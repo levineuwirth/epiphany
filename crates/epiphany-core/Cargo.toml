@@ -1,0 +1,18 @@
+[package]
+name = "epiphany-core"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The Epiphany score graph (spec Chapters 2-5): the typed identifier family, pitch/time primitives, the event arena, staves/voices/regions, and the Chapter 5 graph invariants with generators and shrinkers."
+
+[dependencies]
+epiphany-determinism.workspace = true
+blake3.workspace = true
+slotmap.workspace = true
+getrandom.workspace = true
+num-rational.workspace = true
+num-bigint.workspace = true
+num-traits.workspace = true
+unicode-normalization.workspace = true

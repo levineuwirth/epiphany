@@ -1,0 +1,20 @@
+[package]
+name = "epiphany-ops"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Epiphany concurrent semantics (spec Chapter 6): operation envelopes, the order-independent OperationSlot model, DVV causal context, HLC monotonicity, the canonical reduction order, conflicts, transactions, undo, and integrity anomalies."
+
+[dependencies]
+epiphany-determinism.workspace = true
+epiphany-core.workspace = true
+# Canonical text identity (Appendix D §"Text and Unicode"): the one text field
+# in this crate — a transaction descriptor's `label` — is NFC-normalized before
+# it enters a canonical envelope hash, so canonically-equivalent spellings of a
+# label hash identically.
+unicode-normalization.workspace = true
+
+[[example]]
+name = "fuzz_reduction"

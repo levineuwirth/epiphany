@@ -1,0 +1,375 @@
+//! Deterministic fuzz harnesses for the reduction (the Agent C hand-off gates).
+//!
+//! The QUICKSTART gates this crate on two properties:
+//!
+//! 1. **Reduction determinism** — "the determinism property holds across 10,000
+//!    randomized envelope sets": any permutation of an operation set reduces to
+//!    *byte-identical* materialized state ([`run_reduction_determinism_fuzz`]).
+//!    This is v0 acceptance criteria 1 (convergence) and 5 (reduction
+//!    determinism), exercised at scale.
+//! 2. **Equivocation order-independence** — "the equivocation harness produces
+//!    `OperationSlot::Equivocated` for any duplicate-id-with-different-bytes
+//!    scenario regardless of arrival order" ([`run_equivocation_fuzz`]). This is
+//!    v0 acceptance criterion 3 (Pass 10's order-independence fix).
+//!
+//! Both harnesses are themselves deterministic: they draw from a seeded
+//! SplitMix64 (the determinism crate's, reused — no `rand`, no platform
+//! entropy), so a failing iteration reproduces exactly from its seed. The
+//! generated sets deliberately reuse a small object-id space so deletes,
+//! respellings, and inserts interact (tombstones, already-applied, conflicts),
+//! and they occasionally inject equivocation and HLC-monotonicity anomalies so
+//! those paths are exercised for permutation-invariance too.
+
+use epiphany_core::{
+    EventId, MusicalDuration, MusicalPosition, OperationId, PitchId, RationalTime, RegionId,
+    ReplicaId, SlurId, StaffInstanceId, TypedObjectId, VoiceId,
+};
+use epiphany_determinism::{fuzz::SplitMix64, ContentHash};
+
+use crate::causal::CausalContext;
+use crate::envelope::OperationEnvelope;
+use crate::opset::OperationSet;
+use crate::payload::{
+    CreateCrossCuttingOp, CrossCuttingRef, DeleteEventOp, InsertEventOp, OperationKind,
+    OperationPayload, RespellPitchOp, SetUserSystemBreakOp, TupletCompensation,
+};
+use crate::stamp::{HybridLogicalClock, OperationStamp};
+use crate::support::AuthorId;
+use crate::IntegrityAnomalyKind;
+
+/// Number of replicas the generator draws authors from.
+const REPLICAS: u64 = 3;
+/// Size of the shared object-id space (events, pitches), so operations
+/// genuinely interact during reduction.
+const ID_SPACE: u64 = 6;
+
+/// A tiny extension trait for readable bounded draws.
+trait Draw {
+    fn below(&mut self, n: u64) -> u64;
+    fn chance(&mut self, one_in: u64) -> bool;
+}
+impl Draw for SplitMix64 {
+    #[inline]
+    fn below(&mut self, n: u64) -> u64 {
+        if n == 0 {
+            0
+        } else {
+            self.next_u64() % n
+        }
+    }
+    #[inline]
+    fn chance(&mut self, one_in: u64) -> bool {
+        self.below(one_in.max(1)) == 0
+    }
+}
+
+/// In-place Fisher–Yates shuffle driven by the seeded generator.
+fn shuffle<T>(items: &mut [T], rng: &mut SplitMix64) {
+    for i in (1..items.len()).rev() {
+        let j = (rng.next_u64() % (i as u64 + 1)) as usize;
+        items.swap(i, j);
+    }
+}
+
+fn event(n: u64) -> EventId {
+    EventId::new(ReplicaId(7), n)
+}
+fn pitch(n: u64) -> PitchId {
+    PitchId::new(ReplicaId(7), n)
+}
+
+/// Generates a random payload over the shared id space.
+fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
+    let kind = match rng.below(5) {
+        0 => OperationKind::InsertEvent(InsertEventOp {
+            voice: VoiceId::new(ReplicaId(7), rng.below(3)),
+            staff_instance: StaffInstanceId::new(ReplicaId(7), 0),
+            event: event(rng.below(ID_SPACE)),
+            position: MusicalPosition(RationalTime::from_int(rng.below(4) as i32)),
+            duration: MusicalDuration::whole(),
+            pitches: if rng.chance(2) {
+                vec![pitch(rng.below(ID_SPACE))]
+            } else {
+                vec![]
+            },
+        }),
+        1 => OperationKind::DeleteEvent(DeleteEventOp {
+            event: event(rng.below(ID_SPACE)),
+            tuplet_compensation: TupletCompensation::NotInTuplet,
+        }),
+        2 => OperationKind::RespellPitch(RespellPitchOp {
+            pitch: pitch(rng.below(ID_SPACE)),
+            spelling: ContentHash([(rng.below(4) as u8) + 1; 32]),
+        }),
+        3 => OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: CrossCuttingRef {
+                id: TypedObjectId::Slur(SlurId::new(ReplicaId(7), rng.below(ID_SPACE))),
+                endpoints: vec![
+                    TypedObjectId::Event(event(rng.below(ID_SPACE))),
+                    TypedObjectId::Event(event(rng.below(ID_SPACE))),
+                ],
+            },
+        }),
+        _ => OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
+            region: RegionId::new(ReplicaId(7), 0),
+            anchor: MusicalPosition(RationalTime::from_int(rng.below(4) as i32)),
+            present: rng.chance(2),
+        }),
+    };
+    OperationPayload::Primitive(kind)
+}
+
+/// Generates a random, mostly-well-formed operation set. Per-replica stamps are
+/// monotonic by construction (so most sets are anomaly-free), but the generator
+/// occasionally injects equivocation (a duplicate id with mutated bytes) and an
+/// HLC-monotonicity anomaly, so those paths are exercised for permutation
+/// invariance too.
+pub fn gen_envelope_set(rng: &mut SplitMix64, n: usize) -> Vec<OperationEnvelope> {
+    let mut counters = [0u64; (REPLICAS + 1) as usize];
+    let mut clocks = [0i64; (REPLICAS + 1) as usize];
+    let mut stamps = vec![Vec::<(i64, u32)>::new(); (REPLICAS + 1) as usize];
+    let mut envs = Vec::with_capacity(n);
+
+    for _ in 0..n {
+        let replica = 1 + rng.below(REPLICAS);
+        let r = replica as usize;
+        let counter = counters[r];
+        let id = OperationId::new(ReplicaId(replica), counter);
+
+        // Causal context contains prior history only. Track the maximum stamp
+        // among selected predecessors so the new HLC can strictly outrank it.
+        let mut ctx = CausalContext::new();
+        let mut pred_max = (0i64, 0u32);
+        if counter > 0 {
+            ctx = ctx.with_seen(ReplicaId(replica), counter - 1);
+            pred_max = pred_max.max(stamps[r][(counter - 1) as usize]);
+        }
+        for rr in 1..counters.len() {
+            if rr == r {
+                continue;
+            }
+            let seen = counters[rr];
+            if seen > 0 && rng.chance(2) {
+                let high = rng.below(seen);
+                ctx = ctx.with_seen(ReplicaId(rr as u64), high);
+                pred_max = pred_max.max(stamps[rr][high as usize]);
+            }
+        }
+
+        clocks[r] += rng.below(3) as i64;
+        let previous = stamps[r].last().copied().unwrap_or((0, 0));
+        let physical = clocks[r].max(previous.0).max(pred_max.0);
+        let logical = if physical == previous.0 && physical == pred_max.0 {
+            previous.1.max(pred_max.1) + 1
+        } else if physical == previous.0 {
+            previous.1 + 1
+        } else if physical == pred_max.0 {
+            pred_max.1 + 1
+        } else {
+            0
+        };
+        stamps[r].push((physical, logical));
+        counters[r] += 1;
+
+        envs.push(OperationEnvelope {
+            id,
+            author: AuthorId(replica as u128),
+            stamp: OperationStamp::new(
+                HybridLogicalClock::new(epiphany_core::WallClockTime(physical), logical),
+                id,
+            ),
+            causal_context: ctx,
+            transaction: None,
+            payload: gen_payload(rng),
+        });
+    }
+
+    // Occasionally inject an HLC-monotonicity anomaly: a fresh op on some
+    // replica whose physical time is below an earlier one.
+    if !envs.is_empty() && rng.chance(4) {
+        let replica = 1 + rng.below(REPLICAS);
+        let r = replica as usize;
+        let counter = counters[r];
+        let id = OperationId::new(ReplicaId(replica), counter);
+        envs.push(OperationEnvelope {
+            id,
+            author: AuthorId(replica as u128),
+            // physical -1 is below every generated (non-negative) clock value.
+            stamp: OperationStamp::new(
+                HybridLogicalClock::new(epiphany_core::WallClockTime(0), 0),
+                id,
+            ),
+            causal_context: CausalContext::new(),
+            payload: gen_payload(rng),
+            transaction: None,
+        });
+        // The earlier op must outrank it; bump an existing op's clock high.
+        if let Some(first) = envs
+            .iter_mut()
+            .find(|e| e.id.replica == ReplicaId(replica) && e.id.counter < counter)
+        {
+            first.stamp.hlc.physical_time = epiphany_core::WallClockTime(1_000_000);
+        }
+    }
+
+    // Occasionally inject equivocation: a duplicate id with mutated payload.
+    if !envs.is_empty() && rng.chance(4) {
+        let victim = &envs[rng.below(envs.len() as u64) as usize];
+        let mut twin = victim.clone();
+        twin.payload = OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
+            pitch: pitch(rng.below(ID_SPACE)),
+            spelling: ContentHash([0xEE; 32]),
+        }));
+        if twin.envelope_hash() != victim.envelope_hash() {
+            envs.push(twin);
+        }
+    }
+
+    envs
+}
+
+/// Reduces an envelope set accepted in the given order, returning the canonical
+/// materialized bytes.
+fn reduce_in_order(envs: &[OperationEnvelope]) -> Vec<u8> {
+    let mut set = OperationSet::new();
+    set.accept_all(envs.iter().cloned());
+    set.reduce().canonical_bytes()
+}
+
+/// Runs `iters` reduction-determinism iterations from `seed`. Each iteration
+/// generates a random operation set and asserts that several random
+/// *acceptance orders* reduce to byte-identical materialized state. Panics on
+/// the first violation (the hand-off gate's failure condition).
+pub fn run_reduction_determinism_fuzz(iters: u64, seed: u64) {
+    let mut rng = SplitMix64::new(seed);
+    for _ in 0..iters {
+        let n = 1 + rng.below(14) as usize;
+        let base = gen_envelope_set(&mut rng, n);
+        let reference = reduce_in_order(&base);
+        for _ in 0..3 {
+            let mut perm = base.clone();
+            shuffle(&mut perm, &mut rng);
+            let got = reduce_in_order(&perm);
+            assert_eq!(
+                got, reference,
+                "reduction is not permutation-invariant (n = {n})"
+            );
+        }
+    }
+}
+
+/// Runs `iters` equivocation iterations from `seed`. Each iteration builds two
+/// distinct canonical envelopes under one `OperationId`, accepts them (with a
+/// few unrelated envelopes) in a random order, and asserts the slot is
+/// `Equivocated`, the operation contributes no effect, and an
+/// `OperationSlotEquivocated` anomaly is recorded — regardless of arrival order.
+pub fn run_equivocation_fuzz(iters: u64, seed: u64) {
+    let mut rng = SplitMix64::new(seed);
+    for _ in 0..iters {
+        let id = OperationId::new(ReplicaId(1 + rng.below(REPLICAS)), rng.below(5));
+
+        let mk = |rng: &mut SplitMix64, spelling: u8| OperationEnvelope {
+            id,
+            author: AuthorId(0),
+            stamp: OperationStamp::new(
+                HybridLogicalClock::new(epiphany_core::WallClockTime(rng.below(100) as i64), 0),
+                id,
+            ),
+            causal_context: CausalContext::new(),
+            transaction: None,
+            payload: OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
+                pitch: pitch(0),
+                spelling: ContentHash([spelling; 32]),
+            })),
+        };
+        let a = mk(&mut rng, 1);
+        let b = mk(&mut rng, 2); // distinct canonical bytes (different spelling)
+        debug_assert_ne!(a.envelope_hash(), b.envelope_hash());
+
+        // A few unrelated, well-formed envelopes to vary the surrounding set.
+        let noise_count = rng.below(4) as usize;
+        let noise = gen_envelope_set(&mut rng, noise_count)
+            .into_iter()
+            .filter(|e| e.id != id)
+            .collect::<Vec<_>>();
+
+        let mut items = vec![a.clone(), b.clone()];
+        items.extend(noise);
+        shuffle(&mut items, &mut rng);
+
+        let mut set = OperationSet::new();
+        set.accept_all(items);
+
+        let slot = set.slot(id).expect("slot exists for the equivocating id");
+        assert!(
+            slot.is_equivocated(),
+            "duplicate id with different bytes must equivocate regardless of order"
+        );
+
+        let state = set.reduce();
+        assert!(
+            state.effects.iter().all(|(e, _)| *e != id),
+            "an equivocated operation must produce no canonical effect"
+        );
+        assert!(
+            state.anomalies.iter().any(|an| matches!(
+                an.kind,
+                IntegrityAnomalyKind::OperationSlotEquivocated { operation_id } if operation_id == id
+            )),
+            "an equivocated slot must record an OperationSlotEquivocated anomaly"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reduction_determinism_smoke() {
+        run_reduction_determinism_fuzz(500, 0xC0FFEE);
+    }
+
+    #[test]
+    fn equivocation_smoke() {
+        run_equivocation_fuzz(500, 0x1234_5678);
+    }
+
+    #[test]
+    fn generator_is_deterministic() {
+        let mut a = SplitMix64::new(99);
+        let mut b = SplitMix64::new(99);
+        let sa = gen_envelope_set(&mut a, 10);
+        let sb = gen_envelope_set(&mut b, 10);
+        assert_eq!(sa, sb);
+    }
+
+    #[test]
+    fn clean_generated_histories_respect_causal_stamps() {
+        let mut rng = SplitMix64::new(0xCA05_A117);
+        let mut checked = 0;
+        for _ in 0..2_000 {
+            let set = gen_envelope_set(&mut rng, 24);
+            let mut accepted = OperationSet::new();
+            accepted.accept_all(set);
+            let singles = accepted.single_envelopes();
+            if !crate::anomaly::detect_replica_anomalies(&singles).is_empty() {
+                continue;
+            }
+            for successor in &singles {
+                for predecessor in &singles {
+                    if predecessor.id != successor.id
+                        && successor.causal_context.covers(predecessor.id)
+                    {
+                        assert!(
+                            predecessor.stamp.reduction_tuple() < successor.stamp.reduction_tuple(),
+                            "causal predecessor did not have a lower stamp"
+                        );
+                    }
+                }
+            }
+            checked += 1;
+        }
+        assert!(checked > 1_000, "too few clean generated histories checked");
+    }
+}

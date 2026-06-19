@@ -1,0 +1,5 @@
+# Rust build artifacts
+/target/
+
+# These are tracked once they exist (kept for reproducible builds):
+#   Cargo.lock for the workspace

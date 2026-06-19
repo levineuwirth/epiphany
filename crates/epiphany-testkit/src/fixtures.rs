@@ -1,0 +1,211 @@
+//! Hand-built score fixtures the testkit needs but Agent B's generators do not
+//! provide in the exact shape an acceptance criterion names.
+//!
+//! In particular the layout hand-off case (QUICKSTART, Agent E) is *"a 10-measure
+//! single-staff score"*, which [`ten_measure_single_staff`] builds — Agent B's
+//! [`valid_score`](epiphany_core::generators::valid_score) is 1–2 staves with no
+//! measures, and [`valid_score_rich`](epiphany_core::generators::valid_score_rich)
+//! is three staves. The fixture is invariant-clean and carries measures plus a
+//! tie, spanner, marker, and chord symbol so the layout projection exercises the
+//! cross-cutting objects.
+
+use epiphany_core::{
+    AcousticPitch, AcousticRealization, AnchorOffset, Canvas, ChordSymbol, CmnNominal,
+    CrossCuttingRegistry, Event, EventArena, EventDuration, EventPosition, IdentifiedPitch,
+    IdentityContext, Instrument, Marker, Measure, MetricTimeModel, MusicalDuration,
+    MusicalPosition, Pitch, PitchSpaceId, PitchSpacePosition, RationalTime, RegionContent,
+    RegionEdge, RegionTimeModel, ScalePosition, Score, Spanner, Staff, StaffBasedContent,
+    StaffExtent, StaffInstance, StaffLineConfiguration, StemConfiguration, Tie, TieClass,
+    TimeAnchor, TimeExtent, TuningReference, Voice, WallClockTime,
+};
+use epiphany_core::{
+    ChordSymbolId, EventId, InstrumentId, MarkerId, MeasureId, PitchId, RegionId, ReplicaId,
+    SlurId, SpannerId, StaffId, StaffInstanceId, TieId, VoiceId,
+};
+
+use epiphany_determinism::fuzz::SplitMix64;
+
+/// A C4 pitched quarter-note at musical position `index/4`. All notes are C4 so
+/// the tie between adjacent events is enharmonically valid.
+fn quarter(eid: EventId, voice: VoiceId, pid: PitchId, index: i64) -> Event {
+    Event::Pitched(epiphany_core::PitchedEvent {
+        id: eid,
+        voice,
+        position: EventPosition::Musical(MusicalPosition(RationalTime::new(index, 4).unwrap())),
+        duration: EventDuration::Musical(MusicalDuration(RationalTime::new(1, 4).unwrap())),
+        pitches: vec![IdentifiedPitch {
+            id: pid,
+            pitch: Pitch {
+                scale_position: ScalePosition {
+                    space: PitchSpaceId::new("cmn-12"),
+                    position: PitchSpacePosition::Cmn {
+                        nominal: CmnNominal::C,
+                        alteration: 0,
+                        octave: 4,
+                    },
+                },
+                acoustic: AcousticPitch {
+                    tuning: TuningReference::Inherit,
+                    realization: AcousticRealization::Implicit,
+                },
+            },
+        }],
+        articulations: vec![],
+        dynamic: None,
+        ornaments: vec![],
+        stem: StemConfiguration,
+        grace: None,
+    })
+}
+
+/// A 10-measure, single-staff, single-voice metric score with 40 quarter notes
+/// (four per measure), plus a tie, a spanner, a marker, and a chord symbol. The
+/// QUICKSTART layout hand-off case. Invariant-clean (the returned graph passes
+/// [`check_invariants`](epiphany_core::check_invariants)).
+pub fn ten_measure_single_staff(seed: u64) -> Score {
+    let mut rng = SplitMix64::new(seed ^ 0x0010_3EA5_5AFF);
+    let replica =
+        ReplicaId::from_entropy(rng.next_u64().to_le_bytes()).unwrap_or(ReplicaId(0x10AF));
+    let mut idc = IdentityContext::new(replica);
+
+    let staff_id: StaffId = idc.mint();
+    let instrument: InstrumentId = idc.mint();
+    let region_id: RegionId = idc.mint();
+    let instance_id: StaffInstanceId = idc.mint();
+    let voice_id: VoiceId = idc.mint();
+
+    const MEASURES: i64 = 10;
+    const BEATS_PER_MEASURE: i64 = 4;
+
+    let mut arena = EventArena::new();
+    let mut voice = Voice::user(voice_id);
+    let mut events: Vec<EventId> = Vec::new();
+    for index in 0..(MEASURES * BEATS_PER_MEASURE) {
+        let eid: EventId = idc.mint();
+        let pid: PitchId = idc.mint();
+        arena.insert(quarter(eid, voice_id, pid, index)).unwrap();
+        voice.events.push(eid);
+        events.push(eid);
+    }
+
+    let mut instance = StaffInstance::new(instance_id, staff_id);
+    instance.voices.push(voice);
+    for m in 0..MEASURES {
+        let mid: MeasureId = idc.mint();
+        instance.measures.push(Measure {
+            id: mid,
+            // Region-anchored at a whole-note musical offset (one measure of 4/4).
+            start: TimeAnchor::Region {
+                id: region_id,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(MusicalDuration(RationalTime::new(m, 1).unwrap())),
+            },
+            time_signature: None,
+            explicit_number: Some((m + 1) as u32),
+            number_visibility: Default::default(),
+        });
+    }
+
+    // Cross-cutting: a tie between the first two (C4) events, a spanner across
+    // the staff, a marker, and a chord symbol — all region-anchored validly.
+    let mut cross_cutting = CrossCuttingRegistry::default();
+    cross_cutting.ties.push(Tie {
+        id: idc.mint::<TieId>(),
+        start_event: events[0],
+        end_event: events[1],
+        pitch_pairing: None,
+        class: TieClass::Standard,
+    });
+    cross_cutting.spanners.push(Spanner {
+        id: idc.mint::<SpannerId>(),
+        start: TimeAnchor::Region {
+            id: region_id,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Musical(MusicalDuration::zero()),
+        },
+        end: TimeAnchor::WallClock {
+            time: WallClockTime(10),
+        },
+        staves: vec![staff_id],
+    });
+    cross_cutting.markers.push(Marker {
+        id: idc.mint::<MarkerId>(),
+        anchor: TimeAnchor::Region {
+            id: region_id,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Zero,
+        },
+    });
+    cross_cutting.chord_symbols.push(ChordSymbol {
+        id: idc.mint::<ChordSymbolId>(),
+        anchor: TimeAnchor::Region {
+            id: region_id,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Zero,
+        },
+    });
+    // (A slur id is minted lazily elsewhere; keep the registry otherwise empty.)
+    let _ = SlurId::new(replica, 0);
+
+    let region = epiphany_core::Region {
+        id: region_id,
+        time_model: RegionTimeModel::Metric(MetricTimeModel::default()),
+        content: RegionContent::StaffBased(StaffBasedContent {
+            staff_instances: vec![instance],
+            ..Default::default()
+        }),
+        time_extent: TimeExtent {
+            start: TimeAnchor::WallClock {
+                time: WallClockTime(0),
+            },
+            end: TimeAnchor::WallClock {
+                time: WallClockTime(10_000_000),
+            },
+        },
+        staff_extent: StaffExtent {
+            staves: vec![staff_id],
+        },
+        local_tempo_map: None,
+    };
+
+    let mut score = Score::empty(idc.clone());
+    score.identity = idc;
+    score.instruments = vec![Instrument {
+        id: instrument,
+        name: String::from("Flute"),
+    }];
+    score.staves = vec![Staff {
+        id: staff_id,
+        name: String::from("Flute"),
+        abbreviation: Some(String::from("Fl.")),
+        instrument,
+        default_staff_lines: StaffLineConfiguration::default(),
+        group: None,
+    }];
+    score.events = arena;
+    score.cross_cutting = cross_cutting;
+    score.canvas = Canvas {
+        regions: vec![region],
+    };
+    score
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use epiphany_core::check_invariants;
+
+    #[test]
+    fn fixture_is_invariant_clean_and_shaped() {
+        let s = ten_measure_single_staff(1);
+        let v = check_invariants(&s);
+        assert!(v.is_empty(), "ten-measure fixture has violations: {v:?}");
+        assert_eq!(s.staves.len(), 1, "single staff");
+        assert_eq!(s.canvas.regions[0].staff_instances()[0].measures.len(), 10);
+        assert_eq!(s.events.len(), 40);
+        assert_eq!(s.cross_cutting.ties.len(), 1);
+        assert_eq!(s.cross_cutting.spanners.len(), 1);
+        assert_eq!(s.cross_cutting.markers.len(), 1);
+        assert_eq!(s.cross_cutting.chord_symbols.len(), 1);
+    }
+}

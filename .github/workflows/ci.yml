@@ -1,0 +1,85 @@
+name: CI
+
+# The QUICKSTART requires Agent F's conformance suite to run in CI "from the day
+# Agent A lands" — it is the architecture's tripwire. This workflow runs the
+# whole workspace's checks plus the testkit's conformance suite on every push and
+# pull request.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    # Nightly soak at 04:17 UTC.
+    - cron: "17 4 * * *"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt / clippy / test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (pinned MSRV)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.77"
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (all targets)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test (workspace)
+        run: cargo test --workspace --all-targets
+
+      - name: Doc tests
+        run: cargo test --workspace --doc
+
+      # Deny rustdoc warnings (broken/private intra-doc links, etc.) across the
+      # whole workspace. `RUSTFLAGS` does not cover rustdoc, so `RUSTDOCFLAGS` is
+      # set explicitly.
+      - name: Doc warnings (workspace)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
+
+  conformance:
+    name: conformance suite (testkit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # The full conformance suite at scale 1: Agent A's 1,000,000-iteration
+      # determinism gate, the round-trip corpus, the crash-recovery and
+      # manifest-selection gates, convergence / reduction-determinism /
+      # equivocation against the real epiphany-ops, and the layout round-trip.
+      - name: Run conformance suite
+        run: cargo run --release -p epiphany-testkit --example conformance_suite 1
+
+  # A longer soak, scheduled nightly, exploring a wider seed space at scale.
+  soak:
+    name: conformance soak (nightly)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run conformance soak
+        run: cargo run --release -p epiphany-testkit --example conformance_suite 10

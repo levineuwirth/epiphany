@@ -1,0 +1,65 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/epiphany-determinism",
+    "crates/epiphany-core",
+    "crates/epiphany-bundle",
+    "crates/epiphany-ops",
+    "crates/epiphany-testkit",
+]
+
+# Each remaining crate (epiphany-layout-ir) is added to `members` by its owning
+# agent when it lands. Agent A shipped epiphany-determinism first; Agent B's
+# epiphany-core and Agent D's epiphany-bundle build on it (in parallel — the
+# bundle depends on A only, not on B or C). Agent C's epiphany-ops builds on A
+# and B. Agent F's epiphany-testkit is cross-cutting: it drives the real
+# shipped A/B/C/D and carries a faithful in-tree stub only for the not-yet-landed
+# E (epiphany-layout-ir), which its layout-round-trip harness re-points at when
+# that crate lands. See spec/QUICKSTART.md for the dependency order.
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.77"
+authors = ["Epiphany contributors"]
+repository = "https://github.com/epiphany-notation/epiphany"
+
+[workspace.dependencies]
+blake3 = "1"
+epiphany-determinism = { path = "crates/epiphany-determinism" }
+# Agent C's epiphany-ops builds the concurrent-reduction semantics (Chapter 6)
+# on top of the score graph; the layout-ir and testkit crates will depend on it
+# too, so its path is declared once here.
+epiphany-core = { path = "crates/epiphany-core" }
+# Agent D's epiphany-bundle is the on-disk container (Chapter 8). Agent F's
+# testkit drives its crash-recovery and manifest-selection gates, so its path is
+# declared here alongside the other intra-workspace crates.
+epiphany-bundle = { path = "crates/epiphany-bundle" }
+# Agent C's epiphany-ops is the concurrent-semantics layer (Chapter 6). Agent F's
+# testkit drives its convergence, reduction-determinism, and equivocation gates,
+# so its path is declared here alongside the other intra-workspace crates.
+epiphany-ops = { path = "crates/epiphany-ops" }
+# Event-arena storage backend (QUICKSTART decision 2): slotmap gives
+# generation-checked stale-handle detection, matching the spec's
+# identifier-stability requirement (Chapter 5).
+slotmap = "1"
+# Replica-identifier entropy source (QUICKSTART decision 1): CSPRNG seed for
+# the >=64-bit random ReplicaId (Chapter 5 §"Identifier Generation"). This is
+# the only sanctioned use of platform randomness (Appendix D §"Randomness").
+getrandom = "0.2"
+# Exact arbitrary-precision rationals for the promoted arm of RationalTime
+# (Chapter 3 §"Recommended Implementation: Inline-or-Promoted").
+num-rational = { version = "0.4", default-features = false, features = ["num-bigint"] }
+num-bigint = { version = "0.4", default-features = false }
+num-traits = { version = "0.2", default-features = false }
+# Unicode NFC normalization for canonical text identity (Appendix D §"Text and
+# Unicode": canonical text fields MUST be NFC). Used to normalize registry /
+# catalog names so canonically-equivalent spellings compare equal.
+unicode-normalization = "0.1"
+
+# Determinism-sensitive: never enable fast-math-style codegen on canonical
+# numerical paths (Appendix D, "Rounding and CPU Behavior"). The default
+# release profile is already IEEE-conformant; we keep overflow checks on in
+# every profile so identifier/coordinate arithmetic faults loudly instead of
+# silently wrapping.
+[profile.release]
+overflow-checks = true
