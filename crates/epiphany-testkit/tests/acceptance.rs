@@ -4,9 +4,9 @@
 //! versions (1M / 10k iterations) live in `examples/conformance_suite.rs`; these
 //! run a meaningful slice under the `cargo test` timeout.
 //!
-//! Criteria 1–5 run against the real shipped crates (A/B/C/D). Criterion 6 runs
-//! against the testkit's faithful in-tree layout stub, since Agent E
-//! (`epiphany-layout-ir`) has not landed. See the crate docs for the stub policy.
+//! All six criteria run against the real shipped crates (A/B/C/D/E): criterion
+//! 6 drives the real `epiphany-layout-ir` through the `layout_stub` harness
+//! module (Agent E has landed). See the crate docs for the harness policy.
 
 use epiphany_testkit::{
     bundle_harness, convergence, equivocation, fixtures, generators, layout_stub, roundtrip, Rng,

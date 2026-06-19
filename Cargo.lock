@@ -94,6 +94,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "epiphany-layout-ir"
+version = "0.0.0"
+dependencies = [
+ "epiphany-core",
+ "epiphany-determinism",
+ "epiphany-ops",
+]
+
+[[package]]
 name = "epiphany-ops"
 version = "0.0.0"
 dependencies = [
@@ -109,6 +118,7 @@ dependencies = [
  "epiphany-bundle",
  "epiphany-core",
  "epiphany-determinism",
+ "epiphany-layout-ir",
  "epiphany-ops",
 ]
 

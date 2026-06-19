@@ -149,10 +149,19 @@ impl CanonicalEncode for OperationKind {
 pub enum OperationKindTag {
     InsertEvent,
     DeleteEvent,
+    ModifyEvent,
     RespellPitch,
+    Transpose,
     CreateCrossCutting,
+    DeleteCrossCutting,
+    ModifyCrossCutting,
     ChangeRegionTimeModel,
+    InsertRegion,
+    DeleteRegion,
+    InsertStaffInstance,
+    DeleteStaffInstance,
     SetUserSystemBreak,
+    SetUserPageBreak,
     DeclareTransaction,
     Registered(OperationKindRegistryId),
 }
@@ -162,12 +171,21 @@ impl OperationKindTag {
         match self {
             OperationKindTag::InsertEvent => 0,
             OperationKindTag::DeleteEvent => 1,
-            OperationKindTag::RespellPitch => 2,
-            OperationKindTag::CreateCrossCutting => 3,
-            OperationKindTag::ChangeRegionTimeModel => 4,
-            OperationKindTag::SetUserSystemBreak => 5,
-            OperationKindTag::DeclareTransaction => 6,
-            OperationKindTag::Registered(_) => 7,
+            OperationKindTag::ModifyEvent => 2,
+            OperationKindTag::RespellPitch => 3,
+            OperationKindTag::Transpose => 4,
+            OperationKindTag::CreateCrossCutting => 5,
+            OperationKindTag::DeleteCrossCutting => 6,
+            OperationKindTag::ModifyCrossCutting => 7,
+            OperationKindTag::ChangeRegionTimeModel => 8,
+            OperationKindTag::InsertRegion => 9,
+            OperationKindTag::DeleteRegion => 10,
+            OperationKindTag::InsertStaffInstance => 11,
+            OperationKindTag::DeleteStaffInstance => 12,
+            OperationKindTag::SetUserSystemBreak => 13,
+            OperationKindTag::SetUserPageBreak => 14,
+            OperationKindTag::DeclareTransaction => 15,
+            OperationKindTag::Registered(_) => 16,
         }
     }
 }
@@ -529,6 +547,33 @@ mod tests {
             spelling: ContentHash([4u8; 32]),
         });
         assert_eq!(prim.tag(), OperationKindTag::RespellPitch);
+    }
+
+    #[test]
+    fn every_normative_operation_tag_has_a_distinct_canonical_discriminant() {
+        let tags = [
+            OperationKindTag::InsertEvent,
+            OperationKindTag::DeleteEvent,
+            OperationKindTag::ModifyEvent,
+            OperationKindTag::RespellPitch,
+            OperationKindTag::Transpose,
+            OperationKindTag::CreateCrossCutting,
+            OperationKindTag::DeleteCrossCutting,
+            OperationKindTag::ModifyCrossCutting,
+            OperationKindTag::ChangeRegionTimeModel,
+            OperationKindTag::InsertRegion,
+            OperationKindTag::DeleteRegion,
+            OperationKindTag::InsertStaffInstance,
+            OperationKindTag::DeleteStaffInstance,
+            OperationKindTag::SetUserSystemBreak,
+            OperationKindTag::SetUserPageBreak,
+            OperationKindTag::DeclareTransaction,
+        ];
+        let encoded: std::collections::BTreeSet<_> = tags
+            .iter()
+            .map(CanonicalEncode::to_canonical_bytes)
+            .collect();
+        assert_eq!(encoded.len(), tags.len());
     }
 
     #[test]

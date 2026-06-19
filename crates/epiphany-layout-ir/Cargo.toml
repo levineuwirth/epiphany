@@ -1,0 +1,19 @@
+[package]
+name = "epiphany-layout-ir"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The Epiphany layout intermediate representation (spec Chapter 7) and constraint-solver interface (Chapter 9, interface only): the four IR stages, the TimeAxisModel tagged enum, provenance back-references, engraving-decision records, the vertical-band model, the in-tree Bravura glyph catalog identity, edit barriers keyed on OperationKindTag, and the v0 stub solver that returns the input geometry verbatim."
+
+[dependencies]
+epiphany-determinism.workspace = true
+epiphany-core.workspace = true
+# Agent E depends on A and B for the IR pipeline (QUICKSTART). The edit-barrier
+# types (Chapter 8 §"Forward Compatibility and Edit Barriers") store
+# `prohibited_operation_kinds: Vec<OperationKindTag>`, and `OperationKindTag` is
+# Agent C's canonical discriminator type — reproducing it here would let it
+# drift from the real one, so the barrier types reference C's type directly.
+# This is the only use of epiphany-ops; see DECISIONS.md.
+epiphany-ops.workspace = true

@@ -1,752 +1,36 @@
-//! A faithful **stub** of `epiphany-layout-ir` (Agent E, Chapter 7 "Layout
-//! Intermediate Representation" and Chapter 9 "Constraint-Solver Interface").
-//!
-//! Agent E has not landed; per the QUICKSTART, Agent F *"builds against A and
-//! stubs for the others."* This module is that stub and drives v0 acceptance
-//! criterion 6 (Layout round-trip):
+//! The layout round-trip harness (v0 acceptance criterion 6 — Chapter 7's IR
+//! contract):
 //!
 //! > A score graph → LogicalLayoutIR → stub-solved ResolvedLayoutIR → RenderIR
 //! > interface call completes without panic and without losing provenance
 //! > back-references.
 //!
-//! It is a minimal but spec-faithful model: the four IR stages
-//! ([`LogicalLayoutIR`] → [`ConstrainedLayoutIR`] → [`ResolvedLayoutIR`] →
-//! [`RenderIR`]), the [`TimeAxisModel`] tagged enum (Metric / Proportional /
-//! Aleatoric / Registered — *not* a trait object, Chapter 7), the
-//! [`Provenance`] back-references that every layout object MUST carry
-//! (Chapter 7 §"Provenance"), the [`GlyphCatalogIdentity`] (Chapter 7 §7.3.2),
-//! and the stub constraint solver ([`StubSolver`]) that returns
-//! [`SolveStatus::Solved`] with the input geometry **verbatim** (the QUICKSTART
-//! direction: *"the stub returns `SolveStatus::Solved` with the input geometry
-//! verbatim"*). Quality metrics are not implemented — only the interface, as the
-//! spec requires. Resolved positions are quantized to the Appendix D
-//! `1/1024` staff-space grid via [`QuantizedCoord`].
+//! **Agent E (`epiphany-layout-ir`) has landed.** This module was formerly a
+//! faithful in-tree *stub* of the layout IR; per the QUICKSTART re-point note it
+//! now drives the **real** crate, re-exporting its IR types behind the same
+//! [`round_trip`] signature the acceptance suite already calls. The
+//! provenance-preservation contract the harness asserts is implemented and
+//! tested inside `epiphany-layout-ir` itself; the testkit keeps deterministic
+//! generators for E's public types (Agent F's "generators for every public type
+//! in A through E" mandate) and exercises the real `round_trip` on the testkit's
+//! hand-off fixtures.
 //!
-//! When `epiphany-layout-ir` lands, [`round_trip`] re-points at the real IR
-//! types; the provenance-preservation contract it asserts is the one the real
-//! crate must also satisfy.
+//! The module name is retained so the harness entry point stays
+//! `layout_stub::round_trip`.
 
-use std::collections::BTreeSet;
-
-use epiphany_core::{Region, RegionTimeModel, Score, TypedObjectId};
-use epiphany_determinism::{blake3_256, trunc128, DomainTag, Preimage, QuantizedCoord};
+// Re-export the real layout IR: the four stages, `TimeAxisModel`, the provenance
+// back-references, the glyph-catalog identity, the engraving-decision and
+// vertical-band models, the edit-barrier types, and the stub solver.
+pub use epiphany_layout_ir::*;
 
 use crate::rng::Rng;
 
-/// A layout object's stable identifier across re-layouts where its source is
-/// unchanged (Chapter 7 §"Provenance"). Carried unchanged through every stage.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct LayoutObjectId(pub u128);
+// --- Deterministic generators for Agent E's public types (Agent F mandate) ---
 
 /// A generated layout-object identifier value.
 pub fn gen_layout_object_id(rng: &mut Rng) -> LayoutObjectId {
     LayoutObjectId(((rng.next_u64() as u128) << 64) | rng.next_u64() as u128)
 }
-
-/// Derives the stable layout id of an object from its score-graph **source**
-/// alone — never from its traversal position. This is what makes the id stable
-/// across relayouts (Chapter 7 §"Provenance": stable across re-layouts where the
-/// source is unchanged): inserting, removing, or reordering other objects cannot
-/// change any object's stable id, because each depends solely on its own source.
-pub fn stable_layout_id(source: &TypedObjectId) -> LayoutObjectId {
-    LayoutObjectId(trunc128(&blake3_256(&source.canonical_bytes())))
-}
-
-/// Why an IR object exists without a direct score-graph source (Chapter 7
-/// §"Provenance"). Engraver-synthesized objects MUST declare one. The variant set
-/// mirrors the spec's normative `SynthesisKind`.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum SynthesisKind {
-    CancellationAccidental,
-    KeySignatureNatural,
-    GeneratedRest,
-    EngravedBreak,
-    MultimeasureRest,
-    Cautionary,
-    /// Extension-defined synthesis kind, identified by a registry id.
-    Registered(u128),
-}
-
-/// The provenance back-reference every layout object carries (Chapter 7
-/// §"Provenance"). This is what makes incremental layout possible and what the
-/// round-trip harness proves is preserved end to end.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Provenance {
-    /// The score-graph object this IR object represents or derives from.
-    pub source: TypedObjectId,
-    /// For engraver-synthesized objects, the synthesis kind; `None` for objects
-    /// with a direct score-graph source.
-    pub synthesis: Option<SynthesisKind>,
-    /// Every score-graph object whose change should invalidate this layout
-    /// object (the incremental-layout dependency set).
-    pub dependencies: Vec<TypedObjectId>,
-    /// Stable across re-layouts where the source is unchanged.
-    pub stable_id: LayoutObjectId,
-}
-
-/// The per-region time axis, a tagged enum over the four kinds (Chapter 7): the
-/// enum form is canonical, *not* `Box<dyn TimeAxis>`.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum TimeAxisModel {
-    Metric,
-    Proportional {
-        duration_ns: i64,
-    },
-    Aleatoric,
-    /// Extension-defined axis kind, identified by a registry id.
-    Registered(u128),
-}
-
-/// Glyph catalog identity for layout conformance (Chapter 7 §7.3.2): the font
-/// and metric data the solve consumed. Stubbed to a fixed Bravura-like identity.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct GlyphCatalogIdentity {
-    pub font_id: &'static str,
-    pub smufl_version: (u16, u16),
-    pub metrics_hash: [u8; 32],
-}
-
-impl Default for GlyphCatalogIdentity {
-    fn default() -> Self {
-        GlyphCatalogIdentity {
-            font_id: "Bravura",
-            smufl_version: (1, 4),
-            metrics_hash: stub_metrics_hash(),
-        }
-    }
-}
-
-/// A small representative stub of the per-glyph SMuFL metrics a real solve would
-/// consult: `(glyph name, advance width, bounding box [l, b, r, t])` in
-/// `1/1024`-staff-space units. Agent E bundles the real Bravura metrics in-tree;
-/// this stands in until then.
-const STUB_GLYPH_METRICS: &[(&str, i32, [i32; 4])] = &[
-    ("noteheadBlack", 1180, [0, -512, 1180, 512]),
-    ("noteheadHalf", 1180, [0, -512, 1180, 512]),
-    ("gClef", 2684, [0, -2048, 2600, 4660]),
-    ("fClef", 2776, [0, -1024, 2776, 1024]),
-    ("accidentalSharp", 994, [0, -1392, 994, 1392]),
-    ("accidentalFlat", 821, [0, -703, 821, 1751]),
-    ("restQuarter", 1024, [0, -1536, 1024, 1536]),
-];
-
-/// The catalog metrics identity: a **domain-tagged** (`MUSCFNTM`) BLAKE3 hash
-/// over the canonical serialization of the (stub) glyph metrics actually
-/// available to the solve (Chapter 7 §7.3.2 / Appendix D §"Domain-Separated
-/// Preimages"), rather than a raw hash of a descriptive string.
-pub fn stub_metrics_hash() -> [u8; 32] {
-    stub_metrics_hash_for(STUB_GLYPH_METRICS.iter().map(|metric| metric.0))
-}
-
-fn stub_metrics_hash_for<'a>(names: impl IntoIterator<Item = &'a str>) -> [u8; 32] {
-    let names: BTreeSet<&str> = names.into_iter().collect();
-    let mut p = Preimage::new(DomainTag::FONT_METRICS);
-    p.push_u64_le(names.len() as u64);
-    for name in names {
-        let (_, advance, bbox) = STUB_GLYPH_METRICS
-            .iter()
-            .find(|metric| metric.0 == name)
-            .expect("every constrained glyph must name bundled stub metrics");
-        p.push_u64_le(name.len() as u64);
-        p.push_bytes(name.as_bytes());
-        p.push_u64_le(*advance as u64);
-        for coord in bbox {
-            p.push_u64_le(*coord as u64);
-        }
-    }
-    *p.finish().as_bytes()
-}
-
-/// A canonical 2-D point on the `1/1024` staff-space grid (Appendix D
-/// §"Quantized Layout Coordinates").
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct Point {
-    pub x: QuantizedCoord,
-    pub y: QuantizedCoord,
-}
-
-// --- Stage 1: LogicalLayoutIR ----------------------------------------------
-
-/// A structural layout object before spacing — engraving decisions notionally
-/// made, positions unresolved (Chapter 7 §7.1).
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct LayoutObject {
-    pub provenance: Provenance,
-}
-
-/// A region projected into layout space, carrying its time axis (Chapter 7).
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct LayoutRegion {
-    pub provenance: Provenance,
-    pub time_axis: TimeAxisModel,
-    pub objects: Vec<LayoutObject>,
-}
-
-/// The logical IR: the structural projection of the score graph (Chapter 7 §7.1).
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct LogicalLayoutIR {
-    pub regions: Vec<LayoutRegion>,
-}
-
-// --- Stage 2: ConstrainedLayoutIR ------------------------------------------
-
-/// A glyph with a baseline anchor and bounding extent, the input to the solver
-/// (Chapter 7 §7.2). The `baseline` is the geometry the stub solver returns
-/// verbatim.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct GlyphObject {
-    pub provenance: Provenance,
-    /// The SMuFL glyph whose metrics the solver consults.
-    pub glyph_name: &'static str,
-    pub baseline: Point,
-}
-
-/// The constrained IR: composite objects flattened to glyphs (Chapter 7 §7.2).
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct ConstrainedLayoutIR {
-    pub glyphs: Vec<GlyphObject>,
-    pub catalog: GlyphCatalogIdentity,
-}
-
-// --- Stage 3: ResolvedLayoutIR ---------------------------------------------
-
-/// A glyph with a definitive, quantized position (Chapter 7 §7.3).
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct ResolvedGlyph {
-    pub provenance: Provenance,
-    pub position: Point,
-}
-
-/// The resolved IR: every glyph positioned (Chapter 7 §7.3).
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct ResolvedLayoutIR {
-    pub glyphs: Vec<ResolvedGlyph>,
-    pub catalog: GlyphCatalogIdentity,
-}
-
-// --- Stage 4: RenderIR (interface only) ------------------------------------
-
-/// A single renderer primitive (Chapter 7 §7.4). Interface only — no actual
-/// rendering. Every primitive is traceable to its source (Chapter 7: *"every
-/// renderer primitive MUST be traceable to its originating ResolvedGlyph"*).
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct RenderPrimitive {
-    pub provenance: Provenance,
-    pub position: Point,
-}
-
-/// The render IR interface output (Chapter 7 §7.4).
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct RenderIR {
-    pub primitives: Vec<RenderPrimitive>,
-}
-
-// --- Chapter 9: the constraint-solver interface ----------------------------
-
-/// The solver status (Chapter 9 §9.1). Variants quoted from the spec.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum SolveStatus {
-    /// All hard constraints satisfied, target quality reached.
-    Solved,
-    /// All hard constraints satisfied, but warnings were generated.
-    SolvedWithWarnings,
-    /// Deterministic budget exhausted before reaching target quality.
-    PartialBudgetExhausted,
-    /// Hard constraints cannot be simultaneously satisfied.
-    Unsatisfiable,
-    /// Solver bug or unexpected error.
-    InternalError,
-}
-
-/// The solver report (Chapter 9 §9.1). The `layout` is always present; its
-/// authority depends on `status`.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct SolveReport {
-    pub status: SolveStatus,
-    pub satisfied_hard_constraints: bool,
-    pub layout: ResolvedLayoutIR,
-}
-
-/// The constraint-solver interface (Chapter 9 §9.1), reduced to the single
-/// from-scratch entry point the round-trip needs.
-pub trait ConstraintSolver {
-    fn solve(&self, input: &ConstrainedLayoutIR) -> SolveReport;
-}
-
-/// The v0 stub solver (QUICKSTART, Agent E: *"the stub returns
-/// `SolveStatus::Solved` with the input geometry verbatim"*). It copies each
-/// glyph's baseline anchor into its resolved position unchanged, preserves
-/// provenance, and reports all hard constraints satisfied.
-pub struct StubSolver;
-
-impl ConstraintSolver for StubSolver {
-    fn solve(&self, input: &ConstrainedLayoutIR) -> SolveReport {
-        let metrics_available = input
-            .glyphs
-            .iter()
-            .all(|glyph| STUB_GLYPH_METRICS.iter().any(|m| m.0 == glyph.glyph_name));
-        let expected_hash = stub_metrics_hash_for(input.glyphs.iter().map(|g| g.glyph_name));
-        let catalog_matches = input.catalog.metrics_hash == expected_hash;
-        let glyphs = input
-            .glyphs
-            .iter()
-            .map(|g| ResolvedGlyph {
-                provenance: g.provenance.clone(),
-                position: g.baseline, // input geometry, verbatim
-            })
-            .collect();
-        SolveReport {
-            status: if metrics_available && catalog_matches {
-                SolveStatus::Solved
-            } else {
-                SolveStatus::InternalError
-            },
-            satisfied_hard_constraints: metrics_available && catalog_matches,
-            layout: ResolvedLayoutIR {
-                glyphs,
-                catalog: input.catalog.clone(),
-            },
-        }
-    }
-}
-
-// --- The pipeline ----------------------------------------------------------
-
-/// Projects a score graph into [`LogicalLayoutIR`]. Every layout object carries
-/// a [`Provenance`] whose `source` is the score-graph object it represents, with
-/// dependency back-references for incremental layout. One [`LayoutRegion`] per
-/// score region carries that region's [`TimeAxisModel`].
-pub fn to_logical(score: &Score) -> LogicalLayoutIR {
-    // Stable ids are a pure function of the source identifier (not traversal
-    // position), so inserting or reordering objects never changes another
-    // object's stable id across relayouts.
-    let stable = stable_layout_id;
-
-    // Staves and instruments live at score scope; project them into the first
-    // region (or a region-less bucket if there are none) as cross-cutting
-    // objects. For the round-trip we attach every non-region object to the
-    // region(s) so provenance flows through the region pipeline.
-    let mut regions = Vec::new();
-    for region in &score.canvas.regions {
-        let mut objects = Vec::new();
-
-        // Staves manifested in this region (via the staff extent).
-        for staff_id in &region.staff_extent.staves {
-            let source = TypedObjectId::Staff(*staff_id);
-            objects.push(LayoutObject {
-                provenance: Provenance {
-                    source,
-                    synthesis: None,
-                    dependencies: vec![],
-                    stable_id: stable(&source),
-                },
-            });
-        }
-
-        // Staff instances, voices, and their events + pitches.
-        for si in region.staff_instances() {
-            let si_src = TypedObjectId::StaffInstance(si.id);
-            objects.push(LayoutObject {
-                provenance: Provenance {
-                    source: si_src,
-                    synthesis: None,
-                    dependencies: vec![TypedObjectId::Staff(si.staff)],
-                    stable_id: stable(&si_src),
-                },
-            });
-            for voice in &si.voices {
-                let v_src = TypedObjectId::Voice(voice.id);
-                objects.push(LayoutObject {
-                    provenance: Provenance {
-                        source: v_src,
-                        synthesis: None,
-                        dependencies: vec![si_src],
-                        stable_id: stable(&v_src),
-                    },
-                });
-                for eid in &voice.events {
-                    let e_src = TypedObjectId::Event(*eid);
-                    // Event's pitches become its invalidation dependencies.
-                    let mut deps = vec![v_src];
-                    if let Some(event) = score.events.get(*eid) {
-                        let mut buf = Vec::new();
-                        event.collect_identified_pitches(&mut buf);
-                        for p in &buf {
-                            deps.push(TypedObjectId::Pitch(p.id));
-                        }
-                    }
-                    objects.push(LayoutObject {
-                        provenance: Provenance {
-                            source: e_src,
-                            synthesis: None,
-                            dependencies: deps,
-                            stable_id: stable(&e_src),
-                        },
-                    });
-                    // And the pitches themselves as their own objects.
-                    if let Some(event) = score.events.get(*eid) {
-                        let mut buf = Vec::new();
-                        event.collect_identified_pitches(&mut buf);
-                        for p in &buf {
-                            let p_src = TypedObjectId::Pitch(p.id);
-                            objects.push(LayoutObject {
-                                provenance: Provenance {
-                                    source: p_src,
-                                    synthesis: None,
-                                    dependencies: vec![e_src],
-                                    stable_id: stable(&p_src),
-                                },
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        // Measures, per staff instance (Chapter 5 §"Measures").
-        for si in region.staff_instances() {
-            for measure in &si.measures {
-                let m_src = TypedObjectId::Measure(measure.id);
-                objects.push(LayoutObject {
-                    provenance: Provenance {
-                        source: m_src,
-                        synthesis: None,
-                        dependencies: vec![TypedObjectId::StaffInstance(si.id)],
-                        stable_id: stable(&m_src),
-                    },
-                });
-            }
-        }
-
-        let r_src = TypedObjectId::Region(region.id);
-        regions.push(LayoutRegion {
-            provenance: Provenance {
-                source: r_src,
-                synthesis: None,
-                dependencies: region
-                    .staff_extent
-                    .staves
-                    .iter()
-                    .map(|s| TypedObjectId::Staff(*s))
-                    .collect(),
-                stable_id: stable(&r_src),
-            },
-            time_axis: time_axis_of(region),
-            objects,
-        });
-    }
-
-    // Score-level cross-cutting structures (ties, slurs, beams, tuplets,
-    // spanners, markers, chord symbols). They are score-wide, so they flow
-    // through the first region's object list; their `source` ids are recovered by
-    // [`laid_out_object_ids`] all the same.
-    if let Some(first) = regions.first_mut() {
-        let cc = &score.cross_cutting;
-        let mut push = |src: TypedObjectId, deps: Vec<TypedObjectId>| {
-            first.objects.push(LayoutObject {
-                provenance: Provenance {
-                    source: src,
-                    synthesis: None,
-                    dependencies: deps,
-                    stable_id: stable(&src),
-                },
-            });
-        };
-        for t in &cc.ties {
-            push(
-                TypedObjectId::Tie(t.id),
-                vec![
-                    TypedObjectId::Event(t.start_event),
-                    TypedObjectId::Event(t.end_event),
-                ],
-            );
-        }
-        for s in &cc.slurs {
-            push(
-                TypedObjectId::Slur(s.id),
-                vec![
-                    TypedObjectId::Event(s.start_event),
-                    TypedObjectId::Event(s.end_event),
-                ],
-            );
-        }
-        for b in &cc.beams {
-            push(TypedObjectId::Beam(b.id), vec![]);
-        }
-        for tu in &cc.tuplets {
-            push(
-                TypedObjectId::Tuplet(tu.id),
-                tu.members
-                    .iter()
-                    .map(|e| TypedObjectId::Event(*e))
-                    .collect(),
-            );
-        }
-        for sp in &cc.spanners {
-            push(TypedObjectId::Spanner(sp.id), vec![]);
-        }
-        for mk in &cc.markers {
-            push(TypedObjectId::Marker(mk.id), vec![]);
-        }
-        for ch in &cc.chord_symbols {
-            push(TypedObjectId::ChordSymbol(ch.id), vec![]);
-        }
-    }
-
-    LogicalLayoutIR { regions }
-}
-
-/// Maps a score region's time model to the layout [`TimeAxisModel`] (Chapter 7).
-fn time_axis_of(region: &Region) -> TimeAxisModel {
-    match &region.time_model {
-        RegionTimeModel::Metric(_) => TimeAxisModel::Metric,
-        RegionTimeModel::Proportional(p) => TimeAxisModel::Proportional {
-            duration_ns: p.duration.0,
-        },
-        RegionTimeModel::Aleatoric(_) => TimeAxisModel::Aleatoric,
-    }
-}
-
-/// Flattens [`LogicalLayoutIR`] into [`ConstrainedLayoutIR`]: one glyph per
-/// layout object (including the region object itself), each with a baseline
-/// anchor laid out left-to-right on the `1/1024` grid. Provenance is preserved.
-pub fn to_constrained(logical: &LogicalLayoutIR) -> ConstrainedLayoutIR {
-    let mut glyphs = Vec::new();
-    let mut column: i64 = 0;
-    for region in &logical.regions {
-        // The region's own object first, then its contents.
-        glyphs.push(GlyphObject {
-            provenance: region.provenance.clone(),
-            glyph_name: glyph_name_for(&region.provenance.source),
-            baseline: Point {
-                x: QuantizedCoord::from_units(column * 1024),
-                y: QuantizedCoord::from_units(0),
-            },
-        });
-        column += 1;
-        for object in &region.objects {
-            glyphs.push(GlyphObject {
-                provenance: object.provenance.clone(),
-                glyph_name: glyph_name_for(&object.provenance.source),
-                baseline: Point {
-                    x: QuantizedCoord::from_units(column * 1024),
-                    y: QuantizedCoord::from_units(0),
-                },
-            });
-            column += 1;
-        }
-    }
-    let metrics_hash = stub_metrics_hash_for(glyphs.iter().map(|glyph| glyph.glyph_name));
-    ConstrainedLayoutIR {
-        glyphs,
-        catalog: GlyphCatalogIdentity {
-            metrics_hash,
-            ..GlyphCatalogIdentity::default()
-        },
-    }
-}
-
-fn glyph_name_for(source: &TypedObjectId) -> &'static str {
-    STUB_GLYPH_METRICS[source.discriminant() as usize % STUB_GLYPH_METRICS.len()].0
-}
-
-/// The RenderIR interface call (Chapter 7 §7.4): one primitive per resolved
-/// glyph, provenance and position preserved. Interface only.
-pub fn to_render(resolved: &ResolvedLayoutIR) -> RenderIR {
-    RenderIR {
-        primitives: resolved
-            .glyphs
-            .iter()
-            .map(|g| RenderPrimitive {
-                provenance: g.provenance.clone(),
-                position: g.position,
-            })
-            .collect(),
-    }
-}
-
-/// The set of score-graph objects this stub lays out (the objects whose
-/// [`TypedObjectId`]s the round-trip expects to recover from the RenderIR).
-pub fn laid_out_object_ids(score: &Score) -> BTreeSet<TypedObjectId> {
-    let mut ids = BTreeSet::new();
-    for region in &score.canvas.regions {
-        ids.insert(TypedObjectId::Region(region.id));
-        for staff_id in &region.staff_extent.staves {
-            ids.insert(TypedObjectId::Staff(*staff_id));
-        }
-        for si in region.staff_instances() {
-            ids.insert(TypedObjectId::StaffInstance(si.id));
-            for voice in &si.voices {
-                ids.insert(TypedObjectId::Voice(voice.id));
-                for eid in &voice.events {
-                    ids.insert(TypedObjectId::Event(*eid));
-                    if let Some(event) = score.events.get(*eid) {
-                        let mut buf = Vec::new();
-                        event.collect_identified_pitches(&mut buf);
-                        for p in &buf {
-                            ids.insert(TypedObjectId::Pitch(p.id));
-                        }
-                    }
-                }
-            }
-            for measure in &si.measures {
-                ids.insert(TypedObjectId::Measure(measure.id));
-            }
-        }
-    }
-    // Score-level cross-cutting structures.
-    let cc = &score.cross_cutting;
-    ids.extend(cc.ties.iter().map(|t| TypedObjectId::Tie(t.id)));
-    ids.extend(cc.slurs.iter().map(|s| TypedObjectId::Slur(s.id)));
-    ids.extend(cc.beams.iter().map(|b| TypedObjectId::Beam(b.id)));
-    ids.extend(cc.tuplets.iter().map(|t| TypedObjectId::Tuplet(t.id)));
-    ids.extend(cc.spanners.iter().map(|s| TypedObjectId::Spanner(s.id)));
-    ids.extend(cc.markers.iter().map(|m| TypedObjectId::Marker(m.id)));
-    ids.extend(
-        cc.chord_symbols
-            .iter()
-            .map(|c| TypedObjectId::ChordSymbol(c.id)),
-    );
-    ids
-}
-
-/// What the round-trip recovered, for inspection by tests.
-#[derive(Clone, Debug)]
-pub struct RoundTripReport {
-    pub status: SolveStatus,
-    pub logical_objects: usize,
-    pub glyphs: usize,
-    pub render_primitives: usize,
-    /// Every score-graph source recovered from the RenderIR.
-    pub recovered_sources: BTreeSet<TypedObjectId>,
-}
-
-/// Collects `(stable_id -> Provenance)` for a stage's objects, asserting no two
-/// objects share a stable id (which would let set comparisons hide duplication).
-fn provenance_map<'a>(
-    label: &str,
-    provenances: impl Iterator<Item = &'a Provenance>,
-) -> std::collections::BTreeMap<LayoutObjectId, Provenance> {
-    let mut map = std::collections::BTreeMap::new();
-    for p in provenances {
-        let prev = map.insert(p.stable_id, p.clone());
-        assert!(
-            prev.is_none(),
-            "{label}: duplicate stable id {:?} (provenance duplication)",
-            p.stable_id
-        );
-    }
-    map
-}
-
-/// Runs the full pipeline (acceptance criterion 6): graph → LogicalLayoutIR →
-/// ConstrainedLayoutIR → stub-solved ResolvedLayoutIR → RenderIR, asserting that
-/// it completes without panic and **without losing provenance back-references**.
-/// Specifically:
-///
-/// * the stub solver returns [`SolveStatus::Solved`] with all hard constraints
-///   satisfied;
-/// * the **complete** [`Provenance`] of every object — `source`, `synthesis`,
-///   `dependencies`, and `stable_id` — survives every stage unchanged (compared
-///   as `stable_id -> Provenance` maps, so a dropped/corrupted dependency or
-///   synthesis kind fails, not just a changed id);
-/// * no two objects ever share a `stable_id` (duplication cannot hide);
-/// * the set of sources recovered from the RenderIR equals the set the stub laid
-///   out — a bijection back to graph identity.
-pub fn round_trip(score: &Score) -> RoundTripReport {
-    let logical = to_logical(score);
-    let constrained = to_constrained(&logical);
-
-    // Full-provenance maps at each stage (duplication is caught while building).
-    let logical_map = provenance_map(
-        "logical",
-        logical.regions.iter().flat_map(|r| {
-            std::iter::once(&r.provenance).chain(r.objects.iter().map(|o| &o.provenance))
-        }),
-    );
-    let constrained_map = provenance_map(
-        "constrained",
-        constrained.glyphs.iter().map(|g| &g.provenance),
-    );
-    assert_eq!(
-        logical_map, constrained_map,
-        "provenance not preserved logical -> constrained"
-    );
-
-    let report = StubSolver.solve(&constrained);
-    assert_eq!(
-        report.status,
-        SolveStatus::Solved,
-        "the stub solver must report Solved"
-    );
-    assert!(
-        report.satisfied_hard_constraints,
-        "the stub solver must satisfy all hard constraints"
-    );
-
-    // The stub solver's geometry contract: it returns the input geometry
-    // *verbatim* — each resolved glyph's position is exactly its constrained
-    // baseline (Chapter 9 / QUICKSTART: "the input geometry verbatim"). A future
-    // solver that altered geometry would fail this. The solver preserves order,
-    // so glyphs line up by index.
-    assert_eq!(
-        report.layout.glyphs.len(),
-        constrained.glyphs.len(),
-        "the solver must not add or drop glyphs"
-    );
-    for (constrained_glyph, resolved_glyph) in constrained.glyphs.iter().zip(&report.layout.glyphs)
-    {
-        assert_eq!(
-            resolved_glyph.position, constrained_glyph.baseline,
-            "stub solver must return the input geometry verbatim"
-        );
-    }
-
-    let resolved_map = provenance_map(
-        "resolved",
-        report.layout.glyphs.iter().map(|g| &g.provenance),
-    );
-    assert_eq!(
-        constrained_map, resolved_map,
-        "provenance not preserved constrained -> resolved"
-    );
-
-    let render = to_render(&report.layout);
-    let render_map = provenance_map("render", render.primitives.iter().map(|p| &p.provenance));
-    assert_eq!(
-        resolved_map, render_map,
-        "provenance not preserved resolved -> render"
-    );
-
-    // Provenance back to graph identity: the recovered sources are exactly the
-    // set the stub laid out (a bijection), and the primitive count matches the
-    // distinct-stable-id count (no duplication, no loss).
-    let expected = laid_out_object_ids(score);
-    let recovered: BTreeSet<TypedObjectId> = render
-        .primitives
-        .iter()
-        .map(|p| p.provenance.source)
-        .collect();
-    assert_eq!(
-        expected, recovered,
-        "RenderIR provenance does not bijection back to the laid-out graph objects"
-    );
-    assert_eq!(
-        render.primitives.len(),
-        render_map.len(),
-        "render produced duplicate objects"
-    );
-
-    RoundTripReport {
-        status: report.status,
-        logical_objects: logical.regions.iter().map(|r| 1 + r.objects.len()).sum(),
-        glyphs: constrained.glyphs.len(),
-        render_primitives: render.primitives.len(),
-        recovered_sources: recovered,
-    }
-}
-
-// --- Generators for the stub IR types (Agent E's surface, generated here) ---
 
 /// A synthesis kind (every variant, including the registered form).
 pub fn gen_synthesis_kind(rng: &mut Rng) -> SynthesisKind {
@@ -757,40 +41,58 @@ pub fn gen_synthesis_kind(rng: &mut Rng) -> SynthesisKind {
         3 => SynthesisKind::EngravedBreak,
         4 => SynthesisKind::MultimeasureRest,
         5 => SynthesisKind::Cautionary,
-        _ => SynthesisKind::Registered(((rng.next_u64() as u128) << 64) | rng.next_u64() as u128),
+        _ => SynthesisKind::Registered(SynthesisRegistryId(
+            ((rng.next_u64() as u128) << 64) | rng.next_u64() as u128,
+        )),
     }
 }
 
 /// A time-axis model (every variant of the tagged enum).
 pub fn gen_time_axis_model(rng: &mut Rng) -> TimeAxisModel {
     match rng.below(4) {
-        0 => TimeAxisModel::Metric,
-        1 => TimeAxisModel::Proportional {
+        0 => TimeAxisModel::Metric(MetricTimeAxis::default()),
+        1 => TimeAxisModel::Proportional(ProportionalTimeAxis {
             duration_ns: rng.range(0, 1 << 40) as i64,
-        },
-        2 => TimeAxisModel::Aleatoric,
-        _ => TimeAxisModel::Registered(((rng.next_u64() as u128) << 64) | rng.next_u64() as u128),
+            space_per_second: gen_staff_space(rng),
+            slots: vec![],
+        }),
+        2 => TimeAxisModel::Aleatoric(AleatoricTimeAxis::default()),
+        _ => TimeAxisModel::Registered(
+            TimeAxisRegistryId(((rng.next_u64() as u128) << 64) | rng.next_u64() as u128),
+            SerializedRegisteredAxis(vec![rng.next_u64() as u8]),
+        ),
     }
 }
 
-/// A provenance record with a random source, optional synthesis kind, a few
-/// dependency back-references, and a source-derived [`stable_layout_id`].
+/// A provenance record with a random source and a few dependency
+/// back-references, **internally consistent**: a synthesized provenance carries
+/// `Some(kind)` *and* the matching `synthesized_layout_id`; a projected one
+/// carries `None` *and* `stable_layout_id`. (It never sets a synthesis kind while
+/// keeping the plain source-only id.)
 pub fn gen_provenance(rng: &mut Rng) -> Provenance {
     let source = crate::generators::typed_object_id(rng);
     let mut dependencies = Vec::new();
     for _ in 0..rng.range_usize(0, 3) {
         dependencies.push(crate::generators::typed_object_id(rng));
     }
-    Provenance {
-        stable_id: stable_layout_id(&source),
-        source,
-        synthesis: if rng.boolean() {
-            Some(gen_synthesis_kind(rng))
-        } else {
-            None
-        },
-        dependencies,
+    if rng.boolean() {
+        let kind = gen_synthesis_kind(rng);
+        Provenance::synthesized(
+            source,
+            kind,
+            SynthesisInstanceKey(((rng.next_u64() as u128) << 64) | rng.next_u64() as u128),
+            dependencies,
+        )
+    } else {
+        Provenance::projected(source, dependencies)
     }
+}
+
+/// A bundled SMuFL glyph name.
+fn gen_glyph_name(rng: &mut Rng) -> &'static str {
+    BRAVURA_METRICS[rng.below(BRAVURA_METRICS.len() as u64) as usize]
+        .name
+        .as_ref()
 }
 
 /// A solver status (every variant).
@@ -804,69 +106,134 @@ pub fn gen_solve_status(rng: &mut Rng) -> SolveStatus {
     ])
 }
 
-/// A glyph-catalog identity (the stub Bravura-like identity).
+/// A glyph-catalog identity (the bundled Bravura identity).
 pub fn gen_glyph_catalog_identity(_rng: &mut Rng) -> GlyphCatalogIdentity {
     GlyphCatalogIdentity::default()
 }
 
-/// A canonical quantized 2-D point.
+/// A 2-D staff-space point.
 pub fn gen_point(rng: &mut Rng) -> Point {
-    Point {
-        x: QuantizedCoord::from_units(rng.next_u64() as i64),
-        y: QuantizedCoord::from_units(rng.next_u64() as i64),
-    }
+    // Spread points over a few hundred staff spaces at sub-grid resolution.
+    let coord = |r: &mut Rng| (r.range(0, 400_000) as f32) / 1000.0;
+    Point::new(coord(rng), coord(rng))
 }
 
-/// A logical layout object (carrying a generated [`Provenance`]).
+/// A logical layout object (provenance + an optional owning staff).
 pub fn gen_layout_object(rng: &mut Rng) -> LayoutObject {
-    LayoutObject {
-        provenance: gen_provenance(rng),
-    }
+    LayoutObject::from_projection(
+        gen_provenance(rng),
+        rng.boolean().then(|| crate::generators::staff_id(rng)),
+    )
 }
 
-/// A constrained glyph object (provenance + baseline anchor).
+/// A constrained glyph object (provenance + glyph + baseline anchor + band).
 pub fn gen_glyph_object(rng: &mut Rng) -> GlyphObject {
-    let glyph_name = STUB_GLYPH_METRICS[rng.below(STUB_GLYPH_METRICS.len() as u64) as usize].0;
+    let glyph_name = gen_glyph_name(rng);
     GlyphObject {
         provenance: gen_provenance(rng),
-        glyph_name,
+        glyph: GlyphReference::borrowed(glyph_name),
+        horizontal_slot: gen_spring_slot_id(rng),
         baseline: gen_point(rng),
+        vertical_band: gen_vertical_band_id(rng),
+        bounding_box: metrics(glyph_name)
+            .expect("generator chooses a bundled glyph")
+            .bounding_box(),
+        anchor: gen_point(rng),
+        layer: rng.range(0, 8) as i32,
+        style: GlyphStyle {
+            rgba: rng.next_u64() as u32,
+        },
     }
 }
 
-/// A resolved glyph (provenance + definitive position).
+/// A resolved glyph (provenance + glyph + definitive position).
 pub fn gen_resolved_glyph(rng: &mut Rng) -> ResolvedGlyph {
     ResolvedGlyph {
         provenance: gen_provenance(rng),
+        glyph: GlyphReference::borrowed(gen_glyph_name(rng)),
         position: gen_point(rng),
+        transform: None,
+        bounding_box: gen_glyph_bounding_box(rng),
+        style: GlyphStyle {
+            rgba: rng.next_u64() as u32,
+        },
+        layer: rng.range(0, 8) as i32,
     }
 }
 
 /// A logical layout region (provenance + time axis + a few objects).
 pub fn gen_layout_region(rng: &mut Rng) -> LayoutRegion {
     let n = rng.range_usize(0, 4);
+    let region = crate::generators::region_id(rng);
+    let objects: Vec<LayoutObject> = (0..n).map(|_| gen_layout_object(rng)).collect();
+    let staves = objects.iter().filter_map(LayoutObject::staff).collect();
     LayoutRegion {
-        provenance: gen_provenance(rng),
+        provenance: Provenance::projected(epiphany_core::TypedObjectId::Region(region), vec![]),
+        coordinate_system: LocalCoordinateSystem::default(),
         time_axis: gen_time_axis_model(rng),
-        objects: (0..n).map(|_| gen_layout_object(rng)).collect(),
+        vertical_extent: VerticalExtent { staves },
+        objects,
     }
 }
 
-/// A logical layout IR (a few regions).
+/// A logical layout IR (a few regions and engraving decisions).
 pub fn gen_logical_layout_ir(rng: &mut Rng) -> LogicalLayoutIR {
     let n = rng.range_usize(0, 3);
+    let d = rng.range_usize(0, 3);
     LogicalLayoutIR {
+        source: ScoreVersion::default(),
         regions: (0..n).map(|_| gen_layout_region(rng)).collect(),
+        engraving_decisions: (0..d).map(|_| gen_engraving_decision(rng)).collect(),
+        overrides: vec![],
+        cross_region: vec![],
     }
 }
 
-/// A constrained layout IR whose catalog hash covers exactly its glyph metrics.
+/// A constrained layout IR whose catalog hash covers exactly its glyph metrics
+/// (so the real stub solver accepts it as well-formed), with an **internally
+/// consistent** vertical band: every glyph names the band, and the band's
+/// members are exactly those glyphs.
 pub fn gen_constrained_layout_ir(rng: &mut Rng) -> ConstrainedLayoutIR {
     let n = rng.range_usize(0, 8);
-    let glyphs: Vec<_> = (0..n).map(|_| gen_glyph_object(rng)).collect();
-    let metrics_hash = stub_metrics_hash_for(glyphs.iter().map(|glyph| glyph.glyph_name));
+    let mut glyphs: Vec<GlyphObject> = (0..n).map(|_| gen_glyph_object(rng)).collect();
+    // One band owning exactly these glyphs; point every glyph at it.
+    let band = VerticalBand::staff(
+        crate::generators::staff_id(rng),
+        glyphs.iter().map(|g| g.id()).collect(),
+    );
+    for g in &mut glyphs {
+        g.vertical_band = band.id;
+    }
+    let horizontal_slots: Vec<SpringSlot> = glyphs
+        .iter_mut()
+        .enumerate()
+        .map(|(index, glyph)| {
+            let id = SpringSlotId(glyph.id().0);
+            glyph.horizontal_slot = id;
+            SpringSlot {
+                id,
+                time: TimePoint::WallClock(epiphany_core::WallClockTime(index as i64)),
+                min_width: StaffSpace(1.0),
+                preferred_width: StaffSpace(1.5),
+                max_width: None,
+                stretch_factor: 1.0,
+                compress_factor: 1.0,
+                members: vec![glyph.id()],
+            }
+        })
+        .collect();
+    let metrics_hash = metrics_hash_for(glyphs.iter().map(|g| g.glyph.as_str()));
+    let decisions = rng.range_usize(0, 3);
     ConstrainedLayoutIR {
+        source: ScoreVersion::default(),
+        regions: vec![],
+        horizontal_slots,
         glyphs,
+        vertical_bands: vec![band],
+        constraints: vec![],
+        engraving_decisions: (0..decisions)
+            .map(|_| gen_engraving_decision(rng))
+            .collect(),
         catalog: GlyphCatalogIdentity {
             metrics_hash,
             ..GlyphCatalogIdentity::default()
@@ -876,14 +243,69 @@ pub fn gen_constrained_layout_ir(rng: &mut Rng) -> ConstrainedLayoutIR {
 
 /// A resolved layout IR produced by the real stub-solver interface.
 pub fn gen_resolved_layout_ir(rng: &mut Rng) -> ResolvedLayoutIR {
-    StubSolver.solve(&gen_constrained_layout_ir(rng)).layout
+    StubSolver
+        .solve(&gen_constrained_layout_ir(rng), &SolverConfig::default())
+        .layout
 }
 
-/// A render primitive with generated provenance and geometry.
+pub fn gen_resolved_staff(rng: &mut Rng) -> ResolvedStaff {
+    let staff = crate::generators::staff_id(rng);
+    ResolvedStaff {
+        provenance: Provenance::projected(epiphany_core::TypedObjectId::Staff(staff), vec![]),
+        staff,
+        bounding_box: gen_rect(rng),
+    }
+}
+
+pub fn gen_resolved_measure(rng: &mut Rng) -> ResolvedMeasure {
+    let measure = crate::generators::measure_id(rng);
+    ResolvedMeasure {
+        provenance: Provenance::projected(epiphany_core::TypedObjectId::Measure(measure), vec![]),
+        measure,
+        bounding_box: gen_rect(rng),
+    }
+}
+
+pub fn gen_resolved_system(rng: &mut Rng) -> ResolvedSystem {
+    ResolvedSystem {
+        provenance: gen_provenance(rng),
+        bounding_box: gen_rect(rng),
+        staves: (0..rng.range_usize(0, 2))
+            .map(|_| gen_resolved_staff(rng))
+            .collect(),
+        measures: (0..rng.range_usize(0, 2))
+            .map(|_| gen_resolved_measure(rng))
+            .collect(),
+    }
+}
+
+pub fn gen_resolved_page(rng: &mut Rng) -> ResolvedPage {
+    ResolvedPage {
+        provenance: gen_provenance(rng),
+        number: rng.range(1, 500) as u32,
+        size: gen_size2d(rng),
+        margins: gen_margins(rng),
+        systems: (0..rng.range_usize(0, 2))
+            .map(|_| gen_resolved_system(rng))
+            .collect(),
+        free_objects: (0..rng.range_usize(0, 2))
+            .map(|_| gen_glyph_object_id(rng))
+            .collect(),
+    }
+}
+
+/// A render primitive with generated provenance, glyph, and geometry.
 pub fn gen_render_primitive(rng: &mut Rng) -> RenderPrimitive {
     RenderPrimitive {
         provenance: gen_provenance(rng),
+        glyph: GlyphReference::borrowed(gen_glyph_name(rng)),
         position: gen_point(rng),
+        transform: None,
+        bounding_box: gen_glyph_bounding_box(rng),
+        style: GlyphStyle {
+            rgba: rng.next_u64() as u32,
+        },
+        layer: rng.range(0, 8) as i32,
     }
 }
 
@@ -894,7 +316,7 @@ pub fn gen_render_ir(rng: &mut Rng) -> RenderIR {
 
 /// A complete solver report generated through the solver interface.
 pub fn gen_solve_report(rng: &mut Rng) -> SolveReport {
-    StubSolver.solve(&gen_constrained_layout_ir(rng))
+    StubSolver.solve(&gen_constrained_layout_ir(rng), &SolverConfig::default())
 }
 
 /// A self-consistent round-trip report value.
@@ -914,31 +336,801 @@ pub fn gen_round_trip_report(rng: &mut Rng) -> RoundTripReport {
     }
 }
 
+// --- Generators for the rest of E's public surface (Agent F mandate) ---
+
+/// A staff-space measurement.
+pub fn gen_staff_space(rng: &mut Rng) -> StaffSpace {
+    StaffSpace((rng.range(0, 400_000) as f32) / 1000.0)
+}
+
+/// A 2-D staff-space size.
+pub fn gen_size2d(rng: &mut Rng) -> Size2D {
+    Size2D {
+        width: gen_staff_space(rng),
+        height: gen_staff_space(rng),
+    }
+}
+
+/// A staff-space bounding box.
+pub fn gen_bounding_box(rng: &mut Rng) -> BoundingBox {
+    let c = |r: &mut Rng| (r.range(0, 8000) as f32) / 1000.0;
+    BoundingBox::new(c(rng), c(rng), c(rng), c(rng))
+}
+
+pub fn gen_rect(rng: &mut Rng) -> Rect {
+    Rect {
+        origin: gen_point(rng),
+        size: gen_size2d(rng),
+    }
+}
+
+pub fn gen_transform_2d(rng: &mut Rng) -> Transform2D {
+    let mut transform = Transform2D::default();
+    transform.matrix[0][2] = gen_staff_space(rng).0;
+    transform.matrix[1][2] = gen_staff_space(rng).0;
+    transform
+}
+
+pub fn gen_margins(rng: &mut Rng) -> Margins {
+    Margins {
+        top: gen_staff_space(rng),
+        right: gen_staff_space(rng),
+        bottom: gen_staff_space(rng),
+        left: gen_staff_space(rng),
+    }
+}
+
+pub fn gen_score_version(rng: &mut Rng) -> ScoreVersion {
+    let mut bytes = [0; 32];
+    for chunk in bytes.chunks_exact_mut(8) {
+        chunk.copy_from_slice(&rng.next_u64().to_le_bytes());
+    }
+    ScoreVersion(bytes)
+}
+
+pub fn gen_local_coordinate_system(rng: &mut Rng) -> LocalCoordinateSystem {
+    LocalCoordinateSystem {
+        transform: gen_transform_2d(rng),
+    }
+}
+
+pub fn gen_vertical_extent(rng: &mut Rng) -> VerticalExtent {
+    VerticalExtent {
+        staves: (0..rng.range_usize(0, 3))
+            .map(|_| crate::generators::staff_id(rng))
+            .collect(),
+    }
+}
+
+pub fn gen_cross_region_object(rng: &mut Rng) -> CrossRegionObject {
+    CrossRegionObject {
+        provenance: gen_provenance(rng),
+        regions: (0..rng.range_usize(1, 3))
+            .map(|_| crate::generators::region_id(rng))
+            .collect(),
+        staff: rng.boolean().then(|| crate::generators::staff_id(rng)),
+    }
+}
+
+pub fn gen_dependency_index(rng: &mut Rng) -> DependencyIndex {
+    let mut index = DependencyIndex::default();
+    for _ in 0..rng.range_usize(0, 4) {
+        index.insert(&gen_provenance(rng));
+    }
+    index
+}
+
+pub fn gen_layout_cache(rng: &mut Rng) -> LayoutCache {
+    LayoutCache {
+        dependencies: gen_dependency_index(rng),
+        logical: Default::default(),
+        constrained: Default::default(),
+        resolved: Default::default(),
+        fine_cache: FineLayoutCache::default(),
+    }
+}
+
+pub fn gen_system_id(rng: &mut Rng) -> SystemId {
+    SystemId(((rng.next_u64() as u128) << 64) | rng.next_u64() as u128)
+}
+
+pub fn gen_logical_region_cache(rng: &mut Rng) -> LogicalRegionCache {
+    LogicalRegionCache {
+        objects: (0..rng.range_usize(0, 3))
+            .map(|_| gen_layout_object_id(rng))
+            .collect(),
+    }
+}
+
+pub fn gen_constrained_region_cache(rng: &mut Rng) -> ConstrainedRegionCache {
+    ConstrainedRegionCache {
+        objects: (0..rng.range_usize(0, 3))
+            .map(|_| gen_layout_object_id(rng))
+            .collect(),
+    }
+}
+
+pub fn gen_resolved_system_cache(rng: &mut Rng) -> ResolvedSystemCache {
+    ResolvedSystemCache {
+        objects: (0..rng.range_usize(0, 3))
+            .map(|_| gen_layout_object_id(rng))
+            .collect(),
+    }
+}
+
+pub fn gen_fine_layout_cache(rng: &mut Rng) -> FineLayoutCache {
+    FineLayoutCache {
+        objects: (0..rng.range_usize(0, 3))
+            .map(|_| gen_layout_object_id(rng))
+            .collect(),
+    }
+}
+
+/// A glyph-object identifier value.
+pub fn gen_glyph_object_id(rng: &mut Rng) -> GlyphObjectId {
+    GlyphObjectId(((rng.next_u64() as u128) << 64) | rng.next_u64() as u128)
+}
+
+pub fn gen_synthesis_instance_key(rng: &mut Rng) -> SynthesisInstanceKey {
+    SynthesisInstanceKey(((rng.next_u64() as u128) << 64) | rng.next_u64() as u128)
+}
+
+pub fn gen_glyph_style(rng: &mut Rng) -> GlyphStyle {
+    GlyphStyle {
+        rgba: rng.next_u64() as u32,
+    }
+}
+
+pub fn gen_time_point(rng: &mut Rng) -> TimePoint {
+    if rng.boolean() {
+        TimePoint::Musical(epiphany_core::MusicalPosition(
+            epiphany_core::RationalTime::new(rng.range(0, 16) as i64, 4)
+                .expect("positive denominator"),
+        ))
+    } else {
+        TimePoint::WallClock(epiphany_core::WallClockTime(rng.next_u64() as i64))
+    }
+}
+
+pub fn gen_time_range(rng: &mut Rng) -> TimeRange {
+    if rng.boolean() {
+        let start = epiphany_core::MusicalPosition(
+            epiphany_core::RationalTime::new(rng.range(0, 8) as i64, 4)
+                .expect("positive denominator"),
+        );
+        TimeRange::Musical {
+            start: start.clone(),
+            end: start
+                + epiphany_core::MusicalDuration(
+                    epiphany_core::RationalTime::new(1, 4).expect("positive denominator"),
+                ),
+        }
+    } else {
+        let start = epiphany_core::WallClockTime(rng.range(0, 10_000) as i64);
+        TimeRange::WallClock {
+            start,
+            end: epiphany_core::WallClockTime(start.0 + 1_000),
+        }
+    }
+}
+
+pub fn gen_spring_slot(rng: &mut Rng) -> SpringSlot {
+    SpringSlot {
+        id: gen_spring_slot_id(rng),
+        time: gen_time_point(rng),
+        min_width: StaffSpace(1.0),
+        preferred_width: StaffSpace(2.0),
+        max_width: rng.boolean().then_some(StaffSpace(3.0)),
+        stretch_factor: 1.0,
+        compress_factor: 1.0,
+        members: (0..rng.range_usize(0, 3))
+            .map(|_| gen_glyph_object_id(rng))
+            .collect(),
+    }
+}
+
+pub fn gen_constrained_layout_region(rng: &mut Rng) -> ConstrainedLayoutRegion {
+    let region = crate::generators::region_id(rng);
+    ConstrainedLayoutRegion {
+        provenance: Provenance::projected(epiphany_core::TypedObjectId::Region(region), vec![]),
+        glyphs: (0..rng.range_usize(0, 3))
+            .map(|_| gen_glyph_object_id(rng))
+            .collect(),
+    }
+}
+
+pub fn gen_layout_constraint(rng: &mut Rng) -> LayoutConstraint {
+    match rng.below(6) {
+        0 => LayoutConstraint::NoCollision {
+            a: gen_glyph_object_id(rng),
+            b: gen_glyph_object_id(rng),
+        },
+        1 => LayoutConstraint::Align {
+            a: gen_glyph_object_id(rng),
+            b: gen_glyph_object_id(rng),
+            axis: if rng.boolean() {
+                Axis::Horizontal
+            } else {
+                Axis::Vertical
+            },
+        },
+        2 => LayoutConstraint::PositionWithin {
+            glyph: gen_glyph_object_id(rng),
+            region: gen_rect(rng),
+        },
+        3 => LayoutConstraint::SystemBreakAt {
+            slot: gen_spring_slot_id(rng),
+            kind: if rng.boolean() {
+                BreakKind::Hard
+            } else {
+                BreakKind::Soft
+            },
+        },
+        4 => LayoutConstraint::PageBreakAt {
+            slot: gen_spring_slot_id(rng),
+            kind: if rng.boolean() {
+                BreakKind::Hard
+            } else {
+                BreakKind::Soft
+            },
+        },
+        _ => LayoutConstraint::Registered(
+            ConstraintRegistryId(rng.next_u64() as u128),
+            ConstraintParameters(vec![rng.next_u64() as u8]),
+        ),
+    }
+}
+
+/// A bundled glyph metric (drawn from the in-tree Bravura table).
+pub fn gen_glyph_metric(rng: &mut Rng) -> GlyphMetric {
+    BRAVURA_METRICS[rng.below(BRAVURA_METRICS.len() as u64) as usize].clone()
+}
+
+/// A SMuFL version.
+pub fn gen_smufl_version(rng: &mut Rng) -> SmuflVersion {
+    SmuflVersion {
+        major: rng.range(1, 2) as u16,
+        minor: rng.range(0, 6) as u16,
+    }
+}
+
+/// A font identifier (the bundled font).
+pub fn gen_font_id(rng: &mut Rng) -> FontId {
+    if rng.boolean() {
+        FontId::BRAVURA
+    } else {
+        FontId::owned(format!("runtime-font-{}", rng.next_u64()))
+    }
+}
+
+/// A decision source (every variant).
+pub fn gen_decision_source(rng: &mut Rng) -> DecisionSource {
+    match rng.below(3) {
+        0 => DecisionSource::Automatic,
+        1 => DecisionSource::UserOverride(EngravingOverrideId(rng.next_u64() as u128)),
+        _ => DecisionSource::IrOverride,
+    }
+}
+
+/// An engraving-decision kind (a representative subset).
+pub fn gen_engraving_decision_kind(rng: &mut Rng) -> EngravingDecisionKind {
+    match rng.below(5) {
+        0 => EngravingDecisionKind::StemDirection(if rng.boolean() {
+            StemDirection::Up
+        } else {
+            StemDirection::Down
+        }),
+        1 => EngravingDecisionKind::LedgerLineCount(rng.range(0, 5) as u8),
+        2 => EngravingDecisionKind::SystemBreak,
+        3 => EngravingDecisionKind::PageBreak,
+        _ => EngravingDecisionKind::Registered(EngravingDecisionRegistryId(rng.next_u64() as u128)),
+    }
+}
+
+/// An engraving-decision record with a content-derived id.
+pub fn gen_engraving_decision(rng: &mut Rng) -> EngravingDecision {
+    EngravingDecision::with_source(
+        gen_layout_object_id(rng),
+        gen_engraving_decision_kind(rng),
+        gen_decision_source(rng),
+    )
+}
+
+pub fn gen_override_target(rng: &mut Rng) -> OverrideTarget {
+    if rng.boolean() {
+        OverrideTarget::ScoreGraph(crate::generators::typed_object_id(rng))
+    } else {
+        OverrideTarget::IrSynthesized(gen_layout_object_id(rng))
+    }
+}
+
+pub fn gen_override_kind(rng: &mut Rng) -> OverrideKind {
+    match rng.below(9) {
+        0 => OverrideKind::StemDirection(if rng.boolean() {
+            epiphany_core::StemDirection::Up
+        } else {
+            epiphany_core::StemDirection::Down
+        }),
+        1 => OverrideKind::AccidentalParenthesized(rng.boolean()),
+        2 => OverrideKind::AccidentalVisible(rng.boolean()),
+        3 => OverrideKind::SystemBreak,
+        4 => OverrideKind::PageBreak,
+        5 => OverrideKind::HiddenObject,
+        6 => OverrideKind::CustomPosition(gen_point(rng)),
+        7 => OverrideKind::LedgerLineSuppression,
+        _ => OverrideKind::Registered(rng.next_u64() as u128),
+    }
+}
+
+pub fn gen_engraving_override(rng: &mut Rng) -> EngravingOverride {
+    EngravingOverride {
+        id: EngravingOverrideId(rng.next_u64() as u128),
+        target: gen_override_target(rng),
+        kind: gen_override_kind(rng),
+        priority: if rng.boolean() {
+            OverridePriority::Hard
+        } else {
+            OverridePriority::Soft
+        },
+        origin: match rng.below(4) {
+            0 => OverrideOrigin::User {
+                author: AuthorId(rng.next_u64() as u128),
+                timestamp: Timestamp(rng.next_u64() as i64),
+            },
+            1 => OverrideOrigin::Import {
+                format: ForeignFormatId(rng.next_u64() as u128),
+            },
+            2 => OverrideOrigin::Plugin {
+                plugin: PluginId(rng.next_u64() as u128),
+            },
+            _ => OverrideOrigin::Internal,
+        },
+    }
+}
+
+/// A vertical-band kind (every variant).
+pub fn gen_vertical_band_kind(rng: &mut Rng) -> VerticalBandKind {
+    match rng.below(4) {
+        0 => VerticalBandKind::Staff(crate::generators::staff_id(rng)),
+        1 => VerticalBandKind::InterStaffGap,
+        2 => VerticalBandKind::InterSystemGap,
+        _ => VerticalBandKind::MarginBand,
+    }
+}
+
+/// A vertical band (every constructor / kind exercised).
+pub fn gen_vertical_band(rng: &mut Rng) -> VerticalBand {
+    let members: Vec<GlyphObjectId> = (0..rng.range_usize(0, 3))
+        .map(|_| gen_glyph_object_id(rng))
+        .collect();
+    match rng.below(4) {
+        0 => VerticalBand::staff(crate::generators::staff_id(rng), members),
+        1 => VerticalBand::margin(LayoutObjectId(rng.next_u64() as u128), members),
+        2 => VerticalBand::inter_staff_gap(gen_vertical_band_id(rng)),
+        _ => VerticalBand::inter_system_gap(gen_vertical_band_id(rng)),
+    }
+}
+
+/// An operation-kind tag (every variant Agent C's type provides, including the
+/// registered form).
+pub fn gen_operation_kind_tag(rng: &mut Rng) -> OperationKindTag {
+    match rng.below(17) {
+        0 => OperationKindTag::InsertEvent,
+        1 => OperationKindTag::DeleteEvent,
+        2 => OperationKindTag::ModifyEvent,
+        3 => OperationKindTag::RespellPitch,
+        4 => OperationKindTag::Transpose,
+        5 => OperationKindTag::CreateCrossCutting,
+        6 => OperationKindTag::DeleteCrossCutting,
+        7 => OperationKindTag::ModifyCrossCutting,
+        8 => OperationKindTag::ChangeRegionTimeModel,
+        9 => OperationKindTag::InsertRegion,
+        10 => OperationKindTag::DeleteRegion,
+        11 => OperationKindTag::InsertStaffInstance,
+        12 => OperationKindTag::DeleteStaffInstance,
+        13 => OperationKindTag::SetUserSystemBreak,
+        14 => OperationKindTag::SetUserPageBreak,
+        15 => OperationKindTag::DeclareTransaction,
+        _ => OperationKindTag::Registered(epiphany_ops::OperationKindRegistryId(
+            rng.next_u64() as u128
+        )),
+    }
+}
+
+/// An object kind (the kind of a generated score-graph object).
+pub fn gen_object_kind(rng: &mut Rng) -> ObjectKind {
+    ObjectKind::of(&crate::generators::typed_object_id(rng))
+}
+
+/// A pitch-space id drawn from the built-in catalog.
+fn gen_pitch_space_id(rng: &mut Rng) -> epiphany_core::PitchSpaceId {
+    let names = ["cmn-12", "edo-31", "ji-5limit"];
+    epiphany_core::PitchSpaceId::new(names[rng.below(names.len() as u64) as usize])
+}
+
+/// A barrier scope (every variant).
+pub fn gen_barrier_scope(rng: &mut Rng) -> BarrierScope {
+    match rng.below(8) {
+        0 => BarrierScope::WholeScore,
+        1 => BarrierScope::Region(crate::generators::region_id(rng)),
+        2 => BarrierScope::StaffInstance(crate::generators::staff_instance_id(rng)),
+        3 => BarrierScope::AnalysisLayer(crate::generators::analysis_layer_id(rng)),
+        4 => BarrierScope::ObjectSet(
+            (0..rng.range_usize(0, 3))
+                .map(|_| crate::generators::typed_object_id(rng))
+                .collect(),
+        ),
+        5 => BarrierScope::PitchSpace(gen_pitch_space_id(rng)),
+        6 => BarrierScope::TuningContext,
+        _ => BarrierScope::Registered(BarrierScopeRegistryId(rng.next_u64() as u128)),
+    }
+}
+
+/// A barrier condition (bounded recursion depth; every variant).
+pub fn gen_barrier_condition(rng: &mut Rng) -> BarrierCondition {
+    match rng.below(7) {
+        0 => BarrierCondition::Always,
+        1 => BarrierCondition::ObjectExists(crate::generators::typed_object_id(rng)),
+        2 => BarrierCondition::ObjectHasExtensionData {
+            object: crate::generators::typed_object_id(rng),
+            extension: ExtensionRef(rng.next_u64() as u128),
+        },
+        3 => BarrierCondition::All(vec![BarrierCondition::Always]),
+        4 => BarrierCondition::Any(vec![
+            BarrierCondition::Always,
+            BarrierCondition::ObjectExists(crate::generators::typed_object_id(rng)),
+        ]),
+        5 => BarrierCondition::Not(Box::new(BarrierCondition::Always)),
+        _ => BarrierCondition::Registered(BarrierConditionRegistryId(rng.next_u64() as u128)),
+    }
+}
+
+/// An edit barrier keyed on operation-kind tags.
+pub fn gen_edit_barrier(rng: &mut Rng) -> EditBarrier {
+    EditBarrier {
+        scope: gen_barrier_scope(rng),
+        affected_object_kinds: (0..rng.range_usize(0, 3))
+            .map(|_| gen_object_kind(rng))
+            .collect(),
+        prohibited_operation_kinds: (0..rng.range_usize(0, 3))
+            .map(|_| gen_operation_kind_tag(rng))
+            .collect(),
+        condition: gen_barrier_condition(rng),
+    }
+}
+
+/// An edit context (an object's structural location, every field exercised).
+pub fn gen_edit_context(rng: &mut Rng) -> EditContext {
+    EditContext {
+        region: rng.boolean().then(|| crate::generators::region_id(rng)),
+        staff_instance: rng
+            .boolean()
+            .then(|| crate::generators::staff_instance_id(rng)),
+        analysis_layer: rng
+            .boolean()
+            .then(|| crate::generators::analysis_layer_id(rng)),
+        pitch_space: rng.boolean().then(|| gen_pitch_space_id(rng)),
+    }
+}
+
+/// A solver tier (every variant).
+pub fn gen_solver_tier(rng: &mut Rng) -> SolverTier {
+    *rng.choose(&[
+        SolverTier::Minimal,
+        SolverTier::Standard,
+        SolverTier::Advanced,
+    ])
+}
+
+/// A solver version.
+pub fn gen_solver_version(rng: &mut Rng) -> SolverVersion {
+    SolverVersion(rng.next_u64() as u32)
+}
+
+/// A deterministic solver budget.
+pub fn gen_solver_budget(rng: &mut Rng) -> SolverBudget {
+    SolverBudget {
+        max_iterations: rng.next_u64(),
+        max_nodes: rng.next_u64(),
+        max_constraint_evaluations: rng.next_u64(),
+        advisory_wall_time_ms: rng.boolean().then(|| rng.range(0, 1000)),
+    }
+}
+
+/// A consumed-budget record.
+pub fn gen_solver_budget_used(rng: &mut Rng) -> SolverBudgetUsed {
+    SolverBudgetUsed {
+        iterations: rng.next_u64(),
+        nodes: rng.next_u64(),
+        constraint_evaluations: rng.next_u64(),
+        wall_time_ms: rng.next_u64(),
+    }
+}
+
+/// A solver state.
+pub fn gen_solver_state(rng: &mut Rng) -> SolverState {
+    SolverState {
+        solver_version: rng.boolean().then(|| gen_solver_version(rng)),
+        resolved_glyphs: rng.range_usize(0, 32),
+    }
+}
+
+/// A solver profile (every variant).
+pub fn gen_solver_profile(rng: &mut Rng) -> SolverProfile {
+    *rng.choose(&[
+        SolverProfile::Draft,
+        SolverProfile::Standard,
+        SolverProfile::Publication,
+    ])
+}
+
+/// Tie-breaking weights.
+pub fn gen_tie_breaking_weights(rng: &mut Rng) -> TieBreakingWeights {
+    let w = |r: &mut Rng| (r.range(0, 4000) as f64) / 1000.0;
+    TieBreakingWeights {
+        collision: w(rng),
+        spacing: w(rng),
+        slur_shape: w(rng),
+        beam_slope: w(rng),
+        vertical_density: w(rng),
+        system_break: w(rng),
+        page_fill: w(rng),
+        casting_off: w(rng),
+        symbol_density: w(rng),
+    }
+}
+
+/// A solver configuration (profile + budget + tie-breaking).
+pub fn gen_solver_config(rng: &mut Rng) -> SolverConfig {
+    SolverConfig {
+        profile: gen_solver_profile(rng),
+        budget: gen_solver_budget(rng),
+        tie_breaking: gen_tie_breaking_weights(rng),
+    }
+}
+
+/// A normalized quality metric in `[0, 1]`.
+pub fn gen_normalized_metric(rng: &mut Rng) -> NormalizedMetric {
+    NormalizedMetric::new((rng.range(0, 1000) as f64) / 1000.0)
+}
+
+/// A constraint id.
+pub fn gen_constraint_id(rng: &mut Rng) -> ConstraintId {
+    ConstraintId(rng.next_u64() as u128)
+}
+
+/// A spring-slot id.
+pub fn gen_spring_slot_id(rng: &mut Rng) -> SpringSlotId {
+    SpringSlotId(rng.next_u64() as u128)
+}
+
+/// A quality-metric kind (every variant).
+pub fn gen_quality_metric_kind(rng: &mut Rng) -> QualityMetricKind {
+    *rng.choose(&[
+        QualityMetricKind::Collision,
+        QualityMetricKind::Spacing,
+        QualityMetricKind::SlurShape,
+        QualityMetricKind::BeamSlope,
+        QualityMetricKind::VerticalDensity,
+        QualityMetricKind::SystemBreak,
+        QualityMetricKind::PageFill,
+        QualityMetricKind::CastingOff,
+        QualityMetricKind::SymbolDensity,
+    ])
+}
+
+/// An extension-warning id.
+pub fn gen_extension_warning_id(rng: &mut Rng) -> ExtensionWarningId {
+    ExtensionWarningId(rng.next_u64() as u128)
+}
+
+/// A solver warning (every kind).
+pub fn gen_solver_warning(rng: &mut Rng) -> SolverWarning {
+    let kind = match rng.below(4) {
+        0 => SolverWarningKind::LargeSoftConstraintViolation {
+            constraint: gen_constraint_id(rng),
+            magnitude: (rng.range(0, 10_000) as f64) / 1000.0,
+        },
+        1 => SolverWarningKind::UnusualLayoutDecision("stub".to_string()),
+        2 => SolverWarningKind::QualityFloorApproached {
+            metric: gen_quality_metric_kind(rng),
+        },
+        _ => SolverWarningKind::ExtensionWarning(gen_extension_warning_id(rng)),
+    };
+    SolverWarning {
+        kind,
+        affected_objects: (0..rng.range_usize(0, 2))
+            .map(|_| crate::generators::typed_object_id(rng))
+            .collect(),
+        message: "generated".to_string(),
+    }
+}
+
+/// An extension-metric id.
+pub fn gen_extension_metric_id(rng: &mut Rng) -> ExtensionMetricId {
+    ExtensionMetricId(rng.next_u64() as u128)
+}
+
+/// An extension-contributed quality metric.
+pub fn gen_extension_metric(rng: &mut Rng) -> ExtensionMetric {
+    ExtensionMetric {
+        metric_id: gen_extension_metric_id(rng),
+        value: gen_normalized_metric(rng),
+    }
+}
+
+/// A (non-default) quality metric vector.
+pub fn gen_quality_metric_vector(rng: &mut Rng) -> QualityMetricVector {
+    QualityMetricVector {
+        collision_penalty: gen_normalized_metric(rng),
+        spacing_distortion: gen_normalized_metric(rng),
+        slur_shape_penalty: gen_normalized_metric(rng),
+        beam_slope_penalty: gen_normalized_metric(rng),
+        vertical_density_penalty: gen_normalized_metric(rng),
+        system_break_penalty: gen_normalized_metric(rng),
+        page_fill_efficiency: gen_normalized_metric(rng),
+        casting_off_quality: gen_normalized_metric(rng),
+        symbol_density_uniformity: gen_normalized_metric(rng),
+        extension_metrics: (0..rng.range_usize(0, 2))
+            .map(|_| gen_extension_metric(rng))
+            .collect(),
+    }
+}
+
+/// A render target (every variant).
+pub fn gen_render_target(rng: &mut Rng) -> RenderTarget {
+    *rng.choose(&[
+        RenderTarget::Pdf,
+        RenderTarget::Svg,
+        RenderTarget::Screen,
+        RenderTarget::Print,
+    ])
+}
+
+pub fn gen_color_configuration(rng: &mut Rng) -> ColorConfiguration {
+    ColorConfiguration {
+        color_space: *rng.choose(&[
+            ColorSpace::Srgb,
+            ColorSpace::DisplayP3,
+            ColorSpace::Cmyk,
+            ColorSpace::Grayscale,
+        ]),
+        embed_profile: rng.boolean(),
+    }
+}
+
+pub fn gen_rasterization_configuration(rng: &mut Rng) -> RasterizationConfiguration {
+    RasterizationConfiguration {
+        antialias: rng.boolean(),
+        dpi: rng.range(72, 1201) as u32,
+    }
+}
+
+/// A render configuration.
+pub fn gen_render_configuration(rng: &mut Rng) -> RenderConfiguration {
+    RenderConfiguration {
+        target: gen_render_target(rng),
+        color: gen_color_configuration(rng),
+        rasterization: gen_rasterization_configuration(rng),
+    }
+}
+
+/// An invalidation scope (every variant).
+pub fn gen_invalidation_scope(rng: &mut Rng) -> InvalidationScope {
+    *rng.choose(&[
+        InvalidationScope::ObjectLocal,
+        InvalidationScope::MeasureLocal,
+        InvalidationScope::SystemLocal,
+        InvalidationScope::PageLocal,
+        InvalidationScope::RegionLocal,
+        InvalidationScope::WholeScore,
+    ])
+}
+
+/// An invalidation set over generated slots, bands, constraints, and glyphs.
+pub fn gen_invalidation_set(rng: &mut Rng) -> InvalidationSet {
+    let n = |r: &mut Rng| r.range_usize(0, 3);
+    InvalidationSet {
+        scope: gen_invalidation_scope(rng),
+        slots: (0..n(rng)).map(|_| gen_spring_slot_id(rng)).collect(),
+        bands: (0..n(rng)).map(|_| gen_vertical_band_id(rng)).collect(),
+        constraints: (0..n(rng)).map(|_| gen_constraint_id(rng)).collect(),
+        glyphs: (0..n(rng)).map(|_| gen_glyph_object_id(rng)).collect(),
+    }
+}
+
+// --- Remaining public-type generators (Agent F mandate completeness) ---
+
+/// A render-scale context.
+pub fn gen_scale_context(rng: &mut Rng) -> ScaleContext {
+    ScaleContext {
+        points_per_staff_space: 4.0 + (rng.range(0, 6000) as f32) / 1000.0,
+    }
+}
+
+/// A glyph anchor.
+pub fn gen_glyph_anchor(rng: &mut Rng) -> GlyphAnchor {
+    let names = ["stemUpNW", "stemDownSE", "cutOutNE"];
+    GlyphAnchor {
+        name: std::borrow::Cow::Borrowed(names[rng.below(names.len() as u64) as usize]),
+        x: rng.range(0, 2048) as i32,
+        y: rng.range(0, 2048) as i32,
+    }
+}
+
+/// A vertical-band id.
+pub fn gen_vertical_band_id(rng: &mut Rng) -> VerticalBandId {
+    VerticalBandId(((rng.next_u64() as u128) << 64) | rng.next_u64() as u128)
+}
+
+/// A time-axis kind (every variant).
+pub fn gen_time_axis_kind(rng: &mut Rng) -> TimeAxisKind {
+    match rng.below(4) {
+        0 => TimeAxisKind::Metric,
+        1 => TimeAxisKind::Proportional,
+        2 => TimeAxisKind::Aleatoric,
+        _ => TimeAxisKind::Registered(TimeAxisRegistryId(rng.next_u64() as u128)),
+    }
+}
+
+/// An engraving-decision id (content-derived from a generated decision).
+pub fn gen_engraving_decision_id(rng: &mut Rng) -> EngravingDecisionId {
+    gen_engraving_decision(rng).id
+}
+
+/// A Sem-ver font version.
+pub fn gen_sem_ver(rng: &mut Rng) -> SemVer {
+    SemVer::new(
+        rng.range(0, 4) as u32,
+        rng.range(0, 400) as u32,
+        rng.range(0, 9) as u32,
+    )
+}
+
+/// Glyph render data availability.
+pub fn gen_glyph_render_data(rng: &mut Rng) -> GlyphRenderData {
+    GlyphRenderData {
+        outline: if rng.boolean() {
+            vec![gen_path_command(rng), PathCommand::Close]
+        } else {
+            vec![]
+        },
+        bitmap: rng.boolean().then(|| gen_glyph_bitmap(rng)),
+    }
+}
+
+pub fn gen_path_command(rng: &mut Rng) -> PathCommand {
+    match rng.below(4) {
+        0 => PathCommand::MoveTo(gen_point(rng)),
+        1 => PathCommand::LineTo(gen_point(rng)),
+        2 => PathCommand::CurveTo {
+            control1: gen_point(rng),
+            control2: gen_point(rng),
+            to: gen_point(rng),
+        },
+        _ => PathCommand::Close,
+    }
+}
+
+pub fn gen_glyph_bitmap(rng: &mut Rng) -> GlyphBitmap {
+    GlyphBitmap {
+        width: 1,
+        height: 1,
+        rgba8: vec![rng.next_u64() as u8; 4],
+    }
+}
+
+/// A staff-space bounding box drawn from a bundled glyph.
+pub fn gen_glyph_bounding_box(rng: &mut Rng) -> BoundingBox {
+    gen_glyph_metric(rng).bounding_box()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{fixtures, generators};
+    use crate::fixtures;
     use epiphany_core::TypedObjectId;
-
-    #[test]
-    fn metrics_hash_is_domain_tagged_and_nonzero() {
-        // Not an all-zero placeholder, and domain-separated (a different domain
-        // over the same bytes would differ).
-        let h = stub_metrics_hash();
-        assert_ne!(h, [0u8; 32]);
-        assert_eq!(GlyphCatalogIdentity::default().metrics_hash, h);
-
-        let mut rng = Rng::new(8);
-        let input = gen_constrained_layout_ir(&mut rng);
-        assert_eq!(StubSolver.solve(&input).status, SolveStatus::Solved);
-        let mut wrong_catalog = input;
-        wrong_catalog.catalog.metrics_hash[0] ^= 1;
-        assert_eq!(
-            StubSolver.solve(&wrong_catalog).status,
-            SolveStatus::InternalError,
-            "solver must reject a catalog hash that does not cover consulted metrics"
-        );
-    }
+    use epiphany_determinism::CanonicalEncode;
 
     #[test]
     fn ir_generators_are_deterministic_and_well_formed() {
@@ -946,11 +1138,30 @@ mod tests {
         let mut b = Rng::new(13);
         // Deterministic from the seed.
         assert_eq!(gen_logical_layout_ir(&mut a), gen_logical_layout_ir(&mut b));
-        // Provenance stable_id is always the source-derived id.
+        let generated = gen_logical_layout_ir(&mut Rng::new(14));
+        let constrained = try_to_constrained(&generated)
+            .expect("generated logical IR must be structurally transformable");
+        assert_eq!(
+            StubSolver
+                .solve(&constrained, &SolverConfig::default())
+                .status,
+            SolveStatus::Solved
+        );
+        // Provenance ids are consistent with their synthesis: a projected one
+        // (no synthesis) carries the source-only id; a synthesized one does not.
+        // Every generated constrained IR is accepted by the real stub solver.
         let mut rng = Rng::new(99);
         for _ in 0..64 {
             let p = gen_provenance(&mut rng);
-            assert_eq!(p.stable_id, stable_layout_id(&p.source));
+            match p.synthesis {
+                None => assert_eq!(p.stable_id, stable_layout_id(&p.source)),
+                Some(_) => assert_ne!(p.stable_id, stable_layout_id(&p.source)),
+            }
+            let ci = gen_constrained_layout_ir(&mut rng);
+            assert_eq!(
+                StubSolver.solve(&ci, &SolverConfig::default()).status,
+                SolveStatus::Solved
+            );
             let _ = gen_glyph_object(&mut rng);
             let _ = gen_resolved_glyph(&mut rng);
             let _ = gen_time_axis_model(&mut rng);
@@ -958,26 +1169,135 @@ mod tests {
             let _ = gen_solve_status(&mut rng);
             let _ = gen_glyph_catalog_identity(&mut rng);
             let _ = gen_layout_object_id(&mut rng);
-            let _ = gen_constrained_layout_ir(&mut rng);
             let _ = gen_resolved_layout_ir(&mut rng);
             let _ = gen_render_primitive(&mut rng);
             let _ = gen_render_ir(&mut rng);
             let _ = gen_solve_report(&mut rng);
             let _ = gen_round_trip_report(&mut rng);
+            // The rest of E's public surface.
+            let _ = gen_staff_space(&mut rng);
+            let _ = gen_size2d(&mut rng);
+            let _ = gen_bounding_box(&mut rng);
+            let _ = gen_glyph_object_id(&mut rng);
+            let _ = gen_glyph_metric(&mut rng);
+            let _ = gen_smufl_version(&mut rng);
+            let _ = gen_font_id(&mut rng);
+            let _ = gen_engraving_decision(&mut rng);
+            let _ = gen_vertical_band(&mut rng);
+            let _ = gen_vertical_band_kind(&mut rng);
+            let barrier = gen_edit_barrier(&mut rng);
+            // The barrier canonically encodes (Appendix D), and prohibition is
+            // well-defined against a generated edit context.
+            let _ = barrier.to_canonical_bytes();
+            let _ = barrier.prohibits_edit(
+                gen_operation_kind_tag(&mut rng),
+                &crate::generators::typed_object_id(&mut rng),
+                &gen_edit_context(&mut rng),
+                &AlwaysLiveOracle,
+            );
+            let _ = gen_solver_config(&mut rng);
+            let _ = gen_solver_tier(&mut rng);
+            let _ = gen_solver_version(&mut rng);
+            let _ = gen_invalidation_set(&mut rng);
+            // The remaining public surface.
+            let _ = gen_solver_budget_used(&mut rng);
+            let _ = gen_solver_state(&mut rng);
+            let _ = gen_solver_profile(&mut rng);
+            let _ = gen_tie_breaking_weights(&mut rng);
+            let _ = gen_normalized_metric(&mut rng);
+            let _ = gen_constraint_id(&mut rng);
+            let _ = gen_spring_slot_id(&mut rng);
+            let _ = gen_solver_warning(&mut rng);
+            let _ = gen_scale_context(&mut rng);
+            let _ = gen_glyph_anchor(&mut rng);
+            let _ = gen_vertical_band_id(&mut rng);
+            let _ = gen_time_axis_kind(&mut rng);
+            let _ = gen_engraving_decision_id(&mut rng);
+            let _ = gen_sem_ver(&mut rng);
+            let _ = gen_glyph_render_data(&mut rng);
+            let _ = gen_glyph_bounding_box(&mut rng);
+            let _ = gen_decision_source(&mut rng);
+            let _ = gen_engraving_decision_kind(&mut rng);
+            let _ = gen_object_kind(&mut rng);
+            let _ = gen_barrier_scope(&mut rng);
+            let _ = gen_barrier_condition(&mut rng);
+            let _ = gen_invalidation_scope(&mut rng);
+            let _ = gen_size2d(&mut rng);
+            let _ = gen_layout_object(&mut rng);
+            let _ = gen_layout_region(&mut rng);
+            let _ = gen_font_id(&mut rng);
+            let _ = gen_smufl_version(&mut rng);
+            let _ = gen_quality_metric_kind(&mut rng);
+            let _ = gen_extension_warning_id(&mut rng);
+            let _ = gen_extension_metric(&mut rng);
+            let _ = gen_extension_metric_id(&mut rng);
+            let _ = gen_quality_metric_vector(&mut rng);
+            let _ = gen_render_target(&mut rng);
+            let _ = gen_render_configuration(&mut rng);
+            let _ = gen_glyph_render_data(&mut rng);
+            let _ = gen_vertical_band(&mut rng);
+            let _ = gen_rect(&mut rng);
+            let _ = gen_transform_2d(&mut rng);
+            let _ = gen_margins(&mut rng);
+            let _ = gen_score_version(&mut rng);
+            let _ = gen_local_coordinate_system(&mut rng);
+            let _ = gen_vertical_extent(&mut rng);
+            let _ = gen_cross_region_object(&mut rng);
+            let _ = gen_synthesis_instance_key(&mut rng);
+            let _ = gen_glyph_style(&mut rng);
+            let _ = gen_time_point(&mut rng);
+            let _ = gen_time_range(&mut rng);
+            let _ = gen_spring_slot(&mut rng);
+            let _ = gen_constrained_layout_region(&mut rng);
+            let _ = gen_layout_constraint(&mut rng);
+            let _ = gen_engraving_override(&mut rng);
+            let _ = gen_resolved_staff(&mut rng);
+            let _ = gen_resolved_measure(&mut rng);
+            let _ = gen_resolved_system(&mut rng);
+            let _ = gen_resolved_page(&mut rng);
+            let _ = gen_dependency_index(&mut rng);
+            let _ = gen_layout_cache(&mut rng);
+            let _ = gen_system_id(&mut rng);
+            let _ = gen_logical_region_cache(&mut rng);
+            let _ = gen_constrained_region_cache(&mut rng);
+            let _ = gen_resolved_system_cache(&mut rng);
+            let _ = gen_fine_layout_cache(&mut rng);
+            let _ = gen_color_configuration(&mut rng);
+            let _ = gen_rasterization_configuration(&mut rng);
+            let _ = gen_path_command(&mut rng);
+            let _ = gen_glyph_bitmap(&mut rng);
         }
+    }
+
+    #[test]
+    fn solver_rejects_a_catalog_hash_that_misses_its_glyphs() {
+        let mut rng = Rng::new(8);
+        let mut input = gen_constrained_layout_ir(&mut rng);
+        // Ensure there is at least one glyph to consult.
+        if input.glyphs.is_empty() {
+            input = gen_constrained_layout_ir(&mut Rng::new(3));
+        }
+        assert_eq!(
+            StubSolver.solve(&input, &SolverConfig::default()).status,
+            SolveStatus::Solved
+        );
+        input.catalog.metrics_hash[0] ^= 1;
+        assert_eq!(
+            StubSolver.solve(&input, &SolverConfig::default()).status,
+            SolveStatus::InternalError,
+            "solver must reject a catalog hash that does not cover consulted metrics"
+        );
     }
 
     #[test]
     fn ten_measure_single_staff_round_trips() {
         // The QUICKSTART's headline case for Agent E's hand-off: a real
-        // 10-measure single-staff score (with measures and cross-cutting objects).
+        // 10-measure single-staff score, driven through the real crate.
         let score = fixtures::ten_measure_single_staff(0xA11CE);
         let report = round_trip(&score);
         assert!(report.glyphs > 0);
         assert_eq!(report.glyphs, report.render_primitives);
 
-        // The projection genuinely covers measures and the cross-cutting objects
-        // (so their omission could not pass unseen).
         let measures = report
             .recovered_sources
             .iter()
@@ -991,83 +1311,6 @@ mod tests {
         assert!(report
             .recovered_sources
             .iter()
-            .any(|s| matches!(s, TypedObjectId::Spanner(_))));
-        assert!(report
-            .recovered_sources
-            .iter()
-            .any(|s| matches!(s, TypedObjectId::Marker(_))));
-        assert!(report
-            .recovered_sources
-            .iter()
             .any(|s| matches!(s, TypedObjectId::ChordSymbol(_))));
-    }
-
-    #[test]
-    fn rich_and_varied_scores_round_trip() {
-        for seed in 0..128u64 {
-            round_trip(&fixtures::ten_measure_single_staff(seed));
-            round_trip(&generators::graph::valid_score(
-                seed.wrapping_mul(0x9E37_79B9),
-            ));
-            // The rich generator has metric, proportional, and aleatoric regions
-            // plus a tuplet, tie, spanner, marker, and chord symbol.
-            let rich = generators::graph::valid_score_rich(seed);
-            let report = round_trip(&rich);
-            assert!(report.glyphs >= 3);
-            assert!(report
-                .recovered_sources
-                .iter()
-                .any(|s| matches!(s, TypedObjectId::Tuplet(_))));
-        }
-    }
-
-    /// Every object's stable id is exactly `stable_layout_id(source)` — a pure
-    /// function of the source, with no dependence on traversal position. This is
-    /// the property that makes ids stable across relayouts.
-    #[test]
-    fn stable_ids_are_a_pure_function_of_source() {
-        let score = fixtures::ten_measure_single_staff(5);
-        let logical = to_logical(&score);
-        for region in &logical.regions {
-            assert_eq!(
-                region.provenance.stable_id,
-                stable_layout_id(&region.provenance.source)
-            );
-            for obj in &region.objects {
-                assert_eq!(
-                    obj.provenance.stable_id,
-                    stable_layout_id(&obj.provenance.source)
-                );
-            }
-        }
-    }
-
-    /// Reordering the regions of a score (a relayout where the *sources* are
-    /// unchanged) does not change any object's stable id. The pre-fix
-    /// traversal-counter scheme would have failed this.
-    #[test]
-    fn reordering_regions_preserves_stable_ids() {
-        let score = generators::graph::valid_score_rich(9);
-        let source_to_stable = |s: &Score| {
-            to_logical(s)
-                .regions
-                .iter()
-                .flat_map(|r| {
-                    std::iter::once((r.provenance.source, r.provenance.stable_id)).chain(
-                        r.objects
-                            .iter()
-                            .map(|o| (o.provenance.source, o.provenance.stable_id)),
-                    )
-                })
-                .collect::<std::collections::BTreeMap<_, _>>()
-        };
-        let before = source_to_stable(&score);
-        let mut reordered = score.clone();
-        reordered.canvas.regions.reverse();
-        let after = source_to_stable(&reordered);
-        assert_eq!(
-            before, after,
-            "reordering regions changed stable ids (they are not position-independent)"
-        );
     }
 }

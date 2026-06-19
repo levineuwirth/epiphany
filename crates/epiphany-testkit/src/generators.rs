@@ -1,7 +1,8 @@
 //! Deterministic property-test generators for the public types of A
 //! ([`epiphany_determinism`]), B ([`epiphany_core`]), C ([`epiphany_ops`]), and
-//! D ([`epiphany_bundle`]). Agent E has not landed; its types are stubbed in
-//! [`crate::layout_stub`] and generated there.
+//! D ([`epiphany_bundle`]). Agent E's layout-IR types
+//! ([`epiphany_layout_ir`]) are generated in [`crate::layout_stub`], which
+//! drives the real crate.
 //!
 //! Every generator draws from the seeded [`Rng`], so a failing case reproduces
 //! from its seed (Appendix D §"Randomness": no platform entropy in the harness).

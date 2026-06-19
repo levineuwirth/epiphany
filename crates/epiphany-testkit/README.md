@@ -8,8 +8,8 @@ that proves the other crates work end to end and that runs in CI (see
 It provides:
 
 - **Deterministic property-test generators** for the public types of A
-  (`epiphany-determinism`), B (`epiphany-core`), C (`epiphany-ops`), and D
-  (`epiphany-bundle`), plus the layout types of the E stub. Agent B's score-graph
+  (`epiphany-determinism`), B (`epiphany-core`), C (`epiphany-ops`), D
+  (`epiphany-bundle`), and E (`epiphany-layout-ir`). Agent B's score-graph
   generators/shrinkers are re-exported as `generators::graph`.
 - **The canonical round-trip harness** (`roundtrip`) — v0 acceptance criterion 4.
 - **The CRDT convergence harness** (`convergence`) — criteria 1 and 5.
@@ -18,12 +18,11 @@ It provides:
 - **The manifest-selection harness** (`bundle_harness`).
 - **The layout round-trip harness** (`layout_stub`) — criterion 6.
 
-## Real vs. stub
+## All harnesses are real
 
 The QUICKSTART charters Agent F to *"build against A and stubs for the others."*
-A, B, C, and D have all shipped; only Agent E (`epiphany-layout-ir`) has not
-landed. So all of the operation-semantics and serialization harnesses drive the
-**real** crates; only the layout round-trip uses an in-tree stub.
+All five implementation crates — A, B, C, D, and now E (`epiphany-layout-ir`) —
+have shipped, so every harness drives the **real** crate.
 
 | Harness | Backend | Status |
 |---------|---------|--------|
@@ -31,18 +30,18 @@ landed. So all of the operation-semantics and serialization harnesses drive the
 | `bundle_harness` (criterion 2, manifest selection) | D, real | **real** |
 | `convergence` (criteria 1, 5) | C (`epiphany-ops`), real | **real** |
 | `equivocation` (criterion 3) | C (`epiphany-ops`), real | **real** |
-| `layout_stub` (criterion 6) | in-tree stub | **stub** for E |
+| `layout_stub` (criterion 6) | E (`epiphany-layout-ir`), real | **real** |
 
 For criteria 1, 3, and 5 the testkit drives the real
 `epiphany_ops::OperationSet` / `canonical_reduction_order` / reduce and also
 re-exports Agent C's own authoritative gates
 (`convergence::ops_reduction_determinism_fuzz`,
-`equivocation::ops_equivocation_fuzz`). The layout stub is **not** a copy of the
-future crate: it implements only the slice of Chapters 7 & 9 the round-trip
-exercises — the four IR stages, the `TimeAxisModel` tagged enum, the
-`Provenance` back-references, and the stub solver that returns
-`SolveStatus::Solved` with the input geometry verbatim — using the spec's field
-names, so it re-points at the real crate with minimal churn.
+`equivocation::ops_equivocation_fuzz`). The `layout_stub` module — once a
+faithful in-tree stub of Chapters 7 & 9 — now re-exports the real
+`epiphany-layout-ir` IR types and stub solver behind the same `round_trip`
+signature; the provenance-preservation contract is implemented and tested inside
+that crate. (The "stub" in the module name now refers to the spec-sanctioned
+*stub constraint solver*, not to a stubbed crate.)
 
 ## Criterion 4: what is and isn't tested
 
@@ -96,10 +95,9 @@ not just modeled.
    bounded draws and an overflow-safe full-range `range`), so every failure
    reproduces from its seed.
 2. **Drive the real crate once it ships; stub only what hasn't landed.** Earlier
-   in development `epiphany-ops` was in-flight and the ops harnesses ran against a
-   faithful in-tree stub; now that C has shipped they drive the real crate and
-   re-export its gates. Only the layout round-trip remains stubbed (E has not
-   landed).
+   in development `epiphany-ops` (C) and `epiphany-layout-ir` (E) were in-flight
+   and their harnesses ran against faithful in-tree stubs; now that both have
+   shipped, every harness drives the real crate and re-exports its gates.
 
 ## Flagged for a future spec pass (Pass 11 candidates)
 
@@ -109,10 +107,12 @@ Per the QUICKSTART, implementation-discovered gaps are batched, not improvised:
   decode round-trip at the canonical Chapter-6 `MaterializedState` layer. A
   separate direct wire format for the richer core `Score` remains owned by the
   Binary Format companion.
-- **Re-point the layout harness.** When `epiphany-layout-ir` lands, swap
-  `layout_stub` for the real IR types behind the same `round_trip` signature; the
-  provenance-preservation contract it asserts is the one the real crate must also
-  satisfy.
+- **Layout harness re-pointed.** `epiphany-layout-ir` has landed, so `layout_stub`
+  now drives the real IR types behind the same `round_trip` signature (done). IR
+  coordinates are f32 staff spaces, quantized only when serializing canonical
+  `ResolvedLayoutIR` (Appendix D); see that crate's `DECISIONS.md` for the
+  remaining layout-specific Pass 11 candidates (the `OperationKindTag` variant set
+  and the layout-object id derivation).
 
 ## Running
 

@@ -5,13 +5,16 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "The Epiphany conformance testkit (spec QUICKSTART, Agent F): deterministic generators for the public types, the canonical round-trip harness, the CRDT convergence and equivocation harnesses, and the crash-recovery and manifest-selection gates. Cross-cutting; drives the real epiphany-determinism/core/ops/bundle crates and carries a faithful in-tree stub only for the not-yet-landed epiphany-layout-ir."
+description = "The Epiphany conformance testkit (spec QUICKSTART, Agent F): deterministic generators for the public types, the canonical round-trip harness, the CRDT convergence and equivocation harnesses, the crash-recovery and manifest-selection gates, and the layout round-trip. Cross-cutting; drives the real epiphany-determinism/core/ops/bundle/layout-ir crates."
 
 [dependencies]
 epiphany-determinism.workspace = true
 epiphany-core.workspace = true
 epiphany-bundle.workspace = true
 epiphany-ops.workspace = true
+# Agent E's layout IR has landed; the layout round-trip harness (criterion 6)
+# now drives the real crate instead of an in-tree stub.
+epiphany-layout-ir.workspace = true
 
 # Drives the whole suite at scale outside the unit-test timeout — the analogue
 # of epiphany-determinism's `fuzz_roundtrip` and epiphany-bundle's `fuzz_crash`.

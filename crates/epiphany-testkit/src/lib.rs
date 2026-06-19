@@ -12,12 +12,13 @@
 //! > from finding regressions in weeks 12+. … The harness is the architecture's
 //! > tripwire.
 //!
-//! ## What is real and what is stubbed
+//! ## What is real
 //!
 //! The QUICKSTART charters Agent F to *"build against A and stubs for the
-//! others."* At the time of writing, Agents A ([`epiphany_determinism`]),
-//! B ([`epiphany_core`]), C ([`epiphany_ops`]), and D ([`epiphany_bundle`]) have
-//! shipped, so the harnesses that depend on them are **real**:
+//! others."* All five implementation crates have now shipped — Agents A
+//! ([`epiphany_determinism`]), B ([`epiphany_core`]), C ([`epiphany_ops`]),
+//! D ([`epiphany_bundle`]), and E ([`epiphany_layout_ir`]) — so **every**
+//! harness drives the real crate:
 //!
 //! * [`roundtrip`] — the canonical round-trip harness, driving every
 //!   `CanonicalEncode`/`CanonicalDecode` type in A and B, the real
@@ -34,20 +35,17 @@
 //! * [`equivocation`] — the equivocation harness (criterion 3), driving the real
 //!   [`epiphany_ops::OperationSlot`] model and re-exporting Agent C's gate.
 //!
-//! Agent E (`epiphany-layout-ir`, Chapters 7 & 9) has **not** landed, so the
-//! layout round-trip runs against a **faithful in-tree stub** that implements
-//! the spec's contract directly:
-//!
-//! * [`layout_stub`] — a minimal but spec-faithful Chapter 7 / Chapter 9 model:
-//!   the four IR stages, the `TimeAxisModel` tagged enum, the provenance
-//!   back-references, and the stub solver that returns
-//!   [`layout_stub::SolveStatus::Solved`] with the input geometry verbatim.
-//!   Drives the layout round-trip (criterion 6).
-//!
-//! The stub is documented as a stub and is written so that, when
-//! `epiphany-layout-ir` lands, [`layout_stub::round_trip`] re-points at the real
-//! IR types with minimal churn: the stub types mirror the spec's field names and
-//! the provenance/solve contracts are the ones the real crate must also satisfy.
+//! * [`layout_stub`] — the layout round-trip harness (criterion 6). Agent E
+//!   (`epiphany-layout-ir`, Chapters 7 & 9) has landed, so this module — once a
+//!   faithful in-tree stub — now re-exports the **real** IR types (the four IR
+//!   stages, the `TimeAxisModel` tagged enum, the provenance back-references,
+//!   the engraving-decision and vertical-band models, the glyph-catalog
+//!   identity, and the real stub solver) behind the same
+//!   [`layout_stub::round_trip`] signature. The provenance-preservation contract
+//!   it asserts is implemented and tested inside `epiphany-layout-ir`; the
+//!   testkit retains deterministic generators for E's public types and exercises
+//!   the real round-trip on its hand-off fixtures. (The module name is kept so
+//!   the harness entry point stays `layout_stub::round_trip`.)
 //!
 //! ## Determinism of the harness itself
 //!
