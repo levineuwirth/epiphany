@@ -42,6 +42,7 @@
 //! event-arena storage via `slotmap` (decision 2), fully sync (decision 4),
 //! current stable Rust (decision 5). `unsafe` is forbidden crate-wide.
 
+mod codec;
 mod event;
 mod graph;
 mod ids;
@@ -105,6 +106,8 @@ pub use tempo::{
     Tempo, TempoError, TempoMap, TempoSegment, TempoShape, INVERSION_MAX_DENOMINATOR,
     INVERSION_MAX_ITERATIONS, INVERSION_TOLERANCE_WHOLE_NOTES,
 };
+
+pub use codec::ScoreDecodeError;
 
 pub use indexes::ScoreIndexes;
 

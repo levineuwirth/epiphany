@@ -84,9 +84,11 @@
 //! Criterion 1's reducer-bookkeeping counterpart ([`convergence::assert_convergence`])
 //! and criterion 4's bookkeeping-projection serialization
 //! ([`roundtrip::assert_reduction_serialization_stable`]) are retained under
-//! honest names. The full-`Score` **byte** round-trip is pending item 5 (Agent
-//! B): no whole-score codec exists yet, so that one gate is marked `#[ignore]`
-//! in `tests/acceptance.rs` rather than asserted falsely.
+//! honest names. The full-`Score` **byte** round-trip
+//! ([`roundtrip::assert_score_serialization_stable`]) is now live, driving Agent
+//! B's whole-score codec ([`epiphany_core::Score::canonical_bytes`] /
+//! [`epiphany_core::Score::decode_canonical`]) on a real `reduce_onto`
+//! materialization through a bundle snapshot.
 
 pub mod rng;
 

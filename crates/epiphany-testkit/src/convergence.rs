@@ -281,6 +281,19 @@ pub fn run_graph_convergence(orders: usize, seed: u64) {
     assert_graph_convergence(&base, &envelopes, &targets, orders, &mut rng);
 }
 
+/// Builds a two-voice base, authors a real ~50-bar edit session, reduces it onto
+/// the base via [`OperationSet::reduce_onto`], and returns the materialized real
+/// [`Score`] together with the causal frontier it covers. Used by the
+/// full-Score serialization gate (criterion 4, whole-graph tier).
+pub fn materialized_score(seed: u64) -> (Score, Vec<u8>) {
+    let base = two_voice_base(seed);
+    let mut rng = Rng::new(seed ^ 0x5C0E_5E51_A11A_B1E5);
+    let (_targets, envelopes) = crate::generators::graph_edit_session(&base, &mut rng);
+    let materialization = materialize_onto_in_order(&base, &envelopes);
+    let frontier = crate::generators::frontier_bytes(&envelopes);
+    (materialization.score, frontier)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

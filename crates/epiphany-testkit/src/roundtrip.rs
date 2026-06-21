@@ -35,6 +35,7 @@ use epiphany_bundle::{
     MemStore, ProfileId, ReductionAlgorithmVersion, SchemaVersion, SlotParse, SnapshotId,
     SnapshotRef, StagedChunk, Superblock,
 };
+use epiphany_core::Score;
 use epiphany_determinism::{CanonicalDecode, CanonicalEncode};
 use epiphany_ops::{MaterializedState, OperationEnvelope, OperationSet};
 
@@ -312,6 +313,87 @@ pub fn assert_reduction_serialization_stable(envelopes: &[OperationEnvelope], se
 
     // The reopened bundle's manifest is itself a real decode→reencode fixpoint.
     assert_manifest_roundtrip(reopened.manifest());
+}
+
+/// **Full-`Score` canonical serialization stability** (acceptance criterion 4,
+/// the whole-graph tier — item 5's whole-score codec). The real
+/// [`epiphany_core::Score`] encodes to canonical bytes, survives
+/// content-addressed storage as a `Snapshot` chunk in a real bundle
+/// (hash-verified on reopen), decodes back to an **equal** `Score`, and
+/// re-encodes byte-identically. Unlike [`assert_reduction_serialization_stable`]
+/// (which round-trips the Chapter 6 bookkeeping projection), this round-trips the
+/// whole musical graph — the arena, voices, regions, cross-cutting, and
+/// tombstones — through [`Score::canonical_bytes`] / [`Score::decode_canonical`].
+///
+/// `frontier` is the causal frontier the snapshot materializes (so the snapshot
+/// reference is semantically consistent, not falsely empty).
+pub fn assert_score_serialization_stable(score: &Score, frontier: &[u8], seed: u64) {
+    let canonical = score.canonical_bytes();
+    // Determinism: re-encoding the same score is byte-identical.
+    assert_eq!(
+        canonical,
+        score.canonical_bytes(),
+        "re-encoding the same score changed its bytes"
+    );
+
+    // serialize: stage the canonical score as a real Snapshot chunk referenced
+    // from the manifest's canonical_base.
+    let mut rng = Rng::new(seed);
+    let uuid = FileUuid(rng.array16());
+    let doc = DocumentId(rng.array16());
+    let mut bundle =
+        Bundle::create(MemStore::new(), uuid, Manifest::empty(doc)).expect("create bundle");
+    let snapshot = StagedChunk {
+        kind: ChunkKind::Snapshot,
+        schema_version: SchemaVersion::V0,
+        payload: canonical.clone(),
+    };
+    let frontier = frontier.to_vec();
+    bundle
+        .commit(&[snapshot], |ctx| {
+            let mut m = ctx.previous_manifest.clone();
+            let root = ctx.new_chunks[0];
+            let mut sid = [0u8; 16];
+            sid.copy_from_slice(&root.hash.as_bytes()[..16]);
+            m.canonical_base = Some(SnapshotRef {
+                snapshot_id: SnapshotId(sid),
+                covers_causal_frontier: FrontierBytes::from_bytes(frontier.clone()),
+                reduction_algorithm_version: ReductionAlgorithmVersion(0),
+                profile_id: ProfileId::Full,
+                hash: root.hash,
+                root,
+            });
+            m
+        })
+        .expect("commit snapshot");
+    let image = bundle.into_store().into_bytes();
+
+    // load: reopen, hash-verify, read back byte-identically.
+    let reopened = Bundle::open(MemStore::from_bytes(image)).expect("reopen bundle");
+    reopened
+        .verify_canonical_chunks()
+        .expect("canonical chunks intact");
+    let base = reopened
+        .manifest()
+        .canonical_base
+        .as_ref()
+        .expect("a canonical base");
+    let loaded = reopened
+        .read_chunk(&base.root)
+        .expect("read snapshot chunk back");
+    assert_eq!(
+        loaded, canonical,
+        "score bytes were not preserved through content-addressed storage"
+    );
+
+    // deserialize → equal → reserialize byte-identically.
+    let decoded = Score::decode_canonical(&loaded).expect("loaded score must decode");
+    assert_eq!(&decoded, score, "decoded score changed");
+    assert_eq!(
+        decoded.canonical_bytes(),
+        loaded,
+        "decoded score did not reserialize byte-identically"
+    );
 }
 
 /// Confirms criterion 4 is *musically sensitive* in the strongest form: a score

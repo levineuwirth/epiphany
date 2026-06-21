@@ -107,13 +107,14 @@ Criterion 4 has three tiers — two asserted now, one pending item 5:
   structural equality across delivery orders) — the determinism precondition a
   byte codec depends on.
 
-- **The full-`Score` byte round-trip is pending item 5 (Agent B).** No
-  whole-score canonical codec (`CanonicalEncode`/`CanonicalDecode for Score`)
-  exists yet, so `criterion_4_full_score_byte_roundtrip` is marked `#[ignore]`
-  (visible as *ignored*, never falsely green) rather than asserted on the
-  bookkeeping projection and passed off as a whole-Score gate. When item 5 lands
-  the codec, drop the attribute and assert the real byte cycle through a bundle
-  snapshot.
+- **The full-`Score` byte round-trip** (`criterion_4_full_score_byte_roundtrip`,
+  via `assert_score_serialization_stable`): item 5's whole-score codec
+  (`epiphany_core::Score::canonical_bytes` / `decode_canonical`) has landed, so a
+  real ~50-bar `Score` — materialized through Agent C's `reduce_onto` — now
+  `encode → decode → re-encode`s byte-identically through a real bundle snapshot
+  (hash-verified on reopen), with the decoded `Score` structurally equal to the
+  original. This is the whole musical graph (arena, voices, regions,
+  cross-cutting, tombstones), not the bookkeeping projection.
 
 ## Decisions (per QUICKSTART "Make each one once and document it")
 
@@ -132,14 +133,13 @@ Criterion 4 has three tiers — two asserted now, one pending item 5:
 
 Per the QUICKSTART, implementation-discovered gaps are batched, not improvised:
 
-- **Whole-graph (`epiphany_core::Score`) wire format — pending item 5 (Agent B).**
-  Criterion 4 is a real decode round-trip at the canonical Chapter-6
-  `MaterializedState` layer; the materialized `Score` is shown *reproducible*
-  today. A direct canonical byte codec for the richer core `Score` does not exist
-  yet (it is item 5's "whole-score codec", to be reconciled with the Binary
-  Format companion), so the whole-`Score` byte round-trip
-  (`criterion_4_full_score_byte_roundtrip`) is an explicit `#[ignore]`'d gate
-  rather than a falsely-green assertion.
+- **Whole-graph (`epiphany_core::Score`) wire format — landed (item 5).** A
+  direct canonical byte codec for the core `Score` now exists
+  (`epiphany_core::Score::canonical_bytes` / `decode_canonical`), and
+  `criterion_4_full_score_byte_roundtrip` exercises it on a real `reduce_onto`
+  materialization through a bundle snapshot. The prototype byte form predates the
+  Binary Format companion specification and is to be reconciled with it (see
+  `epiphany-core/DECISIONS.md`, P11-4).
 - **Layout harness re-pointed.** `epiphany-layout-ir` has landed, so `layout_stub`
   now drives the real IR types behind the same `round_trip` signature (done). IR
   coordinates are f32 staff spaces, quantized only when serializing canonical

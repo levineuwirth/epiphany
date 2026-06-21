@@ -643,6 +643,11 @@ impl SpellingPrecedence {
         Some(SpellingPrecedence { order })
     }
 
+    /// The precedence order, for the canonical codec.
+    pub(crate) fn order_ref(&self) -> &[SpellingSourceKind] {
+        &self.order
+    }
+
     /// The rank of a source kind: lower wins. `0` is the highest precedence.
     pub fn rank(&self, kind: SpellingSourceKind) -> usize {
         self.order

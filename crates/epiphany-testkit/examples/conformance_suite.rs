@@ -38,15 +38,17 @@ fn main() {
     eprintln!("[1/8] canonical round-trip corpus: {iters} iters");
     roundtrip::run_roundtrip_corpus(iters, 0x00C0_FFEE_1234_5678);
 
-    // 1b. Bundle manifest + reducer-bookkeeping serialization stability.
-    //     (Full-Score *byte* round-trip is pending item 5's whole-score codec.)
-    eprintln!("[1b ] manifest + reducer-bookkeeping serialization stability");
+    // 1b. Bundle manifest + reducer-bookkeeping serialization + full-Score byte
+    //     round-trip (item 5's whole-score codec, via reduce_onto).
+    eprintln!("[1b ] manifest + bookkeeping + full-Score serialization stability");
     for seed in 0..n(64) {
         roundtrip::assert_manifest_roundtrip(&roundtrip::committed_manifest(seed));
         let mut rng = Rng::new(seed.wrapping_mul(0x0100_0193).wrapping_add(17));
         roundtrip::assert_manifest_roundtrip(&generators::rich_manifest(&mut rng));
         let session = generators::operation_envelopes(&mut rng, 40, 3, 6, 6);
         roundtrip::assert_reduction_serialization_stable(&session, seed);
+        let (score, frontier) = convergence::materialized_score(seed.wrapping_add(101));
+        roundtrip::assert_score_serialization_stable(&score, &frontier, seed);
     }
     roundtrip::assert_content_mutation_changes_serialization();
 

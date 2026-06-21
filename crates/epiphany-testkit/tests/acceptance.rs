@@ -153,22 +153,19 @@ fn full_score_materialization_is_reproducible() {
     }
 }
 
-/// Criterion 4 (full-Score byte round-trip) — **pending item 5 (Agent B).** A
-/// whole-`epiphany_core::Score` / `GraphMaterialization` `encode → decode →
-/// re-encode` byte round-trip requires the whole-score canonical codec
-/// (`CanonicalEncode`/`CanonicalDecode for Score`), which does not exist yet:
-/// today only the bookkeeping `MaterializedState` and the A/B typed values have
-/// codecs. This gate is intentionally `#[ignore]`'d (visible as *ignored*, never
-/// falsely green) until item 5 lands the codec; then drop the attribute and
-/// assert the real byte cycle through a bundle snapshot.
+/// Criterion 4 (full-Score byte round-trip) — **the whole-graph tier (item 5).**
+/// A real ~50-bar `epiphany_core::Score`, materialized through Agent C's
+/// `reduce_onto`, is `encode → decode → re-encode`d byte-identically through the
+/// whole-score canonical codec and a real bundle snapshot (hash-verified on
+/// reopen). This is the honest full-Score serialization gate the bookkeeping
+/// projection ([`reducer_bookkeeping_serialization`]) only approximated.
 #[test]
-#[ignore = "pending item 5 (Agent B): whole-score codec (CanonicalEncode/Decode for Score) does not exist yet"]
 fn criterion_4_full_score_byte_roundtrip() {
-    unimplemented!(
-        "blocked on item 5: epiphany_core::Score has no canonical byte codec. \
-         When it lands, reduce_onto a base, encode the Score, decode, and assert \
-         a byte-identical re-encode through a real bundle snapshot."
-    );
+    for seed in 0..24u64 {
+        let seed = seed.wrapping_mul(0x9E37_79B9).wrapping_add(13);
+        let (score, frontier) = convergence::materialized_score(seed);
+        roundtrip::assert_score_serialization_stable(&score, &frontier, seed);
+    }
 }
 
 /// Criterion 5 — **Reduction determinism.** A randomized 1,000-envelope set,

@@ -95,10 +95,25 @@ exist. To make round-trip serialization testable now (v0 acceptance criterion
 4), this crate defines a concrete canonical byte form for its primitives —
 notably `RationalTime` (sign + length-prefixed big-endian numerator and
 denominator magnitudes, always reduced) and the wall-clock integers
-(little-endian, matching `QuantizedCoord`). These are deterministic and
-reversible but provisional: when the Binary Format companion lands, reconcile
-this crate's `CanonicalEncode`/`CanonicalDecode` with it (a failing cross-crate
-round-trip test would be the trigger, per the QUICKSTART process notes).
+(little-endian, matching `QuantizedCoord`).
+
+**M3 follow-up — the whole-score codec (item 5).** `src/codec.rs` now composes
+those primitives into a total, reversible canonical byte form for the *entire*
+`Score` graph (`Score::canonical_bytes` / `Score::decode_canonical`), so the
+materialized graph — not only the Chapter 6 `MaterializedState` bookkeeping —
+round-trips byte-identically (Agent F's `criterion_4_full_score_byte_roundtrip`
+drives it through a real bundle snapshot). The form is deliberately uniform:
+little-endian integers, a single discriminant byte per tagged union, `u32`
+counts/length-prefixes, every variable-width leaf length-prefixed, and raw
+(non-NFC-folded) UTF-8 for free-text fields so `decode(encode(x)) == x` for every
+valid score (catalog ids are already NFC at construction). The two private-field
+accessors the codec needs (`EventOrderingDAG::edges_ref`,
+`SpellingPrecedence::order_ref`) are `pub(crate)`.
+
+These are deterministic and reversible but provisional: when the Binary Format
+companion lands, reconcile this crate's `CanonicalEncode`/`CanonicalDecode` and
+the whole-score `codec` with it (a failing cross-crate round-trip test would be
+the trigger, per the QUICKSTART process notes).
 
 ### P11-5 — Scope boundary: the Chapter 4 tuning catalog is referenced, not defined here
 

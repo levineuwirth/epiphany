@@ -286,6 +286,14 @@ impl EventOrderingDAG {
         self.edges.get(&event).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
+    /// The raw adjacency map, for the canonical codec (which must serialize the
+    /// full ordering, not only the events reachable from a query).
+    pub(crate) fn edges_ref(
+        &self,
+    ) -> &std::collections::BTreeMap<crate::ids::EventId, Vec<crate::ids::EventId>> {
+        &self.edges
+    }
+
     /// Every event the ordering names — DAG nodes (sources) and edge targets.
     /// Used by the invariant checker to confirm the ordering only references
     /// events that exist in the region (invariant 10).
