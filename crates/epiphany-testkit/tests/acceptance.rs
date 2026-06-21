@@ -95,10 +95,10 @@ fn criterion_3_equivocation() {
 /// manifest/header — including decoder rejection of corruption.
 ///
 /// The **full-Score** byte round-trip is split out below: its bookkeeping
-/// projection ([`reducer_bookkeeping_serialization`]) and its reproducibility
-/// ([`full_score_materialization_is_reproducible`]) are exercised now; the
-/// whole-`Score` byte codec is pending item 5 (Agent B) —
-/// [`criterion_4_full_score_byte_roundtrip`].
+/// projection ([`reducer_bookkeeping_serialization`]), its reproducibility
+/// ([`full_score_materialization_is_reproducible`]), and — now that item 5's
+/// whole-`Score` codec has landed — the real byte-level round-trip
+/// ([`criterion_4_full_score_byte_roundtrip`]).
 #[test]
 fn criterion_4_canonical_serialization_stability() {
     roundtrip::run_roundtrip_corpus(100_000, 0x00C0_FFEE_1234_5678);
@@ -165,6 +165,22 @@ fn criterion_4_full_score_byte_roundtrip() {
         let seed = seed.wrapping_mul(0x9E37_79B9).wrapping_add(13);
         let (score, frontier) = convergence::materialized_score(seed);
         roundtrip::assert_score_serialization_stable(&score, &frontier, seed);
+    }
+}
+
+/// **Operation-block summaries (Chapter 8, C/D integration).** An ops-computed
+/// block summary (causal frontier + min/max operation stamp) survives a real
+/// bundle commit + reopen and is selectable by block id without decoding the
+/// block payload.
+#[test]
+fn operation_block_summaries_survive_storage() {
+    let mut rng = Rng::new(0x0B5_5044_0B0B_0B0B);
+    for seed in 0..16u64 {
+        let envelopes = generators::operation_envelopes(&mut rng, 24, 3, 8, 8);
+        roundtrip::assert_operation_block_summary_survives_storage(
+            &envelopes,
+            seed.wrapping_add(1),
+        );
     }
 }
 

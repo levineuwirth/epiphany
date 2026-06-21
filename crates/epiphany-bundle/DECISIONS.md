@@ -163,14 +163,21 @@ yet enforced so a later integration knows where to extend.
   is re-verified on read). Whole-history dedup needs the same body-wide content
   index as the deferred GC engine.
 
-- **Operation-envelope block summary metadata is omitted.** Chapter 8's
-  `OperationEnvelopeBlock` carries `dvv_summary`, `min_stamp`, and `max_stamp`.
-  These are *semantic* — a DVV and `OperationStamp`s computed by reading the
-  envelopes, which belong to `epiphany-ops` (Agent C). The bundle treats a block
-  as opaque envelope bytes, so it cannot compute them. At C/D integration these
-  become opaque, ops-supplied fields prefixed to the block payload; v0 stores
-  only the envelopes (`block::encode_block`). `read_operation_block` does enforce
-  the chunk kind and the active profile's maximum block size.
+- **Operation-envelope block summary metadata is carried (M4 follow-up).**
+  Chapter 8's `OperationEnvelopeBlock` carries `dvv_summary`, `min_stamp`, and
+  `max_stamp`. These are *semantic* — a DVV and `OperationStamp`s computed by
+  reading the envelopes, which belong to `epiphany-ops` (Agent C). The bundle
+  still treats a block as opaque envelope bytes and cannot compute them, but the
+  manifest now carries an `OperationBlockSummary { dvv_summary, min_stamp,
+  max_stamp }` per block, keyed by the block's `ChunkId`
+  (`Manifest::operation_block_summaries` / `operation_block_summary`), as
+  **opaque ops-supplied bytes** in canonical (ChunkId-ascending) order. This lets
+  a reader select or skip a block by causal frontier / stamp range without
+  decoding it. The C/D integration point — ops computes the summary, the bundle
+  carries it — is exercised end to end by Agent F
+  (`roundtrip::operation_block_summary` +
+  `assert_operation_block_summary_survives_storage`). `read_operation_block`
+  still enforces the chunk kind and the active profile's maximum block size.
 
 - **Schema negotiation is major-gate only.** A canonical chunk or manifest at an
   unsupported schema *major* is refused (`BundleError::UnsupportedSchemaVersion`);

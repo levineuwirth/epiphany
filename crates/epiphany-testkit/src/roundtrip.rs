@@ -31,9 +31,9 @@
 use std::fmt::Debug;
 
 use epiphany_bundle::{
-    Bundle, ChunkKind, CommitContext, DocumentId, FileUuid, FixedHeader, FrontierBytes, Manifest,
-    MemStore, ProfileId, ReductionAlgorithmVersion, SchemaVersion, SlotParse, SnapshotId,
-    SnapshotRef, StagedChunk, Superblock,
+    pack_operation_blocks, Bundle, ChunkKind, CommitContext, DocumentId, FileUuid, FixedHeader,
+    FrontierBytes, Manifest, MemStore, OperationBlockSummary, ProfileId, ReductionAlgorithmVersion,
+    SchemaVersion, SlotParse, SnapshotId, SnapshotRef, StagedChunk, Superblock,
 };
 use epiphany_core::Score;
 use epiphany_determinism::{CanonicalDecode, CanonicalEncode};
@@ -470,10 +470,86 @@ pub fn assert_header_decode_rejects_corruption(header: &FixedHeader) {
     );
 }
 
+/// The ops-computed summary of an operation block (Chapter 8: an
+/// `OperationEnvelopeBlock`'s `dvv_summary`/`min_stamp`/`max_stamp`). This is the
+/// **C/D integration point**: the operation layer (Agent C) computes the
+/// semantic summary by reading the envelopes — the causal frontier they cover
+/// and the canonical bytes of the minimum and maximum operation stamps — and the
+/// bundle (Agent D) carries it opaquely, keyed by the block's chunk id, so a
+/// reader can select a block by frontier/stamp range without decoding it.
+pub fn operation_block_summary(envelopes: &[OperationEnvelope]) -> OperationBlockSummary {
+    let stamp_bytes = |e: &OperationEnvelope| e.stamp.to_canonical_bytes();
+    OperationBlockSummary {
+        dvv_summary: FrontierBytes::from_bytes(generators::frontier_bytes(envelopes)),
+        min_stamp: envelopes
+            .iter()
+            .min_by_key(|e| e.stamp.reduction_tuple())
+            .map(stamp_bytes)
+            .unwrap_or_default(),
+        max_stamp: envelopes
+            .iter()
+            .max_by_key(|e| e.stamp.reduction_tuple())
+            .map(stamp_bytes)
+            .unwrap_or_default(),
+    }
+}
+
+/// Asserts an ops-computed [`operation_block_summary`] survives a real bundle
+/// commit + reopen and is selectable by the block's chunk id without decoding the
+/// block payload (Chapter 8 operation-block summary metadata, C/D integration).
+pub fn assert_operation_block_summary_survives_storage(envelopes: &[OperationEnvelope], seed: u64) {
+    let summary = operation_block_summary(envelopes);
+    assert!(
+        !summary.dvv_summary.as_bytes().is_empty()
+            && !summary.min_stamp.is_empty()
+            && !summary.max_stamp.is_empty(),
+        "a non-empty envelope set must produce a non-vacuous summary"
+    );
+
+    let mut rng = Rng::new(seed);
+    let uuid = FileUuid(rng.array16());
+    let doc = DocumentId(rng.array16());
+    let mut bundle =
+        Bundle::create(MemStore::new(), uuid, Manifest::empty(doc)).expect("create bundle");
+    // A real operation block (opaque payload bytes) carrying the summary.
+    let blocks: Vec<StagedChunk> = pack_operation_blocks(&[rng.byte_vec(4, 64)])
+        .into_iter()
+        .map(StagedChunk::operation_block)
+        .collect();
+    bundle
+        .commit(&blocks, |ctx| {
+            let mut m = ctx.previous_manifest.clone();
+            let root = ctx.new_chunks[0];
+            m.operation_roots.push(root);
+            m.operation_block_summaries.insert(root.id, summary.clone());
+            m
+        })
+        .expect("commit operation block + summary");
+
+    // Reopen and select the summary by block id — no block payload is decoded.
+    let image = bundle.into_store().into_bytes();
+    let reopened = Bundle::open(MemStore::from_bytes(image)).expect("reopen bundle");
+    let root_id = reopened.manifest().operation_roots[0].id;
+    assert_eq!(
+        reopened.manifest().operation_block_summary(root_id),
+        Some(&summary),
+        "the ops-computed block summary must survive storage and be selectable"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use epiphany_bundle::encode_block;
+
+    #[test]
+    fn operation_block_summaries_survive_storage_and_select() {
+        let mut rng = Rng::new(0x05_5077_5044_0B0B);
+        for seed in 0..16u64 {
+            let envelopes = generators::operation_envelopes(&mut rng, 24, 3, 8, 8);
+            assert_operation_block_summary_survives_storage(&envelopes, seed.wrapping_add(1));
+        }
+    }
 
     #[test]
     fn corpus_round_trips() {

@@ -49,6 +49,8 @@ fn main() {
         roundtrip::assert_reduction_serialization_stable(&session, seed);
         let (score, frontier) = convergence::materialized_score(seed.wrapping_add(101));
         roundtrip::assert_score_serialization_stable(&score, &frontier, seed);
+        let envs = generators::operation_envelopes(&mut rng, 24, 3, 8, 8);
+        roundtrip::assert_operation_block_summary_survives_storage(&envs, seed.wrapping_add(202));
     }
     roundtrip::assert_content_mutation_changes_serialization();
 

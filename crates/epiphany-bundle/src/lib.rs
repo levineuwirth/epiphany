@@ -84,8 +84,8 @@ pub use ids::{
     WallClockDuration, WallClockTime,
 };
 pub use manifest::{
-    BlobRef, ExtensionDeclaration, Manifest, ProfileConstraints, ProfileDeclaration,
-    RetentionPolicy, SnapshotRef,
+    BlobRef, ExtensionDeclaration, Manifest, OperationBlockSummary, ProfileConstraints,
+    ProfileDeclaration, RetentionPolicy, SnapshotRef,
 };
 pub use store::{BlockStore, CrashPoint, FaultStore, MemStore, Tear};
 pub use superblock::{

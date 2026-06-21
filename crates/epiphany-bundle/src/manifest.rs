@@ -18,6 +18,8 @@
 //! fields are deliberately distinct (QUICKSTART: *"these are distinct; do not
 //! merge them"*): exactly one canonical base, plus any number of caches.
 
+use std::collections::BTreeMap;
+
 use crate::chunk::{ChunkRef, CompressionAlgorithm};
 use crate::codec::{DecodeError, Reader, Writer};
 use crate::ids::{
@@ -322,6 +324,40 @@ impl ExtensionDeclaration {
 }
 
 /// The manifest itself.
+/// Summary metadata for one operation-envelope block (Chapter 8: an
+/// `OperationEnvelopeBlock`'s `dvv_summary` / `min_stamp` / `max_stamp`).
+///
+/// These are *semantic* values — a causal frontier (DVV) and operation-stamp
+/// range computed by reading the block's envelopes — which belong to the
+/// operation layer (Agent C), not the bundle. The bundle treats them as **opaque
+/// bytes**, computed and interpreted by `epiphany-ops`, and carries them keyed by
+/// the block's chunk id so a reader can select or skip a block by causal frontier
+/// or stamp range **without decoding its envelopes** (the point of a summary).
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct OperationBlockSummary {
+    /// The causal frontier (DVV) the block covers — opaque ops-computed bytes.
+    pub dvv_summary: FrontierBytes,
+    /// The block's minimum operation stamp, canonical bytes — opaque to the bundle.
+    pub min_stamp: Vec<u8>,
+    /// The block's maximum operation stamp, canonical bytes — opaque to the bundle.
+    pub max_stamp: Vec<u8>,
+}
+
+impl OperationBlockSummary {
+    fn encode(&self, w: &mut Writer) {
+        self.dvv_summary.encode(w);
+        w.put_var_bytes(&self.min_stamp);
+        w.put_var_bytes(&self.max_stamp);
+    }
+    fn decode(r: &mut Reader) -> Result<Self, DecodeError> {
+        Ok(OperationBlockSummary {
+            dvv_summary: FrontierBytes::decode(r)?,
+            min_stamp: r.get_var_bytes()?,
+            max_stamp: r.get_var_bytes()?,
+        })
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Manifest {
     /// Logical-work identity.
@@ -336,6 +372,11 @@ pub struct Manifest {
     /// Operation-envelope blocks defining the canonical document (canonical
     /// root).
     pub operation_roots: Vec<ChunkRef>,
+    /// Per-operation-block summaries (Chapter 8: `dvv_summary`/`min_stamp`/
+    /// `max_stamp`), keyed by the block's chunk id. Opaque, ops-supplied metadata
+    /// that lets a reader select blocks without decoding them; non-canonical and
+    /// optional (a block need not have an entry).
+    pub operation_block_summaries: BTreeMap<ChunkId, OperationBlockSummary>,
     /// Optional operation index (non-canonical accelerator).
     pub operation_index_root: Option<ChunkRef>,
     /// The active canonical base snapshot, if pruning has occurred (canonical
@@ -367,6 +408,7 @@ impl Manifest {
             manifest_id: ManifestId::default(),
             generation: 0,
             operation_roots: Vec::new(),
+            operation_block_summaries: BTreeMap::new(),
             operation_index_root: None,
             canonical_base: None,
             acceleration_snapshots: Vec::new(),
@@ -388,6 +430,13 @@ impl Manifest {
             |p| (p.profile_id, p.version),
             |w, p| p.encode(w),
         )
+    }
+
+    /// The summary recorded for the given operation block, if any. Lets a reader
+    /// select or skip a block by causal frontier / stamp range without decoding
+    /// its envelopes (Chapter 8: `OperationEnvelopeBlock` summary metadata).
+    pub fn operation_block_summary(&self, block: ChunkId) -> Option<&OperationBlockSummary> {
+        self.operation_block_summaries.get(&block)
     }
 
     /// The first profile declaration in canonical order, or `None` if none is
@@ -421,6 +470,14 @@ impl Manifest {
         // canonicalize to the same bytes.
         let op_roots = sorted_dedup_chunk_refs(&self.operation_roots);
         w.put_seq(&op_roots, |w, c| c.encode(w));
+
+        // Per-block summaries, in canonical (BTreeMap = ChunkId-ascending) order.
+        let summaries: Vec<(&ChunkId, &OperationBlockSummary)> =
+            self.operation_block_summaries.iter().collect();
+        w.put_seq(&summaries, |w, entry| {
+            w.put_bytes(entry.0.as_bytes());
+            entry.1.encode(w);
+        });
 
         w.put_opt(&self.operation_index_root, |w, c| c.encode(w));
         w.put_opt(&self.canonical_base, |w, s| s.encode(w));
@@ -483,6 +540,13 @@ impl Manifest {
         let lineage_id = r.get_opt(LineageId::decode)?;
         let generation = r.get_u64()?;
         let operation_roots = r.get_seq(ChunkRef::decode)?;
+        let summary_entries = r.get_seq(|r| {
+            let id = ChunkId(ContentHash(r.take_array::<32>()?));
+            let summary = OperationBlockSummary::decode(r)?;
+            Ok((id, summary))
+        })?;
+        let operation_block_summaries: BTreeMap<ChunkId, OperationBlockSummary> =
+            summary_entries.into_iter().collect();
         let operation_index_root = r.get_opt(ChunkRef::decode)?;
         let canonical_base = r.get_opt(SnapshotRef::decode)?;
         let acceleration_snapshots = r.get_seq(SnapshotRef::decode)?;
@@ -499,6 +563,7 @@ impl Manifest {
             manifest_id: stored_id,
             generation,
             operation_roots,
+            operation_block_summaries,
             operation_index_root,
             canonical_base,
             acceleration_snapshots,
@@ -643,6 +708,32 @@ mod tests {
     use super::*;
     use crate::chunk::{chunk_id, ChunkKind};
     use crate::ids::SnapshotId;
+
+    #[test]
+    fn operation_block_summaries_round_trip_and_are_selectable() {
+        let mut m = Manifest::empty(DocumentId([5; 16]));
+        let block = ChunkId(ContentHash([7; 32]));
+        m.operation_block_summaries.insert(
+            block,
+            OperationBlockSummary {
+                dvv_summary: FrontierBytes::from_bytes(vec![1, 2, 3]),
+                min_stamp: vec![10, 11],
+                max_stamp: vec![20, 21],
+            },
+        );
+        // The summary survives the canonical encode/decode of the manifest...
+        let decoded = Manifest::decode(&m.encode()).expect("manifest decodes");
+        let summary = decoded
+            .operation_block_summary(block)
+            .expect("summary preserved");
+        assert_eq!(summary.dvv_summary.as_bytes(), &[1, 2, 3]);
+        assert_eq!(summary.min_stamp, vec![10, 11]);
+        assert_eq!(summary.max_stamp, vec![20, 21]);
+        // ...and a reader selects by block id without touching any block payload.
+        assert!(decoded
+            .operation_block_summary(ChunkId(ContentHash([8; 32])))
+            .is_none());
+    }
 
     #[test]
     fn semver_orders_numerically_not_byte_wise() {
