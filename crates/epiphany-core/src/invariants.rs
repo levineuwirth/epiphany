@@ -167,8 +167,57 @@ impl core::fmt::Display for InvariantViolation {
     }
 }
 
+/// A Chapter 5 well-formedness check this crate could not *decide* for a given
+/// score — e.g., a region-overlap test whose extents use symbolic
+/// [`crate::TimeAnchor`]s that need the full tempo/measure machinery (out of this
+/// crate's scope) to place on a common timeline.
+///
+/// [`check_invariants`] stays *sound* — it never raises a false positive on an
+/// undecidable check — but a sound-and-silent checker would treat "couldn't
+/// decide" identically to "clean". [`deferred_checks`] makes the undecided cases
+/// explicit and testable instead, so a stricter conformance profile can choose
+/// to reject them rather than have them pass unseen.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct DeferredCheck {
+    /// The invariant whose decision was deferred.
+    pub invariant: GraphInvariant,
+    /// A human-readable witness explaining why it could not be decided.
+    pub reason: String,
+}
+
+impl core::fmt::Display for DeferredCheck {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "invariant {} ({:?}) deferred: {}",
+            self.invariant.number(),
+            self.invariant,
+            self.reason
+        )
+    }
+}
+
+/// The well-formedness checks [`check_invariants`] could not decide for `score`.
+///
+/// Currently this is region-overlap pairs that share a staff extent but whose
+/// time overlap does not resolve to a common timeline (symbolic anchors needing
+/// tempo/measure resolution). An empty result means every modelled invariant was
+/// fully decided. The core checker reports these rather than silently accepting
+/// them as valid; the caller decides how strict to be.
+pub fn deferred_checks(score: &Score) -> Vec<DeferredCheck> {
+    let idx = GraphIndex::build(score);
+    let mut out = Vec::new();
+    idx.deferred_region_overlaps(&mut out);
+    out
+}
+
 /// Checks every Chapter 5 graph invariant over `score`, returning all
 /// violations found (empty iff the graph is well-formed).
+///
+/// This is *sound but incomplete* for the few invariants that need absolute-time
+/// resolution: it never raises a false positive, and the cases it could not
+/// decide are reported separately by [`deferred_checks`] rather than silently
+/// passed.
 pub fn check_invariants(score: &Score) -> Vec<InvariantViolation> {
     let idx = GraphIndex::build(score);
     let mut v = Vec::new();
@@ -626,8 +675,11 @@ impl<'a> GraphIndex<'a> {
         }
         // No two regions overlap in both time and staff extent. Time overlap
         // is decided on a common resolved timeline (wall-clock, event/region/
-        // measure-start anchors); pairs whose extents cannot be resolved to a
-        // common clock are skipped (sound but incomplete — see DECISIONS P11-4).
+        // measure-start anchors). Pairs whose extents cannot be resolved to a
+        // common clock are *not* silently passed: they are reported as undecided
+        // by `deferred_checks` (via `deferred_region_overlaps`) rather than
+        // treated as disjoint here. This check stays sound — it only flags a
+        // proven overlap.
         let regions = &self.score.canvas.regions;
         for i in 0..regions.len() {
             for j in (i + 1)..regions.len() {
@@ -643,6 +695,33 @@ impl<'a> GraphIndex<'a> {
                             a.id, b.id
                         ),
                     ));
+                }
+            }
+        }
+    }
+
+    /// Region-overlap pairs that share a staff extent but whose time overlap is
+    /// undecidable here (symbolic anchors needing tempo/measure resolution).
+    /// Surfaced by [`deferred_checks`] so the undecided case is explicit, never
+    /// silently accepted as disjoint.
+    fn deferred_region_overlaps(&self, out: &mut Vec<DeferredCheck>) {
+        let regions = &self.score.canvas.regions;
+        for i in 0..regions.len() {
+            for j in (i + 1)..regions.len() {
+                let (a, b) = (&regions[i], &regions[j]);
+                if !a.staff_extent_intersects(b) {
+                    continue;
+                }
+                if self.regions_overlap_in_time(a, b).is_none() {
+                    out.push(DeferredCheck {
+                        invariant: GraphInvariant::RegionExtents,
+                        reason: format!(
+                            "regions {:?} and {:?} share a staff extent but their time \
+                             overlap is undecidable (symbolic anchors need tempo/measure \
+                             resolution)",
+                            a.id, b.id
+                        ),
+                    });
                 }
             }
         }
@@ -2358,7 +2437,12 @@ impl Endpoints {
             }
             EventPosition::WallClock(t) => {
                 let end = match e.duration() {
-                    EventDuration::WallClock(d) => t.0.saturating_add(d.0),
+                    // Overflow is unresolvable, not a saturated (wrong) endpoint
+                    // that could mask an ordering violation — report Unknown.
+                    EventDuration::WallClock(d) => match t.0.checked_add(d.0) {
+                        Some(end) => end,
+                        None => return Endpoints::Unknown,
+                    },
                     EventDuration::Indeterminate(_) => t.0,
                     EventDuration::Musical(_) => return Endpoints::Unknown,
                 };
@@ -2468,6 +2552,65 @@ mod review_fix_tests {
         // Disjoint-in-time (touching at the far end) must NOT fire.
         s.canvas.regions.last_mut().unwrap().time_extent = wc(1_000_000, 2_000_000);
         assert!(!fires(&s, GraphInvariant::RegionExtents));
+    }
+
+    #[test]
+    fn inv7_unresolvable_overlap_is_deferred_not_silently_valid() {
+        let mut s = valid_score(1);
+        let staff = s.staves[0].id;
+        let r0 = s.canvas.regions[0].id;
+        let rid = s.identity.mint();
+        let inst = StaffInstance::new(s.identity.mint(), staff);
+        // A second region on the same staff whose extent is anchored
+        // region-relative with a *musical* offset; with no tempo map it cannot
+        // resolve to wall-clock, so its overlap with region 0's wall-clock extent
+        // is undecidable.
+        let symbolic = TimeExtent {
+            start: TimeAnchor::Region {
+                id: r0,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(MusicalDuration::zero()),
+            },
+            end: TimeAnchor::Region {
+                id: r0,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(MusicalDuration::whole()),
+            },
+        };
+        s.canvas.regions.push(Region {
+            id: rid,
+            time_model: RegionTimeModel::Metric(MetricTimeModel::default()),
+            content: RegionContent::StaffBased(StaffBasedContent {
+                staff_instances: vec![inst],
+                ..Default::default()
+            }),
+            time_extent: symbolic,
+            staff_extent: StaffExtent {
+                staves: vec![staff],
+            },
+            local_tempo_map: None,
+        });
+
+        // Sound: the undecidable overlap is NOT raised as a (false-positive)
+        // violation — `check_invariants` stays clean...
+        assert!(
+            check_invariants(&s).is_empty(),
+            "unexpected violations: {:?}",
+            check_invariants(&s)
+        );
+        // ...but it is surfaced as a deferred check naming both regions, rather
+        // than silently treated as disjoint/valid.
+        let deferred = deferred_checks(&s);
+        assert_eq!(deferred.len(), 1, "{deferred:?}");
+        assert_eq!(deferred[0].invariant, GraphInvariant::RegionExtents);
+        assert!(deferred[0].reason.contains(&format!("{r0:?}")));
+        assert!(deferred[0].reason.contains(&format!("{rid:?}")));
+
+        // A wall-clock (resolvable), disjoint second region is *decided*, so it is
+        // neither a violation nor deferred.
+        s.canvas.regions.last_mut().unwrap().time_extent = wc(2_000_000, 3_000_000);
+        assert!(deferred_checks(&s).is_empty());
+        assert!(check_invariants(&s).is_empty());
     }
 
     #[test]

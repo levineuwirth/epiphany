@@ -32,7 +32,7 @@
 //! musical time is the exact rational and wall-clock is exact nanoseconds
 //! (Appendix D §"Exact and Quantized Representations").
 
-use epiphany_determinism::CanonicalF64;
+use epiphany_determinism::{CanonicalF64, Tolerance, ToleranceClass, ToleranceGovernance};
 
 use crate::time::{
     MusicalDuration, MusicalPosition, RationalTime, RegionEdge, TimeAnchor, WallClockTime,
@@ -158,6 +158,28 @@ pub const INVERSION_MAX_DENOMINATOR: u64 = 1_000_000;
 /// ordinary rhythm round-trips, yet far smaller than any musical distinction.
 pub const INVERSION_TOLERANCE_WHOLE_NOTES: f64 = 1e-6;
 
+/// Relative tolerance below which two segment speeds count as *equal*, so the
+/// integration takes the numerically-stable constant-speed limit instead of the
+/// general logarithmic form (which loses precision via catastrophic cancellation
+/// as the speeds converge). Expressed as a named [`Tolerance`] of class
+/// [`ToleranceClass::TempoIntegration`] per Appendix D §"Tolerance Classes" (no
+/// ad-hoc epsilons); the magnitude is far below any musical tempo distinction.
+const TEMPO_SPEED_DEGENERACY_RELATIVE: f64 = 1e-12;
+
+/// The typed degeneracy tolerance used by [`SpeedModel`] to decide whether two
+/// speeds are equal for integration purposes (see
+/// [`TEMPO_SPEED_DEGENERACY_RELATIVE`]). `within(s1, s0)` is non-finite-safe and
+/// relative to `s0`, replacing the former ad-hoc `f64::EPSILON` guards.
+fn speed_degeneracy_tolerance() -> Tolerance {
+    Tolerance::absolute(
+        ToleranceClass::TempoIntegration,
+        0.0,
+        ToleranceGovernance::Validation,
+    )
+    .and_then(|t| t.with_relative(TEMPO_SPEED_DEGENERACY_RELATIVE))
+    .expect("constant degeneracy tolerance is finite and non-negative")
+}
+
 /// The closed-form integration model of one stretch of musical time: a
 /// half-open interval `[start, end)` in whole notes (`end == None` is open) plus
 /// how the speed (whole notes per second) behaves across it. Built from the
@@ -193,7 +215,7 @@ impl SpeedModel {
             SpeedModel::Const(s) => len * (u1 - u0) / s,
             SpeedModel::Linear { s0, s1 } => {
                 let d = s1 - s0;
-                if d.abs() < f64::EPSILON {
+                if speed_degeneracy_tolerance().within(*s1, *s0) {
                     len * (u1 - u0) / s0
                 } else {
                     // ∫ du/(s0 + d·u) = (1/d) ln(s(u)); seconds scale by `len`.
@@ -204,7 +226,7 @@ impl SpeedModel {
             }
             SpeedModel::Exponential { s0, s1 } => {
                 let l = (s1 / s0).ln();
-                if l.abs() < f64::EPSILON {
+                if speed_degeneracy_tolerance().within(*s1, *s0) {
                     len * (u1 - u0) / s0
                 } else {
                     // s(u) = s0·e^{l·u}; ∫ du/s(u) = (e^{-l·u0} - e^{-l·u1})/(s0·l).
@@ -221,7 +243,7 @@ impl SpeedModel {
             SpeedModel::Const(s) => secs * s / len,
             SpeedModel::Linear { s0, s1 } => {
                 let d = s1 - s0;
-                if d.abs() < f64::EPSILON {
+                if speed_degeneracy_tolerance().within(*s1, *s0) {
                     secs * s0 / len
                 } else {
                     // secs = len/d · ln(s(u)/s0) ⇒ s(u) = s0·e^{secs·d/len}.
@@ -231,7 +253,7 @@ impl SpeedModel {
             }
             SpeedModel::Exponential { s0, s1 } => {
                 let l = (s1 / s0).ln();
-                if l.abs() < f64::EPSILON {
+                if speed_degeneracy_tolerance().within(*s1, *s0) {
                     secs * s0 / len
                 } else {
                     // secs = len/(s0·l)·(1 - e^{-l·u}) ⇒ u = -ln(1 - secs·s0·l/len)/l.
@@ -577,8 +599,15 @@ fn rational_from_f64(x: f64, max_den: u64, tol: f64) -> Option<RationalTime> {
             break;
         }
         let ai = a as i128;
-        let h = ai * h_prev1 + h_prev2;
-        let k = ai * k_prev1 + k_prev2;
+        // Checked convergent recurrence: a pathological `ai` must never wrap i128
+        // silently (which would yield a wrong rational that still fits the final
+        // range check). On overflow, keep the last good convergent.
+        let Some(h) = ai.checked_mul(h_prev1).and_then(|p| p.checked_add(h_prev2)) else {
+            break;
+        };
+        let Some(k) = ai.checked_mul(k_prev1).and_then(|p| p.checked_add(k_prev2)) else {
+            break;
+        };
         if k <= 0 || (k as u128) > max_den as u128 {
             break;
         }
@@ -591,7 +620,10 @@ fn rational_from_f64(x: f64, max_den: u64, tol: f64) -> Option<RationalTime> {
             break;
         }
         let frac = value - a;
-        if frac.abs() < f64::EPSILON {
+        // Stop once the residual fraction is too small to introduce another
+        // convergent within `max_den` (a meaningful bound, not an ad-hoc epsilon);
+        // this also keeps the next `value = 1/frac`, hence `ai`, bounded.
+        if frac <= 1.0 / max_den as f64 {
             break;
         }
         value = 1.0 / frac;
@@ -686,6 +718,39 @@ mod tests {
         let half = MusicalPosition(RationalTime::new(1, 2).unwrap());
         let th = map.musical_to_wallclock(&half).unwrap();
         assert_eq!(map.wallclock_to_musical(th).unwrap(), half);
+    }
+
+    #[test]
+    fn equal_endpoint_linear_segment_uses_the_constant_limit() {
+        // start_tempo == end_tempo: the typed speed-degeneracy tolerance must
+        // select the constant-speed limit, integrating identically to a constant
+        // tempo (no catastrophic cancellation, no NaN from the general ln-form).
+        let map = TempoMap {
+            initial: None,
+            segments: vec![TempoSegment {
+                start: region_at(RationalTime::zero()),
+                end: Some(region_at(RationalTime::from_int(1))),
+                start_tempo: Tempo::quarter(120.0).unwrap(),
+                end_tempo: Some(Tempo::quarter(120.0).unwrap()),
+                shape: TempoShape::Linear,
+            }],
+        };
+        let one = MusicalPosition(RationalTime::from_int(1));
+        let t = map.musical_to_wallclock(&one).unwrap();
+        // 120 q-bpm constant => one whole note = 2 s.
+        assert_eq!(t, WallClockTime(2_000_000_000));
+        assert_eq!(map.wallclock_to_musical(t).unwrap(), one);
+    }
+
+    #[test]
+    fn inversion_handles_extreme_inputs_without_overflow() {
+        // Pathological wall-clock times must not panic or wrap the continued-
+        // fraction convergent recurrence; each resolves to a finite musical
+        // position or a clean error, never UB.
+        let map = TempoMap::constant(Tempo::quarter(120.0).unwrap());
+        for t in [i64::MAX, i64::MIN, i64::MAX - 1, 1_000_000_000_000_000] {
+            let _ = map.wallclock_to_musical(WallClockTime(t));
+        }
     }
 
     #[test]

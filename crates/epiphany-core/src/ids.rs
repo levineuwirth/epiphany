@@ -888,6 +888,26 @@ mod tests {
     }
 
     #[test]
+    fn typed_object_id_byte_form_is_locked() {
+        // Golden: locks the 16-bit big-endian discriminant table (DECISIONS P11-1)
+        // and the payload layout. A reorder or discriminant reassignment breaks
+        // this deliberately — these bytes are normative (ordering/hashing/equality).
+        let r = ReplicaId(9);
+        // Event = discriminant 0, then the 16-byte big-endian id payload.
+        let event = TypedObjectId::Event(EventId::new(r, 1)).canonical_bytes();
+        const GOLDEN_EVENT: &[u8] = &[0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 1];
+        assert_eq!(event, GOLDEN_EVENT);
+        // Registered = discriminant 27, then registry id (16) + raw extension (16).
+        let reg = TypedObjectId::Registered(ObjectKindRegistryId::new(r, 99), 0xdead_beef)
+            .canonical_bytes();
+        const GOLDEN_REGISTERED: &[u8] = &[
+            0, 27, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 99, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 222, 173, 190, 239,
+        ];
+        assert_eq!(reg, GOLDEN_REGISTERED);
+    }
+
+    #[test]
     fn operation_id_orders_by_replica_then_counter() {
         let a = OperationId::new(ReplicaId(1), 9);
         let b = OperationId::new(ReplicaId(2), 0);

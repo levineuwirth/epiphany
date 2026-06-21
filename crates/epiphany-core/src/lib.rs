@@ -111,4 +111,7 @@ pub use codec::ScoreDecodeError;
 
 pub use indexes::ScoreIndexes;
 
-pub use invariants::{check_invariant, check_invariants, GraphInvariant, InvariantViolation};
+pub use invariants::{
+    check_invariant, check_invariants, deferred_checks, DeferredCheck, GraphInvariant,
+    InvariantViolation,
+};

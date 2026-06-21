@@ -60,6 +60,12 @@ defined layout for the registry id. This crate encodes it as
 confirm the registry-id encoding (and whether `ObjectKindRegistryId` is a
 128-bit value, as assumed here).
 
+**Locked (M3 follow-up).** The discriminant table and `Registered` layout are now
+pinned by a golden-bytes test (`typed_object_id_byte_form_is_locked`): any
+reorder, discriminant reassignment, or layout change breaks it deliberately,
+since these bytes are normative (ordering/hashing/equality). The values remain
+*this crate's proposal* until the spec adopts or overrides them.
+
 ### P11-2 — Graph-invariant count: spec body says 19, QUICKSTART says 18
 
 `spec/QUICKSTART.md` (Agent B) refers to "the 18 graph invariants enumerated in
@@ -86,6 +92,13 @@ Invariant 18 recomputes the exact derivation and rejects any
 The core spec listing now carries both operation ids. The exact hash-domain
 derivation remains provisional until the semantic-operations companion ratifies
 `derive_promoted_voice_id`.
+
+**Locked (M3 follow-up).** The 64-byte `MUSCSVCE` preimage — `staff_instance ||
+original_voice || winning_op || losing_op`, each 16 big-endian bytes — and its
+hash output are pinned by a golden-bytes test
+(`promoted_voice_id_byte_form_is_locked`), so the layout cannot drift unnoticed;
+the companion's ratification (or a different derivation) will update both the code
+and that golden.
 
 ### P11-4 — A prototype canonical encoding precedes the Binary Format companion
 
@@ -157,6 +170,13 @@ its own pitch content, rather than being accepted unconditionally.
 the pitch from a fixed canonical byte form of its intrinsic identity (scale
 position + acoustic realization; strings length-prefixed and NFC). The spec
 should pin the canonical input layout (or define a different derivation).
+
+**Locked (M3 follow-up).** `canonical_pitch_bytes` now NFC-normalizes its string
+fields *at the derivation boundary* (not merely relying on catalog ids being NFC
+at construction), making the "NFC" guarantee explicit, and the `MUSCSPCH` input
+layout + hash output are pinned by a golden-bytes test
+(`system_pitch_id_byte_form_is_locked`). The exact field set ("intrinsic
+identity") and layout are still this crate's proposal pending spec ratification.
 
 ### P11-7 — Tempo "Linear" interpolation parameter
 

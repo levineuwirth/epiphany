@@ -425,9 +425,15 @@ impl Pitch {
 /// catalog ids normalize on construction); the layout is fixed-shape so equal
 /// pitches encode to equal bytes (Appendix D §"Canonical serialization").
 fn canonical_pitch_bytes(p: &Pitch) -> Vec<u8> {
+    // Length-prefixed UTF-8, normalized to NFC at the derivation boundary so the
+    // canonical input is NFC regardless of how the string was obtained (Appendix
+    // D §"Text and Unicode"). Catalog ids are already NFC at construction, so this
+    // is a no-op for them; normalizing here makes the NFC guarantee explicit and
+    // robust rather than relying on every caller.
     fn push_str(out: &mut Vec<u8>, s: &str) {
-        out.extend_from_slice(&(s.len() as u32).to_le_bytes());
-        out.extend_from_slice(s.as_bytes());
+        let nfc: String = s.nfc().collect();
+        out.extend_from_slice(&(nfc.len() as u32).to_le_bytes());
+        out.extend_from_slice(nfc.as_bytes());
     }
     let mut out = Vec::new();
     push_str(&mut out, p.scale_position.space.as_str());
@@ -887,6 +893,21 @@ mod tests {
         assert_eq!(id.replica(), crate::ids::ReplicaId::SYSTEM_DERIVED);
         // Different content derives a different id.
         assert_ne!(id, derive_system_pitch_id(&cmn(CmnNominal::D, 0, 4)));
+    }
+
+    #[test]
+    fn system_pitch_id_byte_form_is_locked() {
+        // Golden: locks the MUSCSPCH canonical-input layout (space name, scale
+        // position discriminant + payload, tuning, acoustic realization; strings
+        // length-prefixed NFC) and the hash. A change to the byte form breaks
+        // this deliberately, forcing the derivation change to be acknowledged
+        // (DECISIONS P11-6).
+        let id = derive_system_pitch_id(&cmn(CmnNominal::C, 0, 4));
+        assert_eq!(id.replica(), crate::ids::ReplicaId::SYSTEM_DERIVED);
+        const GOLDEN: [u8; 16] = [
+            255, 255, 255, 255, 255, 255, 255, 255, 164, 31, 138, 24, 68, 38, 241, 168,
+        ];
+        assert_eq!(id.canonical_bytes(), GOLDEN);
     }
 
     #[test]

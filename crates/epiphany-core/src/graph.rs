@@ -1214,6 +1214,26 @@ mod tests {
     }
 
     #[test]
+    fn promoted_voice_id_byte_form_is_locked() {
+        // Golden: locks the MUSCSVCE 64-byte preimage layout (staff instance ||
+        // original voice || winning op || losing op, each 16 big-endian bytes)
+        // and the hash output. A change to the input order, byte layout, or
+        // domain tag breaks this deliberately, forcing the derivation change to
+        // be acknowledged (DECISIONS P11-3).
+        let id = derive_promoted_voice_id(
+            StaffInstanceId::new(ReplicaId(3), 1),
+            VoiceId::new(ReplicaId(3), 2),
+            OperationId::new(ReplicaId(3), 10),
+            OperationId::new(ReplicaId(4), 11),
+        );
+        assert_eq!(id.replica(), ReplicaId::SYSTEM_DERIVED);
+        const GOLDEN: [u8; 16] = [
+            255, 255, 255, 255, 255, 255, 255, 255, 76, 193, 12, 43, 57, 51, 131, 242,
+        ];
+        assert_eq!(id.canonical_bytes(), GOLDEN);
+    }
+
+    #[test]
     fn wallclock_time_overlap_is_half_open() {
         let r = ReplicaId(1);
         let s0 = StaffId::new(r, 0);
