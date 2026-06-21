@@ -54,7 +54,7 @@ pub fn gen_time_axis_model(rng: &mut Rng) -> TimeAxisModel {
         1 => TimeAxisModel::Proportional(ProportionalTimeAxis {
             duration_ns: rng.range(0, 1 << 40) as i64,
             space_per_second: gen_staff_space(rng),
-            slots: vec![],
+            placements: vec![],
         }),
         2 => TimeAxisModel::Aleatoric(AleatoricTimeAxis::default()),
         _ => TimeAxisModel::Registered(
@@ -536,6 +536,7 @@ pub fn gen_constrained_layout_region(rng: &mut Rng) -> ConstrainedLayoutRegion {
         glyphs: (0..rng.range_usize(0, 3))
             .map(|_| gen_glyph_object_id(rng))
             .collect(),
+        time_axis: gen_time_axis_model(rng),
     }
 }
 

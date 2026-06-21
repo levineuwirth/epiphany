@@ -21,7 +21,7 @@ use crate::logical::{LogicalLayoutIR, ScoreVersion};
 use crate::provenance::{manifestation_layout_id, LayoutObjectId, Provenance};
 use crate::solver::SpringSlotId;
 use crate::spatial::{BoundingBox, Point, Rect, StaffSpace};
-use crate::time_axis::TimePoint;
+use crate::time_axis::{SlotPlacement, TimeAxisModel, TimePoint};
 use crate::vertical_band::{inter_staff_gap_id, VerticalBand, VerticalBandId};
 
 /// A stable identifier for a glyph-level object (Chapter 7: `GlyphObjectId`).
@@ -78,10 +78,14 @@ pub struct GlyphStyle {
     pub rgba: u32,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct ConstrainedLayoutRegion {
     pub provenance: Provenance,
     pub glyphs: Vec<GlyphObjectId>,
+    /// The region's time axis, populated with the time→slot placements of this
+    /// region's spring slots (Chapter 7 §"The Time Axis"): `time_axis.project`
+    /// maps a musical/wall-clock time to the slot covering it.
+    pub time_axis: TimeAxisModel,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -414,21 +418,27 @@ pub fn try_to_constrained(
         let mut staff_members: BTreeMap<StaffId, Vec<GlyphObjectId>> = BTreeMap::new();
         let mut margin_members: Vec<GlyphObjectId> = Vec::new();
         let mut region_glyphs = Vec::new();
+        let mut region_placements: Vec<SlotPlacement> = Vec::new();
 
         for (provenance, staff) in specs {
             let band = band_of(staff);
             let glyph = make_glyph(provenance, column, band);
             column += 1;
             let gid = glyph.id();
+            let time = TimePoint::WallClock(WallClockTime(column - 1));
             horizontal_slots.push(SpringSlot {
                 id: glyph.horizontal_slot,
-                time: TimePoint::WallClock(WallClockTime(column - 1)),
+                time: time.clone(),
                 min_width: StaffSpace(1.0),
                 preferred_width: StaffSpace(1.5),
                 max_width: None,
                 stretch_factor: 1.0,
                 compress_factor: 1.0,
                 members: vec![gid],
+            });
+            region_placements.push(SlotPlacement {
+                time,
+                slot: glyph.horizontal_slot,
             });
             region_glyphs.push(gid);
             match staff {
@@ -463,6 +473,9 @@ pub fn try_to_constrained(
         constrained_regions.push(ConstrainedLayoutRegion {
             provenance: region.provenance.clone(),
             glyphs: region_glyphs,
+            // The region's kind-only logical axis, now populated with the real
+            // time→slot placements resolved during spacing.
+            time_axis: region.time_axis.clone().with_placements(region_placements),
         });
     }
 
@@ -513,8 +526,40 @@ fn make_glyph(provenance: &Provenance, column: i64, band: VerticalBandId) -> Gly
 mod tests {
     use super::*;
     use crate::logical::to_logical;
+    use crate::time_axis::TimeAxis;
     use epiphany_core::generators::valid_score_rich;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn spacing_populates_a_consumable_time_axis_per_region() {
+        let c = to_constrained(&to_logical(&valid_score_rich(11)));
+        assert!(!c.regions.is_empty());
+        for region in &c.regions {
+            // The axis is no longer inert: it carries one placement per slot the
+            // region produced, and the slots come back in time order.
+            let region_slots: Vec<SpringSlotId> =
+                region.glyphs.iter().map(|g| SpringSlotId(g.0)).collect();
+            assert_eq!(region.time_axis.slots(), region_slots);
+
+            // project() consumes the time argument: each slot's own time projects
+            // back to that slot (the covering placement) — not a constant.
+            for placement in region.time_axis.placements() {
+                assert_eq!(
+                    region.time_axis.project(placement.time.clone()),
+                    placement.slot
+                );
+            }
+            // A non-trivial region distinguishes its slots by time (so project is
+            // genuinely a function of the query, not "always the first slot").
+            if region.time_axis.placements().len() >= 2 {
+                let p = region.time_axis.placements();
+                assert_ne!(
+                    region.time_axis.project(p[0].time.clone()),
+                    region.time_axis.project(p[1].time.clone())
+                );
+            }
+        }
+    }
 
     /// Band membership is a correct partition: every glyph names an existing
     /// band, no glyph is a member of two bands, and a glyph's `vertical_band`

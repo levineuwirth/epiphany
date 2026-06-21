@@ -192,6 +192,21 @@ object is covered); the provenance-preservation contract itself is unchanged.
   required for correct incremental-layout cache invalidation (Chapter 7
   §"Incremental Layout").
 
+- **The time axis has real behavior (M5 follow-up).** Previously the
+  `TimeAxisModel` carried bare `Vec<SpringSlotId>` and `project`/`affected_slots`
+  ignored their arguments (returning the first slot / all slots) — inert payload.
+  Each axis now holds ordered `SlotPlacement { time, slot }` entries:
+  `project(time)` returns the slot *covering* a time (the greatest placement at or
+  before it), `affected_slots(range)` returns the slots in a half-open time range,
+  and `slots()` lists them in time order. The spacing stage (`to_constrained`)
+  populates each region's axis from its resolved spring slots
+  (`TimeAxisModel::with_placements`), and the populated axis is carried on
+  `ConstrainedLayoutRegion`, so the axis is a real, consumed artifact rather than
+  an empty placeholder. (The slot *times* are still the prototype's wall-clock
+  spacing columns; mapping a metric region's measure/beat grid to musical times
+  is the next layer, but the axis machinery now genuinely consumes whatever times
+  the spacing assigns.)
+
 ## Pass 11 candidates (ambiguities for the spec, not resolved in code)
 
 1. **Agent E's stated dependency set vs. the edit-barrier types.** The QUICKSTART
