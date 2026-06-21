@@ -21,9 +21,10 @@ use epiphany_core::{
 };
 use epiphany_determinism::{fuzz::SplitMix64, ContentHash};
 use epiphany_ops::{
-    well_formed, AuthorId, CausalContext, ConflictKind, HybridLogicalClock, InsertEventOp,
-    IntegrityAnomalyKind, NoOpReason, OperationEffect, OperationEnvelope, OperationKind,
-    OperationPayload, OperationSet, OperationStamp, RespellPitchOp, TransactionDescriptor,
+    canonical_reduction_order, well_formed, AuthorId, CausalContext, ConflictKind,
+    HybridLogicalClock, InsertEventOp, IntegrityAnomalyKind, NoOpReason, OperationEffect,
+    OperationEnvelope, OperationKind, OperationPayload, OperationSet, OperationStamp,
+    PendingReason, PreconditionFailureReason, RespellPitchOp, TransactionDescriptor,
     TupletCompensation, UndoPolicy, UndoTransactionPayload,
 };
 
@@ -53,12 +54,26 @@ fn envelope(
 }
 
 fn insert(voice: u64, event: u64, pos: i64) -> OperationPayload {
+    insert_span(
+        voice,
+        event,
+        RationalTime::from_int(pos as i32),
+        RationalTime::one(),
+    )
+}
+
+fn insert_span(
+    voice: u64,
+    event: u64,
+    position: RationalTime,
+    duration: RationalTime,
+) -> OperationPayload {
     OperationPayload::Primitive(OperationKind::InsertEvent(InsertEventOp {
         voice: VoiceId::new(ReplicaId(9), voice),
         staff_instance: StaffInstanceId::new(ReplicaId(9), 0),
         event: EventId::new(ReplicaId(9), event),
-        position: MusicalPosition(RationalTime::from_int(pos as i32)),
-        duration: MusicalDuration::whole(),
+        position: MusicalPosition(position),
+        duration: MusicalDuration(duration),
         pitches: vec![PitchId::new(ReplicaId(9), event)],
     }))
 }
@@ -186,6 +201,51 @@ fn thousand_envelope_set_reduces_identically_in_ten_orders() {
     }
 }
 
+#[test]
+fn causal_predecessor_dominates_inverted_cross_replica_hlc() {
+    let predecessor = envelope(1, 0, 100, CausalContext::new(), None, insert(0, 100, 0));
+    let successor = envelope(
+        2,
+        0,
+        1,
+        CausalContext::new().with_dot(predecessor.id),
+        None,
+        insert(0, 101, 1),
+    );
+
+    let ordered = canonical_reduction_order(&[&successor, &predecessor]);
+    assert_eq!(
+        ordered.iter().map(|env| env.id).collect::<Vec<_>>(),
+        vec![predecessor.id, successor.id]
+    );
+}
+
+#[test]
+fn absent_vector_predecessor_holds_operation_pending() {
+    let present = envelope(1, 0, 1, CausalContext::new(), None, insert(0, 99, -1));
+    let dependent = envelope(
+        2,
+        0,
+        10,
+        CausalContext::new().with_seen(ReplicaId(1), 2),
+        None,
+        insert(0, 100, 0),
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(vec![present.clone(), dependent.clone()]);
+    let state = set.reduce();
+
+    assert_eq!(state.effects.len(), 1);
+    assert_eq!(state.effects[0].0, present.id);
+    assert_eq!(
+        state.pending,
+        vec![(
+            dependent.id,
+            PendingReason::MissingCausalPredecessor { missing: op(1, 1) }
+        )]
+    );
+}
+
 // --- Transactions (Chapter 6 §6.6). -----------------------------------------
 
 fn declare_tx(replica: u64, counter: u64, physical: i64, tx: TransactionId) -> OperationEnvelope {
@@ -270,9 +330,60 @@ fn transaction_with_a_failing_member_conflicts_wholesale() {
 }
 
 #[test]
+fn failed_transaction_rolls_back_member_generated_conflicts() {
+    let seed = envelope(2, 0, 1, CausalContext::new(), None, insert(0, 100, 0));
+    let initial_spelling = envelope(
+        2,
+        1,
+        2,
+        CausalContext::new().with_seen(ReplicaId(2), 0),
+        None,
+        respell(100, 1),
+    );
+    let tx = TransactionId::from_raw(89);
+    let descriptor = declare_tx(1, 0, 10, tx);
+    let tx_ctx = CausalContext::new().with_seen(ReplicaId(1), 0);
+    // This member conflicts with the concurrent initial spelling.
+    let conflicting = envelope(1, 1, 11, tx_ctx.clone(), Some(tx), respell(100, 2));
+    // This member fails, forcing the whole block to roll back.
+    let failing = envelope(
+        1,
+        2,
+        12,
+        tx_ctx,
+        Some(tx),
+        OperationPayload::Primitive(OperationKind::DeleteEvent(epiphany_ops::DeleteEventOp {
+            event: EventId::new(ReplicaId(9), 999),
+            tuplet_compensation: TupletCompensation::NotInTuplet,
+        })),
+    );
+
+    let mut set = OperationSet::new();
+    set.accept_all(vec![
+        seed,
+        initial_spelling,
+        descriptor,
+        conflicting,
+        failing,
+    ]);
+    let state = set.reduce();
+
+    assert_eq!(
+        state.spellings.get(&PitchId::new(ReplicaId(9), 100)),
+        Some(&ContentHash([1; 32]))
+    );
+    assert_eq!(state.conflicts.records().len(), 1);
+    assert!(matches!(
+        state.conflicts.records()[0].kind,
+        ConflictKind::TransactionConflict { .. }
+    ));
+}
+
+#[test]
 fn member_without_its_descriptor_is_a_transaction_conflict() {
     // A member that declares membership in a transaction whose descriptor is
-    // absent from the set is malformed against the transaction model.
+    // absent from the set is malformed against the transaction model. This
+    // transaction-specific conflict takes precedence over ordinary pending.
     let tx = TransactionId::from_raw(99);
     let ctx = CausalContext::new().with_seen(ReplicaId(1), 0);
     let orphan = envelope(1, 1, 11, ctx, Some(tx), insert(0, 100, 0));
@@ -280,6 +391,7 @@ fn member_without_its_descriptor_is_a_transaction_conflict() {
     let mut set = OperationSet::new();
     set.accept(orphan.clone());
     let state = set.reduce();
+    assert!(state.pending.is_empty());
     let eff = state
         .effects
         .iter()
@@ -313,6 +425,102 @@ fn hlc_monotonicity_violation_excludes_the_segment() {
         an.kind,
         IntegrityAnomalyKind::ReplicaStreamQuarantined { replica, .. } if replica == ReplicaId(1)
     )));
+}
+
+#[test]
+fn causally_ordered_same_position_insert_is_not_promoted() {
+    let first = envelope(1, 0, 10, CausalContext::new(), None, insert(0, 100, 0));
+    let second = envelope(
+        1,
+        1,
+        11,
+        CausalContext::new().with_seen(ReplicaId(1), 0),
+        None,
+        insert(0, 101, 0),
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(vec![first, second.clone()]);
+    let state = set.reduce();
+
+    let effect = state
+        .effects
+        .iter()
+        .find(|(id, _)| *id == second.id)
+        .map(|(_, effect)| effect);
+    assert_eq!(
+        effect,
+        Some(&OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::EventDurationInvalid,
+            },
+        })
+    );
+}
+
+#[test]
+fn concurrent_partial_interval_overlap_promotes_the_greater_id() {
+    let first = envelope(
+        1,
+        0,
+        10,
+        CausalContext::new(),
+        None,
+        insert_span(0, 100, RationalTime::zero(), RationalTime::one()),
+    );
+    let second = envelope(
+        2,
+        0,
+        10,
+        CausalContext::new(),
+        None,
+        insert_span(
+            0,
+            200,
+            RationalTime::new(1, 2).unwrap(),
+            RationalTime::one(),
+        ),
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(vec![first, second.clone()]);
+    let state = set.reduce();
+
+    assert!(matches!(
+        state
+            .effects
+            .iter()
+            .find(|(id, _)| *id == second.id)
+            .map(|(_, effect)| effect),
+        Some(OperationEffect::AppliedWithRepair { repairs })
+            if repairs.iter().any(|repair| matches!(repair.kind, epiphany_ops::RepairKind::VoicePromoted { .. }))
+    ));
+}
+
+#[test]
+fn adjacent_half_open_intervals_do_not_collide() {
+    let first = envelope(
+        1,
+        0,
+        10,
+        CausalContext::new(),
+        None,
+        insert_span(0, 100, RationalTime::zero(), RationalTime::one()),
+    );
+    let second = envelope(
+        2,
+        0,
+        10,
+        CausalContext::new(),
+        None,
+        insert_span(0, 200, RationalTime::one(), RationalTime::one()),
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(vec![first, second]);
+    let state = set.reduce();
+
+    assert!(state
+        .effects
+        .iter()
+        .all(|(_, effect)| *effect == OperationEffect::Applied));
 }
 
 // --- Forward undo (Chapter 6 §6.8). -----------------------------------------

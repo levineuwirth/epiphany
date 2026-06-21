@@ -4342,12 +4342,12 @@ pub enum VoiceOrigin {
     Imported { format: ForeignFormatId },
 
     /// System-promoted to resolve a concurrent-edit collision.
-    /// The cause operation is the InsertEvent (or similar) whose
-    /// reduction required voice allocation. The original_voice is
-    /// the voice into which the user had intended to insert; the
-    /// promoted voice carries the event that lost the collision.
+    /// The original_voice is the voice into which the user had
+    /// intended to insert; the promoted voice carries the event
+    /// authored by losing_operation.
     SystemPromoted {
-        cause: OperationId,
+        winning_operation: OperationId,
+        losing_operation: OperationId,
         original_voice: VoiceId,
     },
 }

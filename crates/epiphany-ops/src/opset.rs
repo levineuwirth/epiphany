@@ -19,7 +19,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use epiphany_core::OperationId;
 
 use crate::envelope::{well_formed, EnvelopeHash, OperationEnvelope, WellFormednessError};
-use crate::reduce::{reduce_operation_set, MaterializedState};
+use crate::reduce::{
+    reduce_operation_set, reduce_operation_set_onto, GraphMaterialization, MaterializedState,
+};
 use crate::slot::OperationSlot;
 
 /// The outcome of accepting one envelope (Chapter 6 §6.5 transition rules).
@@ -191,6 +193,12 @@ impl OperationSet {
     /// reduces to byte-identical state regardless of how it was assembled.
     pub fn reduce(&self) -> MaterializedState {
         reduce_operation_set(self)
+    }
+
+    /// Reduces this operation set onto a canonical base score and returns both
+    /// the Chapter 6 bookkeeping state and Agent B's materialized graph.
+    pub fn reduce_onto(&self, base: &epiphany_core::Score) -> GraphMaterialization {
+        reduce_operation_set_onto(self, base)
     }
 }
 

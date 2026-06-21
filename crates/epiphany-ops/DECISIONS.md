@@ -48,12 +48,13 @@ companion. This crate mirrors that division exactly:
   migration; LWW; atomic transactions). The remaining catalog kinds are an
   additive future change behind the existing `OperationKind` enum.
 
-The materialized state this crate computes is the canonical bookkeeping Chapter 6
-itself owns — the effect log, conflict registry, anomaly register, object
-existence/tombstones, spellings, and LWW fields. The full musical-graph mutation
-against `epiphany_core::Score` (arena contents, voice event lists, region
-positions) is the integration point with Agent B's crate and is genuinely large;
-it is the natural next phase, and nothing here blocks it.
+`MaterializedState` is the canonical bookkeeping Chapter 6 owns — the effect
+log, conflict registry, anomaly register, object existence/tombstones,
+spellings, and LWW fields. M2 adds `OperationSet::reduce_onto(&Score)`, which
+seeds those indices from a canonical base and returns the corresponding Agent B
+graph. Insert/delete, voice promotion, supported reference-level cross-cutting
+values, system breaks, migration checks, transaction rollback, and undo mutate
+that graph. The base-free `reduce()` remains the operation-set convergence API.
 
 ## Pass 11 candidates (ambiguities for the spec, not resolved in code)
 
@@ -67,8 +68,10 @@ only identifiers and the scalar time types). An `OperationEnvelope` must be
 hashable **today** — the `EnvelopeHash` and slot equivocation both need canonical
 bytes — so this crate's payloads carry the reduction-relevant *identifiers and
 canonical scalar coordinates*, plus a `ContentHash` fingerprint where the
-reduction needs only equality (a respelling). This is faithful to everything the
-chapter's reduction rules actually consume. **For the spec:** pin the payload
+reduction needs only equality (a respelling). Graph-aware reduction materializes
+this projection as deterministic C4 pitches (or a rest when no pitch ids are
+present); those placeholders do not claim to recover musical values absent from
+the payload. **For the spec:** pin the payload
 schemas (the Operation Catalog companion) and the canonical encoding (the Binary
 Format companion); when they land, the structs regain their full value fields
 without changing the reduction. The trigger will be a failing cross-crate
@@ -101,16 +104,17 @@ collision (and whether the superseded loser should retroactively read
 ### P11-C4 — voice-promotion derivation inputs and the >2-collision generalization
 
 Invariant 18's promoted-voice derivation takes *(staff instance, original voice,
-winning op, losing op)* (Agent B's P11-3 already flags that
-`VoiceOrigin::SystemPromoted` stores only one op). This crate resolves promotion
-in an **order-independent pre-pass**: bucket concurrent same-`(voice, position)`
-inserts, keep the smallest `OperationId` in the original voice, and promote each
-other op to `derive_promoted_voice_id(staff_instance, voice, smallest, that_op)`.
-The op carries its `staff_instance` explicitly (a full reducer recovers it from
-the voice's container). Two open points for the spec: (a) confirm the derivation
-inputs (this couples to Agent B's P11-3), and (b) define the >2-way collision
-case — the spec describes a pairwise rule; this crate generalizes "smallest stays,
-rest promote."
+winning op, losing op)*. M2 expanded `VoiceOrigin::SystemPromoted` to retain both
+operation ids, so Agent B verifies the exact Agent C derivation. This crate resolves promotion
+in an **order-independent pre-pass**: bucket inserts by voice, walk them by
+`OperationId`, keep a non-overlapping set in the original voice, and promote
+each concurrent overlapping loser to `derive_promoted_voice_id(staff_instance,
+voice, winner, loser)`. This applies the InsertEvent invariant to partial
+interval overlaps as well as identical start positions. The op carries its
+`staff_instance` explicitly (a full reducer recovers it from the voice's
+container). One open point remains for the spec: define the >2-way collision
+case — the spec describes a pairwise rule; this crate uses the first lower-id overlapping
+operation retained in the original voice as the winner for each promotion.
 
 ### P11-C5 — "nearest surviving anchor" needs resolved positions
 
@@ -124,28 +128,26 @@ cascade) is implemented faithfully; only the metric "nearest" is approximated.
 **For the spec:** no change needed — this resolves once the graph mutation phase
 tracks positions; recorded so the approximation is explicit.
 
-### P11-C6 — time-model-migration compatibility is declared, not computed
+### P11-C6 — time-model compatibility is computed when a graph is available
 
-`ChangeRegionTimeModel`'s `TimeModelMigrationFailure` conflict requires knowing
-which contained events have coordinate kinds incompatible with the new model. The
-prototype does not materialize per-event coordinate kinds, so the op carries a
-`declared_incompatible` list (the authoring layer's knowledge) that drives the
-conflict; concurrent same-region migrations still conflict structurally by
-canonical order. **For the spec:** no change — resolves with the graph mutation
-phase; recorded so the modeling is explicit.
+`ChangeRegionTimeModel` retains a `declared_incompatible` list for base-free
+reduction. Graph-aware reduction additionally derives incompatibilities from
+every event's actual coordinate variants and mapping coverage, refusing any
+migration that would violate Agent B's coordinate discipline. Concurrent
+same-region migrations conflict; causally-later migrations are reevaluated
+against the first migration's graph. **For the spec:** the rich migration
+payload still belongs to the Operation Catalog.
 
-### P11-C7 — the missing-causal-predecessor rule keys on dots + known-bad coverage
+### P11-C7 — DVV contiguous ranges use the zero-based operation-counter floor
 
-The DVV's contiguous `vector[r] = n` asserts predecessors `(r, 0..=n)` exist
-*somewhere*; detecting a *truly missing* `(r, k)` from the vector alone would
-require knowing the expected counter sequence. This crate therefore uses the
-spec's explicit channel for non-contiguous predecessors — the **dots** — as the
-missing-predecessor signal, plus vector-coverage of *known* equivocated/excluded
-ids, with transitive propagation to dependents. This holds a dependent pending
-exactly when a referenced predecessor is absent (a dot to a slotless id),
-equivocated, or excluded. **For the spec:** confirm whether the contiguous vector
-should also synthesize "missing" predecessors (it would need a per-replica
-expected-floor convention).
+The DVV's contiguous `vector[r] = n` asserts predecessors `(r, 0..=n)` exist,
+matching the operation-id and causal-context documentation. Reduction finds the
+first absent id in every asserted range and holds the dependent pending; dots
+and vector coverage of known equivocated/excluded ids remain direct blocking
+signals, with transitive propagation to dependents. The range check walks known
+ids rather than expanding `0..=n`, so a sparse context with a very high counter
+does not cause proportional work. **For the spec:** explicitly retain the
+zero-based per-replica counter floor in the normative DVV definition.
 
 ### P11-C8 — forward undo is modeled via minted-object compensation
 
@@ -155,7 +157,9 @@ graph-mutation phase, this crate models the compensation as tombstoning the
 objects the target transaction *minted*: StrictInverse conflicts if any such
 object was already tombstoned/modified; BestEffort tombstones the survivors;
 Cascade is treated as StrictInverse over the same set (dependent-closure undo is
-deferred with the rest of the catalog). **For the spec:** this is faithful to the
+deferred with the rest of the catalog). Graph-aware reduction also removes those
+event, pitch, promoted-voice, and supported cross-cutting mints from the live
+graph and records graph tombstones. **For the spec:** this is faithful to the
 "content-equivalence to pre-target state" definition for insert-shaped
 transactions; the inverse of every catalog primitive is the Operation Catalog's
 job.

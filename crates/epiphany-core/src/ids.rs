@@ -679,7 +679,7 @@ impl CanonicalDecode for TypedObjectId {
 /// The replica identifier plus identifier-generation state of a score
 /// (Chapter 5 `IdentityContext`). A single monotonic counter suffices for all
 /// identifier kinds.
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct IdentityContext {
     /// This replica's identifier, generated at score creation.
     pub replica_id: ReplicaId,

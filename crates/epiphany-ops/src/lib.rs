@@ -53,7 +53,9 @@
 //! * `opset` — [`OperationSet`]: the slot map plus the acceptance pipeline
 //!   (well-formedness → slot transition → causal validation).
 //! * `reduce` — [`canonical_reduction_order`], [`MaterializedState`], and the
-//!   reduction driver (Chapter 6 §6.3).
+//!   reduction driver (Chapter 6 §6.3). [`OperationSet::reduce_onto`] also
+//!   materializes the representative mutations into an Agent B
+//!   [`epiphany_core::Score`].
 //!
 //! ## Scope (per QUICKSTART and Chapter 6 §6.11)
 //!
@@ -112,7 +114,9 @@ pub use payload::{
     ResolveConflictPayload, RespellPitchOp, SetUserSystemBreakOp, TransactionCategory,
     TransactionDescriptor, TupletCompensation,
 };
-pub use reduce::{canonical_reduction_order, MaterializedState, ObjectState, PendingReason};
+pub use reduce::{
+    canonical_reduction_order, GraphMaterialization, MaterializedState, ObjectState, PendingReason,
+};
 pub use slot::OperationSlot;
 pub use stamp::{HybridLogicalClock, OperationStamp, StampTuple};
 pub use support::{

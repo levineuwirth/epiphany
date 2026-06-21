@@ -208,9 +208,8 @@ impl CanonicalEncode for IntegrityAnomalyKind {
 ///
 /// The check is order-independent: it groups the envelopes by authoring
 /// replica, walks each replica's envelopes in ascending counter order, and
-/// flags the first counter `c2` whose monotonicity tuple is strictly less than
-/// the maximum tuple of an earlier counter `c1`. The resulting segment's
-/// `first_bad_counter` is `c1` (the smaller counter of the violating pair), and
+/// finds every pair `c1 < c2` whose monotonicity tuples decrease. The resulting
+/// segment starts at the smallest `c1` participating in any violating pair, and
 /// every envelope of that replica with counter `>= c1` is excluded.
 ///
 /// Returns one [`AnomalousReplicaSegment`] per offending replica, in ascending
@@ -232,31 +231,27 @@ pub fn detect_replica_anomalies(envelopes: &[&OperationEnvelope]) -> Vec<Anomalo
     let mut segments = Vec::new();
     for (replica, mut ops) in by_replica {
         ops.sort_by_key(|(counter, _, _)| *counter);
-        // Walk ascending counter; track the max tuple and the counter/op that
-        // set it. The first strict decrease is the violation.
-        let mut max_tuple: Option<(i64, u32, u64)> = None;
-        let mut max_op: Option<OperationId> = None;
-        let mut first_bad: Option<(u64, OperationId, OperationId)> = None;
-        for (counter, op, tuple) in &ops {
-            match max_tuple {
-                Some(m) if *tuple < m => {
-                    // Violation: pair is (max_op @ earlier counter, this op).
-                    let earlier = max_op.expect("max_op set whenever max_tuple is");
-                    first_bad = Some((earlier.counter, earlier, *op));
-                    break;
-                }
-                Some(m) if *tuple > m => {
-                    max_tuple = Some(*tuple);
-                    max_op = Some(*op);
-                }
-                None => {
-                    max_tuple = Some(*tuple);
-                    max_op = Some(*op);
-                }
-                _ => {} // equal tuple: still monotone, keep the earlier max_op
+        // Find the earliest counter participating as the left side of any
+        // violating pair. Comparing only against the preceding maximum is not
+        // enough: [100, 200, 50] also makes (counter 0, counter 2) a violating
+        // pair, so quarantine must begin at counter 0 rather than counter 1.
+        // Suffix minima make this linear after the counter sort.
+        let mut suffix_min = vec![(i64::MAX, u32::MAX, u64::MAX); ops.len()];
+        if let Some(last) = ops.last() {
+            suffix_min[ops.len() - 1] = last.2;
+            for index in (0..ops.len() - 1).rev() {
+                suffix_min[index] = ops[index].2.min(suffix_min[index + 1]);
             }
-            let _ = counter;
         }
+        let first_bad = (0..ops.len().saturating_sub(1)).find_map(|earlier| {
+            if ops[earlier].2 <= suffix_min[earlier + 1] {
+                return None;
+            }
+            let later = (earlier + 1..ops.len())
+                .find(|&later| ops[earlier].2 > ops[later].2)
+                .expect("suffix minimum proves that a violating successor exists");
+            Some((ops[earlier].0, ops[earlier].1, ops[later].1))
+        });
 
         if let Some((first_bad_counter, c1_op, c2_op)) = first_bad {
             let excluded: Vec<OperationId> = ops
@@ -336,5 +331,24 @@ mod tests {
         let forward = detect_replica_anomalies(&[&a, &b]);
         let backward = detect_replica_anomalies(&[&b, &a]);
         assert_eq!(forward, backward);
+    }
+
+    #[test]
+    fn quarantine_starts_at_earliest_counter_in_any_violating_pair() {
+        // Counter 2 is below both earlier stamps. The first violating pair by
+        // counter is (0, 2), even though counter 1 carries the maximum stamp.
+        let a = env(1, 0, 100, 0);
+        let b = env(1, 1, 200, 0);
+        let c = env(1, 2, 50, 0);
+        let seg = detect_replica_anomalies(&[&a, &b, &c]);
+        assert_eq!(seg.len(), 1);
+        assert_eq!(seg[0].first_bad_counter, 0);
+        assert_eq!(seg[0].excluded, vec![a.id, b.id, c.id]);
+        assert_eq!(
+            seg[0].reason,
+            ReplicaAnomalyReason::HlcMonotonicityViolation {
+                violating_pair: (a.id, c.id),
+            }
+        );
     }
 }

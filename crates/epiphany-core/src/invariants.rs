@@ -2102,18 +2102,19 @@ impl<'a> GraphIndex<'a> {
         for (_r, si, v) in self.score.voices() {
             match &v.origin {
                 VoiceOrigin::SystemPromoted {
-                    cause,
+                    winning_operation,
+                    losing_operation,
                     original_voice,
                 } => {
                     // A promoted voice's id MUST be the deterministic derivation
-                    // (Chapter 5 §"System-Promoted Voices"). The spec's
-                    // derivation takes the winning *and* losing op ids, but
-                    // `VoiceOrigin::SystemPromoted` records only one `cause`
-                    // (DECISIONS P11-3); this prototype's convention feeds `cause`
-                    // into both slots, and the checker enforces that convention
-                    // exactly — so a fabricated promoted id is caught, not merely
-                    // a wrong namespace.
-                    let expected = derive_promoted_voice_id(si, *original_voice, *cause, *cause);
+                    // (Chapter 5 §"System-Promoted Voices") from the complete
+                    // provenance retained on the graph object.
+                    let expected = derive_promoted_voice_id(
+                        si,
+                        *original_voice,
+                        *winning_operation,
+                        *losing_operation,
+                    );
                     if v.id != expected {
                         out.push(InvariantViolation::new(
                             GraphInvariant::VoiceOriginConsistent,
@@ -2626,8 +2627,9 @@ mod review_fix_tests {
         let mut s = valid_score(30);
         let si = s.canvas.regions[0].staff_instances()[0].id;
         let original = s.canvas.regions[0].staff_instances()[0].voices[0].id;
-        let cause = OperationId::new(s.identity.replica_id, 5);
-        let correct = derive_promoted_voice_id(si, original, cause, cause);
+        let winner = OperationId::new(s.identity.replica_id, 5);
+        let loser = OperationId::new(s.identity.replica_id, 6);
+        let correct = derive_promoted_voice_id(si, original, winner, loser);
 
         // A SystemPromoted voice with the *correct* derived id is accepted.
         let good = Voice {
@@ -2636,7 +2638,8 @@ mod review_fix_tests {
             default_stem_direction: None,
             is_primary: false,
             origin: VoiceOrigin::SystemPromoted {
-                cause,
+                winning_operation: winner,
+                losing_operation: loser,
                 original_voice: original,
             },
         };
@@ -2656,7 +2659,8 @@ mod review_fix_tests {
                 default_stem_direction: None,
                 is_primary: false,
                 origin: VoiceOrigin::SystemPromoted {
-                    cause,
+                    winning_operation: winner,
+                    losing_operation: loser,
                     original_voice: original,
                 },
             });

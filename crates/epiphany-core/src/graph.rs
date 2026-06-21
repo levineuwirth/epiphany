@@ -396,7 +396,10 @@ pub enum VoiceOrigin {
     /// System-promoted to resolve a concurrent-edit collision (Chapter 5
     /// §"System-Promoted Voices").
     SystemPromoted {
-        cause: OperationId,
+        /// The lower-id concurrent operation that retained the original voice.
+        winning_operation: OperationId,
+        /// The greater-id concurrent operation moved into this voice.
+        losing_operation: OperationId,
         original_voice: VoiceId,
     },
 }
@@ -1069,7 +1072,7 @@ impl Default for ScoreTuningContext {
 /// staff groups, parts, tuning context, tempo map, analysis layers, views)
 /// carry their Chapter 5 identity/reference skeleton with deeper bodies left to
 /// the consuming crates (Agents C/E) and later companions.
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Score {
     pub metadata: ScoreMetadata,
     pub canvas: Canvas,

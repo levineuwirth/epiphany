@@ -5,11 +5,9 @@
 //!
 //! * [`canonical_reduction_order`] is the **single function** that orders
 //!   operations (Chapter 6 §6.3.3). The order is causal-first, then by the HLC
-//!   tuple `(physical, logical, replica, counter)`. The authoring HLC rule
-//!   (Chapter 6 §6.1) guarantees a causal predecessor's stamp is strictly less,
-//!   so a plain lexicographic sort by that tuple already respects causal order
-//!   — no topological pass is needed, and the sort key is intrinsic to each
-//!   envelope, so the order is trivially independent of arrival order.
+//!   tuple `(physical, logical, replica, counter)`. A deterministic topological
+//!   pass enforces causal precedence even for an accepted remote envelope whose
+//!   HLC contradicts its causal context; HLC orders only ready operations.
 //! * [`reduce_operation_set`] walks that order and produces a
 //!   [`MaterializedState`] whose [`canonical_bytes`](MaterializedState::canonical_bytes)
 //!   are **byte-identical across any permutation of the input** (Appendix D
@@ -24,19 +22,22 @@
 //! ## Prototype scope
 //!
 //! The per-kind reduction implements the representative operations of §6.10
-//! against an object-existence + spelling + LWW working state — the canonical
-//! bookkeeping Chapter 6 itself owns (effect log, conflict registry, anomaly
-//! register, tombstones). The full musical-graph mutation against
-//! `epiphany_core::Score` is the integration point with Agent B's crate and the
-//! deferred Operation Catalog (§6.11); see `DECISIONS.md` for what is modeled
-//! versus deferred, and the prototype conventions (voice promotion via a
-//! pre-pass, respell-winner effect tag, undo via minted-object compensation).
+//! against the canonical bookkeeping Chapter 6 owns. [`OperationSet::reduce_onto`]
+//! additionally seeds that state from and materializes it into Agent B's
+//! [`Score`]. Rich values absent from the provisional operation payloads remain
+//! deferred to the Operation Catalog (§6.11); see `DECISIONS.md` for the exact
+//! boundary.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
-    derive_promoted_voice_id, EventId, MusicalPosition, OperationId, PitchId, RegionId,
-    TransactionId, TypedObjectId, VoiceId,
+    derive_promoted_voice_id, AcousticPitch, AcousticRealization, AleatoricAnchoringDiscipline,
+    AleatoricTimeModel, AnchorOffset, Beam, CmnNominal, Event, EventDuration, EventId,
+    EventOrderingDAG, EventPosition, IdentifiedPitch, MetricTimeModel, MusicalDuration,
+    MusicalPosition, OperationId, Pitch, PitchId, PitchSpaceId, PitchSpacePosition, PitchedEvent,
+    ProportionalTimeModel, RegionEdge, RegionId, RegionTimeModel, Rest, ScalePosition, Score, Slur,
+    StemConfiguration, Tie, TieClass, TimeAnchor, TransactionId, TuningReference, TypedObjectId,
+    Voice, VoiceId, VoiceOrigin, WallClockDuration,
 };
 use epiphany_determinism::{CanonicalEncode, ContentHash};
 
@@ -59,15 +60,50 @@ use crate::undo::{UndoPolicy, UndoTransactionPayload};
 /// §6.3.3): causal-first, then by the HLC tuple `(physical, logical, replica,
 /// counter)`. Returns the envelopes in that order.
 ///
-/// This is the single ordering function the determinism property tests against:
-/// the key is intrinsic to each envelope (no dependence on input order), and the
-/// authoring HLC invariant guarantees the sort respects causal order without an
-/// explicit topological pass.
+/// This is the single ordering function the determinism property tests against.
+/// It performs deterministic Kahn topological ordering over causal-context
+/// coverage, choosing the smallest HLC reduction tuple among ready operations.
+/// A malformed causal cycle has no valid topological order; the smallest HLC
+/// tuple deterministically breaks the cycle so every replica still converges.
 pub fn canonical_reduction_order<'a>(
     envelopes: &[&'a OperationEnvelope],
 ) -> Vec<&'a OperationEnvelope> {
-    let mut ordered: Vec<&'a OperationEnvelope> = envelopes.to_vec();
-    ordered.sort_by_key(|e| e.stamp.reduction_tuple());
+    let len = envelopes.len();
+    let mut indegree = vec![0usize; len];
+    let mut successors = vec![Vec::<usize>::new(); len];
+    for predecessor in 0..len {
+        for successor in 0..len {
+            if predecessor != successor
+                && envelopes[successor]
+                    .causal_context
+                    .covers(envelopes[predecessor].id)
+            {
+                successors[predecessor].push(successor);
+                indegree[successor] += 1;
+            }
+        }
+    }
+
+    let mut emitted = vec![false; len];
+    let mut ordered = Vec::with_capacity(len);
+    for _ in 0..len {
+        let ready = (0..len)
+            .filter(|&index| !emitted[index] && indegree[index] == 0)
+            .min_by_key(|&index| envelopes[index].stamp.reduction_tuple());
+        let next = ready.unwrap_or_else(|| {
+            // A cycle is malformed, but selecting by the canonical tie-breaker
+            // keeps reduction deterministic and unlocks its outgoing edges.
+            (0..len)
+                .filter(|&index| !emitted[index])
+                .min_by_key(|&index| envelopes[index].stamp.reduction_tuple())
+                .expect("an un-emitted operation remains")
+        });
+        emitted[next] = true;
+        ordered.push(envelopes[next]);
+        for &successor in &successors[next] {
+            indegree[successor] = indegree[successor].saturating_sub(1);
+        }
+    }
     ordered
 }
 
@@ -173,6 +209,18 @@ pub struct MaterializedState {
     pub pending: Vec<(OperationId, PendingReason)>,
 }
 
+/// The result of reducing an operation set onto a canonical base score.
+///
+/// `state` remains the byte-canonical Chapter 6 reduction product. `score` is
+/// the corresponding Agent B graph materialization used by editing, invariant
+/// checking, indexing, and layout; it is derived state, never the source of
+/// truth.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GraphMaterialization {
+    pub state: MaterializedState,
+    pub score: Score,
+}
+
 impl MaterializedState {
     /// The canonical byte serialization of the materialized state. Two
     /// reductions of the same operation set — in any order — produce identical
@@ -242,7 +290,16 @@ impl MaterializedState {
 
 /// Reduces an [`OperationSet`] to its canonical [`MaterializedState`].
 pub fn reduce_operation_set(op_set: &OperationSet) -> MaterializedState {
-    Reducer::new(op_set).run()
+    Reducer::new(op_set).run().0
+}
+
+/// Reduces an [`OperationSet`] onto a canonical base [`Score`].
+pub fn reduce_operation_set_onto(op_set: &OperationSet, base: &Score) -> GraphMaterialization {
+    let (state, score) = Reducer::new_onto(op_set, base).run();
+    GraphMaterialization {
+        state,
+        score: score.expect("graph-aware reduction always retains its base score"),
+    }
 }
 
 /// The working state of one reduction pass.
@@ -258,15 +315,17 @@ struct Reducer<'a> {
     // Transient indices.
     minted_by: BTreeMap<TypedObjectId, OperationId>,
     event_pitches: BTreeMap<EventId, Vec<PitchId>>,
-    voice_occupancy: BTreeMap<(VoiceId, MusicalPosition), EventId>,
+    voice_occupancy: BTreeMap<VoiceId, Vec<(MusicalPosition, MusicalDuration, EventId)>>,
     last_respell: BTreeMap<PitchId, OperationId>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
     descriptors: BTreeMap<TransactionId, OperationId>,
-    promotion: BTreeMap<OperationId, VoiceId>,
+    // Losing insert -> (promoted voice, winning insert).
+    promotion: BTreeMap<OperationId, (VoiceId, OperationId)>,
     tx_minted: BTreeMap<TransactionId, Vec<TypedObjectId>>,
     current_tx: Option<TransactionId>,
+    graph: Option<Score>,
 }
 
 /// A snapshot of the working state, for atomic transaction rollback.
@@ -274,14 +333,102 @@ struct WorkingSnapshot {
     objects: BTreeMap<TypedObjectId, ObjectState>,
     spellings: BTreeMap<PitchId, ContentHash>,
     breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
+    conflicts: ConflictRegistry,
     minted_by: BTreeMap<TypedObjectId, OperationId>,
     event_pitches: BTreeMap<EventId, Vec<PitchId>>,
-    voice_occupancy: BTreeMap<(VoiceId, MusicalPosition), EventId>,
+    voice_occupancy: BTreeMap<VoiceId, Vec<(MusicalPosition, MusicalDuration, EventId)>>,
     last_respell: BTreeMap<PitchId, OperationId>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
+    descriptors: BTreeMap<TransactionId, OperationId>,
     tx_minted: BTreeMap<TransactionId, Vec<TypedObjectId>>,
+    graph: Option<Score>,
+}
+
+fn intervals_overlap(
+    a_position: &MusicalPosition,
+    a_duration: &MusicalDuration,
+    b_position: &MusicalPosition,
+    b_duration: &MusicalDuration,
+) -> bool {
+    if !a_duration.is_positive() || !b_duration.is_positive() {
+        return false;
+    }
+    let a_end = a_position.clone() + a_duration.clone();
+    let b_end = b_position.clone() + b_duration.clone();
+    a_position < &b_end && b_position < &a_end
+}
+
+fn insert_intervals_overlap(a: &InsertEventOp, b: &InsertEventOp) -> bool {
+    intervals_overlap(&a.position, &a.duration, &b.position, &b.duration)
+}
+
+fn graph_voice_location(score: &Score, voice: VoiceId) -> Option<(usize, usize, usize)> {
+    for (region_index, region) in score.canvas.regions.iter().enumerate() {
+        for (instance_index, instance) in region.staff_instances().iter().enumerate() {
+            if let Some(voice_index) = instance
+                .voices
+                .iter()
+                .position(|candidate| candidate.id == voice)
+            {
+                return Some((region_index, instance_index, voice_index));
+            }
+        }
+    }
+    None
+}
+
+fn placeholder_pitch(id: PitchId) -> IdentifiedPitch {
+    IdentifiedPitch {
+        id,
+        pitch: Pitch {
+            scale_position: ScalePosition {
+                space: PitchSpaceId::new("cmn-12"),
+                position: PitchSpacePosition::Cmn {
+                    nominal: CmnNominal::C,
+                    alteration: 0,
+                    octave: 4,
+                },
+            },
+            acoustic: AcousticPitch {
+                tuning: TuningReference::Inherit,
+                realization: AcousticRealization::Implicit,
+            },
+        },
+    }
+}
+
+/// Builds the graph value represented by the prototype's identifier-only
+/// InsertEvent payload. Rich event payloads remain gated on the Operation
+/// Catalog encoding; until then, pitched inserts use deterministic C4 values
+/// and pitchless inserts use a visible rest.
+fn graph_event_from_insert(op: &InsertEventOp, target_voice: VoiceId) -> Event {
+    let position = EventPosition::Musical(op.position.clone());
+    let duration = EventDuration::Musical(op.duration.clone());
+    if op.pitches.is_empty() {
+        Event::Rest(Rest {
+            id: op.event,
+            voice: target_voice,
+            position,
+            duration,
+            vertical_position: None,
+            visible: true,
+        })
+    } else {
+        Event::Pitched(PitchedEvent {
+            id: op.event,
+            voice: target_voice,
+            position,
+            duration,
+            pitches: op.pitches.iter().copied().map(placeholder_pitch).collect(),
+            articulations: Vec::new(),
+            dynamic: None,
+            ornaments: Vec::new(),
+            stem: StemConfiguration,
+            grace: None,
+        })
+    }
 }
 
 impl<'a> Reducer<'a> {
@@ -305,10 +452,182 @@ impl<'a> Reducer<'a> {
             promotion: BTreeMap::new(),
             tx_minted: BTreeMap::new(),
             current_tx: None,
+            graph: None,
         }
     }
 
-    fn run(mut self) -> MaterializedState {
+    fn new_onto(op_set: &'a OperationSet, base: &Score) -> Self {
+        let mut reducer = Self::new(op_set);
+        reducer.graph = Some(base.clone());
+        reducer.seed_from_graph();
+        reducer
+    }
+
+    /// Seeds reduction indices from the canonical base graph. Base objects are
+    /// live but have no operation minter; if a later operation tombstones one,
+    /// that deleting operation is used as the provenance fallback already
+    /// defined by the bookkeeping reducer.
+    fn seed_from_graph(&mut self) {
+        let Some(score) = self.graph.as_ref() else {
+            return;
+        };
+
+        for instrument in &score.instruments {
+            self.objects
+                .insert(TypedObjectId::Instrument(instrument.id), ObjectState::Live);
+        }
+        for staff in &score.staves {
+            self.objects
+                .insert(TypedObjectId::Staff(staff.id), ObjectState::Live);
+        }
+        for group in &score.staff_groups {
+            self.objects
+                .insert(TypedObjectId::StaffGroup(group.id), ObjectState::Live);
+        }
+        for part in &score.parts {
+            self.objects
+                .insert(TypedObjectId::PartDefinition(part.id), ObjectState::Live);
+        }
+        for signature in &score.time_signatures {
+            self.objects.insert(
+                TypedObjectId::TimeSignature(signature.id),
+                ObjectState::Live,
+            );
+        }
+        for layer in &score.analysis_layers {
+            self.objects
+                .insert(TypedObjectId::AnalysisLayer(layer.id), ObjectState::Live);
+        }
+        for view in &score.views {
+            self.objects
+                .insert(TypedObjectId::View(view.id), ObjectState::Live);
+        }
+
+        for region in &score.canvas.regions {
+            self.objects
+                .insert(TypedObjectId::Region(region.id), ObjectState::Live);
+            for instance in region.staff_instances() {
+                self.objects
+                    .insert(TypedObjectId::StaffInstance(instance.id), ObjectState::Live);
+                for measure in &instance.measures {
+                    self.objects
+                        .insert(TypedObjectId::Measure(measure.id), ObjectState::Live);
+                }
+                for voice in &instance.voices {
+                    self.objects
+                        .insert(TypedObjectId::Voice(voice.id), ObjectState::Live);
+                }
+            }
+        }
+
+        for event in score.events.iter_canonical() {
+            let event_id = event.id();
+            self.objects
+                .insert(TypedObjectId::Event(event_id), ObjectState::Live);
+            let mut pitch_ids = Vec::new();
+            let mut pitches = Vec::new();
+            event.collect_identified_pitches(&mut pitches);
+            for pitch in pitches {
+                pitch_ids.push(pitch.id);
+                self.objects
+                    .insert(TypedObjectId::Pitch(pitch.id), ObjectState::Live);
+            }
+            self.event_pitches.insert(event_id, pitch_ids);
+
+            if let (EventPosition::Musical(position), EventDuration::Musical(duration)) =
+                (event.position(), event.duration())
+            {
+                self.voice_occupancy
+                    .entry(event.voice())
+                    .or_default()
+                    .push((position.clone(), duration.clone(), event_id));
+            }
+        }
+
+        for slur in &score.cross_cutting.slurs {
+            let id = TypedObjectId::Slur(slur.id);
+            self.objects.insert(id, ObjectState::Live);
+            self.structures.insert(
+                id,
+                vec![
+                    TypedObjectId::Event(slur.start_event),
+                    TypedObjectId::Event(slur.end_event),
+                ],
+            );
+        }
+        for tie in &score.cross_cutting.ties {
+            let id = TypedObjectId::Tie(tie.id);
+            self.objects.insert(id, ObjectState::Live);
+            self.structures.insert(
+                id,
+                vec![
+                    TypedObjectId::Event(tie.start_event),
+                    TypedObjectId::Event(tie.end_event),
+                ],
+            );
+        }
+        for beam in &score.cross_cutting.beams {
+            let id = TypedObjectId::Beam(beam.id);
+            self.objects.insert(id, ObjectState::Live);
+            self.structures.insert(
+                id,
+                beam.events
+                    .iter()
+                    .copied()
+                    .map(TypedObjectId::Event)
+                    .collect(),
+            );
+        }
+        for tuplet in &score.cross_cutting.tuplets {
+            let id = TypedObjectId::Tuplet(tuplet.id);
+            self.objects.insert(id, ObjectState::Live);
+            self.structures.insert(
+                id,
+                tuplet
+                    .members
+                    .iter()
+                    .copied()
+                    .map(TypedObjectId::Event)
+                    .collect(),
+            );
+        }
+        for spanner in &score.cross_cutting.spanners {
+            self.objects
+                .insert(TypedObjectId::Spanner(spanner.id), ObjectState::Live);
+        }
+        for marker in &score.cross_cutting.markers {
+            self.objects
+                .insert(TypedObjectId::Marker(marker.id), ObjectState::Live);
+        }
+        for annotation in &score.cross_cutting.analytical {
+            self.objects.insert(
+                TypedObjectId::AnalyticalAnnotation(annotation.id),
+                ObjectState::Live,
+            );
+        }
+        for comment in &score.cross_cutting.comments {
+            self.objects
+                .insert(TypedObjectId::Comment(comment.id), ObjectState::Live);
+        }
+        for gesture in &score.cross_cutting.graphic_gestures {
+            self.objects
+                .insert(TypedObjectId::GraphicGesture(gesture.id), ObjectState::Live);
+        }
+        for repeat in &score.cross_cutting.repeats {
+            self.objects
+                .insert(TypedObjectId::RepeatStructure(repeat.id), ObjectState::Live);
+        }
+        for lyric in &score.cross_cutting.lyrics {
+            self.objects
+                .insert(TypedObjectId::LyricLine(lyric.id), ObjectState::Live);
+        }
+        for chord in &score.cross_cutting.chord_symbols {
+            self.objects
+                .insert(TypedObjectId::ChordSymbol(chord.id), ObjectState::Live);
+        }
+    }
+
+    fn run(mut self) -> (MaterializedState, Option<Score>) {
         let singles = self.op_set.single_envelopes();
         let equivocated: BTreeSet<OperationId> =
             self.op_set.equivocated_ids().into_iter().collect();
@@ -336,9 +655,24 @@ impl<'a> Reducer<'a> {
             .filter(|e| !excluded.contains(&e.id))
             .collect();
         let reducible_ids: BTreeSet<OperationId> = reducible.iter().map(|e| e.id).collect();
+        let declared_transactions: BTreeSet<TransactionId> = singles
+            .iter()
+            .filter_map(|env| match &env.payload {
+                OperationPayload::Primitive(OperationKind::DeclareTransaction(descriptor)) => {
+                    Some(descriptor.id)
+                }
+                _ => None,
+            })
+            .collect();
 
         // 3. Missing-causal-predecessor rule → pending set (with reasons).
-        let pending = compute_pending(&reducible, &reducible_ids, &equivocated, &excluded);
+        let pending = compute_pending(
+            &reducible,
+            &reducible_ids,
+            &equivocated,
+            &excluded,
+            &declared_transactions,
+        );
         let active: Vec<&OperationEnvelope> = reducible
             .iter()
             .copied()
@@ -370,7 +704,8 @@ impl<'a> Reducer<'a> {
         let mut pending_vec: Vec<(OperationId, PendingReason)> = pending.into_iter().collect();
         pending_vec.sort_by_key(|(id, _)| *id);
 
-        MaterializedState {
+        let graph = self.graph.take();
+        let state = MaterializedState {
             effects: self.effects,
             conflicts: self.conflicts,
             anomalies: self.anomalies.into_values().collect(),
@@ -378,7 +713,8 @@ impl<'a> Reducer<'a> {
             spellings: self.spellings,
             breaks: self.breaks,
             pending: pending_vec,
-        }
+        };
+        (state, graph)
     }
 
     fn record_anomaly(&mut self, kind: IntegrityAnomalyKind) {
@@ -393,32 +729,411 @@ impl<'a> Reducer<'a> {
     // --- Voice promotion pre-pass (Chapter 6 §6.10 InsertEvent). ------------
 
     fn compute_promotions(&mut self, active: &[&OperationEnvelope]) {
-        // Bucket InsertEvent ops by (voice, position).
-        let mut buckets: BTreeMap<(VoiceId, MusicalPosition), Vec<&OperationEnvelope>> =
-            BTreeMap::new();
+        // Bucket inserts by target voice. Promotion applies only to concurrent
+        // operations whose half-open duration intervals overlap.
+        let mut buckets: BTreeMap<VoiceId, Vec<&OperationEnvelope>> = BTreeMap::new();
         for env in active {
             if let OperationPayload::Primitive(OperationKind::InsertEvent(op)) = &env.payload {
-                buckets
-                    .entry((op.voice, op.position.clone()))
-                    .or_default()
-                    .push(env);
+                if self.graph_insert_precondition(op).is_err() {
+                    continue;
+                }
+                buckets.entry(op.voice).or_default().push(env);
             }
         }
         for (_, mut bucket) in buckets {
             if bucket.len() < 2 {
                 continue;
             }
-            // Smallest OperationId keeps the original voice; the rest promote.
+            // Retain non-overlapping operations in the original voice in
+            // OperationId order. A concurrent collision with an already-kept
+            // insert receives its own deterministic promoted voice.
             bucket.sort_by_key(|e| e.id);
-            let winner = bucket[0].id;
-            for env in &bucket[1..] {
-                if let OperationPayload::Primitive(OperationKind::InsertEvent(op)) = &env.payload {
+            let mut original_voice = Vec::<&OperationEnvelope>::new();
+            for env in bucket {
+                let OperationPayload::Primitive(OperationKind::InsertEvent(op)) = &env.payload
+                else {
+                    continue;
+                };
+                let collision = original_voice.iter().copied().find(|kept| {
+                    let OperationPayload::Primitive(OperationKind::InsertEvent(kept_op)) =
+                        &kept.payload
+                    else {
+                        return false;
+                    };
+                    self.concurrent(env.id, kept.id) && insert_intervals_overlap(op, kept_op)
+                });
+                if let Some(winner) = collision {
                     let promoted =
-                        derive_promoted_voice_id(op.staff_instance, op.voice, winner, env.id);
-                    self.promotion.insert(env.id, promoted);
+                        derive_promoted_voice_id(op.staff_instance, op.voice, winner.id, env.id);
+                    self.promotion.insert(env.id, (promoted, winner.id));
+                } else {
+                    original_voice.push(env);
                 }
             }
         }
+    }
+
+    fn graph_insert_precondition(
+        &self,
+        op: &InsertEventOp,
+    ) -> Result<(usize, usize, usize), PreconditionFailureReason> {
+        let Some(score) = self.graph.as_ref() else {
+            return Ok((0, 0, 0));
+        };
+        let location =
+            graph_voice_location(score, op.voice).ok_or(PreconditionFailureReason::VoiceMissing)?;
+        let (region_index, instance_index, _) = location;
+        let region = &score.canvas.regions[region_index];
+        let instance = &region.staff_instances()[instance_index];
+        if instance.id != op.staff_instance {
+            return Err(PreconditionFailureReason::VoiceMissing);
+        }
+        if !matches!(region.time_model, epiphany_core::RegionTimeModel::Metric(_)) {
+            return Err(PreconditionFailureReason::WrongRegionTimeModel);
+        }
+        if score.events.contains(op.event)
+            || score.tombstoned_events.contains(&op.event)
+            || op.pitches.iter().any(|pitch| {
+                self.objects.contains_key(&TypedObjectId::Pitch(*pitch))
+                    || score.tombstoned_pitches.contains(pitch)
+            })
+        {
+            return Err(PreconditionFailureReason::TargetTombstoned);
+        }
+        Ok(location)
+    }
+
+    fn materialize_graph_insert(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &InsertEventOp,
+        location: (usize, usize, usize),
+        target_voice: VoiceId,
+        promotion: Option<(VoiceId, OperationId)>,
+    ) -> Result<(), PreconditionFailureReason> {
+        let Some(score) = self.graph.as_mut() else {
+            return Ok(());
+        };
+        let (region_index, instance_index, voice_index) = location;
+        let event = graph_event_from_insert(op, target_voice);
+        score
+            .events
+            .insert(event)
+            .map_err(|_| PreconditionFailureReason::EventDurationInvalid)?;
+
+        if let Some((promoted, winner)) = promotion {
+            let instance = score.canvas.regions[region_index]
+                .content
+                .staff_instances_mut()
+                .expect("the precondition found a staff-based instance")
+                .get_mut(instance_index)
+                .expect("the precondition found this instance");
+            instance.voices.push(Voice {
+                id: promoted,
+                events: vec![op.event],
+                default_stem_direction: None,
+                is_primary: false,
+                origin: VoiceOrigin::SystemPromoted {
+                    winning_operation: winner,
+                    losing_operation: env.id,
+                    original_voice: op.voice,
+                },
+            });
+        } else {
+            let mut ordered = score.canvas.regions[region_index].staff_instances()[instance_index]
+                .voices[voice_index]
+                .events
+                .clone();
+            ordered.push(op.event);
+            ordered.sort_by(|a, b| {
+                let a_position = score.events.get(*a).map(Event::position);
+                let b_position = score.events.get(*b).map(Event::position);
+                match (a_position, b_position) {
+                    (
+                        Some(EventPosition::Musical(a_position)),
+                        Some(EventPosition::Musical(b_position)),
+                    ) => a_position.cmp(b_position).then_with(|| a.cmp(b)),
+                    _ => a.cmp(b),
+                }
+            });
+            score.canvas.regions[region_index]
+                .content
+                .staff_instances_mut()
+                .expect("the precondition found a staff-based instance")[instance_index]
+                .voices[voice_index]
+                .events = ordered;
+        }
+        Ok(())
+    }
+
+    fn graph_delete_precondition(
+        &self,
+        op: &DeleteEventOp,
+    ) -> Result<(), PreconditionFailureReason> {
+        let Some(score) = self.graph.as_ref() else {
+            return Ok(());
+        };
+        let event = score
+            .events
+            .get(op.event)
+            .ok_or(PreconditionFailureReason::TargetMissing)?;
+        let containing_tuplets: Vec<_> = score
+            .cross_cutting
+            .tuplets
+            .iter()
+            .filter(|tuplet| tuplet.members.contains(&op.event))
+            .map(|tuplet| tuplet.id)
+            .collect();
+        match &op.tuplet_compensation {
+            TupletCompensation::NotInTuplet if !containing_tuplets.is_empty() => {
+                Err(PreconditionFailureReason::TupletCompensationInvalid)
+            }
+            TupletCompensation::NotInTuplet => Ok(()),
+            TupletCompensation::ReplaceWithRest { new_rest, duration } => {
+                if score.events.contains(*new_rest)
+                    || score.tombstoned_events.contains(new_rest)
+                    || event.duration() != &EventDuration::Musical(duration.clone())
+                {
+                    Err(PreconditionFailureReason::TupletCompensationInvalid)
+                } else {
+                    Ok(())
+                }
+            }
+            // The prototype payload carries only ids, not the rewritten tuplet
+            // values required to preserve invariant 16. Graph-aware reduction
+            // refuses to fabricate those values.
+            TupletCompensation::RewriteTuplets { .. } => {
+                Err(PreconditionFailureReason::TupletCompensationInvalid)
+            }
+            TupletCompensation::CascadeDeleteTuplets { tuplets } => {
+                let listed: BTreeSet<_> = tuplets.iter().copied().collect();
+                let containing: BTreeSet<_> = containing_tuplets.into_iter().collect();
+                if listed == containing && !listed.is_empty() {
+                    Ok(())
+                } else {
+                    Err(PreconditionFailureReason::TupletCompensationInvalid)
+                }
+            }
+        }
+    }
+
+    fn materialize_graph_delete(&mut self, op: &DeleteEventOp) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        let Some(event) = score.events.remove(op.event) else {
+            return;
+        };
+        let voice_id = event.voice();
+        let location = graph_voice_location(score, voice_id);
+        let region_id = location.map(|(region, _, _)| score.canvas.regions[region].id);
+        let removed_event_index = location.and_then(|(region, instance, voice)| {
+            score.canvas.regions[region].staff_instances()[instance].voices[voice]
+                .events
+                .iter()
+                .position(|event| *event == op.event)
+        });
+        if let Some((region_index, instance_index, voice_index)) = location {
+            score.canvas.regions[region_index]
+                .content
+                .staff_instances_mut()
+                .expect("an event voice belongs to staff-based content")[instance_index]
+                .voices[voice_index]
+                .events
+                .retain(|id| *id != op.event);
+        }
+
+        let mut identified = Vec::new();
+        event.collect_identified_pitches(&mut identified);
+        let deleted_pitches: Vec<PitchId> = identified.iter().map(|pitch| pitch.id).collect();
+        score.tombstoned_events.insert(op.event);
+        score
+            .tombstoned_pitches
+            .extend(deleted_pitches.iter().copied());
+
+        match &op.tuplet_compensation {
+            TupletCompensation::ReplaceWithRest { new_rest, duration } => {
+                for tuplet in &mut score.cross_cutting.tuplets {
+                    for member in &mut tuplet.members {
+                        if *member == op.event {
+                            *member = *new_rest;
+                        }
+                    }
+                }
+                let replacement = Event::Rest(Rest {
+                    id: *new_rest,
+                    voice: voice_id,
+                    position: event.position().clone(),
+                    duration: EventDuration::Musical(duration.clone()),
+                    vertical_position: None,
+                    visible: true,
+                });
+                score
+                    .events
+                    .insert(replacement)
+                    .expect("replacement-rest preconditions were checked");
+                if let Some((region_index, instance_index, voice_index)) =
+                    graph_voice_location(score, voice_id)
+                {
+                    let voice = &mut score.canvas.regions[region_index]
+                        .content
+                        .staff_instances_mut()
+                        .expect("an event voice belongs to staff-based content")[instance_index]
+                        .voices[voice_index];
+                    if !voice.events.contains(new_rest) {
+                        let index = removed_event_index
+                            .unwrap_or(voice.events.len())
+                            .min(voice.events.len());
+                        voice.events.insert(index, *new_rest);
+                    }
+                }
+            }
+            TupletCompensation::CascadeDeleteTuplets { tuplets } => {
+                let removed: BTreeSet<_> = tuplets.iter().copied().collect();
+                score
+                    .cross_cutting
+                    .tuplets
+                    .retain(|tuplet| !removed.contains(&tuplet.id));
+            }
+            TupletCompensation::NotInTuplet | TupletCompensation::RewriteTuplets { .. } => {}
+        }
+
+        // Keep the materialized graph reference-clean. The detailed repair
+        // records remain in Chapter 6 state; these graph updates realize the
+        // representative event-anchored structures Agent B models.
+        score
+            .cross_cutting
+            .ties
+            .retain(|tie| tie.start_event != op.event && tie.end_event != op.event);
+        score.cross_cutting.beams.retain_mut(|beam| {
+            beam.events.retain(|event| *event != op.event);
+            beam.events.len() >= 2
+        });
+        score
+            .cross_cutting
+            .slurs
+            .retain(|slur| slur.start_event != op.event && slur.end_event != op.event);
+        score.cross_cutting.lyrics.retain_mut(|line| {
+            line.events.retain(|event| *event != op.event);
+            !line.events.is_empty()
+        });
+        if let Some(region) = region_id {
+            let fallback = TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Zero,
+            };
+            for marker in &mut score.cross_cutting.markers {
+                if matches!(marker.anchor, TimeAnchor::Event { id, .. } if id == op.event) {
+                    marker.anchor = fallback.clone();
+                }
+            }
+        }
+    }
+
+    fn materialize_graph_tombstones(&mut self, targets: &[TypedObjectId]) {
+        let events: Vec<EventId> = targets
+            .iter()
+            .filter_map(|target| match target {
+                TypedObjectId::Event(event) => Some(*event),
+                _ => None,
+            })
+            .collect();
+        for event in events {
+            for placements in self.voice_occupancy.values_mut() {
+                placements.retain(|(_, _, stored_event)| *stored_event != event);
+            }
+            self.voice_occupancy
+                .retain(|_, placements| !placements.is_empty());
+            self.materialize_graph_delete(&DeleteEventOp {
+                event,
+                tuplet_compensation: TupletCompensation::NotInTuplet,
+            });
+        }
+
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        for target in targets {
+            match target {
+                TypedObjectId::Pitch(pitch) => {
+                    score.tombstoned_pitches.insert(*pitch);
+                }
+                TypedObjectId::Voice(voice) => {
+                    for region in &mut score.canvas.regions {
+                        if let Some(instances) = region.content.staff_instances_mut() {
+                            for instance in instances {
+                                instance.voices.retain(|candidate| {
+                                    candidate.id != *voice || !candidate.events.is_empty()
+                                });
+                            }
+                        }
+                    }
+                }
+                TypedObjectId::Slur(id) => {
+                    score.cross_cutting.slurs.retain(|value| value.id != *id);
+                }
+                TypedObjectId::Tie(id) => {
+                    score.cross_cutting.ties.retain(|value| value.id != *id);
+                }
+                TypedObjectId::Beam(id) => {
+                    score.cross_cutting.beams.retain(|value| value.id != *id);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn materialize_graph_cross_cutting(
+        &mut self,
+        op: &CreateCrossCuttingOp,
+    ) -> Result<(), PreconditionFailureReason> {
+        let Some(score) = self.graph.as_mut() else {
+            return Ok(());
+        };
+        let event_endpoints: Option<Vec<EventId>> = op
+            .structure
+            .endpoints
+            .iter()
+            .map(|endpoint| match endpoint {
+                TypedObjectId::Event(event) => Some(*event),
+                _ => None,
+            })
+            .collect();
+
+        match (op.structure.id, event_endpoints.as_deref()) {
+            (TypedObjectId::Slur(id), Some([start, end])) => {
+                score.cross_cutting.slurs.push(Slur {
+                    id,
+                    start_event: *start,
+                    end_event: *end,
+                });
+            }
+            (TypedObjectId::Beam(id), Some(events)) if events.len() >= 2 => {
+                score.cross_cutting.beams.push(Beam {
+                    id,
+                    events: events.to_vec(),
+                    level: 1,
+                });
+            }
+            (TypedObjectId::Tie(id), Some([start, end])) => {
+                score.cross_cutting.ties.push(Tie {
+                    id,
+                    start_event: *start,
+                    end_event: *end,
+                    pitch_pairing: None,
+                    class: TieClass::LaissezVibrer,
+                });
+            }
+            (TypedObjectId::Slur(_) | TypedObjectId::Beam(_) | TypedObjectId::Tie(_), _) => {
+                return Err(PreconditionFailureReason::TargetMissing);
+            }
+            // The reference-level prototype payload does not contain the rich
+            // fields needed to instantiate other cross-cutting variants. Their
+            // canonical identity/reference projection remains in `state`.
+            _ => {}
+        }
+        Ok(())
     }
 
     // --- Dispatch. ----------------------------------------------------------
@@ -431,11 +1146,7 @@ impl<'a> Reducer<'a> {
                 OperationKind::RespellPitch(op) => self.respell_pitch(env, op),
                 OperationKind::CreateCrossCutting(op) => self.create_cross_cutting(env, op),
                 OperationKind::ChangeRegionTimeModel(op) => self.change_region_time_model(env, op),
-                OperationKind::SetUserSystemBreak(op) => {
-                    self.breaks
-                        .insert((op.region, op.anchor.clone()), op.present);
-                    OperationEffect::Applied
-                }
+                OperationKind::SetUserSystemBreak(op) => self.set_user_system_break(op),
                 OperationKind::DeclareTransaction(desc) => {
                     self.descriptors.insert(desc.id, env.id);
                     OperationEffect::Applied
@@ -451,7 +1162,65 @@ impl<'a> Reducer<'a> {
 
     // --- Per-kind reduction. ------------------------------------------------
 
+    fn set_user_system_break(
+        &mut self,
+        op: &crate::payload::SetUserSystemBreakOp,
+    ) -> OperationEffect {
+        if let Some(score) = self.graph.as_mut() {
+            let Some(region) = score
+                .canvas
+                .regions
+                .iter_mut()
+                .find(|region| region.id == op.region)
+            else {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                };
+            };
+            let breaks = match &mut region.content {
+                epiphany_core::RegionContent::StaffBased(content) => {
+                    &mut content.user_system_breaks
+                }
+                epiphany_core::RegionContent::Hybrid { staves, .. } => {
+                    &mut staves.user_system_breaks
+                }
+                epiphany_core::RegionContent::FreeGraphic(_) => {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::TargetMissing,
+                        },
+                    }
+                }
+            };
+            let anchor = TimeAnchor::Region {
+                id: op.region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(MusicalDuration(op.anchor.0.clone())),
+            };
+            if op.present {
+                if !breaks.contains(&anchor) {
+                    breaks.push(anchor);
+                }
+            } else {
+                breaks.retain(|candidate| candidate != &anchor);
+            }
+        }
+
+        self.breaks
+            .insert((op.region, op.anchor.clone()), op.present);
+        OperationEffect::Applied
+    }
+
     fn insert_event(&mut self, env: &OperationEnvelope, op: &InsertEventOp) -> OperationEffect {
+        if !op.duration.is_positive() {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::EventDurationInvalid,
+                },
+            };
+        }
         let ev_obj = TypedObjectId::Event(op.event);
         match self.objects.get(&ev_obj) {
             Some(ObjectState::Live) => {
@@ -466,6 +1235,14 @@ impl<'a> Reducer<'a> {
             }
             None => {}
         }
+        let graph_location = match self.graph_insert_precondition(op) {
+            Ok(location) => location,
+            Err(reason) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction { reason },
+                }
+            }
+        };
         let voice_obj = TypedObjectId::Voice(op.voice);
         match self.objects.get(&voice_obj) {
             Some(ObjectState::Tombstoned { .. }) => {
@@ -483,11 +1260,38 @@ impl<'a> Reducer<'a> {
             }
         }
 
+        let promotion = self.promotion.get(&env.id).copied();
+        let target_voice = promotion.map(|(voice, _)| voice).unwrap_or(op.voice);
+        if self
+            .voice_occupancy
+            .get(&target_voice)
+            .is_some_and(|events| {
+                events.iter().any(|(position, duration, _)| {
+                    intervals_overlap(position, duration, &op.position, &op.duration)
+                })
+            })
+        {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::EventDurationInvalid,
+                },
+            };
+        }
+
+        if let Err(reason) =
+            self.materialize_graph_insert(env, op, graph_location, target_voice, promotion)
+        {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction { reason },
+            };
+        }
+
         let mut repairs = Vec::new();
-        let target_voice = if let Some(promoted) = self.promotion.get(&env.id).copied() {
+        if let Some((promoted, _)) = promotion {
             let pv = TypedObjectId::Voice(promoted);
             self.objects.entry(pv).or_insert(ObjectState::Live);
             self.minted_by.entry(pv).or_insert(env.id);
+            self.note_minted(env, pv);
             repairs.push(RepairRecord {
                 kind: RepairKind::VoicePromoted {
                     from: op.voice,
@@ -495,10 +1299,7 @@ impl<'a> Reducer<'a> {
                 },
                 target: pv,
             });
-            promoted
-        } else {
-            op.voice
-        };
+        }
 
         self.objects.insert(ev_obj, ObjectState::Live);
         self.minted_by.insert(ev_obj, env.id);
@@ -512,8 +1313,11 @@ impl<'a> Reducer<'a> {
             pitches.push(p);
         }
         self.event_pitches.insert(op.event, pitches);
-        self.voice_occupancy
-            .insert((target_voice, op.position.clone()), op.event);
+        self.voice_occupancy.entry(target_voice).or_default().push((
+            op.position.clone(),
+            op.duration.clone(),
+            op.event,
+        ));
 
         if repairs.is_empty() {
             OperationEffect::Applied
@@ -540,6 +1344,19 @@ impl<'a> Reducer<'a> {
             }
             Some(ObjectState::Live) => {}
         }
+        if let Err(reason) = self.graph_delete_precondition(op) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction { reason },
+            };
+        }
+
+        let deleted_placement = self.voice_occupancy.iter().find_map(|(voice, events)| {
+            events
+                .iter()
+                .find(|(_, _, event)| *event == op.event)
+                .map(|(position, duration, _)| (*voice, position.clone(), duration.clone()))
+        });
+        self.materialize_graph_delete(op);
 
         let minter = self.minted_by.get(&ev_obj).copied().unwrap_or(env.id);
         self.objects.insert(
@@ -549,6 +1366,10 @@ impl<'a> Reducer<'a> {
                 minted_by: minter,
             },
         );
+        for events in self.voice_occupancy.values_mut() {
+            events.retain(|(_, _, event)| *event != op.event);
+        }
+        self.voice_occupancy.retain(|_, events| !events.is_empty());
         let mut repairs = Vec::new();
 
         // Tombstone contained pitches.
@@ -569,10 +1390,19 @@ impl<'a> Reducer<'a> {
         // Tuplet compensation.
         match &op.tuplet_compensation {
             TupletCompensation::NotInTuplet => {}
-            TupletCompensation::ReplaceWithRest { new_rest, .. } => {
+            TupletCompensation::ReplaceWithRest { new_rest, duration } => {
                 let rest_obj = TypedObjectId::Event(*new_rest);
                 self.objects.insert(rest_obj, ObjectState::Live);
                 self.minted_by.insert(rest_obj, env.id);
+                self.note_minted(env, rest_obj);
+                self.event_pitches.insert(*new_rest, Vec::new());
+                if let Some((voice, position, _)) = &deleted_placement {
+                    self.voice_occupancy.entry(*voice).or_default().push((
+                        position.clone(),
+                        duration.clone(),
+                        *new_rest,
+                    ));
+                }
                 repairs.push(RepairRecord {
                     kind: RepairKind::TupletCompensated {
                         compensation_kind: TupletCompensationKind::ReplaceWithRest,
@@ -687,7 +1517,7 @@ impl<'a> Reducer<'a> {
 
     fn create_cross_cutting(
         &mut self,
-        _env: &OperationEnvelope,
+        env: &OperationEnvelope,
         op: &CreateCrossCuttingOp,
     ) -> OperationEffect {
         let sid = op.structure.id;
@@ -714,8 +1544,14 @@ impl<'a> Reducer<'a> {
                 };
             }
         }
+        if let Err(reason) = self.materialize_graph_cross_cutting(op) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction { reason },
+            };
+        }
         self.objects.insert(sid, ObjectState::Live);
-        self.minted_by.insert(sid, _env.id);
+        self.minted_by.insert(sid, env.id);
+        self.note_minted(env, sid);
         self.structures.insert(sid, op.structure.endpoints.clone());
         OperationEffect::Applied
     }
@@ -725,31 +1561,97 @@ impl<'a> Reducer<'a> {
         env: &OperationEnvelope,
         op: &crate::payload::ChangeRegionTimeModelOp,
     ) -> OperationEffect {
-        if self.migrated_regions.contains(&op.region) {
-            // Concurrent same-target migration: earlier applies, later conflicts.
-            let winner = self
-                .region_migrator
-                .get(&op.region)
-                .copied()
-                .unwrap_or(env.id);
-            let conflict = ConflictRecord::new(
-                ConflictKind::StructuralFieldCollision {
-                    winner,
-                    loser: env.id,
-                    field: FieldPath("time_model".to_string()),
-                },
-                vec![env.id, winner],
-                vec![TypedObjectId::Region(op.region)],
-            );
-            let cid = conflict.id;
-            self.conflicts.insert(conflict);
-            return OperationEffect::Conflicted { conflict: cid };
+        if let Some(winner) = self.region_migrator.get(&op.region).copied() {
+            // Concurrent same-target migrations conflict. A causally-later
+            // migration is an intentional second structural change and is
+            // evaluated against the graph produced by the first.
+            if !self.concurrent(env.id, winner) {
+                self.migrated_regions.insert(op.region);
+            } else {
+                let conflict = ConflictRecord::new(
+                    ConflictKind::StructuralFieldCollision {
+                        winner,
+                        loser: env.id,
+                        field: FieldPath("time_model".to_string()),
+                    },
+                    vec![env.id, winner],
+                    vec![TypedObjectId::Region(op.region)],
+                );
+                let cid = conflict.id;
+                self.conflicts.insert(conflict);
+                return OperationEffect::Conflicted { conflict: cid };
+            }
         }
-        if !op.declared_incompatible.is_empty() {
-            let incompatible: Vec<TypedObjectId> = op
-                .declared_incompatible
+        let mut incompatible_events: BTreeSet<EventId> =
+            op.declared_incompatible.iter().copied().collect();
+        let mut graph_region_index = None;
+        if let Some(score) = self.graph.as_ref() {
+            let Some(region_index) = score
+                .canvas
+                .regions
                 .iter()
-                .map(|e| TypedObjectId::Event(*e))
+                .position(|region| region.id == op.region)
+            else {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                };
+            };
+            graph_region_index = Some(region_index);
+            let region = &score.canvas.regions[region_index];
+            let event_ids: Vec<EventId> = region
+                .staff_instances()
+                .iter()
+                .flat_map(|instance| &instance.voices)
+                .flat_map(|voice| voice.events.iter().copied())
+                .collect();
+
+            for event_id in &event_ids {
+                let Some(event) = score.events.get(*event_id) else {
+                    incompatible_events.insert(*event_id);
+                    continue;
+                };
+                let compatible = match op.new_time_model {
+                    crate::payload::RegionTimeModelTag::Metric => matches!(
+                        (event.position(), event.duration()),
+                        (EventPosition::Musical(_), EventDuration::Musical(_))
+                    ),
+                    crate::payload::RegionTimeModelTag::Proportional => matches!(
+                        (event.position(), event.duration()),
+                        (EventPosition::WallClock(_), EventDuration::WallClock(_))
+                    ),
+                    crate::payload::RegionTimeModelTag::Aleatoric => true,
+                };
+                if !compatible {
+                    incompatible_events.insert(*event_id);
+                }
+            }
+
+            if let crate::payload::PositionRemapping::Reassign(remapping) = &op.remapping {
+                let mapped: BTreeSet<EventId> = remapping.iter().map(|(event, _)| *event).collect();
+                incompatible_events.extend(
+                    event_ids
+                        .iter()
+                        .filter(|event| !mapped.contains(event))
+                        .copied(),
+                );
+                if matches!(
+                    op.new_time_model,
+                    crate::payload::RegionTimeModelTag::Proportional
+                ) {
+                    // Reassign carries musical positions in the current
+                    // prototype schema, so it cannot satisfy a proportional
+                    // region's wall-clock coordinate discipline.
+                    incompatible_events.extend(event_ids);
+                }
+            }
+        }
+
+        if !incompatible_events.is_empty() {
+            let incompatible: Vec<TypedObjectId> = incompatible_events
+                .into_iter()
+                .map(TypedObjectId::Event)
                 .collect();
             let mut affected = vec![TypedObjectId::Region(op.region)];
             affected.extend(incompatible.iter().copied());
@@ -764,6 +1666,53 @@ impl<'a> Reducer<'a> {
             let cid = conflict.id;
             self.conflicts.insert(conflict);
             return OperationEffect::Conflicted { conflict: cid };
+        }
+
+        if let Some(region_index) = graph_region_index {
+            let score = self
+                .graph
+                .as_mut()
+                .expect("a graph region index implies graph-aware reduction");
+            if let crate::payload::PositionRemapping::Reassign(remapping) = &op.remapping {
+                for (event, position) in remapping {
+                    if let Some(value) = score.events.get_mut(*event) {
+                        value.set_position(EventPosition::Musical(position.clone()));
+                    }
+                    for placements in self.voice_occupancy.values_mut() {
+                        if let Some((stored_position, _, _)) = placements
+                            .iter_mut()
+                            .find(|(_, _, stored_event)| stored_event == event)
+                        {
+                            *stored_position = position.clone();
+                        }
+                    }
+                }
+            }
+            let region = &mut score.canvas.regions[region_index];
+            let wallclock_duration = region
+                .time_extent
+                .as_wallclock()
+                .and_then(|(start, end)| end.checked_sub(start))
+                .filter(|duration| *duration > 0)
+                .unwrap_or(1);
+            region.time_model = match op.new_time_model {
+                crate::payload::RegionTimeModelTag::Metric => {
+                    RegionTimeModel::Metric(MetricTimeModel::default())
+                }
+                crate::payload::RegionTimeModelTag::Proportional => {
+                    RegionTimeModel::Proportional(ProportionalTimeModel {
+                        duration: WallClockDuration(wallclock_duration),
+                    })
+                }
+                crate::payload::RegionTimeModelTag::Aleatoric => {
+                    RegionTimeModel::Aleatoric(AleatoricTimeModel {
+                        ordering: EventOrderingDAG::default(),
+                        anchoring: AleatoricAnchoringDiscipline::FreelyMixed,
+                        bounds: BTreeMap::new(),
+                        duration_hint: WallClockDuration(wallclock_duration),
+                    })
+                }
+            };
         }
         self.migrated_regions.insert(op.region);
         self.region_migrator.insert(op.region, env.id);
@@ -856,6 +1805,7 @@ impl<'a> Reducer<'a> {
                             target: *t,
                         });
                     }
+                    self.materialize_graph_tombstones(&targets);
                     OperationEffect::AppliedWithRepair { repairs }
                 } else {
                     // A target was already tombstoned/modified: strict undo conflicts.
@@ -879,6 +1829,7 @@ impl<'a> Reducer<'a> {
             }
             UndoPolicy::BestEffort => {
                 let mut repairs = Vec::new();
+                let mut tombstoned = Vec::new();
                 for t in &targets {
                     if matches!(self.objects.get(t), Some(ObjectState::Live)) {
                         let minter = self.minted_by.get(t).copied().unwrap_or(env.id);
@@ -893,8 +1844,10 @@ impl<'a> Reducer<'a> {
                             kind: RepairKind::CascadeDeleted,
                             target: *t,
                         });
+                        tombstoned.push(*t);
                     }
                 }
+                self.materialize_graph_tombstones(&tombstoned);
                 OperationEffect::AppliedWithRepair { repairs }
             }
         }
@@ -1120,6 +2073,7 @@ impl<'a> Reducer<'a> {
             objects: self.objects.clone(),
             spellings: self.spellings.clone(),
             breaks: self.breaks.clone(),
+            conflicts: self.conflicts.clone(),
             minted_by: self.minted_by.clone(),
             event_pitches: self.event_pitches.clone(),
             voice_occupancy: self.voice_occupancy.clone(),
@@ -1127,7 +2081,9 @@ impl<'a> Reducer<'a> {
             structures: self.structures.clone(),
             migrated_regions: self.migrated_regions.clone(),
             region_migrator: self.region_migrator.clone(),
+            descriptors: self.descriptors.clone(),
             tx_minted: self.tx_minted.clone(),
+            graph: self.graph.clone(),
         }
     }
 
@@ -1135,6 +2091,7 @@ impl<'a> Reducer<'a> {
         self.objects = s.objects;
         self.spellings = s.spellings;
         self.breaks = s.breaks;
+        self.conflicts = s.conflicts;
         self.minted_by = s.minted_by;
         self.event_pitches = s.event_pitches;
         self.voice_occupancy = s.voice_occupancy;
@@ -1142,7 +2099,9 @@ impl<'a> Reducer<'a> {
         self.structures = s.structures;
         self.migrated_regions = s.migrated_regions;
         self.region_migrator = s.region_migrator;
+        self.descriptors = s.descriptors;
         self.tx_minted = s.tx_minted;
+        self.graph = s.graph;
     }
 }
 
@@ -1200,13 +2159,28 @@ fn compute_pending(
     reducible_ids: &BTreeSet<OperationId>,
     equivocated: &BTreeSet<OperationId>,
     excluded: &BTreeSet<OperationId>,
+    declared_transactions: &BTreeSet<TransactionId>,
 ) -> BTreeMap<OperationId, PendingReason> {
     let mut blocked: BTreeMap<OperationId, PendingReason> = BTreeMap::new();
-
-    // Direct causes: dots referencing non-reducible ids, and vector coverage of
-    // known equivocated/excluded ids.
+    let known_ids: BTreeSet<OperationId> = reducible_ids
+        .iter()
+        .chain(equivocated)
+        .chain(excluded)
+        .copied()
+        .collect();
+    // Direct causes: a hole in an asserted contiguous vector range, a dot
+    // referencing a non-reducible id, or coverage of a known bad id.
     for env in reducible {
+        // An absent transaction descriptor has a more specific normative
+        // outcome: TransactionConflict. Let transaction reduction report it
+        // instead of masking it as an ordinary missing predecessor.
+        if member_transaction(env).is_some_and(|tx| !declared_transactions.contains(&tx)) {
+            continue;
+        }
         let mut causes: Vec<(OperationId, PendingReason)> = Vec::new();
+        if let Some(missing) = first_missing_vector_predecessor(env, &known_ids) {
+            causes.push((missing, PendingReason::MissingCausalPredecessor { missing }));
+        }
         for d in env.causal_context.dots() {
             if !reducible_ids.contains(&d) {
                 let reason = if equivocated.contains(&d) {
@@ -1257,6 +2231,42 @@ fn compute_pending(
     }
 
     blocked
+}
+
+/// Finds the smallest absent id asserted by a causal context's contiguous
+/// vector ranges without expanding those ranges counter by counter.
+fn first_missing_vector_predecessor(
+    env: &OperationEnvelope,
+    known_ids: &BTreeSet<OperationId>,
+) -> Option<OperationId> {
+    let mut first_missing = None;
+
+    for (&replica, &high) in &env.causal_context.vector {
+        let mut expected = 0_u64;
+        let mut complete = false;
+
+        for id in known_ids.range(OperationId::new(replica, 0)..=OperationId::new(replica, high)) {
+            if id.counter > expected {
+                break;
+            }
+            if id.counter == expected {
+                if expected == high {
+                    complete = true;
+                    break;
+                }
+                expected += 1;
+            }
+        }
+
+        if !complete {
+            let candidate = OperationId::new(replica, expected);
+            if first_missing.map_or(true, |current| candidate < current) {
+                first_missing = Some(candidate);
+            }
+        }
+    }
+
+    first_missing
 }
 
 #[cfg(test)]

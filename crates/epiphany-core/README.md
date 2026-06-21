@@ -121,10 +121,9 @@ C4 ≠ C5). Empty pitched events are rejected at the arena boundary and re-check
   tempo map (its `local_tempo_map`, else the score map). Extents that still
   cannot be placed (no tempo defined, or a deferred curve) are skipped rather
   than rejected. Sound (no false positives), incomplete (DECISIONS P11-4).
-- **System-promoted voice derivation (invariant 18)** is enforced against a
-  documented convention because `VoiceOrigin::SystemPromoted` (a spec type)
-  stores a single `cause`, not the winning *and* losing op ids the derivation
-  formula names — a spec inconsistency batched as DECISIONS P11-3.
+- **System-promoted voice derivation (invariant 18)** retains the winning and
+  losing operation ids on `VoiceOrigin::SystemPromoted`; the checker recomputes
+  the exact four-input derivation used by `epiphany-ops`.
 - **The Chapter 4 tuning *catalog*** — `PitchSpace`/`TuningSystem`/
   `AccidentalRegistry` *definitions*, the built-in catalog, the hierarchical
   resolver, and the position→frequency resolution function — is **not** an

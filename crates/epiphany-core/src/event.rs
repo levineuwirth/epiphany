@@ -306,6 +306,20 @@ impl Event {
         }
     }
 
+    /// Sets the event's region-local position (used by time-model migration
+    /// during canonical operation reduction).
+    pub fn set_position(&mut self, position: EventPosition) {
+        match self {
+            Event::Pitched(e) => e.position = position,
+            Event::Unpitched(e) => e.position = position,
+            Event::Rest(e) => e.position = position,
+            Event::Indeterminate(e) => e.position = position,
+            Event::Trajectory(e) => e.position = position,
+            Event::Graphic(e) => e.position = position,
+            Event::Cue(e) => e.position = position,
+        }
+    }
+
     /// Appends references to every [`IdentifiedPitch`] this event embeds:
     /// chord pitches for [`Event::Pitched`], and explicit/stepwise pitches for
     /// [`Event::Trajectory`]. Used by the pitch-uniqueness invariant.
@@ -370,6 +384,15 @@ pub struct EventArena {
     slots: SlotMap<EventKey, Event>,
     by_id: HashMap<EventId, EventKey>,
 }
+
+impl PartialEq for EventArena {
+    fn eq(&self, other: &Self) -> bool {
+        let ids = self.ids_canonical();
+        ids == other.ids_canonical() && ids.into_iter().all(|id| self.get(id) == other.get(id))
+    }
+}
+
+impl Eq for EventArena {}
 
 impl EventArena {
     /// An empty arena.

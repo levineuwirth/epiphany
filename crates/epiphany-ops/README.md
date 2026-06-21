@@ -42,11 +42,9 @@ property is the determinism heart of the architecture, and the
 
 ## The determinism this crate enforces
 
-1. **A single reduction-order function.** `canonical_reduction_order` sorts by
-   the intrinsic stamp tuple `(physical, logical, replica, counter)`. The
-   authoring HLC rule guarantees a causal predecessor's tuple is strictly less,
-   so the sort respects causal order without a topological pass — and, being a
-   sort by intrinsic keys, it is trivially independent of arrival order.
+1. **A single reduction-order function.** `canonical_reduction_order` performs
+   deterministic causal topological ordering, using the intrinsic stamp tuple
+   `(physical, logical, replica, counter)` only among ready operations.
 2. **Order-independent equivocation.** A duplicate `OperationId` with different
    canonical bytes transitions its slot to `Equivocated` regardless of which
    envelope arrived first (Pass 10). Equivocated slots contribute nothing to
@@ -58,6 +56,10 @@ property is the determinism heart of the architecture, and the
 4. **Byte-identical materialized state.** `MaterializedState::canonical_bytes`
    serializes the effect log, conflict registry, anomaly register, object
    existence, spellings, and LWW fields in their normative orders.
+5. **Real graph materialization.** `OperationSet::reduce_onto(&base_score)`
+   returns `GraphMaterialization { state, score }`. The graph is mutated in the
+   same canonical order and compares by canonical event identity, independent
+   of arena storage order.
 
 ## Hand-off gates
 
@@ -85,11 +87,12 @@ Chapter 6 specifies the framework and a *representative* selection of
 operations; the full ~60–80-primitive catalog is an explicit open question
 (§6.11) deferred to the Operation Catalog companion. This crate implements the
 framework in full and the representative operations, which is sufficient to
-exercise every reduction discipline. The full musical-graph mutation against
-`epiphany_core::Score` is the next phase. See `DECISIONS.md` for the scope
-boundary, the prototype conventions (payloads carry identifiers + fingerprints,
-voice promotion via an order-independent pre-pass, undo via minted-object
-compensation), and the batched Pass 11 candidates.
+exercise every reduction discipline. The representative operations can also
+reduce onto an `epiphany_core::Score`: insert/delete, voice promotion, supported
+cross-cutting structures, system breaks, migration checks, transaction
+rollback, and undo mutate the real graph while preserving Agent B's invariants.
+`reduce()` remains the base-free CRDT/bookkeeping API; `reduce_onto()` is the
+graph-aware editing path. See `DECISIONS.md` for remaining payload boundaries.
 
 Per QUICKSTART "Don't do these": undo is the spec's **forward** compensating
 operation, never inverse-based; `unsafe` is forbidden; everything is sync.

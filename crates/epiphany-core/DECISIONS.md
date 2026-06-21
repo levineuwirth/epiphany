@@ -68,28 +68,24 @@ Chapter 5", but Chapter 5 §"Graph Invariants" actually enumerates **19** items
 almost certainly a stale count in the QUICKSTART; the spec body is treated as
 authoritative. Reconcile the two.
 
-### P11-3 — `VoiceOrigin::SystemPromoted` does not carry the spec's full derivation inputs
+### P11-3 — resolved in M2: promoted voices retain the full derivation inputs
 
 Invariant 18 requires a system-promoted voice's `VoiceId` to equal the
 deterministic derivation of Chapter 5 §"System-Promoted Voices", whose inputs
 are *(staff instance, original voice, winning op, losing op)* — four ids. But
-`VoiceOrigin::SystemPromoted` records only `{ cause: OperationId, original_voice:
-VoiceId }` (one op, not two).
+The first-pass `VoiceOrigin::SystemPromoted` recorded only one operation id.
+M2 resolves the inconsistency by storing `{ winning_operation,
+losing_operation, original_voice }`; the staff instance remains recoverable from
+containment.
 
-**Prototype convention (enforced):** the staff instance is recovered from the
-containment walk, and `cause` is fed into *both* the winning- and losing-op
-slots of `derive_promoted_voice_id`. Invariant 18 now recomputes that derivation
-and rejects any `SystemPromoted` voice whose id does not match it (not merely a
-wrong namespace) — see `check_voice_origin_consistent` and the
+Invariant 18 recomputes the exact derivation and rejects any
+`SystemPromoted` voice whose id does not match it (not merely a wrong namespace)
+— see `check_voice_origin_consistent` and the
 `inv18_flags_fabricated_promoted_voice_id_and_accepts_the_derivation` test.
 
-**Open question for the spec:** either `VoiceOrigin::SystemPromoted` should carry
-both the winning and losing op ids (and the spec confirm the derivation over
-those), or the derivation should be defined over the inputs the origin actually
-stores. The derivation function itself is also still deferred ("specified in the
-semantic-operations companion document"); this crate's `derive_promoted_voice_id`
-and the cause-as-both-slots convention are placeholders for that companion to
-ratify.
+The core spec listing now carries both operation ids. The exact hash-domain
+derivation remains provisional until the semantic-operations companion ratifies
+`derive_promoted_voice_id`.
 
 ### P11-4 — A prototype canonical encoding precedes the Binary Format companion
 

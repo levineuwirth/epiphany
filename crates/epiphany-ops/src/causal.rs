@@ -11,12 +11,13 @@
 //! * `dots`: individual [`OperationId`]s observed but not yet contiguous in the
 //!   vector — "known but not yet contiguous" predecessors.
 //!
-//! The canonical reduction order is causal-first (Chapter 6 §6.3.3); the
-//! authoring HLC rule guarantees causal predecessors carry strictly-lesser
-//! stamps, so the reduction never needs to topologically sort — see
-//! [`crate::canonical_reduction_order`]. The DVV is consumed instead by the
-//! *missing-causal-predecessor* rule (an operation whose predecessor is absent,
-//! equivocated, or excluded is held pending) and by the transaction
+//! The canonical reduction order is causal-first (Chapter 6 §6.3.3). Although
+//! correctly authored operations give causal predecessors strictly-lesser HLC
+//! stamps, accepted remote envelopes may violate that authoring rule. Reduction
+//! therefore topologically orders the DVV edges and uses HLC only among ready
+//! operations — see [`crate::canonical_reduction_order`]. The DVV also drives
+//! the *missing-causal-predecessor* rule (an operation whose predecessor is
+//! absent, equivocated, or excluded is held pending) and the transaction
 //! descriptor-precedence rule (Chapter 6 §6.7).
 
 use std::collections::{BTreeMap, BTreeSet};
