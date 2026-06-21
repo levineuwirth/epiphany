@@ -159,6 +159,12 @@ pub enum ConstrainedValidationError {
     SlotMismatch(GlyphObjectId),
     InvalidSlotGeometry(SpringSlotId),
     InvalidGlyphBounds(GlyphObjectId),
+    /// A constraint references a glyph that is not in the glyph set.
+    UnknownConstraintGlyph(GlyphObjectId),
+    /// A break constraint references a spring slot that does not exist.
+    UnknownConstraintSlot(SpringSlotId),
+    /// A `PositionWithin` constraint carries a non-finite or inverted region.
+    InvalidConstraintRegion(GlyphObjectId),
 }
 
 /// A malformed logical-stage value that cannot be transformed without losing
@@ -283,6 +289,49 @@ impl ConstrainedLayoutIR {
             }
             if memberships.get(&glyph.id()) != Some(&glyph.vertical_band) {
                 return Err(ConstrainedValidationError::BandMismatch(glyph.id()));
+            }
+        }
+
+        // Constraints must reference objects that exist: a dangling glyph or
+        // slot reference is a malformed problem, not a silently-accepted one.
+        let glyph_exists = |id: GlyphObjectId| -> bool { glyphs_by_id.contains_key(&id) };
+        for constraint in &self.constraints {
+            match constraint {
+                LayoutConstraint::NoCollision { a, b } | LayoutConstraint::Align { a, b, .. } => {
+                    if !glyph_exists(*a) {
+                        return Err(ConstrainedValidationError::UnknownConstraintGlyph(*a));
+                    }
+                    if !glyph_exists(*b) {
+                        return Err(ConstrainedValidationError::UnknownConstraintGlyph(*b));
+                    }
+                }
+                LayoutConstraint::PositionWithin { glyph, region } => {
+                    if !glyph_exists(*glyph) {
+                        return Err(ConstrainedValidationError::UnknownConstraintGlyph(*glyph));
+                    }
+                    let r = [
+                        region.origin.x.0,
+                        region.origin.y.0,
+                        region.size.width.0,
+                        region.size.height.0,
+                    ];
+                    let region_ok = r.iter().all(|v| v.is_finite())
+                        && region.size.width.0 >= 0.0
+                        && region.size.height.0 >= 0.0;
+                    if !region_ok {
+                        return Err(ConstrainedValidationError::InvalidConstraintRegion(*glyph));
+                    }
+                }
+                LayoutConstraint::SystemBreakAt { slot, .. }
+                | LayoutConstraint::PageBreakAt { slot, .. } => {
+                    if !slot_ids.contains(slot) {
+                        return Err(ConstrainedValidationError::UnknownConstraintSlot(*slot));
+                    }
+                }
+                // A Registered (extension) constraint is opaque; treated
+                // conservatively (not rejected) per "Behavior Under Unknown
+                // Extensions".
+                LayoutConstraint::Registered(_, _) => {}
             }
         }
         Ok(())

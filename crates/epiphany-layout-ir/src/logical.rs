@@ -16,7 +16,7 @@
 use std::collections::BTreeSet;
 
 use epiphany_core::{AnnotationAnchor, RegionId, Score, StaffId, TimeAnchor, TypedObjectId};
-use epiphany_determinism::{CanonicalEncode, DomainTag, Preimage};
+use epiphany_determinism::{DomainTag, Preimage};
 
 use crate::engraving::{EngravingDecision, EngravingDecisionKind, EngravingOverride};
 use crate::provenance::{LayoutObjectId, Provenance};
@@ -368,7 +368,7 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
         }
     }
 
-    let source = derive_score_version(&regions, &cross_region);
+    let source = derive_score_version(score);
     LogicalLayoutIR {
         source,
         regions,
@@ -378,42 +378,18 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
     }
 }
 
-fn derive_score_version(
-    regions: &[LayoutRegion],
-    cross_region: &[CrossRegionObject],
-) -> ScoreVersion {
+/// Derives the [`ScoreVersion`] from the **whole score's canonical content**
+/// (Agent B's whole-score codec), not merely the layout projection's object
+/// identities. Any score edit — including one that changes an event's content
+/// without changing any identifier (e.g. a respelling or a duration change) —
+/// therefore yields a different version, which is what incremental-layout cache
+/// invalidation depends on (Chapter 7 §"Incremental Layout"). The former
+/// derivation keyed on layout-object `stable_id`s alone, so a pure content edit
+/// left the version unchanged.
+fn derive_score_version(score: &Score) -> ScoreVersion {
     let mut preimage = Preimage::new(DomainTag::CONFLICT);
     preimage.push_bytes(b"layout-score-version");
-    for region in regions {
-        preimage.push_bytes(&region.provenance.source.to_canonical_bytes());
-        match &region.time_axis {
-            TimeAxisModel::Metric(_) => {
-                preimage.push_u64_le(0);
-            }
-            TimeAxisModel::Proportional(axis) => {
-                preimage.push_u64_le(1);
-                preimage.push_u64_le(axis.duration_ns as u64);
-                preimage.push_u64_le(axis.space_per_second.0.to_bits() as u64);
-            }
-            TimeAxisModel::Aleatoric(_) => {
-                preimage.push_u64_le(2);
-            }
-            TimeAxisModel::Registered(id, payload) => {
-                preimage.push_u64_le(3);
-                preimage.push_u64_le((id.0 >> 64) as u64);
-                preimage.push_u64_le(id.0 as u64);
-                preimage.push_bytes(&payload.0);
-            }
-        }
-        for object in &region.objects {
-            preimage.push_u64_le((object.provenance().stable_id.0 >> 64) as u64);
-            preimage.push_u64_le(object.provenance().stable_id.0 as u64);
-        }
-    }
-    for object in cross_region {
-        preimage.push_u64_le((object.provenance.stable_id.0 >> 64) as u64);
-        preimage.push_u64_le(object.provenance.stable_id.0 as u64);
-    }
+    preimage.push_bytes(&score.canonical_bytes());
     ScoreVersion(*preimage.finish().as_bytes())
 }
 
@@ -557,8 +533,29 @@ pub(crate) fn cross_cutting_objects(score: &Score) -> Vec<(TypedObjectId, Vec<Ty
 #[cfg(test)]
 mod tests {
     use super::*;
-    use epiphany_core::generators::valid_score_rich;
+    use epiphany_core::generators::{valid_score, valid_score_rich};
     use epiphany_core::{AnchorOffset, RegionEdge, Spanner, SpannerId, TimeAnchor};
+
+    #[test]
+    fn score_version_tracks_content_not_just_identifiers() {
+        let score = valid_score(7);
+        // Deterministic: the same score yields the same version.
+        assert_eq!(to_logical(&score).source, to_logical(&score).source);
+        // Distinct scores yield distinct versions.
+        assert_ne!(
+            to_logical(&valid_score(7)).source,
+            to_logical(&valid_score(8)).source
+        );
+        // A pure content edit that changes NO identifier still changes the
+        // version (the old identity-only derivation missed this).
+        let mut edited = score.clone();
+        edited.metadata.title = Some("a different title".to_owned());
+        assert_ne!(
+            to_logical(&score).source,
+            to_logical(&edited).source,
+            "a content edit with unchanged ids must change the score version"
+        );
+    }
 
     #[test]
     fn spanning_object_uses_cross_region_collection() {

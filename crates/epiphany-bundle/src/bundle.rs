@@ -542,6 +542,27 @@ impl<S: BlockStore> Bundle<S> {
             new_chunks: &new_refs,
             generation: next_generation,
         });
+
+        // Extension-root preservation (Chapter 8 §"Behavior Under Unknown
+        // Extensions"). The bundle's job is preservation: an extension-unaware
+        // commit closure must not silently drop unknown extensions and their
+        // `preserved_chunk_roots` (which would orphan those chunks). Carry
+        // forward every prior extension declaration the closure did not itself
+        // re-declare; an extension-*aware* writer that re-declares its own
+        // `extension_id` keeps full control of that declaration. (The manifest
+        // encoder sorts/dedups `extension_declarations`, so append order does not
+        // affect the canonical form.)
+        let redeclared: std::collections::BTreeSet<crate::ids::ExtensionId> = manifest
+            .extension_declarations
+            .iter()
+            .map(|e| e.extension_id)
+            .collect();
+        for prior in &previous.extension_declarations {
+            if !redeclared.contains(&prior.extension_id) {
+                manifest.extension_declarations.push(prior.clone());
+            }
+        }
+
         manifest.generation = next_generation;
         manifest.manifest_id = manifest.derive_id();
 
@@ -1284,6 +1305,75 @@ mod tests {
         assert!(reopened
             .anomalies()
             .contains(&IntegrityAnomaly::UnknownRequiredExtension));
+    }
+
+    #[test]
+    fn commit_preserves_unknown_extension_roots_when_the_closure_drops_them() {
+        // The bundle's job is preservation: an extension-*unaware* writer that
+        // rebuilds the manifest from scratch must not orphan an unknown
+        // (optional) extension's preserved roots.
+        let mut bundle = fresh_bundle();
+        let ext_id = crate::ids::ExtensionId([7; 16]);
+        let ext_root = ChunkRef {
+            id: ChunkId(ContentHash([42; 32])),
+            kind: ChunkKind::ExtensionData,
+            schema_version: SchemaVersion::V0,
+            offset: 4096,
+            compressed_length: 8,
+            uncompressed_length: 8,
+            compression: CompressionAlgorithm::None,
+            hash: ContentHash([42; 32]),
+        };
+
+        // 1) An extension-aware commit declares the optional extension + a root.
+        bundle
+            .commit(&[], |ctx| {
+                let mut m = ctx.previous_manifest.clone();
+                m.extension_declarations
+                    .push(crate::manifest::ExtensionDeclaration {
+                        extension_id: ext_id,
+                        version: crate::ids::SemVer::new(1, 0, 0),
+                        required: false,
+                        preserved_chunk_roots: vec![ext_root],
+                        affected_object_kinds: Vec::new(),
+                        edit_barriers: Vec::new(),
+                    });
+                m
+            })
+            .unwrap();
+        assert!(bundle
+            .manifest()
+            .extension_declarations
+            .iter()
+            .any(|e| e.extension_id == ext_id));
+
+        // 2) An extension-unaware commit rebuilds the manifest from empty,
+        //    carrying only what it understands (operation roots). The bundle must
+        //    still carry the extension and its root forward.
+        let doc = bundle.manifest().document_id;
+        bundle
+            .commit(&[], |ctx| {
+                let mut m = Manifest::empty(doc);
+                m.operation_roots = ctx.previous_manifest.operation_roots.clone();
+                m
+            })
+            .unwrap();
+
+        let survives = |m: &Manifest| {
+            m.extension_declarations.iter().any(|e| {
+                e.extension_id == ext_id
+                    && e.preserved_chunk_roots.iter().any(|r| r.id == ext_root.id)
+            })
+        };
+        assert!(
+            survives(bundle.manifest()),
+            "unknown extension + its root must survive an extension-unaware commit"
+        );
+
+        // 3) And it survives a reopen (durably preserved).
+        let image = bundle.into_store().into_bytes();
+        let reopened = Bundle::open(MemStore::from_bytes(image)).unwrap();
+        assert!(survives(reopened.manifest()));
     }
 
     #[test]

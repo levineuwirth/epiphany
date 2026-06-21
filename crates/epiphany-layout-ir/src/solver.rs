@@ -17,9 +17,10 @@
 //! [`TieBreakingWeights`] exist (the interface requires them), but the
 //! normalization functions of the Quality Metric Catalog are not. The
 //! `StubSolver` is not a conformant solver and passes no reference suite, so it
-//! reports the interface's `Minimal` tier and an all-worst metric vector. Those
-//! values are deliberately conservative placeholders, not computed quality
-//! measurements; the real solver replaces them.
+//! reports the [`SolverTier::Stub`] tier (the honest non-conformance rung, below
+//! `Minimal`) and an all-worst metric vector. Those values are deliberately
+//! conservative placeholders, not computed quality measurements; the real solver
+//! replaces them.
 
 use epiphany_core::TypedObjectId;
 
@@ -61,8 +62,17 @@ impl SolveStatus {
 }
 
 /// The conformance tier a solver claims (Chapter 9 §"Conformance Tiers").
+///
+/// `Stub` is below the spec's three conformance tiers: it is *not* a conformance
+/// claim but its honest absence — an interface-only solver that evaluates no
+/// constraints and computes no quality metrics reports `Stub`, never `Minimal`,
+/// so a caller cannot mistake the passthrough for the lowest conformant tier.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum SolverTier {
+    /// Not a conformance tier: an interface-only / passthrough solver that
+    /// evaluates no constraints and computes no quality metrics (e.g.
+    /// [`StubSolver`]). Ordered below every conformant tier.
+    Stub,
     /// Minimal Layout Solver.
     Minimal,
     /// Standard Engraving Solver.
@@ -459,7 +469,8 @@ impl StubSolver {
 
 impl ConstraintSolver for StubSolver {
     fn tier(&self) -> SolverTier {
-        SolverTier::Minimal
+        // Honest: a passthrough that evaluates no constraints is below Minimal.
+        SolverTier::Stub
     }
 
     fn version(&self) -> SolverVersion {
@@ -541,8 +552,11 @@ mod tests {
     }
 
     #[test]
-    fn stub_uses_the_minimal_interface_tier_and_worst_metrics() {
-        assert_eq!(StubSolver.tier(), SolverTier::Minimal);
+    fn stub_reports_the_non_conformant_stub_tier_and_worst_metrics() {
+        // Honest non-conformance: a passthrough reports Stub, never Minimal, and
+        // Stub orders below every real conformance tier.
+        assert_eq!(StubSolver.tier(), SolverTier::Stub);
+        assert!(SolverTier::Stub < SolverTier::Minimal);
         assert_eq!(StubSolver.version(), SolverVersion(0));
         let input = constrained(vec![glyph("noteheadBlack")]);
         assert_eq!(
@@ -550,6 +564,48 @@ mod tests {
                 .solve(&input, &SolverConfig::default())
                 .metric_vector,
             QualityMetricVector::unmeasured()
+        );
+    }
+
+    #[test]
+    fn validate_rejects_dangling_constraint_references() {
+        use crate::constrained::{
+            BreakKind, ConstrainedValidationError, GlyphObjectId, LayoutConstraint,
+        };
+        let mut input = constrained(vec![glyph("noteheadBlack")]);
+        assert!(input.validate().is_ok());
+        let real = input.glyphs[0].id();
+
+        // A constraint naming a glyph that is not in the set is rejected, not
+        // silently accepted.
+        let ghost = GlyphObjectId(real.0 ^ 0xABCD);
+        input
+            .constraints
+            .push(LayoutConstraint::NoCollision { a: real, b: ghost });
+        assert_eq!(
+            input.validate(),
+            Err(ConstrainedValidationError::UnknownConstraintGlyph(ghost))
+        );
+
+        // A break constraint on a non-existent slot is rejected.
+        input.constraints = vec![LayoutConstraint::SystemBreakAt {
+            slot: SpringSlotId(999),
+            kind: BreakKind::Hard,
+        }];
+        assert_eq!(
+            input.validate(),
+            Err(ConstrainedValidationError::UnknownConstraintSlot(
+                SpringSlotId(999)
+            ))
+        );
+
+        // A well-formed constraint reference validates — even though the stub
+        // solver still refuses to *evaluate* it (it cannot claim it satisfied).
+        input.constraints = vec![LayoutConstraint::NoCollision { a: real, b: real }];
+        assert!(input.validate().is_ok());
+        assert_eq!(
+            StubSolver.solve(&input, &SolverConfig::default()).status,
+            SolveStatus::InternalError
         );
     }
 

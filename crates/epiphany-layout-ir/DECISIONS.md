@@ -167,9 +167,30 @@ object is covered); the provenance-preservation contract itself is unchanged.
   boundary's `RenderIRProducer::produce(resolved, scale, config)` takes the
   spec's `ScaleContext`/`RenderConfiguration`. The quality-metric/tie-breaking
   *types* exist; what the QUICKSTART defers is normalization computation. The
-  exact non-optional interface is preserved: the stub reports `Minimal` and an
+  exact non-optional interface is preserved: the stub reports the
+  non-conformance `SolverTier::Stub` rung (M5 follow-up — *not* `Minimal`, since a
+  passthrough that evaluates no constraints and computes no quality metrics must
+  not claim the lowest conformance tier; `Stub` orders below `Minimal`), an
   all-worst `QualityMetricVector`, and rejects explicit constraints it cannot
   evaluate rather than claiming them satisfied.
+
+- **Constraint references are validated (M5 follow-up).**
+  `ConstrainedLayoutIR::validate()` now also checks the `LayoutConstraint`
+  vector: `NoCollision`/`Align`/`PositionWithin` must name glyphs in the set,
+  `SystemBreakAt`/`PageBreakAt` must name existing spring slots, and a
+  `PositionWithin` region must be finite/non-negative. Dangling constraint
+  references are rejected (`UnknownConstraintGlyph`/`UnknownConstraintSlot`/
+  `InvalidConstraintRegion`) rather than silently accepted. `Registered`
+  (extension) constraints stay opaque/conservative. Score-graph *source*
+  validation (that a `Provenance::source` names a real graph object) still
+  belongs at the `to_logical` boundary, which holds the `Score`.
+
+- **`ScoreVersion` is content-sensitive (M5 follow-up).** It is now derived from
+  the whole score's canonical bytes (Agent B's whole-score codec) rather than the
+  layout projection's object identities, so a pure content edit (a respelling, a
+  duration change) that changes no identifier still changes the version —
+  required for correct incremental-layout cache invalidation (Chapter 7
+  §"Incremental Layout").
 
 ## Pass 11 candidates (ambiguities for the spec, not resolved in code)
 

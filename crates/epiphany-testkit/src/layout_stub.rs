@@ -816,6 +816,7 @@ pub fn gen_edit_context(rng: &mut Rng) -> EditContext {
 /// A solver tier (every variant).
 pub fn gen_solver_tier(rng: &mut Rng) -> SolverTier {
     *rng.choose(&[
+        SolverTier::Stub,
         SolverTier::Minimal,
         SolverTier::Standard,
         SolverTier::Advanced,

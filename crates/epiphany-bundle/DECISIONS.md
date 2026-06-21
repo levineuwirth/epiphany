@@ -178,14 +178,18 @@ yet enforced so a later integration knows where to extend.
   to exercise yet. Non-canonical opaque chunks at unknown majors are carried
   verbatim (they are never parsed).
 
-- **Extensions: required → read-only; opaque preservation is partial.** An
+- **Extensions: required → read-only; opaque preservation is now enforced.** An
   unknown *required* extension forces read-only (v0 understands no extensions,
   so all are unknown). Optional-extension `preserved_chunk_roots` are carried in
-  the manifest, but the bundle does not yet *enforce* that a commit's builder
-  closure preserves them, nor evaluate edit barriers / the unsafe-edit path —
-  barrier operands (`OperationKindTag`, `ObjectKind`, `EditBarrier`) are owned by
-  Agents C/E. The commit closure is, however, validated to never publish
-  dangling or mismatched *canonical* roots.
+  the manifest, and (M4 follow-up) `commit` now **enforces** preservation:
+  after the builder closure runs, every prior extension declaration the closure
+  did not itself re-declare (by `extension_id`) is carried forward verbatim, so
+  an extension-*unaware* writer cannot silently orphan an unknown extension's
+  roots; an extension-*aware* writer that re-declares its own id keeps control.
+  (Edit barriers / the unsafe-edit path are still not evaluated — barrier
+  operands `OperationKindTag`/`ObjectKind`/`EditBarrier` are owned by Agents
+  C/E.) The commit closure is also validated to never publish dangling or
+  mismatched *canonical* roots.
 
 ## Pass 11 candidates (ambiguities for the spec, not resolved in code)
 
