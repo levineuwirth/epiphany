@@ -933,6 +933,101 @@ pub fn assert_two_staff_populated(envelopes: &[OperationEnvelope]) {
     assert!(live_events(n, 2 * n) > 0, "staff 1 has no live events");
 }
 
+/// Whole-note position past which [`graph_edit_session`] inserts, chosen to
+/// clear `valid_score`'s base content (quarter-note events in `[0, 1)`).
+const GRAPH_SESSION_OFFSET: i64 = 4;
+
+/// An `InsertEvent` payload targeting a **real** base voice (`staff_instance`
+/// must be the voice's actual container), minting `event`/`pitch` under
+/// [`OBJ_REPLICA`] as the `index`-th half-note past the base content. Unlike
+/// [`insert_at`], this addresses ids that already exist in a base [`graph`]
+/// score, so the payload survives [`OperationSet::reduce_onto`] (which rejects
+/// inserts into unknown voices) rather than only the base-free reducer.
+fn insert_into(
+    staff_instance: StaffInstanceId,
+    voice: VoiceId,
+    event: u64,
+    pitch: u64,
+    index: u64,
+) -> OperationPayload {
+    OperationPayload::Primitive(OperationKind::InsertEvent(InsertEventOp {
+        voice,
+        staff_instance,
+        event: obj_event(event),
+        // position = GRAPH_SESSION_OFFSET + index/2 (two half-notes per 4/4 bar).
+        position: MusicalPosition(
+            RationalTime::new(
+                GRAPH_SESSION_OFFSET * EVENTS_PER_BAR as i64 + index as i64,
+                2,
+            )
+            .unwrap(),
+        ),
+        duration: MusicalDuration(RationalTime::new(1, 2).unwrap()),
+        pitches: vec![obj_pitch(pitch)],
+    }))
+}
+
+/// The graph-level twin of [`two_staff_edit_session`]: a real ~50-bar edit
+/// session targeting the **actual** voices of `base`, for the
+/// [`OperationSet::reduce_onto`] convergence gate (acceptance criterion 1).
+///
+/// Two replicas alternately insert [`TWO_STAFF_EVENTS_PER_STAFF`] half-note
+/// events past the base content into the base's first two voices (so both
+/// staves are genuinely edited), then concurrently respell and delete over the
+/// shared minted id space, so the canonical reduction — not delivery order —
+/// decides the materialized `Score`. Returns the targeted voices alongside the
+/// envelopes (the convergence harness checks each one actually grew).
+///
+/// Requires a base with at least one voice; callers pass a base scanned for two
+/// (see `epiphany_core::generators::valid_score`).
+pub fn graph_edit_session(
+    base: &epiphany_core::Score,
+    rng: &mut Rng,
+) -> (Vec<(StaffInstanceId, VoiceId)>, Vec<OperationEnvelope>) {
+    let targets: Vec<(StaffInstanceId, VoiceId)> = base
+        .voices()
+        .map(|(_, instance, voice)| (instance, voice.id))
+        .take(2)
+        .collect();
+    assert!(
+        !targets.is_empty(),
+        "graph_edit_session requires a base score with at least one voice"
+    );
+
+    let n = TWO_STAFF_EVENTS_PER_STAFF;
+    let mut session = Session::new(2);
+    for i in 0..n {
+        for (ti, &(instance, voice)) in targets.iter().enumerate() {
+            // Each target voice's consecutive half-notes alternate authoring
+            // replicas; the two voices are edited by opposite replicas at any
+            // given index. Positions are distinct within a voice (no
+            // same-position collision → clean inserts), while cross-replica
+            // causal sampling makes delivery order differ from reduction order.
+            let r = (i as usize + ti) % 2;
+            let object = ti as u64 * n + i;
+            session.author(rng, r, insert_into(instance, voice, object, object, i));
+        }
+    }
+
+    let total = targets.len() as u64 * n;
+    for _ in 0..80 {
+        let r = rng.below(2) as usize;
+        let payload = if rng.boolean() {
+            OperationPayload::Primitive(OperationKind::DeleteEvent(DeleteEventOp {
+                event: obj_event(rng.below(total)),
+                tuplet_compensation: TupletCompensation::NotInTuplet,
+            }))
+        } else {
+            OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
+                pitch: obj_pitch(rng.below(total)),
+                spelling: ContentHash([(rng.below(4) as u8) + 1; 32]),
+            }))
+        };
+        session.author(rng, r, payload);
+    }
+    (targets, session.out)
+}
+
 /// A `(base, mutated)` pair of operation sets whose operations have **identical
 /// identities, stamps, and causal contexts** but differ in payload *content*
 /// (one respelling's spelling). Both sets insert a pitch and respell it, so the

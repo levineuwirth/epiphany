@@ -9,15 +9,34 @@
 //! module (Agent E has landed). See the crate docs for the harness policy.
 
 use epiphany_testkit::{
-    bundle_harness, convergence, equivocation, fixtures, generators, layout_stub, roundtrip, Rng,
+    bundle_harness, convergence, equivocation, fixtures, generators, layout_stub, negative,
+    roundtrip, Rng,
 };
 
-/// Criterion 1 — **Convergence.** Overlapping edits to a (modeled) 50-bar,
-/// two-staff score by two replicas converge to byte-identical materialized state
-/// regardless of envelope delivery order (Chapter 6's canonical reduction).
+/// Criterion 1 — **Convergence (real Score).** Overlapping edits to a real
+/// ~50-bar, two-voice base [`epiphany_core::Score`] by two replicas converge to
+/// an *identical materialized Score* — the real graph (arena, voices,
+/// tombstones, cross-cutting) together with its bookkeeping state — regardless
+/// of envelope delivery order, with every Chapter 5 invariant intact. Driven
+/// through Agent C's `OperationSet::reduce_onto`. This is the headline criterion;
+/// [`reducer_bookkeeping_convergence`] is its ledger-projection counterpart.
 #[test]
 fn criterion_1_convergence() {
-    // The criterion's named shape: a two-staff, overlapping-edit session.
+    for seed in 0..24u64 {
+        convergence::run_graph_convergence(6, seed.wrapping_mul(0x9E37_79B9).wrapping_add(11));
+    }
+}
+
+/// **Reducer-bookkeeping convergence** (the former, weaker half of criterion 1,
+/// retained and honestly renamed). The canonical Chapter 6 §6.3 *bookkeeping
+/// projection* — `OperationSet::reduce` → `MaterializedState::canonical_bytes` —
+/// is byte-identical across delivery orders. That projection is the ledger
+/// (effects, conflicts, anomalies, tombstones, spellings, pending), **not** the
+/// full musical graph; real-Score convergence is `criterion_1_convergence`.
+/// Kept as a fast byte-level determinism gate (and the basis of criterion 5).
+#[test]
+fn reducer_bookkeeping_convergence() {
+    // The named shape: a two-staff, overlapping-edit session (bookkeeping bytes).
     for seed in 0..16u64 {
         convergence::run_two_staff_convergence(8, seed.wrapping_mul(0x9E37_79B9).wrapping_add(11));
     }
@@ -25,6 +44,14 @@ fn criterion_1_convergence() {
     for seed in 0..200u64 {
         convergence::run_convergence(24, 6, seed.wrapping_mul(0x9E37_79B9));
     }
+}
+
+/// **Audit regression guards.** Every defect the Agent C framework audit
+/// surfaced (the M1 fixes) is independently re-asserted here so a regression in
+/// `epiphany-ops` trips Agent F's suite directly. See [`negative`].
+#[test]
+fn audit_defect_regressions() {
+    negative::run_all();
 }
 
 /// Criterion 2 — **Crash safety.** A crash between any two syscalls in the
@@ -60,11 +87,18 @@ fn criterion_3_equivocation() {
     equivocation::ops_equivocation_fuzz(2_000, 0x1234_5678);
 }
 
-/// Criterion 4 — **Canonical serialization stability.** The same canonical
-/// state serialized → loaded → re-serialized produces byte-identical bytes
-/// (Appendix D's canonical-serialization layer): the type-level round-trip
-/// corpus, Agent A's determinism gate (a slice), the bundle manifest/header, and
-/// a real score (operation-set → materialized bytes) round-trip through a bundle.
+/// Criterion 4 — **Canonical serialization stability (typed + container).** The
+/// same canonical value serialized → loaded → re-serialized produces
+/// byte-identical bytes (Appendix D's canonical-serialization layer): the
+/// type-level round-trip corpus over every `CanonicalEncode` type in Agents A
+/// and B, Agent A's determinism gate (a slice), and the real bundle
+/// manifest/header — including decoder rejection of corruption.
+///
+/// The **full-Score** byte round-trip is split out below: its bookkeeping
+/// projection ([`reducer_bookkeeping_serialization`]) and its reproducibility
+/// ([`full_score_materialization_is_reproducible`]) are exercised now; the
+/// whole-`Score` byte codec is pending item 5 (Agent B) —
+/// [`criterion_4_full_score_byte_roundtrip`].
 #[test]
 fn criterion_4_canonical_serialization_stability() {
     roundtrip::run_roundtrip_corpus(100_000, 0x00C0_FFEE_1234_5678);
@@ -81,7 +115,20 @@ fn criterion_4_canonical_serialization_stability() {
         roundtrip::assert_manifest_roundtrip(&rich);
         // The decoder actually validates: corruption is rejected.
         roundtrip::assert_manifest_decode_rejects_corruption(&rich);
+    }
+}
 
+/// **Reducer-bookkeeping serialization** (the former, narrower half of criterion
+/// 4, retained and honestly renamed). The canonical *bookkeeping projection*
+/// (`MaterializedState::canonical_bytes`) survives content-addressed storage in
+/// a real bundle and re-serializes byte-identically, and is musically sensitive
+/// (same identities + changed content → different bytes). This is the Chapter 6
+/// ledger, **not** the whole musical `Score`; the full-Score byte round-trip is
+/// [`criterion_4_full_score_byte_roundtrip`] (pending item 5).
+#[test]
+fn reducer_bookkeeping_serialization() {
+    for seed in 0..48u64 {
+        let mut rng = Rng::new(seed.wrapping_mul(0x0100_0193).wrapping_add(17));
         // The reduced canonical state survives content-addressed storage, and is
         // musically sensitive: same identities + changed content → different bytes.
         let session = generators::operation_envelopes(&mut rng, 40, 3, 6, 6);
@@ -91,6 +138,37 @@ fn criterion_4_canonical_serialization_stability() {
     }
     // Strong sensitivity: same identities, changed content -> different bytes.
     roundtrip::assert_content_mutation_changes_serialization();
+}
+
+/// **Full-Score materialization reproducibility** (achievable without the byte
+/// codec). Reducing the same edit session onto the same base `Score` twice —
+/// once in authored order, once shuffled — yields the *identical* materialized
+/// `epiphany_core::Score` and bookkeeping state. This is the determinism
+/// precondition any future whole-Score byte codec depends on, asserted today via
+/// structural equality of the real graph (`reduce_onto`).
+#[test]
+fn full_score_materialization_is_reproducible() {
+    for seed in 0..16u64 {
+        convergence::run_graph_convergence(4, seed.wrapping_mul(0x0100_0193).wrapping_add(23));
+    }
+}
+
+/// Criterion 4 (full-Score byte round-trip) — **pending item 5 (Agent B).** A
+/// whole-`epiphany_core::Score` / `GraphMaterialization` `encode → decode →
+/// re-encode` byte round-trip requires the whole-score canonical codec
+/// (`CanonicalEncode`/`CanonicalDecode for Score`), which does not exist yet:
+/// today only the bookkeeping `MaterializedState` and the A/B typed values have
+/// codecs. This gate is intentionally `#[ignore]`'d (visible as *ignored*, never
+/// falsely green) until item 5 lands the codec; then drop the attribute and
+/// assert the real byte cycle through a bundle snapshot.
+#[test]
+#[ignore = "pending item 5 (Agent B): whole-score codec (CanonicalEncode/Decode for Score) does not exist yet"]
+fn criterion_4_full_score_byte_roundtrip() {
+    unimplemented!(
+        "blocked on item 5: epiphany_core::Score has no canonical byte codec. \
+         When it lands, reduce_onto a base, encode the Score, decode, and assert \
+         a byte-identical re-encode through a real bundle snapshot."
+    );
 }
 
 /// Criterion 5 — **Reduction determinism.** A randomized 1,000-envelope set,

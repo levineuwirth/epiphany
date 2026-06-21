@@ -29,11 +29,20 @@
 //!   manifest-selection harness, driving the real [`epiphany_bundle`] through
 //!   its public API and re-exporting its in-crate gates.
 //! * [`convergence`] — the CRDT convergence and reduction-determinism harnesses
-//!   (criteria 1 and 5), driving the real [`epiphany_ops::OperationSet`] /
-//!   [`epiphany_ops::canonical_reduction_order`] / reduce, and re-exporting Agent
-//!   C's own determinism gate.
+//!   (criteria 1 and 5). Criterion 1 proper is **real-Score** convergence
+//!   ([`convergence::run_graph_convergence`]): an edit session reduced onto a
+//!   real [`epiphany_core::Score`] via [`epiphany_ops::OperationSet::reduce_onto`]
+//!   must materialize an identical graph under every delivery order. The
+//!   byte-canonical **bookkeeping projection** convergence
+//!   ([`convergence::assert_convergence`], over
+//!   [`epiphany_ops::OperationSet::reduce`] →
+//!   [`epiphany_ops::MaterializedState`]) is retained as a determinism gate and
+//!   the basis of criterion 5. Re-exports Agent C's own determinism gate.
 //! * [`equivocation`] — the equivocation harness (criterion 3), driving the real
 //!   [`epiphany_ops::OperationSlot`] model and re-exporting Agent C's gate.
+//! * [`negative`] — regression guards for every defect the Agent C framework
+//!   audit surfaced (the M1 fixes), so a regression in `epiphany-ops` trips this
+//!   suite directly rather than slipping past a generic convergence gate.
 //!
 //! * [`layout_stub`] — the layout round-trip harness (criterion 6). Agent E
 //!   (`epiphany-layout-ir`, Chapters 7 & 9) has landed, so this module — once a
@@ -65,12 +74,19 @@
 //!
 //! | # | Criterion | Entry point |
 //! |---|-----------|-------------|
-//! | 1 | Convergence | [`convergence::assert_convergence`] |
+//! | 1 | Convergence (real Score) | [`convergence::run_graph_convergence`] |
 //! | 2 | Crash safety | [`bundle_harness::run_crash_recovery`] |
 //! | 3 | Equivocation | [`equivocation::assert_equivocation_order_independent`] |
-//! | 4 | Canonical serialization stability | [`roundtrip::run_roundtrip_corpus`] |
+//! | 4 | Canonical serialization stability (typed + container) | [`roundtrip::run_roundtrip_corpus`] |
 //! | 5 | Reduction determinism | [`convergence::assert_reduction_determinism`] |
 //! | 6 | Layout round-trip | [`layout_stub::round_trip`] |
+//!
+//! Criterion 1's reducer-bookkeeping counterpart ([`convergence::assert_convergence`])
+//! and criterion 4's bookkeeping-projection serialization
+//! ([`roundtrip::assert_reduction_serialization_stable`]) are retained under
+//! honest names. The full-`Score` **byte** round-trip is pending item 5 (Agent
+//! B): no whole-score codec exists yet, so that one gate is marked `#[ignore]`
+//! in `tests/acceptance.rs` rather than asserted falsely.
 
 pub mod rng;
 
@@ -80,6 +96,7 @@ pub mod roundtrip;
 
 pub mod convergence;
 pub mod equivocation;
+pub mod negative;
 
 pub mod bundle_harness;
 

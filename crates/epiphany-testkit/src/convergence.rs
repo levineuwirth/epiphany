@@ -3,18 +3,34 @@
 //! v0 acceptance criterion 1 (Convergence) and criterion 5 (Reduction
 //! determinism) — the determinism heart of Chapter 6.
 //!
-//! It drives the **real** [`epiphany_ops`] crate (Agent C has shipped): an
-//! [`OperationSet`] accepts the envelopes, [`OperationSet::reduce`] materializes
-//! them, and the materialized state's `canonical_bytes` is the artifact compared
-//! across delivery orders. Because the canonical reduction order
+//! It drives the **real** [`epiphany_ops`] crate (Agent C has shipped). There
+//! are two levels of convergence, and this harness asserts both:
+//!
+//! * **Real-Score convergence** ([`assert_graph_convergence`],
+//!   [`run_graph_convergence`]) is the headline criterion 1: an edit session is
+//!   reduced onto a real base [`epiphany_core::Score`] via
+//!   [`OperationSet::reduce_onto`], and the entire materialized graph (the
+//!   `Score` *and* its bookkeeping state) must be identical across delivery
+//!   orders, pass `check_invariants`, and genuinely mutate the score.
+//! * **Reducer-bookkeeping convergence** ([`assert_convergence`],
+//!   [`run_convergence`], [`run_two_staff_convergence`]) compares the canonical
+//!   *bookkeeping projection* — [`OperationSet::reduce`] →
+//!   `MaterializedState::canonical_bytes` — across delivery orders. This is the
+//!   Chapter 6 §6.3 ledger (effects, conflicts, anomalies, tombstones,
+//!   spellings, pending), not the full musical graph; it is retained as the
+//!   byte-canonical determinism gate and the basis of criterion 5.
+//!
+//! Because the canonical reduction order
 //! ([`epiphany_ops::canonical_reduction_order`]) is a function of the operation
 //! *set* and not of delivery order, every delivery permutation must materialize
-//! byte-identically. The negative control in the tests proves the harness is not
-//! vacuous: a reducer that consumed *arrival* order instead would diverge, and
-//! this harness would catch it.
+//! identically at both levels. The negative control in the tests proves the
+//! harness is not vacuous: a reducer that consumed *arrival* order instead would
+//! diverge, and this harness would catch it.
 
-use epiphany_core::OperationId;
-use epiphany_ops::{canonical_reduction_order, OperationEnvelope, OperationSet};
+use epiphany_core::{check_invariants, OperationId, Score, StaffInstanceId, VoiceId};
+use epiphany_ops::{
+    canonical_reduction_order, GraphMaterialization, OperationEnvelope, OperationSet,
+};
 
 use crate::rng::Rng;
 
@@ -165,6 +181,106 @@ pub fn run_authoritative_reduction_gate(sets: usize, orders: usize, seed: u64) {
     }
 }
 
+// === Real-Score convergence (acceptance criterion 1, graph level). ==========
+
+/// Reduces `envelopes` onto `base` in the given delivery order via the real
+/// [`OperationSet::reduce_onto`], returning the full graph materialization (the
+/// `epiphany_core::Score` together with its canonical bookkeeping state).
+fn materialize_onto_in_order(
+    base: &Score,
+    envelopes: &[OperationEnvelope],
+) -> GraphMaterialization {
+    let mut set = OperationSet::new();
+    set.accept_all(envelopes.iter().cloned());
+    set.reduce_onto(base)
+}
+
+/// The number of events the given voice carries in `score`, or `None` if the
+/// voice is absent.
+fn voice_event_count(score: &Score, voice: VoiceId) -> Option<usize> {
+    score
+        .voices()
+        .find_map(|(_, _, v)| (v.id == voice).then_some(v.events.len()))
+}
+
+/// **Real-Score convergence (acceptance criterion 1).** Reduces the same
+/// operation set onto `base` under `orders` independent delivery permutations
+/// and asserts the entire [`GraphMaterialization`] — the real
+/// [`epiphany_core::Score`] *and* its bookkeeping state — is identical every
+/// time. Also asserts the materialized score satisfies every Chapter 5 graph
+/// invariant ([`check_invariants`]) and that the session is non-vacuous: the
+/// score actually changed and each targeted voice grew.
+pub fn assert_graph_convergence(
+    base: &Score,
+    envelopes: &[OperationEnvelope],
+    targets: &[(StaffInstanceId, VoiceId)],
+    orders: usize,
+    rng: &mut Rng,
+) {
+    let reference = materialize_onto_in_order(base, envelopes);
+
+    // The materialized real Score is structurally valid.
+    let violations = check_invariants(&reference.score);
+    assert!(
+        violations.is_empty(),
+        "materialized score violates graph invariants: {violations:?}"
+    );
+
+    // Non-vacuity: the session genuinely mutated the score, and each targeted
+    // voice grew (the generator inserts only at fresh positions, so no insert is
+    // lost to promotion).
+    assert!(
+        reference.score != *base,
+        "the edit session did not change the base score (vacuous convergence test)"
+    );
+    for &(_, voice) in targets {
+        let before = voice_event_count(base, voice).expect("target voice exists in base");
+        let after =
+            voice_event_count(&reference.score, voice).expect("target voice survives reduction");
+        assert!(
+            after > before,
+            "target voice {voice:?} did not grow under reduction ({before} -> {after})"
+        );
+    }
+
+    for k in 0..orders {
+        let perm = rng.permutation(envelopes.len());
+        let shuffled: Vec<OperationEnvelope> = perm.iter().map(|&i| envelopes[i].clone()).collect();
+        let got = materialize_onto_in_order(base, &shuffled);
+        assert_eq!(
+            reference, got,
+            "delivery permutation #{k} changed the materialized Score \
+             (graph reduction is not order-independent)"
+        );
+    }
+}
+
+/// Selects a `valid_score` base with at least two voices (scanning successive
+/// seeds), so the graph convergence gate genuinely edits two staves.
+fn two_voice_base(seed: u64) -> Score {
+    let mut s = seed;
+    for _ in 0..64 {
+        let score = epiphany_core::generators::valid_score(s);
+        if score.voices().count() >= 2 {
+            return score;
+        }
+        s = s.wrapping_mul(0x9E37_79B9).wrapping_add(1);
+    }
+    epiphany_core::generators::valid_score(seed)
+}
+
+/// **The self-contained real-Score convergence driver (criterion 1).** Builds a
+/// two-voice base score, authors a real ~50-bar edit session against its actual
+/// voices ([`crate::generators::graph_edit_session`]), and asserts graph-level
+/// convergence across `orders` delivery permutations. This is the graph
+/// counterpart of [`run_two_staff_convergence`] (its reducer-bookkeeping twin).
+pub fn run_graph_convergence(orders: usize, seed: u64) {
+    let base = two_voice_base(seed);
+    let mut rng = Rng::new(seed ^ 0x67A0_6FAC_E0B0_B0B0);
+    let (targets, envelopes) = crate::generators::graph_edit_session(&base, &mut rng);
+    assert_graph_convergence(&base, &envelopes, &targets, orders, &mut rng);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,6 +303,13 @@ mod tests {
     fn two_staff_session_converges() {
         for seed in 0..16u64 {
             run_two_staff_convergence(8, seed.wrapping_mul(0x9E37_79B9).wrapping_add(1));
+        }
+    }
+
+    #[test]
+    fn graph_sessions_converge_on_the_real_score() {
+        for seed in 0..8u64 {
+            run_graph_convergence(4, seed.wrapping_mul(0x9E37_79B9).wrapping_add(7));
         }
     }
 

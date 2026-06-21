@@ -12,7 +12,8 @@
 //! first violation.
 
 use epiphany_testkit::{
-    bundle_harness, convergence, equivocation, fixtures, generators, layout_stub, roundtrip, Rng,
+    bundle_harness, convergence, equivocation, fixtures, generators, layout_stub, negative,
+    roundtrip, Rng,
 };
 
 fn main() {
@@ -37,8 +38,9 @@ fn main() {
     eprintln!("[1/8] canonical round-trip corpus: {iters} iters");
     roundtrip::run_roundtrip_corpus(iters, 0x00C0_FFEE_1234_5678);
 
-    // 1b. Bundle manifest + score serialization stability.
-    eprintln!("[1b ] manifest + score serialization stability");
+    // 1b. Bundle manifest + reducer-bookkeeping serialization stability.
+    //     (Full-Score *byte* round-trip is pending item 5's whole-score codec.)
+    eprintln!("[1b ] manifest + reducer-bookkeeping serialization stability");
     for seed in 0..n(64) {
         roundtrip::assert_manifest_roundtrip(&roundtrip::committed_manifest(seed));
         let mut rng = Rng::new(seed.wrapping_mul(0x0100_0193).wrapping_add(17));
@@ -67,14 +69,22 @@ fn main() {
         bundle_harness::run_manifest_selection(seed);
     }
 
-    // 5. Convergence (criterion 1): random sessions + the two-staff scenario.
-    eprintln!("[5/8] convergence across delivery orders");
+    // 5. Convergence (criterion 1): real-Score convergence through reduce_onto,
+    //    plus the reducer-bookkeeping projection convergence.
+    eprintln!("[5/8] convergence across delivery orders (real Score + bookkeeping)");
+    for seed in 0..n(64) {
+        convergence::run_graph_convergence(6, seed.wrapping_mul(0x9E37_79B9).wrapping_add(11));
+    }
     for seed in 0..n(500) {
         convergence::run_convergence(24, 8, seed.wrapping_mul(0x9E37_79B9));
     }
     for seed in 0..n(32) {
         convergence::run_two_staff_convergence(8, seed.wrapping_mul(0x9E37_79B9).wrapping_add(7));
     }
+
+    // 5b. Audit regression guards (every defect the Agent C audit surfaced).
+    eprintln!("[5b ] audit defect regression guards");
+    negative::run_all();
 
     // 6. Reduction determinism (criterion 5): a large set reduced many ways, the
     //    testkit's authoritative causal-order gate, + Agent C's own gate.
