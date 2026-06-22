@@ -731,8 +731,11 @@ impl<'a> Reducer<'a> {
     // --- Voice promotion pre-pass (Chapter 6 §6.10 InsertEvent). ------------
 
     fn compute_promotions(&mut self, active: &[&OperationEnvelope]) {
-        // Bucket inserts by target voice. Promotion applies only to concurrent
-        // operations whose half-open duration intervals overlap.
+        // Bucket inserts by target voice. Bucketing by `op.voice` alone realizes
+        // the spec's `(staff_instance, original_voice)` key: a VoiceId is
+        // globally unique and (Invariant 5) belongs to exactly one staff
+        // instance, so the voice id alone determines the pair. Promotion applies
+        // only to concurrent operations whose half-open duration intervals overlap.
         let mut buckets: BTreeMap<VoiceId, Vec<&OperationEnvelope>> = BTreeMap::new();
         for env in active {
             if let OperationPayload::Primitive(OperationKind::InsertEvent(op)) = &env.payload {

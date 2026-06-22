@@ -2066,6 +2066,30 @@ mod tests {
     }
 
     #[test]
+    fn degenerate_tuplet_ratio_is_rejected_on_decode() {
+        // Guards the TupletRatio::dec re-validation (Pass 11 item 3.5): a
+        // hand-crafted byte stream must not be able to inject a degenerate ratio
+        // that TupletRatio::new would reject at construction. Without the
+        // `.ok_or(Reconstruct)` in dec, these would decode into an
+        // unconstructible-by-API value.
+        let decode = |actual: u32, notated: u32| {
+            let mut bytes = Vec::new();
+            actual.enc(&mut bytes);
+            notated.enc(&mut bytes);
+            TupletRatio::dec(&mut Reader::new(&bytes))
+        };
+        for (a, n) in [(0u32, 0u32), (2, 0), (0, 2), (4, 4)] {
+            assert!(
+                matches!(decode(a, n), Err(ScoreDecodeError::Reconstruct(_))),
+                "degenerate ratio {a}:{n} must be rejected on decode"
+            );
+        }
+        // A well-formed ratio still decodes.
+        let ok = decode(3, 2).expect("non-degenerate ratio decodes");
+        assert_eq!((ok.actual(), ok.notated()), (3, 2));
+    }
+
+    #[test]
     fn exotic_event_and_pitch_variants_round_trip() {
         // Round-trip is structural, so this need not satisfy graph invariants —
         // it exists to exercise every event/pitch variant the generators omit.

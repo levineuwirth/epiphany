@@ -3690,7 +3690,7 @@ pub enum ObjectKind {
   Section~\ref{sec:graph:system-derived} with the reserved domain tag
   \texttt{"MUSCSANM"} over the anomaly kind's canonical bytes:
   \texttt{derive\_system\_id::<IntegrityAnomalyId>(b"MUSCSANM",
-  \&kind.canonical\_bytes())}. Because the identity is content-derived
+  \&kind.to\_canonical\_bytes())}. Because the identity is content-derived
   from the kind, two replicas observing the same structural failure
   derive the same anomaly identifier and therefore agree on anomaly
   identity across the network.
@@ -7898,9 +7898,9 @@ pub struct LayoutObjectId(pub u128);
 \begin{requirement}
   \label{req:layoutir:object-id-derivation}
   A \texttt{LayoutObjectId} \MUST{} be stable across re-layouts whose
-  underlying source is unchanged. It is derived by domain-separated
-  BLAKE3 truncation with the reserved layout domain tag
-  \texttt{"MUSCLOID"} over a key that depends on how the object is
+  underlying source is unchanged. It \MUST{} be derived by
+  domain-separated BLAKE3 truncation with the reserved layout domain
+  tag \texttt{"MUSCLOID"} over a key that depends on how the object is
   manifested:
 
   \begin{itemize}
@@ -7928,7 +7928,13 @@ pub struct LayoutObjectId(pub u128);
   Section~\ref{sec:graph:system-derived}. The fixed derivation is
   pinned for incremental-relayout correctness and provenance
   back-reference stability; its consumers are the solver and renderer
-  (Track~A), not the interchange track.
+  (Track~A), not the interchange track. Because these ids never enter
+  document state, no stored or interchanged artifact depends on this
+  derivation; the v0 reference crate accordingly mints layout ids with
+  a provisional, untagged stand-in (synthesized objects borrowing the
+  \texttt{"MUSCCONF"} tag), and wiring the \texttt{"MUSCLOID"}
+  derivation above is Track~A work rather than a property the prototype
+  yet realizes.
 \end{requirement}
 
 \section{The Stage Pipeline}
@@ -13991,8 +13997,10 @@ state.
   pinned the \texttt{TransactionCategory} and \texttt{ObjectKind} core
   vocabularies; added \texttt{ResolutionAction::Dismiss} so the
   \texttt{Dismissed} resolution state is reachable by an authored
-  operation; and pinned the (non-canonical) \texttt{LayoutObjectId}
-  derivation with a \texttt{MUSCLOID} tag. \emph{Fixes:} blob hashing
+  operation; and specified the (non-canonical) \texttt{LayoutObjectId}
+  derivation with a \texttt{MUSCLOID} tag as the Track~A target (the v0
+  prototype still mints provisional layout ids; wiring \texttt{MUSCLOID}
+  is Track~A work). \emph{Fixes:} blob hashing
   is the bare \texttt{"MUSCBLOB" || payload} (deleted the
   contradictory ``identically to chunks'' phrasing); added the
   equal-generation superblock rule (\texttt{DivergentSameGeneration}

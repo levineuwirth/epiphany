@@ -208,5 +208,8 @@ which is both faithful and removes the need for a runtime pass:
 - `TimeSignature::new` rejects beat groups that do not sum to the measure
   duration.
 - `EventOrderingDAG::try_new` rejects a cyclic aleatoric ordering.
-- `Tuplet` degenerate ratios (`0:n`/`n:0`) are caught by invariant 16
-  (`check_invariants`), since a `Tuplet` is a plain struct.
+- `TupletRatio::new` rejects degenerate ratios (either term zero, or
+  `actual == notated`); its fields are private, so a degenerate `TupletRatio`
+  is never representable, and codec decode re-validates through the same
+  constructor. (Pass 11 item 3.5 moved this from a runtime invariant-16
+  sub-check to a construction-time MUST.)

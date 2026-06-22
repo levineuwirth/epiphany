@@ -136,8 +136,9 @@ impl Provenance {
 /// stable across re-layouts where the source is unchanged): inserting,
 /// removing, or reordering other objects cannot change any object's stable id,
 /// because each depends solely on its own source's canonical bytes. v0 derives
-/// it as `trunc128(BLAKE3(source.canonical_bytes()))`; see `DECISIONS.md` for
-/// why this is not (yet) domain-separated.
+/// it as `trunc128(BLAKE3(source.canonical_bytes()))` — a provisional, untagged
+/// stand-in. The spec (`req:layoutir:object-id-derivation`) pins a
+/// `MUSCLOID`-tagged derivation as the Track A target; see `DECISIONS.md`.
 pub fn stable_layout_id(source: &TypedObjectId) -> LayoutObjectId {
     LayoutObjectId(trunc128(&blake3_256(&source.canonical_bytes())))
 }
@@ -155,9 +156,11 @@ pub fn manifestation_layout_id(source: &TypedObjectId, region: RegionId) -> Layo
 
 /// Derives the stable layout id of an **engraver-synthesized** object from its
 /// `source` and its [`SynthesisKind`], so distinct synthesis kinds from one
-/// source do not collide (Chapter 7 §"Provenance"). Domain-tagged via the
-/// borrowed `MUSCCONF` tag with a `synthesized` discriminator prefix (the
-/// determinism crate defines no layout tag — see `DECISIONS.md`).
+/// source do not collide (Chapter 7 §"Provenance"). Provisionally domain-tagged
+/// via the borrowed `MUSCCONF` tag with a `synthesized` discriminator prefix; the
+/// determinism crate defines no `MUSCLOID` layout tag yet, and the spec'd
+/// `MUSCLOID` derivation (`req:layoutir:object-id-derivation`) is the Track A
+/// target — see `DECISIONS.md`.
 pub fn synthesized_layout_id(
     source: &TypedObjectId,
     kind: SynthesisKind,

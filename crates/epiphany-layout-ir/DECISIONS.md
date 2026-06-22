@@ -9,11 +9,15 @@ items batched."*).
 
 > **RATIFIED (Pass 11, 2026-06-21).** layout P11-2 (`LayoutObjectId` derivation)
 > is ratified into `core_spec.tex` §"Provenance"
-> (`req:layoutir:object-id-derivation`): a `MUSCLOID`-tagged derivation keying
-> multiply-manifested objects on `(source, region)` and synthesized objects on
-> `(source, synthesis_kind, stable_semantic_instance_key)`. Layout ids are
-> non-canonical, so this is flagged for Track A (solver/renderer). layout P11-1
-> (layout→ops dependency) stays a crate-topology call for the G–K re-cut. See
+> (`req:layoutir:object-id-derivation`): the spec **pins** a `MUSCLOID`-tagged
+> derivation keying multiply-manifested objects on `(source, region)` and
+> synthesized objects on `(source, synthesis_kind, stable_semantic_instance_key)`.
+> Layout ids are non-canonical, so the `MUSCLOID` tag is **flagged for Track A
+> and not yet wired in code**: this crate still mints provisional ids (untagged;
+> synthesized borrows `MUSCCONF`) because the frozen determinism crate exposes no
+> `MUSCLOID` tag (see the `stable_layout_id` bullet below). Adopting the spec'd
+> derivation is Track A (solver/renderer) work. layout P11-1 (layout→ops
+> dependency) stays a crate-topology call for the G–K re-cut. See
 > `spec/PASS11_RATIFICATION_LOG.md`.
 
 ## Scope
@@ -88,7 +92,11 @@ object is covered); the provenance-preservation contract itself is unchanged.
   reordering of other objects (Chapter 7 §"Provenance"). It is not domain-
   separated, and the engraving-decision id borrows the `MUSCCONF` tag with a
   literal `engraving-decision` type prefix, because the frozen determinism crate
-  (Agent A) defines no layout-object domain tag. See Pass 11 candidate 3.
+  (Agent A) defines no layout-object domain tag. Pass 11 ratified the **target**
+  derivation — a `MUSCLOID`-tagged hash (`req:layoutir:object-id-derivation`) —
+  but adopting it is Track A work (the determinism crate must first expose the
+  layout-namespace tag); these ids stay provisional until then. See the header
+  note.
 
 - **Repeated manifestations get per-`(source, region)` ids.** A score-graph
   object manifested within a region is laid out **per manifestation**: its stable

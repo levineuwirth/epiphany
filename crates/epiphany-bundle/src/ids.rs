@@ -101,6 +101,11 @@ impl ManifestId {
     /// core_spec §"Manifest Encoding", Requirement `req:format:manifest-id`
     /// (`trunc128(BLAKE3("MUSCMNIF" || document_id || generation || body))`,
     /// body excluding `manifest_id`).
+    ///
+    /// Note: `document_id` and `generation` are committed twice — explicitly
+    /// here and again inside `body_preimage` (the canonical manifest body opens
+    /// with them). This duplication is intentional and golden-locked, not an
+    /// oversight: the preimage shape above is the ratified format.
     pub(crate) fn derive(document_id: DocumentId, generation: u64, body_preimage: &[u8]) -> Self {
         let mut p = Preimage::new(DomainTag::MANIFEST_ID);
         p.push_bytes(document_id.as_bytes());
