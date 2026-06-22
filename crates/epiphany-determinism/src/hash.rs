@@ -76,9 +76,11 @@ impl ContentHash {
     pub const ZERO: ContentHash = ContentHash([0u8; 32]);
 
     /// Hashes a blob payload: `BLAKE3(MUSCBLOB || payload)`. This is the
-    /// `BlobId` construction (Chapter 8: "BLAKE3 of blob content with domain
-    /// tag `MUSCBLOB`") — the only spec content hash that is a bare
-    /// `domain || payload`.
+    /// `BlobId` construction — the only spec content hash that is a bare
+    /// `domain || payload`. RATIFIED by Pass 11 (item 3.1, P11-D3, a spec-bug
+    /// fix): core_spec §"Blobs", Requirement `req:format:blob-hash-shape` now
+    /// states the bare form explicitly and deletes the contradictory
+    /// "identically to chunks" phrasing.
     ///
     /// Other content hashes are *not* this shape: a chunk hash also commits to
     /// kind, schema version, and uncompressed length (Chapter 8

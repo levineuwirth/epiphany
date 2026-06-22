@@ -7,7 +7,11 @@
 //!
 //! * `vector`: for each replica the authoring replica knows, the highest
 //!   *contiguous* counter it has observed. `vector[r] = n` asserts that every
-//!   operation `(r, 0..=n)` is a causal predecessor.
+//!   operation `(r, 0..=n)` is a causal predecessor. The counter floor is
+//!   **zero-based** and normative — RATIFIED by Pass 11 (item 3.4, P11-C7):
+//!   core_spec §"Causal Context via Dotted Version Vectors" now pins the
+//!   zero-based floor so a second implementation cannot pick a one-based floor
+//!   and diverge on pending detection.
 //! * `dots`: individual [`OperationId`]s observed but not yet contiguous in the
 //!   vector — "known but not yet contiguous" predecessors.
 //!

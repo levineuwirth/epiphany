@@ -32,13 +32,15 @@ use crate::support::{
     IntegrityAnomalyRegistryId, ObjectKind, ReplicaAnomalyRegistryId, SerializedCanonicalInputs,
 };
 
-/// The `MUSCS`-prefixed system domain tag under which integrity-anomaly
-/// identifiers are content-derived, so two replicas reducing the same operation
-/// set mint byte-identical anomaly ids (Chapter 5 §"System-Derived
-/// Identifiers"). A prototype choice (see `DECISIONS.md`): the spec gives
-/// `IntegrityAnomaly` an `IntegrityAnomalyId` but does not pin its derivation.
+/// The reserved built-in system domain tag (`MUSCSANM`) under which
+/// integrity-anomaly identifiers are content-derived, so two replicas reducing
+/// the same operation set mint byte-identical anomaly ids. Ratified by Pass 11
+/// (item 1.4): `MUSCSANM` is a built-in reserved tag alongside `MUSCSVCE` /
+/// `MUSCSPCH` (Chapter 5 §"System-Derived Counter Collisions",
+/// Requirement `req:graph:integrity-anomaly-id`), not an extension tag —
+/// anomalies are core.
 fn anomaly_domain_tag() -> SystemDomainTag {
-    SystemDomainTag::new_extension(*b"MUSCSANM").expect("MUSCSANM is a valid system tag")
+    SystemDomainTag::ANOMALY
 }
 
 /// A range of envelopes from a single replica identified as

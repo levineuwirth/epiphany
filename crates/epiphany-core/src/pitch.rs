@@ -899,9 +899,12 @@ mod tests {
     fn system_pitch_id_byte_form_is_locked() {
         // Golden: locks the MUSCSPCH canonical-input layout (space name, scale
         // position discriminant + payload, tuning, acoustic realization; strings
-        // length-prefixed NFC) and the hash. A change to the byte form breaks
-        // this deliberately, forcing the derivation change to be acknowledged
-        // (DECISIONS P11-6).
+        // length-prefixed NFC) and the hash. RATIFIED by Pass 11 (item 1.3,
+        // P11-6): this is the spec's golden, normative in core_spec
+        // §"System-Derived Pitch Identity",
+        // Requirement `req:graph:system-derived-pitch-id` — note the tuning
+        // reference (incl. the Inherit marker) is always part of intrinsic
+        // identity. A change to the byte form breaks this deliberately.
         let id = derive_system_pitch_id(&cmn(CmnNominal::C, 0, 4));
         assert_eq!(id.replica(), crate::ids::ReplicaId::SYSTEM_DERIVED);
         const GOLDEN: [u8; 16] = [

@@ -7,6 +7,16 @@ than improvised in code (QUICKSTART, Process notes: *"Ambiguities go into a
 batch, not into code … Don't open Pass 11 until you have at least three such
 items batched."*).
 
+> **RATIFIED (Pass 11, 2026-06-21).** The bundle-layer Pass 11 candidates have
+> been ratified into `core_spec.tex` — see `spec/PASS11_RATIFICATION_LOG.md`.
+> Highlights: D4 adopted (ChunkKind/ProfileId/CompressionAlgorithm discriminants);
+> D5 adopted (`ManifestId` preimage, with `manifest_id` excluded); D1 fixed
+> (equal-generation superblock rule → `DivergentSameGeneration`); D3 fixed (blob
+> hashing is bare `MUSCBLOB‖payload`, spec contradiction removed); D6 fixed
+> (`ProfileConstraints` defined with the required `RetentionPolicy`,
+> first-declared multi-profile precedence). D2 (Binary Format companion) stays
+> Track B, with the convention baseline ratified by core item 1.8.
+
 ## Implementation decisions (QUICKSTART "Decisions you'll need to make")
 
 1. **Replica ID entropy source** — N/A to this crate (Agent B/`epiphany-core`).

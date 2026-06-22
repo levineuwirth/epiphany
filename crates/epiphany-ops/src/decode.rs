@@ -340,7 +340,8 @@ fn resolution_action(reader: &mut Reader<'_>) -> Result<ResolutionAction> {
         3 => Ok(ResolutionAction::Reanchor {
             new_target: typed_object_id(reader)?,
         }),
-        4 => Ok(ResolutionAction::Registered(registry_id(
+        4 => Ok(ResolutionAction::Dismiss),
+        5 => Ok(ResolutionAction::Registered(registry_id(
             reader,
             ResolutionRegistryId,
         )?)),

@@ -38,6 +38,17 @@ operation so demotion is never observable.
 
 ## Pass 11 candidates (ambiguities for the spec, not resolved in code)
 
+> **RATIFIED (Pass 11, 2026-06-21).** The spec-internal items below have been
+> ratified into normative `core_spec.tex` text — see
+> `spec/PASS11_RATIFICATION_LOG.md`. Disposition summary: P11-1/3/6 adopted as
+> golden (TypedObjectId discriminants, promoted-voice + synthetic-pitch
+> derivations); P11-2 fixed (count = 19; three construction-time MUSTs named, and
+> `TupletRatio` now rejects degenerate ratios at construction); P11-4 adopted
+> (RationalTime/scalar layouts + codec convention baseline the Binary Format
+> companion inherits); P11-7 decided (tempo `Linear` interpolates speed). P11-5
+> remains a scope boundary (Track C). The byte-layout golden tests now cite their
+> ratified requirements.
+
 ### P11-1 — `TypedObjectId` discriminant values are unspecified
 
 Chapter 5 fixes the *shape* of `TypedObjectId::canonical_bytes` ("a 16-bit

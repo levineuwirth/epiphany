@@ -2012,6 +2012,43 @@ exponential segments, conversion has a closed-form solution. For curve
 segments, conversion is numerical.
 
 \begin{requirement}
+  \label{req:time:linear-interpolates-speed}
+  For a \texttt{TempoShape::Linear} segment, the quantity that varies
+  linearly across the segment is \emph{speed} --- whole notes per
+  second --- as a function of fractional position within the segment,
+  \emph{not} beats-per-minute and \emph{not} beat period. Speed is
+  derived from a \texttt{Tempo} as
+  $\text{speed} = \text{bpm} \times w(\text{beat\_unit}) / 60$, where
+  $w(\cdot)$ is the beat unit's value in whole notes. Writing
+  $s_0, s_1$ for the segment's start and end speeds and
+  $u \in [0,1]$ for fractional position, $s(u) = s_0 + (s_1 - s_0)\,u$,
+  and the wall-clock duration of the segment of musical length
+  $\ell$ is the closed form
+  $\int_0^1 \ell\,\mathrm{d}u / s(u) = (\ell / (s_1 - s_0))\,
+  \ln(s_1 / s_0)$ (and $\ell / s_0$ when $s_1 = s_0$).
+
+  A \texttt{TempoShape::Exponential} segment interpolates speed
+  \emph{geometrically}: $s(u) = s_0\,(s_1/s_0)^{u}$, i.e. a constant
+  continuous rate of change of speed.
+\end{requirement}
+
+\begin{rationale}
+  ``Linear interpolation from \texttt{start\_tempo} to
+  \texttt{end\_tempo}'' is ambiguous about which quantity is linear:
+  bpm, period, or speed. We pin \emph{speed} because it is the only
+  beat-unit-agnostic choice. A tempo map may change beat unit across
+  segments (a \texttt{quarter = 120} segment abutting a
+  \texttt{dotted-quarter = 80} segment); interpolating bpm would make
+  the wall-clock schedule depend on the arbitrary beat unit chosen to
+  notate each endpoint, whereas interpolating speed depends only on
+  the sounding rate. When both endpoints share a beat unit, speed-linear
+  and bpm-linear coincide, so the common case matches a conductor's
+  ``linear accelerando'' intuition. Because this choice fixes the
+  derived wall-clock schedule for every playback engine, it is stated
+  normatively rather than left to the implementation.
+\end{rationale}
+
+\begin{requirement}
   The tempo map \MUST{} expose two conversion functions:
   \texttt{musical\_to\_wallclock} and \texttt{wallclock\_to\_musical}.
   Both \MUST{} be deterministic: given identical tempo maps and inputs,
@@ -2177,6 +2214,20 @@ pub struct TupletRatio {
     pub notated: u32,
 }
 \end{lstlisting}
+
+\begin{requirement}
+  \label{req:time:tuplet-ratio-construction}
+  A \texttt{TupletRatio} is \emph{degenerate} if either term is zero
+  or if \texttt{actual == notated} (a ratio that expresses no
+  augmentation or diminution). Degenerate ratios \MUST{} be rejected
+  at construction: a conforming constructor of \texttt{TupletRatio}
+  (and therefore of any \texttt{Tuplet}) \MUST{} fail rather than
+  produce a value with \texttt{actual == 0}, \texttt{notated == 0}, or
+  \texttt{actual == notated}. This is a construction-time rejection,
+  not a runtime graph invariant (Section~\ref{sec:graph:invariants}):
+  a degenerate ratio is never a representable graph state, so no
+  invariant restores it after the fact.
+\end{requirement}
 
 \subsection{Tuplet Nesting}
 
@@ -2367,6 +2418,7 @@ encoding admits both as cases.
 \end{requirement}
 
 \begin{requirement}
+  \label{req:time:ordering-dag-acyclic}
   The ordering DAG \MUST{} be acyclic. Cycles \MUST{} be rejected at
   construction. Two events with no path between them in the DAG are
   unordered.
@@ -3394,6 +3446,11 @@ pub enum TypedObjectId {
     GraphicGesture(GraphicGestureId),
     TimeSignature(TimeSignatureId),
     AnalysisLayer(AnalysisLayerId),
+    Tuplet(TupletId),
+    RepeatStructure(RepeatStructureId),
+    LyricLine(LyricLineId),
+    ChordSymbol(ChordSymbolId),
+    View(ViewId),
     /// Extension-defined object kind, identified by registry id
     /// plus the extension's own 128-bit identifier.
     Registered(ObjectKindRegistryId, u128),
@@ -3406,6 +3463,51 @@ impl TypedObjectId {
     pub fn canonical_bytes(&self) -> Vec<u8> { /* ... */ }
 }
 \end{lstlisting}
+
+\begin{requirement}
+  \label{req:graph:typed-object-id-discriminants}
+  The \texttt{TypedObjectId} variant tag \MUST{} be encoded as a
+  16-bit big-endian discriminant followed by the variant payload's
+  canonical bytes. The discriminant of each variant is its
+  declaration-order index in the following closed table; this
+  assignment is normative and stable, and \MUSTNOT{} be reordered:
+
+  \begin{center}
+  \begin{tabular}{r l @{\qquad} r l}
+    \toprule
+    \textbf{Disc.} & \textbf{Variant} &
+    \textbf{Disc.} & \textbf{Variant} \\
+    \midrule
+    0  & \texttt{Event}                  & 14 & \texttt{Spanner} \\
+    1  & \texttt{Pitch}                   & 15 & \texttt{Marker} \\
+    2  & \texttt{Voice}                   & 16 & \texttt{AnalyticalAnnotation} \\
+    3  & \texttt{Staff}                   & 17 & \texttt{Comment} \\
+    4  & \texttt{StaffInstance}           & 18 & \texttt{GraphicObject} \\
+    5  & \texttt{StaffGroup}              & 19 & \texttt{GraphicGesture} \\
+    6  & \texttt{Region}                  & 20 & \texttt{TimeSignature} \\
+    7  & \texttt{Instrument}              & 21 & \texttt{AnalysisLayer} \\
+    8  & \texttt{PartDefinition}          & 22 & \texttt{Tuplet} \\
+    9  & \texttt{Measure}                 & 23 & \texttt{RepeatStructure} \\
+    10 & \texttt{BarlineAlignmentGroup}   & 24 & \texttt{LyricLine} \\
+    11 & \texttt{Slur}                    & 25 & \texttt{ChordSymbol} \\
+    12 & \texttt{Tie}                     & 26 & \texttt{View} \\
+    13 & \texttt{Beam}                    & 27 & \texttt{Registered} \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+
+  The object-kind set is closed at these 28 discriminants
+  (\texttt{0}--\texttt{27}). Every named object kind in the score
+  graph has a dedicated discriminant; kinds introduced by registered
+  extensions \MUST{} use discriminant \texttt{27}
+  (\texttt{Registered}) and are distinguished by their
+  \texttt{ObjectKindRegistryId}, never by extending this table. The
+  \texttt{Registered(reg, raw)} payload is encoded as the 128-bit
+  \texttt{reg.canonical\_bytes()} (16 big-endian bytes) followed by
+  the 16 big-endian bytes of the \texttt{raw} \texttt{u128}, for a
+  total canonical form of $2 + 16 + 16 = 34$ bytes.
+  \texttt{ObjectKindRegistryId} is a 128-bit value.
+\end{requirement}
 
 \subsection{Identifier Generation}
 
@@ -3488,14 +3590,22 @@ fn derive_system_counter(
 }
   \end{lstlisting}
 
-  Domain tags for system-derived identifiers:
+  The built-in (reserved) domain tags for system-derived identifiers
+  are a closed set of three:
   \begin{itemize}
-    \item \texttt{"MUSCSVCE"} for system-promoted voices.
+    \item \texttt{"MUSCSVCE"} for system-promoted voices
+      (Section~\ref{sec:graph:promoted-voices}).
     \item \texttt{"MUSCSPCH"} for system-derived pitches (rare;
-      only when promotion logic introduces a synthetic pitch).
+      only when promotion logic introduces a synthetic pitch;
+      Section~\ref{sec:graph:system-derived-pitch}).
+    \item \texttt{"MUSCSANM"} for integrity-anomaly identifiers
+      (Section~\ref{sec:graph:system-collisions}). Anomalies are
+      core, not an extension concern, so their tag is built in
+      alongside the other two.
     \item Additional domain tags introduced by registered
-      extensions \MUST{} begin with \texttt{"MUSCS"} and have
-      length exactly 8 bytes.
+      extensions \MUST{} begin with \texttt{"MUSCS"}, have length
+      exactly 8 bytes, and \MUSTNOT{} collide with the three
+      reserved tags above.
   \end{itemize}
 
   Two replicas reducing the same operation set \MUST{} derive
@@ -3550,7 +3660,47 @@ pub enum IntegrityAnomalyKind {
     /// transport.
     Registered(IntegrityAnomalyRegistryId),
 }
+
+/// The kind of object whose system-derived identifier collided.
+/// Open vocabulary, but intentionally narrower than TypedObjectId:
+/// only the kinds actually minted into the system-derived namespace
+/// appear here.
+pub enum ObjectKind {
+    Voice,   // system-promoted voices (MUSCSVCE)
+    Pitch,   // content-derived synthetic pitches (MUSCSPCH)
+    Registered(OperationKindRegistryId),
+}
 \end{lstlisting}
+
+\begin{requirement}
+  \label{req:graph:integrity-anomaly-id}
+  An \texttt{IntegrityAnomalyId} \MUST{} be derived by the
+  system-derived identifier function of
+  Section~\ref{sec:graph:system-derived} with the reserved domain tag
+  \texttt{"MUSCSANM"} over the anomaly kind's canonical bytes:
+  \texttt{derive\_system\_id::<IntegrityAnomalyId>(b"MUSCSANM",
+  \&kind.canonical\_bytes())}. Because the identity is content-derived
+  from the kind, two replicas observing the same structural failure
+  derive the same anomaly identifier and therefore agree on anomaly
+  identity across the network.
+\end{requirement}
+
+\begin{requirement}
+  \label{req:graph:object-kind-vocab}
+  \texttt{ObjectKind} (the kind field of
+  \texttt{SystemIdentifierCollision}) is an \emph{open} vocabulary
+  whose normative core set is exactly \texttt{Voice} and
+  \texttt{Pitch}, with a \texttt{Registered} escape for
+  extension-introduced system-derived kinds. It is deliberately
+  narrower than \texttt{TypedObjectId}'s 28-kind table
+  (Requirement~\ref{req:graph:typed-object-id-discriminants}):
+  \texttt{ObjectKind} enumerates only the kinds that are actually
+  minted into the \texttt{ReplicaId::SYSTEM\_DERIVED} namespace ---
+  today, promoted voices and synthetic pitches --- because those are
+  the only kinds for which a system-derived counter collision is
+  possible. A new core variant is added here only when a new object
+  kind begins being minted into the system-derived namespace.
+\end{requirement}
 
 \begin{requirement}
   Implementations \MUST{} perform a collision check during
@@ -3604,6 +3754,37 @@ pub enum IntegrityAnomalyKind {
   failure. Treating it as a diagnostic anomaly halts canonical
   growth until external recovery resolves the structural issue.
 \end{rationale}
+
+\subsection{System-Derived Pitch Identity}
+\label{sec:graph:system-derived-pitch}
+
+When promotion logic introduces a synthetic pitch (rare), its
+\texttt{PitchId} is content-addressed from the pitch's intrinsic
+identity rather than allocated from a replica counter, so that all
+replicas mint the same identifier for the same synthetic pitch.
+
+\begin{requirement}
+  \label{req:graph:system-derived-pitch-id}
+  A system-derived \texttt{PitchId} \MUST{} be derived by the
+  function of Section~\ref{sec:graph:system-derived} with domain tag
+  \texttt{"MUSCSPCH"} over a fixed canonical byte form of the pitch's
+  \emph{intrinsic identity}, defined as the pair (\emph{scale
+  position}, \emph{acoustic realization}). All variable-width string
+  components of this preimage (nominal names, accidental and tuning
+  catalog references) \MUST{} be length-prefixed and \MUST{} be
+  NFC-normalized at the derivation boundary, so that
+  canonically-equivalent Unicode spellings derive the same identifier.
+
+  The acoustic realization's \emph{tuning reference} is always part of
+  intrinsic identity, including the \texttt{TuningReference::Inherit}
+  case: \texttt{Inherit} is encoded as a distinct presence marker, not
+  as the absence of a field. Consequently a synthetic pitch that
+  inherits its tuning and one that names an explicit tuning are
+  \emph{distinct} identities even when they would resolve to the same
+  frequency in context. This makes synthetic-pitch identity stable
+  under later changes to the inherited tuning environment, and aligns
+  Invariant~11's uniqueness check with a fixed, context-free preimage.
+\end{requirement}
 
 \subsection{Identifier Stability}
 
@@ -4389,12 +4570,67 @@ preserves the non-overlap invariant without rejecting user intent.
     \item The losing operation's \texttt{OperationId}.
   \end{enumerate}
 
-  The exact derivation function (a hash of the concatenated
-  identifiers, normalized to the replica-plus-counter format
-  reserved for system-derived identifiers) is specified in the
-  semantic-operations companion document. Determinism is required so
-  that all replicas independently arrive at the same promoted
-  voice identity.
+  The derivation is the system-derived identifier function of
+  Section~\ref{sec:graph:system-derived} with domain tag
+  \texttt{"MUSCSVCE"} over a fixed 64-byte preimage formed by
+  concatenating the four identifiers in the order listed above, each
+  as its 16-byte big-endian canonical form:
+
+  \begin{lstlisting}[language=Rust]
+fn derive_promoted_voice_id(
+    staff_instance: StaffInstanceId,
+    original_voice: VoiceId,
+    winning_op: OperationId,
+    losing_op: OperationId,
+) -> VoiceId {
+    // 4 * 16 = 64 bytes, each component big-endian.
+    let mut inputs = Vec::with_capacity(64);
+    inputs.extend_from_slice(&staff_instance.canonical_bytes());
+    inputs.extend_from_slice(&original_voice.canonical_bytes());
+    inputs.extend_from_slice(&winning_op.canonical_bytes());
+    inputs.extend_from_slice(&losing_op.canonical_bytes());
+    derive_system_id::<VoiceId>(b"MUSCSVCE", &inputs)
+}
+  \end{lstlisting}
+
+  The enclosing staff instance is recovered from graph containment at
+  reduction time; the operation does not store it redundantly.
+  Determinism is required so that all replicas independently arrive at
+  the same promoted voice identity. This derivation is the same one
+  whose result Invariant~18 (Section~\ref{sec:graph:invariants})
+  verifies; the reducer that mints the voice and the verifier that
+  checks it consume one derivation.
+\end{requirement}
+
+\begin{requirement}
+  \label{req:graph:promotion-generalization}
+  The promotion rule generalizes from the pairwise case to any number
+  of concurrent overlapping inserts into the same voice by an
+  order-independent pre-pass:
+
+  \begin{enumerate}
+    \item Bucket the concurrent \texttt{InsertEvent} operations by
+      their target \texttt{(staff\_instance, original\_voice)}.
+    \item Within a bucket, walk the operations in ascending
+      \texttt{OperationId} order, maintaining a \emph{retained set} of
+      mutually non-overlapping inserts that stay in the original voice.
+    \item An operation whose inserted interval does not overlap any
+      member of the retained set joins the retained set. An operation
+      whose interval overlaps some retained member is a \emph{loser}
+      and is promoted; the lowest-\texttt{OperationId} retained member
+      it overlaps is its \texttt{winning\_operation}.
+  \end{enumerate}
+
+  Because the walk is by \texttt{OperationId} and the retained set is
+  built deterministically, every replica promotes the same operations
+  and derives the same promoted-voice identities regardless of
+  delivery order. ``Overlap'' is interval overlap of the half-open
+  inserted spans \texttt{[start,\,end)}: the rule applies to
+  \emph{partial} overlaps, not only to inserts that share an identical
+  start position. This is a deliberate widening of the pairwise rule's
+  identical-start-position language; it is the correct reading because
+  any positive-duration overlap breaks the voice non-overlap invariant
+  (Invariant~3), not just a shared onset.
 \end{requirement}
 
 \begin{requirement}
@@ -5099,6 +5335,29 @@ The score graph maintains a set of structural invariants. Implementations
   changes that restore them within the same operation.
 \end{requirement}
 
+This enumeration contains exactly \textbf{19} invariants. (Earlier
+summary material, including the QUICKSTART, referred to ``18 graph
+invariants''; the authoritative count is 19, matching this
+enumeration and the reference implementation.) These 19 are
+\emph{runtime} invariants: they hold over every well-formed graph and
+are restored by compensating changes when an edit would break them.
+
+Distinct from them are three \emph{construction-time} rejections
+defined in Chapter~\ref{ch:time}, which a conforming constructor
+\MUST{} enforce before a value ever enters the graph, and which no
+runtime invariant restores because the offending value is never a
+representable graph state:
+
+\begin{enumerate}
+  \item A \texttt{TimeSignature}'s beat groups \MUST{} sum to the
+    measure duration (Section~\ref{sec:time:meter}).
+  \item An \texttt{EventOrderingDAG} \MUST{} be acyclic
+    (Requirement~\ref{req:time:ordering-dag-acyclic}).
+  \item A \texttt{TupletRatio} \MUSTNOT{} be degenerate
+    (Section~\ref{sec:time:tuplets},
+    Requirement~\ref{req:time:tuplet-ratio-construction}).
+\end{enumerate}
+
 \section{Indexes and Auxiliary Structures}
 \label{sec:graph:indexes}
 
@@ -5289,6 +5548,20 @@ pub struct CausalContext {
   the canonical causal representation; they may appear in debugging
   output or in the operation log's expanded form, but the wire and
   storage representation of causal context is the DVV.
+
+  The per-replica counter floor is \textbf{zero-based} and
+  normative: \texttt{vector[r] == n} asserts that \emph{every}
+  operation \texttt{(r,\,0..=n)} is a causal predecessor --- the
+  contiguous range begins at counter \texttt{0}, not \texttt{1}. A
+  conforming implementation \MUSTNOT{} adopt a one-based floor: doing
+  so would shift the contiguous/dot boundary and make two
+  implementations disagree about which operations are pending versus
+  ready. The membership check (``is operation \texttt{(r,\,c)}
+  covered?'') is \texttt{c <= vector[r]} or \texttt{(r,\,c) in dots};
+  an implementation \MAY{} evaluate it by walking the known operation
+  ids rather than materializing the full \texttt{0..=n} range, so a
+  sparse high-counter context does not force work proportional to the
+  counter value.
 
   Interval tree clocks and other compact causal representations
   \MAY{} appear in future revisions as performance optimizations but
@@ -6135,6 +6408,10 @@ pub enum ConflictResolutionState {
     Dismissed { by: OperationId },
 }
 
+// See Requirement (field-collision effect tag): for a
+// StructuralFieldCollision the winner (later op) reads Conflicted;
+// the earlier op retains Applied.
+
 pub enum ResolutionAction {
     /// Accept the losing operation's effect (replacing the winner).
     AcceptLoser,
@@ -6145,10 +6422,43 @@ pub enum ResolutionAction {
     Override { override_operation: OperationId },
     /// Re-anchor to a user-chosen target.
     Reanchor { new_target: TypedObjectId },
+    /// Dismiss the conflict without changing the materialized graph:
+    /// the user acknowledges it and accepts the current (winner)
+    /// state. Selects the Dismissed resolution state.
+    Dismiss,
     /// Custom resolution for registered conflict kinds.
     Registered(ResolutionRegistryId),
 }
 \end{lstlisting}
+
+\begin{requirement}
+  \label{req:semops:field-collision-effect}
+  When two concurrent operations write the same non-LWW field and
+  reduction records a \texttt{StructuralFieldCollision}, the
+  per-operation \texttt{OperationEffect} is assigned as follows: the
+  \emph{winner} --- the operation later in canonical order, whose
+  choice materializes and whose processing created the conflict record
+  --- reads \texttt{Conflicted\{conflict\}}; the \emph{earlier}
+  (losing) operation retains the \texttt{Applied} effect it received
+  when it was first reduced. The winner carries the flag because it is
+  the single operation that both materializes the field and observes
+  the collision, which makes the assignment independent of the order
+  in which envelopes arrive at any replica.
+\end{requirement}
+
+\begin{rationale}
+  The alternative --- tagging the loser \texttt{Conflicted} (or
+  \texttt{NoOp\{SupersededByLaterOperation\}}) because its intent did
+  not survive --- is defensible and arguably more intuitive for a UI
+  that surfaces ``your edit was overridden.'' We pin
+  \emph{winner-carries} instead because it is computed at the moment
+  the collision is detected (when the winning operation is reduced
+  against already-present state), needs no second pass to retroactively
+  re-tag an earlier operation, and is manifestly order-independent. A
+  UI that wishes to tell the losing author their edit was overridden
+  reads the \texttt{StructuralFieldCollision} record's \texttt{loser}
+  field rather than the loser operation's effect.
+\end{rationale}
 
 \subsection{The Conflict Registry}
 
@@ -6255,10 +6565,17 @@ pub struct ResolveConflictPayload {
 
 \begin{requirement}
   A \texttt{ResolveConflict} operation transitions a conflict's
-  state from \texttt{Unresolved} to \texttt{Resolved} (with the
-  declared action applied) or \texttt{Dismissed} (with no semantic
-  change to the materialized graph beyond the conflict record's
-  state).
+  state from \texttt{Unresolved} to one of two states selected by its
+  \texttt{action}. The \texttt{ResolutionAction::Dismiss} action
+  transitions the conflict to \texttt{Dismissed} (no semantic change
+  to the materialized graph beyond the conflict record's state: the
+  user acknowledges the conflict and accepts the current winner
+  state). Every other \texttt{action} transitions the conflict to
+  \texttt{Resolved} with that action applied. Both resolution states
+  are thus reachable by an authored operation; \texttt{Dismiss} is the
+  authored selector for \texttt{Dismissed}, closing the prior gap in
+  which \texttt{Dismissed} was a representable state with no operation
+  to reach it.
 
   Concurrent \texttt{ResolveConflict} operations on the same
   conflict are themselves subject to canonical reduction: the
@@ -6288,7 +6605,31 @@ pub struct TransactionDescriptor {
 }
 
 pub struct TransactionId(pub u128);
+
+/// Open vocabulary: a minimal core set plus a Registered escape for
+/// extension-defined categories.
+pub enum TransactionCategory {
+    NoteEntry,
+    Structural,
+    Layout,
+    Import,
+    Registered(OperationKindRegistryId),
+}
 \end{lstlisting}
+
+\begin{requirement}
+  \label{req:semops:transaction-category}
+  \texttt{TransactionCategory} is an \emph{open} vocabulary. Its
+  normative core set is exactly \texttt{NoteEntry}, \texttt{Structural},
+  \texttt{Layout}, and \texttt{Import}; any other category \MUST{} be
+  expressed as \texttt{Registered(OperationKindRegistryId)} rather than
+  by extending the core set. The field is advisory (consumed by UIs and
+  analytics, never by canonical reduction), so the minimal core set is
+  the right tradeoff: under-specifying is cheap to extend through
+  \texttt{Registered}, whereas baking speculative categories into the
+  core vocabulary is not. The discriminants follow declaration order
+  (\texttt{NoteEntry} $= 0$ through \texttt{Registered} $= 4$).
+\end{requirement}
 
 Each primitive operation belonging to a transaction carries the
 transaction's identifier in its envelope's \texttt{transaction} field.
@@ -7128,9 +7469,14 @@ that operation's choice. The losing respelling is recorded in a
 \texttt{ConflictRecord} of kind
 \texttt{StructuralFieldCollision} if the two respellings represent
 different spellings (i.e., differ in nominal, accidental stack, or
-octave). Identical concurrent respellings reduce idempotently: the
-later operation produces \texttt{NoOp\{reason: AlreadyApplied\}}
-with no conflict recorded.
+octave). The per-operation effect assignment follows the general
+field-collision rule
+(Requirement~\ref{req:semops:field-collision-effect}): the later
+operation --- the winner, which materializes --- reads
+\texttt{Conflicted}, and the earlier operation retains
+\texttt{Applied}. Identical concurrent respellings reduce
+idempotently: the later operation produces
+\texttt{NoOp\{reason: AlreadyApplied\}} with no conflict recorded.
 
 \subsection{ChangeRegionTimeModel}
 
@@ -7536,6 +7882,42 @@ pub struct LayoutObjectId(pub u128);
   objects) \MUST{} declare a \texttt{synthesis} kind. The
   \texttt{dependencies} list \MUST{} include every score graph object
   whose change should invalidate this layout object.
+\end{requirement}
+
+\begin{requirement}
+  \label{req:layoutir:object-id-derivation}
+  A \texttt{LayoutObjectId} \MUST{} be stable across re-layouts whose
+  underlying source is unchanged. It is derived by domain-separated
+  BLAKE3 truncation with the reserved layout domain tag
+  \texttt{"MUSCLOID"} over a key that depends on how the object is
+  manifested:
+
+  \begin{itemize}
+    \item A layout object that manifests a single score-graph object
+      exactly once is keyed on \texttt{source.canonical\_bytes()}.
+    \item A multiply-manifested object --- one score-graph object that
+      appears in more than one layout context, e.g. a staff manifested
+      in two regions --- is keyed on the pair
+      \texttt{(source,\,region)}, so each manifestation receives a
+      distinct, stable id.
+    \item A synthesized object (no direct score-graph
+      \texttt{source}; \texttt{synthesis} is \texttt{Some}) is keyed
+      on the triple \texttt{(source,\,synthesis\_kind,\,
+      stable\_semantic\_instance\_key)}, where the
+      \texttt{stable\_semantic\_instance\_key} distinguishes multiple
+      synthesized objects sharing a source and synthesis kind by a
+      semantically stable discriminator (not a layout-position
+      ordinal, which would not survive relayout).
+  \end{itemize}
+
+  \texttt{LayoutObjectId}s are \emph{non-canonical}: they are not part
+  of document state and do not enter any content hash, so the
+  \texttt{"MUSCLOID"} tag lives in the layout namespace and is not one
+  of the reserved \emph{canonical} system tags of
+  Section~\ref{sec:graph:system-derived}. The fixed derivation is
+  pinned for incremental-relayout correctness and provenance
+  back-reference stability; its consumers are the solver and renderer
+  (Track~A), not the interchange track.
 \end{requirement}
 
 \section{The Stage Pipeline}
@@ -8779,13 +9161,48 @@ pub enum CommitState {
       highest-generation valid slot; it \MUSTNOT{} silently treat
       the file as normal.
     \item If both slots are valid and their generations differ by
-      at most one, the slot with the higher generation is active.
+      exactly one, the slot with the higher generation is active.
+    \item If both slots are valid and their generations are
+      \emph{equal}, the reader \MUST{} compare the slots'
+      \emph{load-bearing} selection fields:
+      \texttt{manifest\_hash}, \texttt{manifest\_schema\_version},
+      \texttt{reduction\_algorithm\_version}, and
+      \texttt{profile\_id}. The advisory fields
+      \texttt{commit\_timestamp} and the physical chunk
+      offset/length are \emph{excluded} from this comparison.
+      \begin{itemize}
+        \item If every load-bearing field is equal, the two slots
+          select equivalent canonical state; the reader \MUST{}
+          deterministically choose slot~A and open normally.
+        \item If any load-bearing field differs, the reader \MUST{}
+          report a format-layer \texttt{IntegrityAnomaly} of kind
+          \texttt{DivergentSameGeneration} and open the bundle
+          read-only. Two genuinely different committed states cannot
+          share a generation under a conforming writer (the
+          atomic-write protocol increments the generation on every
+          commit), so the divergence is a structural failure, not a
+          state the reader may silently resolve by picking one.
+      \end{itemize}
     \item If exactly one slot is valid, that slot is active.
     \item If neither slot is valid, the file is corrupt; readers
       \MUST{} surface this as a hard error and \MUSTNOT{}
       synthesize state.
   \end{enumerate}
 \end{requirement}
+
+\begin{rationale}
+  The advisory fields are excluded from the equal-generation
+  comparison because they do not determine which canonical state a
+  slot selects: \texttt{commit\_timestamp} is wall-clock metadata,
+  and the physical offset/length merely locate the manifest chunk in
+  the file. Two slots that agree on the four load-bearing fields name
+  the same canonical document even if they were written at different
+  times or to different offsets, so treating an advisory-only
+  difference as divergence would raise false anomalies on benign
+  repacks. Conversely, a difference in any load-bearing field means
+  the two slots disagree about canonical state itself, which is the
+  precise condition that must not be silently resolved.
+\end{rationale}
 
 \section{The Manifest}
 \label{sec:format:manifest}
@@ -9020,6 +9437,26 @@ manifest before it has any information from the chunk store.
   the few hundred bytes of compression headroom.
 \end{rationale}
 
+\begin{requirement}
+  \label{req:format:manifest-id}
+  The \texttt{manifest\_id} field \MUST{} be derived as
+  \[
+    \texttt{ManifestId} = \mathrm{trunc128}\!\left(
+      \mathrm{BLAKE3}(\texttt{"MUSCMNIF"} \Vert \texttt{document\_id}
+      \Vert \texttt{generation} \Vert \texttt{manifest\_body})\right),
+  \]
+  where \texttt{document\_id} is its 16-byte canonical form,
+  \texttt{generation} is the 8-byte little-endian \texttt{u64}, and
+  \texttt{manifest\_body} is the canonical manifest encoding with the
+  \texttt{manifest\_id} field itself \emph{excluded}. The exclusion is
+  normative: a conforming writer \MUST{} omit (equivalently, zero) the
+  \texttt{manifest\_id} field when computing the preimage, so that the
+  identifier does not reference itself. $\mathrm{trunc128}$ takes the
+  leading 16 bytes of the 32-byte BLAKE3 output. Two conforming
+  writers committing the same manifest body at the same generation of
+  the same document therefore derive identical \texttt{ManifestId}s.
+\end{requirement}
+
 \section{Content Hashing}
 \label{sec:format:hashing}
 
@@ -9181,6 +9618,42 @@ pub struct ContentHash(pub [u8; 32]);
 /// the same 32 bytes.
 pub struct ChunkId(pub ContentHash);
 \end{lstlisting}
+
+\begin{requirement}
+  \label{req:format:chunkkind-discriminants}
+  \texttt{ChunkKind::canonical\_bytes()} is a single byte: the
+  variant's declaration-order discriminant. Because that byte is part
+  of the chunk hash preimage (Section~\ref{sec:format:chunks},
+  ``Domain-Separated Preimages''), this assignment is normative and
+  stable and \MUSTNOT{} be reordered:
+
+  \begin{center}
+  \begin{tabular}{r l @{\qquad} r l}
+    \toprule
+    \textbf{Disc.} & \textbf{Variant} &
+    \textbf{Disc.} & \textbf{Variant} \\
+    \midrule
+    0 & \texttt{OperationEnvelopeBlock} & 5 & \texttt{TextProjection} \\
+    1 & \texttt{OperationIndex}         & 6 & \texttt{LayoutCache} \\
+    2 & \texttt{Snapshot}               & 7 & \texttt{IntegrityIndex} \\
+    3 & \texttt{Blob}                   & 8 & \texttt{Manifest} \\
+    4 & \texttt{ExtensionData}          &   & \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+
+  \texttt{CompressionAlgorithm} likewise encodes as a single
+  declaration-order discriminant byte followed by any variant payload:
+  \texttt{None} $= 0$ (no payload); \texttt{Zstd\{level\}} $= 1$
+  followed by the \texttt{level} byte; \texttt{Reserved(u8)} $= 2$
+  followed by the reserved byte. Compression is \emph{not} part of a
+  chunk's content identity (it is metadata on the \texttt{ChunkRef}),
+  so these discriminants are stable but do not affect chunk hashes.
+
+  \texttt{ProfileId}'s discriminants are pinned in
+  Section~\ref{sec:format:profiles}
+  (Requirement~\ref{req:format:profileid-discriminants}).
+\end{requirement}
 
 \begin{requirement}
   Chunks \MUST{} be immutable. Once a chunk is written and its bytes
@@ -9393,9 +9866,23 @@ pub struct SnapshotRef {
 \label{sec:format:blobs}
 
 The blob store holds large opaque content: audio reference tracks,
-embedded images, custom fonts, ML model checkpoints. Blobs are
-content-addressed identically to chunks (BLAKE3 of uncompressed
-payload, with the \texttt{"MUSCBLOB"} domain tag).
+embedded images, custom fonts, ML model checkpoints.
+
+\begin{requirement}
+  \label{req:format:blob-hash-shape}
+  A \texttt{BlobId} \MUST{} be BLAKE3 over the \emph{bare} preimage
+  \texttt{"MUSCBLOB"} $\Vert$ \texttt{uncompressed\_payload}: the
+  8-byte domain tag immediately followed by the uncompressed payload
+  bytes, with \emph{no} chunk-kind, schema-version, or length fields.
+  This is deliberately \emph{unlike} the structured chunk preimage of
+  Section~\ref{sec:format:chunks} (which commits to kind, schema
+  version, and length): a blob is opaque payload with no schema, so
+  its identity commits only to the domain tag and the bytes. As with
+  chunks, the compression algorithm is metadata on the
+  \texttt{BlobRef} and is \emph{not} part of the blob's identity, so
+  identical payloads stored under different compression share a
+  \texttt{BlobId}.
+\end{requirement}
 
 \begin{lstlisting}[language=Rust]
 pub struct BlobRef {
@@ -9872,12 +10359,63 @@ pub enum ProfileId {
 }
 \end{lstlisting}
 
+The constraints a profile imposes are carried in
+\texttt{ProfileConstraints}, which the GC and retention rules
+(Section~\ref{sec:format:gc}) reference for the mandatory
+\texttt{RetentionPolicy}:
+
+\begin{lstlisting}[language=Rust]
+pub struct ProfileConstraints {
+    /// Maximum uncompressed operation-envelope block size a reader
+    /// must accept under this profile (default 64 MiB).
+    pub max_uncompressed_block_size: u64,
+
+    /// The RetentionPolicy this profile declares. Required: the GC
+    /// and retention rules read it from the active profile.
+    pub retention_policy: RetentionPolicy,
+    // Additional constraint fields (permitted compression sets,
+    // required-extension lists) are reserved for a later revision;
+    // a reader MUST tolerate their future addition under the
+    // minor-version compatibility rule.
+}
+\end{lstlisting}
+
+\begin{requirement}
+  \label{req:format:profile-constraints}
+  Every \texttt{ProfileDeclaration} \MUST{} carry a
+  \texttt{ProfileConstraints}, and every \texttt{ProfileConstraints}
+  \MUST{} include a \texttt{retention\_policy} field. This satisfies
+  the requirement (Section~\ref{sec:format:gc}) that the active
+  conformance profile declare a \texttt{RetentionPolicy}: the policy
+  lives inside the active profile's constraints, not as a free-standing
+  manifest field.
+
+  When a bundle declares more than one profile, the
+  \texttt{RetentionPolicy} in force is the one declared by the
+  \emph{first} profile in the manifest's \texttt{profile\_declarations}
+  list (declaration order is canonical). A bundle that declares no
+  profile constraints carrying a policy uses the Full profile's
+  default retention policy.
+\end{requirement}
+
 \begin{requirement}
   Every bundle \MUST{} declare at least one profile in its manifest's
   \texttt{profile\_declarations}. An implementation \MAY{} open a
   bundle if it supports any of the declared profiles, subject to
   the required-extension rules
   (Section~\ref{sec:format:fwdcompat}).
+\end{requirement}
+
+\begin{requirement}
+  \label{req:format:profileid-discriminants}
+  \texttt{ProfileId} encodes as a single declaration-order
+  discriminant followed by any variant payload: \texttt{Full} $= 0$,
+  \texttt{ReadOnly} $= 1$, \texttt{Lite} $= 2$,
+  \texttt{Custom(ProfileRegistryId)} $= 3$ followed by the registry
+  id's canonical bytes. This assignment is normative and stable.
+  \texttt{ProfileId} participates in superblock selection
+  (Section~\ref{sec:format:bundle}, the load-bearing field set), so
+  its discriminants are part of that comparison.
 \end{requirement}
 
 \section{Compression}
@@ -9997,9 +10535,72 @@ Format document. The Binary Format document is normative; an
 implementation cannot conform to the file format specification
 without conforming to the Binary Format specification.
 
+\subsection{Ratified Convention Baseline}
+\label{sec:format:codec-baseline}
+
+Although the full Binary Format companion is still to be written, the
+canonical encoding conventions shared by the core, operations, and
+bundle layers are ratified now, so those three layers do not drift
+apart before the companion formalizes them. The companion
+\emph{inherits} this baseline rather than re-deriving it.
+
+\begin{requirement}
+  \label{req:format:codec-conventions}
+  The canonical encoding of every composite structure (whole
+  \texttt{Score}, operation envelopes, manifest) \MUST{} follow these
+  conventions:
+  \begin{itemize}
+    \item Integers are little-endian. A boolean is a single
+      \texttt{0}/\texttt{1} byte.
+    \item Counts and the length prefix of every variable-width
+      \emph{leaf} (an identifier, a \texttt{RationalTime}, a string)
+      are \texttt{u32} little-endian. Length-prefixing every leaf
+      makes the decoder width-agnostic: it never infers a boundary
+      from context.
+    \item A tagged union is encoded as a single discriminant byte
+      followed by the variant payload.
+    \item Free-text string fields are length-prefixed UTF-8 and are
+      \emph{not} NFC-folded by the codec: the in-memory value is
+      preserved byte-exact, so \texttt{decode(encode(x)) == x}.
+      Catalog identifiers are NFC-normalized at construction, not in
+      the codec.
+  \end{itemize}
+
+  Certain fixed hashing preimages deliberately depart from the
+  single-discriminant-byte convention where a wider or order-bearing
+  tag is required --- notably \texttt{TypedObjectId}'s 16-bit
+  big-endian discriminant
+  (Requirement~\ref{req:graph:typed-object-id-discriminants}). Such
+  departures are pinned at their definitions and are not overridden by
+  this baseline.
+\end{requirement}
+
+\begin{requirement}
+  \label{req:format:rationaltime-encoding}
+  The primitive scalar layouts referenced throughout the canonical
+  encodings are ratified as follows:
+  \begin{itemize}
+    \item \texttt{RationalTime} encodes as a sign byte
+      (\texttt{0} = zero, \texttt{1} = positive, \texttt{2} =
+      negative), then the \texttt{u32}-little-endian-length-prefixed
+      big-endian magnitude of the numerator, then the
+      \texttt{u32}-little-endian-length-prefixed big-endian magnitude
+      of the denominator. The value \MUST{} always be stored reduced
+      (lowest terms, positive denominator), so the encoding is
+      canonical: equal rationals encode to equal bytes.
+    \item Wall-clock integers (\texttt{WallClockTime},
+      \texttt{WallClockDuration}) are little-endian fixed-width
+      integers, matching \texttt{QuantizedCoord}.
+  \end{itemize}
+\end{requirement}
+
 \begin{openquestion}
-  The Binary Format companion is under development as a separate
-  specification. Its development follows this chapter; the byte-level
+  The remainder of the Binary Format companion --- the full composite
+  struct layouts, schema-version wire evolution, and varint details
+  beyond the baseline above --- is under development as a separate
+  specification. Its development follows this chapter and inherits the
+  ratified baseline (Sections~\ref{req:format:codec-conventions}
+  and~\ref{req:format:rationaltime-encoding}); the remaining byte-level
   decisions depend on the structural decisions specified here.
 \end{openquestion}
 
@@ -11625,10 +12226,12 @@ rules are normative here.
 
   \texttt{ManifestId} &
   Content-derived from manifest payload &
-  Unique per manifest version. Implementations \MAY{} use
-  trunc128(BLAKE3 of canonical manifest preimage) with domain
-  tag \texttt{"MUSCMNIF"}; the Binary Format companion defines
-  the exact derivation. \\
+  Unique per manifest version. Derived as
+  \texttt{trunc128(BLAKE3("MUSCMNIF" || document\_id ||
+  generation || manifest\_body))} with the \texttt{manifest\_id}
+  field excluded from \texttt{manifest\_body}; the derivation is
+  ratified normatively in
+  Section~\ref{req:format:manifest-id}. \\
 
   \texttt{SnapshotId} &
   Content-derived from snapshot payload and frontier &
@@ -13345,6 +13948,43 @@ state.
   Chapter~\ref{ch:format}'' wording, reflecting that the
   Pass 3 architectural shift made causal context part of
   operation semantics rather than only file storage. \\
+  \today & Pass 11 revision (spec ratification) &
+  Converted the v0 implementation's provisional, golden-locked byte
+  choices into ratified normative spec text; the architecture is
+  unchanged. \emph{Adopt-and-pin (bytes):} pinned the
+  \texttt{TypedObjectId} 16-bit big-endian discriminant table
+  (\texttt{0}--\texttt{27}, \texttt{Registered}~=~27; added the
+  \texttt{Tuplet}/\texttt{RepeatStructure}/\texttt{LyricLine}/%
+  \texttt{ChordSymbol}/\texttt{View} variants the implementation
+  carried); the promoted-voice (\texttt{MUSCSVCE}), system-pitch
+  (\texttt{MUSCSPCH}, tuning always part of identity), and
+  integrity-anomaly (\texttt{MUSCSANM}, promoted to a reserved
+  built-in tag) derivations; the \texttt{ChunkKind} /
+  \texttt{ProfileId} / \texttt{CompressionAlgorithm} discriminants;
+  the \texttt{ManifestId} preimage (with \texttt{manifest\_id}
+  excluded); and the \texttt{RationalTime}/scalar primitive layouts
+  plus the shared codec convention baseline the Binary Format
+  companion inherits. \emph{Decide-and-pin:} \texttt{TempoShape::Linear}
+  interpolates \emph{speed} (whole notes/second), not bpm; a
+  \texttt{StructuralFieldCollision} tags the \emph{winner}
+  \texttt{Conflicted}; lifted the $>$2-way voice-promotion
+  generalization (partial-overlap, lowest-id-survivor) to normative;
+  pinned the \texttt{TransactionCategory} and \texttt{ObjectKind} core
+  vocabularies; added \texttt{ResolutionAction::Dismiss} so the
+  \texttt{Dismissed} resolution state is reachable by an authored
+  operation; and pinned the (non-canonical) \texttt{LayoutObjectId}
+  derivation with a \texttt{MUSCLOID} tag. \emph{Fixes:} blob hashing
+  is the bare \texttt{"MUSCBLOB" || payload} (deleted the
+  contradictory ``identically to chunks'' phrasing); added the
+  equal-generation superblock rule (\texttt{DivergentSameGeneration}
+  on load-bearing-field divergence); defined \texttt{ProfileConstraints}
+  and placed the required \texttt{RetentionPolicy} in it with
+  first-declared multi-profile precedence; made the DVV zero-based
+  counter floor normative; reconciled the graph-invariant count to 19
+  (was 18 in QUICKSTART) and named the three construction-time MUSTs
+  (time-signature beat-group sum, ordering-DAG acyclicity, and
+  non-degenerate \texttt{TupletRatio}, now enforced at construction).
+  \\
   \bottomrule
 \end{longtable}
 

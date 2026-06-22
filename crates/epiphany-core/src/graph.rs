@@ -751,11 +751,43 @@ pub struct Tie {
     pub class: TieClass,
 }
 
-/// The actual:notated ratio of a tuplet (Chapter 3 §"Tuplets").
+/// The actual:notated ratio of a tuplet (Chapter 3 §"Tuplets"). Built only
+/// through [`TupletRatio::new`], which rejects degenerate ratios at
+/// construction (Chapter 3 §"Tuplets", `req:time:tuplet-ratio-construction`):
+/// both terms must be nonzero and `actual != notated`, so a degenerate ratio is
+/// never a representable graph state. The fields are private to keep that
+/// guarantee unbypassable.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct TupletRatio {
-    pub actual: u32,
-    pub notated: u32,
+    actual: u32,
+    notated: u32,
+}
+
+impl TupletRatio {
+    /// Builds an `actual:notated` ratio, returning `None` for a *degenerate*
+    /// ratio — either term zero, or `actual == notated` (a ratio that expresses
+    /// no augmentation or diminution). This is the construction-time MUST of
+    /// Chapter 3 §"Tuplets": degeneracy is rejected here, not by a runtime
+    /// invariant.
+    pub fn new(actual: u32, notated: u32) -> Option<Self> {
+        if actual == 0 || notated == 0 || actual == notated {
+            None
+        } else {
+            Some(TupletRatio { actual, notated })
+        }
+    }
+
+    /// The `actual` term: how many notes are played.
+    #[inline]
+    pub const fn actual(&self) -> u32 {
+        self.actual
+    }
+
+    /// The `notated` term: in the time of how many.
+    #[inline]
+    pub const fn notated(&self) -> u32 {
+        self.notated
+    }
 }
 
 /// A tuplet grouping object (Chapter 3 §"Tuplets as Grouping Objects").
@@ -959,8 +991,8 @@ impl NotatedComponent {
     pub fn sounding_duration(&self, tuplet_ratio: Option<TupletRatio>) -> MusicalDuration {
         let notated = self.notated_duration();
         match tuplet_ratio {
-            Some(r) if r.actual != 0 && r.notated != 0 => {
-                let scale = crate::time::RationalTime::new(r.notated as i64, r.actual as i64)
+            Some(r) if r.actual() != 0 && r.notated() != 0 => {
+                let scale = crate::time::RationalTime::new(r.notated() as i64, r.actual() as i64)
                     .expect("validated nonzero");
                 MusicalDuration(notated.rational().mul(&scale))
             }
@@ -1217,9 +1249,10 @@ mod tests {
     fn promoted_voice_id_byte_form_is_locked() {
         // Golden: locks the MUSCSVCE 64-byte preimage layout (staff instance ||
         // original voice || winning op || losing op, each 16 big-endian bytes)
-        // and the hash output. A change to the input order, byte layout, or
-        // domain tag breaks this deliberately, forcing the derivation change to
-        // be acknowledged (DECISIONS P11-3).
+        // and the hash output. RATIFIED by Pass 11 (item 1.2, P11-3 / ops C4):
+        // this is the spec's golden, normative in core_spec
+        // §"System-Promoted Voices" (`derive_promoted_voice_id`). A change to the
+        // input order, byte layout, or domain tag breaks this deliberately.
         let id = derive_promoted_voice_id(
             StaffInstanceId::new(ReplicaId(3), 1),
             VoiceId::new(ReplicaId(3), 2),

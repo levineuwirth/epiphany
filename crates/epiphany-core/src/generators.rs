@@ -286,10 +286,7 @@ pub fn valid_score_rich(seed: u64) -> Score {
     let triplet_id: TupletId = idc.mint();
     cross_cutting.tuplets.push(Tuplet {
         id: triplet_id,
-        ratio: TupletRatio {
-            actual: 3,
-            notated: 2,
-        },
+        ratio: TupletRatio::new(3, 2).expect("3:2 is a valid tuplet ratio"),
         members: triplet_members.clone(),
         parent: None,
         required_total: MusicalDuration(RationalTime::new(1, 4).unwrap()),
@@ -678,10 +675,7 @@ pub fn violating_score(inv: GraphInvariant, seed: u64) -> Score {
             let (e0, e1) = first_two_event_ids(&s);
             s.cross_cutting.tuplets.push(Tuplet {
                 id: TupletId::new(replica, 1),
-                ratio: TupletRatio {
-                    actual: 3,
-                    notated: 2,
-                },
+                ratio: TupletRatio::new(3, 2).expect("3:2 is a valid tuplet ratio"),
                 members: vec![e0, e1],
                 parent: None,
                 required_total: MusicalDuration::whole(),

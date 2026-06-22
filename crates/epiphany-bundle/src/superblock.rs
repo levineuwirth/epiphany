@@ -290,7 +290,10 @@ impl Superblock {
 /// version, same profile. The advisory `commit_timestamp` (and the physical
 /// manifest offset/length, which a matching `manifest_hash` already pins) are
 /// deliberately excluded — a difference in those does not make the states
-/// divergent.
+/// divergent. RATIFIED by Pass 11 (item 3.2, P11-D1, a spec-gap fix): core_spec
+/// §"Superblock Selection" now states the equal-generation rule (this
+/// load-bearing field set → equivalent, pick A; otherwise
+/// `DivergentSameGeneration`, read-only).
 fn selection_equivalent(a: &Superblock, b: &Superblock) -> bool {
     a.manifest_hash == b.manifest_hash
         && a.manifest_schema_version == b.manifest_schema_version

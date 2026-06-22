@@ -42,7 +42,9 @@ use epiphany_core::{
 use epiphany_determinism::{CanonicalEncode, ContentHash};
 
 use crate::anomaly::{detect_replica_anomalies, IntegrityAnomaly, IntegrityAnomalyKind};
-use crate::conflict::{ConflictKind, ConflictRecord, ConflictRegistry, FieldPath};
+use crate::conflict::{
+    ConflictKind, ConflictRecord, ConflictRegistry, FieldPath, ResolutionAction,
+};
 use crate::effect::{
     NoOpReason, OperationEffect, PreconditionFailureReason, ReanchorReason, RepairKind,
     RepairRecord, TupletCompensationKind,
@@ -1737,9 +1739,12 @@ impl<'a> Reducer<'a> {
             },
             Some(RS::Unresolved) => {
                 if let Some(rec) = self.conflicts.get_mut(op.target) {
-                    rec.resolution_state = RS::Resolved {
-                        by: env.id,
-                        action: op.action,
+                    // ResolutionAction::Dismiss selects the Dismissed state;
+                    // every other action selects Resolved with that action
+                    // applied (Pass 11, item 2.5).
+                    rec.resolution_state = match op.action {
+                        ResolutionAction::Dismiss => RS::Dismissed { by: env.id },
+                        action => RS::Resolved { by: env.id, action },
                     };
                 }
                 OperationEffect::Applied
@@ -2352,5 +2357,98 @@ mod tests {
             .find(|(id, _)| *id == a.id)
             .map(|(_, e)| e);
         assert_eq!(kept, Some(&OperationEffect::Applied));
+    }
+
+    #[test]
+    fn resolve_conflict_with_dismiss_reaches_dismissed_state() {
+        // Pass 11, item 2.5: an authored ResolveConflict whose action is
+        // `Dismiss` must reach the `Dismissed` resolution state (previously
+        // `Dismissed` was representable but unreachable by any authored op).
+        use crate::conflict::{ConflictResolutionState, ResolutionAction};
+        use crate::payload::{ResolveConflictPayload, RespellPitchOp};
+        use epiphany_core::PitchId;
+        use epiphany_determinism::ContentHash;
+
+        let pitch = PitchId::new(ReplicaId(9), 500);
+
+        // An InsertEvent carrying `pitch` makes the pitch Live.
+        let mut insert_env = insert(1, 0, 10, 1, 100, 0);
+        if let OperationPayload::Primitive(OperationKind::InsertEvent(ref mut op)) =
+            insert_env.payload
+        {
+            op.pitches = vec![pitch];
+        }
+
+        // Two concurrent, differing respellings of `pitch`, both causally after
+        // the insert (so the pitch is Live) but concurrent with each other (so
+        // they collide into a StructuralFieldCollision conflict).
+        let respell = |replica: u64, counter: u64, physical: i64, byte: u8| {
+            let id = OperationId::new(ReplicaId(replica), counter);
+            OperationEnvelope {
+                id,
+                author: AuthorId(0),
+                stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(physical), 0), id),
+                causal_context: CausalContext::new().with_seen(ReplicaId(1), 0),
+                transaction: None,
+                payload: OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
+                    pitch,
+                    spelling: ContentHash([byte; 32]),
+                })),
+            }
+        };
+        let respell_a = respell(2, 0, 20, 0xAA);
+        let respell_b = respell(3, 0, 21, 0xBB);
+
+        // Phase 1: reduce to discover the content-derived conflict id.
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            insert_env.clone(),
+            respell_a.clone(),
+            respell_b.clone(),
+        ]);
+        let state = set.reduce();
+        assert_eq!(
+            state.conflicts.records().len(),
+            1,
+            "expected exactly one field-collision conflict"
+        );
+        let cid = state.conflicts.records()[0].id;
+        assert_eq!(
+            state.conflicts.records()[0].resolution_state,
+            ConflictResolutionState::Unresolved
+        );
+
+        // Phase 2: author ResolveConflict { Dismiss } against that conflict,
+        // causally after the colliding respells so it reduces against the
+        // already-created conflict record.
+        let resolve_id = OperationId::new(ReplicaId(4), 0);
+        let resolve_env = OperationEnvelope {
+            id: resolve_id,
+            author: AuthorId(0),
+            stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(30), 0), resolve_id),
+            causal_context: CausalContext::new()
+                .with_dot(respell_a.id)
+                .with_dot(respell_b.id),
+            transaction: None,
+            payload: OperationPayload::ResolveConflict(ResolveConflictPayload {
+                target: cid,
+                action: ResolutionAction::Dismiss,
+            }),
+        };
+
+        let mut set2 = OperationSet::new();
+        set2.accept_all(vec![insert_env, respell_a, respell_b, resolve_env]);
+        let state2 = set2.reduce();
+        let rec = state2
+            .conflicts
+            .records()
+            .iter()
+            .find(|r| r.id == cid)
+            .expect("conflict still present after resolution");
+        assert_eq!(
+            rec.resolution_state,
+            ConflictResolutionState::Dismissed { by: resolve_id },
+            "Dismiss action must select the Dismissed state"
+        );
     }
 }

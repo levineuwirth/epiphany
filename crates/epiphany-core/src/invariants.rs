@@ -1938,17 +1938,11 @@ impl<'a> GraphIndex<'a> {
     // --- 16. Tuplet member durations sum to required total. -----------------
     fn check_tuplet_sum(&self, out: &mut Vec<InvariantViolation>) {
         for t in &self.score.cross_cutting.tuplets {
-            // The actual:notated ratio must be well-formed: both terms positive
-            // (a 0:0 or n:0 ratio is meaningless, Chapter 3 §"Tuplets").
-            if t.ratio.actual == 0 || t.ratio.notated == 0 {
-                out.push(InvariantViolation::new(
-                    GraphInvariant::TupletSum,
-                    format!(
-                        "tuplet {:?} has a degenerate ratio {}:{}",
-                        t.id, t.ratio.actual, t.ratio.notated
-                    ),
-                ));
-            }
+            // Degenerate ratios (a zero term or actual == notated) are rejected
+            // at construction by `TupletRatio::new` (Chapter 3 §"Tuplets",
+            // `req:time:tuplet-ratio-construction`), so they are never a
+            // representable graph state and are not re-checked here.
+            //
             // Sum the members' musical durations; skip members that are absent
             // (invariant 10) or non-musical (cannot contribute to a rational
             // total).
@@ -1979,10 +1973,12 @@ impl<'a> GraphIndex<'a> {
             // so a wrong ratio (e.g. 3:2 changed to 5:4) is caught. Members
             // without an in-tuplet decomposition are skipped (sound but
             // incomplete; the decomposition pre-pass is deferred).
-            if t.ratio.actual != 0 && t.ratio.notated != 0 {
-                let scale =
-                    crate::time::RationalTime::new(t.ratio.notated as i64, t.ratio.actual as i64)
-                        .expect("nonzero ratio");
+            if t.ratio.actual() != 0 && t.ratio.notated() != 0 {
+                let scale = crate::time::RationalTime::new(
+                    t.ratio.notated() as i64,
+                    t.ratio.actual() as i64,
+                )
+                .expect("nonzero ratio");
                 for &member in &t.members {
                     let comps: Vec<&crate::graph::NotatedComponent> = self
                         .score
@@ -2011,7 +2007,7 @@ impl<'a> GraphIndex<'a> {
                             format!(
                                 "tuplet {:?} ratio {}:{} is inconsistent with member {:?}'s notation \
                                  (notated scaled to {:?}, sounding duration is {:?})",
-                                t.id, t.ratio.actual, t.ratio.notated, member, sounding, sd
+                                t.id, t.ratio.actual(), t.ratio.notated(), member, sounding, sd
                             ),
                         ));
                     }
@@ -2952,10 +2948,7 @@ mod review_fix_tests_2 {
         let e = s.events.ids_canonical()[0];
         s.cross_cutting.tuplets.push(Tuplet {
             id: TupletId::new(r, 1),
-            ratio: TupletRatio {
-                actual: 3,
-                notated: 2,
-            },
+            ratio: TupletRatio::new(3, 2).expect("3:2 is a valid tuplet ratio"),
             members: vec![e],
             parent: Some(TupletId::new(r, 7_000_002)),
             required_total: MusicalDuration(RationalTime::new(1, 4).unwrap()),
@@ -3168,11 +3161,11 @@ mod review_fix_tests_3 {
     use crate::graph::{
         AleatoricAnchoringDiscipline, AleatoricTimeModel, Instrument, Region, RegionContent,
         RegionTimeModel, Spanner, StaffBasedContent, StaffExtent, StaffInstance, Tie, TieClass,
-        TimeExtent, Tuplet, TupletRatio, Voice,
+        TimeExtent, TupletRatio, Voice,
     };
     use crate::ids::{
         EventId, InstrumentId, PitchId, RegionId, ReplicaId, SpannerId, StaffInstanceId, TieId,
-        TupletId, VoiceId,
+        VoiceId,
     };
     use crate::pitch::{
         AcousticPitch, AcousticRealization, CmnNominal, IdentifiedPitch, Pitch, PitchSpaceId,
@@ -3285,23 +3278,20 @@ mod review_fix_tests_3 {
     }
 
     #[test]
-    fn inv16_flags_degenerate_tuplet_ratio() {
-        let mut s = valid_score(91);
-        let r = s.identity.replica_id;
-        let e = s.events.ids_canonical()[0];
-        s.cross_cutting.tuplets.push(Tuplet {
-            id: TupletId::new(r, 1),
-            ratio: TupletRatio {
-                actual: 0,
-                notated: 2,
-            },
-            members: vec![e],
-            parent: None,
-            // Match the member's 1/4 so only the ratio is wrong.
-            required_total: MusicalDuration(RationalTime::new(1, 4).unwrap()),
-        });
-        let v = check_invariant(&s, GraphInvariant::TupletSum);
-        assert!(v.iter().any(|x| x.witness.contains("degenerate ratio")));
+    fn degenerate_tuplet_ratio_is_rejected_at_construction() {
+        // Pass 11, item 3.5 / Tuplet honesty: a degenerate ratio is rejected by
+        // `TupletRatio::new` at construction, so it can never enter the graph
+        // and is no longer a runtime invariant. A zero term or `actual ==
+        // notated` is refused; a well-formed ratio is accepted.
+        assert!(TupletRatio::new(0, 2).is_none(), "n:0-form rejected");
+        assert!(TupletRatio::new(2, 0).is_none(), "0:n-form rejected");
+        assert!(TupletRatio::new(0, 0).is_none(), "0:0 rejected");
+        assert!(
+            TupletRatio::new(4, 4).is_none(),
+            "actual == notated rejected"
+        );
+        let ok = TupletRatio::new(3, 2).expect("3:2 is valid");
+        assert_eq!((ok.actual(), ok.notated()), (3, 2));
     }
 
     #[test]
@@ -3840,10 +3830,8 @@ mod review_fix_tests_4 {
         // Changing the ratio to 5:4 (member notation unchanged) now has a
         // validation effect: the notated eighth no longer scales to 1/12.
         let mut s = valid_score_rich(241);
-        s.cross_cutting.tuplets[0].ratio = TupletRatio {
-            actual: 5,
-            notated: 4,
-        };
+        s.cross_cutting.tuplets[0].ratio =
+            TupletRatio::new(5, 4).expect("5:4 is a valid tuplet ratio");
         assert!(fires(&s, GraphInvariant::TupletSum));
     }
 }

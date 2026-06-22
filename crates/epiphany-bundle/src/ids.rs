@@ -97,7 +97,10 @@ impl ManifestId {
     /// the document id, generation, and the canonical bytes of the manifest
     /// body (with the `manifest_id` field itself excluded to avoid a circular
     /// dependency). Deterministic — two writers encoding the same manifest
-    /// content derive the same id.
+    /// content derive the same id. RATIFIED by Pass 11 (item 1.6, P11-D5):
+    /// core_spec §"Manifest Encoding", Requirement `req:format:manifest-id`
+    /// (`trunc128(BLAKE3("MUSCMNIF" || document_id || generation || body))`,
+    /// body excluding `manifest_id`).
     pub(crate) fn derive(document_id: DocumentId, generation: u64, body_preimage: &[u8]) -> Self {
         let mut p = Preimage::new(DomainTag::MANIFEST_ID);
         p.push_bytes(document_id.as_bytes());

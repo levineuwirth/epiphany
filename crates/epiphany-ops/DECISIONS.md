@@ -7,6 +7,16 @@ than improvised in code (QUICKSTART, Process notes: *"Ambiguities go into a
 batch, not into code … Don't open Pass 11 until you have at least three such
 items batched."*).
 
+> **RATIFIED (Pass 11, 2026-06-21).** The ops-layer Pass 11 candidates have been
+> ratified into `core_spec.tex` — see `spec/PASS11_RATIFICATION_LOG.md`.
+> Highlights: C2 adopted (`IntegrityAnomalyId` = `derive_system_id(MUSCSANM,…)`,
+> with `MUSCSANM` promoted to a reserved built-in tag); C3 decided
+> (field-collision tags the *winner* `Conflicted`); C4 adopted + lifted to spec
+> (the >2-way, partial-overlap promotion generalization); C7 fixed (zero-based
+> DVV floor made normative); C9 decided (`TransactionCategory`/`ObjectKind` core
+> vocabularies pinned); C10 decided (added `ResolutionAction::Dismiss` so
+> `Dismissed` is reachable). C1/C5/C6/C8 stay deferred to their tracks.
+
 ## Implementation decisions (QUICKSTART "Decisions you'll need to make")
 
 1. **Replica ID entropy / event-arena / chunk store** — N/A to this crate

@@ -187,6 +187,10 @@ pub enum ResolutionAction {
     Override { override_operation: OperationId },
     /// Re-anchor to a user-chosen target.
     Reanchor { new_target: TypedObjectId },
+    /// Dismiss the conflict without changing the materialized graph: the user
+    /// acknowledges it and accepts the current (winner) state. Selects the
+    /// `Dismissed` resolution state (Pass 11, item 2.5; Chapter 6).
+    Dismiss,
     /// Custom resolution for a registered conflict kind.
     Registered(ResolutionRegistryId),
 }
@@ -198,7 +202,8 @@ impl ResolutionAction {
             ResolutionAction::KeepWinner => 1,
             ResolutionAction::Override { .. } => 2,
             ResolutionAction::Reanchor { .. } => 3,
-            ResolutionAction::Registered(_) => 4,
+            ResolutionAction::Dismiss => 4,
+            ResolutionAction::Registered(_) => 5,
         }
     }
 }
@@ -207,7 +212,9 @@ impl CanonicalEncode for ResolutionAction {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         push_tag(out, self.discriminant());
         match self {
-            ResolutionAction::AcceptLoser | ResolutionAction::KeepWinner => {}
+            ResolutionAction::AcceptLoser
+            | ResolutionAction::KeepWinner
+            | ResolutionAction::Dismiss => {}
             ResolutionAction::Override { override_operation } => {
                 push_canon(out, override_operation)
             }

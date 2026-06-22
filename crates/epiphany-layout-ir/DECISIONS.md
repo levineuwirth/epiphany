@@ -7,6 +7,15 @@ rather than improvised in code (QUICKSTART, Process notes: *"Ambiguities go into
 a batch, not into code … Don't open Pass 11 until you have at least three such
 items batched."*).
 
+> **RATIFIED (Pass 11, 2026-06-21).** layout P11-2 (`LayoutObjectId` derivation)
+> is ratified into `core_spec.tex` §"Provenance"
+> (`req:layoutir:object-id-derivation`): a `MUSCLOID`-tagged derivation keying
+> multiply-manifested objects on `(source, region)` and synthesized objects on
+> `(source, synthesis_kind, stable_semantic_instance_key)`. Layout ids are
+> non-canonical, so this is flagged for Track A (solver/renderer). layout P11-1
+> (layout→ops dependency) stays a crate-topology call for the G–K re-cut. See
+> `spec/PASS11_RATIFICATION_LOG.md`.
+
 ## Scope
 
 The crate implements the Chapter 7 interface surface: all four stages, the

@@ -53,7 +53,7 @@ Spec sections: Appendix D in full, Chapter 4 §4.6 (frequency units), Chapter 7 
 
 ### Agent B — `epiphany-core`
 
-Owns the score graph: the identifier family (`EventId`, `PitchId`, `VoiceId`, ..., `TypedObjectId`), the `ReplicaId::SYSTEM_DERIVED` reserved value and counter derivation (`trunc64(BLAKE3(domain_tag || canonical_inputs))`), `IdentifiedPitch`, `PitchSpelling`, `ScalePosition`, the duration union (`EventDuration` / `ConcreteDuration`), `MusicalPosition`, `WallClockTime`, `TimeAnchor`, `AnchorOffset`, the event arena, `Voice`, `Staff` and `StaffInstance` (these are distinct types — the spec is explicit), `Region`, `BarlineAlignmentGroup`, and the 18 graph invariants enumerated in Chapter 5.
+Owns the score graph: the identifier family (`EventId`, `PitchId`, `VoiceId`, ..., `TypedObjectId`), the `ReplicaId::SYSTEM_DERIVED` reserved value and counter derivation (`trunc64(BLAKE3(domain_tag || canonical_inputs))`), `IdentifiedPitch`, `PitchSpelling`, `ScalePosition`, the duration union (`EventDuration` / `ConcreteDuration`), `MusicalPosition`, `WallClockTime`, `TimeAnchor`, `AnchorOffset`, the event arena, `Voice`, `Staff` and `StaffInstance` (these are distinct types — the spec is explicit), `Region`, `BarlineAlignmentGroup`, and the 19 graph invariants enumerated in Chapter 5.
 
 **Critical**: graph invariants are property tests in CI, not runtime assertions in release builds. The testkit provides arbitrary-instance generators. For each invariant, you must have a positive generator that produces valid graphs and a negative shrinker that minimizes invariant violations to a small witness for debugging.
 

@@ -889,9 +889,13 @@ mod tests {
 
     #[test]
     fn typed_object_id_byte_form_is_locked() {
-        // Golden: locks the 16-bit big-endian discriminant table (DECISIONS P11-1)
-        // and the payload layout. A reorder or discriminant reassignment breaks
-        // this deliberately — these bytes are normative (ordering/hashing/equality).
+        // Golden: locks the 16-bit big-endian discriminant table and the payload
+        // layout. RATIFIED by Pass 11 (item 1.1, P11-1): this is now the spec's
+        // golden, normative in core_spec §"Identifiers",
+        // Requirement `req:graph:typed-object-id-discriminants` (discriminants
+        // 0..=27, Registered=27 as disc(2)||reg(16)||raw_be(16)). A reorder or
+        // reassignment breaks this deliberately — these bytes drive
+        // ordering/hashing/equality for every object.
         let r = ReplicaId(9);
         // Event = discriminant 0, then the 16-byte big-endian id payload.
         let event = TypedObjectId::Event(EventId::new(r, 1)).canonical_bytes();

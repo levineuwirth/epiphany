@@ -26,8 +26,9 @@ impl DomainTag {
 
     /// The prefix marking a *system-derived* tag (Chapter 5:
     /// "Additional domain tags introduced by registered extensions MUST begin
-    /// with `MUSCS` and have length exactly 8 bytes"). The two built-in system
-    /// tags ([`Self::SYSTEM_VOICE`], [`Self::SYSTEM_PITCH`]) also carry it.
+    /// with `MUSCS` and have length exactly 8 bytes"). The three built-in
+    /// system tags ([`Self::SYSTEM_VOICE`], [`Self::SYSTEM_PITCH`],
+    /// [`Self::SYSTEM_ANOMALY`]) also carry it.
     const SYSTEM_PREFIX: &'static [u8] = b"MUSCS";
 
     /// The raw 8 ASCII bytes.
@@ -56,9 +57,13 @@ impl DomainTag {
     pub const SYSTEM_VOICE: DomainTag = DomainTag(*b"MUSCSVCE");
     /// System-derived pitch counter derivation (Chapter 5 §"System-Derived").
     pub const SYSTEM_PITCH: DomainTag = DomainTag(*b"MUSCSPCH");
+    /// `IntegrityAnomalyId` derivation (Chapter 5 §"System-Derived Counter
+    /// Collisions"). Reserved built-in: anomalies are core, not an extension
+    /// concern (Pass 11, item 1.4).
+    pub const SYSTEM_ANOMALY: DomainTag = DomainTag(*b"MUSCSANM");
 
     /// Every built-in tag, in declaration order. The closed core vocabulary.
-    pub const BUILTINS: [DomainTag; 9] = [
+    pub const BUILTINS: [DomainTag; 10] = [
         Self::CHUNK,
         Self::MANIFEST,
         Self::BLOB,
@@ -68,6 +73,7 @@ impl DomainTag {
         Self::MANIFEST_ID,
         Self::SYSTEM_VOICE,
         Self::SYSTEM_PITCH,
+        Self::SYSTEM_ANOMALY,
     ];
 
     /// Constructs a domain tag from raw bytes, accepting only the spec's closed
@@ -114,16 +120,16 @@ impl DomainTag {
         Self::BUILTINS.contains(self)
     }
 
-    /// Whether this is a *system-derived* tag (begins `MUSCS`): the built-in
-    /// [`Self::SYSTEM_VOICE`] / [`Self::SYSTEM_PITCH`] or an extension tag
-    /// minted via [`SystemDomainTag::new_extension`].
+    /// Whether this is a *system-derived* tag (begins `MUSCS`): a built-in
+    /// [`Self::SYSTEM_VOICE`] / [`Self::SYSTEM_PITCH`] / [`Self::SYSTEM_ANOMALY`]
+    /// or an extension tag minted via [`SystemDomainTag::new_extension`].
     #[inline]
     pub fn is_system_derived(&self) -> bool {
         self.0.starts_with(Self::SYSTEM_PREFIX)
     }
 
     /// Whether this is an *extension-introduced* system tag: system-derived and
-    /// not a reserved built-in. The two built-in system tags return `false`
+    /// not a reserved built-in. The three built-in system tags return `false`
     /// here — they are reserved, not extension-introduced.
     #[inline]
     pub fn is_extension_system_tag(&self) -> bool {
@@ -131,8 +137,9 @@ impl DomainTag {
     }
 }
 
-/// A [`DomainTag`] proven to be *system-derived* (begins `MUSCS`): the built-in
-/// [`DomainTag::SYSTEM_VOICE`] / [`DomainTag::SYSTEM_PITCH`], or an
+/// A [`DomainTag`] proven to be *system-derived* (begins `MUSCS`): a built-in
+/// [`DomainTag::SYSTEM_VOICE`] / [`DomainTag::SYSTEM_PITCH`] /
+/// [`DomainTag::SYSTEM_ANOMALY`], or an
 /// extension-introduced tag. Only these are admissible seeds for
 /// [`crate::derive_system_counter`] (Chapter 5 §"System-Derived Identifiers").
 ///
@@ -148,6 +155,8 @@ impl SystemDomainTag {
     pub const VOICE: SystemDomainTag = SystemDomainTag(DomainTag::SYSTEM_VOICE);
     /// Built-in: system-derived pitch counters (`MUSCSPCH`).
     pub const PITCH: SystemDomainTag = SystemDomainTag(DomainTag::SYSTEM_PITCH);
+    /// Built-in: integrity-anomaly identifiers (`MUSCSANM`).
+    pub const ANOMALY: SystemDomainTag = SystemDomainTag(DomainTag::SYSTEM_ANOMALY);
 
     /// Wraps a domain tag if it is system-derived; returns `None` otherwise.
     #[inline]
@@ -215,6 +224,7 @@ mod tests {
             DomainTag::MANIFEST_ID,
             DomainTag::SYSTEM_VOICE,
             DomainTag::SYSTEM_PITCH,
+            DomainTag::SYSTEM_ANOMALY,
         ];
         for t in tags {
             assert_eq!(t.as_bytes().len(), DomainTag::LEN);
@@ -235,6 +245,7 @@ mod tests {
             DomainTag::MANIFEST_ID,
             DomainTag::SYSTEM_VOICE,
             DomainTag::SYSTEM_PITCH,
+            DomainTag::SYSTEM_ANOMALY,
         ];
         for (i, a) in tags.iter().enumerate() {
             for b in &tags[i + 1..] {
@@ -255,6 +266,7 @@ mod tests {
         assert_eq!(DomainTag::MANIFEST_ID.as_bytes(), b"MUSCMNIF");
         assert_eq!(DomainTag::SYSTEM_VOICE.as_bytes(), b"MUSCSVCE");
         assert_eq!(DomainTag::SYSTEM_PITCH.as_bytes(), b"MUSCSPCH");
+        assert_eq!(DomainTag::SYSTEM_ANOMALY.as_bytes(), b"MUSCSANM");
         assert_eq!(&BUNDLE_MAGIC, b"MUSCBND\0");
         assert_eq!(&SUPERBLOCK_MAGIC, b"MUSCSUPR");
     }
@@ -264,10 +276,13 @@ mod tests {
         // They are system-derived (begin MUSCS)...
         assert!(DomainTag::SYSTEM_VOICE.is_system_derived());
         assert!(DomainTag::SYSTEM_PITCH.is_system_derived());
+        assert!(DomainTag::SYSTEM_ANOMALY.is_system_derived());
         // ...but reserved built-ins, NOT extension-introduced.
         assert!(DomainTag::SYSTEM_VOICE.is_builtin());
+        assert!(DomainTag::SYSTEM_ANOMALY.is_builtin());
         assert!(!DomainTag::SYSTEM_VOICE.is_extension_system_tag());
         assert!(!DomainTag::SYSTEM_PITCH.is_extension_system_tag());
+        assert!(!DomainTag::SYSTEM_ANOMALY.is_extension_system_tag());
         // A non-system tag is neither.
         assert!(!DomainTag::CHUNK.is_system_derived());
         assert!(!DomainTag::CHUNK.is_extension_system_tag());
@@ -301,6 +316,8 @@ mod tests {
         assert!(SystemDomainTag::new_extension(*b"MUSCXXXX").is_none());
         // Must not collide with a reserved built-in.
         assert!(SystemDomainTag::new_extension(*b"MUSCSVCE").is_none());
+        // MUSCSANM is now a reserved built-in too (Pass 11): not extension-mintable.
+        assert!(SystemDomainTag::new_extension(*b"MUSCSANM").is_none());
         // Non-ASCII rejected.
         assert!(
             SystemDomainTag::new_extension([b'M', b'U', b'S', b'C', b'S', 0xFF, b'A', b'B'])
@@ -313,7 +330,9 @@ mod tests {
         assert!(ext.tag().is_extension_system_tag());
         // Built-in system tags wrap; non-system tags do not.
         assert_eq!(SystemDomainTag::VOICE.tag(), DomainTag::SYSTEM_VOICE);
+        assert_eq!(SystemDomainTag::ANOMALY.tag(), DomainTag::SYSTEM_ANOMALY);
         assert!(SystemDomainTag::new(DomainTag::SYSTEM_PITCH).is_some());
+        assert!(SystemDomainTag::new(DomainTag::SYSTEM_ANOMALY).is_some());
         assert!(SystemDomainTag::new(DomainTag::CHUNK).is_none());
     }
 }

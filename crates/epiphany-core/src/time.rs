@@ -328,8 +328,11 @@ impl Default for RationalTime {
 /// numerator's sign and big-endian magnitude (length-prefixed), then the
 /// positive denominator's big-endian magnitude (length-prefixed). The value is
 /// always reduced first, so equal rationals encode to equal bytes (Appendix D
-/// §"Canonical serialization determinism"). The full bundle wire format is the
-/// Binary Format companion's (Agent D); this is the prototype's canonical form.
+/// §"Canonical serialization determinism"). RATIFIED by Pass 11 (item 1.7,
+/// P11-4): this primitive layout is now normative in core_spec §"Binary Format
+/// Companion", Requirement `req:format:rationaltime-encoding`; the full
+/// composite wire format remains the Binary Format companion's (Agent J), which
+/// inherits the ratified convention baseline (`req:format:codec-conventions`).
 impl CanonicalEncode for RationalTime {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         let big = self.to_big();

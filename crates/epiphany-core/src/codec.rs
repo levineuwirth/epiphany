@@ -28,7 +28,11 @@
 //!
 //! This is a concrete, reversible canonical form that predates the Binary Format
 //! companion specification; when that lands, reconcile the two (see
-//! `DECISIONS.md`, P11-4).
+//! `DECISIONS.md`, P11-4). The convention set above is RATIFIED by Pass 11
+//! (item 1.8): core_spec §"Binary Format Companion",
+//! Requirement `req:format:codec-conventions` blesses these conventions as the
+//! companion's inherited baseline, so core/ops/bundle stay mutually consistent
+//! until Agent J formalizes the full companion.
 
 use core::num::NonZeroU16;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1474,7 +1478,22 @@ struct_codec!(Slur {
     end_event
 });
 struct_codec!(Beam { id, events, level });
-struct_codec!(TupletRatio { actual, notated });
+// TupletRatio is not a plain struct_codec!: it has private fields and a checked
+// constructor that rejects degenerate ratios, so decode must validate too
+// (a malformed bundle cannot inject a degenerate ratio).
+impl Codec for TupletRatio {
+    fn enc(&self, out: &mut Vec<u8>) {
+        self.actual().enc(out);
+        self.notated().enc(out);
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        let actual = Codec::dec(r)?;
+        let notated = Codec::dec(r)?;
+        TupletRatio::new(actual, notated).ok_or(ScoreDecodeError::Reconstruct(
+            "TupletRatio: degenerate ratio",
+        ))
+    }
+}
 struct_codec!(Tuplet {
     id,
     ratio,

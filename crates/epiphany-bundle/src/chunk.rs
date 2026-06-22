@@ -40,7 +40,9 @@ pub enum ChunkKind {
 impl ChunkKind {
     /// The stable 1-byte discriminant, assigned by the spec's declaration order.
     /// Part of the hash preimage and of the chunk-reference canonical order, so
-    /// the assignment is normative for this format version.
+    /// the assignment is normative for this format version. RATIFIED by Pass 11
+    /// (item 1.5, P11-D4): core_spec §"Chunks",
+    /// Requirement `req:format:chunkkind-discriminants` (0..=8).
     #[inline]
     pub const fn discriminant(self) -> u8 {
         match self {
