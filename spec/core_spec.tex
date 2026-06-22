@@ -686,6 +686,9 @@ orthogonal to file-format profiles
   \ref{app:refs} & Bibliography and references. \\
   \ref{app:determinism} & Determinism contract: the legal code
     for reproducibility. \\
+  \ref{app:bytes} & Canonical byte-layout reference: every ratified
+    discriminant, derivation preimage, and primitive encoding in one
+    place, for the Binary Format companion to import. \\
   \ref{app:history} & Revision history. \\
   \bottomrule
 \end{longtable}
@@ -3711,6 +3714,17 @@ pub enum ObjectKind {
   the only kinds for which a system-derived counter collision is
   possible. A new core variant is added here only when a new object
   kind begins being minted into the system-derived namespace.
+
+  The discriminant byte of \texttt{ObjectKind} is its declaration-order
+  index in the listing above: \texttt{Voice} $= 0$, \texttt{Pitch}
+  $= 1$, \texttt{Registered} $= 2$. Because \texttt{ObjectKind} is the
+  \texttt{kind} field of a \texttt{SystemIdentifierCollision} anomaly,
+  this byte enters the canonical-input preimage of the resulting
+  \texttt{IntegrityAnomalyId}
+  (Requirement~\ref{req:graph:integrity-anomaly-id}); two replicas
+  observing the same structural failure agree on its identity only if
+  they agree on this byte. The assignment is therefore normative and
+  stable and \MUSTNOT{} be reordered.
 \end{requirement}
 
 \begin{requirement}
@@ -6443,6 +6457,22 @@ pub enum ResolutionAction {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:semops:resolution-action-discriminants}
+  The discriminant byte of \texttt{ResolutionAction} is its
+  declaration-order index in the listing above: \texttt{AcceptLoser}
+  $= 0$, \texttt{KeepWinner} $= 1$, \texttt{Override} $= 2$,
+  \texttt{Reanchor} $= 3$, \texttt{Dismiss} $= 4$, \texttt{Registered}
+  $= 5$. A \texttt{ResolutionAction} is encoded into the
+  \texttt{ResolveConflict} operation payload and therefore into that
+  operation's content hash, so this assignment is normative and stable
+  and \MUSTNOT{} be reordered. \texttt{Dismiss} was assigned \texttt{4}
+  ahead of \texttt{Registered} (\texttt{5}) when the \texttt{Dismissed}
+  resolution state was made reachable by an authored operation
+  (Section~\ref{sec:semops:conflict-resolution} below), fixing the wire
+  form against a silent shift.
+\end{requirement}
+
+\begin{requirement}
   \label{req:semops:field-collision-effect}
   When two concurrent operations write the same non-LWW field and
   reduction records a \texttt{StructuralFieldCollision}, the
@@ -6566,6 +6596,7 @@ fn derive_conflict_id(
 \end{rationale}
 
 \subsection{Conflict Resolution Operations}
+\label{sec:semops:conflict-resolution}
 
 \begin{lstlisting}[language=Rust]
 pub struct ResolveConflictPayload {
@@ -10567,7 +10598,12 @@ Although the full Binary Format companion is still to be written, the
 canonical encoding conventions shared by the core, operations, and
 bundle layers are ratified now, so those three layers do not drift
 apart before the companion formalizes them. The companion
-\emph{inherits} this baseline rather than re-deriving it.
+\emph{inherits} this baseline rather than re-deriving it. Every
+ratified discriminant table, derivation preimage, and primitive
+encoding is consolidated in
+Appendix~\ref{app:bytes} (the Canonical Byte-Layout Reference); the
+companion imports that appendix as its starting point rather than
+recovering the layouts from the three crates.
 
 \begin{requirement}
   \label{req:format:codec-conventions}
@@ -13344,6 +13380,337 @@ state.
   \end{itemize}
 \end{requirement}
 
+% ===========================================================================
+\chapter{Canonical Byte-Layout Reference}
+\label{app:bytes}
+
+\providecommand{\bul}{\_\discretionary{}{}{}}% breakable underscore for long identifiers
+\providecommand{\cwb}{\discretionary{}{}{}}% zero-width break for long camelCase identifiers
+
+\section{Status of this reference}
+
+This appendix consolidates, in one place, every byte layout pinned by
+the Pass 11 ratification: the discriminant tables, derivation
+preimages, and primitive encodings that the core, operations, and
+bundle layers already implement and lock with golden-bytes tests. Its
+purpose is to give the Binary Format companion
+(Section~\ref{sec:format:binary}) a single point to import, rather than
+re-deriving these layouts from three separate crates.
+
+This reference is a \emph{consolidation, not a second source of truth.}
+Every entry cites the requirement that defines it normatively; where
+this appendix and a cited requirement appear to disagree, the cited
+requirement governs. The appendix introduces no obligation beyond what
+its citations already impose. The layouts that Pass 11 deliberately
+left to the interchange companions are listed in
+Section~\ref{sec:bytes:deferred} so the boundary is explicit.
+
+\section{Shared encoding conventions}
+\label{sec:bytes:conventions}
+
+All composite canonical encodings follow the convention baseline that
+the Binary Format companion inherits
+(Requirement~\ref{req:format:codec-conventions}): little-endian
+integers; a boolean as a single \texttt{0}/\texttt{1} byte; \texttt{u32}
+little-endian counts and a length prefix on every variable-width leaf;
+a tagged union as a single discriminant byte followed by its variant
+payload; and free-text strings as length-prefixed UTF-8 that the codec
+does \emph{not} NFC-fold (catalog identifiers are NFC-normalized at
+construction, not in the codec). Certain hashing preimages deliberately
+depart from the single-discriminant-byte convention where a wider or
+order-bearing tag is required --- notably the \texttt{TypedObjectId}
+16-bit big-endian discriminant; such departures are pinned at their
+definitions and noted in the tables below.
+
+\section{System-derived identifier function}
+\label{sec:bytes:system-derived}
+
+Several identifiers below are content-addressed rather than
+counter-allocated. They share one function
+(Section~\ref{sec:graph:system-derived}): the 64-bit counter of a
+\texttt{ReplicaId::SYSTEM\_DERIVED}
+(\texttt{0xffff\_ffff\_ffff\_ffff}) identifier is
+$\mathrm{BE\_u64}(\mathrm{BLAKE3}(\texttt{domain\_tag} \Vert
+\texttt{canonical\_inputs})[0..8])$. The domain tag is exactly eight
+bytes. The reserved built-in tags are the closed set
+\{\texttt{MUSCSVCE}, \texttt{MUSCSPCH}, \texttt{MUSCSANM}\}; tags
+introduced by registered extensions \MUST{} begin with \texttt{MUSCS},
+be exactly eight bytes, and not collide with the reserved three.
+
+\section{Discriminant tables, derivations, and encodings}
+\label{sec:bytes:tables}
+
+\subsection{Object-graph identity (canonical document state)}
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{3.5cm} >{\raggedright\arraybackslash}p{6.8cm} p{2.2cm}}
+  \toprule
+  \textbf{Layout} & \textbf{Canonical bytes / preimage} &
+  \textbf{Requirement} \\
+  \midrule
+  \endhead
+  \texttt{TypedObjectId} tag &
+  16-bit big-endian discriminant (\texttt{0}--\texttt{27}) $\Vert$
+  variant payload. \texttt{Registered} $= 27$ encodes
+  \texttt{reg}~(16 BE) $\Vert$ \texttt{raw}~(16 BE), 34 bytes total.
+  \texttt{ObjectKindRegistryId} is 128-bit &
+  \ref{req:graph:typed-object-id-discriminants} \\[2pt]
+
+  Promoted \texttt{VoiceId} &
+  System-derived under \texttt{MUSCSVCE} over a 64-byte preimage:
+  \texttt{staff\_instance} $\Vert$ \texttt{original\_voice} $\Vert$
+  \texttt{winning\_op} $\Vert$ \texttt{losing\_op}, each 16-byte
+  big-endian &
+  \S\ref{sec:graph:promoted-voices} \\[2pt]
+
+  System-derived \texttt{PitchId} &
+  System-derived under \texttt{MUSCSPCH} over the intrinsic identity
+  (scale position, acoustic realization); variable-width strings
+  length-prefixed and NFC-normalized at the boundary; the tuning
+  reference is always present (\texttt{Inherit} as a distinct presence
+  marker) &
+  \ref{req:graph:system-derived-pitch-id} \\[2pt]
+
+  \texttt{Integrity\cwb AnomalyId} &
+  System-derived under \texttt{MUSCSANM} over
+  \texttt{Integrity\cwb AnomalyKind::\cwb to\bul canonical\bul bytes()} &
+  \ref{req:graph:integrity-anomaly-id} \\[2pt]
+
+  \texttt{ObjectKind} discriminant &
+  Single byte: \texttt{Voice} $= 0$, \texttt{Pitch} $= 1$,
+  \texttt{Registered} $= 2$. Enters the \texttt{IntegrityAnomalyId}
+  preimage &
+  \ref{req:graph:object-kind-vocab} \\
+  \bottomrule
+\end{longtable}
+
+\subsection{Bundle layer (chunk store, manifest, blobs)}
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{3.5cm} >{\raggedright\arraybackslash}p{6.8cm} p{2.2cm}}
+  \toprule
+  \textbf{Layout} & \textbf{Canonical bytes / preimage} &
+  \textbf{Requirement} \\
+  \midrule
+  \endhead
+  Chunk content hash &
+  BLAKE3 of \texttt{domain\bul tag} $\Vert$ \texttt{ChunkKind} byte
+  $\Vert$ \texttt{SchemaVersion} (4) $\Vert$
+  \texttt{uncompressed\bul length} (u64 LE) $\Vert$ \texttt{payload};
+  tag \texttt{MUSCCHNK} for chunks, \texttt{MUSCMANI} for the manifest.
+  Compression is \emph{not} in the preimage &
+  \S\ref{sec:format:hashing} \\[2pt]
+
+  \texttt{ChunkKind} &
+  Single declaration-order byte, \texttt{0}--\texttt{8} (in the chunk
+  hash preimage, so stable) &
+  \ref{req:format:chunkkind-discriminants} \\[2pt]
+
+  \texttt{Compression\cwb Algorithm} &
+  Fixed two bytes: discriminant $\Vert$ parameter. \texttt{None} $=$
+  \texttt{[0,0]}, \texttt{Zstd\{level\}} $=$ \texttt{[1,level]},
+  \texttt{Reserved(v)} $=$ \texttt{[2,v]}. Not part of chunk identity &
+  \ref{req:format:chunkkind-discriminants} \\[2pt]
+
+  \texttt{SchemaVersion} &
+  \texttt{major}~(u16 LE) $\Vert$ \texttt{minor}~(u16 LE), four bytes &
+  \S\ref{sec:format:hashing} \\[2pt]
+
+  \texttt{BlobId} &
+  Bare BLAKE3 of \texttt{MUSCBLOB} $\Vert$
+  \texttt{uncompressed\bul payload}: the domain tag immediately
+  followed by payload, with no kind, schema, or length fields &
+  \ref{req:format:blob-hash-shape} \\[2pt]
+
+  \texttt{ManifestId} &
+  \texttt{trunc128} (leading 16 bytes) of BLAKE3 of \texttt{MUSCMNIF}
+  $\Vert$ \texttt{document\bul id} (16) $\Vert$ \texttt{generation}
+  (u64 LE) $\Vert$ \texttt{manifest\bul body}; the
+  \texttt{manifest\bul id} field is excluded from the body &
+  \ref{req:format:manifest-id} \\[2pt]
+
+  \texttt{ProfileId} &
+  Fixed 20 bytes: discriminant (u32 LE; \texttt{Full} $= 0$,
+  \texttt{ReadOnly} $= 1$, \texttt{Lite} $= 2$, \texttt{Custom} $= 3$)
+  $\Vert$ \texttt{ProfileRegistryId}~(16, zero unless \texttt{Custom}).
+  Load-bearing in superblock selection &
+  \ref{req:format:profileid-discriminants} \\
+  \bottomrule
+\end{longtable}
+
+\subsection{Operation layer (transaction metadata)}
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{3.5cm} >{\raggedright\arraybackslash}p{6.8cm} p{2.2cm}}
+  \toprule
+  \textbf{Layout} & \textbf{Canonical bytes} & \textbf{Requirement} \\
+  \midrule
+  \endhead
+  \texttt{Transaction\cwb Category} &
+  Single byte: \texttt{NoteEntry} $= 0$, \texttt{Structural} $= 1$,
+  \texttt{Layout} $= 2$, \texttt{Import} $= 3$, \texttt{Registered}
+  $= 4$ &
+  \ref{req:semops:transaction-category} \\[2pt]
+
+  \texttt{ResolutionAction} &
+  Single byte: \texttt{AcceptLoser} $= 0$, \texttt{KeepWinner} $= 1$,
+  \texttt{Override} $= 2$, \texttt{Reanchor} $= 3$, \texttt{Dismiss}
+  $= 4$, \texttt{Registered} $= 5$. Encoded into the operation content
+  hash &
+  \ref{req:semops:resolution-action-discriminants} \\
+  \bottomrule
+\end{longtable}
+
+\subsection{Primitive scalar encodings}
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{3.5cm} >{\raggedright\arraybackslash}p{6.8cm} p{2.2cm}}
+  \toprule
+  \textbf{Layout} & \textbf{Canonical bytes} & \textbf{Requirement} \\
+  \midrule
+  \endhead
+  \texttt{RationalTime} &
+  Sign byte (\texttt{0} zero, \texttt{1} positive, \texttt{2} negative)
+  $\Vert$ numerator magnitude (u32-LE length-prefixed, big-endian)
+  $\Vert$ denominator magnitude (u32-LE length-prefixed, big-endian).
+  Always stored reduced (lowest terms, positive denominator), so equal
+  rationals encode to equal bytes &
+  \ref{req:format:rationaltime-encoding} \\[2pt]
+
+  Wall-clock integers &
+  Fixed-width little-endian (matching \texttt{QuantizedCoord}) &
+  \ref{req:format:rationaltime-encoding} \\
+  \bottomrule
+\end{longtable}
+
+\section{Domain-tag registry}
+\label{sec:bytes:tags}
+
+Every reserved built-in eight-byte domain tag, in one place, plus the
+\texttt{MUSCLOID} Track-A target. The nine \emph{canonical} tags ---
+whose preimages produce content that enters document state --- are
+listed first; \texttt{MUSCFNTM} and \texttt{MUSCLOID} are
+\emph{non-canonical} (layout-only) and listed last, for completeness
+(see Section~\ref{sec:bytes:deferred}). Registered extensions may
+additionally mint \emph{system-derived} tags, which \MUST{} begin with
+\texttt{MUSCS}, be exactly eight bytes, and not collide with a reserved
+tag (Section~\ref{sec:bytes:system-derived}).
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{2.6cm} >{\raggedright\arraybackslash}p{10.4cm}}
+  \toprule
+  \textbf{Tag} & \textbf{Use} \\
+  \midrule
+  \endhead
+  \texttt{MUSCCHNK} & Chunk content-hash preimage
+    (\S\ref{sec:format:hashing}) \\
+  \texttt{MUSCMANI} & Manifest chunk content-hash preimage
+    (\S\ref{sec:format:hashing}) \\
+  \texttt{MUSCBLOB} & Blob identity, bare preimage
+    (Requirement~\ref{req:format:blob-hash-shape}) \\
+  \texttt{MUSCMNIF} & Manifest-id derivation
+    (Requirement~\ref{req:format:manifest-id}) \\
+  \texttt{MUSCCONF} & \texttt{ConflictId} derivation
+    (\S\ref{sec:semops:conflict-id}) \\
+  \texttt{MUSCENVH} & Operation-envelope hash (\texttt{EnvelopeHash})
+    (\S\ref{sec:semops:equivocation}) \\
+  \texttt{MUSCSVCE} & System-promoted voice id
+    (\S\ref{sec:graph:promoted-voices}) \\
+  \texttt{MUSCSPCH} & System-derived pitch id
+    (Requirement~\ref{req:graph:system-derived-pitch-id}) \\
+  \texttt{MUSCSANM} & Integrity-anomaly id
+    (Requirement~\ref{req:graph:integrity-anomaly-id}) \\
+  \texttt{MUSCFNTM} & Font-metrics hash for layout conformance ---
+    \emph{non-canonical} (\S\ref{sec:layoutir:catalog-identity}) \\
+  \texttt{MUSCLOID} & Layout-object id --- \emph{non-canonical},
+    Track-A target, not minted by the prototype
+    (Requirement~\ref{req:layoutir:object-id-derivation}) \\
+  \bottomrule
+\end{longtable}
+
+\section{Reference-implementation locks}
+\label{sec:bytes:goldens}
+
+Each ratified layout above is anchored by a test in the reference
+implementation that fails deliberately if the layout drifts. Most are
+\emph{golden-bytes} tests pinning the literal encoding; the two noted
+exceptions (\texttt{BlobId} and \texttt{RationalTime}) are anchored by
+round-trip and canonicalization tests, which catch a drift in decode or
+normalized form but not every literal-byte change. These anchors make
+the spec-to-code correspondence checkable.
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{3.7cm} >{\raggedright\arraybackslash}p{9.3cm}}
+  \toprule
+  \textbf{Layout} & \textbf{Anchoring test} \\
+  \midrule
+  \endhead
+  \texttt{TypedObjectId} &
+    {\footnotesize\texttt{epiphany-core/src/ids.rs}:
+    \texttt{typed\bul object\bul id\bul byte\bul form\bul is\bul locked}} \\
+  Promoted \texttt{VoiceId} &
+    {\footnotesize\texttt{epiphany-core/src/graph.rs}:
+    \texttt{promoted\bul voice\bul id\bul byte\bul form\bul is\bul locked}} \\
+  System \texttt{PitchId} &
+    {\footnotesize\texttt{epiphany-core/src/pitch.rs}:
+    \texttt{system\bul pitch\bul id\bul byte\bul form\bul is\bul locked}} \\
+  \texttt{Integrity\cwb AnomalyId} &
+    {\footnotesize\texttt{epiphany-ops/src/anomaly.rs}:
+    \texttt{integrity\bul anomaly\bul id\bul byte\bul form\bul is\bul locked}} \\
+  \texttt{ObjectKind} &
+    {\footnotesize\texttt{epiphany-ops/src/support.rs}:
+    \texttt{object\bul kind\bul discriminants\bul are\bul golden}} \\
+  \texttt{ChunkKind} &
+    {\footnotesize\texttt{epiphany-bundle/src/chunk.rs}:
+    \texttt{chunk\bul kind\bul discriminants\bul are\bul golden}} \\
+  \texttt{Compression\cwb Algorithm} &
+    {\footnotesize\texttt{epiphany-bundle/src/chunk.rs}:
+    \texttt{compression\bul algorithm\bul encoding\bul is\bul golden}} \\
+  \texttt{ProfileId} &
+    {\footnotesize\texttt{epiphany-bundle/src/superblock.rs}:
+    \texttt{profile\bul id\bul discriminants\bul are\bul golden}} \\
+  \texttt{ManifestId} &
+    {\footnotesize\texttt{epiphany-bundle/src/ids.rs}:
+    \texttt{manifest\bul id\bul is\bul content\bul derived\bul and\bul deterministic}} \\
+  \texttt{Transaction\cwb Category} &
+    {\footnotesize\texttt{epiphany-ops/src/payload.rs}:
+    \texttt{transaction\bul category\bul discriminants\bul are\bul golden}} \\
+  \texttt{ResolutionAction} &
+    {\footnotesize\texttt{epiphany-ops/src/conflict.rs}:
+    \texttt{resolution\bul action\bul discriminants\bul are\bul golden}} \\
+  \texttt{BlobId} &
+    {\footnotesize\texttt{epiphany-determinism/src/hash.rs}:
+    \texttt{ContentHash::of\bul blob} and its round-trip locks
+    \emph{(round-trip, not a literal-byte golden)}} \\
+  \texttt{RationalTime} &
+    {\footnotesize\texttt{epiphany-core/src/time.rs}:
+    \texttt{equal\bul rationals\bul encode\bul identically}
+    \emph{(canonical-equality lock, not a literal-byte golden)}} \\
+  \bottomrule
+\end{longtable}
+
+\section{Layouts deferred to the companions}
+\label{sec:bytes:deferred}
+
+The following are intentionally \emph{not} ratified here; they remain
+provisional pending the Binary Format companion and the Operation
+Catalog, and are recorded so the companion authors know precisely which
+layouts they own versus inherit:
+
+\begin{itemize}
+  \item \texttt{OperationKindTag} / \texttt{OperationKind} discriminants
+    and the full per-operation payload encodings. The reference
+    implementation assigns provisional declaration-order discriminants
+    (\texttt{0}--\texttt{16}) locked only for mutual distinctness, not
+    to literal values; pinning the literal wire form is the
+    Operation Catalog's and Binary Format companion's job.
+  \item The full composite struct layouts --- whole-\texttt{Score},
+    operation envelopes, the manifest body's field order --- together
+    with schema-version wire evolution and varint details beyond the
+    convention baseline
+    (Requirement~\ref{req:format:codec-conventions}). The companion
+    inherits the baseline and formalizes these.
+  \item \texttt{MUSCLOID} layout-object ids
+    (Requirement~\ref{req:layoutir:object-id-derivation}) are
+    non-canonical (they are not document state) and the prototype still
+    mints provisional, untagged ids; realizing the \texttt{MUSCLOID}
+    derivation is Track-A work.
+\end{itemize}
+
 \chapter{Revision History}
 \label{app:history}
 
@@ -14011,6 +14378,17 @@ state.
   (was 18 in QUICKSTART) and named the three construction-time MUSTs
   (time-signature beat-group sum, ordering-DAG acyclicity, and
   non-degenerate \texttt{TupletRatio}, now enforced at construction).
+  \emph{Consolidation:} added the Canonical Byte-Layout Reference
+  (Appendix~\ref{app:bytes}) gathering every ratified discriminant,
+  derivation preimage, and primitive encoding into one place for the
+  Binary Format companion to import, with a domain-tag registry and
+  golden-lock anchors; and closed two follow-through gaps where the
+  discriminant \emph{bytes} of \texttt{ObjectKind} (\texttt{Voice}~=~0,
+  \texttt{Pitch}~=~1, \texttt{Registered}~=~2; feeds the
+  \texttt{IntegrityAnomalyId} preimage) and \texttt{ResolutionAction}
+  (\texttt{AcceptLoser}~=~0~$\dots$~\texttt{Registered}~=~5; feeds the
+  operation content hash) were golden-locked in code but unpinned in
+  spec text.
   \\
   \bottomrule
 \end{longtable}

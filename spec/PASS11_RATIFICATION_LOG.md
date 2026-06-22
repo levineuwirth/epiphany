@@ -29,8 +29,8 @@ unchanged. The full worklist is `PASS11_WORKLIST.md`.
 | 2.1 Tempo `Linear` parameter | P11-7 | **decided: speed-linear** — interpolates whole-notes-per-second (beat-unit-agnostic), not bpm/period; `Exponential` interpolates speed geometrically. Rationale: a tempo map may change beat unit across segments, so only speed gives a beat-unit-independent wall-clock schedule | §"Conversion", `req:time:linear-interpolates-speed` + rationale | `tempo.rs::SpeedModel` |
 | 2.2 Field-collision effect tag | P11-C3 | **decided: winner-carries-`Conflicted`** — the later op (which materializes and noticed the collision) reads `Conflicted`; the earlier op keeps `Applied`. Chosen for order-independence; a UI reads the record's `loser` field for "your edit was overridden" | `req:semops:field-collision-effect` + rationale; RespellPitch reduction rule | `reduce.rs::respell_pitch` |
 | 2.3 `>2`-way promotion | P11-C4 | **adopt + lifted to normative** — order-independent pre-pass: bucket by voice, walk by OperationId, retain a non-overlapping set, promote each overlapping loser (lowest-id retained survivor wins); applies to **partial** interval overlaps, not just identical onsets | §"System-Promoted Voices", `req:graph:promotion-generalization` | `reduce.rs::compute_promotions` |
-| 2.4 Open-vocab enums | P11-C9 | **decided: pinned core sets, kept `Registered`** — `TransactionCategory ∈ {NoteEntry, Structural, Layout, Import, Registered}`; `ObjectKind ∈ {Voice, Pitch, Registered}` (narrower than the 28 object kinds: only kinds minted into the system namespace) | `req:semops:transaction-category`, `req:graph:object-kind-vocab` | `payload.rs`, `support.rs` |
-| 2.5 `ResolveConflict` Dismissed | P11-C10 | **decided: added `ResolutionAction::Dismiss`** (code + spec) — closes the half-unreachable state machine; the Dismiss action selects the `Dismissed` state, every other action selects `Resolved` | §"Conflict Resolution Operations" | `conflict.rs`, `reduce.rs::resolve_conflict`, `resolve_conflict_with_dismiss_reaches_dismissed_state` |
+| 2.4 Open-vocab enums | P11-C9 | **decided: pinned core sets, kept `Registered`** — `TransactionCategory ∈ {NoteEntry, Structural, Layout, Import, Registered}`; `ObjectKind ∈ {Voice, Pitch, Registered}` (narrower than the 28 object kinds: only kinds minted into the system namespace). **Discriminant bytes now pinned in spec text:** `TransactionCategory` 0–4 (was already pinned); `ObjectKind` Voice=0/Pitch=1/Registered=2 added to `req:graph:object-kind-vocab` because the byte feeds the `IntegrityAnomalyId` preimage and was golden-locked in code but absent from spec text | `req:semops:transaction-category`, `req:graph:object-kind-vocab` | `payload.rs`, `support.rs::object_kind_discriminants_are_golden` |
+| 2.5 `ResolveConflict` Dismissed | P11-C10 | **decided: added `ResolutionAction::Dismiss`** (code + spec) — closes the half-unreachable state machine; the Dismiss action selects the `Dismissed` state, every other action selects `Resolved`. **Discriminant bytes now pinned in spec text** (`AcceptLoser`=0 … `Dismiss`=4, `Registered`=5) in new `req:semops:resolution-action-discriminants`: the action is encoded into the operation content hash and was golden-locked in code but absent from spec text | §"Conflict Resolution Operations", `req:semops:resolution-action-discriminants` | `conflict.rs::resolution_action_discriminants_are_golden`, `reduce.rs::resolve_conflict`, `resolve_conflict_with_dismiss_reaches_dismissed_state` |
 | 2.6 Layout-object id | layout P11-2 | **decided: spec pins `MUSCLOID` tag; code adoption is Track A** — the spec specifies a `MUSCLOID`-tagged derivation keying multiply-manifested objects on `(source, region)`, synthesized objects on `(source, synthesis_kind, stable_semantic_instance_key)`. Non-canonical (not document state). The v0 `layout-ir` crate still mints **provisional** ids (untagged; synthesized borrows `MUSCCONF`) because the frozen determinism crate exposes no `MUSCLOID` tag — realizing the spec'd derivation is Track A work, not done in this pass | §"Provenance", `req:layoutir:object-id-derivation` | `layout-ir` provenance (provisional) |
 
 ## Bucket 3 — Fixes (spec was contradictory or silent)
@@ -55,3 +55,40 @@ call for the G–K re-cut (recommend blessing the dependency).
 **Tally:** 8 adopt-and-pin, 6 decide-then-pin, 5 fix, 6 no-spec-change-defer =
 25 candidate items. All 19 ratifiable items are ratified; the 6 deferrals are
 recorded with their owning track.
+
+## Deliverables
+
+- **Canonical Byte-Layout Reference (Appendix E of `core_spec`).** A single,
+  self-contained appendix consolidating every ratified discriminant table,
+  derivation preimage, and primitive encoding from this pass into one place,
+  for the Binary Format companion (Agent J) to import rather than re-derive
+  from three crates. It includes a domain-tag registry (all ten reserved
+  built-in `MUSC*` tags — nine canonical plus the non-canonical
+  `MUSCFNTM` — and the `MUSCLOID` Track-A target), a golden-lock
+  cross-reference table (each layout → its reference-implementation
+  anchoring test), and an explicit "deferred to the
+  companions" section naming what Pass 11 did **not** ratify (`OperationKindTag`
+  discriminants, full composite struct layouts, `MUSCLOID`). The reference is a
+  consolidation, not a second source of truth: every entry cites the
+  requirement that governs it. Cross-referenced from §"Binary Format Companion"
+  and the front-matter chapter table.
+- **Ratification log** (this file): one line per worklist item with disposition.
+- **Golden-test annotations**: every byte-layout golden test in
+  `epiphany-core`, `epiphany-ops`, `epiphany-bundle`, `epiphany-determinism`
+  cites its ratified `req:*` section.
+- **Spec rebuilds clean** (lualatex/latexmk, 0 undefined references, 261 pages);
+  `cargo test --workspace` 434 pass / 0 fail; `clippy -D warnings` and `fmt`
+  clean.
+
+## Follow-through gaps closed (this session)
+
+Two enums that Pass 11 explicitly ratified (items 2.4, 2.5) had their
+discriminant **bytes** golden-locked in code and labelled "RATIFIED by Pass 11"
+but the **spec text** pinned only their vocabulary, not the byte values — a
+divergence hole, since both feed content hashes. Closed by pinning the bytes:
+`ObjectKind` (Voice=0/Pitch=1/Registered=2 → `IntegrityAnomalyId` preimage) in
+`req:graph:object-kind-vocab`, and `ResolutionAction` (0…5 → operation content
+hash) in the new `req:semops:resolution-action-discriminants`. `OperationKindTag`
+discriminants remain deliberately deferred to Track B (their literal wire form
+is the Operation Catalog's / Binary Format companion's to pin; the code locks
+them only for mutual distinctness today).

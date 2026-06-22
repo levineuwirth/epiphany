@@ -402,11 +402,12 @@ mod tests {
 
     #[test]
     fn resolution_action_discriminants_are_golden() {
-        // RATIFIED by Pass 11 (items 2.5 / 1.5): ResolutionAction is canonically
-        // encoded into operation content, so its discriminants are normative.
-        // Dismiss = 4 was inserted ahead of Registered (now 5); lock the literal
-        // values so any future reorder breaks deliberately rather than silently
-        // shifting the wire form.
+        // RATIFIED by Pass 11 (item 2.5; core_spec
+        // `req:semops:resolution-action-discriminants`): ResolutionAction is
+        // canonically encoded into operation content, so its discriminants are
+        // normative. Dismiss = 4 was inserted ahead of Registered (now 5); lock
+        // the literal values so any future reorder breaks deliberately rather
+        // than silently shifting the wire form.
         assert_eq!(ResolutionAction::AcceptLoser.discriminant(), 0);
         assert_eq!(ResolutionAction::KeepWinner.discriminant(), 1);
         assert_eq!(
