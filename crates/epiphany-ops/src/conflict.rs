@@ -401,6 +401,33 @@ mod tests {
     }
 
     #[test]
+    fn resolution_action_discriminants_are_golden() {
+        // RATIFIED by Pass 11 (items 2.5 / 1.5): ResolutionAction is canonically
+        // encoded into operation content, so its discriminants are normative.
+        // Dismiss = 4 was inserted ahead of Registered (now 5); lock the literal
+        // values so any future reorder breaks deliberately rather than silently
+        // shifting the wire form.
+        assert_eq!(ResolutionAction::AcceptLoser.discriminant(), 0);
+        assert_eq!(ResolutionAction::KeepWinner.discriminant(), 1);
+        assert_eq!(
+            ResolutionAction::Override {
+                override_operation: op(1, 1)
+            }
+            .discriminant(),
+            2
+        );
+        assert_eq!(
+            ResolutionAction::Reanchor { new_target: obj(7) }.discriminant(),
+            3
+        );
+        assert_eq!(ResolutionAction::Dismiss.discriminant(), 4);
+        assert_eq!(
+            ResolutionAction::Registered(ResolutionRegistryId(0)).discriminant(),
+            5
+        );
+    }
+
+    #[test]
     fn conflict_id_is_order_independent_in_its_inputs() {
         let kind = ConflictKind::TombstonedTarget {
             target: obj(7),

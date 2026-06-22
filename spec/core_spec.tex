@@ -2210,8 +2210,19 @@ pub struct Tuplet {
 }
 
 pub struct TupletRatio {
-    pub actual: u32,
-    pub notated: u32,
+    // Fields are private: a TupletRatio is constructed only through the
+    // checked `new`, so a degenerate ratio is never representable (see
+    // the requirement below). The fields are read via `actual()`/`notated()`.
+    actual: u32,
+    notated: u32,
+}
+
+impl TupletRatio {
+    /// Returns `None` for a degenerate ratio (either term zero, or
+    /// `actual == notated`); otherwise the well-formed ratio.
+    pub fn new(actual: u32, notated: u32) -> Option<TupletRatio> { /* checked */ }
+    pub fn actual(&self) -> u32 { /* ... */ }
+    pub fn notated(&self) -> u32 { /* ... */ }
 }
 \end{lstlisting}
 
@@ -9642,11 +9653,15 @@ pub struct ChunkId(pub ContentHash);
   \end{tabular}
   \end{center}
 
-  \texttt{CompressionAlgorithm} likewise encodes as a single
-  declaration-order discriminant byte followed by any variant payload:
-  \texttt{None} $= 0$ (no payload); \texttt{Zstd\{level\}} $= 1$
-  followed by the \texttt{level} byte; \texttt{Reserved(u8)} $= 2$
-  followed by the reserved byte. Compression is \emph{not} part of a
+  \texttt{CompressionAlgorithm} encodes as a fixed \emph{two} bytes: a
+  declaration-order discriminant byte followed by a single parameter
+  byte that is always present. \texttt{None} $= 0$ (the parameter byte
+  is present but zero, and ignored on read); \texttt{Zstd\{level\}}
+  $= 1$ with the \texttt{level} in the parameter byte;
+  \texttt{Reserved(u8)} $= 2$ with the reserved value in the parameter
+  byte. The parameter byte is written even for \texttt{None}, so the
+  encoding is fixed-width and a reader always consumes two bytes.
+  Compression is \emph{not} part of a
   chunk's content identity (it is metadata on the \texttt{ChunkRef}),
   so these discriminants are stable but do not affect chunk hashes.
 
@@ -10408,11 +10423,15 @@ pub struct ProfileConstraints {
 
 \begin{requirement}
   \label{req:format:profileid-discriminants}
-  \texttt{ProfileId} encodes as a single declaration-order
-  discriminant followed by any variant payload: \texttt{Full} $= 0$,
-  \texttt{ReadOnly} $= 1$, \texttt{Lite} $= 2$,
-  \texttt{Custom(ProfileRegistryId)} $= 3$ followed by the registry
-  id's canonical bytes. This assignment is normative and stable.
+  \texttt{ProfileId} encodes as a fixed \emph{20} bytes: a
+  little-endian \texttt{u32} declaration-order discriminant
+  (\texttt{Full} $= 0$, \texttt{ReadOnly} $= 1$, \texttt{Lite} $= 2$,
+  \texttt{Custom} $= 3$) followed by a 16-byte
+  \texttt{ProfileRegistryId}. The trailing 16 bytes carry the registry
+  id for \texttt{Custom} and are zero for the other three variants; the
+  field is always present, so the encoding is fixed-width (the
+  superblock reserves a fixed slot for it). This assignment is
+  normative and stable.
   \texttt{ProfileId} participates in superblock selection
   (Section~\ref{sec:format:bundle}, the load-bearing field set), so
   its discriminants are part of that comparison.

@@ -308,9 +308,10 @@ fn obj_pitch(n: u64) -> PitchId {
     PitchId::new(OBJ_REPLICA, n)
 }
 
-/// A conflict-resolution action (every core and registered variant).
+/// A conflict-resolution action (every core and registered variant,
+/// including `Dismiss`).
 pub fn resolution_action(rng: &mut Rng) -> ResolutionAction {
-    match rng.below(5) {
+    match rng.below(6) {
         0 => ResolutionAction::AcceptLoser,
         1 => ResolutionAction::KeepWinner,
         2 => ResolutionAction::Override {
@@ -319,6 +320,7 @@ pub fn resolution_action(rng: &mut Rng) -> ResolutionAction {
         3 => ResolutionAction::Reanchor {
             new_target: typed_object_id(rng),
         },
+        4 => ResolutionAction::Dismiss,
         _ => ResolutionAction::Registered(ResolutionRegistryId(
             ((rng.next_u64() as u128) << 64) | rng.next_u64() as u128,
         )),

@@ -304,6 +304,29 @@ mod tests {
     }
 
     #[test]
+    fn integrity_anomaly_id_byte_form_is_locked() {
+        // Golden: locks the MUSCSANM-derived anomaly id for a fixed kind.
+        // RATIFIED by Pass 11 (item 1.4, req:graph:integrity-anomaly-id): the
+        // identity is content-derived so two replicas observing the same failure
+        // agree on it, which is a conformance property. A change to the domain
+        // tag, the kind's canonical encoding, or the derivation breaks this
+        // deliberately.
+        let kind = IntegrityAnomalyKind::OperationSlotEquivocated {
+            operation_id: OperationId::new(ReplicaId(7), 42),
+        };
+        let id = IntegrityAnomaly::new(kind).id;
+        // First 8 bytes are the SYSTEM_DERIVED replica; the id is in that namespace.
+        assert_eq!(
+            &id.canonical_bytes()[0..8],
+            &ReplicaId::SYSTEM_DERIVED.to_be_bytes()
+        );
+        const GOLDEN: [u8; 16] = [
+            255, 255, 255, 255, 255, 255, 255, 255, 81, 178, 18, 20, 252, 222, 201, 215,
+        ];
+        assert_eq!(id.canonical_bytes(), GOLDEN);
+    }
+
+    #[test]
     fn monotone_stream_has_no_anomaly() {
         let a = env(1, 0, 10, 0);
         let b = env(1, 1, 10, 1);

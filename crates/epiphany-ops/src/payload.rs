@@ -538,6 +538,20 @@ mod tests {
     use epiphany_core::{ReplicaId, SlurId};
 
     #[test]
+    fn transaction_category_discriminants_are_golden() {
+        // RATIFIED by Pass 11 (item 2.4, req:semops:transaction-category): the
+        // declaration-order discriminants are normative and canonically encoded.
+        assert_eq!(TransactionCategory::NoteEntry.discriminant(), 0);
+        assert_eq!(TransactionCategory::Structural.discriminant(), 1);
+        assert_eq!(TransactionCategory::Layout.discriminant(), 2);
+        assert_eq!(TransactionCategory::Import.discriminant(), 3);
+        assert_eq!(
+            TransactionCategory::Registered(OperationKindRegistryId(0)).discriminant(),
+            4
+        );
+    }
+
+    #[test]
     fn kind_tag_projects_and_round_trips_registered_id() {
         let reg = OperationKindRegistryId(7);
         let k = OperationKind::Registered(reg, vec![1, 2, 3]);

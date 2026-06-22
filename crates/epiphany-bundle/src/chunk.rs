@@ -315,6 +315,41 @@ mod tests {
     }
 
     #[test]
+    fn chunk_kind_discriminants_are_golden() {
+        // RATIFIED by Pass 11 (item 1.5, req:format:chunkkind-discriminants):
+        // the declaration-order discriminant byte is in the chunk hash preimage,
+        // so the *literal* values are normative. The round-trip test above is
+        // invariant under a coordinated renumbering; this locks the values
+        // themselves so a reorder breaks deliberately (and cannot silently
+        // change every chunk's content address).
+        assert_eq!(ChunkKind::OperationEnvelopeBlock.discriminant(), 0);
+        assert_eq!(ChunkKind::OperationIndex.discriminant(), 1);
+        assert_eq!(ChunkKind::Snapshot.discriminant(), 2);
+        assert_eq!(ChunkKind::Blob.discriminant(), 3);
+        assert_eq!(ChunkKind::ExtensionData.discriminant(), 4);
+        assert_eq!(ChunkKind::TextProjection.discriminant(), 5);
+        assert_eq!(ChunkKind::LayoutCache.discriminant(), 6);
+        assert_eq!(ChunkKind::IntegrityIndex.discriminant(), 7);
+        assert_eq!(ChunkKind::Manifest.discriminant(), 8);
+    }
+
+    #[test]
+    fn compression_algorithm_encoding_is_golden() {
+        // RATIFIED by Pass 11 (item 1.5, req:format:chunkkind-discriminants):
+        // CompressionAlgorithm encodes as a fixed two bytes — a discriminant
+        // byte plus an always-present parameter byte. `None` carries a zero
+        // parameter byte (it is NOT a bare tag), so lock the exact bytes.
+        let enc = |c: CompressionAlgorithm| {
+            let mut w = Writer::new();
+            c.encode(&mut w);
+            w.into_bytes()
+        };
+        assert_eq!(enc(CompressionAlgorithm::None), vec![0, 0]);
+        assert_eq!(enc(CompressionAlgorithm::Zstd { level: 9 }), vec![1, 9]);
+        assert_eq!(enc(CompressionAlgorithm::Reserved(7)), vec![2, 7]);
+    }
+
+    #[test]
     fn manifest_and_ordinary_chunks_use_distinct_domains() {
         // A manifest payload and an operation block with identical bytes must
         // get different content hashes (different domain tag).

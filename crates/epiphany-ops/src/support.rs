@@ -193,6 +193,20 @@ mod tests {
     use epiphany_determinism::sort_canonical;
 
     #[test]
+    fn object_kind_discriminants_are_golden() {
+        // RATIFIED by Pass 11 (item 2.4, req:graph:object-kind-vocab): the
+        // discriminant byte feeds an IntegrityAnomaly's content-derived
+        // identity, so the literal values are normative and must agree across
+        // replicas. Lock them.
+        assert_eq!(ObjectKind::Voice.discriminant(), 0);
+        assert_eq!(ObjectKind::Pitch.discriminant(), 1);
+        assert_eq!(
+            ObjectKind::Registered(OperationKindRegistryId(0)).discriminant(),
+            2
+        );
+    }
+
+    #[test]
     fn registry_ids_order_by_canonical_bytes() {
         let mut v = vec![
             OperationKindRegistryId(3),

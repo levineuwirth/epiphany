@@ -407,6 +407,25 @@ mod tests {
     }
 
     #[test]
+    fn profile_id_discriminants_are_golden() {
+        // RATIFIED by Pass 11 (item 1.5, req:format:profileid-discriminants):
+        // ProfileId is a load-bearing superblock-selection field, so the literal
+        // u32 discriminants are normative. Lock the values, not just round-trip.
+        assert_eq!(ProfileId::Full.discriminant(), 0);
+        assert_eq!(ProfileId::ReadOnly.discriminant(), 1);
+        assert_eq!(ProfileId::Lite.discriminant(), 2);
+        assert_eq!(
+            ProfileId::Custom(ProfileRegistryId([0; 16])).discriminant(),
+            3
+        );
+        // And the fixed-width encoding: a u32-LE discriminant + 16-byte registry
+        // id (zero unless Custom) = 20 bytes; Full is twenty zero bytes.
+        let mut w = Writer::new();
+        ProfileId::Full.encode(&mut w);
+        assert_eq!(w.into_bytes(), vec![0u8; 20]);
+    }
+
+    #[test]
     fn superblock_round_trips_through_256_bytes() {
         let original = Superblock {
             commit_timestamp: WallClockTime(1_700_000_000_000_000_000),
