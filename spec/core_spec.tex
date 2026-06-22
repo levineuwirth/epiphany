@@ -13432,10 +13432,13 @@ counter-allocated. They share one function
 (\texttt{0xffff\_ffff\_ffff\_ffff}) identifier is
 $\mathrm{BE\_u64}(\mathrm{BLAKE3}(\texttt{domain\_tag} \Vert
 \texttt{canonical\_inputs})[0..8])$. The domain tag is exactly eight
-bytes. The reserved built-in tags are the closed set
-\{\texttt{MUSCSVCE}, \texttt{MUSCSPCH}, \texttt{MUSCSANM}\}; tags
-introduced by registered extensions \MUST{} begin with \texttt{MUSCS},
-be exactly eight bytes, and not collide with the reserved three.
+bytes. The reserved built-in tags \emph{for this derivation} are the
+closed set \{\texttt{MUSCSVCE}, \texttt{MUSCSPCH}, \texttt{MUSCSANM}\}
+--- the three system-derived-identifier tags only; the other reserved
+domain tags catalogued in Section~\ref{sec:bytes:tags} feed plain
+hashing preimages, not this counter. Tags introduced by registered
+extensions \MUST{} begin with \texttt{MUSCS}, be exactly eight bytes,
+and not collide with the reserved three.
 
 \section{Discriminant tables, derivations, and encodings}
 \label{sec:bytes:tables}
@@ -13584,7 +13587,9 @@ be exactly eight bytes, and not collide with the reserved three.
 
 Every reserved built-in eight-byte domain tag, in one place, plus the
 \texttt{MUSCLOID} Track-A target. The nine \emph{canonical} tags ---
-whose preimages produce content that enters document state --- are
+whose preimages produce identifiers and content hashes that are part of
+the interoperable, durably persisted form every conforming
+implementation must reproduce bit-identically --- are
 listed first; \texttt{MUSCFNTM} and \texttt{MUSCLOID} are
 \emph{non-canonical} (layout-only) and listed last, for completeness
 (see Section~\ref{sec:bytes:deferred}). Registered extensions may
