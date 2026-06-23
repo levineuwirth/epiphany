@@ -25,14 +25,17 @@
 //!   and the event temporal-coordinate unions [`EventPosition`],
 //!   [`EventDuration`], [`ConcreteDuration`] (Chapter 3).
 //! * `pitch` — [`Pitch`], [`ScalePosition`], [`IdentifiedPitch`],
-//!   [`PitchSpelling`], the spelling-attachment subsystem, and the spelling
-//!   pre-pass stub (Chapter 2; Chapter 4 for the tuning/pitch-space registry
-//!   identifiers it references).
+//!   [`PitchSpelling`], and the spelling-attachment subsystem (Chapter 2;
+//!   Chapter 4 for the tuning/pitch-space registry identifiers it references).
 //! * `event` — the [`Event`] taxonomy and the [`EventArena`] (Chapter 5
 //!   §"The Event Arena").
 //! * `graph` — [`Canvas`], [`Region`], [`Staff`]/[`StaffInstance`] (distinct
 //!   types), [`Voice`], [`Measure`], [`BarlineAlignmentGroup`], and the
 //!   reference-bearing cross-cutting structures (Chapter 5).
+//! * `prepass` — the spelling and notational-decomposition pre-passes
+//!   ([`derive_annotations`]): canonical *derived annotations* recomputed on
+//!   materialization, not stored graph state (Chapter 2 §"The Spelling
+//!   Pre-Pass"; Chapter 3 §"Notational Decomposition").
 //! * `invariants` — the Chapter 5 graph-invariant checker, with one check
 //!   per enumerated invariant and a typed witness for each violation.
 //!
@@ -53,6 +56,7 @@ mod tempo;
 mod time;
 
 pub mod generators;
+pub mod prepass;
 
 pub use ids::{
     derive_system_id, AnalysisLayerId, AnalyticalAnnotationId, BarlineAlignmentGroupId, BeamId,
@@ -71,12 +75,17 @@ pub use time::{
 
 pub use pitch::{
     derive_system_pitch_id, spell, AccidentalId, AccidentalRegistryId, AcousticPitch,
-    AcousticRealization, CmnNominal, ForeignFormatId, IdentifiedPitch, NominalRegistryId, Pitch,
-    PitchSpaceId, PitchSpacePosition, PitchSpelling, PositionRegistryId, ReferencePitch,
-    ScalePosition, SpellingAlgorithmId, SpellingAttachment, SpellingContext, SpellingDirective,
-    SpellingNominal, SpellingPrecedence, SpellingRenderHints, SpellingRule, SpellingRuleSetId,
-    SpellingScope, SpellingSource, SpellingSourceKind, StaffGroupKindRegistryId,
+    AcousticRealization, CmnNominal, DecompositionAlgorithmId, ForeignFormatId, IdentifiedPitch,
+    NominalRegistryId, Pitch, PitchSpaceId, PitchSpacePosition, PitchSpelling, PositionRegistryId,
+    ReferencePitch, ScalePosition, SpellingAlgorithmId, SpellingAttachment, SpellingContext,
+    SpellingDirective, SpellingNominal, SpellingPrecedence, SpellingRenderHints, SpellingRule,
+    SpellingRuleSetId, SpellingScope, SpellingSource, SpellingSourceKind, StaffGroupKindRegistryId,
     TieClassRegistryId, TuningReference, TuningSystemId, VoiceSelector,
+};
+
+pub use prepass::{
+    derive_annotations, resolve_spelling, simplest_spelling, DerivedAnnotations, PrePassProfile,
+    ResolvedSpelling, SpellingProvenance, TaxonomyReport,
 };
 
 pub use event::{

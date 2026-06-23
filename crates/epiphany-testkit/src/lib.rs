@@ -96,6 +96,13 @@ pub mod fixtures;
 pub mod generators;
 pub mod roundtrip;
 
+// Phase 2, Agent F (for Agent H): the representative score corpus + eligibility
+// taxonomy harness (`corpus`, worklist F3) and H's spelling/decomposition merge
+// gate (`prepass_harness`, worklist F4). See `DECISIONS.md` F0 for why per-agent
+// harnesses are library modules asserted by `tests/` integration tests.
+pub mod corpus;
+pub mod prepass_harness;
+
 pub mod convergence;
 pub mod equivocation;
 pub mod negative;

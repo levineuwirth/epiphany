@@ -213,3 +213,106 @@ which is both faithful and removes the need for a runtime pass:
   is never representable, and codec decode re-validates through the same
   constructor. (Pass 11 item 3.5 moved this from a runtime invariant-16
   sub-check to a construction-time MUST.)
+
+## Phase 2 — Agent H (spelling + decomposition pre-passes)
+
+The two sanctioned v0 stubs (`pitch::spell` returning a trivial middle-C; no
+decomposition algorithm) are now real, in `src/prepass.rs`. `spell` now takes
+the full `&Pitch` (was `AcousticPitch` by value): spelling needs the scale
+position, which `AcousticPitch` does not carry, so the old signature could not
+have done real work — a breaking but necessary change (the only callers were
+in-crate). The pre-passes are
+**canonical derived annotations** (PHASE2_QUICKSTART §H): pure functions of
+`(materialized Score, profile, SpellingAlgorithmId, DecompositionAlgorithmId)`,
+recomputed on materialization, never stored. They do **not** enter the canonical
+`Score` bytes — there is deliberately no codec for `DerivedAnnotations` — so the
+Chapter-6 reducer and criteria 4/5 are untouched (the conformance suite stays
+green). `derive_annotations(&Score, &PrePassProfile)` is the entry point a
+materializer (F's integration harness) calls after reduction completes.
+
+### Phase-2 decisions made (the five the dispatch asked H to make once)
+
+1. **Spelling algorithm — Temperley line-of-fifths, registered as
+   `SpellingAlgorithmId::default_id()` (`"default"`).** A per-voice
+   centre-of-gravity preference rule over the line of fifths (each note picks the
+   tonal-pitch-class spelling closest to a running window of recent spellings,
+   broken by accidental simplicity, then melodic direction, then a total order on
+   the lof value). It is deterministic, key-free (infers tonal context from the
+   melody itself), and spells diatonic music in sharp/flat keys correctly
+   (verified against C/D-major and B♭-major scales and sharp/flat contexts in the
+   `prepass::tests` suite). Authored CMN scale positions are **preserved, not
+   re-spelled** (an authored C♯ stays C♯); the algorithm only *decides* spelling
+   for integer/chromatic (12-EDO) input, which is where spelling is genuinely
+   undetermined. Chosen over Longuet-Higgins line-of-fifths because it is the
+   best-documented and has the cleanest deterministic constraint formulation
+   (PHASE2_QUICKSTART recommendation). **Awaits G ratification in Pass 12** (Pass
+   11 is closed), per the dispatch's "or Pass 12 if the call slips."
+
+2. **Decomposition algorithm — metric greedy-aligned splitting, registered as
+   `DecompositionAlgorithmId::default_id()` (`"default"`).** All grid logic is
+   integer arithmetic over a `1/4096`-of-a-whole-note grid, so every note value
+   to a (single-)dotted sixty-fourth is exact and the derivation is deterministic.
+   A duration is split at barlines (with ties), then within a measure each span
+   is emitted as the single notated value it equals **unless** it would cross a
+   dyadic boundary at least as strong as the one it starts on (the
+   beat-clarity/syncopation rule), in which case it splits at the strongest
+   interior boundary and ties across. Tuplet members convert sounding→notated in
+   the exact rational domain *before* gridding (a triplet eighth's sounding `1/12`
+   is non-dyadic; its notated `1/8` is), then decompose and carry tuplet
+   membership. Components' sounding durations sum to the event's (invariant 15).
+
+   The remaining three Phase-2 decisions (solver architecture, renderer SVG
+   dialect, catalog/companion versioning) belong to Agents I/K/J, not H.
+
+### Eligibility taxonomy
+
+`derive_annotations` classifies and **counts** every event and embedded pitch
+into explicit buckets (`TaxonomyReport`), so "ineligible" is never silently
+absent (PHASE2_QUICKSTART §H): pitched events → spelling per pitch + decomposition
+(if metric, determinate musical duration); rests/unpitched → decomposition, no
+pitch spelling; trajectory pitches are spelled but the event is not decomposed;
+graphic/indeterminate/cue → neither; non-`cmn-12`-determinable pitch spaces →
+`spelling_unavailable`; proportional/aleatoric regions →
+`decomposition_deferred_nonmetric`.
+
+### Precedence rule (H formalizes the rule, not the model)
+
+`resolve_spelling` layers authored overrides above the inferred default: an
+engraved-layer, pitch-scoped, `Explicit` `SpellingAttachment` whose
+`SpellingSource` kind outranks `Inferred` in the score's `SpellingPrecedence`
+wins; otherwise the algorithm's spelling stands. This is the precedence a
+`RespellPitch` override rides on. **Coordination with K:** the v0 `RespellPitchOp`
+carries only a `ContentHash` *fingerprint* of the new spelling (P11-C1), so an
+override's spelling *value* is not reconstructable from a v0 op alone; H's rule
+operates on the authored `SpellingAttachment`s present on the materialized
+`Score` (set by imports/analysis today, by K's real value-typed payloads in
+Phase 2). The rule itself is value-independent and final.
+
+### Pass 12 candidates (batched for F's Pass 12 tracker; ≥3, so the batch opens)
+
+- **P12-H1 — Ratify `SpellingAlgorithmId::Default` = Temperley line-of-fifths
+  v1.** The algorithm choice is H's call to propose and G's to ratify; Pass 11
+  closed before H landed, so this is the first Pass 12 item. Until ratified the id
+  `"default"` is this crate's proposal (it is *not* a byte-layout, so nothing
+  golden-locks on it).
+- **P12-H2 — `KeySignatureChange` / `ClefChange` are anchor-only placeholders**
+  (Chapter 7 detail deferred). Context-aware spelling therefore infers tonal
+  context from the melody (line-of-fifths centre of gravity) rather than a
+  *declared* key. A real key-signature/clef content model would let spelling and
+  decomposition honour declared keys/clefs and place natural signs to cancel a
+  key; flagged as a graph-model gap, not improvised here.
+- **P12-H3 — Chromatic-run convention** (ascending = sharps, descending = flats)
+  is only a *tiebreak* in the centre-of-gravity rule, so an isolated chromatic run
+  with no tonal context may pick the enharmonic the convention would not. A
+  voice-leading refinement is a Pass-12 candidate (the dispatch sanctions deferring
+  hard chromatic cases).
+- **P12-H4 — Decomposition simplifications:** single governing meter per region
+  (multi-meter / mid-region meter changes deferred); region origin assumed to be a
+  barline (anacrusis/pickup deferred); compound-meter (6/8…) beat-group grouping
+  beyond the dyadic default; tuplet nesting and cross-beat tuplet members; double
+  (and higher) augmentation dots — `MAX_DOTS = 1` for v1, so a double-dotted value
+  is written as tied single/dotted values (correct, if not the most compact).
+- **P12-H5 — Automatic spelling under aleatoric regions** (the spec's open
+  question). H spells pitches region-independently (pitch identity does not depend
+  on the time model) but performs no region-specific aleatoric spelling; defer if
+  the algorithm does not generalise cleanly.

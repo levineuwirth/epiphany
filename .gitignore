@@ -4,6 +4,12 @@
 # These are tracked once they exist (kept for reproducible builds):
 #   Cargo.lock for the workspace
 
+# Handoff/working artifacts, not source: each crate's own DECISIONS.md and
+# README.md are the source of truth; these root-level files are a local
+# convenience concatenation and a planning briefing, not committed.
+/ALL_DECISIONS_AND_READMES.md
+/HANDOFF.md
+
 # LaTeX build intermediates (the spec PDF itself is tracked; these are not).
 spec/*.aux
 spec/*.fdb_latexmk

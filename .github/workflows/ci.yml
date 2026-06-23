@@ -72,6 +72,28 @@ jobs:
       - name: Run conformance suite
         run: cargo run --release -p epiphany-testkit --example conformance_suite 1
 
+  # Track A, Agent H's merge gate (Phase 2). A discrete job so a spelling /
+  # decomposition pre-pass regression is attributable to H, not buried in the
+  # workspace test run. Asserts H's PHASE2_QUICKSTART acceptance criterion: the
+  # representative-corpus eligibility taxonomy (F3) and the pre-pass harness (F4 —
+  # determinism, spelling correctness, decomposition reconstruction, RespellPitch
+  # precedence, non-vacuity). The same gate also runs inside the conformance
+  # suite's stage [7b]; this job isolates it for fast, attributable feedback.
+  prepass-harness:
+    name: Agent H pre-pass gate (testkit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: H spelling + decomposition merge gate
+        run: cargo test -p epiphany-testkit --test prepass
+
   # A longer soak, scheduled nightly, exploring a wider seed space at scale.
   soak:
     name: conformance soak (nightly)

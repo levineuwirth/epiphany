@@ -113,18 +113,40 @@ catalog_id!(
     SpellingAlgorithmId
 );
 catalog_id!(
+    /// Identifies a notational-decomposition algorithm family (Chapter 3
+    /// §"Sounding Duration and Notational Decomposition"). Versioned the same
+    /// way as [`SpellingAlgorithmId`]: the id is part of the derivation key for
+    /// the decomposition pre-pass, so a profile-declared change deterministically
+    /// invalidates derived decompositions. The Phase-2 default
+    /// ([`DecompositionAlgorithmId::default_id`]) resolves to the metric
+    /// greedy-aligned splitter in [`crate::prepass`].
+    DecompositionAlgorithmId
+);
+catalog_id!(
     /// Identifies a foreign interchange format (e.g. MusicXML), used as a
     /// spelling/decomposition provenance tag.
     ForeignFormatId
 );
 
 impl SpellingAlgorithmId {
-    /// The sanctioned v0 default spelling algorithm. The real pre-pass is an
-    /// open question (Chapter 2 §"The Spelling Pre-Pass"; Appendix D §"Open
-    /// Algorithm Hooks"), so [`spell`] returns a trivial advisory default
-    /// registered under this id.
+    /// The Phase-2 default spelling algorithm, registered under the id
+    /// `"default"`. The id resolves to the deterministic Temperley-style
+    /// line-of-fifths pre-pass implemented in [`crate::prepass`] (Chapter 2
+    /// §"The Spelling Pre-Pass"). The literal id is part of the derivation key:
+    /// changing the registered algorithm changes the id, so derived spellings
+    /// computed under a different version never silently alias.
     pub fn default_id() -> Self {
         SpellingAlgorithmId::new("default")
+    }
+}
+
+impl DecompositionAlgorithmId {
+    /// The Phase-2 default decomposition algorithm, registered under the id
+    /// `"default"`. The id resolves to the deterministic metric greedy-aligned
+    /// splitter implemented in [`crate::prepass`] (Chapter 3 §"Sounding Duration
+    /// and Notational Decomposition").
+    pub fn default_id() -> Self {
+        DecompositionAlgorithmId::new("default")
     }
 }
 
@@ -742,17 +764,18 @@ pub struct SpellingContext {
     pub space: Option<PitchSpaceId>,
 }
 
-/// The spelling pre-pass stub (QUICKSTART "Don't do these": *"Don't implement
-/// the spelling pre-pass. Stub: returning a trivial default. Register as
-/// `SpellingAlgorithmId::Default`."*).
+/// The context-free spelling of a single pitch: its authored CMN letter if it
+/// has one, else the simplest (fewest-accidental) enharmonic spelling of its
+/// 12-TET pitch class (Chapter 2 §"The Spelling Pre-Pass").
 ///
-/// Returns a trivial, advisory CMN default (middle-octave C, no accidental).
-/// Per Appendix D §"Open Algorithm Hooks", an unspecified algorithm affecting
-/// canonical state must be non-canonical/advisory: this output is advisory and
-/// must not be treated as a canonical spelling until the real pre-pass is
-/// specified or profile-declared.
-pub fn spell(_p: AcousticPitch, _ctx: &SpellingContext) -> PitchSpelling {
-    PitchSpelling::cmn(CmnNominal::C, 4)
+/// This is the *isolated* entry point. Real, context-aware spelling — the
+/// Temperley line-of-fifths pre-pass that resolves a pitch by its melodic
+/// neighbours — is a function of the whole score and lives in
+/// [`crate::prepass::derive_annotations`]; the `_ctx` argument is retained for
+/// source compatibility. A pitch whose space declares spelling unavailable
+/// (no determinable 12-TET class) falls back to a middle-C advisory default.
+pub fn spell(p: &Pitch, _ctx: &SpellingContext) -> PitchSpelling {
+    crate::prepass::simplest_spelling(p).unwrap_or_else(|| PitchSpelling::cmn(CmnNominal::C, 4))
 }
 
 #[cfg(test)]
@@ -977,14 +1000,54 @@ mod tests {
     }
 
     #[test]
-    fn spell_stub_returns_trivial_default() {
-        let ap = AcousticPitch {
-            tuning: TuningReference::Inherit,
-            realization: AcousticRealization::Implicit,
+    fn spell_preserves_authored_cmn_letter() {
+        // An authored C-sharp keeps its letter (spelling follows the scale
+        // position, not the trivial old C-default stub).
+        let p = Pitch {
+            scale_position: ScalePosition {
+                space: PitchSpaceId::new("cmn-12"),
+                position: PitchSpacePosition::Cmn {
+                    nominal: CmnNominal::C,
+                    alteration: 1,
+                    octave: 5,
+                },
+            },
+            acoustic: AcousticPitch {
+                tuning: TuningReference::Inherit,
+                realization: AcousticRealization::Implicit,
+            },
         };
-        let s = spell(ap, &SpellingContext::default());
+        let s = spell(&p, &SpellingContext::default());
         assert_eq!(s.nominal, SpellingNominal::Cmn(CmnNominal::C));
-        assert!(s.accidentals.is_empty());
+        assert_eq!(s.accidentals, vec![AccidentalId::new("sharp")]);
+        assert_eq!(s.octave, 5);
         assert_eq!(SpellingAlgorithmId::default_id().as_str(), "default");
+    }
+
+    #[test]
+    fn spell_chromatic_integer_pitch_is_nontrivial() {
+        // A 12-EDO integer position (chromatic input) gets a real spelling of
+        // its pitch class, not the old constant middle-C.
+        let p = Pitch {
+            scale_position: ScalePosition {
+                space: PitchSpaceId::new("cmn-12"),
+                position: PitchSpacePosition::Integer {
+                    space_size: 12,
+                    index: 54, // pitch class 6 (F#/Gb)
+                },
+            },
+            acoustic: AcousticPitch {
+                tuning: TuningReference::Inherit,
+                realization: AcousticRealization::Implicit,
+            },
+        };
+        let s = spell(&p, &SpellingContext::default());
+        // Simplest single-accidental spelling of pitch class 6 (either F# or Gb);
+        // it is a real, non-default spelling.
+        assert!(matches!(
+            s.nominal,
+            SpellingNominal::Cmn(CmnNominal::F) | SpellingNominal::Cmn(CmnNominal::G)
+        ));
+        assert_eq!(s.accidentals.len(), 1);
     }
 }

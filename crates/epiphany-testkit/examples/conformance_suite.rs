@@ -12,8 +12,8 @@
 //! first violation.
 
 use epiphany_testkit::{
-    bundle_harness, convergence, equivocation, fixtures, generators, layout_stub, negative,
-    roundtrip, Rng,
+    bundle_harness, convergence, corpus, equivocation, fixtures, generators, layout_stub, negative,
+    prepass_harness, roundtrip, Rng,
 };
 
 fn main() {
@@ -115,6 +115,14 @@ fn main() {
         layout_stub::round_trip(&fixtures::ten_measure_single_staff(seed));
         layout_stub::round_trip(&generators::graph::valid_score_rich(seed));
     }
+
+    // 7b. Track A — Agent H pre-pass merge gate (spelling + decomposition):
+    //     the representative-corpus eligibility taxonomy (F3) and the H harness
+    //     (F4) — determinism, spelling correctness, decomposition reconstruction,
+    //     RespellPitch precedence, and the non-vacuity tripwire — at scale.
+    eprintln!("[7b ] Agent H pre-pass gate: taxonomy coverage + merge gate");
+    corpus::run_all();
+    prepass_harness::run_all(scale.max(1));
 
     eprintln!("[8/8] ok: full conformance suite passed (scale {scale})");
 }
