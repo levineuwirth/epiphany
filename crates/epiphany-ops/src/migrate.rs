@@ -353,3 +353,161 @@ fn recover_spelling(
         "respell spelling fingerprint has no matching explicit spelling in context (P12-K1)",
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    //! Direct coverage of the reconstruction branches the corpus-driven
+    //! equivalence gate (`epiphany-testkit::migration`) does not reach: its
+    //! generator only emits `NotInTuplet` and a `Slur` create, so the Tie/Beam,
+    //! tuplet-compensation, Spanner-irreversible, and respell paths are tested
+    //! here against `project_v1_to_v0` + `migrate_v0_envelope` directly.
+    use super::*;
+    use crate::stamp::HybridLogicalClock;
+    use crate::{CausalContext, OperationStamp};
+    use epiphany_core::{
+        BeamId, EventId, IdentityContext, MusicalDuration, PitchId, ReplicaId, Score, SlurId,
+        Spanner, SpannerId, StaffId, TieId, TimeAnchor, VoiceId,
+    };
+
+    fn env(payload: OperationPayload) -> OperationEnvelope {
+        let id = epiphany_core::OperationId::new(ReplicaId(3), 0);
+        OperationEnvelope {
+            id,
+            author: crate::support::AuthorId(0),
+            stamp: OperationStamp::new(
+                HybridLogicalClock::new(epiphany_core::WallClockTime(1), 0),
+                id,
+            ),
+            causal_context: CausalContext::new(),
+            transaction: None,
+            payload,
+        }
+    }
+
+    fn ev(n: u64) -> EventId {
+        EventId::new(ReplicaId(3), n)
+    }
+
+    /// Round-trip `migrate(project(env))` against an empty context.
+    fn round_trip(env: &OperationEnvelope) -> Result<OperationEnvelope, MigrationError> {
+        let ctx = Score::empty(IdentityContext::new(ReplicaId(1)));
+        migrate_v0_envelope(project_v1_to_v0(env), &ctx)
+    }
+
+    fn primitive(kind: OperationKind) -> OperationPayload {
+        OperationPayload::Primitive(kind)
+    }
+
+    #[test]
+    fn tie_and_beam_creates_round_trip_exactly() {
+        for kind in [
+            CrossCuttingValue::Tie(valuegen::tie(TieId::new(ReplicaId(3), 1), ev(1), ev(2))),
+            CrossCuttingValue::Beam(valuegen::beam(
+                BeamId::new(ReplicaId(3), 1),
+                vec![ev(1), ev(2), ev(3)],
+            )),
+            CrossCuttingValue::Slur(valuegen::slur(SlurId::new(ReplicaId(3), 1), ev(1), ev(2))),
+        ] {
+            let e = env(primitive(OperationKind::CreateCrossCutting(
+                CreateCrossCuttingOp { structure: kind },
+            )));
+            assert_eq!(round_trip(&e), Ok(e.clone()));
+        }
+    }
+
+    #[test]
+    fn spanner_create_is_irreversible() {
+        // A spanner is anchored by TimeAnchors, not a fixed event pair, so its
+        // value is not reconstructable from the v0 event-reference projection
+        // (documented in operation_catalog.tex §CreateCrossCutting).
+        let spanner = Spanner {
+            id: SpannerId::new(ReplicaId(3), 1),
+            start: TimeAnchor::Event {
+                id: ev(1),
+                offset: epiphany_core::AnchorOffset::Zero,
+            },
+            end: TimeAnchor::Event {
+                id: ev(2),
+                offset: epiphany_core::AnchorOffset::Zero,
+            },
+            staves: vec![StaffId::new(ReplicaId(3), 0)],
+        };
+        let e = env(primitive(OperationKind::CreateCrossCutting(
+            CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Spanner(spanner),
+            },
+        )));
+        assert!(matches!(
+            round_trip(&e),
+            Err(MigrationError::Irreversible(_))
+        ));
+    }
+
+    #[test]
+    fn tuplet_compensation_variants_migrate() {
+        let voice = VoiceId::new(ReplicaId(3), 0);
+        // NotInTuplet, RewriteTuplets, CascadeDeleteTuplets round-trip exactly.
+        for comp in [
+            TupletCompensation::NotInTuplet,
+            TupletCompensation::RewriteTuplets {
+                tuplets: vec![epiphany_core::TupletId::new(ReplicaId(3), 1)],
+            },
+            TupletCompensation::CascadeDeleteTuplets {
+                tuplets: vec![epiphany_core::TupletId::new(ReplicaId(3), 2)],
+            },
+        ] {
+            let e = env(primitive(OperationKind::DeleteEvent(DeleteEventOp {
+                event: ev(1),
+                tuplet_compensation: comp,
+            })));
+            assert_eq!(round_trip(&e), Ok(e.clone()));
+        }
+
+        // ReplaceWithRest preserves the rest's id and duration; its voice is the
+        // one v0 dropped (recovered from the deleted event's placement at
+        // reduction, not from the rest value), so the round-trip is not exact —
+        // it is reduction-faithful (finding #3).
+        let dur = MusicalDuration::whole();
+        let e = env(primitive(OperationKind::DeleteEvent(DeleteEventOp {
+            event: ev(1),
+            tuplet_compensation: TupletCompensation::ReplaceWithRest {
+                rest: valuegen::rest_value(ev(9), voice, dur.clone()),
+            },
+        })));
+        let migrated = round_trip(&e).expect("ReplaceWithRest migrates");
+        let OperationPayload::Primitive(OperationKind::DeleteEvent(op)) = &migrated.payload else {
+            panic!("expected DeleteEvent");
+        };
+        let TupletCompensation::ReplaceWithRest { rest } = &op.tuplet_compensation else {
+            panic!("expected ReplaceWithRest");
+        };
+        assert_eq!(rest.id, ev(9));
+        assert_eq!(rest.duration, epiphany_core::EventDuration::Musical(dur));
+    }
+
+    #[test]
+    fn respell_recovers_from_context_else_irreversible() {
+        let pitch = PitchId::new(ReplicaId(3), 1);
+        let spelling = valuegen::spelling(42);
+        let e = env(primitive(OperationKind::RespellPitch(RespellPitchOp {
+            pitch,
+            spelling: spelling.clone(),
+        })));
+
+        // With the spelling attached to the context, the respell round-trips.
+        let mut ctx = Score::empty(IdentityContext::new(ReplicaId(1)));
+        ctx.spelling_attachments
+            .push(valuegen::explicit_spelling_attachment(pitch, spelling));
+        assert_eq!(
+            migrate_v0_envelope(project_v1_to_v0(&e), &ctx),
+            Ok(e.clone())
+        );
+
+        // Without it, the fingerprint cannot be inverted: Irreversible (P12-K1).
+        let empty = Score::empty(IdentityContext::new(ReplicaId(1)));
+        assert!(matches!(
+            migrate_v0_envelope(project_v1_to_v0(&e), &empty),
+            Err(MigrationError::Irreversible(_))
+        ));
+    }
+}

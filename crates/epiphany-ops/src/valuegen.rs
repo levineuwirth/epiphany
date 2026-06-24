@@ -100,9 +100,13 @@ pub fn rest_value(id: EventId, voice: VoiceId, duration: MusicalDuration) -> Res
     }
 }
 
-/// One of seven distinct CMN spellings (C4..B4), selected by `nth`. Distinct
-/// `nth` give distinct [`PitchSpelling`] values, so concurrent respellings can be
-/// made to agree or conflict deterministically.
+/// A distinct CMN spelling per `nth`, **injective over the full `u8`**: the
+/// nominal is `nth mod 7` and the octave is `nth / 7`, so two distinct `nth`
+/// always yield distinct [`PitchSpelling`] values. This lets a harness make
+/// concurrent respellings agree or conflict deterministically without having to
+/// keep its selector constants within any small range (the earlier `mod 7`-only
+/// form silently collapsed congruent selectors). The octave is a test token, not
+/// a musically meaningful register.
 pub fn spelling(nth: u8) -> PitchSpelling {
     let nominal = match nth % 7 {
         0 => CmnNominal::C,
@@ -113,7 +117,7 @@ pub fn spelling(nth: u8) -> PitchSpelling {
         5 => CmnNominal::A,
         _ => CmnNominal::B,
     };
-    PitchSpelling::cmn(nominal, 4)
+    PitchSpelling::cmn(nominal, (nth / 7) as i8)
 }
 
 /// A [`Slur`] over two event endpoints.
