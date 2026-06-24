@@ -1,0 +1,19 @@
+[package]
+name = "epiphany-engrave"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Agent I's Epiphany engraving solver (spec Chapter 9): turns a ConstrainedLayoutIR into a ResolvedLayoutIR with real geometry. Phase-2 scaffold — a deterministic horizontal-spacing pass (the first axis of the planned two-pass spring layout) that honestly reports SolverTier::Stub until it evaluates the declared hard constraints and earns the Minimal tier."
+
+[dependencies]
+# The solver consumes/produces the Chapter 7 IR stages and implements the
+# Chapter 9 `ConstraintSolver` interface — all defined in epiphany-layout-ir,
+# which re-exports the epiphany-core ids/types the solver references.
+epiphany-layout-ir.workspace = true
+
+[dev-dependencies]
+# Tests drive the solver from real score fixtures via epiphany-core's generators
+# (and a couple of leaf id/time types).
+epiphany-core.workspace = true

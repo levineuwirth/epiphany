@@ -1,0 +1,15 @@
+fixture=ten_measure_single_staff solver=stub
+glyph_count=98
+path_count=98
+fallback_rect_count=0
+provenance_count=98
+layer_count=1
+hard_constraint_count=0
+xml_well_formed=true
+view_box=[-2 -5.2408 102.18 11.6328]
+class_counts:
+  accidental=10
+  clef=2
+  flag=1
+  notehead=83
+  rest=2

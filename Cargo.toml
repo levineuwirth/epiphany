@@ -6,6 +6,8 @@ members = [
     "crates/epiphany-bundle",
     "crates/epiphany-ops",
     "crates/epiphany-layout-ir",
+    "crates/epiphany-engrave",
+    "crates/epiphany-render-svg",
     "crates/epiphany-testkit",
 ]
 
@@ -45,6 +47,18 @@ epiphany-ops = { path = "crates/epiphany-ops" }
 # (v0 acceptance criterion 6), so its path is declared here alongside the other
 # intra-workspace crates.
 epiphany-layout-ir = { path = "crates/epiphany-layout-ir" }
+# Agent I's Phase-2 visible-slice crates: epiphany-engrave is the real
+# constraint solver (Chapter 9 Minimal tier — in progress) consuming the
+# ConstrainedLayoutIR; epiphany-render-svg is the SVG renderer behind the
+# Chapter 7 RenderIR interface. The renderer is developed against the stub
+# solver first (QUICKSTART, Agent I), so it depends on the engrave crate only
+# for the demo binary's `--solver=real` path.
+epiphany-engrave = { path = "crates/epiphany-engrave" }
+epiphany-render-svg = { path = "crates/epiphany-render-svg" }
+# Agent F's testkit. Declared here so Agent I's render crate can use its score
+# fixtures (`ten_measure_single_staff`) as a dev-dependency for the demo binary
+# and acceptance tests.
+epiphany-testkit = { path = "crates/epiphany-testkit" }
 # Event-arena storage backend (QUICKSTART decision 2): slotmap gives
 # generation-checked stale-handle detection, matching the spec's
 # identifier-stability requirement (Chapter 5).

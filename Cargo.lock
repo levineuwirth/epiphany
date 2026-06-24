@@ -94,6 +94,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "epiphany-engrave"
+version = "0.0.0"
+dependencies = [
+ "epiphany-core",
+ "epiphany-layout-ir",
+]
+
+[[package]]
 name = "epiphany-layout-ir"
 version = "0.0.0"
 dependencies = [
@@ -109,6 +117,16 @@ dependencies = [
  "epiphany-core",
  "epiphany-determinism",
  "unicode-normalization",
+]
+
+[[package]]
+name = "epiphany-render-svg"
+version = "0.0.0"
+dependencies = [
+ "epiphany-core",
+ "epiphany-engrave",
+ "epiphany-layout-ir",
+ "epiphany-testkit",
 ]
 
 [[package]]

@@ -1,0 +1,23 @@
+[package]
+name = "epiphany-render-svg"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Agent I's SVG renderer behind the Epiphany RenderIR interface (spec Chapter 7): turns a ResolvedLayoutIR into well-formed SVG 1.1, drawing each glyph as a genuine Bravura SMuFL outline <path>. A renderer, not an engraver — it makes SVG-encoding choices only, never engraving-semantic ones."
+
+[dependencies]
+# The renderer consumes the Chapter 7 ResolvedLayoutIR / RenderIR and the glyph
+# catalog, all defined in epiphany-layout-ir.
+epiphany-layout-ir.workspace = true
+
+[dev-dependencies]
+# The demo binary's `--solver=real` path drives Agent I's engrave solver; only
+# the example/tests need it, so it is a dev-dependency (the renderer itself is
+# solver-agnostic — it consumes a ResolvedLayoutIR from any solver).
+epiphany-engrave.workspace = true
+# Fixtures and the score-graph types the demo binary and acceptance tests build
+# their input from.
+epiphany-testkit.workspace = true
+epiphany-core.workspace = true

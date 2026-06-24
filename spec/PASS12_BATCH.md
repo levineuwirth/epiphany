@@ -26,9 +26,12 @@ code instead is the failure mode this batch exists to prevent.
 | P12-H3 | `epiphany-core` H | Chromatic-run convention (ascending = sharps, descending = flats) is only a *tiebreak* in the centre-of-gravity rule, so an isolated chromatic run with no tonal context may pick the enharmonic the convention would not. Voice-leading refinement deferred. | G / Pass 12 (spelling) |
 | P12-H4 | `epiphany-core` H | Decomposition simplifications: single governing meter per region (multi/mid-region meter changes deferred); region origin assumed a barline (anacrusis deferred); compound-meter beat grouping beyond the dyadic default; tuplet nesting and cross-beat tuplet members; double+ augmentation dots (`MAX_DOTS = 1`). | G (decomposition scope) |
 | P12-H5 | `epiphany-core` H | Automatic spelling under aleatoric regions (the spec's open question). H spells pitches region-independently but performs no region-specific aleatoric spelling; defer if the algorithm does not generalise cleanly. | G / Pass 12 (open question) |
+| P12-I1 | `epiphany-layout-ir` / `engrave` / `render-svg` I | The v0 `to_logical`/`to_constrained` pipeline is a **structural placeholder**: each layout object becomes one *arbitrary* glyph (`BRAVURA_METRICS[discriminant % N]`) at `y = 0`, not real notation. Chapter 7 says the *logical* stage has "engraving decisions made"; the spec should clarify which engraving decisions (glyph-by-duration selection, pitch→staff-position, clef/key/meter/barline realization, stems/beams) are core-IR construction versus solver work, so the real-notation engraving has a defined home before it is built next phase. Consequence: the QUICKSTART human visual-acceptance gate ("the SVG visually parses as standard notation") is a **next-phase** gate, *not* met by stub output — this phase's gate is renderer correctness/faithfulness. | G / Pass 12 (Ch 7 engraving boundary) |
+| P12-I2 | `epiphany-render-svg` / `engrave` I | Stable layout-object id derivation (`MUSCLOID`, Pass-11 item 2.6, deferred to I) is still unwired: the frozen `epiphany-determinism` exposes no `MUSCLOID` tag, so provenance is traced via the provisional `stable_id`. Wiring the ratified derivation is Track A work (already noted in `layout-ir/DECISIONS.md`). | G (determinism tag) / Track A |
+| P12-I3 | `epiphany-layout-ir` I | The bundled `BRAVURA_METRICS` are *approximations* that disagree with the genuine Bravura outlines the renderer now extracts from the font (e.g. `timeSig4`: metrics bbox `[40,0,1240,2048]` vs real outline ≈ `[0.08,-1.0,1.8,1.004]` staff spaces). Real spacing needs exact metrics; regenerate the metrics table from the font or reconcile it with the outline source. | G / Pass 12 (glyph metrics) |
 
 ## Not yet open elsewhere
 
-Track A's other agents (I) and Track B (K, J) have not yet contributed items.
-When they do, append rows; the batch is already open, so they join directly (no
-new threshold).
+Agent I (Track A) has contributed P12-I1..I3 above. Track B (K, J) has not yet
+contributed items. When they do, append rows; the batch is already open, so they
+join directly (no new threshold).
