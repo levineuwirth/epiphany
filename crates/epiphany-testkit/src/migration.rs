@@ -77,11 +77,18 @@ pub fn run_migration_equivalence(n_ops: usize, seed: u64) {
         "v0->v1 migration changed the canonical reduction state (seed {seed})"
     );
 
-    // The migration faithfully inverts the projection on the representative
-    // payloads (a stronger property than reduction-equivalence alone).
+    // Round-trip self-consistency over *this* corpus: because the corpus is
+    // built from the same `valuegen` helpers the migration reconstructs values
+    // with, `migrate(project(env)) == env` holds exactly here. This is a sharper
+    // check than reduction-equivalence for the corpus, but it is NOT a universal
+    // inverse: the v0 projection drops fields the migration cannot recover (e.g.
+    // a `ReplaceWithRest` rest's own voice — recovered from the deleted event's
+    // placement at reduction, not from the value). The spec-level property is the
+    // reduction-equivalence asserted above; widening `operation_envelopes` to emit
+    // such a payload would surface here and is M2's cue to revisit faithfulness.
     assert_eq!(
         v1, migrated,
-        "migration is not the inverse of projection (seed {seed})"
+        "migration round-trip diverged from the original on this corpus (seed {seed})"
     );
 
     // Deterministic: migrating the same projection against the same context

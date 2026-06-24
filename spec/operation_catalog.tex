@@ -500,6 +500,15 @@ policy.
 \textbf{Re-anchoring.} The structure participates in the re-anchoring rule table
 when one of its endpoints is later tombstoned (see DeleteEvent).
 
+\textbf{Migration coverage.} The v0$\rightarrow$v1 migration
+(Chapter~\ref{ch:migration}) reconstructs the event-anchored \texttt{Tie},
+\texttt{Slur}, and \texttt{Beam} from the v0 reference (id plus event endpoints).
+A \texttt{Spanner} is anchored by \texttt{TimeAnchor}s rather than a fixed pair
+of event endpoints, so its full value is not reconstructable from the v0
+event-reference projection; a \texttt{Spanner}-create is therefore reported
+unmigratable (read-only) under M1, alongside the respell case of P12-K1. A
+faithful spanner migration joins when the projection carries the anchors --- M2.
+
 \section{ChangeRegionTimeModel}
 \label{sec:k0:change-region-time-model}
 
