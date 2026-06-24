@@ -8,10 +8,10 @@ use epiphany_core::{
     WallClockTime,
 };
 use epiphany_ops::{
-    AuthorId, CausalContext, ChangeRegionTimeModelOp, ConflictKind, CreateCrossCuttingOp,
-    CrossCuttingRef, DeleteEventOp, HybridLogicalClock, InsertEventOp, NoOpReason, OperationEffect,
-    OperationEnvelope, OperationKind, OperationPayload, OperationSet, OperationStamp,
-    PositionRemapping, PreconditionFailureReason, RegionTimeModelTag, SetUserSystemBreakOp,
+    valuegen, AuthorId, CausalContext, ChangeRegionTimeModelOp, ConflictKind, CreateCrossCuttingOp,
+    CrossCuttingValue, DeleteEventOp, HybridLogicalClock, InsertEventOp, NoOpReason,
+    OperationEffect, OperationEnvelope, OperationKind, OperationPayload, OperationSet,
+    OperationStamp, PositionRemapping, PreconditionFailureReason, SetUserSystemBreakOp,
     TransactionCategory, TransactionDescriptor, TupletCompensation, UndoPolicy,
     UndoTransactionPayload,
 };
@@ -48,12 +48,14 @@ fn insert(
     position: i32,
 ) -> OperationPayload {
     OperationPayload::Primitive(OperationKind::InsertEvent(InsertEventOp {
-        voice,
         staff_instance,
-        event,
-        position: MusicalPosition(RationalTime::from_int(position)),
-        duration: MusicalDuration::whole(),
-        pitches: vec![pitch],
+        event: valuegen::insert_event_value(
+            event,
+            voice,
+            MusicalPosition(RationalTime::from_int(position)),
+            MusicalDuration::whole(),
+            &[pitch],
+        ),
     }))
 }
 
@@ -352,7 +354,7 @@ fn system_break_lww_state_is_materialized_in_the_region() {
         None,
         OperationPayload::Primitive(OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
             region,
-            anchor: position.clone(),
+            anchor: valuegen::region_start_anchor(region, position.clone()),
             present: true,
         })),
     );
@@ -390,7 +392,7 @@ fn migration_computes_incompatible_events_from_the_graph() {
         OperationPayload::Primitive(OperationKind::ChangeRegionTimeModel(
             ChangeRegionTimeModelOp {
                 region,
-                new_time_model: RegionTimeModelTag::Proportional,
+                new_time_model: valuegen::proportional_model(),
                 declared_incompatible: Vec::new(),
                 remapping: PositionRemapping::PreserveTime,
             },
@@ -422,14 +424,7 @@ fn create_cross_cutting_materializes_supported_graph_structures() {
         CausalContext::new(),
         None,
         OperationPayload::Primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
-            structure: CrossCuttingRef {
-                id: TypedObjectId::Slur(slur),
-                endpoints: endpoints
-                    .iter()
-                    .copied()
-                    .map(TypedObjectId::Event)
-                    .collect(),
-            },
+            structure: CrossCuttingValue::Slur(valuegen::slur(slur, endpoints[0], endpoints[1])),
         })),
     );
     let mut set = OperationSet::new();
@@ -459,7 +454,7 @@ fn causally_ordered_time_migrations_do_not_conflict() {
         OperationPayload::Primitive(OperationKind::ChangeRegionTimeModel(
             ChangeRegionTimeModelOp {
                 region,
-                new_time_model: RegionTimeModelTag::Aleatoric,
+                new_time_model: valuegen::aleatoric_model(),
                 declared_incompatible: Vec::new(),
                 remapping: PositionRemapping::PreserveTime,
             },
@@ -474,7 +469,7 @@ fn causally_ordered_time_migrations_do_not_conflict() {
         OperationPayload::Primitive(OperationKind::ChangeRegionTimeModel(
             ChangeRegionTimeModelOp {
                 region,
-                new_time_model: RegionTimeModelTag::Metric,
+                new_time_model: valuegen::metric_model(),
                 declared_incompatible: Vec::new(),
                 remapping: PositionRemapping::PreserveTime,
             },

@@ -139,6 +139,27 @@ companion lands, reconcile this crate's `CanonicalEncode`/`CanonicalDecode` and
 the whole-score `codec` with it (a failing cross-crate round-trip test would be
 the trigger, per the QUICKSTART process notes).
 
+**Phase 2 — Agent K (Operation Catalog): the `CanonicalValue` seam.** Track B's
+Operation Catalog shifts `epiphany-ops` from identifier-only operation payloads
+to *value-typed* ones (an `InsertEvent` carrying the real `Event`, a
+`RespellPitch` carrying the real `PitchSpelling`). Those payloads must serialize
+canonically (an envelope stays hashable across an implementation boundary), so
+`epiphany-ops` needs to canonically encode/decode core value types. The internal
+`Codec` trait and its `Reader` cursor stay `pub(crate)` (they are composition
+machinery, not a stable surface); instead `src/codec.rs` exposes a thin **public
+`CanonicalValue` trait** (`canonical_bytes` / `decode_canonical`) implemented —
+via a macro that *delegates to the existing `Codec` impls* — for exactly the
+value types operation payloads embed (`Event`, `Rest`, `PitchSpelling`, `Tie`,
+`Slur`, `Beam`, `Spanner`, `RegionTimeModel`, `TimeAnchor`). This introduces **no
+new byte layout**: a `value_codec` test asserts each value's `CanonicalValue`
+bytes equal the bytes the whole-score codec already embeds for it, so all
+existing goldens / criterion 4 stay byte-for-byte green. This is the **K↔J
+coordination seam**: value-type wire encoding is nominally the Binary Format
+companion's (Agent J) to formalize, but K needs the surface now and J inherits
+core's ratified conventions (Pass 11 item 1.8, `req:format:codec-conventions`)
+rather than reconciling a second codec. Rejected alternative: a parallel value
+codec inside `epiphany-ops` (two sources of truth for one byte layout).
+
 ### P11-5 — Scope boundary: the Chapter 4 tuning catalog is referenced, not defined here
 
 `epiphany-core` (Agent B) owns the score graph and the pitch/time primitives. It

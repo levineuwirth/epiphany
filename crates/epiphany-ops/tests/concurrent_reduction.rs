@@ -19,9 +19,9 @@ use epiphany_core::{
     EventId, MusicalDuration, MusicalPosition, OperationId, PitchId, RationalTime, ReplicaId,
     StaffInstanceId, TransactionId, TypedObjectId, VoiceId, WallClockTime,
 };
-use epiphany_determinism::{fuzz::SplitMix64, ContentHash};
+use epiphany_determinism::fuzz::SplitMix64;
 use epiphany_ops::{
-    canonical_reduction_order, well_formed, AuthorId, CausalContext, ConflictKind,
+    canonical_reduction_order, valuegen, well_formed, AuthorId, CausalContext, ConflictKind,
     HybridLogicalClock, InsertEventOp, IntegrityAnomalyKind, NoOpReason, OperationEffect,
     OperationEnvelope, OperationKind, OperationPayload, OperationSet, OperationStamp,
     PendingReason, PreconditionFailureReason, RespellPitchOp, TransactionDescriptor,
@@ -69,19 +69,21 @@ fn insert_span(
     duration: RationalTime,
 ) -> OperationPayload {
     OperationPayload::Primitive(OperationKind::InsertEvent(InsertEventOp {
-        voice: VoiceId::new(ReplicaId(9), voice),
         staff_instance: StaffInstanceId::new(ReplicaId(9), 0),
-        event: EventId::new(ReplicaId(9), event),
-        position: MusicalPosition(position),
-        duration: MusicalDuration(duration),
-        pitches: vec![PitchId::new(ReplicaId(9), event)],
+        event: valuegen::insert_event_value(
+            EventId::new(ReplicaId(9), event),
+            VoiceId::new(ReplicaId(9), voice),
+            MusicalPosition(position),
+            MusicalDuration(duration),
+            &[PitchId::new(ReplicaId(9), event)],
+        ),
     }))
 }
 
 fn respell(pitch: u64, spelling: u8) -> OperationPayload {
     OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
         pitch: PitchId::new(ReplicaId(9), pitch),
-        spelling: ContentHash([spelling; 32]),
+        spelling: valuegen::spelling(spelling),
     }))
 }
 
@@ -370,7 +372,7 @@ fn failed_transaction_rolls_back_member_generated_conflicts() {
 
     assert_eq!(
         state.spellings.get(&PitchId::new(ReplicaId(9), 100)),
-        Some(&ContentHash([1; 32]))
+        Some(&valuegen::spelling(1))
     );
     assert_eq!(state.conflicts.records().len(), 1);
     assert!(matches!(

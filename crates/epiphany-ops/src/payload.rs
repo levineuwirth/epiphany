@@ -3,39 +3,53 @@
 //! structs the chapter specifies reduction rules for (Chapter 6 §"The Operation
 //! Framework", §"Representative Operations").
 //!
-//! ## Why these payloads carry identifiers, not whole graph objects
+//! ## These payloads are value-typed (Operation Catalog, v1)
 //!
-//! The spec's payload structs embed rich graph values — `InsertEventOp` holds an
-//! `Event`, `RespellPitchOp` holds a `PitchSpelling`, and so on. Their *canonical
-//! wire encoding*, however, is deferred to the Binary Format companion (Agent B's
-//! `epiphany-core` canonically encodes only identifiers and the scalar time
-//! types; the value-type encoding is its Pass 11 candidate P11-4). To keep an
-//! [`OperationEnvelope`](crate::OperationEnvelope) **hashable today** — the
-//! [`EnvelopeHash`](crate::EnvelopeHash) and slot equivocation both need
-//! canonical bytes — these payloads carry the reduction-relevant *identifiers and
-//! canonical scalar coordinates*, plus a content fingerprint where the reduction
-//! only needs equality (a respelling's [`ContentHash`]). This is faithful to
-//! everything Chapter 6's reduction rules actually consume, and is recorded as a
-//! Pass 11 candidate (see `DECISIONS.md`): when the companion lands, the structs
-//! grow back their full value fields without changing the reduction.
+//! Track B's Operation Catalog (Agent K) shifted these payloads from the v0
+//! *identifier-only projection* (an `InsertEvent` that carried only an `EventId`
+//! plus scalars; a `RespellPitch` that carried only a [`ContentHash`] fingerprint
+//! of the new spelling) to the **value-typed** form the spec describes:
+//! `InsertEventOp` carries the real [`Event`], `RespellPitchOp` carries the real
+//! [`PitchSpelling`], `CreateCrossCuttingOp` carries the real cross-cutting
+//! structure, and so on. This is what makes an operation *durable* — replayable
+//! in a fresh context (a backup restore, a cross-tool round-trip) without the
+//! originating graph.
+//!
+//! The payloads serialize canonically by embedding each value's
+//! [`CanonicalValue`] bytes behind a `u32` length prefix (the same ratified byte
+//! layout `epiphany-core`'s whole-score codec uses — Pass 11 item 1.8,
+//! `req:format:codec-conventions`), so an [`OperationEnvelope`](crate::OperationEnvelope)
+//! stays hashable ([`EnvelopeHash`](crate::EnvelopeHash) / slot equivocation). The
+//! v0 shapes are retained in [`crate::v0`] solely as the migration regression
+//! guard; the [`migrate_v0_envelope`](crate::migrate_v0_envelope) path lifts a v0
+//! envelope to this v1 form (deterministically, preserving canonical reduction
+//! state). See `DECISIONS.md` (P11-C1 resolved; P12-K1).
 //!
 //! The *set* of kinds here is the representative selection of §6.10, not the full
 //! ~60–80-primitive catalog (an explicit open question, §6.11). Together they
-//! exercise every reduction discipline the chapter defines.
+//! exercise every reduction discipline the chapter defines. The Operation Catalog
+//! companion (`spec/operation_catalog.tex`) is the normative schema for these
+//! payloads.
 
 use epiphany_core::{
-    EventId, MusicalDuration, MusicalPosition, PitchId, RegionId, StaffInstanceId, TransactionId,
-    TupletId, TypedObjectId, VoiceId,
+    Beam, CanonicalValue, Event, EventDuration, EventId, EventPosition, MusicalDuration,
+    MusicalPosition, PitchId, PitchSpelling, RegionId, RegionTimeModel, Rest, Slur, Spanner,
+    StaffInstanceId, Tie, TimeAnchor, TransactionId, TupletId, TypedObjectId, VoiceId,
 };
-use epiphany_determinism::{sorted_canonical, CanonicalEncode, ContentHash};
+use epiphany_determinism::{sorted_canonical, CanonicalEncode};
 
 use crate::conflict::{ConflictId, ResolutionAction};
-use crate::encode::{push_canon, push_seq, push_str, push_tag, push_u8_bool};
+use crate::encode::{push_canon, push_lp_bytes, push_seq, push_str, push_tag, push_u8_bool};
 use crate::support::OperationKindRegistryId;
 use crate::undo::UndoTransactionPayload;
 
 /// The full payload of an operation envelope: a primitive, or one of the two
 /// meta-operations (Chapter 6 §"Operation Envelopes").
+// v1 payloads carry whole graph values, so the `Primitive` variant is
+// intentionally larger than the meta-operations — the durability the catalog
+// requires. Operation payloads are not packed in a hot path, so the size
+// disparity is acceptable rather than worth a `Box` indirection on every match.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum OperationPayload {
     /// A primitive mutation.
@@ -70,6 +84,9 @@ impl CanonicalEncode for OperationPayload {
 
 /// The catalog of primitive operation kinds reduced by this crate (Chapter 6
 /// §"Operation Envelopes", representative subset of §6.10).
+// `InsertEvent` carries a whole `Event`, so this variant is intentionally larger
+// than the others (see `OperationPayload`); inline values are the v1 design.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum OperationKind {
     /// Insert an event into a voice (position-keyed; voice promotion on
@@ -201,31 +218,63 @@ impl CanonicalEncode for OperationKindTag {
 
 // --- Representative operation payloads (Chapter 6 §6.10). --------------------
 
-/// Insert an event into a voice (Chapter 6 §6.10 InsertEvent).
+/// Insert an event into a voice (Chapter 6 §6.10 InsertEvent). Carries the full
+/// [`Event`] value (v1, value-typed); the voice, position, duration, and pitch
+/// identities the reduction keys on are read from it via the accessors below.
 ///
-/// The `staff_instance` makes the system-promoted-voice derivation total
-/// without a containment walk (a full reducer recovers it from the voice's
-/// container; see `DECISIONS.md`). `position`/`duration` are exact musical
-/// rationals, the collision key for voice promotion. `pitches` are tombstoned
-/// with the event on delete.
+/// `staff_instance` is retained alongside the event so the system-promoted-voice
+/// derivation is total without a containment walk (a full reducer recovers it
+/// from the voice's container; see `DECISIONS.md`).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct InsertEventOp {
-    pub voice: VoiceId,
     pub staff_instance: StaffInstanceId,
-    pub event: EventId,
-    pub position: MusicalPosition,
-    pub duration: MusicalDuration,
-    pub pitches: Vec<PitchId>,
+    pub event: Event,
+}
+
+impl InsertEventOp {
+    /// The voice the event is inserted into (the bucketing / promotion key).
+    pub fn voice(&self) -> VoiceId {
+        self.event.voice()
+    }
+
+    /// The inserted event's identifier.
+    pub fn event_id(&self) -> EventId {
+        self.event.id()
+    }
+
+    /// The pitch identities the event embeds (minted live with the event;
+    /// tombstoned with it on delete).
+    pub fn pitch_ids(&self) -> Vec<PitchId> {
+        let mut ips: Vec<&epiphany_core::IdentifiedPitch> = Vec::new();
+        self.event.collect_identified_pitches(&mut ips);
+        ips.iter().map(|ip| ip.id).collect()
+    }
+
+    /// The event's musical position — the voice-promotion collision key. A
+    /// non-musical position (reachable only in a non-metric region, which the
+    /// graph precondition rejects for InsertEvent) reads as the origin.
+    pub fn musical_position(&self) -> MusicalPosition {
+        match self.event.position() {
+            EventPosition::Musical(p) => p.clone(),
+            EventPosition::WallClock(_) => MusicalPosition::origin(),
+        }
+    }
+
+    /// The event's musical duration — the other half of the collision interval.
+    pub fn musical_duration(&self) -> MusicalDuration {
+        match self.event.duration() {
+            EventDuration::Musical(d) => d.clone(),
+            EventDuration::WallClock(_) | EventDuration::Indeterminate(_) => {
+                MusicalDuration::zero()
+            }
+        }
+    }
 }
 
 impl CanonicalEncode for InsertEventOp {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
-        push_canon(out, &self.voice);
         push_canon(out, &self.staff_instance);
-        push_canon(out, &self.event);
-        push_canon(out, &self.position);
-        push_canon(out, &self.duration);
-        push_seq(out, &sorted_canonical(self.pitches.clone()));
+        push_lp_bytes(out, &self.event.canonical_bytes());
     }
 }
 
@@ -244,18 +293,14 @@ impl CanonicalEncode for DeleteEventOp {
 }
 
 /// Compensation for a deleted event's tuplet membership (Chapter 6 §6.10).
-/// The replacement rest is represented by its freshly-minted [`EventId`] and
-/// duration (the reducer adds it live and validates the duration); the full
-/// `Rest` value is deferred with the rest of the payload encoding.
+/// The replacement rest carries its full [`Rest`] value (v1, value-typed); the
+/// reducer adds it live and validates the duration.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TupletCompensation {
     /// Target is not in any tuplet.
     NotInTuplet,
     /// Replace the deleted event with a rest of the same duration.
-    ReplaceWithRest {
-        new_rest: EventId,
-        duration: MusicalDuration,
-    },
+    ReplaceWithRest { rest: Rest },
     /// Rewrite the enclosing tuplet(s) to remain consistent.
     RewriteTuplets { tuplets: Vec<TupletId> },
     /// Cascade-delete the tuplet group(s) containing the target.
@@ -284,9 +329,8 @@ impl CanonicalEncode for TupletCompensation {
         push_tag(out, self.discriminant());
         match self {
             TupletCompensation::NotInTuplet => {}
-            TupletCompensation::ReplaceWithRest { new_rest, duration } => {
-                push_canon(out, new_rest);
-                push_canon(out, duration);
+            TupletCompensation::ReplaceWithRest { rest } => {
+                push_lp_bytes(out, &rest.canonical_bytes());
             }
             TupletCompensation::RewriteTuplets { tuplets }
             | TupletCompensation::CascadeDeleteTuplets { tuplets } => {
@@ -296,31 +340,31 @@ impl CanonicalEncode for TupletCompensation {
     }
 }
 
-/// Overwrite a pitch's spelling (Chapter 6 §6.10 RespellPitch). The intended
-/// [`PitchSpelling`](epiphany_core::PitchSpelling) is represented by a
-/// [`ContentHash`] fingerprint: the reduction only needs spelling *equality*
-/// (identical concurrent respellings reduce idempotently; differing ones
-/// conflict).
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+/// Overwrite a pitch's spelling (Chapter 6 §6.10 RespellPitch). Carries the full
+/// [`PitchSpelling`] value (v1, value-typed); the reduction needs spelling
+/// *equality* (identical concurrent respellings reduce idempotently; differing
+/// ones conflict), which is now structural value equality rather than a
+/// fingerprint comparison.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RespellPitchOp {
     pub pitch: PitchId,
-    pub spelling: ContentHash,
+    pub spelling: PitchSpelling,
 }
 
 impl CanonicalEncode for RespellPitchOp {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         push_canon(out, &self.pitch);
-        push_canon(out, &self.spelling);
+        push_lp_bytes(out, &self.spelling.canonical_bytes());
     }
 }
 
-/// Create a cross-cutting structure (Chapter 6 §6.10 CreateCrossCutting). The
-/// structure is identified by its [`TypedObjectId`] (whose variant carries the
-/// kind — Slur, Tie, Beam, …) and its referenced endpoints; that is everything
-/// the set-union reduction and the re-anchoring rule table consume.
+/// Create a cross-cutting structure (Chapter 6 §6.10 CreateCrossCutting). Carries
+/// the full typed structure value (v1, value-typed); the set-union reduction and
+/// the re-anchoring rule table key on its [`CrossCuttingValue::id`] and
+/// [`CrossCuttingValue::endpoints`], which it derives from the value.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CreateCrossCuttingOp {
-    pub structure: CrossCuttingRef,
+    pub structure: CrossCuttingValue,
 }
 
 impl CanonicalEncode for CreateCrossCuttingOp {
@@ -329,34 +373,90 @@ impl CanonicalEncode for CreateCrossCuttingOp {
     }
 }
 
-/// A reference-level view of a cross-cutting structure: its identity and the
-/// objects it references (Chapter 6 §6.5 re-anchoring operands).
+/// A cross-cutting structure value (Chapter 5 §"Cross-Cutting Structures"): the
+/// representative event-anchored family the reduction materializes. The reduction
+/// keys only on the [`id`](CrossCuttingValue::id) and
+/// [`endpoints`](CrossCuttingValue::endpoints); the rich per-kind fields (a tie's
+/// class, a beam's level) carry through to the graph materialization.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct CrossCuttingRef {
-    /// The structure's identity; its `TypedObjectId` variant names the kind.
-    pub id: TypedObjectId,
-    /// The objects this structure references (its endpoints/anchors).
-    pub endpoints: Vec<TypedObjectId>,
+pub enum CrossCuttingValue {
+    Tie(Tie),
+    Slur(Slur),
+    Beam(Beam),
+    Spanner(Spanner),
 }
 
-impl CanonicalEncode for CrossCuttingRef {
-    fn encode_canonical(&self, out: &mut Vec<u8>) {
-        push_canon(out, &self.id);
-        // Endpoint order is meaningful (start before end), so it is NOT sorted.
-        push_seq(out, &self.endpoints);
+impl CrossCuttingValue {
+    fn discriminant(&self) -> u8 {
+        match self {
+            CrossCuttingValue::Tie(_) => 0,
+            CrossCuttingValue::Slur(_) => 1,
+            CrossCuttingValue::Beam(_) => 2,
+            CrossCuttingValue::Spanner(_) => 3,
+        }
+    }
+
+    /// The structure's identity; its [`TypedObjectId`] variant names the kind.
+    pub fn id(&self) -> TypedObjectId {
+        match self {
+            CrossCuttingValue::Tie(t) => TypedObjectId::Tie(t.id),
+            CrossCuttingValue::Slur(s) => TypedObjectId::Slur(s.id),
+            CrossCuttingValue::Beam(b) => TypedObjectId::Beam(b.id),
+            CrossCuttingValue::Spanner(s) => TypedObjectId::Spanner(s.id),
+        }
+    }
+
+    /// The objects this structure references (its endpoints/anchors), in
+    /// significant order (start before end). A spanner contributes the event
+    /// ids of any [`TimeAnchor::Event`] endpoints it carries.
+    pub fn endpoints(&self) -> Vec<TypedObjectId> {
+        match self {
+            CrossCuttingValue::Tie(t) => vec![
+                TypedObjectId::Event(t.start_event),
+                TypedObjectId::Event(t.end_event),
+            ],
+            CrossCuttingValue::Slur(s) => vec![
+                TypedObjectId::Event(s.start_event),
+                TypedObjectId::Event(s.end_event),
+            ],
+            CrossCuttingValue::Beam(b) => {
+                b.events.iter().copied().map(TypedObjectId::Event).collect()
+            }
+            CrossCuttingValue::Spanner(s) => [&s.start, &s.end]
+                .into_iter()
+                .filter_map(|anchor| match anchor {
+                    TimeAnchor::Event { id, .. } => Some(TypedObjectId::Event(*id)),
+                    _ => None,
+                })
+                .collect(),
+        }
     }
 }
 
-/// Change a region's time model (Chapter 6 §6.10 ChangeRegionTimeModel). The
-/// target model is represented by its [`RegionTimeModelTag`]; the prototype's
-/// reducer cannot recompute coordinate-kind compatibility from the not-yet-
-/// canonical region contents, so the authoring layer declares any events it
-/// knows to be un-migratable (`declared_incompatible`), which drive the
-/// `TimeModelMigrationFailure` conflict (see `DECISIONS.md`).
+impl CanonicalEncode for CrossCuttingValue {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_tag(out, self.discriminant());
+        let bytes = match self {
+            CrossCuttingValue::Tie(t) => t.canonical_bytes(),
+            CrossCuttingValue::Slur(s) => s.canonical_bytes(),
+            CrossCuttingValue::Beam(b) => b.canonical_bytes(),
+            CrossCuttingValue::Spanner(s) => s.canonical_bytes(),
+        };
+        push_lp_bytes(out, &bytes);
+    }
+}
+
+/// Change a region's time model (Chapter 6 §6.10 ChangeRegionTimeModel). Carries
+/// the full target [`RegionTimeModel`] value (v1, value-typed); the reduction
+/// keys coordinate-kind compatibility on the value's *kind*. The authoring layer
+/// additionally declares any events it knows to be un-migratable
+/// (`declared_incompatible`), which drive the `TimeModelMigrationFailure`
+/// conflict (see `DECISIONS.md`, P11-C6 — graph-aware reduction derives the rest
+/// from the region contents).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ChangeRegionTimeModelOp {
     pub region: RegionId,
-    pub new_time_model: RegionTimeModelTag,
+    pub new_time_model: RegionTimeModel,
     pub declared_incompatible: Vec<EventId>,
     pub remapping: PositionRemapping,
 }
@@ -364,36 +464,9 @@ pub struct ChangeRegionTimeModelOp {
 impl CanonicalEncode for ChangeRegionTimeModelOp {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         push_canon(out, &self.region);
-        self.new_time_model.encode_canonical(out);
+        push_lp_bytes(out, &self.new_time_model.canonical_bytes());
         push_seq(out, &sorted_canonical(self.declared_incompatible.clone()));
         self.remapping.encode_canonical(out);
-    }
-}
-
-/// Which region time model a migration targets (Chapter 3 §"Region Time
-/// Models"). The discriminator the reducer needs; the full
-/// [`RegionTimeModel`](epiphany_core::RegionTimeModel) value is deferred.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum RegionTimeModelTag {
-    Metric,
-    Proportional,
-    Aleatoric,
-}
-
-impl RegionTimeModelTag {
-    fn discriminant(&self) -> u8 {
-        match self {
-            RegionTimeModelTag::Metric => 0,
-            RegionTimeModelTag::Proportional => 1,
-            RegionTimeModelTag::Aleatoric => 2,
-        }
-    }
-}
-
-impl CanonicalEncode for RegionTimeModelTag {
-    #[inline]
-    fn encode_canonical(&self, out: &mut Vec<u8>) {
-        push_tag(out, self.discriminant());
     }
 }
 
@@ -440,21 +513,37 @@ fn push_len_pairs(out: &mut Vec<u8>, entries: &[(EventId, MusicalPosition)]) {
     }
 }
 
-/// Set a user system-break preference (Chapter 6 §6.10 SetUserSystemBreak). The
-/// anchor is represented by its resolved [`MusicalPosition`] — the canonical
-/// LWW bucketing key; the full [`TimeAnchor`](epiphany_core::TimeAnchor) value
-/// is deferred.
+/// Set a user system-break preference (Chapter 6 §6.10 SetUserSystemBreak).
+/// Carries the full [`TimeAnchor`] value (v1, value-typed); the reduction's LWW
+/// bucketing key is the anchor's resolved [`MusicalPosition`]
+/// ([`SetUserSystemBreakOp::resolved_position`]).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SetUserSystemBreakOp {
     pub region: RegionId,
-    pub anchor: MusicalPosition,
+    pub anchor: TimeAnchor,
     pub present: bool,
+}
+
+impl SetUserSystemBreakOp {
+    /// The anchor's resolved musical position — the canonical LWW bucketing key.
+    /// A region-relative musical offset resolves to that offset; any other anchor
+    /// shape resolves to the region origin (the break still applies to the
+    /// region, the prototype LWW key is coarse — see `DECISIONS.md`).
+    pub fn resolved_position(&self) -> MusicalPosition {
+        match &self.anchor {
+            TimeAnchor::Region {
+                offset: epiphany_core::AnchorOffset::Musical(d),
+                ..
+            } => MusicalPosition(d.0.clone()),
+            _ => MusicalPosition::origin(),
+        }
+    }
 }
 
 impl CanonicalEncode for SetUserSystemBreakOp {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         push_canon(out, &self.region);
-        push_canon(out, &self.anchor);
+        push_lp_bytes(out, &self.anchor.canonical_bytes());
         push_u8_bool(out, self.present);
     }
 }
@@ -558,7 +647,7 @@ mod tests {
         assert_eq!(k.tag(), OperationKindTag::Registered(reg));
         let prim = OperationKind::RespellPitch(RespellPitchOp {
             pitch: PitchId::new(ReplicaId(1), 1),
-            spelling: ContentHash([4u8; 32]),
+            spelling: crate::valuegen::spelling(4),
         });
         assert_eq!(prim.tag(), OperationKindTag::RespellPitch);
     }
@@ -602,17 +691,13 @@ mod tests {
 
     #[test]
     fn cross_cutting_endpoint_order_is_significant() {
-        let s = TypedObjectId::Slur(SlurId::new(ReplicaId(1), 1));
-        let a = TypedObjectId::Event(EventId::new(ReplicaId(1), 2));
-        let b = TypedObjectId::Event(EventId::new(ReplicaId(1), 3));
-        let fwd = CrossCuttingRef {
-            id: s,
-            endpoints: vec![a, b],
-        };
-        let rev = CrossCuttingRef {
-            id: s,
-            endpoints: vec![b, a],
-        };
+        // A slur's (start, end) order is meaningful: swapping the endpoints
+        // changes the canonical bytes.
+        let s = SlurId::new(ReplicaId(1), 1);
+        let a = EventId::new(ReplicaId(1), 2);
+        let b = EventId::new(ReplicaId(1), 3);
+        let fwd = CrossCuttingValue::Slur(crate::valuegen::slur(s, a, b));
+        let rev = CrossCuttingValue::Slur(crate::valuegen::slur(s, b, a));
         assert_ne!(fwd.to_canonical_bytes(), rev.to_canonical_bytes());
     }
 }

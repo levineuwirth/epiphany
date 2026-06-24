@@ -70,6 +70,27 @@ that graph. The base-free `reduce()` remains the operation-set convergence API.
 
 ### P11-C1 — operation payload schemas are deferred; we carry identifiers + fingerprints
 
+> **RESOLVED (Phase 2, Agent K — Operation Catalog, M1).** The representative
+> payloads are now **value-typed**: `InsertEventOp { staff_instance, event:
+> Event }`, `RespellPitchOp { pitch, spelling: PitchSpelling }`,
+> `CreateCrossCuttingOp { structure: CrossCuttingValue }`,
+> `ChangeRegionTimeModelOp { …, new_time_model: RegionTimeModel }`,
+> `SetUserSystemBreakOp { …, anchor: TimeAnchor }`, and
+> `TupletCompensation::ReplaceWithRest { rest: Rest }`. They serialize by framing
+> each value's `epiphany_core::CanonicalValue` bytes behind a `u32` length prefix
+> — the ratified byte-convention baseline (Pass 11 item 1.8,
+> `req:format:codec-conventions`), introducing no new layout (the K↔J seam; see
+> `epiphany-core/DECISIONS.md`). Graph-aware reduction now materializes the
+> **real** event/structure rather than the C4 placeholder described below.
+> `reduce_onto`'s reduction rules are unchanged — only the field read-sites moved
+> onto the value. The v0 identifier-only shapes are frozen in `src/v0.rs` as the
+> migration regression guard, and `src/migrate.rs` lifts a v0 envelope to v1
+> deterministically and equivalence-preservingly (`migrate_v0_envelope(v0,
+> context: &Score)`; `epiphany-testkit::migration` is the merge gate). The full
+> K0 set + the literal wire layout (Binary Format companion, Agent J) follow; the
+> remainder of this entry is the historical v0 rationale. See `P12-K1` below and
+> `spec/operation_catalog.tex`.
+
 Chapter 6's payload structs embed rich graph values (`InsertEventOp { event:
 Event }`, `RespellPitchOp { new_spelling: PitchSpelling }`, …), but the
 *canonical wire encoding* of those graph value types is itself deferred to the
@@ -190,6 +211,26 @@ a single `ResolveConflictPayload { target, action }`. This crate maps every
 applied resolve to `Resolved { action }`; `Dismissed` is reachable as a state but
 is not authored by a representative op. **For the spec:** define how a
 `ResolveConflict` selects Dismissed (a distinct action, or a separate payload).
+*Phase 2 update: the Operation Catalog (Ch. ResolveConflict) records that
+`ResolutionAction::Dismiss` is the action that selects `Dismissed`; resolved.*
+
+## Pass 12 candidates (Agent K — Operation Catalog)
+
+### P12-K1 — a v0 `RespellPitch` fingerprint is not invertible to a spelling
+
+The v0 `RespellPitchOp` carried a `ContentHash` *fingerprint* of the new
+spelling, not the `PitchSpelling`. The v0→v1 migration (`src/migrate.rs`) must
+reconstruct the value, but a fingerprint cannot be inverted without a side table.
+The migration recovers the spelling from the score-graph **context** — an
+explicit per-pitch spelling attachment (`SpellingScope::Pitch` +
+`SpellingDirective::Explicit`) whose canonical bytes hash to the fingerprint —
+and, when the context lacks it, returns `MigrationError::Irreversible` (the
+bundle opens read-only, per the QUICKSTART migration contract). This is the one
+representative payload that is not self-contained under migration. **For Pass
+12:** confirm the read-only fallback is the intended long-term disposition (vs.
+requiring a richer v0 corpus that preserves spelling pre-images). Recorded in
+`spec/PASS12_BATCH.md` and `spec/operation_catalog.tex`
+(§RespellPitch, §Migration).
 
 ## Provisional canonical encoding (mirrors Agent B's P11-4)
 

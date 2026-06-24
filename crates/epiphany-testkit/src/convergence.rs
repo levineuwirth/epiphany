@@ -297,10 +297,9 @@ pub fn materialized_score(seed: u64) -> (Score, Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use epiphany_core::{PitchId, ReplicaId, WallClockTime};
-    use epiphany_determinism::ContentHash;
+    use epiphany_core::{PitchId, PitchSpelling, ReplicaId, WallClockTime};
     use epiphany_ops::{
-        AuthorId, CausalContext, HybridLogicalClock, OperationKind, OperationPayload,
+        valuegen, AuthorId, CausalContext, HybridLogicalClock, OperationKind, OperationPayload,
         OperationStamp, RespellPitchOp,
     };
     use std::collections::BTreeMap;
@@ -354,21 +353,21 @@ mod tests {
             transaction: None,
             payload: OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
                 pitch: PitchId::new(ReplicaId(0x0B7E_C700), 0),
-                spelling: ContentHash([spelling; 32]),
+                spelling: valuegen::spelling(spelling),
             })),
         }
     }
 
     /// A deliberately broken, order-*dependent* reducer: last spelling wins by
     /// arrival order. Stands in for the bug the harness must catch.
-    fn naive_arrival_order_spelling(envs: &[OperationEnvelope]) -> Option<[u8; 32]> {
-        let mut last: BTreeMap<PitchId, [u8; 32]> = BTreeMap::new();
+    fn naive_arrival_order_spelling(envs: &[OperationEnvelope]) -> Option<PitchSpelling> {
+        let mut last: BTreeMap<PitchId, PitchSpelling> = BTreeMap::new();
         for e in envs {
             if let OperationPayload::Primitive(OperationKind::RespellPitch(op)) = &e.payload {
-                last.insert(op.pitch, op.spelling.0);
+                last.insert(op.pitch, op.spelling.clone());
             }
         }
-        last.values().next().copied()
+        last.values().next().cloned()
     }
 
     #[test]

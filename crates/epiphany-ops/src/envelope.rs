@@ -195,7 +195,6 @@ mod tests {
     use crate::payload::{OperationKind, RespellPitchOp};
     use crate::stamp::HybridLogicalClock;
     use epiphany_core::{PitchId, ReplicaId, WallClockTime};
-    use epiphany_determinism::ContentHash;
 
     fn env(id: OperationId, stamp_id: OperationId) -> OperationEnvelope {
         OperationEnvelope {
@@ -206,7 +205,7 @@ mod tests {
             transaction: None,
             payload: OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
                 pitch: PitchId::new(ReplicaId(1), 1),
-                spelling: ContentHash([7u8; 32]),
+                spelling: crate::valuegen::spelling(7),
             })),
         }
     }
@@ -257,7 +256,7 @@ mod tests {
         let ha = a.envelope_hash();
         a.payload = OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
             pitch: PitchId::new(ReplicaId(1), 1),
-            spelling: ContentHash([9u8; 32]), // different spelling
+            spelling: crate::valuegen::spelling(9), // different spelling
         }));
         assert_ne!(ha, a.envelope_hash());
     }

@@ -283,7 +283,6 @@ mod tests {
     use crate::support::AuthorId;
     use crate::OperationPayload;
     use epiphany_core::{PitchId, WallClockTime};
-    use epiphany_determinism::ContentHash;
 
     fn env(replica: u64, counter: u64, physical: i64, logical: u32) -> OperationEnvelope {
         let id = OperationId::new(ReplicaId(replica), counter);
@@ -298,7 +297,7 @@ mod tests {
             transaction: None,
             payload: OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
                 pitch: PitchId::new(ReplicaId(replica), counter),
-                spelling: ContentHash([1u8; 32]),
+                spelling: crate::valuegen::spelling(1),
             })),
         }
     }

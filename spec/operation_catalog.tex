@@ -1,0 +1,686 @@
+% !TEX program = xelatex
+%
+% Epiphany --- Operation Catalog (companion specification)
+% Companion to the Core Specification. Compile with XeLaTeX.
+%
+% This document is versioned independently of the Core Specification
+% (independent semver; see the Versioning note in the front matter). Its preamble
+% is intentionally a self-contained copy of the core specification's preamble so
+% the two documents build independently; factoring a shared preamble file is a
+% later cleanup, not a v0.1 deliverable.
+
+\documentclass[11pt,letterpaper]{report}
+
+% ---------------------------------------------------------------------------
+% Packages
+% ---------------------------------------------------------------------------
+\usepackage{fontspec}
+\usepackage{geometry}
+\geometry{
+  letterpaper,
+  top=1.05in,
+  bottom=1.05in,
+  left=1.15in,
+  right=1.15in,
+  headheight=15pt
+}
+
+\usepackage[english]{babel}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{listings}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable, skins}
+
+% ---------------------------------------------------------------------------
+% Color palette (shared with the core specification)
+% ---------------------------------------------------------------------------
+\definecolor{epiphanyteal}{HTML}{1A4044}
+\definecolor{epiphanygold}{HTML}{8E6E2E}
+\definecolor{epiphanyink}{HTML}{1F1B16}
+\definecolor{epiphanyslate}{HTML}{6B6660}
+\definecolor{epiphanycream}{HTML}{F8F4ED}
+\definecolor{epiphanymist}{HTML}{ECE8E0}
+\definecolor{epiphanycode}{HTML}{2A2520}
+\definecolor{epiphanycrimson}{HTML}{7A2424}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=epiphanyteal,
+  citecolor=epiphanyteal,
+  urlcolor=epiphanygold,
+  pdftitle={Epiphany --- Operation Catalog},
+  pdfauthor={The Epiphany Project},
+  pdfsubject={Operation Catalog companion for the Epiphany music notation platform},
+  pdfkeywords={music notation, operations, CRDT, reduction, serialization},
+  bookmarksnumbered=true,
+  bookmarksopen=true
+}
+
+% ---------------------------------------------------------------------------
+% Typography (shared with the core specification)
+% ---------------------------------------------------------------------------
+\setmainfont{TeX Gyre Pagella}[Numbers={OldStyle, Proportional}, Ligatures={TeX, Common}]
+\setsansfont{TeX Gyre Heros}[Scale=0.94, Ligatures={TeX, Common}]
+\setmonofont{TeX Gyre Cursor}[Scale=0.88, Ligatures={TeX}]
+\newfontfamily\titlefont{TeX Gyre Pagella}[Numbers={OldStyle}, Ligatures={TeX, Common}]
+\newcommand{\tablenums}[1]{{\addfontfeatures{Numbers={Lining,Tabular}}#1}}
+\newcommand{\sectionsc}[1]{{\addfontfeatures{Letters=SmallCaps}#1}}
+
+% ---------------------------------------------------------------------------
+% Section styling (shared with the core specification)
+% ---------------------------------------------------------------------------
+\titleformat{\chapter}[display]
+  {\normalfont\filright}
+  {\raggedright\color{epiphanygold}\fontsize{14pt}{16pt}\selectfont
+    \scshape Chapter\ \thechapter}
+  {16pt}
+  {\raggedright\color{epiphanyteal}\fontsize{32pt}{36pt}\selectfont\bfseries}
+  [\vspace{4pt}{\color{epiphanygold}\rule{2in}{0.6pt}}]
+\titlespacing*{\chapter}{0pt}{-20pt}{30pt}
+\titleformat{\section}
+  {\normalfont\Large\bfseries\color{epiphanyteal}}
+  {\color{epiphanygold}\thesection}{1em}{}
+\titleformat{\subsection}
+  {\normalfont\large\bfseries\color{epiphanyteal}}
+  {\color{epiphanygold}\thesubsection}{1em}{}
+\titleformat{\subsubsection}
+  {\normalfont\normalsize\bfseries\color{epiphanyink}}
+  {\thesubsubsection}{1em}{}
+
+% ---------------------------------------------------------------------------
+% Headers and footers (shared with the core specification)
+% ---------------------------------------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\fancyhead[L]{\small\scshape\color{epiphanyslate}Epiphany --- Operation Catalog}
+\fancyhead[R]{\small\itshape\color{epiphanyslate}\leftmark}
+\fancyfoot[C]{\small\color{epiphanyslate}\thepage}
+\renewcommand{\headrule}{
+  \color{epiphanygold!50}\hrule width\headwidth height 0.4pt
+  \vspace{1pt}
+  \color{epiphanygold!30}\hrule width\headwidth height 0.2pt
+}
+
+% ---------------------------------------------------------------------------
+% Code listing style (shared with the core specification)
+% ---------------------------------------------------------------------------
+\lstdefinelanguage{Rust}{
+  keywords={fn,let,mut,pub,struct,enum,impl,trait,for,in,if,else,match,return,
+           use,mod,crate,self,Self,as,where,move,async,await,const,static,
+           ref,type,unsafe,extern,dyn,box,break,continue,loop,while},
+  keywordstyle=\color{epiphanyteal}\bfseries,
+  ndkeywords={i8,i16,i32,i64,i128,u8,u16,u32,u64,u128,f32,f64,bool,char,str,
+              String,Vec,Option,Result,Box,Rc,Arc,HashMap,BTreeMap,
+              NonZeroU16,NonZeroU32,NonZeroU64,Duration,Timestamp},
+  ndkeywordstyle=\color{epiphanygold}\bfseries,
+  sensitive=true,
+  comment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  commentstyle=\color{epiphanyslate}\itshape,
+  stringstyle=\color{epiphanycrimson},
+  morestring=[b]",
+  morestring=[b]'
+}
+\lstset{
+  basicstyle=\ttfamily\small\color{epiphanycode},
+  backgroundcolor=\color{epiphanycream},
+  frame=leftline,
+  rulecolor=\color{epiphanygold!60},
+  framesep=8pt,
+  framerule=1.5pt,
+  xleftmargin=10pt,
+  xrightmargin=4pt,
+  breaklines=true,
+  showstringspaces=false,
+  numberstyle=\tiny\color{epiphanyslate},
+  numbersep=10pt,
+  captionpos=b,
+  aboveskip=10pt,
+  belowskip=10pt,
+  language=Rust
+}
+
+% ---------------------------------------------------------------------------
+% Custom environments (shared with the core specification)
+% ---------------------------------------------------------------------------
+\newtcolorbox{openquestion}[1][]{
+  enhanced, breakable,
+  colback=epiphanymist, colframe=epiphanycrimson,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Open Question},
+  coltitle=white, colbacktitle=epiphanycrimson,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+\newtcolorbox{rationale}[1][]{
+  enhanced, breakable,
+  colback=epiphanymist, colframe=epiphanyteal,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Rationale},
+  coltitle=white, colbacktitle=epiphanyteal,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+\newtcolorbox{requirement}[1][]{
+  enhanced, breakable,
+  colback=white, colframe=epiphanygold,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Requirement},
+  coltitle=white, colbacktitle=epiphanygold,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+\newtcolorbox{nongoal}[1][]{
+  enhanced, breakable,
+  colback=epiphanymist, colframe=epiphanyslate,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Non-Goal},
+  coltitle=white, colbacktitle=epiphanyslate,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+
+\newcommand{\MUST}{\textbf{MUST}}
+\newcommand{\MUSTNOT}{\textbf{MUST}\nobreak\ \textbf{NOT}}
+\newcommand{\SHOULD}{\textbf{SHOULD}}
+\newcommand{\SHOULDNOT}{\textbf{SHOULD}\nobreak\ \textbf{NOT}}
+\newcommand{\MAY}{\textbf{MAY}}
+
+\setlist[itemize]{topsep=2pt, itemsep=3pt, parsep=0pt}
+\setlist[enumerate]{topsep=2pt, itemsep=3pt, parsep=0pt}
+\setlist[description]{topsep=2pt, itemsep=5pt, parsep=0pt}
+\AtBeginDocument{\color{epiphanyink}}
+
+% ---------------------------------------------------------------------------
+% Document
+% ---------------------------------------------------------------------------
+\begin{document}
+
+\begin{titlepage}
+  \thispagestyle{empty}
+  \centering
+  \vspace*{2.2in}
+  {\color{epiphanygold}\rule{3in}{0.8pt}}\\[18pt]
+  {\titlefont\fontsize{34pt}{38pt}\selectfont\color{epiphanyteal}\bfseries Epiphany}\\[10pt]
+  {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
+  {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
+  {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
+  {\normalsize\color{epiphanyink}Version 0.1.0 --- Phase 2 (K0 representative primitives)}\\[4pt]
+  {\small\color{epiphanyslate}Normative for the operation kinds it defines}
+  \vfill
+\end{titlepage}
+
+\tableofcontents
+
+% ===========================================================================
+\chapter{About This Companion}
+\label{ch:about}
+
+The \emph{Operation Catalog} is a companion to the Epiphany Core Specification.
+It fulfils the open question the core specification raises in its
+\emph{Operation Catalog Conformance} section (Chapter~6,
+\sectionsc{Semantic Operations and Concurrent Reduction}, the
+\texttt{sec:semops:catalog} open question), which states that the catalog
+``is normative once published; this specification is non-final until the catalog
+is delivered.'' This v0.1 release delivers the catalog \emph{framework} and the
+\textbf{K0 representative primitive set} --- the operation kinds the Phase~2
+visible slice and binary format actually exercise. The remaining K0 and the full
+$60$--$80$-primitive catalog are drafted as framework slots
+(Chapter~\ref{ch:k1}) and completed in Phase~3.
+
+\section{Relationship to the Core Specification}
+
+This companion does not restate the operation framework; it \emph{references} it.
+The framework --- operation identity and stamps, the hybrid-logical-clock
+monotonicity rule, the dotted-version-vector causal context, the
+order-independent operation-slot model and equivocation, the canonical reduction
+order, the four-phase lifecycle, conflict records and the conflict registry,
+re-anchoring, transactions, forward undo, and the LWW discipline --- is the core
+specification's Chapter~6. This companion defines, for each operation kind, the
+\emph{payload schema} and how that kind \emph{instantiates} the framework's
+reduction, conflict, undo, and re-anchoring rules.
+
+It also consumes, rather than re-deriving, the \textbf{ratified byte-convention
+baseline} (core specification Chapter~8, \sectionsc{Binary Format Companion},
+requirement \texttt{req:format:codec-conventions}, and the
+\sectionsc{Canonical Byte-Layout Reference} appendix): little-endian integers, a
+single discriminant byte per tagged union, \texttt{u32} length prefixes on every
+variable-width leaf, and raw UTF-8 free text. Operation-payload encodings are
+expressed in terms of that baseline; the literal wire layout of each payload is
+the Binary Format companion's (Agent~J's) to pin, in coordination with this
+catalog.
+
+\begin{rationale}
+The catalog is versioned \emph{independently} of the core specification
+(independent semver). Operation kinds are added over time; the catalog should
+evolve --- adding primitives, refining conflict cases --- without forcing a core
+specification revision. The core specification changes only when the
+\emph{framework} changes.
+\end{rationale}
+
+\section{Conformance Profiles}
+
+A \textbf{Phase-2 profile} implementation \MUST{} implement every primitive in
+Chapter~\ref{ch:k0} with the schema, reduction rule, conflict cases, undo
+semantics, and re-anchoring behaviour defined there. The K1 primitives of
+Chapter~\ref{ch:k1} are \emph{unavailable} under the Phase-2 profile: an
+implementation \MUST{} reject (not silently ignore) an operation whose kind is a
+K1 primitive it does not implement.
+
+% ===========================================================================
+\chapter{The Catalog Framework}
+\label{ch:framework}
+
+\section{Value-Typed Payloads}
+\label{sec:framework:value-typed}
+
+Every operation payload in this catalog is \textbf{value-typed}: it carries the
+real graph values its effect introduces, not identifiers that point at values in
+some ambient graph. An \texttt{InsertEvent} carries the whole \texttt{Event}; a
+\texttt{RespellPitch} carries the whole \texttt{PitchSpelling}; a
+\texttt{CreateCrossCutting} carries the whole tie, slur, beam, or spanner.
+
+\begin{rationale}
+The v0 prototype carried \emph{identifier-only projections} --- an
+\texttt{InsertEvent} held an \texttt{EventId} plus reduction-relevant scalars; a
+\texttt{RespellPitch} held a content-hash \emph{fingerprint} of the new spelling.
+That was sufficient to make an envelope hashable and to drive reduction, but it
+is \textbf{not durable}: an operation replayed in a fresh context --- a backup
+restore, a cross-tool round-trip --- needs the full value, which an
+identifier-only payload cannot supply. Value-typed payloads are what make an
+Epiphany document portable.
+\end{rationale}
+
+\begin{requirement}
+\label{req:catalog:value-encoding}
+A value-typed payload field \MUST{} be encoded by emitting the field's value
+under the core specification's canonical value encoding
+(\texttt{req:format:codec-conventions}), framed by a \texttt{u32} little-endian
+length prefix. Decoding \MUST{} be the exact inverse and \MUST{} reject trailing
+bytes within the framed region. The encoding introduces no byte layout beyond the
+ratified baseline: a value's bytes here are byte-for-byte the bytes the whole
+document codec emits for that value.
+\end{requirement}
+
+\section{Per-Primitive Schema Template}
+\label{sec:framework:template}
+
+Each catalog primitive is specified under a fixed six-part template. A new
+primitive is a schema-fill against this template, not a fresh design:
+
+\begin{description}
+  \item[Payload schema] The value-typed fields the operation carries, with their
+    core-specification types.
+  \item[Canonical encoding] The field order and framing, consuming
+    Requirement~\ref{req:catalog:value-encoding}. (The literal byte layout is the
+    Binary Format companion's; this catalog fixes the \emph{field set and order}.)
+  \item[Reduction rule] How the operation mutates canonical state when it is
+    reached in canonical reduction order --- the preconditions it checks, the
+    objects it mints or tombstones, and the bookkeeping it records.
+  \item[Conflict cases] The conflict records the operation can produce, by
+    \texttt{ConflictKind}, and which participant materialises.
+  \item[Undo semantics] The compensating effect of undoing a transaction that
+    contains the operation, under each \texttt{UndoPolicy}
+    (\texttt{StrictInverse} / \texttt{BestEffort} / \texttt{Cascade}).
+  \item[Re-anchoring] The behaviour when an object the operation references is
+    tombstoned before or concurrently with it.
+\end{description}
+
+\section{Reduction-Discipline Coverage}
+
+The K0 representative set is chosen so that, between them, the primitives
+exercise \emph{every} reduction discipline the framework defines:
+position-keyed insert with system-voice promotion; delete-wins with tombstones,
+tuplet compensation, and cross-cutting re-anchoring; field-overwrite with
+last-writer-wins and structural-field-collision conflicts; set-union creation;
+structural time-model migration; an LWW advisory; atomic transactions with
+descriptor precedence; and the two meta-operations (conflict resolution and
+forward undo). A primitive added later that reuses one of these disciplines
+inherits its reduction, conflict, undo, and re-anchoring treatment.
+
+% ===========================================================================
+\chapter{K0 --- Representative Primitives}
+\label{ch:k0}
+
+This chapter is normative under the Phase-2 profile. Each primitive's reduction,
+conflict, undo, and re-anchoring behaviour is the behaviour the core
+specification's Chapter~6 defines for its discipline; the description here states
+how the primitive instantiates it. The reference implementation is
+\texttt{epiphany-ops} (the \texttt{payload}, \texttt{reduce}, and \texttt{migrate}
+modules).
+
+\section{InsertEvent}
+\label{sec:k0:insert-event}
+
+\textbf{Payload schema.} \texttt{InsertEventOp \{ staff\_instance:
+StaffInstanceId, event: Event \}}. The voice, region-local position, duration,
+and pitch identities are read from the \texttt{Event} value; the
+\texttt{staff\_instance} is retained alongside it so the system-voice promotion
+derivation is total without a containment walk.
+
+\textbf{Canonical encoding.} \texttt{staff\_instance}, then the length-framed
+canonical bytes of \texttt{event}.
+
+\textbf{Reduction rule.} A position-keyed insert. Preconditions: the event's
+duration is positive; the event id is neither live nor tombstoned; in graph-aware
+reduction the target voice exists in a metric region and the event's pitch ids
+are fresh. The event and its pitches are minted live; the voice is created on
+first use. Concurrent inserts whose half-open duration intervals overlap in the
+same voice are resolved by an order-independent promotion pre-pass: the
+lower-\texttt{OperationId} insert is retained in the original voice, and each
+overlapping loser is promoted to the deterministic system voice
+\texttt{derive\_promoted\_voice\_id(staff\_instance, voice, winner, loser)} and
+tagged \texttt{VoicePromoted}.
+
+\textbf{Conflict cases.} None at reduction time; promotion is a deterministic
+repair, not a conflict.
+
+\textbf{Undo semantics.} Undoing the enclosing transaction tombstones the minted
+event, its pitches, and any promoted voice. \texttt{StrictInverse} conflicts if
+any was already tombstoned or modified; \texttt{BestEffort} tombstones the
+survivors; \texttt{Cascade} is \texttt{StrictInverse} over the same minted set
+(dependent-closure undo is a Phase-3 refinement).
+
+\textbf{Re-anchoring.} Not applicable (the operation mints, it does not
+reference a pre-existing object that could be tombstoned).
+
+\section{DeleteEvent}
+\label{sec:k0:delete-event}
+
+\textbf{Payload schema.} \texttt{DeleteEventOp \{ event: EventId,
+tuplet\_compensation: TupletCompensation \}}, where \texttt{TupletCompensation}
+is \texttt{NotInTuplet}, \texttt{ReplaceWithRest \{ rest: Rest \}} (value-typed
+replacement rest), \texttt{RewriteTuplets \{ tuplets \}}, or
+\texttt{CascadeDeleteTuplets \{ tuplets \}}.
+
+\textbf{Canonical encoding.} \texttt{event}, then the tuplet-compensation
+discriminant and its payload (a length-framed \texttt{Rest} value for
+\texttt{ReplaceWithRest}).
+
+\textbf{Reduction rule.} Delete-wins: the event and its contained pitches are
+tombstoned (retaining their identifiers). Tuplet compensation, when present, adds
+the replacement rest live or tombstones the cascaded tuplet group. Concurrent
+deletes of the same event are idempotent.
+
+\textbf{Conflict cases.} None for the delete itself. Graph-aware reduction
+refuses an ill-formed tuplet compensation as a precondition failure (no-op).
+
+\textbf{Undo semantics.} An insert-shaped compensation re-introduces the
+tombstoned content; for the prototype's minted-object model this is the inverse
+of the tombstone set, with the policy treatment described under InsertEvent.
+
+\textbf{Re-anchoring.} Tombstoning the event runs the framework's re-anchoring
+rule table over every cross-cutting structure that referenced it: a tie
+cascade-deletes; a comment or analytical annotation orphans (user content is
+never silently deleted); a beam truncates while $\geq 2$ members survive and
+otherwise cascade-deletes; a slur or spanner re-anchors to the nearest surviving
+endpoint while $\geq 1$ survives and otherwise cascade-deletes.
+
+\section{RespellPitch}
+\label{sec:k0:respell-pitch}
+
+\textbf{Payload schema.} \texttt{RespellPitchOp \{ pitch: PitchId, spelling:
+PitchSpelling \}} --- the full spelling value (v1), not a fingerprint.
+
+\textbf{Canonical encoding.} \texttt{pitch}, then the length-framed canonical
+bytes of \texttt{spelling}.
+
+\textbf{Reduction rule.} A last-writer-wins field overwrite, keyed by pitch.
+Precondition: the pitch is live. The resolved spelling is the one carried by the
+operation latest in canonical order. Two respellings of one pitch that are
+causally ordered overwrite intentionally; two \emph{concurrent} respellings with
+\emph{equal} spelling reduce idempotently.
+
+\textbf{Conflict cases.} Two concurrent respellings of one pitch with
+\emph{differing} spellings produce a \texttt{StructuralFieldCollision} conflict
+recording the winner (later in canonical order), the loser, and the field
+\texttt{spelling}. The winner materialises and carries the \texttt{Conflicted}
+effect tag.
+
+\textbf{Undo semantics.} Undo restores the pre-operation spelling (or removes the
+spelling if the operation introduced the first one), under the active policy.
+
+\textbf{Re-anchoring.} If the target pitch is tombstoned, the respelling is a
+no-op (\texttt{TargetTombstoned}).
+
+\begin{openquestion}
+\textbf{P12-K1.} A v0 \texttt{RespellPitch} carried only a content-hash \emph{fingerprint} of the
+spelling. The fingerprint cannot be inverted to a \texttt{PitchSpelling} without
+a side table, so the v0$\rightarrow$v1 migration (Chapter~\ref{ch:migration})
+recovers the spelling from the score graph context --- an explicit per-pitch
+spelling attachment whose canonical bytes hash to the fingerprint --- and, when
+the context lacks it, declares the envelope unmigratable (the bundle opens
+read-only). This is the one representative payload that is not self-contained
+under migration; the disposition (whether a richer v0 corpus, or a documented
+read-only fallback, is the long-term answer) is a Pass-12 question.
+\end{openquestion}
+
+\section{CreateCrossCutting}
+\label{sec:k0:create-cross-cutting}
+
+\textbf{Payload schema.} \texttt{CreateCrossCuttingOp \{ structure:
+CrossCuttingValue \}}, where \texttt{CrossCuttingValue} is the typed value of a
+\texttt{Tie}, \texttt{Slur}, \texttt{Beam}, or \texttt{Spanner}. Its identity and
+referenced endpoints are read from the value.
+
+\textbf{Canonical encoding.} A discriminant for the structure kind, then the
+length-framed canonical bytes of the structure value.
+
+\textbf{Reduction rule.} Set-union creation: the structure is minted live if its
+id is not already live and every referenced endpoint is live; a second create of
+a live id is idempotent. Graph-aware reduction materialises the structure with
+its full fields.
+
+\textbf{Conflict cases.} None (all-or-nothing creation; union is deterministic).
+
+\textbf{Undo semantics.} Undo tombstones the minted structure, under the active
+policy.
+
+\textbf{Re-anchoring.} The structure participates in the re-anchoring rule table
+when one of its endpoints is later tombstoned (see DeleteEvent).
+
+\section{ChangeRegionTimeModel}
+\label{sec:k0:change-region-time-model}
+
+\textbf{Payload schema.} \texttt{ChangeRegionTimeModelOp \{ region: RegionId,
+new\_time\_model: RegionTimeModel, declared\_incompatible: Vec<EventId>,
+remapping: PositionRemapping \}} --- the full target model value (v1).
+
+\textbf{Canonical encoding.} \texttt{region}, the length-framed
+\texttt{new\_time\_model} value, the canonically-ordered
+\texttt{declared\_incompatible} set, then \texttt{remapping}.
+
+\textbf{Reduction rule.} Structural migration. The region adopts the target time
+model. Graph-aware reduction derives coordinate-kind incompatibilities from the
+region's events (and from the remapping coverage) and refuses a migration that
+would violate the coordinate discipline.
+
+\textbf{Conflict cases.} Concurrent same-region migrations produce a
+\texttt{StructuralFieldCollision} on the field \texttt{time\_model}; a migration
+with incompatible events produces a \texttt{TimeModelMigrationFailure} naming the
+region and the incompatible events. A causally-later migration is re-evaluated
+against the first migration's graph rather than conflicting.
+
+\textbf{Undo semantics.} Undo restores the region's prior time model under the
+active policy.
+
+\textbf{Re-anchoring.} Not applicable.
+
+\begin{openquestion}
+\textbf{P11-C6.} The rich migration payload --- a coordinate converter rather than a
+\texttt{declared\_incompatible} list plus a \texttt{PositionRemapping} --- remains
+the catalog's to design when graph-aware migration is the only reduction path.
+\end{openquestion}
+
+\section{SetUserSystemBreak}
+\label{sec:k0:set-user-system-break}
+
+\textbf{Payload schema.} \texttt{SetUserSystemBreakOp \{ region: RegionId,
+anchor: TimeAnchor, present: bool \}} --- the full anchor value (v1).
+
+\textbf{Canonical encoding.} \texttt{region}, the length-framed \texttt{anchor}
+value, then the boolean.
+
+\textbf{Reduction rule.} A last-writer-wins advisory. The break preference is
+recorded for the region keyed by the anchor's \emph{resolved musical position};
+graph-aware reduction adds or removes the anchor from the region's user
+system-break list.
+
+\textbf{Conflict cases.} None (LWW advisory).
+
+\textbf{Undo semantics.} Undo restores the prior advisory value for the
+\texttt{(region, resolved-position)} key.
+
+\textbf{Re-anchoring.} Not applicable in the prototype (the advisory is keyed by
+resolved position; a tombstoned anchor target degrades to the region origin).
+
+\section{DeclareTransaction}
+\label{sec:k0:declare-transaction}
+
+\textbf{Payload schema.} \texttt{TransactionDescriptor \{ id: TransactionId,
+label: String, category: Option<TransactionCategory> \}}. Value-complete in v0
+and unchanged.
+
+\textbf{Reduction rule.} Records the descriptor. Member primitives reference the
+transaction id and \MUST{} causally depend on the descriptor; the members reduce
+atomically (all-or-nothing) in canonical order.
+
+\textbf{Conflict cases.} A missing descriptor or a member that does not causally
+follow it produces a \texttt{TransactionConflict}; any member failure rolls back
+the whole transaction and all members read \texttt{NoOp\{TransactionConflict\}}.
+
+\textbf{Undo / re-anchoring.} Transactions are the unit of undo
+(Section~\ref{sec:k0:undo}); re-anchoring is per member.
+
+\section{ResolveConflict (meta-operation)}
+\label{sec:k0:resolve-conflict}
+
+\textbf{Payload schema.} \texttt{ResolveConflictPayload \{ target: ConflictId,
+action: ResolutionAction \}}. Value-complete.
+
+\textbf{Reduction rule.} Transitions the target conflict's resolution state. An
+action of \texttt{Dismiss} reaches the \texttt{Dismissed} state; any other action
+reaches \texttt{Resolved}. Re-resolving with the same action is idempotent; two
+concurrent resolves with differing actions produce a meta-conflict.
+
+\begin{rationale}
+Pass~11 added \texttt{ResolutionAction::Dismiss} (item 2.5) precisely so the
+\texttt{Dismissed} state is reachable by an authored operation rather than merely
+representable. The catalog records that \texttt{Dismiss} is the action that
+selects it (resolving the v0 ambiguity P11-C10).
+\end{rationale}
+
+\section{UndoTransaction (meta-operation)}
+\label{sec:k0:undo}
+
+\textbf{Payload schema.} \texttt{UndoTransactionPayload \{ target: TransactionId,
+policy: UndoPolicy \}}, with \texttt{UndoPolicy} one of \texttt{StrictInverse},
+\texttt{BestEffort}, \texttt{Cascade}. Value-complete.
+
+\textbf{Reduction rule.} A forward compensating edit computed against the
+materialised state at the undo's canonical position (never literal time travel).
+The prototype models the compensation as tombstoning the objects the target
+transaction minted: \texttt{StrictInverse} conflicts (\texttt{TombstonedTarget})
+if any minted object was already tombstoned; \texttt{BestEffort} tombstones the
+survivors; \texttt{Cascade} is \texttt{StrictInverse} over the same set
+(dependent-closure undo is a Phase-3 refinement, P11-C8).
+
+% ===========================================================================
+\chapter{v0 \texorpdfstring{$\rightarrow$}{->} v1 Payload Migration}
+\label{ch:migration}
+
+A v0 envelope carries an identifier-only payload; a v1 envelope carries the
+value-typed payload this catalog defines. The two forms do not coexist as
+permanent dialects (that would double the reducer surface forever); instead the
+catalog ships a \textbf{one-time migration} that lifts a v0 envelope to v1 using
+the score graph as context, applied once on read. Production code carries only v1
+payloads; v0 envelopes survive only as a regression corpus.
+
+\begin{requirement}
+\label{req:migration:properties}
+The migration \texttt{migrate\_v0\_envelope(v0, context: \&Score)} \MUST{} be
+\textbf{deterministic} (two implementations migrating the same v0 envelope
+against the same context produce byte-identical v1 envelopes) and
+\textbf{equivalence-preserving} (a v0 envelope and its v1 migration reduce to
+byte-identical canonical \texttt{MaterializedState}). When a value cannot be
+reconstructed from the v0 projection plus the context, the migration \MUST{}
+report the envelope unmigratable rather than fabricate a value, and the bundle
+opens read-only.
+\end{requirement}
+
+The reference implementation (\texttt{epiphany-ops::migrate}) reconstructs the
+\texttt{InsertEvent} event, the \texttt{DeleteEvent} compensation, the
+\texttt{ChangeRegionTimeModel} model, the \texttt{SetUserSystemBreak} anchor, and
+the cross-cutting structure self-containedly from the v0 projection; it recovers
+a \texttt{RespellPitch} spelling from the context (P12-K1,
+Section~\ref{sec:k0:respell-pitch}). The migration's merge gate
+(\texttt{epiphany-testkit::migration}) drives the inverse direction --- projecting
+a v1 corpus to v0 and migrating it back --- and asserts byte-identical reduction
+plus a non-vacuity guard.
+
+% ===========================================================================
+\chapter{K1 --- Framework Slots (Phase 3)}
+\label{ch:k1}
+
+The following K0 catalogue bullet items are \emph{drafted} here as framework
+slots and completed in Phase~3. Under the Phase-2 profile they are
+\textbf{unavailable}: an implementation \MUST{} reject an operation of one of
+these kinds. Each is a schema-fill against the template of
+Chapter~\ref{ch:framework}; adding one is not a fresh design.
+
+\begin{description}
+  \item[Create score / canvas / region / staff / staff instance / voice]
+    Structural mint operations. Discipline: set-union creation
+    (Section~\ref{sec:k0:create-cross-cutting}); undo tombstones the mint;
+    re-anchoring is not applicable.
+  \item[ModifyEvent]
+    Field overwrite on an event's non-identity fields (articulations, dynamics,
+    stem). Discipline: last-writer-wins with structural-field-collision
+    (Section~\ref{sec:k0:respell-pitch}).
+  \item[Insert / delete / modify identified pitch]
+    Pitch-level mint, tombstone, and field overwrite within an event. Disciplines
+    as for the event-level analogues.
+  \item[Set metadata (title / composer / lyricist / copyright)]
+    Field overwrite on score metadata. Discipline: LWW advisory
+    (Section~\ref{sec:k0:set-user-system-break}).
+  \item[Set metric grid / time signature / tempo segment]
+    Structural field overwrite on a region's metric model. Discipline:
+    last-writer-wins, with a structural-field-collision on concurrent differing
+    grids.
+  \item[Delete / update tie / slur / beam / spanner]
+    Cross-cutting tombstone and field overwrite. Disciplines: delete-wins with
+    re-anchoring (Section~\ref{sec:k0:delete-event}) and field overwrite.
+  \item[Set layout / system-break advisory]
+    The page/layout advisory companion to
+    Section~\ref{sec:k0:set-user-system-break}.
+\end{description}
+
+\begin{nongoal}
+The full $60$--$80$-primitive catalogue is not a Phase-2 deliverable. The
+framework (Chapter~\ref{ch:framework}) and the K0 representative set
+(Chapter~\ref{ch:k0}) are sufficient to exercise every reduction discipline; the
+remaining primitives are Phase-3 schema-fill.
+\end{nongoal}
+
+\end{document}

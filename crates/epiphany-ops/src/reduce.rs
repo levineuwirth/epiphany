@@ -31,15 +31,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
-    derive_promoted_voice_id, AcousticPitch, AcousticRealization, AleatoricAnchoringDiscipline,
-    AleatoricTimeModel, AnchorOffset, Beam, CmnNominal, Event, EventDuration, EventId,
-    EventOrderingDAG, EventPosition, IdentifiedPitch, MetricTimeModel, MusicalDuration,
-    MusicalPosition, OperationId, Pitch, PitchId, PitchSpaceId, PitchSpacePosition, PitchedEvent,
-    ProportionalTimeModel, RegionEdge, RegionId, RegionTimeModel, Rest, ScalePosition, Score, Slur,
-    StemConfiguration, Tie, TieClass, TimeAnchor, TransactionId, TuningReference, TypedObjectId,
-    Voice, VoiceId, VoiceOrigin, WallClockDuration,
+    derive_promoted_voice_id, AnchorOffset, CanonicalValue, Event, EventDuration, EventId,
+    EventPosition, MusicalDuration, MusicalPosition, OperationId, PitchId, PitchSpelling,
+    RegionEdge, RegionId, RegionTimeModel, Score, TimeAnchor, TransactionId, TypedObjectId, Voice,
+    VoiceId, VoiceOrigin,
 };
-use epiphany_determinism::{CanonicalEncode, ContentHash};
+use epiphany_determinism::CanonicalEncode;
 
 use crate::anomaly::{detect_replica_anomalies, IntegrityAnomaly, IntegrityAnomalyKind};
 use crate::conflict::{
@@ -49,12 +46,12 @@ use crate::effect::{
     NoOpReason, OperationEffect, PreconditionFailureReason, ReanchorReason, RepairKind,
     RepairRecord, TupletCompensationKind,
 };
-use crate::encode::{push_canon, push_len, push_u8_bool};
+use crate::encode::{push_canon, push_len, push_lp_bytes, push_u8_bool};
 use crate::envelope::OperationEnvelope;
 use crate::opset::OperationSet;
 use crate::payload::{
-    CreateCrossCuttingOp, DeleteEventOp, InsertEventOp, OperationKind, OperationPayload,
-    RespellPitchOp, TupletCompensation,
+    CreateCrossCuttingOp, CrossCuttingValue, DeleteEventOp, InsertEventOp, OperationKind,
+    OperationPayload, RespellPitchOp, TupletCompensation,
 };
 use crate::undo::{UndoPolicy, UndoTransactionPayload};
 
@@ -204,7 +201,7 @@ pub struct MaterializedState {
     /// Object existence (live/tombstoned), keyed by `TypedObjectId`.
     pub objects: BTreeMap<TypedObjectId, ObjectState>,
     /// Current resolved spelling per pitch (the `RespellPitch` field).
-    pub spellings: BTreeMap<PitchId, ContentHash>,
+    pub spellings: BTreeMap<PitchId, PitchSpelling>,
     /// User system-break preferences (LWW advisory), keyed by region+anchor.
     pub breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
     /// Operations held pending, ordered by `OperationId`.
@@ -252,11 +249,12 @@ impl MaterializedState {
             push_canon(&mut out, id);
             state.encode_canonical(&mut out);
         }
-        // Spellings (PitchId order).
+        // Spellings (PitchId order). The value is the full PitchSpelling (v1),
+        // encoded behind a u32 length prefix via its canonical value bytes.
         push_len(&mut out, self.spellings.len());
-        for (pitch, hash) in &self.spellings {
+        for (pitch, spelling) in &self.spellings {
             push_canon(&mut out, pitch);
-            push_canon(&mut out, hash);
+            push_lp_bytes(&mut out, &spelling.canonical_bytes());
         }
         // Breaks (region+anchor order).
         push_len(&mut out, self.breaks.len());
@@ -309,7 +307,7 @@ struct Reducer<'a> {
     op_set: &'a OperationSet,
     // Canonical results.
     objects: BTreeMap<TypedObjectId, ObjectState>,
-    spellings: BTreeMap<PitchId, ContentHash>,
+    spellings: BTreeMap<PitchId, PitchSpelling>,
     breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
     conflicts: ConflictRegistry,
     effects: Vec<(OperationId, OperationEffect)>,
@@ -333,7 +331,7 @@ struct Reducer<'a> {
 /// A snapshot of the working state, for atomic transaction rollback.
 struct WorkingSnapshot {
     objects: BTreeMap<TypedObjectId, ObjectState>,
-    spellings: BTreeMap<PitchId, ContentHash>,
+    spellings: BTreeMap<PitchId, PitchSpelling>,
     breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
     conflicts: ConflictRegistry,
     minted_by: BTreeMap<TypedObjectId, OperationId>,
@@ -363,7 +361,12 @@ fn intervals_overlap(
 }
 
 fn insert_intervals_overlap(a: &InsertEventOp, b: &InsertEventOp) -> bool {
-    intervals_overlap(&a.position, &a.duration, &b.position, &b.duration)
+    intervals_overlap(
+        &a.musical_position(),
+        &a.musical_duration(),
+        &b.musical_position(),
+        &b.musical_duration(),
+    )
 }
 
 fn graph_voice_location(score: &Score, voice: VoiceId) -> Option<(usize, usize, usize)> {
@@ -381,56 +384,14 @@ fn graph_voice_location(score: &Score, voice: VoiceId) -> Option<(usize, usize, 
     None
 }
 
-fn placeholder_pitch(id: PitchId) -> IdentifiedPitch {
-    IdentifiedPitch {
-        id,
-        pitch: Pitch {
-            scale_position: ScalePosition {
-                space: PitchSpaceId::new("cmn-12"),
-                position: PitchSpacePosition::Cmn {
-                    nominal: CmnNominal::C,
-                    alteration: 0,
-                    octave: 4,
-                },
-            },
-            acoustic: AcousticPitch {
-                tuning: TuningReference::Inherit,
-                realization: AcousticRealization::Implicit,
-            },
-        },
-    }
-}
-
-/// Builds the graph value represented by the prototype's identifier-only
-/// InsertEvent payload. Rich event payloads remain gated on the Operation
-/// Catalog encoding; until then, pitched inserts use deterministic C4 values
-/// and pitchless inserts use a visible rest.
+/// The graph value inserted by a value-typed InsertEvent: the carried [`Event`]
+/// itself, with its voice rebound to the (possibly system-promoted) target
+/// voice. The Operation Catalog (v1) carries the real event, so this is no
+/// longer a placeholder reconstruction.
 fn graph_event_from_insert(op: &InsertEventOp, target_voice: VoiceId) -> Event {
-    let position = EventPosition::Musical(op.position.clone());
-    let duration = EventDuration::Musical(op.duration.clone());
-    if op.pitches.is_empty() {
-        Event::Rest(Rest {
-            id: op.event,
-            voice: target_voice,
-            position,
-            duration,
-            vertical_position: None,
-            visible: true,
-        })
-    } else {
-        Event::Pitched(PitchedEvent {
-            id: op.event,
-            voice: target_voice,
-            position,
-            duration,
-            pitches: op.pitches.iter().copied().map(placeholder_pitch).collect(),
-            articulations: Vec::new(),
-            dynamic: None,
-            ornaments: Vec::new(),
-            stem: StemConfiguration,
-            grace: None,
-        })
-    }
+    let mut event = op.event.clone();
+    event.set_voice(target_voice);
+    event
 }
 
 impl<'a> Reducer<'a> {
@@ -742,7 +703,7 @@ impl<'a> Reducer<'a> {
                 if self.graph_insert_precondition(op).is_err() {
                     continue;
                 }
-                buckets.entry(op.voice).or_default().push(env);
+                buckets.entry(op.voice()).or_default().push(env);
             }
         }
         for (_, mut bucket) in buckets {
@@ -769,7 +730,7 @@ impl<'a> Reducer<'a> {
                 });
                 if let Some(winner) = collision {
                     let promoted =
-                        derive_promoted_voice_id(op.staff_instance, op.voice, winner.id, env.id);
+                        derive_promoted_voice_id(op.staff_instance, op.voice(), winner.id, env.id);
                     self.promotion.insert(env.id, (promoted, winner.id));
                 } else {
                     original_voice.push(env);
@@ -785,8 +746,8 @@ impl<'a> Reducer<'a> {
         let Some(score) = self.graph.as_ref() else {
             return Ok((0, 0, 0));
         };
-        let location =
-            graph_voice_location(score, op.voice).ok_or(PreconditionFailureReason::VoiceMissing)?;
+        let location = graph_voice_location(score, op.voice())
+            .ok_or(PreconditionFailureReason::VoiceMissing)?;
         let (region_index, instance_index, _) = location;
         let region = &score.canvas.regions[region_index];
         let instance = &region.staff_instances()[instance_index];
@@ -796,9 +757,10 @@ impl<'a> Reducer<'a> {
         if !matches!(region.time_model, epiphany_core::RegionTimeModel::Metric(_)) {
             return Err(PreconditionFailureReason::WrongRegionTimeModel);
         }
-        if score.events.contains(op.event)
-            || score.tombstoned_events.contains(&op.event)
-            || op.pitches.iter().any(|pitch| {
+        let event_id = op.event_id();
+        if score.events.contains(event_id)
+            || score.tombstoned_events.contains(&event_id)
+            || op.pitch_ids().iter().any(|pitch| {
                 self.objects.contains_key(&TypedObjectId::Pitch(*pitch))
                     || score.tombstoned_pitches.contains(pitch)
             })
@@ -835,13 +797,13 @@ impl<'a> Reducer<'a> {
                 .expect("the precondition found this instance");
             instance.voices.push(Voice {
                 id: promoted,
-                events: vec![op.event],
+                events: vec![op.event_id()],
                 default_stem_direction: None,
                 is_primary: false,
                 origin: VoiceOrigin::SystemPromoted {
                     winning_operation: winner,
                     losing_operation: env.id,
-                    original_voice: op.voice,
+                    original_voice: op.voice(),
                 },
             });
         } else {
@@ -849,7 +811,7 @@ impl<'a> Reducer<'a> {
                 .voices[voice_index]
                 .events
                 .clone();
-            ordered.push(op.event);
+            ordered.push(op.event_id());
             ordered.sort_by(|a, b| {
                 let a_position = score.events.get(*a).map(Event::position);
                 let b_position = score.events.get(*b).map(Event::position);
@@ -894,10 +856,10 @@ impl<'a> Reducer<'a> {
                 Err(PreconditionFailureReason::TupletCompensationInvalid)
             }
             TupletCompensation::NotInTuplet => Ok(()),
-            TupletCompensation::ReplaceWithRest { new_rest, duration } => {
-                if score.events.contains(*new_rest)
-                    || score.tombstoned_events.contains(new_rest)
-                    || event.duration() != &EventDuration::Musical(duration.clone())
+            TupletCompensation::ReplaceWithRest { rest } => {
+                if score.events.contains(rest.id)
+                    || score.tombstoned_events.contains(&rest.id)
+                    || event.duration() != &rest.duration
                 {
                     Err(PreconditionFailureReason::TupletCompensationInvalid)
                 } else {
@@ -957,25 +919,23 @@ impl<'a> Reducer<'a> {
             .extend(deleted_pitches.iter().copied());
 
         match &op.tuplet_compensation {
-            TupletCompensation::ReplaceWithRest { new_rest, duration } => {
+            TupletCompensation::ReplaceWithRest { rest } => {
+                let new_rest = rest.id;
                 for tuplet in &mut score.cross_cutting.tuplets {
                     for member in &mut tuplet.members {
                         if *member == op.event {
-                            *member = *new_rest;
+                            *member = new_rest;
                         }
                     }
                 }
-                let replacement = Event::Rest(Rest {
-                    id: *new_rest,
-                    voice: voice_id,
-                    position: event.position().clone(),
-                    duration: EventDuration::Musical(duration.clone()),
-                    vertical_position: None,
-                    visible: true,
-                });
+                // The value-typed payload (v1) carries the replacement Rest; it
+                // is placed at the deleted event's voice and position.
+                let mut replacement = rest.clone();
+                replacement.voice = voice_id;
+                replacement.position = event.position().clone();
                 score
                     .events
-                    .insert(replacement)
+                    .insert(Event::Rest(replacement))
                     .expect("replacement-rest preconditions were checked");
                 if let Some((region_index, instance_index, voice_index)) =
                     graph_voice_location(score, voice_id)
@@ -985,11 +945,11 @@ impl<'a> Reducer<'a> {
                         .staff_instances_mut()
                         .expect("an event voice belongs to staff-based content")[instance_index]
                         .voices[voice_index];
-                    if !voice.events.contains(new_rest) {
+                    if !voice.events.contains(&new_rest) {
                         let index = removed_event_index
                             .unwrap_or(voice.events.len())
                             .min(voice.events.len());
-                        voice.events.insert(index, *new_rest);
+                        voice.events.insert(index, new_rest);
                     }
                 }
             }
@@ -1096,47 +1056,21 @@ impl<'a> Reducer<'a> {
         let Some(score) = self.graph.as_mut() else {
             return Ok(());
         };
-        let event_endpoints: Option<Vec<EventId>> = op
-            .structure
-            .endpoints
-            .iter()
-            .map(|endpoint| match endpoint {
-                TypedObjectId::Event(event) => Some(*event),
-                _ => None,
-            })
-            .collect();
-
-        match (op.structure.id, event_endpoints.as_deref()) {
-            (TypedObjectId::Slur(id), Some([start, end])) => {
-                score.cross_cutting.slurs.push(Slur {
-                    id,
-                    start_event: *start,
-                    end_event: *end,
-                });
+        // The value-typed payload (v1) carries the real structure with its rich
+        // fields, so materialization clones it directly rather than rebuilding a
+        // default from the reference-level projection.
+        match &op.structure {
+            CrossCuttingValue::Slur(slur) => score.cross_cutting.slurs.push(slur.clone()),
+            CrossCuttingValue::Beam(beam) => {
+                if beam.events.len() < 2 {
+                    return Err(PreconditionFailureReason::TargetMissing);
+                }
+                score.cross_cutting.beams.push(beam.clone());
             }
-            (TypedObjectId::Beam(id), Some(events)) if events.len() >= 2 => {
-                score.cross_cutting.beams.push(Beam {
-                    id,
-                    events: events.to_vec(),
-                    level: 1,
-                });
+            CrossCuttingValue::Tie(tie) => score.cross_cutting.ties.push(tie.clone()),
+            CrossCuttingValue::Spanner(spanner) => {
+                score.cross_cutting.spanners.push(spanner.clone())
             }
-            (TypedObjectId::Tie(id), Some([start, end])) => {
-                score.cross_cutting.ties.push(Tie {
-                    id,
-                    start_event: *start,
-                    end_event: *end,
-                    pitch_pairing: None,
-                    class: TieClass::LaissezVibrer,
-                });
-            }
-            (TypedObjectId::Slur(_) | TypedObjectId::Beam(_) | TypedObjectId::Tie(_), _) => {
-                return Err(PreconditionFailureReason::TargetMissing);
-            }
-            // The reference-level prototype payload does not contain the rich
-            // fields needed to instantiate other cross-cutting variants. Their
-            // canonical identity/reference projection remains in `state`.
-            _ => {}
         }
         Ok(())
     }
@@ -1199,11 +1133,9 @@ impl<'a> Reducer<'a> {
                     }
                 }
             };
-            let anchor = TimeAnchor::Region {
-                id: op.region,
-                edge: RegionEdge::Start,
-                offset: AnchorOffset::Musical(MusicalDuration(op.anchor.0.clone())),
-            };
+            // The value-typed payload (v1) carries the full TimeAnchor, so the
+            // graph break is the anchor itself rather than a reconstructed one.
+            let anchor = op.anchor.clone();
             if op.present {
                 if !breaks.contains(&anchor) {
                     breaks.push(anchor);
@@ -1213,20 +1145,26 @@ impl<'a> Reducer<'a> {
             }
         }
 
+        // The LWW bucketing key is the anchor's resolved musical position.
         self.breaks
-            .insert((op.region, op.anchor.clone()), op.present);
+            .insert((op.region, op.resolved_position()), op.present);
         OperationEffect::Applied
     }
 
     fn insert_event(&mut self, env: &OperationEnvelope, op: &InsertEventOp) -> OperationEffect {
-        if !op.duration.is_positive() {
+        // The reduction keys are read from the carried event value (v1).
+        let event_id = op.event_id();
+        let orig_voice = op.voice();
+        let op_position = op.musical_position();
+        let op_duration = op.musical_duration();
+        if !op_duration.is_positive() {
             return OperationEffect::NoOp {
                 reason: NoOpReason::PreconditionFailedUnderReduction {
                     reason: PreconditionFailureReason::EventDurationInvalid,
                 },
             };
         }
-        let ev_obj = TypedObjectId::Event(op.event);
+        let ev_obj = TypedObjectId::Event(event_id);
         match self.objects.get(&ev_obj) {
             Some(ObjectState::Live) => {
                 return OperationEffect::NoOp {
@@ -1248,7 +1186,7 @@ impl<'a> Reducer<'a> {
                 }
             }
         };
-        let voice_obj = TypedObjectId::Voice(op.voice);
+        let voice_obj = TypedObjectId::Voice(orig_voice);
         match self.objects.get(&voice_obj) {
             Some(ObjectState::Tombstoned { .. }) => {
                 return OperationEffect::NoOp {
@@ -1266,13 +1204,13 @@ impl<'a> Reducer<'a> {
         }
 
         let promotion = self.promotion.get(&env.id).copied();
-        let target_voice = promotion.map(|(voice, _)| voice).unwrap_or(op.voice);
+        let target_voice = promotion.map(|(voice, _)| voice).unwrap_or(orig_voice);
         if self
             .voice_occupancy
             .get(&target_voice)
             .is_some_and(|events| {
                 events.iter().any(|(position, duration, _)| {
-                    intervals_overlap(position, duration, &op.position, &op.duration)
+                    intervals_overlap(position, duration, &op_position, &op_duration)
                 })
             })
         {
@@ -1299,7 +1237,7 @@ impl<'a> Reducer<'a> {
             self.note_minted(env, pv);
             repairs.push(RepairRecord {
                 kind: RepairKind::VoicePromoted {
-                    from: op.voice,
+                    from: orig_voice,
                     to: promoted,
                 },
                 target: pv,
@@ -1310,18 +1248,18 @@ impl<'a> Reducer<'a> {
         self.minted_by.insert(ev_obj, env.id);
         self.note_minted(env, ev_obj);
         let mut pitches = Vec::new();
-        for &p in &op.pitches {
+        for p in op.pitch_ids() {
             let p_obj = TypedObjectId::Pitch(p);
             self.objects.insert(p_obj, ObjectState::Live);
             self.minted_by.insert(p_obj, env.id);
             self.note_minted(env, p_obj);
             pitches.push(p);
         }
-        self.event_pitches.insert(op.event, pitches);
+        self.event_pitches.insert(event_id, pitches);
         self.voice_occupancy.entry(target_voice).or_default().push((
-            op.position.clone(),
-            op.duration.clone(),
-            op.event,
+            op_position,
+            op_duration,
+            event_id,
         ));
 
         if repairs.is_empty() {
@@ -1395,17 +1333,24 @@ impl<'a> Reducer<'a> {
         // Tuplet compensation.
         match &op.tuplet_compensation {
             TupletCompensation::NotInTuplet => {}
-            TupletCompensation::ReplaceWithRest { new_rest, duration } => {
-                let rest_obj = TypedObjectId::Event(*new_rest);
+            TupletCompensation::ReplaceWithRest { rest } => {
+                let new_rest = rest.id;
+                let rest_duration = match &rest.duration {
+                    EventDuration::Musical(d) => d.clone(),
+                    EventDuration::WallClock(_) | EventDuration::Indeterminate(_) => {
+                        MusicalDuration::zero()
+                    }
+                };
+                let rest_obj = TypedObjectId::Event(new_rest);
                 self.objects.insert(rest_obj, ObjectState::Live);
                 self.minted_by.insert(rest_obj, env.id);
                 self.note_minted(env, rest_obj);
-                self.event_pitches.insert(*new_rest, Vec::new());
+                self.event_pitches.insert(new_rest, Vec::new());
                 if let Some((voice, position, _)) = &deleted_placement {
                     self.voice_occupancy.entry(*voice).or_default().push((
                         position.clone(),
-                        duration.clone(),
-                        *new_rest,
+                        rest_duration,
+                        new_rest,
                     ));
                 }
                 repairs.push(RepairRecord {
@@ -1476,15 +1421,15 @@ impl<'a> Reducer<'a> {
 
         match self.last_respell.get(&op.pitch).copied() {
             None => {
-                self.spellings.insert(op.pitch, op.spelling);
+                self.spellings.insert(op.pitch, op.spelling.clone());
                 self.last_respell.insert(op.pitch, env.id);
                 OperationEffect::Applied
             }
             Some(prev_op) => {
-                let prev_spelling = self.spellings.get(&op.pitch).copied();
+                let prev_spelling = self.spellings.get(&op.pitch).cloned();
                 let concurrent = self.concurrent(env.id, prev_op);
                 if concurrent {
-                    if prev_spelling == Some(op.spelling) {
+                    if prev_spelling.as_ref() == Some(&op.spelling) {
                         // Identical concurrent respelling: idempotent.
                         OperationEffect::NoOp {
                             reason: NoOpReason::AlreadyApplied,
@@ -1495,7 +1440,7 @@ impl<'a> Reducer<'a> {
                         // earlier op is recorded as the loser. (Prototype
                         // convention: the winner carries the Conflicted effect;
                         // see DECISIONS.md.)
-                        self.spellings.insert(op.pitch, op.spelling);
+                        self.spellings.insert(op.pitch, op.spelling.clone());
                         self.last_respell.insert(op.pitch, env.id);
                         let conflict = ConflictRecord::new(
                             ConflictKind::StructuralFieldCollision {
@@ -1512,7 +1457,7 @@ impl<'a> Reducer<'a> {
                     }
                 } else {
                     // Causally-ordered re-respell: intentional overwrite.
-                    self.spellings.insert(op.pitch, op.spelling);
+                    self.spellings.insert(op.pitch, op.spelling.clone());
                     self.last_respell.insert(op.pitch, env.id);
                     OperationEffect::Applied
                 }
@@ -1525,7 +1470,8 @@ impl<'a> Reducer<'a> {
         env: &OperationEnvelope,
         op: &CreateCrossCuttingOp,
     ) -> OperationEffect {
-        let sid = op.structure.id;
+        let sid = op.structure.id();
+        let endpoints = op.structure.endpoints();
         match self.objects.get(&sid) {
             Some(ObjectState::Live) => {
                 return OperationEffect::NoOp {
@@ -1540,7 +1486,7 @@ impl<'a> Reducer<'a> {
             None => {}
         }
         // Endpoints must exist (live).
-        for e in &op.structure.endpoints {
+        for e in &endpoints {
             if !matches!(self.objects.get(e), Some(ObjectState::Live)) {
                 return OperationEffect::NoOp {
                     reason: NoOpReason::PreconditionFailedUnderReduction {
@@ -1557,7 +1503,7 @@ impl<'a> Reducer<'a> {
         self.objects.insert(sid, ObjectState::Live);
         self.minted_by.insert(sid, env.id);
         self.note_minted(env, sid);
-        self.structures.insert(sid, op.structure.endpoints.clone());
+        self.structures.insert(sid, endpoints);
         OperationEffect::Applied
     }
 
@@ -1617,16 +1563,16 @@ impl<'a> Reducer<'a> {
                     incompatible_events.insert(*event_id);
                     continue;
                 };
-                let compatible = match op.new_time_model {
-                    crate::payload::RegionTimeModelTag::Metric => matches!(
+                let compatible = match &op.new_time_model {
+                    RegionTimeModel::Metric(_) => matches!(
                         (event.position(), event.duration()),
                         (EventPosition::Musical(_), EventDuration::Musical(_))
                     ),
-                    crate::payload::RegionTimeModelTag::Proportional => matches!(
+                    RegionTimeModel::Proportional(_) => matches!(
                         (event.position(), event.duration()),
                         (EventPosition::WallClock(_), EventDuration::WallClock(_))
                     ),
-                    crate::payload::RegionTimeModelTag::Aleatoric => true,
+                    RegionTimeModel::Aleatoric(_) => true,
                 };
                 if !compatible {
                     incompatible_events.insert(*event_id);
@@ -1641,10 +1587,7 @@ impl<'a> Reducer<'a> {
                         .filter(|event| !mapped.contains(event))
                         .copied(),
                 );
-                if matches!(
-                    op.new_time_model,
-                    crate::payload::RegionTimeModelTag::Proportional
-                ) {
+                if matches!(op.new_time_model, RegionTimeModel::Proportional(_)) {
                     // Reassign carries musical positions in the current
                     // prototype schema, so it cannot satisfy a proportional
                     // region's wall-clock coordinate discipline.
@@ -1693,31 +1636,11 @@ impl<'a> Reducer<'a> {
                     }
                 }
             }
+            // The value-typed payload (v1) carries the real target model, so the
+            // region adopts it directly rather than rebuilding a default from a
+            // discriminator tag.
             let region = &mut score.canvas.regions[region_index];
-            let wallclock_duration = region
-                .time_extent
-                .as_wallclock()
-                .and_then(|(start, end)| end.checked_sub(start))
-                .filter(|duration| *duration > 0)
-                .unwrap_or(1);
-            region.time_model = match op.new_time_model {
-                crate::payload::RegionTimeModelTag::Metric => {
-                    RegionTimeModel::Metric(MetricTimeModel::default())
-                }
-                crate::payload::RegionTimeModelTag::Proportional => {
-                    RegionTimeModel::Proportional(ProportionalTimeModel {
-                        duration: WallClockDuration(wallclock_duration),
-                    })
-                }
-                crate::payload::RegionTimeModelTag::Aleatoric => {
-                    RegionTimeModel::Aleatoric(AleatoricTimeModel {
-                        ordering: EventOrderingDAG::default(),
-                        anchoring: AleatoricAnchoringDiscipline::FreelyMixed,
-                        bounds: BTreeMap::new(),
-                        duration_hint: WallClockDuration(wallclock_duration),
-                    })
-                }
-            };
+            region.time_model = op.new_time_model.clone();
         }
         self.migrated_regions.insert(op.region);
         self.region_migrator.insert(op.region, env.id);
@@ -2307,12 +2230,14 @@ mod tests {
             payload: OperationPayload::Primitive(OperationKind::InsertEvent(InsertEventOp {
                 // Voice and staff instance live in a shared (author-independent)
                 // namespace so two authors can target the same voice.
-                voice: VoiceId::new(ReplicaId(9), voice),
                 staff_instance: StaffInstanceId::new(ReplicaId(9), 0),
-                event: EventId::new(ReplicaId(replica), event),
-                position: pos(pos_units),
-                duration: epiphany_core::MusicalDuration::whole(),
-                pitches: vec![],
+                event: crate::valuegen::insert_event_value(
+                    EventId::new(ReplicaId(replica), event),
+                    VoiceId::new(ReplicaId(9), voice),
+                    pos(pos_units),
+                    epiphany_core::MusicalDuration::whole(),
+                    &[],
+                ),
             })),
         }
     }
@@ -2370,7 +2295,6 @@ mod tests {
         use crate::conflict::{ConflictResolutionState, ResolutionAction};
         use crate::payload::{ResolveConflictPayload, RespellPitchOp};
         use epiphany_core::PitchId;
-        use epiphany_determinism::ContentHash;
 
         let pitch = PitchId::new(ReplicaId(9), 500);
 
@@ -2379,7 +2303,13 @@ mod tests {
         if let OperationPayload::Primitive(OperationKind::InsertEvent(ref mut op)) =
             insert_env.payload
         {
-            op.pitches = vec![pitch];
+            op.event = crate::valuegen::insert_event_value(
+                op.event_id(),
+                op.voice(),
+                op.musical_position(),
+                op.musical_duration(),
+                &[pitch],
+            );
         }
 
         // Two concurrent, differing respellings of `pitch`, both causally after
@@ -2395,7 +2325,7 @@ mod tests {
                 transaction: None,
                 payload: OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
                     pitch,
-                    spelling: ContentHash([byte; 32]),
+                    spelling: crate::valuegen::spelling(byte),
                 })),
             }
         };

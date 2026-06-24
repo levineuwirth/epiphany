@@ -29,9 +29,11 @@ code instead is the failure mode this batch exists to prevent.
 | P12-I1 | `epiphany-layout-ir` / `engrave` / `render-svg` I | The v0 `to_logical`/`to_constrained` pipeline is a **structural placeholder**: each layout object becomes one *arbitrary* glyph (`BRAVURA_METRICS[discriminant % N]`) at `y = 0`, not real notation. Chapter 7 says the *logical* stage has "engraving decisions made"; the spec should clarify which engraving decisions (glyph-by-duration selection, pitch→staff-position, clef/key/meter/barline realization, stems/beams) are core-IR construction versus solver work, so the real-notation engraving has a defined home before it is built next phase. Consequence: the QUICKSTART human visual-acceptance gate ("the SVG visually parses as standard notation") is a **next-phase** gate, *not* met by stub output — this phase's gate is renderer correctness/faithfulness. | G / Pass 12 (Ch 7 engraving boundary) |
 | P12-I2 | `epiphany-render-svg` / `engrave` I | Stable layout-object id derivation (`MUSCLOID`, Pass-11 item 2.6, deferred to I) is still unwired: the frozen `epiphany-determinism` exposes no `MUSCLOID` tag, so provenance is traced via the provisional `stable_id`. Wiring the ratified derivation is Track A work (already noted in `layout-ir/DECISIONS.md`). | G (determinism tag) / Track A |
 | P12-I3 | `epiphany-layout-ir` I | The bundled `BRAVURA_METRICS` are *approximations* that disagree with the genuine Bravura outlines the renderer now extracts from the font (e.g. `timeSig4`: metrics bbox `[40,0,1240,2048]` vs real outline ≈ `[0.08,-1.0,1.8,1.004]` staff spaces). Real spacing needs exact metrics; regenerate the metrics table from the font or reconcile it with the outline source. | G / Pass 12 (glyph metrics) |
+| P12-K1 | `epiphany-ops` K | A v0 `RespellPitch` carried a `ContentHash` *fingerprint* of the spelling, not the `PitchSpelling`. The v0→v1 migration (Operation Catalog, M1) cannot invert a fingerprint, so it recovers the spelling from the score-graph context (an explicit per-pitch spelling attachment whose canonical bytes hash to the fingerprint) and returns `MigrationError::Irreversible` (bundle opens read-only) when the context lacks it. Every other representative payload migrates self-contained; this is the lone exception. Confirm the read-only fallback is the intended disposition vs. requiring a v0 corpus that preserves spelling pre-images. | G / Pass 12 (migration) |
 
 ## Not yet open elsewhere
 
-Agent I (Track A) has contributed P12-I1..I3 above. Track B (K, J) has not yet
-contributed items. When they do, append rows; the batch is already open, so they
-join directly (no new threshold).
+Agent I (Track A) has contributed P12-I1..I3 above. Track B's Agent K has
+contributed P12-K1 (Operation Catalog M1). Agent J (Binary Format companion) has
+not yet contributed; when it does, append rows — the batch is already open, so it
+joins directly (no new threshold).

@@ -84,12 +84,15 @@ mod decode;
 mod effect;
 mod encode;
 mod envelope;
+mod migrate;
 mod opset;
 mod payload;
 mod reduce;
 mod slot;
 mod stamp;
 mod support;
+mod v0;
+pub mod valuegen;
 
 pub mod fuzz;
 
@@ -107,12 +110,13 @@ pub use effect::{
     RepairKind, RepairRecord, TupletCompensationKind,
 };
 pub use envelope::{well_formed, EnvelopeHash, OperationEnvelope, WellFormednessError};
+pub use migrate::{migrate_v0_envelope, project_v1_to_v0, MigrationError};
 pub use opset::OperationSet;
 pub use payload::{
-    ChangeRegionTimeModelOp, CreateCrossCuttingOp, CrossCuttingRef, DeleteEventOp, InsertEventOp,
-    OperationKind, OperationKindTag, OperationPayload, PositionRemapping, RegionTimeModelTag,
-    ResolveConflictPayload, RespellPitchOp, SetUserSystemBreakOp, TransactionCategory,
-    TransactionDescriptor, TupletCompensation,
+    ChangeRegionTimeModelOp, CreateCrossCuttingOp, CrossCuttingValue, DeleteEventOp, InsertEventOp,
+    OperationKind, OperationKindTag, OperationPayload, PositionRemapping, ResolveConflictPayload,
+    RespellPitchOp, SetUserSystemBreakOp, TransactionCategory, TransactionDescriptor,
+    TupletCompensation,
 };
 pub use reduce::{
     canonical_reduction_order, GraphMaterialization, MaterializedState, ObjectState, PendingReason,
@@ -127,5 +131,6 @@ pub use support::{
 };
 
 pub use undo::{UndoPolicy, UndoTransactionPayload};
+pub use v0::V0OperationEnvelope;
 
 mod undo;

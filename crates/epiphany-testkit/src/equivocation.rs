@@ -20,9 +20,8 @@ use epiphany_core::{
     EventId, MusicalDuration, MusicalPosition, OperationId, PitchId, RationalTime, ReplicaId,
     StaffInstanceId, VoiceId, WallClockTime,
 };
-use epiphany_determinism::ContentHash;
 use epiphany_ops::{
-    AuthorId, CausalContext, HybridLogicalClock, InsertEventOp, MaterializedState,
+    valuegen, AuthorId, CausalContext, HybridLogicalClock, InsertEventOp, MaterializedState,
     OperationEnvelope, OperationKind, OperationPayload, OperationSet, OperationSlot,
     OperationStamp, RespellPitchOp,
 };
@@ -150,7 +149,7 @@ fn respell_env(id: OperationId, phys: i64, pitch: u64, spelling: u8) -> Operatio
         transaction: None,
         payload: OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
             pitch: PitchId::new(OBJ_REPLICA, pitch),
-            spelling: ContentHash([spelling; 32]),
+            spelling: valuegen::spelling(spelling),
         })),
     }
 }
@@ -165,12 +164,14 @@ fn insert_pitch_env(id: OperationId, phys: i64, event: u64, pitch: u64) -> Opera
         causal_context: CausalContext::new(),
         transaction: None,
         payload: OperationPayload::Primitive(OperationKind::InsertEvent(InsertEventOp {
-            voice: VoiceId::new(OBJ_REPLICA, 0),
             staff_instance: StaffInstanceId::new(OBJ_REPLICA, 0),
-            event: EventId::new(OBJ_REPLICA, event),
-            position: MusicalPosition(RationalTime::from_int(0)),
-            duration: MusicalDuration::whole(),
-            pitches: vec![PitchId::new(OBJ_REPLICA, pitch)],
+            event: valuegen::insert_event_value(
+                EventId::new(OBJ_REPLICA, event),
+                VoiceId::new(OBJ_REPLICA, 0),
+                MusicalPosition(RationalTime::from_int(0)),
+                MusicalDuration::whole(),
+                &[PitchId::new(OBJ_REPLICA, pitch)],
+            ),
         })),
     }
 }

@@ -211,7 +211,6 @@ mod tests {
     use crate::support::AuthorId;
     use crate::OperationPayload;
     use epiphany_core::{PitchId, ReplicaId, WallClockTime};
-    use epiphany_determinism::ContentHash;
 
     fn env_with(id: OperationId, spelling: u8) -> OperationEnvelope {
         OperationEnvelope {
@@ -222,7 +221,7 @@ mod tests {
             transaction: None,
             payload: OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
                 pitch: PitchId::new(ReplicaId(1), 1),
-                spelling: ContentHash([spelling; 32]),
+                spelling: crate::valuegen::spelling(spelling),
             })),
         }
     }

@@ -9,8 +9,8 @@
 //! module (Agent E has landed). See the crate docs for the harness policy.
 
 use epiphany_testkit::{
-    bundle_harness, convergence, equivocation, fixtures, generators, layout_stub, negative,
-    roundtrip, Rng,
+    bundle_harness, convergence, equivocation, fixtures, generators, layout_stub, migration,
+    negative, roundtrip, Rng,
 };
 
 /// Criterion 1 — **Convergence (real Score).** Overlapping edits to a real
@@ -226,5 +226,20 @@ fn criterion_6_layout_round_trip() {
 fn manifest_selection_harness() {
     for seed in 0..16u64 {
         bundle_harness::run_manifest_selection(seed);
+    }
+}
+
+/// **Agent K — Operation Catalog v0→v1 migration.** The shift from
+/// identifier-only payloads to value-typed payloads ships a one-time migration;
+/// this is its merge gate (QUICKSTART Agent K acceptance: deterministic and
+/// equivalence-preserving migration). For each random corpus, the v1 envelopes
+/// project to their v0 wire shape and migrate back, reducing to byte-identical
+/// canonical state — and the gate's non-vacuity guard proves a wrong migration
+/// would be caught. See [`migration`].
+#[test]
+fn agent_k_migration_equivalence_gate() {
+    migration::assert_migration_gate_is_not_vacuous();
+    for seed in 0..32u64 {
+        migration::run_migration_equivalence(48, seed.wrapping_mul(0x9E37_79B9).wrapping_add(5));
     }
 }

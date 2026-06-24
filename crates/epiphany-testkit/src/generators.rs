@@ -28,20 +28,21 @@ use epiphany_determinism::{
     CanonicalEncode, CanonicalF64, ChunkId, ContentHash, DomainTag, QuantizedCoord, Tolerance,
     ToleranceClass, ToleranceGovernance,
 };
+use epiphany_ops::valuegen;
 use epiphany_ops::{
     AnomalousReplicaSegment, AuthorId, CausalContext, ChangeRegionTimeModelOp, ConflictId,
     ConflictKind, ConflictKindRegistryId, ConflictRecord, ConflictRegistry,
-    ConflictResolutionState, CreateCrossCuttingOp, CrossCuttingRef, DeleteEventOp,
+    ConflictResolutionState, CreateCrossCuttingOp, CrossCuttingValue, DeleteEventOp,
     ExtensionPreconditionId, FieldPath, HybridLogicalClock, InsertEventOp, IntegrityAnomaly,
     IntegrityAnomalyKind, IntegrityAnomalyRegistryId, MaterializedState, NoOpReason, ObjectKind,
     ObjectState, OperationEffect, OperationEnvelope, OperationKind, OperationKindRegistryId,
     OperationPayload, OperationSet, OperationStamp, PendingReason, PositionRemapping,
     PreconditionFailureReason, PreconditionFailureRegistryId, ReanchorReason,
-    ReanchorReasonRegistryId, ReanchorResult, RegionTimeModelTag, RepairKind, RepairKindRegistryId,
-    RepairRecord, ReplicaAnomalyReason, ReplicaAnomalyRegistryId, ResolutionAction,
-    ResolutionRegistryId, ResolveConflictPayload, RespellPitchOp, SerializedCanonicalInputs,
-    SetUserSystemBreakOp, TransactionCategory, TransactionDescriptor, TupletCompensation,
-    TupletCompensationKind, UndoPolicy, UndoTransactionPayload,
+    ReanchorReasonRegistryId, ReanchorResult, RepairKind, RepairKindRegistryId, RepairRecord,
+    ReplicaAnomalyReason, ReplicaAnomalyRegistryId, ResolutionAction, ResolutionRegistryId,
+    ResolveConflictPayload, RespellPitchOp, SerializedCanonicalInputs, SetUserSystemBreakOp,
+    TransactionCategory, TransactionDescriptor, TupletCompensation, TupletCompensationKind,
+    UndoPolicy, UndoTransactionPayload,
 };
 
 use crate::rng::Rng;
@@ -634,47 +635,53 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
         _ => {}
     }
     let kind = match rng.below(8) {
-        0 => OperationKind::InsertEvent(InsertEventOp {
-            voice: VoiceId::new(OBJ_REPLICA, rng.below(4)),
-            staff_instance: StaffInstanceId::new(OBJ_REPLICA, rng.below(2)),
-            event: obj_event(rng.below(events)),
-            position: MusicalPosition(RationalTime::from_int(rng.below(events) as i32)),
-            duration: MusicalDuration::whole(),
-            pitches: if rng.boolean() {
+        0 => {
+            let pitches = if rng.boolean() {
                 vec![obj_pitch(rng.below(pitches))]
             } else {
                 vec![]
-            },
-        }),
+            };
+            OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: StaffInstanceId::new(OBJ_REPLICA, rng.below(2)),
+                event: valuegen::insert_event_value(
+                    obj_event(rng.below(events)),
+                    VoiceId::new(OBJ_REPLICA, rng.below(4)),
+                    MusicalPosition(RationalTime::from_int(rng.below(events) as i32)),
+                    MusicalDuration::whole(),
+                    &pitches,
+                ),
+            })
+        }
         1 => OperationKind::DeleteEvent(DeleteEventOp {
             event: obj_event(rng.below(events)),
             tuplet_compensation: TupletCompensation::NotInTuplet,
         }),
         2 => OperationKind::RespellPitch(RespellPitchOp {
             pitch: obj_pitch(rng.below(pitches)),
-            spelling: ContentHash([(rng.below(4) as u8) + 1; 32]),
+            spelling: valuegen::spelling(rng.below(4) as u8 + 1),
         }),
         3 => OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
-            structure: CrossCuttingRef {
-                id: TypedObjectId::Slur(SlurId::new(OBJ_REPLICA, rng.below(events))),
-                endpoints: vec![
-                    TypedObjectId::Event(obj_event(rng.below(events))),
-                    TypedObjectId::Event(obj_event(rng.below(events))),
-                ],
-            },
+            structure: CrossCuttingValue::Slur(valuegen::slur(
+                SlurId::new(OBJ_REPLICA, rng.below(events)),
+                obj_event(rng.below(events)),
+                obj_event(rng.below(events)),
+            )),
         }),
         4 => OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
             region: RegionId::new(OBJ_REPLICA, 0),
-            anchor: MusicalPosition(RationalTime::from_int(rng.below(4) as i32)),
+            anchor: valuegen::region_start_anchor(
+                RegionId::new(OBJ_REPLICA, 0),
+                MusicalPosition(RationalTime::from_int(rng.below(4) as i32)),
+            ),
             present: rng.boolean(),
         }),
         5 => OperationKind::ChangeRegionTimeModel(ChangeRegionTimeModelOp {
             region: RegionId::new(OBJ_REPLICA, rng.below(2)),
-            new_time_model: *rng.choose(&[
-                RegionTimeModelTag::Metric,
-                RegionTimeModelTag::Proportional,
-                RegionTimeModelTag::Aleatoric,
-            ]),
+            new_time_model: match rng.below(3) {
+                0 => valuegen::metric_model(),
+                1 => valuegen::proportional_model(),
+                _ => valuegen::aleatoric_model(),
+            },
             declared_incompatible: Vec::new(),
             remapping: PositionRemapping::PreserveTime,
         }),
@@ -853,12 +860,14 @@ pub const TWO_STAFF_EVENTS_PER_STAFF: u64 = TWO_STAFF_BARS * EVENTS_PER_BAR;
 /// whole-notes, i.e. two per 4/4 bar).
 fn insert_at(instance: u64, voice: u64, event: u64, pitch: u64, index: u64) -> OperationPayload {
     OperationPayload::Primitive(OperationKind::InsertEvent(InsertEventOp {
-        voice: VoiceId::new(OBJ_REPLICA, voice),
         staff_instance: StaffInstanceId::new(OBJ_REPLICA, instance),
-        event: obj_event(event),
-        position: MusicalPosition(RationalTime::new(index as i64, EVENTS_PER_BAR as i64).unwrap()),
-        duration: MusicalDuration(RationalTime::new(1, EVENTS_PER_BAR as i64).unwrap()),
-        pitches: vec![obj_pitch(pitch)],
+        event: valuegen::insert_event_value(
+            obj_event(event),
+            VoiceId::new(OBJ_REPLICA, voice),
+            MusicalPosition(RationalTime::new(index as i64, EVENTS_PER_BAR as i64).unwrap()),
+            MusicalDuration(RationalTime::new(1, EVENTS_PER_BAR as i64).unwrap()),
+            &[obj_pitch(pitch)],
+        ),
     }))
 }
 
@@ -892,7 +901,7 @@ pub fn two_staff_edit_session(rng: &mut Rng) -> Vec<OperationEnvelope> {
         } else {
             OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
                 pitch: obj_pitch(rng.below(total)),
-                spelling: ContentHash([(rng.below(4) as u8) + 1; 32]),
+                spelling: valuegen::spelling(rng.below(4) as u8 + 1),
             }))
         };
         session.author(rng, r, payload);
@@ -953,19 +962,21 @@ fn insert_into(
     index: u64,
 ) -> OperationPayload {
     OperationPayload::Primitive(OperationKind::InsertEvent(InsertEventOp {
-        voice,
         staff_instance,
-        event: obj_event(event),
         // position = GRAPH_SESSION_OFFSET + index/2 (two half-notes per 4/4 bar).
-        position: MusicalPosition(
-            RationalTime::new(
-                GRAPH_SESSION_OFFSET * EVENTS_PER_BAR as i64 + index as i64,
-                2,
-            )
-            .unwrap(),
+        event: valuegen::insert_event_value(
+            obj_event(event),
+            voice,
+            MusicalPosition(
+                RationalTime::new(
+                    GRAPH_SESSION_OFFSET * EVENTS_PER_BAR as i64 + index as i64,
+                    2,
+                )
+                .unwrap(),
+            ),
+            MusicalDuration(RationalTime::new(1, 2).unwrap()),
+            &[obj_pitch(pitch)],
         ),
-        duration: MusicalDuration(RationalTime::new(1, 2).unwrap()),
-        pitches: vec![obj_pitch(pitch)],
     }))
 }
 
@@ -1022,7 +1033,7 @@ pub fn graph_edit_session(
         } else {
             OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
                 pitch: obj_pitch(rng.below(total)),
-                spelling: ContentHash([(rng.below(4) as u8) + 1; 32]),
+                spelling: valuegen::spelling(rng.below(4) as u8 + 1),
             }))
         };
         session.author(rng, r, payload);
@@ -1047,14 +1058,14 @@ pub fn content_mutation_pair() -> (Vec<OperationEnvelope>, Vec<OperationEnvelope
         0,
         OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
             pitch: obj_pitch(0),
-            spelling: ContentHash([0xAA; 32]),
+            spelling: valuegen::spelling(0xAA),
         })),
     );
     let base = session.out;
 
     let mut mutated = base.clone();
     if let OperationPayload::Primitive(OperationKind::RespellPitch(op)) = &mut mutated[1].payload {
-        op.spelling = ContentHash([0xBB; 32]);
+        op.spelling = valuegen::spelling(0xBB);
     } else {
         unreachable!("the second op is the respelling");
     }
@@ -1109,12 +1120,12 @@ pub fn equivocating_twin(env: &OperationEnvelope) -> OperationEnvelope {
     let mut twin = env.clone();
     twin.payload = OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
         pitch: obj_pitch(0),
-        spelling: ContentHash([0xEE; 32]),
+        spelling: valuegen::spelling(0xEE),
     }));
     if twin.envelope_hash() == env.envelope_hash() {
         twin.payload = OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
             pitch: obj_pitch(1),
-            spelling: ContentHash([0x11; 32]),
+            spelling: valuegen::spelling(0x11),
         }));
     }
     twin
@@ -1460,7 +1471,7 @@ mod tests {
                 .insert(typed_object_id(&mut rng), object_state(&mut rng));
             state
                 .spellings
-                .insert(pitch_id(&mut rng), content_hash(&mut rng));
+                .insert(pitch_id(&mut rng), valuegen::spelling(rng.below(7) as u8));
             state.breaks.insert(
                 (region_id(&mut rng), musical_position(&mut rng)),
                 rng.boolean(),

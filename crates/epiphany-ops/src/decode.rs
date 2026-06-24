@@ -6,8 +6,10 @@
 
 use std::collections::BTreeMap;
 
-use epiphany_core::{MusicalPosition, OperationId, PitchId, RegionId, TypedObjectId};
-use epiphany_determinism::{CanonicalDecode, ContentHash};
+use epiphany_core::{
+    CanonicalValue, MusicalPosition, OperationId, PitchId, PitchSpelling, RegionId, TypedObjectId,
+};
+use epiphany_determinism::CanonicalDecode;
 
 use crate::{
     ConflictId, ConflictKind, ConflictKindRegistryId, ConflictRecord, ConflictRegistry,
@@ -516,8 +518,11 @@ pub(crate) fn decode_materialized_state(bytes: &[u8]) -> Result<MaterializedStat
     let mut spellings = BTreeMap::new();
     for _ in 0..spelling_count {
         let pitch = fixed::<PitchId>(&mut reader, 16, "PitchId")?;
-        let hash = fixed::<ContentHash>(&mut reader, 32, "ContentHash")?;
-        spellings.insert(pitch, hash);
+        // The value is the full PitchSpelling (v1), encoded behind a u32 length
+        // prefix via its canonical value bytes.
+        let spelling = PitchSpelling::decode_canonical(reader.lp_bytes()?)
+            .map_err(|_| MaterializedDecodeError::InvalidValue("PitchSpelling"))?;
+        spellings.insert(pitch, spelling);
     }
 
     let break_count = reader.len()?;

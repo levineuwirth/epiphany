@@ -30,9 +30,8 @@ use epiphany_core::{
     EventId, MusicalDuration, MusicalPosition, OperationId, PitchId, RationalTime, ReplicaId,
     StaffInstanceId, TransactionId, VoiceId, WallClockTime,
 };
-use epiphany_determinism::ContentHash;
 use epiphany_ops::{
-    canonical_reduction_order, AuthorId, CausalContext, ConflictKind, DeleteEventOp,
+    canonical_reduction_order, valuegen, AuthorId, CausalContext, ConflictKind, DeleteEventOp,
     HybridLogicalClock, InsertEventOp, IntegrityAnomalyKind, NoOpReason, OperationEffect,
     OperationEnvelope, OperationKind, OperationPayload, OperationSet, OperationStamp,
     PendingReason, PreconditionFailureReason, RepairKind, RespellPitchOp, TransactionDescriptor,
@@ -72,12 +71,14 @@ fn insert_span(
     duration: RationalTime,
 ) -> OperationPayload {
     OperationPayload::Primitive(OperationKind::InsertEvent(InsertEventOp {
-        voice: VoiceId::new(OBJ, voice),
         staff_instance: StaffInstanceId::new(OBJ, 0),
-        event: EventId::new(OBJ, event),
-        position: MusicalPosition(position),
-        duration: MusicalDuration(duration),
-        pitches: vec![PitchId::new(OBJ, event)],
+        event: valuegen::insert_event_value(
+            EventId::new(OBJ, event),
+            VoiceId::new(OBJ, voice),
+            MusicalPosition(position),
+            MusicalDuration(duration),
+            &[PitchId::new(OBJ, event)],
+        ),
     }))
 }
 
@@ -93,7 +94,7 @@ fn insert(voice: u64, event: u64, pos: i64) -> OperationPayload {
 fn respell(pitch: u64, spelling: u8) -> OperationPayload {
     OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
         pitch: PitchId::new(OBJ, pitch),
-        spelling: ContentHash([spelling; 32]),
+        spelling: valuegen::spelling(spelling),
     }))
 }
 
@@ -255,7 +256,7 @@ pub fn assert_failed_transaction_rolls_back_member_conflicts() {
 
     assert_eq!(
         state.spellings.get(&PitchId::new(OBJ, 100)),
-        Some(&ContentHash([1; 32])),
+        Some(&valuegen::spelling(1)),
         "the pre-transaction spelling must survive the rollback"
     );
     assert_eq!(

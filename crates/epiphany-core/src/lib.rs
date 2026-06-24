@@ -116,7 +116,7 @@ pub use tempo::{
     INVERSION_MAX_ITERATIONS, INVERSION_TOLERANCE_WHOLE_NOTES,
 };
 
-pub use codec::ScoreDecodeError;
+pub use codec::{CanonicalValue, ScoreDecodeError};
 
 pub use indexes::ScoreIndexes;
 

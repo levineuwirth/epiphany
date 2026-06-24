@@ -22,19 +22,20 @@
 
 use epiphany_core::{
     EventId, MusicalDuration, MusicalPosition, OperationId, PitchId, RationalTime, RegionId,
-    ReplicaId, SlurId, StaffInstanceId, TypedObjectId, VoiceId,
+    ReplicaId, SlurId, StaffInstanceId, VoiceId,
 };
-use epiphany_determinism::{fuzz::SplitMix64, ContentHash};
+use epiphany_determinism::fuzz::SplitMix64;
 
 use crate::causal::CausalContext;
 use crate::envelope::OperationEnvelope;
 use crate::opset::OperationSet;
 use crate::payload::{
-    CreateCrossCuttingOp, CrossCuttingRef, DeleteEventOp, InsertEventOp, OperationKind,
+    CreateCrossCuttingOp, CrossCuttingValue, DeleteEventOp, InsertEventOp, OperationKind,
     OperationPayload, RespellPitchOp, SetUserSystemBreakOp, TupletCompensation,
 };
 use crate::stamp::{HybridLogicalClock, OperationStamp};
 use crate::support::AuthorId;
+use crate::valuegen;
 use crate::IntegrityAnomalyKind;
 
 /// Number of replicas the generator draws authors from.
@@ -81,38 +82,46 @@ fn pitch(n: u64) -> PitchId {
 /// Generates a random payload over the shared id space.
 fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
     let kind = match rng.below(5) {
-        0 => OperationKind::InsertEvent(InsertEventOp {
-            voice: VoiceId::new(ReplicaId(7), rng.below(3)),
-            staff_instance: StaffInstanceId::new(ReplicaId(7), 0),
-            event: event(rng.below(ID_SPACE)),
-            position: MusicalPosition(RationalTime::from_int(rng.below(4) as i32)),
-            duration: MusicalDuration::whole(),
-            pitches: if rng.chance(2) {
+        0 => {
+            let voice = VoiceId::new(ReplicaId(7), rng.below(3));
+            let position = MusicalPosition(RationalTime::from_int(rng.below(4) as i32));
+            let pitches = if rng.chance(2) {
                 vec![pitch(rng.below(ID_SPACE))]
             } else {
                 vec![]
-            },
-        }),
+            };
+            OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: StaffInstanceId::new(ReplicaId(7), 0),
+                event: valuegen::insert_event_value(
+                    event(rng.below(ID_SPACE)),
+                    voice,
+                    position,
+                    MusicalDuration::whole(),
+                    &pitches,
+                ),
+            })
+        }
         1 => OperationKind::DeleteEvent(DeleteEventOp {
             event: event(rng.below(ID_SPACE)),
             tuplet_compensation: TupletCompensation::NotInTuplet,
         }),
         2 => OperationKind::RespellPitch(RespellPitchOp {
             pitch: pitch(rng.below(ID_SPACE)),
-            spelling: ContentHash([(rng.below(4) as u8) + 1; 32]),
+            spelling: valuegen::spelling(rng.below(4) as u8 + 1),
         }),
         3 => OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
-            structure: CrossCuttingRef {
-                id: TypedObjectId::Slur(SlurId::new(ReplicaId(7), rng.below(ID_SPACE))),
-                endpoints: vec![
-                    TypedObjectId::Event(event(rng.below(ID_SPACE))),
-                    TypedObjectId::Event(event(rng.below(ID_SPACE))),
-                ],
-            },
+            structure: CrossCuttingValue::Slur(valuegen::slur(
+                SlurId::new(ReplicaId(7), rng.below(ID_SPACE)),
+                event(rng.below(ID_SPACE)),
+                event(rng.below(ID_SPACE)),
+            )),
         }),
         _ => OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
             region: RegionId::new(ReplicaId(7), 0),
-            anchor: MusicalPosition(RationalTime::from_int(rng.below(4) as i32)),
+            anchor: valuegen::region_start_anchor(
+                RegionId::new(ReplicaId(7), 0),
+                MusicalPosition(RationalTime::from_int(rng.below(4) as i32)),
+            ),
             present: rng.chance(2),
         }),
     };
@@ -218,7 +227,7 @@ pub fn gen_envelope_set(rng: &mut SplitMix64, n: usize) -> Vec<OperationEnvelope
         let mut twin = victim.clone();
         twin.payload = OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
             pitch: pitch(rng.below(ID_SPACE)),
-            spelling: ContentHash([0xEE; 32]),
+            spelling: valuegen::spelling(6),
         }));
         if twin.envelope_hash() != victim.envelope_hash() {
             envs.push(twin);
@@ -279,7 +288,7 @@ pub fn run_equivocation_fuzz(iters: u64, seed: u64) {
             transaction: None,
             payload: OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
                 pitch: pitch(0),
-                spelling: ContentHash([spelling; 32]),
+                spelling: valuegen::spelling(spelling),
             })),
         };
         let a = mk(&mut rng, 1);

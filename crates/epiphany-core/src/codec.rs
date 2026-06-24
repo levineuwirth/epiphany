@@ -2019,6 +2019,134 @@ impl Score {
     }
 }
 
+// ===========================================================================
+// Public per-value canonical codec (the K↔J seam).
+// ===========================================================================
+
+/// A public, whole-buffer canonical byte form for an *individual* value
+/// reachable from a [`Score`] — the per-type analogue of
+/// [`Score::canonical_bytes`].
+///
+/// ## Why this exists
+///
+/// The internal `Codec` trait (and its `Reader`) are crate-private: they are
+/// the composition machinery for the whole-score codec, and exposing them would
+/// leak the cursor and the combinator surface. But Track B's Operation Catalog
+/// (Agent K) needs *value-typed* operation payloads — an `InsertEvent` that
+/// carries the real [`Event`], a `RespellPitch` that carries the real
+/// [`PitchSpelling`] — and those payloads must serialize canonically so an
+/// operation envelope stays hashable across an implementation boundary.
+///
+/// `CanonicalValue` is that agreed surface: a thin, public, per-type
+/// `canonical_bytes`/`decode_canonical` pair that **delegates to the existing,
+/// ratified `Codec` byte layout** (Pass 11 item 1.8,
+/// `req:format:codec-conventions`). It introduces *no new byte layout* — the
+/// bytes are byte-for-byte the same ones the whole-score codec already emits for
+/// these values, merely made reachable for an individual value. The Binary
+/// Format companion (Agent J) documents this surface as normative; until then it
+/// inherits core's conventions exactly, so core/ops stay consistent. See
+/// `DECISIONS.md` (P11-4 / the K↔J seam).
+///
+/// Implemented only for the value types operation payloads embed, not for every
+/// `Codec` type, to keep the public surface intentional.
+pub trait CanonicalValue: Sized {
+    /// The canonical bytes of this single value, using the same layout the
+    /// whole-score codec uses for it.
+    fn canonical_bytes(&self) -> Vec<u8>;
+
+    /// The exact inverse of [`CanonicalValue::canonical_bytes`]. Validates every
+    /// tag, length, primitive, and invariant; rejects trailing bytes.
+    fn decode_canonical(bytes: &[u8]) -> core::result::Result<Self, ScoreDecodeError>;
+}
+
+/// Implements [`CanonicalValue`] for value types that already have a [`Codec`],
+/// by delegating to it. No new byte layout is introduced.
+macro_rules! canonical_value {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl CanonicalValue for $ty {
+                fn canonical_bytes(&self) -> Vec<u8> {
+                    let mut out = Vec::new();
+                    Codec::enc(self, &mut out);
+                    out
+                }
+                fn decode_canonical(bytes: &[u8]) -> Result<Self> {
+                    let mut r = Reader::new(bytes);
+                    let v = <$ty as Codec>::dec(&mut r)?;
+                    r.finish()?;
+                    Ok(v)
+                }
+            }
+        )*
+    };
+}
+
+canonical_value! {
+    Event,
+    Rest,
+    PitchSpelling,
+    Tie,
+    Slur,
+    Beam,
+    Spanner,
+    RegionTimeModel,
+    TimeAnchor,
+}
+
+#[cfg(test)]
+mod value_codec_tests {
+    use super::*;
+    use crate::generators::{valid_score, valid_score_rich};
+
+    /// Every `CanonicalValue` round-trips, and its per-value bytes are exactly
+    /// the bytes the whole-score codec embeds for that value (no new layout).
+    fn assert_value_round_trips<T>(v: &T)
+    where
+        T: CanonicalValue + Codec + PartialEq + core::fmt::Debug,
+    {
+        let bytes = v.canonical_bytes();
+        // Per-value bytes equal what the internal Codec emits (the embedded form).
+        let mut embedded = Vec::new();
+        Codec::enc(v, &mut embedded);
+        assert_eq!(bytes, embedded, "CanonicalValue diverged from Codec layout");
+        let decoded = T::decode_canonical(&bytes).expect("value decodes");
+        assert_eq!(&decoded, v, "value round-trip changed the value");
+        assert_eq!(
+            decoded.canonical_bytes(),
+            bytes,
+            "value re-encode not byte-identical"
+        );
+    }
+
+    #[test]
+    fn value_types_round_trip_over_generator_corpus() {
+        for seed in 0..64u64 {
+            let s = valid_score_rich(seed.wrapping_mul(0x0100_0193).wrapping_add(7));
+            for region in &s.canvas.regions {
+                assert_value_round_trips(&region.time_model);
+            }
+            for tie in &s.cross_cutting.ties {
+                assert_value_round_trips(tie);
+            }
+            for slur in &s.cross_cutting.slurs {
+                assert_value_round_trips(slur);
+            }
+            for beam in &s.cross_cutting.beams {
+                assert_value_round_trips(beam);
+            }
+            for spanner in &s.cross_cutting.spanners {
+                assert_value_round_trips(spanner);
+            }
+        }
+        for seed in 0..200u64 {
+            let s = valid_score(seed.wrapping_mul(0x9E37_79B9).wrapping_add(1));
+            for ev in s.events.iter() {
+                assert_value_round_trips(ev);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

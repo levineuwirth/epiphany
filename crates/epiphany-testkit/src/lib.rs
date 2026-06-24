@@ -105,6 +105,7 @@ pub mod prepass_harness;
 
 pub mod convergence;
 pub mod equivocation;
+pub mod migration;
 pub mod negative;
 
 pub mod bundle_harness;
