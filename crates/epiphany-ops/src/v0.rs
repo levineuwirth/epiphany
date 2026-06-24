@@ -39,6 +39,9 @@ pub struct V0OperationEnvelope {
 }
 
 /// Frozen v0 payload union (pre-catalog).
+// Mirrors the live payload's size profile (the v1-native Group-1 kinds carry
+// whole values); inline values are the design (see `payload::OperationKind`).
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum V0OperationPayload {
     Primitive(V0OperationKind),
@@ -49,6 +52,7 @@ pub enum V0OperationPayload {
 }
 
 /// Frozen v0 primitive kinds (the representative §6.10 set).
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum V0OperationKind {
     InsertEvent(V0InsertEventOp),
@@ -61,6 +65,15 @@ pub enum V0OperationKind {
     DeclareTransaction(TransactionDescriptor),
     /// Opaque extension payload; unchanged in v1.
     Registered(OperationKindRegistryId, Vec<u8>),
+    // --- Group 1 (M2) kinds. These are v1-native: they had no identifier-only
+    // v0 predecessor, so their "v0 form" carries the v1 payload verbatim and the
+    // migration round-trips them by identity (only the original kinds above have
+    // a lossy v0 projection to reconstruct). ---
+    ModifyEvent(crate::payload::ModifyEventOp),
+    Transpose(crate::payload::TransposeOp),
+    InsertIdentifiedPitch(crate::payload::InsertIdentifiedPitchOp),
+    DeleteIdentifiedPitch(crate::payload::DeleteIdentifiedPitchOp),
+    ModifyIdentifiedPitch(crate::payload::ModifyIdentifiedPitchOp),
 }
 
 /// v0 `InsertEvent`: the event was a bare [`EventId`] plus the reduction-relevant

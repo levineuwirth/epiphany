@@ -30,8 +30,9 @@ use crate::causal::CausalContext;
 use crate::envelope::OperationEnvelope;
 use crate::opset::OperationSet;
 use crate::payload::{
-    CreateCrossCuttingOp, CrossCuttingValue, DeleteEventOp, InsertEventOp, OperationKind,
-    OperationPayload, RespellPitchOp, SetUserSystemBreakOp, TupletCompensation,
+    CreateCrossCuttingOp, CrossCuttingValue, DeleteEventOp, DeleteIdentifiedPitchOp, InsertEventOp,
+    InsertIdentifiedPitchOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind,
+    OperationPayload, RespellPitchOp, SetUserSystemBreakOp, TransposeOp, TupletCompensation,
 };
 use crate::stamp::{HybridLogicalClock, OperationStamp};
 use crate::support::AuthorId;
@@ -81,7 +82,7 @@ fn pitch(n: u64) -> PitchId {
 
 /// Generates a random payload over the shared id space.
 fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
-    let kind = match rng.below(5) {
+    let kind = match rng.below(10) {
         0 => {
             let voice = VoiceId::new(ReplicaId(7), rng.below(3));
             let position = MusicalPosition(RationalTime::from_int(rng.below(4) as i32));
@@ -116,13 +117,38 @@ fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
                 event(rng.below(ID_SPACE)),
             )),
         }),
-        _ => OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
+        4 => OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
             region: RegionId::new(ReplicaId(7), 0),
             anchor: valuegen::region_start_anchor(
                 RegionId::new(ReplicaId(7), 0),
                 MusicalPosition(RationalTime::from_int(rng.below(4) as i32)),
             ),
             present: rng.chance(2),
+        }),
+        // Group 1 (M2): event & pitch leaf-field ops over the shared id space.
+        5 => OperationKind::ModifyEvent(ModifyEventOp {
+            event: valuegen::insert_event_value(
+                event(rng.below(ID_SPACE)),
+                VoiceId::new(ReplicaId(7), rng.below(3)),
+                MusicalPosition(RationalTime::from_int(rng.below(4) as i32)),
+                MusicalDuration::whole(),
+                &[pitch(rng.below(ID_SPACE))],
+            ),
+        }),
+        6 => OperationKind::Transpose(TransposeOp {
+            targets: vec![pitch(rng.below(ID_SPACE))],
+            chromatic_steps: rng.below(5) as i32 - 2,
+        }),
+        7 => OperationKind::InsertIdentifiedPitch(InsertIdentifiedPitchOp {
+            event: event(rng.below(ID_SPACE)),
+            pitch: valuegen::identified_pitch(pitch(rng.below(ID_SPACE))),
+        }),
+        8 => OperationKind::DeleteIdentifiedPitch(DeleteIdentifiedPitchOp {
+            pitch: pitch(rng.below(ID_SPACE)),
+        }),
+        _ => OperationKind::ModifyIdentifiedPitch(ModifyIdentifiedPitchOp {
+            pitch: pitch(rng.below(ID_SPACE)),
+            value: valuegen::pitch_value_nth(rng.below(4) as u8 + 1),
         }),
     };
     OperationPayload::Primitive(kind)

@@ -2084,6 +2084,8 @@ macro_rules! canonical_value {
 canonical_value! {
     Event,
     Rest,
+    Pitch,
+    IdentifiedPitch,
     PitchSpelling,
     Tie,
     Slur,
@@ -2142,6 +2144,12 @@ mod value_codec_tests {
             let s = valid_score(seed.wrapping_mul(0x9E37_79B9).wrapping_add(1));
             for ev in s.events.iter() {
                 assert_value_round_trips(ev);
+                let mut ips = Vec::new();
+                ev.collect_identified_pitches(&mut ips);
+                for ip in ips {
+                    assert_value_round_trips(ip);
+                    assert_value_round_trips(&ip.pitch);
+                }
             }
         }
     }

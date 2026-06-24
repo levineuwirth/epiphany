@@ -32,7 +32,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
     derive_promoted_voice_id, AnchorOffset, CanonicalValue, Event, EventDuration, EventId,
-    EventPosition, MusicalDuration, MusicalPosition, OperationId, PitchId, PitchSpelling,
+    EventPosition, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId, PitchSpelling,
     RegionEdge, RegionId, RegionTimeModel, Score, TimeAnchor, TransactionId, TypedObjectId, Voice,
     VoiceId, VoiceOrigin,
 };
@@ -50,8 +50,9 @@ use crate::encode::{push_canon, push_len, push_lp_bytes, push_u8_bool};
 use crate::envelope::OperationEnvelope;
 use crate::opset::OperationSet;
 use crate::payload::{
-    CreateCrossCuttingOp, CrossCuttingValue, DeleteEventOp, InsertEventOp, OperationKind,
-    OperationPayload, RespellPitchOp, TupletCompensation,
+    CreateCrossCuttingOp, CrossCuttingValue, DeleteEventOp, DeleteIdentifiedPitchOp, InsertEventOp,
+    InsertIdentifiedPitchOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind,
+    OperationPayload, RespellPitchOp, TransposeOp, TupletCompensation,
 };
 use crate::undo::{UndoPolicy, UndoTransactionPayload};
 
@@ -317,6 +318,11 @@ struct Reducer<'a> {
     event_pitches: BTreeMap<EventId, Vec<PitchId>>,
     voice_occupancy: BTreeMap<VoiceId, Vec<(MusicalPosition, MusicalDuration, EventId)>>,
     last_respell: BTreeMap<PitchId, OperationId>,
+    // LWW working state for the Group-1 field-overwrite ops: the last modifier
+    // and the value it wrote, used to detect concurrent *differing* modifications
+    // (the resolved value itself lives in the graph, not in MaterializedState).
+    last_event_modify: BTreeMap<EventId, (OperationId, Event)>,
+    last_pitch_modify: BTreeMap<PitchId, (OperationId, Pitch)>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
@@ -338,6 +344,8 @@ struct WorkingSnapshot {
     event_pitches: BTreeMap<EventId, Vec<PitchId>>,
     voice_occupancy: BTreeMap<VoiceId, Vec<(MusicalPosition, MusicalDuration, EventId)>>,
     last_respell: BTreeMap<PitchId, OperationId>,
+    last_event_modify: BTreeMap<EventId, (OperationId, Event)>,
+    last_pitch_modify: BTreeMap<PitchId, (OperationId, Pitch)>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
@@ -408,6 +416,8 @@ impl<'a> Reducer<'a> {
             event_pitches: BTreeMap::new(),
             voice_occupancy: BTreeMap::new(),
             last_respell: BTreeMap::new(),
+            last_event_modify: BTreeMap::new(),
+            last_pitch_modify: BTreeMap::new(),
             structures: BTreeMap::new(),
             migrated_regions: BTreeSet::new(),
             region_migrator: BTreeMap::new(),
@@ -1093,6 +1103,11 @@ impl<'a> Reducer<'a> {
                 // Extension-defined primitive: opaque to the core; recorded as
                 // applied (the extension realizes its own effect).
                 OperationKind::Registered(_, _) => OperationEffect::Applied,
+                OperationKind::ModifyEvent(op) => self.modify_event(env, op),
+                OperationKind::Transpose(op) => self.transpose(env, op),
+                OperationKind::InsertIdentifiedPitch(op) => self.insert_identified_pitch(env, op),
+                OperationKind::DeleteIdentifiedPitch(op) => self.delete_identified_pitch(env, op),
+                OperationKind::ModifyIdentifiedPitch(op) => self.modify_identified_pitch(env, op),
             },
             OperationPayload::ResolveConflict(op) => self.resolve_conflict(env, op),
             OperationPayload::UndoTransaction(op) => self.undo_transaction(env, op),
@@ -1784,6 +1799,308 @@ impl<'a> Reducer<'a> {
         }
     }
 
+    // --- Group 1 (M2): event & pitch leaf-field ops. ------------------------
+    //
+    // The modify/transpose ops follow respell's field-overwrite discipline but
+    // do NOT store the resolved value in MaterializedState (an Event/Pitch is a
+    // graph object, not a bookkeeping-owned annotation like a spelling): their
+    // canonical footprint is the effect-log entry plus, on a concurrent differing
+    // write, a StructuralFieldCollision. The resolved value is materialized in the
+    // graph by reduce_onto. The LWW key/diff uses `last_*_modify` working state.
+
+    fn modify_event(&mut self, env: &OperationEnvelope, op: &ModifyEventOp) -> OperationEffect {
+        let event_id = op.event_id();
+        let ev_obj = TypedObjectId::Event(event_id);
+        match self.objects.get(&ev_obj) {
+            None => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                }
+            }
+            Some(ObjectState::Tombstoned { .. }) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::TargetTombstoned,
+                }
+            }
+            Some(ObjectState::Live) => {}
+        }
+        let prev = self
+            .last_event_modify
+            .get(&event_id)
+            .map(|(o, e)| (*o, e.clone()));
+        let effect = match prev {
+            Some((prev_op, prev_event)) if self.concurrent(env.id, prev_op) => {
+                if prev_event == op.event {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::AlreadyApplied,
+                    };
+                }
+                // Later in canonical order wins and materializes; the earlier op
+                // is the loser. (Winner carries the Conflicted tag; see DECISIONS.)
+                let conflict = ConflictRecord::new(
+                    ConflictKind::StructuralFieldCollision {
+                        winner: env.id,
+                        loser: prev_op,
+                        field: FieldPath("event".to_string()),
+                    },
+                    vec![env.id, prev_op],
+                    vec![ev_obj],
+                );
+                let cid = conflict.id;
+                self.conflicts.insert(conflict);
+                OperationEffect::Conflicted { conflict: cid }
+            }
+            // First modify, or a causally-ordered intentional overwrite.
+            _ => OperationEffect::Applied,
+        };
+        self.last_event_modify
+            .insert(event_id, (env.id, op.event.clone()));
+        self.graph_replace_event(&op.event);
+        effect
+    }
+
+    fn transpose(&mut self, _env: &OperationEnvelope, op: &TransposeOp) -> OperationEffect {
+        // Precondition: every target pitch is live. Transpose is order-dependent
+        // (transpositions do not commute); its canonical footprint is the
+        // effect-log entry. The transposed values are materialized in the graph.
+        for pitch in &op.targets {
+            match self.objects.get(&TypedObjectId::Pitch(*pitch)) {
+                Some(ObjectState::Live) => {}
+                Some(ObjectState::Tombstoned { .. }) => {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::TargetTombstoned,
+                    }
+                }
+                None => {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::TargetMissing,
+                        },
+                    }
+                }
+            }
+        }
+        for pitch in &op.targets {
+            self.graph_transpose_pitch(*pitch, op.chromatic_steps);
+        }
+        OperationEffect::Applied
+    }
+
+    fn insert_identified_pitch(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &InsertIdentifiedPitchOp,
+    ) -> OperationEffect {
+        let pitch_id = op.pitch_id();
+        let p_obj = TypedObjectId::Pitch(pitch_id);
+        // The target event must be live; the pitch id must be fresh.
+        if !matches!(
+            self.objects.get(&TypedObjectId::Event(op.event)),
+            Some(ObjectState::Live)
+        ) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
+        match self.objects.get(&p_obj) {
+            Some(ObjectState::Live) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::AlreadyApplied,
+                }
+            }
+            Some(ObjectState::Tombstoned { .. }) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::TargetTombstoned,
+                }
+            }
+            None => {}
+        }
+        self.objects.insert(p_obj, ObjectState::Live);
+        self.minted_by.insert(p_obj, env.id);
+        self.note_minted(env, p_obj);
+        self.event_pitches
+            .entry(op.event)
+            .or_default()
+            .push(pitch_id);
+        self.graph_insert_pitch(op.event, &op.pitch);
+        OperationEffect::Applied
+    }
+
+    fn delete_identified_pitch(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &DeleteIdentifiedPitchOp,
+    ) -> OperationEffect {
+        let p_obj = TypedObjectId::Pitch(op.pitch);
+        let minted_by = match self.objects.get(&p_obj) {
+            None => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                }
+            }
+            Some(ObjectState::Tombstoned { .. }) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::AlreadyApplied,
+                }
+            }
+            Some(ObjectState::Live) => self.minted_by.get(&p_obj).copied().unwrap_or(env.id),
+        };
+        self.objects.insert(
+            p_obj,
+            ObjectState::Tombstoned {
+                deleted_by: env.id,
+                minted_by,
+            },
+        );
+        for pitches in self.event_pitches.values_mut() {
+            pitches.retain(|p| *p != op.pitch);
+        }
+        self.graph_delete_pitch(op.pitch);
+        OperationEffect::Applied
+    }
+
+    fn modify_identified_pitch(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &ModifyIdentifiedPitchOp,
+    ) -> OperationEffect {
+        let p_obj = TypedObjectId::Pitch(op.pitch);
+        match self.objects.get(&p_obj) {
+            None => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                }
+            }
+            Some(ObjectState::Tombstoned { .. }) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::TargetTombstoned,
+                }
+            }
+            Some(ObjectState::Live) => {}
+        }
+        let prev = self
+            .last_pitch_modify
+            .get(&op.pitch)
+            .map(|(o, v)| (*o, v.clone()));
+        let effect = match prev {
+            Some((prev_op, prev_value)) if self.concurrent(env.id, prev_op) => {
+                if prev_value == op.value {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::AlreadyApplied,
+                    };
+                }
+                let conflict = ConflictRecord::new(
+                    ConflictKind::StructuralFieldCollision {
+                        winner: env.id,
+                        loser: prev_op,
+                        field: FieldPath("pitch".to_string()),
+                    },
+                    vec![env.id, prev_op],
+                    vec![p_obj],
+                );
+                let cid = conflict.id;
+                self.conflicts.insert(conflict);
+                OperationEffect::Conflicted { conflict: cid }
+            }
+            _ => OperationEffect::Applied,
+        };
+        self.last_pitch_modify
+            .insert(op.pitch, (env.id, op.value.clone()));
+        self.graph_modify_pitch(op.pitch, &op.value);
+        effect
+    }
+
+    // --- Group 1 graph mutations (reduce_onto only; no-op when graph is None). --
+
+    fn graph_replace_event(&mut self, new_event: &Event) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        if let Some(existing) = score.events.get_mut(new_event.id()) {
+            // Preserve the original voice membership (placement is owned by the
+            // voice lists; ModifyEvent overwrites the event's fields, not its
+            // container). Re-sorting on a position change is deferred.
+            let voice = existing.voice();
+            let mut replacement = new_event.clone();
+            replacement.set_voice(voice);
+            *existing = replacement;
+        }
+    }
+
+    fn graph_event_of_pitch(score: &Score, pitch: PitchId) -> Option<EventId> {
+        score.events.iter().find_map(|event| {
+            let mut ips = Vec::new();
+            event.collect_identified_pitches(&mut ips);
+            ips.iter().any(|ip| ip.id == pitch).then(|| event.id())
+        })
+    }
+
+    fn graph_insert_pitch(&mut self, event: EventId, pitch: &epiphany_core::IdentifiedPitch) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        if let Some(Event::Pitched(pe)) = score.events.get_mut(event) {
+            if !pe.pitches.iter().any(|ip| ip.id == pitch.id) {
+                pe.pitches.push(pitch.clone());
+            }
+        }
+    }
+
+    fn graph_delete_pitch(&mut self, pitch: PitchId) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        let Some(event) = Self::graph_event_of_pitch(score, pitch) else {
+            return;
+        };
+        if let Some(Event::Pitched(pe)) = score.events.get_mut(event) {
+            pe.pitches.retain(|ip| ip.id != pitch);
+        }
+    }
+
+    fn graph_modify_pitch(&mut self, pitch: PitchId, value: &Pitch) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        let Some(event) = Self::graph_event_of_pitch(score, pitch) else {
+            return;
+        };
+        if let Some(Event::Pitched(pe)) = score.events.get_mut(event) {
+            if let Some(ip) = pe.pitches.iter_mut().find(|ip| ip.id == pitch) {
+                ip.pitch = value.clone();
+            }
+        }
+    }
+
+    fn graph_transpose_pitch(&mut self, pitch: PitchId, chromatic_steps: i32) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        let Some(event) = Self::graph_event_of_pitch(score, pitch) else {
+            return;
+        };
+        if let Some(Event::Pitched(pe)) = score.events.get_mut(event) {
+            if let Some(ip) = pe.pitches.iter_mut().find(|ip| ip.id == pitch) {
+                // Minimal interval: shift the CMN alteration. Full interval
+                // algebra (Chapter 4 tuning) is deferred — P12-K2.
+                if let epiphany_core::PitchSpacePosition::Cmn { alteration, .. } =
+                    &mut ip.pitch.scale_position.position
+                {
+                    let shifted = (*alteration as i32).saturating_add(chromatic_steps);
+                    *alteration = shifted.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
+                }
+            }
+        }
+    }
+
     // --- Re-anchoring (Chapter 6 §6.5 rule table, representative subset). ----
 
     fn reanchor_for_tombstone(
@@ -2009,6 +2326,8 @@ impl<'a> Reducer<'a> {
             event_pitches: self.event_pitches.clone(),
             voice_occupancy: self.voice_occupancy.clone(),
             last_respell: self.last_respell.clone(),
+            last_event_modify: self.last_event_modify.clone(),
+            last_pitch_modify: self.last_pitch_modify.clone(),
             structures: self.structures.clone(),
             migrated_regions: self.migrated_regions.clone(),
             region_migrator: self.region_migrator.clone(),
@@ -2027,6 +2346,8 @@ impl<'a> Reducer<'a> {
         self.event_pitches = s.event_pitches;
         self.voice_occupancy = s.voice_occupancy;
         self.last_respell = s.last_respell;
+        self.last_event_modify = s.last_event_modify;
+        self.last_pitch_modify = s.last_pitch_modify;
         self.structures = s.structures;
         self.migrated_regions = s.migrated_regions;
         self.region_migrator = s.region_migrator;
@@ -2382,6 +2703,114 @@ mod tests {
             rec.resolution_state,
             ConflictResolutionState::Dismissed { by: resolve_id },
             "Dismiss action must select the Dismissed state"
+        );
+    }
+
+    // --- Group 1 (M2) behavior. --------------------------------------------
+
+    fn prim_env(
+        replica: u64,
+        counter: u64,
+        physical: i64,
+        ctx: CausalContext,
+        kind: OperationKind,
+    ) -> OperationEnvelope {
+        let id = OperationId::new(ReplicaId(replica), counter);
+        OperationEnvelope {
+            id,
+            author: AuthorId(0),
+            stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(physical), 0), id),
+            causal_context: ctx,
+            transaction: None,
+            payload: OperationPayload::Primitive(kind),
+        }
+    }
+
+    fn modify_event_of(event: EventId, pitch: PitchId) -> OperationKind {
+        OperationKind::ModifyEvent(crate::payload::ModifyEventOp {
+            event: crate::valuegen::insert_event_value(
+                event,
+                VoiceId::new(ReplicaId(9), 1),
+                pos(0),
+                epiphany_core::MusicalDuration::whole(),
+                &[pitch],
+            ),
+        })
+    }
+
+    #[test]
+    fn concurrent_differing_modify_event_conflicts() {
+        let event = EventId::new(ReplicaId(1), 100);
+        let seen = CausalContext::new().with_seen(ReplicaId(1), 0);
+        // Insert the event (replica 1), then two concurrent differing modifies.
+        let insert = insert(1, 0, 10, 1, 100, 0);
+        let mod_a = prim_env(
+            2,
+            0,
+            20,
+            seen.clone(),
+            modify_event_of(event, PitchId::new(ReplicaId(1), 1)),
+        );
+        let mod_b = prim_env(
+            3,
+            0,
+            20,
+            seen,
+            modify_event_of(event, PitchId::new(ReplicaId(1), 2)),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![insert, mod_a, mod_b]);
+        let state = set.reduce();
+        assert_eq!(
+            state.conflicts.records().len(),
+            1,
+            "concurrent differing ModifyEvent must record exactly one conflict"
+        );
+        assert!(matches!(
+            state.conflicts.records()[0].kind,
+            ConflictKind::StructuralFieldCollision { .. }
+        ));
+    }
+
+    #[test]
+    fn insert_then_delete_identified_pitch_tombstones() {
+        let event = EventId::new(ReplicaId(1), 100);
+        let pitch = PitchId::new(ReplicaId(1), 7);
+        let insert = insert(1, 0, 10, 1, 100, 0);
+        let add = prim_env(
+            1,
+            1,
+            20,
+            CausalContext::new().with_seen(ReplicaId(1), 0),
+            OperationKind::InsertIdentifiedPitch(crate::payload::InsertIdentifiedPitchOp {
+                event,
+                pitch: crate::valuegen::identified_pitch(pitch),
+            }),
+        );
+        let del = prim_env(
+            1,
+            2,
+            30,
+            CausalContext::new().with_seen(ReplicaId(1), 1),
+            OperationKind::DeleteIdentifiedPitch(crate::payload::DeleteIdentifiedPitchOp { pitch }),
+        );
+
+        let mut after_add = OperationSet::new();
+        after_add.accept_all(vec![insert.clone(), add.clone()]);
+        assert_eq!(
+            after_add.reduce().objects.get(&TypedObjectId::Pitch(pitch)),
+            Some(&ObjectState::Live),
+            "InsertIdentifiedPitch mints the pitch live"
+        );
+
+        let mut after_del = OperationSet::new();
+        after_del.accept_all(vec![insert, add, del]);
+        assert!(
+            matches!(
+                after_del.reduce().objects.get(&TypedObjectId::Pitch(pitch)),
+                Some(ObjectState::Tombstoned { .. })
+            ),
+            "DeleteIdentifiedPitch tombstones the pitch"
         );
     }
 }

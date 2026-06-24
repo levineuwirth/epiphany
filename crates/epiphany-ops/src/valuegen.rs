@@ -51,6 +51,35 @@ pub fn identified_pitch(id: PitchId) -> IdentifiedPitch {
     }
 }
 
+/// A distinct CMN [`Pitch`] per `nth` (injective over the `u8`, like
+/// [`spelling`]): nominal = `nth % 7`, octave = `nth / 7`. Lets a harness make
+/// concurrent `ModifyIdentifiedPitch`es agree or conflict deterministically.
+pub fn pitch_value_nth(nth: u8) -> Pitch {
+    let nominal = match nth % 7 {
+        0 => CmnNominal::C,
+        1 => CmnNominal::D,
+        2 => CmnNominal::E,
+        3 => CmnNominal::F,
+        4 => CmnNominal::G,
+        5 => CmnNominal::A,
+        _ => CmnNominal::B,
+    };
+    Pitch {
+        scale_position: ScalePosition {
+            space: PitchSpaceId::new("cmn-12"),
+            position: PitchSpacePosition::Cmn {
+                nominal,
+                alteration: 0,
+                octave: (nth / 7) as i8,
+            },
+        },
+        acoustic: AcousticPitch {
+            tuning: epiphany_core::TuningReference::Inherit,
+            realization: AcousticRealization::Implicit,
+        },
+    }
+}
+
 /// The event an InsertEvent inserts: a pitched event when `pitch_ids` is
 /// non-empty, otherwise a visible rest. Mirrors the prototype's
 /// pitched-or-rest split, now as a real value.

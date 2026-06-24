@@ -141,6 +141,16 @@ fn project_kind(kind: &OperationKind) -> V0OperationKind {
             V0OperationKind::DeclareTransaction(desc.clone())
         }
         OperationKind::Registered(id, bytes) => V0OperationKind::Registered(*id, bytes.clone()),
+        // v1-native (Group 1): no lossy v0 form — projected verbatim.
+        OperationKind::ModifyEvent(op) => V0OperationKind::ModifyEvent(op.clone()),
+        OperationKind::Transpose(op) => V0OperationKind::Transpose(op.clone()),
+        OperationKind::InsertIdentifiedPitch(op) => {
+            V0OperationKind::InsertIdentifiedPitch(op.clone())
+        }
+        OperationKind::DeleteIdentifiedPitch(op) => V0OperationKind::DeleteIdentifiedPitch(*op),
+        OperationKind::ModifyIdentifiedPitch(op) => {
+            V0OperationKind::ModifyIdentifiedPitch(op.clone())
+        }
     }
 }
 
@@ -256,6 +266,16 @@ fn migrate_kind(kind: &V0OperationKind, context: &Score) -> Result<OperationKind
             OperationKind::DeclareTransaction(desc.clone())
         }
         V0OperationKind::Registered(id, bytes) => OperationKind::Registered(*id, bytes.clone()),
+        // v1-native (Group 1): identity round-trip (no lossy reconstruction).
+        V0OperationKind::ModifyEvent(op) => OperationKind::ModifyEvent(op.clone()),
+        V0OperationKind::Transpose(op) => OperationKind::Transpose(op.clone()),
+        V0OperationKind::InsertIdentifiedPitch(op) => {
+            OperationKind::InsertIdentifiedPitch(op.clone())
+        }
+        V0OperationKind::DeleteIdentifiedPitch(op) => OperationKind::DeleteIdentifiedPitch(*op),
+        V0OperationKind::ModifyIdentifiedPitch(op) => {
+            OperationKind::ModifyIdentifiedPitch(op.clone())
+        }
     })
 }
 
@@ -509,5 +529,43 @@ mod tests {
             migrate_v0_envelope(project_v1_to_v0(&e), &empty),
             Err(MigrationError::Irreversible(_))
         ));
+    }
+
+    #[test]
+    fn group1_kinds_round_trip_by_identity() {
+        // The Group-1 (M2) kinds are v1-native: they had no lossy v0 form, so
+        // project+migrate is the identity (no context needed), and the round-trip
+        // is exact for every one of them.
+        let voice = VoiceId::new(ReplicaId(3), 0);
+        let kinds = [
+            OperationKind::ModifyEvent(crate::payload::ModifyEventOp {
+                event: valuegen::insert_event_value(
+                    ev(1),
+                    voice,
+                    epiphany_core::MusicalPosition::origin(),
+                    MusicalDuration::whole(),
+                    &[PitchId::new(ReplicaId(3), 1)],
+                ),
+            }),
+            OperationKind::Transpose(crate::payload::TransposeOp {
+                targets: vec![PitchId::new(ReplicaId(3), 1)],
+                chromatic_steps: -2,
+            }),
+            OperationKind::InsertIdentifiedPitch(crate::payload::InsertIdentifiedPitchOp {
+                event: ev(1),
+                pitch: valuegen::identified_pitch(PitchId::new(ReplicaId(3), 2)),
+            }),
+            OperationKind::DeleteIdentifiedPitch(crate::payload::DeleteIdentifiedPitchOp {
+                pitch: PitchId::new(ReplicaId(3), 2),
+            }),
+            OperationKind::ModifyIdentifiedPitch(crate::payload::ModifyIdentifiedPitchOp {
+                pitch: PitchId::new(ReplicaId(3), 1),
+                value: valuegen::pitch_value_nth(3),
+            }),
+        ];
+        for kind in kinds {
+            let e = env(primitive(kind));
+            assert_eq!(round_trip(&e), Ok(e.clone()));
+        }
     }
 }

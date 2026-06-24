@@ -32,9 +32,10 @@
 //! payloads.
 
 use epiphany_core::{
-    Beam, CanonicalValue, Event, EventDuration, EventId, EventPosition, MusicalDuration,
-    MusicalPosition, PitchId, PitchSpelling, RegionId, RegionTimeModel, Rest, Slur, Spanner,
-    StaffInstanceId, Tie, TimeAnchor, TransactionId, TupletId, TypedObjectId, VoiceId,
+    Beam, CanonicalValue, Event, EventDuration, EventId, EventPosition, IdentifiedPitch,
+    MusicalDuration, MusicalPosition, Pitch, PitchId, PitchSpelling, RegionId, RegionTimeModel,
+    Rest, Slur, Spanner, StaffInstanceId, Tie, TimeAnchor, TransactionId, TupletId, TypedObjectId,
+    VoiceId,
 };
 use epiphany_determinism::{sorted_canonical, CanonicalEncode};
 
@@ -106,6 +107,18 @@ pub enum OperationKind {
     DeclareTransaction(TransactionDescriptor),
     /// An extension-defined primitive operation (opaque serialized payload).
     Registered(OperationKindRegistryId, Vec<u8>),
+    // --- Group 1 (M2): event & pitch leaf-field ops. Discriminants extend the
+    // stable v1 wire form (0..=7 above) additively. ---
+    /// Overwrite a live event's value (later-in-canonical-order wins).
+    ModifyEvent(ModifyEventOp),
+    /// Transpose live pitches by an interval (order-dependent; ids preserved).
+    Transpose(TransposeOp),
+    /// Add a pitch to a live event (mint).
+    InsertIdentifiedPitch(InsertIdentifiedPitchOp),
+    /// Tombstone a live pitch (delete-wins).
+    DeleteIdentifiedPitch(DeleteIdentifiedPitchOp),
+    /// Overwrite a live pitch's value (later-in-canonical-order wins).
+    ModifyIdentifiedPitch(ModifyIdentifiedPitchOp),
 }
 
 impl OperationKind {
@@ -119,6 +132,11 @@ impl OperationKind {
             OperationKind::SetUserSystemBreak(_) => 5,
             OperationKind::DeclareTransaction(_) => 6,
             OperationKind::Registered(..) => 7,
+            OperationKind::ModifyEvent(_) => 8,
+            OperationKind::Transpose(_) => 9,
+            OperationKind::InsertIdentifiedPitch(_) => 10,
+            OperationKind::DeleteIdentifiedPitch(_) => 11,
+            OperationKind::ModifyIdentifiedPitch(_) => 12,
         }
     }
 
@@ -135,6 +153,11 @@ impl OperationKind {
             OperationKind::SetUserSystemBreak(_) => OperationKindTag::SetUserSystemBreak,
             OperationKind::DeclareTransaction(_) => OperationKindTag::DeclareTransaction,
             OperationKind::Registered(id, _) => OperationKindTag::Registered(*id),
+            OperationKind::ModifyEvent(_) => OperationKindTag::ModifyEvent,
+            OperationKind::Transpose(_) => OperationKindTag::Transpose,
+            OperationKind::InsertIdentifiedPitch(_) => OperationKindTag::InsertIdentifiedPitch,
+            OperationKind::DeleteIdentifiedPitch(_) => OperationKindTag::DeleteIdentifiedPitch,
+            OperationKind::ModifyIdentifiedPitch(_) => OperationKindTag::ModifyIdentifiedPitch,
         }
     }
 }
@@ -154,6 +177,11 @@ impl CanonicalEncode for OperationKind {
                 push_canon(out, id);
                 crate::encode::push_lp_bytes(out, bytes);
             }
+            OperationKind::ModifyEvent(op) => op.encode_canonical(out),
+            OperationKind::Transpose(op) => op.encode_canonical(out),
+            OperationKind::InsertIdentifiedPitch(op) => op.encode_canonical(out),
+            OperationKind::DeleteIdentifiedPitch(op) => op.encode_canonical(out),
+            OperationKind::ModifyIdentifiedPitch(op) => op.encode_canonical(out),
         }
     }
 }
@@ -181,6 +209,9 @@ pub enum OperationKindTag {
     SetUserPageBreak,
     DeclareTransaction,
     Registered(OperationKindRegistryId),
+    InsertIdentifiedPitch,
+    DeleteIdentifiedPitch,
+    ModifyIdentifiedPitch,
 }
 
 impl OperationKindTag {
@@ -203,6 +234,9 @@ impl OperationKindTag {
             OperationKindTag::SetUserPageBreak => 14,
             OperationKindTag::DeclareTransaction => 15,
             OperationKindTag::Registered(_) => 16,
+            OperationKindTag::InsertIdentifiedPitch => 17,
+            OperationKindTag::DeleteIdentifiedPitch => 18,
+            OperationKindTag::ModifyIdentifiedPitch => 19,
         }
     }
 }
@@ -621,6 +655,99 @@ impl CanonicalEncode for ResolveConflictPayload {
     }
 }
 
+// --- Group 1 (M2): event & pitch leaf-field ops (Chapter 6 §6.10). -----------
+
+/// Overwrite a live event's value (Chapter 6 §6.10 ModifyEvent). Carries the
+/// full replacement [`Event`] (v1, value-typed). Field-overwrite discipline:
+/// later-in-canonical-order wins; concurrent differing modifications conflict.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ModifyEventOp {
+    pub event: Event,
+}
+
+impl ModifyEventOp {
+    /// The modified event's identifier (the LWW key).
+    pub fn event_id(&self) -> EventId {
+        self.event.id()
+    }
+}
+
+impl CanonicalEncode for ModifyEventOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_lp_bytes(out, &self.event.canonical_bytes());
+    }
+}
+
+/// Transpose live pitches by a chromatic interval (Chapter 6 §6.10 Transpose).
+/// Pitch identifiers are preserved; reduction is order-dependent (transpositions
+/// do not commute). `chromatic_steps` is a minimal interval (a CMN alteration
+/// shift); rich interval algebra is deferred (Chapter 4 tuning catalog; P12-K2).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TransposeOp {
+    pub targets: Vec<PitchId>,
+    pub chromatic_steps: i32,
+}
+
+impl CanonicalEncode for TransposeOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_seq(out, &sorted_canonical(self.targets.clone()));
+        out.extend_from_slice(&self.chromatic_steps.to_le_bytes());
+    }
+}
+
+/// Add a pitch to a live event (Chapter 6 §6.10 InsertIdentifiedPitch). Carries
+/// the full [`IdentifiedPitch`] (v1). Mint discipline.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct InsertIdentifiedPitchOp {
+    pub event: EventId,
+    pub pitch: IdentifiedPitch,
+}
+
+impl InsertIdentifiedPitchOp {
+    /// The minted pitch's identifier.
+    pub fn pitch_id(&self) -> PitchId {
+        self.pitch.id
+    }
+}
+
+impl CanonicalEncode for InsertIdentifiedPitchOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_canon(out, &self.event);
+        push_lp_bytes(out, &self.pitch.canonical_bytes());
+    }
+}
+
+/// Tombstone a live pitch (Chapter 6 §6.10 DeleteIdentifiedPitch). Delete-wins
+/// discipline; the identifier is retained as a tombstone.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct DeleteIdentifiedPitchOp {
+    pub pitch: PitchId,
+}
+
+impl CanonicalEncode for DeleteIdentifiedPitchOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_canon(out, &self.pitch);
+    }
+}
+
+/// Overwrite a live pitch's value (Chapter 6 §6.10 ModifyIdentifiedPitch).
+/// Carries the full replacement [`Pitch`] (v1) — its acoustic / scale-position,
+/// distinct from [`RespellPitchOp`] which overwrites only the *spelling*.
+/// Field-overwrite discipline (later-in-canonical-order wins; concurrent
+/// differing conflict).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ModifyIdentifiedPitchOp {
+    pub pitch: PitchId,
+    pub value: Pitch,
+}
+
+impl CanonicalEncode for ModifyIdentifiedPitchOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_canon(out, &self.pitch);
+        push_lp_bytes(out, &self.value.canonical_bytes());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -671,6 +798,9 @@ mod tests {
             OperationKindTag::SetUserSystemBreak,
             OperationKindTag::SetUserPageBreak,
             OperationKindTag::DeclareTransaction,
+            OperationKindTag::InsertIdentifiedPitch,
+            OperationKindTag::DeleteIdentifiedPitch,
+            OperationKindTag::ModifyIdentifiedPitch,
         ];
         let encoded: std::collections::BTreeSet<_> = tags
             .iter()

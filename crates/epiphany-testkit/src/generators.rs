@@ -33,16 +33,16 @@ use epiphany_ops::{
     AnomalousReplicaSegment, AuthorId, CausalContext, ChangeRegionTimeModelOp, ConflictId,
     ConflictKind, ConflictKindRegistryId, ConflictRecord, ConflictRegistry,
     ConflictResolutionState, CreateCrossCuttingOp, CrossCuttingValue, DeleteEventOp,
-    ExtensionPreconditionId, FieldPath, HybridLogicalClock, InsertEventOp, IntegrityAnomaly,
-    IntegrityAnomalyKind, IntegrityAnomalyRegistryId, MaterializedState, NoOpReason, ObjectKind,
-    ObjectState, OperationEffect, OperationEnvelope, OperationKind, OperationKindRegistryId,
-    OperationPayload, OperationSet, OperationStamp, PendingReason, PositionRemapping,
-    PreconditionFailureReason, PreconditionFailureRegistryId, ReanchorReason,
-    ReanchorReasonRegistryId, ReanchorResult, RepairKind, RepairKindRegistryId, RepairRecord,
-    ReplicaAnomalyReason, ReplicaAnomalyRegistryId, ResolutionAction, ResolutionRegistryId,
-    ResolveConflictPayload, RespellPitchOp, SerializedCanonicalInputs, SetUserSystemBreakOp,
-    TransactionCategory, TransactionDescriptor, TupletCompensation, TupletCompensationKind,
-    UndoPolicy, UndoTransactionPayload,
+    DeleteIdentifiedPitchOp, ExtensionPreconditionId, FieldPath, HybridLogicalClock, InsertEventOp,
+    InsertIdentifiedPitchOp, IntegrityAnomaly, IntegrityAnomalyKind, IntegrityAnomalyRegistryId,
+    MaterializedState, ModifyEventOp, ModifyIdentifiedPitchOp, NoOpReason, ObjectKind, ObjectState,
+    OperationEffect, OperationEnvelope, OperationKind, OperationKindRegistryId, OperationPayload,
+    OperationSet, OperationStamp, PendingReason, PositionRemapping, PreconditionFailureReason,
+    PreconditionFailureRegistryId, ReanchorReason, ReanchorReasonRegistryId, ReanchorResult,
+    RepairKind, RepairKindRegistryId, RepairRecord, ReplicaAnomalyReason, ReplicaAnomalyRegistryId,
+    ResolutionAction, ResolutionRegistryId, ResolveConflictPayload, RespellPitchOp,
+    SerializedCanonicalInputs, SetUserSystemBreakOp, TransactionCategory, TransactionDescriptor,
+    TransposeOp, TupletCompensation, TupletCompensationKind, UndoPolicy, UndoTransactionPayload,
 };
 
 use crate::rng::Rng;
@@ -634,7 +634,7 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
         }
         _ => {}
     }
-    let kind = match rng.below(8) {
+    let kind = match rng.below(13) {
         0 => {
             let pitches = if rng.boolean() {
                 vec![obj_pitch(rng.below(pitches))]
@@ -693,6 +693,31 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
                 TransactionCategory::Structural,
                 TransactionCategory::Layout,
             ])),
+        }),
+        // Group 1 (M2): event & pitch leaf-field ops over the shared id space.
+        7 => OperationKind::ModifyEvent(ModifyEventOp {
+            event: valuegen::insert_event_value(
+                obj_event(rng.below(events)),
+                VoiceId::new(OBJ_REPLICA, rng.below(4)),
+                MusicalPosition(RationalTime::from_int(rng.below(events) as i32)),
+                MusicalDuration::whole(),
+                &[obj_pitch(rng.below(pitches))],
+            ),
+        }),
+        8 => OperationKind::Transpose(TransposeOp {
+            targets: vec![obj_pitch(rng.below(pitches))],
+            chromatic_steps: rng.below(5) as i32 - 2,
+        }),
+        9 => OperationKind::InsertIdentifiedPitch(InsertIdentifiedPitchOp {
+            event: obj_event(rng.below(events)),
+            pitch: valuegen::identified_pitch(obj_pitch(rng.below(pitches))),
+        }),
+        10 => OperationKind::DeleteIdentifiedPitch(DeleteIdentifiedPitchOp {
+            pitch: obj_pitch(rng.below(pitches)),
+        }),
+        11 => OperationKind::ModifyIdentifiedPitch(ModifyIdentifiedPitchOp {
+            pitch: obj_pitch(rng.below(pitches)),
+            value: valuegen::pitch_value_nth(rng.below(4) as u8 + 1),
         }),
         _ => OperationKind::Registered(
             OperationKindRegistryId(rng.next_u64() as u128),
