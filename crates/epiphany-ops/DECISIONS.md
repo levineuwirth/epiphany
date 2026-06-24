@@ -66,6 +66,48 @@ graph. Insert/delete, voice promotion, supported reference-level cross-cutting
 values, system breaks, migration checks, transaction rollback, and undo mutate
 that graph. The base-free `reduce()` remains the operation-set convergence API.
 
+## M2a (Group 1) — event & pitch leaf-field ops: graph materialization
+
+The Group-1 leaf-field ops (`ModifyEvent`, `Transpose`, `InsertIdentifiedPitch`,
+`DeleteIdentifiedPitch`, `ModifyIdentifiedPitch`) reuse M1's reduction
+disciplines unchanged; the canonical `MaterializedState` records only their
+effect-log entry and — for the field-overwrite ops — a `StructuralFieldCollision`
+on a concurrent differing write. Their resolved values live in the graph
+(`reduce_onto`), which is derived state, not a second canonical store, so the two
+decisions below are **graph-materialization-only**: the bookkeeping projection,
+and therefore convergence/determinism, is unaffected. Both exist because an
+in-place `EventArena::get_mut` edit bypasses `insert`'s well-formedness guard, so
+the reducer must keep the graph Chapter-5-valid itself (otherwise the malformed
+state surfaces only later, in `check_invariants`). Both are exercised at scale by
+`run_graph_convergence` (criterion 1, now emitting these kinds) and pinned by
+targeted `reduce_onto` tests in `tests/graph_reduction.rs`.
+
+- **A note and a rest are the same slot under pitch add/remove (note↔rest
+  conversion).** `DeleteIdentifiedPitch` of a single-pitch note's *only* pitch
+  degrades the event to a `Rest` of the same id/voice/position/duration rather
+  than leaving an empty pitched event — Chapter 5 forbids the empty chord ("use
+  `Rest` for the no-pitch case", `ArenaError::EmptyPitchedEvent`).
+  `InsertIdentifiedPitch` into a rest is the dual: the rest becomes a one-pitch
+  note. This preserves the ops' disciplines (delete-wins / mint) and keeps the
+  graph consistent with the bookkeeping (which tombstones / mints the pitch
+  object either way). *Rejected alternative:* a "would empty the event"
+  precondition failure — it needs a new `PreconditionFailureReason` against a
+  ratified set, breaks delete-wins, and is a worse fit than the editor-natural
+  "deleting a note's last pitch leaves a rest". **For the spec:** the Operation
+  Catalog §"Insert/Delete identified pitch" (M2e) ratifies this note↔rest
+  equivalence normatively.
+
+- **`ModifyEvent` defers placement changes in the graph.** A `ModifyEvent` whose
+  payload moves the event (different position or duration) is *not* applied to
+  the graph: re-sorting a voice's event list on a placement change is deferred,
+  and applying a move via `get_mut` would break invariant 3
+  (`VoiceEventsSortedNonOverlap`). Same-placement field edits apply, preserving
+  the existing voice membership (owned by the voice list); a malformed (empty)
+  pitched replacement is likewise skipped. The LWW bookkeeping records the modify
+  either way. **For the spec:** the catalog §ModifyEvent (M2e) states the
+  placement-change deferral as the prototype boundary (a full re-sort/move op is
+  a later refinement).
+
 ## Pass 11 candidates (ambiguities for the spec, not resolved in code)
 
 ### P11-C1 — operation payload schemas are deferred; we carry identifiers + fingerprints

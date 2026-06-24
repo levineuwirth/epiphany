@@ -51,9 +51,10 @@ pub fn identified_pitch(id: PitchId) -> IdentifiedPitch {
     }
 }
 
-/// A distinct CMN [`Pitch`] per `nth` (injective over the `u8`, like
-/// [`spelling`]): nominal = `nth % 7`, octave = `nth / 7`. Lets a harness make
-/// concurrent `ModifyIdentifiedPitch`es agree or conflict deterministically.
+/// A distinct CMN [`Pitch`] per `nth`: nominal = `nth % 7`, octave = `nth / 7`.
+/// Unlike [`spelling`] (which fixes the octave, so distinct `nth` can collide),
+/// this is injective over the whole `u8`, letting a harness make concurrent
+/// `ModifyIdentifiedPitch`es agree or conflict deterministically.
 pub fn pitch_value_nth(nth: u8) -> Pitch {
     let nominal = match nth % 7 {
         0 => CmnNominal::C,

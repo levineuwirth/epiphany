@@ -2024,10 +2024,27 @@ impl<'a> Reducer<'a> {
         let Some(score) = self.graph.as_mut() else {
             return;
         };
+        // A ModifyEvent carrying a malformed (empty) pitched event must not
+        // corrupt the arena: `get_mut` bypasses `insert`'s well-formedness guard,
+        // so an empty chord would only be caught later by `check_invariants`.
+        // Skip the graph replace in that case (bookkeeping still records it).
+        if let Event::Pitched(pe) = new_event {
+            if !pe.is_well_formed() {
+                return;
+            }
+        }
         if let Some(existing) = score.events.get_mut(new_event.id()) {
-            // Preserve the original voice membership (placement is owned by the
-            // voice lists; ModifyEvent overwrites the event's fields, not its
-            // container). Re-sorting on a position change is deferred.
+            // Re-sorting a voice on a placement change is deferred, so a
+            // ModifyEvent that moves the event (different position or duration)
+            // is not applied to the graph yet: doing so via `get_mut` would
+            // break invariant 3 (voice events sorted, non-overlapping). The LWW
+            // bookkeeping still records it; same-placement field edits apply,
+            // preserving the original voice membership (owned by the voice list).
+            if new_event.position() != existing.position()
+                || new_event.duration() != existing.duration()
+            {
+                return;
+            }
             let voice = existing.voice();
             let mut replacement = new_event.clone();
             replacement.set_voice(voice);
@@ -2047,10 +2064,33 @@ impl<'a> Reducer<'a> {
         let Some(score) = self.graph.as_mut() else {
             return;
         };
-        if let Some(Event::Pitched(pe)) = score.events.get_mut(event) {
+        let Some(slot) = score.events.get_mut(event) else {
+            return;
+        };
+        if let Event::Pitched(pe) = slot {
             if !pe.pitches.iter().any(|ip| ip.id == pitch.id) {
                 pe.pitches.push(pitch.clone());
             }
+            return;
+        }
+        // Adding a pitch to a rest turns the rest into a note — the dual of a
+        // last-pitch delete (below). Without this, the bookkeeping mints the
+        // pitch live while the graph silently drops it (a non-pitched slot has
+        // no pitch list), so the two would diverge.
+        if let Event::Rest(rest) = slot {
+            let replacement = epiphany_core::PitchedEvent {
+                id: rest.id,
+                voice: rest.voice,
+                position: rest.position.clone(),
+                duration: rest.duration.clone(),
+                pitches: vec![pitch.clone()],
+                articulations: Vec::new(),
+                dynamic: None,
+                ornaments: Vec::new(),
+                stem: epiphany_core::StemConfiguration,
+                grace: None,
+            };
+            *slot = Event::Pitched(replacement);
         }
     }
 
@@ -2061,8 +2101,28 @@ impl<'a> Reducer<'a> {
         let Some(event) = Self::graph_event_of_pitch(score, pitch) else {
             return;
         };
-        if let Some(Event::Pitched(pe)) = score.events.get_mut(event) {
-            pe.pitches.retain(|ip| ip.id != pitch);
+        let Some(slot) = score.events.get_mut(event) else {
+            return;
+        };
+        if let Event::Pitched(pe) = slot {
+            if pe.pitches.iter().filter(|ip| ip.id != pitch).count() == 0 {
+                // Removing the last pitch would leave an empty (invalid) pitched
+                // event; Chapter 5 forbids that ("use Rest for the no-pitch
+                // case"), so the note degrades to a rest of the same placement
+                // and duration. Keeps `get_mut` from materializing a malformed
+                // chord that `check_invariants` would later reject.
+                let rest = epiphany_core::Rest {
+                    id: pe.id,
+                    voice: pe.voice,
+                    position: pe.position.clone(),
+                    duration: pe.duration.clone(),
+                    vertical_position: None,
+                    visible: true,
+                };
+                *slot = Event::Rest(rest);
+            } else {
+                pe.pitches.retain(|ip| ip.id != pitch);
+            }
         }
     }
 
@@ -2089,7 +2149,9 @@ impl<'a> Reducer<'a> {
         };
         if let Some(Event::Pitched(pe)) = score.events.get_mut(event) {
             if let Some(ip) = pe.pitches.iter_mut().find(|ip| ip.id == pitch) {
-                // Minimal interval: shift the CMN alteration. Full interval
+                // Minimal interval: shift the CMN alteration, saturating at the
+                // `i8` bound (a lossy stand-in — an extreme transpose clamps
+                // rather than renormalizing nominal/octave). Full interval
                 // algebra (Chapter 4 tuning) is deferred — P12-K2.
                 if let epiphany_core::PitchSpacePosition::Cmn { alteration, .. } =
                     &mut ip.pitch.scale_position.position

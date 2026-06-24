@@ -535,3 +535,106 @@ fn graph_materialization_is_deterministic_across_base_corpus_and_delivery_order(
         );
     }
 }
+
+#[test]
+fn delete_last_identified_pitch_degrades_the_note_to_a_rest() {
+    // A single-pitch note whose only pitch is deleted must NOT materialize as an
+    // empty (invalid) pitched event; Chapter 5 forbids that, so it degrades to a
+    // rest of the same placement (and `check_invariants` would reject otherwise).
+    let base = epiphany_core::generators::valid_score(100);
+    let (staff_instance, target_voice) = target(&base);
+    let event = EventId::new(ReplicaId(60), 0);
+    let pitch = PitchId::new(ReplicaId(60), 1);
+    let insert_note = envelope(
+        60,
+        0,
+        10,
+        CausalContext::new(),
+        None,
+        insert(staff_instance, target_voice, event, pitch, 100),
+    );
+    let delete_pitch = envelope(
+        60,
+        1,
+        20,
+        CausalContext::new().with_seen(ReplicaId(60), 0),
+        None,
+        OperationPayload::Primitive(OperationKind::DeleteIdentifiedPitch(
+            epiphany_ops::DeleteIdentifiedPitchOp { pitch },
+        )),
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(vec![insert_note, delete_pitch]);
+
+    let result = set.reduce_onto(&base);
+
+    assert!(
+        matches!(
+            result.score.events.get(event),
+            Some(epiphany_core::Event::Rest(_))
+        ),
+        "a note whose last pitch is deleted must become a rest, not an empty chord"
+    );
+    assert!(
+        matches!(
+            result.state.objects.get(&TypedObjectId::Pitch(pitch)),
+            Some(epiphany_ops::ObjectState::Tombstoned { .. })
+        ),
+        "the deleted pitch is tombstoned in the bookkeeping projection"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn insert_identified_pitch_into_a_rest_promotes_it_to_a_note() {
+    // Adding a pitch to a rest turns the rest into a note — the dual of the
+    // last-pitch delete — so the graph holds the pitch the bookkeeping minted
+    // (otherwise the live pitch object would have no graph counterpart).
+    let base = epiphany_core::generators::valid_score(100);
+    let (staff_instance, target_voice) = target(&base);
+    let rest = EventId::new(ReplicaId(61), 0);
+    let insert_rest = envelope(
+        61,
+        0,
+        10,
+        CausalContext::new(),
+        None,
+        OperationPayload::Primitive(OperationKind::InsertEvent(InsertEventOp {
+            staff_instance,
+            event: valuegen::insert_event_value(
+                rest,
+                target_voice,
+                MusicalPosition(RationalTime::from_int(100)),
+                MusicalDuration::whole(),
+                &[],
+            ),
+        })),
+    );
+    let pitch = PitchId::new(ReplicaId(61), 1);
+    let add_pitch = envelope(
+        61,
+        1,
+        20,
+        CausalContext::new().with_seen(ReplicaId(61), 0),
+        None,
+        OperationPayload::Primitive(OperationKind::InsertIdentifiedPitch(
+            epiphany_ops::InsertIdentifiedPitchOp {
+                event: rest,
+                pitch: valuegen::identified_pitch(pitch),
+            },
+        )),
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(vec![insert_rest, add_pitch]);
+
+    let result = set.reduce_onto(&base);
+
+    match result.score.events.get(rest) {
+        Some(epiphany_core::Event::Pitched(pe)) => assert!(
+            pe.pitches.iter().any(|ip| ip.id == pitch),
+            "the inserted pitch is present on the promoted note"
+        ),
+        other => panic!("expected the rest to become a note, got {other:?}"),
+    }
+    assert!(check_invariants(&result.score).is_empty());
+}

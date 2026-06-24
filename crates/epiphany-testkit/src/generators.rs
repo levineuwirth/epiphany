@@ -1050,18 +1050,61 @@ pub fn graph_edit_session(
     let total = targets.len() as u64 * n;
     for _ in 0..80 {
         let r = rng.below(2) as usize;
-        let payload = if rng.boolean() {
-            OperationPayload::Primitive(OperationKind::DeleteEvent(DeleteEventOp {
+        // Mix the original edit kinds with the Group-1 (M2) leaf-field ops so the
+        // real-Score gate exercises their *graph* materialization (reduce_onto +
+        // check_invariants), not just the bookkeeping projection. Each targets a
+        // live object minted by the insert phase above.
+        let kind = match rng.below(7) {
+            0 => OperationKind::DeleteEvent(DeleteEventOp {
                 event: obj_event(rng.below(total)),
                 tuplet_compensation: TupletCompensation::NotInTuplet,
-            }))
-        } else {
-            OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
+            }),
+            1 => OperationKind::RespellPitch(RespellPitchOp {
                 pitch: obj_pitch(rng.below(total)),
                 spelling: valuegen::spelling(rng.below(4) as u8 + 1),
-            }))
+            }),
+            2 => {
+                // Rebuild the event at its *original* placement (so the graph
+                // applies the modify rather than deferring it as a move).
+                let idx = rng.below(total);
+                let (_, voice) = targets[(idx / n) as usize];
+                OperationKind::ModifyEvent(ModifyEventOp {
+                    event: valuegen::insert_event_value(
+                        obj_event(idx),
+                        voice,
+                        MusicalPosition(
+                            RationalTime::new(
+                                GRAPH_SESSION_OFFSET * EVENTS_PER_BAR as i64 + (idx % n) as i64,
+                                2,
+                            )
+                            .unwrap(),
+                        ),
+                        MusicalDuration(RationalTime::new(1, 2).unwrap()),
+                        &[obj_pitch(idx)],
+                    ),
+                })
+            }
+            3 => OperationKind::Transpose(TransposeOp {
+                targets: vec![obj_pitch(rng.below(total))],
+                chromatic_steps: rng.below(5) as i32 - 2,
+            }),
+            // Fresh pitch id (beyond the inserted 0..total range): adds a pitch to
+            // a note, or turns a rest (left by a last-pitch delete) back into one.
+            4 => OperationKind::InsertIdentifiedPitch(InsertIdentifiedPitchOp {
+                event: obj_event(rng.below(total)),
+                pitch: valuegen::identified_pitch(obj_pitch(total + rng.below(total))),
+            }),
+            // Deletes a single-pitch note's only pitch → exercises the note→rest
+            // degradation path.
+            5 => OperationKind::DeleteIdentifiedPitch(DeleteIdentifiedPitchOp {
+                pitch: obj_pitch(rng.below(total)),
+            }),
+            _ => OperationKind::ModifyIdentifiedPitch(ModifyIdentifiedPitchOp {
+                pitch: obj_pitch(rng.below(total)),
+                value: valuegen::pitch_value_nth(rng.below(7) as u8),
+            }),
         };
-        session.author(rng, r, payload);
+        session.author(rng, r, OperationPayload::Primitive(kind));
     }
     (targets, session.out)
 }

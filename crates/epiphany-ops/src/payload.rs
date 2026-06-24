@@ -679,9 +679,11 @@ impl CanonicalEncode for ModifyEventOp {
 }
 
 /// Transpose live pitches by a chromatic interval (Chapter 6 §6.10 Transpose).
-/// Pitch identifiers are preserved; reduction is order-dependent (transpositions
-/// do not commute). `chromatic_steps` is a minimal interval (a CMN alteration
-/// shift); rich interval algebra is deferred (Chapter 4 tuning catalog; P12-K2).
+/// Pitch identifiers are preserved; reduction is order-dependent in the general
+/// case (interval composition need not commute). `chromatic_steps` is a minimal
+/// interval (a CMN alteration shift) that, in this prototype, commutes except at
+/// the alteration's `i8` saturation bound; rich interval algebra is deferred
+/// (Chapter 4 tuning catalog; P12-K2).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TransposeOp {
     pub targets: Vec<PitchId>,
