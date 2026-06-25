@@ -74,6 +74,9 @@ pub enum V0OperationKind {
     InsertIdentifiedPitch(crate::payload::InsertIdentifiedPitchOp),
     DeleteIdentifiedPitch(crate::payload::DeleteIdentifiedPitchOp),
     ModifyIdentifiedPitch(crate::payload::ModifyIdentifiedPitchOp),
+    // Group 2 (M2) — also v1-native; round-trip by identity.
+    DeleteCrossCutting(crate::payload::DeleteCrossCuttingOp),
+    ModifyCrossCutting(crate::payload::ModifyCrossCuttingOp),
 }
 
 /// v0 `InsertEvent`: the event was a bare [`EventId`] plus the reduction-relevant

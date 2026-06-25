@@ -151,6 +151,9 @@ fn project_kind(kind: &OperationKind) -> V0OperationKind {
         OperationKind::ModifyIdentifiedPitch(op) => {
             V0OperationKind::ModifyIdentifiedPitch(op.clone())
         }
+        // v1-native (Group 2): projected verbatim.
+        OperationKind::DeleteCrossCutting(op) => V0OperationKind::DeleteCrossCutting(*op),
+        OperationKind::ModifyCrossCutting(op) => V0OperationKind::ModifyCrossCutting(op.clone()),
     }
 }
 
@@ -276,6 +279,9 @@ fn migrate_kind(kind: &V0OperationKind, context: &Score) -> Result<OperationKind
         V0OperationKind::ModifyIdentifiedPitch(op) => {
             OperationKind::ModifyIdentifiedPitch(op.clone())
         }
+        // v1-native (Group 2): identity round-trip.
+        V0OperationKind::DeleteCrossCutting(op) => OperationKind::DeleteCrossCutting(*op),
+        V0OperationKind::ModifyCrossCutting(op) => OperationKind::ModifyCrossCutting(op.clone()),
     })
 }
 
@@ -532,8 +538,8 @@ mod tests {
     }
 
     #[test]
-    fn group1_kinds_round_trip_by_identity() {
-        // The Group-1 (M2) kinds are v1-native: they had no lossy v0 form, so
+    fn group1_and_group2_kinds_round_trip_by_identity() {
+        // The Group-1/2 (M2) kinds are v1-native: they had no lossy v0 form, so
         // project+migrate is the identity (no context needed), and the round-trip
         // is exact for every one of them.
         let voice = VoiceId::new(ReplicaId(3), 0);
@@ -561,6 +567,16 @@ mod tests {
             OperationKind::ModifyIdentifiedPitch(crate::payload::ModifyIdentifiedPitchOp {
                 pitch: PitchId::new(ReplicaId(3), 1),
                 value: valuegen::pitch_value_nth(3),
+            }),
+            OperationKind::DeleteCrossCutting(crate::payload::DeleteCrossCuttingOp {
+                structure: epiphany_core::TypedObjectId::Slur(SlurId::new(ReplicaId(3), 5)),
+            }),
+            OperationKind::ModifyCrossCutting(crate::payload::ModifyCrossCuttingOp {
+                structure: CrossCuttingValue::Slur(valuegen::slur(
+                    SlurId::new(ReplicaId(3), 5),
+                    ev(1),
+                    ev(2),
+                )),
             }),
         ];
         for kind in kinds {

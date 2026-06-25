@@ -32,12 +32,13 @@ use epiphany_ops::valuegen;
 use epiphany_ops::{
     AnomalousReplicaSegment, AuthorId, CausalContext, ChangeRegionTimeModelOp, ConflictId,
     ConflictKind, ConflictKindRegistryId, ConflictRecord, ConflictRegistry,
-    ConflictResolutionState, CreateCrossCuttingOp, CrossCuttingValue, DeleteEventOp,
-    DeleteIdentifiedPitchOp, ExtensionPreconditionId, FieldPath, HybridLogicalClock, InsertEventOp,
-    InsertIdentifiedPitchOp, IntegrityAnomaly, IntegrityAnomalyKind, IntegrityAnomalyRegistryId,
-    MaterializedState, ModifyEventOp, ModifyIdentifiedPitchOp, NoOpReason, ObjectKind, ObjectState,
-    OperationEffect, OperationEnvelope, OperationKind, OperationKindRegistryId, OperationPayload,
-    OperationSet, OperationStamp, PendingReason, PositionRemapping, PreconditionFailureReason,
+    ConflictResolutionState, CreateCrossCuttingOp, CrossCuttingValue, DeleteCrossCuttingOp,
+    DeleteEventOp, DeleteIdentifiedPitchOp, ExtensionPreconditionId, FieldPath, HybridLogicalClock,
+    InsertEventOp, InsertIdentifiedPitchOp, IntegrityAnomaly, IntegrityAnomalyKind,
+    IntegrityAnomalyRegistryId, MaterializedState, ModifyCrossCuttingOp, ModifyEventOp,
+    ModifyIdentifiedPitchOp, NoOpReason, ObjectKind, ObjectState, OperationEffect,
+    OperationEnvelope, OperationKind, OperationKindRegistryId, OperationPayload, OperationSet,
+    OperationStamp, PendingReason, PositionRemapping, PreconditionFailureReason,
     PreconditionFailureRegistryId, ReanchorReason, ReanchorReasonRegistryId, ReanchorResult,
     RepairKind, RepairKindRegistryId, RepairRecord, ReplicaAnomalyReason, ReplicaAnomalyRegistryId,
     ResolutionAction, ResolutionRegistryId, ResolveConflictPayload, RespellPitchOp,
@@ -634,7 +635,7 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
         }
         _ => {}
     }
-    let kind = match rng.below(13) {
+    let kind = match rng.below(15) {
         0 => {
             let pitches = if rng.boolean() {
                 vec![obj_pitch(rng.below(pitches))]
@@ -718,6 +719,17 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
         11 => OperationKind::ModifyIdentifiedPitch(ModifyIdentifiedPitchOp {
             pitch: obj_pitch(rng.below(pitches)),
             value: valuegen::pitch_value_nth(rng.below(4) as u8 + 1),
+        }),
+        // Group 2 (M2): cross-cutting CRUD over the shared id space.
+        12 => OperationKind::DeleteCrossCutting(DeleteCrossCuttingOp {
+            structure: TypedObjectId::Slur(SlurId::new(OBJ_REPLICA, rng.below(events))),
+        }),
+        13 => OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+            structure: CrossCuttingValue::Slur(valuegen::slur(
+                SlurId::new(OBJ_REPLICA, rng.below(events)),
+                obj_event(rng.below(events)),
+                obj_event(rng.below(events)),
+            )),
         }),
         _ => OperationKind::Registered(
             OperationKindRegistryId(rng.next_u64() as u128),

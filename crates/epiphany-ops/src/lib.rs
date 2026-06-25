@@ -113,11 +113,12 @@ pub use envelope::{well_formed, EnvelopeHash, OperationEnvelope, WellFormednessE
 pub use migrate::{migrate_v0_envelope, project_v1_to_v0, MigrationError};
 pub use opset::OperationSet;
 pub use payload::{
-    ChangeRegionTimeModelOp, CreateCrossCuttingOp, CrossCuttingValue, DeleteEventOp,
-    DeleteIdentifiedPitchOp, InsertEventOp, InsertIdentifiedPitchOp, ModifyEventOp,
-    ModifyIdentifiedPitchOp, OperationKind, OperationKindTag, OperationPayload, PositionRemapping,
-    ResolveConflictPayload, RespellPitchOp, SetUserSystemBreakOp, TransactionCategory,
-    TransactionDescriptor, TransposeOp, TupletCompensation,
+    ChangeRegionTimeModelOp, CreateCrossCuttingOp, CrossCuttingValue, DeleteCrossCuttingOp,
+    DeleteEventOp, DeleteIdentifiedPitchOp, InsertEventOp, InsertIdentifiedPitchOp,
+    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationKindTag,
+    OperationPayload, PositionRemapping, ResolveConflictPayload, RespellPitchOp,
+    SetUserSystemBreakOp, TransactionCategory, TransactionDescriptor, TransposeOp,
+    TupletCompensation,
 };
 pub use reduce::{
     canonical_reduction_order, GraphMaterialization, MaterializedState, ObjectState, PendingReason,

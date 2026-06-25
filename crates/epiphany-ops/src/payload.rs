@@ -119,6 +119,12 @@ pub enum OperationKind {
     DeleteIdentifiedPitch(DeleteIdentifiedPitchOp),
     /// Overwrite a live pitch's value (later-in-canonical-order wins).
     ModifyIdentifiedPitch(ModifyIdentifiedPitchOp),
+    // --- Group 2 (M2): cross-cutting CRUD. Discriminants extend additively. ---
+    /// Tombstone a cross-cutting structure (delete-wins).
+    DeleteCrossCutting(DeleteCrossCuttingOp),
+    /// Overwrite a cross-cutting structure's value (later-in-canonical-order
+    /// wins).
+    ModifyCrossCutting(ModifyCrossCuttingOp),
 }
 
 impl OperationKind {
@@ -137,6 +143,8 @@ impl OperationKind {
             OperationKind::InsertIdentifiedPitch(_) => 10,
             OperationKind::DeleteIdentifiedPitch(_) => 11,
             OperationKind::ModifyIdentifiedPitch(_) => 12,
+            OperationKind::DeleteCrossCutting(_) => 13,
+            OperationKind::ModifyCrossCutting(_) => 14,
         }
     }
 
@@ -158,6 +166,8 @@ impl OperationKind {
             OperationKind::InsertIdentifiedPitch(_) => OperationKindTag::InsertIdentifiedPitch,
             OperationKind::DeleteIdentifiedPitch(_) => OperationKindTag::DeleteIdentifiedPitch,
             OperationKind::ModifyIdentifiedPitch(_) => OperationKindTag::ModifyIdentifiedPitch,
+            OperationKind::DeleteCrossCutting(_) => OperationKindTag::DeleteCrossCutting,
+            OperationKind::ModifyCrossCutting(_) => OperationKindTag::ModifyCrossCutting,
         }
     }
 }
@@ -182,6 +192,8 @@ impl CanonicalEncode for OperationKind {
             OperationKind::InsertIdentifiedPitch(op) => op.encode_canonical(out),
             OperationKind::DeleteIdentifiedPitch(op) => op.encode_canonical(out),
             OperationKind::ModifyIdentifiedPitch(op) => op.encode_canonical(out),
+            OperationKind::DeleteCrossCutting(op) => op.encode_canonical(out),
+            OperationKind::ModifyCrossCutting(op) => op.encode_canonical(out),
         }
     }
 }
@@ -747,6 +759,49 @@ impl CanonicalEncode for ModifyIdentifiedPitchOp {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         push_canon(out, &self.pitch);
         push_lp_bytes(out, &self.value.canonical_bytes());
+    }
+}
+
+// --- Group 2 (M2): cross-cutting CRUD (Chapter 6 §6.10). ---------------------
+
+/// Tombstone a cross-cutting structure (Chapter 6 §6.10 DeleteCrossCutting).
+/// Delete-wins discipline; the structure id is retained as a tombstone. The
+/// structure is named by its [`TypedObjectId`] — the same key the set-union
+/// creation and the re-anchoring table use — which must be a cross-cutting kind
+/// (`Tie`/`Slur`/`Beam`/`Spanner`).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct DeleteCrossCuttingOp {
+    pub structure: TypedObjectId,
+}
+
+impl CanonicalEncode for DeleteCrossCuttingOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_canon(out, &self.structure);
+    }
+}
+
+/// Overwrite a cross-cutting structure's value (Chapter 6 §6.10
+/// ModifyCrossCutting). Carries the full replacement [`CrossCuttingValue`] (v1,
+/// value-typed); the field-overwrite discipline keys on the structure's
+/// [`CrossCuttingValue::id`] (later-in-canonical-order wins; concurrent differing
+/// conflict). The replacement keeps the structure's identity but may change its
+/// endpoints and per-kind fields — the reduction re-derives its endpoints from
+/// the new value (so a later re-anchoring sees them).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ModifyCrossCuttingOp {
+    pub structure: CrossCuttingValue,
+}
+
+impl ModifyCrossCuttingOp {
+    /// The structure's identity (the LWW key).
+    pub fn id(&self) -> TypedObjectId {
+        self.structure.id()
+    }
+}
+
+impl CanonicalEncode for ModifyCrossCuttingOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        self.structure.encode_canonical(out);
     }
 }
 

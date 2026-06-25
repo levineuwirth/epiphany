@@ -638,3 +638,306 @@ fn insert_identified_pitch_into_a_rest_promotes_it_to_a_note() {
     }
     assert!(check_invariants(&result.score).is_empty());
 }
+
+/// Three non-overlapping events in the target voice plus a cross-cutting
+/// structure over them (built by `structure`) — a self-contained corpus authored
+/// on one replica so each op causally follows (and therefore sees) the events it
+/// depends on. Returns the events, the create envelope, and the three inserts;
+/// tests append their own op at counter 4 (causally after the create).
+fn cross_cutting_fixture(
+    base: &Score,
+    structure: impl FnOnce(EventId, EventId, EventId) -> CrossCuttingValue,
+) -> (
+    EventId,
+    EventId,
+    EventId,
+    OperationEnvelope,
+    Vec<OperationEnvelope>,
+) {
+    let (staff_instance, target_voice) = target(base);
+    let r = 70;
+    let (e1, e2, e3) = (
+        EventId::new(ReplicaId(r), 0),
+        EventId::new(ReplicaId(r), 1),
+        EventId::new(ReplicaId(r), 2),
+    );
+    let ins = |counter: u64, ev: EventId, pos: i32| {
+        let ctx = if counter == 0 {
+            CausalContext::new()
+        } else {
+            CausalContext::new().with_seen(ReplicaId(r), counter - 1)
+        };
+        envelope(
+            r,
+            counter,
+            10 + counter as i64,
+            ctx,
+            None,
+            insert(
+                staff_instance,
+                target_voice,
+                ev,
+                PitchId::new(ReplicaId(r), 100 + counter),
+                pos,
+            ),
+        )
+    };
+    let inserts = vec![ins(0, e1, 100), ins(1, e2, 101), ins(2, e3, 102)];
+    let create = envelope(
+        r,
+        3,
+        14,
+        CausalContext::new().with_seen(ReplicaId(r), 2),
+        None,
+        OperationPayload::Primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: structure(e1, e2, e3),
+        })),
+    );
+    (e1, e2, e3, create, inserts)
+}
+
+/// An op authored after the fixture's create (counter 4, sees counters 0..=3).
+fn after_create(payload: OperationPayload) -> OperationEnvelope {
+    envelope(
+        70,
+        4,
+        15,
+        CausalContext::new().with_seen(ReplicaId(70), 3),
+        None,
+        payload,
+    )
+}
+
+/// An event-anchored spanner over `a`..`b` (the reduction reads its endpoints
+/// from the two [`TimeAnchor::Event`] anchors).
+fn spanner_over(id: epiphany_core::SpannerId, a: EventId, b: EventId) -> epiphany_core::Spanner {
+    epiphany_core::Spanner {
+        id,
+        start: TimeAnchor::Event {
+            id: a,
+            offset: AnchorOffset::Zero,
+        },
+        end: TimeAnchor::Event {
+            id: b,
+            offset: AnchorOffset::Zero,
+        },
+        staves: Vec::new(),
+    }
+}
+
+/// Create a structure, then delete it; assert it leaves the graph and the
+/// structure id is tombstoned (delete-wins), graph invariants intact.
+fn assert_delete_removes_and_tombstones(
+    structure: impl FnOnce(EventId, EventId, EventId) -> CrossCuttingValue,
+    sid: TypedObjectId,
+    still_present: impl Fn(&Score) -> bool,
+) {
+    let base = epiphany_core::generators::valid_score(100);
+    let (_e1, _e2, _e3, create, inserts) = cross_cutting_fixture(&base, structure);
+    let delete = after_create(OperationPayload::Primitive(
+        OperationKind::DeleteCrossCutting(epiphany_ops::DeleteCrossCuttingOp { structure: sid }),
+    ));
+    let mut set = OperationSet::new();
+    set.accept_all(inserts.into_iter().chain([create, delete]));
+    let result = set.reduce_onto(&base);
+    assert!(
+        !still_present(&result.score),
+        "DeleteCrossCutting removes {sid:?} from the graph"
+    );
+    assert!(
+        matches!(
+            result.state.objects.get(&sid),
+            Some(epiphany_ops::ObjectState::Tombstoned { .. })
+        ),
+        "DeleteCrossCutting tombstones {sid:?} (delete-wins)"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+/// Create a structure, then overwrite it with `modified`; run `verify` on the
+/// resulting graph (which receives the fixture's three events), invariants intact.
+fn assert_modify_updates(
+    initial: impl FnOnce(EventId, EventId, EventId) -> CrossCuttingValue,
+    modified: impl FnOnce(EventId, EventId, EventId) -> CrossCuttingValue,
+    verify: impl FnOnce(&Score, EventId, EventId, EventId),
+) {
+    let base = epiphany_core::generators::valid_score(100);
+    let (e1, e2, e3, create, inserts) = cross_cutting_fixture(&base, initial);
+    let modify = after_create(OperationPayload::Primitive(
+        OperationKind::ModifyCrossCutting(epiphany_ops::ModifyCrossCuttingOp {
+            structure: modified(e1, e2, e3),
+        }),
+    ));
+    let mut set = OperationSet::new();
+    set.accept_all(inserts.into_iter().chain([create, modify]));
+    let result = set.reduce_onto(&base);
+    verify(&result.score, e1, e2, e3);
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn delete_cross_cutting_removes_the_structure_from_the_graph() {
+    let slur = SlurId::new(ReplicaId(70), 9);
+    // First confirm the create actually materializes (the delete assertions below
+    // would pass vacuously if it didn't).
+    let base = epiphany_core::generators::valid_score(100);
+    let (_e1, _e2, _e3, create, inserts) = cross_cutting_fixture(&base, |e1, e2, _| {
+        CrossCuttingValue::Slur(valuegen::slur(slur, e1, e2))
+    });
+    let mut created = OperationSet::new();
+    created.accept_all(inserts.into_iter().chain([create]));
+    assert!(
+        created
+            .reduce_onto(&base)
+            .score
+            .cross_cutting
+            .slurs
+            .iter()
+            .any(|s| s.id == slur),
+        "CreateCrossCutting materializes the slur in the graph"
+    );
+
+    assert_delete_removes_and_tombstones(
+        |e1, e2, _| CrossCuttingValue::Slur(valuegen::slur(slur, e1, e2)),
+        TypedObjectId::Slur(slur),
+        move |score| score.cross_cutting.slurs.iter().any(|s| s.id == slur),
+    );
+}
+
+#[test]
+fn delete_cross_cutting_handles_tie_beam_and_spanner() {
+    let tie = epiphany_core::TieId::new(ReplicaId(70), 1);
+    assert_delete_removes_and_tombstones(
+        |e1, e2, _| CrossCuttingValue::Tie(valuegen::tie(tie, e1, e2)),
+        TypedObjectId::Tie(tie),
+        move |score| score.cross_cutting.ties.iter().any(|t| t.id == tie),
+    );
+    let beam = epiphany_core::BeamId::new(ReplicaId(70), 1);
+    assert_delete_removes_and_tombstones(
+        |e1, e2, e3| CrossCuttingValue::Beam(valuegen::beam(beam, vec![e1, e2, e3])),
+        TypedObjectId::Beam(beam),
+        move |score| score.cross_cutting.beams.iter().any(|b| b.id == beam),
+    );
+    let spanner = epiphany_core::SpannerId::new(ReplicaId(70), 1);
+    assert_delete_removes_and_tombstones(
+        |e1, e2, _| CrossCuttingValue::Spanner(spanner_over(spanner, e1, e2)),
+        TypedObjectId::Spanner(spanner),
+        move |score| score.cross_cutting.spanners.iter().any(|s| s.id == spanner),
+    );
+}
+
+#[test]
+fn modify_cross_cutting_updates_the_structure_in_the_graph() {
+    let slur = SlurId::new(ReplicaId(70), 9);
+    // Re-point the slur's end from e2 to e3 (a different live endpoint).
+    assert_modify_updates(
+        |e1, e2, _| CrossCuttingValue::Slur(valuegen::slur(slur, e1, e2)),
+        |e1, _, e3| CrossCuttingValue::Slur(valuegen::slur(slur, e1, e3)),
+        move |score, _e1, _e2, e3| {
+            let s = score
+                .cross_cutting
+                .slurs
+                .iter()
+                .find(|s| s.id == slur)
+                .expect("the slur is still present after a modify");
+            assert_eq!(s.end_event, e3, "modify updates the slur's endpoint");
+        },
+    );
+}
+
+#[test]
+fn modify_cross_cutting_updates_tie_beam_and_spanner() {
+    let tie = epiphany_core::TieId::new(ReplicaId(70), 1);
+    assert_modify_updates(
+        |e1, e2, _| CrossCuttingValue::Tie(valuegen::tie(tie, e1, e2)),
+        |e1, _, e3| CrossCuttingValue::Tie(valuegen::tie(tie, e1, e3)),
+        move |score, _e1, _e2, e3| {
+            let t = score
+                .cross_cutting
+                .ties
+                .iter()
+                .find(|t| t.id == tie)
+                .expect("the tie is still present after a modify");
+            assert_eq!(t.end_event, e3, "modify updates the tie's endpoint");
+        },
+    );
+    let beam = epiphany_core::BeamId::new(ReplicaId(70), 1);
+    assert_modify_updates(
+        |e1, e2, _| CrossCuttingValue::Beam(valuegen::beam(beam, vec![e1, e2])),
+        |e1, e2, e3| CrossCuttingValue::Beam(valuegen::beam(beam, vec![e1, e2, e3])),
+        move |score, _e1, _e2, _e3| {
+            let b = score
+                .cross_cutting
+                .beams
+                .iter()
+                .find(|b| b.id == beam)
+                .expect("the beam is still present after a modify");
+            assert_eq!(b.events.len(), 3, "modify grows the beam to three events");
+        },
+    );
+    let spanner = epiphany_core::SpannerId::new(ReplicaId(70), 1);
+    assert_modify_updates(
+        |e1, e2, _| CrossCuttingValue::Spanner(spanner_over(spanner, e1, e2)),
+        |e1, _, e3| CrossCuttingValue::Spanner(spanner_over(spanner, e1, e3)),
+        move |score, _e1, _e2, e3| {
+            let s = score
+                .cross_cutting
+                .spanners
+                .iter()
+                .find(|s| s.id == spanner)
+                .expect("the spanner is still present after a modify");
+            assert!(
+                matches!(s.end, TimeAnchor::Event { id, .. } if id == e3),
+                "modify re-points the spanner's end anchor"
+            );
+        },
+    );
+}
+
+#[test]
+fn modify_cross_cutting_rejects_an_undersized_beam() {
+    // Dropping a beam below two events is a precondition NoOp (mirrors
+    // CreateCrossCutting); the graph keeps the original beam, hitting the
+    // `beam.events.len() < 2` branch of modify_cross_cutting.
+    let base = epiphany_core::generators::valid_score(100);
+    let beam = epiphany_core::BeamId::new(ReplicaId(70), 1);
+    let (e1, e2, _e3, create, inserts) = cross_cutting_fixture(&base, |e1, e2, _| {
+        CrossCuttingValue::Beam(valuegen::beam(beam, vec![e1, e2]))
+    });
+    let shrink = after_create(OperationPayload::Primitive(
+        OperationKind::ModifyCrossCutting(epiphany_ops::ModifyCrossCuttingOp {
+            structure: CrossCuttingValue::Beam(valuegen::beam(beam, vec![e1])),
+        }),
+    ));
+    let shrink_id = shrink.id;
+    let mut set = OperationSet::new();
+    set.accept_all(inserts.into_iter().chain([create, shrink]));
+    let result = set.reduce_onto(&base);
+    assert!(
+        matches!(
+            result
+                .state
+                .effects
+                .iter()
+                .find(|(id, _)| *id == shrink_id)
+                .map(|(_, e)| e),
+            Some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction { .. }
+            })
+        ),
+        "a beam-modify dropping below two events is a precondition NoOp"
+    );
+    let materialized = result
+        .score
+        .cross_cutting
+        .beams
+        .iter()
+        .find(|b| b.id == beam)
+        .expect("the original beam survives the rejected modify");
+    assert_eq!(
+        materialized.events,
+        vec![e1, e2],
+        "the rejected modify left the original two-event beam"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}

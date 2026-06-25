@@ -50,9 +50,10 @@ use crate::encode::{push_canon, push_len, push_lp_bytes, push_u8_bool};
 use crate::envelope::OperationEnvelope;
 use crate::opset::OperationSet;
 use crate::payload::{
-    CreateCrossCuttingOp, CrossCuttingValue, DeleteEventOp, DeleteIdentifiedPitchOp, InsertEventOp,
-    InsertIdentifiedPitchOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind,
-    OperationPayload, RespellPitchOp, TransposeOp, TupletCompensation,
+    CreateCrossCuttingOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp,
+    DeleteIdentifiedPitchOp, InsertEventOp, InsertIdentifiedPitchOp, ModifyCrossCuttingOp,
+    ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationPayload, RespellPitchOp,
+    TransposeOp, TupletCompensation,
 };
 use crate::undo::{UndoPolicy, UndoTransactionPayload};
 
@@ -323,6 +324,9 @@ struct Reducer<'a> {
     // (the resolved value itself lives in the graph, not in MaterializedState).
     last_event_modify: BTreeMap<EventId, (OperationId, Event)>,
     last_pitch_modify: BTreeMap<PitchId, (OperationId, Pitch)>,
+    // LWW working state for ModifyCrossCutting (Group 2), mirroring the leaf-field
+    // modify maps above: last modifier + value it wrote, keyed by structure id.
+    last_cross_cutting_modify: BTreeMap<TypedObjectId, (OperationId, CrossCuttingValue)>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
@@ -346,6 +350,7 @@ struct WorkingSnapshot {
     last_respell: BTreeMap<PitchId, OperationId>,
     last_event_modify: BTreeMap<EventId, (OperationId, Event)>,
     last_pitch_modify: BTreeMap<PitchId, (OperationId, Pitch)>,
+    last_cross_cutting_modify: BTreeMap<TypedObjectId, (OperationId, CrossCuttingValue)>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
@@ -418,6 +423,7 @@ impl<'a> Reducer<'a> {
             last_respell: BTreeMap::new(),
             last_event_modify: BTreeMap::new(),
             last_pitch_modify: BTreeMap::new(),
+            last_cross_cutting_modify: BTreeMap::new(),
             structures: BTreeMap::new(),
             migrated_regions: BTreeSet::new(),
             region_migrator: BTreeMap::new(),
@@ -1108,6 +1114,8 @@ impl<'a> Reducer<'a> {
                 OperationKind::InsertIdentifiedPitch(op) => self.insert_identified_pitch(env, op),
                 OperationKind::DeleteIdentifiedPitch(op) => self.delete_identified_pitch(env, op),
                 OperationKind::ModifyIdentifiedPitch(op) => self.modify_identified_pitch(env, op),
+                OperationKind::DeleteCrossCutting(op) => self.delete_cross_cutting(env, op),
+                OperationKind::ModifyCrossCutting(op) => self.modify_cross_cutting(env, op),
             },
             OperationPayload::ResolveConflict(op) => self.resolve_conflict(env, op),
             OperationPayload::UndoTransaction(op) => self.undo_transaction(env, op),
@@ -1520,6 +1528,197 @@ impl<'a> Reducer<'a> {
         self.note_minted(env, sid);
         self.structures.insert(sid, endpoints);
         OperationEffect::Applied
+    }
+
+    fn delete_cross_cutting(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &DeleteCrossCuttingOp,
+    ) -> OperationEffect {
+        let sid = op.structure;
+        // DeleteCrossCutting names a cross-cutting structure only; refuse to
+        // tombstone any other object kind through this path.
+        if !matches!(
+            sid,
+            TypedObjectId::Tie(_)
+                | TypedObjectId::Slur(_)
+                | TypedObjectId::Beam(_)
+                | TypedObjectId::Spanner(_)
+        ) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
+        let minted_by = match self.objects.get(&sid) {
+            None => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                }
+            }
+            // Concurrent same-target deletes are idempotent (delete-wins).
+            Some(ObjectState::Tombstoned { .. }) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::AlreadyApplied,
+                }
+            }
+            Some(ObjectState::Live) => self.minted_by.get(&sid).copied().unwrap_or(env.id),
+        };
+        self.objects.insert(
+            sid,
+            ObjectState::Tombstoned {
+                deleted_by: env.id,
+                minted_by,
+            },
+        );
+        // Drop the transient endpoint/LWW indices so a later event tombstone's
+        // re-anchoring pass never re-processes the deleted structure.
+        self.structures.remove(&sid);
+        self.last_cross_cutting_modify.remove(&sid);
+        self.graph_delete_cross_cutting(sid);
+        OperationEffect::Applied
+    }
+
+    fn modify_cross_cutting(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &ModifyCrossCuttingOp,
+    ) -> OperationEffect {
+        let sid = op.id();
+        match self.objects.get(&sid) {
+            None => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                }
+            }
+            Some(ObjectState::Tombstoned { .. }) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::TargetTombstoned,
+                }
+            }
+            Some(ObjectState::Live) => {}
+        }
+        // A beam must keep at least two events (mirrors CreateCrossCutting); the
+        // new endpoints must all be live.
+        if let CrossCuttingValue::Beam(beam) = &op.structure {
+            if beam.events.len() < 2 {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                };
+            }
+        }
+        let endpoints = op.structure.endpoints();
+        for e in &endpoints {
+            if !matches!(self.objects.get(e), Some(ObjectState::Live)) {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                };
+            }
+        }
+        // LWW field-overwrite, mirroring modify_event: the resolved value lives in
+        // the graph; MaterializedState records only the effect and, on a
+        // concurrent differing write, a StructuralFieldCollision.
+        let prev = self
+            .last_cross_cutting_modify
+            .get(&sid)
+            .map(|(o, v)| (*o, v.clone()));
+        let effect = match prev {
+            Some((prev_op, prev_value)) if self.concurrent(env.id, prev_op) => {
+                if prev_value == op.structure {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::AlreadyApplied,
+                    };
+                }
+                let conflict = ConflictRecord::new(
+                    ConflictKind::StructuralFieldCollision {
+                        winner: env.id,
+                        loser: prev_op,
+                        field: FieldPath("cross_cutting".to_string()),
+                    },
+                    vec![env.id, prev_op],
+                    vec![sid],
+                );
+                let cid = conflict.id;
+                self.conflicts.insert(conflict);
+                OperationEffect::Conflicted { conflict: cid }
+            }
+            _ => OperationEffect::Applied,
+        };
+        self.last_cross_cutting_modify
+            .insert(sid, (env.id, op.structure.clone()));
+        self.structures.insert(sid, endpoints);
+        self.graph_modify_cross_cutting(&op.structure);
+        effect
+    }
+
+    fn graph_delete_cross_cutting(&mut self, sid: TypedObjectId) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        match sid {
+            TypedObjectId::Slur(id) => score.cross_cutting.slurs.retain(|v| v.id != id),
+            TypedObjectId::Tie(id) => score.cross_cutting.ties.retain(|v| v.id != id),
+            TypedObjectId::Beam(id) => score.cross_cutting.beams.retain(|v| v.id != id),
+            TypedObjectId::Spanner(id) => score.cross_cutting.spanners.retain(|v| v.id != id),
+            _ => {}
+        }
+    }
+
+    fn graph_modify_cross_cutting(&mut self, value: &CrossCuttingValue) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        // Replace the structure in place by id (identity is preserved across a
+        // modify). A structure that is Live in bookkeeping but absent from the
+        // graph (e.g. one a DeleteEvent re-anchor removed from the graph while
+        // bookkeeping kept it Live) is left as-is; the modify is still recorded.
+        match value {
+            CrossCuttingValue::Slur(slur) => {
+                if let Some(existing) = score
+                    .cross_cutting
+                    .slurs
+                    .iter_mut()
+                    .find(|v| v.id == slur.id)
+                {
+                    *existing = slur.clone();
+                }
+            }
+            CrossCuttingValue::Tie(tie) => {
+                if let Some(existing) = score.cross_cutting.ties.iter_mut().find(|v| v.id == tie.id)
+                {
+                    *existing = tie.clone();
+                }
+            }
+            CrossCuttingValue::Beam(beam) => {
+                if let Some(existing) = score
+                    .cross_cutting
+                    .beams
+                    .iter_mut()
+                    .find(|v| v.id == beam.id)
+                {
+                    *existing = beam.clone();
+                }
+            }
+            CrossCuttingValue::Spanner(spanner) => {
+                if let Some(existing) = score
+                    .cross_cutting
+                    .spanners
+                    .iter_mut()
+                    .find(|v| v.id == spanner.id)
+                {
+                    *existing = spanner.clone();
+                }
+            }
+        }
     }
 
     fn change_region_time_model(
@@ -2390,6 +2589,7 @@ impl<'a> Reducer<'a> {
             last_respell: self.last_respell.clone(),
             last_event_modify: self.last_event_modify.clone(),
             last_pitch_modify: self.last_pitch_modify.clone(),
+            last_cross_cutting_modify: self.last_cross_cutting_modify.clone(),
             structures: self.structures.clone(),
             migrated_regions: self.migrated_regions.clone(),
             region_migrator: self.region_migrator.clone(),
@@ -2410,6 +2610,7 @@ impl<'a> Reducer<'a> {
         self.last_respell = s.last_respell;
         self.last_event_modify = s.last_event_modify;
         self.last_pitch_modify = s.last_pitch_modify;
+        self.last_cross_cutting_modify = s.last_cross_cutting_modify;
         self.structures = s.structures;
         self.migrated_regions = s.migrated_regions;
         self.region_migrator = s.region_migrator;
@@ -2874,5 +3075,100 @@ mod tests {
             ),
             "DeleteIdentifiedPitch tombstones the pitch"
         );
+    }
+
+    // --- Group 2 (M2) behavior. --------------------------------------------
+
+    fn create_slur(slur: epiphany_core::SlurId, a: EventId, b: EventId) -> OperationKind {
+        OperationKind::CreateCrossCutting(crate::payload::CreateCrossCuttingOp {
+            structure: CrossCuttingValue::Slur(crate::valuegen::slur(slur, a, b)),
+        })
+    }
+
+    #[test]
+    fn delete_cross_cutting_tombstones_the_structure() {
+        let e1 = EventId::new(ReplicaId(1), 100);
+        let e2 = EventId::new(ReplicaId(1), 101);
+        let slur = epiphany_core::SlurId::new(ReplicaId(1), 1);
+        let sid = TypedObjectId::Slur(slur);
+        let create = prim_env(
+            1,
+            2,
+            12,
+            CausalContext::new().with_seen(ReplicaId(1), 1),
+            create_slur(slur, e1, e2),
+        );
+        let delete = prim_env(
+            1,
+            3,
+            13,
+            CausalContext::new().with_seen(ReplicaId(1), 2),
+            OperationKind::DeleteCrossCutting(crate::payload::DeleteCrossCuttingOp {
+                structure: sid,
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            insert(1, 0, 10, 1, 100, 0),
+            insert(1, 1, 11, 1, 101, 1),
+            create,
+            delete,
+        ]);
+        let state = set.reduce();
+        assert!(
+            matches!(
+                state.objects.get(&sid),
+                Some(ObjectState::Tombstoned { .. })
+            ),
+            "DeleteCrossCutting tombstones the structure (delete-wins)"
+        );
+    }
+
+    #[test]
+    fn concurrent_differing_modify_cross_cutting_conflicts() {
+        let e1 = EventId::new(ReplicaId(1), 100);
+        let e2 = EventId::new(ReplicaId(1), 101);
+        let e3 = EventId::new(ReplicaId(1), 102);
+        let slur = epiphany_core::SlurId::new(ReplicaId(1), 1);
+        let create = prim_env(
+            1,
+            3,
+            13,
+            CausalContext::new().with_seen(ReplicaId(1), 2),
+            create_slur(slur, e1, e2),
+        );
+        // Two concurrent modifies (seen the create, not each other) with differing
+        // endpoints: e1->e2 vs e1->e3.
+        let seen_create = CausalContext::new().with_seen(ReplicaId(1), 3);
+        let modify = |replica: u64, end: EventId| {
+            prim_env(
+                replica,
+                0,
+                20,
+                seen_create.clone(),
+                OperationKind::ModifyCrossCutting(crate::payload::ModifyCrossCuttingOp {
+                    structure: CrossCuttingValue::Slur(crate::valuegen::slur(slur, e1, end)),
+                }),
+            )
+        };
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            insert(1, 0, 10, 1, 100, 0),
+            insert(1, 1, 11, 1, 101, 1),
+            insert(1, 2, 12, 1, 102, 2),
+            create,
+            modify(2, e2),
+            modify(3, e3),
+        ]);
+        let state = set.reduce();
+        assert_eq!(
+            state.conflicts.records().len(),
+            1,
+            "concurrent differing ModifyCrossCutting must record exactly one conflict"
+        );
+        assert!(matches!(
+            state.conflicts.records()[0].kind,
+            ConflictKind::StructuralFieldCollision { .. }
+        ));
     }
 }
