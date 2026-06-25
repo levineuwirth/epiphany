@@ -84,6 +84,10 @@ pub enum V0OperationKind {
     DeleteStaffInstance(crate::payload::DeleteStaffInstanceOp),
     CreateVoice(crate::payload::CreateVoiceOp),
     DeleteVoice(crate::payload::DeleteVoiceOp),
+    // Group 4 (M2d) — also v1-native; round-trip by identity.
+    SetMetadata(crate::payload::SetMetadataOp),
+    SetMetricGrid(crate::payload::SetMetricGridOp),
+    SetUserPageBreak(crate::payload::SetUserPageBreakOp),
 }
 
 /// v0 `InsertEvent`: the event was a bare [`EventId`] plus the reduction-relevant

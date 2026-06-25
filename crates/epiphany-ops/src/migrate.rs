@@ -161,6 +161,10 @@ fn project_kind(kind: &OperationKind) -> V0OperationKind {
         OperationKind::DeleteStaffInstance(op) => V0OperationKind::DeleteStaffInstance(*op),
         OperationKind::CreateVoice(op) => V0OperationKind::CreateVoice(op.clone()),
         OperationKind::DeleteVoice(op) => V0OperationKind::DeleteVoice(*op),
+        // v1-native (Group 4): projected verbatim.
+        OperationKind::SetMetadata(op) => V0OperationKind::SetMetadata(op.clone()),
+        OperationKind::SetMetricGrid(op) => V0OperationKind::SetMetricGrid(op.clone()),
+        OperationKind::SetUserPageBreak(op) => V0OperationKind::SetUserPageBreak(op.clone()),
     }
 }
 
@@ -296,6 +300,10 @@ fn migrate_kind(kind: &V0OperationKind, context: &Score) -> Result<OperationKind
         V0OperationKind::DeleteStaffInstance(op) => OperationKind::DeleteStaffInstance(*op),
         V0OperationKind::CreateVoice(op) => OperationKind::CreateVoice(op.clone()),
         V0OperationKind::DeleteVoice(op) => OperationKind::DeleteVoice(*op),
+        // v1-native (Group 4): identity round-trip.
+        V0OperationKind::SetMetadata(op) => OperationKind::SetMetadata(op.clone()),
+        V0OperationKind::SetMetricGrid(op) => OperationKind::SetMetricGrid(op.clone()),
+        V0OperationKind::SetUserPageBreak(op) => OperationKind::SetUserPageBreak(op.clone()),
     })
 }
 
@@ -614,6 +622,21 @@ mod tests {
             }),
             OperationKind::DeleteVoice(crate::payload::DeleteVoiceOp {
                 voice: VoiceId::new(ReplicaId(3), 9),
+            }),
+            OperationKind::SetMetadata(crate::payload::SetMetadataOp {
+                metadata: valuegen::score_metadata(2),
+            }),
+            OperationKind::SetMetricGrid(crate::payload::SetMetricGridOp {
+                region: epiphany_core::RegionId::new(ReplicaId(3), 7),
+                grid: Some(valuegen::metric_grid()),
+            }),
+            OperationKind::SetUserPageBreak(crate::payload::SetUserPageBreakOp {
+                region: epiphany_core::RegionId::new(ReplicaId(3), 7),
+                anchor: valuegen::region_start_anchor(
+                    epiphany_core::RegionId::new(ReplicaId(3), 7),
+                    epiphany_core::MusicalPosition::origin(),
+                ),
+                present: true,
             }),
         ];
         for kind in kinds {

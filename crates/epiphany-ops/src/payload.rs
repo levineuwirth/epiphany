@@ -33,9 +33,9 @@
 
 use epiphany_core::{
     Beam, CanonicalValue, Event, EventDuration, EventId, EventPosition, IdentifiedPitch,
-    MusicalDuration, MusicalPosition, Pitch, PitchId, PitchSpelling, Region, RegionId,
-    RegionTimeModel, Rest, Slur, Spanner, StaffInstance, StaffInstanceId, Tie, TimeAnchor,
-    TransactionId, TupletId, TypedObjectId, Voice, VoiceId,
+    MetricGrid, MusicalDuration, MusicalPosition, Pitch, PitchId, PitchSpelling, Region, RegionId,
+    RegionTimeModel, Rest, ScoreMetadata, Slur, Spanner, StaffInstance, StaffInstanceId, Tie,
+    TimeAnchor, TransactionId, TupletId, TypedObjectId, Voice, VoiceId,
 };
 use epiphany_determinism::{sorted_canonical, CanonicalEncode};
 
@@ -138,6 +138,14 @@ pub enum OperationKind {
     CreateVoice(CreateVoiceOp),
     /// Tombstone an empty voice (precondition: no live events).
     DeleteVoice(DeleteVoiceOp),
+    // --- Group 4 (M2d): score settings. LWW field-overwrite. ---
+    /// Overwrite the score metadata (later-in-canonical-order wins).
+    SetMetadata(SetMetadataOp),
+    /// Overwrite a region's default metric grid (later-in-canonical-order wins).
+    SetMetricGrid(SetMetricGridOp),
+    /// Set a user page-break preference (LWW advisory; the page-break sibling of
+    /// `SetUserSystemBreak`).
+    SetUserPageBreak(SetUserPageBreakOp),
 }
 
 impl OperationKind {
@@ -164,6 +172,9 @@ impl OperationKind {
             OperationKind::DeleteStaffInstance(_) => 18,
             OperationKind::CreateVoice(_) => 19,
             OperationKind::DeleteVoice(_) => 20,
+            OperationKind::SetMetadata(_) => 21,
+            OperationKind::SetMetricGrid(_) => 22,
+            OperationKind::SetUserPageBreak(_) => 23,
         }
     }
 
@@ -193,6 +204,9 @@ impl OperationKind {
             OperationKind::DeleteStaffInstance(_) => OperationKindTag::DeleteStaffInstance,
             OperationKind::CreateVoice(_) => OperationKindTag::CreateVoice,
             OperationKind::DeleteVoice(_) => OperationKindTag::DeleteVoice,
+            OperationKind::SetMetadata(_) => OperationKindTag::SetMetadata,
+            OperationKind::SetMetricGrid(_) => OperationKindTag::SetMetricGrid,
+            OperationKind::SetUserPageBreak(_) => OperationKindTag::SetUserPageBreak,
         }
     }
 }
@@ -225,6 +239,9 @@ impl CanonicalEncode for OperationKind {
             OperationKind::DeleteStaffInstance(op) => op.encode_canonical(out),
             OperationKind::CreateVoice(op) => op.encode_canonical(out),
             OperationKind::DeleteVoice(op) => op.encode_canonical(out),
+            OperationKind::SetMetadata(op) => op.encode_canonical(out),
+            OperationKind::SetMetricGrid(op) => op.encode_canonical(out),
+            OperationKind::SetUserPageBreak(op) => op.encode_canonical(out),
         }
     }
 }
@@ -257,6 +274,8 @@ pub enum OperationKindTag {
     ModifyIdentifiedPitch,
     CreateVoice,
     DeleteVoice,
+    SetMetadata,
+    SetMetricGrid,
 }
 
 impl OperationKindTag {
@@ -284,6 +303,8 @@ impl OperationKindTag {
             OperationKindTag::ModifyIdentifiedPitch => 19,
             OperationKindTag::CreateVoice => 20,
             OperationKindTag::DeleteVoice => 21,
+            OperationKindTag::SetMetadata => 22,
+            OperationKindTag::SetMetricGrid => 23,
         }
     }
 }
@@ -949,6 +970,78 @@ pub struct DeleteVoiceOp {
 impl CanonicalEncode for DeleteVoiceOp {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         push_canon(out, &self.voice);
+    }
+}
+
+// --- Group 4 (M2d): score settings (Chapter 6 §6.10). LWW field-overwrite. ---
+
+/// Overwrite the score metadata (Chapter 6 §6.10 SetMetadata). Carries the full
+/// [`ScoreMetadata`] (v1); the score-singleton field-overwrite is last-writer-wins
+/// (concurrent differing ⇒ structural-field-collision).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SetMetadataOp {
+    pub metadata: ScoreMetadata,
+}
+
+impl CanonicalEncode for SetMetadataOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_lp_bytes(out, &self.metadata.canonical_bytes());
+    }
+}
+
+/// Overwrite a region's default metric grid (Chapter 6 §6.10 SetMetricGrid).
+/// Carries the full target [`MetricGrid`] (or `None` to clear it); LWW
+/// field-overwrite keyed by region (concurrent differing ⇒
+/// structural-field-collision).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SetMetricGridOp {
+    pub region: RegionId,
+    pub grid: Option<MetricGrid>,
+}
+
+impl CanonicalEncode for SetMetricGridOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_canon(out, &self.region);
+        match &self.grid {
+            None => push_tag(out, 0),
+            Some(grid) => {
+                push_tag(out, 1);
+                push_lp_bytes(out, &grid.canonical_bytes());
+            }
+        }
+    }
+}
+
+/// Set a user page-break preference (Chapter 6 §6.10 SetUserPageBreak) — the
+/// page-break sibling of [`SetUserSystemBreakOp`]. Carries the full
+/// [`TimeAnchor`] (v1); the LWW bucketing key is the anchor's resolved
+/// [`MusicalPosition`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SetUserPageBreakOp {
+    pub region: RegionId,
+    pub anchor: TimeAnchor,
+    pub present: bool,
+}
+
+impl SetUserPageBreakOp {
+    /// The anchor's resolved musical position — the canonical LWW bucketing key
+    /// (see [`SetUserSystemBreakOp::resolved_position`]).
+    pub fn resolved_position(&self) -> MusicalPosition {
+        match &self.anchor {
+            TimeAnchor::Region {
+                offset: epiphany_core::AnchorOffset::Musical(d),
+                ..
+            } => MusicalPosition(d.0.clone()),
+            _ => MusicalPosition::origin(),
+        }
+    }
+}
+
+impl CanonicalEncode for SetUserPageBreakOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_canon(out, &self.region);
+        push_lp_bytes(out, &self.anchor.canonical_bytes());
+        push_u8_bool(out, self.present);
     }
 }
 

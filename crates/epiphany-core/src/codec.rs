@@ -2101,6 +2101,9 @@ canonical_value! {
     // fingerprint (a normative surface, vs. its Debug form).
     DecompositionAttachment,
     SpellingSourceKind,
+    // Score settings (M2d) — value-typed set-* payloads embed these.
+    ScoreMetadata,
+    MetricGrid,
 }
 
 #[cfg(test)]

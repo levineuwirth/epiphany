@@ -34,7 +34,8 @@ use crate::payload::{
     DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
     DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
     ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationPayload,
-    RespellPitchOp, SetUserSystemBreakOp, TransposeOp, TupletCompensation,
+    RespellPitchOp, SetMetadataOp, SetMetricGridOp, SetUserPageBreakOp, SetUserSystemBreakOp,
+    TransposeOp, TupletCompensation,
 };
 use crate::stamp::{HybridLogicalClock, OperationStamp};
 use crate::support::AuthorId;
@@ -84,7 +85,7 @@ fn pitch(n: u64) -> PitchId {
 
 /// Generates a random payload over the shared id space.
 fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
-    let kind = match rng.below(18) {
+    let kind = match rng.below(21) {
         0 => {
             let voice = VoiceId::new(ReplicaId(7), rng.below(3));
             let position = MusicalPosition(RationalTime::from_int(rng.below(4) as i32));
@@ -184,8 +185,24 @@ fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
             staff_instance: StaffInstanceId::new(ReplicaId(7), rng.below(3)),
             voice: valuegen::voice(VoiceId::new(ReplicaId(7), rng.below(3))),
         }),
-        _ => OperationKind::DeleteVoice(DeleteVoiceOp {
+        17 => OperationKind::DeleteVoice(DeleteVoiceOp {
             voice: VoiceId::new(ReplicaId(7), rng.below(3)),
+        }),
+        // Group 4 (M2d): score settings over the shared id space.
+        18 => OperationKind::SetMetadata(SetMetadataOp {
+            metadata: valuegen::score_metadata(rng.below(3) as u8),
+        }),
+        19 => OperationKind::SetMetricGrid(SetMetricGridOp {
+            region: RegionId::new(ReplicaId(7), rng.below(3)),
+            grid: rng.chance(2).then(valuegen::metric_grid),
+        }),
+        _ => OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+            region: RegionId::new(ReplicaId(7), 0),
+            anchor: valuegen::region_start_anchor(
+                RegionId::new(ReplicaId(7), 0),
+                MusicalPosition(RationalTime::from_int(rng.below(4) as i32)),
+            ),
+            present: rng.chance(2),
         }),
     };
     OperationPayload::Primitive(kind)

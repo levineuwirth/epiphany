@@ -32,10 +32,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
     derive_promoted_voice_id, AnchorOffset, CanonicalValue, Event, EventDuration, EventId,
-    EventPosition, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId, PitchSpelling,
-    RegionEdge, RegionId, RegionTimeModel, Score, SpellingAttachment, SpellingDirective,
-    SpellingScope, SpellingSource, StaffInstance, StaffInstanceId, TimeAnchor, TransactionId,
-    TypedObjectId, Voice, VoiceId, VoiceOrigin,
+    EventPosition, MetricGrid, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId,
+    PitchSpelling, RegionEdge, RegionId, RegionTimeModel, Score, ScoreMetadata, SpellingAttachment,
+    SpellingDirective, SpellingScope, SpellingSource, StaffInstance, StaffInstanceId, TimeAnchor,
+    TransactionId, TypedObjectId, Voice, VoiceId, VoiceOrigin,
 };
 use epiphany_determinism::CanonicalEncode;
 
@@ -55,7 +55,8 @@ use crate::payload::{
     DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
     DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
     ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationPayload,
-    RespellPitchOp, TransposeOp, TupletCompensation,
+    RespellPitchOp, SetMetadataOp, SetMetricGridOp, SetUserPageBreakOp, TransposeOp,
+    TupletCompensation,
 };
 use crate::undo::{UndoPolicy, UndoTransactionPayload};
 
@@ -208,6 +209,9 @@ pub struct MaterializedState {
     pub spellings: BTreeMap<PitchId, PitchSpelling>,
     /// User system-break preferences (LWW advisory), keyed by region+anchor.
     pub breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
+    /// User page-break preferences (LWW advisory), keyed by region+anchor (the
+    /// page-break sibling of [`MaterializedState::breaks`], M2d).
+    pub page_breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
     /// Operations held pending, ordered by `OperationId`.
     pub pending: Vec<(OperationId, PendingReason)>,
 }
@@ -267,6 +271,13 @@ impl MaterializedState {
             push_canon(&mut out, anchor);
             push_u8_bool(&mut out, *present);
         }
+        // Page breaks (region+anchor order) — sibling of breaks (M2d).
+        push_len(&mut out, self.page_breaks.len());
+        for ((region, anchor), present) in &self.page_breaks {
+            push_canon(&mut out, region);
+            push_canon(&mut out, anchor);
+            push_u8_bool(&mut out, *present);
+        }
         // Pending (OperationId order).
         push_len(&mut out, self.pending.len());
         for (id, reason) in &self.pending {
@@ -313,6 +324,7 @@ struct Reducer<'a> {
     objects: BTreeMap<TypedObjectId, ObjectState>,
     spellings: BTreeMap<PitchId, PitchSpelling>,
     breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
+    page_breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
     conflicts: ConflictRegistry,
     effects: Vec<(OperationId, OperationEffect)>,
     anomalies: BTreeMap<epiphany_core::IntegrityAnomalyId, IntegrityAnomaly>,
@@ -329,6 +341,10 @@ struct Reducer<'a> {
     // LWW working state for ModifyCrossCutting (Group 2), mirroring the leaf-field
     // modify maps above: last modifier + value it wrote, keyed by structure id.
     last_cross_cutting_modify: BTreeMap<TypedObjectId, (OperationId, CrossCuttingValue)>,
+    // LWW working state for the Group-4 (M2d) score-settings overwrites: the last
+    // writer and the value it wrote (the resolved value lives in the graph).
+    last_metadata: Option<(OperationId, ScoreMetadata)>,
+    last_metric_grid: BTreeMap<RegionId, (OperationId, Option<MetricGrid>)>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     // Live child sets for the structural-container empty-only delete (Group 3):
     // a region's live staff instances, and a staff instance's live voices. (A
@@ -350,6 +366,7 @@ struct WorkingSnapshot {
     objects: BTreeMap<TypedObjectId, ObjectState>,
     spellings: BTreeMap<PitchId, PitchSpelling>,
     breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
+    page_breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
     conflicts: ConflictRegistry,
     minted_by: BTreeMap<TypedObjectId, OperationId>,
     event_pitches: BTreeMap<EventId, Vec<PitchId>>,
@@ -358,6 +375,8 @@ struct WorkingSnapshot {
     last_event_modify: BTreeMap<EventId, (OperationId, Event)>,
     last_pitch_modify: BTreeMap<PitchId, (OperationId, Pitch)>,
     last_cross_cutting_modify: BTreeMap<TypedObjectId, (OperationId, CrossCuttingValue)>,
+    last_metadata: Option<(OperationId, ScoreMetadata)>,
+    last_metric_grid: BTreeMap<RegionId, (OperationId, Option<MetricGrid>)>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     region_instances: BTreeMap<RegionId, BTreeSet<StaffInstanceId>>,
     instance_voices: BTreeMap<StaffInstanceId, BTreeSet<VoiceId>>,
@@ -423,6 +442,7 @@ impl<'a> Reducer<'a> {
             objects: BTreeMap::new(),
             spellings: BTreeMap::new(),
             breaks: BTreeMap::new(),
+            page_breaks: BTreeMap::new(),
             conflicts: ConflictRegistry::new(),
             effects: Vec::new(),
             anomalies: BTreeMap::new(),
@@ -433,6 +453,8 @@ impl<'a> Reducer<'a> {
             last_event_modify: BTreeMap::new(),
             last_pitch_modify: BTreeMap::new(),
             last_cross_cutting_modify: BTreeMap::new(),
+            last_metadata: None,
+            last_metric_grid: BTreeMap::new(),
             structures: BTreeMap::new(),
             region_instances: BTreeMap::new(),
             instance_voices: BTreeMap::new(),
@@ -723,6 +745,7 @@ impl<'a> Reducer<'a> {
             objects: self.objects,
             spellings: self.spellings,
             breaks: self.breaks,
+            page_breaks: self.page_breaks,
             pending: pending_vec,
         };
         (state, graph)
@@ -1227,6 +1250,9 @@ impl<'a> Reducer<'a> {
                 OperationKind::DeleteStaffInstance(op) => self.delete_staff_instance(env, op),
                 OperationKind::CreateVoice(op) => self.create_voice(env, op),
                 OperationKind::DeleteVoice(op) => self.delete_voice(env, op),
+                OperationKind::SetMetadata(op) => self.set_metadata(env, op),
+                OperationKind::SetMetricGrid(op) => self.set_metric_grid(env, op),
+                OperationKind::SetUserPageBreak(op) => self.set_user_page_break(op),
             },
             OperationPayload::ResolveConflict(op) => self.resolve_conflict(env, op),
             OperationPayload::UndoTransaction(op) => self.undo_transaction(env, op),
@@ -1281,6 +1307,148 @@ impl<'a> Reducer<'a> {
 
         // The LWW bucketing key is the anchor's resolved musical position.
         self.breaks
+            .insert((op.region, op.resolved_position()), op.present);
+        OperationEffect::Applied
+    }
+
+    // --- Group 4 (M2d): score settings (LWW field-overwrite). --------------
+    //
+    // SetMetadata / SetMetricGrid mirror the modify ops: the resolved value lives
+    // in the graph (reduce_onto); MaterializedState records only the effect and,
+    // on a concurrent differing write, a StructuralFieldCollision. SetUserPageBreak
+    // mirrors SetUserSystemBreak: it is a canonical LWW advisory (page_breaks).
+
+    fn set_metadata(&mut self, env: &OperationEnvelope, op: &SetMetadataOp) -> OperationEffect {
+        let effect = match &self.last_metadata {
+            Some((prev_op, prev_meta)) if self.concurrent(env.id, *prev_op) => {
+                if *prev_meta == op.metadata {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::AlreadyApplied,
+                    };
+                }
+                let prev_op = *prev_op;
+                let conflict = ConflictRecord::new(
+                    ConflictKind::StructuralFieldCollision {
+                        winner: env.id,
+                        loser: prev_op,
+                        field: FieldPath("metadata".to_string()),
+                    },
+                    vec![env.id, prev_op],
+                    vec![],
+                );
+                let cid = conflict.id;
+                self.conflicts.insert(conflict);
+                OperationEffect::Conflicted { conflict: cid }
+            }
+            _ => OperationEffect::Applied,
+        };
+        self.last_metadata = Some((env.id, op.metadata.clone()));
+        if let Some(score) = self.graph.as_mut() {
+            score.metadata = op.metadata.clone();
+        }
+        effect
+    }
+
+    fn set_metric_grid(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &SetMetricGridOp,
+    ) -> OperationEffect {
+        if !matches!(
+            self.objects.get(&TypedObjectId::Region(op.region)),
+            Some(ObjectState::Live)
+        ) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
+        let prev = self
+            .last_metric_grid
+            .get(&op.region)
+            .map(|(o, g)| (*o, g.clone()));
+        let effect = match prev {
+            Some((prev_op, prev_grid)) if self.concurrent(env.id, prev_op) => {
+                if prev_grid == op.grid {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::AlreadyApplied,
+                    };
+                }
+                let conflict = ConflictRecord::new(
+                    ConflictKind::StructuralFieldCollision {
+                        winner: env.id,
+                        loser: prev_op,
+                        field: FieldPath("metric_grid".to_string()),
+                    },
+                    vec![env.id, prev_op],
+                    vec![TypedObjectId::Region(op.region)],
+                );
+                let cid = conflict.id;
+                self.conflicts.insert(conflict);
+                OperationEffect::Conflicted { conflict: cid }
+            }
+            _ => OperationEffect::Applied,
+        };
+        self.last_metric_grid
+            .insert(op.region, (env.id, op.grid.clone()));
+        self.graph_set_metric_grid(op.region, &op.grid);
+        effect
+    }
+
+    fn graph_set_metric_grid(&mut self, region: RegionId, grid: &Option<MetricGrid>) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        if let Some(region) = score.canvas.regions.iter_mut().find(|r| r.id == region) {
+            match &mut region.content {
+                epiphany_core::RegionContent::StaffBased(content) => {
+                    content.default_metric_grid = grid.clone();
+                }
+                epiphany_core::RegionContent::Hybrid { staves, .. } => {
+                    staves.default_metric_grid = grid.clone();
+                }
+                epiphany_core::RegionContent::FreeGraphic(_) => {}
+            }
+        }
+    }
+
+    fn set_user_page_break(&mut self, op: &SetUserPageBreakOp) -> OperationEffect {
+        if let Some(score) = self.graph.as_mut() {
+            let Some(region) = score
+                .canvas
+                .regions
+                .iter_mut()
+                .find(|region| region.id == op.region)
+            else {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                };
+            };
+            let breaks = match &mut region.content {
+                epiphany_core::RegionContent::StaffBased(content) => &mut content.user_page_breaks,
+                epiphany_core::RegionContent::Hybrid { staves, .. } => &mut staves.user_page_breaks,
+                epiphany_core::RegionContent::FreeGraphic(_) => {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::TargetMissing,
+                        },
+                    }
+                }
+            };
+            let anchor = op.anchor.clone();
+            if op.present {
+                if !breaks.contains(&anchor) {
+                    breaks.push(anchor);
+                }
+            } else {
+                breaks.retain(|candidate| candidate != &anchor);
+            }
+        }
+
+        self.page_breaks
             .insert((op.region, op.resolved_position()), op.present);
         OperationEffect::Applied
     }
@@ -3024,6 +3192,7 @@ impl<'a> Reducer<'a> {
             objects: self.objects.clone(),
             spellings: self.spellings.clone(),
             breaks: self.breaks.clone(),
+            page_breaks: self.page_breaks.clone(),
             conflicts: self.conflicts.clone(),
             minted_by: self.minted_by.clone(),
             event_pitches: self.event_pitches.clone(),
@@ -3032,6 +3201,8 @@ impl<'a> Reducer<'a> {
             last_event_modify: self.last_event_modify.clone(),
             last_pitch_modify: self.last_pitch_modify.clone(),
             last_cross_cutting_modify: self.last_cross_cutting_modify.clone(),
+            last_metadata: self.last_metadata.clone(),
+            last_metric_grid: self.last_metric_grid.clone(),
             structures: self.structures.clone(),
             region_instances: self.region_instances.clone(),
             instance_voices: self.instance_voices.clone(),
@@ -3047,6 +3218,7 @@ impl<'a> Reducer<'a> {
         self.objects = s.objects;
         self.spellings = s.spellings;
         self.breaks = s.breaks;
+        self.page_breaks = s.page_breaks;
         self.conflicts = s.conflicts;
         self.minted_by = s.minted_by;
         self.event_pitches = s.event_pitches;
@@ -3055,6 +3227,8 @@ impl<'a> Reducer<'a> {
         self.last_event_modify = s.last_event_modify;
         self.last_pitch_modify = s.last_pitch_modify;
         self.last_cross_cutting_modify = s.last_cross_cutting_modify;
+        self.last_metadata = s.last_metadata;
+        self.last_metric_grid = s.last_metric_grid;
         self.structures = s.structures;
         self.region_instances = s.region_instances;
         self.instance_voices = s.instance_voices;

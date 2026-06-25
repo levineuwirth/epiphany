@@ -268,6 +268,25 @@ pub fn region(id: RegionId) -> Region {
     }
 }
 
+/// Score metadata with a `nth`-distinct title (M2d) — distinct `nth` give
+/// distinct [`ScoreMetadata`] values so a harness can make concurrent
+/// `SetMetadata`s agree or conflict deterministically.
+pub fn score_metadata(nth: u8) -> epiphany_core::ScoreMetadata {
+    epiphany_core::ScoreMetadata {
+        title: Some(format!("title-{nth}")),
+        composer: Some("composer".to_string()),
+        copyright: None,
+    }
+}
+
+/// An empty metric grid (M2d) — no meter changes, hence anchor-free and
+/// reference-clean (Chapter 5). The container a `SetMetricGrid` sets on a region.
+pub fn metric_grid() -> epiphany_core::MetricGrid {
+    epiphany_core::MetricGrid {
+        meter_sequence: Vec::new(),
+    }
+}
+
 /// An explicit, user-chosen per-pitch [`SpellingAttachment`] — the engraved-layer
 /// spelling a materialized score carries after a `RespellPitch`. The v0 → v1
 /// migration recovers a respell's spelling from exactly these attachments

@@ -43,8 +43,9 @@ use epiphany_ops::{
     PreconditionFailureRegistryId, ReanchorReason, ReanchorReasonRegistryId, ReanchorResult,
     RepairKind, RepairKindRegistryId, RepairRecord, ReplicaAnomalyReason, ReplicaAnomalyRegistryId,
     ResolutionAction, ResolutionRegistryId, ResolveConflictPayload, RespellPitchOp,
-    SerializedCanonicalInputs, SetUserSystemBreakOp, TransactionCategory, TransactionDescriptor,
-    TransposeOp, TupletCompensation, TupletCompensationKind, UndoPolicy, UndoTransactionPayload,
+    SerializedCanonicalInputs, SetMetadataOp, SetMetricGridOp, SetUserPageBreakOp,
+    SetUserSystemBreakOp, TransactionCategory, TransactionDescriptor, TransposeOp,
+    TupletCompensation, TupletCompensationKind, UndoPolicy, UndoTransactionPayload,
 };
 
 use crate::rng::Rng;
@@ -636,7 +637,7 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
         }
         _ => {}
     }
-    let kind = match rng.below(21) {
+    let kind = match rng.below(24) {
         0 => {
             let pitches = if rng.boolean() {
                 vec![obj_pitch(rng.below(pitches))]
@@ -755,6 +756,22 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
         }),
         19 => OperationKind::DeleteVoice(DeleteVoiceOp {
             voice: VoiceId::new(OBJ_REPLICA, rng.below(4)),
+        }),
+        // Group 4 (M2d): score settings (LWW) over the shared id space.
+        20 => OperationKind::SetMetadata(SetMetadataOp {
+            metadata: valuegen::score_metadata(rng.below(3) as u8),
+        }),
+        21 => OperationKind::SetMetricGrid(SetMetricGridOp {
+            region: RegionId::new(OBJ_REPLICA, rng.below(2)),
+            grid: rng.boolean().then(valuegen::metric_grid),
+        }),
+        22 => OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+            region: RegionId::new(OBJ_REPLICA, 0),
+            anchor: valuegen::region_start_anchor(
+                RegionId::new(OBJ_REPLICA, 0),
+                MusicalPosition(RationalTime::from_int(rng.below(4) as i32)),
+            ),
+            present: rng.boolean(),
         }),
         _ => OperationKind::Registered(
             OperationKindRegistryId(rng.next_u64() as u128),

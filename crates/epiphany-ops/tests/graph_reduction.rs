@@ -1213,3 +1213,124 @@ fn structural_containers_create_and_empty_only_delete_in_the_graph() {
     }
     assert!(check_invariants(&result.score).is_empty());
 }
+
+#[test]
+fn score_settings_materialize_in_the_graph_and_ledger() {
+    let base = epiphany_core::generators::valid_score(100);
+    let region = base.canvas.regions[0].id;
+    let r = 73;
+    let set_metadata = envelope(
+        r,
+        0,
+        10,
+        CausalContext::new(),
+        None,
+        OperationPayload::Primitive(OperationKind::SetMetadata(epiphany_ops::SetMetadataOp {
+            metadata: valuegen::score_metadata(5),
+        })),
+    );
+    let set_grid = envelope(
+        r,
+        1,
+        11,
+        CausalContext::new().with_seen(ReplicaId(r), 0),
+        None,
+        OperationPayload::Primitive(OperationKind::SetMetricGrid(
+            epiphany_ops::SetMetricGridOp {
+                region,
+                grid: Some(valuegen::metric_grid()),
+            },
+        )),
+    );
+    let set_page = envelope(
+        r,
+        2,
+        12,
+        CausalContext::new().with_seen(ReplicaId(r), 1),
+        None,
+        OperationPayload::Primitive(OperationKind::SetUserPageBreak(
+            epiphany_ops::SetUserPageBreakOp {
+                region,
+                anchor: valuegen::region_start_anchor(
+                    region,
+                    MusicalPosition(RationalTime::from_int(0)),
+                ),
+                present: true,
+            },
+        )),
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(vec![set_metadata, set_grid, set_page]);
+    let result = set.reduce_onto(&base);
+
+    assert_eq!(
+        result.score.metadata.title.as_deref(),
+        Some("title-5"),
+        "SetMetadata overwrites the score metadata in the graph"
+    );
+    let materialized_region = result
+        .score
+        .canvas
+        .regions
+        .iter()
+        .find(|rg| rg.id == region)
+        .expect("the region is present");
+    assert!(
+        matches!(
+            &materialized_region.content,
+            epiphany_core::RegionContent::StaffBased(c) if c.default_metric_grid.is_some()
+        ),
+        "SetMetricGrid sets the region's default metric grid"
+    );
+    assert!(
+        matches!(
+            &materialized_region.content,
+            epiphany_core::RegionContent::StaffBased(c) if !c.user_page_breaks.is_empty()
+        ),
+        "SetUserPageBreak adds the anchor to the region's user page breaks"
+    );
+    assert!(
+        !result.state.page_breaks.is_empty(),
+        "the page break is recorded in the canonical MaterializedState.page_breaks"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn concurrent_differing_set_metadata_conflicts() {
+    let base = epiphany_core::generators::valid_score(100);
+    // Two concurrent SetMetadata (neither sees the other) with differing values.
+    let a = envelope(
+        74,
+        0,
+        10,
+        CausalContext::new(),
+        None,
+        OperationPayload::Primitive(OperationKind::SetMetadata(epiphany_ops::SetMetadataOp {
+            metadata: valuegen::score_metadata(1),
+        })),
+    );
+    let b = envelope(
+        75,
+        0,
+        10,
+        CausalContext::new(),
+        None,
+        OperationPayload::Primitive(OperationKind::SetMetadata(epiphany_ops::SetMetadataOp {
+            metadata: valuegen::score_metadata(2),
+        })),
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(vec![a, b]);
+    let result = set.reduce_onto(&base);
+    assert_eq!(
+        result.state.conflicts.records().len(),
+        1,
+        "concurrent differing SetMetadata records exactly one conflict"
+    );
+    assert!(matches!(
+        result.state.conflicts.records()[0].kind,
+        ConflictKind::StructuralFieldCollision { .. }
+    ));
+    assert!(check_invariants(&result.score).is_empty());
+}

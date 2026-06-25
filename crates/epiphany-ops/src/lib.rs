@@ -117,9 +117,9 @@ pub use payload::{
     CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
     DeleteRegionOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
     ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationKindTag,
-    OperationPayload, PositionRemapping, ResolveConflictPayload, RespellPitchOp,
-    SetUserSystemBreakOp, TransactionCategory, TransactionDescriptor, TransposeOp,
-    TupletCompensation,
+    OperationPayload, PositionRemapping, ResolveConflictPayload, RespellPitchOp, SetMetadataOp,
+    SetMetricGridOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransactionCategory,
+    TransactionDescriptor, TransposeOp, TupletCompensation,
 };
 pub use reduce::{
     canonical_reduction_order, GraphMaterialization, MaterializedState, ObjectState, PendingReason,

@@ -539,6 +539,19 @@ pub(crate) fn decode_materialized_state(bytes: &[u8]) -> Result<MaterializedStat
         breaks.insert((region, anchor), present);
     }
 
+    let page_break_count = reader.len()?;
+    let mut page_breaks = BTreeMap::new();
+    for _ in 0..page_break_count {
+        let region = fixed::<RegionId>(&mut reader, 16, "RegionId")?;
+        let anchor = musical_position(&mut reader)?;
+        let present = match reader.byte()? {
+            0 => false,
+            1 => true,
+            value => return Err(MaterializedDecodeError::InvalidBoolean(value)),
+        };
+        page_breaks.insert((region, anchor), present);
+    }
+
     let pending_count = reader.len()?;
     let mut pending = Vec::with_capacity(pending_count.min(1024));
     for _ in 0..pending_count {
@@ -556,6 +569,7 @@ pub(crate) fn decode_materialized_state(bytes: &[u8]) -> Result<MaterializedStat
         objects,
         spellings,
         breaks,
+        page_breaks,
         pending,
     };
     if state.canonical_bytes() != bytes {
