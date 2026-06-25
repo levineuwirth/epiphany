@@ -571,8 +571,21 @@ impl<'a> Reducer<'a> {
             );
         }
         for spanner in &score.cross_cutting.spanners {
-            self.objects
-                .insert(TypedObjectId::Spanner(spanner.id), ObjectState::Live);
+            let id = TypedObjectId::Spanner(spanner.id);
+            self.objects.insert(id, ObjectState::Live);
+            // Record the spanner's event-anchored endpoints so a later event
+            // tombstone re-anchors it through the same rule table as a created
+            // spanner (keeping the graph and ledger consistent on delete).
+            self.structures.insert(
+                id,
+                [&spanner.start, &spanner.end]
+                    .into_iter()
+                    .filter_map(|anchor| match anchor {
+                        TimeAnchor::Event { id, .. } => Some(TypedObjectId::Event(*id)),
+                        _ => None,
+                    })
+                    .collect(),
+            );
         }
         for marker in &score.cross_cutting.markers {
             self.objects
@@ -990,10 +1003,83 @@ impl<'a> Reducer<'a> {
             beam.events.retain(|event| *event != op.event);
             beam.events.len() >= 2
         });
-        score
-            .cross_cutting
-            .slurs
-            .retain(|slur| slur.start_event != op.event && slur.end_event != op.event);
+        // Slurs and spanners follow the bookkeeping re-anchoring rule: an
+        // endpoint-deleted structure re-anchors to its surviving endpoint while
+        // one survives, and cascade-deletes only when none does (Chapter 6 §6.5;
+        // matching `reanchor_for_tombstone`, so the graph and the ledger agree on
+        // the structure's existence). A re-anchored two-endpoint structure
+        // collapses onto the survivor — degenerate but reference-clean (both
+        // endpoints stay live); proximity-aware re-anchoring is deferred (P11-C5).
+        let slurs = std::mem::take(&mut score.cross_cutting.slurs);
+        let kept_slurs: Vec<_> = slurs
+            .into_iter()
+            .filter_map(|mut slur| {
+                let start_hit = slur.start_event == op.event;
+                let end_hit = slur.end_event == op.event;
+                if !start_hit && !end_hit {
+                    return Some(slur);
+                }
+                let survivor = if start_hit {
+                    slur.end_event
+                } else {
+                    slur.start_event
+                };
+                if survivor != op.event && score.events.contains(survivor) {
+                    slur.start_event = if start_hit {
+                        survivor
+                    } else {
+                        slur.start_event
+                    };
+                    slur.end_event = if end_hit { survivor } else { slur.end_event };
+                    Some(slur)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        score.cross_cutting.slurs = kept_slurs;
+
+        let spanners = std::mem::take(&mut score.cross_cutting.spanners);
+        let kept_spanners: Vec<_> = spanners
+            .into_iter()
+            .filter_map(|mut spanner| {
+                let start_hit =
+                    matches!(spanner.start, TimeAnchor::Event { id, .. } if id == op.event);
+                let end_hit = matches!(spanner.end, TimeAnchor::Event { id, .. } if id == op.event);
+                if !start_hit && !end_hit {
+                    return Some(spanner);
+                }
+                // The survivor is the *other* anchor's event, if it is an event
+                // anchor on a live event; otherwise the spanner cascade-deletes.
+                let other = if start_hit {
+                    &spanner.end
+                } else {
+                    &spanner.start
+                };
+                let survivor = match other {
+                    TimeAnchor::Event { id, .. }
+                        if *id != op.event && score.events.contains(*id) =>
+                    {
+                        Some(*id)
+                    }
+                    _ => None,
+                };
+                let to = survivor?;
+                if start_hit {
+                    if let TimeAnchor::Event { id, .. } = &mut spanner.start {
+                        *id = to;
+                    }
+                }
+                if end_hit {
+                    if let TimeAnchor::Event { id, .. } = &mut spanner.end {
+                        *id = to;
+                    }
+                }
+                Some(spanner)
+            })
+            .collect();
+        score.cross_cutting.spanners = kept_spanners;
+
         score.cross_cutting.lyrics.retain_mut(|line| {
             line.events.retain(|event| *event != op.event);
             !line.events.is_empty()

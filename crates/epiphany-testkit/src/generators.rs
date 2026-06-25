@@ -1060,13 +1060,33 @@ pub fn graph_edit_session(
     }
 
     let total = targets.len() as u64 * n;
+
+    // Create a handful of slurs over replica-0 events (the even object indices of
+    // the first target voice — replica 0 authored and therefore sees them), so the
+    // Group-2 cross-cutting CRUD below has live structures to delete and modify,
+    // and the DeleteEvent edits exercise slur re-anchoring on the real graph.
+    let n_slurs = (n / 4).clamp(1, 6);
+    for k in 0..n_slurs {
+        session.author(
+            rng,
+            0,
+            OperationPayload::Primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Slur(valuegen::slur(
+                    SlurId::new(OBJ_REPLICA, k),
+                    obj_event(4 * k),
+                    obj_event(4 * k + 2),
+                )),
+            })),
+        );
+    }
+
     for _ in 0..80 {
         let r = rng.below(2) as usize;
-        // Mix the original edit kinds with the Group-1 (M2) leaf-field ops so the
-        // real-Score gate exercises their *graph* materialization (reduce_onto +
+        // Mix the original edit kinds with the Group-1/2 (M2) ops so the real-Score
+        // gate exercises their *graph* materialization (reduce_onto +
         // check_invariants), not just the bookkeeping projection. Each targets a
-        // live object minted by the insert phase above.
-        let kind = match rng.below(7) {
+        // live object minted by the phases above.
+        let kind = match rng.below(9) {
             0 => OperationKind::DeleteEvent(DeleteEventOp {
                 event: obj_event(rng.below(total)),
                 tuplet_compensation: TupletCompensation::NotInTuplet,
@@ -1111,10 +1131,25 @@ pub fn graph_edit_session(
             5 => OperationKind::DeleteIdentifiedPitch(DeleteIdentifiedPitchOp {
                 pitch: obj_pitch(rng.below(total)),
             }),
-            _ => OperationKind::ModifyIdentifiedPitch(ModifyIdentifiedPitchOp {
+            6 => OperationKind::ModifyIdentifiedPitch(ModifyIdentifiedPitchOp {
                 pitch: obj_pitch(rng.below(total)),
                 value: valuegen::pitch_value_nth(rng.below(7) as u8),
             }),
+            // Group 2 (M2): cross-cutting CRUD over the slurs created above.
+            7 => OperationKind::DeleteCrossCutting(DeleteCrossCuttingOp {
+                structure: TypedObjectId::Slur(SlurId::new(OBJ_REPLICA, rng.below(n_slurs))),
+            }),
+            _ => {
+                let k = rng.below(n_slurs);
+                OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+                    // Re-point the slur's end to another even (replica-0) event.
+                    structure: CrossCuttingValue::Slur(valuegen::slur(
+                        SlurId::new(OBJ_REPLICA, k),
+                        obj_event(4 * k),
+                        obj_event(4 * ((k + 1) % n_slurs)),
+                    )),
+                })
+            }
         };
         session.author(rng, r, OperationPayload::Primitive(kind));
     }

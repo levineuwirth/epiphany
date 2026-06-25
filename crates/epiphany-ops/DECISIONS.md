@@ -108,6 +108,40 @@ targeted `reduce_onto` tests in `tests/graph_reduction.rs`.
   placement-change deferral as the prototype boundary (a full re-sort/move op is
   a later refinement).
 
+## DeleteEvent re-anchoring: the graph follows the ledger
+
+A `DeleteEvent` that tombstones an event runs the re-anchoring rule table
+(Chapter 6 §6.5) over the cross-cutting structures that referenced it. The
+*ledger* decision (`reanchor_for_tombstone`) and the *graph* mutation
+(`materialize_graph_delete`) MUST agree on whether a structure survives — else an
+object is `Live` in `MaterializedState` but gone from the graph (or vice versa),
+a faithfulness gap the graph convergence gate (criterion 1) would surface.
+
+- **Slurs and spanners re-anchor, not unconditionally drop.** The ledger keeps a
+  slur/spanner `Live` while ≥1 endpoint survives (re-anchored) and cascade-deletes
+  only when none does. `materialize_graph_delete` now mirrors that exactly:
+  an endpoint-deleted slur/spanner re-anchors onto its surviving endpoint (the
+  structure stays in the graph) and is removed only when no endpoint survives.
+  Previously the graph removed *any* slur touching the deleted event regardless of
+  the ledger's re-anchor — the divergence this entry fixes. Ties (cascade) and
+  beams (truncate-while-≥2-members, else cascade) were already consistent and are
+  unchanged.
+- **A re-anchored two-endpoint structure collapses onto the survivor.** With only
+  two endpoints, the sole survivor *is* the other endpoint, so re-anchoring sets
+  both to it (a degenerate `(B, B)` slur / spanner). This is reference-clean — the
+  cross-cutting invariant requires only that endpoints reference *live* events, not
+  that they differ — but musically a stand-in. A proximity-aware target (the note
+  that took the deleted one's place) needs resolved positions and is deferred
+  (P11-C5; `nearest_survivor` is the lexicographic stand-in).
+- **Base-score spanners are now indexed for re-anchoring.** `seed_from_graph`
+  records each seeded spanner's event-anchored endpoints in `structures` (as it
+  already did for slurs/ties/beams), so a base spanner re-anchors through the same
+  rule as a created one rather than being left dangling.
+
+This consistency is what lets `graph_edit_session` create cross-cutting structures
+and delete their endpoints, giving the Group-2 CRUD ops (and slur re-anchoring)
+real at-scale coverage under criterion 1 + `check_invariants`.
+
 ## Pass 11 candidates (ambiguities for the spec, not resolved in code)
 
 ### P11-C1 — operation payload schemas are deferred; we carry identifiers + fingerprints

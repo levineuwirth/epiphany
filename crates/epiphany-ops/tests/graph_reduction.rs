@@ -941,3 +941,92 @@ fn modify_cross_cutting_rejects_an_undersized_beam() {
     );
     assert!(check_invariants(&result.score).is_empty());
 }
+
+#[test]
+fn deleting_a_slur_endpoint_reanchors_in_both_graph_and_ledger() {
+    // Deleting one endpoint of a slur re-anchors it onto the survivor: the slur
+    // stays Live in the ledger AND present in the graph (collapsed onto the
+    // surviving endpoint), so the two never disagree on its existence.
+    let base = epiphany_core::generators::valid_score(100);
+    let slur = SlurId::new(ReplicaId(70), 9);
+    let (e1, e2, _e3, create, inserts) = cross_cutting_fixture(&base, |a, b, _| {
+        CrossCuttingValue::Slur(valuegen::slur(slur, a, b))
+    });
+    let delete_e1 = after_create(OperationPayload::Primitive(OperationKind::DeleteEvent(
+        DeleteEventOp {
+            event: e1,
+            tuplet_compensation: TupletCompensation::NotInTuplet,
+        },
+    )));
+    let mut set = OperationSet::new();
+    set.accept_all(inserts.into_iter().chain([create, delete_e1]));
+    let result = set.reduce_onto(&base);
+
+    assert_eq!(
+        result.state.objects.get(&TypedObjectId::Slur(slur)),
+        Some(&epiphany_ops::ObjectState::Live),
+        "a re-anchored slur stays live in the ledger"
+    );
+    let materialized = result
+        .score
+        .cross_cutting
+        .slurs
+        .iter()
+        .find(|s| s.id == slur)
+        .expect("the re-anchored slur is still present in the graph");
+    assert_eq!(
+        (materialized.start_event, materialized.end_event),
+        (e2, e2),
+        "the slur collapses onto the surviving endpoint"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn deleting_both_slur_endpoints_cascades_in_both_graph_and_ledger() {
+    // With no endpoint surviving, the slur cascade-deletes: tombstoned in the
+    // ledger AND removed from the graph (the other side of the same coin).
+    let base = epiphany_core::generators::valid_score(100);
+    let slur = SlurId::new(ReplicaId(70), 9);
+    let (e1, e2, _e3, create, inserts) = cross_cutting_fixture(&base, |a, b, _| {
+        CrossCuttingValue::Slur(valuegen::slur(slur, a, b))
+    });
+    let delete_e1 = after_create(OperationPayload::Primitive(OperationKind::DeleteEvent(
+        DeleteEventOp {
+            event: e1,
+            tuplet_compensation: TupletCompensation::NotInTuplet,
+        },
+    )));
+    let delete_e2 = envelope(
+        70,
+        5,
+        16,
+        CausalContext::new().with_seen(ReplicaId(70), 4),
+        None,
+        OperationPayload::Primitive(OperationKind::DeleteEvent(DeleteEventOp {
+            event: e2,
+            tuplet_compensation: TupletCompensation::NotInTuplet,
+        })),
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(inserts.into_iter().chain([create, delete_e1, delete_e2]));
+    let result = set.reduce_onto(&base);
+
+    assert!(
+        matches!(
+            result.state.objects.get(&TypedObjectId::Slur(slur)),
+            Some(epiphany_ops::ObjectState::Tombstoned { .. })
+        ),
+        "a slur with no surviving endpoint is tombstoned in the ledger"
+    );
+    assert!(
+        !result
+            .score
+            .cross_cutting
+            .slurs
+            .iter()
+            .any(|s| s.id == slur),
+        "the cascaded slur is removed from the graph"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}
