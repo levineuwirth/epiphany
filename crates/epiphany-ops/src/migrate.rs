@@ -154,6 +154,13 @@ fn project_kind(kind: &OperationKind) -> V0OperationKind {
         // v1-native (Group 2): projected verbatim.
         OperationKind::DeleteCrossCutting(op) => V0OperationKind::DeleteCrossCutting(*op),
         OperationKind::ModifyCrossCutting(op) => V0OperationKind::ModifyCrossCutting(op.clone()),
+        // v1-native (Group 3): projected verbatim.
+        OperationKind::CreateRegion(op) => V0OperationKind::CreateRegion(op.clone()),
+        OperationKind::DeleteRegion(op) => V0OperationKind::DeleteRegion(*op),
+        OperationKind::CreateStaffInstance(op) => V0OperationKind::CreateStaffInstance(op.clone()),
+        OperationKind::DeleteStaffInstance(op) => V0OperationKind::DeleteStaffInstance(*op),
+        OperationKind::CreateVoice(op) => V0OperationKind::CreateVoice(op.clone()),
+        OperationKind::DeleteVoice(op) => V0OperationKind::DeleteVoice(*op),
     }
 }
 
@@ -282,6 +289,13 @@ fn migrate_kind(kind: &V0OperationKind, context: &Score) -> Result<OperationKind
         // v1-native (Group 2): identity round-trip.
         V0OperationKind::DeleteCrossCutting(op) => OperationKind::DeleteCrossCutting(*op),
         V0OperationKind::ModifyCrossCutting(op) => OperationKind::ModifyCrossCutting(op.clone()),
+        // v1-native (Group 3): identity round-trip.
+        V0OperationKind::CreateRegion(op) => OperationKind::CreateRegion(op.clone()),
+        V0OperationKind::DeleteRegion(op) => OperationKind::DeleteRegion(*op),
+        V0OperationKind::CreateStaffInstance(op) => OperationKind::CreateStaffInstance(op.clone()),
+        V0OperationKind::DeleteStaffInstance(op) => OperationKind::DeleteStaffInstance(*op),
+        V0OperationKind::CreateVoice(op) => OperationKind::CreateVoice(op.clone()),
+        V0OperationKind::DeleteVoice(op) => OperationKind::DeleteVoice(*op),
     })
 }
 
@@ -577,6 +591,29 @@ mod tests {
                     ev(1),
                     ev(2),
                 )),
+            }),
+            OperationKind::CreateRegion(crate::payload::CreateRegionOp {
+                region: valuegen::region(epiphany_core::RegionId::new(ReplicaId(3), 7)),
+            }),
+            OperationKind::DeleteRegion(crate::payload::DeleteRegionOp {
+                region: epiphany_core::RegionId::new(ReplicaId(3), 7),
+            }),
+            OperationKind::CreateStaffInstance(crate::payload::CreateStaffInstanceOp {
+                region: epiphany_core::RegionId::new(ReplicaId(3), 7),
+                instance: valuegen::staff_instance(
+                    epiphany_core::StaffInstanceId::new(ReplicaId(3), 8),
+                    StaffId::new(ReplicaId(3), 1),
+                ),
+            }),
+            OperationKind::DeleteStaffInstance(crate::payload::DeleteStaffInstanceOp {
+                staff_instance: epiphany_core::StaffInstanceId::new(ReplicaId(3), 8),
+            }),
+            OperationKind::CreateVoice(crate::payload::CreateVoiceOp {
+                staff_instance: epiphany_core::StaffInstanceId::new(ReplicaId(3), 8),
+                voice: valuegen::voice(VoiceId::new(ReplicaId(3), 9)),
+            }),
+            OperationKind::DeleteVoice(crate::payload::DeleteVoiceOp {
+                voice: VoiceId::new(ReplicaId(3), 9),
             }),
         ];
         for kind in kinds {

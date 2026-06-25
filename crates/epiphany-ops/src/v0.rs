@@ -77,6 +77,13 @@ pub enum V0OperationKind {
     // Group 2 (M2) — also v1-native; round-trip by identity.
     DeleteCrossCutting(crate::payload::DeleteCrossCuttingOp),
     ModifyCrossCutting(crate::payload::ModifyCrossCuttingOp),
+    // Group 3 (M2c) — also v1-native; round-trip by identity.
+    CreateRegion(crate::payload::CreateRegionOp),
+    DeleteRegion(crate::payload::DeleteRegionOp),
+    CreateStaffInstance(crate::payload::CreateStaffInstanceOp),
+    DeleteStaffInstance(crate::payload::DeleteStaffInstanceOp),
+    CreateVoice(crate::payload::CreateVoiceOp),
+    DeleteVoice(crate::payload::DeleteVoiceOp),
 }
 
 /// v0 `InsertEvent`: the event was a bare [`EventId`] plus the reduction-relevant

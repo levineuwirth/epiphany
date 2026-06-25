@@ -33,8 +33,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use epiphany_core::{
     derive_promoted_voice_id, AnchorOffset, CanonicalValue, Event, EventDuration, EventId,
     EventPosition, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId, PitchSpelling,
-    RegionEdge, RegionId, RegionTimeModel, Score, TimeAnchor, TransactionId, TypedObjectId, Voice,
-    VoiceId, VoiceOrigin,
+    RegionEdge, RegionId, RegionTimeModel, Score, StaffInstance, StaffInstanceId, TimeAnchor,
+    TransactionId, TypedObjectId, Voice, VoiceId, VoiceOrigin,
 };
 use epiphany_determinism::CanonicalEncode;
 
@@ -50,10 +50,11 @@ use crate::encode::{push_canon, push_len, push_lp_bytes, push_u8_bool};
 use crate::envelope::OperationEnvelope;
 use crate::opset::OperationSet;
 use crate::payload::{
-    CreateCrossCuttingOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp,
-    DeleteIdentifiedPitchOp, InsertEventOp, InsertIdentifiedPitchOp, ModifyCrossCuttingOp,
-    ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationPayload, RespellPitchOp,
-    TransposeOp, TupletCompensation,
+    CreateCrossCuttingOp, CreateRegionOp, CreateStaffInstanceOp, CreateVoiceOp, CrossCuttingValue,
+    DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
+    DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
+    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationPayload,
+    RespellPitchOp, TransposeOp, TupletCompensation,
 };
 use crate::undo::{UndoPolicy, UndoTransactionPayload};
 
@@ -328,6 +329,11 @@ struct Reducer<'a> {
     // modify maps above: last modifier + value it wrote, keyed by structure id.
     last_cross_cutting_modify: BTreeMap<TypedObjectId, (OperationId, CrossCuttingValue)>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
+    // Live child sets for the structural-container empty-only delete (Group 3):
+    // a region's live staff instances, and a staff instance's live voices. (A
+    // voice's live events are read from `voice_occupancy`.)
+    region_instances: BTreeMap<RegionId, BTreeSet<StaffInstanceId>>,
+    instance_voices: BTreeMap<StaffInstanceId, BTreeSet<VoiceId>>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
     descriptors: BTreeMap<TransactionId, OperationId>,
@@ -352,6 +358,8 @@ struct WorkingSnapshot {
     last_pitch_modify: BTreeMap<PitchId, (OperationId, Pitch)>,
     last_cross_cutting_modify: BTreeMap<TypedObjectId, (OperationId, CrossCuttingValue)>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
+    region_instances: BTreeMap<RegionId, BTreeSet<StaffInstanceId>>,
+    instance_voices: BTreeMap<StaffInstanceId, BTreeSet<VoiceId>>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
     descriptors: BTreeMap<TransactionId, OperationId>,
@@ -425,6 +433,8 @@ impl<'a> Reducer<'a> {
             last_pitch_modify: BTreeMap::new(),
             last_cross_cutting_modify: BTreeMap::new(),
             structures: BTreeMap::new(),
+            region_instances: BTreeMap::new(),
+            instance_voices: BTreeMap::new(),
             migrated_regions: BTreeSet::new(),
             region_migrator: BTreeMap::new(),
             descriptors: BTreeMap::new(),
@@ -485,9 +495,17 @@ impl<'a> Reducer<'a> {
         for region in &score.canvas.regions {
             self.objects
                 .insert(TypedObjectId::Region(region.id), ObjectState::Live);
+            let instance_set = self.region_instances.entry(region.id).or_default();
+            for instance in region.staff_instances() {
+                instance_set.insert(instance.id);
+            }
             for instance in region.staff_instances() {
                 self.objects
                     .insert(TypedObjectId::StaffInstance(instance.id), ObjectState::Live);
+                let voice_set = self.instance_voices.entry(instance.id).or_default();
+                for voice in &instance.voices {
+                    voice_set.insert(voice.id);
+                }
                 for measure in &instance.measures {
                     self.objects
                         .insert(TypedObjectId::Measure(measure.id), ObjectState::Live);
@@ -1202,6 +1220,12 @@ impl<'a> Reducer<'a> {
                 OperationKind::ModifyIdentifiedPitch(op) => self.modify_identified_pitch(env, op),
                 OperationKind::DeleteCrossCutting(op) => self.delete_cross_cutting(env, op),
                 OperationKind::ModifyCrossCutting(op) => self.modify_cross_cutting(env, op),
+                OperationKind::CreateRegion(op) => self.create_region(env, op),
+                OperationKind::DeleteRegion(op) => self.delete_region(env, op),
+                OperationKind::CreateStaffInstance(op) => self.create_staff_instance(env, op),
+                OperationKind::DeleteStaffInstance(op) => self.delete_staff_instance(env, op),
+                OperationKind::CreateVoice(op) => self.create_voice(env, op),
+                OperationKind::DeleteVoice(op) => self.delete_voice(env, op),
             },
             OperationPayload::ResolveConflict(op) => self.resolve_conflict(env, op),
             OperationPayload::UndoTransaction(op) => self.undo_transaction(env, op),
@@ -1309,6 +1333,11 @@ impl<'a> Reducer<'a> {
                 // Implicit voice creation on first use (prototype convention).
                 self.objects.insert(voice_obj, ObjectState::Live);
                 self.minted_by.insert(voice_obj, env.id);
+                // Track it under its staff instance for the container empty-check.
+                self.instance_voices
+                    .entry(op.staff_instance)
+                    .or_default()
+                    .insert(orig_voice);
             }
         }
 
@@ -1802,6 +1831,286 @@ impl<'a> Reducer<'a> {
                     .find(|v| v.id == spanner.id)
                 {
                     *existing = spanner.clone();
+                }
+            }
+        }
+    }
+
+    // --- Group 3 (M2c): structural container CRUD. -------------------------
+    //
+    // Creates mint an empty container (set-union creation; the authoring contract
+    // is that the carried value is empty, so only its own object is minted).
+    // Deletes are empty-only delete-wins: a precondition NoOp unless the
+    // container has no live children. Child liveness is read from
+    // `region_instances` / `instance_voices` (and `voice_occupancy` for a voice's
+    // events), so the ledger projection and the graph agree on the result.
+
+    fn mint_container(&mut self, env: &OperationEnvelope, obj: TypedObjectId) {
+        self.objects.insert(obj, ObjectState::Live);
+        self.minted_by.insert(obj, env.id);
+        self.note_minted(env, obj);
+    }
+
+    /// `Some(effect)` when `obj` cannot be freshly minted (already live or
+    /// tombstoned); `None` when it is fresh and the create may proceed.
+    fn mint_precondition(&self, obj: TypedObjectId) -> Option<OperationEffect> {
+        match self.objects.get(&obj) {
+            Some(ObjectState::Live) => Some(OperationEffect::NoOp {
+                reason: NoOpReason::AlreadyApplied,
+            }),
+            Some(ObjectState::Tombstoned { .. }) => Some(OperationEffect::NoOp {
+                reason: NoOpReason::TargetTombstoned,
+            }),
+            None => None,
+        }
+    }
+
+    fn create_region(&mut self, env: &OperationEnvelope, op: &CreateRegionOp) -> OperationEffect {
+        let robj = TypedObjectId::Region(op.region_id());
+        if let Some(effect) = self.mint_precondition(robj) {
+            return effect;
+        }
+        self.graph_create_region(&op.region);
+        self.mint_container(env, robj);
+        self.region_instances.entry(op.region_id()).or_default();
+        OperationEffect::Applied
+    }
+
+    fn create_staff_instance(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &CreateStaffInstanceOp,
+    ) -> OperationEffect {
+        if !matches!(
+            self.objects.get(&TypedObjectId::Region(op.region)),
+            Some(ObjectState::Live)
+        ) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
+        let iobj = TypedObjectId::StaffInstance(op.instance_id());
+        if let Some(effect) = self.mint_precondition(iobj) {
+            return effect;
+        }
+        self.graph_create_staff_instance(op.region, &op.instance);
+        self.mint_container(env, iobj);
+        self.region_instances
+            .entry(op.region)
+            .or_default()
+            .insert(op.instance_id());
+        self.instance_voices.entry(op.instance_id()).or_default();
+        OperationEffect::Applied
+    }
+
+    fn create_voice(&mut self, env: &OperationEnvelope, op: &CreateVoiceOp) -> OperationEffect {
+        if !matches!(
+            self.objects
+                .get(&TypedObjectId::StaffInstance(op.staff_instance)),
+            Some(ObjectState::Live)
+        ) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
+        let vobj = TypedObjectId::Voice(op.voice_id());
+        if let Some(effect) = self.mint_precondition(vobj) {
+            return effect;
+        }
+        self.graph_create_voice(op.staff_instance, &op.voice);
+        self.mint_container(env, vobj);
+        self.instance_voices
+            .entry(op.staff_instance)
+            .or_default()
+            .insert(op.voice_id());
+        OperationEffect::Applied
+    }
+
+    /// `Some(effect)` when `obj` cannot be deleted (missing, idempotent
+    /// re-delete, or non-empty); `None` with the resolved minter when the
+    /// empty-only delete may proceed.
+    fn delete_precondition(
+        &self,
+        obj: TypedObjectId,
+        env: &OperationEnvelope,
+        has_live_children: bool,
+    ) -> Result<OperationId, OperationEffect> {
+        match self.objects.get(&obj) {
+            None => Err(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            }),
+            Some(ObjectState::Tombstoned { .. }) => Err(OperationEffect::NoOp {
+                reason: NoOpReason::AlreadyApplied,
+            }),
+            Some(ObjectState::Live) if has_live_children => Err(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::ContainerNotEmpty,
+                },
+            }),
+            Some(ObjectState::Live) => Ok(self.minted_by.get(&obj).copied().unwrap_or(env.id)),
+        }
+    }
+
+    fn delete_region(&mut self, env: &OperationEnvelope, op: &DeleteRegionOp) -> OperationEffect {
+        let robj = TypedObjectId::Region(op.region);
+        let has_instances = self
+            .region_instances
+            .get(&op.region)
+            .is_some_and(|s| !s.is_empty());
+        let minted_by = match self.delete_precondition(robj, env, has_instances) {
+            Ok(minter) => minter,
+            Err(effect) => return effect,
+        };
+        self.objects.insert(
+            robj,
+            ObjectState::Tombstoned {
+                deleted_by: env.id,
+                minted_by,
+            },
+        );
+        self.region_instances.remove(&op.region);
+        self.graph_delete_region(op.region);
+        OperationEffect::Applied
+    }
+
+    fn delete_staff_instance(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &DeleteStaffInstanceOp,
+    ) -> OperationEffect {
+        let iobj = TypedObjectId::StaffInstance(op.staff_instance);
+        let has_voices = self
+            .instance_voices
+            .get(&op.staff_instance)
+            .is_some_and(|s| !s.is_empty());
+        let minted_by = match self.delete_precondition(iobj, env, has_voices) {
+            Ok(minter) => minter,
+            Err(effect) => return effect,
+        };
+        self.objects.insert(
+            iobj,
+            ObjectState::Tombstoned {
+                deleted_by: env.id,
+                minted_by,
+            },
+        );
+        self.instance_voices.remove(&op.staff_instance);
+        for set in self.region_instances.values_mut() {
+            set.remove(&op.staff_instance);
+        }
+        self.graph_delete_staff_instance(op.staff_instance);
+        OperationEffect::Applied
+    }
+
+    fn delete_voice(&mut self, env: &OperationEnvelope, op: &DeleteVoiceOp) -> OperationEffect {
+        let vobj = TypedObjectId::Voice(op.voice);
+        let has_events = self
+            .voice_occupancy
+            .get(&op.voice)
+            .is_some_and(|e| !e.is_empty());
+        let minted_by = match self.delete_precondition(vobj, env, has_events) {
+            Ok(minter) => minter,
+            Err(effect) => return effect,
+        };
+        self.objects.insert(
+            vobj,
+            ObjectState::Tombstoned {
+                deleted_by: env.id,
+                minted_by,
+            },
+        );
+        self.voice_occupancy.remove(&op.voice);
+        for set in self.instance_voices.values_mut() {
+            set.remove(&op.voice);
+        }
+        self.graph_delete_voice(op.voice);
+        OperationEffect::Applied
+    }
+
+    // --- Group 3 graph mutations (reduce_onto only; no-op when graph is None). --
+
+    fn graph_create_region(&mut self, region: &epiphany_core::Region) {
+        if let Some(score) = self.graph.as_mut() {
+            score.canvas.regions.push(region.clone());
+        }
+    }
+
+    fn graph_create_staff_instance(&mut self, region: RegionId, instance: &StaffInstance) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        if let Some(region) = score.canvas.regions.iter_mut().find(|r| r.id == region) {
+            let staff = instance.staff;
+            if let Some(instances) = region.content.staff_instances_mut() {
+                instances.push(instance.clone());
+            }
+            // Keep the region's staff extent listing exactly its manifested
+            // staves (Chapter 5 RegionExtents).
+            if !region.staff_extent.staves.contains(&staff) {
+                region.staff_extent.staves.push(staff);
+            }
+        }
+    }
+
+    fn graph_create_voice(&mut self, staff_instance: StaffInstanceId, voice: &Voice) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        for region in &mut score.canvas.regions {
+            if let Some(instances) = region.content.staff_instances_mut() {
+                if let Some(instance) = instances.iter_mut().find(|i| i.id == staff_instance) {
+                    instance.voices.push(voice.clone());
+                    return;
+                }
+            }
+        }
+    }
+
+    fn graph_delete_region(&mut self, region: RegionId) {
+        if let Some(score) = self.graph.as_mut() {
+            score.canvas.regions.retain(|r| r.id != region);
+        }
+    }
+
+    fn graph_delete_staff_instance(&mut self, staff_instance: StaffInstanceId) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        for region in &mut score.canvas.regions {
+            let Some(instances) = region.content.staff_instances_mut() else {
+                continue;
+            };
+            let Some(removed_staff) = instances
+                .iter()
+                .find(|i| i.id == staff_instance)
+                .map(|i| i.staff)
+            else {
+                continue;
+            };
+            instances.retain(|i| i.id != staff_instance);
+            // Drop the staff from the extent if no remaining instance manifests
+            // it (Chapter 5 RegionExtents).
+            let still_used = instances.iter().any(|i| i.staff == removed_staff);
+            if !still_used {
+                region.staff_extent.staves.retain(|s| *s != removed_staff);
+            }
+        }
+    }
+
+    fn graph_delete_voice(&mut self, voice: VoiceId) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        for region in &mut score.canvas.regions {
+            if let Some(instances) = region.content.staff_instances_mut() {
+                for instance in instances {
+                    instance.voices.retain(|v| v.id != voice);
                 }
             }
         }
@@ -2677,6 +2986,8 @@ impl<'a> Reducer<'a> {
             last_pitch_modify: self.last_pitch_modify.clone(),
             last_cross_cutting_modify: self.last_cross_cutting_modify.clone(),
             structures: self.structures.clone(),
+            region_instances: self.region_instances.clone(),
+            instance_voices: self.instance_voices.clone(),
             migrated_regions: self.migrated_regions.clone(),
             region_migrator: self.region_migrator.clone(),
             descriptors: self.descriptors.clone(),
@@ -2698,6 +3009,8 @@ impl<'a> Reducer<'a> {
         self.last_pitch_modify = s.last_pitch_modify;
         self.last_cross_cutting_modify = s.last_cross_cutting_modify;
         self.structures = s.structures;
+        self.region_instances = s.region_instances;
+        self.instance_voices = s.instance_voices;
         self.migrated_regions = s.migrated_regions;
         self.region_migrator = s.region_migrator;
         self.descriptors = s.descriptors;

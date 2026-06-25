@@ -33,9 +33,9 @@
 
 use epiphany_core::{
     Beam, CanonicalValue, Event, EventDuration, EventId, EventPosition, IdentifiedPitch,
-    MusicalDuration, MusicalPosition, Pitch, PitchId, PitchSpelling, RegionId, RegionTimeModel,
-    Rest, Slur, Spanner, StaffInstanceId, Tie, TimeAnchor, TransactionId, TupletId, TypedObjectId,
-    VoiceId,
+    MusicalDuration, MusicalPosition, Pitch, PitchId, PitchSpelling, Region, RegionId,
+    RegionTimeModel, Rest, Slur, Spanner, StaffInstance, StaffInstanceId, Tie, TimeAnchor,
+    TransactionId, TupletId, TypedObjectId, Voice, VoiceId,
 };
 use epiphany_determinism::{sorted_canonical, CanonicalEncode};
 
@@ -125,6 +125,19 @@ pub enum OperationKind {
     /// Overwrite a cross-cutting structure's value (later-in-canonical-order
     /// wins).
     ModifyCrossCutting(ModifyCrossCuttingOp),
+    // --- Group 3 (M2c): structural container CRUD. Mint + empty-only delete. ---
+    /// Mint an empty region into the canvas.
+    CreateRegion(CreateRegionOp),
+    /// Tombstone an empty region (delete-wins; precondition: no live instances).
+    DeleteRegion(DeleteRegionOp),
+    /// Mint an empty staff instance into a live region.
+    CreateStaffInstance(CreateStaffInstanceOp),
+    /// Tombstone an empty staff instance (precondition: no live voices).
+    DeleteStaffInstance(DeleteStaffInstanceOp),
+    /// Mint an empty voice into a live staff instance.
+    CreateVoice(CreateVoiceOp),
+    /// Tombstone an empty voice (precondition: no live events).
+    DeleteVoice(DeleteVoiceOp),
 }
 
 impl OperationKind {
@@ -145,6 +158,12 @@ impl OperationKind {
             OperationKind::ModifyIdentifiedPitch(_) => 12,
             OperationKind::DeleteCrossCutting(_) => 13,
             OperationKind::ModifyCrossCutting(_) => 14,
+            OperationKind::CreateRegion(_) => 15,
+            OperationKind::DeleteRegion(_) => 16,
+            OperationKind::CreateStaffInstance(_) => 17,
+            OperationKind::DeleteStaffInstance(_) => 18,
+            OperationKind::CreateVoice(_) => 19,
+            OperationKind::DeleteVoice(_) => 20,
         }
     }
 
@@ -168,6 +187,12 @@ impl OperationKind {
             OperationKind::ModifyIdentifiedPitch(_) => OperationKindTag::ModifyIdentifiedPitch,
             OperationKind::DeleteCrossCutting(_) => OperationKindTag::DeleteCrossCutting,
             OperationKind::ModifyCrossCutting(_) => OperationKindTag::ModifyCrossCutting,
+            OperationKind::CreateRegion(_) => OperationKindTag::InsertRegion,
+            OperationKind::DeleteRegion(_) => OperationKindTag::DeleteRegion,
+            OperationKind::CreateStaffInstance(_) => OperationKindTag::InsertStaffInstance,
+            OperationKind::DeleteStaffInstance(_) => OperationKindTag::DeleteStaffInstance,
+            OperationKind::CreateVoice(_) => OperationKindTag::CreateVoice,
+            OperationKind::DeleteVoice(_) => OperationKindTag::DeleteVoice,
         }
     }
 }
@@ -194,6 +219,12 @@ impl CanonicalEncode for OperationKind {
             OperationKind::ModifyIdentifiedPitch(op) => op.encode_canonical(out),
             OperationKind::DeleteCrossCutting(op) => op.encode_canonical(out),
             OperationKind::ModifyCrossCutting(op) => op.encode_canonical(out),
+            OperationKind::CreateRegion(op) => op.encode_canonical(out),
+            OperationKind::DeleteRegion(op) => op.encode_canonical(out),
+            OperationKind::CreateStaffInstance(op) => op.encode_canonical(out),
+            OperationKind::DeleteStaffInstance(op) => op.encode_canonical(out),
+            OperationKind::CreateVoice(op) => op.encode_canonical(out),
+            OperationKind::DeleteVoice(op) => op.encode_canonical(out),
         }
     }
 }
@@ -224,6 +255,8 @@ pub enum OperationKindTag {
     InsertIdentifiedPitch,
     DeleteIdentifiedPitch,
     ModifyIdentifiedPitch,
+    CreateVoice,
+    DeleteVoice,
 }
 
 impl OperationKindTag {
@@ -249,6 +282,8 @@ impl OperationKindTag {
             OperationKindTag::InsertIdentifiedPitch => 17,
             OperationKindTag::DeleteIdentifiedPitch => 18,
             OperationKindTag::ModifyIdentifiedPitch => 19,
+            OperationKindTag::CreateVoice => 20,
+            OperationKindTag::DeleteVoice => 21,
         }
     }
 }
@@ -802,6 +837,118 @@ impl ModifyCrossCuttingOp {
 impl CanonicalEncode for ModifyCrossCuttingOp {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         self.structure.encode_canonical(out);
+    }
+}
+
+// --- Group 3 (M2c): structural container CRUD (Chapter 6 §6.10). -------------
+//
+// Creates are value-typed mints of an *empty* container (set-union creation);
+// deletes are empty-only delete-wins tombstones (the container must have no live
+// children — the caller deletes contents first). See `DECISIONS.md`.
+
+/// Mint an empty region into the canvas (Chapter 6 §6.10 InsertRegion). Carries
+/// the full [`Region`] value (v1); the reduction preconditions it carries no
+/// staff instances (an empty container).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CreateRegionOp {
+    pub region: Region,
+}
+
+impl CreateRegionOp {
+    /// The minted region's identifier.
+    pub fn region_id(&self) -> RegionId {
+        self.region.id
+    }
+}
+
+impl CanonicalEncode for CreateRegionOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_lp_bytes(out, &self.region.canonical_bytes());
+    }
+}
+
+/// Tombstone an empty region (Chapter 6 §6.10 DeleteRegion). Delete-wins, but a
+/// precondition NoOp if the region still has live staff instances.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct DeleteRegionOp {
+    pub region: RegionId,
+}
+
+impl CanonicalEncode for DeleteRegionOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_canon(out, &self.region);
+    }
+}
+
+/// Mint an empty staff instance into a live region (Chapter 6 §6.10
+/// InsertStaffInstance). Carries the full [`StaffInstance`] value (v1); the
+/// reduction preconditions it carries no voices.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CreateStaffInstanceOp {
+    pub region: RegionId,
+    pub instance: StaffInstance,
+}
+
+impl CreateStaffInstanceOp {
+    /// The minted staff instance's identifier.
+    pub fn instance_id(&self) -> StaffInstanceId {
+        self.instance.id
+    }
+}
+
+impl CanonicalEncode for CreateStaffInstanceOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_canon(out, &self.region);
+        push_lp_bytes(out, &self.instance.canonical_bytes());
+    }
+}
+
+/// Tombstone an empty staff instance (Chapter 6 §6.10 DeleteStaffInstance).
+/// Delete-wins, but a precondition NoOp if it still has live voices.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct DeleteStaffInstanceOp {
+    pub staff_instance: StaffInstanceId,
+}
+
+impl CanonicalEncode for DeleteStaffInstanceOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_canon(out, &self.staff_instance);
+    }
+}
+
+/// Mint an empty voice into a live staff instance (Chapter 6 §6.10 CreateVoice).
+/// Carries the full [`Voice`] value (v1); the reduction preconditions it carries
+/// no events.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CreateVoiceOp {
+    pub staff_instance: StaffInstanceId,
+    pub voice: Voice,
+}
+
+impl CreateVoiceOp {
+    /// The minted voice's identifier.
+    pub fn voice_id(&self) -> VoiceId {
+        self.voice.id
+    }
+}
+
+impl CanonicalEncode for CreateVoiceOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_canon(out, &self.staff_instance);
+        push_lp_bytes(out, &self.voice.canonical_bytes());
+    }
+}
+
+/// Tombstone an empty voice (Chapter 6 §6.10 DeleteVoice). Delete-wins, but a
+/// precondition NoOp if it still has live events.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct DeleteVoiceOp {
+    pub voice: VoiceId,
+}
+
+impl CanonicalEncode for DeleteVoiceOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_canon(out, &self.voice);
     }
 }
 

@@ -218,6 +218,7 @@ fn precondition_reason(reader: &mut Reader<'_>) -> Result<PreconditionFailureRea
             reader,
             PreconditionFailureRegistryId,
         )?)),
+        10 => Ok(PreconditionFailureReason::ContainerNotEmpty),
         tag => Err(MaterializedDecodeError::InvalidTag {
             kind: "PreconditionFailureReason",
             tag,

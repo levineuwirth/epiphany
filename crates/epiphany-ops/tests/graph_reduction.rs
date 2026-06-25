@@ -1030,3 +1030,186 @@ fn deleting_both_slur_endpoints_cascades_in_both_graph_and_ledger() {
     );
     assert!(check_invariants(&result.score).is_empty());
 }
+
+/// Helper: the effect recorded for `id` in a reduction.
+fn effect_of(result: &epiphany_ops::GraphMaterialization, id: OperationId) -> OperationEffect {
+    result
+        .state
+        .effects
+        .iter()
+        .find(|(e, _)| *e == id)
+        .map(|(_, eff)| eff.clone())
+        .expect("the operation has an effect")
+}
+
+#[test]
+fn structural_containers_create_and_empty_only_delete_in_the_graph() {
+    use epiphany_core::{RegionId, StaffInstanceId};
+    let base = epiphany_core::generators::valid_score(100);
+    let staff = base.staves[0].id;
+    let region = RegionId::new(ReplicaId(72), 0);
+    let instance = StaffInstanceId::new(ReplicaId(72), 1);
+    let v = VoiceId::new(ReplicaId(72), 2);
+
+    let r = 72;
+    let create_region = envelope(
+        r,
+        0,
+        10,
+        CausalContext::new(),
+        None,
+        OperationPayload::Primitive(OperationKind::CreateRegion(epiphany_ops::CreateRegionOp {
+            region: valuegen::region(region),
+        })),
+    );
+    let create_instance = envelope(
+        r,
+        1,
+        11,
+        CausalContext::new().with_seen(ReplicaId(r), 0),
+        None,
+        OperationPayload::Primitive(OperationKind::CreateStaffInstance(
+            epiphany_ops::CreateStaffInstanceOp {
+                region,
+                instance: valuegen::staff_instance(instance, staff),
+            },
+        )),
+    );
+    let create_voice = envelope(
+        r,
+        2,
+        12,
+        CausalContext::new().with_seen(ReplicaId(r), 1),
+        None,
+        OperationPayload::Primitive(OperationKind::CreateVoice(epiphany_ops::CreateVoiceOp {
+            staff_instance: instance,
+            voice: valuegen::voice(v),
+        })),
+    );
+    let creates = [
+        create_region.clone(),
+        create_instance.clone(),
+        create_voice.clone(),
+    ];
+
+    // Creates materialize the container subtree, invariant-clean.
+    let mut after_create = OperationSet::new();
+    after_create.accept_all(creates.clone());
+    let created = after_create.reduce_onto(&base);
+    let materialized_region = created
+        .score
+        .canvas
+        .regions
+        .iter()
+        .find(|rg| rg.id == region)
+        .expect("the region is materialized");
+    assert!(
+        materialized_region
+            .staff_instances()
+            .iter()
+            .any(|i| i.id == instance),
+        "the staff instance is materialized in its region"
+    );
+    assert!(
+        materialized_region
+            .staff_instances()
+            .iter()
+            .flat_map(|i| &i.voices)
+            .any(|vo| vo.id == v),
+        "the voice is materialized in its staff instance"
+    );
+    assert!(check_invariants(&created.score).is_empty());
+
+    // Empty-only: deleting the non-empty region (and instance) is refused.
+    let del_region_early = envelope(
+        r,
+        3,
+        13,
+        CausalContext::new().with_seen(ReplicaId(r), 2),
+        None,
+        OperationPayload::Primitive(OperationKind::DeleteRegion(epiphany_ops::DeleteRegionOp {
+            region,
+        })),
+    );
+    let mut early = OperationSet::new();
+    early.accept_all(creates.iter().cloned().chain([del_region_early.clone()]));
+    let early_res = early.reduce_onto(&base);
+    assert!(
+        early_res
+            .score
+            .canvas
+            .regions
+            .iter()
+            .any(|rg| rg.id == region),
+        "a non-empty region delete is refused and leaves the region in the graph"
+    );
+    assert_eq!(
+        effect_of(&early_res, del_region_early.id),
+        OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::ContainerNotEmpty,
+            },
+        },
+        "the refused delete reports ContainerNotEmpty"
+    );
+
+    // Ordered teardown (voice, instance, region) clears the subtree from graph
+    // and ledger, invariant-clean.
+    let del_voice = envelope(
+        r,
+        3,
+        13,
+        CausalContext::new().with_seen(ReplicaId(r), 2),
+        None,
+        OperationPayload::Primitive(OperationKind::DeleteVoice(epiphany_ops::DeleteVoiceOp {
+            voice: v,
+        })),
+    );
+    let del_instance = envelope(
+        r,
+        4,
+        14,
+        CausalContext::new().with_seen(ReplicaId(r), 3),
+        None,
+        OperationPayload::Primitive(OperationKind::DeleteStaffInstance(
+            epiphany_ops::DeleteStaffInstanceOp {
+                staff_instance: instance,
+            },
+        )),
+    );
+    let del_region = envelope(
+        r,
+        5,
+        15,
+        CausalContext::new().with_seen(ReplicaId(r), 4),
+        None,
+        OperationPayload::Primitive(OperationKind::DeleteRegion(epiphany_ops::DeleteRegionOp {
+            region,
+        })),
+    );
+    let mut teardown = OperationSet::new();
+    teardown.accept_all(
+        creates
+            .into_iter()
+            .chain([del_voice, del_instance, del_region]),
+    );
+    let result = teardown.reduce_onto(&base);
+    assert!(
+        !result.score.canvas.regions.iter().any(|rg| rg.id == region),
+        "the region is removed from the graph after the ordered teardown"
+    );
+    for obj in [
+        TypedObjectId::Region(region),
+        TypedObjectId::StaffInstance(instance),
+        TypedObjectId::Voice(v),
+    ] {
+        assert!(
+            matches!(
+                result.state.objects.get(&obj),
+                Some(epiphany_ops::ObjectState::Tombstoned { .. })
+            ),
+            "{obj:?} is tombstoned in the ledger after teardown"
+        );
+    }
+    assert!(check_invariants(&result.score).is_empty());
+}

@@ -2093,6 +2093,10 @@ canonical_value! {
     Spanner,
     RegionTimeModel,
     TimeAnchor,
+    // Structural containers (M2c) — value-typed create payloads embed these.
+    Region,
+    StaffInstance,
+    Voice,
 }
 
 #[cfg(test)]
@@ -2126,6 +2130,13 @@ mod value_codec_tests {
             let s = valid_score_rich(seed.wrapping_mul(0x0100_0193).wrapping_add(7));
             for region in &s.canvas.regions {
                 assert_value_round_trips(&region.time_model);
+                assert_value_round_trips(region);
+                for instance in region.staff_instances() {
+                    assert_value_round_trips(instance);
+                    for voice in &instance.voices {
+                        assert_value_round_trips(voice);
+                    }
+                }
             }
             for tie in &s.cross_cutting.ties {
                 assert_value_round_trips(tie);

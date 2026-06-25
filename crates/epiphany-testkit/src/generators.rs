@@ -32,11 +32,12 @@ use epiphany_ops::valuegen;
 use epiphany_ops::{
     AnomalousReplicaSegment, AuthorId, CausalContext, ChangeRegionTimeModelOp, ConflictId,
     ConflictKind, ConflictKindRegistryId, ConflictRecord, ConflictRegistry,
-    ConflictResolutionState, CreateCrossCuttingOp, CrossCuttingValue, DeleteCrossCuttingOp,
-    DeleteEventOp, DeleteIdentifiedPitchOp, ExtensionPreconditionId, FieldPath, HybridLogicalClock,
-    InsertEventOp, InsertIdentifiedPitchOp, IntegrityAnomaly, IntegrityAnomalyKind,
-    IntegrityAnomalyRegistryId, MaterializedState, ModifyCrossCuttingOp, ModifyEventOp,
-    ModifyIdentifiedPitchOp, NoOpReason, ObjectKind, ObjectState, OperationEffect,
+    ConflictResolutionState, CreateCrossCuttingOp, CreateRegionOp, CreateStaffInstanceOp,
+    CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
+    DeleteRegionOp, DeleteStaffInstanceOp, DeleteVoiceOp, ExtensionPreconditionId, FieldPath,
+    HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp, IntegrityAnomaly,
+    IntegrityAnomalyKind, IntegrityAnomalyRegistryId, MaterializedState, ModifyCrossCuttingOp,
+    ModifyEventOp, ModifyIdentifiedPitchOp, NoOpReason, ObjectKind, ObjectState, OperationEffect,
     OperationEnvelope, OperationKind, OperationKindRegistryId, OperationPayload, OperationSet,
     OperationStamp, PendingReason, PositionRemapping, PreconditionFailureReason,
     PreconditionFailureRegistryId, ReanchorReason, ReanchorReasonRegistryId, ReanchorResult,
@@ -635,7 +636,7 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
         }
         _ => {}
     }
-    let kind = match rng.below(15) {
+    let kind = match rng.below(21) {
         0 => {
             let pitches = if rng.boolean() {
                 vec![obj_pitch(rng.below(pitches))]
@@ -730,6 +731,30 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
                 obj_event(rng.below(events)),
                 obj_event(rng.below(events)),
             )),
+        }),
+        // Group 3 (M2c): structural container CRUD over the shared id space.
+        14 => OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(RegionId::new(OBJ_REPLICA, rng.below(2))),
+        }),
+        15 => OperationKind::DeleteRegion(DeleteRegionOp {
+            region: RegionId::new(OBJ_REPLICA, rng.below(2)),
+        }),
+        16 => OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region: RegionId::new(OBJ_REPLICA, rng.below(2)),
+            instance: valuegen::staff_instance(
+                StaffInstanceId::new(OBJ_REPLICA, rng.below(2)),
+                StaffId::new(OBJ_REPLICA, 0),
+            ),
+        }),
+        17 => OperationKind::DeleteStaffInstance(DeleteStaffInstanceOp {
+            staff_instance: StaffInstanceId::new(OBJ_REPLICA, rng.below(2)),
+        }),
+        18 => OperationKind::CreateVoice(CreateVoiceOp {
+            staff_instance: StaffInstanceId::new(OBJ_REPLICA, rng.below(2)),
+            voice: valuegen::voice(VoiceId::new(OBJ_REPLICA, rng.below(4))),
+        }),
+        19 => OperationKind::DeleteVoice(DeleteVoiceOp {
+            voice: VoiceId::new(OBJ_REPLICA, rng.below(4)),
         }),
         _ => OperationKind::Registered(
             OperationKindRegistryId(rng.next_u64() as u128),

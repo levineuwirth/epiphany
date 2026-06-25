@@ -22,7 +22,7 @@
 
 use epiphany_core::{
     EventId, MusicalDuration, MusicalPosition, OperationId, PitchId, RationalTime, RegionId,
-    ReplicaId, SlurId, StaffInstanceId, TypedObjectId, VoiceId,
+    ReplicaId, SlurId, StaffId, StaffInstanceId, TypedObjectId, VoiceId,
 };
 use epiphany_determinism::fuzz::SplitMix64;
 
@@ -30,10 +30,11 @@ use crate::causal::CausalContext;
 use crate::envelope::OperationEnvelope;
 use crate::opset::OperationSet;
 use crate::payload::{
-    CreateCrossCuttingOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp,
-    DeleteIdentifiedPitchOp, InsertEventOp, InsertIdentifiedPitchOp, ModifyCrossCuttingOp,
-    ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationPayload, RespellPitchOp,
-    SetUserSystemBreakOp, TransposeOp, TupletCompensation,
+    CreateCrossCuttingOp, CreateRegionOp, CreateStaffInstanceOp, CreateVoiceOp, CrossCuttingValue,
+    DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
+    DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
+    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationPayload,
+    RespellPitchOp, SetUserSystemBreakOp, TransposeOp, TupletCompensation,
 };
 use crate::stamp::{HybridLogicalClock, OperationStamp};
 use crate::support::AuthorId;
@@ -83,7 +84,7 @@ fn pitch(n: u64) -> PitchId {
 
 /// Generates a random payload over the shared id space.
 fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
-    let kind = match rng.below(12) {
+    let kind = match rng.below(18) {
         0 => {
             let voice = VoiceId::new(ReplicaId(7), rng.below(3));
             let position = MusicalPosition(RationalTime::from_int(rng.below(4) as i32));
@@ -155,12 +156,36 @@ fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
         10 => OperationKind::DeleteCrossCutting(DeleteCrossCuttingOp {
             structure: TypedObjectId::Slur(SlurId::new(ReplicaId(7), rng.below(ID_SPACE))),
         }),
-        _ => OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+        11 => OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
             structure: CrossCuttingValue::Slur(valuegen::slur(
                 SlurId::new(ReplicaId(7), rng.below(ID_SPACE)),
                 event(rng.below(ID_SPACE)),
                 event(rng.below(ID_SPACE)),
             )),
+        }),
+        // Group 3 (M2c): structural container CRUD over the shared id space.
+        12 => OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(RegionId::new(ReplicaId(7), rng.below(3))),
+        }),
+        13 => OperationKind::DeleteRegion(DeleteRegionOp {
+            region: RegionId::new(ReplicaId(7), rng.below(3)),
+        }),
+        14 => OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region: RegionId::new(ReplicaId(7), rng.below(3)),
+            instance: valuegen::staff_instance(
+                StaffInstanceId::new(ReplicaId(7), rng.below(3)),
+                StaffId::new(ReplicaId(7), 0),
+            ),
+        }),
+        15 => OperationKind::DeleteStaffInstance(DeleteStaffInstanceOp {
+            staff_instance: StaffInstanceId::new(ReplicaId(7), rng.below(3)),
+        }),
+        16 => OperationKind::CreateVoice(CreateVoiceOp {
+            staff_instance: StaffInstanceId::new(ReplicaId(7), rng.below(3)),
+            voice: valuegen::voice(VoiceId::new(ReplicaId(7), rng.below(3))),
+        }),
+        _ => OperationKind::DeleteVoice(DeleteVoiceOp {
+            voice: VoiceId::new(ReplicaId(7), rng.below(3)),
         }),
     };
     OperationPayload::Primitive(kind)

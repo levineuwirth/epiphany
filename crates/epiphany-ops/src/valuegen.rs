@@ -18,10 +18,11 @@ use epiphany_core::{
     AcousticPitch, AcousticRealization, AleatoricAnchoringDiscipline, AleatoricTimeModel,
     AnchorOffset, Beam, BeamId, CmnNominal, Event, EventId, EventOrderingDAG, EventPosition,
     IdentifiedPitch, MetricTimeModel, MusicalDuration, MusicalPosition, Pitch, PitchId,
-    PitchSpaceId, PitchSpacePosition, PitchSpelling, PitchedEvent, ProportionalTimeModel,
-    RegionEdge, RegionId, RegionTimeModel, Rest, ScalePosition, Slur, SlurId, SpellingAttachment,
-    SpellingDirective, SpellingScope, SpellingSource, StemConfiguration, Tie, TieClass, TieId,
-    TimeAnchor, VoiceId, WallClockDuration,
+    PitchSpaceId, PitchSpacePosition, PitchSpelling, PitchedEvent, ProportionalTimeModel, Region,
+    RegionContent, RegionEdge, RegionId, RegionTimeModel, Rest, ScalePosition, Slur, SlurId,
+    SpellingAttachment, SpellingDirective, SpellingScope, SpellingSource, StaffBasedContent,
+    StaffExtent, StaffId, StaffInstance, StaffInstanceId, StemConfiguration, Tie, TieClass, TieId,
+    TimeAnchor, TimeExtent, Voice, VoiceId, VoiceOrigin, WallClockDuration, WallClockTime,
 };
 
 /// A deterministic, fully-specified C4 pitch in the cmn-12 space — the neutral
@@ -209,6 +210,62 @@ pub fn aleatoric_model() -> RegionTimeModel {
         bounds: BTreeMap::new(),
         duration_hint: WallClockDuration(1),
     })
+}
+
+/// An empty, user-declared [`Voice`] (M2c) — the container a `CreateVoice` mints
+/// before any event is inserted into it.
+pub fn voice(id: VoiceId) -> Voice {
+    Voice {
+        id,
+        events: Vec::new(),
+        default_stem_direction: None,
+        is_primary: false,
+        origin: VoiceOrigin::UserDeclared,
+    }
+}
+
+/// An empty [`StaffInstance`] (M2c) over the given global `staff` — the container
+/// a `CreateStaffInstance` mints before any voice is created in it.
+pub fn staff_instance(id: StaffInstanceId, staff: StaffId) -> StaffInstance {
+    StaffInstance {
+        id,
+        staff,
+        voices: Vec::new(),
+        clef_sequence: Vec::new(),
+        key_sequence: Vec::new(),
+        local_metric_grid: None,
+        measures: Vec::new(),
+        instrument_override: None,
+        staff_lines_override: None,
+        visible: true,
+    }
+}
+
+/// An empty metric [`Region`] (M2c) — the container a `CreateRegion` mints before
+/// any staff instance is added to it. Carries no staff instances and an empty
+/// staff extent (a region with no instances is reference-clean, Chapter 5).
+pub fn region(id: RegionId) -> Region {
+    Region {
+        id,
+        time_model: metric_model(),
+        content: RegionContent::StaffBased(StaffBasedContent {
+            staff_instances: Vec::new(),
+            ..Default::default()
+        }),
+        // A far-future wall-clock extent so a freshly-created (initially empty)
+        // region does not overlap an existing region in both time and staff once
+        // a staff instance is added (Chapter 5 RegionExtents).
+        time_extent: TimeExtent {
+            start: TimeAnchor::WallClock {
+                time: WallClockTime(1_000_000_000),
+            },
+            end: TimeAnchor::WallClock {
+                time: WallClockTime(1_000_001_000),
+            },
+        },
+        staff_extent: StaffExtent { staves: Vec::new() },
+        local_tempo_map: None,
+    }
 }
 
 /// An explicit, user-chosen per-pitch [`SpellingAttachment`] — the engraved-layer

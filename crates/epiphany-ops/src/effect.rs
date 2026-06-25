@@ -132,6 +132,10 @@ pub enum PreconditionFailureReason {
     PitchSpaceMismatch,
     /// The operation targeted a voice that does not exist or is tombstoned.
     VoiceMissing,
+    /// A structural-container delete (Group 3) targeted a container that still
+    /// has live children (an empty-only delete; the caller deletes contents
+    /// first).
+    ContainerNotEmpty,
     /// An extension-declared precondition failed.
     ExtensionPrecondition(ExtensionPreconditionId),
     /// A registered precondition code from a versioned registry.
@@ -151,6 +155,8 @@ impl PreconditionFailureReason {
             PreconditionFailureReason::VoiceMissing => 7,
             PreconditionFailureReason::ExtensionPrecondition(_) => 8,
             PreconditionFailureReason::Registered(_) => 9,
+            // Additive (Group 3); keeps the ratified 0..=9 discriminants stable.
+            PreconditionFailureReason::ContainerNotEmpty => 10,
         }
     }
 }
