@@ -33,8 +33,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use epiphany_core::{
     derive_promoted_voice_id, AnchorOffset, CanonicalValue, Event, EventDuration, EventId,
     EventPosition, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId, PitchSpelling,
-    RegionEdge, RegionId, RegionTimeModel, Score, StaffInstance, StaffInstanceId, TimeAnchor,
-    TransactionId, TypedObjectId, Voice, VoiceId, VoiceOrigin,
+    RegionEdge, RegionId, RegionTimeModel, Score, SpellingAttachment, SpellingDirective,
+    SpellingScope, SpellingSource, StaffInstance, StaffInstanceId, TimeAnchor, TransactionId,
+    TypedObjectId, Voice, VoiceId, VoiceOrigin,
 };
 use epiphany_determinism::CanonicalEncode;
 
@@ -1559,8 +1560,7 @@ impl<'a> Reducer<'a> {
 
         match self.last_respell.get(&op.pitch).copied() {
             None => {
-                self.spellings.insert(op.pitch, op.spelling.clone());
-                self.last_respell.insert(op.pitch, env.id);
+                self.materialize_respell(env, op);
                 OperationEffect::Applied
             }
             Some(prev_op) => {
@@ -1578,8 +1578,7 @@ impl<'a> Reducer<'a> {
                         // earlier op is recorded as the loser. (Prototype
                         // convention: the winner carries the Conflicted effect;
                         // see DECISIONS.md.)
-                        self.spellings.insert(op.pitch, op.spelling.clone());
-                        self.last_respell.insert(op.pitch, env.id);
+                        self.materialize_respell(env, op);
                         let conflict = ConflictRecord::new(
                             ConflictKind::StructuralFieldCollision {
                                 winner: env.id,
@@ -1595,11 +1594,46 @@ impl<'a> Reducer<'a> {
                     }
                 } else {
                     // Causally-ordered re-respell: intentional overwrite.
-                    self.spellings.insert(op.pitch, op.spelling.clone());
-                    self.last_respell.insert(op.pitch, env.id);
+                    self.materialize_respell(env, op);
                     OperationEffect::Applied
                 }
             }
+        }
+    }
+
+    /// Records a winning respell: the canonical bookkeeping spelling, the LWW
+    /// marker, and — for graph-aware reduction — an explicit user-chosen
+    /// [`SpellingAttachment`] so the spelling/decomposition pre-passes (Agent H's
+    /// `derive_annotations`) resolve the override with manual-override precedence.
+    /// Without the graph attachment a reduced `RespellPitch` would be visible only
+    /// in `MaterializedState.spellings` and lost before annotation derivation.
+    fn materialize_respell(&mut self, env: &OperationEnvelope, op: &RespellPitchOp) {
+        self.spellings.insert(op.pitch, op.spelling.clone());
+        self.last_respell.insert(op.pitch, env.id);
+        self.graph_respell_pitch(op.pitch, &op.spelling);
+    }
+
+    fn graph_respell_pitch(&mut self, pitch: PitchId, spelling: &PitchSpelling) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        // Upsert the user-chosen explicit override (one per pitch), keeping the
+        // attachment list's canonical order stable for the resolver's tie-break.
+        if let Some(existing) = score.spelling_attachments.iter_mut().find(|a| {
+            a.layer.is_none()
+                && matches!(a.source, SpellingSource::UserChosen)
+                && matches!(&a.scope, SpellingScope::Pitch(p) if *p == pitch)
+                && matches!(a.directive, SpellingDirective::Explicit(_))
+        }) {
+            existing.directive = SpellingDirective::Explicit(spelling.clone());
+        } else {
+            score.spelling_attachments.push(SpellingAttachment {
+                scope: SpellingScope::Pitch(pitch),
+                directive: SpellingDirective::Explicit(spelling.clone()),
+                source: SpellingSource::UserChosen,
+                priority: 0,
+                layer: None,
+            });
         }
     }
 
@@ -2692,6 +2726,19 @@ impl<'a> Reducer<'a> {
         let Some(score) = self.graph.as_mut() else {
             return;
         };
+        // Drop any user-chosen respell override for the deleted pitch (the dual
+        // of `graph_respell_pitch`), so no spelling attachment is left targeting a
+        // pitch that is no longer present (Chapter 5 SpellingScopeResolves). The
+        // pitch is not added to `tombstoned_pitches` here: unlike a whole-event
+        // delete the event survives, and a later ModifyEvent may legitimately
+        // reintroduce the id — tombstoning it would make it both live and
+        // tombstoned (invariant 11).
+        score.spelling_attachments.retain(|a| {
+            !(a.layer.is_none()
+                && matches!(a.source, SpellingSource::UserChosen)
+                && matches!(&a.scope, SpellingScope::Pitch(p) if *p == pitch)
+                && matches!(a.directive, SpellingDirective::Explicit(_)))
+        });
         let Some(event) = Self::graph_event_of_pitch(score, pitch) else {
             return;
         };

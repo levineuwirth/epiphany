@@ -40,13 +40,13 @@ fn profile() -> PrePassProfile {
     PrePassProfile::default()
 }
 
-/// A canonical fingerprint of derived annotations. `DerivedAnnotations` has no
-/// codec by design (it is never serialized into canonical `Score` bytes), so the
-/// fingerprint is its `Debug` form — deterministic because the `spellings` and
-/// `decompositions` maps are `BTreeMap`s (canonical key order) and the taxonomy
-/// is plain counts. Equal fingerprints ⇒ byte-identical derivations.
-pub fn fingerprint(ann: &DerivedAnnotations) -> String {
-    format!("{ann:?}")
+/// A canonical byte fingerprint of derived annotations
+/// ([`DerivedAnnotations::canonical_fingerprint`]): the embedded graph values use
+/// their ratified `CanonicalValue` bytes, counts/ids are little-endian. Equal
+/// fingerprints ⇒ byte-identical derivations — a normative serialization surface,
+/// rather than the (non-normative) `Debug` form the gate used previously.
+pub fn fingerprint(ann: &DerivedAnnotations) -> Vec<u8> {
+    ann.canonical_fingerprint()
 }
 
 // ===========================================================================
@@ -385,6 +385,77 @@ pub fn assert_respell_precedence() {
     );
 }
 
+/// The H↔K seam: a **real reduced** `RespellPitch` (not a hand-pushed
+/// attachment) is honored by [`derive_annotations`]. The reducer must surface
+/// the override into the materialized graph; otherwise a respelling accepted by
+/// `reduce_onto` is lost before the pre-pass runs, silently violating the
+/// manual-override precedence requirement.
+pub fn assert_reduced_respell_is_honored() {
+    use epiphany_core::{check_invariants, OperationId, ReplicaId, WallClockTime};
+    use epiphany_ops::{
+        AuthorId, CausalContext, HybridLogicalClock, OperationEnvelope, OperationKind,
+        OperationPayload, OperationSet, OperationStamp, RespellPitchOp,
+    };
+
+    let (score, pid) = corpus::override_probe();
+
+    // Inferred baseline (no override).
+    let inferred = derive_annotations(&score, &profile())
+        .spellings
+        .get(&pid)
+        .expect("probe pitch is spelled")
+        .spelling
+        .clone();
+    // A clearly distinct authored spelling (Db4), engraved-layer UserChosen.
+    let override_spelling = PitchSpelling {
+        nominal: SpellingNominal::Cmn(CmnNominal::D),
+        accidentals: vec![AccidentalId::new("flat")],
+        octave: 4,
+        render_hints: Default::default(),
+    };
+    assert_ne!(
+        override_spelling, inferred,
+        "the override fixture must differ from the inferred spelling to be meaningful"
+    );
+
+    // Reduce a real RespellPitch onto the score, then derive annotations on the
+    // *materialized* graph the reducer produced.
+    let id = OperationId::new(ReplicaId(0x5EE11), 0);
+    let respell = OperationEnvelope {
+        id,
+        author: AuthorId(0),
+        stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(1), 0), id),
+        causal_context: CausalContext::new(),
+        transaction: None,
+        payload: OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
+            pitch: pid,
+            spelling: override_spelling.clone(),
+        })),
+    };
+    let mut set = OperationSet::new();
+    set.accept(respell);
+    let reduced = set.reduce_onto(&score);
+
+    let ann = derive_annotations(&reduced.score, &profile());
+    let rs = ann
+        .spellings
+        .get(&pid)
+        .expect("the respelled pitch is spelled");
+    assert_eq!(
+        rs.spelling, override_spelling,
+        "a reduced RespellPitch must be honored by derive_annotations (not lost before the pre-pass)"
+    );
+    assert_eq!(
+        rs.provenance,
+        SpellingProvenance::Authored(SpellingSourceKind::UserChosen),
+        "a reduced RespellPitch should resolve with manual-override precedence"
+    );
+    assert!(
+        check_invariants(&reduced.score).is_empty(),
+        "the reduced score carrying the surfaced override is invariant-clean"
+    );
+}
+
 // ===========================================================================
 // Spelling correctness vs. published tonal expectations
 // ===========================================================================
@@ -674,8 +745,10 @@ pub fn run_all(scale: u64) {
         assert_decompositions_reconstruct(&score, &ann);
     }
 
-    // Authored-override precedence.
+    // Authored-override precedence (hand-pushed attachment) ...
     assert_respell_precedence();
+    // ... and a real reduced RespellPitch surfaced through the K↔H seam.
+    assert_reduced_respell_is_honored();
 
     // Spelling correctness on published tonal cases.
     assert_spelling_matches_published_expectations();

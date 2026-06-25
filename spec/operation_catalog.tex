@@ -652,24 +652,43 @@ plus a non-vacuity guard.
 \chapter{K1 --- Framework Slots (Phase 3)}
 \label{ch:k1}
 
-The following K0 catalogue bullet items are \emph{drafted} here as framework
-slots and completed in Phase~3. Under the Phase-2 profile they are
-\textbf{unavailable}: an implementation \MUST{} reject an operation of one of
-these kinds. Each is a schema-fill against the template of
-Chapter~\ref{ch:framework}; adding one is not a fresh design.
+This chapter drafted the remaining catalogue items as framework slots. Since the
+Phase-2 \textbf{M2} expansion (the broad-K0 groups in \texttt{epiphany-ops}),
+several have been \emph{implemented} and are available under the Phase-2 profile;
+their per-primitive \S{}schema joins Chapter~\ref{ch:k0} with the M2e catalogue
+expansion. The genuinely Phase-3 slots that remain \textbf{unavailable} are listed
+second: an implementation \MUST{} reject an operation of one of \emph{those} kinds
+(and \MUST{} \emph{not} reject the implemented kinds below). Each remaining slot is
+a schema-fill against the template of Chapter~\ref{ch:framework}; adding one is not
+a fresh design.
+
+\section*{Implemented since M2 (available under the Phase-2 profile)}
 
 \begin{description}
-  \item[Create score / canvas / region / staff / staff instance / voice]
-    Structural mint operations. Discipline: set-union creation
-    (Section~\ref{sec:k0:create-cross-cutting}); undo tombstones the mint;
-    re-anchoring is not applicable.
-  \item[ModifyEvent]
-    Field overwrite on an event's non-identity fields (articulations, dynamics,
-    stem). Discipline: last-writer-wins with structural-field-collision
-    (Section~\ref{sec:k0:respell-pitch}).
+  \item[Modify event; transpose]
+    Field overwrite on an event's non-identity fields, and an order-dependent
+    chromatic transpose (M2 Group~1). Discipline: last-writer-wins with
+    structural-field-collision (Section~\ref{sec:k0:respell-pitch}).
   \item[Insert / delete / modify identified pitch]
-    Pitch-level mint, tombstone, and field overwrite within an event. Disciplines
-    as for the event-level analogues.
+    Pitch-level mint, tombstone, and field overwrite within an event (M2
+    Group~1). Disciplines as for the event-level analogues.
+  \item[Delete / update tie / slur / beam / spanner]
+    Cross-cutting tombstone and field overwrite (M2 Group~2). Disciplines:
+    delete-wins with re-anchoring (Section~\ref{sec:k0:delete-event}) and field
+    overwrite.
+  \item[Create / delete region / staff instance / voice]
+    Structural container mint and \emph{empty-only} delete (M2 Group~3).
+    Disciplines: set-union creation (Section~\ref{sec:k0:create-cross-cutting})
+    and a delete-wins tombstone that is a precondition no-op unless the container
+    has no live children.
+\end{description}
+
+\section*{Remaining framework slots (Phase 3 --- unavailable, MUST reject)}
+
+\begin{description}
+  \item[Create score / canvas / staff]
+    The remaining structural mints (the document root, the canvas, and global
+    staves) the Phase-2 slice does not exercise. Discipline: set-union creation.
   \item[Set metadata (title / composer / lyricist / copyright)]
     Field overwrite on score metadata. Discipline: LWW advisory
     (Section~\ref{sec:k0:set-user-system-break}).
@@ -677,10 +696,7 @@ Chapter~\ref{ch:framework}; adding one is not a fresh design.
     Structural field overwrite on a region's metric model. Discipline:
     last-writer-wins, with a structural-field-collision on concurrent differing
     grids.
-  \item[Delete / update tie / slur / beam / spanner]
-    Cross-cutting tombstone and field overwrite. Disciplines: delete-wins with
-    re-anchoring (Section~\ref{sec:k0:delete-event}) and field overwrite.
-  \item[Set layout / system-break advisory]
+  \item[Set layout / system- and page-break advisory]
     The page/layout advisory companion to
     Section~\ref{sec:k0:set-user-system-break}.
 \end{description}

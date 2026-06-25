@@ -144,6 +144,77 @@ pub struct DerivedAnnotations {
     pub profile: PrePassProfile,
 }
 
+impl DerivedAnnotations {
+    /// A canonical byte fingerprint of the derivation. Deterministic and
+    /// order-independent — the maps are `BTreeMap`s in canonical key order, the
+    /// embedded graph values (`PitchSpelling`, `DecompositionAttachment`,
+    /// `SpellingSourceKind`) use their ratified [`CanonicalValue`] bytes, and
+    /// counts/ids are little-endian, length-framed where variable. Two
+    /// byte-equal fingerprints imply byte-identical derivations. This is the
+    /// normative serialization surface the determinism gate compares, rather
+    /// than the (non-normative) `Debug` form.
+    ///
+    /// [`CanonicalValue`]: crate::CanonicalValue
+    pub fn canonical_fingerprint(&self) -> Vec<u8> {
+        use crate::CanonicalValue;
+        let mut out = Vec::new();
+        let lp = |out: &mut Vec<u8>, bytes: &[u8]| {
+            out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            out.extend_from_slice(bytes);
+        };
+
+        out.extend_from_slice(&(self.spellings.len() as u64).to_le_bytes());
+        for (pid, rs) in &self.spellings {
+            out.extend_from_slice(&pid.canonical_bytes());
+            lp(&mut out, &rs.spelling.canonical_bytes());
+            match &rs.provenance {
+                SpellingProvenance::Inferred => out.push(0),
+                SpellingProvenance::Authored(kind) => {
+                    out.push(1);
+                    lp(&mut out, &kind.canonical_bytes());
+                }
+            }
+        }
+
+        out.extend_from_slice(&(self.decompositions.len() as u64).to_le_bytes());
+        for (eid, dec) in &self.decompositions {
+            out.extend_from_slice(&eid.canonical_bytes());
+            lp(&mut out, &dec.canonical_bytes());
+        }
+
+        let t = &self.taxonomy;
+        for count in [
+            t.pitched_events,
+            t.unpitched_events,
+            t.rest_events,
+            t.trajectory_events,
+            t.graphic_events,
+            t.indeterminate_events,
+            t.cue_events,
+            t.spellings_inferred,
+            t.spellings_authored,
+            t.spelling_unavailable,
+            t.decompositions_inferred,
+            t.decomposition_skipped_nonmusical,
+            t.decomposition_deferred_nonmetric,
+            t.decomposition_inapplicable,
+            t.decomposition_ungriddable,
+        ] {
+            out.extend_from_slice(&(count as u64).to_le_bytes());
+        }
+
+        lp(
+            &mut out,
+            self.profile.spelling_algorithm.as_str().as_bytes(),
+        );
+        lp(
+            &mut out,
+            self.profile.decomposition_algorithm.as_str().as_bytes(),
+        );
+        out
+    }
+}
+
 // ===========================================================================
 // Entry point
 // ===========================================================================
@@ -160,21 +231,37 @@ pub fn derive_annotations(score: &Score, profile: &PrePassProfile) -> DerivedAnn
     // position-sorted (invariant 3), so the per-voice order is canonical.
     let layout = ScoreLayout::build(score);
 
+    // The pre-passes implement exactly one algorithm each (the registered
+    // `"default"` id). A profile requesting any other id is **not honored**:
+    // rather than return default output labeled as the requested algorithm —
+    // which would let an unimplemented/future algorithm silently alias the
+    // default in a derivation cache — that pre-pass derives nothing. The
+    // requested id stays in the result's `profile`, so the cache key is honest.
+    let spelling_supported = profile.spelling_algorithm == SpellingAlgorithmId::default_id();
+    let decomposition_supported =
+        profile.decomposition_algorithm == DecompositionAlgorithmId::default_id();
+
     // --- Spelling pre-pass. ---
-    let inferred = infer_spellings(score, &layout, &mut taxonomy);
-    let precedence = &score.spelling_precedence;
     let mut spellings = BTreeMap::new();
-    for (pid, inferred_spelling) in inferred {
-        let resolved = resolve_spelling(score, pid, inferred_spelling, precedence);
-        match resolved.provenance {
-            SpellingProvenance::Inferred => taxonomy.spellings_inferred += 1,
-            SpellingProvenance::Authored(_) => taxonomy.spellings_authored += 1,
+    if spelling_supported {
+        let inferred = infer_spellings(score, &layout, &mut taxonomy);
+        let precedence = &score.spelling_precedence;
+        for (pid, inferred_spelling) in inferred {
+            let resolved = resolve_spelling(score, pid, inferred_spelling, precedence);
+            match resolved.provenance {
+                SpellingProvenance::Inferred => taxonomy.spellings_inferred += 1,
+                SpellingProvenance::Authored(_) => taxonomy.spellings_authored += 1,
+            }
+            spellings.insert(pid, resolved);
         }
-        spellings.insert(pid, resolved);
     }
 
     // --- Decomposition pre-pass. ---
-    let decompositions = infer_decompositions(score, &layout, &mut taxonomy);
+    let decompositions = if decomposition_supported {
+        infer_decompositions(score, &layout, &mut taxonomy)
+    } else {
+        BTreeMap::new()
+    };
 
     DerivedAnnotations {
         spellings,

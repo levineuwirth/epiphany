@@ -2097,6 +2097,10 @@ canonical_value! {
     Region,
     StaffInstance,
     Voice,
+    // Pre-pass annotation leaves — give DerivedAnnotations a canonical byte
+    // fingerprint (a normative surface, vs. its Debug form).
+    DecompositionAttachment,
+    SpellingSourceKind,
 }
 
 #[cfg(test)]

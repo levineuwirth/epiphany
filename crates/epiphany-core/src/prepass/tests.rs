@@ -1018,3 +1018,76 @@ fn decomposition_components_sum_to_event_duration() {
         assert_eq!(total, dur, "components sum to the event duration");
     }
 }
+
+#[test]
+fn unknown_algorithm_ids_are_not_honored() {
+    // A profile requesting an algorithm the pre-pass does not implement must not
+    // receive default output labeled as that algorithm; the unhonored pre-pass
+    // derives nothing while the requested id stays in the result profile.
+    let score = metric_score(|idc, voice| {
+        let eid = idc.mint();
+        let pid = idc.mint::<PitchId>();
+        let ev = pitched(
+            eid,
+            voice,
+            r(0, 1),
+            r(1, 4),
+            vec![IdentifiedPitch {
+                id: pid,
+                pitch: integer_pitch(48),
+            }],
+        );
+        (vec![ev], vec![])
+    });
+
+    let default = derive_annotations(&score, &PrePassProfile::default());
+    assert!(!default.spellings.is_empty(), "the default profile spells");
+    assert!(
+        !default.decompositions.is_empty(),
+        "the default profile decomposes"
+    );
+
+    // Unknown spelling algorithm: no spellings; decomposition (still default) runs.
+    let unknown_spelling = PrePassProfile {
+        spelling_algorithm: SpellingAlgorithmId::new("future-v2"),
+        decomposition_algorithm: DecompositionAlgorithmId::default_id(),
+    };
+    let a = derive_annotations(&score, &unknown_spelling);
+    assert!(
+        a.spellings.is_empty(),
+        "an unknown spelling algorithm is not honored (no default output)"
+    );
+    assert_eq!(
+        a.decompositions.len(),
+        default.decompositions.len(),
+        "the supported decomposition pre-pass still runs"
+    );
+    assert_eq!(
+        a.profile.spelling_algorithm,
+        SpellingAlgorithmId::new("future-v2"),
+        "the requested id is preserved in the result profile"
+    );
+    // The canonical fingerprint distinguishes differing derivations (it is not a
+    // degenerate constant the determinism gate would pass vacuously).
+    assert_ne!(
+        a.canonical_fingerprint(),
+        default.canonical_fingerprint(),
+        "the canonical fingerprint discriminates differing annotations"
+    );
+
+    // Unknown decomposition algorithm: no decompositions; spelling runs.
+    let unknown_decomp = PrePassProfile {
+        spelling_algorithm: SpellingAlgorithmId::default_id(),
+        decomposition_algorithm: DecompositionAlgorithmId::new("future-v2"),
+    };
+    let b = derive_annotations(&score, &unknown_decomp);
+    assert!(
+        b.decompositions.is_empty(),
+        "an unknown decomposition algorithm is not honored"
+    );
+    assert_eq!(
+        b.spellings.len(),
+        default.spellings.len(),
+        "the supported spelling pre-pass still runs"
+    );
+}
