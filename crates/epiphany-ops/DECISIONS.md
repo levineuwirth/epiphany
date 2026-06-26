@@ -159,6 +159,17 @@ and delete semantics are **empty-only (precondition)**.
   feeding the cross-cutting re-anchoring table) are a strictly larger design than
   the slice needs. The empty-only gate is the conservative floor a cascade could
   later build on. Catalog §Structural Containers (M2e) states this normatively.
+- **A create must carry an empty container, too — for *every* typed child
+  object, not just the structural hierarchy.** `create_region` /
+  `create_staff_instance` / `create_voice` reject (`ContainerNotEmpty`) a carried
+  value bearing any nested object with a distinct `TypedObjectId`: a region's
+  staff instances, barline-alignment groups, or graphic objects; a staff
+  instance's voices or measures; a voice's events. Graph creation clones the full
+  value into the score, so a carried child would materialize an object the reducer
+  never mints in its `objects` bookkeeping — a graph/ledger faithfulness gap. The
+  check reads the carried value only, so `reduce()` and `reduce_onto()` agree.
+  *(Review-driven: the first cut checked only the hierarchy vectors;
+  `barline_alignment_groups` / `graphic_objects` / `measures` were added after.)*
 - **Live-child sets are tracked in the reducer, not re-derived from the graph.**
   `region_instances: RegionId → {StaffInstanceId}` and `instance_voices:
   StaffInstanceId → {VoiceId}` (a voice's live events are read from
@@ -196,8 +207,13 @@ classification names. Recorded here because the review changed code/tests.
   indices.
 - **`SetUserPageBreak` mirrors `SetUserSystemBreak` exactly, under the canonical
   LWW key.** Both now (i) share the live-and-staff-based precondition via a
-  `staff_based_regions` index, so `reduce()` and `reduce_onto()` agree on
-  missing / tombstoned / FreeGraphic targets, and (ii) materialize the graph break
+  `staff_based_regions` index, so for any region *represented in reducer state*
+  `reduce()` and `reduce_onto()` reach the same missing / tombstoned / FreeGraphic
+  verdict — that is, regions an op stream creates or deletes. (`reduce_onto(base)`
+  additionally seeds the base regions into that state, which a base-free `reduce()`
+  does not see, so a layout op targeting a live *base* region can still apply under
+  `reduce_onto` and no-op under `reduce`; the corpus exercises only op-created
+  regions, where the two agree.) Both also (ii) materialize the graph break
   under the anchor's **resolved musical position** (`apply_break_lww` +
   `resolved_anchor_position`): any existing anchor resolving to the same position
   is dropped before the new one is added, so the graph break list stays in lockstep

@@ -1615,3 +1615,216 @@ fn user_breaks_at_one_resolved_position_collapse_to_a_single_anchor() {
     );
     assert!(check_invariants(&result.score).is_empty());
 }
+
+#[test]
+fn create_rejects_a_non_empty_carried_container() {
+    let base = epiphany_core::generators::valid_score(100);
+    let region = base.canvas.regions[0].id;
+    let (staff_instance, _) = target(&base);
+
+    let rejected = |effect: OperationEffect| {
+        matches!(
+            effect,
+            OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::ContainerNotEmpty,
+                },
+            }
+        )
+    };
+
+    // A create mints an empty container; carrying a child the create does not
+    // itself mint must be rejected (else the graph gains unminted objects).
+    let fresh_region_id = epiphany_core::RegionId::new(ReplicaId(80), 0);
+    let mut region_with_child = valuegen::region(fresh_region_id);
+    region_with_child
+        .content
+        .staff_instances_mut()
+        .expect("staff based")
+        .push(valuegen::staff_instance(
+            StaffInstanceId::new(ReplicaId(80), 1),
+            base.staves[0].id,
+        ));
+    let create_region = envelope(
+        80,
+        0,
+        10,
+        CausalContext::new(),
+        None,
+        OperationPayload::Primitive(OperationKind::CreateRegion(epiphany_ops::CreateRegionOp {
+            region: region_with_child,
+        })),
+    );
+
+    let mut instance_with_child =
+        valuegen::staff_instance(StaffInstanceId::new(ReplicaId(80), 2), base.staves[0].id);
+    instance_with_child
+        .voices
+        .push(valuegen::voice(VoiceId::new(ReplicaId(80), 3)));
+    let create_instance = envelope(
+        81,
+        0,
+        11,
+        CausalContext::new(),
+        None,
+        OperationPayload::Primitive(OperationKind::CreateStaffInstance(
+            epiphany_ops::CreateStaffInstanceOp {
+                region,
+                instance: instance_with_child,
+            },
+        )),
+    );
+
+    let mut voice_with_child = valuegen::voice(VoiceId::new(ReplicaId(80), 4));
+    voice_with_child.events.push(EventId::new(ReplicaId(80), 5));
+    let create_voice = envelope(
+        82,
+        0,
+        12,
+        CausalContext::new(),
+        None,
+        OperationPayload::Primitive(OperationKind::CreateVoice(epiphany_ops::CreateVoiceOp {
+            staff_instance,
+            voice: voice_with_child,
+        })),
+    );
+
+    let mut set = OperationSet::new();
+    set.accept_all(vec![
+        create_region.clone(),
+        create_instance.clone(),
+        create_voice.clone(),
+    ]);
+    let result = set.reduce_onto(&base);
+
+    assert!(
+        rejected(effect_of(&result, create_region.id)),
+        "a region carrying a staff instance is rejected"
+    );
+    assert!(
+        rejected(effect_of(&result, create_instance.id)),
+        "a staff instance carrying a voice is rejected"
+    );
+    assert!(
+        rejected(effect_of(&result, create_voice.id)),
+        "a voice carrying an event is rejected"
+    );
+    assert!(
+        !result
+            .score
+            .canvas
+            .regions
+            .iter()
+            .any(|r| r.id == fresh_region_id),
+        "the non-empty region is not materialized into the graph"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn create_rejects_carried_non_hierarchy_children() {
+    let base = epiphany_core::generators::valid_score(100);
+    let region = base.canvas.regions[0].id;
+    let staff = base.staves[0].id;
+
+    let rejected = |effect: OperationEffect| {
+        matches!(
+            effect,
+            OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::ContainerNotEmpty,
+                },
+            }
+        )
+    };
+
+    // A region carrying a barline-alignment group (a typed object, not a staff
+    // instance) must still be rejected.
+    let mut region_with_barline = valuegen::region(epiphany_core::RegionId::new(ReplicaId(83), 0));
+    region_with_barline
+        .content
+        .staff_based_mut()
+        .expect("staff based")
+        .barline_alignment_groups
+        .push(epiphany_core::BarlineAlignmentGroup {
+            id: epiphany_core::BarlineAlignmentGroupId::new(ReplicaId(83), 1),
+            members: Vec::new(),
+        });
+    let create_barline = envelope(
+        83,
+        0,
+        10,
+        CausalContext::new(),
+        None,
+        OperationPayload::Primitive(OperationKind::CreateRegion(epiphany_ops::CreateRegionOp {
+            region: region_with_barline,
+        })),
+    );
+
+    // A free-graphic region carrying a graphic object.
+    let mut region_with_graphic = valuegen::region(epiphany_core::RegionId::new(ReplicaId(83), 2));
+    region_with_graphic.content =
+        epiphany_core::RegionContent::FreeGraphic(epiphany_core::GraphicContent {
+            objects: vec![epiphany_core::GraphicObject {
+                id: epiphany_core::GraphicObjectId::new(ReplicaId(83), 3),
+            }],
+        });
+    let create_graphic = envelope(
+        83,
+        1,
+        11,
+        CausalContext::new(),
+        None,
+        OperationPayload::Primitive(OperationKind::CreateRegion(epiphany_ops::CreateRegionOp {
+            region: region_with_graphic,
+        })),
+    );
+
+    // A staff instance carrying a measure (a typed object, not a voice).
+    let mut instance_with_measure =
+        valuegen::staff_instance(StaffInstanceId::new(ReplicaId(83), 4), staff);
+    instance_with_measure.measures.push(epiphany_core::Measure {
+        id: epiphany_core::MeasureId::new(ReplicaId(83), 5),
+        start: TimeAnchor::WallClock {
+            time: WallClockTime(0),
+        },
+        time_signature: None,
+        explicit_number: None,
+        number_visibility: Default::default(),
+    });
+    let create_measure = envelope(
+        84,
+        0,
+        12,
+        CausalContext::new(),
+        None,
+        OperationPayload::Primitive(OperationKind::CreateStaffInstance(
+            epiphany_ops::CreateStaffInstanceOp {
+                region,
+                instance: instance_with_measure,
+            },
+        )),
+    );
+
+    let mut set = OperationSet::new();
+    set.accept_all(vec![
+        create_barline.clone(),
+        create_graphic.clone(),
+        create_measure.clone(),
+    ]);
+    let result = set.reduce_onto(&base);
+
+    assert!(
+        rejected(effect_of(&result, create_barline.id)),
+        "a region carrying a barline-alignment group is rejected"
+    );
+    assert!(
+        rejected(effect_of(&result, create_graphic.id)),
+        "a region carrying a graphic object is rejected"
+    );
+    assert!(
+        rejected(effect_of(&result, create_measure.id)),
+        "a staff instance carrying a measure is rejected"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}

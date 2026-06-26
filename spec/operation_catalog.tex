@@ -505,8 +505,10 @@ recorded but not materialised.
 \emph{differing} values produce a \texttt{StructuralFieldCollision} on the field
 \texttt{event}, recording the winner (later in canonical order) and the loser.
 
-\textbf{Undo semantics.} Undo restores the pre-operation event value under the
-active policy.
+\textbf{Undo semantics.} Under the prototype's minted-object undo
+(Section~\ref{sec:k0:undo}) a field overwrite mints nothing, so undoing the
+enclosing transaction does not restore the prior event value; a snapshot-and-
+restore inverse is a Phase-3 refinement (P11-C8).
 
 \textbf{Re-anchoring.} If the target event is tombstoned, the modification is a
 no-op (\texttt{TargetTombstoned}/\texttt{TargetMissing}).
@@ -541,10 +543,11 @@ bookkeeping, which tombstones or mints the pitch object either way.
 is idempotent). Modify: two concurrent differing writes of one pitch produce a
 \texttt{StructuralFieldCollision} on the field \texttt{pitch}.
 
-\textbf{Undo semantics.} Insert undoes by tombstoning the minted pitch (re-rest
-if it was the only pitch); delete undoes by re-introducing the tombstoned pitch
-(re-note from a degraded rest); modify restores the prior value --- each under
-the active policy.
+\textbf{Undo semantics.} Insert is the only minting member: undoing the enclosing
+transaction tombstones the minted pitch, re-resting the event if it was the only
+one (Section~\ref{sec:k0:undo}). The prototype's minted-object undo has nothing
+to tombstone for delete or modify, so neither is inverted under it (re-introducing
+a tombstoned pitch or restoring a prior value is a Phase-3 refinement, P11-C8).
 
 \textbf{Re-anchoring.} An operation whose target event or pitch is tombstoned is
 a no-op; tombstoning a pitch runs the cross-cutting re-anchoring table over any
@@ -571,8 +574,9 @@ deferred (Chapter~4 tuning catalog; P12-K2).
 \textbf{Conflict cases.} None --- composition is deterministic in canonical order
 (a deterministic repair, not a conflict).
 
-\textbf{Undo semantics.} Undo applies the negated interval to the same targets
-under the active policy.
+\textbf{Undo semantics.} Transpose mints nothing, so the prototype's minted-object
+undo (Section~\ref{sec:k0:undo}) does not negate it; an inverse-interval undo is a
+Phase-3 refinement (P11-C8).
 
 \textbf{Re-anchoring.} Tombstoned targets are skipped (the transpose applies only
 to live pitches).
@@ -607,8 +611,9 @@ when one of its endpoints is later tombstoned (see DeleteEvent).
 A \texttt{Spanner} is anchored by \texttt{TimeAnchor}s rather than a fixed pair
 of event endpoints, so its full value is not reconstructable from the v0
 event-reference projection; a \texttt{Spanner}-create is therefore reported
-unmigratable (read-only) under M1, alongside the respell case of P12-K1. A
-faithful spanner migration joins when the projection carries the anchors --- M2.
+unmigratable (read-only), alongside the respell case of P12-K1, and remains so.
+A faithful spanner migration awaits a richer v0 projection that carries the
+anchors --- a Phase-3 / Pass-12 extension, not yet implemented.
 
 \section{DeleteCrossCutting}
 \label{sec:k0:delete-cross-cutting}
@@ -627,8 +632,9 @@ reduction removes the structure from the score.
 
 \textbf{Conflict cases.} None (delete-wins is idempotent).
 
-\textbf{Undo semantics.} Undo re-introduces the tombstoned structure under the
-active policy.
+\textbf{Undo semantics.} A delete mints nothing, so the prototype's minted-object
+undo (Section~\ref{sec:k0:undo}) does not re-introduce the tombstoned structure
+(P11-C8).
 
 \textbf{Re-anchoring.} The deletion is direct (the structure is the target, not a
 referenced endpoint); it does not itself trigger the endpoint re-anchoring table.
@@ -654,8 +660,9 @@ Graph-aware reduction overwrites the structure in place.
 \textbf{Conflict cases.} Two concurrent differing modifications of one structure
 produce a \texttt{StructuralFieldCollision} on the field \texttt{cross\_cutting}.
 
-\textbf{Undo semantics.} Undo restores the prior structure value under the active
-policy.
+\textbf{Undo semantics.} A modification mints nothing, so the prototype's
+minted-object undo (Section~\ref{sec:k0:undo}) does not restore the prior
+structure value (a snapshot-and-restore inverse is Phase-3, P11-C8).
 
 \textbf{Re-anchoring.} If the target structure is tombstoned, the modification is
 a no-op; re-deriving the endpoints lets a subsequent endpoint tombstone re-anchor
@@ -704,8 +711,8 @@ the catalog's to design when graph-aware migration is the only reduction path.
 \texttt{DeleteStaffInstanceOp \{ staff\_instance: StaffInstanceId \}};
 \texttt{CreateVoiceOp \{ staff\_instance: StaffInstanceId, voice: Voice \}} /
 \texttt{DeleteVoiceOp \{ voice: VoiceId \}}. Each create carries the full
-container value (v1); the reduction preconditions it carries no children (an
-empty container).
+container value (v1); the reduction preconditions it bears \emph{no typed child
+object} --- an empty container.
 
 \textbf{Canonical encoding.} Create: the parent id (where the schema names one),
 then the length-framed canonical bytes of the container value. Delete: the
@@ -714,8 +721,11 @@ container id.
 \textbf{Reduction rule.} Set-union creation of an \emph{empty} container, and an
 \emph{empty-only} delete-wins tombstone. A create mints the container live if its
 id is fresh and (for staff instance and voice) its parent is live; it
-preconditions the carried value to have no live children, so contents are added
-by subsequent operations. A delete is a delete-wins tombstone, but a
+preconditions the carried value to bear no typed child object (a region: no staff
+instances, barline-alignment groups, or graphic objects; a staff instance: no
+voices or measures; a voice: no events), since those carry distinct
+\texttt{TypedObjectId}s the reducer mints separately --- so contents are added by
+subsequent operations. A delete is a delete-wins tombstone, but a
 \emph{precondition no-op} (\texttt{ContainerNotEmpty}) unless the container has no
 live children --- the caller deletes contents first. Graph-aware reduction adds
 or removes the container and maintains the region's staff extent so
@@ -725,9 +735,11 @@ or removes the container and maintains the region's staff extent so
 create is idempotent), and the empty-only delete is a deterministic precondition
 gate, not a conflict.
 
-\textbf{Undo semantics.} Undo of a create tombstones the minted container; undo
-of a delete re-introduces it. \texttt{StrictInverse} conflicts if the target was
-concurrently mutated; the policy treatment is as for InsertEvent.
+\textbf{Undo semantics.} Undo of a \emph{create} tombstones the minted container
+(Section~\ref{sec:k0:undo}); \texttt{StrictInverse} conflicts if it was
+concurrently mutated, with the policy treatment as for InsertEvent. A
+\emph{delete} mints nothing, so the prototype's minted-object undo does not
+re-introduce it (P11-C8).
 
 \textbf{Re-anchoring.} Not applicable (the containers are minted/tombstoned by id;
 the empty-only precondition means a delete never strands live children).
@@ -788,9 +800,10 @@ single slot).
 SetMetricGrid: two concurrent differing grids for one region produce a
 \texttt{StructuralFieldCollision} on the field \texttt{metric\_grid}.
 
-\textbf{Undo semantics.} Undo restores the prior metadata, the prior region grid,
-or the prior \texttt{(region, resolved-position)} break preference, under the
-active policy.
+\textbf{Undo semantics.} All three are field overwrites that mint nothing, so the
+prototype's minted-object undo (Section~\ref{sec:k0:undo}) does not restore the
+prior metadata, grid, or break preference (a snapshot-and-restore inverse is a
+Phase-3 refinement, P11-C8).
 
 \textbf{Re-anchoring.} The advisory breaks degrade as for SetUserSystemBreak; the
 metric grid and metadata are keyed by region / singleton and do not re-anchor (a
@@ -873,8 +886,11 @@ opens read-only.
 The reference implementation (\texttt{epiphany-ops::migrate}) reconstructs the
 \texttt{InsertEvent} event, the \texttt{DeleteEvent} compensation, the
 \texttt{ChangeRegionTimeModel} model, the \texttt{SetUserSystemBreak} anchor, and
-the cross-cutting structure self-containedly from the v0 projection; it recovers
-a \texttt{RespellPitch} spelling from the context (P12-K1,
+the event-anchored cross-cutting structures (\texttt{Tie} / \texttt{Slur} /
+\texttt{Beam}) self-containedly from the v0 projection; a \texttt{Spanner},
+anchored by \texttt{TimeAnchor}s rather than event endpoints, remains unmigratable
+until the projection carries them. It recovers a \texttt{RespellPitch} spelling
+from the context (P12-K1,
 Section~\ref{sec:k0:respell-pitch}). The migration's merge gate
 (\texttt{epiphany-testkit::migration}) drives the inverse direction --- projecting
 a v1 corpus to v0 and migrating it back --- and asserts byte-identical reduction

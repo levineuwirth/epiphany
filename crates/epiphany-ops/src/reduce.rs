@@ -353,10 +353,14 @@ struct Reducer<'a> {
     region_instances: BTreeMap<RegionId, BTreeSet<StaffInstanceId>>,
     instance_voices: BTreeMap<StaffInstanceId, BTreeSet<VoiceId>>,
     // Regions whose content carries a staff-based slot (staff-based or hybrid),
-    // and so can hold a metric grid or user break. FreeGraphic regions cannot;
-    // tracking this in the base-free reducer lets SetMetricGrid / SetUserPageBreak
-    // / SetUserSystemBreak reach the same precondition verdict with or without a
-    // graph, so reduce() and reduce_onto() never disagree on those ops.
+    // and so can hold a metric grid or user break. FreeGraphic regions cannot.
+    // Tracking this lets SetMetricGrid / SetUserPageBreak / SetUserSystemBreak
+    // reach the same precondition verdict for any region *represented in reducer
+    // state* (those an op stream creates/deletes) whether or not a graph is
+    // present. A base-only region exists in reducer state solely after
+    // `seed_from_graph` (reduce_onto), so a base-free reduce() that never sees it
+    // can still diverge on a base-region target — the corpus targets only
+    // op-created regions, where the two agree.
     staff_based_regions: BTreeSet<RegionId>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
@@ -392,6 +396,17 @@ struct WorkingSnapshot {
     descriptors: BTreeMap<TransactionId, OperationId>,
     tx_minted: BTreeMap<TransactionId, Vec<TypedObjectId>>,
     graph: Option<Score>,
+}
+
+/// The precondition no-op a structural create or delete returns when a container
+/// is non-empty where the operation requires it empty (a create carrying children,
+/// or a delete of a container with live children).
+fn container_not_empty() -> OperationEffect {
+    OperationEffect::NoOp {
+        reason: NoOpReason::PreconditionFailedUnderReduction {
+            reason: PreconditionFailureReason::ContainerNotEmpty,
+        },
+    }
 }
 
 /// Apply a user break to a region's break list under the canonical LWW key — the
@@ -2053,6 +2068,18 @@ impl<'a> Reducer<'a> {
         if let Some(effect) = self.mint_precondition(robj) {
             return effect;
         }
+        // A create mints an *empty* container: its child objects are minted (or
+        // base-seeded) separately. A carried value bearing any typed child object
+        // — a staff instance, a barline-alignment group, or a graphic object, each
+        // a distinct TypedObjectId the reducer does not mint here — would import an
+        // unminted object into the graph, so it is rejected (Catalog §Structural
+        // Containers).
+        if !op.region.content.staff_instances().is_empty()
+            || !op.region.content.barline_alignment_groups().is_empty()
+            || !op.region.content.graphic_objects().is_empty()
+        {
+            return container_not_empty();
+        }
         self.graph_create_region(&op.region);
         self.mint_container(env, robj);
         self.region_instances.entry(op.region_id()).or_default();
@@ -2081,6 +2108,11 @@ impl<'a> Reducer<'a> {
         if let Some(effect) = self.mint_precondition(iobj) {
             return effect;
         }
+        // Reject a carried staff instance bearing any typed child object — a voice
+        // or a measure (the two object collections it can hold).
+        if !op.instance.voices.is_empty() || !op.instance.measures.is_empty() {
+            return container_not_empty();
+        }
         self.graph_create_staff_instance(op.region, &op.instance);
         self.mint_container(env, iobj);
         self.region_instances
@@ -2106,6 +2138,9 @@ impl<'a> Reducer<'a> {
         let vobj = TypedObjectId::Voice(op.voice_id());
         if let Some(effect) = self.mint_precondition(vobj) {
             return effect;
+        }
+        if !op.voice.events.is_empty() {
+            return container_not_empty();
         }
         self.graph_create_voice(op.staff_instance, &op.voice);
         self.mint_container(env, vobj);
