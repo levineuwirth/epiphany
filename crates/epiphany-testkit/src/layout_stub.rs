@@ -715,7 +715,7 @@ pub fn gen_vertical_band(rng: &mut Rng) -> VerticalBand {
 /// An operation-kind tag (every variant Agent C's type provides, including the
 /// registered form).
 pub fn gen_operation_kind_tag(rng: &mut Rng) -> OperationKindTag {
-    match rng.below(17) {
+    match rng.below(24) {
         0 => OperationKindTag::InsertEvent,
         1 => OperationKindTag::DeleteEvent,
         2 => OperationKindTag::ModifyEvent,
@@ -732,6 +732,13 @@ pub fn gen_operation_kind_tag(rng: &mut Rng) -> OperationKindTag {
         13 => OperationKindTag::SetUserSystemBreak,
         14 => OperationKindTag::SetUserPageBreak,
         15 => OperationKindTag::DeclareTransaction,
+        16 => OperationKindTag::InsertIdentifiedPitch,
+        17 => OperationKindTag::DeleteIdentifiedPitch,
+        18 => OperationKindTag::ModifyIdentifiedPitch,
+        19 => OperationKindTag::CreateVoice,
+        20 => OperationKindTag::DeleteVoice,
+        21 => OperationKindTag::SetMetadata,
+        22 => OperationKindTag::SetMetricGrid,
         _ => OperationKindTag::Registered(epiphany_ops::OperationKindRegistryId(
             rng.next_u64() as u128
         )),

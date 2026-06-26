@@ -583,6 +583,15 @@ impl RegionContent {
         }
     }
 
+    /// Mutable staff-based content, if this region is staff-based or hybrid.
+    pub fn staff_based_mut(&mut self) -> Option<&mut StaffBasedContent> {
+        match self {
+            RegionContent::StaffBased(c) => Some(c),
+            RegionContent::Hybrid { staves, .. } => Some(staves),
+            RegionContent::FreeGraphic(_) => None,
+        }
+    }
+
     /// Mutable access to the staff instances, if this content has any (used by
     /// editing and by the invariant shrinker in [`crate::generators`]).
     pub fn staff_instances_mut(&mut self) -> Option<&mut Vec<StaffInstance>> {

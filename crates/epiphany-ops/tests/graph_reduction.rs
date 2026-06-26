@@ -1297,7 +1297,7 @@ fn score_settings_materialize_in_the_graph_and_ledger() {
 }
 
 #[test]
-fn concurrent_differing_set_metadata_conflicts() {
+fn concurrent_differing_set_metadata_is_advisory_lww() {
     let base = epiphany_core::generators::valid_score(100);
     // Two concurrent SetMetadata (neither sees the other) with differing values.
     let a = envelope(
@@ -1321,16 +1321,297 @@ fn concurrent_differing_set_metadata_conflicts() {
         })),
     );
     let mut set = OperationSet::new();
-    set.accept_all(vec![a, b]);
+    set.accept_all(vec![a.clone(), b.clone()]);
     let result = set.reduce_onto(&base);
-    assert_eq!(
-        result.state.conflicts.records().len(),
-        1,
-        "concurrent differing SetMetadata records exactly one conflict"
+
+    // Metadata is an advisory last-writer-wins field: a clean concurrent edit
+    // raises no conflict and leaves the materialized state clean (matching the
+    // catalog/core-spec "LWW advisory" classification).
+    assert!(
+        result.state.conflicts.records().is_empty(),
+        "concurrent differing SetMetadata is advisory — it records no conflict"
     );
-    assert!(matches!(
-        result.state.conflicts.records()[0].kind,
-        ConflictKind::StructuralFieldCollision { .. }
-    ));
+    assert!(
+        result.state.is_clean(),
+        "an advisory metadata edit keeps the materialized state clean"
+    );
+    assert!(
+        result
+            .state
+            .effects
+            .iter()
+            .all(|(_, effect)| matches!(effect, OperationEffect::Applied)),
+        "both writes apply; the last in canonical order silently wins"
+    );
+
+    // The resolved value is one of the two writes and is permutation-independent.
+    let resolved = result.score.metadata.clone();
+    assert!(
+        resolved == valuegen::score_metadata(1) || resolved == valuegen::score_metadata(2),
+        "the resolved metadata is one of the concurrent writes"
+    );
+    let mut reversed = OperationSet::new();
+    reversed.accept_all(vec![b, a]);
+    assert_eq!(
+        reversed.reduce_onto(&base).score.metadata,
+        resolved,
+        "metadata resolution is independent of acceptance order"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+/// Whether an effect is the precondition NoOp the layout ops use for a target
+/// that is missing, tombstoned, or not staff-based.
+fn is_target_missing(effect: &OperationEffect) -> bool {
+    matches!(
+        effect,
+        OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::TargetMissing,
+            },
+        }
+    )
+}
+
+#[test]
+fn set_user_page_break_on_a_missing_region_is_a_consistent_noop() {
+    let base = epiphany_core::generators::valid_score(100);
+    let ghost = epiphany_core::RegionId::new(ReplicaId(123), 7); // absent from the base
+    let op = envelope(
+        58,
+        0,
+        10,
+        CausalContext::new(),
+        None,
+        OperationPayload::Primitive(OperationKind::SetUserPageBreak(
+            epiphany_ops::SetUserPageBreakOp {
+                region: ghost,
+                anchor: valuegen::region_start_anchor(
+                    ghost,
+                    MusicalPosition(RationalTime::from_int(0)),
+                ),
+                present: true,
+            },
+        )),
+    );
+    let mut set = OperationSet::new();
+    set.accept(op.clone());
+
+    // Graph-aware: the absent region has no break slot, so the op is a NoOp and
+    // nothing enters the canonical page_breaks.
+    let graph = set.reduce_onto(&base);
+    assert!(is_target_missing(&effect_of(&graph, op.id)));
+    assert!(
+        graph.state.page_breaks.is_empty(),
+        "no canonical page break is recorded for a missing region"
+    );
+
+    // Base-free: with no region ever minted the reducer reaches the same verdict,
+    // so reduce() and reduce_onto() agree.
+    let bookkeeping = set.reduce();
+    let effect = bookkeeping
+        .effects
+        .iter()
+        .find(|(e, _)| *e == op.id)
+        .map(|(_, eff)| eff)
+        .expect("the operation has an effect");
+    assert!(is_target_missing(effect));
+    assert!(bookkeeping.page_breaks.is_empty());
+}
+
+#[test]
+fn layout_ops_on_a_free_graphic_region_are_rejected() {
+    let mut base = epiphany_core::generators::valid_score(100);
+    // A staff-less FreeGraphic region: it has neither a metric-grid nor a break
+    // slot, so both layout ops must reject it. The staff-based index is read with
+    // or without a graph, so reduce() and reduce_onto() reach the same verdict.
+    let fg_id = epiphany_core::RegionId::new(ReplicaId(99), 0);
+    let mut fg = valuegen::region(fg_id);
+    fg.content = epiphany_core::RegionContent::FreeGraphic(epiphany_core::GraphicContent {
+        objects: Vec::new(),
+    });
+    base.canvas.regions.push(fg);
+
+    let page = envelope(
+        59,
+        0,
+        10,
+        CausalContext::new(),
+        None,
+        OperationPayload::Primitive(OperationKind::SetUserPageBreak(
+            epiphany_ops::SetUserPageBreakOp {
+                region: fg_id,
+                anchor: valuegen::region_start_anchor(
+                    fg_id,
+                    MusicalPosition(RationalTime::from_int(0)),
+                ),
+                present: true,
+            },
+        )),
+    );
+    let grid = envelope(
+        59,
+        1,
+        11,
+        CausalContext::new().with_seen(ReplicaId(59), 0),
+        None,
+        OperationPayload::Primitive(OperationKind::SetMetricGrid(
+            epiphany_ops::SetMetricGridOp {
+                region: fg_id,
+                grid: Some(valuegen::metric_grid()),
+            },
+        )),
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(vec![page.clone(), grid.clone()]);
+    let result = set.reduce_onto(&base);
+
+    assert!(
+        is_target_missing(&effect_of(&result, page.id)),
+        "a page break on a FreeGraphic region is rejected"
+    );
+    assert!(
+        is_target_missing(&effect_of(&result, grid.id)),
+        "a metric grid on a FreeGraphic region is rejected"
+    );
+    assert!(
+        result.state.page_breaks.is_empty(),
+        "nothing is recorded for the FreeGraphic region"
+    );
+}
+
+#[test]
+fn set_metric_grid_rejects_an_undeclared_time_signature_reference() {
+    let base = epiphany_core::generators::valid_score(100);
+    let region = base.canvas.regions[0].id;
+    let grid_before = base.canvas.regions[0]
+        .content
+        .staff_based()
+        .expect("fixture is staff based")
+        .default_metric_grid
+        .clone();
+
+    // A grid whose single meter change names a time signature the score never
+    // declares — the graph invariant (epiphany-core) forbids installing it.
+    let bogus = epiphany_core::TimeSignatureId::new(ReplicaId(200), 1);
+    let bad_grid = epiphany_core::MetricGrid {
+        meter_sequence: vec![epiphany_core::MeterChange {
+            anchor: valuegen::region_start_anchor(
+                region,
+                MusicalPosition(RationalTime::from_int(0)),
+            ),
+            time_signature: bogus,
+        }],
+    };
+    let op = envelope(
+        60,
+        0,
+        10,
+        CausalContext::new(),
+        None,
+        OperationPayload::Primitive(OperationKind::SetMetricGrid(
+            epiphany_ops::SetMetricGridOp {
+                region,
+                grid: Some(bad_grid),
+            },
+        )),
+    );
+    let mut set = OperationSet::new();
+    set.accept(op.clone());
+    let result = set.reduce_onto(&base);
+
+    assert!(
+        is_target_missing(&effect_of(&result, op.id)),
+        "a grid referencing an undeclared time signature is rejected"
+    );
+    let grid_after = result
+        .score
+        .canvas
+        .regions
+        .iter()
+        .find(|r| r.id == region)
+        .expect("the region survives")
+        .content
+        .staff_based()
+        .expect("still staff based")
+        .default_metric_grid
+        .clone();
+    assert_eq!(
+        grid_before, grid_after,
+        "the rejected grid leaves the region's metric grid unchanged"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn user_breaks_at_one_resolved_position_collapse_to_a_single_anchor() {
+    let base = epiphany_core::generators::valid_score(100);
+    let region = base.canvas.regions[0].id;
+    let offset = RationalTime::from_int(4);
+    // Two structurally distinct anchors (region start vs. end) that resolve to the
+    // *same* musical position — the canonical LWW key — both set present.
+    let start_anchor = TimeAnchor::Region {
+        id: region,
+        edge: RegionEdge::Start,
+        offset: AnchorOffset::Musical(MusicalDuration(offset.clone())),
+    };
+    let end_anchor = TimeAnchor::Region {
+        id: region,
+        edge: RegionEdge::End,
+        offset: AnchorOffset::Musical(MusicalDuration(offset.clone())),
+    };
+    let first = envelope(
+        61,
+        0,
+        10,
+        CausalContext::new(),
+        None,
+        OperationPayload::Primitive(OperationKind::SetUserPageBreak(
+            epiphany_ops::SetUserPageBreakOp {
+                region,
+                anchor: start_anchor,
+                present: true,
+            },
+        )),
+    );
+    let second = envelope(
+        61,
+        1,
+        11,
+        CausalContext::new().with_seen(ReplicaId(61), 0),
+        None,
+        OperationPayload::Primitive(OperationKind::SetUserPageBreak(
+            epiphany_ops::SetUserPageBreakOp {
+                region,
+                anchor: end_anchor.clone(),
+                present: true,
+            },
+        )),
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(vec![first, second]);
+    let result = set.reduce_onto(&base);
+
+    let breaks = &result
+        .score
+        .canvas
+        .regions
+        .iter()
+        .find(|r| r.id == region)
+        .expect("the region survives")
+        .content
+        .staff_based()
+        .expect("fixture is staff based")
+        .user_page_breaks;
+    assert_eq!(
+        breaks.as_slice(),
+        &[end_anchor],
+        "two anchors at one resolved position collapse to the single last writer"
+    );
+    assert_eq!(
+        result.state.page_breaks.len(),
+        1,
+        "exactly one canonical LWW slot for the resolved position"
+    );
     assert!(check_invariants(&result.score).is_empty());
 }

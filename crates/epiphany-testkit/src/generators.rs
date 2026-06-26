@@ -1633,6 +1633,10 @@ mod tests {
                 (region_id(&mut rng), musical_position(&mut rng)),
                 rng.boolean(),
             );
+            state.page_breaks.insert(
+                (region_id(&mut rng), musical_position(&mut rng)),
+                rng.boolean(),
+            );
             state
                 .pending
                 .push((operation_id(&mut rng), pending_reason(&mut rng)));

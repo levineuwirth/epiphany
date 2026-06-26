@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use epiphany_core::{
     derive_promoted_voice_id, AnchorOffset, CanonicalValue, Event, EventDuration, EventId,
     EventPosition, MetricGrid, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId,
-    PitchSpelling, RegionEdge, RegionId, RegionTimeModel, Score, ScoreMetadata, SpellingAttachment,
+    PitchSpelling, RegionEdge, RegionId, RegionTimeModel, Score, SpellingAttachment,
     SpellingDirective, SpellingScope, SpellingSource, StaffInstance, StaffInstanceId, TimeAnchor,
     TransactionId, TypedObjectId, Voice, VoiceId, VoiceOrigin,
 };
@@ -341,9 +341,10 @@ struct Reducer<'a> {
     // LWW working state for ModifyCrossCutting (Group 2), mirroring the leaf-field
     // modify maps above: last modifier + value it wrote, keyed by structure id.
     last_cross_cutting_modify: BTreeMap<TypedObjectId, (OperationId, CrossCuttingValue)>,
-    // LWW working state for the Group-4 (M2d) score-settings overwrites: the last
-    // writer and the value it wrote (the resolved value lives in the graph).
-    last_metadata: Option<(OperationId, ScoreMetadata)>,
+    // LWW working state for SetMetricGrid (Group 4, M2d): the last writer and the
+    // grid it wrote, used to detect concurrent *differing* grids (the resolved
+    // value lives in the graph). SetMetadata is advisory LWW — no working state,
+    // no conflict — so the latest write in canonical order silently wins.
     last_metric_grid: BTreeMap<RegionId, (OperationId, Option<MetricGrid>)>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     // Live child sets for the structural-container empty-only delete (Group 3):
@@ -351,6 +352,12 @@ struct Reducer<'a> {
     // voice's live events are read from `voice_occupancy`.)
     region_instances: BTreeMap<RegionId, BTreeSet<StaffInstanceId>>,
     instance_voices: BTreeMap<StaffInstanceId, BTreeSet<VoiceId>>,
+    // Regions whose content carries a staff-based slot (staff-based or hybrid),
+    // and so can hold a metric grid or user break. FreeGraphic regions cannot;
+    // tracking this in the base-free reducer lets SetMetricGrid / SetUserPageBreak
+    // / SetUserSystemBreak reach the same precondition verdict with or without a
+    // graph, so reduce() and reduce_onto() never disagree on those ops.
+    staff_based_regions: BTreeSet<RegionId>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
     descriptors: BTreeMap<TransactionId, OperationId>,
@@ -375,16 +382,29 @@ struct WorkingSnapshot {
     last_event_modify: BTreeMap<EventId, (OperationId, Event)>,
     last_pitch_modify: BTreeMap<PitchId, (OperationId, Pitch)>,
     last_cross_cutting_modify: BTreeMap<TypedObjectId, (OperationId, CrossCuttingValue)>,
-    last_metadata: Option<(OperationId, ScoreMetadata)>,
     last_metric_grid: BTreeMap<RegionId, (OperationId, Option<MetricGrid>)>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     region_instances: BTreeMap<RegionId, BTreeSet<StaffInstanceId>>,
     instance_voices: BTreeMap<StaffInstanceId, BTreeSet<VoiceId>>,
+    staff_based_regions: BTreeSet<RegionId>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
     descriptors: BTreeMap<TransactionId, OperationId>,
     tx_minted: BTreeMap<TransactionId, Vec<TypedObjectId>>,
     graph: Option<Score>,
+}
+
+/// Apply a user break to a region's break list under the canonical LWW key — the
+/// anchor's resolved musical position. Any existing anchor resolving to that same
+/// position is dropped first, so two anchors at one position never both persist,
+/// then the new anchor is pushed iff the break is present. The graph break list
+/// then matches the resolved-position-keyed ledger map.
+fn apply_break_lww(breaks: &mut Vec<TimeAnchor>, anchor: &TimeAnchor, present: bool) {
+    let resolved = crate::payload::resolved_anchor_position(anchor);
+    breaks.retain(|existing| crate::payload::resolved_anchor_position(existing) != resolved);
+    if present {
+        breaks.push(anchor.clone());
+    }
 }
 
 fn intervals_overlap(
@@ -453,11 +473,11 @@ impl<'a> Reducer<'a> {
             last_event_modify: BTreeMap::new(),
             last_pitch_modify: BTreeMap::new(),
             last_cross_cutting_modify: BTreeMap::new(),
-            last_metadata: None,
             last_metric_grid: BTreeMap::new(),
             structures: BTreeMap::new(),
             region_instances: BTreeMap::new(),
             instance_voices: BTreeMap::new(),
+            staff_based_regions: BTreeSet::new(),
             migrated_regions: BTreeSet::new(),
             region_migrator: BTreeMap::new(),
             descriptors: BTreeMap::new(),
@@ -518,6 +538,9 @@ impl<'a> Reducer<'a> {
         for region in &score.canvas.regions {
             self.objects
                 .insert(TypedObjectId::Region(region.id), ObjectState::Live);
+            if region.content.staff_based().is_some() {
+                self.staff_based_regions.insert(region.id);
+            }
             let instance_set = self.region_instances.entry(region.id).or_default();
             for instance in region.staff_instances() {
                 instance_set.insert(instance.id);
@@ -1250,7 +1273,7 @@ impl<'a> Reducer<'a> {
                 OperationKind::DeleteStaffInstance(op) => self.delete_staff_instance(env, op),
                 OperationKind::CreateVoice(op) => self.create_voice(env, op),
                 OperationKind::DeleteVoice(op) => self.delete_voice(env, op),
-                OperationKind::SetMetadata(op) => self.set_metadata(env, op),
+                OperationKind::SetMetadata(op) => self.set_metadata(op),
                 OperationKind::SetMetricGrid(op) => self.set_metric_grid(env, op),
                 OperationKind::SetUserPageBreak(op) => self.set_user_page_break(op),
             },
@@ -1265,43 +1288,14 @@ impl<'a> Reducer<'a> {
         &mut self,
         op: &crate::payload::SetUserSystemBreakOp,
     ) -> OperationEffect {
+        if let Some(effect) = self.layout_region_slot(op.region) {
+            return effect;
+        }
         if let Some(score) = self.graph.as_mut() {
-            let Some(region) = score
-                .canvas
-                .regions
-                .iter_mut()
-                .find(|region| region.id == op.region)
-            else {
-                return OperationEffect::NoOp {
-                    reason: NoOpReason::PreconditionFailedUnderReduction {
-                        reason: PreconditionFailureReason::TargetMissing,
-                    },
-                };
-            };
-            let breaks = match &mut region.content {
-                epiphany_core::RegionContent::StaffBased(content) => {
-                    &mut content.user_system_breaks
+            if let Some(region) = score.canvas.regions.iter_mut().find(|r| r.id == op.region) {
+                if let Some(content) = region.content.staff_based_mut() {
+                    apply_break_lww(&mut content.user_system_breaks, &op.anchor, op.present);
                 }
-                epiphany_core::RegionContent::Hybrid { staves, .. } => {
-                    &mut staves.user_system_breaks
-                }
-                epiphany_core::RegionContent::FreeGraphic(_) => {
-                    return OperationEffect::NoOp {
-                        reason: NoOpReason::PreconditionFailedUnderReduction {
-                            reason: PreconditionFailureReason::TargetMissing,
-                        },
-                    }
-                }
-            };
-            // The value-typed payload (v1) carries the full TimeAnchor, so the
-            // graph break is the anchor itself rather than a reconstructed one.
-            let anchor = op.anchor.clone();
-            if op.present {
-                if !breaks.contains(&anchor) {
-                    breaks.push(anchor);
-                }
-            } else {
-                breaks.retain(|candidate| candidate != &anchor);
             }
         }
 
@@ -1313,40 +1307,44 @@ impl<'a> Reducer<'a> {
 
     // --- Group 4 (M2d): score settings (LWW field-overwrite). --------------
     //
-    // SetMetadata / SetMetricGrid mirror the modify ops: the resolved value lives
-    // in the graph (reduce_onto); MaterializedState records only the effect and,
-    // on a concurrent differing write, a StructuralFieldCollision. SetUserPageBreak
-    // mirrors SetUserSystemBreak: it is a canonical LWW advisory (page_breaks).
+    // SetMetadata is an *advisory* last-writer-wins field (operation_catalog
+    // §set-user-system-break "LWW advisory"): the latest write in canonical order
+    // silently wins, with no conflict — a clean concurrent metadata edit keeps the
+    // state clean. SetMetricGrid is a structural field-overwrite: the resolved grid
+    // lives in the graph and a concurrent differing grid records a
+    // StructuralFieldCollision. SetUserPageBreak mirrors SetUserSystemBreak: a
+    // canonical LWW advisory (page_breaks).
+    //
+    // SetMetricGrid / SetUserPageBreak target a region's staff-based slot, so they
+    // share `layout_region_slot`: the region must be live *and* staff-based (a
+    // FreeGraphic region has neither a metric grid nor a break list). That verdict
+    // reads only the base-free indices, so reduce() and reduce_onto() agree on it.
 
-    fn set_metadata(&mut self, env: &OperationEnvelope, op: &SetMetadataOp) -> OperationEffect {
-        let effect = match &self.last_metadata {
-            Some((prev_op, prev_meta)) if self.concurrent(env.id, *prev_op) => {
-                if *prev_meta == op.metadata {
-                    return OperationEffect::NoOp {
-                        reason: NoOpReason::AlreadyApplied,
-                    };
-                }
-                let prev_op = *prev_op;
-                let conflict = ConflictRecord::new(
-                    ConflictKind::StructuralFieldCollision {
-                        winner: env.id,
-                        loser: prev_op,
-                        field: FieldPath("metadata".to_string()),
-                    },
-                    vec![env.id, prev_op],
-                    vec![],
-                );
-                let cid = conflict.id;
-                self.conflicts.insert(conflict);
-                OperationEffect::Conflicted { conflict: cid }
-            }
-            _ => OperationEffect::Applied,
-        };
-        self.last_metadata = Some((env.id, op.metadata.clone()));
+    /// `Some(NoOp)` when `region` cannot carry a metric grid or user break — it is
+    /// missing, tombstoned, or FreeGraphic; `None` when it has a staff-based slot.
+    fn layout_region_slot(&self, region: RegionId) -> Option<OperationEffect> {
+        let live = matches!(
+            self.objects.get(&TypedObjectId::Region(region)),
+            Some(ObjectState::Live)
+        );
+        if live && self.staff_based_regions.contains(&region) {
+            None
+        } else {
+            Some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            })
+        }
+    }
+
+    fn set_metadata(&mut self, op: &SetMetadataOp) -> OperationEffect {
+        // Advisory LWW: no conflict, no idempotence short-circuit. The resolved
+        // value is the last write in canonical order, held in the graph.
         if let Some(score) = self.graph.as_mut() {
             score.metadata = op.metadata.clone();
         }
-        effect
+        OperationEffect::Applied
     }
 
     fn set_metric_grid(
@@ -1354,15 +1352,28 @@ impl<'a> Reducer<'a> {
         env: &OperationEnvelope,
         op: &SetMetricGridOp,
     ) -> OperationEffect {
-        if !matches!(
-            self.objects.get(&TypedObjectId::Region(op.region)),
-            Some(ObjectState::Live)
-        ) {
-            return OperationEffect::NoOp {
-                reason: NoOpReason::PreconditionFailedUnderReduction {
-                    reason: PreconditionFailureReason::TargetMissing,
-                },
-            };
+        if let Some(effect) = self.layout_region_slot(op.region) {
+            return effect;
+        }
+        // A non-empty grid names a time signature per meter change; the graph
+        // invariant (epiphany-core invariants.rs) rejects a grid that references an
+        // undeclared signature, so reject it here rather than install an
+        // invariant-violating grid. Time signatures are seeded from the base, so
+        // this verdict is identical with or without a graph.
+        if let Some(grid) = &op.grid {
+            for change in &grid.meter_sequence {
+                if !matches!(
+                    self.objects
+                        .get(&TypedObjectId::TimeSignature(change.time_signature)),
+                    Some(ObjectState::Live)
+                ) {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::TargetMissing,
+                        },
+                    };
+                }
+            }
         }
         let prev = self
             .last_metric_grid
@@ -1401,53 +1412,23 @@ impl<'a> Reducer<'a> {
             return;
         };
         if let Some(region) = score.canvas.regions.iter_mut().find(|r| r.id == region) {
-            match &mut region.content {
-                epiphany_core::RegionContent::StaffBased(content) => {
-                    content.default_metric_grid = grid.clone();
-                }
-                epiphany_core::RegionContent::Hybrid { staves, .. } => {
-                    staves.default_metric_grid = grid.clone();
-                }
-                epiphany_core::RegionContent::FreeGraphic(_) => {}
+            if let Some(content) = region.content.staff_based_mut() {
+                content.default_metric_grid = grid.clone();
             }
         }
     }
 
     fn set_user_page_break(&mut self, op: &SetUserPageBreakOp) -> OperationEffect {
+        if let Some(effect) = self.layout_region_slot(op.region) {
+            return effect;
+        }
         if let Some(score) = self.graph.as_mut() {
-            let Some(region) = score
-                .canvas
-                .regions
-                .iter_mut()
-                .find(|region| region.id == op.region)
-            else {
-                return OperationEffect::NoOp {
-                    reason: NoOpReason::PreconditionFailedUnderReduction {
-                        reason: PreconditionFailureReason::TargetMissing,
-                    },
-                };
-            };
-            let breaks = match &mut region.content {
-                epiphany_core::RegionContent::StaffBased(content) => &mut content.user_page_breaks,
-                epiphany_core::RegionContent::Hybrid { staves, .. } => &mut staves.user_page_breaks,
-                epiphany_core::RegionContent::FreeGraphic(_) => {
-                    return OperationEffect::NoOp {
-                        reason: NoOpReason::PreconditionFailedUnderReduction {
-                            reason: PreconditionFailureReason::TargetMissing,
-                        },
-                    }
+            if let Some(region) = score.canvas.regions.iter_mut().find(|r| r.id == op.region) {
+                if let Some(content) = region.content.staff_based_mut() {
+                    apply_break_lww(&mut content.user_page_breaks, &op.anchor, op.present);
                 }
-            };
-            let anchor = op.anchor.clone();
-            if op.present {
-                if !breaks.contains(&anchor) {
-                    breaks.push(anchor);
-                }
-            } else {
-                breaks.retain(|candidate| candidate != &anchor);
             }
         }
-
         self.page_breaks
             .insert((op.region, op.resolved_position()), op.present);
         OperationEffect::Applied
@@ -2075,6 +2056,9 @@ impl<'a> Reducer<'a> {
         self.graph_create_region(&op.region);
         self.mint_container(env, robj);
         self.region_instances.entry(op.region_id()).or_default();
+        if op.region.content.staff_based().is_some() {
+            self.staff_based_regions.insert(op.region_id());
+        }
         OperationEffect::Applied
     }
 
@@ -2177,6 +2161,7 @@ impl<'a> Reducer<'a> {
             },
         );
         self.region_instances.remove(&op.region);
+        self.staff_based_regions.remove(&op.region);
         self.graph_delete_region(op.region);
         OperationEffect::Applied
     }
@@ -3201,11 +3186,11 @@ impl<'a> Reducer<'a> {
             last_event_modify: self.last_event_modify.clone(),
             last_pitch_modify: self.last_pitch_modify.clone(),
             last_cross_cutting_modify: self.last_cross_cutting_modify.clone(),
-            last_metadata: self.last_metadata.clone(),
             last_metric_grid: self.last_metric_grid.clone(),
             structures: self.structures.clone(),
             region_instances: self.region_instances.clone(),
             instance_voices: self.instance_voices.clone(),
+            staff_based_regions: self.staff_based_regions.clone(),
             migrated_regions: self.migrated_regions.clone(),
             region_migrator: self.region_migrator.clone(),
             descriptors: self.descriptors.clone(),
@@ -3227,11 +3212,11 @@ impl<'a> Reducer<'a> {
         self.last_event_modify = s.last_event_modify;
         self.last_pitch_modify = s.last_pitch_modify;
         self.last_cross_cutting_modify = s.last_cross_cutting_modify;
-        self.last_metadata = s.last_metadata;
         self.last_metric_grid = s.last_metric_grid;
         self.structures = s.structures;
         self.region_instances = s.region_instances;
         self.instance_voices = s.instance_voices;
+        self.staff_based_regions = s.staff_based_regions;
         self.migrated_regions = s.migrated_regions;
         self.region_migrator = s.region_migrator;
         self.descriptors = s.descriptors;

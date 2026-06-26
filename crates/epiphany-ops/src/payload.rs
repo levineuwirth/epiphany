@@ -626,19 +626,27 @@ pub struct SetUserSystemBreakOp {
     pub present: bool,
 }
 
+/// The musical position a [`TimeAnchor`] resolves to for user-break LWW
+/// bucketing. A region-relative musical offset resolves to that offset; any
+/// other anchor shape resolves to the region origin (the break still applies to
+/// the region, the prototype LWW key is coarse — see `DECISIONS.md`). The graph
+/// reducer keys break anchors by this same position, so two anchors resolving
+/// here to one position occupy a single LWW slot.
+pub(crate) fn resolved_anchor_position(anchor: &TimeAnchor) -> MusicalPosition {
+    match anchor {
+        TimeAnchor::Region {
+            offset: epiphany_core::AnchorOffset::Musical(d),
+            ..
+        } => MusicalPosition(d.0.clone()),
+        _ => MusicalPosition::origin(),
+    }
+}
+
 impl SetUserSystemBreakOp {
-    /// The anchor's resolved musical position — the canonical LWW bucketing key.
-    /// A region-relative musical offset resolves to that offset; any other anchor
-    /// shape resolves to the region origin (the break still applies to the
-    /// region, the prototype LWW key is coarse — see `DECISIONS.md`).
+    /// The anchor's resolved musical position — the canonical LWW bucketing key
+    /// (see [`resolved_anchor_position`]).
     pub fn resolved_position(&self) -> MusicalPosition {
-        match &self.anchor {
-            TimeAnchor::Region {
-                offset: epiphany_core::AnchorOffset::Musical(d),
-                ..
-            } => MusicalPosition(d.0.clone()),
-            _ => MusicalPosition::origin(),
-        }
+        resolved_anchor_position(&self.anchor)
     }
 }
 
@@ -976,8 +984,9 @@ impl CanonicalEncode for DeleteVoiceOp {
 // --- Group 4 (M2d): score settings (Chapter 6 §6.10). LWW field-overwrite. ---
 
 /// Overwrite the score metadata (Chapter 6 §6.10 SetMetadata). Carries the full
-/// [`ScoreMetadata`] (v1); the score-singleton field-overwrite is last-writer-wins
-/// (concurrent differing ⇒ structural-field-collision).
+/// [`ScoreMetadata`] (v1); the score-singleton field-overwrite is *advisory*
+/// last-writer-wins — the latest write in canonical order silently wins and no
+/// conflict is recorded (operation_catalog §set-user-system-break "LWW advisory").
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SetMetadataOp {
     pub metadata: ScoreMetadata,
@@ -1025,15 +1034,9 @@ pub struct SetUserPageBreakOp {
 
 impl SetUserPageBreakOp {
     /// The anchor's resolved musical position — the canonical LWW bucketing key
-    /// (see [`SetUserSystemBreakOp::resolved_position`]).
+    /// (see [`resolved_anchor_position`]).
     pub fn resolved_position(&self) -> MusicalPosition {
-        match &self.anchor {
-            TimeAnchor::Region {
-                offset: epiphany_core::AnchorOffset::Musical(d),
-                ..
-            } => MusicalPosition(d.0.clone()),
-            _ => MusicalPosition::origin(),
-        }
+        resolved_anchor_position(&self.anchor)
     }
 }
 
@@ -1098,6 +1101,10 @@ mod tests {
             OperationKindTag::InsertIdentifiedPitch,
             OperationKindTag::DeleteIdentifiedPitch,
             OperationKindTag::ModifyIdentifiedPitch,
+            OperationKindTag::CreateVoice,
+            OperationKindTag::DeleteVoice,
+            OperationKindTag::SetMetadata,
+            OperationKindTag::SetMetricGrid,
         ];
         let encoded: std::collections::BTreeSet<_> = tags
             .iter()
