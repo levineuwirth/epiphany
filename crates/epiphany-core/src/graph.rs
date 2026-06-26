@@ -51,17 +51,116 @@ impl Default for StaffLineConfiguration {
     }
 }
 
-/// A clef placed at a point in a staff instance. Placeholder (Chapter 7).
+/// The SMuFL clef family a [`Clef`] draws from. The reference pitch each family
+/// fixes (G4 / F3 / middle&nbsp;C4) is what pins the staff-position mapping.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum ClefShape {
+    /// G clef (treble family) — reference pitch G4.
+    G,
+    /// F clef (bass family) — reference pitch F3.
+    F,
+    /// C clef (alto / tenor family) — reference pitch middle C (C4).
+    C,
+    /// Unpitched percussion clef — no diatonic reference.
+    Percussion,
+}
+
+/// A clef: the SMuFL [`ClefShape`], the staff line its reference pitch sits on
+/// (`1` = the bottom line of the staff, counting up), and an octave
+/// transposition (`-1` for treble-8vb, `+1` for treble-8va, …). The shape's
+/// reference pitch on `line` fixes where every pitch under this clef lands on
+/// the staff.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct Clef {
+    pub shape: ClefShape,
+    pub line: i8,
+    pub octave_shift: i8,
+}
+
+impl Clef {
+    /// Treble clef — G clef on line 2.
+    pub const fn treble() -> Self {
+        Clef {
+            shape: ClefShape::G,
+            line: 2,
+            octave_shift: 0,
+        }
+    }
+    /// Bass clef — F clef on line 4.
+    pub const fn bass() -> Self {
+        Clef {
+            shape: ClefShape::F,
+            line: 4,
+            octave_shift: 0,
+        }
+    }
+    /// Alto clef — C clef on line 3.
+    pub const fn alto() -> Self {
+        Clef {
+            shape: ClefShape::C,
+            line: 3,
+            octave_shift: 0,
+        }
+    }
+    /// Tenor clef — C clef on line 4.
+    pub const fn tenor() -> Self {
+        Clef {
+            shape: ClefShape::C,
+            line: 4,
+            octave_shift: 0,
+        }
+    }
+}
+
+impl Default for Clef {
+    fn default() -> Self {
+        Clef::treble()
+    }
+}
+
+/// A key signature as a position on the circle of fifths: `fifths` sharps when
+/// positive (`1` = G major, one sharp), flats when negative (`-1` = F major,
+/// one flat), and `0` for C major / A minor. The accidental set the renderer
+/// draws is derived from this count.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
+pub struct KeySignature {
+    fifths: i8,
+}
+
+impl KeySignature {
+    /// Lowest key-signature fifth count in conventional CMN notation: seven flats.
+    pub const MIN_FIFTHS: i8 = -7;
+    /// Highest key-signature fifth count in conventional CMN notation: seven sharps.
+    pub const MAX_FIFTHS: i8 = 7;
+
+    /// Builds a key signature, rejecting values outside the conventional
+    /// `-7..=7` circle-of-fifths range.
+    pub const fn new(fifths: i8) -> Option<Self> {
+        if fifths >= Self::MIN_FIFTHS && fifths <= Self::MAX_FIFTHS {
+            Some(KeySignature { fifths })
+        } else {
+            None
+        }
+    }
+
+    /// The circle-of-fifths position (`-7..=7`).
+    pub const fn fifths(self) -> i8 {
+        self.fifths
+    }
+}
+
+/// A clef placed at a point in a staff instance (Chapter 7).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ClefChange {
     pub anchor: TimeAnchor,
+    pub clef: Clef,
 }
 
-/// A key-signature change at a point in a staff instance. Placeholder
-/// (Chapter 7).
+/// A key-signature change at a point in a staff instance (Chapter 7).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct KeySignatureChange {
     pub anchor: TimeAnchor,
+    pub key: KeySignature,
 }
 
 /// Whether and how a measure number is shown. Placeholder (Chapter 7).

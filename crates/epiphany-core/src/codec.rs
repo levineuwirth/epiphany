@@ -48,15 +48,16 @@ use crate::event::{
 use crate::graph::{
     AleatoricAnchoringDiscipline, AleatoricTimeModel, AnalysisLayer, AnalyticalAnnotation,
     AnnotationAnchor, BarlineAlignmentGroup, BarlineAlignmentMember, Beam, BeatGroup, Canvas,
-    ChordSymbol, ClefChange, Comment, CrossCuttingRegistry, DecompositionAttachment,
-    DecompositionSource, EventOrderingDAG, GestureAnchoring, GraphicContent, GraphicGesture,
-    GraphicObject, Instrument, KeySignatureChange, LyricLine, Marker, Measure,
-    MeasureNumberVisibility, MeterChange, MetricGrid, MetricTimeModel, NotatedComponent, NoteValue,
-    PartDefinition, PowerOfTwo, ProportionalTimeModel, Region, RegionContent, RegionTimeModel,
-    RepeatStructure, Score, ScoreMetadata, ScoreTuningContext, Slur, Spanner, Staff,
-    StaffBasedContent, StaffExtent, StaffGroup, StaffGroupKind, StaffInstance,
-    StaffLineConfiguration, StemDirection, TempoMapReference, Tie, TieClass, TimeExtent,
-    TimeSignature, TimeSignatureDisplay, Tuplet, TupletRatio, ViewDefinition, Voice, VoiceOrigin,
+    ChordSymbol, Clef, ClefChange, ClefShape, Comment, CrossCuttingRegistry,
+    DecompositionAttachment, DecompositionSource, EventOrderingDAG, GestureAnchoring,
+    GraphicContent, GraphicGesture, GraphicObject, Instrument, KeySignature, KeySignatureChange,
+    LyricLine, Marker, Measure, MeasureNumberVisibility, MeterChange, MetricGrid, MetricTimeModel,
+    NotatedComponent, NoteValue, PartDefinition, PowerOfTwo, ProportionalTimeModel, Region,
+    RegionContent, RegionTimeModel, RepeatStructure, Score, ScoreMetadata, ScoreTuningContext,
+    Slur, Spanner, Staff, StaffBasedContent, StaffExtent, StaffGroup, StaffGroupKind,
+    StaffInstance, StaffLineConfiguration, StemDirection, TempoMapReference, Tie, TieClass,
+    TimeExtent, TimeSignature, TimeSignatureDisplay, Tuplet, TupletRatio, ViewDefinition, Voice,
+    VoiceOrigin,
 };
 use crate::ids::{
     AnalysisLayerId, AnalyticalAnnotationId, BarlineAlignmentGroupId, BeamId, ChordSymbolId,
@@ -1453,8 +1454,27 @@ struct_codec!(MeterChange {
 struct_codec!(MetricGrid { meter_sequence });
 struct_codec!(ProportionalTimeModel { duration });
 struct_codec!(MetricTimeModel { meters, tempo });
-struct_codec!(ClefChange { anchor });
-struct_codec!(KeySignatureChange { anchor });
+cstyle_enum_codec!(ClefShape {
+    0 => G,
+    1 => F,
+    2 => C,
+    3 => Percussion,
+});
+struct_codec!(Clef {
+    shape,
+    line,
+    octave_shift
+});
+impl Codec for KeySignature {
+    fn enc(&self, out: &mut Vec<u8>) {
+        self.fifths().enc(out);
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        KeySignature::new(i8::dec(r)?).ok_or(ScoreDecodeError::Reconstruct("KeySignature"))
+    }
+}
+struct_codec!(ClefChange { anchor, clef });
+struct_codec!(KeySignatureChange { anchor, key });
 struct_codec!(Measure {
     id,
     start,
@@ -2191,6 +2211,72 @@ mod tests {
             bytes,
             "re-encode not byte-identical"
         );
+    }
+
+    #[test]
+    fn clef_and_key_signature_codecs_round_trip() {
+        use crate::graph::{Clef, ClefChange, ClefShape, KeySignature, KeySignatureChange};
+        use crate::time::{TimeAnchor, WallClockTime};
+
+        fn rt<T: Codec + PartialEq + core::fmt::Debug>(v: &T) {
+            let mut out = Vec::new();
+            v.enc(&mut out);
+            let mut r = Reader::new(&out);
+            let decoded = T::dec(&mut r).expect("decodes");
+            assert_eq!(&decoded, v, "round-trip changed the value");
+        }
+
+        for shape in [
+            ClefShape::G,
+            ClefShape::F,
+            ClefShape::C,
+            ClefShape::Percussion,
+        ] {
+            rt(&shape);
+            for line in [-3i8, 1, 2, 3, 4, 5] {
+                for octave_shift in [-1i8, 0, 1] {
+                    rt(&Clef {
+                        shape,
+                        line,
+                        octave_shift,
+                    });
+                }
+            }
+        }
+        for shape_clef in [Clef::treble(), Clef::bass(), Clef::alto(), Clef::tenor()] {
+            rt(&shape_clef);
+        }
+        for fifths in -7i8..=7 {
+            rt(&KeySignature::new(fifths).expect("fifths is in range"));
+        }
+        let anchor = TimeAnchor::WallClock {
+            time: WallClockTime(0),
+        };
+        rt(&ClefChange {
+            anchor: anchor.clone(),
+            clef: Clef::bass(),
+        });
+        rt(&KeySignatureChange {
+            anchor,
+            key: KeySignature::new(-3).expect("fifths is in range"),
+        });
+    }
+
+    #[test]
+    fn key_signature_rejects_out_of_range_fifths_on_decode() {
+        let decode = |fifths: i8| {
+            let mut bytes = Vec::new();
+            fifths.enc(&mut bytes);
+            KeySignature::dec(&mut Reader::new(&bytes))
+        };
+        assert!(decode(-7).is_ok());
+        assert!(decode(7).is_ok());
+        for fifths in [-8i8, 8] {
+            assert!(
+                matches!(decode(fifths), Err(ScoreDecodeError::Reconstruct(_))),
+                "out-of-range fifth count {fifths} must be rejected"
+            );
+        }
     }
 
     #[test]

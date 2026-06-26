@@ -99,9 +99,9 @@ pub use event::{
 pub use graph::{
     derive_promoted_voice_id, AleatoricAnchoringDiscipline, AleatoricTimeModel, AnalysisLayer,
     AnalyticalAnnotation, AnnotationAnchor, BarlineAlignmentGroup, BarlineAlignmentMember, Beam,
-    BeatGroup, Canvas, ChordSymbol, ClefChange, Comment, CoordinateDiscipline,
+    BeatGroup, Canvas, ChordSymbol, Clef, ClefChange, ClefShape, Comment, CoordinateDiscipline,
     CrossCuttingRegistry, DecompositionAttachment, DecompositionSource, EventOrderingDAG,
-    GestureAnchoring, GraphicContent, GraphicGesture, GraphicObject, Instrument,
+    GestureAnchoring, GraphicContent, GraphicGesture, GraphicObject, Instrument, KeySignature,
     KeySignatureChange, LyricLine, Marker, Measure, MeasureNumberVisibility, MeterChange,
     MetricGrid, MetricTimeModel, NotatedComponent, NoteValue, PartDefinition, PowerOfTwo,
     ProportionalTimeModel, Region, RegionContent, RegionTimeModel, RepeatStructure, Score,
