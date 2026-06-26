@@ -142,6 +142,72 @@ This consistency is what lets `graph_edit_session` create cross-cutting structur
 and delete their endpoints, giving the Group-2 CRUD ops (and slur re-anchoring)
 real at-scale coverage under criterion 1 + `check_invariants`.
 
+## M2c (Group 3) — structural containers: empty-only delete
+
+The structural-container CRUD ops (`CreateRegion`/`DeleteRegion`,
+`CreateStaffInstance`/`DeleteStaffInstance`, `CreateVoice`/`DeleteVoice`) mint an
+**empty** container (set-union creation) and tombstone an **empty** one. Two
+scoping calls the user made fixed the shape: the slice covers *structural
+container* CRUD (not the document root / canvas / global staves — those stay K1),
+and delete semantics are **empty-only (precondition)**.
+
+- **A delete of a non-empty container is a precondition no-op
+  (`ContainerNotEmpty`), not a cascade.** The caller deletes contents first.
+  *Rejected alternative:* a cascading delete that tombstones the live children
+  transitively — it conflates two intents (remove this container vs. remove its
+  contents), and a cascade's re-anchoring interactions (a deleted voice's events
+  feeding the cross-cutting re-anchoring table) are a strictly larger design than
+  the slice needs. The empty-only gate is the conservative floor a cascade could
+  later build on. Catalog §Structural Containers (M2e) states this normatively.
+- **Live-child sets are tracked in the reducer, not re-derived from the graph.**
+  `region_instances: RegionId → {StaffInstanceId}` and `instance_voices:
+  StaffInstanceId → {VoiceId}` (a voice's live events are read from
+  `voice_occupancy`) are maintained by the create/delete materializers and seeded
+  by `seed_from_graph`, so the empty-only precondition is decided identically in
+  the base-free `reduce()` and graph-aware `reduce_onto()`.
+- **Graph creation maintains the region staff extent.** An empty staff-based
+  region with a freshly-created staff instance would violate `RegionExtents`
+  (the staff extent must list exactly the manifested staves) unless the extent is
+  updated as instances are added/removed; the create/delete materializers do so,
+  and `valuegen::region` carries a far-future time extent so a fresh region does
+  not overlap an existing one once a staff instance lands.
+
+## M2d (Group 4) — score settings: per-op discipline (review-hardened)
+
+The score-settings ops (`SetMetadata`, `SetMetricGrid`, `SetUserPageBreak`) are
+all field overwrites, but they do **not** share one discipline; the M2d review
+(closed in commit `d93baac`) pinned each to the discipline its catalog
+classification names. Recorded here because the review changed code/tests.
+
+- **`SetMetadata` is an advisory LWW — no conflict.** The catalog
+  (§set-user-system-break "LWW advisory") and core_spec already classified
+  metadata this way; the first implementation wrongly raised a
+  `StructuralFieldCollision` on a concurrent differing write, which could make a
+  clean concurrent metadata edit turn `MaterializedState::is_clean()` false. It
+  now silently last-writer-wins in canonical order (graph singleton overwrite,
+  always `Applied`, no working slot). *Direction chosen:* fix the implementation
+  to match the already-correct spec, not the reverse.
+- **`SetMetricGrid` is a structural overwrite with two preconditions.** It keys a
+  `StructuralFieldCollision` (field `metric_grid`) on concurrent differing grids
+  (kept), *and* (a) preconditions the region live **and staff-based** — a
+  FreeGraphic region has no metric-grid slot — and (b) rejects a grid whose meter
+  sequence names a time signature that is not a live object (the Chapter-5
+  invariant forbids installing such a grid). Both checks read only base-free
+  indices.
+- **`SetUserPageBreak` mirrors `SetUserSystemBreak` exactly, under the canonical
+  LWW key.** Both now (i) share the live-and-staff-based precondition via a
+  `staff_based_regions` index, so `reduce()` and `reduce_onto()` agree on
+  missing / tombstoned / FreeGraphic targets, and (ii) materialize the graph break
+  under the anchor's **resolved musical position** (`apply_break_lww` +
+  `resolved_anchor_position`): any existing anchor resolving to the same position
+  is dropped before the new one is added, so the graph break list stays in lockstep
+  with the resolved-position-keyed ledger map. The system-break fix is a sibling
+  parity change, not new M2d scope.
+- **Performance.** The dedicated 10K-envelope reducer micro-bench (criterion 5)
+  is Agent F's worklist F1; the M2 value-typed ops are already exercised at
+  10K·scale by the conformance suite's reduction-determinism and convergence
+  gates, which emit every M2 kind. No criterion bench is added under Agent K.
+
 ## Pass 11 candidates (ambiguities for the spec, not resolved in code)
 
 ### P11-C1 — operation payload schemas are deferred; we carry identifiers + fingerprints

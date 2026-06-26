@@ -226,7 +226,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.1.0 --- Phase 2 (K0 representative primitives)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.2.0 --- Phase 2 (K0 representative + broad-K0 M2 groups)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -243,9 +243,12 @@ It fulfils the open question the core specification raises in its
 \sectionsc{Semantic Operations and Concurrent Reduction}, the
 \texttt{sec:semops:catalog} open question), which states that the catalog
 ``is normative once published; this specification is non-final until the catalog
-is delivered.'' This v0.1 release delivers the catalog \emph{framework} and the
-\textbf{K0 representative primitive set} --- the operation kinds the Phase~2
-visible slice and binary format actually exercise. The remaining K0 and the full
+is delivered.'' This release delivers the catalog \emph{framework}, the
+\textbf{K0 representative primitive set}, and the \textbf{M2 broad-K0 groups}
+(the event/pitch leaf-field, cross-cutting CRUD, structural-container, and
+score-settings operations the Phase~2 slice exercises) --- the operation kinds
+the Phase~2 visible slice and binary format actually exercise, each fully
+specified in Chapter~\ref{ch:k0}. The remaining items of the full
 $60$--$80$-primitive catalog are drafted as framework slots
 (Chapter~\ref{ch:k1}) and completed in Phase~3.
 
@@ -282,11 +285,12 @@ specification revision. The core specification changes only when the
 \section{Conformance Profiles}
 
 A \textbf{Phase-2 profile} implementation \MUST{} implement every primitive in
-Chapter~\ref{ch:k0} with the schema, reduction rule, conflict cases, undo
-semantics, and re-anchoring behaviour defined there. The K1 primitives of
+Chapter~\ref{ch:k0} --- the representative set and the M2 broad-K0 groups --- with
+the schema, reduction rule, conflict cases, undo semantics, and re-anchoring
+behaviour defined there. The remaining (Phase-3) framework slots of
 Chapter~\ref{ch:k1} are \emph{unavailable} under the Phase-2 profile: an
-implementation \MUST{} reject (not silently ignore) an operation whose kind is a
-K1 primitive it does not implement.
+implementation \MUST{} reject (not silently ignore) an operation whose kind is one
+of those slots it does not implement.
 
 % ===========================================================================
 \chapter{The Catalog Framework}
@@ -476,6 +480,103 @@ under migration; the disposition (whether a richer v0 corpus, or a documented
 read-only fallback, is the long-term answer) is a Pass-12 question.
 \end{openquestion}
 
+\section{ModifyEvent}
+\label{sec:k0:modify-event}
+
+\textbf{Payload schema.} \texttt{ModifyEventOp \{ event: Event \}} --- the full
+replacement \texttt{Event} value (v1). The identity (and therefore the LWW key)
+is read from the value.
+
+\textbf{Canonical encoding.} The length-framed canonical bytes of \texttt{event}.
+
+\textbf{Reduction rule.} A last-writer-wins field overwrite keyed by event id.
+Precondition: the event is live. The resolved value is the one carried by the
+operation latest in canonical order; two causally ordered modifications overwrite
+intentionally, and two \emph{concurrent} modifications with \emph{equal} value
+reduce idempotently. Graph-aware reduction overwrites the event in place. A
+modification that \emph{moves} the event (a different region-local position or
+duration) is recorded in the bookkeeping but its placement change is \emph{not}
+applied to the graph: re-sorting a voice on a placement change is a deferred
+refinement, and an in-place move would break \texttt{VoiceEventsSortedNonOverlap}
+(Chapter~5 invariant~3). A malformed (empty pitched) replacement is likewise
+recorded but not materialised.
+
+\textbf{Conflict cases.} Two concurrent modifications of one event with
+\emph{differing} values produce a \texttt{StructuralFieldCollision} on the field
+\texttt{event}, recording the winner (later in canonical order) and the loser.
+
+\textbf{Undo semantics.} Undo restores the pre-operation event value under the
+active policy.
+
+\textbf{Re-anchoring.} If the target event is tombstoned, the modification is a
+no-op (\texttt{TargetTombstoned}/\texttt{TargetMissing}).
+
+\section{Identified-Pitch Operations}
+\label{sec:k0:identified-pitch}
+
+\textbf{Payload schema.} \texttt{InsertIdentifiedPitchOp \{ event: EventId,
+pitch: IdentifiedPitch \}} mints a pitch into a live event;
+\texttt{DeleteIdentifiedPitchOp \{ pitch: PitchId \}} tombstones one;
+\texttt{ModifyIdentifiedPitchOp \{ pitch: PitchId, value: Pitch \}} overwrites a
+pitch's acoustic / scale-position value (distinct from \texttt{RespellPitch},
+which overwrites only the \emph{spelling}).
+
+\textbf{Canonical encoding.} Insert: \texttt{event}, then the length-framed
+\texttt{pitch} value. Delete: \texttt{pitch}. Modify: \texttt{pitch}, then the
+length-framed \texttt{value}.
+
+\textbf{Reduction rule.} The pitch-level analogues of the event-level mint,
+delete, and field overwrite, inheriting their disciplines
+(Sections~\ref{sec:k0:insert-event}, \ref{sec:k0:delete-event}, and this
+chapter's field-overwrite treatment). \textbf{A note and a rest are the same slot
+under pitch add/remove} (normative): deleting the \emph{only} pitch of a
+single-pitch note degrades the event to a \texttt{Rest} of the same
+id/voice/position/duration rather than leaving an empty pitched event (Chapter~5
+forbids the empty chord, \texttt{ArenaError::EmptyPitchedEvent}); inserting a
+pitch into a rest is the dual, promoting it to a one-pitch note. This preserves
+the delete-wins / mint disciplines and keeps the graph consistent with the
+bookkeeping, which tombstones or mints the pitch object either way.
+
+\textbf{Conflict cases.} Insert and delete: none (mint is set-union; delete-wins
+is idempotent). Modify: two concurrent differing writes of one pitch produce a
+\texttt{StructuralFieldCollision} on the field \texttt{pitch}.
+
+\textbf{Undo semantics.} Insert undoes by tombstoning the minted pitch (re-rest
+if it was the only pitch); delete undoes by re-introducing the tombstoned pitch
+(re-note from a degraded rest); modify restores the prior value --- each under
+the active policy.
+
+\textbf{Re-anchoring.} An operation whose target event or pitch is tombstoned is
+a no-op; tombstoning a pitch runs the cross-cutting re-anchoring table over any
+structure that referenced it (see DeleteEvent).
+
+\section{Transpose}
+\label{sec:k0:transpose}
+
+\textbf{Payload schema.} \texttt{TransposeOp \{ targets: Vec<PitchId>,
+chromatic\_steps: i32 \}}. Pitch identifiers are preserved; only acoustic content
+changes.
+
+\textbf{Canonical encoding.} The canonically-ordered \texttt{targets} set, then
+\texttt{chromatic\_steps} as a little-endian \texttt{i32}.
+
+\textbf{Reduction rule.} An order-dependent content overwrite. Each live target
+pitch is shifted by \texttt{chromatic\_steps}; reduction is order-dependent in the
+general case (interval composition need not commute), so the resolved value is
+the composition in canonical reduction order. In this prototype
+\texttt{chromatic\_steps} is a minimal CMN alteration shift that commutes except
+at the alteration's \texttt{i8} saturation bound; rich interval algebra is
+deferred (Chapter~4 tuning catalog; P12-K2).
+
+\textbf{Conflict cases.} None --- composition is deterministic in canonical order
+(a deterministic repair, not a conflict).
+
+\textbf{Undo semantics.} Undo applies the negated interval to the same targets
+under the active policy.
+
+\textbf{Re-anchoring.} Tombstoned targets are skipped (the transpose applies only
+to live pitches).
+
 \section{CreateCrossCutting}
 \label{sec:k0:create-cross-cutting}
 
@@ -508,6 +609,57 @@ of event endpoints, so its full value is not reconstructable from the v0
 event-reference projection; a \texttt{Spanner}-create is therefore reported
 unmigratable (read-only) under M1, alongside the respell case of P12-K1. A
 faithful spanner migration joins when the projection carries the anchors --- M2.
+
+\section{DeleteCrossCutting}
+\label{sec:k0:delete-cross-cutting}
+
+\textbf{Payload schema.} \texttt{DeleteCrossCuttingOp \{ structure: TypedObjectId
+\}} --- the structure named by the same key the set-union creation and the
+re-anchoring table use; it \MUST{} be a cross-cutting kind
+(\texttt{Tie}/\texttt{Slur}/\texttt{Beam}/\texttt{Spanner}).
+
+\textbf{Canonical encoding.} The canonical bytes of \texttt{structure}.
+
+\textbf{Reduction rule.} Delete-wins: the structure is tombstoned (its identifier
+retained). A second delete of the same structure is idempotent; deleting a
+missing or non-cross-cutting id is a no-op precondition failure. Graph-aware
+reduction removes the structure from the score.
+
+\textbf{Conflict cases.} None (delete-wins is idempotent).
+
+\textbf{Undo semantics.} Undo re-introduces the tombstoned structure under the
+active policy.
+
+\textbf{Re-anchoring.} The deletion is direct (the structure is the target, not a
+referenced endpoint); it does not itself trigger the endpoint re-anchoring table.
+
+\section{ModifyCrossCutting}
+\label{sec:k0:modify-cross-cutting}
+
+\textbf{Payload schema.} \texttt{ModifyCrossCuttingOp \{ structure:
+CrossCuttingValue \}} --- the full replacement value (v1). The replacement keeps
+the structure's identity but may change its endpoints and per-kind fields; the
+LWW key is the structure's \texttt{CrossCuttingValue::id}.
+
+\textbf{Canonical encoding.} The discriminant and length-framed bytes of the
+\texttt{CrossCuttingValue} (as for CreateCrossCutting).
+
+\textbf{Reduction rule.} A last-writer-wins field overwrite keyed by structure
+id. Precondition: the structure is live. The reduction re-derives the structure's
+endpoints from the new value, so a later re-anchoring sees them. A malformed
+replacement is a precondition no-op --- in particular a beam whose membership
+falls below the two-member minimum is refused rather than materialised.
+Graph-aware reduction overwrites the structure in place.
+
+\textbf{Conflict cases.} Two concurrent differing modifications of one structure
+produce a \texttt{StructuralFieldCollision} on the field \texttt{cross\_cutting}.
+
+\textbf{Undo semantics.} Undo restores the prior structure value under the active
+policy.
+
+\textbf{Re-anchoring.} If the target structure is tombstoned, the modification is
+a no-op; re-deriving the endpoints lets a subsequent endpoint tombstone re-anchor
+the structure through the standard table (see DeleteEvent).
 
 \section{ChangeRegionTimeModel}
 \label{sec:k0:change-region-time-model}
@@ -542,6 +694,44 @@ active policy.
 the catalog's to design when graph-aware migration is the only reduction path.
 \end{openquestion}
 
+\section{Structural Containers}
+\label{sec:k0:structural-containers}
+
+\textbf{Payload schema.} Three create/delete pairs over the region hierarchy:
+\texttt{CreateRegionOp \{ region: Region \}} /
+\texttt{DeleteRegionOp \{ region: RegionId \}};
+\texttt{CreateStaffInstanceOp \{ region: RegionId, instance: StaffInstance \}} /
+\texttt{DeleteStaffInstanceOp \{ staff\_instance: StaffInstanceId \}};
+\texttt{CreateVoiceOp \{ staff\_instance: StaffInstanceId, voice: Voice \}} /
+\texttt{DeleteVoiceOp \{ voice: VoiceId \}}. Each create carries the full
+container value (v1); the reduction preconditions it carries no children (an
+empty container).
+
+\textbf{Canonical encoding.} Create: the parent id (where the schema names one),
+then the length-framed canonical bytes of the container value. Delete: the
+container id.
+
+\textbf{Reduction rule.} Set-union creation of an \emph{empty} container, and an
+\emph{empty-only} delete-wins tombstone. A create mints the container live if its
+id is fresh and (for staff instance and voice) its parent is live; it
+preconditions the carried value to have no live children, so contents are added
+by subsequent operations. A delete is a delete-wins tombstone, but a
+\emph{precondition no-op} (\texttt{ContainerNotEmpty}) unless the container has no
+live children --- the caller deletes contents first. Graph-aware reduction adds
+or removes the container and maintains the region's staff extent so
+\texttt{RegionExtents} stays satisfied.
+
+\textbf{Conflict cases.} None at reduction time: creation is set-union (a repeat
+create is idempotent), and the empty-only delete is a deterministic precondition
+gate, not a conflict.
+
+\textbf{Undo semantics.} Undo of a create tombstones the minted container; undo
+of a delete re-introduces it. \texttt{StrictInverse} conflicts if the target was
+concurrently mutated; the policy treatment is as for InsertEvent.
+
+\textbf{Re-anchoring.} Not applicable (the containers are minted/tombstoned by id;
+the empty-only precondition means a delete never strands live children).
+
 \section{SetUserSystemBreak}
 \label{sec:k0:set-user-system-break}
 
@@ -563,6 +753,48 @@ system-break list.
 
 \textbf{Re-anchoring.} Not applicable in the prototype (the advisory is keyed by
 resolved position; a tombstoned anchor target degrades to the region origin).
+
+\section{Score Settings}
+\label{sec:k0:score-settings}
+
+\textbf{Payload schema.} Three score-level field overwrites:
+\texttt{SetMetadataOp \{ metadata: ScoreMetadata \}} overwrites the score
+singleton; \texttt{SetMetricGridOp \{ region: RegionId, grid: Option<MetricGrid>
+\}} overwrites (or clears) a region's default metric grid;
+\texttt{SetUserPageBreakOp \{ region: RegionId, anchor: TimeAnchor, present: bool
+\}} is the page-break sibling of SetUserSystemBreak.
+
+\textbf{Canonical encoding.} Metadata: the length-framed \texttt{metadata} value.
+Metric grid: \texttt{region}, then an \texttt{Option} discriminant and (when
+present) the length-framed \texttt{grid} value. Page break: \texttt{region}, the
+length-framed \texttt{anchor} value, then the boolean.
+
+\textbf{Reduction rule.} Three field overwrites differing only in discipline.
+\emph{SetMetadata} is an \textbf{advisory} last-writer-wins: the latest write in
+canonical order silently wins and the operation always applies --- no working
+state and no conflict (the same discipline as SetUserSystemBreak, on the score
+singleton). \emph{SetMetricGrid} is a \textbf{structural} field overwrite keyed
+by region: precondition the region is live and staff-based (a FreeGraphic region
+has no metric-grid slot --- the op is a no-op there), and reject a grid whose
+meter sequence names a time signature that is not live (the Chapter~5 invariant
+forbids installing such a grid). \emph{SetUserPageBreak} is a canonical LWW
+advisory keyed by the anchor's resolved musical position, with the same
+staff-based precondition. Graph-aware reduction overwrites the metadata singleton,
+sets the region's default metric grid, or adds/removes the page-break anchor
+under its resolved-position key (so two anchors resolving to one position occupy a
+single slot).
+
+\textbf{Conflict cases.} SetMetadata and SetUserPageBreak: none (advisory LWW).
+SetMetricGrid: two concurrent differing grids for one region produce a
+\texttt{StructuralFieldCollision} on the field \texttt{metric\_grid}.
+
+\textbf{Undo semantics.} Undo restores the prior metadata, the prior region grid,
+or the prior \texttt{(region, resolved-position)} break preference, under the
+active policy.
+
+\textbf{Re-anchoring.} The advisory breaks degrade as for SetUserSystemBreak; the
+metric grid and metadata are keyed by region / singleton and do not re-anchor (a
+deleted region's settings are no-ops --- \texttt{TargetMissing}).
 
 \section{DeclareTransaction}
 \label{sec:k0:declare-transaction}
@@ -652,35 +884,33 @@ plus a non-vacuity guard.
 \chapter{K1 --- Framework Slots (Phase 3)}
 \label{ch:k1}
 
-This chapter drafted the remaining catalogue items as framework slots. Since the
-Phase-2 \textbf{M2} expansion (the broad-K0 groups in \texttt{epiphany-ops}),
-several have been \emph{implemented} and are available under the Phase-2 profile;
-their per-primitive \S{}schema joins Chapter~\ref{ch:k0} with the M2e catalogue
-expansion. The genuinely Phase-3 slots that remain \textbf{unavailable} are listed
-second: an implementation \MUST{} reject an operation of one of \emph{those} kinds
-(and \MUST{} \emph{not} reject the implemented kinds below). Each remaining slot is
-a schema-fill against the template of Chapter~\ref{ch:framework}; adding one is not
+This chapter drafted the remaining catalogue items as framework slots. The
+Phase-2 \textbf{M2} expansion (the broad-K0 groups in \texttt{epiphany-ops})
+implemented four groups of them; with the \textbf{M2e} catalogue expansion their
+full per-primitive schemas now appear in Chapter~\ref{ch:k0}, so they are
+\emph{normative under the Phase-2 profile} and an implementation \MUST{}
+\emph{not} reject them. They are cross-referenced first. The genuinely Phase-3
+slots that remain \textbf{unavailable} are listed second: an implementation
+\MUST{} reject an operation of one of \emph{those} kinds. Each remaining slot is a
+schema-fill against the template of Chapter~\ref{ch:framework}; adding one is not
 a fresh design.
 
-\section*{Implemented since M2 (available under the Phase-2 profile)}
+\section*{Implemented since M2 (now in Chapter~\ref{ch:k0})}
 
 \begin{description}
-  \item[Modify event; transpose]
-    Field overwrite on an event's non-identity fields, and an order-dependent
-    chromatic transpose (M2 Group~1). Discipline: last-writer-wins with
-    structural-field-collision (Section~\ref{sec:k0:respell-pitch}).
-  \item[Insert / delete / modify identified pitch]
-    Pitch-level mint, tombstone, and field overwrite within an event (M2
-    Group~1). Disciplines as for the event-level analogues.
-  \item[Delete / update tie / slur / beam / spanner]
-    Cross-cutting tombstone and field overwrite (M2 Group~2). Disciplines:
-    delete-wins with re-anchoring (Section~\ref{sec:k0:delete-event}) and field
-    overwrite.
+  \item[Modify event; identified-pitch operations; transpose]
+    M2 Group~1 --- Sections~\ref{sec:k0:modify-event},
+    \ref{sec:k0:identified-pitch}, and \ref{sec:k0:transpose}.
+  \item[Delete / modify cross-cutting]
+    M2 Group~2 --- Sections~\ref{sec:k0:delete-cross-cutting} and
+    \ref{sec:k0:modify-cross-cutting} (creation is
+    Section~\ref{sec:k0:create-cross-cutting}).
   \item[Create / delete region / staff instance / voice]
-    Structural container mint and \emph{empty-only} delete (M2 Group~3).
-    Disciplines: set-union creation (Section~\ref{sec:k0:create-cross-cutting})
-    and a delete-wins tombstone that is a precondition no-op unless the container
-    has no live children.
+    M2 Group~3 --- Section~\ref{sec:k0:structural-containers} (set-union creation
+    and the empty-only delete).
+  \item[Set metadata / metric grid / user page break]
+    M2 Group~4 --- Section~\ref{sec:k0:score-settings} (advisory metadata,
+    structural metric grid, advisory page break).
 \end{description}
 
 \section*{Remaining framework slots (Phase 3 --- unavailable, MUST reject)}
@@ -689,16 +919,15 @@ a fresh design.
   \item[Create score / canvas / staff]
     The remaining structural mints (the document root, the canvas, and global
     staves) the Phase-2 slice does not exercise. Discipline: set-union creation.
-  \item[Set metadata (title / composer / lyricist / copyright)]
-    Field overwrite on score metadata. Discipline: LWW advisory
-    (Section~\ref{sec:k0:set-user-system-break}).
-  \item[Set metric grid / time signature / tempo segment]
-    Structural field overwrite on a region's metric model. Discipline:
-    last-writer-wins, with a structural-field-collision on concurrent differing
-    grids.
-  \item[Set layout / system- and page-break advisory]
-    The page/layout advisory companion to
-    Section~\ref{sec:k0:set-user-system-break}.
+  \item[Set time signature / tempo segment]
+    The finer-grained metric-model overwrites beneath the whole-grid
+    \texttt{SetMetricGrid} (Section~\ref{sec:k0:score-settings}): a single meter
+    change or tempo segment rather than the region's entire grid. Discipline:
+    last-writer-wins structural overwrite.
+  \item[Set layout]
+    The non-break layout advisories (the page/system-break advisories themselves
+    are implemented --- Sections~\ref{sec:k0:set-user-system-break} and
+    \ref{sec:k0:score-settings}). Discipline: LWW advisory.
 \end{description}
 
 \begin{nongoal}
