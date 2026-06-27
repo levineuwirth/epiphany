@@ -36,8 +36,9 @@ use epiphany_layout_ir::{
     RenderIR, SolverConfig,
 };
 use epiphany_ops::{
-    AcceptOutcome, AuthorId, CausalContext, HybridLogicalClock, OperationEnvelope, OperationKind,
-    OperationPayload, OperationSet, OperationStamp, TransposeOp,
+    AcceptOutcome, AuthorId, CausalContext, DeleteEventOp, DeleteIdentifiedPitchOp,
+    HybridLogicalClock, OperationEnvelope, OperationKind, OperationPayload, OperationSet,
+    OperationStamp, TransposeOp, TupletCompensation,
 };
 
 /// The current selection: the score-graph object to act on, plus the stable layout
@@ -262,6 +263,30 @@ impl EditorSession {
         }))
     }
 
+    /// Deletes the selected object. A selected **pitch** (a notehead) is tombstoned
+    /// — the note's last pitch degrades its event to a rest of the same duration, so
+    /// the rhythm survives; a selected **event** (a rest, a stem) is deleted whole.
+    /// Errors if the selection is neither. The selection does not survive (its layout
+    /// object is gone), so it is cleared.
+    pub fn delete_selection(&mut self) -> Result<EditOutcome, EditorError> {
+        let selection = self.selection.ok_or(EditorError::NoSelection)?;
+        let kind = match selection.source {
+            TypedObjectId::Pitch(pitch) => {
+                OperationKind::DeleteIdentifiedPitch(DeleteIdentifiedPitchOp { pitch })
+            }
+            TypedObjectId::Event(event) => OperationKind::DeleteEvent(DeleteEventOp {
+                event,
+                tuplet_compensation: TupletCompensation::NotInTuplet,
+            }),
+            _ => {
+                return Err(EditorError::WrongSelection {
+                    expected: "pitch or event",
+                })
+            }
+        };
+        self.apply(kind)
+    }
+
     /// Re-resolves the current selection against the current layout: keeps it
     /// (refreshing its source) when its layout object survives, clears it otherwise.
     /// Returns whether it survived.
@@ -452,6 +477,32 @@ mod tests {
     fn a_diagnostic_only_layout_is_refused_at_open() {
         let opened = EditorSession::open(valid_score_rich(0x5EED), Box::new(UnsatisfiableSolver));
         assert_eq!(opened.err(), Some(EditorError::NotRenderable));
+    }
+
+    #[test]
+    fn delete_selection_removes_the_note_and_drops_the_selection() {
+        let mut session = open_rich(0x5EED);
+        let before = session.render().clone();
+        let selection = click_a_notehead(&mut session);
+
+        let outcome = session.delete_selection().expect("the delete applies");
+        assert!(outcome.graph_changed, "the note was tombstoned");
+        // The selected pitch is gone (its event degraded to a rest or lost a chord
+        // note), so its layout object no longer exists and the selection is cleared.
+        assert!(!outcome.selection_preserved);
+        assert_eq!(session.selection(), None);
+        assert!(!session
+            .hit_test()
+            .regions
+            .iter()
+            .any(|r| r.layout_object == selection.layout_object));
+        assert_ne!(&before, session.render(), "the delete changed the render");
+    }
+
+    #[test]
+    fn delete_selection_requires_a_selection() {
+        let mut session = open_rich(0x5EED);
+        assert_eq!(session.delete_selection(), Err(EditorError::NoSelection));
     }
 
     #[test]
