@@ -98,7 +98,8 @@ See `spec/PASS12_BATCH.md` (rows P12-I1, P12-I2, P12-I3). Most relevant here:
   landed. The real notation pass and real-Engraver goldens now close that gate;
   the stub path remains locked as an interface/reference mode, not the visual
   deliverable.
-- **P12-I2** — stable layout-object id derivation (`MUSCLOID`, Pass-11 item 2.6,
-  deferred to Agent I) is still unwired: the determinism crate exposes no
-  `MUSCLOID` tag and is frozen. The renderer traces provenance by the existing
-  provisional `stable_id`; wiring the ratified derivation is Track A work.
+- **P12-I2 (resolved)** — the stable layout-object id derivation (`MUSCLOID`,
+  Pass-11 item 2.6) is wired: `epiphany-determinism` reserves the built-in
+  `MUSCLOID` tag and `layout-ir` provenance routes through it. The renderer traces
+  provenance by the (now `MUSCLOID`-tagged) `stable_id`; only the `data-prov` hex in
+  the goldens changed (the ids are non-canonical).

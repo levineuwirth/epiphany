@@ -71,16 +71,17 @@ Catalog lands (Phase 3, explicitly out of Agent I's scope).
 
 ## Pass 12 candidates
 
-See `spec/PASS12_BATCH.md` (rows P12-I1, P12-I2, P12-I3). In brief:
+See `spec/PASS12_BATCH.md` (rows P12-I1, P12-I2, P12-I3) — all three are now
+resolved:
 
-- **P12-I1** — the v0 `to_logical`/`to_constrained` pipeline is a *structural
-  placeholder* (each layout object → one arbitrary glyph by `discriminant % N`,
-  laid out at `y = 0`), not real notation. Chapter 7 says the *logical* stage has
-  "engraving decisions made"; the spec should clarify which engraving decisions
-  (glyph-by-duration selection, pitch→staff-position, clef/key/meter/barline
-  realization, stems/beams) are core-IR construction versus solver work, so the
-  real-notation engraving has a defined home before it is built next phase.
-- **P12-I3** — `layout-ir`'s bundled `BRAVURA_METRICS` are *approximations* and
-  disagree with the genuine Bravura outlines the renderer now bundles (e.g.
-  `timeSig4` vertical registration). Real spacing needs exact metrics; the metrics
-  table should be regenerated from the font or reconciled with the outline source.
+- **P12-I1 (resolved by I-1)** — the v0 pipeline was a *structural placeholder*
+  (one arbitrary glyph per object at `y = 0`). `to_constrained` now builds real
+  notation (clef-relative noteheads, accidentals, key/time signatures, rests,
+  barlines, stems) and the Engraver re-spaces it; the Ch 7 engraving boundary
+  resolved to notation-construction-in-`to_constrained`, spacing-in-the-Engraver.
+- **P12-I2 (resolved)** — the `MUSCLOID` layout-object id derivation is wired
+  (`epiphany-determinism` reserves the built-in tag; `layout-ir` provenance and the
+  engraving-decision id route through it).
+- **P12-I3 (resolved by I-4a)** — `BRAVURA_METRICS` is re-extracted from the same
+  SHA-pinned `bravura-1.392` font the outlines come from, with bboxes rounded
+  outward to contain the drawn ink (a `render-svg` test proves containment).
