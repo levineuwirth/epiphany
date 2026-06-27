@@ -179,17 +179,18 @@ impl EngravingDecision {
 /// Derives an [`EngravingDecisionId`] from its target, kind, and source, so
 /// equal decisions share an id and differing ones do not.
 ///
-/// The preimage **borrows** the `MUSCCONF` domain tag (the determinism crate,
-/// frozen, defines no layout-object domain) and prefixes a literal
-/// `engraving-decision` discriminator so it cannot alias a real conflict id.
-/// This is *type-tag*, not *domain*, separation; a dedicated layout domain tag
-/// is a Pass 11 candidate (see `DECISIONS.md`).
+/// An engraving decision is a non-canonical layout-namespace object, so the
+/// preimage is domain-separated under the layout tag
+/// [`DomainTag::LAYOUT_OBJECT_ID`] (`MUSCLOID`) — the same tag as
+/// [`crate::provenance::LayoutObjectId`] — with a literal `engraving-decision`
+/// discriminator prefix so a decision id can never alias a layout-object id
+/// within that namespace.
 fn derive_decision_id(
     target: LayoutObjectId,
     kind: &EngravingDecisionKind,
     source: DecisionSource,
 ) -> EngravingDecisionId {
-    let mut p = Preimage::new(DomainTag::CONFLICT);
+    let mut p = Preimage::new(DomainTag::LAYOUT_OBJECT_ID);
     p.push_bytes(b"engraving-decision");
     p.push_u64_le((target.0 >> 64) as u64);
     p.push_u64_le(target.0 as u64);

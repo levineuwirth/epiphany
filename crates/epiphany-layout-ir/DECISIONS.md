@@ -7,17 +7,19 @@ rather than improvised in code (QUICKSTART, Process notes: *"Ambiguities go into
 a batch, not into code … Don't open Pass 11 until you have at least three such
 items batched."*).
 
-> **RATIFIED (Pass 11, 2026-06-21).** layout P11-2 (`LayoutObjectId` derivation)
-> is ratified into `core_spec.tex` §"Provenance"
+> **RATIFIED (Pass 11, 2026-06-21); WIRED (Pass 12, P12-I2).** layout P11-2
+> (`LayoutObjectId` derivation) is ratified into `core_spec.tex` §"Provenance"
 > (`req:layoutir:object-id-derivation`): the spec **pins** a `MUSCLOID`-tagged
 > derivation keying multiply-manifested objects on `(source, region)` and
 > synthesized objects on `(source, synthesis_kind, stable_semantic_instance_key)`.
-> Layout ids are non-canonical, so the `MUSCLOID` tag is **flagged for Track A
-> and not yet wired in code**: this crate still mints provisional ids (untagged;
-> synthesized borrows `MUSCCONF`) because the frozen determinism crate exposes no
-> `MUSCLOID` tag (see the `stable_layout_id` bullet below). Adopting the spec'd
-> derivation is Track A (solver/renderer) work. layout P11-1 (layout→ops
-> dependency) stays a crate-topology call for the G–K re-cut. See
+> This is now **wired**: `epiphany-determinism` exposes the reserved built-in
+> `DomainTag::LAYOUT_OBJECT_ID` (`MUSCLOID`), and all three derivations in
+> `provenance.rs` route through it (`stable_layout_id`, `manifestation_layout_id`,
+> `synthesized_layout_id` — the last no longer borrows `MUSCCONF`). Layout ids stay
+> non-canonical (not document state, in no content hash), so realizing the
+> derivation changed layout-id *values* (and the `data-prov` hex in the SVG goldens)
+> but no durable or interchanged artifact. layout P11-1 (layout→ops dependency)
+> stays a crate-topology call for the G–K re-cut. See
 > `spec/PASS11_RATIFICATION_LOG.md`.
 
 ## Scope
@@ -86,17 +88,16 @@ object is covered); the provenance-preservation contract itself is unchanged.
   Extensions". This avoids over-prohibiting edits to objects demonstrably outside
   a known scope or to objects a known condition excludes.
 
-- **`stable_layout_id` and the engraving-decision id borrow a domain tag.** A
-  layout object's stable id is `trunc128(BLAKE3(source.canonical_bytes()))` — a
-  pure function of its source, so it is invariant under insertion/removal/
-  reordering of other objects (Chapter 7 §"Provenance"). It is not domain-
-  separated, and the engraving-decision id borrows the `MUSCCONF` tag with a
-  literal `engraving-decision` type prefix, because the frozen determinism crate
-  (Agent A) defines no layout-object domain tag. Pass 11 ratified the **target**
-  derivation — a `MUSCLOID`-tagged hash (`req:layoutir:object-id-derivation`) —
-  but adopting it is Track A work (the determinism crate must first expose the
-  layout-namespace tag); these ids stay provisional until then. See the header
-  note.
+- **`stable_layout_id` and the engraving-decision id are `MUSCLOID`-tagged
+  (P12-I2 wired).** A layout object's stable id is a pure function of its source
+  (and, for manifestations/synthesized objects, the region or the synthesis
+  kind+instance key), so it is invariant under insertion/removal/reordering of
+  other objects (Chapter 7 §"Provenance"). Both ids are now domain-separated under
+  the reserved built-in `DomainTag::LAYOUT_OBJECT_ID` (`MUSCLOID`), the spec's
+  non-canonical layout namespace (`req:layoutir:object-id-derivation`); the
+  engraving-decision id keeps its literal `engraving-decision` discriminator prefix
+  so it cannot alias a layout-object id within that namespace. Neither borrows
+  `MUSCCONF` any longer. See the header note for the realization details.
 
 - **Repeated manifestations get per-`(source, region)` ids.** A score-graph
   object manifested within a region is laid out **per manifestation**: its stable
@@ -238,12 +239,14 @@ object is covered); the provenance-preservation contract itself is unchanged.
    chapter home are in tension; the spec should either bless a layout→ops
    dependency for the discriminator type or relocate the edit-barrier types.
 
-2. **Provenance / layout-object id derivation is unspecified.** Chapter 7
-   declares `LayoutObjectId(pub u128)` and requires stability across relayouts but
-   specifies neither the derivation, whether it is domain-separated (Appendix D
-   §"Domain-Separated Preimages" would suggest a dedicated `MUSC*` tag), how a
-   multiply-manifested object (a staff in two regions) is identified — v0 keys it
-   on `(source, region)` — nor how synthesized objects are keyed — v0 uses
-   `(source, synthesis_kind, stable_semantic_instance_key)`. The spec should pin
-   the derivation, manifestation-context key, and synthesized-object key, and
-   register a layout domain tag if separation is required.
+2. **Provenance / layout-object id derivation. — RESOLVED (ratified Pass 11;
+   wired P12-I2).** Chapter 7 originally declared `LayoutObjectId(pub u128)` and
+   required stability across relayouts without specifying the derivation, its
+   domain separation, or how multiply-manifested / synthesized objects are keyed.
+   Pass 11 ratified the `MUSCLOID`-tagged derivation
+   (`req:layoutir:object-id-derivation`) — single objects keyed on
+   `source.canonical_bytes()`, multiply-manifested on `(source, region)`,
+   synthesized on `(source, synthesis_kind, stable_semantic_instance_key)` — and
+   P12-I2 wired it: `epiphany-determinism` reserves the built-in
+   `DomainTag::LAYOUT_OBJECT_ID` and `provenance.rs` (and the engraving-decision
+   id) route through it. See the ratified-block note at the top of this file.

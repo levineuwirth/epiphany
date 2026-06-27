@@ -8,7 +8,7 @@
 //! complete provenance of every object survives the whole pipeline unchanged.
 
 use epiphany_core::{RegionId, TypedObjectId};
-use epiphany_determinism::{blake3_256, trunc128, DomainTag, Preimage};
+use epiphany_determinism::{DomainTag, Preimage};
 
 /// An IR object's stable identifier across re-layouts where its source is
 /// unchanged (Chapter 7 §"Provenance"). Carried unchanged through every stage.
@@ -135,40 +135,46 @@ impl Provenance {
 /// This is what makes the id stable across relayouts (Chapter 7 §"Provenance":
 /// stable across re-layouts where the source is unchanged): inserting,
 /// removing, or reordering other objects cannot change any object's stable id,
-/// because each depends solely on its own source's canonical bytes. v0 derives
-/// it as `trunc128(BLAKE3(source.canonical_bytes()))` — a provisional, untagged
-/// stand-in. The spec (`req:layoutir:object-id-derivation`) pins a
-/// `MUSCLOID`-tagged derivation as the Track A target; see `DECISIONS.md`.
+/// because each depends solely on its own source's canonical bytes. This is the
+/// ratified derivation of `req:layoutir:object-id-derivation`: domain-separated
+/// BLAKE3 truncation under the [`DomainTag::LAYOUT_OBJECT_ID`] (`MUSCLOID`) tag,
+/// keyed on `source.canonical_bytes()` for a single manifestation.
 pub fn stable_layout_id(source: &TypedObjectId) -> LayoutObjectId {
-    LayoutObjectId(trunc128(&blake3_256(&source.canonical_bytes())))
+    LayoutObjectId(
+        Preimage::new(DomainTag::LAYOUT_OBJECT_ID)
+            .push_bytes(&source.canonical_bytes())
+            .finish_trunc128(),
+    )
 }
 
 /// Derives the stable layout id of an object manifested **within a region**,
 /// from its source *and* that region (Chapter 5 §"Region Overlap and
 /// Concurrency"). Distinct regions give the same source distinct manifestation
 /// ids, so multiple manifestations of one score-graph object are distinct layout
-/// objects; the id remains independent of traversal position.
+/// objects; the id remains independent of traversal position. The ratified
+/// `MUSCLOID` derivation keyed on the pair `(source, region)`
+/// (`req:layoutir:object-id-derivation`).
 pub fn manifestation_layout_id(source: &TypedObjectId, region: RegionId) -> LayoutObjectId {
-    let mut bytes = source.canonical_bytes();
-    bytes.extend_from_slice(&region.canonical_bytes());
-    LayoutObjectId(trunc128(&blake3_256(&bytes)))
+    LayoutObjectId(
+        Preimage::new(DomainTag::LAYOUT_OBJECT_ID)
+            .push_bytes(&source.canonical_bytes())
+            .push_bytes(&region.canonical_bytes())
+            .finish_trunc128(),
+    )
 }
 
 /// Derives the stable layout id of an **engraver-synthesized** object from its
-/// `source` and its [`SynthesisKind`], so distinct synthesis kinds from one
-/// source do not collide (Chapter 7 §"Provenance"). Provisionally domain-tagged
-/// via the borrowed `MUSCCONF` tag with a `synthesized` discriminator prefix; the
-/// determinism crate defines no `MUSCLOID` layout tag yet, and the spec'd
-/// `MUSCLOID` derivation (`req:layoutir:object-id-derivation`) is the Track A
-/// target — see `DECISIONS.md`.
+/// `source`, its [`SynthesisKind`], and a stable semantic instance key, so
+/// distinct synthesis kinds — and distinct instances of one kind — from one
+/// source do not collide (Chapter 7 §"Provenance"). The ratified `MUSCLOID`
+/// derivation keyed on the triple `(source, synthesis_kind, instance_key)`
+/// (`req:layoutir:object-id-derivation`); the instance key is a semantically
+/// stable discriminator, never a layout-position ordinal.
 pub fn synthesized_layout_id(
     source: &TypedObjectId,
     kind: SynthesisKind,
     instance: SynthesisInstanceKey,
 ) -> LayoutObjectId {
-    let mut p = Preimage::new(DomainTag::CONFLICT);
-    p.push_bytes(b"synthesized-layout");
-    p.push_bytes(&source.canonical_bytes());
     let (disc, reg) = match kind {
         SynthesisKind::CancellationAccidental => (0u64, 0u128),
         SynthesisKind::KeySignatureNatural => (1, 0),
@@ -178,6 +184,8 @@ pub fn synthesized_layout_id(
         SynthesisKind::Cautionary => (5, 0),
         SynthesisKind::Registered(id) => (6, id.0),
     };
+    let mut p = Preimage::new(DomainTag::LAYOUT_OBJECT_ID);
+    p.push_bytes(&source.canonical_bytes());
     p.push_u64_le(disc);
     p.push_u64_le((reg >> 64) as u64);
     p.push_u64_le(reg as u64);
@@ -255,5 +263,39 @@ mod tests {
         assert_ne!(caution.stable_id, caution_b.stable_id);
         // And distinct from the plain source-only id.
         assert_ne!(cancel.stable_id, stable_layout_id(&src));
+    }
+
+    #[test]
+    fn stable_id_uses_the_ratified_muscloid_derivation() {
+        use epiphany_determinism::{blake3_256, trunc128};
+        let src = TypedObjectId::Event(EventId::from_raw(0x1234));
+        // Exactly the MUSCLOID-tagged derivation `req:layoutir:object-id-derivation`
+        // pins: domain-separated BLAKE3 over the source's canonical bytes.
+        let expected = LayoutObjectId(
+            Preimage::new(DomainTag::LAYOUT_OBJECT_ID)
+                .push_bytes(&src.canonical_bytes())
+                .finish_trunc128(),
+        );
+        assert_eq!(stable_layout_id(&src), expected);
+        // ...and it is genuinely domain-separated — not the old untagged stand-in,
+        // so a hash for some other domain over the same bytes cannot alias a layout id.
+        let untagged = LayoutObjectId(trunc128(&blake3_256(&src.canonical_bytes())));
+        assert_ne!(stable_layout_id(&src), untagged);
+    }
+
+    #[test]
+    fn the_three_keying_schemes_do_not_collide() {
+        use epiphany_core::StaffId;
+        // One source, the three manifestation schemes (single / multiply-manifested /
+        // synthesized) → three distinct ids, so a single object's id can never alias a
+        // manifestation or a synthesized object derived from the same source.
+        let src = TypedObjectId::Staff(StaffId::from_raw(7));
+        let single = stable_layout_id(&src);
+        let manifested = manifestation_layout_id(&src, RegionId::from_raw(3));
+        let synthesized =
+            synthesized_layout_id(&src, SynthesisKind::GeneratedRest, SynthesisInstanceKey(0));
+        assert_ne!(single, manifested);
+        assert_ne!(single, synthesized);
+        assert_ne!(manifested, synthesized);
     }
 }

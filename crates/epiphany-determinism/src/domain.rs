@@ -61,9 +61,18 @@ impl DomainTag {
     /// Collisions"). Reserved built-in: anomalies are core, not an extension
     /// concern (Pass 11, item 1.4).
     pub const SYSTEM_ANOMALY: DomainTag = DomainTag(*b"MUSCSANM");
+    /// `LayoutObjectId` derivation (Chapter 7 §"Provenance",
+    /// Requirement `req:layoutir:object-id-derivation`). Like
+    /// [`Self::FONT_METRICS`], this is a reserved built-in but **non-canonical**:
+    /// layout-object ids are not document state and enter no content hash, so the
+    /// tag lives in the layout namespace, not among the canonical system tags
+    /// (Chapter 8 §"Domain-tag registry").
+    pub const LAYOUT_OBJECT_ID: DomainTag = DomainTag(*b"MUSCLOID");
 
-    /// Every built-in tag, in declaration order. The closed core vocabulary.
-    pub const BUILTINS: [DomainTag; 10] = [
+    /// Every built-in tag, in declaration order. The closed core vocabulary
+    /// (the nine canonical tags plus the non-canonical layout tags
+    /// [`Self::FONT_METRICS`] and [`Self::LAYOUT_OBJECT_ID`]).
+    pub const BUILTINS: [DomainTag; 11] = [
         Self::CHUNK,
         Self::MANIFEST,
         Self::BLOB,
@@ -74,6 +83,7 @@ impl DomainTag {
         Self::SYSTEM_VOICE,
         Self::SYSTEM_PITCH,
         Self::SYSTEM_ANOMALY,
+        Self::LAYOUT_OBJECT_ID,
     ];
 
     /// Constructs a domain tag from raw bytes, accepting only the spec's closed
@@ -214,19 +224,7 @@ mod tests {
 
     #[test]
     fn every_tag_is_eight_ascii_bytes_starting_with_musc() {
-        let tags = [
-            DomainTag::CHUNK,
-            DomainTag::MANIFEST,
-            DomainTag::BLOB,
-            DomainTag::CONFLICT,
-            DomainTag::ENVELOPE,
-            DomainTag::FONT_METRICS,
-            DomainTag::MANIFEST_ID,
-            DomainTag::SYSTEM_VOICE,
-            DomainTag::SYSTEM_PITCH,
-            DomainTag::SYSTEM_ANOMALY,
-        ];
-        for t in tags {
+        for t in DomainTag::BUILTINS {
             assert_eq!(t.as_bytes().len(), DomainTag::LEN);
             assert!(t.as_bytes().starts_with(b"MUSC"), "{t:?}");
             assert!(t.as_bytes().iter().all(|b| b.is_ascii()), "{t:?}");
@@ -235,18 +233,7 @@ mod tests {
 
     #[test]
     fn tags_are_pairwise_distinct() {
-        let tags = [
-            DomainTag::CHUNK,
-            DomainTag::MANIFEST,
-            DomainTag::BLOB,
-            DomainTag::CONFLICT,
-            DomainTag::ENVELOPE,
-            DomainTag::FONT_METRICS,
-            DomainTag::MANIFEST_ID,
-            DomainTag::SYSTEM_VOICE,
-            DomainTag::SYSTEM_PITCH,
-            DomainTag::SYSTEM_ANOMALY,
-        ];
+        let tags = DomainTag::BUILTINS;
         for (i, a) in tags.iter().enumerate() {
             for b in &tags[i + 1..] {
                 assert_ne!(a, b, "duplicate domain tag {a:?}");
@@ -267,6 +254,7 @@ mod tests {
         assert_eq!(DomainTag::SYSTEM_VOICE.as_bytes(), b"MUSCSVCE");
         assert_eq!(DomainTag::SYSTEM_PITCH.as_bytes(), b"MUSCSPCH");
         assert_eq!(DomainTag::SYSTEM_ANOMALY.as_bytes(), b"MUSCSANM");
+        assert_eq!(DomainTag::LAYOUT_OBJECT_ID.as_bytes(), b"MUSCLOID");
         assert_eq!(&BUNDLE_MAGIC, b"MUSCBND\0");
         assert_eq!(&SUPERBLOCK_MAGIC, b"MUSCSUPR");
     }
@@ -304,6 +292,13 @@ mod tests {
             DomainTag::from_bytes(*b"MUSCCHNK").unwrap(),
             DomainTag::CHUNK
         );
+        // The layout-object-id tag is a registered (non-system) built-in.
+        assert_eq!(
+            DomainTag::from_bytes(*b"MUSCLOID").unwrap(),
+            DomainTag::LAYOUT_OBJECT_ID
+        );
+        assert!(DomainTag::LAYOUT_OBJECT_ID.is_builtin());
+        assert!(!DomainTag::LAYOUT_OBJECT_ID.is_system_derived());
         // Extension system tag: accepted.
         assert!(DomainTag::from_bytes(*b"MUSCSEXT")
             .unwrap()

@@ -7961,11 +7961,13 @@ pub struct LayoutObjectId(pub u128);
   back-reference stability; its consumers are the solver and renderer
   (Track~A), not the interchange track. Because these ids never enter
   document state, no stored or interchanged artifact depends on this
-  derivation; the v0 reference crate accordingly mints layout ids with
-  a provisional, untagged stand-in (synthesized objects borrowing the
-  \texttt{"MUSCCONF"} tag), and wiring the \texttt{"MUSCLOID"}
-  derivation above is Track~A work rather than a property the prototype
-  yet realizes.
+  derivation. The v0 reference implementation realizes this derivation
+  as of Pass-12 item P12-I2: \texttt{epiphany-determinism} reserves the
+  built-in \texttt{"MUSCLOID"} layout tag and the \texttt{layout-ir}
+  provenance derivations (single, multiply-manifested, and synthesized)
+  route through it, the synthesized case no longer borrowing
+  \texttt{"MUSCCONF"}. Because the ids are non-canonical, doing so
+  changed layout-id values but no stored or interchanged artifact.
 \end{requirement}
 
 \section{The Stage Pipeline}
@@ -13585,8 +13587,8 @@ and not collide with the reserved three.
 \section{Domain-tag registry}
 \label{sec:bytes:tags}
 
-Every reserved built-in eight-byte domain tag, in one place, plus the
-\texttt{MUSCLOID} Track-A target. The nine \emph{canonical} tags ---
+Every reserved built-in eight-byte domain tag, in one place. The nine
+\emph{canonical} tags ---
 whose preimages produce identifiers and content hashes that are part of
 the interoperable, durably persisted form every conforming
 implementation must reproduce bit-identically --- are
@@ -13623,7 +13625,7 @@ tag (Section~\ref{sec:bytes:system-derived}).
   \texttt{MUSCFNTM} & Font-metrics hash for layout conformance ---
     \emph{non-canonical} (\S\ref{sec:layoutir:catalog-identity}) \\
   \texttt{MUSCLOID} & Layout-object id --- \emph{non-canonical},
-    Track-A target, not minted by the prototype
+    wired by the reference implementation as of P12-I2
     (Requirement~\ref{req:layoutir:object-id-derivation}) \\
   \bottomrule
 \end{longtable}
@@ -13688,6 +13690,19 @@ the spec-to-code correspondence checkable.
   \bottomrule
 \end{longtable}
 
+The \texttt{MUSCLOID} layout-object-id derivation
+(Requirement~\ref{req:layoutir:object-id-derivation}), wired in P12-I2,
+is anchored differently because it is \emph{non-canonical}: its ids
+never enter document state or a content hash, so there is no durable
+byte layout to golden-lock. It is instead pinned by a derivation
+reference-lock test (\texttt{epiphany-layout-ir/src/provenance.rs}:
+\texttt{stable\bul id\bul uses\bul the\bul ratified\bul muscloid\bul derivation}),
+which fixes the tagged preimage; by the tag-spelling lock
+(\texttt{epiphany-determinism/src/domain.rs}:
+\texttt{exact\bul tag\bul spellings\bul match\bul spec}); and by the
+renderer's provenance goldens, whose \texttt{data-prov} hex changes if
+the derivation drifts.
+
 \section{Layouts deferred to the companions}
 \label{sec:bytes:deferred}
 
@@ -13709,11 +13724,6 @@ layouts they own versus inherit:
     convention baseline
     (Requirement~\ref{req:format:codec-conventions}). The companion
     inherits the baseline and formalizes these.
-  \item \texttt{MUSCLOID} layout-object ids
-    (Requirement~\ref{req:layoutir:object-id-derivation}) are
-    non-canonical (they are not document state) and the prototype still
-    mints provisional, untagged ids; realizing the \texttt{MUSCLOID}
-    derivation is Track-A work.
 \end{itemize}
 
 \chapter{Revision History}
@@ -14370,9 +14380,9 @@ layouts they own versus inherit:
   vocabularies; added \texttt{ResolutionAction::Dismiss} so the
   \texttt{Dismissed} resolution state is reachable by an authored
   operation; and specified the (non-canonical) \texttt{LayoutObjectId}
-  derivation with a \texttt{MUSCLOID} tag as the Track~A target (the v0
-  prototype still mints provisional layout ids; wiring \texttt{MUSCLOID}
-  is Track~A work). \emph{Fixes:} blob hashing
+  derivation with a \texttt{MUSCLOID} tag as the Track~A target (then
+  deferred to Track~A; subsequently wired by the reference
+  implementation in P12-I2). \emph{Fixes:} blob hashing
   is the bare \texttt{"MUSCBLOB" || payload} (deleted the
   contradictory ``identically to chunks'' phrasing); added the
   equal-generation superblock rule (\texttt{DivergentSameGeneration}
