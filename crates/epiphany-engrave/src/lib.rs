@@ -977,4 +977,28 @@ mod tests {
             "the Engraver must re-space, not echo the stub's verbatim columns"
         );
     }
+
+    /// The editing-loop vertical slice (testkit's `run_edit_loop_with`) driven
+    /// through the **real Engraver**: click a notehead, sharpen its pitch, re-space
+    /// with the Engraver, and confirm the selection survives. The selection is the
+    /// `MUSCLOID` layout id (content-independent), so it holds even though the
+    /// Engraver re-spaces every glyph — proving the slice's "real Engraver too"
+    /// claim, not just the stub's.
+    #[test]
+    fn the_editing_loop_holds_through_the_real_engraver() {
+        use epiphany_core::generators::valid_score_rich;
+        for seed in 0..16u64 {
+            let report =
+                epiphany_testkit::editloop::run_edit_loop_with(&valid_score_rich(seed), &Engraver)
+                    .unwrap_or_else(|| {
+                        panic!("seed {seed}: no clickable notehead to drive the loop")
+                    });
+            assert!(report.graph_changed, "seed {seed}: graph unchanged");
+            assert!(
+                report.selection_preserved,
+                "seed {seed}: selection lost across the Engraver's relayout"
+            );
+            assert!(report.render_changed, "seed {seed}: edit not visible");
+        }
+    }
 }

@@ -112,4 +112,8 @@ pub mod bundle_harness;
 
 pub mod layout_stub;
 
+// The editing-loop vertical slice: hit-test → score object → operation → reduce →
+// re-layout → re-render → re-resolve selection, across the ops/layout/render seams.
+pub mod editloop;
+
 pub use rng::Rng;
