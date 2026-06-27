@@ -12,8 +12,8 @@
 //! first violation.
 
 use epiphany_testkit::{
-    bundle_harness, convergence, corpus, equivocation, fixtures, generators, layout_stub, negative,
-    prepass_harness, roundtrip, Rng,
+    bundle_harness, convergence, corpus, editloop, equivocation, fixtures, generators, layout_stub,
+    negative, prepass_harness, roundtrip, Rng,
 };
 
 fn main() {
@@ -123,6 +123,35 @@ fn main() {
     eprintln!("[7b ] Agent H pre-pass gate: taxonomy coverage + merge gate");
     corpus::run_all();
     prepass_harness::run_all(scale.max(1));
+
+    // 7c. Track A — the UI seam: the editing-loop vertical slice (hit-test → score
+    //     object → operation → reduce → re-layout → re-render → re-resolve
+    //     selection). Every fixture must drive a click→sharpen→re-render cycle whose
+    //     selection survives the relayout — the contract a GUI's correctness rests
+    //     on. (The harness `epiphany-editor-core` packages as a callable API.)
+    eprintln!("[7c ] UI-seam gate: editing loop over the corpus");
+    for seed in 0..n(48) {
+        for score in [
+            fixtures::ten_measure_single_staff(seed),
+            generators::graph::valid_score_rich(seed),
+        ] {
+            let report = editloop::run_edit_loop(&score).unwrap_or_else(|| {
+                panic!("seed {seed}: no clickable notehead to drive the editing loop")
+            });
+            assert!(
+                report.graph_changed,
+                "edit-loop seed {seed}: graph unchanged"
+            );
+            assert!(
+                report.selection_preserved,
+                "edit-loop seed {seed}: selection lost across relayout"
+            );
+            assert!(
+                report.render_changed,
+                "edit-loop seed {seed}: edit not visible"
+            );
+        }
+    }
 
     eprintln!("[8/8] ok: full conformance suite passed (scale {scale})");
 }

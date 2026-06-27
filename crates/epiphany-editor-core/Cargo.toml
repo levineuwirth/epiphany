@@ -1,0 +1,21 @@
+[package]
+name = "epiphany-editor-core"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "A headless editor core over an Epiphany score: selection state, render + hit-test queries, primitive-operation minting, apply/re-render, and selection preservation across relayouts. The solver-agnostic API a GUI drives — no UI, no rendering backend of its own (it produces a RenderIR)."
+
+[dependencies]
+# The document graph and its ids (Score, PitchId, OperationId, …).
+epiphany-core.workspace = true
+# Operations and the reduction driver (mint an envelope, reduce_onto a score).
+epiphany-ops.workspace = true
+# The layout pipeline, the ConstraintSolver interface (held as a trait object so
+# the editor is solver-agnostic), the RenderIR, and the hit-test contract.
+epiphany-layout-ir.workspace = true
+
+[dev-dependencies]
+# Tests drive the editor from real score fixtures.
+epiphany-core.workspace = true

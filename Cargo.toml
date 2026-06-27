@@ -8,6 +8,7 @@ members = [
     "crates/epiphany-layout-ir",
     "crates/epiphany-engrave",
     "crates/epiphany-render-svg",
+    "crates/epiphany-editor-core",
     "crates/epiphany-testkit",
 ]
 
@@ -55,6 +56,9 @@ epiphany-layout-ir = { path = "crates/epiphany-layout-ir" }
 # for the demo binary's `--solver=real` path.
 epiphany-engrave = { path = "crates/epiphany-engrave" }
 epiphany-render-svg = { path = "crates/epiphany-render-svg" }
+# A headless editor core over the score graph (selection, hit-test query, operation
+# minting, apply/re-render, selection preservation) — the API a GUI calls.
+epiphany-editor-core = { path = "crates/epiphany-editor-core" }
 # Agent F's testkit. Declared here so Agent I's render crate can use its score
 # fixtures (`ten_measure_single_staff`) as a dev-dependency for the demo binary
 # and acceptance tests.

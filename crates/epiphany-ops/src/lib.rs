@@ -111,7 +111,7 @@ pub use effect::{
 };
 pub use envelope::{well_formed, EnvelopeHash, OperationEnvelope, WellFormednessError};
 pub use migrate::{migrate_v0_envelope, project_v1_to_v0, MigrationError};
-pub use opset::OperationSet;
+pub use opset::{AcceptOutcome, OperationSet};
 pub use payload::{
     ChangeRegionTimeModelOp, CreateCrossCuttingOp, CreateRegionOp, CreateStaffInstanceOp,
     CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,

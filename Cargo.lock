@@ -94,6 +94,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "epiphany-editor-core"
+version = "0.0.0"
+dependencies = [
+ "epiphany-core",
+ "epiphany-layout-ir",
+ "epiphany-ops",
+]
+
+[[package]]
 name = "epiphany-engrave"
 version = "0.0.0"
 dependencies = [
