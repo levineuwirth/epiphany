@@ -1,23 +1,21 @@
 # epiphany-render-svg — decisions and Pass 12 candidates
 
-This file records (a) the Phase-2 QUICKSTART decisions Agent I made for the
-renderer, and (b) ambiguities batched as **Pass 12 candidates**
-(`spec/PASS12_BATCH.md`) rather than improvised in code.
+This file records (a) the QUICKSTART decisions Agent I made for the renderer,
+and (b) ambiguities batched as **Pass 12 candidates** (`spec/PASS12_BATCH.md`)
+rather than improvised in code.
 
-## Scope and phase status
+## Scope and status
 
-`epiphany-render-svg` is one renderer behind the Chapter 7 `RenderIR` interface:
-it turns a `ResolvedLayoutIR` into well-formed **SVG 1.1**, drawing each glyph as
-a genuine Bravura SMuFL outline `<path>`. Per the QUICKSTART development pattern
-it is built and **golden-locked against the stub solver's output first**, before
-the real engraving solver and the score→real-notation engraving pass land. The
-stub returns the constrained IR's geometry verbatim — a structural projection,
-not yet real notation (each layout object becomes one arbitrary glyph in a row) —
-so this phase proves the renderer is *correct and faithful* (genuine outlines,
-provenance preserved, output XML-valid and deterministic), independent of
-engraving quality. The renderer already consumes any solver's `ResolvedLayoutIR`,
-so when the real `epiphany-engrave` solver lands, the visible result improves with
-no renderer change (the demo binary's `--solver=stub|real` flag exercises both).
+`epiphany-render-svg` is the SVG renderer behind the Chapter 7 `RenderIR`
+interface: it turns a `ResolvedLayoutIR` into well-formed **SVG 1.1**, drawing
+glyphs from genuine Bravura SMuFL data either as inline outline `<path>`s
+(`GlyphMode::PathOutline`) or as `<text>` set in an embedded subset font
+(`GlyphMode::EmbeddedFont`). Per the QUICKSTART development pattern it was
+golden-locked against the stub solver's output first, then against the real
+`epiphany-engrave` solver once the score→real-notation pass and re-spacing
+landed. The renderer consumes any solver's `ResolvedLayoutIR`; it proves
+renderer faithfulness — resolved geometry preserved, provenance traced,
+output XML-valid and deterministic — independent of engraving quality.
 
 ## The non-overreach rule (Chapter 7 / QUICKSTART, Agent I)
 
@@ -46,13 +44,25 @@ glyph and one provenance trace per drawn element.
 
 ### Local decisions
 
-- **Glyph rendering — inline genuine Bravura outline `<path>`s
-  (`GlyphMode::PathOutline`), the default and only mode this phase.** The
-  QUICKSTART's recommendation: path outlines make the SVG self-contained (it
-  renders in any browser, image tool, or print pipeline with no font installed),
-  at the cost of file size. An embedded-`@font-face` mode is a documented future
-  option, intentionally **not stubbed** so the interface does not lie about a
-  capability that is absent.
+- **Glyph rendering — two self-contained modes; inline outlines
+  (`GlyphMode::PathOutline`) is the default and the verified reference.** Path
+  outlines make the SVG self-contained (it renders in any browser, image tool, or
+  print pipeline with no font installed) and are byte-golden-locked, at the cost of
+  file size — the QUICKSTART's recommendation. `GlyphMode::EmbeddedFont` instead
+  references each glyph by SMuFL codepoint with a `<text>` element drawn from an
+  `@font-face`-embedded Bravura *subset* (only the ~33 named glyphs), so the SVG is
+  still self-contained (the font travels in it) and the text is selectable, at a
+  larger file size. The two modes anchor glyphs at the same origin (em = 4 staff
+  spaces), so placement is consistent by construction; the embedded mode is
+  structurally tested rather than byte-golden-locked, and exact rasterisation is
+  the consumer's font renderer's, so path mode remains the pixel-verified one.
+- **Embedded-font subset — generated, not a vendored binary.** The subset is a
+  deterministic base64 OTF emitted into `src/font_subset_generated.rs` by
+  `tools/extract_bravura_outlines.py --font-out`, keeping the "only generated
+  artifacts committed" rule (no font binary is vendored). It retains the font's
+  OFL copyright/license name records (belt-and-suspenders with `tools/OFL.txt`).
+  Caveat: unlike the geometry-only outlines, the binary subset's exact bytes
+  depend on the fontTools version, which the generated header records.
 - **Outline source — the official OFL `Bravura.otf`, extracted reproducibly.**
   `tools/extract_bravura_outlines.py` fetches the font + SMuFL `glyphnames.json`
   and emits `src/outlines_generated.rs`. The font is **not vendored**; only the
@@ -82,12 +92,12 @@ glyph and one provenance trace per drawn element.
 
 See `spec/PASS12_BATCH.md` (rows P12-I1, P12-I2, P12-I3). Most relevant here:
 
-- **P12-I1** — the constrained IR is a structural placeholder, so the rendered
-  stub output is *not yet recognizable notation*. The QUICKSTART's human-review
-  visual-acceptance gate ("the SVG visually parses as standard music notation")
-  is therefore a **next-phase** gate, met once real engraving lands; this phase's
-  gate is renderer correctness/faithfulness. Recorded so the visual gate is not
-  mistaken for already-met.
+- **P12-I1 (resolved by I-1/I-3)** — the original stub-only renderer output was
+  a structural placeholder, so the human-review visual-acceptance gate ("the SVG
+  visually parses as standard music notation") was deferred until real engraving
+  landed. The real notation pass and real-Engraver goldens now close that gate;
+  the stub path remains locked as an interface/reference mode, not the visual
+  deliverable.
 - **P12-I2** — stable layout-object id derivation (`MUSCLOID`, Pass-11 item 2.6,
   deferred to Agent I) is still unwired: the determinism crate exposes no
   `MUSCLOID` tag and is frozen. The renderer traces provenance by the existing

@@ -60,7 +60,85 @@ def load():
     verify(names_bytes, NAMES_SHA256, "glyphnames.json")
     font = TTFont(io.BytesIO(font_bytes))
     names = json.loads(names_bytes)
-    return font, names
+    return font, names, font_bytes
+
+
+# The subset is a Modified Version under the OFL, so its primary user-facing name
+# must NOT be the Reserved Font Name "Bravura" (OFL §"Reserved Font Name"). The
+# copyright/trademark/license records (which name Bravura as attribution) are kept.
+SUBSET_FAMILY = "EpiphanyBravuraSubset"
+RESERVED_FONT_NAME = "Bravura"
+
+
+def subset_font_b64(font_bytes, codepoints):
+    """A deterministic, OFL-renamed base64 OTF subset of `font_bytes`.
+
+    For the renderer's `GlyphMode::EmbeddedFont` `@font-face` data-URI. SMuFL is
+    accessed by codepoint (no shaping), so layout features are dropped; the result
+    is small and byte-stable for a given fontTools version. Returns
+    `(family, b64, decoded_len, blake3_hex)`.
+    """
+    import io, base64, blake3
+    from fontTools.ttLib import TTFont
+    from fontTools.subset import Subsetter, Options
+    # `recalcTimestamp=False` keeps the source font's fixed `head.modified` instead
+    # of stamping "now" on save, so the subset bytes are reproducible across runs
+    # (not just within one process), making the BLAKE3 lock stable per fontTools
+    # version.
+    sub = TTFont(io.BytesIO(font_bytes), recalcTimestamp=False)
+    opts = Options()
+    opts.layout_features = []          # codepoint access only; no GSUB/GPOS shaping
+    opts.name_IDs = ["*"]              # keep name records incl. the OFL copyright/license
+    opts.notdef_outline = True
+    opts.recalc_bounds = True
+    ss = Subsetter(options=opts)
+    cps = sorted(set(codepoints))
+    ss.populate(unicodes=cps)
+    ss.subset(sub)
+
+    # OFL reserved-name compliance: rename the primary user-facing name off the
+    # Reserved Font Name in BOTH naming structures an OTF carries — the SFNT `name`
+    # table AND the CFF table's own name (the CFF Name INDEX and the top dict's
+    # FullName/FamilyName). Copyright/trademark/license records (which name Bravura
+    # as attribution) are left intact.
+    name = sub["name"]
+    for rec in list(name.names):
+        if rec.nameID in (1, 4, 6, 16):
+            name.setName(SUBSET_FAMILY, rec.nameID, rec.platformID, rec.platEncID, rec.langID)
+        elif rec.nameID == 3:
+            name.setName(rec.toUnicode().replace(RESERVED_FONT_NAME, SUBSET_FAMILY),
+                         3, rec.platformID, rec.platEncID, rec.langID)
+    cff = sub["CFF "].cff
+    cff.fontNames[0] = SUBSET_FAMILY                 # the CFF Name INDEX
+    topdict = cff.topDictIndex[0]
+    for key in ("FullName", "FamilyName"):           # CFF top-dict display names
+        if key in topdict.rawDict:
+            setattr(topdict, key, SUBSET_FAMILY)
+
+    # Coverage guard: the subset cmap MUST map every requested codepoint, or the
+    # embedded font would render tofu for a glyph the pipeline names.
+    cmap = sub.getBestCmap()
+    missing = [f"U+{cp:04X}" for cp in cps if cp not in cmap]
+    if missing:
+        sys.exit(f"subset cmap is missing codepoints: {missing}")
+
+    buf = io.BytesIO()
+    sub.save(buf)
+    raw = buf.getvalue()
+
+    # Compliance guard: reparse the *saved* bytes and confirm no primary name in
+    # either structure is still the Reserved Font Name (the copyright/trademark
+    # attribution may, and should, still mention Bravura).
+    check = TTFont(io.BytesIO(raw))
+    primary = [check["name"].getDebugName(i) for i in (1, 4, 6, 16)]
+    primary.append(check["CFF "].cff.fontNames[0])
+    ctop = check["CFF "].cff.topDictIndex[0]
+    primary += [getattr(ctop, k, None) for k in ("FullName", "FamilyName")]
+    if any(p == RESERVED_FONT_NAME for p in primary):
+        sys.exit(f"reserved font name leaked into a primary name record: {primary}")
+
+    return (SUBSET_FAMILY, base64.b64encode(raw).decode("ascii"),
+            len(raw), blake3.blake3(raw).hexdigest())
 
 def round_d(d, nd=4):
     def r(m):
@@ -73,7 +151,7 @@ def main():
     from fontTools.pens.svgPathPen import SVGPathPen
     from fontTools.pens.transformPen import TransformPen
     from fontTools.pens.boundsPen import BoundsPen
-    font, glyphnames = load()
+    font, glyphnames, font_bytes = load()
     upm = font["head"].unitsPerEm
     sp = upm / 4.0           # font units per staff space (SMuFL em = 4 staff spaces)
     scale = 1.0 / sp
@@ -150,6 +228,51 @@ def main():
     o.append("];")
     sys.stdout.write("\n".join(o) + "\n")
     print(f"// extracted {len(rows)}/{len(NAMES)} glyphs", file=sys.stderr)
+
+    # Optionally emit the embedded-font subset (renderer GlyphMode::EmbeddedFont).
+    if "--font-out" in sys.argv:
+        import fontTools
+        out_path = sys.argv[sys.argv.index("--font-out") + 1]
+        family, b64, raw_len, digest = subset_font_b64(font_bytes, [cp for _, cp, _, _ in rows])
+        f = []
+        f.append("//! GENERATED by `tools/extract_bravura_outlines.py --font-out` — "
+                 "do not edit by hand.")
+        f.append("//!")
+        f.append("//! A subset of the OFL `Bravura.otf` holding exactly the glyphs the v0")
+        f.append("//! layout pipeline can name (the `BRAVURA_METRICS` / `NAMES` set), base64")
+        f.append("//! OTF for the renderer's `GlyphMode::EmbeddedFont` `@font-face` data-URI.")
+        f.append("//!")
+        f.append("//! As a Modified Version under the OFL, the subset's primary font name is")
+        f.append(f"//! `{family}`, NOT the Reserved Font Name; the copyright/trademark/license")
+        f.append("//! name records are retained as attribution (and `tools/OFL.txt` ships the")
+        f.append("//! full license). The cmap is verified at generation to cover every glyph.")
+        f.append("//!")
+        f.append(f"//! Source (pinned + SHA-256 verified): Bravura {FONT_TAG}, "
+                 f"steinbergmedia/bravura @ {FONT_REF}.")
+        f.append(f"//! Subsetted with fontTools {fontTools.version}. Unlike the geometry-only")
+        f.append("//! outlines, the binary subset's exact bytes depend on the fontTools")
+        f.append("//! version recorded here, so regeneration is reproducible per version.")
+        f.append("")
+        f.append("/// The subset's font-family name (non-reserved; see the module note).")
+        f.append(f'pub(crate) const BRAVURA_SUBSET_FAMILY: &str = "{family}";')
+        f.append("")
+        f.append("/// MIME type for the embedded-font data-URI.")
+        f.append('pub(crate) const BRAVURA_SUBSET_MIME: &str = "font/otf";')
+        f.append("")
+        f.append("/// Decoded length, in bytes, of the embedded OTF (integrity lock).")
+        f.append("#[allow(dead_code)] // consumed only by the integrity test")
+        f.append(f"pub(crate) const BRAVURA_SUBSET_LEN: usize = {raw_len};")
+        f.append("")
+        f.append("/// BLAKE3-256 (hex) of the decoded OTF bytes (content-integrity lock).")
+        f.append("#[allow(dead_code)] // consumed only by the integrity test")
+        f.append(f'pub(crate) const BRAVURA_SUBSET_BLAKE3: &str = "{digest}";')
+        f.append("")
+        f.append("/// The Bravura subset (OTF/CFF outlines), base64-encoded.")
+        f.append(f'pub(crate) const BRAVURA_SUBSET_OTF_BASE64: &str = "{b64}";')
+        with open(out_path, "w") as fh:
+            fh.write("\n".join(f) + "\n")
+        print(f"// wrote {out_path} ({len(b64)} b64 chars, {raw_len} bytes, "
+              f"blake3 {digest[:16]}…)", file=sys.stderr)
 
 if __name__ == "__main__":
     main()

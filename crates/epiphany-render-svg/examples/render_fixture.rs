@@ -10,20 +10,22 @@
 //!
 //! ```text
 //! cargo run -p epiphany-render-svg --example render_fixture -- \
-//!     ten_measure_single_staff [--solver=stub|real] [--seed=N] [--no-provenance] \
-//!     > out.svg
+//!     ten_measure_single_staff [--solver=stub|real] [--seed=N] \
+//!     [--glyph-mode=path|embedded] [--no-provenance] > out.svg
 //! ```
 //!
 //! The `--solver` flag selects the interface-only stub (`stub`, the default this
 //! phase) or Agent I's engrave solver (`real`); keeping the renderer working
 //! against both is how a renderer-vs-solver bug is bisected with a one-flag
-//! change (QUICKSTART, Agent I, "Development pattern").
+//! change (QUICKSTART, Agent I, "Development pattern"). The `--glyph-mode` flag
+//! selects inline outline `<path>`s (`path`, default) or the embedded-font
+//! `<text>` mode (`embedded`).
 
 use std::process::ExitCode;
 
 use epiphany_engrave::Engraver;
 use epiphany_layout_ir::{to_constrained, to_logical, ConstraintSolver, SolverConfig, StubSolver};
-use epiphany_render_svg::{render, RenderOptions};
+use epiphany_render_svg::{render, GlyphMode, RenderOptions};
 
 const FIXTURES: &str = "ten_measure_single_staff, valid_score_rich, valid_score";
 const SOLVERS: &str = "stub, real";
@@ -33,6 +35,7 @@ fn main() -> ExitCode {
     let mut solver = String::from("stub");
     let mut seed: u64 = 0x000A_11CE;
     let mut emit_provenance = true;
+    let mut glyph_mode = GlyphMode::PathOutline;
 
     for arg in std::env::args().skip(1) {
         if let Some(v) = arg.strip_prefix("--solver=") {
@@ -42,6 +45,16 @@ fn main() -> ExitCode {
                 Ok(n) => seed = n,
                 Err(_) => return fail(&format!("invalid --seed value: {v}")),
             }
+        } else if let Some(v) = arg.strip_prefix("--glyph-mode=") {
+            glyph_mode = match v {
+                "path" => GlyphMode::PathOutline,
+                "embedded" => GlyphMode::EmbeddedFont,
+                other => {
+                    return fail(&format!(
+                        "unknown --glyph-mode {other:?}; known: path, embedded"
+                    ))
+                }
+            };
         } else if arg == "--no-provenance" {
             emit_provenance = false;
         } else if arg == "--help" || arg == "-h" {
@@ -80,6 +93,7 @@ fn main() -> ExitCode {
         &report.layout,
         &RenderOptions {
             emit_provenance,
+            glyph_mode,
             ..RenderOptions::default()
         },
     );
@@ -89,9 +103,10 @@ fn main() -> ExitCode {
         report.status
     );
     eprintln!(
-        "glyphs={} paths={} fallback_rects={} provenance={} layers={} hard_constraints={} well_formed={}",
+        "glyphs={} paths={} texts={} fallback_rects={} provenance={} layers={} hard_constraints={} well_formed={}",
         out.stats.glyph_count,
         out.stats.path_count,
+        out.stats.text_count,
         out.stats.fallback_rect_count,
         out.stats.provenance_count,
         out.stats.layer_count,
@@ -108,9 +123,11 @@ fn main() -> ExitCode {
 
 fn usage() {
     eprintln!(
-        "usage: render_fixture <fixture> [--solver=stub|real] [--seed=N] [--no-provenance]\n\
+        "usage: render_fixture <fixture> [--solver=stub|real] [--seed=N] \
+         [--glyph-mode=path|embedded] [--no-provenance]\n\
          fixtures: {FIXTURES}\n\
-         solvers:  {SOLVERS} (default: stub)"
+         solvers:  {SOLVERS} (default: stub)\n\
+         glyph-mode: path, embedded (default: path)"
     );
 }
 

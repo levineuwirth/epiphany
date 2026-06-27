@@ -2,19 +2,22 @@
 
 Agent I's **SVG renderer** behind the Epiphany `RenderIR` interface (spec
 Chapter 7): turns a `ResolvedLayoutIR` into well-formed **SVG 1.1**, drawing each
-glyph as a **genuine Bravura SMuFL outline** `<path>`. It is the visible end of
-the v0 `Score → layout IR` pipeline.
+glyph from **genuine Bravura SMuFL** data — inline outline `<path>`s by default
+(`GlyphMode::PathOutline`), or `<text>` set in an `@font-face`-embedded Bravura
+subset (`GlyphMode::EmbeddedFont`). It is the visible end of the v0
+`Score → layout IR` pipeline.
 
-## Status: renderer against the stub solver
+## Status
 
-This phase builds and golden-locks the renderer against the **stub solver's**
-output (the QUICKSTART development pattern), before the real engraving solver and
-the score→real-notation engraving pass land. The stub returns the IR geometry
-verbatim — a structural projection (each object becomes one arbitrary glyph in a
-row), not yet recognizable notation — so what is proven here is **renderer
-correctness and faithfulness**: real outlines, provenance preserved, output
-XML-valid and deterministic. The renderer consumes any solver's output, so the
-picture improves with no renderer change once `epiphany-engrave` lands.
+The `Score → layout IR → SVG` pipeline renders **recognizable notation** — clefs,
+noteheads at clef-relative staff positions, accidentals, key/time signatures,
+rests, barlines, and the staff lines and stems that connect them. Output is
+golden-locked against **both** the interface-only stub solver and Agent I's real
+`epiphany-engrave` solver (whose horizontal spacing pass re-spaces the glyphs),
+and the layout round-trip (criterion 6) runs through both. What the renderer
+itself guarantees, independent of engraving quality: real Bravura glyphs,
+provenance preserved to the score graph, output XML-valid and deterministic. The
+renderer consumes any solver's `ResolvedLayoutIR`.
 
 ## Demo
 
@@ -26,6 +29,10 @@ cargo run -p epiphany-render-svg --example render_fixture -- \
 # Drive Agent I's engrave solver instead, to bisect renderer-vs-solver:
 cargo run -p epiphany-render-svg --example render_fixture -- \
     ten_measure_single_staff --solver=real > out.svg
+
+# Use the embedded-font glyph mode (<text> + @font-face) instead of inline paths:
+cargo run -p epiphany-render-svg --example render_fixture -- \
+    ten_measure_single_staff --glyph-mode=embedded > out.svg
 ```
 
 Fixtures: `ten_measure_single_staff`, `valid_score_rich`, `valid_score`. Stats and
@@ -42,19 +49,29 @@ println!("{}", out.svg);
 ```
 
 `render` is pure and deterministic. `RenderOptions` controls SVG-encoding choices
-only (display scale, margin, provenance attributes) — nothing that changes
-engraving.
+only (display scale, margin, provenance attributes, and `glyph_mode` — inline
+`PathOutline` vs `EmbeddedFont`) — nothing that changes engraving.
 
-## Bundled outlines
+## Bundled Bravura data
 
-The glyph outlines in `src/outlines_generated.rs` are extracted from the official
-OFL `Bravura.otf` by `tools/extract_bravura_outlines.py`. The font is not
-vendored; only the generated Rust is committed. Bravura is © Steinberg Media
-Technologies GmbH under the SIL Open Font License 1.1 (`tools/OFL.txt`); the
-extracted outlines are redistributed under the same license. To regenerate:
+Two generated artifacts come from the official OFL `Bravura.otf` via
+`tools/extract_bravura_outlines.py` — the font is **not vendored**, only the
+generated Rust is committed:
+
+- `src/outlines_generated.rs` — the inline glyph outlines (geometry-only, so
+  byte-stable across fontTools versions);
+- `src/font_subset_generated.rs` — a base64 OTF **subset** (just the pipeline's
+  glyphs) for `GlyphMode::EmbeddedFont`. As a Modified Version, its primary font
+  name is renamed off the Reserved Font Name "Bravura" per the OFL; a content
+  BLAKE3 + decoded length are committed alongside as an integrity lock.
+
+Bravura is © Steinberg Media Technologies GmbH under the SIL Open Font License 1.1
+(`tools/OFL.txt`); both artifacts are redistributed under the same license. To
+regenerate both (the subset step also needs the `blake3` package):
 
 ```sh
 cd crates/epiphany-render-svg/tools
-python3 -m venv .venv && . .venv/bin/activate && pip install fonttools
-python3 extract_bravura_outlines.py > ../src/outlines_generated.rs
+python3 -m venv .venv && . .venv/bin/activate && pip install fonttools blake3
+python3 extract_bravura_outlines.py --font-out ../src/font_subset_generated.rs \
+    > ../src/outlines_generated.rs
 ```

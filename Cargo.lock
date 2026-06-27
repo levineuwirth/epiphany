@@ -125,6 +125,7 @@ name = "epiphany-render-svg"
 version = "0.0.0"
 dependencies = [
  "epiphany-core",
+ "epiphany-determinism",
  "epiphany-engrave",
  "epiphany-layout-ir",
  "epiphany-testkit",

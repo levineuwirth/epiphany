@@ -41,7 +41,10 @@ use std::fmt::Write as _;
 
 use epiphany_layout_ir::{BoundingBox, Provenance, ResolvedGlyph, ResolvedLayoutIR, Transform2D};
 
-use crate::outline::outline;
+use crate::font_subset_generated::{
+    BRAVURA_SUBSET_FAMILY, BRAVURA_SUBSET_MIME, BRAVURA_SUBSET_OTF_BASE64,
+};
+use crate::outline::{outline, smufl_codepoint};
 use crate::xml::{check_well_formed, escape_attr};
 
 /// How glyphs are drawn.
@@ -50,9 +53,18 @@ pub enum GlyphMode {
     /// Inline genuine Bravura outline `<path>`s (default). Self-contained: the
     /// SVG renders in any viewer with no font dependency (QUICKSTART, Agent I:
     /// "inline path outlines for golden fixtures and the demonstrable
-    /// deliverable").
+    /// deliverable"). This is the byte-golden-locked, pixel-verified reference
+    /// mode.
     #[default]
     PathOutline,
+    /// Reference each glyph by its SMuFL codepoint with a `<text>` element, drawn
+    /// from an `@font-face`-embedded subset of Bravura (the same SHA-pinned font
+    /// the outlines come from, base64 in `font_subset_generated`). The result is
+    /// self-contained — the font travels in the SVG — and text-selectable, at the
+    /// cost of a larger file. Glyph placement is consistent with
+    /// [`GlyphMode::PathOutline`] by construction (same origin, em = 4 staff
+    /// spaces); exact glyph rasterisation is then the consumer's font renderer's.
+    EmbeddedFont,
 }
 
 /// Renderer configuration. SVG-encoding choices only — nothing here changes
@@ -157,8 +169,12 @@ pub struct Diagnostic {
 pub struct RenderStats {
     /// Glyphs in the resolved layout (the renderer's input objects).
     pub glyph_count: usize,
-    /// `<path>` elements emitted (glyphs drawn from a bundled outline).
+    /// `<path>` elements emitted (glyphs drawn from a bundled outline, the
+    /// default [`GlyphMode::PathOutline`]).
     pub path_count: usize,
+    /// `<text>` elements emitted (glyphs set in the embedded font, the
+    /// [`GlyphMode::EmbeddedFont`] mode). Zero in the default path mode.
+    pub text_count: usize,
     /// Fallback `<rect>` elements emitted (glyphs with no bundled outline).
     pub fallback_rect_count: usize,
     /// `<line>` elements emitted (one per resolved stroke: staff line, stem, …).
@@ -209,13 +225,14 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
         Some(b) => b,
         // Empty layout: a minimal, valid, honest empty canvas.
         None => {
-            let svg = empty_svg(options.emit_provenance);
+            let svg = empty_svg(options.glyph_mode, options.emit_provenance);
             let well_formed = check_well_formed(&svg).is_ok();
             debug_assert!(well_formed);
             return RenderOutput {
                 stats: RenderStats {
                     glyph_count: 0,
                     path_count: 0,
+                    text_count: 0,
                     fallback_rect_count: 0,
                     stroke_count: 0,
                     provenance_count: 0,
@@ -248,6 +265,7 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
         .collect();
 
     let mut path_count = 0;
+    let mut text_count = 0;
     let mut fallback_rect_count = 0;
     let mut stroke_count = 0;
     let mut provenance_count = 0;
@@ -263,15 +281,26 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
         num(height),
     );
     // Declared metadata wrapper (a comment — honest about what this is, including
-    // whether provenance traces are present: suppressing them is an explicit
-    // display-only choice the output announces rather than dropping silently).
+    // how glyphs are drawn and whether provenance traces are present: suppressing
+    // them is an explicit display-only choice the output announces, not drops).
     let _ = writeln!(
         s,
-        "  <!-- epiphany-render-svg: glyphs are genuine Bravura SMuFL outlines; \
-         geometry is the resolved layout verbatim, no engraving performed here; \
-         {} -->",
+        "  <!-- epiphany-render-svg: {}; geometry is the resolved layout \
+         verbatim, no engraving performed here; {} -->",
+        glyph_note(options.glyph_mode),
         provenance_note(options.emit_provenance),
     );
+    // In embedded-font mode, declare the Bravura subset once via `@font-face`; the
+    // `<text>` glyphs below reference it by its (non-reserved) family name (see the
+    // font subset's own header for its provenance and the OFL terms it carries).
+    if options.glyph_mode == GlyphMode::EmbeddedFont {
+        let _ = writeln!(
+            s,
+            "  <defs><style>@font-face {{ font-family: \"{}\"; \
+             src: url(\"data:{};base64,{}\") format(\"opentype\"); }}</style></defs>",
+            BRAVURA_SUBSET_FAMILY, BRAVURA_SUBSET_MIME, BRAVURA_SUBSET_OTF_BASE64,
+        );
+    }
     // The single y-flip wrapper: staff-space/y-up world -> SVG y-down.
     let _ = writeln!(
         s,
@@ -338,21 +367,42 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
                 } else {
                     String::new()
                 };
-                match outline(name) {
-                    Some(o) => {
+                // The drawn element depends on the mode: an inline outline `<path>`
+                // (the self-contained default) or a `<text>` referencing the embedded
+                // Bravura by SMuFL codepoint. Both anchor at the same `(x, y)` origin,
+                // so the two modes are geometrically consistent. `None` (no bundled
+                // outline / no codepoint) falls through to the visible bbox rect.
+                let element = match options.glyph_mode {
+                    GlyphMode::PathOutline => outline(name).map(|o| {
                         path_count += 1;
-                        let _ = writeln!(
-                            s,
-                            "      <path d=\"{}\" transform=\"{}\" fill=\"{}\"{}{}/>",
+                        format!(
+                            "<path d=\"{}\" transform=\"{}\" fill=\"{}\"{}{}/>",
                             o.path, placement, fill, opacity, prov,
-                        );
+                        )
+                    }),
+                    GlyphMode::EmbeddedFont => smufl_codepoint(name).map(|cp| {
+                        text_count += 1;
+                        // The font glyph is drawn upright by a per-glyph counter-flip
+                        // (`scale(1 -1)`, innermost) cancelling the outer y-flip; the
+                        // em is four staff spaces (SMuFL), so `font-size="4"`.
+                        format!(
+                            "<text transform=\"{placement} scale(1 -1)\" \
+                             font-family=\"{BRAVURA_SUBSET_FAMILY}\" font-size=\"4\" \
+                             fill=\"{fill}\"{opacity}{prov}>&#x{cp:X};</text>",
+                        )
+                    }),
+                };
+                match element {
+                    Some(el) => {
+                        let _ = writeln!(s, "      {el}");
                     }
                     None => {
-                        // No outline: surface it and draw the IR bounding box so the
-                        // missing glyph is visible, not silently absent.
+                        // Unrenderable in this mode: surface it and draw the IR
+                        // bounding box so the missing glyph is visible, not silent.
                         fallback_rect_count += 1;
                         diagnostics.push(Diagnostic {
-                            message: "no bundled Bravura outline; drew bounding-box fallback"
+                            message: "no bundled Bravura glyph for this name; drew \
+                                      bounding-box fallback"
                                 .to_owned(),
                             glyph: Some(name.to_owned()),
                         });
@@ -383,6 +433,7 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
         stats: RenderStats {
             glyph_count: resolved.glyphs.len(),
             path_count,
+            text_count,
             fallback_rect_count,
             stroke_count,
             provenance_count,
@@ -572,6 +623,16 @@ fn colour(rgba: u32) -> (String, String) {
     (fill, opacity)
 }
 
+/// The glyph-mode clause of the metadata comment: which drawing strategy produced
+/// the SVG. Shared by the main render and [`empty_svg`] so the declared mode
+/// boundary is the same on the empty path.
+fn glyph_note(mode: GlyphMode) -> &'static str {
+    match mode {
+        GlyphMode::PathOutline => "glyphs are genuine Bravura SMuFL outlines inlined as paths",
+        GlyphMode::EmbeddedFont => "glyphs are Bravura SMuFL codepoints set in the embedded font",
+    }
+}
+
 /// The provenance-state clause of the metadata comment. Archival mode declares
 /// traces present; display-only mode declares them suppressed — so a trace-free
 /// SVG (including the empty canvas) announces itself rather than passing as
@@ -585,13 +646,15 @@ fn provenance_note(emit_provenance: bool) -> &'static str {
 }
 
 /// A minimal, valid empty SVG for a layout with nothing to draw — still declaring
-/// its provenance state, so an empty trace-free render is honest like a full one.
-fn empty_svg(emit_provenance: bool) -> String {
+/// its glyph mode and provenance state, so an empty render is honest like a full
+/// one (the metadata is the same declared boundary on both paths).
+fn empty_svg(glyph_mode: GlyphMode, emit_provenance: bool) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\" viewBox=\"0 0 1 1\">\n\
-         \x20\x20<!-- epiphany-render-svg: empty resolved layout (no glyphs); {} -->\n\
+         \x20\x20<!-- epiphany-render-svg: empty resolved layout (no glyphs); {}; {} -->\n\
          </svg>\n",
+        glyph_note(glyph_mode),
         provenance_note(emit_provenance),
     )
 }
@@ -781,6 +844,77 @@ mod tests {
     }
 
     #[test]
+    fn embedded_font_mode_sets_text_from_the_embedded_subset() {
+        let layout = stub_layout(11);
+        let out = render(
+            &layout,
+            &RenderOptions {
+                glyph_mode: GlyphMode::EmbeddedFont,
+                ..RenderOptions::default()
+            },
+        );
+        assert!(
+            out.is_well_formed(),
+            "embedded-font SVG must be well-formed"
+        );
+
+        // The font is declared exactly once via @font-face with the base64 subset,
+        // under its non-reserved family name (OFL: not the Reserved Font Name).
+        assert_eq!(out.svg.matches("@font-face").count(), 1);
+        assert!(out.svg.contains("font-family: \"EpiphanyBravuraSubset\""));
+        assert!(!out.svg.contains("font-family: \"Bravura\""));
+        assert!(out.svg.contains("data:font/otf;base64,"));
+
+        // Every glyph is a `<text>` (the stub names only bundled glyphs), none a
+        // path or a fallback rect, and each carries a SMuFL codepoint reference.
+        assert_eq!(out.stats.text_count, layout.glyphs.len());
+        assert_eq!(out.stats.path_count, 0);
+        assert_eq!(out.stats.fallback_rect_count, 0);
+        assert!(out.diagnostics.is_empty());
+        assert_eq!(out.svg.matches("<text ").count(), layout.glyphs.len());
+        assert_eq!(out.svg.matches("&#x").count(), layout.glyphs.len());
+
+        // The metadata comment declares the embedded-font mode, and provenance is
+        // preserved exactly as in path mode.
+        assert!(out.svg.contains("set in the embedded font"));
+        assert_eq!(
+            out.stats.provenance_count,
+            layout.glyphs.len() + layout.strokes.len()
+        );
+        assert!(out.svg.contains("data-prov="));
+    }
+
+    #[test]
+    fn embedded_font_mode_is_deterministic_and_draws_every_glyph() {
+        let layout = stub_layout(7);
+        let a = render(
+            &layout,
+            &RenderOptions {
+                glyph_mode: GlyphMode::EmbeddedFont,
+                ..RenderOptions::default()
+            },
+        );
+        let b = render(
+            &layout,
+            &RenderOptions {
+                glyph_mode: GlyphMode::EmbeddedFont,
+                ..RenderOptions::default()
+            },
+        );
+        assert_eq!(a.svg, b.svg, "embedded-font render must be deterministic");
+        // Every glyph is accounted for (text or fallback rect), none dropped — the
+        // same no-silent-drop contract as path mode.
+        assert_eq!(
+            a.stats.text_count + a.stats.fallback_rect_count,
+            a.stats.glyph_count
+        );
+        // The default path mode draws no `<text>`; the modes do not bleed.
+        let path = render(&layout, &RenderOptions::default());
+        assert_eq!(path.stats.text_count, 0);
+        assert!(!path.svg.contains("@font-face"));
+    }
+
+    #[test]
     fn empty_layout_renders_a_valid_empty_canvas() {
         let layout = ResolvedLayoutIR {
             source: Default::default(),
@@ -806,6 +940,17 @@ mod tests {
         );
         assert!(suppressed.is_well_formed());
         assert!(suppressed.svg.contains("provenance traces suppressed"));
+
+        // The empty canvas also declares its glyph mode (the same boundary as a
+        // full render), so an empty embedded render is not mistaken for a path one.
+        let empty_embedded = render(
+            &layout,
+            &RenderOptions {
+                glyph_mode: GlyphMode::EmbeddedFont,
+                ..RenderOptions::default()
+            },
+        );
+        assert!(empty_embedded.svg.contains("set in the embedded font"));
     }
 
     #[test]
