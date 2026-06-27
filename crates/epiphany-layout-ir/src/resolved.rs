@@ -24,7 +24,7 @@
 use epiphany_core::{MeasureId, StaffId, TypedObjectId};
 use epiphany_determinism::{CanonicalEncode, CanonicalF64, QuantizedCoord};
 
-use crate::constrained::{GlyphObjectId, GlyphStyle};
+use crate::constrained::{GlyphObjectId, GlyphStyle, Stroke};
 use crate::engraving::{DecisionSource, EngravingDecision, EngravingDecisionKind};
 use crate::glyph::{GlyphCatalogIdentity, GlyphReference};
 use crate::logical::ScoreVersion;
@@ -87,6 +87,9 @@ pub struct ResolvedLayoutIR {
     pub source: ScoreVersion,
     pub pages: Vec<ResolvedPage>,
     pub glyphs: Vec<ResolvedGlyph>,
+    /// Resolved non-glyph line primitives (staff lines, stems, barlines, …),
+    /// positioned by the solver alongside the glyphs.
+    pub strokes: Vec<Stroke>,
     pub engraving_decisions: Vec<EngravingDecision>,
     /// The catalog identity under which this layout was produced — required for
     /// any byte-equal conformance claim (Chapter 7 §7.3.2).
@@ -141,6 +144,19 @@ impl CanonicalEncode for ResolvedLayoutIR {
             encode_bounding_box(out, glyph.bounding_box);
             out.extend_from_slice(&glyph.style.rgba.to_le_bytes());
             out.extend_from_slice(&glyph.layer.to_le_bytes());
+        }
+        push_u64(out, self.strokes.len() as u64);
+        for stroke in &self.strokes {
+            encode_provenance(out, &stroke.provenance);
+            let (fx, fy) = quantize(stroke.from);
+            fx.encode_canonical(out);
+            fy.encode_canonical(out);
+            let (tx, ty) = quantize(stroke.to);
+            tx.encode_canonical(out);
+            ty.encode_canonical(out);
+            encode_staff_space(out, stroke.thickness);
+            out.extend_from_slice(&stroke.style.rgba.to_le_bytes());
+            out.extend_from_slice(&stroke.layer.to_le_bytes());
         }
         push_u64(out, self.engraving_decisions.len() as u64);
         for decision in &self.engraving_decisions {
@@ -353,6 +369,7 @@ mod tests {
             source: ScoreVersion::default(),
             pages: vec![],
             glyphs,
+            strokes: vec![],
             engraving_decisions: decisions,
             catalog: GlyphCatalogIdentity::default(),
         }

@@ -214,7 +214,12 @@ fn criterion_6_layout_round_trip() {
     for seed in 0..128u64 {
         let report = layout_stub::round_trip(&fixtures::ten_measure_single_staff(seed));
         assert!(report.glyphs > 0);
-        assert_eq!(report.glyphs, report.render_primitives);
+        // The render IR carries glyph *and* stroke primitives; the round-trip
+        // recovers a source for every one of them.
+        assert_eq!(
+            report.render_primitives,
+            report.glyphs + report.render_strokes
+        );
 
         layout_stub::round_trip(&generators::graph::valid_score_rich(seed));
     }

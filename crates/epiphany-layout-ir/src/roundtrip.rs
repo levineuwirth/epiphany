@@ -64,9 +64,13 @@ pub fn laid_out_object_ids(score: &Score) -> BTreeSet<TypedObjectId> {
 pub struct RoundTripReport {
     pub status: SolveStatus,
     pub logical_objects: usize,
+    /// Glyph primitives (one per laid-out glyph).
     pub glyphs: usize,
+    /// Stroke primitives (staff lines, stems, markers, …).
+    pub render_strokes: usize,
+    /// Total render primitives — glyphs **and** strokes.
     pub render_primitives: usize,
-    /// Every score-graph source recovered from the RenderIR.
+    /// Every score-graph source recovered from the RenderIR (glyphs + strokes).
     pub recovered_sources: BTreeSet<TypedObjectId>,
 }
 
@@ -122,14 +126,27 @@ pub fn round_trip(score: &Score) -> RoundTripReport {
             })
             .chain(logical.cross_region.iter().map(|object| &object.provenance)),
     );
+    // Every primitive — glyph *and* stroke — is provenance-tracked. The
+    // constrained stage may carry *more* primitives than the logical stage has
+    // objects: each logical object is covered by exactly one primitive carrying
+    // its provenance, plus the engraver's synthesized derived primitives
+    // (accidentals, staff lines, stems, …), whose `source` is constrained to a
+    // laid-out object by the surjection below.
     let constrained_map = provenance_map(
         "constrained",
-        constrained.glyphs.iter().map(|g| &g.provenance),
+        constrained
+            .glyphs
+            .iter()
+            .map(|g| &g.provenance)
+            .chain(constrained.strokes.iter().map(|s| &s.provenance)),
     );
-    assert_eq!(
-        logical_map, constrained_map,
-        "provenance not preserved logical -> constrained"
-    );
+    for (id, provenance) in &logical_map {
+        assert_eq!(
+            constrained_map.get(id),
+            Some(provenance),
+            "logical object {id:?} is not covered (with its exact provenance) in constrained"
+        );
+    }
 
     let report = StubSolver.solve(&constrained, &SolverConfig::default());
     assert_eq!(
@@ -162,10 +179,20 @@ pub fn round_trip(score: &Score) -> RoundTripReport {
         assert_eq!(resolved_glyph.style, constrained_glyph.style);
         assert_eq!(resolved_glyph.layer, constrained_glyph.layer);
     }
+    // Strokes likewise pass through the stub verbatim, in order.
+    assert_eq!(
+        report.layout.strokes, constrained.strokes,
+        "stub solver must return the input strokes verbatim"
+    );
 
     let resolved_map = provenance_map(
         "resolved",
-        report.layout.glyphs.iter().map(|g| &g.provenance),
+        report
+            .layout
+            .glyphs
+            .iter()
+            .map(|g| &g.provenance)
+            .chain(report.layout.strokes.iter().map(|s| &s.provenance)),
     );
     assert_eq!(
         constrained_map, resolved_map,
@@ -181,31 +208,43 @@ pub fn round_trip(score: &Score) -> RoundTripReport {
         assert_eq!(primitive.style, resolved_glyph.style);
         assert_eq!(primitive.layer, resolved_glyph.layer);
     }
-    let render_map = provenance_map("render", render.primitives.iter().map(|p| &p.provenance));
+    assert_eq!(
+        render.strokes, report.layout.strokes,
+        "render must carry the resolved strokes verbatim"
+    );
+    let render_map = provenance_map(
+        "render",
+        render
+            .primitives
+            .iter()
+            .map(|p| &p.provenance)
+            .chain(render.strokes.iter().map(|s| &s.provenance)),
+    );
     assert_eq!(
         resolved_map, render_map,
         "provenance not preserved resolved -> render"
     );
 
-    // Provenance back to graph identity: the recovered source *set* is exactly
-    // the set laid out (a surjection — every source recovered, nothing spurious),
-    // while the primitive count equals the distinct-stable-id count, so each
-    // layout object (including each manifestation of a multiply-manifested
-    // source) is represented exactly once.
+    // Provenance back to graph identity: the recovered source *set* — over every
+    // primitive, glyph and stroke — is exactly the set laid out (a surjection:
+    // every source recovered, nothing spurious), while the primitive count equals
+    // the distinct-stable-id count, so each layout object (and each synthesized
+    // derived primitive) is represented exactly once.
     let expected = laid_out_object_ids(score);
     let recovered: BTreeSet<TypedObjectId> = render
         .primitives
         .iter()
         .map(|p| p.provenance.source)
+        .chain(render.strokes.iter().map(|s| s.provenance.source))
         .collect();
     assert_eq!(
         expected, recovered,
         "RenderIR sources do not match the laid-out graph objects"
     );
     assert_eq!(
-        render.primitives.len(),
+        render.primitives.len() + render.strokes.len(),
         render_map.len(),
-        "render produced two objects with the same stable id"
+        "render produced two primitives with the same stable id"
     );
 
     RoundTripReport {
@@ -217,7 +256,8 @@ pub fn round_trip(score: &Score) -> RoundTripReport {
             .sum::<usize>()
             + logical.cross_region.len(),
         glyphs: constrained.glyphs.len(),
-        render_primitives: render.primitives.len(),
+        render_strokes: render.strokes.len(),
+        render_primitives: render.primitives.len() + render.strokes.len(),
         recovered_sources: recovered,
     }
 }
@@ -272,18 +312,26 @@ mod tests {
         assert_eq!(report.status, SolveStatus::Solved);
         let render = to_render(&report.layout);
 
-        // Two primitives for the shared staff (one per region), distinct ids.
-        let staff_prims: Vec<_> = render
-            .primitives
+        // A staff engraves as stroke line primitives (its five staff lines); its
+        // own provenance anchors the bottom line, the upper four are synthesized
+        // from it. Two manifestations → two anchor lines with distinct ids.
+        let staff_anchors: Vec<_> = render
+            .strokes
             .iter()
-            .filter(|p| p.provenance.source == TypedObjectId::Staff(staff))
+            .filter(|s| {
+                s.provenance.source == TypedObjectId::Staff(staff)
+                    && s.provenance.synthesis.is_none()
+            })
             .collect();
         assert_eq!(
-            staff_prims.len(),
+            staff_anchors.len(),
             2,
             "both manifestations reach the render stage"
         );
-        let ids: BTreeSet<_> = staff_prims.iter().map(|p| p.provenance.stable_id).collect();
+        let ids: BTreeSet<_> = staff_anchors
+            .iter()
+            .map(|s| s.provenance.stable_id)
+            .collect();
         assert_eq!(
             ids.len(),
             2,
@@ -369,8 +417,19 @@ mod tests {
     fn valid_scores_round_trip() {
         for seed in 0..64u64 {
             let report = round_trip(&valid_score(seed));
-            assert_eq!(report.glyphs, report.render_primitives);
-            assert_eq!(report.recovered_sources.len(), report.render_primitives);
+            assert_eq!(
+                report.render_primitives,
+                report.glyphs + report.render_strokes
+            );
+            // Every laid-out source is recovered, nothing spurious (the
+            // surjection). A source may back several primitives now — a staff's
+            // five lines all trace to it — so the recovered *set* is no larger
+            // than the primitive count, not equal to it.
+            assert_eq!(
+                report.recovered_sources,
+                laid_out_object_ids(&valid_score(seed))
+            );
+            assert!(report.recovered_sources.len() <= report.render_primitives);
         }
     }
 

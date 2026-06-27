@@ -1,16 +1,14 @@
 fixture=valid_score_rich solver=stub
-glyph_count=32
-path_count=32
+glyph_count=11
+path_count=11
 fallback_rect_count=0
-provenance_count=32
+stroke_count=33
+provenance_count=44
 layer_count=1
 hard_constraint_count=0
 xml_well_formed=true
-view_box=[-2 -5.2408 36.18 11.6328]
+view_box=[-3.065 -3.632 39.329998 11.632]
 class_counts:
-  accidental=1
-  clef=6
-  dynamic=1
-  flag=1
-  notehead=21
-  rest=2
+  barline=1
+  clef=3
+  notehead=7

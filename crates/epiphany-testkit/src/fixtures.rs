@@ -208,4 +208,47 @@ mod tests {
         assert_eq!(s.cross_cutting.markers.len(), 1);
         assert_eq!(s.cross_cutting.chord_symbols.len(), 1);
     }
+
+    /// A measure that references a time signature lists it (and its start
+    /// anchor's target) among its invalidation dependencies, so a time-signature
+    /// display change with an unchanged id invalidates the measure and its
+    /// synthesized time-signature glyphs.
+    #[test]
+    fn a_measure_depends_on_its_time_signature_and_start_anchor() {
+        use epiphany_core::{TimeSignatureId, TypedObjectId};
+        use epiphany_layout_ir::to_logical;
+
+        let mut score = ten_measure_single_staff(1);
+        let time_signature: TimeSignatureId = score.identity.mint();
+        let (measure_id, region_id) = {
+            let region = &mut score.canvas.regions[0];
+            let region_id = region.id;
+            let instance = region
+                .content
+                .staff_instances_mut()
+                .expect("the fixture is staff-based")
+                .first_mut()
+                .expect("a staff instance");
+            instance.measures[0].time_signature = Some(time_signature);
+            (instance.measures[0].id, region_id)
+        };
+
+        let logical = to_logical(&score);
+        let measure = logical
+            .regions
+            .iter()
+            .flat_map(|r| r.objects.iter())
+            .find(|o| o.provenance().source == TypedObjectId::Measure(measure_id))
+            .expect("measure 0 is projected");
+        let deps = &measure.provenance().dependencies;
+        assert!(
+            deps.contains(&TypedObjectId::TimeSignature(time_signature)),
+            "a measure depends on the time signature it displays"
+        );
+        // Each fixture measure is region-anchored, so the region is a dep too.
+        assert!(
+            deps.contains(&TypedObjectId::Region(region_id)),
+            "a measure depends on its start anchor's target"
+        );
+    }
 }

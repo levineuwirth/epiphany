@@ -16,8 +16,9 @@
 //! grows this crate into the real two-pass spring solver. This is the first
 //! increment: [`Engraver`] runs a genuine deterministic **horizontal spacing
 //! pass** (see [`spacing`]) — the first axis of the planned two-pass spring
-//! layout — placing each spring slot left-to-right by its preferred width
-//! instead of returning the input columns verbatim.
+//! layout — placing each glyph-bearing slot left-to-right by a collision-aware
+//! advance (its preferred width floored by the real glyph bearings) instead of
+//! returning the input columns verbatim.
 //!
 //! It does **not yet** run the vertical spring pass, the soft-constraint
 //! stretch/compress solve, or evaluate the IR's declared hard constraints. By the
@@ -41,13 +42,11 @@
 
 mod spacing;
 
-use std::collections::BTreeMap;
-
 use epiphany_layout_ir::{
     all_available, BravuraCatalog, ConstrainedLayoutIR, ConstraintSolver, GlyphCatalog,
-    InvalidationSet, Margins, QualityMetricVector, Rect, ResolvedGlyph, ResolvedLayoutIR,
+    InvalidationSet, Margins, Point, QualityMetricVector, Rect, ResolvedGlyph, ResolvedLayoutIR,
     ResolvedPage, ResolvedSystem, Size2D, SolveReport, SolveStatus, SolverBudgetUsed, SolverConfig,
-    SolverState, SolverTier, SolverVersion, SolverWarning, SolverWarningKind,
+    SolverState, SolverTier, SolverVersion, SolverWarning, SolverWarningKind, Stroke,
 };
 
 /// The Epiphany engraving solver (Chapter 9). See the crate docs for the phase
@@ -81,11 +80,17 @@ impl Engraver {
         // constraints is reported as not-yet-solvable rather than falsely Solved.
         let well_formed = structural_valid && catalog_valid && input.constraints.is_empty();
 
-        let glyphs: Vec<ResolvedGlyph> = if structural_valid {
-            let positions = spacing::slot_positions(input);
-            place_glyphs(input, &positions)
+        // The horizontal spacing pass re-places each glyph by its spring slot.
+        // The strokes that track those glyphs (stems, staff lines, barlines) must
+        // ride the *same* horizontal map, or a re-spaced notehead would leave its
+        // stem behind. Both gate on structural validity: a malformed input must
+        // not leak geometry into the diagnostic layout (which reaches
+        // canonical_bytes / the renderer).
+        let (glyphs, strokes): (Vec<ResolvedGlyph>, Vec<Stroke>) = if structural_valid {
+            let remap = HorizontalRemap::build(input);
+            (remap.glyphs(input), remap.strokes(input))
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         let resolved_glyphs = glyphs.len();
 
@@ -136,6 +141,7 @@ impl Engraver {
                 source: input.source,
                 pages,
                 glyphs,
+                strokes,
                 engraving_decisions: input.engraving_decisions.clone(),
                 catalog: input.catalog.clone(),
             },
@@ -158,32 +164,92 @@ impl Engraver {
     }
 }
 
-/// Copies each glyph to the `x` of its horizontal slot (its baseline `y`
-/// preserved), preserving provenance, glyph identity, bounds, style, and layer.
-/// A glyph whose slot has no computed position keeps its baseline `x`.
-fn place_glyphs(
-    input: &ConstrainedLayoutIR,
-    positions: &BTreeMap<epiphany_layout_ir::SpringSlotId, f32>,
-) -> Vec<ResolvedGlyph> {
-    input
-        .glyphs
-        .iter()
-        .map(|g| {
-            let x = positions
-                .get(&g.horizontal_slot)
-                .copied()
-                .unwrap_or(g.baseline.x.0);
-            ResolvedGlyph {
+/// A monotonic piecewise-linear map from a constrained x to its spaced x. Each
+/// column's *source* x (the baseline its member glyphs share) maps to the
+/// *target* x the spacing pass assigns its slot; intermediate and outlying
+/// coordinates interpolate/extrapolate linearly. Applied to glyph baselines
+/// **and** stroke endpoints alike, so a stroke at (or near) a glyph's column
+/// moves with it instead of detaching — the fix for strokes being left at their
+/// constrained coordinates while glyphs re-space.
+struct HorizontalRemap {
+    /// `(source_x, target_x)` control points, sorted by source, sources distinct.
+    points: Vec<(f32, f32)>,
+}
+
+impl HorizontalRemap {
+    fn build(input: &ConstrainedLayoutIR) -> Self {
+        // The control points are computed collision-aware (per-slot bearings) by
+        // the spacing pass; sources are globally monotonic because regions tile
+        // left-to-right.
+        HorizontalRemap {
+            points: spacing::control_points(input),
+        }
+    }
+
+    /// Maps a constrained x to its spaced x.
+    fn map(&self, x: f32) -> f32 {
+        let p = &self.points;
+        match p.len() {
+            0 => x,
+            // One column: a pure translation keeps relative offsets.
+            1 => x + (p[0].1 - p[0].0),
+            n => {
+                if x <= p[0].0 {
+                    interp(p[0], p[1], x)
+                } else if x >= p[n - 1].0 {
+                    interp(p[n - 2], p[n - 1], x)
+                } else {
+                    p.windows(2)
+                        .find(|w| x >= w[0].0 && x <= w[1].0)
+                        .map(|w| interp(w[0], w[1], x))
+                        .unwrap_or(x)
+                }
+            }
+        }
+    }
+
+    /// Re-places each glyph at its mapped x, baseline `y` preserved; provenance,
+    /// glyph identity, bounds, style, and layer carried through.
+    fn glyphs(&self, input: &ConstrainedLayoutIR) -> Vec<ResolvedGlyph> {
+        input
+            .glyphs
+            .iter()
+            .map(|g| ResolvedGlyph {
                 provenance: g.provenance.clone(),
                 glyph: g.glyph.clone(),
-                position: epiphany_layout_ir::Point::new(x, g.baseline.y.0),
+                position: Point::new(self.map(g.baseline.x.0), g.baseline.y.0),
                 transform: None,
                 bounding_box: g.bounding_box,
                 style: g.style,
                 layer: g.layer,
-            }
-        })
-        .collect()
+            })
+            .collect()
+    }
+
+    /// Re-maps both endpoints of each stroke, so it tracks the glyphs it spans.
+    fn strokes(&self, input: &ConstrainedLayoutIR) -> Vec<Stroke> {
+        input
+            .strokes
+            .iter()
+            .map(|s| Stroke {
+                provenance: s.provenance.clone(),
+                from: Point::new(self.map(s.from.x.0), s.from.y.0),
+                to: Point::new(self.map(s.to.x.0), s.to.y.0),
+                thickness: s.thickness,
+                layer: s.layer,
+                style: s.style,
+            })
+            .collect()
+    }
+}
+
+/// Linear interpolation/extrapolation through two control points.
+fn interp((s0, t0): (f32, f32), (s1, t1): (f32, f32), x: f32) -> f32 {
+    if (s1 - s0).abs() < f32::EPSILON {
+        t0
+    } else {
+        t0 + (x - s0) * (t1 - t0) / (s1 - s0)
+    }
 }
 
 impl ConstraintSolver for Engraver {
@@ -255,6 +321,35 @@ mod tests {
     }
 
     #[test]
+    fn a_structurally_invalid_input_emits_no_strokes() {
+        // Strokes are gated on the same structural validity as glyphs: an input
+        // whose validation fails (here, an out-of-range stroke thickness) yields a
+        // diagnostic layout with no glyphs *and* no strokes — the malformed stroke
+        // must not leak into canonical_bytes or the renderer.
+        let mut input = fixture();
+        let provenance = input.glyphs[0].provenance.clone();
+        input.strokes.push(epiphany_layout_ir::Stroke {
+            provenance,
+            from: epiphany_layout_ir::Point::new(0.0, 0.0),
+            to: epiphany_layout_ir::Point::new(1.0, 0.0),
+            thickness: epiphany_layout_ir::StaffSpace(f32::MAX),
+            layer: 0,
+            style: epiphany_layout_ir::GlyphStyle::default(),
+        });
+        assert!(
+            input.validate().is_err(),
+            "the out-of-range stroke is invalid"
+        );
+        let report = Engraver.solve(&input, &SolverConfig::default());
+        assert_eq!(report.status, SolveStatus::InternalError);
+        assert!(report.layout.glyphs.is_empty());
+        assert!(
+            report.layout.strokes.is_empty(),
+            "a structurally invalid input emits no strokes (gated like glyphs)"
+        );
+    }
+
+    #[test]
     fn horizontal_spacing_differs_from_the_verbatim_stub() {
         // The whole point of the scaffold: it re-spaces horizontally rather than
         // echoing the input columns. With multiple glyphs the positions differ
@@ -280,12 +375,255 @@ mod tests {
     }
 
     #[test]
+    fn strokes_ride_the_same_coordinate_map_as_glyphs() {
+        // The spacing pass re-places glyphs; the strokes that track them must move
+        // by the same horizontal map, not stay at their constrained coordinates.
+        let input = fixture();
+        let engraved = Engraver.solve(&input, &SolverConfig::default()).layout;
+
+        // Constrained x -> engraved x, per glyph.
+        let glyph_map: Vec<(f32, f32)> = input
+            .glyphs
+            .iter()
+            .zip(&engraved.glyphs)
+            .map(|(c, r)| (c.baseline.x.0, r.position.x.0))
+            .collect();
+
+        // Every stroke endpoint coincident with a glyph's column lands at that
+        // glyph's engraved x — they ride one map, so they stay attached.
+        let mut checked = 0;
+        for (c, r) in input.strokes.iter().zip(&engraved.strokes) {
+            for (gx, ex) in &glyph_map {
+                if (c.from.x.0 - gx).abs() < 1e-6 {
+                    assert!(
+                        (r.from.x.0 - ex).abs() < 1e-3,
+                        "a stroke at a glyph's column detached from it after spacing"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(
+            checked > 0,
+            "expected strokes coincident with glyph columns"
+        );
+
+        // …and the strokes actually moved (the pass re-spaces, it does not echo).
+        let moved = input.strokes.iter().zip(&engraved.strokes).any(|(c, r)| {
+            (c.from.x.0 - r.from.x.0).abs() > 1e-4 || (c.to.x.0 - r.to.x.0).abs() > 1e-4
+        });
+        assert!(
+            moved,
+            "strokes must be re-spaced with the glyphs, not left behind"
+        );
+    }
+
+    #[test]
     fn solve_is_deterministic_and_quantizable() {
         let input = fixture();
         let a = Engraver.solve(&input, &SolverConfig::default()).layout;
         let b = Engraver.solve(&input, &SolverConfig::default()).layout;
         // Byte-identical canonical output across solves (Chapter 9 determinism).
         assert_eq!(a.canonical_bytes(), b.canonical_bytes());
+    }
+
+    #[test]
+    fn engraver_reserves_an_accidental_against_the_previous_note() {
+        // A note's accidental overhangs *left* of its notehead, into the previous
+        // note's column. The spacing pass must reserve that overhang (against the
+        // previous slot's advance), or the accidental overlaps the prior notehead.
+        use epiphany_core::{
+            AccidentalId, CmnNominal, EventId, MusicalPosition, PitchId, PitchSpelling,
+            RationalTime, RegionId, StaffId, TypedObjectId,
+        };
+        use epiphany_layout_ir::{
+            LayoutContent, LayoutObject, LayoutRegion, LocalCoordinateSystem, LogicalLayoutIR,
+            MetricTimeAxis, NoteContent, NotePitch, Provenance, ScoreVersion, TimeAxisModel,
+            TimePoint, VerticalExtent,
+        };
+
+        let region = RegionId::from_raw(1);
+        let staff = StaffId::from_raw(10);
+        let plain = PitchId::from_raw(100);
+        let sharped = PitchId::from_raw(101);
+        let manifested = |src, content| {
+            LayoutObject::from_projection_with_content(
+                Provenance::manifested(src, region, vec![]),
+                Some(staff),
+                content,
+            )
+        };
+        let at = |n, d| TimePoint::Musical(MusicalPosition(RationalTime::new(n, d).unwrap()));
+        let note = |pid: PitchId, time: TimePoint, accidental: bool| {
+            let mut spelling = PitchSpelling::cmn(CmnNominal::C, 5);
+            if accidental {
+                spelling.accidentals.push(AccidentalId::new("sharp"));
+            }
+            LayoutContent::Note(NoteContent {
+                position: time,
+                components: vec![],
+                pitches: vec![NotePitch {
+                    pitch: pid,
+                    spelling: Some(spelling),
+                }],
+            })
+        };
+        let logical = LogicalLayoutIR {
+            source: ScoreVersion::default(),
+            regions: vec![LayoutRegion {
+                provenance: Provenance::projected(TypedObjectId::Region(region), vec![]),
+                coordinate_system: LocalCoordinateSystem::default(),
+                time_axis: TimeAxisModel::Metric(MetricTimeAxis::default()),
+                vertical_extent: VerticalExtent {
+                    staves: vec![staff],
+                },
+                objects: vec![
+                    // A plain note, then a note with a sharp a quarter later.
+                    manifested(
+                        TypedObjectId::Event(EventId::from_raw(1)),
+                        note(plain, at(0, 1), false),
+                    ),
+                    manifested(TypedObjectId::Pitch(plain), LayoutContent::Structural),
+                    manifested(
+                        TypedObjectId::Event(EventId::from_raw(2)),
+                        note(sharped, at(1, 4), true),
+                    ),
+                    manifested(TypedObjectId::Pitch(sharped), LayoutContent::Structural),
+                ],
+            }],
+            engraving_decisions: vec![],
+            overrides: vec![],
+            cross_region: vec![],
+        };
+
+        let constrained = to_constrained(&logical);
+        let engraved = Engraver
+            .solve(&constrained, &SolverConfig::default())
+            .layout;
+        let mut noteheads: Vec<_> = engraved
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str() == "noteheadBlack")
+            .collect();
+        noteheads.sort_by(|a, b| a.position.x.0.partial_cmp(&b.position.x.0).unwrap());
+        assert_eq!(noteheads.len(), 2, "two noteheads");
+        let first_right = noteheads[0].position.x.0 + noteheads[0].bounding_box.right.0;
+        let sharp = engraved
+            .glyphs
+            .iter()
+            .find(|g| g.glyph.as_str() == "accidentalSharp")
+            .expect("a sharp is drawn");
+        let sharp_left = sharp.position.x.0 + sharp.bounding_box.left.0;
+        assert!(
+            sharp_left >= first_right,
+            "the accidental ({sharp_left}) overlaps the previous notehead's right edge ({first_right})"
+        );
+    }
+
+    #[test]
+    fn engraver_preserves_key_signature_lead_spacing() {
+        // The lead area (clef + key signature) is fixed-width content. The spacing
+        // pass must reserve it via the lead slot's preferred width, or it compresses
+        // the key signature back onto the clef. This drives the *real* engraver, not
+        // just the verbatim stub.
+        use epiphany_core::{
+            CmnNominal, EventId, KeySignature, MusicalPosition, PitchId, PitchSpelling, RegionId,
+            StaffId, StaffInstanceId, TypedObjectId,
+        };
+        use epiphany_layout_ir::{
+            LayoutContent, LayoutObject, LayoutRegion, LocalCoordinateSystem, LogicalLayoutIR,
+            MetricTimeAxis, NoteContent, NotePitch, PlacedKeySignature, Provenance, ScoreVersion,
+            StaffContent, TimeAxisModel, TimePoint, VerticalExtent,
+        };
+
+        let region = RegionId::from_raw(1);
+        let staff = StaffId::from_raw(10);
+        let pitch = PitchId::from_raw(100);
+        let manifested = |src, content| {
+            LayoutObject::from_projection_with_content(
+                Provenance::manifested(src, region, vec![]),
+                Some(staff),
+                content,
+            )
+        };
+        let logical = LogicalLayoutIR {
+            source: ScoreVersion::default(),
+            regions: vec![LayoutRegion {
+                provenance: Provenance::projected(TypedObjectId::Region(region), vec![]),
+                coordinate_system: LocalCoordinateSystem::default(),
+                time_axis: TimeAxisModel::Metric(MetricTimeAxis::default()),
+                vertical_extent: VerticalExtent {
+                    staves: vec![staff],
+                },
+                objects: vec![
+                    // A 3-sharp (A major) key signature, then a note.
+                    manifested(
+                        TypedObjectId::StaffInstance(StaffInstanceId::from_raw(1)),
+                        LayoutContent::Staff(StaffContent {
+                            clefs: vec![],
+                            keys: vec![PlacedKeySignature {
+                                time: TimePoint::Musical(MusicalPosition::origin()),
+                                key: KeySignature::new(3).expect("three sharps"),
+                            }],
+                        }),
+                    ),
+                    manifested(
+                        TypedObjectId::Event(EventId::from_raw(1)),
+                        LayoutContent::Note(NoteContent {
+                            position: TimePoint::Musical(MusicalPosition::origin()),
+                            components: vec![],
+                            pitches: vec![NotePitch {
+                                pitch,
+                                spelling: Some(PitchSpelling::cmn(CmnNominal::C, 5)),
+                            }],
+                        }),
+                    ),
+                    manifested(TypedObjectId::Pitch(pitch), LayoutContent::Structural),
+                ],
+            }],
+            engraving_decisions: vec![],
+            overrides: vec![],
+            cross_region: vec![],
+        };
+
+        let constrained = to_constrained(&logical);
+        let engraved = Engraver
+            .solve(&constrained, &SolverConfig::default())
+            .layout;
+        let x_of = |name: &str| {
+            engraved
+                .glyphs
+                .iter()
+                .find(|g| g.glyph.as_str() == name)
+                .map(|g| g.position.x.0)
+        };
+        let clef_x = x_of("gClef").expect("clef engraved");
+        let note_x = x_of("noteheadBlack").expect("notehead engraved");
+        let sharps: Vec<f32> = engraved
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str() == "accidentalSharp")
+            .map(|g| g.position.x.0)
+            .collect();
+        assert_eq!(sharps.len(), 3, "a three-sharp signature");
+
+        // Not compressed into the clef: the lead clearly exceeds one note slot.
+        assert!(
+            note_x - clef_x > 3.0,
+            "key signature compressed into the clef (lead width {})",
+            note_x - clef_x
+        );
+        // The accidentals sit in the lead (clef..note), spread to distinct x.
+        assert!(
+            sharps.iter().all(|&x| x > clef_x && x < note_x),
+            "accidentals must lie between the clef and the first note"
+        );
+        let mut sorted = sharps;
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!(
+            sorted[0] < sorted[1] && sorted[1] < sorted[2],
+            "accidentals are spread out, not stacked at one x"
+        );
     }
 
     #[test]

@@ -95,8 +95,9 @@ pub enum TimeAxisKind {
 }
 
 /// Compares two [`TimePoint`]s of the *same* kind; mixed kinds are
-/// incomparable (`None`), which a uniform region never produces.
-fn time_cmp(a: &TimePoint, b: &TimePoint) -> Option<core::cmp::Ordering> {
+/// incomparable (`None`), which a uniform region never produces. Exact — over
+/// rational musical time and integer wall-clock, never a lossy `f64`.
+pub(crate) fn time_cmp(a: &TimePoint, b: &TimePoint) -> Option<core::cmp::Ordering> {
     match (a, b) {
         (TimePoint::Musical(x), TimePoint::Musical(y)) => Some(x.cmp(y)),
         (TimePoint::WallClock(x), TimePoint::WallClock(y)) => Some(x.cmp(y)),

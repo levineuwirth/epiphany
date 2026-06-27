@@ -10,6 +10,11 @@
 /ALL_DECISIONS_AND_READMES.md
 /HANDOFF.md
 
+# The render-svg demo writes its SVG here by convention
+# (`cargo run -p epiphany-render-svg --example render_fixture -- … > out.svg`);
+# it is a working artifact, not source.
+/out.svg
+
 # LaTeX build intermediates (the spec PDF itself is tracked; these are not).
 spec/*.aux
 spec/*.fdb_latexmk

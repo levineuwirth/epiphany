@@ -213,8 +213,20 @@ pub const BRAVURA_METRICS: &[GlyphMetric] = &[
     GlyphMetric::new("flag8thUp", 1007, [0, -84, 1007, 2607]),
     GlyphMetric::new("flag8thDown", 1007, [0, -2607, 1007, 84]),
     GlyphMetric::new("augmentationDot", 400, [0, -154, 308, 154]),
-    GlyphMetric::new("timeSig4", 1280, [40, 0, 1240, 2048]),
-    GlyphMetric::new("timeSigCommon", 1480, [80, 0, 1400, 2048]),
+    // Time-signature digits and the common-time C, with their genuine Bravura
+    // advances and tight bounding boxes (centred on the baseline, y ≈ ±1), from
+    // `tools/extract_bravura_outlines.py` — kept consistent with the outlines.
+    GlyphMetric::new("timeSig0", 1925, [82, -1024, 1843, 1028]),
+    GlyphMetric::new("timeSig1", 1368, [82, -1024, 1286, 1028]),
+    GlyphMetric::new("timeSig2", 1827, [82, -1053, 1745, 1040]),
+    GlyphMetric::new("timeSig3", 1724, [82, -1028, 1642, 1020]),
+    GlyphMetric::new("timeSig4", 1925, [82, -1024, 1843, 1028]),
+    GlyphMetric::new("timeSig5", 1651, [82, -1028, 1569, 1008]),
+    GlyphMetric::new("timeSig6", 1778, [82, -1020, 1696, 1028]),
+    GlyphMetric::new("timeSig7", 1806, [82, -1024, 1724, 1020]),
+    GlyphMetric::new("timeSig8", 1786, [82, -1061, 1704, 1061]),
+    GlyphMetric::new("timeSig9", 1778, [82, -1020, 1696, 1028]),
+    GlyphMetric::new("timeSigCommon", 1737, [20, -1020, 1737, 1028]),
     GlyphMetric::new("barlineSingle", 160, [0, -2048, 160, 2048]),
     GlyphMetric::new("barlineFinal", 620, [0, -2048, 620, 2048]),
     GlyphMetric::new("dynamicForte", 1480, [0, -706, 1480, 1565]),

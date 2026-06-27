@@ -60,6 +60,7 @@ fn snapshot_text(fixture: &str, constrained: &ConstrainedLayoutIR, out: &RenderO
         "fallback_rect_count={}\n",
         out.stats.fallback_rect_count
     ));
+    s.push_str(&format!("stroke_count={}\n", out.stats.stroke_count));
     s.push_str(&format!(
         "provenance_count={}\n",
         out.stats.provenance_count
@@ -135,8 +136,9 @@ fn fixtures_render_to_golden_locked_svg_and_snapshot() {
             "{fixture}: every glyph must be drawn (path or fallback), none dropped"
         );
         assert_eq!(
-            out.stats.provenance_count, out.stats.glyph_count,
-            "{fixture}: every drawn glyph must carry a provenance trace"
+            out.stats.provenance_count,
+            out.stats.glyph_count + out.stats.stroke_count,
+            "{fixture}: every drawn glyph and stroke must carry a provenance trace"
         );
         let class_sum: usize = out.stats.class_counts.values().sum();
         assert_eq!(
@@ -248,4 +250,46 @@ fn svg_validates_under_xmllint_when_available() {
         }
     }
     let _ = std::fs::remove_file(&tmp);
+}
+
+/// The renderer's contract is "consumes *any* solver's `ResolvedLayoutIR`", but
+/// the goldens above only exercise the stub. This drives Agent I's real
+/// `Engraver` — whose horizontal-spacing pass produces geometry that *differs*
+/// from the stub's verbatim columns — through the same renderer and asserts the
+/// output is still well-formed with every glyph drawn and traced, so an
+/// `Engraver` geometry regression cannot slip through unnoticed (the stub
+/// goldens would not catch it).
+#[test]
+fn engraver_output_renders_well_formed_with_every_glyph_drawn() {
+    use epiphany_engrave::Engraver;
+    use epiphany_layout_ir::SolveStatus;
+
+    for (fixture, score) in fixtures() {
+        let constrained = to_constrained(&to_logical(&score));
+        let report = Engraver.solve(&constrained, &SolverConfig::default());
+        assert_eq!(
+            report.status,
+            SolveStatus::Solved,
+            "{fixture}: engrave should solve the constraint-free stub pipeline"
+        );
+        let out = render(&report.layout, &RenderOptions::default());
+
+        check_well_formed(&out.svg)
+            .unwrap_or_else(|e| panic!("{fixture}: engraver SVG is not well-formed: {e}"));
+        assert!(out.stats.glyph_count > 0, "{fixture}: nothing was laid out");
+        assert_eq!(
+            out.stats.path_count + out.stats.fallback_rect_count,
+            out.stats.glyph_count,
+            "{fixture}: every engraver glyph must be drawn (path or fallback), none dropped"
+        );
+        assert_eq!(
+            out.stats.provenance_count,
+            out.stats.glyph_count + out.stats.stroke_count,
+            "{fixture}: every drawn glyph and stroke must carry a provenance trace"
+        );
+        assert!(
+            out.diagnostics.is_empty(),
+            "{fixture}: stub-pipeline glyphs are all bundled, so no fallback is expected"
+        );
+    }
 }

@@ -204,9 +204,13 @@ pub struct ExtensionMetric {
 }
 
 /// The quality metric vector for a layout (Chapter 9 §"Quality Metrics":
-/// `QualityMetricVector`). v0 carries the type but computes **no** values: the
-/// stub's vector is a placeholder all-`0.0` (nominal-best) vector with no
-/// conformance meaning (the normalization functions are deferred).
+/// `QualityMetricVector`). v0 carries the type but computes **no** values: an
+/// interface-only solver reports the conservative all-worst placeholder
+/// ([`QualityMetricVector::unmeasured`], every metric `1.0`), never a measured
+/// value, so a caller cannot mistake an unmeasured layout for a good one. (The
+/// derived [`Default`] is all-`0.0`/nominal-best and is *not* what the stub
+/// reports; the normalization functions of the Quality Metric Catalog are
+/// deferred.)
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct QualityMetricVector {
     pub collision_penalty: NormalizedMetric,
@@ -416,6 +420,13 @@ impl StubSolver {
         } else {
             Vec::new()
         };
+        // Strokes pass through verbatim (the stub resolves no geometry), gated on
+        // the same structural validity as the glyphs.
+        let strokes = if structural_valid {
+            input.strokes.clone()
+        } else {
+            Vec::new()
+        };
         let resolved_glyphs = glyphs.len();
         let pages = input
             .regions
@@ -451,6 +462,7 @@ impl StubSolver {
                 source: input.source,
                 pages,
                 glyphs,
+                strokes,
                 engraving_decisions: input.engraving_decisions.clone(),
                 catalog: input.catalog.clone(),
             },
@@ -544,9 +556,11 @@ mod tests {
                 members: glyphs.iter().map(GlyphObject::id).collect(),
             }],
             glyphs,
+            strokes: vec![],
             vertical_bands: vec![band],
             constraints: vec![],
             engraving_decisions: vec![],
+            diagnostics: vec![],
             catalog,
         }
     }
@@ -628,9 +642,11 @@ mod tests {
                 members: vec![unknown.id()],
             }],
             glyphs: vec![unknown],
+            strokes: vec![],
             vertical_bands: vec![band],
             constraints: vec![],
             engraving_decisions: vec![],
+            diagnostics: vec![],
             catalog: GlyphCatalogIdentity::default(),
         };
         let report = StubSolver.solve(&input, &SolverConfig::default());
@@ -648,6 +664,34 @@ mod tests {
         assert_eq!(report.state.resolved_glyphs, 1);
         assert!(report.unsatisfied_constraints.is_empty());
         assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    fn strokes_survive_the_solve_and_enter_the_canonical_bytes() {
+        let mut input = constrained(vec![glyph("noteheadBlack")]);
+        let baseline = StubSolver
+            .solve(&input, &SolverConfig::default())
+            .layout
+            .canonical_bytes();
+        input.strokes.push(crate::Stroke {
+            provenance: input.glyphs[0].provenance.clone(),
+            from: crate::Point::new(0.0, 0.0),
+            to: crate::Point::new(1.5, 0.0),
+            thickness: crate::StaffSpace(0.13),
+            layer: 0,
+            style: crate::GlyphStyle::default(),
+        });
+        let solved = StubSolver.solve(&input, &SolverConfig::default());
+        assert_eq!(
+            solved.layout.strokes.len(),
+            1,
+            "the stroke survives the solve"
+        );
+        assert_ne!(
+            solved.layout.canonical_bytes(),
+            baseline,
+            "a stroke changes the resolved canonical bytes"
+        );
     }
 
     #[test]

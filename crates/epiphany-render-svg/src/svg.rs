@@ -35,7 +35,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use epiphany_layout_ir::{BoundingBox, Provenance, ResolvedGlyph, ResolvedLayoutIR};
+use epiphany_layout_ir::{BoundingBox, Provenance, ResolvedGlyph, ResolvedLayoutIR, Transform2D};
 
 use crate::outline::outline;
 use crate::xml::{check_well_formed, escape_attr};
@@ -154,13 +154,18 @@ pub struct RenderStats {
     pub path_count: usize,
     /// Fallback `<rect>` elements emitted (glyphs with no bundled outline).
     pub fallback_rect_count: usize,
+    /// `<line>` elements emitted (one per resolved stroke: staff line, stem, …).
+    pub stroke_count: usize,
     /// Elements carrying a `data-prov` trace back to a score-graph source.
     pub provenance_count: usize,
     /// Distinct layers, each rendered as one `<g>` group.
     pub layer_count: usize,
     /// Per-class glyph counts.
     pub class_counts: BTreeMap<GlyphClass, usize>,
-    /// The content viewBox `[min_x, min_y, width, height]`, in staff spaces.
+    /// The padded content bounds `[min_x, min_y, width, height]`, in staff
+    /// spaces. Note this is the *content extent*, not the emitted `viewBox`
+    /// attribute: the SVG is translated so its `viewBox` is always `0 0 W H`
+    /// (the `min_x`/`min_y` here are folded into the y-flip group's translate).
     pub view_box: [f32; 4],
 }
 
@@ -205,6 +210,7 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
                     glyph_count: 0,
                     path_count: 0,
                     fallback_rect_count: 0,
+                    stroke_count: 0,
                     provenance_count: 0,
                     layer_count: 0,
                     class_counts,
@@ -217,14 +223,26 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
     };
     let max_y = min_y + height;
 
-    // Group glyph indices by layer (ascending), preserving input order within.
-    let mut layers: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
+    // Group glyphs and strokes by layer (ascending), preserving input order
+    // within. Strokes draw before glyphs at the same layer, so a staff line sits
+    // under the noteheads on it.
+    let mut glyph_layers: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
     for (i, g) in resolved.glyphs.iter().enumerate() {
-        layers.entry(g.layer).or_default().push(i);
+        glyph_layers.entry(g.layer).or_default().push(i);
     }
+    let mut stroke_layers: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
+    for (i, stroke) in resolved.strokes.iter().enumerate() {
+        stroke_layers.entry(stroke.layer).or_default().push(i);
+    }
+    let layer_ids: std::collections::BTreeSet<i32> = glyph_layers
+        .keys()
+        .chain(stroke_layers.keys())
+        .copied()
+        .collect();
 
     let mut path_count = 0;
     let mut fallback_rect_count = 0;
+    let mut stroke_count = 0;
     let mut provenance_count = 0;
 
     let mut s = String::new();
@@ -250,53 +268,96 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
         num(max_y),
     );
 
-    for (layer, indices) in &layers {
+    for layer in &layer_ids {
         let _ = writeln!(s, "    <g data-layer=\"{}\">", layer);
-        for &i in indices {
-            let g = &resolved.glyphs[i];
-            let name = g.glyph.as_str();
-            let (x, y) = (g.position.x.0, g.position.y.0);
-            let (fill, opacity) = colour(g.style.rgba);
-            let prov = if options.emit_provenance {
-                provenance_count += 1;
-                provenance_attrs(&g.provenance, name, GlyphClass::of(name))
-            } else {
-                String::new()
-            };
-            match outline(name) {
-                Some(o) => {
-                    path_count += 1;
-                    let _ = writeln!(
-                        s,
-                        "      <path d=\"{}\" transform=\"translate({} {})\" fill=\"{}\"{}{}/>",
-                        o.path,
-                        num(x),
-                        num(y),
-                        fill,
-                        opacity,
-                        prov,
-                    );
+
+        // Strokes (staff lines, stems, barlines, …) — drawn first so glyphs on
+        // the same layer sit over them.
+        if let Some(indices) = stroke_layers.get(layer) {
+            for &i in indices {
+                let stroke = &resolved.strokes[i];
+                let (stroke_fill, opacity) = stroke_colour(stroke.style.rgba);
+                let prov = if options.emit_provenance {
+                    provenance_count += 1;
+                    stroke_provenance_attrs(&stroke.provenance)
+                } else {
+                    String::new()
+                };
+                stroke_count += 1;
+                let _ = writeln!(
+                    s,
+                    "      <line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" \
+                     stroke=\"{}\" stroke-width=\"{}\"{}{}/>",
+                    num(stroke.from.x.0),
+                    num(stroke.from.y.0),
+                    num(stroke.to.x.0),
+                    num(stroke.to.y.0),
+                    stroke_fill,
+                    num(stroke.thickness.0),
+                    opacity,
+                    prov,
+                );
+            }
+        }
+
+        if let Some(indices) = glyph_layers.get(layer) {
+            for &i in indices {
+                let g = &resolved.glyphs[i];
+                let name = g.glyph.as_str();
+                let (x, y) = (g.position.x.0, g.position.y.0);
+                // The glyph's resolved transform (scale/rotate/skew about its
+                // origin), composed after the placement translate. `None` ⇒ a bare
+                // translate, the common case.
+                let placement = placement_transform(x, y, &g.transform);
+                if let Some(t) = &g.transform {
+                    if !is_affine(t) {
+                        diagnostics.push(Diagnostic {
+                            message: "non-affine (projective) glyph transform is not \
+                                      representable in SVG; rendered its affine projection"
+                                .to_owned(),
+                            glyph: Some(name.to_owned()),
+                        });
+                    }
                 }
-                None => {
-                    // No outline: surface it and draw the IR bounding box so the
-                    // missing glyph is visible, not silently absent.
-                    fallback_rect_count += 1;
-                    diagnostics.push(Diagnostic {
-                        message: "no bundled Bravura outline; drew bounding-box fallback"
-                            .to_owned(),
-                        glyph: Some(name.to_owned()),
-                    });
-                    let bb = g.bounding_box;
-                    let _ = writeln!(
-                        s,
-                        "      <rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" \
-                         fill=\"none\" stroke=\"#cc0000\" stroke-width=\"0.05\"{}/>",
-                        num(x + bb.left.0),
-                        num(y + bb.bottom.0),
-                        num((bb.right.0 - bb.left.0).max(0.0)),
-                        num((bb.top.0 - bb.bottom.0).max(0.0)),
-                        prov,
-                    );
+                let (fill, opacity) = colour(g.style.rgba);
+                let prov = if options.emit_provenance {
+                    provenance_count += 1;
+                    provenance_attrs(&g.provenance, name, GlyphClass::of(name))
+                } else {
+                    String::new()
+                };
+                match outline(name) {
+                    Some(o) => {
+                        path_count += 1;
+                        let _ = writeln!(
+                            s,
+                            "      <path d=\"{}\" transform=\"{}\" fill=\"{}\"{}{}/>",
+                            o.path, placement, fill, opacity, prov,
+                        );
+                    }
+                    None => {
+                        // No outline: surface it and draw the IR bounding box so the
+                        // missing glyph is visible, not silently absent.
+                        fallback_rect_count += 1;
+                        diagnostics.push(Diagnostic {
+                            message: "no bundled Bravura outline; drew bounding-box fallback"
+                                .to_owned(),
+                            glyph: Some(name.to_owned()),
+                        });
+                        let bb = g.bounding_box;
+                        let _ = writeln!(
+                            s,
+                            "      <rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" \
+                             transform=\"{}\" fill=\"none\" stroke=\"#cc0000\" \
+                             stroke-width=\"0.05\"{}/>",
+                            num(bb.left.0),
+                            num(bb.bottom.0),
+                            num((bb.right.0 - bb.left.0).max(0.0)),
+                            num((bb.top.0 - bb.bottom.0).max(0.0)),
+                            placement,
+                            prov,
+                        );
+                    }
                 }
             }
         }
@@ -311,8 +372,9 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
             glyph_count: resolved.glyphs.len(),
             path_count,
             fallback_rect_count,
+            stroke_count,
             provenance_count,
-            layer_count: layers.len(),
+            layer_count: layer_ids.len(),
             class_counts,
             view_box: [num_f(min_x), num_f(min_y), num_f(width), num_f(height)],
         },
@@ -332,16 +394,39 @@ fn content_bounds(resolved: &ResolvedLayoutIR, margin: f32) -> Option<(f32, f32,
     for g in &resolved.glyphs {
         let bb = drawn_bbox(g);
         let (x, y) = (g.position.x.0, g.position.y.0);
-        for (px, py) in [
-            (x + bb.left.0, y + bb.bottom.0),
-            (x + bb.right.0, y + bb.top.0),
+        // All four bbox corners mapped through the *same* placement transform the
+        // renderer applies — a scale/rotation can push drawn geometry past the
+        // untransformed axis-aligned extent, which would crop it.
+        for (lx, ly) in [
+            (bb.left.0, bb.bottom.0),
+            (bb.right.0, bb.bottom.0),
+            (bb.left.0, bb.top.0),
+            (bb.right.0, bb.top.0),
         ] {
+            let (px, py) = placed_point(x, y, &g.transform, lx, ly);
             if px.is_finite() && py.is_finite() {
                 any = true;
                 min_x = min_x.min(px);
                 min_y = min_y.min(py);
                 max_x = max_x.max(px);
                 max_y = max_y.max(py);
+            }
+        }
+    }
+    // Strokes extend the bounds by a half-thickness box around each endpoint, so a
+    // thick rule is not clipped perpendicular to its direction even at margin 0.
+    for stroke in &resolved.strokes {
+        let half = (stroke.thickness.0 * 0.5).max(0.0);
+        for point in [stroke.from, stroke.to] {
+            let (cx, cy) = (point.x.0, point.y.0);
+            for (px, py) in [(cx - half, cy - half), (cx + half, cy + half)] {
+                if px.is_finite() && py.is_finite() {
+                    any = true;
+                    min_x = min_x.min(px);
+                    min_y = min_y.min(py);
+                    max_x = max_x.max(px);
+                    max_y = max_y.max(py);
+                }
             }
         }
     }
@@ -376,6 +461,87 @@ fn provenance_attrs(p: &Provenance, glyph: &str, class: GlyphClass) -> String {
         escape_attr(glyph),
         class.token(),
     )
+}
+
+/// `data-*` provenance attributes for a stroke (a non-glyph line primitive).
+fn stroke_provenance_attrs(p: &Provenance) -> String {
+    format!(
+        " data-prov=\"{:032x}\" data-source-kind=\"{}\" data-kind=\"stroke\"",
+        p.stable_id.0,
+        p.source.discriminant(),
+    )
+}
+
+/// Whether a [`Transform2D`] is a pure 2-D affine — its bottom row is `[0, 0, 1]`
+/// (within an `f32` tolerance). SVG transforms are affine, so a non-affine
+/// (projective) transform cannot be represented; the renderer diagnoses it and
+/// renders its affine projection.
+fn is_affine(transform: &Transform2D) -> bool {
+    let bottom = transform.matrix[2];
+    bottom[0].abs() < 1e-6 && bottom[1].abs() < 1e-6 && (bottom[2] - 1.0).abs() < 1e-6
+}
+
+/// A glyph-local point mapped to world space through the renderer's placement
+/// transform — the glyph's resolved affine applied about the origin, then
+/// translated to `(px, py)`. Matches [`placement_transform`]'s SVG output (it
+/// uses the affine projection, dropping any projective bottom row).
+fn placed_point(px: f32, py: f32, transform: &Option<Transform2D>, lx: f32, ly: f32) -> (f32, f32) {
+    let (tx, ty) = match transform {
+        None => (lx, ly),
+        Some(t) => {
+            let m = t.matrix;
+            (
+                m[0][0] * lx + m[0][1] * ly + m[0][2],
+                m[1][0] * lx + m[1][1] * ly + m[1][2],
+            )
+        }
+    };
+    (px + tx, py + ty)
+}
+
+/// The SVG `transform` placing a glyph at `(x, y)` and applying its resolved
+/// affine (`scale`/`rotate`/`skew` about the glyph origin) when present. The
+/// affine is the inner (rightmost) transform, so the glyph's local outline is
+/// transformed, then translated into place. `None` is the common case: a bare
+/// translate, byte-identical to the pre-transform output. A non-affine transform
+/// is rendered as its affine projection (the bottom row is dropped); the render
+/// loop emits a diagnostic for that case.
+fn placement_transform(x: f32, y: f32, transform: &Option<Transform2D>) -> String {
+    match transform {
+        None => format!("translate({} {})", num(x), num(y)),
+        Some(t) => {
+            let m = t.matrix;
+            // SVG matrix(a b c d e f) is the affine [[a c e],[b d f],[0 0 1]];
+            // map it from the row-major 3×3 (the bottom row is implicit).
+            format!(
+                "translate({} {}) matrix({} {} {} {} {} {})",
+                num(x),
+                num(y),
+                num(m[0][0]),
+                num(m[1][0]),
+                num(m[0][1]),
+                num(m[1][1]),
+                num(m[0][2]),
+                num(m[1][2]),
+            )
+        }
+    }
+}
+
+/// Splits an `0xRRGGBBAA` colour into an SVG `stroke` value and an optional
+/// `stroke-opacity` attribute (empty when fully opaque).
+fn stroke_colour(rgba: u32) -> (String, String) {
+    let r = (rgba >> 24) & 0xff;
+    let g = (rgba >> 16) & 0xff;
+    let b = (rgba >> 8) & 0xff;
+    let a = rgba & 0xff;
+    let stroke = format!("#{r:02x}{g:02x}{b:02x}");
+    let opacity = if a == 0xff {
+        String::new()
+    } else {
+        format!(" stroke-opacity=\"{}\"", num(a as f32 / 255.0))
+    };
+    (stroke, opacity)
 }
 
 /// Splits an `0xRRGGBBAA` colour into an SVG `fill` value and an optional
@@ -419,8 +585,9 @@ fn num(v: f32) -> String {
     s
 }
 
-/// Normalises a coordinate value: `-0.0` and tiny `±0` round to `0.0`; other
-/// values pass through. Keeps the formatted form and the stored stats agreeing.
+/// Normalises a coordinate value: `-0.0` (which compares equal to `0.0`) maps to
+/// `0.0`; every other value passes through unchanged. Keeps the formatted form
+/// and the stored stats agreeing.
 fn num_f(v: f32) -> f32 {
     if v == 0.0 {
         0.0
@@ -434,7 +601,8 @@ mod tests {
     use super::*;
     use epiphany_core::generators::valid_score_rich;
     use epiphany_layout_ir::{
-        to_constrained, to_logical, ConstraintSolver, SolverConfig, StubSolver,
+        to_constrained, to_logical, ConstraintSolver, GlyphStyle, Point, SolverConfig, StaffSpace,
+        Stroke, StubSolver, Transform2D,
     };
 
     fn stub_layout(seed: u64) -> ResolvedLayoutIR {
@@ -442,6 +610,120 @@ mod tests {
         StubSolver
             .solve(&constrained, &SolverConfig::default())
             .layout
+    }
+
+    #[test]
+    fn a_stroke_renders_as_a_traced_line() {
+        let mut layout = stub_layout(11);
+        let glyph_count = layout.glyphs.len();
+        // The engraver already emits strokes (staff lines, stems, …); this adds
+        // one more and checks it renders and traces on top of them.
+        let base_strokes = layout.strokes.len();
+        layout.strokes.push(Stroke {
+            provenance: layout.glyphs[0].provenance.clone(),
+            from: Point::new(0.0, 0.0),
+            to: Point::new(4.0, 0.0),
+            thickness: StaffSpace(0.13),
+            layer: -1,
+            style: GlyphStyle { rgba: 0x0000_00ff },
+        });
+        let out = render(&layout, &RenderOptions::default());
+        assert!(
+            out.is_well_formed(),
+            "SVG with a stroke must be well-formed"
+        );
+        assert_eq!(out.stats.stroke_count, base_strokes + 1);
+        assert!(
+            out.svg.contains("<line "),
+            "the stroke is drawn as a <line>"
+        );
+        assert!(
+            out.svg.contains("data-kind=\"stroke\""),
+            "the stroke carries a provenance trace"
+        );
+        assert_eq!(
+            out.stats.provenance_count,
+            glyph_count + base_strokes + 1,
+            "every glyph and stroke is traced"
+        );
+    }
+
+    #[test]
+    fn a_glyph_transform_is_applied_not_dropped() {
+        let mut layout = stub_layout(11);
+        // A 2× scale about the glyph origin: the renderer must emit it, not ignore
+        // it (otherwise a future solver's transform would silently disappear).
+        layout.glyphs[0].transform = Some(Transform2D {
+            matrix: [[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 1.0]],
+        });
+        let out = render(&layout, &RenderOptions::default());
+        assert!(out.is_well_formed());
+        assert!(
+            out.svg.contains("matrix(2 0 0 2 0 0)"),
+            "the glyph's resolved transform is applied"
+        );
+    }
+
+    #[test]
+    fn glyph_transform_expands_the_view_box() {
+        let base = stub_layout(11);
+        let base_width = render(&base, &RenderOptions::default()).stats.view_box[2];
+        let mut transformed = base.clone();
+        // Translate one glyph far to the right via its transform; the bounds must
+        // grow to contain it (untransformed bounds would crop it).
+        transformed.glyphs[0].transform = Some(Transform2D {
+            matrix: [[1.0, 0.0, 1000.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        });
+        let width = render(&transformed, &RenderOptions::default())
+            .stats
+            .view_box[2];
+        assert!(
+            width > base_width + 900.0,
+            "a transformed glyph widens the viewBox ({width} vs {base_width})"
+        );
+    }
+
+    #[test]
+    fn thick_stroke_expands_bounds_by_half_width() {
+        let mut layout = stub_layout(11);
+        let provenance = layout.glyphs[0].provenance.clone();
+        layout.glyphs.clear();
+        layout.strokes.push(Stroke {
+            provenance,
+            from: Point::new(0.0, 0.0),
+            to: Point::new(4.0, 0.0),
+            thickness: StaffSpace(2.0),
+            layer: 0,
+            style: GlyphStyle::default(),
+        });
+        let options = RenderOptions {
+            margin: 0.0,
+            ..RenderOptions::default()
+        };
+        let height = render(&layout, &options).stats.view_box[3];
+        // A horizontal rule of thickness 2 spans y ∈ [−1, 1]: a half-width each
+        // side, so the perpendicular extent is at least the full thickness.
+        assert!(
+            height >= 2.0,
+            "half-thickness expands the perpendicular extent (got {height})"
+        );
+    }
+
+    #[test]
+    fn non_affine_transform_is_diagnosed() {
+        let mut layout = stub_layout(11);
+        // A non-zero bottom row makes the transform projective, not affine.
+        layout.glyphs[0].transform = Some(Transform2D {
+            matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.5, 0.0, 1.0]],
+        });
+        let out = render(&layout, &RenderOptions::default());
+        assert!(out.is_well_formed());
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.message.contains("non-affine")),
+            "a projective transform is surfaced as a diagnostic, not silently mis-rendered"
+        );
     }
 
     #[test]
@@ -454,7 +736,10 @@ mod tests {
         assert_eq!(out.stats.path_count, layout.glyphs.len());
         assert_eq!(out.stats.fallback_rect_count, 0);
         assert!(out.diagnostics.is_empty());
-        assert_eq!(out.stats.provenance_count, layout.glyphs.len());
+        assert_eq!(
+            out.stats.provenance_count,
+            layout.glyphs.len() + layout.strokes.len()
+        );
         assert!(out.svg.contains("<svg"));
         assert!(out.svg.contains("data-prov="));
     }
@@ -474,6 +759,7 @@ mod tests {
             source: Default::default(),
             pages: vec![],
             glyphs: vec![],
+            strokes: vec![],
             engraving_decisions: vec![],
             catalog: Default::default(),
         };

@@ -1,107 +1,132 @@
 //! The horizontal spacing pass — the first axis of the planned two-pass spring
 //! layout (`epiphany-engrave`'s DECISIONS.md, decision 1).
 //!
-//! A `ConstrainedLayoutIR` carries one horizontal spring slot per musical time
-//! column, each with a `preferred_width` in staff spaces. This pass walks the
-//! slots in their emitted left-to-right order and assigns each an absolute `x`
-//! by accumulating preferred widths, producing even, non-overlapping horizontal
-//! spacing (the stub solver, by contrast, returns the raw input columns
-//! verbatim). The vertical pass, the soft-spring stretch/compress solve, and
-//! constraint evaluation are deferred to the `Minimal`-tier work (next phase).
+//! A `ConstrainedLayoutIR` carries horizontal spring slots — one slot per
+//! *musical time column* (`to_constrained` groups simultaneous glyphs into a
+//! shared column slot, with the clef in a lead column and barlines in their own
+//! columns). This pass places each glyph-bearing slot left to right and yields
+//! the coordinate-map control points the caller ([`crate::HorizontalRemap`])
+//! applies to glyph baselines *and* the strokes that track them.
+//!
+//! The advance from one slot to the next is the larger of the slot's
+//! `preferred_width` (the spring's natural width — a uniform placeholder in v0)
+//! and a **collision minimum** derived from real glyph bounding boxes: the slot's
+//! right content extent, plus a gap, plus the *next* slot's left overhang (its
+//! accidental zone). Reserving the next slot's left overhang against *this* slot's
+//! advance is what protects a note's accidental from overlapping the previous
+//! note — a single per-slot `preferred_width` could only reserve space to the
+//! right of a slot's source. The vertical pass, the soft-spring stretch/compress
+//! solve, and constraint evaluation remain `Minimal`-tier work (next phase).
 
 use std::collections::BTreeMap;
 
-use epiphany_layout_ir::{ConstrainedLayoutIR, SpringSlotId, StaffSpace};
+use epiphany_layout_ir::{ConstrainedLayoutIR, SpringSlotId};
 
-/// The absolute `x` (in staff spaces) assigned to each spring slot, accumulated
-/// left-to-right over the slots' emitted order. Deterministic: a pure function
-/// of the slot sequence and their preferred widths.
-pub(crate) fn slot_positions(input: &ConstrainedLayoutIR) -> BTreeMap<SpringSlotId, f32> {
-    let mut positions = BTreeMap::new();
-    let mut cursor = 0.0_f32;
-    for slot in &input.horizontal_slots {
-        positions.insert(slot.id, cursor);
-        // Advance by the slot's preferred width; a non-finite or negative width
-        // would have been rejected by `ConstrainedLayoutIR::validate`, but clamp
-        // defensively so the cursor stays finite and monotonic regardless.
-        let StaffSpace(width) = slot.preferred_width;
-        cursor += if width.is_finite() && width >= 0.0 {
-            width
-        } else {
-            0.0
-        };
+/// Inter-slot gap (staff spaces) reserved between one slot's right content and
+/// the next slot's left content.
+const SLOT_GAP: f32 = 0.3;
+
+/// Horizontal coordinate-map control points `(source_x, target_x)`, one per
+/// glyph-bearing slot, sorted left to right. The source is the slot's column
+/// reference (its first member glyph's baseline); the target accumulates
+/// collision-aware advances so neighbouring slots' content — including
+/// left-overhanging accidentals — never overlaps, and a wide lead (clef + key
+/// signature) reserves real space. Deterministic: a pure function of the glyphs
+/// and their bounding boxes.
+pub(crate) fn control_points(input: &ConstrainedLayoutIR) -> Vec<(f32, f32)> {
+    /// One slot's horizontal extent, from its member glyphs.
+    struct Extent {
+        /// Column reference x (the first member's baseline).
+        source: f32,
+        /// Leftmost / rightmost content edge across the slot's glyphs.
+        min_left: f32,
+        max_right: f32,
+        /// The spring's natural width.
+        preferred: f32,
     }
-    positions
+
+    let preferred_of: BTreeMap<SpringSlotId, f32> = input
+        .horizontal_slots
+        .iter()
+        .map(|s| (s.id, s.preferred_width.0))
+        .collect();
+    let mut by_slot: BTreeMap<SpringSlotId, Extent> = BTreeMap::new();
+    for glyph in &input.glyphs {
+        let left = glyph.baseline.x.0 + glyph.bounding_box.left.0;
+        let right = glyph.baseline.x.0 + glyph.bounding_box.right.0;
+        by_slot
+            .entry(glyph.horizontal_slot)
+            .and_modify(|e| {
+                e.min_left = e.min_left.min(left);
+                e.max_right = e.max_right.max(right);
+            })
+            .or_insert(Extent {
+                source: glyph.baseline.x.0,
+                min_left: left,
+                max_right: right,
+                preferred: preferred_of
+                    .get(&glyph.horizontal_slot)
+                    .copied()
+                    .unwrap_or(0.0),
+            });
+    }
+
+    let mut slots: Vec<Extent> = by_slot.into_values().collect();
+    slots.sort_by(|a, b| {
+        a.source
+            .partial_cmp(&b.source)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut points = Vec::with_capacity(slots.len());
+    let mut target = 0.0_f32;
+    for i in 0..slots.len() {
+        points.push((slots[i].source, target));
+        let right_bearing = slots[i].max_right - slots[i].source;
+        // The next slot's left overhang must be cleared by *this* slot's advance.
+        let next_left = slots
+            .get(i + 1)
+            .map(|next| next.source - next.min_left)
+            .unwrap_or(0.0);
+        let advance = slots[i].preferred.max(right_bearing + SLOT_GAP + next_left);
+        target += advance;
+    }
+    points.dedup_by(|a, b| a.0 == b.0);
+    points
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use epiphany_core::generators::valid_score_rich;
-    use epiphany_core::WallClockTime;
-    use epiphany_layout_ir::{
-        to_constrained, to_logical, GlyphCatalogIdentity, SpringSlot, TimePoint,
-    };
-
-    fn slot(id: u128, preferred: f32) -> SpringSlot {
-        SpringSlot {
-            id: SpringSlotId(id),
-            time: TimePoint::WallClock(WallClockTime(id as i64)),
-            min_width: StaffSpace(preferred),
-            preferred_width: StaffSpace(preferred),
-            max_width: None,
-            stretch_factor: 1.0,
-            compress_factor: 1.0,
-            members: vec![],
-        }
-    }
-
-    fn ir_with_slots(slots: Vec<SpringSlot>) -> ConstrainedLayoutIR {
-        ConstrainedLayoutIR {
-            source: Default::default(),
-            regions: vec![],
-            horizontal_slots: slots,
-            glyphs: vec![],
-            vertical_bands: vec![],
-            constraints: vec![],
-            engraving_decisions: vec![],
-            catalog: GlyphCatalogIdentity::default(),
-        }
-    }
+    use epiphany_layout_ir::{to_constrained, to_logical};
 
     #[test]
-    fn slots_are_placed_left_to_right_by_accumulated_width() {
+    fn control_points_are_monotonic_in_source_and_target() {
         let c = to_constrained(&to_logical(&valid_score_rich(7)));
-        let positions = slot_positions(&c);
-        // Every slot got a position equal to the running cursor, non-decreasing
-        // in emitted order (preferred widths are non-negative).
-        assert_eq!(positions.len(), c.horizontal_slots.len());
-        let mut cursor = 0.0_f32;
-        for slot in &c.horizontal_slots {
-            let x = positions[&slot.id];
-            assert!(x.is_finite());
-            assert!(
-                (x - cursor).abs() < 1e-3,
-                "slot x must equal the running cursor"
-            );
-            cursor += slot.preferred_width.0;
+        let points = control_points(&c);
+        assert!(!points.is_empty());
+        for w in points.windows(2) {
+            assert!(w[1].0 > w[0].0, "sources strictly increase");
+            assert!(w[1].1 > w[0].1, "targets strictly increase");
         }
     }
 
     #[test]
-    fn spacing_uses_preferred_widths_not_input_columns() {
-        // Slots that each prefer 2.0 staff spaces lay out at 0, 2, 4 — a pure
-        // function of widths, independent of any input baseline column.
-        let input = ir_with_slots(vec![slot(1, 2.0), slot(2, 2.0), slot(3, 2.0)]);
-        let p = slot_positions(&input);
-        assert_eq!(p[&SpringSlotId(1)], 0.0);
-        assert_eq!(p[&SpringSlotId(2)], 2.0);
-        assert_eq!(p[&SpringSlotId(3)], 4.0);
+    fn spacing_re_spaces_rather_than_echoing_sources() {
+        // A wide lead (clef) advances by more than a uniform note slot, so the
+        // engraved targets are not a copy of the source columns.
+        let c = to_constrained(&to_logical(&valid_score_rich(7)));
+        let points = control_points(&c);
+        assert!(
+            points.iter().any(|(s, t)| (s - t).abs() > 1e-3),
+            "targets must differ from sources (re-spacing happened)"
+        );
     }
 
     #[test]
     fn spacing_is_deterministic() {
-        let input = ir_with_slots(vec![slot(10, 1.5), slot(20, 1.5)]);
-        assert_eq!(slot_positions(&input), slot_positions(&input));
+        let c = to_constrained(&to_logical(&valid_score_rich(3)));
+        assert_eq!(control_points(&c), control_points(&c));
     }
 }

@@ -67,6 +67,7 @@
 pub mod barrier;
 pub mod cache;
 pub mod constrained;
+pub mod engrave_theory;
 pub mod engraving;
 pub mod glyph;
 pub mod logical;
@@ -91,7 +92,11 @@ pub use constrained::{
     to_constrained, try_to_constrained, Axis, BreakKind, ConstrainedLayoutIR,
     ConstrainedLayoutRegion, ConstrainedValidationError, ConstraintParameters,
     ConstraintRegistryId, GlyphObject, GlyphObjectId, GlyphStyle, LayoutConstraint,
-    LayoutTransformError, SpringSlot,
+    LayoutTransformError, SpringSlot, Stroke,
+};
+pub use engrave_theory::{
+    accidental_glyph, clef_glyph, flag_glyph, has_stem, key_signature, notehead_glyph, rest_glyph,
+    staff_position, KeyAccidental, StaffStep,
 };
 pub use engraving::{
     AuthorId, DecisionSource, EngravingDecision, EngravingDecisionId, EngravingDecisionKind,
@@ -104,11 +109,14 @@ pub use glyph::{
     GlyphRenderData, PathCommand, SemVer, SmuflVersion, BRAVURA_METRICS, BRAVURA_VERSION,
 };
 pub use logical::{
-    to_logical, BarLineLayout, BeamGroupLayout, ChordLayout, ClefLayout, CompositeLayoutObject,
-    CrossRegionObject, CueLayout, GraphicLayout, GroupLayout, KeySignatureLayout, LayoutObject,
-    LayoutRegion, LocalCoordinateSystem, LogicalLayoutIR, MarkerLayout, MultimeasureRestLayout,
-    NoteLayout, RestLayout, ScoreVersion, SlurLayout, SpannerLayout, StaffLayout, TextLayout,
-    TieLayout, TimeSignatureDisplayLayout, TrajectoryLayout, TupletDisplayLayout, VerticalExtent,
+    to_logical, BarLineLayout, BarlineKind, BeamGroupLayout, ChordLayout, ClefLayout,
+    CompositeLayoutObject, CrossRegionObject, CueLayout, GraphicLayout, GroupLayout,
+    KeySignatureLayout, LayoutContent, LayoutObject, LayoutRegion, LocalCoordinateSystem,
+    LogicalLayoutIR, MarkerLayout, MeasureContent, MultimeasureRestLayout, NoteContent, NoteLayout,
+    NotePitch, PlacedClef, PlacedComponent, PlacedKeySignature, RestContent, RestLayout,
+    ScoreVersion, SlurLayout, SpannerLayout, StaffContent, StaffLayout, TextLayout, TieLayout,
+    TimeSignatureContent, TimeSignatureDisplayLayout, TrajectoryLayout, TupletDisplayLayout,
+    VerticalExtent,
 };
 pub use provenance::{
     manifestation_layout_id, stable_layout_id, synthesized_layout_id, LayoutObjectId, Provenance,

@@ -118,11 +118,134 @@ pub fn gen_point(rng: &mut Rng) -> Point {
     Point::new(coord(rng), coord(rng))
 }
 
-/// A logical layout object (provenance + an optional owning staff).
+/// A logical engraving-content payload — every [`LayoutContent`] variant, so the
+/// generator/fuzz surface exercises the enriched payloads, not just structural.
+pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
+    fn time(rng: &mut Rng) -> TimePoint {
+        if rng.boolean() {
+            TimePoint::Musical(epiphany_core::MusicalPosition(
+                epiphany_core::RationalTime::new(rng.range(0, 16) as i64, 4).expect("nonzero"),
+            ))
+        } else {
+            TimePoint::WallClock(epiphany_core::WallClockTime(rng.range(0, 10_000) as i64))
+        }
+    }
+    fn duration(numerator: i64, denominator: i64) -> epiphany_core::MusicalDuration {
+        epiphany_core::MusicalDuration(
+            epiphany_core::RationalTime::new(numerator, denominator).expect("nonzero"),
+        )
+    }
+    fn component(rng: &mut Rng, offset: epiphany_core::MusicalDuration) -> PlacedComponent {
+        PlacedComponent {
+            offset,
+            component: epiphany_core::NotatedComponent {
+                base_value: *rng.choose(&[
+                    epiphany_core::NoteValue::Whole,
+                    epiphany_core::NoteValue::Half,
+                    epiphany_core::NoteValue::Quarter,
+                    epiphany_core::NoteValue::Eighth,
+                    epiphany_core::NoteValue::Sixteenth,
+                ]),
+                dots: rng.range(0, 4) as u8,
+                tuplet: None,
+                tied_to_next: rng.boolean(),
+            },
+            tuplet: None,
+        }
+    }
+    fn components(rng: &mut Rng) -> Vec<PlacedComponent> {
+        let mut out = vec![component(rng, epiphany_core::MusicalDuration::zero())];
+        if rng.boolean() {
+            out.push(component(rng, duration(1, 4)));
+        }
+        out
+    }
+    fn clefs(rng: &mut Rng) -> Vec<PlacedClef> {
+        if rng.boolean() {
+            vec![
+                PlacedClef {
+                    time: time(rng),
+                    clef: epiphany_core::Clef::treble(),
+                },
+                PlacedClef {
+                    time: time(rng),
+                    clef: epiphany_core::Clef::bass(),
+                },
+            ]
+        } else {
+            Vec::new()
+        }
+    }
+    fn keys(rng: &mut Rng) -> Vec<PlacedKeySignature> {
+        if rng.boolean() {
+            vec![PlacedKeySignature {
+                time: time(rng),
+                key: epiphany_core::KeySignature::new(rng.range(0, 14) as i8 - 7)
+                    .expect("generator stays in -7..=7"),
+            }]
+        } else {
+            Vec::new()
+        }
+    }
+    fn spelling(rng: &mut Rng) -> Option<epiphany_core::PitchSpelling> {
+        rng.boolean().then(|| {
+            let nominal = *rng.choose(&[
+                epiphany_core::CmnNominal::C,
+                epiphany_core::CmnNominal::D,
+                epiphany_core::CmnNominal::E,
+                epiphany_core::CmnNominal::F,
+                epiphany_core::CmnNominal::G,
+                epiphany_core::CmnNominal::A,
+                epiphany_core::CmnNominal::B,
+            ]);
+            epiphany_core::PitchSpelling::cmn(nominal, rng.range(2, 7) as i8)
+        })
+    }
+    fn barline(rng: &mut Rng) -> BarlineKind {
+        match rng.below(3) {
+            0 => BarlineKind::Interior,
+            1 => BarlineKind::RegionEnd,
+            _ => BarlineKind::Final,
+        }
+    }
+    match rng.below(5) {
+        0 => LayoutContent::Structural,
+        1 => LayoutContent::Staff(StaffContent {
+            clefs: clefs(rng),
+            keys: keys(rng),
+        }),
+        2 => LayoutContent::Note(NoteContent {
+            position: time(rng),
+            components: components(rng),
+            pitches: vec![NotePitch {
+                pitch: epiphany_core::PitchId::new(epiphany_core::ReplicaId(7), rng.next_u64()),
+                spelling: spelling(rng),
+            }],
+        }),
+        3 => LayoutContent::Rest(RestContent {
+            position: time(rng),
+            components: components(rng),
+            staff_position: rng
+                .boolean()
+                .then(|| epiphany_core::StaffPosition(rng.range(0, 9) as i16)),
+        }),
+        _ => LayoutContent::Measure(MeasureContent {
+            start: time(rng),
+            barline: barline(rng),
+            time_signature: rng.boolean().then(|| TimeSignatureContent {
+                numerator: rng.range(1, 13) as u16,
+                denominator: *rng.choose(&[2, 4, 8, 16]),
+            }),
+        }),
+    }
+}
+
+/// A logical layout object (provenance + an optional owning staff + content).
 pub fn gen_layout_object(rng: &mut Rng) -> LayoutObject {
-    LayoutObject::from_projection(
+    LayoutObject::from_projection_with_content(
         gen_provenance(rng),
         rng.boolean().then(|| crate::generators::staff_id(rng)),
+        gen_layout_content(rng),
     )
 }
 
@@ -189,6 +312,21 @@ pub fn gen_logical_layout_ir(rng: &mut Rng) -> LogicalLayoutIR {
     }
 }
 
+/// A non-glyph line primitive (a staff line / stem / barline), so the
+/// generator/fuzz surface exercises strokes alongside glyphs.
+pub fn gen_stroke(rng: &mut Rng) -> Stroke {
+    Stroke {
+        provenance: gen_provenance(rng),
+        from: gen_point(rng),
+        to: gen_point(rng),
+        thickness: gen_staff_space(rng),
+        layer: rng.range(0, 8) as i32 - 4,
+        style: GlyphStyle {
+            rgba: rng.next_u64() as u32,
+        },
+    }
+}
+
 /// A constrained layout IR whose catalog hash covers exactly its glyph metrics
 /// (so the real stub solver accepts it as well-formed), with an **internally
 /// consistent** vertical band: every glyph names the band, and the band's
@@ -229,11 +367,15 @@ pub fn gen_constrained_layout_ir(rng: &mut Rng) -> ConstrainedLayoutIR {
         regions: vec![],
         horizontal_slots,
         glyphs,
+        strokes: (0..rng.range_usize(0, 3))
+            .map(|_| gen_stroke(rng))
+            .collect(),
         vertical_bands: vec![band],
         constraints: vec![],
         engraving_decisions: (0..decisions)
             .map(|_| gen_engraving_decision(rng))
             .collect(),
+        diagnostics: Vec::new(),
         catalog: GlyphCatalogIdentity {
             metrics_hash,
             ..GlyphCatalogIdentity::default()
@@ -326,12 +468,15 @@ pub fn gen_round_trip_report(rng: &mut Rng) -> RoundTripReport {
         .primitives
         .iter()
         .map(|primitive| primitive.provenance.source)
+        .chain(render.strokes.iter().map(|stroke| stroke.provenance.source))
         .collect();
+    let total = render.primitives.len() + render.strokes.len();
     RoundTripReport {
         status: SolveStatus::Solved,
-        logical_objects: render.primitives.len(),
+        logical_objects: total,
         glyphs: render.primitives.len(),
-        render_primitives: render.primitives.len(),
+        render_strokes: render.strokes.len(),
+        render_primitives: total,
         recovered_sources,
     }
 }
@@ -1305,7 +1450,10 @@ mod tests {
         let score = fixtures::ten_measure_single_staff(0xA11CE);
         let report = round_trip(&score);
         assert!(report.glyphs > 0);
-        assert_eq!(report.glyphs, report.render_primitives);
+        assert_eq!(
+            report.render_primitives,
+            report.glyphs + report.render_strokes
+        );
 
         let measures = report
             .recovered_sources
