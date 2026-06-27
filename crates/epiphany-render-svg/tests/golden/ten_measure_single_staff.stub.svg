@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="888.7701" height="116.32" viewBox="0 0 88.877 11.632">
+<svg xmlns="http://www.w3.org/2000/svg" width="888.7701" height="110.24" viewBox="0 0 88.877 11.024">
   <!-- epiphany-render-svg: glyphs are genuine Bravura SMuFL outlines; geometry is the resolved layout verbatim, no engraving performed here -->
-  <g transform="translate(3.065 8) scale(1 -1)">
+  <g transform="translate(3.065 7.392) scale(1 -1)">
     <g data-layer="0">
       <line x1="0" y1="0" x2="0" y2="0" stroke="#000000" stroke-width="0" data-prov="2ef8d2dba955aee38147023b72bdabb7" data-source-kind="6" data-kind="stroke"/>
       <line x1="-1" y1="0" x2="83.4" y2="0" stroke="#000000" stroke-width="0.13" data-prov="a2b28d85f329dbc90f5b6c27789b129b" data-source-kind="3" data-kind="stroke"/>
@@ -95,16 +95,16 @@
       <path d="M0.388 -0.5C0.744 -0.5 1.18 -0.172 1.18 0.168C1.18 0.372 1.02 0.5 0.792 0.5C0.352 0.5 0 0.176 0 -0.168C0 -0.376 0.172 -0.5 0.388 -0.5Z" transform="translate(76.6 -1)" fill="#000000" data-prov="5bc064cf9ed41d380fddb186477aeb78" data-source-kind="1" data-glyph="noteheadBlack" data-class="notehead"/>
       <path d="M0.388 -0.5C0.744 -0.5 1.18 -0.172 1.18 0.168C1.18 0.372 1.02 0.5 0.792 0.5C0.352 0.5 0 0.176 0 -0.168C0 -0.376 0.172 -0.5 0.388 -0.5Z" transform="translate(78.2 -1)" fill="#000000" data-prov="8e06e0b817d3359c9e251afed6d58cee" data-source-kind="1" data-glyph="noteheadBlack" data-class="notehead"/>
       <path d="M0.388 -0.5C0.744 -0.5 1.18 -0.172 1.18 0.168C1.18 0.372 1.02 0.5 0.792 0.5C0.352 0.5 0 0.176 0 -0.168C0 -0.376 0.172 -0.5 0.388 -0.5Z" transform="translate(79.8 -1)" fill="#000000" data-prov="86405f19f3e47252c21d628ae33e94c2" data-source-kind="1" data-glyph="noteheadBlack" data-class="notehead"/>
-      <path d="M0.144 0V4H0V0Z" transform="translate(3 2)" fill="#000000" data-prov="913e510f5e3d36b6ab5a21a0bd531816" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
-      <path d="M0.144 0V4H0V0Z" transform="translate(11 2)" fill="#000000" data-prov="e8f4fdf6d757a83af167a7d7b0d268b9" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
-      <path d="M0.144 0V4H0V0Z" transform="translate(19 2)" fill="#000000" data-prov="aa6e5be72b5517b089a04363f42a1d1c" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
-      <path d="M0.144 0V4H0V0Z" transform="translate(27 2)" fill="#000000" data-prov="ee1eea474c5d0d997d284a2610206922" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
-      <path d="M0.144 0V4H0V0Z" transform="translate(35 2)" fill="#000000" data-prov="a353d60fd103f7a61e55a2b8aa95114e" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
-      <path d="M0.144 0V4H0V0Z" transform="translate(43 2)" fill="#000000" data-prov="55d172d9d863190758f311e8b5c69c9b" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
-      <path d="M0.144 0V4H0V0Z" transform="translate(51 2)" fill="#000000" data-prov="7552f781fca3b72788a57822d143ee69" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
-      <path d="M0.144 0V4H0V0Z" transform="translate(59 2)" fill="#000000" data-prov="4e04c5515de885c96a377123738e0397" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
-      <path d="M0.144 0V4H0V0Z" transform="translate(67 2)" fill="#000000" data-prov="65d223b9dca9579949a3a134b8d06182" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
-      <path d="M0.144 0V4H0V0ZM0.912 4H0.412V0H0.912Z" transform="translate(82.9 2)" fill="#000000" data-prov="8f49273e29ce144556b73f0e914cf377" data-source-kind="9" data-glyph="barlineFinal" data-class="barline"/>
+      <path d="M0.144 0V4H0V0Z" transform="translate(3 0)" fill="#000000" data-prov="913e510f5e3d36b6ab5a21a0bd531816" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
+      <path d="M0.144 0V4H0V0Z" transform="translate(11 0)" fill="#000000" data-prov="e8f4fdf6d757a83af167a7d7b0d268b9" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
+      <path d="M0.144 0V4H0V0Z" transform="translate(19 0)" fill="#000000" data-prov="aa6e5be72b5517b089a04363f42a1d1c" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
+      <path d="M0.144 0V4H0V0Z" transform="translate(27 0)" fill="#000000" data-prov="ee1eea474c5d0d997d284a2610206922" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
+      <path d="M0.144 0V4H0V0Z" transform="translate(35 0)" fill="#000000" data-prov="a353d60fd103f7a61e55a2b8aa95114e" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
+      <path d="M0.144 0V4H0V0Z" transform="translate(43 0)" fill="#000000" data-prov="55d172d9d863190758f311e8b5c69c9b" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
+      <path d="M0.144 0V4H0V0Z" transform="translate(51 0)" fill="#000000" data-prov="7552f781fca3b72788a57822d143ee69" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
+      <path d="M0.144 0V4H0V0Z" transform="translate(59 0)" fill="#000000" data-prov="4e04c5515de885c96a377123738e0397" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
+      <path d="M0.144 0V4H0V0Z" transform="translate(67 0)" fill="#000000" data-prov="65d223b9dca9579949a3a134b8d06182" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
+      <path d="M0.144 0V4H0V0ZM0.912 4H0.412V0H0.912Z" transform="translate(82.9 0)" fill="#000000" data-prov="8f49273e29ce144556b73f0e914cf377" data-source-kind="9" data-glyph="barlineFinal" data-class="barline"/>
     </g>
   </g>
 </svg>

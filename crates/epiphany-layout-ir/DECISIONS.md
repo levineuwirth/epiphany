@@ -166,8 +166,12 @@ object is covered); the provenance-preservation contract itself is unchanged.
   parallel re-engraving) with both `metrics` and `render_data`. The in-tree
   Bravura catalog bundles metrics but **no** outlines/bitmaps, so its
   `render_data` honestly returns `None` (reporting `Some` would claim data that
-  does not exist). `font_version` is `Option<SemVer>`, set to the latest stable
-  Bravura release (`1.38.0`). Glyph anchors are a *map* keyed by name: the catalog
+  does not exist). `font_version` is `Option<SemVer>`, set to the SHA-pinned
+  `bravura-1.392` release the in-tree metrics are extracted from — the same font
+  the renderer's outlines come from, so reserved metrics and drawn ink agree. The
+  font declares a single decimal version (`"Version 1.392"`), recorded verbatim as
+  `SemVer { major: 1, minor: 392, patch: 0 }`; see `BRAVURA_VERSION` for the
+  canonical mapping rule. Glyph anchors are a *map* keyed by name: the catalog
   hash sorts them by name and **rejects** a duplicate name (a panic), so the hash
   never depends on anchor slice order (Appendix D §"Ordered Iteration").
   every catalog method, including `identity`, is object-safe; owned font,

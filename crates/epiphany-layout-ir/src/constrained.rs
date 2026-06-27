@@ -1030,7 +1030,11 @@ pub fn try_to_constrained(
                         "barlineSingle"
                     };
                     let info = column(&key);
-                    let baseline = Point::new(info.x, yo + STAFF_HEIGHT / 2.0);
+                    // The barline glyph's origin is its lower end — Bravura barlines
+                    // run 0..4 staff spaces *up* from the origin — so anchoring it at
+                    // the staff bottom (`yo`) makes it connect the bottom and top
+                    // staff lines rather than float above the midline.
+                    let baseline = Point::new(info.x, yo);
                     emit.glyph(provenance, name, baseline, band_of(staff), staff, info.slot);
                     // The time signature this measure introduces: numerator over
                     // denominator, just right of the barline, each digit a

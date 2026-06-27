@@ -99,9 +99,17 @@ pub struct GlyphCatalogIdentity {
     pub metrics_hash: [u8; 32],
 }
 
-/// The Bravura release whose metrics the in-tree table approximates (the latest
-/// stable Bravura release).
-pub const BRAVURA_VERSION: SemVer = SemVer::new(1, 38, 0);
+/// The Bravura release the in-tree metrics table is extracted from — the *same*
+/// SHA-pinned font (`bravura-1.392`) the renderer's outlines come from, so the
+/// reserved advances/bboxes and the drawn ink agree.
+///
+/// **Version mapping (canonical):** the font declares a single decimal version —
+/// name-table ID 5 is literally `"Version 1.392"` and `head.fontRevision ≈ 1.392`
+/// — so it is recorded verbatim as `major.minor = 1.392`, i.e. `SemVer { major: 1,
+/// minor: 392, patch: 0 }`. The minor field carries the font's `392` unchanged
+/// rather than inventing a `1.39.2` patch split the font never declares, so this
+/// identifier round-trips to the font's own version string.
+pub const BRAVURA_VERSION: SemVer = SemVer::new(1, 392, 0);
 
 impl Default for GlyphCatalogIdentity {
     /// The bundled Bravura identity, with `metrics_hash` over the *whole*
@@ -186,51 +194,61 @@ const STEM_DOWN_SE: GlyphAnchor = GlyphAnchor {
 const NOTEHEAD_ANCHORS: &[GlyphAnchor] = &[STEM_UP_NW, STEM_DOWN_SE];
 
 /// A representative in-tree slice of Bravura's SMuFL metrics
-/// (`(name, advance, [left, bottom, right, top])`, `1/1024`-staff-space units).
-/// Every glyph the v0 pipeline names is in this table; the stub solver checks
-/// that, so a missing entry surfaces as [`crate::SolveStatus::InternalError`].
+/// (`(name, advance, [left, bottom, right, top])`, `1/1024`-staff-space units),
+/// extracted from the SHA-pinned `bravura-1.392` font by `epiphany-render-svg`'s
+/// `tools/extract_bravura_outlines.py` — the **same** font the renderer's outlines
+/// come from. Each `bbox` is the corresponding outline's bounds rounded *outward*
+/// to the `1/1024` grid (floor the mins, ceil the maxes), so the metric box always
+/// **contains** the drawn ink: the engraver evaluates collisions from this box, and
+/// a containing box keeps a no-collision result honest on paper (a `render-svg` test
+/// proves the containment). Every glyph the v0 pipeline names is in this table; the
+/// stub solver checks that, so a missing entry surfaces as
+/// [`crate::SolveStatus::InternalError`]. The named anchors are SMuFL
+/// engraving-default approximations (font metadata, not glyf bounds — so not part of
+/// the outline extraction).
 pub const BRAVURA_METRICS: &[GlyphMetric] = &[
     GlyphMetric::anchored(
         "noteheadBlack",
-        1180,
-        [0, -512, 1180, 512],
+        1208,
+        [0, -512, 1209, 512],
         NOTEHEAD_ANCHORS,
     ),
-    GlyphMetric::anchored("noteheadHalf", 1180, [0, -512, 1180, 512], NOTEHEAD_ANCHORS),
-    GlyphMetric::new("noteheadWhole", 1690, [0, -512, 1690, 512]),
-    GlyphMetric::new("noteheadDoubleWhole", 2616, [0, -512, 2616, 512]),
-    GlyphMetric::new("gClef", 2684, [0, -2048, 2600, 4660]),
-    GlyphMetric::new("fClef", 2776, [0, -1024, 2776, 1024]),
-    GlyphMetric::new("cClef", 2884, [0, -2048, 2884, 2048]),
-    GlyphMetric::new("accidentalSharp", 994, [0, -1392, 994, 1392]),
-    GlyphMetric::new("accidentalFlat", 821, [0, -703, 821, 1751]),
-    GlyphMetric::new("accidentalNatural", 686, [0, -1377, 686, 1377]),
-    GlyphMetric::new("accidentalDoubleSharp", 1006, [0, -260, 1006, 260]),
-    GlyphMetric::new("restWhole", 1280, [0, 0, 1280, 512]),
-    GlyphMetric::new("restHalf", 1280, [0, -512, 1280, 0]),
-    GlyphMetric::new("restQuarter", 1024, [0, -1536, 1024, 1536]),
-    GlyphMetric::new("rest8th", 845, [0, -1024, 845, 1024]),
-    GlyphMetric::new("flag8thUp", 1007, [0, -84, 1007, 2607]),
-    GlyphMetric::new("flag8thDown", 1007, [0, -2607, 1007, 84]),
-    GlyphMetric::new("augmentationDot", 400, [0, -154, 308, 154]),
-    // Time-signature digits and the common-time C, with their genuine Bravura
-    // advances and tight bounding boxes (centred on the baseline, y ≈ ±1), from
-    // `tools/extract_bravura_outlines.py` — kept consistent with the outlines.
-    GlyphMetric::new("timeSig0", 1925, [82, -1024, 1843, 1028]),
-    GlyphMetric::new("timeSig1", 1368, [82, -1024, 1286, 1028]),
-    GlyphMetric::new("timeSig2", 1827, [82, -1053, 1745, 1040]),
-    GlyphMetric::new("timeSig3", 1724, [82, -1028, 1642, 1020]),
-    GlyphMetric::new("timeSig4", 1925, [82, -1024, 1843, 1028]),
-    GlyphMetric::new("timeSig5", 1651, [82, -1028, 1569, 1008]),
-    GlyphMetric::new("timeSig6", 1778, [82, -1020, 1696, 1028]),
-    GlyphMetric::new("timeSig7", 1806, [82, -1024, 1724, 1020]),
-    GlyphMetric::new("timeSig8", 1786, [82, -1061, 1704, 1061]),
-    GlyphMetric::new("timeSig9", 1778, [82, -1020, 1696, 1028]),
-    GlyphMetric::new("timeSigCommon", 1737, [20, -1020, 1737, 1028]),
-    GlyphMetric::new("barlineSingle", 160, [0, -2048, 160, 2048]),
-    GlyphMetric::new("barlineFinal", 620, [0, -2048, 620, 2048]),
-    GlyphMetric::new("dynamicForte", 1480, [0, -706, 1480, 1565]),
-    GlyphMetric::new("dynamicPiano", 1700, [0, -509, 1700, 1565]),
+    GlyphMetric::anchored("noteheadHalf", 1208, [0, -512, 1209, 512], NOTEHEAD_ANCHORS),
+    GlyphMetric::new("noteheadWhole", 1729, [0, -512, 1729, 512]),
+    GlyphMetric::new("noteheadDoubleWhole", 2454, [0, -635, 2454, 635]),
+    GlyphMetric::new("gClef", 2748, [0, -2696, 2749, 4498]),
+    GlyphMetric::new("fClef", 2802, [-21, -2601, 2802, 1074]),
+    GlyphMetric::new("cClef", 2863, [0, -2073, 2864, 2073]),
+    GlyphMetric::new("accidentalSharp", 1020, [0, -1426, 1020, 1434]),
+    GlyphMetric::new("accidentalFlat", 926, [0, -717, 926, 1799]),
+    GlyphMetric::new("accidentalNatural", 688, [0, -1373, 689, 1397]),
+    GlyphMetric::new("accidentalDoubleSharp", 1024, [0, -512, 1012, 521]),
+    GlyphMetric::new("restWhole", 1159, [0, -553, 1156, 37]),
+    GlyphMetric::new("restHalf", 1159, [0, -9, 1156, 582]),
+    GlyphMetric::new("restQuarter", 1106, [4, -1536, 1106, 1528]),
+    GlyphMetric::new("rest8th", 1024, [0, -1029, 1012, 713]),
+    GlyphMetric::new("flag8thUp", 1081, [0, -3319, 1082, 37]),
+    GlyphMetric::new("flag8thDown", 1253, [0, -58, 1254, 3310]),
+    GlyphMetric::new("augmentationDot", 410, [0, -205, 410, 205]),
+    // Time-signature digits and the common-time C — centred on the baseline
+    // (y ≈ ±1), so a numerator/denominator pair straddles the staff midline.
+    GlyphMetric::new("timeSig0", 1925, [81, -1024, 1844, 1029]),
+    GlyphMetric::new("timeSig1", 1368, [81, -1024, 1287, 1029]),
+    GlyphMetric::new("timeSig2", 1827, [81, -1053, 1745, 1041]),
+    GlyphMetric::new("timeSig3", 1724, [81, -1029, 1643, 1020]),
+    GlyphMetric::new("timeSig4", 1925, [81, -1024, 1844, 1029]),
+    GlyphMetric::new("timeSig5", 1651, [81, -1029, 1569, 1008]),
+    GlyphMetric::new("timeSig6", 1778, [81, -1020, 1696, 1029]),
+    GlyphMetric::new("timeSig7", 1806, [81, -1024, 1725, 1020]),
+    GlyphMetric::new("timeSig8", 1786, [81, -1061, 1704, 1061]),
+    GlyphMetric::new("timeSig9", 1778, [81, -1020, 1696, 1029]),
+    GlyphMetric::new("timeSigCommon", 1737, [20, -1020, 1737, 1029]),
+    // Barlines: the origin is the lower end; the line runs 0..4096 (four staff
+    // spaces) *up* from it, spanning the staff when anchored at the bottom line.
+    GlyphMetric::new("barlineSingle", 147, [0, 0, 148, 4096]),
+    GlyphMetric::new("barlineFinal", 938, [0, 0, 934, 4096]),
+    GlyphMetric::new("dynamicForte", 1491, [-578, -623, 1491, 1819]),
+    GlyphMetric::new("dynamicPiano", 1495, [-365, -582, 1500, 1123]),
 ];
 
 /// Looks up one glyph's metrics by SMuFL name, if bundled.

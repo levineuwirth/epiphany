@@ -14,7 +14,7 @@ The font is NOT vendored; only the generated Rust is committed. Bravura is
 © Steinberg Media Technologies GmbH under the SIL Open Font License 1.1; the
 extracted outlines are redistributed under the same license (see OFL.txt).
 """
-import hashlib, json, re, sys, urllib.request
+import hashlib, json, math, re, sys, urllib.request
 
 # Pinned, immutable sources. A moving branch (`master` / `gh-pages`) would make
 # regeneration non-reproducible: a future font update would silently change the
@@ -94,9 +94,14 @@ def main():
         l, b, r, t = ([round(v * scale, 4) for v in bp.bounds] if bp.bounds else [0, 0, 0, 0])
         rows.append((name, cp, d, (l, b, r, t)))
         # Companion metrics for layout-ir `BRAVURA_METRICS` (1/1024 staff space):
-        # the glyph's advance (from hmtx) and tight bbox.
+        # the advance (from hmtx), and a bbox rounded *outward* from the outline's
+        # bbox — floor the mins, ceil the maxes — so the integer metric box always
+        # *contains* the drawn outline. The engraver evaluates collisions from the
+        # metric box; an inward (nearest) round could leave it a hair smaller than
+        # the ink, making a no-collision result microscopically false on paper.
         adv1024 = round(hmtx[g][0] * scale * 1024)
-        bbox1024 = [round(v * scale * 1024) for v in (bp.bounds or (0, 0, 0, 0))]
+        bbox1024 = [math.floor(l * 1024), math.floor(b * 1024),
+                    math.ceil(r * 1024), math.ceil(t * 1024)]
         metrics.append((name, adv1024, bbox1024))
     rows.sort()
     print("// --- BRAVURA_METRICS rows (advance, [l,b,r,t] in 1/1024 staff space) ---",
