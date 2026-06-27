@@ -131,6 +131,21 @@ object is covered); the provenance-preservation contract itself is unchanged.
   **injective in glyph identity** — swapping two glyphs' names (even with the
   consulted-name *set*, and so the metrics hash, unchanged) changes the bytes.
 
+- **The render-to-hit-test contract lives at the RenderIR boundary, in world
+  coordinates.** `RenderIR::hit_test_map` (`hittest.rs`) turns the provenance the
+  spec calls "the basis of hit-testing, selection, and back-reference navigation"
+  (Chapter 7 §"RenderIR") into a structured map an editor can use directly: one
+  `HitRegion` per glyph/stroke carrying the full chain — rendered primitive →
+  layout object (`stable_id`) → score object (`source`) — plus a selectable
+  `HitShape` (a glyph's placed `bounding_box`, or a stroke's segment + half-width)
+  with `contains`/`aabb` and `hit`/`within` queries. Two deliberate boundaries:
+  (1) shapes are in **staff-space world coords** (the same frame as
+  `RenderPrimitive.position`, before any renderer's world→screen transform), so the
+  contract is renderer-independent and a GUI applies the inverse of the same
+  transform its renderer uses; (2) a glyph's region is its **IR `bounding_box`**
+  (the boundary's granularity, which I-4a made contain the drawn ink), not the
+  render-only outline. Tested against the real pipeline, not guessed by the GUI.
+
 - **Comprehensive, rejecting canonical encoding for `ResolvedLayoutIR`.** The
   canonical output (`ResolvedLayoutIR::canonical_bytes`, via `CanonicalEncode`)
   covers the *full* resolved layout — every glyph's provenance (source, stable

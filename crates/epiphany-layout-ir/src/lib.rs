@@ -70,6 +70,7 @@ pub mod constrained;
 pub mod engrave_theory;
 pub mod engraving;
 pub mod glyph;
+pub mod hittest;
 pub mod logical;
 pub mod provenance;
 pub mod render;
@@ -108,6 +109,7 @@ pub use glyph::{
     GlyphAnchor, GlyphBitmap, GlyphCatalog, GlyphCatalogIdentity, GlyphMetric, GlyphReference,
     GlyphRenderData, PathCommand, SemVer, SmuflVersion, BRAVURA_METRICS, BRAVURA_VERSION,
 };
+pub use hittest::{HitRegion, HitShape, HitTestMap, PrimitiveRef};
 pub use logical::{
     to_logical, BarLineLayout, BarlineKind, BeamGroupLayout, ChordLayout, ClefLayout,
     CompositeLayoutObject, CrossRegionObject, CueLayout, GraphicLayout, GroupLayout,
