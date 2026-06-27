@@ -130,7 +130,7 @@ pub use render::{
 pub use resolved::{
     ResolvedGlyph, ResolvedLayoutIR, ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem,
 };
-pub use roundtrip::{laid_out_object_ids, round_trip, RoundTripReport};
+pub use roundtrip::{laid_out_object_ids, round_trip, round_trip_with, RoundTripReport};
 pub use solver::{
     ConstraintId, ConstraintSolver, ExtensionMetric, ExtensionMetricId, ExtensionWarningId,
     InvalidationScope, InvalidationSet, NormalizedMetric, QualityMetricKind, QualityMetricVector,

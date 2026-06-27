@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Agent I's Epiphany engraving solver (spec Chapter 9): turns a ConstrainedLayoutIR into a ResolvedLayoutIR with real geometry. Phase-2 scaffold — a deterministic horizontal-spacing pass (the first axis of the planned two-pass spring layout) that honestly reports SolverTier::Stub until it evaluates the declared hard constraints and earns the Minimal tier."
+description = "Agent I's Epiphany engraving solver (spec Chapter 9): turns a ConstrainedLayoutIR into a ResolvedLayoutIR with real geometry. A deterministic horizontal-spacing pass (the first axis of the planned two-pass spring layout) that evaluates the declared hard constraints and reports SolverTier::Minimal. The vertical spring pass and casting-off are deferred to a later tier."
 
 [dependencies]
 # The solver consumes/produces the Chapter 7 IR stages and implements the
@@ -17,3 +17,7 @@ epiphany-layout-ir.workspace = true
 # Tests drive the solver from real score fixtures via epiphany-core's generators
 # (and a couple of leaf id/time types).
 epiphany-core.workspace = true
+# The criterion-6 round-trip test mirrors the hand-off gate's fixtures, including
+# epiphany-testkit's `ten_measure_single_staff` (testkit does not depend on this
+# crate, so this dev-dep introduces no cycle).
+epiphany-testkit.workspace = true

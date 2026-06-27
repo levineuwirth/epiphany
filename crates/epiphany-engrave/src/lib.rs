@@ -919,4 +919,62 @@ mod tests {
         );
         assert_eq!(full.layout, inc.layout);
     }
+
+    /// Acceptance criterion 6 (the Chapter 7 layout round-trip) against the **real**
+    /// Engraver, not the verbatim stub. `round_trip_with` drives graph -> logical ->
+    /// constrained -> *engraved* -> render and asserts the whole provenance contract
+    /// internally: every laid-out object is covered, the complete `Provenance`
+    /// (source, synthesis, dependencies, stable id) survives the engrave pass and the
+    /// render unchanged, the recovered source set is exactly the set laid out, and no
+    /// two objects share a stable id. The point the stub can never make: provenance is
+    /// preserved *through a real geometry change* — the Engraver re-spaces every glyph
+    /// and the strokes that track them, yet not one back-reference is lost.
+    #[test]
+    fn criterion_six_round_trips_through_the_engravers_respacing() {
+        use epiphany_core::generators::valid_score;
+        use epiphany_layout_ir::{round_trip_with, SolveStatus};
+        use epiphany_testkit::fixtures::ten_measure_single_staff;
+
+        for seed in 0..32u64 {
+            // Mirror the criterion-6 hand-off gate's own fixtures — the 10-measure
+            // single staff (measures + barlines) and the rich score (cross-cutting
+            // tuplet/tie/spanner/marker) — and keep `valid_score` for added breadth.
+            let scores = [
+                ten_measure_single_staff(seed),
+                valid_score(seed),
+                valid_score_rich(seed),
+            ];
+            for score in scores {
+                // round_trip_with asserts the full provenance contract; a Solved
+                // status also confirms the Engraver satisfied the pipeline's hard
+                // constraints (the stub pipeline declares none, so vacuously).
+                let report = round_trip_with(&score, &Engraver);
+                assert_eq!(report.status, SolveStatus::Solved);
+            }
+        }
+
+        // Non-vacuity: the contract above held *through* a genuine re-spacing — the
+        // Engraver's geometry differs from the stub's verbatim columns, so provenance
+        // survived a real geometry change rather than a pass-through.
+        let constrained = to_constrained(&to_logical(&valid_score_rich(11)));
+        assert!(constrained.glyphs.len() >= 2);
+        let engraved = Engraver
+            .solve(&constrained, &SolverConfig::default())
+            .layout;
+        let stub = StubSolver
+            .solve(&constrained, &SolverConfig::default())
+            .layout;
+        assert_ne!(
+            engraved
+                .glyphs
+                .iter()
+                .map(|g| g.position.x.0)
+                .collect::<Vec<_>>(),
+            stub.glyphs
+                .iter()
+                .map(|g| g.position.x.0)
+                .collect::<Vec<_>>(),
+            "the Engraver must re-space, not echo the stub's verbatim columns"
+        );
+    }
 }

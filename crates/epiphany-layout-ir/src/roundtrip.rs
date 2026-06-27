@@ -22,7 +22,7 @@ use crate::constrained::to_constrained;
 use crate::logical::{cross_cutting_objects, identified_pitch_ids, to_logical, LayoutObject};
 use crate::provenance::{LayoutObjectId, Provenance};
 use crate::render::to_render;
-use crate::solver::{ConstraintSolver, SolveStatus, SolverConfig, StubSolver};
+use crate::solver::{ConstraintSolver, SolveStatus, SolverConfig, SolverTier, StubSolver};
 
 /// The set of score-graph objects the pipeline lays out — the [`TypedObjectId`]s
 /// the round-trip expects to recover from the RenderIR. Kept in lockstep with
@@ -111,7 +111,22 @@ fn provenance_map<'a>(
 ///   laid out — a surjection onto graph identity (every laid-out source is
 ///   recovered and nothing spurious appears; one source may back several layout
 ///   objects, which the distinct stable ids account for).
+///
+/// Runs against the [`StubSolver`]; [`round_trip_with`] runs the same contract
+/// against any conformant solver (a real solver re-spaces, so the verbatim-geometry
+/// clause is checked only for the [`SolverTier::Stub`] tier).
 pub fn round_trip(score: &Score) -> RoundTripReport {
+    round_trip_with(score, &StubSolver)
+}
+
+/// Criterion 6 for an arbitrary conformant `solver`: every provenance-preservation
+/// guarantee of [`round_trip`] *except* the verbatim-geometry clause, which is the
+/// [`SolverTier::Stub`] tier's specific promise. A real solver re-spaces the glyphs,
+/// but the [`Provenance`] back-references — `source`, `synthesis`, `dependencies`,
+/// and `stable_id` — must survive that re-spacing unchanged, and the recovered
+/// source set must still be exactly the set laid out. This is the strictly stronger
+/// statement: a solver may move geometry, never lose a provenance trace.
+pub fn round_trip_with<S: ConstraintSolver>(score: &Score, solver: &S) -> RoundTripReport {
     let logical = to_logical(score);
     let constrained = to_constrained(&logical);
 
@@ -148,42 +163,51 @@ pub fn round_trip(score: &Score) -> RoundTripReport {
         );
     }
 
-    let report = StubSolver.solve(&constrained, &SolverConfig::default());
-    assert_eq!(
-        report.status,
-        SolveStatus::Solved,
-        "the stub solver must report Solved"
+    let report = solver.solve(&constrained, &SolverConfig::default());
+    // A conformant solver need not report exactly `Solved`: any renderable status
+    // (`Solved`, `SolvedWithWarnings`, `PartialBudgetExhausted`) carries a layout
+    // whose hard constraints are satisfied (Chapter 9 §"The Solver Report"), which
+    // is all the round-trip needs — the provenance contract below is independent of
+    // quality. The non-renderable, diagnostic-only statuses (Unsatisfiable,
+    // InternalError) have no authoritative layout to round-trip.
+    assert!(
+        report.status.is_renderable(),
+        "the solver must return a renderable layout, got {:?}",
+        report.status
     );
     assert!(
         report.satisfied_hard_constraints,
-        "the stub solver must satisfy all hard constraints"
+        "the solver must satisfy all hard constraints"
     );
 
-    // The stub solver's geometry contract: it returns the input geometry
-    // *verbatim* — each resolved glyph's position is exactly its constrained
-    // baseline (Chapter 9 / QUICKSTART: "the input geometry verbatim"). The
-    // solver preserves order, so glyphs line up by index.
-    assert_eq!(
-        report.layout.glyphs.len(),
-        constrained.glyphs.len(),
-        "the solver must not add or drop glyphs"
-    );
-    for (constrained_glyph, resolved_glyph) in constrained.glyphs.iter().zip(&report.layout.glyphs)
-    {
+    // The Stub tier's geometry contract: it returns the input geometry *verbatim*
+    // — each resolved glyph's position is exactly its constrained baseline (Chapter
+    // 9 / QUICKSTART: "the input geometry verbatim"), strokes pass through in order.
+    // A higher tier re-spaces, so this clause is the stub's alone; provenance
+    // preservation (asserted below) holds for *every* tier regardless.
+    if solver.tier() == SolverTier::Stub {
         assert_eq!(
-            resolved_glyph.position, constrained_glyph.baseline,
-            "stub solver must return the input geometry verbatim"
+            report.layout.glyphs.len(),
+            constrained.glyphs.len(),
+            "the stub solver must not add or drop glyphs"
         );
-        assert_eq!(resolved_glyph.glyph, constrained_glyph.glyph);
-        assert_eq!(resolved_glyph.bounding_box, constrained_glyph.bounding_box);
-        assert_eq!(resolved_glyph.style, constrained_glyph.style);
-        assert_eq!(resolved_glyph.layer, constrained_glyph.layer);
+        for (constrained_glyph, resolved_glyph) in
+            constrained.glyphs.iter().zip(&report.layout.glyphs)
+        {
+            assert_eq!(
+                resolved_glyph.position, constrained_glyph.baseline,
+                "stub solver must return the input geometry verbatim"
+            );
+            assert_eq!(resolved_glyph.glyph, constrained_glyph.glyph);
+            assert_eq!(resolved_glyph.bounding_box, constrained_glyph.bounding_box);
+            assert_eq!(resolved_glyph.style, constrained_glyph.style);
+            assert_eq!(resolved_glyph.layer, constrained_glyph.layer);
+        }
+        assert_eq!(
+            report.layout.strokes, constrained.strokes,
+            "stub solver must return the input strokes verbatim"
+        );
     }
-    // Strokes likewise pass through the stub verbatim, in order.
-    assert_eq!(
-        report.layout.strokes, constrained.strokes,
-        "stub solver must return the input strokes verbatim"
-    );
 
     let resolved_map = provenance_map(
         "resolved",

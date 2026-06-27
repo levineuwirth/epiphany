@@ -51,9 +51,14 @@ fn pipeline(score: &Score) -> (ConstrainedLayoutIR, RenderOutput) {
 
 /// A deterministic, human-diffable serialization of the machine acceptance
 /// snapshot.
-fn snapshot_text(fixture: &str, constrained: &ConstrainedLayoutIR, out: &RenderOutput) -> String {
+fn snapshot_text(
+    fixture: &str,
+    solver: &str,
+    constrained: &ConstrainedLayoutIR,
+    out: &RenderOutput,
+) -> String {
     let mut s = String::new();
-    s.push_str(&format!("fixture={fixture} solver=stub\n"));
+    s.push_str(&format!("fixture={fixture} solver={solver}\n"));
     s.push_str(&format!("glyph_count={}\n", out.stats.glyph_count));
     s.push_str(&format!("path_count={}\n", out.stats.path_count));
     s.push_str(&format!(
@@ -162,7 +167,7 @@ fn fixtures_render_to_golden_locked_svg_and_snapshot() {
         // Golden locks: the machine snapshot and the full SVG bytes.
         assert_golden(
             &format!("{fixture}.stub.snapshot.txt"),
-            &snapshot_text(fixture, &constrained, &out),
+            &snapshot_text(fixture, "stub", &constrained, &out),
         );
         assert_golden(&format!("{fixture}.stub.svg"), &out.svg);
     }
@@ -252,15 +257,29 @@ fn svg_validates_under_xmllint_when_available() {
     let _ = std::fs::remove_file(&tmp);
 }
 
+/// Drives the full pipeline through Agent I's real `Engraver` — whose
+/// horizontal-spacing pass re-spaces every glyph and the strokes that track them.
+fn engrave_pipeline(score: &Score) -> (ConstrainedLayoutIR, RenderOutput) {
+    use epiphany_engrave::Engraver;
+
+    let constrained = to_constrained(&to_logical(score));
+    let layout = Engraver
+        .solve(&constrained, &SolverConfig::default())
+        .layout;
+    let out = render(&layout, &RenderOptions::default());
+    (constrained, out)
+}
+
 /// The renderer's contract is "consumes *any* solver's `ResolvedLayoutIR`", but
-/// the goldens above only exercise the stub. This drives Agent I's real
+/// the `.stub.*` goldens above only exercise the stub. This drives the real
 /// `Engraver` — whose horizontal-spacing pass produces geometry that *differs*
-/// from the stub's verbatim columns — through the same renderer and asserts the
-/// output is still well-formed with every glyph drawn and traced, so an
-/// `Engraver` geometry regression cannot slip through unnoticed (the stub
-/// goldens would not catch it).
+/// from the stub's verbatim columns — through the same renderer and **golden-locks
+/// its SVG bytes and machine snapshot** under `.engrave.*`, so an `Engraver`
+/// geometry regression is caught at the byte level (the stub goldens cannot see
+/// it), while the same structural invariants (every glyph drawn, every primitive
+/// traced, well-formed XML, no fallbacks) hold as for the stub.
 #[test]
-fn engraver_output_renders_well_formed_with_every_glyph_drawn() {
+fn engraver_output_is_golden_locked_well_formed_with_every_glyph_drawn() {
     use epiphany_engrave::Engraver;
     use epiphany_layout_ir::SolveStatus;
 
@@ -272,8 +291,11 @@ fn engraver_output_renders_well_formed_with_every_glyph_drawn() {
             SolveStatus::Solved,
             "{fixture}: engrave should solve the constraint-free stub pipeline"
         );
-        let out = render(&report.layout, &RenderOptions::default());
 
+        let (_, out) = engrave_pipeline(&score);
+
+        // Structural invariants — identical to the stub's, because the Engraver
+        // re-spaces geometry without adding, dropping, or un-tracing a primitive.
         check_well_formed(&out.svg)
             .unwrap_or_else(|e| panic!("{fixture}: engraver SVG is not well-formed: {e}"));
         assert!(out.stats.glyph_count > 0, "{fixture}: nothing was laid out");
@@ -290,6 +312,37 @@ fn engraver_output_renders_well_formed_with_every_glyph_drawn() {
         assert!(
             out.diagnostics.is_empty(),
             "{fixture}: stub-pipeline glyphs are all bundled, so no fallback is expected"
+        );
+
+        // Provenance survival into the SVG, as for the stub goldens.
+        for g in &out_glyph_ids(&score) {
+            assert!(
+                out.svg.contains(&format!("data-prov=\"{g:032x}\"")),
+                "{fixture}: provenance {g:032x} did not survive the engrave into the SVG"
+            );
+        }
+
+        // Golden locks: the engraver's machine snapshot and full SVG bytes.
+        assert_golden(
+            &format!("{fixture}.engrave.snapshot.txt"),
+            &snapshot_text(fixture, "engrave", &constrained, &out),
+        );
+        assert_golden(&format!("{fixture}.engrave.svg"), &out.svg);
+    }
+}
+
+/// The two solvers' goldens must genuinely differ: the Engraver re-spaces, so its
+/// SVG cannot be byte-identical to the stub's verbatim-column SVG. A regression
+/// that made the Engraver echo the stub would pass both golden checks above (each
+/// would just match its own committed file) — this catches that degeneracy.
+#[test]
+fn engraver_goldens_differ_from_the_stub_goldens() {
+    for (fixture, score) in fixtures() {
+        let (_, stub_out) = pipeline(&score);
+        let (_, engrave_out) = engrave_pipeline(&score);
+        assert_ne!(
+            stub_out.svg, engrave_out.svg,
+            "{fixture}: the Engraver must re-space, so its SVG must differ from the stub's"
         );
     }
 }
