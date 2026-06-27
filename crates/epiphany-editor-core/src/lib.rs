@@ -15,14 +15,19 @@
 //! * **operation minting** ([`EditorSession::apply`] and intents like
 //!   [`EditorSession::transpose_selection`]) — the caller supplies an
 //!   [`OperationKind`] or an intent, and the session assembles the
-//!   [`OperationEnvelope`] (id, author, stamp, causal context) so a GUI never
-//!   hand-rolls the envelope bookkeeping;
+//!   [`OperationEnvelope`] (id, author, stamp, and a causal context covering the
+//!   session's prior edits) so a GUI never hand-rolls the envelope bookkeeping and
+//!   so sequential edits to one target read as overwrites, not concurrent conflicts;
 //! * **apply / re-render** — reduce the operation onto the score, re-render, and
 //!   refuse a diagnostic-only (non-renderable) layout, leaving the document
 //!   unchanged if the edit would not render;
 //! * **selection preservation** — re-resolve the selection against the new layout,
 //!   keeping it when its layout object survives (the cursor does not jump off the
-//!   edited object) and clearing it when the object is gone.
+//!   edited object) and clearing it when the object is gone;
+//! * an **append-only operation log** ([`EditorSession::applied_operations`],
+//!   [`EditorSession::last_applied`]) — every applied envelope, in order, the record
+//!   undo, history, and sync build on (each intent feeds it automatically via
+//!   `apply`).
 //!
 //! The session is **solver-agnostic**: it holds a `Box<dyn ConstraintSolver>`, so a
 //! GUI plugs in the real `Engraver`, the stub, or any conformant solver. It
@@ -103,17 +108,25 @@ impl std::error::Error for EditorError {}
 /// A headless editor session over a score. A GUI opens one, queries its render and
 /// hit-test map to draw and to resolve clicks, and drives edits through it.
 pub struct EditorSession {
+    // The pristine open-time score. Every edit reduces the whole applied-op log
+    // onto this base, so the session's materialization is exactly the canonical
+    // reduction of the operations it emits — which also means a new op's causal
+    // predecessors are present in the set being reduced (see `apply`).
+    base: Score,
     score: Score,
     solver: Box<dyn ConstraintSolver>,
     render: RenderIR,
     map: HitTestMap,
     selection: Option<Selection>,
-    // Operation-minting context. A real client supplies its own replica/author;
-    // the counter and clock advance per minted operation so each gets a fresh,
-    // ordered id.
+    // Operation-minting identity. A real client supplies its own replica/author.
+    // Minted operations form this replica's contiguous, zero-based local history;
+    // the next op's counter is `applied.len()`, so a failed apply consumes no id.
     replica: ReplicaId,
     author: AuthorId,
-    op_counter: u64,
+    // Append-only log of the envelopes this session has applied, in order — the
+    // record undo, sync, and history build on (every intent feeds it via `apply`),
+    // and the input the session re-reduces onto `base` on each edit.
+    applied: Vec<OperationEnvelope>,
 }
 
 impl EditorSession {
@@ -123,6 +136,7 @@ impl EditorSession {
         let (render, map) =
             render_score(&score, solver.as_ref()).ok_or(EditorError::NotRenderable)?;
         Ok(EditorSession {
+            base: score.clone(),
             score,
             solver,
             render,
@@ -130,13 +144,25 @@ impl EditorSession {
             selection: None,
             replica: ReplicaId(1),
             author: AuthorId(0),
-            op_counter: 0,
+            applied: Vec::new(),
         })
     }
 
     /// Overrides the replica/author the session mints operations under (a GUI sets
     /// these to the local editing identity). Defaults to `ReplicaId(1)` / author 0.
+    ///
+    /// **Pre-edit only** — panics if called after an [`Self::apply`]. A session's op
+    /// log is one replica's contiguous, zero-based history (each counter is
+    /// `applied.len()`); switching identity mid-stream would continue the counter
+    /// under a new replica, leaving a `(new_replica, 0)` hole that the
+    /// missing-predecessor rule would hold pending. The identity is therefore fixed
+    /// before the first edit.
     pub fn with_identity(mut self, replica: ReplicaId, author: AuthorId) -> Self {
+        assert!(
+            self.applied.is_empty(),
+            "with_identity must be set before any edit: a session's op log is a \
+             single replica's contiguous history"
+        );
         self.replica = replica;
         self.author = author;
         self
@@ -160,6 +186,20 @@ impl EditorSession {
     /// The current selection, if any.
     pub fn selection(&self) -> Option<Selection> {
         self.selection
+    }
+
+    /// The operations this session has applied, oldest first — an append-only log
+    /// for undo, history, and sync (a client streams these to peers; an undo layer
+    /// rebuilds or inverts from them). Only successfully-applied edits appear; a
+    /// rejected or non-renderable edit leaves the log untouched.
+    pub fn applied_operations(&self) -> &[OperationEnvelope] {
+        &self.applied
+    }
+
+    /// The most recently applied operation, if any (the tail of
+    /// [`Self::applied_operations`]).
+    pub fn last_applied(&self) -> Option<&OperationEnvelope> {
+        self.applied.last()
     }
 
     /// Resolves a click at a world `point`: selects the **topmost** hit there (what
@@ -195,10 +235,23 @@ impl EditorSession {
 
     /// Builds an [`OperationEnvelope`] for a primitive `kind` under the session's
     /// identity at operation `counter` — the bookkeeping (id, author, stamp, causal
-    /// context) a GUI would otherwise assemble by hand. Pure: it does not advance
-    /// the session's counter, so a failed [`Self::apply`] consumes no id.
+    /// context) a GUI would otherwise assemble by hand. Pure: it reads no mutable
+    /// state, so a failed [`Self::apply`] consumes no id.
+    ///
+    /// The causal context makes the session's edits a single replica's contiguous,
+    /// zero-based history: the op at `counter` covers every prior local op (the
+    /// range `[0, counter - 1]`). Two sequential edits to the same target therefore
+    /// read as intentional overwrites — the later covering the earlier — rather than
+    /// concurrent conflicting edits, both when this session re-reduces its own log
+    /// and when a peer replays it. The first op (counter 0) is a root: an empty
+    /// context.
     fn envelope_for(&self, counter: u64, kind: OperationKind) -> OperationEnvelope {
         let id = OperationId::new(self.replica, counter);
+        let causal_context = if counter > 0 {
+            CausalContext::new().with_seen(self.replica, counter - 1)
+        } else {
+            CausalContext::new()
+        };
         OperationEnvelope {
             id,
             author: self.author,
@@ -206,27 +259,40 @@ impl EditorSession {
                 HybridLogicalClock::new(WallClockTime(counter as i64), 0),
                 id,
             ),
-            causal_context: CausalContext::new(),
+            causal_context,
             transaction: None,
             payload: OperationPayload::Primitive(kind),
         }
     }
 
-    /// Applies a primitive operation: mints an envelope, reduces it onto the score,
+    /// Applies a primitive operation: mints an envelope, reduces the whole local
+    /// op log (prior edits plus this one) onto the pristine open-time score,
     /// re-renders, and re-resolves the selection. **Atomic**: on any error — a
     /// rejected (not well-formed) operation, or a diagnostic-only layout — the
-    /// session is left entirely unchanged, including its operation counter.
+    /// session is left entirely unchanged, op log included.
+    ///
+    /// Reducing the *accumulated* set onto `base` (rather than the new op alone
+    /// onto the running materialization) is what lets each envelope carry a causal
+    /// context that covers its predecessors: those predecessors are present in the
+    /// set, so the missing-predecessor rule does not hold the new op pending, and
+    /// the session's render is exactly the canonical reduction of the op log it
+    /// emits. (Re-reducing the whole log each edit is fine at editor scale;
+    /// incremental reduction is a later optimization.)
     pub fn apply(&mut self, kind: OperationKind) -> Result<EditOutcome, EditorError> {
-        let counter = self.op_counter + 1;
+        let counter = self.applied.len() as u64;
         let envelope = self.envelope_for(counter, kind);
 
-        // A minted operation that the reducer will not accept (e.g. a reserved
-        // replica identity) must not silently no-op the edit.
+        // Re-accept the prior log (idempotent — they were accepted before), then
+        // the new op. A minted operation the reducer will not accept (e.g. a
+        // reserved replica identity) must not silently no-op the edit.
         let mut set = OperationSet::new();
-        if !matches!(set.accept(envelope), AcceptOutcome::Accepted) {
+        for prior in &self.applied {
+            set.accept(prior.clone());
+        }
+        if !matches!(set.accept(envelope.clone()), AcceptOutcome::Accepted) {
             return Err(EditorError::RejectedOperation);
         }
-        let edited = set.reduce_onto(&self.score).score;
+        let edited = set.reduce_onto(&self.base).score;
         let graph_changed = edited != self.score;
 
         // Refuse a diagnostic-only layout, still before committing anything.
@@ -234,11 +300,11 @@ impl EditorSession {
             render_score(&edited, self.solver.as_ref()).ok_or(EditorError::NotRenderable)?;
 
         // Commit (the only mutation point — so an error above leaves all state,
-        // counter included, untouched).
-        self.op_counter = counter;
+        // op log included, untouched).
         self.score = edited;
         self.render = render;
         self.map = map;
+        self.applied.push(envelope);
 
         let selection_preserved = self.reresolve_selection();
         Ok(EditOutcome {
@@ -503,6 +569,90 @@ mod tests {
     fn delete_selection_requires_a_selection() {
         let mut session = open_rich(0x5EED);
         assert_eq!(session.delete_selection(), Err(EditorError::NoSelection));
+    }
+
+    #[test]
+    fn applied_operations_log_records_each_successful_edit_in_order() {
+        let mut session = open_rich(0x5EED);
+        assert!(session.applied_operations().is_empty());
+        assert!(session.last_applied().is_none());
+
+        click_a_notehead(&mut session);
+        session.transpose_selection(1).unwrap();
+        session.transpose_selection(-1).unwrap();
+
+        // Two edits, two log entries, distinct ids, in application order, and
+        // last_applied is the tail.
+        let log = session.applied_operations();
+        assert_eq!(log.len(), 2);
+        assert_ne!(log[0].id, log[1].id);
+        assert_eq!(session.last_applied(), Some(&log[1]));
+        // The log carries real envelopes a peer/undo layer can consume.
+        assert!(matches!(
+            log[1].payload,
+            OperationPayload::Primitive(OperationKind::Transpose(_))
+        ));
+    }
+
+    #[test]
+    fn each_local_edit_causally_covers_the_prior_one() {
+        // The session's edits form one replica's contiguous, zero-based history, so
+        // a later edit's envelope causally covers the earlier one. That is what makes
+        // two sequential same-target edits (e.g. a diatonic move, which modifies a
+        // pitch in place) reduce as intentional overwrites rather than concurrent
+        // conflicts — both here and on a peer replaying the log.
+        let mut session = open_rich(0x5EED);
+        click_a_notehead(&mut session);
+        session.transpose_selection(1).unwrap();
+        session.transpose_selection(1).unwrap();
+
+        let log = session.applied_operations();
+        assert_eq!(log.len(), 2);
+        // The first edit is a root: no causal predecessors.
+        assert!(
+            log[0].causal_context.is_empty(),
+            "the first edit has no predecessors"
+        );
+        // The second covers the first (and shares neither id).
+        assert_ne!(log[0].id, log[1].id);
+        assert!(
+            log[1].causal_context.covers(log[0].id),
+            "the second edit causally covers the first"
+        );
+        // And it still materialized — covering its predecessor must not hold it
+        // pending under the missing-predecessor rule (the predecessor is in the set
+        // the session reduces).
+        assert!(
+            session.last_applied().is_some(),
+            "the covering edit applied"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "before any edit")]
+    fn changing_identity_after_an_edit_is_refused() {
+        // The op log is one replica's contiguous history; switching identity after
+        // an edit would continue the counter under a new replica and open a
+        // `(new_replica, 0)` hole. The session refuses it.
+        let mut session = open_rich(0x5EED);
+        click_a_notehead(&mut session);
+        session.transpose_selection(1).unwrap();
+        let _ = session.with_identity(ReplicaId(2), AuthorId(0));
+    }
+
+    #[test]
+    fn a_rejected_edit_is_not_logged() {
+        use epiphany_core::ReplicaId;
+        let mut session = open_rich(0x5EED).with_identity(ReplicaId::SYSTEM_DERIVED, AuthorId(0));
+        click_a_notehead(&mut session);
+        assert_eq!(
+            session.transpose_selection(1),
+            Err(EditorError::RejectedOperation)
+        );
+        assert!(
+            session.applied_operations().is_empty(),
+            "a rejected edit leaves the op log untouched"
+        );
     }
 
     #[test]
