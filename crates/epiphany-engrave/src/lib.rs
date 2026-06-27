@@ -9,27 +9,26 @@
 //! crates so the core/product boundary stays sharp (`spec/PHASE2_QUICKSTART.md`,
 //! crate topology).
 //!
-//! ## Phase status — honest scaffold, not yet `Minimal`
+//! ## Phase status — `Minimal` tier
 //!
-//! Per the QUICKSTART's recommended development pattern, Agent I develops the
-//! renderer ([`epiphany-render-svg`]) against the **stub solver** first, then
-//! grows this crate into the real two-pass spring solver. This is the first
-//! increment: [`Engraver`] runs a genuine deterministic **horizontal spacing
-//! pass** (see [`spacing`]) — the first axis of the planned two-pass spring
-//! layout — placing each glyph-bearing slot left-to-right by a collision-aware
-//! advance (its preferred width floored by the real glyph bearings) instead of
-//! returning the input columns verbatim.
+//! [`Engraver`] runs a genuine deterministic **horizontal spacing pass** (see
+//! [`spacing`]) — placing each glyph-bearing slot left-to-right by a
+//! collision-aware advance (its preferred width floored by the real glyph
+//! bearings) — and **evaluates the IR's declared hard constraints** against the
+//! resolved geometry (no-collision, alignment, position-within; a hard break or
+//! unverifiable extension constraint it cannot honour is reported unsatisfied).
+//! A solve is [`SolveStatus::Solved`] only when every hard constraint is
+//! satisfied; otherwise it is a diagnostic layout naming the ones it could not.
 //!
-//! It does **not yet** run the vertical spring pass, the soft-constraint
-//! stretch/compress solve, or evaluate the IR's declared hard constraints. By the
-//! same honesty rule `layout-ir`'s [`StubSolver`] follows, a solver that does not
-//! evaluate the declared constraints and computes no quality metrics MUST report
-//! [`SolverTier::Stub`], never [`SolverTier::Minimal`] (Chapter 9 §"Conformance
-//! Tiers"). So [`Engraver::tier`] reports `Stub` today; it is promoted to
-//! `Minimal` in the same change that lands real constraint satisfaction. The
-//! quality-metric vector is the conservative all-worst placeholder
-//! ([`QualityMetricVector::unmeasured`]) until the Quality Metric Catalog lands
-//! (Phase 3).
+//! Having earned it, [`Engraver::tier`] reports [`SolverTier::Minimal`] — which
+//! (Chapter 9 §"Conformance Tiers" / QUICKSTART) means *hard constraints
+//! satisfied, no claim about optimality*. It therefore makes **no
+//! normalized-metric claim**: the quality-metric vector stays the conservative
+//! all-worst "no claim" placeholder ([`QualityMetricVector::unmeasured`]) until
+//! the Quality Metric Catalog lands (Phase 3 / `Standard`). Still deferred to a
+//! later tier: the **vertical spring pass** (glyph `y` is the constrained natural
+//! staff layout, preserved verbatim) and **casting-off** (a single system, so it
+//! cannot honour a forced system/page break).
 //!
 //! ## Architecture decision (see `DECISIONS.md`)
 //!
@@ -42,16 +41,19 @@
 
 mod spacing;
 
+use std::collections::BTreeMap;
+
 use epiphany_layout_ir::{
-    all_available, BravuraCatalog, ConstrainedLayoutIR, ConstraintSolver, GlyphCatalog,
-    InvalidationSet, Margins, Point, QualityMetricVector, Rect, ResolvedGlyph, ResolvedLayoutIR,
-    ResolvedPage, ResolvedSystem, Size2D, SolveReport, SolveStatus, SolverBudgetUsed, SolverConfig,
-    SolverState, SolverTier, SolverVersion, SolverWarning, SolverWarningKind, Stroke,
+    all_available, Axis, BravuraCatalog, BreakKind, ConstrainedLayoutIR, ConstraintId,
+    ConstraintSolver, GlyphCatalog, GlyphObjectId, InvalidationSet, LayoutConstraint, Margins,
+    Point, QualityMetricVector, Rect, ResolvedGlyph, ResolvedLayoutIR, ResolvedPage,
+    ResolvedSystem, Size2D, SolveReport, SolveStatus, SolverBudgetUsed, SolverConfig, SolverState,
+    SolverTier, SolverVersion, SolverWarning, SolverWarningKind, Stroke,
 };
 
-/// The Epiphany engraving solver (Chapter 9). See the crate docs for the phase
-/// status: this is the horizontal-spacing scaffold of the planned two-pass
-/// spring layout, reporting [`SolverTier::Stub`] until it earns `Minimal`.
+/// The Epiphany engraving solver (Chapter 9). A `Minimal`-tier solver: it spaces
+/// glyphs horizontally and satisfies the IR's declared hard constraints. See the
+/// crate docs for what each tier claims and what remains deferred.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Engraver;
 
@@ -61,11 +63,12 @@ pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(1);
 
 impl Engraver {
     /// Resolves geometry: a deterministic horizontal spacing pass over the spring
-    /// slots, copying each glyph to its slot's `x` with its baseline `y`
-    /// preserved. Well-formedness is gated exactly as the stub's is — an unknown
-    /// glyph, a forged catalog identity, malformed structure, or an explicit
-    /// constraint this scaffold cannot yet evaluate yields
-    /// [`SolveStatus::InternalError`] (a diagnostic-only layout), never a panic.
+    /// slots (each glyph to its slot's `x`, baseline `y` preserved), then
+    /// evaluation of the declared hard constraints. A malformed input — an unknown
+    /// glyph, a forged catalog identity, or invalid structure — yields
+    /// [`SolveStatus::InternalError`]; a valid problem whose hard constraints
+    /// cannot all be satisfied yields [`SolveStatus::Unsatisfiable`] (naming the
+    /// unsatisfied constraints). Both are diagnostic-only; neither panics.
     fn resolve(&self, input: &ConstrainedLayoutIR) -> SolveReport {
         let structural_valid = input.validate().is_ok();
 
@@ -74,11 +77,6 @@ impl Engraver {
         let names: Vec<&str> = input.glyphs.iter().map(|g| g.glyph.as_str()).collect();
         let metrics_available = all_available(names.iter().copied());
         let catalog_valid = metrics_available && input.catalog == BravuraCatalog.identity(&names);
-
-        // This scaffold does not yet evaluate explicit hard constraints, so — like
-        // the stub — it must not claim them satisfied. An input carrying explicit
-        // constraints is reported as not-yet-solvable rather than falsely Solved.
-        let well_formed = structural_valid && catalog_valid && input.constraints.is_empty();
 
         // The horizontal spacing pass re-places each glyph by its spring slot.
         // The strokes that track those glyphs (stems, staff lines, barlines) must
@@ -94,16 +92,41 @@ impl Engraver {
         };
         let resolved_glyphs = glyphs.len();
 
+        // Evaluate every declared hard constraint against the *resolved* geometry.
+        // A Minimal solve is `Solved` only when all are satisfied. A structurally
+        // invalid or bad-catalog input is not evaluated — there is no trustworthy
+        // geometry — so it reports no evaluation work.
+        let (constraints_satisfied, unsatisfied_constraints, constraints_evaluated) =
+            if structural_valid && catalog_valid {
+                let (satisfied, unsatisfied) = evaluate_constraints(&input.constraints, &glyphs);
+                (satisfied, unsatisfied, input.constraints.len() as u64)
+            } else {
+                (false, Vec::new(), 0)
+            };
+        let well_formed = structural_valid && catalog_valid && constraints_satisfied;
+        // Distinguish a *malformed/unusable* input (InternalError — a structural or
+        // catalog defect the solver cannot proceed past) from a *valid problem
+        // whose declared hard constraints cannot all be satisfied* (Unsatisfiable),
+        // per the solver-report contract (Chapter 9 §"The Solver Report").
+        let status = if !structural_valid || !catalog_valid {
+            SolveStatus::InternalError
+        } else if constraints_satisfied {
+            SolveStatus::Solved
+        } else {
+            SolveStatus::Unsatisfiable
+        };
+
         let mut warnings = Vec::new();
-        if structural_valid && catalog_valid && !input.constraints.is_empty() {
+        if structural_valid && catalog_valid && !unsatisfied_constraints.is_empty() {
             warnings.push(SolverWarning {
                 kind: SolverWarningKind::UnusualLayoutDecision(
-                    "explicit hard-constraint evaluation is not implemented in the \
-                     horizontal-spacing scaffold; it lands with the Minimal tier"
+                    "one or more declared hard constraints are not satisfiable by this \
+                     single-system Minimal solve (e.g. a forced break, or an unverifiable \
+                     extension constraint); see unsatisfied_constraints"
                         .to_owned(),
                 ),
                 affected_objects: Vec::new(),
-                message: "engrave scaffold cannot yet evaluate declared constraints".to_owned(),
+                message: "declared hard constraints unsatisfied".to_owned(),
             });
         }
 
@@ -131,11 +154,7 @@ impl Engraver {
             .collect();
 
         SolveReport {
-            status: if well_formed {
-                SolveStatus::Solved
-            } else {
-                SolveStatus::InternalError
-            },
+            status,
             satisfied_hard_constraints: well_formed,
             layout: ResolvedLayoutIR {
                 source: input.source,
@@ -145,15 +164,18 @@ impl Engraver {
                 engraving_decisions: input.engraving_decisions.clone(),
                 catalog: input.catalog.clone(),
             },
-            unsatisfied_constraints: Vec::new(),
+            unsatisfied_constraints,
             warnings,
-            // No normalized quality metrics computed yet (Stub tier, Phase 3 work).
+            // Minimal makes no normalized-metric claim (Chapter 9 / QUICKSTART:
+            // "satisfies hard constraints but makes no normalized-metric claims";
+            // the Quality Metric Catalog is Phase 3), so the vector is the
+            // conservative all-worst "no claim" placeholder, like the stub's.
             metric_vector: QualityMetricVector::unmeasured(),
             budget_used: SolverBudgetUsed {
                 // The horizontal pass touches each slot once; report that honestly.
                 iterations: input.horizontal_slots.len() as u64,
                 nodes: resolved_glyphs as u64,
-                constraint_evaluations: 0,
+                constraint_evaluations: constraints_evaluated,
                 wall_time_ms: 0,
             },
             state: SolverState {
@@ -252,12 +274,98 @@ fn interp((s0, t0): (f32, f32), (s1, t1): (f32, f32), x: f32) -> f32 {
     }
 }
 
+/// Evaluates the IR's declared hard constraints against the *resolved* geometry,
+/// returning whether all are satisfied and the ids of those that are not — a
+/// constraint's id is its index in the IR's constraint list.
+///
+/// Geometric constraints (no-collision, alignment, position-within) are checked
+/// against the resolved glyph boxes. A *hard* break is reported unsatisfied — a
+/// single-system, single-page Minimal solve casts off nothing, so it cannot force
+/// a break (a *soft* break imposes no obligation). An extension `Registered`
+/// constraint this solver cannot interpret is likewise not claimed satisfied
+/// (Chapter 7 §"Behavior Under Unknown Extensions": conservative).
+fn evaluate_constraints(
+    constraints: &[LayoutConstraint],
+    glyphs: &[ResolvedGlyph],
+) -> (bool, Vec<ConstraintId>) {
+    let by_id: BTreeMap<GlyphObjectId, &ResolvedGlyph> = glyphs
+        .iter()
+        .map(|g| (GlyphObjectId(g.provenance.stable_id.0), g))
+        .collect();
+    let mut unsatisfied = Vec::new();
+    for (index, constraint) in constraints.iter().enumerate() {
+        let satisfied = match constraint {
+            LayoutConstraint::NoCollision { a, b } => match (by_id.get(a), by_id.get(b)) {
+                (Some(a), Some(b)) => !overlaps(a, b),
+                // A referenced glyph was dropped (a diagnostic layout): not claimed.
+                _ => false,
+            },
+            LayoutConstraint::Align { a, b, axis } => match (by_id.get(a), by_id.get(b)) {
+                (Some(a), Some(b)) => aligned(a, b, *axis),
+                _ => false,
+            },
+            LayoutConstraint::PositionWithin { glyph, region } => match by_id.get(glyph) {
+                Some(g) => within(g, region),
+                None => false,
+            },
+            LayoutConstraint::SystemBreakAt { kind, .. }
+            | LayoutConstraint::PageBreakAt { kind, .. } => matches!(kind, BreakKind::Soft),
+            LayoutConstraint::Registered(_, _) => false,
+        };
+        if !satisfied {
+            unsatisfied.push(ConstraintId(index as u128));
+        }
+    }
+    (unsatisfied.is_empty(), unsatisfied)
+}
+
+/// A resolved glyph's absolute bounding box `[left, bottom, right, top]`.
+fn abs_box(g: &ResolvedGlyph) -> [f32; 4] {
+    [
+        g.position.x.0 + g.bounding_box.left.0,
+        g.position.y.0 + g.bounding_box.bottom.0,
+        g.position.x.0 + g.bounding_box.right.0,
+        g.position.y.0 + g.bounding_box.top.0,
+    ]
+}
+
+/// Whether two glyphs' boxes overlap (touching edges do not count).
+fn overlaps(a: &ResolvedGlyph, b: &ResolvedGlyph) -> bool {
+    let [al, ab, ar, at] = abs_box(a);
+    let [bl, bb, br, bt] = abs_box(b);
+    ar > bl && br > al && at > bb && bt > ab
+}
+
+/// Whether two glyphs are aligned along `axis`: a common horizontal line (equal
+/// baseline y) for `Horizontal`, a common vertical line (equal x) for `Vertical`.
+/// (The spec leaves the axis sense to the solver; this is the chosen convention.)
+fn aligned(a: &ResolvedGlyph, b: &ResolvedGlyph, axis: Axis) -> bool {
+    const EPS: f32 = 1e-3;
+    match axis {
+        Axis::Horizontal => (a.position.y.0 - b.position.y.0).abs() < EPS,
+        Axis::Vertical => (a.position.x.0 - b.position.x.0).abs() < EPS,
+    }
+}
+
+/// Whether a glyph's box lies within a region rectangle (inclusive, with a small
+/// tolerance for quantization).
+fn within(g: &ResolvedGlyph, region: &Rect) -> bool {
+    const EPS: f32 = 1e-3;
+    let [l, b, r, t] = abs_box(g);
+    let rl = region.origin.x.0;
+    let rb = region.origin.y.0;
+    let rr = rl + region.size.width.0;
+    let rt = rb + region.size.height.0;
+    l >= rl - EPS && b >= rb - EPS && r <= rr + EPS && t <= rt + EPS
+}
+
 impl ConstraintSolver for Engraver {
     fn tier(&self) -> SolverTier {
-        // Honest: a solver that does not evaluate the declared hard constraints
-        // and computes no quality metrics is below Minimal (Chapter 9). Promoted
-        // to `Minimal` in the change that lands real constraint satisfaction.
-        SolverTier::Stub
+        // Minimal (Chapter 9): it evaluates and satisfies the IR's declared hard
+        // constraints, reporting honestly which (if any) it cannot. It makes no
+        // normalized-metric claim — `Minimal` means hard constraints satisfied,
+        // not optimal quality (the Quality Metric Catalog is Phase 3 / `Standard`).
+        SolverTier::Minimal
     }
 
     fn version(&self) -> SolverVersion {
@@ -294,14 +402,171 @@ mod tests {
     }
 
     #[test]
-    fn reports_the_honest_stub_tier_until_it_earns_minimal() {
-        // The crate exists to *become* the Minimal solver, but until it evaluates
-        // the declared constraints it reports Stub — never a tier it has not
-        // earned. This guards the honesty invariant.
-        assert_eq!(Engraver.tier(), SolverTier::Stub);
-        assert!(Engraver.tier() < SolverTier::Minimal);
+    fn reports_the_minimal_tier_it_has_earned() {
+        // It evaluates the declared hard constraints, so it reports Minimal — above
+        // the interface-only stub, below the metric-claiming Standard tier.
+        assert_eq!(Engraver.tier(), SolverTier::Minimal);
+        assert!(Engraver.tier() > StubSolver.tier());
+        assert!(Engraver.tier() < SolverTier::Standard);
+        // Minimal makes no normalized-metric claim (the catalog is Phase 3).
+        let report = Engraver.solve(&fixture(), &SolverConfig::default());
+        assert_eq!(report.metric_vector, QualityMetricVector::unmeasured());
         assert_eq!(Engraver.version(), ENGRAVER_VERSION);
         assert_ne!(Engraver.version(), StubSolver.version());
+    }
+
+    /// Builds a tiny valid constrained IR — a clef and a single note — and lets
+    /// the caller add constraints over its glyphs.
+    fn with_constraints(
+        constraints: impl FnOnce(&ConstrainedLayoutIR) -> Vec<epiphany_layout_ir::LayoutConstraint>,
+    ) -> ConstrainedLayoutIR {
+        use epiphany_core::{
+            CmnNominal, EventId, MusicalPosition, PitchId, PitchSpelling, RegionId, StaffId,
+            StaffInstanceId, TypedObjectId,
+        };
+        use epiphany_layout_ir::{
+            LayoutContent, LayoutObject, LayoutRegion, LocalCoordinateSystem, LogicalLayoutIR,
+            MetricTimeAxis, NoteContent, NotePitch, Provenance, ScoreVersion, StaffContent,
+            TimeAxisModel, TimePoint, VerticalExtent,
+        };
+        let region = RegionId::from_raw(1);
+        let staff = StaffId::from_raw(10);
+        let pitch = PitchId::from_raw(100);
+        let manifested = |src, content| {
+            LayoutObject::from_projection_with_content(
+                Provenance::manifested(src, region, vec![]),
+                Some(staff),
+                content,
+            )
+        };
+        let logical = LogicalLayoutIR {
+            source: ScoreVersion::default(),
+            regions: vec![LayoutRegion {
+                provenance: Provenance::projected(TypedObjectId::Region(region), vec![]),
+                coordinate_system: LocalCoordinateSystem::default(),
+                time_axis: TimeAxisModel::Metric(MetricTimeAxis::default()),
+                vertical_extent: VerticalExtent {
+                    staves: vec![staff],
+                },
+                objects: vec![
+                    manifested(
+                        TypedObjectId::StaffInstance(StaffInstanceId::from_raw(1)),
+                        LayoutContent::Staff(StaffContent {
+                            clefs: vec![],
+                            keys: vec![],
+                        }),
+                    ),
+                    manifested(
+                        TypedObjectId::Event(EventId::from_raw(1)),
+                        LayoutContent::Note(NoteContent {
+                            position: TimePoint::Musical(MusicalPosition::origin()),
+                            components: vec![],
+                            pitches: vec![NotePitch {
+                                pitch,
+                                spelling: Some(PitchSpelling::cmn(CmnNominal::C, 5)),
+                            }],
+                        }),
+                    ),
+                    manifested(TypedObjectId::Pitch(pitch), LayoutContent::Structural),
+                ],
+            }],
+            engraving_decisions: vec![],
+            overrides: vec![],
+            cross_region: vec![],
+        };
+        let mut c = to_constrained(&logical);
+        c.constraints = constraints(&c);
+        c
+    }
+
+    #[test]
+    fn an_empty_constraint_set_is_vacuously_satisfied() {
+        let report = Engraver.solve(&fixture(), &SolverConfig::default());
+        assert_eq!(report.status, SolveStatus::Solved);
+        assert!(report.satisfied_hard_constraints);
+        assert!(report.unsatisfied_constraints.is_empty());
+        assert_eq!(
+            report.budget_used.constraint_evaluations,
+            fixture().constraints.len() as u64
+        );
+    }
+
+    #[test]
+    fn a_satisfied_no_collision_constraint_solves() {
+        use epiphany_layout_ir::LayoutConstraint;
+        // The clef and the notehead are in different columns, so they do not
+        // collide; a NoCollision over them is satisfied.
+        let input = with_constraints(|c| {
+            let clef = c
+                .glyphs
+                .iter()
+                .find(|g| g.glyph.as_str() == "gClef")
+                .unwrap()
+                .id();
+            let head = c
+                .glyphs
+                .iter()
+                .find(|g| g.glyph.as_str().starts_with("notehead"))
+                .unwrap()
+                .id();
+            vec![LayoutConstraint::NoCollision { a: clef, b: head }]
+        });
+        let report = Engraver.solve(&input, &SolverConfig::default());
+        assert_eq!(report.status, SolveStatus::Solved, "{:?}", report.warnings);
+        assert!(report.satisfied_hard_constraints);
+        assert!(report.unsatisfied_constraints.is_empty());
+        assert_eq!(report.budget_used.constraint_evaluations, 1);
+    }
+
+    #[test]
+    fn a_violated_no_collision_is_reported_not_falsely_solved() {
+        use epiphany_layout_ir::LayoutConstraint;
+        // A glyph trivially collides with itself; NoCollision(g, g) is unsatisfiable
+        // and must be reported, not silently accepted.
+        let input = with_constraints(|c| {
+            let g = c
+                .glyphs
+                .iter()
+                .find(|g| g.glyph.as_str().starts_with("notehead"))
+                .unwrap()
+                .id();
+            vec![LayoutConstraint::NoCollision { a: g, b: g }]
+        });
+        let report = Engraver.solve(&input, &SolverConfig::default());
+        // A valid problem whose hard constraint cannot be met is Unsatisfiable,
+        // not an InternalError (which is reserved for solver/structure failures).
+        assert_eq!(report.status, SolveStatus::Unsatisfiable);
+        assert!(!report.satisfied_hard_constraints);
+        assert_eq!(report.unsatisfied_constraints.len(), 1);
+        assert_eq!(report.budget_used.constraint_evaluations, 1);
+    }
+
+    #[test]
+    fn a_hard_break_cannot_be_honoured_by_single_system_minimal() {
+        use epiphany_layout_ir::{BreakKind, LayoutConstraint};
+        let input = with_constraints(|c| {
+            let slot = c.horizontal_slots[0].id;
+            vec![LayoutConstraint::SystemBreakAt {
+                slot,
+                kind: BreakKind::Hard,
+            }]
+        });
+        let report = Engraver.solve(&input, &SolverConfig::default());
+        assert_eq!(report.status, SolveStatus::Unsatisfiable);
+        assert_eq!(report.unsatisfied_constraints.len(), 1);
+
+        // …but a *soft* break imposes no obligation, so it solves.
+        let soft = with_constraints(|c| {
+            let slot = c.horizontal_slots[0].id;
+            vec![LayoutConstraint::SystemBreakAt {
+                slot,
+                kind: BreakKind::Soft,
+            }]
+        });
+        assert_eq!(
+            Engraver.solve(&soft, &SolverConfig::default()).status,
+            SolveStatus::Solved
+        );
     }
 
     #[test]
@@ -336,6 +601,12 @@ mod tests {
             layer: 0,
             style: epiphany_layout_ir::GlyphStyle::default(),
         });
+        // Declare a constraint too: a malformed input is *not* evaluated, so the
+        // report must claim zero constraint evaluations (not work it never did).
+        let g = input.glyphs[0].id();
+        input
+            .constraints
+            .push(epiphany_layout_ir::LayoutConstraint::NoCollision { a: g, b: g });
         assert!(
             input.validate().is_err(),
             "the out-of-range stroke is invalid"
@@ -346,6 +617,10 @@ mod tests {
         assert!(
             report.layout.strokes.is_empty(),
             "a structurally invalid input emits no strokes (gated like glyphs)"
+        );
+        assert_eq!(
+            report.budget_used.constraint_evaluations, 0,
+            "no constraints were evaluated on a malformed input"
         );
     }
 
