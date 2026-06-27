@@ -6,7 +6,11 @@
 //! (`spec/PHASE2_QUICKSTART.md`, Agent I), every emitted SVG element traces to a
 //! [`ResolvedGlyph`] (and thus to its score-graph source) or to a declared
 //! renderer wrapper (the `<svg>` root, a metadata comment, the y-flip group, a
-//! per-layer `<g>`). The renderer makes *SVG-encoding* choices only — grouping,
+//! per-layer `<g>`). Provenance traces are on by default; turning them off (when
+//! [`RenderOptions::emit_provenance`] is `false`) is an explicit display-only mode
+//! that the metadata comment *declares*, so a trace-free SVG announces itself
+//! rather than passing as an archival one. The renderer makes *SVG-encoding*
+//! choices only — grouping,
 //! `<path>` vs `<rect>` fallback, the viewBox, the coordinate flip, colour
 //! representation. It makes **no engraving-semantic** choices (stem direction,
 //! spacing, beam slope, accidental placement, glyph selection): those are the
@@ -63,6 +67,9 @@ pub struct RenderOptions {
     /// How glyphs are drawn.
     pub glyph_mode: GlyphMode,
     /// Emit `data-*` provenance attributes tracing each element to its source.
+    /// `true` (the default) is the archival/traceable mode; `false` is an explicit
+    /// display-only mode that the emitted SVG's metadata comment *declares*, so the
+    /// absence of traces is announced rather than silently produced.
     pub emit_provenance: bool,
 }
 
@@ -202,7 +209,7 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
         Some(b) => b,
         // Empty layout: a minimal, valid, honest empty canvas.
         None => {
-            let svg = empty_svg();
+            let svg = empty_svg(options.emit_provenance);
             let well_formed = check_well_formed(&svg).is_ok();
             debug_assert!(well_formed);
             return RenderOutput {
@@ -255,10 +262,15 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
         num(width),
         num(height),
     );
-    // Declared metadata wrapper (a comment — honest about what this is).
-    s.push_str(
+    // Declared metadata wrapper (a comment — honest about what this is, including
+    // whether provenance traces are present: suppressing them is an explicit
+    // display-only choice the output announces rather than dropping silently).
+    let _ = writeln!(
+        s,
         "  <!-- epiphany-render-svg: glyphs are genuine Bravura SMuFL outlines; \
-         geometry is the resolved layout verbatim, no engraving performed here -->\n",
+         geometry is the resolved layout verbatim, no engraving performed here; \
+         {} -->",
+        provenance_note(options.emit_provenance),
     );
     // The single y-flip wrapper: staff-space/y-up world -> SVG y-down.
     let _ = writeln!(
@@ -560,13 +572,28 @@ fn colour(rgba: u32) -> (String, String) {
     (fill, opacity)
 }
 
-/// A minimal, valid empty SVG for a layout with nothing to draw.
-fn empty_svg() -> String {
-    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-     <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\" viewBox=\"0 0 1 1\">\n\
-     \x20\x20<!-- epiphany-render-svg: empty resolved layout (no glyphs) -->\n\
-     </svg>\n"
-        .to_owned()
+/// The provenance-state clause of the metadata comment. Archival mode declares
+/// traces present; display-only mode declares them suppressed — so a trace-free
+/// SVG (including the empty canvas) announces itself rather than passing as
+/// archival. Shared by the main render and [`empty_svg`] so neither can drift.
+fn provenance_note(emit_provenance: bool) -> &'static str {
+    if emit_provenance {
+        "every glyph and stroke carries a data-prov trace to its score-graph source"
+    } else {
+        "provenance traces suppressed (display-only output, not archival)"
+    }
+}
+
+/// A minimal, valid empty SVG for a layout with nothing to draw — still declaring
+/// its provenance state, so an empty trace-free render is honest like a full one.
+fn empty_svg(emit_provenance: bool) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\" viewBox=\"0 0 1 1\">\n\
+         \x20\x20<!-- epiphany-render-svg: empty resolved layout (no glyphs); {} -->\n\
+         </svg>\n",
+        provenance_note(emit_provenance),
+    )
 }
 
 /// Formats a coordinate to at most 4 decimals, trimming trailing zeros and
@@ -767,10 +794,22 @@ mod tests {
         assert!(out.is_well_formed());
         assert_eq!(out.stats.glyph_count, 0);
         assert_eq!(out.stats.path_count, 0);
+
+        // Even with nothing to draw, suppressing provenance is declared display-only
+        // — the empty canvas is held to the same honesty contract as a full render.
+        let suppressed = render(
+            &layout,
+            &RenderOptions {
+                emit_provenance: false,
+                ..RenderOptions::default()
+            },
+        );
+        assert!(suppressed.is_well_formed());
+        assert!(suppressed.svg.contains("provenance traces suppressed"));
     }
 
     #[test]
-    fn provenance_can_be_suppressed() {
+    fn provenance_can_be_suppressed_but_is_declared() {
         let layout = stub_layout(5);
         let out = render(
             &layout,
@@ -782,6 +821,17 @@ mod tests {
         assert_eq!(out.stats.provenance_count, 0);
         assert!(!out.svg.contains("data-prov="));
         assert!(out.is_well_formed());
+        // Suppression is announced, not silent: the metadata comment declares the
+        // output display-only, so it can't be mistaken for a traceable/archival one.
+        assert!(
+            out.svg.contains("provenance traces suppressed"),
+            "a trace-free SVG must declare itself display-only"
+        );
+
+        // The default (archival) render instead declares that traces are present.
+        let archival = render(&layout, &RenderOptions::default());
+        assert!(archival.svg.contains("data-prov trace"));
+        assert!(!archival.svg.contains("provenance traces suppressed"));
     }
 
     #[test]

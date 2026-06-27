@@ -22,13 +22,18 @@ no renderer change (the demo binary's `--solver=stub|real` flag exercises both).
 ## The non-overreach rule (Chapter 7 / QUICKSTART, Agent I)
 
 The renderer makes **SVG-encoding choices only** and **no engraving-semantic**
-choices. Every emitted element traces to a `ResolvedGlyph` (and thus a score-graph
-source, via `data-prov`/`data-source-kind`) or to a declared renderer wrapper
-(the `<svg>` root, the metadata comment, the y-flip `<g>`, a per-layer `<g>`). A
-glyph with no bundled outline is **surfaced as a diagnostic** and drawn as a
-visible bounding-box fallback `<rect>` — never silently dropped and never
-invented. The acceptance harness asserts one drawn element per glyph and one
-provenance trace per drawn element.
+choices. In the default **archival** mode every emitted element traces to a
+`ResolvedGlyph` (and thus a score-graph source, via `data-prov`/`data-source-kind`)
+or to a declared renderer wrapper (the `<svg>` root, the metadata comment, the
+y-flip `<g>`, a per-layer `<g>`). Traces can be turned off
+(`RenderOptions::emit_provenance = false`) for a smaller **display-only** SVG; that
+is an explicit mode the **metadata comment declares** (archival → "carries a
+data-prov trace", display-only → "provenance traces suppressed"), so a trace-free
+SVG — including the empty canvas — announces itself rather than passing as
+archival. A glyph with no bundled outline is **surfaced as a diagnostic** and drawn
+as a visible bounding-box fallback `<rect>` — never silently dropped and never
+invented. The acceptance harness (archival mode) asserts one drawn element per
+glyph and one provenance trace per drawn element.
 
 ## Implementation decisions (QUICKSTART "Decisions you'll need to make")
 
