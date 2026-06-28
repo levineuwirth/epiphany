@@ -36,9 +36,10 @@
 use std::fmt;
 
 use epiphany_core::{
-    AcousticRealization, CmnNominal, EventId, IdentifiedPitch, OperationId, Pitch, PitchId,
-    PitchSpacePosition, ReplicaId, Score, SpellingDirective, SpellingScope, SpellingSourceKind,
-    TypedObjectId, WallClockTime,
+    AcousticRealization, CmnNominal, Event, EventDuration, EventId, EventPosition, IdentifiedPitch,
+    MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId, PitchSpacePosition,
+    PitchedEvent, RegionTimeModel, ReplicaId, Score, SpellingDirective, SpellingScope,
+    SpellingSourceKind, StaffInstanceId, StemConfiguration, TypedObjectId, VoiceId, WallClockTime,
 };
 use epiphany_layout_ir::{
     to_constrained, to_logical, to_render, ConstraintSolver, HitTestMap, LayoutObjectId, Point,
@@ -46,8 +47,9 @@ use epiphany_layout_ir::{
 };
 use epiphany_ops::{
     AcceptOutcome, AuthorId, CausalContext, DeleteEventOp, DeleteIdentifiedPitchOp,
-    HybridLogicalClock, InsertIdentifiedPitchOp, ModifyIdentifiedPitchOp, OperationEnvelope,
-    OperationKind, OperationPayload, OperationSet, OperationStamp, TransposeOp, TupletCompensation,
+    HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp, ModifyIdentifiedPitchOp,
+    OperationEnvelope, OperationKind, OperationPayload, OperationSet, OperationStamp, TransposeOp,
+    TupletCompensation,
 };
 
 /// The current selection: the score-graph object to act on, plus the stable layout
@@ -88,12 +90,19 @@ pub enum EditorError {
         /// The kind of object the intent expected.
         expected: &'static str,
     },
-    /// The selected pitch carries an authored spelling override (user-chosen,
-    /// imported, or propagated) that outranks the inferred spelling and pins its
-    /// rendered staff position. A staff-step move that changed only the pitch value
-    /// would move the sound but not the notehead, so it is refused. A respelling-aware
-    /// move (atomically rebasing the override) is a follow-up.
+    /// A pitch involved in the edit carries an authored spelling override (user-chosen,
+    /// imported, or propagated) that outranks the inferred spelling. An intent that
+    /// cannot carry the override refuses rather than mislead: a staff-step move (which
+    /// would move the sound but not the pinned notehead), a chord add whose target
+    /// event has an override (so the rendered staff order can't be read off the raw
+    /// pitch positions), or an insert that copies the pitch (dropping the override from
+    /// the new note). Override-aware edits (atomic value change + `RespellPitch`) are a
+    /// follow-up.
     PitchSpellingOverridden,
+    /// An insert-after would land on a musical position already occupied by another
+    /// event in the same voice (the reducer would silently no-op it). The edit is
+    /// refused; inserting into a packed voice needs an explicit make-room policy.
+    InsertSlotOccupied,
 }
 
 impl fmt::Display for EditorError {
@@ -112,6 +121,9 @@ impl fmt::Display for EditorError {
             EditorError::PitchSpellingOverridden => f.write_str(
                 "the selected pitch has an authored spelling override that pins its staff position",
             ),
+            EditorError::InsertSlotOccupied => {
+                f.write_str("the position after the selection is already occupied in its voice")
+            }
         }
     }
 }
@@ -475,6 +487,151 @@ impl EditorSession {
             .any(|ip| has_authored_spelling_override(&self.score, ip.id))
     }
 
+    /// Inserts a new note in the selected pitch's voice immediately after its event:
+    /// a fresh single-note event ([`OperationKind::InsertEvent`]) at the next musical
+    /// position, copying the selected pitch and its rhythmic value. The selection is
+    /// unchanged — the anchored notehead is still there.
+    ///
+    /// Errors if nothing — or a non-pitch — is selected, the selected pitch carries an
+    /// authored spelling override (which the copy could not carry —
+    /// [`EditorError::PitchSpellingOverridden`]), the anchor event is not a metric
+    /// (musical) event in a metric region, or the position right after it is already
+    /// occupied in the voice ([`EditorError::InsertSlotOccupied`]) — inserting into a
+    /// packed voice needs an explicit make-room policy, a follow-up.
+    pub fn insert_note_after_selection(&mut self) -> Result<EditOutcome, EditorError> {
+        let selection = self.selection.ok_or(EditorError::NoSelection)?;
+        let TypedObjectId::Pitch(anchor) = selection.source else {
+            return Err(EditorError::WrongSelection { expected: "pitch" });
+        };
+        // The copy carries only the raw pitch value, not a pitch-scoped authored
+        // spelling, so the new note would render differently from the selected one.
+        // Refuse until an override-aware insert (atomic InsertEvent + RespellPitch)
+        // exists.
+        if has_authored_spelling_override(&self.score, anchor) {
+            return Err(EditorError::PitchSpellingOverridden);
+        }
+        let (event_id, anchor_value) = self
+            .event_and_pitch_of(anchor)
+            .ok_or(EditorError::WrongSelection { expected: "pitch" })?;
+
+        // The anchor's voice, position, and duration — the position and duration must
+        // be metric, with a positive duration (InsertEvent rejects a zero/negative
+        // span and a non-metric region).
+        let (voice, position, duration) = {
+            let ev = self
+                .score
+                .events
+                .get(event_id)
+                .ok_or(EditorError::WrongSelection { expected: "pitch" })?;
+            let EventPosition::Musical(position) = ev.position().clone() else {
+                return Err(EditorError::WrongSelection {
+                    expected: "metric event",
+                });
+            };
+            let EventDuration::Musical(duration) = ev.duration().clone() else {
+                return Err(EditorError::WrongSelection {
+                    expected: "metric event",
+                });
+            };
+            (ev.voice(), position, duration)
+        };
+        if !duration.is_positive() {
+            return Err(EditorError::WrongSelection {
+                expected: "metric event",
+            });
+        }
+        let next_position = position + duration.clone();
+
+        // Resolve the voice's region + staff instance together and require a metric
+        // region — the reducer's InsertEvent precondition rejects any other time model.
+        let staff_instance =
+            self.metric_staff_instance_of_voice(voice)
+                .ok_or(EditorError::WrongSelection {
+                    expected: "metric event",
+                })?;
+        // Pre-check the slot so the edit refuses cleanly instead of being silently
+        // no-op'd (and logged) by the reducer's voice-overlap rule.
+        if self.voice_slot_occupied(voice, &next_position, &duration) {
+            return Err(EditorError::InsertSlotOccupied);
+        }
+
+        let event = Event::Pitched(PitchedEvent {
+            id: self.mint_event_id(),
+            voice,
+            position: EventPosition::Musical(next_position),
+            duration: EventDuration::Musical(duration),
+            pitches: vec![IdentifiedPitch {
+                id: self.mint_pitch_id(),
+                pitch: anchor_value,
+            }],
+            articulations: vec![],
+            dynamic: None,
+            ornaments: vec![],
+            stem: StemConfiguration,
+            grace: None,
+        });
+        self.apply(OperationKind::InsertEvent(InsertEventOp {
+            staff_instance,
+            event,
+        }))
+    }
+
+    /// The staff instance hosting `voice`, but only when its region is metric — the
+    /// time model `InsertEvent` requires (the reducer rejects any other). `None` if
+    /// the voice is absent from the voice tree or its region is non-metric.
+    fn metric_staff_instance_of_voice(&self, voice: VoiceId) -> Option<StaffInstanceId> {
+        let (region_id, staff_instance, _) = self.score.voices().find(|(_, _, v)| v.id == voice)?;
+        let region = self
+            .score
+            .canvas
+            .regions
+            .iter()
+            .find(|r| r.id == region_id)?;
+        matches!(region.time_model, RegionTimeModel::Metric(_)).then_some(staff_instance)
+    }
+
+    /// Whether any metric event already in `voice` overlaps `[position, position +
+    /// duration)` — the same voice-overlap test the reducer's insert applies, so a
+    /// clean pre-check matches its accept/no-op decision exactly.
+    fn voice_slot_occupied(
+        &self,
+        voice: VoiceId,
+        position: &MusicalPosition,
+        duration: &MusicalDuration,
+    ) -> bool {
+        self.score.events.iter().any(|ev| {
+            ev.voice() == voice
+                && matches!(
+                    (ev.position(), ev.duration()),
+                    (EventPosition::Musical(p), EventDuration::Musical(d))
+                        if musical_overlap(position, duration, p, d)
+                )
+        })
+    }
+
+    /// Mints a fresh [`EventId`] in the session's replica namespace, on the same
+    /// three-source high-water-mark basis as [`Self::mint_pitch_id`]: the pristine
+    /// `base`, the current score (each live or tombstoned), and this session's op log.
+    fn mint_event_id(&self) -> EventId {
+        let ids = self
+            .base
+            .events
+            .iter()
+            .map(Event::id)
+            .chain(self.base.tombstoned_events.iter().copied())
+            .chain(self.score.events.iter().map(Event::id))
+            .chain(self.score.tombstoned_events.iter().copied())
+            .chain(self.applied.iter().flat_map(inserted_event_ids));
+        let next = ids
+            .filter(|e| e.replica() == self.replica)
+            .map(|e| e.counter())
+            .max()
+            .map_or(0, |c| {
+                c.checked_add(1).expect("event id counter overflowed u64")
+            });
+        EventId::new(self.replica, next)
+    }
+
     /// The current value of the identified `pitch` in the score graph, if it is
     /// present (a live embedded pitch).
     fn current_pitch(&self, pitch: PitchId) -> Option<Pitch> {
@@ -611,6 +768,32 @@ fn inserted_pitch_ids(env: &OperationEnvelope) -> Vec<PitchId> {
     }
 }
 
+/// The event ids a session envelope brought into being — the event-id analogue of
+/// [`inserted_pitch_ids`], so the event minter never reuses a since-deleted id.
+fn inserted_event_ids(env: &OperationEnvelope) -> Vec<EventId> {
+    match &env.payload {
+        OperationPayload::Primitive(OperationKind::InsertEvent(op)) => vec![op.event_id()],
+        _ => Vec::new(),
+    }
+}
+
+/// Whether two metric spans overlap — `[a_pos, a_pos + a_dur)` against `[b_pos,
+/// b_pos + b_dur)`. Mirrors the reducer's `intervals_overlap` (non-positive spans
+/// never overlap), so the editor's pre-check matches the reducer's decision.
+fn musical_overlap(
+    a_pos: &MusicalPosition,
+    a_dur: &MusicalDuration,
+    b_pos: &MusicalPosition,
+    b_dur: &MusicalDuration,
+) -> bool {
+    if !a_dur.is_positive() || !b_dur.is_positive() {
+        return false;
+    }
+    let a_end = a_pos.clone() + a_dur.clone();
+    let b_end = b_pos.clone() + b_dur.clone();
+    *a_pos < b_end && *b_pos < a_end
+}
+
 /// The CMN nominal at diatonic index `i` (`0..=6` → `C..=B`); callers pass
 /// `rem_euclid(7)`, so other values are unreachable and fold to `B`.
 fn nominal_from_index(i: i64) -> CmnNominal {
@@ -686,6 +869,37 @@ mod tests {
             })
             .expect("the rich fixture renders a notehead");
         session.click(click).expect("the click selects a glyph")
+    }
+
+    /// Selects the pitch `pid` by finding its notehead in the hit map.
+    fn select_pitch(session: &mut EditorSession, pid: PitchId) -> Selection {
+        let lo = session
+            .hit_test()
+            .regions
+            .iter()
+            .find(|r| r.source == TypedObjectId::Pitch(pid))
+            .map(|r| r.layout_object)
+            .expect("the notehead is in the hit map");
+        session.select(lo).expect("selects the pitch")
+    }
+
+    /// A pitch in the last event of the first voice that has events — its slot has
+    /// room after it (nothing follows in that voice), so an insert-after applies.
+    fn last_event_pitch(session: &EditorSession) -> PitchId {
+        let last_eid = session
+            .score()
+            .voices()
+            .filter_map(|(_, _, v)| v.events.last().copied())
+            .next()
+            .expect("a voice with events");
+        let mut buf: Vec<&IdentifiedPitch> = Vec::new();
+        session
+            .score()
+            .events
+            .get(last_eid)
+            .unwrap()
+            .collect_identified_pitches(&mut buf);
+        buf.first().expect("the last event has a pitch").id
     }
 
     #[test]
@@ -1213,6 +1427,150 @@ mod tests {
             diatonic_index(&hi) > diatonic_index(&lo),
             "the chord rises rather than duplicating a position"
         );
+    }
+
+    #[test]
+    fn insert_note_after_selection_adds_a_following_event() {
+        let mut session = open_rich(0x5EED);
+        let before_render = session.render().clone();
+        let anchor = last_event_pitch(&session);
+        select_pitch(&mut session, anchor);
+
+        // The anchor event's voice / end position / value, before the insert.
+        let (anchor_event, anchor_value) = session.event_and_pitch_of(anchor).unwrap();
+        let ev = session.score().events.get(anchor_event).unwrap();
+        let anchor_voice = ev.voice();
+        let (EventPosition::Musical(pos), EventDuration::Musical(dur)) =
+            (ev.position().clone(), ev.duration().clone())
+        else {
+            panic!("the fixture's events are metric");
+        };
+        let expected_position = pos + dur;
+        let before_ids: std::collections::BTreeSet<_> =
+            session.score().events.iter().map(Event::id).collect();
+
+        let outcome = session
+            .insert_note_after_selection()
+            .expect("the insert applies after the last note");
+        assert!(outcome.graph_changed, "a new event was inserted");
+        assert!(outcome.selection_preserved, "the anchor note survives");
+
+        // Exactly one new event, in the anchor's voice, at the next position, with a
+        // fresh id under the session replica and a single note copying the anchor.
+        let new_eid = session
+            .score()
+            .events
+            .iter()
+            .map(Event::id)
+            .find(|e| !before_ids.contains(e))
+            .expect("a new event");
+        assert_eq!(new_eid.replica(), ReplicaId(1));
+        let new_event = session.score().events.get(new_eid).unwrap();
+        assert_eq!(new_event.voice(), anchor_voice, "same voice as the anchor");
+        assert!(
+            matches!(new_event.position(), EventPosition::Musical(p) if *p == expected_position),
+            "placed immediately after the anchor"
+        );
+        let mut buf: Vec<&IdentifiedPitch> = Vec::new();
+        new_event.collect_identified_pitches(&mut buf);
+        assert_eq!(buf.len(), 1, "a single inserted note");
+        assert_eq!(buf[0].pitch, anchor_value, "copies the selected pitch");
+        assert_ne!(&before_render, session.render(), "the new note shows");
+    }
+
+    #[test]
+    fn insert_after_an_already_filled_slot_is_refused() {
+        let mut session = open_rich(0x5EED);
+        let anchor = last_event_pitch(&session);
+        select_pitch(&mut session, anchor);
+        // The first insert fills the slot right after the anchor.
+        session
+            .insert_note_after_selection()
+            .expect("the first insert applies");
+        let logged = session.applied_operations().len();
+        // The selection still anchors the same note, so a second insert-after targets
+        // the now-occupied slot and is refused (not silently no-op'd).
+        assert_eq!(
+            session.insert_note_after_selection(),
+            Err(EditorError::InsertSlotOccupied)
+        );
+        // A pre-apply refusal mints/logs nothing — no dead op is appended.
+        assert_eq!(session.applied_operations().len(), logged);
+    }
+
+    #[test]
+    fn insert_after_refuses_a_pitch_with_an_authored_spelling_override() {
+        use epiphany_core::PitchSpelling;
+        use epiphany_ops::RespellPitchOp;
+
+        let mut session = open_rich(0x5EED);
+        let anchor = last_event_pitch(&session);
+        select_pitch(&mut session, anchor);
+        // Pin the anchor's spelling; a value-only copy would drop the override and
+        // render differently, so the insert is refused.
+        session
+            .apply(OperationKind::RespellPitch(RespellPitchOp {
+                pitch: anchor,
+                spelling: PitchSpelling::cmn(CmnNominal::C, 4),
+            }))
+            .expect("the respell applies");
+        let logged = session.applied_operations().len();
+
+        assert_eq!(
+            session.insert_note_after_selection(),
+            Err(EditorError::PitchSpellingOverridden)
+        );
+        assert_eq!(
+            session.applied_operations().len(),
+            logged,
+            "a refused insert logs no dead op"
+        );
+    }
+
+    #[test]
+    fn insert_note_after_selection_requires_a_pitch_selection() {
+        let mut session = open_rich(0x5EED);
+        assert_eq!(
+            session.insert_note_after_selection(),
+            Err(EditorError::NoSelection)
+        );
+    }
+
+    #[test]
+    fn successive_inserts_mint_distinct_event_ids() {
+        let mut session = open_rich(0x5EED);
+        let anchor = last_event_pitch(&session);
+        select_pitch(&mut session, anchor);
+        let before_ids: std::collections::BTreeSet<_> =
+            session.score().events.iter().map(Event::id).collect();
+
+        // Insert after the anchor, then after the new (now last) event.
+        session.insert_note_after_selection().expect("first insert");
+        let first_new = session
+            .score()
+            .events
+            .iter()
+            .map(Event::id)
+            .find(|e| !before_ids.contains(e))
+            .expect("the first new event");
+        let next_anchor = last_event_pitch(&session);
+        select_pitch(&mut session, next_anchor);
+        session
+            .insert_note_after_selection()
+            .expect("second insert");
+
+        let self_ids: Vec<_> = session
+            .score()
+            .events
+            .iter()
+            .map(Event::id)
+            .filter(|e| e.replica() == ReplicaId(1))
+            .collect();
+        assert_eq!(self_ids.len(), 2, "two session-minted events");
+        // The minter consulted the log: the first event id survived and the second
+        // is a distinct, never-reused id.
+        assert!(self_ids.contains(&first_new), "the first event id survived");
+        assert_ne!(self_ids[0], self_ids[1], "distinct, never reused");
     }
 
     #[test]
