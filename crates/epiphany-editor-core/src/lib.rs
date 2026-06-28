@@ -36,8 +36,9 @@
 use std::fmt;
 
 use epiphany_core::{
-    CmnNominal, IdentifiedPitch, OperationId, Pitch, PitchId, PitchSpacePosition, ReplicaId, Score,
-    SpellingDirective, SpellingScope, SpellingSourceKind, TypedObjectId, WallClockTime,
+    AcousticRealization, CmnNominal, EventId, IdentifiedPitch, OperationId, Pitch, PitchId,
+    PitchSpacePosition, ReplicaId, Score, SpellingDirective, SpellingScope, SpellingSourceKind,
+    TypedObjectId, WallClockTime,
 };
 use epiphany_layout_ir::{
     to_constrained, to_logical, to_render, ConstraintSolver, HitTestMap, LayoutObjectId, Point,
@@ -45,8 +46,8 @@ use epiphany_layout_ir::{
 };
 use epiphany_ops::{
     AcceptOutcome, AuthorId, CausalContext, DeleteEventOp, DeleteIdentifiedPitchOp,
-    HybridLogicalClock, ModifyIdentifiedPitchOp, OperationEnvelope, OperationKind,
-    OperationPayload, OperationSet, OperationStamp, TransposeOp, TupletCompensation,
+    HybridLogicalClock, InsertIdentifiedPitchOp, ModifyIdentifiedPitchOp, OperationEnvelope,
+    OperationKind, OperationPayload, OperationSet, OperationStamp, TransposeOp, TupletCompensation,
 };
 
 /// The current selection: the score-graph object to act on, plus the stable layout
@@ -404,18 +405,123 @@ impl EditorSession {
         ))
     }
 
+    /// Adds a note to the selected pitch's event, forming (or extending) a chord: a
+    /// new identified pitch one diatonic staff step above the event's highest note,
+    /// with a fresh id ([`OperationKind::InsertIdentifiedPitch`]). The selection is
+    /// unchanged — the anchored notehead is still there. Errors if nothing — or a
+    /// non-pitch — is selected, the event has no CMN note to step above, or any note
+    /// in the event carries an authored spelling override (which would make the
+    /// rendered staff order differ from the raw pitch order — see
+    /// [`EditorError::PitchSpellingOverridden`]).
+    ///
+    /// The default is deliberately minimal (a real client picks the inserted pitch);
+    /// stepping above the top note means repeated calls build a rising chord rather
+    /// than stacking duplicates on one staff position.
+    pub fn add_note_to_selection(&mut self) -> Result<EditOutcome, EditorError> {
+        let selection = self.selection.ok_or(EditorError::NoSelection)?;
+        let TypedObjectId::Pitch(anchor) = selection.source else {
+            return Err(EditorError::WrongSelection { expected: "pitch" });
+        };
+        let (event, _) = self
+            .event_and_pitch_of(anchor)
+            .ok_or(EditorError::WrongSelection { expected: "pitch" })?;
+        // "Above the top" ranks raw pitch positions; an authored override makes the
+        // rendered staff order diverge from that, so the pick could be wrong. Refuse
+        // (as the move intent does) rather than guess — resolved-spelling-aware
+        // stacking is a follow-up.
+        if self.event_has_authored_override(event) {
+            return Err(EditorError::PitchSpellingOverridden);
+        }
+        let top = self
+            .highest_pitch_in_event(event)
+            .ok_or(EditorError::WrongSelection {
+                expected: "CMN pitch",
+            })?;
+        let value = note_above(&top).ok_or(EditorError::WrongSelection {
+            expected: "CMN pitch",
+        })?;
+        let pitch = IdentifiedPitch {
+            id: self.mint_pitch_id(),
+            pitch: value,
+        };
+        self.apply(OperationKind::InsertIdentifiedPitch(
+            InsertIdentifiedPitchOp { event, pitch },
+        ))
+    }
+
+    /// The highest CMN note (by diatonic staff index) embedded in `event`, if any —
+    /// the note a chord-add stacks above.
+    fn highest_pitch_in_event(&self, event: EventId) -> Option<Pitch> {
+        let mut buf: Vec<&IdentifiedPitch> = Vec::new();
+        self.score
+            .events
+            .get(event)?
+            .collect_identified_pitches(&mut buf);
+        buf.iter()
+            .filter_map(|ip| diatonic_index(&ip.pitch).map(|d| (d, &ip.pitch)))
+            .max_by_key(|(d, _)| *d)
+            .map(|(_, p)| p.clone())
+    }
+
+    /// Whether any note in `event` carries an authored spelling override (so the
+    /// rendered staff order cannot be read off the raw pitch positions).
+    fn event_has_authored_override(&self, event: EventId) -> bool {
+        let mut buf: Vec<&IdentifiedPitch> = Vec::new();
+        let Some(ev) = self.score.events.get(event) else {
+            return false;
+        };
+        ev.collect_identified_pitches(&mut buf);
+        buf.iter()
+            .any(|ip| has_authored_spelling_override(&self.score, ip.id))
+    }
+
     /// The current value of the identified `pitch` in the score graph, if it is
     /// present (a live embedded pitch).
     fn current_pitch(&self, pitch: PitchId) -> Option<Pitch> {
+        self.event_and_pitch_of(pitch).map(|(_, value)| value)
+    }
+
+    /// The event holding the identified `pitch` and the pitch's current value, if it
+    /// is present (a live embedded pitch).
+    fn event_and_pitch_of(&self, pitch: PitchId) -> Option<(EventId, Pitch)> {
         let mut buf: Vec<&IdentifiedPitch> = Vec::new();
         for event in self.score.events.iter() {
             buf.clear();
             event.collect_identified_pitches(&mut buf);
             if let Some(ip) = buf.iter().find(|ip| ip.id == pitch) {
-                return Some(ip.pitch.clone());
+                return Some((event.id(), ip.pitch.clone()));
             }
         }
         None
+    }
+
+    /// Mints a fresh [`PitchId`] in the session's replica namespace: one past the
+    /// highest pitch counter this replica has ever named. A pitch can leave the
+    /// *current* score without being recorded anywhere in it — `DeleteIdentifiedPitch`
+    /// tombstones only reducer state, never `Score.tombstoned_pitches` — so the
+    /// high-water mark is taken over three sources: the pristine open-time `base`
+    /// (catches an opened pitch since deleted), the current score (catches anything a
+    /// future reducer change records), and this session's op log (catches a
+    /// session-inserted pitch since deleted). Reusing an id would make a later insert
+    /// no-op against a tombstone under whole-log reduction. Pitches authored by other
+    /// replicas occupy disjoint namespaces and do not constrain it.
+    fn mint_pitch_id(&self) -> PitchId {
+        let ids = self
+            .base
+            .live_pitch_ids()
+            .into_iter()
+            .chain(self.base.tombstoned_pitches.iter().copied())
+            .chain(self.score.live_pitch_ids())
+            .chain(self.score.tombstoned_pitches.iter().copied())
+            .chain(self.applied.iter().flat_map(inserted_pitch_ids));
+        let next = ids
+            .filter(|p| p.replica() == self.replica)
+            .map(|p| p.counter())
+            .max()
+            .map_or(0, |c| {
+                c.checked_add(1).expect("pitch id counter overflowed u64")
+            });
+        PitchId::new(self.replica, next)
     }
 
     /// Re-resolves the current selection against the current layout: keeps it
@@ -452,18 +558,13 @@ impl EditorSession {
 /// non-CMN position — which has no staff-step notion — or an octave that overflows
 /// `i8`.
 fn staff_step(pitch: &Pitch, steps: i32) -> Option<Pitch> {
-    let PitchSpacePosition::Cmn {
-        nominal,
-        alteration,
-        octave,
-    } = pitch.scale_position.position
-    else {
+    let PitchSpacePosition::Cmn { alteration, .. } = pitch.scale_position.position else {
         return None;
     };
     // Seven nominals to an octave: index diatonically, move, then decompose so a
     // move past B (or below C) carries the octave. Computed in i64 so an extreme
     // `steps` cannot overflow the intermediate before the octave range-check below.
-    let diatonic = octave as i64 * 7 + nominal as i64 + steps as i64;
+    let diatonic = diatonic_index(pitch)? + steps as i64;
     let new_octave = i8::try_from(diatonic.div_euclid(7)).ok()?;
     let new_nominal = nominal_from_index(diatonic.rem_euclid(7));
     let mut moved = pitch.clone();
@@ -473,6 +574,41 @@ fn staff_step(pitch: &Pitch, steps: i32) -> Option<Pitch> {
         octave: new_octave,
     };
     Some(moved)
+}
+
+/// The diatonic staff index of a CMN pitch — `octave * 7 + nominal`, so two pitches
+/// compare by staff position and a step is `± 1`. `None` for a non-CMN position.
+fn diatonic_index(pitch: &Pitch) -> Option<i64> {
+    match pitch.scale_position.position {
+        PitchSpacePosition::Cmn {
+            nominal, octave, ..
+        } => Some(octave as i64 * 7 + nominal as i64),
+        _ => None,
+    }
+}
+
+/// The pitch one staff step above `top`, for a *newly inserted* note: like
+/// [`staff_step`] but with the acoustic realization reset to
+/// [`AcousticRealization::Implicit`]. A fresh note must sound at its written
+/// position; cloning an explicit absolute-Hz or cents-offset realization from the
+/// note it stacks above would make it look higher but sound the same frequency.
+fn note_above(top: &Pitch) -> Option<Pitch> {
+    let mut above = staff_step(top, 1)?;
+    above.acoustic.realization = AcousticRealization::Implicit;
+    Some(above)
+}
+
+/// The pitch ids a session envelope brought into being — so the minter never reuses
+/// one, including ids since deleted (a `DeleteIdentifiedPitch` leaves no trace in the
+/// materialized score, so the log is the authoritative record). Both insert ops mint
+/// pitches: `InsertIdentifiedPitch` (one) and `InsertEvent` (the event's embedded
+/// pitches).
+fn inserted_pitch_ids(env: &OperationEnvelope) -> Vec<PitchId> {
+    match &env.payload {
+        OperationPayload::Primitive(OperationKind::InsertIdentifiedPitch(op)) => vec![op.pitch.id],
+        OperationPayload::Primitive(OperationKind::InsertEvent(op)) => op.pitch_ids(),
+        _ => Vec::new(),
+    }
 }
 
 /// The CMN nominal at diatonic index `i` (`0..=6` → `C..=B`); callers pass
@@ -874,6 +1010,208 @@ mod tests {
         assert!(
             materialized.state.is_clean(),
             "sequential same-target moves must replay without a conflict or pending op"
+        );
+    }
+
+    #[test]
+    fn add_note_to_selection_adds_a_chord_note_above_the_top() {
+        let mut session = open_rich(0x5EED);
+        let before_render = session.render().clone();
+        let selection = click_a_notehead(&mut session);
+        let TypedObjectId::Pitch(anchor) = selection.source else {
+            panic!("a notehead selects a pitch");
+        };
+        let (event, _) = session.event_and_pitch_of(anchor).expect("anchor is live");
+        let top = session.highest_pitch_in_event(event).expect("a CMN note");
+        let before = session.score().live_pitch_ids();
+
+        let outcome = session.add_note_to_selection().expect("the add applies");
+        assert!(outcome.graph_changed, "a pitch was inserted");
+        assert!(outcome.selection_preserved, "the anchor notehead survives");
+
+        // Exactly one new pitch, minted under the session replica, a staff step above
+        // the prior top note.
+        let after = session.score().live_pitch_ids();
+        let new_ids: Vec<_> = after.difference(&before).copied().collect();
+        assert_eq!(new_ids.len(), 1, "exactly one new pitch");
+        let new_id = new_ids[0];
+        assert_eq!(
+            new_id.replica(),
+            ReplicaId(1),
+            "minted under the session replica"
+        );
+        assert_eq!(
+            session.current_pitch(new_id).unwrap(),
+            note_above(&top).unwrap(),
+            "the new note sits a staff step above the event's top note"
+        );
+        assert_ne!(&before_render, session.render(), "the chord note shows");
+    }
+
+    #[test]
+    fn add_note_to_selection_requires_a_pitch_selection() {
+        let mut session = open_rich(0x5EED);
+        assert_eq!(
+            session.add_note_to_selection(),
+            Err(EditorError::NoSelection)
+        );
+    }
+
+    #[test]
+    fn re_minting_skips_an_id_used_earlier_in_the_session_log() {
+        // Add a chord pitch, delete it, add again. The deleted pitch leaves no trace
+        // in the materialized score (graph_delete_pitch does not record it in
+        // tombstoned_pitches), so a score-only minter would re-mint it — and the
+        // re-add would then no-op against the tombstone under whole-log reduction.
+        // The minter consults the op log, so the second add gets a fresh id.
+        let mut session = open_rich(0x5EED);
+        click_a_notehead(&mut session);
+        session.add_note_to_selection().expect("first add");
+        let first = *session
+            .score()
+            .live_pitch_ids()
+            .iter()
+            .find(|p| p.replica() == ReplicaId(1))
+            .expect("the inserted pitch is under the session replica");
+
+        session
+            .apply(OperationKind::DeleteIdentifiedPitch(
+                DeleteIdentifiedPitchOp { pitch: first },
+            ))
+            .expect("the delete applies");
+
+        let outcome = session.add_note_to_selection().expect("the re-add applies");
+        assert!(
+            outcome.graph_changed,
+            "the re-add materialized — a fresh id, not the tombstoned one"
+        );
+        let live_self: Vec<_> = session
+            .score()
+            .live_pitch_ids()
+            .into_iter()
+            .filter(|p| p.replica() == ReplicaId(1))
+            .collect();
+        assert_eq!(
+            live_self,
+            vec![PitchId::new(ReplicaId(1), first.counter() + 1)],
+            "the re-add minted the next counter, not the deleted id"
+        );
+    }
+
+    #[test]
+    fn re_minting_skips_a_deleted_base_pitch_under_the_session_replica() {
+        // The reopen case: the session edits under the same replica that authored some
+        // base pitches. Deleting the highest-counter base pitch removes it from the
+        // current score without recording it anywhere there, so a score-only minter
+        // would reuse its counter. Scanning the pristine `base` keeps the high-water
+        // mark.
+        let base = valid_score_rich(0x5EED);
+        let target = *base
+            .live_pitch_ids()
+            .iter()
+            .max_by_key(|p| p.counter())
+            .expect("the fixture has live pitches");
+        let replica = target.replica();
+        let base_max = base
+            .live_pitch_ids()
+            .into_iter()
+            .chain(base.tombstoned_pitches.iter().copied())
+            .filter(|p| p.replica() == replica)
+            .map(|p| p.counter())
+            .max()
+            .unwrap();
+
+        let mut session = EditorSession::open(base, Box::new(StubSolver))
+            .unwrap()
+            .with_identity(replica, AuthorId(0));
+        session
+            .apply(OperationKind::DeleteIdentifiedPitch(
+                DeleteIdentifiedPitchOp { pitch: target },
+            ))
+            .expect("the base pitch deletes");
+
+        let minted = session.mint_pitch_id();
+        assert_eq!(
+            minted,
+            PitchId::new(replica, base_max + 1),
+            "minted past the base high-water mark, not reusing the deleted pitch"
+        );
+        assert_ne!(minted, target, "the deleted base pitch was not reused");
+    }
+
+    #[test]
+    fn add_refuses_when_a_note_in_the_event_has_an_authored_spelling_override() {
+        use epiphany_core::PitchSpelling;
+        use epiphany_ops::RespellPitchOp;
+
+        let mut session = open_rich(0x5EED);
+        let selection = click_a_notehead(&mut session);
+        let TypedObjectId::Pitch(anchor) = selection.source else {
+            panic!("a notehead selects a pitch");
+        };
+        // Pin the anchor's spelling; "above the top" can no longer be read off raw
+        // pitch positions, so the add is refused (as the move intent is).
+        session
+            .apply(OperationKind::RespellPitch(RespellPitchOp {
+                pitch: anchor,
+                spelling: PitchSpelling::cmn(CmnNominal::C, 4),
+            }))
+            .expect("the respell applies");
+        assert_eq!(
+            session.add_note_to_selection(),
+            Err(EditorError::PitchSpellingOverridden)
+        );
+    }
+
+    #[test]
+    fn an_inserted_note_sounds_at_its_written_position_not_a_cloned_frequency() {
+        // staff_step preserves acoustic realization (intended for notation-only
+        // moves); a freshly inserted note must not inherit an explicit absolute
+        // frequency from the note it stacks above — it would look higher but sound
+        // identical. note_above resets the realization to Implicit.
+        let mut session = open_rich(0x5EED);
+        let selection = click_a_notehead(&mut session);
+        let TypedObjectId::Pitch(anchor) = selection.source else {
+            panic!("a notehead selects a pitch");
+        };
+        let mut top = session.current_pitch(anchor).expect("anchor is live");
+        top.acoustic.realization = AcousticRealization::absolute_hz(440.0).unwrap();
+
+        let inserted = note_above(&top).expect("a CMN note steps");
+        assert_eq!(
+            inserted.acoustic.realization,
+            AcousticRealization::Implicit,
+            "the new note drops the source's explicit frequency"
+        );
+        assert!(
+            diatonic_index(&inserted) > diatonic_index(&top),
+            "and it is genuinely a staff step higher"
+        );
+    }
+
+    #[test]
+    fn repeated_adds_mint_distinct_fresh_ids_and_build_a_rising_chord() {
+        let mut session = open_rich(0x5EED);
+        click_a_notehead(&mut session);
+        let before = session.score().live_pitch_ids();
+
+        session.add_note_to_selection().expect("first add");
+        session.add_note_to_selection().expect("second add");
+
+        let after = session.score().live_pitch_ids();
+        let mut new_ids: Vec<_> = after.difference(&before).copied().collect();
+        assert_eq!(new_ids.len(), 2, "two distinct pitches added");
+        // Both minted under the session replica, with distinct (advancing) counters —
+        // ids are never reused.
+        assert!(new_ids.iter().all(|p| p.replica() == ReplicaId(1)));
+        new_ids.sort_by_key(|p| p.counter());
+        assert_ne!(new_ids[0].counter(), new_ids[1].counter());
+        // The second add stacked above the first: strictly higher staff position.
+        let lo = session.current_pitch(new_ids[0]).unwrap();
+        let hi = session.current_pitch(new_ids[1]).unwrap();
+        assert!(
+            diatonic_index(&hi) > diatonic_index(&lo),
+            "the chord rises rather than duplicating a position"
         );
     }
 
