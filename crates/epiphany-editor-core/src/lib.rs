@@ -39,18 +39,20 @@
 //! produces a [`RenderIR`]; turning that into pixels is the renderer's job.
 
 use std::cmp::Reverse;
+use std::collections::BTreeMap;
 use std::fmt;
 
 use epiphany_core::{
-    AcousticRealization, CmnNominal, Event, EventDuration, EventId, EventPosition, IdentifiedPitch,
-    MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId, PitchSpacePosition,
-    PitchSpelling, PitchedEvent, RegionTimeModel, ReplicaId, Score, SpellingDirective,
-    SpellingNominal, SpellingScope, SpellingSourceKind, StaffInstanceId, StemConfiguration,
-    TransactionId, TypedObjectId, VoiceId, WallClockTime,
+    AcousticRealization, Clef, CmnNominal, Event, EventDuration, EventId, EventPosition,
+    IdentifiedPitch, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId,
+    PitchSpacePosition, PitchSpelling, PitchedEvent, RegionId, RegionTimeModel, ReplicaId, Score,
+    SpellingDirective, SpellingNominal, SpellingScope, SpellingSourceKind, StaffId, StaffInstance,
+    StaffInstanceId, StemConfiguration, TransactionId, TypedObjectId, VoiceId, WallClockTime,
 };
 use epiphany_layout_ir::{
-    to_constrained, to_logical, to_render, ConstraintSolver, HitTestMap, LayoutObjectId, Point,
-    RenderIR, ResolvedLayoutIR, SolverConfig,
+    active_clef, manifestation_layout_id, staff_step_pitch, to_constrained, to_logical, to_render,
+    ConstraintSolver, HitTestMap, LayoutContent, LayoutObjectId, LogicalLayoutIR, Point, RenderIR,
+    ResolvedLayoutIR, SolverConfig, TimePoint,
 };
 use epiphany_ops::{
     AcceptOutcome, AuthorId, CausalContext, DeleteEventOp, DeleteIdentifiedPitchOp,
@@ -68,6 +70,20 @@ pub struct Selection {
     /// The layout object the selection is anchored on — content-independent, so it
     /// survives a relayout of an unchanged source.
     pub layout_object: LayoutObjectId,
+}
+
+/// What a click at a world point resolves to **vertically**: the staff under the
+/// cursor and the natural diatonic pitch at that height under the staff's clef. The
+/// vertical half of click-to-insert (the horizontal half — the musical position — is
+/// a separate query). The accidental is left natural; a caller respells if needed.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct StaffPitch {
+    /// The staff instance the click is over (nearest staff).
+    pub staff_instance: StaffInstanceId,
+    /// The diatonic nominal at the clicked height.
+    pub nominal: CmnNominal,
+    /// The octave (scientific-pitch) at the clicked height.
+    pub octave: i8,
 }
 
 /// What an [`EditorSession::apply`] did.
@@ -171,6 +187,11 @@ pub struct EditorSession {
     resolved: ResolvedLayoutIR,
     render: RenderIR,
     map: HitTestMap,
+    // The clef in force at the start of each manifested staff, resolved by time from
+    // the logical layout's `PlacedClef`s (not vector order). Keyed by the manifesting
+    // `(region, staff)`, since one staff can be tiled into several regions. The
+    // vertical half of click-to-insert reads this to spell the clicked height.
+    start_clefs: BTreeMap<(RegionId, StaffId), Clef>,
     selection: Option<Selection>,
     // Operation-minting identity. A real client supplies its own replica/author.
     // Minted operations form this replica's contiguous, zero-based local history;
@@ -187,7 +208,7 @@ impl EditorSession {
     /// Opens a session on `score` with `solver`, rendering immediately. Errors with
     /// [`EditorError::NotRenderable`] if the initial layout is diagnostic-only.
     pub fn open(score: Score, solver: Box<dyn ConstraintSolver>) -> Result<Self, EditorError> {
-        let (resolved, render, map) =
+        let (start_clefs, resolved, render, map) =
             render_score(&score, solver.as_ref()).ok_or(EditorError::NotRenderable)?;
         Ok(EditorSession {
             base: score.clone(),
@@ -196,6 +217,7 @@ impl EditorSession {
             resolved,
             render,
             map,
+            start_clefs,
             selection: None,
             replica: ReplicaId(1),
             author: AuthorId(0),
@@ -262,6 +284,74 @@ impl EditorSession {
     /// [`Self::applied_operations`]).
     pub fn last_applied(&self) -> Option<&OperationEnvelope> {
         self.applied.last()
+    }
+
+    /// The staff and diatonic pitch at a world `point` — the **vertical half** of a
+    /// click-to-insert. Finds the staff the click is over (the nearest staff by its
+    /// rendered line band) and the natural pitch at that height under the staff's
+    /// clef. `None` if there is no staff, the staff has no diatonic clef (percussion),
+    /// or the height is out of representable range. The horizontal half (the musical
+    /// position to insert at) is a separate query.
+    pub fn staff_pitch_at(&self, point: Point) -> Option<StaffPitch> {
+        // Reject a non-finite click up front: `dist_to_band`'s `<`/`>` would let a
+        // NaN fall through as distance 0 (matching every staff), and `round() as i32`
+        // saturates a non-finite height into a bogus staff step. A malformed view
+        // transform yields no pitch rather than an arbitrary one.
+        if !point.x.0.is_finite() || !point.y.0.is_finite() {
+            return None;
+        }
+        // A 5-line staff spans four staff spaces above its bottom line.
+        const STAFF_SPAN: f32 = 4.0;
+        // Pick the manifested staff the click is nearest, by 2D proximity: horizontal
+        // span first (which region — one staff tiles across regions that can share a y
+        // band), then the vertical band (which staff within it). The bottom staff line
+        // carries the staff's manifestation id as its stroke `stable_id`, which is how
+        // a rendered line maps back to its `(region, staff_instance)`.
+        let mut best: Option<(RegionId, &StaffInstance, f32)> = None;
+        let mut best_dist = (f32::INFINITY, f32::INFINITY);
+        for (region, si) in self.score.staff_instances() {
+            let manifest = manifestation_layout_id(&TypedObjectId::Staff(si.staff), region);
+            let Some(bottom) = self
+                .resolved
+                .strokes
+                .iter()
+                .find(|s| s.provenance.stable_id == manifest)
+            else {
+                continue;
+            };
+            // The bottom line is horizontal; its `y` is the step origin and its
+            // endpoints bound the staff's horizontal extent.
+            let origin = bottom.from.y.0;
+            let span = (
+                bottom.from.x.0.min(bottom.to.x.0),
+                bottom.from.x.0.max(bottom.to.x.0),
+            );
+            let dist = (
+                dist_to_band(point.x.0, span),
+                dist_to_band(point.y.0, (origin, origin + STAFF_SPAN)),
+            );
+            if dist < best_dist {
+                best_dist = dist;
+                best = Some((region, si, origin));
+            }
+        }
+        let (region, si, origin) = best?;
+        // The clef in force at the staff start, resolved by time when the layout was
+        // built (a mid-staff clef change is a later refinement); default treble when
+        // none is declared.
+        let clef = self
+            .start_clefs
+            .get(&(region, si.staff))
+            .copied()
+            .unwrap_or_default();
+        // Each step is half a staff space, +y up; round to the nearest line/space.
+        let step = ((point.y.0 - origin) * 2.0).round() as i32;
+        let (nominal, octave) = staff_step_pitch(step, &clef)?;
+        Some(StaffPitch {
+            staff_instance: si.id,
+            nominal,
+            octave,
+        })
     }
 
     /// Resolves a click at a world `point`: selects the **topmost** hit there (what
@@ -378,7 +468,7 @@ impl EditorSession {
         let graph_changed = edited != self.score;
 
         // Refuse a diagnostic-only layout, still before committing anything.
-        let (resolved, render, map) =
+        let (start_clefs, resolved, render, map) =
             render_score(&edited, self.solver.as_ref()).ok_or(EditorError::NotRenderable)?;
 
         // Commit (the only mutation point — so an error above leaves all state,
@@ -387,6 +477,7 @@ impl EditorSession {
         self.resolved = resolved;
         self.render = render;
         self.map = map;
+        self.start_clefs = start_clefs;
         self.applied.extend(new);
 
         let selection_preserved = self.reresolve_selection();
@@ -922,6 +1013,18 @@ fn staff_step(pitch: &Pitch, steps: i32) -> Option<Pitch> {
     Some(moved)
 }
 
+/// The distance from height `y` to a staff's line band `(bottom, top)`: zero inside
+/// the band, else the gap to the nearer edge. Used to pick the staff a click is over.
+fn dist_to_band(y: f32, (bottom, top): (f32, f32)) -> f32 {
+    if y < bottom {
+        bottom - y
+    } else if y > top {
+        y - top
+    } else {
+        0.0
+    }
+}
+
 /// The diatonic staff index of a CMN pitch — `octave * 7 + nominal`, so two pitches
 /// compare by staff position and a step is `± 1`. `None` for a non-CMN position.
 fn diatonic_index(pitch: &Pitch) -> Option<i64> {
@@ -1060,20 +1163,46 @@ fn staff_step_spelling(spelling: &PitchSpelling, steps: i32) -> Option<PitchSpel
 
 /// Renders a score with `solver` to its `RenderIR` + hit-test map, or `None` if the
 /// solver's report is diagnostic-only (not renderable).
+type StartClefs = BTreeMap<(RegionId, StaffId), Clef>;
+
 fn render_score(
     score: &Score,
     solver: &dyn ConstraintSolver,
-) -> Option<(ResolvedLayoutIR, RenderIR, HitTestMap)> {
-    let report = solver.solve(
-        &to_constrained(&to_logical(score)),
-        &SolverConfig::default(),
-    );
+) -> Option<(StartClefs, ResolvedLayoutIR, RenderIR, HitTestMap)> {
+    // Build the start-clef table from the logical layout, where anchor resolution has
+    // already placed each `PlacedClef` at a concrete time — the editor's vertical
+    // inverse spells the clicked height against this, not against vector order.
+    let logical = to_logical(score);
+    let start_clefs = staff_start_clefs(&logical);
+    let report = solver.solve(&to_constrained(&logical), &SolverConfig::default());
     if !report.status.is_renderable() {
         return None;
     }
     let render = to_render(&report.layout);
     let map = render.hit_test_map();
-    Some((report.layout, render, map))
+    Some((start_clefs, report.layout, render, map))
+}
+
+/// The clef in force at each manifested staff's start, resolved by time from the
+/// logical layout's placed clefs (see [`active_clef`]). Keyed by the manifesting
+/// `(region, staff)` so tiled copies of one staff each get their own entry — the
+/// vertical half of click-to-insert looks a staff up by the region its rendered
+/// lines were traced to.
+fn staff_start_clefs(logical: &LogicalLayoutIR) -> StartClefs {
+    let start = TimePoint::Musical(MusicalPosition::origin());
+    let mut clefs = StartClefs::new();
+    for region in &logical.regions {
+        let TypedObjectId::Region(region_id) = region.provenance.source else {
+            continue;
+        };
+        for object in &region.objects {
+            if let (Some(staff), LayoutContent::Staff(content)) = (object.staff(), object.content())
+            {
+                clefs.insert((region_id, staff), active_clef(&content.clefs, &start));
+            }
+        }
+    }
+    clefs
 }
 
 #[cfg(test)]
@@ -1162,6 +1291,152 @@ mod tests {
         // A click on empty space clears the selection.
         session.click(Point::new(-1.0e6, -1.0e6));
         assert_eq!(session.selection(), None);
+    }
+
+    #[test]
+    fn staff_pitch_at_reads_the_clicked_height() {
+        let session = open_rich(0x5EED);
+        // The lowest staff-line stroke is the bottom staff's step origin.
+        let origin = session
+            .resolved()
+            .strokes
+            .iter()
+            .filter(|s| matches!(s.provenance.source, TypedObjectId::Staff(_)))
+            .map(|s| s.from.y.0)
+            .fold(f32::INFINITY, f32::min);
+        assert!(origin.is_finite(), "the score renders staff lines");
+
+        let diatonic = |p: StaffPitch| p.octave as i32 * 7 + p.nominal as i32;
+        let at = |dy: f32| session.staff_pitch_at(Point::new(5.0, origin + dy));
+
+        let bottom = at(0.0).expect("a staff under the click");
+        // Two staff spaces up is four diatonic steps (a fifth) higher, on the same
+        // staff — so y maps to staff steps at two steps per space.
+        let up_a_fifth = at(2.0).expect("still over the staff");
+        assert_eq!(up_a_fifth.staff_instance, bottom.staff_instance);
+        assert_eq!(diatonic(up_a_fifth) - diatonic(bottom), 4);
+        // A half-space below the bottom line is one diatonic step down.
+        let below = at(-0.5).expect("just below the staff still resolves");
+        assert_eq!(diatonic(bottom) - diatonic(below), 1);
+    }
+
+    #[test]
+    fn staff_pitch_at_picks_the_staff_under_the_x() {
+        let session = open_rich(0x5EED);
+        // Each staff manifestation's bottom line: its step-origin y and its x span.
+        let mut bands: Vec<(StaffInstanceId, f32, f32, f32)> = session
+            .score()
+            .staff_instances()
+            .filter_map(|(region, si)| {
+                let m = manifestation_layout_id(&TypedObjectId::Staff(si.staff), region);
+                session
+                    .resolved()
+                    .strokes
+                    .iter()
+                    .find(|s| s.provenance.stable_id == m)
+                    .map(|s| {
+                        (
+                            si.id,
+                            s.from.x.0.min(s.to.x.0),
+                            s.from.x.0.max(s.to.x.0),
+                            s.from.y.0,
+                        )
+                    })
+            })
+            .collect();
+        bands.sort_by(|a, b| a.1.total_cmp(&b.1));
+        // The fixture tiles its staves left-to-right sharing one y band — so height
+        // alone cannot tell them apart; only x identifies the clicked staff.
+        assert!(bands.len() >= 2, "the fixture manifests multiple staves");
+        let origin = bands[0].3;
+        assert!(
+            bands.iter().all(|b| (b.3 - origin).abs() < 1e-3),
+            "the staves share a y band, so the click is ambiguous by height alone"
+        );
+        let mut resolved = std::collections::BTreeSet::new();
+        for &(expected, lo, hi, _) in &bands {
+            // Click the centre of this staff's x span, at the shared band height.
+            let pitch = session
+                .staff_pitch_at(Point::new((lo + hi) / 2.0, origin + 2.0))
+                .expect("a staff under the click");
+            assert_eq!(
+                pitch.staff_instance, expected,
+                "the click resolves to the staff occupying that x, not a height-only pick"
+            );
+            resolved.insert(pitch.staff_instance);
+        }
+        assert_eq!(
+            resolved.len(),
+            bands.len(),
+            "distinct x positions resolved to distinct staves (height alone could not)"
+        );
+    }
+
+    #[test]
+    fn staff_pitch_at_rejects_non_finite_clicks() {
+        let session = open_rich(0x5EED);
+        // A finite click resolves, so the fixture has a staff to hit.
+        assert!(session.staff_pitch_at(Point::new(5.0, 0.0)).is_some());
+        // A malformed view transform can hand a NaN/inf coordinate; it must yield no
+        // pitch, not a bogus one (NaN would slip through `dist_to_band` as distance 0
+        // and saturate the `round() as i32` step).
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(session.staff_pitch_at(Point::new(bad, 0.0)), None);
+            assert_eq!(session.staff_pitch_at(Point::new(5.0, bad)), None);
+        }
+    }
+
+    #[test]
+    fn staff_start_clefs_resolve_by_time_not_vector_order() {
+        use epiphany_core::{MusicalPosition, RationalTime};
+        use epiphany_layout_ir::{LayoutObject, PlacedClef};
+
+        let at = |n, d| TimePoint::Musical(MusicalPosition(RationalTime::new(n, d).unwrap()));
+        let mut logical = to_logical(&valid_score_rich(0x5EED));
+        // Author one staff's clefs out of order: bass at time 1, treble at the origin.
+        // The clef in force at the staff start is treble (the latest change at or
+        // before time 0), even though bass is first in the vector.
+        let mut patched = None;
+        'outer: for region in &mut logical.regions {
+            let TypedObjectId::Region(rid) = region.provenance.source else {
+                continue;
+            };
+            for object in &mut region.objects {
+                // Match on content, not variant: the staff-content object projects from
+                // a `StaffInstance` source, so it is not the `Staff` layout variant.
+                let LayoutContent::Staff(content) = object.content() else {
+                    continue;
+                };
+                let Some(staff) = object.staff() else {
+                    continue;
+                };
+                let mut content = content.clone();
+                content.clefs = vec![
+                    PlacedClef {
+                        time: at(1, 1),
+                        clef: Clef::bass(),
+                    },
+                    PlacedClef {
+                        time: at(0, 1),
+                        clef: Clef::treble(),
+                    },
+                ];
+                *object = LayoutObject::from_projection_with_content(
+                    object.provenance().clone(),
+                    Some(staff),
+                    LayoutContent::Staff(content),
+                );
+                patched = Some((rid, staff));
+                break 'outer;
+            }
+        }
+        let key = patched.expect("the fixture has a staff layout object");
+        let clefs = staff_start_clefs(&logical);
+        assert_eq!(
+            clefs.get(&key).copied(),
+            Some(Clef::treble()),
+            "the start clef resolves by time (treble@0), not vector order (bass first)"
+        );
     }
 
     #[test]

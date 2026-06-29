@@ -338,9 +338,15 @@ impl EditorApp {
         if response.clicked() {
             if let Some(pos) = response.interact_pointer_pos() {
                 let world = ViewMap::new(self.view_box, rect).screen_to_world(pos);
+                // The pitch the clicked height resolves to (the vertical half of
+                // click-to-insert) — shown when the click lands on empty staff.
+                let pitch = self.session.staff_pitch_at(world);
                 self.status = match self.session.click(world) {
                     Some(_) => "selected".to_string(),
-                    None => "cleared selection".to_string(),
+                    None => match pitch {
+                        Some(p) => format!("empty — would insert {:?}{}", p.nominal, p.octave),
+                        None => "cleared selection".to_string(),
+                    },
                 };
             }
         }

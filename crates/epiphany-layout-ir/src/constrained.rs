@@ -1526,7 +1526,7 @@ fn shift_time(base: &TimePoint, offset: &MusicalDuration) -> TimePoint {
 /// readings coincide, and the lead clef glyph uses this same query so it always
 /// agrees with the notes. The sequence is not assumed sorted: `[bass@1, treble@0]`
 /// resolves a note after time 1 to bass and one before to treble.
-fn active_clef(clefs: &[PlacedClef], at: &TimePoint) -> Clef {
+pub fn active_clef(clefs: &[PlacedClef], at: &TimePoint) -> Clef {
     clefs
         .iter()
         .filter(|placed| {
