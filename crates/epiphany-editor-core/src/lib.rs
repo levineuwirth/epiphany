@@ -111,11 +111,11 @@ pub enum EditorError {
     },
     /// A pitch involved in the edit carries an authored spelling override (user-chosen,
     /// imported, or propagated) that outranks the inferred spelling, and the intent
-    /// cannot carry it. Raised by a chord add whose target event has an override (so
-    /// the rendered staff order can't be read off the raw pitch positions) and by an
-    /// insert that copies the pitch (which would drop the override from the new note);
-    /// both await an override-aware (transaction-carrying) version. A staff-step move
-    /// does *not* raise this — it rebases the override atomically instead.
+    /// cannot carry it. Raised by a chord add whose target event has an override — the
+    /// rendered staff order can't be read off the raw pitch positions, so the "above
+    /// the top" pick could be wrong; resolved-spelling-aware stacking is a follow-up.
+    /// The staff-step move and the insert do *not* raise this — they rebase / carry the
+    /// override atomically instead.
     PitchSpellingOverridden,
     /// An insert-after would land on a musical position already occupied by another
     /// event in the same voice (the reducer would silently no-op it). The edit is
@@ -653,24 +653,19 @@ impl EditorSession {
     /// position, copying the selected pitch and its rhythmic value. The selection is
     /// unchanged — the anchored notehead is still there.
     ///
-    /// Errors if nothing — or a non-pitch — is selected, the selected pitch carries an
-    /// authored spelling override (which the copy could not carry —
-    /// [`EditorError::PitchSpellingOverridden`]), the anchor event is not a metric
-    /// (musical) event in a metric region, or the position right after it is already
-    /// occupied in the voice ([`EditorError::InsertSlotOccupied`]) — inserting into a
-    /// packed voice needs an explicit make-room policy, a follow-up.
+    /// If the selected pitch carries an **authored spelling override**, the copy carries
+    /// it too: the insert lands **atomically** with a `RespellPitch` that gives the new
+    /// note the same spelling, so the copy renders like the original.
+    ///
+    /// Errors if nothing — or a non-pitch — is selected, the anchor event is not a
+    /// metric (musical) event in a metric region, or the position right after it is
+    /// already occupied in the voice ([`EditorError::InsertSlotOccupied`]) — inserting
+    /// into a packed voice needs an explicit make-room policy, a follow-up.
     pub fn insert_note_after_selection(&mut self) -> Result<EditOutcome, EditorError> {
         let selection = self.selection.ok_or(EditorError::NoSelection)?;
         let TypedObjectId::Pitch(anchor) = selection.source else {
             return Err(EditorError::WrongSelection { expected: "pitch" });
         };
-        // The copy carries only the raw pitch value, not a pitch-scoped authored
-        // spelling, so the new note would render differently from the selected one.
-        // Refuse until an override-aware insert (atomic InsertEvent + RespellPitch)
-        // exists.
-        if has_authored_spelling_override(&self.score, anchor) {
-            return Err(EditorError::PitchSpellingOverridden);
-        }
         let (event_id, anchor_value) = self
             .event_and_pitch_of(anchor)
             .ok_or(EditorError::WrongSelection { expected: "pitch" })?;
@@ -716,13 +711,14 @@ impl EditorSession {
             return Err(EditorError::InsertSlotOccupied);
         }
 
+        let new_pitch = self.mint_pitch_id();
         let event = Event::Pitched(PitchedEvent {
             id: self.mint_event_id(),
             voice,
             position: EventPosition::Musical(next_position),
             duration: EventDuration::Musical(duration),
             pitches: vec![IdentifiedPitch {
-                id: self.mint_pitch_id(),
+                id: new_pitch,
                 pitch: anchor_value,
             }],
             articulations: vec![],
@@ -731,10 +727,29 @@ impl EditorSession {
             stem: StemConfiguration,
             grace: None,
         });
-        self.apply(OperationKind::InsertEvent(InsertEventOp {
+        let insert = OperationKind::InsertEvent(InsertEventOp {
             staff_instance,
             event,
-        }))
+        });
+
+        // The new note copies the selected pitch's value; if that pitch has an authored
+        // spelling, copy it onto the new note too — atomically, so the copy renders the
+        // same. The respell targets the pitch the insert mints, so the insert must run
+        // first; the transaction's canonical order (by counter) guarantees that.
+        match authored_spelling(&self.score, anchor) {
+            None => self.apply(insert),
+            Some(spelling) => self.apply_transaction(
+                "insert note",
+                Some(TransactionCategory::NoteEntry),
+                vec![
+                    insert,
+                    OperationKind::RespellPitch(RespellPitchOp {
+                        pitch: new_pitch,
+                        spelling,
+                    }),
+                ],
+            ),
+        }
     }
 
     /// The staff instance hosting `voice`, but only when its region is metric — the
@@ -1739,31 +1754,50 @@ mod tests {
     }
 
     #[test]
-    fn insert_after_refuses_a_pitch_with_an_authored_spelling_override() {
-        use epiphany_core::PitchSpelling;
-        use epiphany_ops::RespellPitchOp;
-
+    fn insert_after_an_overridden_pitch_carries_the_spelling() {
         let mut session = open_rich(0x5EED);
         let anchor = last_event_pitch(&session);
         select_pitch(&mut session, anchor);
-        // Pin the anchor's spelling; a value-only copy would drop the override and
-        // render differently, so the insert is refused.
+        // Pin the anchor's spelling (C4). The copy must carry it, not drop it.
         session
             .apply(OperationKind::RespellPitch(RespellPitchOp {
                 pitch: anchor,
                 spelling: PitchSpelling::cmn(CmnNominal::C, 4),
             }))
             .expect("the respell applies");
-        let logged = session.applied_operations().len();
+        let before_ids: std::collections::BTreeSet<_> =
+            session.score().events.iter().map(Event::id).collect();
 
+        let outcome = session
+            .insert_note_after_selection()
+            .expect("the override-carrying insert applies");
+        assert!(outcome.graph_changed);
+
+        // The new event's note carries the same authored spelling (C4).
+        let new_eid = session
+            .score()
+            .events
+            .iter()
+            .map(Event::id)
+            .find(|e| !before_ids.contains(e))
+            .expect("a new event");
+        let mut buf: Vec<&IdentifiedPitch> = Vec::new();
+        session
+            .score()
+            .events
+            .get(new_eid)
+            .unwrap()
+            .collect_identified_pitches(&mut buf);
+        let new_pitch = buf[0].id;
+        let spelling =
+            authored_spelling(session.score(), new_pitch).expect("the copy carries an override");
+        assert!(matches!(
+            spelling.nominal,
+            SpellingNominal::Cmn(CmnNominal::C)
+        ));
         assert_eq!(
-            session.insert_note_after_selection(),
-            Err(EditorError::PitchSpellingOverridden)
-        );
-        assert_eq!(
-            session.applied_operations().len(),
-            logged,
-            "a refused insert logs no dead op"
+            spelling.octave, 4,
+            "the copy's spelling matches the original"
         );
     }
 
