@@ -97,7 +97,7 @@ pub use constrained::{
 };
 pub use engrave_theory::{
     accidental_glyph, clef_glyph, flag_glyph, has_stem, key_signature, notehead_glyph, rest_glyph,
-    staff_position, KeyAccidental, StaffStep,
+    staff_position, staff_step_pitch, KeyAccidental, StaffStep,
 };
 pub use engraving::{
     AuthorId, DecisionSource, EngravingDecision, EngravingDecisionId, EngravingDecisionKind,

@@ -63,6 +63,38 @@ pub fn staff_position(nominal: CmnNominal, octave: i8, clef: &Clef) -> StaffStep
     }
 }
 
+/// The [`CmnNominal`] for a diatonic letter index `0..=6` (`C..=B`); callers pass
+/// `rem_euclid(7)`, so out-of-range values are unreachable and fold to `B`.
+fn cmn_nominal(letter: i32) -> CmnNominal {
+    match letter {
+        0 => CmnNominal::C,
+        1 => CmnNominal::D,
+        2 => CmnNominal::E,
+        3 => CmnNominal::F,
+        4 => CmnNominal::G,
+        5 => CmnNominal::A,
+        _ => CmnNominal::B,
+    }
+}
+
+/// The diatonic pitch `(nominal, octave)` written at staff position `step` under
+/// `clef` — the inverse of [`staff_position`], used to turn a clicked staff height
+/// into the pitch to insert. `None` for a percussion clef (no diatonic mapping — it
+/// collapses every pitch onto its reference line), and `None` when the position is
+/// so far off the staff that its octave falls outside the representable `i8` range
+/// (rather than silently wrapping to a wrong-looking octave). Inverse only of the
+/// *diatonic* position; the accidental is a separate, caller-chosen concern.
+pub fn staff_step_pitch(step: StaffStep, clef: &Clef) -> Option<(CmnNominal, i8)> {
+    let reference_line_step = (clef.line as i64 - 1) * 2;
+    let reference_diatonic = clef_reference_diatonic(clef.shape)? as i64;
+    // i64 so an extreme `step` cannot overflow the intermediate before the octave
+    // range-check rejects it.
+    let diatonic =
+        step as i64 - reference_line_step + reference_diatonic + clef.octave_shift as i64 * 7;
+    let octave = i8::try_from(diatonic.div_euclid(7)).ok()?;
+    Some((cmn_nominal(diatonic.rem_euclid(7) as i32), octave))
+}
+
 /// The SMuFL notehead glyph for a note value: a hollow whole/half notehead, else
 /// the filled black notehead.
 pub fn notehead_glyph(value: NoteValue) -> &'static str {
@@ -214,6 +246,65 @@ mod tests {
         // Alto: middle C4 the middle line (4). Tenor: middle C4 the fourth line (6).
         assert_eq!(staff_position(CmnNominal::C, 4, &Clef::alto()), 4);
         assert_eq!(staff_position(CmnNominal::C, 4, &Clef::tenor()), 6);
+    }
+
+    #[test]
+    fn staff_step_pitch_inverts_staff_position() {
+        let nominals = [
+            CmnNominal::C,
+            CmnNominal::D,
+            CmnNominal::E,
+            CmnNominal::F,
+            CmnNominal::G,
+            CmnNominal::A,
+            CmnNominal::B,
+        ];
+        // Plain clefs and octave-shifted (8va/8vb) trebles — the editor inverse
+        // depends on the same octave_shift sign convention as the forward map.
+        let octave_treble = |shift: i8| Clef {
+            shape: ClefShape::G,
+            line: 2,
+            octave_shift: shift,
+        };
+        for clef in [
+            Clef::treble(),
+            Clef::bass(),
+            Clef::alto(),
+            Clef::tenor(),
+            octave_treble(1),
+            octave_treble(-1),
+        ] {
+            for octave in 1..8i8 {
+                for nominal in nominals {
+                    let step = staff_position(nominal, octave, &clef);
+                    assert_eq!(
+                        staff_step_pitch(step, &clef),
+                        Some((nominal, octave)),
+                        "round trip failed for {nominal:?}{octave} under {clef:?}"
+                    );
+                }
+            }
+        }
+        // A percussion clef has no diatonic mapping, so no inverse.
+        let percussion = Clef {
+            shape: ClefShape::Percussion,
+            line: 3,
+            octave_shift: 0,
+        };
+        assert_eq!(staff_step_pitch(0, &percussion), None);
+    }
+
+    #[test]
+    fn staff_step_pitch_refuses_an_unrepresentable_octave() {
+        // A click so far off the staff that its octave overflows i8 is refused, not
+        // wrapped to a plausible-but-wrong octave.
+        let treble = Clef::treble();
+        assert_eq!(staff_step_pitch(i32::MAX, &treble), None);
+        assert_eq!(staff_step_pitch(i32::MIN, &treble), None);
+        assert_eq!(staff_step_pitch(10_000, &treble), None);
+        assert_eq!(staff_step_pitch(-10_000, &treble), None);
+        // …but a position just inside the i8 octave range still resolves.
+        assert!(staff_step_pitch(staff_position(CmnNominal::C, 9, &treble), &treble).is_some());
     }
 
     #[test]
