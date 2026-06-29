@@ -45,11 +45,29 @@ use std::collections::BTreeMap;
 
 use epiphany_layout_ir::{
     all_available, Axis, BravuraCatalog, BreakKind, ConstrainedLayoutIR, ConstraintId,
-    ConstraintSolver, GlyphCatalog, GlyphObjectId, InvalidationSet, LayoutConstraint, Margins,
-    Point, QualityMetricVector, Rect, ResolvedGlyph, ResolvedLayoutIR, ResolvedPage,
+    ConstraintSolver, GlyphCatalog, GlyphObject, GlyphObjectId, InvalidationSet, LayoutConstraint,
+    Margins, Point, QualityMetricVector, Rect, ResolvedGlyph, ResolvedLayoutIR, ResolvedPage,
     ResolvedSystem, Size2D, SolveReport, SolveStatus, SolverBudgetUsed, SolverConfig, SolverState,
     SolverTier, SolverVersion, SolverWarning, SolverWarningKind, Stroke,
 };
+
+/// The glyph a fixed-width stroke (a ledger line) belongs to: the same-source glyph
+/// whose baseline falls within the stroke's horizontal span (its accidentals sit
+/// outside the span, to the left). The stroke is anchored to this glyph's column so
+/// it translates with it — found by source, never inferred from the stroke's own
+/// midpoint, which for a wide head can fall nearer a neighbouring column.
+pub(crate) fn owning_glyph<'a>(
+    stroke: &Stroke,
+    glyphs: &'a [GlyphObject],
+) -> Option<&'a GlyphObject> {
+    let lo = stroke.from.x.0.min(stroke.to.x.0);
+    let hi = stroke.from.x.0.max(stroke.to.x.0);
+    glyphs.iter().find(|g| {
+        g.provenance.source == stroke.provenance.source
+            && g.baseline.x.0 >= lo
+            && g.baseline.x.0 <= hi
+    })
+}
 
 /// The Epiphany engraving solver (Chapter 9). A `Minimal`-tier solver: it spaces
 /// glyphs horizontally and satisfies the IR's declared hard constraints. See the
@@ -248,18 +266,39 @@ impl HorizontalRemap {
             .collect()
     }
 
-    /// Re-maps both endpoints of each stroke, so it tracks the glyphs it spans.
+    /// Re-maps each stroke's endpoints so it tracks the glyphs it spans. A
+    /// system-spanning stroke (staff line, barline, …) maps both endpoints, so it
+    /// stretches with the spacing; a fixed-width stroke (a ledger line on one
+    /// notehead) is translated rigidly by its owning column's delta
+    /// ([`epiphany_layout_ir::is_rigid_width_stroke`]) — preserving both its length
+    /// and its offset from its glyph, which maps by that same delta at its column.
     fn strokes(&self, input: &ConstrainedLayoutIR) -> Vec<Stroke> {
         input
             .strokes
             .iter()
-            .map(|s| Stroke {
-                provenance: s.provenance.clone(),
-                from: Point::new(self.map(s.from.x.0), s.from.y.0),
-                to: Point::new(self.map(s.to.x.0), s.to.y.0),
-                thickness: s.thickness,
-                layer: s.layer,
-                style: s.style,
+            .map(|s| {
+                let (from_x, to_x) = if epiphany_layout_ir::is_rigid_width_stroke(s) {
+                    // Translate rigidly by the *owning glyph's* column delta — found by
+                    // source, not the stroke's midpoint, which for a wide head could
+                    // pick a neighbouring column and reintroduce drift. The glyph
+                    // baseline is a control point, so `map(baseline) − baseline` is its
+                    // exact column delta; applying it keeps the stroke's offset from the
+                    // glyph and its length.
+                    let delta = owning_glyph(s, &input.glyphs)
+                        .map(|g| self.map(g.baseline.x.0) - g.baseline.x.0)
+                        .unwrap_or(0.0);
+                    (s.from.x.0 + delta, s.to.x.0 + delta)
+                } else {
+                    (self.map(s.from.x.0), self.map(s.to.x.0))
+                };
+                Stroke {
+                    provenance: s.provenance.clone(),
+                    from: Point::new(from_x, s.from.y.0),
+                    to: Point::new(to_x, s.to.y.0),
+                    thickness: s.thickness,
+                    layer: s.layer,
+                    style: s.style,
+                }
             })
             .collect()
     }
@@ -395,7 +434,7 @@ impl ConstraintSolver for Engraver {
 mod tests {
     use super::*;
     use epiphany_core::generators::valid_score_rich;
-    use epiphany_layout_ir::{to_constrained, to_logical, StubSolver};
+    use epiphany_layout_ir::{is_rigid_width_stroke, to_constrained, to_logical, StubSolver};
 
     fn fixture() -> ConstrainedLayoutIR {
         to_constrained(&to_logical(&valid_score_rich(11)))
@@ -567,6 +606,270 @@ mod tests {
             Engraver.solve(&soft, &SolverConfig::default()).status,
             SolveStatus::Solved
         );
+    }
+
+    #[test]
+    fn ledger_lines_keep_their_width_through_the_spacing_pass() {
+        // A corpus score with off-staff notes yields ledger strokes; the horizontal
+        // spacing pass must translate them (preserving length), not re-map both
+        // endpoints — which would scale a fixed-width mark with the local spacing.
+        let mut checked = 0;
+        for seed in 0..16 {
+            let input = to_constrained(&to_logical(&valid_score_rich(seed)));
+            let widths: std::collections::HashMap<u128, f32> = input
+                .strokes
+                .iter()
+                .filter(|s| is_rigid_width_stroke(s))
+                .map(|s| (s.provenance.stable_id.0, s.to.x.0 - s.from.x.0))
+                .collect();
+            if widths.is_empty() {
+                continue;
+            }
+            let report = Engraver.solve(&input, &SolverConfig::default());
+            for s in report
+                .layout
+                .strokes
+                .iter()
+                .filter(|s| is_rigid_width_stroke(s))
+            {
+                if let Some(&w_in) = widths.get(&s.provenance.stable_id.0) {
+                    let w_out = s.to.x.0 - s.from.x.0;
+                    assert!(
+                        (w_out - w_in).abs() < 1e-4,
+                        "ledger width changed through spacing: {w_in} -> {w_out}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0, "no ledger strokes exercised across 16 seeds");
+    }
+
+    /// Two whole notes (wide heads) a step above the staff, in adjacent time
+    /// columns — the case where a ledger's own midpoint can fall nearer the next
+    /// column than its notehead's.
+    fn two_off_staff_whole_notes() -> ConstrainedLayoutIR {
+        use epiphany_core::{
+            CmnNominal, EventId, MusicalDuration, MusicalPosition, NotatedComponent, NoteValue,
+            PitchId, PitchSpelling, RationalTime, RegionId, StaffId, StaffInstanceId,
+            TypedObjectId,
+        };
+        use epiphany_layout_ir::{
+            LayoutContent, LayoutObject, LayoutRegion, LocalCoordinateSystem, LogicalLayoutIR,
+            MetricTimeAxis, NoteContent, NotePitch, PlacedComponent, Provenance, ScoreVersion,
+            StaffContent, TimeAxisModel, TimePoint, VerticalExtent,
+        };
+        let region = RegionId::from_raw(1);
+        let staff = StaffId::from_raw(10);
+        let manifested = |src, content| {
+            LayoutObject::from_projection_with_content(
+                Provenance::manifested(src, region, vec![]),
+                Some(staff),
+                content,
+            )
+        };
+        let whole = || {
+            vec![PlacedComponent {
+                offset: MusicalDuration::zero(),
+                component: NotatedComponent {
+                    base_value: NoteValue::Whole,
+                    dots: 0,
+                    tuplet: None,
+                    tied_to_next: false,
+                },
+                tuplet: None,
+            }]
+        };
+        let note = |eid: u128, pid: u128, pos: MusicalPosition| {
+            let pitch = PitchId::from_raw(pid);
+            [
+                manifested(
+                    TypedObjectId::Event(EventId::from_raw(eid)),
+                    LayoutContent::Note(NoteContent {
+                        position: TimePoint::Musical(pos),
+                        components: whole(),
+                        // C6 is a step above the treble staff, so each head earns
+                        // ledger lines.
+                        pitches: vec![NotePitch {
+                            pitch,
+                            spelling: Some(PitchSpelling::cmn(CmnNominal::C, 6)),
+                        }],
+                    }),
+                ),
+                manifested(TypedObjectId::Pitch(pitch), LayoutContent::Structural),
+            ]
+        };
+        let mut objects = vec![manifested(
+            TypedObjectId::StaffInstance(StaffInstanceId::from_raw(1)),
+            LayoutContent::Staff(StaffContent {
+                clefs: vec![],
+                keys: vec![],
+            }),
+        )];
+        objects.extend(note(1, 101, MusicalPosition::origin()));
+        objects.extend(note(
+            2,
+            102,
+            MusicalPosition(RationalTime::new(1, 1).unwrap()),
+        ));
+        let logical = LogicalLayoutIR {
+            source: ScoreVersion::default(),
+            regions: vec![LayoutRegion {
+                provenance: Provenance::projected(TypedObjectId::Region(region), vec![]),
+                coordinate_system: LocalCoordinateSystem::default(),
+                time_axis: TimeAxisModel::Metric(MetricTimeAxis::default()),
+                vertical_extent: VerticalExtent {
+                    staves: vec![staff],
+                },
+                objects,
+            }],
+            engraving_decisions: vec![],
+            overrides: vec![],
+            cross_region: vec![],
+        };
+        to_constrained(&logical)
+    }
+
+    #[test]
+    fn an_off_staff_whole_note_ledger_does_not_drift() {
+        let input = two_off_staff_whole_notes();
+        assert!(
+            input
+                .glyphs
+                .iter()
+                .any(|g| g.glyph.as_str() == "noteheadWhole"),
+            "the fixture engraves whole notes"
+        );
+        let ledger_count = input
+            .strokes
+            .iter()
+            .filter(|s| is_rigid_width_stroke(s))
+            .count();
+        assert!(
+            ledger_count >= 2,
+            "off-staff whole notes earn ledger strokes"
+        );
+
+        let report = Engraver.solve(&input, &SolverConfig::default());
+        // The wide whole-note columns re-space (their deltas differ), so a midpoint-
+        // anchored ledger would translate by a neighbouring column's delta and drift.
+        // The owning-glyph anchor keeps every ledger at its notehead's offset.
+        for s_in in input.strokes.iter().filter(|s| is_rigid_width_stroke(s)) {
+            let g_in = owning_glyph(s_in, &input.glyphs).expect("owning notehead");
+            let s_out = report
+                .layout
+                .strokes
+                .iter()
+                .find(|s| s.provenance.stable_id == s_in.provenance.stable_id)
+                .expect("stroke survives");
+            let g_out = report
+                .layout
+                .glyphs
+                .iter()
+                .find(|g| g.provenance.stable_id == g_in.provenance.stable_id)
+                .expect("glyph survives");
+            let offset_in = s_in.from.x.0 - g_in.baseline.x.0;
+            let offset_out = s_out.from.x.0 - g_out.position.x.0;
+            assert!(
+                (offset_out - offset_in).abs() < 1e-4,
+                "whole-note ledger drifted {offset_in} -> {offset_out}"
+            );
+        }
+    }
+
+    #[test]
+    fn ledger_offsets_from_the_notehead_survive_the_engraver() {
+        // The column-delta translation keeps a ledger at exactly the same offset from
+        // its notehead through the spacing pass; interpolating its midpoint (the bug
+        // this replaced) would shift it under a non-unit local slope.
+        let mut checked = 0;
+        for seed in 0..16 {
+            let input = to_constrained(&to_logical(&valid_score_rich(seed)));
+            let report = Engraver.solve(&input, &SolverConfig::default());
+            for s_in in input.strokes.iter().filter(|s| is_rigid_width_stroke(s)) {
+                let lo = s_in.from.x.0.min(s_in.to.x.0);
+                let hi = s_in.from.x.0.max(s_in.to.x.0);
+                let Some(g_in) = input.glyphs.iter().find(|g| {
+                    g.provenance.source == s_in.provenance.source
+                        && g.baseline.x.0 >= lo
+                        && g.baseline.x.0 <= hi
+                }) else {
+                    continue;
+                };
+                let Some(s_out) = report
+                    .layout
+                    .strokes
+                    .iter()
+                    .find(|s| s.provenance.stable_id == s_in.provenance.stable_id)
+                else {
+                    continue;
+                };
+                let Some(g_out) = report
+                    .layout
+                    .glyphs
+                    .iter()
+                    .find(|g| g.provenance.stable_id == g_in.provenance.stable_id)
+                else {
+                    continue;
+                };
+                let offset_in = s_in.from.x.0 - g_in.baseline.x.0;
+                let offset_out = s_out.from.x.0 - g_out.position.x.0;
+                assert!(
+                    (offset_out - offset_in).abs() < 1e-4,
+                    "seed {seed}: ledger offset drifted {offset_in} -> {offset_out}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "no ledger/notehead pairs exercised");
+    }
+
+    #[test]
+    fn adjacent_ledger_lines_are_spaced_not_overlapping() {
+        use std::collections::HashMap;
+        // The spacing pass reserves room for ledger overhang, so two off-staff notes
+        // that share a ledger height (same step) and sit in neighbouring columns get
+        // ledger strokes that do not overlap.
+        let mut ledgers = 0;
+        let mut pairs = 0;
+        for seed in 0..32 {
+            let report = Engraver.solve(
+                &to_constrained(&to_logical(&valid_score_rich(seed))),
+                &SolverConfig::default(),
+            );
+            let mut by_height: HashMap<i64, Vec<(f32, f32, _)>> = HashMap::new();
+            for s in report
+                .layout
+                .strokes
+                .iter()
+                .filter(|s| is_rigid_width_stroke(s))
+            {
+                ledgers += 1;
+                let y = (s.from.y.0 * 1024.0).round() as i64;
+                let (lo, hi) = (s.from.x.0.min(s.to.x.0), s.from.x.0.max(s.to.x.0));
+                by_height
+                    .entry(y)
+                    .or_default()
+                    .push((lo, hi, s.provenance.source));
+            }
+            for group in by_height.values_mut() {
+                group.sort_by(|a, b| a.0.total_cmp(&b.0));
+                for w in group.windows(2) {
+                    // Distinct notes' ledgers at the same height must not overlap.
+                    if w[0].2 != w[1].2 {
+                        pairs += 1;
+                        assert!(
+                            w[0].1 <= w[1].0 + 1e-3,
+                            "seed {seed}: ledger lines overlap ({:?} vs {:?})",
+                            w[0],
+                            w[1]
+                        );
+                    }
+                }
+            }
+        }
+        assert!(ledgers > 0, "the corpus exercised no ledger lines");
+        assert!(pairs > 0, "no adjacent same-height ledger pairs to check");
     }
 
     #[test]

@@ -20,7 +20,9 @@
 
 use std::collections::BTreeMap;
 
-use epiphany_layout_ir::{ConstrainedLayoutIR, SpringSlotId};
+use epiphany_layout_ir::{is_rigid_width_stroke, ConstrainedLayoutIR, SpringSlotId};
+
+use crate::owning_glyph;
 
 /// Inter-slot gap (staff spaces) reserved between one slot's right content and
 /// the next slot's left content.
@@ -69,6 +71,25 @@ pub(crate) fn control_points(input: &ConstrainedLayoutIR) -> Vec<(f32, f32)> {
                     .copied()
                     .unwrap_or(0.0),
             });
+    }
+
+    // Fold each ledger line (a fixed-width stroke) into its notehead's slot extent,
+    // so a ledger that overhangs the notehead reserves room — otherwise adjacent
+    // off-staff notes' ledgers can overlap even though glyph spacing is collision-
+    // aware. The owning notehead is the same-source glyph whose baseline lies within
+    // the stroke's span (its accidentals sit outside it, to the left).
+    for stroke in &input.strokes {
+        if !is_rigid_width_stroke(stroke) {
+            continue;
+        }
+        if let Some(glyph) = owning_glyph(stroke, &input.glyphs) {
+            let lo = stroke.from.x.0.min(stroke.to.x.0);
+            let hi = stroke.from.x.0.max(stroke.to.x.0);
+            if let Some(extent) = by_slot.get_mut(&glyph.horizontal_slot) {
+                extent.min_left = extent.min_left.min(lo);
+                extent.max_right = extent.max_right.max(hi);
+            }
+        }
     }
 
     let mut slots: Vec<Extent> = by_slot.into_values().collect();

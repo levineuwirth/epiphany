@@ -464,6 +464,8 @@ const TIME_DIGIT_X: f32 = 0.8; // x advance per time-signature digit
 /// five lines share its source, so four of them must be synthesized to earn
 /// distinct stable ids; this is the kind they declare.
 const STAFF_LINE_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5354_4146_465F_4C4E); // "STAFFLN"
+const LEDGER_LINE_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4C45_4447_4552_4C4E); // "LEDGERLN"
+const LEDGER_LINE_EXTENSION: f32 = 0.3; // a ledger line reaches this far past the notehead, each side
 
 /// The registry id for **notated-component synthesis**: a note/rest notated as a
 /// tied decomposition (e.g. a quarter tied to an eighth across a barline) draws
@@ -654,6 +656,7 @@ pub fn try_to_constrained(
                                 name,
                                 key: key.clone(),
                                 y,
+                                step,
                                 comp,
                                 accidentals,
                             });
@@ -984,6 +987,31 @@ pub fn try_to_constrained(
                                 staff,
                                 info.slot,
                             );
+                            // Ledger lines: short strokes continuing the staff to a
+                            // notehead above or below it, one per whole step between
+                            // the staff and the note, reaching `LEDGER_LINE_EXTENSION`
+                            // past each side of *this notehead's* drawn box — so a
+                            // wider head (a whole note) gets a wider ledger. Synthesized
+                            // from the pitch; render-svg draws strokes under glyphs at a
+                            // layer, so the notehead sits over them.
+                            let head_box = metrics(head.name).map(|m| m.bounding_box());
+                            let head_left = head_box.map_or(0.0, |b| b.left.0);
+                            let head_right = head_box.map_or(NOTEHEAD_STEM_X, |b| b.right.0);
+                            for ledger_step in ledger_steps(head.step) {
+                                let y = step_to_y(yo, ledger_step);
+                                let ledger_provenance = Provenance::synthesized(
+                                    provenance.source,
+                                    SynthesisKind::Registered(LEDGER_LINE_SYNTHESIS),
+                                    ledger_line_key(head.comp, ledger_step),
+                                    provenance.dependencies.clone(),
+                                );
+                                emit.stroke(line_stroke(
+                                    ledger_provenance,
+                                    Point::new(info.x + head_left - LEDGER_LINE_EXTENSION, y),
+                                    Point::new(info.x + head_right + LEDGER_LINE_EXTENSION, y),
+                                    STAFF_LINE_THICKNESS,
+                                ));
+                            }
                             // The spelling's accidental stack: synthesized glyphs
                             // left of the notehead (innermost nearest it), at its
                             // staff position, sharing the notehead's column slot.
@@ -1188,6 +1216,8 @@ struct Head {
     name: &'static str,
     key: ColumnKey,
     y: f32,
+    /// The note's diatonic staff position, for ledger-line emission.
+    step: StaffStep,
     comp: usize,
     /// The spelling's accidental stack (innermost — nearest the notehead — first),
     /// each drawn left of the notehead. Present only on the first component (a tie
@@ -1532,6 +1562,49 @@ fn step_to_y(y_origin: f32, step: StaffStep) -> f32 {
     y_origin + step as f32 * 0.5
 }
 
+/// The staff steps at which a note at `step` needs ledger lines: the even steps
+/// strictly outside the five-line staff (whose lines are the even steps `0..=8`),
+/// from the staff out to the note. Empty when the note is on or within the staff,
+/// or one space just outside it (an odd step at `±1` from the nearest line). At
+/// most one of the two loops runs, since a step cannot be both above and below.
+fn ledger_steps(step: StaffStep) -> Vec<StaffStep> {
+    let mut steps = Vec::new();
+    let mut above = 10;
+    while above <= step {
+        steps.push(above);
+        above += 2;
+    }
+    let mut below = -2;
+    while below >= step {
+        steps.push(below);
+        below -= 2;
+    }
+    steps
+}
+
+/// A distinct synthesis key for a ledger line on component `comp` at diatonic
+/// `step`. The component occupies the high 64 bits and the signed step the low 64,
+/// so the two fields never overlap — including a step below `-128`, whose
+/// two's-complement low bits would otherwise reach into the component field and let
+/// two components of a very low pitch mint colliding stable ids.
+fn ledger_line_key(comp: usize, step: StaffStep) -> SynthesisInstanceKey {
+    SynthesisInstanceKey(((comp as u128) << 64) | (step as i64 as u64 as u128))
+}
+
+/// Whether a stroke must keep a **fixed width** when a solver resolves horizontal
+/// spacing: its length is a glyph-relative constant, not a span across the columns
+/// the spacing pass stretches. A solver should translate such a stroke (preserving
+/// its length) rather than re-map both endpoints, which would scale it. Ledger lines
+/// are the case today — a fixed-width mark centered on one notehead, unlike a staff
+/// line or barline that genuinely spans the system. Public so the constraint solver
+/// can honor it without hard-coding the ledger synthesis identity.
+pub fn is_rigid_width_stroke(stroke: &Stroke) -> bool {
+    matches!(
+        stroke.provenance.synthesis,
+        Some(SynthesisKind::Registered(k)) if k == LEDGER_LINE_SYNTHESIS
+    )
+}
+
 /// The staff step of a clef's reference line — a neutral fallback position for a
 /// pitch whose spelling does not resolve to a CMN nominal.
 fn reference_step(clef: &Clef) -> StaffStep {
@@ -1626,6 +1699,93 @@ mod tests {
     use crate::time_axis::TimeAxis;
     use epiphany_core::generators::valid_score_rich;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn ledger_steps_cover_only_lines_outside_the_staff() {
+        // Within the five-line staff (steps 0..=8) and one space just outside: none.
+        for step in [-1, 0, 4, 8, 9] {
+            assert!(ledger_steps(step).is_empty(), "no ledger at step {step}");
+        }
+        // First ledger above (step 10) and below (-2): exactly one line, on the note.
+        assert_eq!(ledger_steps(10), vec![10]);
+        assert_eq!(ledger_steps(-2), vec![-2]);
+        // A note in the space above the first ledger still needs just that line.
+        assert_eq!(ledger_steps(11), vec![10]);
+        // Two lines above / below, in order from the staff outward.
+        assert_eq!(ledger_steps(12), vec![10, 12]);
+        assert_eq!(ledger_steps(-4), vec![-2, -4]);
+    }
+
+    #[test]
+    fn ledger_line_keys_are_distinct_across_components_and_low_steps() {
+        // The high/low 64-bit split keeps the component and step fields disjoint —
+        // including a step below -128, whose two's-complement low bits are large and,
+        // under a naive `(comp << small) | (step + bias)`, would reach into the
+        // component field and collide with another component's key.
+        let mut seen = std::collections::HashSet::new();
+        for comp in 0..3usize {
+            for step in [-300, -200, -130, -128, -2, 10, 200] {
+                assert!(
+                    seen.insert(ledger_line_key(comp, step).0),
+                    "ledger key collision at comp={comp} step={step}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_ledger_line_spans_its_notehead() {
+        // The ledger reaches past the notehead on both sides, for any notehead width
+        // — a whole note's head is wider than a black head, and the ledger must use
+        // the real bounding box, not a fixed notehead width.
+        let mut checked = 0;
+        for seed in 0..32 {
+            let c = to_constrained(&to_logical(&valid_score_rich(seed)));
+            for s in c.strokes.iter().filter(|s| is_rigid_width_stroke(s)) {
+                let lo = s.from.x.0.min(s.to.x.0);
+                let hi = s.from.x.0.max(s.to.x.0);
+                // The owning notehead: same source, baseline within the stroke span.
+                if let Some(g) = c.glyphs.iter().find(|g| {
+                    g.provenance.source == s.provenance.source
+                        && g.baseline.x.0 >= lo
+                        && g.baseline.x.0 <= hi
+                }) {
+                    let head_left = g.baseline.x.0 + g.bounding_box.left.0;
+                    let head_right = g.baseline.x.0 + g.bounding_box.right.0;
+                    assert!(
+                        lo <= head_left + 1e-4 && hi >= head_right - 1e-4,
+                        "seed {seed}: ledger [{lo}, {hi}] does not span notehead [{head_left}, {head_right}]"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0, "no ledger/notehead pairs to check");
+    }
+
+    #[test]
+    fn a_note_far_above_the_staff_gets_ledger_strokes() {
+        // A constrained layout of the rich corpus has noteheads across the range; at
+        // least one sits far enough off the staff to earn a ledger line, emitted as a
+        // synthesized stroke sourced from its pitch.
+        let mut any_ledger = false;
+        for seed in 0..16 {
+            let c = to_constrained(&to_logical(&valid_score_rich(seed)));
+            if c.strokes.iter().any(|s| {
+                matches!(
+                    s.provenance.synthesis,
+                    Some(SynthesisKind::Registered(k)) if k == LEDGER_LINE_SYNTHESIS
+                )
+            }) {
+                any_ledger = true;
+                break;
+            }
+        }
+        assert!(
+            any_ledger,
+            "no ledger-line strokes across 16 rich-corpus seeds"
+        );
+    }
 
     #[test]
     fn out_of_range_finite_stroke_thickness_is_rejected() {
