@@ -50,7 +50,7 @@ use epiphany_core::{
 };
 use epiphany_layout_ir::{
     to_constrained, to_logical, to_render, ConstraintSolver, HitTestMap, LayoutObjectId, Point,
-    RenderIR, SolverConfig,
+    RenderIR, ResolvedLayoutIR, SolverConfig,
 };
 use epiphany_ops::{
     AcceptOutcome, AuthorId, CausalContext, DeleteEventOp, DeleteIdentifiedPitchOp,
@@ -165,6 +165,10 @@ pub struct EditorSession {
     base: Score,
     score: Score,
     solver: Box<dyn ConstraintSolver>,
+    // The solved layout the current render derives from — the input a renderer (e.g.
+    // epiphany-render-svg) consumes. Kept alongside the RenderIR, which is the
+    // hit-test projection of it.
+    resolved: ResolvedLayoutIR,
     render: RenderIR,
     map: HitTestMap,
     selection: Option<Selection>,
@@ -183,12 +187,13 @@ impl EditorSession {
     /// Opens a session on `score` with `solver`, rendering immediately. Errors with
     /// [`EditorError::NotRenderable`] if the initial layout is diagnostic-only.
     pub fn open(score: Score, solver: Box<dyn ConstraintSolver>) -> Result<Self, EditorError> {
-        let (render, map) =
+        let (resolved, render, map) =
             render_score(&score, solver.as_ref()).ok_or(EditorError::NotRenderable)?;
         Ok(EditorSession {
             base: score.clone(),
             score,
             solver,
+            resolved,
             render,
             map,
             selection: None,
@@ -221,6 +226,13 @@ impl EditorSession {
     /// The current document.
     pub fn score(&self) -> &Score {
         &self.score
+    }
+
+    /// The current resolved layout — the input a renderer (e.g. `epiphany-render-svg`)
+    /// consumes to draw the score. The [`Self::render`] / [`Self::hit_test`] views are
+    /// its hit-test projection.
+    pub fn resolved(&self) -> &ResolvedLayoutIR {
+        &self.resolved
     }
 
     /// The current render, for the GUI to draw.
@@ -366,12 +378,13 @@ impl EditorSession {
         let graph_changed = edited != self.score;
 
         // Refuse a diagnostic-only layout, still before committing anything.
-        let (render, map) =
+        let (resolved, render, map) =
             render_score(&edited, self.solver.as_ref()).ok_or(EditorError::NotRenderable)?;
 
         // Commit (the only mutation point — so an error above leaves all state,
         // op log included, untouched).
         self.score = edited;
+        self.resolved = resolved;
         self.render = render;
         self.map = map;
         self.applied.extend(new);
@@ -1047,7 +1060,10 @@ fn staff_step_spelling(spelling: &PitchSpelling, steps: i32) -> Option<PitchSpel
 
 /// Renders a score with `solver` to its `RenderIR` + hit-test map, or `None` if the
 /// solver's report is diagnostic-only (not renderable).
-fn render_score(score: &Score, solver: &dyn ConstraintSolver) -> Option<(RenderIR, HitTestMap)> {
+fn render_score(
+    score: &Score,
+    solver: &dyn ConstraintSolver,
+) -> Option<(ResolvedLayoutIR, RenderIR, HitTestMap)> {
     let report = solver.solve(
         &to_constrained(&to_logical(score)),
         &SolverConfig::default(),
@@ -1057,7 +1073,7 @@ fn render_score(score: &Score, solver: &dyn ConstraintSolver) -> Option<(RenderI
     }
     let render = to_render(&report.layout);
     let map = render.hit_test_map();
-    Some((render, map))
+    Some((report.layout, render, map))
 }
 
 #[cfg(test)]
@@ -1128,6 +1144,10 @@ mod tests {
         let session = open_rich(0x5EED);
         assert!(!session.render().primitives.is_empty(), "the score renders");
         assert!(!session.hit_test().regions.is_empty(), "with hit regions");
+        assert!(
+            !session.resolved().glyphs.is_empty(),
+            "the resolved layout a renderer consumes is exposed"
+        );
         assert_eq!(session.selection(), None, "nothing is selected at open");
     }
 
