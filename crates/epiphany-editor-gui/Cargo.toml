@@ -1,0 +1,31 @@
+[package]
+name = "epiphany-editor-gui"
+version = "0.0.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "A thin native (egui) GUI shell over epiphany-editor-core: renders the score with epiphany-render-svg (rasterized by resvg), click to select, and a toolbar/keys for the note-editing intents. A vertical slice proving the editor seam — no duration editing, empty-space insert, or undo UI yet."
+
+# A demo binary, not a library other crates build on, so it carries the heavy GUI
+# dependency tree (eframe/winit/wgpu, resvg/usvg/tiny-skia) the rest of the
+# workspace deliberately avoids. It opts out of the workspace MSRV claim because
+# those crates require a newer toolchain than the core crates pin.
+
+[dependencies]
+# The headless editor this GUI drives.
+epiphany-editor-core.workspace = true
+# The real constraint solver (so the GUI shows a genuinely engraved score).
+epiphany-engrave.workspace = true
+# SVG rendering of the resolved layout, and the layout/hit-test geometry types.
+epiphany-render-svg.workspace = true
+epiphany-layout-ir.workspace = true
+# Operation payload types, to label the last applied op in the debug panel.
+epiphany-ops.workspace = true
+# A clean score fixture to open.
+epiphany-testkit.workspace = true
+
+# Native GUI shell (window, event loop, immediate-mode UI). Pinned to the classic
+# `App::update(ctx, frame)` + panel API (egui 0.35 redesigned `App` around `ui()`).
+eframe = "0.29"
+# Rasterizes the rendered SVG to a pixmap for display (bundles usvg + tiny-skia).
+resvg = "0.45"

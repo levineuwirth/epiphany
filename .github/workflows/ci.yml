@@ -36,14 +36,17 @@ jobs:
       - name: Formatting
         run: cargo fmt --all -- --check
 
+      # The demo GUI crate (eframe/resvg) needs a newer toolchain than the pinned
+      # MSRV, so it is excluded from these MSRV-pinned workspace commands and
+      # checked on current stable in the `editor-gui` job below.
       - name: Clippy (all targets)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude epiphany-editor-gui --all-targets -- -D warnings
 
       - name: Test (workspace)
-        run: cargo test --workspace --all-targets
+        run: cargo test --workspace --exclude epiphany-editor-gui --all-targets
 
       - name: Doc tests
-        run: cargo test --workspace --doc
+        run: cargo test --workspace --exclude epiphany-editor-gui --doc
 
       # Deny rustdoc warnings (broken/private intra-doc links, etc.) across the
       # whole workspace. `RUSTFLAGS` does not cover rustdoc, so `RUSTDOCFLAGS` is
@@ -51,7 +54,37 @@ jobs:
       - name: Doc warnings (workspace)
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --workspace --no-deps
+        run: cargo doc --workspace --exclude epiphany-editor-gui --no-deps
+
+  # The demo GUI crate, on current stable (its eframe/resvg tree requires a newer
+  # toolchain than the workspace MSRV). Separate so a GUI build break is its own
+  # attributable signal, not a regression in the core crates.
+  editor-gui:
+    name: editor GUI (current stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (current stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libssl-dev
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Clippy (GUI)
+        run: cargo clippy -p epiphany-editor-gui --all-targets -- -D warnings
+
+      - name: Test (GUI)
+        run: cargo test -p epiphany-editor-gui
 
   conformance:
     name: conformance suite (testkit)

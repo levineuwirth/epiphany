@@ -9,6 +9,7 @@ members = [
     "crates/epiphany-engrave",
     "crates/epiphany-render-svg",
     "crates/epiphany-editor-core",
+    "crates/epiphany-editor-gui",
     "crates/epiphany-testkit",
 ]
 
