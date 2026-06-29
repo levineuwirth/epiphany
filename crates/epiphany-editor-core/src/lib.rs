@@ -38,14 +38,15 @@
 //! GUI plugs in the real `Engraver`, the stub, or any conformant solver. It
 //! produces a [`RenderIR`]; turning that into pixels is the renderer's job.
 
+use std::cmp::Reverse;
 use std::fmt;
 
 use epiphany_core::{
     AcousticRealization, CmnNominal, Event, EventDuration, EventId, EventPosition, IdentifiedPitch,
     MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId, PitchSpacePosition,
-    PitchedEvent, RegionTimeModel, ReplicaId, Score, SpellingDirective, SpellingScope,
-    SpellingSourceKind, StaffInstanceId, StemConfiguration, TransactionId, TypedObjectId, VoiceId,
-    WallClockTime,
+    PitchSpelling, PitchedEvent, RegionTimeModel, ReplicaId, Score, SpellingDirective,
+    SpellingNominal, SpellingScope, SpellingSourceKind, StaffInstanceId, StemConfiguration,
+    TransactionId, TypedObjectId, VoiceId, WallClockTime,
 };
 use epiphany_layout_ir::{
     to_constrained, to_logical, to_render, ConstraintSolver, HitTestMap, LayoutObjectId, Point,
@@ -55,7 +56,7 @@ use epiphany_ops::{
     AcceptOutcome, AuthorId, CausalContext, DeleteEventOp, DeleteIdentifiedPitchOp,
     HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp, ModifyIdentifiedPitchOp,
     OperationEnvelope, OperationKind, OperationPayload, OperationSet, OperationStamp,
-    TransactionCategory, TransactionDescriptor, TransposeOp, TupletCompensation,
+    RespellPitchOp, TransactionCategory, TransactionDescriptor, TransposeOp, TupletCompensation,
 };
 
 /// The current selection: the score-graph object to act on, plus the stable layout
@@ -109,13 +110,12 @@ pub enum EditorError {
         expected: &'static str,
     },
     /// A pitch involved in the edit carries an authored spelling override (user-chosen,
-    /// imported, or propagated) that outranks the inferred spelling. An intent that
-    /// cannot carry the override refuses rather than mislead: a staff-step move (which
-    /// would move the sound but not the pinned notehead), a chord add whose target
-    /// event has an override (so the rendered staff order can't be read off the raw
-    /// pitch positions), or an insert that copies the pitch (dropping the override from
-    /// the new note). Override-aware edits (atomic value change + `RespellPitch`) are a
-    /// follow-up.
+    /// imported, or propagated) that outranks the inferred spelling, and the intent
+    /// cannot carry it. Raised by a chord add whose target event has an override (so
+    /// the rendered staff order can't be read off the raw pitch positions) and by an
+    /// insert that copies the pitch (which would drop the override from the new note);
+    /// both await an override-aware (transaction-carrying) version. A staff-step move
+    /// does *not* raise this — it rebases the override atomically instead.
     PitchSpellingOverridden,
     /// An insert-after would land on a musical position already occupied by another
     /// event in the same voice (the reducer would silently no-op it). The edit is
@@ -527,37 +527,55 @@ impl EditorSession {
     /// performs. It modifies the pitch in place ([`OperationKind::ModifyIdentifiedPitch`]),
     /// so the note keeps its identity and the selection survives the relayout.
     ///
-    /// Errors if nothing — or a non-pitch — is selected, if the selected pitch has no
-    /// CMN staff position to step (an N-tone or grammar-defined position), or if the
-    /// pitch carries an authored spelling override that would pin its rendered position
-    /// ([`EditorError::PitchSpellingOverridden`]).
+    /// If the pitch carries an **authored spelling override** (which pins the rendered
+    /// staff position), the move also rebases that spelling by the same step, applied
+    /// **atomically** as one transaction — so the notehead and the sound move together
+    /// rather than the move being refused.
+    ///
+    /// Errors if nothing — or a non-pitch — is selected, or the selected pitch (or its
+    /// override) has no CMN staff position to step (an N-tone or grammar-defined
+    /// position).
     pub fn move_selection_staff_step(&mut self, steps: i32) -> Result<EditOutcome, EditorError> {
         let selection = self.selection.ok_or(EditorError::NoSelection)?;
         let TypedObjectId::Pitch(pitch) = selection.source else {
             return Err(EditorError::WrongSelection { expected: "pitch" });
         };
-        // An authored spelling override resolves ahead of the inferred spelling, so
-        // it pins the rendered staff position: modifying the pitch value alone would
-        // change the sound but leave the notehead where it was. Refuse rather than
-        // mislead — moving the override too needs an atomic respell (a follow-up).
-        if has_authored_spelling_override(&self.score, pitch) {
-            return Err(EditorError::PitchSpellingOverridden);
-        }
         // The move is relative to the pitch's current value, so read it from the
         // graph and step its staff position.
-        let moved = self
+        let current = self
             .current_pitch(pitch)
-            .as_ref()
-            .and_then(|current| staff_step(current, steps))
-            .ok_or(EditorError::WrongSelection {
-                expected: "CMN pitch",
-            })?;
-        self.apply(OperationKind::ModifyIdentifiedPitch(
-            ModifyIdentifiedPitchOp {
-                pitch,
-                value: moved,
-            },
-        ))
+            .ok_or(EditorError::WrongSelection { expected: "pitch" })?;
+        let moved = staff_step(&current, steps).ok_or(EditorError::WrongSelection {
+            expected: "CMN pitch",
+        })?;
+        let modify = OperationKind::ModifyIdentifiedPitch(ModifyIdentifiedPitchOp {
+            pitch,
+            value: moved,
+        });
+
+        // With no override, the inferred spelling follows the new value — a plain
+        // modify suffices. With one, step it too and land both atomically, so the
+        // pinned notehead moves with the sound.
+        match authored_spelling(&self.score, pitch) {
+            None => self.apply(modify),
+            Some(spelling) => {
+                let moved_spelling =
+                    staff_step_spelling(&spelling, steps).ok_or(EditorError::WrongSelection {
+                        expected: "CMN pitch",
+                    })?;
+                self.apply_transaction(
+                    "move note",
+                    Some(TransactionCategory::NoteEntry),
+                    vec![
+                        modify,
+                        OperationKind::RespellPitch(RespellPitchOp {
+                            pitch,
+                            spelling: moved_spelling,
+                        }),
+                    ],
+                )
+            }
+        }
     }
 
     /// Adds a note to the selected pitch's event, forming (or extending) a chord: a
@@ -959,19 +977,56 @@ fn nominal_from_index(i: i64) -> CmnNominal {
     }
 }
 
-/// Whether the score carries an authored explicit spelling override for `pitch`
-/// that the resolver would rank ahead of the inferred spelling — pinning the
-/// rendered staff position regardless of the pitch value. Mirrors `epiphany_core`'s
-/// `resolve_spelling`: engraved layer, pitch-scoped, explicit, and a source that
-/// outranks `Inferred` under the score's precedence (the default ranks `UserChosen`,
-/// `Imported`, and `Propagated` all ahead of `Inferred`, so any of them pins).
-fn has_authored_spelling_override(score: &Score, pitch: PitchId) -> bool {
+/// The authored explicit spelling the resolver would use for `pitch` — the one that
+/// pins its rendered staff position — or `None` if there is none. Mirrors
+/// `epiphany_core`'s `resolve_spelling`: among engraved-layer, pitch-scoped, explicit
+/// attachments whose source outranks `Inferred` under the score's precedence (the
+/// default ranks `UserChosen`, `Imported`, and `Propagated` all ahead of `Inferred`),
+/// the winner is the lowest precedence rank, then highest priority, then first in
+/// canonical order.
+fn authored_spelling(score: &Score, pitch: PitchId) -> Option<PitchSpelling> {
     let inferred_rank = score.spelling_precedence.rank(SpellingSourceKind::Inferred);
-    score.spelling_attachments.iter().any(|att| {
-        att.layer.is_none()
-            && matches!(&att.scope, SpellingScope::Pitch(p) if *p == pitch)
-            && matches!(att.directive, SpellingDirective::Explicit(_))
-            && score.spelling_precedence.rank(att.source.kind()) < inferred_rank
+    score
+        .spelling_attachments
+        .iter()
+        .filter(|att| {
+            att.layer.is_none()
+                && matches!(&att.scope, SpellingScope::Pitch(p) if *p == pitch)
+                && matches!(att.directive, SpellingDirective::Explicit(_))
+                && score.spelling_precedence.rank(att.source.kind()) < inferred_rank
+        })
+        .min_by_key(|att| {
+            (
+                score.spelling_precedence.rank(att.source.kind()),
+                Reverse(att.priority),
+            )
+        })
+        .and_then(|att| match &att.directive {
+            SpellingDirective::Explicit(spelling) => Some(spelling.clone()),
+            _ => None,
+        })
+}
+
+/// Whether `pitch` has an authored spelling override that pins its rendered position.
+fn has_authored_spelling_override(score: &Score, pitch: PitchId) -> bool {
+    authored_spelling(score, pitch).is_some()
+}
+
+/// The spelling one or more diatonic staff steps from `spelling`: its CMN nominal
+/// moves by `steps` (carrying the octave at the B↔C boundary), with the accidental
+/// stack and render hints preserved. `None` for a non-CMN spelling nominal. The
+/// spelling analogue of [`staff_step`], used to rebase an override as a pitch moves.
+fn staff_step_spelling(spelling: &PitchSpelling, steps: i32) -> Option<PitchSpelling> {
+    let SpellingNominal::Cmn(nominal) = spelling.nominal else {
+        return None;
+    };
+    let diatonic = spelling.octave as i64 * 7 + nominal as i64 + steps as i64;
+    let new_octave = i8::try_from(diatonic.div_euclid(7)).ok()?;
+    Some(PitchSpelling {
+        nominal: SpellingNominal::Cmn(nominal_from_index(diatonic.rem_euclid(7))),
+        accidentals: spelling.accidentals.clone(),
+        octave: new_octave,
+        render_hints: spelling.render_hints,
     })
 }
 
@@ -1298,28 +1353,62 @@ mod tests {
     }
 
     #[test]
-    fn move_refuses_a_pitch_with_an_authored_spelling_override() {
-        use epiphany_core::PitchSpelling;
-        use epiphany_ops::RespellPitchOp;
-
+    fn move_with_an_authored_spelling_rebases_it_atomically() {
         let mut session = open_rich(0x5EED);
         let selection = click_a_notehead(&mut session);
         let TypedObjectId::Pitch(pid) = selection.source else {
             panic!("a notehead selects a pitch");
         };
-        // Pin the pitch with an explicit user spelling (what an authored respell leaves).
+        // Pin the pitch with an explicit user spelling (D4) — what a manual respell
+        // leaves. Before this step, a move would have refused.
         session
             .apply(OperationKind::RespellPitch(RespellPitchOp {
                 pitch: pid,
-                spelling: PitchSpelling::cmn(CmnNominal::C, 4),
+                spelling: PitchSpelling::cmn(CmnNominal::D, 4),
             }))
             .expect("the respell applies");
+        let before_value = session.current_pitch(pid).unwrap();
+        let logged = session.applied_operations().len();
 
-        // The override pins the rendered staff position, so a value-only move is
-        // refused rather than silently changing the sound without moving the notehead.
+        let outcome = session
+            .move_selection_staff_step(1)
+            .expect("the override-aware move applies");
+        assert!(outcome.graph_changed);
+        assert!(outcome.selection_preserved, "the moved pitch survives");
+
+        // Both the value and the pinned spelling moved one staff step: the pitch value
+        // steps up, and the override D4 → E4.
         assert_eq!(
-            session.move_selection_staff_step(1),
-            Err(EditorError::PitchSpellingOverridden)
+            session.current_pitch(pid).unwrap(),
+            staff_step(&before_value, 1).unwrap(),
+            "the pitch value moved one staff step"
+        );
+        let spelling = authored_spelling(session.score(), pid).expect("still overridden");
+        assert!(matches!(
+            spelling.nominal,
+            SpellingNominal::Cmn(CmnNominal::E)
+        ));
+        assert_eq!(spelling.octave, 4, "the override moved D4 → E4");
+
+        // It landed as one atomic transaction: a descriptor plus two members.
+        assert_eq!(session.applied_operations().len(), logged + 3);
+    }
+
+    #[test]
+    fn staff_step_spelling_carries_the_octave_and_keeps_accidentals() {
+        // B4 (with an accidental stack) up one step → C5, accidentals + octave carry.
+        let b4 = PitchSpelling {
+            nominal: SpellingNominal::Cmn(CmnNominal::B),
+            accidentals: PitchSpelling::cmn(CmnNominal::B, 4).accidentals,
+            octave: 4,
+            render_hints: Default::default(),
+        };
+        let up = staff_step_spelling(&b4, 1).expect("a CMN spelling steps");
+        assert!(matches!(up.nominal, SpellingNominal::Cmn(CmnNominal::C)));
+        assert_eq!(up.octave, 5);
+        assert_eq!(
+            up.accidentals, b4.accidentals,
+            "the accidental stack is kept"
         );
     }
 
