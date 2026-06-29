@@ -18,6 +18,11 @@
 //!   [`OperationEnvelope`] (id, author, stamp, and a causal context covering the
 //!   session's prior edits) so a GUI never hand-rolls the envelope bookkeeping and
 //!   so sequential edits to one target read as overwrites, not concurrent conflicts;
+//! * **atomic transactions** ([`EditorSession::apply_transaction`]) — several
+//!   primitives committed together under one `DeclareTransaction`, applied
+//!   all-or-nothing by the reducer and reconstructed as one unit by a peer; the
+//!   substrate for intents that must land a value change and its matching respelling
+//!   together (and a cleaner unit of work for undo);
 //! * **apply / re-render** — reduce the operation onto the score, re-render, and
 //!   refuse a diagnostic-only (non-renderable) layout, leaving the document
 //!   unchanged if the edit would not render;
@@ -39,7 +44,8 @@ use epiphany_core::{
     AcousticRealization, CmnNominal, Event, EventDuration, EventId, EventPosition, IdentifiedPitch,
     MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId, PitchSpacePosition,
     PitchedEvent, RegionTimeModel, ReplicaId, Score, SpellingDirective, SpellingScope,
-    SpellingSourceKind, StaffInstanceId, StemConfiguration, TypedObjectId, VoiceId, WallClockTime,
+    SpellingSourceKind, StaffInstanceId, StemConfiguration, TransactionId, TypedObjectId, VoiceId,
+    WallClockTime,
 };
 use epiphany_layout_ir::{
     to_constrained, to_logical, to_render, ConstraintSolver, HitTestMap, LayoutObjectId, Point,
@@ -48,8 +54,8 @@ use epiphany_layout_ir::{
 use epiphany_ops::{
     AcceptOutcome, AuthorId, CausalContext, DeleteEventOp, DeleteIdentifiedPitchOp,
     HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp, ModifyIdentifiedPitchOp,
-    OperationEnvelope, OperationKind, OperationPayload, OperationSet, OperationStamp, TransposeOp,
-    TupletCompensation,
+    OperationEnvelope, OperationKind, OperationPayload, OperationSet, OperationStamp,
+    TransactionCategory, TransactionDescriptor, TransposeOp, TupletCompensation,
 };
 
 /// The current selection: the score-graph object to act on, plus the stable layout
@@ -78,10 +84,22 @@ pub enum EditorError {
     /// The solver returned a diagnostic-only (non-renderable) layout — the edit is
     /// rejected and the document is left unchanged.
     NotRenderable,
-    /// The minted operation was not accepted by the reducer (it was not
-    /// well-formed — e.g. minted under the reserved [`epiphany_core::ReplicaId::SYSTEM_DERIVED`]
-    /// identity). The edit is dropped rather than silently no-op'd.
+    /// The edit was not applied and nothing changed: either a minted operation was
+    /// not well-formed (e.g. minted under the reserved
+    /// [`epiphany_core::ReplicaId::SYSTEM_DERIVED`] identity), or the reduction was
+    /// not clean — an atomic transaction whose member preconditions failed rolls back
+    /// as a conflict, and the editor refuses to log a transaction that did not take
+    /// effect. The edit is dropped rather than silently no-op'd.
     RejectedOperation,
+    /// [`EditorSession::apply_transaction`] was called with no member operations,
+    /// which would log only a no-op transaction descriptor.
+    EmptyTransaction,
+    /// An [`OperationKind::DeclareTransaction`] was submitted as an edit — passed to
+    /// [`EditorSession::apply`], or as a member of [`EditorSession::apply_transaction`].
+    /// The session declares transactions itself; only primitive mutations may be
+    /// submitted, so a directly-applied or nested declaration (which would log a dead
+    /// descriptor-only unit) is refused.
+    DeclareTransactionNotAllowed,
     /// An intent needed a selection but none is set.
     NoSelection,
     /// The selection is not the kind the intent requires (e.g. a transpose needs a
@@ -111,9 +129,10 @@ impl fmt::Display for EditorError {
             EditorError::NotRenderable => {
                 f.write_str("the resulting layout is diagnostic-only and cannot be rendered")
             }
-            EditorError::RejectedOperation => {
-                f.write_str("the minted operation was not well-formed and was rejected")
-            }
+            EditorError::RejectedOperation => f.write_str(
+                "the edit was rejected and nothing changed (an ill-formed operation, or a \
+                 transaction that rolled back)",
+            ),
             EditorError::NoSelection => f.write_str("no selection"),
             EditorError::WrongSelection { expected } => {
                 write!(f, "the selection is not a {expected}")
@@ -123,6 +142,12 @@ impl fmt::Display for EditorError {
             ),
             EditorError::InsertSlotOccupied => {
                 f.write_str("the position after the selection is already occupied in its voice")
+            }
+            EditorError::EmptyTransaction => {
+                f.write_str("a transaction must have at least one member operation")
+            }
+            EditorError::DeclareTransactionNotAllowed => {
+                f.write_str("a transaction cannot be declared through an edit; the session manages transactions")
             }
         }
     }
@@ -258,10 +283,10 @@ impl EditorSession {
         self.selection = None;
     }
 
-    /// Builds an [`OperationEnvelope`] for a primitive `kind` under the session's
-    /// identity at operation `counter` — the bookkeeping (id, author, stamp, causal
-    /// context) a GUI would otherwise assemble by hand. Pure: it reads no mutable
-    /// state, so a failed [`Self::apply`] consumes no id.
+    /// Builds an [`OperationEnvelope`] at operation `counter` under the session's
+    /// identity, carrying `payload` and an optional `transaction` membership — the
+    /// bookkeeping (id, author, stamp, causal context) a GUI would otherwise assemble
+    /// by hand. Pure: it reads no mutable state, so a failed apply consumes no id.
     ///
     /// The causal context makes the session's edits a single replica's contiguous,
     /// zero-based history: the op at `counter` covers every prior local op (the
@@ -269,8 +294,14 @@ impl EditorSession {
     /// read as intentional overwrites — the later covering the earlier — rather than
     /// concurrent conflicting edits, both when this session re-reduces its own log
     /// and when a peer replays it. The first op (counter 0) is a root: an empty
-    /// context.
-    fn envelope_for(&self, counter: u64, kind: OperationKind) -> OperationEnvelope {
+    /// context. This also gives transaction members descriptor-precedence for free:
+    /// a member at a later counter covers the descriptor minted before it.
+    fn envelope_at(
+        &self,
+        counter: u64,
+        payload: OperationPayload,
+        transaction: Option<TransactionId>,
+    ) -> OperationEnvelope {
         let id = OperationId::new(self.replica, counter);
         let causal_context = if counter > 0 {
             CausalContext::new().with_seen(self.replica, counter - 1)
@@ -285,39 +316,53 @@ impl EditorSession {
                 id,
             ),
             causal_context,
-            transaction: None,
-            payload: OperationPayload::Primitive(kind),
+            transaction,
+            payload,
         }
     }
 
-    /// Applies a primitive operation: mints an envelope, reduces the whole local
-    /// op log (prior edits plus this one) onto the pristine open-time score,
-    /// re-renders, and re-resolves the selection. **Atomic**: on any error — a
-    /// rejected (not well-formed) operation, or a diagnostic-only layout — the
-    /// session is left entirely unchanged, op log included.
-    ///
-    /// Reducing the *accumulated* set onto `base` (rather than the new op alone
-    /// onto the running materialization) is what lets each envelope carry a causal
-    /// context that covers its predecessors: those predecessors are present in the
-    /// set, so the missing-predecessor rule does not hold the new op pending, and
-    /// the session's render is exactly the canonical reduction of the op log it
-    /// emits. (Re-reducing the whole log each edit is fine at editor scale;
-    /// incremental reduction is a later optimization.)
-    pub fn apply(&mut self, kind: OperationKind) -> Result<EditOutcome, EditorError> {
-        let counter = self.applied.len() as u64;
-        let envelope = self.envelope_for(counter, kind);
+    /// Builds a standalone primitive envelope for `kind` at `counter`.
+    fn envelope_for(&self, counter: u64, kind: OperationKind) -> OperationEnvelope {
+        self.envelope_at(counter, OperationPayload::Primitive(kind), None)
+    }
 
-        // Re-accept the prior log (idempotent — they were accepted before), then
-        // the new op. A minted operation the reducer will not accept (e.g. a
-        // reserved replica identity) must not silently no-op the edit.
+    /// Accepts `new` envelopes on top of the prior log, reduces the whole set onto
+    /// the pristine open-time `base`, re-renders, and re-resolves the selection,
+    /// committing only if every step succeeds. **Atomic**: on a rejected (not
+    /// well-formed) envelope or a diagnostic-only layout, nothing mutates — the op
+    /// log included. The shared engine of [`Self::apply`] and
+    /// [`Self::apply_transaction`].
+    ///
+    /// Reducing the *accumulated* set onto `base` (rather than the new ops alone onto
+    /// the running materialization) is what lets each envelope carry a causal context
+    /// covering its predecessors: those predecessors are present in the set, so the
+    /// missing-predecessor rule does not hold a new op pending, and the session's
+    /// render is exactly the canonical reduction of the op log it emits. (Re-reducing
+    /// the whole log each edit is fine at editor scale; incremental reduction is a
+    /// later optimization.)
+    fn commit(&mut self, new: Vec<OperationEnvelope>) -> Result<EditOutcome, EditorError> {
+        // Re-accept the prior log (idempotent — they were accepted before), then the
+        // new envelopes. One the reducer will not accept (e.g. a reserved replica
+        // identity) must not partially apply.
         let mut set = OperationSet::new();
         for prior in &self.applied {
             set.accept(prior.clone());
         }
-        if !matches!(set.accept(envelope.clone()), AcceptOutcome::Accepted) {
+        for env in &new {
+            if !matches!(set.accept(env.clone()), AcceptOutcome::Accepted) {
+                return Err(EditorError::RejectedOperation);
+            }
+        }
+        let materialized = set.reduce_onto(&self.base);
+        // A non-clean reduction means the edit did not apply cleanly: an atomic
+        // transaction whose member preconditions fail rolls back as a conflict, yet
+        // the reducer still returns a score. Refuse rather than log an edit that did
+        // not take effect. (Committed edits are kept clean, so any conflict/pending is
+        // introduced by `new`.)
+        if !materialized.state.is_clean() {
             return Err(EditorError::RejectedOperation);
         }
-        let edited = set.reduce_onto(&self.base).score;
+        let edited = materialized.score;
         let graph_changed = edited != self.score;
 
         // Refuse a diagnostic-only layout, still before committing anything.
@@ -329,13 +374,111 @@ impl EditorSession {
         self.score = edited;
         self.render = render;
         self.map = map;
-        self.applied.push(envelope);
+        self.applied.extend(new);
 
         let selection_preserved = self.reresolve_selection();
         Ok(EditOutcome {
             graph_changed,
             selection_preserved,
         })
+    }
+
+    /// Applies a single primitive operation: mints an envelope and commits it. A
+    /// [`OperationKind::DeclareTransaction`] is not a primitive mutation — the session
+    /// declares transactions via [`Self::apply_transaction`] — so it is refused here.
+    pub fn apply(&mut self, kind: OperationKind) -> Result<EditOutcome, EditorError> {
+        if matches!(kind, OperationKind::DeclareTransaction(_)) {
+            return Err(EditorError::DeclareTransactionNotAllowed);
+        }
+        let counter = self.applied.len() as u64;
+        let envelope = self.envelope_for(counter, kind);
+        self.commit(vec![envelope])
+    }
+
+    /// Applies a sequence of primitive operations as one **atomic transaction**: a
+    /// `DeclareTransaction` descriptor (carrying `label` and `category`, for undo
+    /// history) plus one member envelope per `kind`, all committed together. The
+    /// reducer applies the members all-or-nothing — if any member's precondition
+    /// fails, the whole block rolls back as a transaction conflict — and a peer
+    /// replaying the log reconstructs the same atomic unit. This is the substrate for
+    /// intents that must land several primitives together (e.g. a value change with a
+    /// matching respelling); editor-level atomicity (commit only on full success) is
+    /// inherited from [`Self::commit`].
+    pub fn apply_transaction(
+        &mut self,
+        label: &str,
+        category: Option<TransactionCategory>,
+        kinds: Vec<OperationKind>,
+    ) -> Result<EditOutcome, EditorError> {
+        // A member-less transaction would log a descriptor-only no-op (a dead
+        // undo/sync unit). Refuse before minting anything.
+        if kinds.is_empty() {
+            return Err(EditorError::EmptyTransaction);
+        }
+        // The session declares the transaction; a member that is itself a
+        // DeclareTransaction would log a nested no-op declaration. Refuse it.
+        if kinds
+            .iter()
+            .any(|k| matches!(k, OperationKind::DeclareTransaction(_)))
+        {
+            return Err(EditorError::DeclareTransactionNotAllowed);
+        }
+        let envelopes = self.transaction_envelopes(label, category, kinds);
+        self.commit(envelopes)
+    }
+
+    /// Mints the envelopes for an atomic transaction: a `DeclareTransaction`
+    /// descriptor at the next counter, then one member envelope per kind at the
+    /// following counters, each referencing the transaction id. The contiguous causal
+    /// context gives every member descriptor-precedence over the descriptor for free.
+    /// Pure.
+    fn transaction_envelopes(
+        &self,
+        label: &str,
+        category: Option<TransactionCategory>,
+        kinds: Vec<OperationKind>,
+    ) -> Vec<OperationEnvelope> {
+        let base = self.applied.len() as u64;
+        let tx_id = self.mint_transaction_id();
+        let descriptor = TransactionDescriptor {
+            id: tx_id,
+            label: label.to_string(),
+            category,
+        };
+        let mut envelopes = Vec::with_capacity(kinds.len() + 1);
+        envelopes.push(self.envelope_at(
+            base,
+            OperationPayload::Primitive(OperationKind::DeclareTransaction(descriptor)),
+            None,
+        ));
+        for (i, kind) in kinds.into_iter().enumerate() {
+            let counter = base + 1 + i as u64;
+            envelopes.push(self.envelope_at(
+                counter,
+                OperationPayload::Primitive(kind),
+                Some(tx_id),
+            ));
+        }
+        envelopes
+    }
+
+    /// Mints a fresh [`TransactionId`] in the session's replica namespace, one past
+    /// the highest transaction counter declared in this session's op log. (Transaction
+    /// ids live only in the op stream — the materialized score retains no trace — so
+    /// the log is the sole source.)
+    fn mint_transaction_id(&self) -> TransactionId {
+        let next = self
+            .applied
+            .iter()
+            .filter_map(declared_transaction_id)
+            .filter(|t| t.replica() == self.replica)
+            .map(|t| t.counter())
+            .max()
+            .map_or(0, |c| {
+                c.checked_add(1)
+                    .expect("transaction id counter overflowed u64")
+            });
+        TransactionId::new(self.replica, next)
     }
 
     /// Transposes the selected pitch by `chromatic_steps` (a `+1` is a sharpen).
@@ -774,6 +917,14 @@ fn inserted_event_ids(env: &OperationEnvelope) -> Vec<EventId> {
     match &env.payload {
         OperationPayload::Primitive(OperationKind::InsertEvent(op)) => vec![op.event_id()],
         _ => Vec::new(),
+    }
+}
+
+/// The transaction id a session envelope declares, if it is a `DeclareTransaction`.
+fn declared_transaction_id(env: &OperationEnvelope) -> Option<TransactionId> {
+    match &env.payload {
+        OperationPayload::Primitive(OperationKind::DeclareTransaction(desc)) => Some(desc.id),
+        _ => None,
     }
 }
 
@@ -1571,6 +1722,181 @@ mod tests {
         // is a distinct, never-reused id.
         assert!(self_ids.contains(&first_new), "the first event id survived");
         assert_ne!(self_ids[0], self_ids[1], "distinct, never reused");
+    }
+
+    #[test]
+    fn apply_transaction_lands_all_members_atomically() {
+        use epiphany_core::PitchSpelling;
+        use epiphany_ops::RespellPitchOp;
+
+        let mut session = open_rich(0x5EED);
+        let selection = click_a_notehead(&mut session);
+        let TypedObjectId::Pitch(pitch) = selection.source else {
+            panic!("a notehead selects a pitch");
+        };
+        let current = session.current_pitch(pitch).expect("the pitch is live");
+        let moved = staff_step(&current, 1).expect("a CMN pitch");
+
+        // A value change and a matching respelling, together.
+        let outcome = session
+            .apply_transaction(
+                "move note",
+                Some(TransactionCategory::NoteEntry),
+                vec![
+                    OperationKind::ModifyIdentifiedPitch(ModifyIdentifiedPitchOp {
+                        pitch,
+                        value: moved.clone(),
+                    }),
+                    OperationKind::RespellPitch(RespellPitchOp {
+                        pitch,
+                        spelling: PitchSpelling::cmn(CmnNominal::D, 4),
+                    }),
+                ],
+            )
+            .expect("the transaction applies");
+
+        assert!(outcome.graph_changed);
+        assert!(outcome.selection_preserved, "the edited pitch survives");
+        // Both members materialized: the value moved and an authored override landed.
+        assert_eq!(session.current_pitch(pitch).unwrap(), moved);
+        assert!(has_authored_spelling_override(session.score(), pitch));
+
+        // The log holds the descriptor plus two members under one transaction id.
+        let log = session.applied_operations();
+        assert_eq!(log.len(), 3);
+        let tx_id = log
+            .iter()
+            .find_map(declared_transaction_id)
+            .expect("a declared transaction");
+        let members = log.iter().filter(|e| e.transaction == Some(tx_id)).count();
+        assert_eq!(members, 2, "two members reference the transaction id");
+    }
+
+    #[test]
+    fn a_transaction_replays_as_a_clean_atomic_unit() {
+        use epiphany_core::PitchSpelling;
+        use epiphany_ops::RespellPitchOp;
+
+        let mut session = open_rich(0x5EED);
+        let selection = click_a_notehead(&mut session);
+        let TypedObjectId::Pitch(pitch) = selection.source else {
+            panic!("a notehead selects a pitch");
+        };
+        let moved = staff_step(&session.current_pitch(pitch).unwrap(), 1).unwrap();
+        session
+            .apply_transaction(
+                "move note",
+                None,
+                vec![
+                    OperationKind::ModifyIdentifiedPitch(ModifyIdentifiedPitchOp {
+                        pitch,
+                        value: moved,
+                    }),
+                    OperationKind::RespellPitch(RespellPitchOp {
+                        pitch,
+                        spelling: PitchSpelling::cmn(CmnNominal::D, 4),
+                    }),
+                ],
+            )
+            .unwrap();
+
+        // Replaying the emitted log reduces with no conflict and nothing pending: the
+        // descriptor-precedence rule holds (members cover the descriptor) and the
+        // block applies atomically.
+        let base = valid_score_rich(0x5EED);
+        let mut set = OperationSet::new();
+        for env in session.applied_operations() {
+            set.accept(env.clone());
+        }
+        let materialized = set.reduce_onto(&base);
+        assert!(
+            materialized.state.is_clean(),
+            "the transaction replays without a conflict or pending op"
+        );
+    }
+
+    #[test]
+    fn a_transaction_with_a_failing_member_rolls_back_and_is_not_logged() {
+        let mut session = open_rich(0x5EED);
+        let selection = click_a_notehead(&mut session);
+        let TypedObjectId::Pitch(pitch) = selection.source else {
+            panic!("a notehead selects a pitch");
+        };
+        let moved = staff_step(&session.current_pitch(pitch).unwrap(), 1).unwrap();
+        // A fresh id is absent from the score, so a modify targeting it fails its
+        // precondition — and the reducer rolls back the whole transaction.
+        let missing = session.mint_pitch_id();
+        let before_score = session.score().clone();
+        let before_log = session.applied_operations().len();
+
+        let result = session.apply_transaction(
+            "bad move",
+            None,
+            vec![
+                OperationKind::ModifyIdentifiedPitch(ModifyIdentifiedPitchOp {
+                    pitch,
+                    value: moved.clone(),
+                }),
+                OperationKind::ModifyIdentifiedPitch(ModifyIdentifiedPitchOp {
+                    pitch: missing,
+                    value: moved,
+                }),
+            ],
+        );
+        assert_eq!(result, Err(EditorError::RejectedOperation));
+        assert_eq!(&before_score, session.score(), "the score is unchanged");
+        assert_eq!(
+            session.applied_operations().len(),
+            before_log,
+            "a rolled-back transaction logs nothing"
+        );
+    }
+
+    #[test]
+    fn an_empty_transaction_is_refused() {
+        let mut session = open_rich(0x5EED);
+        click_a_notehead(&mut session);
+        assert_eq!(
+            session.apply_transaction("empty", None, vec![]),
+            Err(EditorError::EmptyTransaction)
+        );
+        assert!(
+            session.applied_operations().is_empty(),
+            "no descriptor-only op is logged"
+        );
+    }
+
+    #[test]
+    fn declare_transaction_is_refused_as_a_direct_edit_and_as_a_member() {
+        let declare = || {
+            OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: TransactionId::new(ReplicaId(1), 0),
+                label: "decl".to_string(),
+                category: None,
+            })
+        };
+
+        // Directly through apply: the session manages transaction declaration.
+        let mut session = open_rich(0x5EED);
+        click_a_notehead(&mut session);
+        assert_eq!(
+            session.apply(declare()),
+            Err(EditorError::DeclareTransactionNotAllowed)
+        );
+        assert!(
+            session.applied_operations().is_empty(),
+            "a direct declaration logs nothing"
+        );
+
+        // And as a transaction member (a nested no-op declaration).
+        assert_eq!(
+            session.apply_transaction("outer", None, vec![declare()]),
+            Err(EditorError::DeclareTransactionNotAllowed)
+        );
+        assert!(
+            session.applied_operations().is_empty(),
+            "a nested declaration logs nothing"
+        );
     }
 
     #[test]
