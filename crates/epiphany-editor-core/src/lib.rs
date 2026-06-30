@@ -171,8 +171,18 @@ pub enum EditorError {
     /// A click-to-insert's make-room would have to trim or delete a **tuplet member**,
     /// whose duration is governed by the tuplet's ratio. Compensating a tuplet on a
     /// pencil overwrite is a later refinement, so the insert is refused rather than
-    /// leaving the tuplet inconsistent.
+    /// leaving the tuplet inconsistent. Also raised by a duration edit of a tuplet
+    /// member itself.
     OverlapsTuplet,
+    /// A duration edit was given a non-positive duration, which is not a valid written
+    /// note value. Nothing changes.
+    InvalidDuration,
+    /// A duration change (a resize, or a make-room trim/split) would alter an event that
+    /// carries a persistent **decomposition attachment** — its notated components would
+    /// no longer sum to the event's duration (invariant 15). Editing decompositions is a
+    /// later refinement, so the edit is refused rather than left inconsistent. (A delete
+    /// is fine; the tombstoned target's decomposition is no longer checked.)
+    DecomposedEvent,
 }
 
 impl fmt::Display for EditorError {
@@ -202,7 +212,11 @@ impl fmt::Display for EditorError {
                 f.write_str("the click resolved to no insert target (off-staff, non-metric, or no voice)")
             }
             EditorError::OverlapsTuplet => {
-                f.write_str("the insert would have to trim or delete a tuplet member")
+                f.write_str("the edit would have to trim or delete a tuplet member")
+            }
+            EditorError::InvalidDuration => f.write_str("a non-positive duration is not a note value"),
+            EditorError::DecomposedEvent => {
+                f.write_str("the edit would change the duration of an event with a decomposition")
             }
         }
     }
@@ -1031,120 +1045,21 @@ impl EditorSession {
             return Err(EditorError::NoInsertTarget);
         }
 
-        // The new note's half-open span.
+        // The new note's half-open span; make room over whatever it overlaps.
         let start = placed.position;
         let duration = grid.step.clone();
         let end = start.clone() + duration.clone();
+        let room = self.make_room(voice, &start, &end, None)?;
 
-        // Make-room: classify every note/rest in the voice that overlaps the span.
-        let mut trims: Vec<Event> = Vec::new();
-        let mut deletes: Vec<EventId> = Vec::new();
-        let mut tails: Vec<(Event, MusicalPosition, MusicalDuration)> = Vec::new();
-        for event in self.score.events.iter() {
-            if event.voice() != voice {
-                continue;
-            }
-            let (EventPosition::Musical(ep), EventDuration::Musical(ed)) =
-                (event.position(), event.duration())
-            else {
-                continue;
-            };
-            let event_end = ep.clone() + ed.clone();
-            if !(ep < &end && start < event_end) {
-                continue; // disjoint from [start, end)
-            }
-            if self.event_in_tuplet(event.id()) {
-                return Err(EditorError::OverlapsTuplet);
-            }
-            if !matches!(event, Event::Pitched(_) | Event::Rest(_)) {
-                return Err(EditorError::NoInsertTarget); // no make-room rule for this kind
-            }
-            match (ep < &start, event_end > end) {
-                // Fully covered → delete.
-                (false, false) => deletes.push(event.id()),
-                // The note lands inside it → split: trim to the head, re-insert the tail.
-                (true, true) => {
-                    trims.push(replace_span(event, ep.clone(), span_between(ep, &start)));
-                    tails.push((event.clone(), end.clone(), span_between(&end, &event_end)));
-                }
-                // Overlaps the head (event ends inside the note) → trim the tail off.
-                (true, false) => {
-                    trims.push(replace_span(event, ep.clone(), span_between(ep, &start)));
-                }
-                // Overlaps the tail (event starts inside the note) → trim the head off.
-                (false, true) => {
-                    trims.push(replace_span(
-                        event,
-                        end.clone(),
-                        span_between(&end, &event_end),
-                    ));
-                }
-            }
-        }
-
-        // Mint ids for the split tails and the new note with local counters, advancing
-        // them (checked, like the session minters) so the several mints in this one
-        // intent do not collide — the session high-water mark does not move until commit.
-        let replica = self.replica;
-        let mut next_event = self.mint_event_id().counter();
-        let mut next_pitch = self.mint_pitch_id().counter();
-        let mut mint_event = || {
-            let id = EventId::new(replica, next_event);
-            next_event = next_event
-                .checked_add(1)
-                .expect("event id counter overflowed u64");
-            id
-        };
-        let mut mint_pitch = || {
-            let id = PitchId::new(replica, next_pitch);
-            next_pitch = next_pitch
-                .checked_add(1)
-                .expect("pitch id counter overflowed u64");
-            id
-        };
-
-        // Order: free the span first (trims, deletes), then the re-inserted tails (each
-        // carrying its spellings), then the new note. Members apply in this order.
-        let mut ops: Vec<OperationKind> = Vec::new();
-        for event in trims {
-            ops.push(OperationKind::ModifyEvent(ModifyEventOp { event }));
-        }
-        for event in deletes {
-            ops.push(OperationKind::DeleteEvent(DeleteEventOp {
-                event,
-                tuplet_compensation: TupletCompensation::NotInTuplet,
-            }));
-        }
-        for (original, position, duration) in tails {
-            // The tail is the original event's later portion: clone its whole shape (a
-            // rest's visibility, a note's articulations/dynamics/stem/grace) with fresh
-            // ids, then carry any *authored* spelling onto the fresh pitches (an inferred
-            // one re-derives) — the same atomic copy `insert_note_after_selection` does.
-            let mut pitches: Vec<&IdentifiedPitch> = Vec::new();
-            original.collect_identified_pitches(&mut pitches);
-            let originals: Vec<PitchId> = pitches.iter().map(|ip| ip.id).collect();
-            let fresh: Vec<PitchId> = originals.iter().map(|_| mint_pitch()).collect();
-            let tail = respan_with_fresh_ids(&original, mint_event(), position, duration, &fresh);
-            ops.push(OperationKind::InsertEvent(InsertEventOp {
-                staff_instance: pitch.staff_instance,
-                event: tail,
-            }));
-            for (old, new) in originals.iter().zip(&fresh) {
-                if let Some(spelling) = authored_spelling(&self.score, *old) {
-                    ops.push(OperationKind::RespellPitch(RespellPitchOp {
-                        pitch: *new,
-                        spelling,
-                    }));
-                }
-            }
-        }
+        let mut minter = self.minter();
+        let mut ops = self.make_room_ops(room, pitch.staff_instance, &mut minter);
         let new_note = note_event(
-            mint_event(),
+            minter.event(),
             voice,
             start,
             duration,
             vec![IdentifiedPitch {
-                id: mint_pitch(),
+                id: minter.pitch(),
                 pitch: cmn_pitch(pitch.nominal, pitch.octave),
             }],
         );
@@ -1161,6 +1076,223 @@ impl EditorSession {
         }
     }
 
+    /// Sets the selected event's written **duration** (a notation duration-palette
+    /// gesture; the selection may be a notehead or a rest/stem). Shrinking just frees
+    /// the space after the event; **lengthening makes room** under the overwrite policy
+    /// — the events it grows over are trimmed, deleted, or split, atomically with the
+    /// resize. Errors: [`InvalidDuration`](EditorError::InvalidDuration) for a
+    /// non-positive duration, [`OverlapsTuplet`](EditorError::OverlapsTuplet) when the
+    /// event (or one it grows over) is a tuplet member, and
+    /// [`WrongSelection`](EditorError::WrongSelection) when nothing apt is selected or
+    /// the event is not metric.
+    pub fn set_selection_duration(
+        &mut self,
+        duration: MusicalDuration,
+    ) -> Result<EditOutcome, EditorError> {
+        if !duration.is_positive() {
+            return Err(EditorError::InvalidDuration);
+        }
+        let selection = self.selection.ok_or(EditorError::NoSelection)?;
+        let event_id = match selection.source {
+            TypedObjectId::Pitch(pitch) => self
+                .event_and_pitch_of(pitch)
+                .map(|(event, _)| event)
+                .ok_or(EditorError::WrongSelection {
+                expected: "pitch or event",
+            })?,
+            TypedObjectId::Event(event) => event,
+            _ => {
+                return Err(EditorError::WrongSelection {
+                    expected: "pitch or event",
+                })
+            }
+        };
+        // The event's voice and metric onset. Only a note or rest is resizable here (a
+        // non-metric event has no note value; only `Pitched`/`Rest` carry a make-room
+        // rule). A tuplet member's duration is ratio-governed, and a decomposed event's
+        // notated components would no longer sum to a changed duration, so refuse both.
+        let (voice, position) = {
+            let event = self
+                .score
+                .events
+                .get(event_id)
+                .ok_or(EditorError::WrongSelection {
+                    expected: "pitch or event",
+                })?;
+            if !matches!(event, Event::Pitched(_) | Event::Rest(_)) {
+                return Err(EditorError::WrongSelection {
+                    expected: "note or rest",
+                });
+            }
+            let (EventPosition::Musical(position), EventDuration::Musical(_)) =
+                (event.position().clone(), event.duration())
+            else {
+                return Err(EditorError::WrongSelection {
+                    expected: "metric event",
+                });
+            };
+            (event.voice(), position)
+        };
+        if self.event_in_tuplet(event_id) {
+            return Err(EditorError::OverlapsTuplet);
+        }
+        if self.event_has_decomposition(event_id) {
+            return Err(EditorError::DecomposedEvent);
+        }
+        // Require a metric region (its time model) — and resolve the staff instance for
+        // any re-inserted split tails.
+        let staff_instance =
+            self.metric_staff_instance_of_voice(voice)
+                .ok_or(EditorError::WrongSelection {
+                    expected: "metric event",
+                })?;
+
+        // Lengthening claims [position, position + duration); make room over the other
+        // events there (the resized event itself is excluded). Shrinking frees space, so
+        // make-room finds nothing. The resize applies last, after the span is cleared.
+        let end = position.clone() + duration.clone();
+        let resized = replace_span(
+            self.score.events.get(event_id).unwrap(),
+            position.clone(),
+            duration,
+        );
+        let room = self.make_room(voice, &position, &end, Some(event_id))?;
+
+        let mut minter = self.minter();
+        let mut ops = self.make_room_ops(room, staff_instance, &mut minter);
+        ops.push(OperationKind::ModifyEvent(ModifyEventOp { event: resized }));
+        if ops.len() == 1 {
+            self.apply(ops.into_iter().next().expect("one op"))
+        } else {
+            self.apply_transaction("set duration", Some(TransactionCategory::NoteEntry), ops)
+        }
+    }
+
+    /// The events make-room must change to clear `[start, end)` in `voice` (other than
+    /// `exclude`, the event being inserted/resized): whole-event deletes, in-place
+    /// trims, and splits. Errors on a tuplet member or a non-note/rest overlap there is
+    /// no make-room rule for.
+    fn make_room(
+        &self,
+        voice: VoiceId,
+        start: &MusicalPosition,
+        end: &MusicalPosition,
+        exclude: Option<EventId>,
+    ) -> Result<MakeRoom, EditorError> {
+        let mut room = MakeRoom::default();
+        for event in self.score.events.iter() {
+            if event.voice() != voice || Some(event.id()) == exclude {
+                continue;
+            }
+            let (EventPosition::Musical(ep), EventDuration::Musical(ed)) =
+                (event.position(), event.duration())
+            else {
+                continue;
+            };
+            // A non-positive existing span never occupies the range (matching the
+            // reducer's overlap rule), so it is not in the way.
+            if !ed.is_positive() {
+                continue;
+            }
+            let event_end = ep.clone() + ed.clone();
+            if !(ep < end && start < &event_end) {
+                continue; // disjoint from [start, end)
+            }
+            if self.event_in_tuplet(event.id()) {
+                return Err(EditorError::OverlapsTuplet);
+            }
+            if !matches!(event, Event::Pitched(_) | Event::Rest(_)) {
+                return Err(EditorError::NoInsertTarget); // no make-room rule for this kind
+            }
+            // A trim or split changes the event's duration; refuse if a persistent
+            // decomposition would no longer sum to it (a full-cover delete is fine — the
+            // tombstoned target's decomposition is no longer checked).
+            let fully_covered = ep >= start && &event_end <= end;
+            if !fully_covered && self.event_has_decomposition(event.id()) {
+                return Err(EditorError::DecomposedEvent);
+            }
+            match (ep < start, &event_end > end) {
+                // Fully covered → delete.
+                (false, false) => room.deletes.push(event.id()),
+                // The span lands inside it → split: trim to the head, re-insert the tail.
+                (true, true) => {
+                    room.trims
+                        .push(replace_span(event, ep.clone(), span_between(ep, start)));
+                    room.tails
+                        .push((event.clone(), end.clone(), span_between(end, &event_end)));
+                }
+                // Overlaps the head (event ends inside the span) → trim the tail off.
+                (true, false) => {
+                    room.trims
+                        .push(replace_span(event, ep.clone(), span_between(ep, start)))
+                }
+                // Overlaps the tail (event starts inside the span) → trim the head off.
+                (false, true) => room.trims.push(replace_span(
+                    event,
+                    end.clone(),
+                    span_between(end, &event_end),
+                )),
+            }
+        }
+        Ok(room)
+    }
+
+    /// Turns a [`MakeRoom`] into operations: trims (`ModifyEvent`), deletes
+    /// (`DeleteEvent`), and split tails (`InsertEvent`, cloning the original event's
+    /// shape with fresh ids, carrying any authored spelling via `RespellPitch`). Order
+    /// frees the span before the caller appends its own op (the new note or the resize).
+    fn make_room_ops(
+        &self,
+        room: MakeRoom,
+        staff_instance: StaffInstanceId,
+        minter: &mut Minter,
+    ) -> Vec<OperationKind> {
+        let mut ops: Vec<OperationKind> = Vec::new();
+        for event in room.trims {
+            ops.push(OperationKind::ModifyEvent(ModifyEventOp { event }));
+        }
+        for event in room.deletes {
+            ops.push(OperationKind::DeleteEvent(DeleteEventOp {
+                event,
+                tuplet_compensation: TupletCompensation::NotInTuplet,
+            }));
+        }
+        for (original, position, duration) in room.tails {
+            // The tail is the original event's later portion: clone its whole shape (a
+            // rest's visibility, a note's articulations/dynamics/stem/grace) with fresh
+            // ids, then carry any *authored* spelling onto the fresh pitches (an inferred
+            // one re-derives) — the same atomic copy `insert_note_after_selection` does.
+            let mut pitches: Vec<&IdentifiedPitch> = Vec::new();
+            original.collect_identified_pitches(&mut pitches);
+            let originals: Vec<PitchId> = pitches.iter().map(|ip| ip.id).collect();
+            let fresh: Vec<PitchId> = originals.iter().map(|_| minter.pitch()).collect();
+            let tail = respan_with_fresh_ids(&original, minter.event(), position, duration, &fresh);
+            ops.push(OperationKind::InsertEvent(InsertEventOp {
+                staff_instance,
+                event: tail,
+            }));
+            for (old, new) in originals.iter().zip(&fresh) {
+                if let Some(spelling) = authored_spelling(&self.score, *old) {
+                    ops.push(OperationKind::RespellPitch(RespellPitchOp {
+                        pitch: *new,
+                        spelling,
+                    }));
+                }
+            }
+        }
+        ops
+    }
+
+    /// A fresh-id [`Minter`] seeded from the session high-water marks (which do not move
+    /// until commit), so several mints within one intent never collide.
+    fn minter(&self) -> Minter {
+        Minter {
+            replica: self.replica,
+            next_event: self.mint_event_id().counter(),
+            next_pitch: self.mint_pitch_id().counter(),
+        }
+    }
+
     /// Whether `event` is a member of any tuplet (its duration is ratio-governed, so
     /// make-room cannot trim or delete it without tuplet compensation).
     fn event_in_tuplet(&self, event: EventId) -> bool {
@@ -1169,6 +1301,16 @@ impl EditorSession {
             .tuplets
             .iter()
             .any(|tuplet| tuplet.members.contains(&event))
+    }
+
+    /// Whether `event` carries a persistent decomposition attachment — its notated
+    /// components, which a duration change would no longer sum to (invariant 15), so the
+    /// editor cannot resize/trim it until decomposition-edit ops exist.
+    fn event_has_decomposition(&self, event: EventId) -> bool {
+        self.score
+            .decomposition_attachments
+            .iter()
+            .any(|attachment| attachment.target == event)
     }
 
     /// The staff instance hosting `voice`, but only when its region is metric — the
@@ -1455,6 +1597,47 @@ fn cmn_pitch(nominal: CmnNominal, octave: i8) -> Pitch {
 /// The musical duration spanning `from..to` (`to - from`), exact over rational time.
 fn span_between(from: &MusicalPosition, to: &MusicalPosition) -> MusicalDuration {
     MusicalDuration(to.0.sub(&from.0))
+}
+
+/// The events make-room must change to clear a span: whole-event deletes, in-place
+/// trims (a `ModifyEvent` value), and splits (the original event plus the tail's onset
+/// and duration, for re-inserting the tail with fresh ids). Built by
+/// [`EditorSession::make_room`], turned into ops by [`EditorSession::make_room_ops`].
+#[derive(Default)]
+struct MakeRoom {
+    trims: Vec<Event>,
+    deletes: Vec<EventId>,
+    tails: Vec<(Event, MusicalPosition, MusicalDuration)>,
+}
+
+/// Mints fresh event/pitch ids within one intent, advancing local counters (checked,
+/// like the session minters) so the several mints in one transaction never collide —
+/// the session high-water mark does not move until commit. Seeded by
+/// [`EditorSession::minter`].
+struct Minter {
+    replica: ReplicaId,
+    next_event: u64,
+    next_pitch: u64,
+}
+
+impl Minter {
+    fn event(&mut self) -> EventId {
+        let id = EventId::new(self.replica, self.next_event);
+        self.next_event = self
+            .next_event
+            .checked_add(1)
+            .expect("event id counter overflowed u64");
+        id
+    }
+
+    fn pitch(&mut self) -> PitchId {
+        let id = PitchId::new(self.replica, self.next_pitch);
+        self.next_pitch = self
+            .next_pitch
+            .checked_add(1)
+            .expect("pitch id counter overflowed u64");
+        id
+    }
 }
 
 /// `event` re-placed at a new metric `position`/`duration` (a make-room trim), keeping
@@ -2544,6 +2727,286 @@ mod tests {
         assert_eq!(
             session.insert_note_at(at, &grid(1, 4)),
             Err(EditorError::NoInsertTarget)
+        );
+    }
+
+    fn dur(numerator: i64, denominator: i64) -> MusicalDuration {
+        MusicalDuration(RationalTime::new(numerator, denominator).unwrap())
+    }
+
+    /// Selects the first pitch (notehead) of `event` and returns its id.
+    fn select_first_pitch_of(session: &mut EditorSession, event: EventId) -> PitchId {
+        let mut buf: Vec<&IdentifiedPitch> = Vec::new();
+        session
+            .score()
+            .events
+            .get(event)
+            .expect("event present")
+            .collect_identified_pitches(&mut buf);
+        let pid = buf.first().expect("a pitch on the event").id;
+        select_pitch(session, pid);
+        pid
+    }
+
+    #[test]
+    fn set_selection_duration_shrinks_a_note() {
+        let mut session = open_plain(0x5EED);
+        let region = a_clean_metric_region(&session);
+        let voice = primary_voice(&session, region);
+        let events = voice_events(&session, voice);
+        let (target, pos, _) = events[0].clone();
+        select_first_pitch_of(&mut session, target);
+
+        session
+            .set_selection_duration(dur(1, 8))
+            .expect("shrink applies");
+        let after = voice_events(&session, voice);
+        let resized = after
+            .iter()
+            .find(|(id, _, _)| *id == target)
+            .expect("the note survives");
+        assert_eq!(resized.2, dur(1, 8), "the note is shorter");
+        assert_eq!(resized.1, pos, "its onset is unchanged");
+        assert_eq!(
+            after.len(),
+            events.len(),
+            "no other events change (the gap is ok)"
+        );
+    }
+
+    #[test]
+    fn set_selection_duration_lengthens_into_empty_space() {
+        let mut session = open_plain(0x5EED);
+        let region = a_clean_metric_region(&session);
+        let voice = primary_voice(&session, region);
+        let events = voice_events(&session, voice);
+        let (last, _, _) = events.last().unwrap().clone();
+        select_first_pitch_of(&mut session, last);
+
+        session
+            .set_selection_duration(dur(1, 2))
+            .expect("lengthen into empty space applies");
+        let after = voice_events(&session, voice);
+        assert_eq!(
+            after.iter().find(|(id, _, _)| *id == last).unwrap().2,
+            dur(1, 2)
+        );
+        assert_eq!(after.len(), events.len(), "no other events change");
+    }
+
+    #[test]
+    fn set_selection_duration_lengthens_and_deletes_a_covered_note() {
+        let mut session = open_plain(0x5EED);
+        let region = a_clean_metric_region(&session);
+        let voice = primary_voice(&session, region);
+        let events = voice_events(&session, voice);
+        // First note [0, 1/4); next [1/4, 1/2). Lengthen the first to 1/2 → fully covers
+        // the next, which is deleted.
+        let (first, _, _) = events[0].clone();
+        let (second, _, _) = events[1].clone();
+        select_first_pitch_of(&mut session, first);
+
+        session
+            .set_selection_duration(dur(1, 2))
+            .expect("lengthen with overwrite applies");
+        let after = voice_events(&session, voice);
+        assert_eq!(
+            after.iter().find(|(id, _, _)| *id == first).unwrap().2,
+            dur(1, 2),
+            "lengthened to 1/2"
+        );
+        assert!(
+            !after.iter().any(|(id, _, _)| *id == second),
+            "the covered next note was deleted"
+        );
+        assert_eq!(after.len(), events.len() - 1, "one event removed");
+    }
+
+    #[test]
+    fn set_selection_duration_lengthen_trims_a_partial_overlap() {
+        let mut session = open_plain(0x5EED);
+        let region = a_clean_metric_region(&session);
+        let voice = primary_voice(&session, region);
+        let events = voice_events(&session, voice);
+        let (first, _, _) = events[0].clone();
+        let (second, _, _) = events[1].clone();
+        select_first_pitch_of(&mut session, first);
+
+        // Lengthen [0, 1/4) to 3/8 → [0, 3/8) overlaps [1/4, 1/2)'s head → trim it.
+        session
+            .set_selection_duration(dur(3, 8))
+            .expect("partial-overlap lengthen applies");
+        let after = voice_events(&session, voice);
+        assert_eq!(
+            after.iter().find(|(id, _, _)| *id == first).unwrap().2,
+            dur(3, 8)
+        );
+        let trimmed = after
+            .iter()
+            .find(|(id, _, _)| *id == second)
+            .expect("the next note survives, trimmed");
+        assert_eq!(
+            trimmed.1,
+            MusicalPosition(RationalTime::new(3, 8).unwrap()),
+            "trimmed to start where the first now ends"
+        );
+        assert_eq!(trimmed.2, dur(1, 8), "with the remaining 1/8");
+        assert_eq!(after.len(), events.len(), "trimmed, not deleted");
+    }
+
+    #[test]
+    fn set_selection_duration_refuses_non_positive_and_tuplet_members() {
+        // Non-positive duration: refused before anything else.
+        let mut plain = open_plain(0x5EED);
+        let region = a_clean_metric_region(&plain);
+        let voice = primary_voice(&plain, region);
+        let (note, _, _) = voice_events(&plain, voice)[0].clone();
+        select_first_pitch_of(&mut plain, note);
+        assert_eq!(
+            plain.set_selection_duration(MusicalDuration(RationalTime::zero())),
+            Err(EditorError::InvalidDuration)
+        );
+
+        // A tuplet member's duration is ratio-governed → refused.
+        let mut rich = open_rich(0x5EED);
+        let triplet = a_region_with(&rich, true);
+        let tvoice = primary_voice(&rich, triplet);
+        let (member, _, member_dur) = voice_events(&rich, tvoice)[0].clone();
+        select_first_pitch_of(&mut rich, member);
+        assert_eq!(
+            rich.set_selection_duration(member_dur),
+            Err(EditorError::OverlapsTuplet)
+        );
+    }
+
+    #[test]
+    fn set_selection_duration_refuses_a_decomposed_event() {
+        use epiphany_core::{
+            DecompositionAttachment, DecompositionSource, NotatedComponent, NoteValue,
+        };
+
+        let mut score = valid_score(0x5EED);
+        let region = score
+            .canvas
+            .regions
+            .iter()
+            .find(|r| matches!(r.time_model, RegionTimeModel::Metric(_)))
+            .unwrap()
+            .id;
+        let voice = score
+            .voices()
+            .find(|(r, _, _)| *r == region)
+            .map(|(_, _, v)| v.id)
+            .unwrap();
+        let first = {
+            let mut evs: Vec<(EventId, MusicalPosition)> = score
+                .events
+                .iter()
+                .filter(|e| e.voice() == voice)
+                .filter_map(|e| match e.position() {
+                    EventPosition::Musical(p) => Some((e.id(), p.clone())),
+                    _ => None,
+                })
+                .collect();
+            evs.sort_by(|a, b| a.1.cmp(&b.1));
+            evs[0].0
+        };
+        // A valid quarter-note decomposition of the first (quarter) note: changing the
+        // note's duration would leave it no longer summing, so the resize is refused.
+        score
+            .decomposition_attachments
+            .push(DecompositionAttachment {
+                target: first,
+                components: vec![NotatedComponent {
+                    base_value: NoteValue::Quarter,
+                    dots: 0,
+                    tuplet: None,
+                    tied_to_next: false,
+                }],
+                source: DecompositionSource::Inferred,
+            });
+
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+        select_first_pitch_of(&mut session, first);
+        assert_eq!(
+            session.set_selection_duration(dur(1, 8)),
+            Err(EditorError::DecomposedEvent)
+        );
+    }
+
+    #[test]
+    fn set_selection_duration_refuses_a_non_note_event() {
+        use epiphany_core::{StaffPosition, UnpitchedEvent, UnpitchedMemberId};
+
+        // Turn the first metric note into an unpitched event (same id/voice/span): it
+        // renders as a structural anchor and can be selected, but has no note value to
+        // resize, so the duration edit is refused before anything is minted.
+        let mut score = valid_score(0x5EED);
+        let region = score
+            .canvas
+            .regions
+            .iter()
+            .find(|r| matches!(r.time_model, RegionTimeModel::Metric(_)))
+            .unwrap()
+            .id;
+        let voice = score
+            .voices()
+            .find(|(r, _, _)| *r == region)
+            .map(|(_, _, v)| v.id)
+            .unwrap();
+        let first = {
+            let mut evs: Vec<(EventId, MusicalPosition)> = score
+                .events
+                .iter()
+                .filter(|e| e.voice() == voice)
+                .filter_map(|e| match e.position() {
+                    EventPosition::Musical(p) => Some((e.id(), p.clone())),
+                    _ => None,
+                })
+                .collect();
+            evs.sort_by(|a, b| a.1.cmp(&b.1));
+            evs[0].0
+        };
+        {
+            let ev = score.events.get(first).unwrap();
+            let (position, duration) = (ev.position().clone(), ev.duration().clone());
+            *score.events.get_mut(first).unwrap() = Event::Unpitched(UnpitchedEvent {
+                id: first,
+                voice,
+                position,
+                duration,
+                staff_position: StaffPosition(0),
+                instrument_member: UnpitchedMemberId(0),
+                articulations: Vec::new(),
+                dynamic: None,
+                stem: StemConfiguration,
+                grace: None,
+            });
+        }
+
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+        let lo = session
+            .hit_test()
+            .regions
+            .iter()
+            .find(|r| r.source == TypedObjectId::Event(first))
+            .map(|r| r.layout_object)
+            .expect("the unpitched event has a hit region");
+        session.select(lo).expect("selects the unpitched event");
+        assert_eq!(
+            session.set_selection_duration(dur(1, 4)),
+            Err(EditorError::WrongSelection {
+                expected: "note or rest"
+            })
+        );
+    }
+
+    #[test]
+    fn set_selection_duration_requires_a_selection() {
+        let mut session = open_plain(0x5EED);
+        assert_eq!(
+            session.set_selection_duration(dur(1, 4)),
+            Err(EditorError::NoSelection)
         );
     }
 
