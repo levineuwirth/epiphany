@@ -29,10 +29,16 @@
 //! * **selection preservation** — re-resolve the selection against the new layout,
 //!   keeping it when its layout object survives (the cursor does not jump off the
 //!   edited object) and clearing it when the object is gone;
-//! * an **append-only operation log** ([`EditorSession::applied_operations`],
-//!   [`EditorSession::last_applied`]) — every applied envelope, in order, the record
-//!   undo, history, and sync build on (each intent feeds it automatically via
-//!   `apply`).
+//! * **undo / redo** ([`EditorSession::undo`], [`EditorSession::redo`]) — re-reducing
+//!   the active prefix of the op log without (or with) its last unit, so even a
+//!   delete is undone (the CRDT is delete-wins, so a tombstone is re-reduced *away*
+//!   rather than inverted);
+//! * two views of the op log: [`EditorSession::applied_operations`] (the
+//!   currently-applied prefix, which shrinks on undo) and
+//!   [`EditorSession::authored_operations`] (every envelope ever minted, the
+//!   **append-only**, monotonic-id record). The authored log is a *local* high-water
+//!   source, not streaming-consistent undo — a peer replaying it would re-apply
+//!   undone units (undo is a local prefix change, not an operation).
 //!
 //! The session is **solver-agnostic**: it holds a `Box<dyn ConstraintSolver>`, so a
 //! GUI plugs in the real `Engraver`, the stub, or any conformant solver. It
@@ -247,14 +253,45 @@ pub struct EditorSession {
     start_clefs: BTreeMap<(RegionId, StaffId), Clef>,
     selection: Option<Selection>,
     // Operation-minting identity. A real client supplies its own replica/author.
-    // Minted operations form this replica's contiguous, zero-based local history;
-    // the next op's counter is `applied.len()`, so a failed apply consumes no id.
+    // Minted operations form this replica's monotonic local history; the next op's
+    // counter is `authored.len()` (never reused across undo), so a failed apply consumes
+    // no id. The causal context covers the active prefix, not a fixed counter range, so a
+    // fork (undo + new edit) does not strand a later op pending behind a removed unit.
     replica: ReplicaId,
     author: AuthorId,
-    // Append-only log of the envelopes this session has applied, in order — the
-    // record undo, sync, and history build on (every intent feeds it via `apply`),
-    // and the input the session re-reduces onto `base` on each edit.
+    // The currently-applied envelopes, in order — the log the session re-reduces onto
+    // `base` to materialize `score`. One user action appends one unit (a primitive is
+    // one envelope; a transaction is its descriptor plus members). Undo moves the last
+    // unit to `redo_stack` and re-reduces the shorter prefix; a new edit clears the redo
+    // stack. (A delete tombstones permanently in the CRDT, so undo cannot invert it —
+    // it re-reduces *without* the delete instead, which is why the log drives the score
+    // rather than a stack of inverse operations.)
     applied: Vec<OperationEnvelope>,
+    // The size (envelope count) of each applied unit, in order, so undo can drop a whole
+    // unit at once. `undo_units.iter().sum() == applied.len()`.
+    undo_units: Vec<usize>,
+    // Units undone and available to redo, most-recently-undone last (LIFO). Cleared by a
+    // new edit; a redo re-appends the top unit and re-reduces.
+    redo_stack: Vec<Vec<OperationEnvelope>>,
+    // The append-only record of *every* envelope this session has ever minted — active,
+    // undone, and forked-away. It never shrinks, so it is the monotonic high-water source
+    // for new operation, event, pitch, and transaction ids: undoing an edit must not let
+    // a later edit re-mint its ids (which would equivocate a streamed op or collide an
+    // entity id). A new op's counter is `authored.len()`; minting scans this, not the
+    // active prefix. (`applied` is always a — possibly non-contiguous, after a fork —
+    // subsequence of `authored`.)
+    authored: Vec<OperationEnvelope>,
+}
+
+/// One materialization of the op log: the reduced score and everything derived from it
+/// that the session installs together (so the render, hit-test, and clef table never
+/// disagree with the score). Produced by [`EditorSession::materialize`].
+struct Materialization {
+    score: Score,
+    start_clefs: BTreeMap<(RegionId, StaffId), Clef>,
+    resolved: ResolvedLayoutIR,
+    render: RenderIR,
+    map: HitTestMap,
 }
 
 impl EditorSession {
@@ -275,23 +312,26 @@ impl EditorSession {
             replica: ReplicaId(1),
             author: AuthorId(0),
             applied: Vec::new(),
+            undo_units: Vec::new(),
+            redo_stack: Vec::new(),
+            authored: Vec::new(),
         })
     }
 
     /// Overrides the replica/author the session mints operations under (a GUI sets
     /// these to the local editing identity). Defaults to `ReplicaId(1)` / author 0.
     ///
-    /// **Pre-edit only** — panics if called after an [`Self::apply`]. A session's op
-    /// log is one replica's contiguous, zero-based history (each counter is
-    /// `applied.len()`); switching identity mid-stream would continue the counter
-    /// under a new replica, leaving a `(new_replica, 0)` hole that the
-    /// missing-predecessor rule would hold pending. The identity is therefore fixed
-    /// before the first edit.
+    /// **Pre-edit only** — panics if called after any edit (including ones since undone).
+    /// A session's op ids are one replica's monotonic history; switching identity
+    /// mid-stream would continue the counter under a new replica, leaving a
+    /// `(new_replica, 0)` hole that the missing-predecessor rule would hold pending. The
+    /// guard is on the **authored** history (every id ever minted), not the active
+    /// prefix, so undoing back to an empty prefix does not reopen it.
     pub fn with_identity(mut self, replica: ReplicaId, author: AuthorId) -> Self {
         assert!(
-            self.applied.is_empty(),
+            self.authored.is_empty(),
             "with_identity must be set before any edit: a session's op log is a \
-             single replica's contiguous history"
+             single replica's monotonic history"
         );
         self.replica = replica;
         self.author = author;
@@ -325,12 +365,21 @@ impl EditorSession {
         self.selection
     }
 
-    /// The operations this session has applied, oldest first — an append-only log
-    /// for undo, history, and sync (a client streams these to peers; an undo layer
-    /// rebuilds or inverts from them). Only successfully-applied edits appear; a
-    /// rejected or non-renderable edit leaves the log untouched.
+    /// The operations **currently applied**, oldest first — the active prefix the
+    /// materialized score reduces from. It grows by one unit per successful edit and
+    /// **shrinks on [`undo`](Self::undo)** (a redo re-extends it), so it is not an
+    /// append-only history; the session keeps that separately as the monotonic id
+    /// source. A rejected or non-renderable edit leaves it untouched.
     pub fn applied_operations(&self) -> &[OperationEnvelope] {
         &self.applied
+    }
+
+    /// Every envelope this session has ever minted, in mint order — the **append-only**
+    /// authored history, including units since undone or forked away by a later edit.
+    /// This is the monotonic high-water source that keeps ids unique; the currently
+    /// applied subset is [`applied_operations`](Self::applied_operations).
+    pub fn authored_operations(&self) -> &[OperationEnvelope] {
+        &self.authored
     }
 
     /// The most recently applied operation, if any (the tail of
@@ -533,30 +582,18 @@ impl EditorSession {
     }
 
     /// Builds an [`OperationEnvelope`] at operation `counter` under the session's
-    /// identity, carrying `payload` and an optional `transaction` membership — the
-    /// bookkeeping (id, author, stamp, causal context) a GUI would otherwise assemble
-    /// by hand. Pure: it reads no mutable state, so a failed apply consumes no id.
-    ///
-    /// The causal context makes the session's edits a single replica's contiguous,
-    /// zero-based history: the op at `counter` covers every prior local op (the
-    /// range `[0, counter - 1]`). Two sequential edits to the same target therefore
-    /// read as intentional overwrites — the later covering the earlier — rather than
-    /// concurrent conflicting edits, both when this session re-reduces its own log
-    /// and when a peer replays it. The first op (counter 0) is a root: an empty
-    /// context. This also gives transaction members descriptor-precedence for free:
-    /// a member at a later counter covers the descriptor minted before it.
+    /// identity, carrying `payload`, an optional `transaction` membership, and the
+    /// `causal_context` the caller derived from the active head — the bookkeeping a GUI
+    /// would otherwise assemble by hand. Pure: it reads no mutable state, so a failed
+    /// apply consumes no id.
     fn envelope_at(
         &self,
         counter: u64,
         payload: OperationPayload,
         transaction: Option<TransactionId>,
+        causal_context: CausalContext,
     ) -> OperationEnvelope {
         let id = OperationId::new(self.replica, counter);
-        let causal_context = if counter > 0 {
-            CausalContext::new().with_seen(self.replica, counter - 1)
-        } else {
-            CausalContext::new()
-        };
         OperationEnvelope {
             id,
             author: self.author,
@@ -570,9 +607,20 @@ impl EditorSession {
         }
     }
 
-    /// Builds a standalone primitive envelope for `kind` at `counter`.
-    fn envelope_for(&self, counter: u64, kind: OperationKind) -> OperationEnvelope {
-        self.envelope_at(counter, OperationPayload::Primitive(kind), None)
+    /// The causal context a newly-minted op carries: it covers every **currently
+    /// applied** op (so two sequential same-target edits read as intentional overwrites,
+    /// the later covering the earlier, rather than concurrent conflicts). Derived from
+    /// the active head's own context plus the head, so it covers the whole active prefix
+    /// without asserting coverage of any unit since undone or forked away — which would
+    /// otherwise leave the new op held pending behind a missing predecessor. Empty when
+    /// nothing is applied (a root op). The compact contiguous form is preserved while
+    /// the active prefix has no holes (the common case); a fork records the active tail
+    /// as dots (see [`extend_context`]).
+    fn active_prior_context(&self) -> CausalContext {
+        match self.applied.last() {
+            None => CausalContext::new(),
+            Some(head) => extend_context(head.causal_context.clone(), head.id),
+        }
     }
 
     /// Accepts `new` envelopes on top of the prior log, reduces the whole set onto
@@ -590,48 +638,122 @@ impl EditorSession {
     /// the whole log each edit is fine at editor scale; incremental reduction is a
     /// later optimization.)
     fn commit(&mut self, new: Vec<OperationEnvelope>) -> Result<EditOutcome, EditorError> {
-        // Re-accept the prior log (idempotent — they were accepted before), then the
-        // new envelopes. One the reducer will not accept (e.g. a reserved replica
-        // identity) must not partially apply.
-        let mut set = OperationSet::new();
-        for prior in &self.applied {
-            set.accept(prior.clone());
+        let unit = new.len();
+        let kept = self.applied.len();
+        // Append the unit tentatively and materialize the whole prefix; on any failure
+        // (a rejected op, a rolled-back transaction, a diagnostic-only layout) truncate
+        // back so the failed edit leaves all state — the op log included — untouched.
+        self.applied.extend(new.iter().cloned());
+        match self.materialize(&self.applied) {
+            Ok(materialized) => {
+                let graph_changed = materialized.score != self.score;
+                // Record the unit permanently (the monotonic id source) and as the new
+                // active tail; a new edit forks history past any undos.
+                self.authored.extend(new);
+                self.undo_units.push(unit);
+                self.redo_stack.clear();
+                self.install(materialized);
+                let selection_preserved = self.reresolve_selection();
+                Ok(EditOutcome {
+                    graph_changed,
+                    selection_preserved,
+                })
+            }
+            Err(err) => {
+                self.applied.truncate(kept);
+                Err(err)
+            }
         }
-        for env in &new {
+    }
+
+    /// Undoes the most recent edit (one user action — a primitive, or a whole
+    /// transaction). Re-reduces the log without that unit, so even a delete is undone
+    /// (its tombstone is simply never produced). The unit moves to the redo stack.
+    /// `None` if there is nothing to undo.
+    pub fn undo(&mut self) -> Option<EditOutcome> {
+        let unit = *self.undo_units.last()?;
+        let cut = self.applied.len() - unit;
+        // A prefix of a valid log is itself valid (units are dropped from the end, so
+        // every remaining op's causal predecessors are still present), so this succeeds.
+        let materialized = self.materialize(&self.applied[..cut]).ok()?;
+        let graph_changed = materialized.score != self.score;
+        let undone = self.applied.split_off(cut);
+        self.redo_stack.push(undone);
+        self.undo_units.pop();
+        self.install(materialized);
+        let selection_preserved = self.reresolve_selection();
+        Some(EditOutcome {
+            graph_changed,
+            selection_preserved,
+        })
+    }
+
+    /// Redoes the most recently undone edit, re-appending its unit and re-reducing.
+    /// `None` if there is nothing to redo (a new edit clears the redo stack).
+    pub fn redo(&mut self) -> Option<EditOutcome> {
+        let unit = self.redo_stack.last()?.clone();
+        let kept = self.applied.len();
+        self.applied.extend(unit.iter().cloned());
+        let Ok(materialized) = self.materialize(&self.applied) else {
+            self.applied.truncate(kept); // leave the redo stack intact on the (unexpected) failure
+            return None;
+        };
+        let graph_changed = materialized.score != self.score;
+        self.redo_stack.pop();
+        self.undo_units.push(unit.len());
+        self.install(materialized);
+        let selection_preserved = self.reresolve_selection();
+        Some(EditOutcome {
+            graph_changed,
+            selection_preserved,
+        })
+    }
+
+    /// Whether there is an applied edit to [`undo`](Self::undo).
+    pub fn can_undo(&self) -> bool {
+        !self.undo_units.is_empty()
+    }
+
+    /// Whether there is an undone edit to [`redo`](Self::redo).
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    /// Reduces `log` onto `base` and renders it — the materialization every edit, undo,
+    /// and redo installs. Errors with [`EditorError::RejectedOperation`] if an op does
+    /// not accept or the reduction is not clean (a transaction whose members fail rolls
+    /// back as a conflict yet still returns a score), or [`EditorError::NotRenderable`]
+    /// for a diagnostic-only layout.
+    fn materialize(&self, log: &[OperationEnvelope]) -> Result<Materialization, EditorError> {
+        let mut set = OperationSet::new();
+        for env in log {
             if !matches!(set.accept(env.clone()), AcceptOutcome::Accepted) {
                 return Err(EditorError::RejectedOperation);
             }
         }
         let materialized = set.reduce_onto(&self.base);
-        // A non-clean reduction means the edit did not apply cleanly: an atomic
-        // transaction whose member preconditions fail rolls back as a conflict, yet
-        // the reducer still returns a score. Refuse rather than log an edit that did
-        // not take effect. (Committed edits are kept clean, so any conflict/pending is
-        // introduced by `new`.)
         if !materialized.state.is_clean() {
             return Err(EditorError::RejectedOperation);
         }
-        let edited = materialized.score;
-        let graph_changed = edited != self.score;
-
-        // Refuse a diagnostic-only layout, still before committing anything.
+        let score = materialized.score;
         let (start_clefs, resolved, render, map) =
-            render_score(&edited, self.solver.as_ref()).ok_or(EditorError::NotRenderable)?;
-
-        // Commit (the only mutation point — so an error above leaves all state,
-        // op log included, untouched).
-        self.score = edited;
-        self.resolved = resolved;
-        self.render = render;
-        self.map = map;
-        self.start_clefs = start_clefs;
-        self.applied.extend(new);
-
-        let selection_preserved = self.reresolve_selection();
-        Ok(EditOutcome {
-            graph_changed,
-            selection_preserved,
+            render_score(&score, self.solver.as_ref()).ok_or(EditorError::NotRenderable)?;
+        Ok(Materialization {
+            score,
+            start_clefs,
+            resolved,
+            render,
+            map,
         })
+    }
+
+    /// Installs a materialization as the session's current score, layout, and render.
+    fn install(&mut self, materialized: Materialization) {
+        self.score = materialized.score;
+        self.start_clefs = materialized.start_clefs;
+        self.resolved = materialized.resolved;
+        self.render = materialized.render;
+        self.map = materialized.map;
     }
 
     /// Applies a single primitive operation: mints an envelope and commits it. A
@@ -641,8 +763,15 @@ impl EditorSession {
         if matches!(kind, OperationKind::DeclareTransaction(_)) {
             return Err(EditorError::DeclareTransactionNotAllowed);
         }
-        let counter = self.applied.len() as u64;
-        let envelope = self.envelope_for(counter, kind);
+        // The next id is one past every id ever minted (monotonic across undo), and the
+        // context covers the currently-applied ops.
+        let counter = self.authored.len() as u64;
+        let envelope = self.envelope_at(
+            counter,
+            OperationPayload::Primitive(kind),
+            None,
+            self.active_prior_context(),
+        );
         self.commit(vec![envelope])
     }
 
@@ -680,16 +809,17 @@ impl EditorSession {
 
     /// Mints the envelopes for an atomic transaction: a `DeclareTransaction`
     /// descriptor at the next counter, then one member envelope per kind at the
-    /// following counters, each referencing the transaction id. The contiguous causal
-    /// context gives every member descriptor-precedence over the descriptor for free.
-    /// Pure.
+    /// following counters, each referencing the transaction id. Each envelope's context
+    /// covers the ones before it (the active prefix, then the descriptor, then earlier
+    /// members), which gives every member descriptor-precedence over the descriptor for
+    /// free. Pure.
     fn transaction_envelopes(
         &self,
         label: &str,
         category: Option<TransactionCategory>,
         kinds: Vec<OperationKind>,
     ) -> Vec<OperationEnvelope> {
-        let base = self.applied.len() as u64;
+        let base = self.authored.len() as u64;
         let tx_id = self.mint_transaction_id();
         let descriptor = TransactionDescriptor {
             id: tx_id,
@@ -697,29 +827,39 @@ impl EditorSession {
             category,
         };
         let mut envelopes = Vec::with_capacity(kinds.len() + 1);
-        envelopes.push(self.envelope_at(
+        // Thread the context: each envelope sees the active prefix plus every earlier
+        // envelope in this unit.
+        let mut context = self.active_prior_context();
+        let descriptor_env = self.envelope_at(
             base,
             OperationPayload::Primitive(OperationKind::DeclareTransaction(descriptor)),
             None,
-        ));
+            context.clone(),
+        );
+        context = extend_context(context, descriptor_env.id);
+        envelopes.push(descriptor_env);
         for (i, kind) in kinds.into_iter().enumerate() {
             let counter = base + 1 + i as u64;
-            envelopes.push(self.envelope_at(
+            let member = self.envelope_at(
                 counter,
                 OperationPayload::Primitive(kind),
                 Some(tx_id),
-            ));
+                context.clone(),
+            );
+            context = extend_context(context, member.id);
+            envelopes.push(member);
         }
         envelopes
     }
 
-    /// Mints a fresh [`TransactionId`] in the session's replica namespace, one past
-    /// the highest transaction counter declared in this session's op log. (Transaction
-    /// ids live only in the op stream — the materialized score retains no trace — so
-    /// the log is the sole source.)
+    /// Mints a fresh [`TransactionId`] in the session's replica namespace, one past the
+    /// highest transaction counter declared in this session's **authored** history
+    /// (so an undone transaction's id is never reused). Transaction ids live only in the
+    /// op stream — the materialized score retains no trace — so the log is the sole
+    /// source.
     fn mint_transaction_id(&self) -> TransactionId {
         let next = self
-            .applied
+            .authored
             .iter()
             .filter_map(declared_transaction_id)
             .filter(|t| t.replica() == self.replica)
@@ -1348,7 +1488,8 @@ impl EditorSession {
 
     /// Mints a fresh [`EventId`] in the session's replica namespace, on the same
     /// three-source high-water-mark basis as [`Self::mint_pitch_id`]: the pristine
-    /// `base`, the current score (each live or tombstoned), and this session's op log.
+    /// `base`, the current score (each live or tombstoned), and this session's
+    /// **authored** history (so an id from an undone insert is never reused).
     fn mint_event_id(&self) -> EventId {
         let ids = self
             .base
@@ -1358,7 +1499,7 @@ impl EditorSession {
             .chain(self.base.tombstoned_events.iter().copied())
             .chain(self.score.events.iter().map(Event::id))
             .chain(self.score.tombstoned_events.iter().copied())
-            .chain(self.applied.iter().flat_map(inserted_event_ids));
+            .chain(self.authored.iter().flat_map(inserted_event_ids));
         let next = ids
             .filter(|e| e.replica() == self.replica)
             .map(|e| e.counter())
@@ -1395,10 +1536,10 @@ impl EditorSession {
     /// tombstones only reducer state, never `Score.tombstoned_pitches` — so the
     /// high-water mark is taken over three sources: the pristine open-time `base`
     /// (catches an opened pitch since deleted), the current score (catches anything a
-    /// future reducer change records), and this session's op log (catches a
-    /// session-inserted pitch since deleted). Reusing an id would make a later insert
-    /// no-op against a tombstone under whole-log reduction. Pitches authored by other
-    /// replicas occupy disjoint namespaces and do not constrain it.
+    /// future reducer change records), and this session's **authored** history (catches
+    /// a session-inserted pitch since deleted *or undone*). Reusing an id would make a
+    /// later insert no-op against a tombstone under whole-log reduction. Pitches authored
+    /// by other replicas occupy disjoint namespaces and do not constrain it.
     fn mint_pitch_id(&self) -> PitchId {
         let ids = self
             .base
@@ -1407,7 +1548,7 @@ impl EditorSession {
             .chain(self.base.tombstoned_pitches.iter().copied())
             .chain(self.score.live_pitch_ids())
             .chain(self.score.tombstoned_pitches.iter().copied())
-            .chain(self.applied.iter().flat_map(inserted_pitch_ids));
+            .chain(self.authored.iter().flat_map(inserted_pitch_ids));
         let next = ids
             .filter(|p| p.replica() == self.replica)
             .map(|p| p.counter())
@@ -1757,6 +1898,25 @@ fn declared_transaction_id(env: &OperationEnvelope) -> Option<TransactionId> {
     match &env.payload {
         OperationPayload::Primitive(OperationKind::DeclareTransaction(desc)) => Some(desc.id),
         _ => None,
+    }
+}
+
+/// Extends a causal context to also cover `op`. When `op` continues `op.replica`'s
+/// contiguous range (the common case — a session with no undo mints `0, 1, 2, …`), it
+/// folds into the compact version vector, reproducing the simple `with_seen(replica,
+/// counter)` history; once a fork (undo + new edit) leaves a gap below `op.counter`, it
+/// is recorded as an individual dot so the context covers the active op without
+/// asserting — and stranding the new op pending behind — the forked-away counters in
+/// between.
+fn extend_context(context: CausalContext, op: OperationId) -> CausalContext {
+    let continues = context
+        .vector
+        .get(&op.replica)
+        .map_or(op.counter == 0, |&high| op.counter == high + 1);
+    if continues {
+        context.with_seen(op.replica, op.counter)
+    } else {
+        context.with_dot(op)
     }
 }
 
@@ -3928,6 +4088,306 @@ mod tests {
             log[1].payload,
             OperationPayload::Primitive(OperationKind::Transpose(_))
         ));
+    }
+
+    #[test]
+    fn undo_and_redo_a_transpose() {
+        let mut session = open_rich(0x5EED);
+        let selection = click_a_notehead(&mut session);
+        let TypedObjectId::Pitch(pid) = selection.source else {
+            panic!("a notehead selects a pitch");
+        };
+        let before = session.current_pitch(pid).unwrap();
+        session.transpose_selection(1).expect("sharpen");
+        let after = session.current_pitch(pid).unwrap();
+        assert_ne!(before, after);
+        assert!(session.can_undo() && !session.can_redo());
+
+        let outcome = session.undo().expect("undo");
+        assert!(outcome.graph_changed);
+        assert_eq!(
+            session.current_pitch(pid).unwrap(),
+            before,
+            "undo restores the value"
+        );
+        assert!(!session.can_undo() && session.can_redo());
+
+        session.redo().expect("redo");
+        assert_eq!(
+            session.current_pitch(pid).unwrap(),
+            after,
+            "redo re-applies the edit"
+        );
+        assert!(session.can_undo() && !session.can_redo());
+    }
+
+    #[test]
+    fn undo_restores_a_deleted_note() {
+        // The CRDT is delete-wins (a tombstone is permanent), so undo cannot *invert* a
+        // delete — it re-reduces the log without it, and the note reappears.
+        let mut session = open_rich(0x5EED);
+        let selection = click_a_notehead(&mut session);
+        let TypedObjectId::Pitch(pid) = selection.source else {
+            panic!("a notehead selects a pitch");
+        };
+        assert!(session.score().live_pitch_ids().contains(&pid));
+        session.delete_selection().expect("delete");
+        assert!(!session.score().live_pitch_ids().contains(&pid), "deleted");
+
+        session.undo().expect("undo");
+        assert!(
+            session.score().live_pitch_ids().contains(&pid),
+            "undo brings the deleted note back"
+        );
+        session.redo().expect("redo");
+        assert!(
+            !session.score().live_pitch_ids().contains(&pid),
+            "redo deletes it again"
+        );
+    }
+
+    #[test]
+    fn undo_reverts_a_split_insert_as_one_unit() {
+        let mut session = open_plain(0x5EED);
+        let region = a_clean_metric_region(&session);
+        let voice = primary_voice(&session, region);
+        let before = voice_events(&session, voice);
+        let (_, _, origin_y) = region_staff_line(&session, region);
+
+        let (_, first_pos, first_dur) = before[0].clone();
+        let cell = first_dur.0.mul(&RationalTime::new(1, 4).unwrap());
+        let target = MusicalPosition(first_pos.0.add(&cell));
+        let at = click_for_position(&session, region, &target, origin_y + 1.0);
+        session
+            .insert_note_at(
+                at,
+                &GridResolution {
+                    step: MusicalDuration(cell),
+                },
+            )
+            .expect("split");
+        assert_eq!(voice_events(&session, voice).len(), before.len() + 2);
+        assert!(
+            session.applied_operations().len() > 1,
+            "the split is a multi-op transaction"
+        );
+
+        session.undo().expect("undo");
+        // Trim-head + tail-insert + new-note all undo together as one unit.
+        assert_eq!(
+            voice_events(&session, voice),
+            before,
+            "undo restores the original voice exactly"
+        );
+        assert_eq!(
+            session.applied_operations().len(),
+            0,
+            "the whole unit is gone"
+        );
+
+        session.redo().expect("redo");
+        assert_eq!(
+            voice_events(&session, voice).len(),
+            before.len() + 2,
+            "redo re-splits"
+        );
+    }
+
+    #[test]
+    fn undo_restores_a_make_room_overwrite() {
+        let mut session = open_plain(0x5EED);
+        let region = a_clean_metric_region(&session);
+        let voice = primary_voice(&session, region);
+        let before = voice_events(&session, voice);
+        let (first, _, _) = before[0].clone();
+        let (second, _, _) = before[1].clone();
+        select_first_pitch_of(&mut session, first);
+
+        session
+            .set_selection_duration(dur(1, 2))
+            .expect("lengthen with overwrite");
+        assert!(
+            !voice_events(&session, voice)
+                .iter()
+                .any(|(id, _, _)| *id == second),
+            "the covered note was deleted"
+        );
+        session.undo().expect("undo");
+        assert_eq!(
+            voice_events(&session, voice),
+            before,
+            "undo restores both the resize and the deleted note"
+        );
+    }
+
+    #[test]
+    fn undo_an_override_aware_move_restores_value_and_spelling() {
+        use epiphany_core::PitchSpelling;
+        use epiphany_ops::RespellPitchOp;
+
+        let mut session = open_rich(0x5EED);
+        let selection = click_a_notehead(&mut session);
+        let TypedObjectId::Pitch(pid) = selection.source else {
+            panic!("a notehead selects a pitch");
+        };
+        // Pin a spelling so the move lands as a value + respell transaction.
+        session
+            .apply(OperationKind::RespellPitch(RespellPitchOp {
+                pitch: pid,
+                spelling: PitchSpelling::cmn(CmnNominal::D, 4),
+            }))
+            .expect("respell");
+        let value = session.current_pitch(pid).unwrap();
+        let spelling = authored_spelling(session.score(), pid).expect("pinned");
+
+        session
+            .move_selection_staff_step(1)
+            .expect("override-aware move");
+        assert_ne!(session.current_pitch(pid).unwrap(), value, "value moved");
+        assert_ne!(
+            authored_spelling(session.score(), pid),
+            Some(spelling.clone()),
+            "spelling moved"
+        );
+
+        session.undo().expect("undo the move");
+        // Both transaction members (the modify and the respell) undo together.
+        assert_eq!(session.current_pitch(pid).unwrap(), value, "value restored");
+        assert_eq!(
+            authored_spelling(session.score(), pid),
+            Some(spelling),
+            "spelling restored"
+        );
+    }
+
+    #[test]
+    fn a_new_edit_after_undo_forks_history() {
+        let mut session = open_rich(0x5EED);
+        assert!(!session.can_undo() && !session.can_redo());
+        assert!(session.undo().is_none(), "nothing to undo");
+        assert!(session.redo().is_none(), "nothing to redo");
+
+        click_a_notehead(&mut session);
+        session.transpose_selection(1).expect("e1");
+        session.transpose_selection(1).expect("e2");
+        assert_eq!(session.applied_operations().len(), 2);
+
+        session.undo().expect("undo e2");
+        assert!(session.can_redo());
+        // A new edit past an undo clears the redo stack.
+        session.transpose_selection(-1).expect("e3");
+        assert!(!session.can_redo(), "the new edit forked away the redo");
+        assert_eq!(
+            session.applied_operations().len(),
+            2,
+            "e1 + e3 (e2 was undone and forked away)"
+        );
+    }
+
+    #[test]
+    fn a_fork_mints_a_fresh_operation_id_not_the_undone_one() {
+        let mut session = open_rich(0x5EED);
+        click_a_notehead(&mut session);
+        session.transpose_selection(1).expect("A");
+        let a_id = session.last_applied().unwrap().id;
+        session.undo().expect("undo A");
+        session.transpose_selection(-1).expect("B (forks A)");
+        let b_id = session.last_applied().unwrap().id;
+
+        assert_ne!(a_id, b_id, "B gets a fresh op id, not A's reused counter");
+        // B is in the active prefix; A is forked out of it but kept in authored history.
+        assert!(session.applied_operations().iter().any(|e| e.id == b_id));
+        assert!(!session.applied_operations().iter().any(|e| e.id == a_id));
+        assert!(session.authored_operations().iter().any(|e| e.id == a_id));
+        assert_eq!(
+            session.authored_operations().len(),
+            2,
+            "A and B both authored"
+        );
+    }
+
+    #[test]
+    fn a_fork_does_not_reuse_minted_event_ids() {
+        let mut session = open_plain(0x5EED);
+        let region = a_clean_metric_region(&session);
+        let voice = primary_voice(&session, region);
+        let (_, _, origin_y) = region_staff_line(&session, region);
+        let opened: std::collections::BTreeSet<EventId> =
+            session.score().events.iter().map(|e| e.id()).collect();
+
+        // Insert into empty space (mints a fresh event), then undo it.
+        let last = voice_events(&session, voice).last().unwrap().clone();
+        let target = MusicalPosition(last.1 .0.add(&last.2 .0));
+        let at = click_for_position(&session, region, &target, origin_y + 1.0);
+        let grid = GridResolution {
+            step: last.2.clone(),
+        };
+        session.insert_note_at(at, &grid).expect("insert 1");
+        let inserted = |s: &EditorSession| -> EventId {
+            *s.score()
+                .events
+                .iter()
+                .map(|e| e.id())
+                .collect::<std::collections::BTreeSet<_>>()
+                .difference(&opened)
+                .next()
+                .expect("one inserted event")
+        };
+        let first = inserted(&session);
+        session.undo().expect("undo insert 1");
+
+        // Insert again at the same spot: the undone event's id left the score and the
+        // active prefix, but it is still in authored history, so a fresh id is minted.
+        session.insert_note_at(at, &grid).expect("insert 2");
+        let second = inserted(&session);
+        assert_ne!(
+            second, first,
+            "the second insert mints a fresh event id, not the undone one's"
+        );
+    }
+
+    #[test]
+    fn edits_after_a_fork_re_reduce_cleanly() {
+        let mut session = open_rich(0x5EED);
+        click_a_notehead(&mut session);
+        session.transpose_selection(1).expect("A");
+        session.transpose_selection(1).expect("B");
+        session.undo().expect("undo B");
+        // Each edit re-reduces the whole active prefix; if a forked op were stranded
+        // pending (a missing-predecessor hole left by a non-contiguous context), the
+        // reduction would be unclean and the edit would be refused. So these succeeding
+        // is the proof the fork's causal contexts are correct.
+        session.transpose_selection(-1).expect("C");
+        session.transpose_selection(-1).expect("D");
+
+        let active = session.applied_operations();
+        assert_eq!(active.len(), 3, "A, C, D active; B forked away");
+        let ids: std::collections::BTreeSet<_> = active.iter().map(|e| e.id).collect();
+        assert_eq!(
+            ids.len(),
+            3,
+            "distinct, monotonic op ids (B's was not reused)"
+        );
+        assert_eq!(
+            session.authored_operations().len(),
+            4,
+            "A, B, C, D all authored"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "with_identity must be set before any edit")]
+    fn with_identity_is_refused_after_an_undone_edit() {
+        let mut session = open_rich(0x5EED);
+        click_a_notehead(&mut session);
+        session.transpose_selection(1).expect("edit");
+        session.undo().expect("undo");
+        assert!(
+            session.applied_operations().is_empty(),
+            "the active prefix is empty"
+        );
+        // ...but the session has authored history, so the identity is still fixed.
+        let _ = session.with_identity(ReplicaId(2), AuthorId(0));
     }
 
     #[test]
