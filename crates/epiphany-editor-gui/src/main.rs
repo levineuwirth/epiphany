@@ -7,10 +7,11 @@
 //! `resvg` into an `egui` texture, resolves clicks back to world coordinates to
 //! select, and drives the note-editing intents from a toolbar and keyboard.
 //!
-//! Intentionally narrow (per the GUI vertical-slice plan): no duration editing, no
-//! empty-space insertion, and no undo UI — the debug panel just shows the selection
-//! and the last applied op, enough to confirm the op log is usable. The GUI is the
-//! thing meant to surface the next real core gaps.
+//! Intentionally narrow (per the GUI vertical-slice plan): no duration editing and no
+//! undo UI — the debug panel just shows the selection and the last applied op, enough
+//! to confirm the op log is usable. A **pencil mode** turns a click into a
+//! click-to-insert ([`EditorSession::insert_note_at`]) with make-room overwrite, on a
+//! quarter-note grid. The GUI is the thing meant to surface the next real core gaps.
 //!
 //! It is a demo binary; there is no headless way to assert its rendering here, so the
 //! one piece of nontrivial logic — the screen↔world coordinate map a click depends on
@@ -159,6 +160,9 @@ struct EditorApp {
     logical_size: egui::Vec2,
     px_per_staff_space: f32,
     needs_render: bool,
+    /// Pencil ("insert") mode: a click on the staff inserts a note at that pitch and
+    /// beat (with make-room overwrite) instead of selecting.
+    pencil: bool,
     status: String,
 }
 
@@ -174,6 +178,7 @@ impl EditorApp {
             logical_size: egui::vec2(1.0, 1.0),
             px_per_staff_space: 12.0,
             needs_render: true,
+            pencil: false,
             status: "opened ten_measure_single_staff".to_string(),
         }
     }
@@ -242,6 +247,8 @@ impl EditorApp {
                 self.run("insert after", |s| s.insert_note_after_selection());
             }
             ui.separator();
+            ui.toggle_value(&mut self.pencil, "✏ Pencil (insert)");
+            ui.separator();
             if ui
                 .add(egui::Slider::new(&mut self.px_per_staff_space, 6.0..=28.0).text("zoom"))
                 .changed()
@@ -279,10 +286,11 @@ impl EditorApp {
             }
         }
         ui.separator();
-        ui.label(
-            "Click a notehead to select.\n\
-             Keys: Del delete · ↑/↓ staff-step move · +/− transpose · A add chord · I insert after",
-        );
+        ui.label(format!(
+            "Click a notehead to select. Pencil mode: {}.\n\
+             Keys: Del delete · ↑/↓ staff-step move · +/− transpose · A add chord · I insert after · P pencil",
+            if self.pencil { "ON — click to insert" } else { "off" }
+        ));
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
@@ -294,7 +302,12 @@ impl EditorApp {
             flat: i.key_pressed(egui::Key::Minus),
             add: i.key_pressed(egui::Key::A),
             insert: i.key_pressed(egui::Key::I),
+            pencil: i.key_pressed(egui::Key::P),
         });
+        if k.pencil {
+            self.pencil = !self.pencil;
+            self.status = format!("pencil mode {}", if self.pencil { "on" } else { "off" });
+        }
         if k.delete {
             self.run("delete", |s| s.delete_selection());
         }
@@ -338,26 +351,38 @@ impl EditorApp {
         if response.clicked() {
             if let Some(pos) = response.interact_pointer_pos() {
                 let world = ViewMap::new(self.view_box, rect).screen_to_world(pos);
-                // What a click-to-insert would resolve to on empty staff: the pitch
-                // (vertical half) and the grid-snapped position (horizontal half), on
-                // a default quarter-note grid.
-                let pitch = self.session.staff_pitch_at(world);
-                let position = self.session.position_at(world, &GridResolution::quarter());
-                self.status = match self.session.click(world) {
-                    Some(_) => "selected".to_string(),
-                    None => match (pitch, position) {
-                        (Some(p), Some(gp)) => format!(
-                            "empty — would insert {:?}{} at beat {:.3}",
-                            p.nominal,
-                            p.octave,
-                            gp.position.0.to_f64()
-                        ),
-                        (Some(p), None) => {
-                            format!("empty — would insert {:?}{}", p.nominal, p.octave)
-                        }
-                        _ => "cleared selection".to_string(),
-                    },
-                };
+                if self.pencil {
+                    // Insert a note at the clicked pitch/beat on a quarter-note grid,
+                    // making room over whatever it overlaps. This runs *after* this
+                    // frame's rerender slot, so request a repaint to draw the edit, and
+                    // return before the selection overlay below paints the new hit map
+                    // over the old (not-yet-rerendered) texture.
+                    self.run("insert note", |s| {
+                        s.insert_note_at(world, &GridResolution::quarter())
+                    });
+                    ui.ctx().request_repaint();
+                    return;
+                } else {
+                    // Select the topmost hit; on empty staff, report what a pencil
+                    // click *would* insert (the pitch and grid-snapped beat).
+                    let pitch = self.session.staff_pitch_at(world);
+                    let position = self.session.position_at(world, &GridResolution::quarter());
+                    self.status = match self.session.click(world) {
+                        Some(_) => "selected".to_string(),
+                        None => match (pitch, position) {
+                            (Some(p), Some(gp)) => format!(
+                                "empty — pencil would insert {:?}{} at beat {:.3}",
+                                p.nominal,
+                                p.octave,
+                                gp.position.0.to_f64()
+                            ),
+                            (Some(p), None) => {
+                                format!("empty — pencil would insert {:?}{}", p.nominal, p.octave)
+                            }
+                            _ => "cleared selection".to_string(),
+                        },
+                    };
+                }
             }
         }
 
@@ -389,6 +414,7 @@ struct Keys {
     flat: bool,
     add: bool,
     insert: bool,
+    pencil: bool,
 }
 
 impl eframe::App for EditorApp {
