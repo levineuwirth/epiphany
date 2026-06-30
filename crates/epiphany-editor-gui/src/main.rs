@@ -18,7 +18,7 @@
 
 use eframe::egui;
 
-use epiphany_editor_core::{EditOutcome, EditorError, EditorSession};
+use epiphany_editor_core::{EditOutcome, EditorError, EditorSession, GridResolution};
 use epiphany_engrave::Engraver;
 use epiphany_layout_ir::{BoundingBox, HitShape, Point};
 use epiphany_ops::{OperationKind, OperationPayload};
@@ -338,14 +338,24 @@ impl EditorApp {
         if response.clicked() {
             if let Some(pos) = response.interact_pointer_pos() {
                 let world = ViewMap::new(self.view_box, rect).screen_to_world(pos);
-                // The pitch the clicked height resolves to (the vertical half of
-                // click-to-insert) — shown when the click lands on empty staff.
+                // What a click-to-insert would resolve to on empty staff: the pitch
+                // (vertical half) and the grid-snapped position (horizontal half), on
+                // a default quarter-note grid.
                 let pitch = self.session.staff_pitch_at(world);
+                let position = self.session.position_at(world, &GridResolution::quarter());
                 self.status = match self.session.click(world) {
                     Some(_) => "selected".to_string(),
-                    None => match pitch {
-                        Some(p) => format!("empty — would insert {:?}{}", p.nominal, p.octave),
-                        None => "cleared selection".to_string(),
+                    None => match (pitch, position) {
+                        (Some(p), Some(gp)) => format!(
+                            "empty — would insert {:?}{} at beat {:.3}",
+                            p.nominal,
+                            p.octave,
+                            gp.position.0.to_f64()
+                        ),
+                        (Some(p), None) => {
+                            format!("empty — would insert {:?}{}", p.nominal, p.octave)
+                        }
+                        _ => "cleared selection".to_string(),
                     },
                 };
             }

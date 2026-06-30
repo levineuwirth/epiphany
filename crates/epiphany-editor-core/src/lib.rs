@@ -39,15 +39,16 @@
 //! produces a [`RenderIR`]; turning that into pixels is the renderer's job.
 
 use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 use epiphany_core::{
     AcousticRealization, Clef, CmnNominal, Event, EventDuration, EventId, EventPosition,
     IdentifiedPitch, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId,
-    PitchSpacePosition, PitchSpelling, PitchedEvent, RegionId, RegionTimeModel, ReplicaId, Score,
-    SpellingDirective, SpellingNominal, SpellingScope, SpellingSourceKind, StaffId, StaffInstance,
-    StaffInstanceId, StemConfiguration, TransactionId, TypedObjectId, VoiceId, WallClockTime,
+    PitchSpacePosition, PitchSpelling, PitchedEvent, RationalTime, RegionId, RegionTimeModel,
+    ReplicaId, Score, SpellingDirective, SpellingNominal, SpellingScope, SpellingSourceKind,
+    StaffId, StaffInstance, StaffInstanceId, StemConfiguration, TransactionId, TypedObjectId,
+    VoiceId, WallClockTime,
 };
 use epiphany_layout_ir::{
     active_clef, manifestation_layout_id, staff_step_pitch, to_constrained, to_logical, to_render,
@@ -84,6 +85,38 @@ pub struct StaffPitch {
     pub nominal: CmnNominal,
     /// The octave (scientific-pitch) at the clicked height.
     pub octave: i8,
+}
+
+/// The beat grid a click-to-insert snaps to: the musical-time `step` between insert
+/// positions (and the natural default written duration of a note entered there) —
+/// a DAW's "grid" setting. The caller chooses the resolution; deriving a default
+/// from the region's meter is a later refinement, so this carries no meter logic.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GridResolution {
+    /// The grid step from the region origin; insert positions are its multiples.
+    pub step: MusicalDuration,
+}
+
+impl GridResolution {
+    /// A quarter-note grid — a sensible default for a client that has not chosen a
+    /// resolution (a meter-derived default is a later refinement).
+    pub fn quarter() -> Self {
+        // `1/4` is always representable (a non-zero denominator).
+        GridResolution {
+            step: MusicalDuration(RationalTime::new(1, 4).expect("1/4 is a valid duration")),
+        }
+    }
+}
+
+/// What a click at a world point resolves to **horizontally**: the metric region
+/// under the cursor and the grid-snapped musical position to insert at. The vertical
+/// half (the pitch) is a [`StaffPitch`]; a click-to-insert combines the two.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GridPosition {
+    /// The metric region the position belongs to.
+    pub region: RegionId,
+    /// The grid-snapped onset to insert at.
+    pub position: MusicalPosition,
 }
 
 /// What an [`EditorSession::apply`] did.
@@ -293,20 +326,43 @@ impl EditorSession {
     /// or the height is out of representable range. The horizontal half (the musical
     /// position to insert at) is a separate query.
     pub fn staff_pitch_at(&self, point: Point) -> Option<StaffPitch> {
+        let (region, si, origin) = self.nearest_manifestation(point)?;
+        // The clef in force at the staff start, resolved by time when the layout was
+        // built (a mid-staff clef change is a later refinement); default treble when
+        // none is declared.
+        let clef = self
+            .start_clefs
+            .get(&(region, si.staff))
+            .copied()
+            .unwrap_or_default();
+        // Each step is half a staff space, +y up; round to the nearest line/space.
+        let step = ((point.y.0 - origin) * 2.0).round() as i32;
+        let (nominal, octave) = staff_step_pitch(step, &clef)?;
+        Some(StaffPitch {
+            staff_instance: si.id,
+            nominal,
+            octave,
+        })
+    }
+
+    /// The manifested staff a world `point` is nearest, by 2D proximity — its
+    /// `(region, staff instance)` and the staff's step-origin `y`. Horizontal span
+    /// first (which region — one staff tiles across regions that can share a y band),
+    /// then the vertical band (which staff within it). The bottom staff line carries
+    /// the staff's manifestation id as its stroke `stable_id`, which is how a rendered
+    /// line maps back to `(region, staff_instance)`. Both halves of click-to-insert —
+    /// [`Self::staff_pitch_at`] (pitch) and [`Self::position_at`] (position) — select
+    /// the staff/region through this. `None` on a non-finite point or no staff line.
+    fn nearest_manifestation(&self, point: Point) -> Option<(RegionId, &StaffInstance, f32)> {
         // Reject a non-finite click up front: `dist_to_band`'s `<`/`>` would let a
-        // NaN fall through as distance 0 (matching every staff), and `round() as i32`
-        // saturates a non-finite height into a bogus staff step. A malformed view
-        // transform yields no pitch rather than an arbitrary one.
+        // NaN fall through as distance 0 (matching every staff), and downstream a
+        // `round() as i32` would saturate a non-finite height into a bogus step. A
+        // malformed view transform yields no manifestation rather than an arbitrary one.
         if !point.x.0.is_finite() || !point.y.0.is_finite() {
             return None;
         }
         // A 5-line staff spans four staff spaces above its bottom line.
         const STAFF_SPAN: f32 = 4.0;
-        // Pick the manifested staff the click is nearest, by 2D proximity: horizontal
-        // span first (which region — one staff tiles across regions that can share a y
-        // band), then the vertical band (which staff within it). The bottom staff line
-        // carries the staff's manifestation id as its stroke `stable_id`, which is how
-        // a rendered line maps back to its `(region, staff_instance)`.
         let mut best: Option<(RegionId, &StaffInstance, f32)> = None;
         let mut best_dist = (f32::INFINITY, f32::INFINITY);
         for (region, si) in self.score.staff_instances() {
@@ -335,23 +391,94 @@ impl EditorSession {
                 best = Some((region, si, origin));
             }
         }
-        let (region, si, origin) = best?;
-        // The clef in force at the staff start, resolved by time when the layout was
-        // built (a mid-staff clef change is a later refinement); default treble when
-        // none is declared.
-        let clef = self
-            .start_clefs
-            .get(&(region, si.staff))
-            .copied()
-            .unwrap_or_default();
-        // Each step is half a staff space, +y up; round to the nearest line/space.
-        let step = ((point.y.0 - origin) * 2.0).round() as i32;
-        let (nominal, octave) = staff_step_pitch(step, &clef)?;
-        Some(StaffPitch {
-            staff_instance: si.id,
-            nominal,
-            octave,
-        })
+        best
+    }
+
+    /// The musical position a world `point` snaps to on the beat grid — the
+    /// **horizontal half** of a click-to-insert. Finds the metric region under the
+    /// cursor, inverts the click's `x` to a raw musical position (piecewise-linear
+    /// through the region's rendered event anchors), then snaps it to `grid`. `None`
+    /// if the click is off any staff, the region is non-metric (a proportional or
+    /// aleatoric region has no musical position to land on), `grid` is non-positive,
+    /// or the region has fewer than two rendered metric events to fix a scale from.
+    /// The vertical half (the pitch) is [`Self::staff_pitch_at`].
+    pub fn position_at(&self, point: Point, grid: &GridResolution) -> Option<GridPosition> {
+        if !grid.step.is_positive() {
+            return None;
+        }
+        let (region, _, _) = self.nearest_manifestation(point)?;
+        // Only a metric region has a musical position to land on (a proportional or
+        // aleatoric region is measured in wall-clock / DAG order, not metric onsets).
+        if !self.region_is_metric(region) {
+            return None;
+        }
+        // Two anchors fix the x→time scale; with fewer, the spacing density is
+        // unknown, so there is nothing to extrapolate an empty-space position from.
+        let anchors = self.position_anchors(region);
+        if anchors.len() < 2 {
+            return None;
+        }
+        let raw = invert_x(&anchors, point.x.0);
+        let position = snap_to_grid(raw, &grid.step);
+        Some(GridPosition { region, position })
+    }
+
+    /// Whether `region` uses metric time (positions are musical onsets).
+    fn region_is_metric(&self, region: RegionId) -> bool {
+        self.score
+            .canvas
+            .regions
+            .iter()
+            .find(|r| r.id == region)
+            .is_some_and(|r| matches!(r.time_model, RegionTimeModel::Metric(_)))
+    }
+
+    /// The `(musical onset, leftmost rendered x)` anchors of `region`'s metric events,
+    /// in ascending time order — the samples the horizontal inverse interpolates. A
+    /// glyph maps to its onset through its `Pitch`/`Event` provenance source; the
+    /// leftmost glyph at an onset (the notehead/stem column) fixes that onset's x.
+    fn position_anchors(&self, region: RegionId) -> Vec<(MusicalPosition, f32)> {
+        // Source id (event or one of its pitches) → the event's metric onset.
+        let mut onset: HashMap<TypedObjectId, MusicalPosition> = HashMap::new();
+        let mut pitches: Vec<&IdentifiedPitch> = Vec::new();
+        for (rid, _, voice) in self.score.voices() {
+            if rid != region {
+                continue;
+            }
+            for event_id in &voice.events {
+                let Some(event) = self.score.events.get(*event_id) else {
+                    continue;
+                };
+                let EventPosition::Musical(at) = event.position() else {
+                    continue;
+                };
+                onset.insert(TypedObjectId::Event(*event_id), at.clone());
+                pitches.clear();
+                event.collect_identified_pitches(&mut pitches);
+                for ip in &pitches {
+                    onset.insert(TypedObjectId::Pitch(ip.id), at.clone());
+                }
+            }
+        }
+        // Leftmost glyph x per onset, gathered in time order (BTreeMap key = onset).
+        let mut by_onset: BTreeMap<MusicalPosition, f32> = BTreeMap::new();
+        for glyph in &self.resolved.glyphs {
+            // Only the directly-manifested onset glyph (the notehead/rest) fixes the
+            // onset's x. Skip synthesized glyphs: an accidental shares its note's
+            // `Pitch` source but is placed *left* of the notehead, so taking it as the
+            // anchor would pull the onset's x off the time column.
+            if glyph.provenance.synthesis.is_some() {
+                continue;
+            }
+            if let Some(at) = onset.get(&glyph.provenance.source) {
+                let x = glyph.position.x.0;
+                by_onset
+                    .entry(at.clone())
+                    .and_modify(|cur| *cur = cur.min(x))
+                    .or_insert(x);
+            }
+        }
+        by_onset.into_iter().collect()
     }
 
     /// Resolves a click at a world `point`: selects the **topmost** hit there (what
@@ -1025,6 +1152,51 @@ fn dist_to_band(y: f32, (bottom, top): (f32, f32)) -> f32 {
     }
 }
 
+/// Inverts an `x` coordinate to a raw musical position through `(onset, x)` anchors
+/// in ascending order (`>= 2`, leftmost first) — the horizontal inverse before grid
+/// snapping. Within the anchored span it interpolates the bracketing segment; outside
+/// it, it extrapolates the nearest end segment's slope (the common case — a click in
+/// the empty staff after the last note). `f64` because this is geometry, not exact
+/// musical time; the result is snapped to an exact grid position by [`snap_to_grid`].
+fn invert_x(anchors: &[(MusicalPosition, f32)], x: f32) -> f64 {
+    let n = anchors.len();
+    debug_assert!(n >= 2, "invert_x needs at least two anchors for a scale");
+    let pos = |i: usize| anchors[i].0 .0.to_f64();
+    let ax = |i: usize| anchors[i].1 as f64;
+    // The segment to (inter/extra)polate on: the one bracketing `x`, clamped to the
+    // first/last segment when `x` is left of / right of every anchor.
+    let seg = if x <= anchors[0].1 {
+        0
+    } else if x >= anchors[n - 1].1 {
+        n - 2
+    } else {
+        (0..n - 1)
+            .find(|&i| x >= anchors[i].1 && x <= anchors[i + 1].1)
+            .unwrap_or(n - 2)
+    };
+    let (x0, x1) = (ax(seg), ax(seg + 1));
+    let (p0, p1) = (pos(seg), pos(seg + 1));
+    let span = x1 - x0;
+    if span.abs() < f64::EPSILON {
+        return p0;
+    }
+    p0 + (x as f64 - x0) / span * (p1 - p0)
+}
+
+/// Snaps a raw musical position to the nearest multiple of `step` from the origin,
+/// clamped to be non-negative (no position precedes the region start). The multiple
+/// is taken in `f64`, then the position is rebuilt by exact rational arithmetic
+/// (`step * k`), so the result lands exactly on the grid, not on a rounded float.
+fn snap_to_grid(raw: f64, step: &MusicalDuration) -> MusicalPosition {
+    let step_f = step.0.to_f64();
+    let k = if step_f > 0.0 {
+        (raw / step_f).round().clamp(0.0, i32::MAX as f64) as i32
+    } else {
+        0
+    };
+    MusicalPosition(step.0.mul(&RationalTime::from_int(k)))
+}
+
 /// The diatonic staff index of a CMN pitch — `octave * 7 + nominal`, so two pitches
 /// compare by staff position and a step is `± 1`. `None` for a non-CMN position.
 fn diatonic_index(pitch: &Pitch) -> Option<i64> {
@@ -1437,6 +1609,245 @@ mod tests {
             Some(Clef::treble()),
             "the start clef resolves by time (treble@0), not vector order (bass first)"
         );
+    }
+
+    /// The first region whose events have `time_model`-matching positions, picked by
+    /// the `metric` flag (a `Musical` vs `WallClock` onset).
+    fn a_region_with(session: &EditorSession, metric: bool) -> RegionId {
+        session
+            .score()
+            .voices()
+            .find_map(|(rid, _, v)| {
+                v.events.iter().find_map(|eid| {
+                    let ev = session.score().events.get(*eid)?;
+                    (matches!(ev.position(), EventPosition::Musical(_)) == metric).then_some(rid)
+                })
+            })
+            .expect("a region with the requested time model")
+    }
+
+    /// `region`'s pitched metric events as `(onset, first pitch id)`, in onset order.
+    fn region_pitched_events(
+        session: &EditorSession,
+        region: RegionId,
+    ) -> Vec<(MusicalPosition, PitchId)> {
+        let mut out = Vec::new();
+        let mut buf: Vec<&IdentifiedPitch> = Vec::new();
+        for (rid, _, v) in session.score().voices() {
+            if rid != region {
+                continue;
+            }
+            for eid in &v.events {
+                let Some(ev) = session.score().events.get(*eid) else {
+                    continue;
+                };
+                let EventPosition::Musical(at) = ev.position() else {
+                    continue;
+                };
+                buf.clear();
+                ev.collect_identified_pitches(&mut buf);
+                if let Some(ip) = buf.first() {
+                    out.push((at.clone(), ip.id));
+                }
+            }
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// `region`'s rendered bottom staff line as `(left_x, right_x, origin_y)`.
+    fn region_staff_line(session: &EditorSession, region: RegionId) -> (f32, f32, f32) {
+        let (_, si) = session
+            .score()
+            .staff_instances()
+            .find(|(r, _)| *r == region)
+            .expect("the region has a staff instance");
+        let m = manifestation_layout_id(&TypedObjectId::Staff(si.staff), region);
+        let line = session
+            .resolved()
+            .strokes
+            .iter()
+            .find(|s| s.provenance.stable_id == m)
+            .expect("the staff renders its bottom line");
+        (
+            line.from.x.0.min(line.to.x.0),
+            line.from.x.0.max(line.to.x.0),
+            line.from.y.0,
+        )
+    }
+
+    /// A world point on `region`'s staff: the midpoint of its bottom line, one staff
+    /// space up (inside the staff, so the click resolves to this region).
+    fn point_on_region_staff(session: &EditorSession, region: RegionId) -> Point {
+        let (left, right, origin_y) = region_staff_line(session, region);
+        Point::new((left + right) / 2.0, origin_y + 1.0)
+    }
+
+    #[test]
+    fn position_at_snaps_a_click_to_the_beat_grid() {
+        let session = open_rich(0x5EED);
+        let region = a_region_with(&session, true);
+        let anchors = session.position_anchors(region);
+        assert!(
+            anchors.len() >= 2,
+            "the metric region renders multiple notes"
+        );
+        let (_, right, origin_y) = region_staff_line(&session, region);
+        let y = origin_y + 1.0;
+
+        // Grid = the first inter-onset gap, so every rendered onset is a grid multiple.
+        let step = MusicalDuration(anchors[1].0 .0.sub(&anchors[0].0 .0));
+        assert!(step.is_positive());
+        let grid = GridResolution { step };
+
+        // Clicking each notehead snaps to that note's onset.
+        for (onset, x) in &anchors {
+            let gp = session
+                .position_at(Point::new(*x, y), &grid)
+                .expect("a metric region under the click");
+            assert_eq!(gp.region, region);
+            assert_eq!(&gp.position, onset, "the click snaps to the note's onset");
+        }
+
+        // Past the last note but still over this staff (between the last notehead and
+        // the staff's right edge — the empty space a make-room insert targets), the
+        // inverse extrapolates to a later grid slot, strictly after the last onset.
+        let (last_onset, last_x) = anchors.last().cloned().unwrap();
+        let reach = (last_x + right) / 2.0;
+        assert!(reach > last_x, "the staff extends past the last note");
+        let far = session
+            .position_at(Point::new(reach, y), &grid)
+            .expect("empty space past the notes still resolves");
+        assert!(
+            far.position > last_onset,
+            "a click past the last note lands later on the grid"
+        );
+
+        // Left of the first note clamps to the region origin (no negative musical time).
+        let before = session
+            .position_at(Point::new(anchors[0].1 - 1000.0, y), &grid)
+            .expect("left of the first note still resolves");
+        assert_eq!(before.position, MusicalPosition::origin());
+    }
+
+    #[test]
+    fn position_at_anchors_on_the_notehead_not_the_accidental() {
+        // An accidental shares its note's `Pitch` source but is drawn left of the
+        // notehead. Sharpen a note so it grows an accidental, then verify a click on
+        // its notehead still snaps to the note's onset — the accidental's leftward x
+        // must not become the time anchor.
+        let base = open_rich(0x5EED);
+        let region = a_region_with(&base, true);
+        let events = region_pitched_events(&base, region);
+        assert!(
+            events.len() >= 2,
+            "the metric region renders multiple notes"
+        );
+        // Grid = the first inter-onset gap, so every onset is a grid multiple.
+        let grid = GridResolution {
+            step: MusicalDuration(events[1].0 .0.sub(&events[0].0 .0)),
+        };
+        let (_, _, origin_y) = region_staff_line(&base, region);
+
+        // Use the first note past the origin whose sharpen renders an accidental
+        // (a semitone up is a natural for some spellings, e.g. E→F — skip those).
+        let mut tested = false;
+        for (onset, pid) in events.iter().skip(1) {
+            let mut session = open_rich(0x5EED);
+            select_pitch(&mut session, *pid);
+            if session.transpose_selection(1).is_err() {
+                continue;
+            }
+            let glyph_x = |synthesized: bool| {
+                session
+                    .resolved()
+                    .glyphs
+                    .iter()
+                    .filter(|g| {
+                        g.provenance.source == TypedObjectId::Pitch(*pid)
+                            && g.provenance.synthesis.is_some() == synthesized
+                    })
+                    .map(|g| g.position.x.0)
+                    .next()
+            };
+            let Some(notehead_x) = glyph_x(false) else {
+                continue;
+            };
+            let Some(accidental_x) = glyph_x(true) else {
+                continue; // the sharpen produced a natural; not the case we want
+            };
+            assert!(
+                accidental_x < notehead_x,
+                "the accidental sits left of the notehead"
+            );
+            // The onset's anchor must be the notehead x, not the (leftmost) accidental
+            // — the exact check, independent of how coarse the grid is.
+            let anchor_x = session
+                .position_anchors(region)
+                .into_iter()
+                .find(|(o, _)| o == onset)
+                .map(|(_, x)| x)
+                .expect("the sharped note has a rendered anchor");
+            assert_eq!(
+                anchor_x, notehead_x,
+                "the onset anchors on the notehead, not the accidental left of it"
+            );
+            // And end-to-end: clicking the notehead snaps to the note's onset.
+            let gp = session
+                .position_at(Point::new(notehead_x, origin_y + 1.0), &grid)
+                .expect("a metric region under the click");
+            assert_eq!(gp.position, *onset, "the click snaps to the note's onset");
+            tested = true;
+            break;
+        }
+        assert!(
+            tested,
+            "a sharpened note rendered an accidental to test the anchor against"
+        );
+    }
+
+    #[test]
+    fn position_at_rejects_a_non_metric_region() {
+        let session = open_rich(0x5EED);
+        // The fixture's middle region is proportional (wall-clock events) — it has no
+        // musical onset to land on, so a click over it yields no grid position.
+        let region = a_region_with(&session, false);
+        assert!(!session.region_is_metric(region));
+        let grid = GridResolution {
+            step: MusicalDuration(RationalTime::new(1, 4).unwrap()),
+        };
+        assert_eq!(
+            session.position_at(point_on_region_staff(&session, region), &grid),
+            None
+        );
+    }
+
+    #[test]
+    fn position_at_rejects_a_non_positive_grid() {
+        let session = open_rich(0x5EED);
+        let region = a_region_with(&session, true);
+        let at = point_on_region_staff(&session, region);
+        // A positive grid resolves; a zero/negative one cannot snap, so it is refused.
+        let ok = GridResolution {
+            step: MusicalDuration(RationalTime::new(1, 12).unwrap()),
+        };
+        assert!(session.position_at(at, &ok).is_some());
+        let zero = GridResolution {
+            step: MusicalDuration(RationalTime::zero()),
+        };
+        assert_eq!(session.position_at(at, &zero), None);
+    }
+
+    #[test]
+    fn position_at_rejects_non_finite_clicks() {
+        let session = open_rich(0x5EED);
+        let grid = GridResolution {
+            step: MusicalDuration(RationalTime::new(1, 12).unwrap()),
+        };
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(session.position_at(Point::new(bad, 1.0), &grid), None);
+            assert_eq!(session.position_at(Point::new(5.0, bad), &grid), None);
+        }
     }
 
     #[test]
