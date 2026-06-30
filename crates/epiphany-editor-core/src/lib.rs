@@ -43,12 +43,12 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 use epiphany_core::{
-    AcousticRealization, Clef, CmnNominal, Event, EventDuration, EventId, EventPosition,
-    IdentifiedPitch, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId,
-    PitchSpacePosition, PitchSpelling, PitchedEvent, RationalTime, RegionId, RegionTimeModel,
-    ReplicaId, Score, SpellingDirective, SpellingNominal, SpellingScope, SpellingSourceKind,
-    StaffId, StaffInstance, StaffInstanceId, StemConfiguration, TransactionId, TypedObjectId,
-    VoiceId, WallClockTime,
+    AcousticPitch, AcousticRealization, Clef, CmnNominal, Event, EventDuration, EventId,
+    EventPosition, IdentifiedPitch, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId,
+    PitchSpaceId, PitchSpacePosition, PitchSpelling, PitchedEvent, RationalTime, RegionId,
+    RegionTimeModel, ReplicaId, ScalePosition, Score, SpellingDirective, SpellingNominal,
+    SpellingScope, SpellingSourceKind, StaffId, StaffInstance, StaffInstanceId, StemConfiguration,
+    TransactionId, TuningReference, TypedObjectId, VoiceId, WallClockTime,
 };
 use epiphany_layout_ir::{
     active_clef, manifestation_layout_id, staff_step_pitch, to_constrained, to_logical, to_render,
@@ -57,9 +57,10 @@ use epiphany_layout_ir::{
 };
 use epiphany_ops::{
     AcceptOutcome, AuthorId, CausalContext, DeleteEventOp, DeleteIdentifiedPitchOp,
-    HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp, ModifyIdentifiedPitchOp,
-    OperationEnvelope, OperationKind, OperationPayload, OperationSet, OperationStamp,
-    RespellPitchOp, TransactionCategory, TransactionDescriptor, TransposeOp, TupletCompensation,
+    HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp, ModifyEventOp,
+    ModifyIdentifiedPitchOp, OperationEnvelope, OperationKind, OperationPayload, OperationSet,
+    OperationStamp, RespellPitchOp, TransactionCategory, TransactionDescriptor, TransposeOp,
+    TupletCompensation,
 };
 
 /// The current selection: the score-graph object to act on, plus the stable layout
@@ -170,6 +171,15 @@ pub enum EditorError {
     /// event in the same voice (the reducer would silently no-op it). The edit is
     /// refused; inserting into a packed voice needs an explicit make-room policy.
     InsertSlotOccupied,
+    /// A click-to-insert resolved to no insert target: the point is off any staff, the
+    /// region is non-metric or has too few rendered events to place a position, or the
+    /// staff has no voice / no diatonic clef. Nothing is inserted.
+    NoInsertTarget,
+    /// A click-to-insert's make-room would have to trim or delete a **tuplet member**,
+    /// whose duration is governed by the tuplet's ratio. Compensating a tuplet on a
+    /// pencil overwrite is a later refinement, so the insert is refused rather than
+    /// leaving the tuplet inconsistent.
+    OverlapsTuplet,
 }
 
 impl fmt::Display for EditorError {
@@ -197,6 +207,12 @@ impl fmt::Display for EditorError {
             }
             EditorError::DeclareTransactionNotAllowed => {
                 f.write_str("a transaction cannot be declared through an edit; the session manages transactions")
+            }
+            EditorError::NoInsertTarget => {
+                f.write_str("the click resolved to no insert target (off-staff, non-metric, or no voice)")
+            }
+            EditorError::OverlapsTuplet => {
+                f.write_str("the insert would have to trim or delete a tuplet member")
             }
         }
     }
@@ -983,6 +999,188 @@ impl EditorSession {
         }
     }
 
+    /// Inserts a note at a world `point` on the beat grid — the **click-to-insert**
+    /// ("pencil"): the pitch is the natural pitch at the cursor's height, the position
+    /// is the grid-snapped onset, and the written duration is the grid `step`. The note
+    /// goes into the staff's primary voice and **makes room** under an overwrite policy
+    /// — an existing note/rest the new note fully covers is deleted, one it partially
+    /// overlaps is trimmed, and one it lands inside is split (head trimmed, tail
+    /// re-inserted) — all as one transaction, so it applies atomically or not at all.
+    ///
+    /// Errors with [`EditorError::NoInsertTarget`] when the click resolves to no metric
+    /// staff/position (or the overlap includes a non-note/rest event there is no
+    /// make-room rule for), or [`EditorError::OverlapsTuplet`] when make-room would have
+    /// to disturb a tuplet member (its duration is ratio-governed).
+    pub fn insert_note_at(
+        &mut self,
+        point: Point,
+        grid: &GridResolution,
+    ) -> Result<EditOutcome, EditorError> {
+        let pitch = self
+            .staff_pitch_at(point)
+            .ok_or(EditorError::NoInsertTarget)?;
+        let placed = self
+            .position_at(point, grid)
+            .ok_or(EditorError::NoInsertTarget)?;
+        // The staff instance's region (must match the resolved position's) and its
+        // primary voice — the new note's home.
+        let (region, voice) = self
+            .score
+            .staff_instances()
+            .find(|(_, si)| si.id == pitch.staff_instance)
+            .and_then(|(region, si)| {
+                let voice = si
+                    .voices
+                    .iter()
+                    .find(|v| v.is_primary)
+                    .or_else(|| si.voices.first())?;
+                Some((region, voice.id))
+            })
+            .ok_or(EditorError::NoInsertTarget)?;
+        if region != placed.region {
+            return Err(EditorError::NoInsertTarget);
+        }
+
+        // The new note's half-open span.
+        let start = placed.position;
+        let duration = grid.step.clone();
+        let end = start.clone() + duration.clone();
+
+        // Make-room: classify every note/rest in the voice that overlaps the span.
+        let mut trims: Vec<Event> = Vec::new();
+        let mut deletes: Vec<EventId> = Vec::new();
+        let mut tails: Vec<(Event, MusicalPosition, MusicalDuration)> = Vec::new();
+        for event in self.score.events.iter() {
+            if event.voice() != voice {
+                continue;
+            }
+            let (EventPosition::Musical(ep), EventDuration::Musical(ed)) =
+                (event.position(), event.duration())
+            else {
+                continue;
+            };
+            let event_end = ep.clone() + ed.clone();
+            if !(ep < &end && start < event_end) {
+                continue; // disjoint from [start, end)
+            }
+            if self.event_in_tuplet(event.id()) {
+                return Err(EditorError::OverlapsTuplet);
+            }
+            if !matches!(event, Event::Pitched(_) | Event::Rest(_)) {
+                return Err(EditorError::NoInsertTarget); // no make-room rule for this kind
+            }
+            match (ep < &start, event_end > end) {
+                // Fully covered → delete.
+                (false, false) => deletes.push(event.id()),
+                // The note lands inside it → split: trim to the head, re-insert the tail.
+                (true, true) => {
+                    trims.push(replace_span(event, ep.clone(), span_between(ep, &start)));
+                    tails.push((event.clone(), end.clone(), span_between(&end, &event_end)));
+                }
+                // Overlaps the head (event ends inside the note) → trim the tail off.
+                (true, false) => {
+                    trims.push(replace_span(event, ep.clone(), span_between(ep, &start)));
+                }
+                // Overlaps the tail (event starts inside the note) → trim the head off.
+                (false, true) => {
+                    trims.push(replace_span(
+                        event,
+                        end.clone(),
+                        span_between(&end, &event_end),
+                    ));
+                }
+            }
+        }
+
+        // Mint ids for the split tails and the new note with local counters, advancing
+        // them (checked, like the session minters) so the several mints in this one
+        // intent do not collide — the session high-water mark does not move until commit.
+        let replica = self.replica;
+        let mut next_event = self.mint_event_id().counter();
+        let mut next_pitch = self.mint_pitch_id().counter();
+        let mut mint_event = || {
+            let id = EventId::new(replica, next_event);
+            next_event = next_event
+                .checked_add(1)
+                .expect("event id counter overflowed u64");
+            id
+        };
+        let mut mint_pitch = || {
+            let id = PitchId::new(replica, next_pitch);
+            next_pitch = next_pitch
+                .checked_add(1)
+                .expect("pitch id counter overflowed u64");
+            id
+        };
+
+        // Order: free the span first (trims, deletes), then the re-inserted tails (each
+        // carrying its spellings), then the new note. Members apply in this order.
+        let mut ops: Vec<OperationKind> = Vec::new();
+        for event in trims {
+            ops.push(OperationKind::ModifyEvent(ModifyEventOp { event }));
+        }
+        for event in deletes {
+            ops.push(OperationKind::DeleteEvent(DeleteEventOp {
+                event,
+                tuplet_compensation: TupletCompensation::NotInTuplet,
+            }));
+        }
+        for (original, position, duration) in tails {
+            // The tail is the original event's later portion: clone its whole shape (a
+            // rest's visibility, a note's articulations/dynamics/stem/grace) with fresh
+            // ids, then carry any *authored* spelling onto the fresh pitches (an inferred
+            // one re-derives) — the same atomic copy `insert_note_after_selection` does.
+            let mut pitches: Vec<&IdentifiedPitch> = Vec::new();
+            original.collect_identified_pitches(&mut pitches);
+            let originals: Vec<PitchId> = pitches.iter().map(|ip| ip.id).collect();
+            let fresh: Vec<PitchId> = originals.iter().map(|_| mint_pitch()).collect();
+            let tail = respan_with_fresh_ids(&original, mint_event(), position, duration, &fresh);
+            ops.push(OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: pitch.staff_instance,
+                event: tail,
+            }));
+            for (old, new) in originals.iter().zip(&fresh) {
+                if let Some(spelling) = authored_spelling(&self.score, *old) {
+                    ops.push(OperationKind::RespellPitch(RespellPitchOp {
+                        pitch: *new,
+                        spelling,
+                    }));
+                }
+            }
+        }
+        let new_note = note_event(
+            mint_event(),
+            voice,
+            start,
+            duration,
+            vec![IdentifiedPitch {
+                id: mint_pitch(),
+                pitch: cmn_pitch(pitch.nominal, pitch.octave),
+            }],
+        );
+        ops.push(OperationKind::InsertEvent(InsertEventOp {
+            staff_instance: pitch.staff_instance,
+            event: new_note,
+        }));
+
+        // A bare insert needs no transaction; a make-room insert is atomic.
+        if ops.len() == 1 {
+            self.apply(ops.into_iter().next().expect("one op"))
+        } else {
+            self.apply_transaction("insert note", Some(TransactionCategory::NoteEntry), ops)
+        }
+    }
+
+    /// Whether `event` is a member of any tuplet (its duration is ratio-governed, so
+    /// make-room cannot trim or delete it without tuplet compensation).
+    fn event_in_tuplet(&self, event: EventId) -> bool {
+        self.score
+            .cross_cutting
+            .tuplets
+            .iter()
+            .any(|tuplet| tuplet.members.contains(&event))
+    }
+
     /// The staff instance hosting `voice`, but only when its region is metric — the
     /// time model `InsertEvent` requires (the reducer rejects any other). `None` if
     /// the voice is absent from the voice tree or its region is non-metric.
@@ -1219,6 +1417,121 @@ fn note_above(top: &Pitch) -> Option<Pitch> {
     Some(above)
 }
 
+/// A natural CMN pitch at `nominal`/`octave`, sounding at its written position
+/// ([`AcousticRealization::Implicit`]) — the value a click-to-insert mints for the
+/// height under the cursor (a caller respells if an accidental is wanted).
+fn cmn_pitch(nominal: CmnNominal, octave: i8) -> Pitch {
+    Pitch {
+        scale_position: ScalePosition {
+            space: PitchSpaceId::new("cmn-12"),
+            position: PitchSpacePosition::Cmn {
+                nominal,
+                alteration: 0,
+                octave,
+            },
+        },
+        acoustic: AcousticPitch {
+            tuning: TuningReference::Inherit,
+            realization: AcousticRealization::Implicit,
+        },
+    }
+}
+
+/// The musical duration spanning `from..to` (`to - from`), exact over rational time.
+fn span_between(from: &MusicalPosition, to: &MusicalPosition) -> MusicalDuration {
+    MusicalDuration(to.0.sub(&from.0))
+}
+
+/// `event` re-placed at a new metric `position`/`duration` (a make-room trim), keeping
+/// everything else. Only notes and rests carry a make-room rule; other kinds return
+/// unchanged (the caller refuses such an overlap before reaching here).
+fn replace_span(event: &Event, position: MusicalPosition, duration: MusicalDuration) -> Event {
+    let mut moved = event.clone();
+    match &mut moved {
+        Event::Pitched(pe) => {
+            pe.position = EventPosition::Musical(position);
+            pe.duration = EventDuration::Musical(duration);
+        }
+        Event::Rest(rest) => {
+            rest.position = EventPosition::Musical(position);
+            rest.duration = EventDuration::Musical(duration);
+        }
+        _ => {}
+    }
+    moved
+}
+
+/// `event`'s later portion as a fresh event for a split tail: a clone with a fresh
+/// event `id`, its pitches re-identified by `fresh_pitch_ids` (same values, in order),
+/// re-placed at `position`/`duration`. Cloning keeps everything a continuation should
+/// keep — a rest's `visible`/`vertical_position`, a note's articulations, dynamics,
+/// ornaments, stem, and grace. Authored spellings are carried separately (they key on
+/// pitch id, so the caller adds `RespellPitch`es for the fresh ids).
+fn respan_with_fresh_ids(
+    event: &Event,
+    id: EventId,
+    position: MusicalPosition,
+    duration: MusicalDuration,
+    fresh_pitch_ids: &[PitchId],
+) -> Event {
+    let mut tail = event.clone();
+    let position = EventPosition::Musical(position);
+    let duration = EventDuration::Musical(duration);
+    match &mut tail {
+        Event::Pitched(pe) => {
+            pe.id = id;
+            pe.position = position;
+            pe.duration = duration;
+            for (ip, fresh) in pe.pitches.iter_mut().zip(fresh_pitch_ids) {
+                ip.id = *fresh;
+            }
+        }
+        Event::Rest(rest) => {
+            rest.id = id;
+            rest.position = position;
+            rest.duration = duration;
+        }
+        _ => {}
+    }
+    tail
+}
+
+/// A fresh metric event in `voice`: a [`PitchedEvent`] when `pitches` is non-empty,
+/// else a [`Rest`](epiphany_core::Rest) — used for the new note and any split tail.
+fn note_event(
+    id: EventId,
+    voice: VoiceId,
+    position: MusicalPosition,
+    duration: MusicalDuration,
+    pitches: Vec<IdentifiedPitch>,
+) -> Event {
+    let position = EventPosition::Musical(position);
+    let duration = EventDuration::Musical(duration);
+    if pitches.is_empty() {
+        Event::Rest(epiphany_core::Rest {
+            id,
+            voice,
+            position,
+            duration,
+            vertical_position: None,
+            visible: true,
+        })
+    } else {
+        Event::Pitched(PitchedEvent {
+            id,
+            voice,
+            position,
+            duration,
+            pitches,
+            articulations: Vec::new(),
+            dynamic: None,
+            ornaments: Vec::new(),
+            stem: StemConfiguration,
+            grace: None,
+        })
+    }
+}
+
 /// The pitch ids a session envelope brought into being — so the minter never reuses
 /// one, including ids since deleted (a `DeleteIdentifiedPitch` leaves no trace in the
 /// materialized score, so the log is the authoritative record). Both insert ops mint
@@ -1380,7 +1693,7 @@ fn staff_start_clefs(logical: &LogicalLayoutIR) -> StartClefs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use epiphany_core::generators::valid_score_rich;
+    use epiphany_core::generators::{valid_score, valid_score_rich};
     use epiphany_layout_ir::{
         ConstrainedLayoutIR, HitShape, InvalidationSet, SolveReport, SolveStatus, SolverState,
         SolverTier, SolverVersion, StubSolver,
@@ -1388,6 +1701,13 @@ mod tests {
 
     fn open_rich(seed: u64) -> EditorSession {
         EditorSession::open(valid_score_rich(seed), Box::new(StubSolver)).expect("rich renders")
+    }
+
+    /// A session on the plain fixture, whose single metric region is a tuplet-free run
+    /// of quarter notes — the clean target for the make-room tests (the rich fixture's
+    /// only metric region is a triplet).
+    fn open_plain(seed: u64) -> EditorSession {
+        EditorSession::open(valid_score(seed), Box::new(StubSolver)).expect("plain renders")
     }
 
     /// Clicks the centre of the first notehead (a pitch-backed glyph) and returns the
@@ -1848,6 +2168,373 @@ mod tests {
             assert_eq!(session.position_at(Point::new(bad, 1.0), &grid), None);
             assert_eq!(session.position_at(Point::new(5.0, bad), &grid), None);
         }
+    }
+
+    fn grid(numerator: i64, denominator: i64) -> GridResolution {
+        GridResolution {
+            step: MusicalDuration(RationalTime::new(numerator, denominator).unwrap()),
+        }
+    }
+
+    /// A metric region (its time model is metric) none of whose events are tuplet
+    /// members — the clean target for the make-room tests.
+    fn a_clean_metric_region(session: &EditorSession) -> RegionId {
+        session
+            .score()
+            .canvas
+            .regions
+            .iter()
+            .filter(|r| matches!(r.time_model, RegionTimeModel::Metric(_)))
+            .map(|r| r.id)
+            .find(|rid| {
+                session
+                    .score()
+                    .voices()
+                    .filter(|(r, _, _)| r == rid)
+                    .flat_map(|(_, _, v)| v.events.clone())
+                    .all(|eid| {
+                        !session
+                            .score()
+                            .cross_cutting
+                            .tuplets
+                            .iter()
+                            .any(|t| t.members.contains(&eid))
+                    })
+            })
+            .expect("a tuplet-free metric region")
+    }
+
+    fn primary_voice(session: &EditorSession, region: RegionId) -> VoiceId {
+        let (_, si) = session
+            .score()
+            .staff_instances()
+            .find(|(r, _)| *r == region)
+            .expect("the region has a staff instance");
+        si.voices
+            .iter()
+            .find(|v| v.is_primary)
+            .or_else(|| si.voices.first())
+            .expect("the staff has a voice")
+            .id
+    }
+
+    fn voice_events(
+        session: &EditorSession,
+        voice: VoiceId,
+    ) -> Vec<(EventId, MusicalPosition, MusicalDuration)> {
+        let mut out = Vec::new();
+        for ev in session.score().events.iter() {
+            if ev.voice() != voice {
+                continue;
+            }
+            if let (EventPosition::Musical(p), EventDuration::Musical(d)) =
+                (ev.position(), ev.duration())
+            {
+                out.push((ev.id(), p.clone(), d.clone()));
+            }
+        }
+        out.sort_by(|a, b| a.1.cmp(&b.1));
+        out
+    }
+
+    /// A click whose horizontal inverse snaps to `position` in `region` — derived from
+    /// the region's rendered anchors, so it is the inverse of `position_at` (the stub
+    /// solver spaces a metric region's onsets linearly, so a global fit suffices).
+    fn click_for_position(
+        session: &EditorSession,
+        region: RegionId,
+        position: &MusicalPosition,
+        y: f32,
+    ) -> Point {
+        let anchors = session.position_anchors(region);
+        let (p0, x0) = (anchors[0].0 .0.to_f64(), anchors[0].1 as f64);
+        let last = anchors.last().unwrap();
+        let (p1, x1) = (last.0 .0.to_f64(), last.1 as f64);
+        let t = (position.0.to_f64() - p0) / (p1 - p0);
+        Point::new((x0 + t * (x1 - x0)) as f32, y)
+    }
+
+    #[test]
+    fn insert_note_at_fills_empty_space() {
+        let mut session = open_plain(0x5EED);
+        let region = a_clean_metric_region(&session);
+        let voice = primary_voice(&session, region);
+        let before = voice_events(&session, voice);
+        let (_, _, origin_y) = region_staff_line(&session, region);
+
+        // The onset just after the last note — empty space, so a bare insert.
+        let (_, last_pos, last_dur) = before.last().unwrap().clone();
+        let target = MusicalPosition(last_pos.0.add(&last_dur.0));
+        let at = click_for_position(&session, region, &target, origin_y + 1.0);
+        let outcome = session
+            .insert_note_at(at, &grid(1, 4))
+            .expect("insert into empty space");
+        assert!(outcome.graph_changed);
+
+        let after = voice_events(&session, voice);
+        assert_eq!(
+            after.len(),
+            before.len() + 1,
+            "one note added, none removed"
+        );
+        assert!(
+            after
+                .iter()
+                .any(|(_, p, d)| *p == target && d.0 == RationalTime::new(1, 4).unwrap()),
+            "the new note sits at the snapped onset with the grid duration"
+        );
+    }
+
+    #[test]
+    fn insert_note_at_overwrites_a_covered_note() {
+        let mut session = open_plain(0x5EED);
+        let region = a_clean_metric_region(&session);
+        let voice = primary_voice(&session, region);
+        let before = voice_events(&session, voice);
+        let (_, _, origin_y) = region_staff_line(&session, region);
+
+        // Click the last note with grid = its duration: the new note fully covers it.
+        let (old_id, pos, dur) = before.last().unwrap().clone();
+        let at = click_for_position(&session, region, &pos, origin_y + 1.0);
+        session
+            .insert_note_at(at, &GridResolution { step: dur })
+            .expect("overwrite the covered note");
+
+        let after = voice_events(&session, voice);
+        assert_eq!(after.len(), before.len(), "delete + insert keeps the count");
+        let covering = after
+            .iter()
+            .find(|(_, p, _)| *p == pos)
+            .expect("a note at the covered onset");
+        assert_ne!(covering.0, old_id, "the covered note was replaced");
+        assert!(
+            !after.iter().any(|(id, _, _)| *id == old_id),
+            "the covered note's event is gone"
+        );
+    }
+
+    #[test]
+    fn insert_note_at_splits_an_enclosing_note() {
+        let mut session = open_plain(0x5EED);
+        let region = a_clean_metric_region(&session);
+        let voice = primary_voice(&session, region);
+        let before = voice_events(&session, voice);
+        let (_, _, origin_y) = region_staff_line(&session, region);
+
+        // A grid a quarter of the first note's length, clicked one cell in, lands the
+        // new note strictly inside the note (its second of four cells) — a split.
+        let (first_id, first_pos, first_dur) = before.first().unwrap().clone();
+        let cell = first_dur.0.mul(&RationalTime::new(1, 4).unwrap());
+        let step = GridResolution {
+            step: MusicalDuration(cell.clone()),
+        };
+        let target = MusicalPosition(first_pos.0.add(&cell));
+        let at = click_for_position(&session, region, &target, origin_y + 1.0);
+        session
+            .insert_note_at(at, &step)
+            .expect("split the enclosing note");
+
+        let after = voice_events(&session, voice);
+        assert_eq!(
+            after.len(),
+            before.len() + 2,
+            "the split adds the new note and a tail"
+        );
+        let head = after
+            .iter()
+            .find(|(id, _, _)| *id == first_id)
+            .expect("the original note survives as the head");
+        assert_eq!(head.1, first_pos, "the head keeps the original onset");
+        assert_eq!(head.2 .0, cell, "the head is trimmed to the click");
+        assert!(
+            after
+                .iter()
+                .any(|(id, p, d)| *id != first_id && *p == target && d.0 == cell),
+            "the new note sits at the click"
+        );
+        let tail_start = MusicalPosition(target.0.add(&cell));
+        assert!(
+            after.iter().any(|(_, p, _)| *p == tail_start),
+            "a tail picks up where the new note ends"
+        );
+    }
+
+    #[test]
+    fn insert_note_at_split_tail_keeps_the_event_shape() {
+        // Give the first metric note an articulation, then split it: the tail must keep
+        // the note's shape (it is a clone with fresh ids), not be rebuilt as a default
+        // note that drops articulations/dynamics/stem/grace.
+        let mut score = valid_score(0x5EED);
+        let region = score
+            .canvas
+            .regions
+            .iter()
+            .find(|r| matches!(r.time_model, RegionTimeModel::Metric(_)))
+            .unwrap()
+            .id;
+        let voice = score
+            .voices()
+            .find(|(r, _, _)| *r == region)
+            .map(|(_, _, v)| v.id)
+            .unwrap();
+        let first_id = {
+            let mut evs: Vec<(EventId, MusicalPosition)> = score
+                .events
+                .iter()
+                .filter(|e| e.voice() == voice)
+                .filter_map(|e| match e.position() {
+                    EventPosition::Musical(p) => Some((e.id(), p.clone())),
+                    _ => None,
+                })
+                .collect();
+            evs.sort_by(|a, b| a.1.cmp(&b.1));
+            evs[0].0
+        };
+        if let Some(Event::Pitched(pe)) = score.events.get_mut(first_id) {
+            pe.articulations.push(epiphany_core::ArticulationMark);
+        }
+
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+        let (_, _, origin_y) = region_staff_line(&session, region);
+        let (_, first_pos, first_dur) = voice_events(&session, voice)
+            .into_iter()
+            .find(|(id, _, _)| *id == first_id)
+            .unwrap();
+        let cell = first_dur.0.mul(&RationalTime::new(1, 4).unwrap());
+        let target = MusicalPosition(first_pos.0.add(&cell));
+        let at = click_for_position(&session, region, &target, origin_y + 1.0);
+        session
+            .insert_note_at(
+                at,
+                &GridResolution {
+                    step: MusicalDuration(cell.clone()),
+                },
+            )
+            .expect("split the articulated note");
+
+        let tail_pos = MusicalPosition(target.0.add(&cell));
+        let tail = session
+            .score()
+            .events
+            .iter()
+            .find(|e| {
+                e.voice() == voice
+                    && matches!(e.position(), EventPosition::Musical(p) if *p == tail_pos)
+            })
+            .expect("a tail event at the original note's remainder");
+        match tail {
+            Event::Pitched(pe) => assert!(
+                !pe.articulations.is_empty(),
+                "the split tail kept the note's articulation"
+            ),
+            _ => panic!("the tail of a pitched note is pitched"),
+        }
+        assert_ne!(
+            tail.id(),
+            first_id,
+            "the tail is a fresh event, not the original"
+        );
+    }
+
+    #[test]
+    fn insert_note_at_split_tail_carries_an_authored_spelling() {
+        let mut session = open_plain(0x5EED);
+        let region = a_clean_metric_region(&session);
+        let voice = primary_voice(&session, region);
+        let before = voice_events(&session, voice);
+        let (_, _, origin_y) = region_staff_line(&session, region);
+        let (first_id, first_pos, first_dur) = before.first().unwrap().clone();
+
+        // Pin the first note's pitch with an explicit user spelling — an authored
+        // override the split tail must carry onto its fresh pitch id.
+        let source_pitch = {
+            let ev = session.score().events.get(first_id).unwrap();
+            let mut buf: Vec<&IdentifiedPitch> = Vec::new();
+            ev.collect_identified_pitches(&mut buf);
+            buf.first().expect("the first note has a pitch").id
+        };
+        let pinned = PitchSpelling::cmn(CmnNominal::D, 4);
+        session
+            .apply(OperationKind::RespellPitch(RespellPitchOp {
+                pitch: source_pitch,
+                spelling: pinned.clone(),
+            }))
+            .expect("the respell applies");
+        assert_eq!(
+            authored_spelling(session.score(), source_pitch),
+            Some(pinned.clone())
+        );
+
+        // Split the pinned note (grid a quarter of its length, clicked one cell in).
+        let cell = first_dur.0.mul(&RationalTime::new(1, 4).unwrap());
+        let target = MusicalPosition(first_pos.0.add(&cell));
+        let at = click_for_position(&session, region, &target, origin_y + 1.0);
+        session
+            .insert_note_at(
+                at,
+                &GridResolution {
+                    step: MusicalDuration(cell.clone()),
+                },
+            )
+            .expect("split the pinned note");
+
+        // The tail is a fresh event whose pitch carries the authored spelling.
+        let tail_pos = MusicalPosition(target.0.add(&cell));
+        let tail = session
+            .score()
+            .events
+            .iter()
+            .find(|e| {
+                e.voice() == voice
+                    && matches!(e.position(), EventPosition::Musical(p) if *p == tail_pos)
+            })
+            .expect("a tail event");
+        let mut buf: Vec<&IdentifiedPitch> = Vec::new();
+        tail.collect_identified_pitches(&mut buf);
+        let tail_pitch = buf.first().expect("the tail has a pitch").id;
+        assert_ne!(tail_pitch, source_pitch, "the tail's pitch id is fresh");
+        assert_eq!(
+            authored_spelling(session.score(), tail_pitch),
+            Some(pinned),
+            "the authored spelling carried onto the tail"
+        );
+    }
+
+    #[test]
+    fn insert_note_at_refuses_to_disturb_a_tuplet() {
+        let mut session = open_rich(0x5EED);
+        // The rich fixture's first metric region is an eighth-note triplet; covering a
+        // member would need tuplet compensation, so the insert is refused.
+        let region = a_region_with(&session, true);
+        assert!(
+            session
+                .score()
+                .cross_cutting
+                .tuplets
+                .iter()
+                .any(|t| !t.members.is_empty()),
+            "the fixture region is a tuplet"
+        );
+        let voice = primary_voice(&session, region);
+        let (_, pos, dur) = voice_events(&session, voice).into_iter().next().unwrap();
+        let (_, _, origin_y) = region_staff_line(&session, region);
+        let at = click_for_position(&session, region, &pos, origin_y + 1.0);
+        assert_eq!(
+            session.insert_note_at(at, &GridResolution { step: dur }),
+            Err(EditorError::OverlapsTuplet)
+        );
+    }
+
+    #[test]
+    fn insert_note_at_on_a_non_metric_region_is_no_target() {
+        let mut session = open_rich(0x5EED);
+        // The proportional region has no musical onset to insert at.
+        let region = a_region_with(&session, false);
+        let at = point_on_region_staff(&session, region);
+        assert_eq!(
+            session.insert_note_at(at, &grid(1, 4)),
+            Err(EditorError::NoInsertTarget)
+        );
     }
 
     #[test]
