@@ -55,7 +55,8 @@ use epiphany_core::{
     PitchSpaceId, PitchSpacePosition, PitchSpelling, PitchedEvent, RationalTime, RegionId,
     RegionTimeModel, ReplicaId, ScalePosition, Score, SpellingDirective, SpellingNominal,
     SpellingScope, SpellingSourceKind, StaffId, StaffInstance, StaffInstanceId, StemConfiguration,
-    TransactionId, TuningReference, TypedObjectId, VoiceId, WallClockTime,
+    TimeSignature, TimeSignatureDisplay, TransactionId, TuningReference, TypedObjectId, VoiceId,
+    WallClockTime,
 };
 use epiphany_layout_ir::{
     active_clef, manifestation_layout_id, staff_step_pitch, to_constrained, to_logical, to_render,
@@ -490,6 +491,43 @@ impl EditorSession {
         let raw = invert_x(&anchors, point.x.0);
         let position = snap_to_grid(raw, &grid.step);
         Some(GridPosition { region, position })
+    }
+
+    /// A sensible [`GridResolution`] for a click at `point`, derived from the meter of
+    /// the region under it (its governing time signature's beat — `1/denominator`),
+    /// defaulting to a quarter when there is no determinable meter. A GUI uses this so
+    /// the pencil snaps to the score's beat instead of a fixed value. `None` only when
+    /// the point resolves to no staff (a non-finite point, or nothing rendered).
+    pub fn default_grid_at(&self, point: Point) -> Option<GridResolution> {
+        let (region, _, _) = self.nearest_manifestation(point)?;
+        Some(self.region_default_grid(region))
+    }
+
+    /// The meter-derived default [`GridResolution`] for `region`: the beat (`1/
+    /// denominator`) of its governing time signature — the first one a region measure
+    /// references, else the score's first — and a quarter note when none is determinable
+    /// (or the meter has no single denominator). Mirrors the prepass's single-governing-
+    /// meter-per-region resolution (`resolve_measure_units`).
+    fn region_default_grid(&self, region: RegionId) -> GridResolution {
+        let governing = self
+            .score
+            .canvas
+            .regions
+            .iter()
+            .find(|r| r.id == region)
+            .and_then(|graph_region| {
+                graph_region
+                    .staff_instances()
+                    .iter()
+                    .flat_map(|si| si.measures.iter())
+                    .filter_map(|measure| measure.time_signature.as_ref())
+                    .find_map(|tsid| self.score.time_signatures.iter().find(|ts| &ts.id == tsid))
+                    .or_else(|| self.score.time_signatures.first())
+            });
+        match governing.and_then(time_signature_beat) {
+            Some(step) => GridResolution { step },
+            None => GridResolution::quarter(),
+        }
     }
 
     /// Whether `region` uses metric time (positions are musical onsets).
@@ -1740,6 +1778,21 @@ fn span_between(from: &MusicalPosition, to: &MusicalPosition) -> MusicalDuration
     MusicalDuration(to.0.sub(&from.0))
 }
 
+/// A time signature's beat unit — the note value it counts in, `1/denominator` (4/4 → a
+/// quarter, 6/8 → an eighth). `None` for a meter with no single denominator
+/// (mixed-denominator, none, or a symbolic display), which the caller defaults.
+fn time_signature_beat(ts: &TimeSignature) -> Option<MusicalDuration> {
+    let denominator: i64 = match &ts.display {
+        TimeSignatureDisplay::Standard { denominator, .. }
+        | TimeSignatureDisplay::Compound { denominator, .. } => denominator.get() as i64,
+        TimeSignatureDisplay::Irrational { denominator, .. } => denominator.get() as i64,
+        TimeSignatureDisplay::MixedDenominators { .. }
+        | TimeSignatureDisplay::None
+        | TimeSignatureDisplay::Symbolic(_) => return None,
+    };
+    RationalTime::new(1, denominator).map(MusicalDuration)
+}
+
 /// The events make-room must change to clear a span: whole-event deletes, in-place
 /// trims (a `ModifyEvent` value), and splits (the original event plus the tail's onset
 /// and duration, for re-inserting the tail with fresh ids). Built by
@@ -2521,6 +2574,90 @@ mod tests {
             assert_eq!(session.position_at(Point::new(bad, 1.0), &grid), None);
             assert_eq!(session.position_at(Point::new(5.0, bad), &grid), None);
         }
+    }
+
+    /// A time signature with `display`, a measure of `measure`, and one beat group
+    /// spanning it (so the beat-sum invariant holds).
+    fn time_sig(
+        display: epiphany_core::TimeSignatureDisplay,
+        measure: MusicalDuration,
+    ) -> TimeSignature {
+        use epiphany_core::{BeatGroup, TimeSignatureId};
+        TimeSignature::new(
+            TimeSignatureId::new(ReplicaId(9), 0),
+            display,
+            measure.clone(),
+            vec![BeatGroup {
+                duration: measure,
+                subdivision: None,
+                accent: 0,
+            }],
+        )
+        .expect("a single-beat-group time signature is well-formed")
+    }
+
+    #[test]
+    fn time_signature_beat_is_one_over_the_denominator() {
+        use epiphany_core::{PowerOfTwo, TimeSignatureDisplay};
+        let whole = MusicalDuration(RationalTime::new(1, 1).unwrap());
+        // 4/4 → quarter; 2/2 → half.
+        let four_four = time_sig(
+            TimeSignatureDisplay::Standard {
+                numerator: 4,
+                denominator: PowerOfTwo::new(4).unwrap(),
+            },
+            whole.clone(),
+        );
+        assert_eq!(time_signature_beat(&four_four), Some(dur(1, 4)));
+        let cut = time_sig(
+            TimeSignatureDisplay::Standard {
+                numerator: 2,
+                denominator: PowerOfTwo::new(2).unwrap(),
+            },
+            whole.clone(),
+        );
+        assert_eq!(time_signature_beat(&cut), Some(dur(1, 2)));
+        // A meter with no single denominator has no derivable beat.
+        let mixed = time_sig(
+            TimeSignatureDisplay::MixedDenominators { components: vec![] },
+            whole,
+        );
+        assert_eq!(time_signature_beat(&mixed), None);
+    }
+
+    #[test]
+    fn default_grid_at_uses_the_governing_meter() {
+        use epiphany_core::{PowerOfTwo, TimeSignatureDisplay};
+        // Declare a 6/8 (its beat is an eighth). With no measure referencing one, the
+        // score's first time signature governs — the same fallback `resolve_measure_units`
+        // uses.
+        let mut score = valid_score(0x5EED);
+        score.time_signatures.push(time_sig(
+            TimeSignatureDisplay::Standard {
+                numerator: 6,
+                denominator: PowerOfTwo::new(8).unwrap(),
+            },
+            dur(6, 8),
+        ));
+        let session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+        let region = a_clean_metric_region(&session);
+        let at = point_on_region_staff(&session, region);
+        assert_eq!(
+            session.default_grid_at(at),
+            Some(GridResolution { step: dur(1, 8) }),
+            "a 6/8 meter gives an eighth-note grid"
+        );
+    }
+
+    #[test]
+    fn default_grid_at_defaults_to_a_quarter_without_a_meter() {
+        // The plain fixture declares no time signatures, so the default is a quarter.
+        let session = open_plain(0x5EED);
+        let region = a_clean_metric_region(&session);
+        let at = point_on_region_staff(&session, region);
+        assert_eq!(session.default_grid_at(at), Some(GridResolution::quarter()));
+        // A non-finite click resolves to no staff, so there is no grid.
+        assert_eq!(session.default_grid_at(Point::new(f32::NAN, 0.0)), None);
     }
 
     fn grid(numerator: i64, denominator: i64) -> GridResolution {

@@ -12,7 +12,8 @@
 //! ([`EditorSession::undo`] / [`EditorSession::redo`]; Ctrl/Cmd+Z undo,
 //! Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redo), a
 //! **pencil mode** that turns a click into a click-to-insert
-//! ([`EditorSession::insert_note_at`]) with make-room overwrite on a quarter-note grid,
+//! ([`EditorSession::insert_note_at`]) with make-room overwrite, snapping to the
+//! meter's beat grid ([`EditorSession::default_grid_at`]),
 //! and a **duration palette** ([`EditorSession::set_selection_duration`]). The debug
 //! panel shows the selection and the last applied op. The GUI is the thing meant to
 //! surface the next real core gaps.
@@ -412,22 +413,26 @@ impl EditorApp {
         if response.clicked() {
             if let Some(pos) = response.interact_pointer_pos() {
                 let world = ViewMap::new(self.view_box, rect).screen_to_world(pos);
+                // The grid the pencil snaps to: the meter's beat under the cursor,
+                // defaulting to a quarter off-staff.
+                let grid = self
+                    .session
+                    .default_grid_at(world)
+                    .unwrap_or_else(GridResolution::quarter);
                 if self.pencil {
-                    // Insert a note at the clicked pitch/beat on a quarter-note grid,
-                    // making room over whatever it overlaps. This runs *after* this
-                    // frame's rerender slot, so request a repaint to draw the edit, and
-                    // return before the selection overlay below paints the new hit map
-                    // over the old (not-yet-rerendered) texture.
-                    self.run("insert note", |s| {
-                        s.insert_note_at(world, &GridResolution::quarter())
-                    });
+                    // Insert a note at the clicked pitch/beat, making room over whatever
+                    // it overlaps. This runs *after* this frame's rerender slot, so
+                    // request a repaint to draw the edit, and return before the selection
+                    // overlay below paints the new hit map over the old (not-yet-
+                    // rerendered) texture.
+                    self.run("insert note", |s| s.insert_note_at(world, &grid));
                     ui.ctx().request_repaint();
                     return;
                 } else {
                     // Select the topmost hit; on empty staff, report what a pencil
                     // click *would* insert (the pitch and grid-snapped beat).
                     let pitch = self.session.staff_pitch_at(world);
-                    let position = self.session.position_at(world, &GridResolution::quarter());
+                    let position = self.session.position_at(world, &grid);
                     self.status = match self.session.click(world) {
                         Some(_) => "selected".to_string(),
                         None => match (pitch, position) {
