@@ -7,11 +7,13 @@
 //! `resvg` into an `egui` texture, resolves clicks back to world coordinates to
 //! select, and drives the note-editing intents from a toolbar and keyboard.
 //!
-//! Intentionally narrow (per the GUI vertical-slice plan): no duration editing and no
-//! undo UI — the debug panel just shows the selection and the last applied op, enough
-//! to confirm the op log is usable. A **pencil mode** turns a click into a
-//! click-to-insert ([`EditorSession::insert_note_at`]) with make-room overwrite, on a
-//! quarter-note grid. The GUI is the thing meant to surface the next real core gaps.
+//! Intentionally narrow (per the GUI vertical-slice plan): no undo UI — the debug
+//! panel just shows the selection and the last applied op, enough to confirm the op log
+//! is usable. A **pencil mode** turns a click into a click-to-insert
+//! ([`EditorSession::insert_note_at`]) with make-room overwrite on a quarter-note grid,
+//! and a **duration palette** resizes the selection
+//! ([`EditorSession::set_selection_duration`]). The GUI is the thing meant to surface
+//! the next real core gaps.
 //!
 //! It is a demo binary; there is no headless way to assert its rendering here, so the
 //! one piece of nontrivial logic — the screen↔world coordinate map a click depends on
@@ -19,6 +21,7 @@
 
 use eframe::egui;
 
+use epiphany_core::NoteValue;
 use epiphany_editor_core::{EditOutcome, EditorError, EditorSession, GridResolution};
 use epiphany_engrave::Engraver;
 use epiphany_layout_ir::{BoundingBox, HitShape, Point};
@@ -245,6 +248,23 @@ impl EditorApp {
             }
             if ui.button("Insert after").clicked() {
                 self.run("insert after", |s| s.insert_note_after_selection());
+            }
+            ui.separator();
+            // Duration palette: set the selected note/rest's written value (make-room
+            // overwrite when lengthening).
+            ui.label("Dur:");
+            for (label, value) in [
+                ("1", NoteValue::Whole),
+                ("1/2", NoteValue::Half),
+                ("1/4", NoteValue::Quarter),
+                ("1/8", NoteValue::Eighth),
+                ("1/16", NoteValue::Sixteenth),
+            ] {
+                if ui.button(label).clicked() {
+                    self.run(&format!("duration {label}"), |s| {
+                        s.set_selection_duration(value.whole_note_fraction())
+                    });
+                }
             }
             ui.separator();
             ui.toggle_value(&mut self.pencil, "✏ Pencil (insert)");

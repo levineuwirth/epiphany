@@ -4,7 +4,7 @@ version = "0.0.0"
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "A thin native (egui) GUI shell over epiphany-editor-core: renders the score with epiphany-render-svg (rasterized by resvg), click to select, and a toolbar/keys for the note-editing intents. A vertical slice proving the editor seam — no duration editing, empty-space insert, or undo UI yet."
+description = "A thin native (egui) GUI shell over epiphany-editor-core: renders the score with epiphany-render-svg (rasterized by resvg), click to select, a pencil mode that clicks notes onto the staff, and a toolbar/keys for the note-editing intents and a duration palette. A vertical slice proving the editor seam — no undo UI yet."
 
 # A demo binary, not a library other crates build on, so it carries the heavy GUI
 # dependency tree (eframe/winit/wgpu, resvg/usvg/tiny-skia) the rest of the
@@ -14,6 +14,8 @@ description = "A thin native (egui) GUI shell over epiphany-editor-core: renders
 [dependencies]
 # The headless editor this GUI drives.
 epiphany-editor-core.workspace = true
+# Musical-duration / note-value types, for the duration palette.
+epiphany-core.workspace = true
 # The real constraint solver (so the GUI shows a genuinely engraved score).
 epiphany-engrave.workspace = true
 # SVG rendering of the resolved layout, and the layout/hit-test geometry types.
