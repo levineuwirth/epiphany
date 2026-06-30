@@ -42,6 +42,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
+use epiphany_core::prepass::{derive_annotations, DerivedAnnotations, PrePassProfile};
 use epiphany_core::{
     AcousticPitch, AcousticRealization, Clef, CmnNominal, Event, EventDuration, EventId,
     EventPosition, IdentifiedPitch, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId,
@@ -159,14 +160,6 @@ pub enum EditorError {
         /// The kind of object the intent expected.
         expected: &'static str,
     },
-    /// A pitch involved in the edit carries an authored spelling override (user-chosen,
-    /// imported, or propagated) that outranks the inferred spelling, and the intent
-    /// cannot carry it. Raised by a chord add whose target event has an override — the
-    /// rendered staff order can't be read off the raw pitch positions, so the "above
-    /// the top" pick could be wrong; resolved-spelling-aware stacking is a follow-up.
-    /// The staff-step move and the insert do *not* raise this — they rebase / carry the
-    /// override atomically instead.
-    PitchSpellingOverridden,
     /// An insert-after would land on a musical position already occupied by another
     /// event in the same voice (the reducer would silently no-op it). The edit is
     /// refused; inserting into a packed voice needs an explicit make-room policy.
@@ -196,9 +189,6 @@ impl fmt::Display for EditorError {
             EditorError::WrongSelection { expected } => {
                 write!(f, "the selection is not a {expected}")
             }
-            EditorError::PitchSpellingOverridden => f.write_str(
-                "the selected pitch has an authored spelling override that pins its staff position",
-            ),
             EditorError::InsertSlotOccupied => {
                 f.write_str("the position after the selection is already occupied in its voice")
             }
@@ -826,17 +816,17 @@ impl EditorSession {
     }
 
     /// Adds a note to the selected pitch's event, forming (or extending) a chord: a
-    /// new identified pitch one diatonic staff step above the event's highest note,
-    /// with a fresh id ([`OperationKind::InsertIdentifiedPitch`]). The selection is
-    /// unchanged — the anchored notehead is still there. Errors if nothing — or a
-    /// non-pitch — is selected, the event has no CMN note to step above, or any note
-    /// in the event carries an authored spelling override (which would make the
-    /// rendered staff order differ from the raw pitch order — see
-    /// [`EditorError::PitchSpellingOverridden`]).
+    /// new identified pitch one diatonic staff step above the event's **rendered**-
+    /// highest note, with a fresh id ([`OperationKind::InsertIdentifiedPitch`]). The
+    /// selection is unchanged — the anchored notehead is still there. Errors if
+    /// nothing — or a non-pitch — is selected, or the event has no CMN note to step
+    /// above.
     ///
-    /// The default is deliberately minimal (a real client picks the inserted pitch);
-    /// stepping above the top note means repeated calls build a rising chord rather
-    /// than stacking duplicates on one staff position.
+    /// The "highest note" is ranked by each note's **resolved** spelling (the staff
+    /// position the layout draws it at), so an authored respelling — or an inferred
+    /// one — is honored rather than refused. The default is deliberately minimal (a
+    /// real client picks the inserted pitch); stepping above the top note means
+    /// repeated calls build a rising chord rather than stacking on one position.
     pub fn add_note_to_selection(&mut self) -> Result<EditOutcome, EditorError> {
         let selection = self.selection.ok_or(EditorError::NoSelection)?;
         let TypedObjectId::Pitch(anchor) = selection.source else {
@@ -845,21 +835,27 @@ impl EditorSession {
         let (event, _) = self
             .event_and_pitch_of(anchor)
             .ok_or(EditorError::WrongSelection { expected: "pitch" })?;
-        // "Above the top" ranks raw pitch positions; an authored override makes the
-        // rendered staff order diverge from that, so the pick could be wrong. Refuse
-        // (as the move intent does) rather than guess — resolved-spelling-aware
-        // stacking is a follow-up.
-        if self.event_has_authored_override(event) {
-            return Err(EditorError::PitchSpellingOverridden);
-        }
-        let top = self
-            .highest_pitch_in_event(event)
-            .ok_or(EditorError::WrongSelection {
-                expected: "CMN pitch",
-            })?;
-        let value = note_above(&top).ok_or(EditorError::WrongSelection {
+        // Rank the chord's notes by their *resolved* staff position — the spelling the
+        // layout renders, which an authored override or an inferred respelling can move
+        // off the raw pitch position — and step one staff step above the rendered-
+        // highest note. (Resolved-spelling-aware, so an authored override no longer
+        // refuses.) The new note's raw position is the rendered top's `+ 1`: stepping
+        // the top's pitch by `rendered_top + 1 - raw_top` carries its alteration and
+        // lands its raw position there; the acoustic realization resets so the new note
+        // sounds at its written height, not the top's frequency.
+        let (top, rendered_top) =
+            self.rendered_top_of_event(event)
+                .ok_or(EditorError::WrongSelection {
+                    expected: "CMN pitch",
+                })?;
+        let raw_top = diatonic_index(&top).ok_or(EditorError::WrongSelection {
             expected: "CMN pitch",
         })?;
+        let value = note_stepped(&top, (rendered_top + 1 - raw_top) as i32).ok_or(
+            EditorError::WrongSelection {
+                expected: "CMN pitch",
+            },
+        )?;
         let pitch = IdentifiedPitch {
             id: self.mint_pitch_id(),
             pitch: value,
@@ -869,30 +865,24 @@ impl EditorSession {
         ))
     }
 
-    /// The highest CMN note (by diatonic staff index) embedded in `event`, if any —
-    /// the note a chord-add stacks above.
-    fn highest_pitch_in_event(&self, event: EventId) -> Option<Pitch> {
+    /// The note in `event` that renders highest, and that rendered staff index — ranked
+    /// by each note's **resolved** spelling (from [`derive_annotations`], the same
+    /// spellings the layout places noteheads from), so an authored override or an
+    /// inferred respelling is accounted for. Falls back to a note's raw pitch position
+    /// when it has no resolved CMN spelling. `None` if the event has no CMN note.
+    fn rendered_top_of_event(&self, event: EventId) -> Option<(Pitch, i64)> {
+        let annotations = derive_annotations(&self.score, &PrePassProfile::default());
         let mut buf: Vec<&IdentifiedPitch> = Vec::new();
         self.score
             .events
             .get(event)?
             .collect_identified_pitches(&mut buf);
         buf.iter()
-            .filter_map(|ip| diatonic_index(&ip.pitch).map(|d| (d, &ip.pitch)))
+            .filter_map(|ip| {
+                resolved_staff_index(&annotations, ip.id, &ip.pitch).map(|d| (d, &ip.pitch))
+            })
             .max_by_key(|(d, _)| *d)
-            .map(|(_, p)| p.clone())
-    }
-
-    /// Whether any note in `event` carries an authored spelling override (so the
-    /// rendered staff order cannot be read off the raw pitch positions).
-    fn event_has_authored_override(&self, event: EventId) -> bool {
-        let mut buf: Vec<&IdentifiedPitch> = Vec::new();
-        let Some(ev) = self.score.events.get(event) else {
-            return false;
-        };
-        ev.collect_identified_pitches(&mut buf);
-        buf.iter()
-            .any(|ip| has_authored_spelling_override(&self.score, ip.id))
+            .map(|(d, p)| (p.clone(), d))
     }
 
     /// Inserts a new note in the selected pitch's voice immediately after its event:
@@ -1406,15 +1396,40 @@ fn diatonic_index(pitch: &Pitch) -> Option<i64> {
     }
 }
 
-/// The pitch one staff step above `top`, for a *newly inserted* note: like
-/// [`staff_step`] but with the acoustic realization reset to
-/// [`AcousticRealization::Implicit`]. A fresh note must sound at its written
-/// position; cloning an explicit absolute-Hz or cents-offset realization from the
-/// note it stacks above would make it look higher but sound the same frequency.
-fn note_above(top: &Pitch) -> Option<Pitch> {
-    let mut above = staff_step(top, 1)?;
-    above.acoustic.realization = AcousticRealization::Implicit;
-    Some(above)
+/// The diatonic staff index of a resolved CMN spelling — `octave * 7 + nominal`, on
+/// the same scale as [`diatonic_index`], so a note's resolved (rendered) staff position
+/// and a raw pitch position are directly comparable. `None` for a non-CMN nominal.
+fn spelling_diatonic(spelling: &PitchSpelling) -> Option<i64> {
+    match spelling.nominal {
+        SpellingNominal::Cmn(nominal) => Some(spelling.octave as i64 * 7 + nominal as i64),
+        _ => None,
+    }
+}
+
+/// The **rendered** staff index of `pitch` (id `id`): from its resolved spelling when
+/// that is CMN — so an authored override or an inferred respelling is reflected —
+/// otherwise its raw pitch position.
+fn resolved_staff_index(
+    annotations: &DerivedAnnotations,
+    id: PitchId,
+    pitch: &Pitch,
+) -> Option<i64> {
+    annotations
+        .spellings
+        .get(&id)
+        .and_then(|resolved| spelling_diatonic(&resolved.spelling))
+        .or_else(|| diatonic_index(pitch))
+}
+
+/// `top` moved `steps` diatonic staff steps (preserving its alteration), with the
+/// acoustic realization reset to [`AcousticRealization::Implicit`]. A fresh note must
+/// sound at its written position; cloning an explicit absolute-Hz or cents-offset
+/// realization from the note it stacks above would make it look higher but sound the
+/// same frequency. `None` for a non-CMN position.
+fn note_stepped(top: &Pitch, steps: i32) -> Option<Pitch> {
+    let mut moved = staff_step(top, steps)?;
+    moved.acoustic.realization = AcousticRealization::Implicit;
+    Some(moved)
 }
 
 /// A natural CMN pitch at `nominal`/`octave`, sounding at its written position
@@ -1621,11 +1636,6 @@ fn authored_spelling(score: &Score, pitch: PitchId) -> Option<PitchSpelling> {
             SpellingDirective::Explicit(spelling) => Some(spelling.clone()),
             _ => None,
         })
-}
-
-/// Whether `pitch` has an authored spelling override that pins its rendered position.
-fn has_authored_spelling_override(score: &Score, pitch: PitchId) -> bool {
-    authored_spelling(score, pitch).is_some()
 }
 
 /// The spelling one or more diatonic staff steps from `spelling`: its CMN nominal
@@ -2832,7 +2842,7 @@ mod tests {
         let mut score = valid_score_rich(0x5EED);
         let pid = *score.live_pitch_ids().iter().next().expect("a live pitch");
         // Baseline: an unspelled live pitch is not pinned.
-        assert!(!has_authored_spelling_override(&score, pid));
+        assert!(authored_spelling(&score, pid).is_none());
 
         score.spelling_attachments.push(SpellingAttachment {
             scope: SpellingScope::Pitch(pid),
@@ -2842,7 +2852,7 @@ mod tests {
             layer: None,
         });
         assert!(
-            has_authored_spelling_override(&score, pid),
+            authored_spelling(&score, pid).is_some(),
             "a propagated explicit override outranks Inferred and pins the notehead"
         );
     }
@@ -2884,15 +2894,15 @@ mod tests {
             panic!("a notehead selects a pitch");
         };
         let (event, _) = session.event_and_pitch_of(anchor).expect("anchor is live");
-        let top = session.highest_pitch_in_event(event).expect("a CMN note");
+        let (_, rendered_top) = session.rendered_top_of_event(event).expect("a CMN note");
         let before = session.score().live_pitch_ids();
 
         let outcome = session.add_note_to_selection().expect("the add applies");
         assert!(outcome.graph_changed, "a pitch was inserted");
         assert!(outcome.selection_preserved, "the anchor notehead survives");
 
-        // Exactly one new pitch, minted under the session replica, a staff step above
-        // the prior top note.
+        // Exactly one new pitch, minted under the session replica, one staff step above
+        // the rendered-top note's resolved position.
         let after = session.score().live_pitch_ids();
         let new_ids: Vec<_> = after.difference(&before).copied().collect();
         assert_eq!(new_ids.len(), 1, "exactly one new pitch");
@@ -2903,9 +2913,9 @@ mod tests {
             "minted under the session replica"
         );
         assert_eq!(
-            session.current_pitch(new_id).unwrap(),
-            note_above(&top).unwrap(),
-            "the new note sits a staff step above the event's top note"
+            diatonic_index(&session.current_pitch(new_id).unwrap()),
+            Some(rendered_top + 1),
+            "the new note's staff position is one step above the rendered top"
         );
         assert_ne!(&before_render, session.render(), "the chord note shows");
     }
@@ -3002,7 +3012,7 @@ mod tests {
     }
 
     #[test]
-    fn add_refuses_when_a_note_in_the_event_has_an_authored_spelling_override() {
+    fn add_to_a_respelled_note_stacks_above_the_rendered_position() {
         use epiphany_core::PitchSpelling;
         use epiphany_ops::RespellPitchOp;
 
@@ -3011,17 +3021,36 @@ mod tests {
         let TypedObjectId::Pitch(anchor) = selection.source else {
             panic!("a notehead selects a pitch");
         };
-        // Pin the anchor's spelling; "above the top" can no longer be read off raw
-        // pitch positions, so the add is refused (as the move intent is).
+        let raw = diatonic_index(&session.current_pitch(anchor).unwrap()).expect("a CMN pitch");
+        // Pin the note three staff steps above its raw pitch position, so the rendered
+        // staff order diverges from the raw pitch order.
+        let rendered = raw + 3;
         session
             .apply(OperationKind::RespellPitch(RespellPitchOp {
                 pitch: anchor,
-                spelling: PitchSpelling::cmn(CmnNominal::C, 4),
+                spelling: PitchSpelling::cmn(
+                    nominal_from_index(rendered.rem_euclid(7)),
+                    rendered.div_euclid(7) as i8,
+                ),
             }))
             .expect("the respell applies");
+
+        // The add no longer refuses; it stacks one step above the *rendered* position
+        // (raw + 4), not above the raw pitch position (raw ranking would give raw + 1).
+        let before = session.score().live_pitch_ids();
+        session
+            .add_note_to_selection()
+            .expect("the override-aware add applies");
+        let new_id = *session
+            .score()
+            .live_pitch_ids()
+            .difference(&before)
+            .next()
+            .expect("a new pitch");
         assert_eq!(
-            session.add_note_to_selection(),
-            Err(EditorError::PitchSpellingOverridden)
+            diatonic_index(&session.current_pitch(new_id).unwrap()),
+            Some(rendered + 1),
+            "stacked above the rendered (respelled) position, not the raw one"
         );
     }
 
@@ -3039,7 +3068,7 @@ mod tests {
         let mut top = session.current_pitch(anchor).expect("anchor is live");
         top.acoustic.realization = AcousticRealization::absolute_hz(440.0).unwrap();
 
-        let inserted = note_above(&top).expect("a CMN note steps");
+        let inserted = note_stepped(&top, 1).expect("a CMN note steps");
         assert_eq!(
             inserted.acoustic.realization,
             AcousticRealization::Implicit,
@@ -3275,7 +3304,7 @@ mod tests {
         assert!(outcome.selection_preserved, "the edited pitch survives");
         // Both members materialized: the value moved and an authored override landed.
         assert_eq!(session.current_pitch(pitch).unwrap(), moved);
-        assert!(has_authored_spelling_override(session.score(), pitch));
+        assert!(authored_spelling(session.score(), pitch).is_some());
 
         // The log holds the descriptor plus two members under one transaction id.
         let log = session.applied_operations();
