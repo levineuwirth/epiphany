@@ -7,13 +7,15 @@
 //! `resvg` into an `egui` texture, resolves clicks back to world coordinates to
 //! select, and drives the note-editing intents from a toolbar and keyboard.
 //!
-//! Intentionally narrow (per the GUI vertical-slice plan): no undo UI — the debug
-//! panel just shows the selection and the last applied op, enough to confirm the op log
-//! is usable. A **pencil mode** turns a click into a click-to-insert
+//! A thin but real editing surface over the headless session: click to select, a
+//! toolbar and keys for the note-editing intents, **undo/redo**
+//! ([`EditorSession::undo`] / [`EditorSession::redo`]; Ctrl/Cmd+Z undo,
+//! Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redo), a
+//! **pencil mode** that turns a click into a click-to-insert
 //! ([`EditorSession::insert_note_at`]) with make-room overwrite on a quarter-note grid,
-//! and a **duration palette** resizes the selection
-//! ([`EditorSession::set_selection_duration`]). The GUI is the thing meant to surface
-//! the next real core gaps.
+//! and a **duration palette** ([`EditorSession::set_selection_duration`]). The debug
+//! panel shows the selection and the last applied op. The GUI is the thing meant to
+//! surface the next real core gaps.
 //!
 //! It is a demo binary; there is no headless way to assert its rendering here, so the
 //! one piece of nontrivial logic — the screen↔world coordinate map a click depends on
@@ -203,6 +205,20 @@ impl EditorApp {
         self.needs_render = true;
     }
 
+    /// Runs an undo/redo step (which returns `None` when there is nothing to do),
+    /// recording the outcome in the status line and scheduling a re-render.
+    fn run_history(
+        &mut self,
+        name: &str,
+        step: impl FnOnce(&mut EditorSession) -> Option<EditOutcome>,
+    ) {
+        self.status = match step(&mut self.session) {
+            Some(outcome) => format!("{name}: ok (changed={})", outcome.graph_changed),
+            None => format!("nothing to {name}"),
+        };
+        self.needs_render = true;
+    }
+
     /// Re-renders the session's resolved layout to a texture. The view box, logical
     /// size, and texture are updated together (only on a successful rasterization), so
     /// the displayed pixels never disagree with the click plane; on failure the score
@@ -228,6 +244,19 @@ impl EditorApp {
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(self.session.can_undo(), egui::Button::new("↶ Undo"))
+                .clicked()
+            {
+                self.run_history("undo", |s| s.undo());
+            }
+            if ui
+                .add_enabled(self.session.can_redo(), egui::Button::new("↷ Redo"))
+                .clicked()
+            {
+                self.run_history("redo", |s| s.redo());
+            }
+            ui.separator();
             if ui.button("Delete").clicked() {
                 self.run("delete", |s| s.delete_selection());
             }
@@ -308,13 +337,19 @@ impl EditorApp {
         ui.separator();
         ui.label(format!(
             "Click a notehead to select. Pencil mode: {}.\n\
-             Keys: Del delete · ↑/↓ staff-step move · +/− transpose · A add chord · I insert after · P pencil",
+             Keys: Del delete · ↑/↓ staff-step move · +/− transpose · A add chord · I insert after · P pencil · Ctrl/Cmd+Z undo · Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redo",
             if self.pencil { "ON — click to insert" } else { "off" }
         ));
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
         let k = ctx.input(|i| Keys {
+            // Ctrl/Cmd-Z undo, Ctrl/Cmd-Shift-Z (or Ctrl/Cmd-Y) redo, read first so a
+            // modified Z is not also taken as a plain key.
+            undo: i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::Z),
+            redo: i.modifiers.command
+                && ((i.modifiers.shift && i.key_pressed(egui::Key::Z))
+                    || i.key_pressed(egui::Key::Y)),
             delete: i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace),
             move_up: i.key_pressed(egui::Key::ArrowUp),
             move_down: i.key_pressed(egui::Key::ArrowDown),
@@ -324,6 +359,12 @@ impl EditorApp {
             insert: i.key_pressed(egui::Key::I),
             pencil: i.key_pressed(egui::Key::P),
         });
+        if k.undo {
+            self.run_history("undo", |s| s.undo());
+        }
+        if k.redo {
+            self.run_history("redo", |s| s.redo());
+        }
         if k.pencil {
             self.pencil = !self.pencil;
             self.status = format!("pencil mode {}", if self.pencil { "on" } else { "off" });
@@ -427,6 +468,8 @@ impl EditorApp {
 
 /// Keyboard edges read once per frame (so a held key fires one edit).
 struct Keys {
+    undo: bool,
+    redo: bool,
     delete: bool,
     move_up: bool,
     move_down: bool,
