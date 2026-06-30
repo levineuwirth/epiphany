@@ -97,16 +97,26 @@ targeted `reduce_onto` tests in `tests/graph_reduction.rs`.
   Catalog §"Insert/Delete identified pitch" (M2e) ratifies this note↔rest
   equivalence normatively.
 
-- **`ModifyEvent` defers placement changes in the graph.** A `ModifyEvent` whose
-  payload moves the event (different position or duration) is *not* applied to
-  the graph: re-sorting a voice's event list on a placement change is deferred,
-  and applying a move via `get_mut` would break invariant 3
-  (`VoiceEventsSortedNonOverlap`). Same-placement field edits apply, preserving
-  the existing voice membership (owned by the voice list); a malformed (empty)
-  pitched replacement is likewise skipped. The LWW bookkeeping records the modify
-  either way. **For the spec:** the catalog §ModifyEvent (M2e) states the
-  placement-change deferral as the prototype boundary (a full re-sort/move op is
-  a later refinement).
+- **`ModifyEvent` materializes metric placement changes (trim/move).** A
+  `ModifyEvent` whose payload moves a *metric* event (different `Musical` position
+  or duration) is now applied to the graph and the owning voice is **re-sorted**
+  by ascending position (id-tiebroken — the same order an insert maintains), so
+  invariant 3 (`VoiceEventsSortedNonOverlap`) is preserved. This is the make-room
+  enabler: a "pencil" insert trims the events it overlaps. To keep invariant 3,
+  `modify_event` first checks a **placement precondition** read from
+  `voice_occupancy` (the canonical, graph-independent placement index, so
+  `reduce()` and `reduce_onto()` agree): a move with a non-positive span, or one
+  that would overlap another live event in the voice, is **refused** as a clean
+  `NoOp(EventDurationInvalid)` rather than skipped silently (which would log a
+  clean op that never took effect). A materialized move updates `voice_occupancy`
+  too, so a later insert sees the freed/changed span. A *non-metric* placement
+  change is still deferred (re-sorting a non-metric voice is out of scope), and a
+  malformed (empty) pitched replacement is still skipped; same-placement field
+  edits apply as before, preserving voice membership. The LWW bookkeeping records
+  the modify in every case. **For the spec:** the catalog §ModifyEvent (M2e)
+  prototype boundary moves from "placement-change deferral" to "metric
+  placement-change materialization with an invariant-3 precondition"; partial
+  trimming of a tuplet member, and non-metric moves, remain later refinements.
 
 ## DeleteEvent re-anchoring: the graph follows the ledger
 

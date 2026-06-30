@@ -460,6 +460,24 @@ fn graph_voice_location(score: &Score, voice: VoiceId) -> Option<(usize, usize, 
     None
 }
 
+/// The verdict on a [`ModifyEvent`](OperationKind::ModifyEvent)'s placement: whether
+/// it moves the target event's metric span, and if so whether the move keeps
+/// invariant 3 (`VoiceEventsSortedNonOverlap`). A non-metric or same-placement modify
+/// is [`Unchanged`](PlacementVerdict::Unchanged) — handled by the existing field-edit
+/// path.
+enum PlacementVerdict {
+    /// Same placement, or a non-metric event: nothing to materialize or refuse.
+    Unchanged,
+    /// A metric move that would overlap a sibling, or carries a non-positive span.
+    Refused,
+    /// A valid metric move to `position`/`duration` within `voice`.
+    Moved {
+        voice: VoiceId,
+        position: MusicalPosition,
+        duration: MusicalDuration,
+    },
+}
+
 /// The graph value inserted by a value-typed InsertEvent: the carried [`Event`]
 /// itself, with its voice rebound to the (possibly system-promoted) target
 /// voice. The Operation Catalog (v1) carries the real event, so this is no
@@ -2642,6 +2660,20 @@ impl<'a> Reducer<'a> {
             }
             Some(ObjectState::Live) => {}
         }
+        // A `ModifyEvent` that moves a metric event's span (a trim or move) is now
+        // materialized, but it must keep invariant 3 (`VoiceEventsSortedNonOverlap`):
+        // refuse a move onto another live event in the voice, or one with a
+        // non-positive span, rather than skip it silently (which would log a clean op
+        // that never took effect). The verdict reads `voice_occupancy`, the
+        // graph-independent index, so `reduce()` and `reduce_onto()` agree on it.
+        let placement = self.metric_placement_verdict(&op.event);
+        if matches!(placement, PlacementVerdict::Refused) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::EventDurationInvalid,
+                },
+            };
+        }
         let prev = self
             .last_event_modify
             .get(&event_id)
@@ -2673,8 +2705,113 @@ impl<'a> Reducer<'a> {
         };
         self.last_event_modify
             .insert(event_id, (env.id, op.event.clone()));
-        self.graph_replace_event(&op.event);
+        // Materialize a move only when it is a sanctioned metric move (`Moved`) *and*
+        // the replacement is well-formed — so the graph and the occupancy index move
+        // together. A malformed (empty) pitched replacement is not materialized in the
+        // graph (`graph_replace_event` skips it), so it must not move occupancy either.
+        let materialize_move = matches!(placement, PlacementVerdict::Moved { .. })
+            && !matches!(&op.event, Event::Pitched(pe) if !pe.is_well_formed());
+        self.graph_replace_event(&op.event, materialize_move);
+        // Keep the voice-occupancy index in step with a materialized move, so a later
+        // insert sees the freed/changed span (the same index its overlap check reads).
+        if materialize_move {
+            if let PlacementVerdict::Moved {
+                voice,
+                position,
+                duration,
+            } = placement
+            {
+                if let Some(events) = self.voice_occupancy.get_mut(&voice) {
+                    for slot in events.iter_mut().filter(|slot| slot.2 == event_id) {
+                        slot.0 = position.clone();
+                        slot.1 = duration.clone();
+                    }
+                }
+            }
+        }
         effect
+    }
+
+    /// The verdict on a [`ModifyEvent`](OperationKind::ModifyEvent)'s placement: does
+    /// it move the event's metric span, and if so does the move keep invariant 3
+    /// (`VoiceEventsSortedNonOverlap`)? Read from `voice_occupancy` — the canonical,
+    /// graph-independent placement index — so the verdict is identical with or without
+    /// a base graph.
+    fn metric_placement_verdict(&self, new_event: &Event) -> PlacementVerdict {
+        let event_id = new_event.id();
+        let Some((voice, current_position, current_duration)) =
+            self.voice_occupancy.iter().find_map(|(voice, events)| {
+                events
+                    .iter()
+                    .find(|(_, _, event)| *event == event_id)
+                    .map(|(position, duration, _)| (*voice, position.clone(), duration.clone()))
+            })
+        else {
+            // The event has no metric occupancy entry (untracked or non-metric):
+            // nothing to materialize or refuse here.
+            return PlacementVerdict::Unchanged;
+        };
+        let (EventPosition::Musical(new_position), EventDuration::Musical(new_duration)) =
+            (new_event.position(), new_event.duration())
+        else {
+            // A non-metric placement is left deferred, neither moved nor refused.
+            return PlacementVerdict::Unchanged;
+        };
+        if *new_position == current_position && *new_duration == current_duration {
+            return PlacementVerdict::Unchanged;
+        }
+        if !new_duration.is_positive() {
+            return PlacementVerdict::Refused;
+        }
+        let overlaps = self.voice_occupancy.get(&voice).is_some_and(|events| {
+            events.iter().any(|(position, duration, event)| {
+                *event != event_id
+                    && intervals_overlap(new_position, new_duration, position, duration)
+            })
+        });
+        if overlaps {
+            PlacementVerdict::Refused
+        } else {
+            PlacementVerdict::Moved {
+                voice,
+                position: new_position.clone(),
+                duration: new_duration.clone(),
+            }
+        }
+    }
+
+    /// Re-sorts `voice`'s graph event list by ascending position (id-tiebroken), the
+    /// same order an insert maintains — run after a materialized placement change so
+    /// the voice stays sorted (invariant 3). A no-op when the graph is absent.
+    fn resort_voice(&mut self, voice: VoiceId) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        let Some((region_index, instance_index, voice_index)) = graph_voice_location(score, voice)
+        else {
+            return;
+        };
+        let mut ordered = score.canvas.regions[region_index].staff_instances()[instance_index]
+            .voices[voice_index]
+            .events
+            .clone();
+        ordered.sort_by(|a, b| {
+            let a_position = score.events.get(*a).map(Event::position);
+            let b_position = score.events.get(*b).map(Event::position);
+            match (a_position, b_position) {
+                (
+                    Some(EventPosition::Musical(a_position)),
+                    Some(EventPosition::Musical(b_position)),
+                ) => a_position.cmp(b_position).then_with(|| a.cmp(b)),
+                _ => a.cmp(b),
+            }
+        });
+        score.canvas.regions[region_index]
+            .content
+            .staff_instances_mut()
+            .expect("the voice was located in a staff-based instance")[instance_index]
+            .voices[voice_index]
+            .events = ordered;
     }
 
     fn transpose(&mut self, _env: &OperationEnvelope, op: &TransposeOp) -> OperationEffect {
@@ -2836,35 +2973,48 @@ impl<'a> Reducer<'a> {
 
     // --- Group 1 graph mutations (reduce_onto only; no-op when graph is None). --
 
-    fn graph_replace_event(&mut self, new_event: &Event) {
-        let Some(score) = self.graph.as_mut() else {
-            return;
-        };
-        // A ModifyEvent carrying a malformed (empty) pitched event must not
-        // corrupt the arena: `get_mut` bypasses `insert`'s well-formedness guard,
-        // so an empty chord would only be caught later by `check_invariants`.
-        // Skip the graph replace in that case (bookkeeping still records it).
-        if let Event::Pitched(pe) = new_event {
-            if !pe.is_well_formed() {
+    /// Applies a `ModifyEvent`'s value to the graph. `materialize_move` is the caller's
+    /// sanction (from [`Self::metric_placement_verdict`]) that a *placement* change is a
+    /// valid metric move and should be applied + the voice re-sorted; when it is false a
+    /// placement change is deferred (a non-metric move, a no-occupancy event, or a
+    /// refused move), leaving only same-placement field edits to apply. Keeping
+    /// materialization gated on this single sanction is what holds the graph and the
+    /// `voice_occupancy` index in agreement.
+    fn graph_replace_event(&mut self, new_event: &Event, materialize_move: bool) {
+        let placement_changed;
+        let voice;
+        {
+            let Some(score) = self.graph.as_mut() else {
+                return;
+            };
+            // A ModifyEvent carrying a malformed (empty) pitched event must not
+            // corrupt the arena: `get_mut` bypasses `insert`'s well-formedness guard,
+            // so an empty chord would only be caught later by `check_invariants`.
+            // Skip the graph replace in that case (bookkeeping still records it).
+            if let Event::Pitched(pe) = new_event {
+                if !pe.is_well_formed() {
+                    return;
+                }
+            }
+            let Some(existing) = score.events.get_mut(new_event.id()) else {
+                return;
+            };
+            placement_changed = new_event.position() != existing.position()
+                || new_event.duration() != existing.duration();
+            // A placement change is materialized (and the voice re-sorted below) only
+            // when the caller sanctioned it as a valid metric move; otherwise it is
+            // deferred, leaving the LWW bookkeeping to record the modify. Same-placement
+            // field edits always apply, preserving the original voice membership.
+            if placement_changed && !materialize_move {
                 return;
             }
-        }
-        if let Some(existing) = score.events.get_mut(new_event.id()) {
-            // Re-sorting a voice on a placement change is deferred, so a
-            // ModifyEvent that moves the event (different position or duration)
-            // is not applied to the graph yet: doing so via `get_mut` would
-            // break invariant 3 (voice events sorted, non-overlapping). The LWW
-            // bookkeeping still records it; same-placement field edits apply,
-            // preserving the original voice membership (owned by the voice list).
-            if new_event.position() != existing.position()
-                || new_event.duration() != existing.duration()
-            {
-                return;
-            }
-            let voice = existing.voice();
+            voice = existing.voice();
             let mut replacement = new_event.clone();
             replacement.set_voice(voice);
             *existing = replacement;
+        }
+        if placement_changed {
+            self.resort_voice(voice);
         }
     }
 
@@ -3673,6 +3823,298 @@ mod tests {
             state.conflicts.records()[0].kind,
             ConflictKind::StructuralFieldCollision { .. }
         ));
+    }
+
+    // --- ModifyEvent placement changes (trim/move): the make-room enabler. ------
+
+    fn musical(numerator: i64, denominator: i64) -> MusicalDuration {
+        MusicalDuration(RationalTime::new(numerator, denominator).unwrap())
+    }
+
+    fn position_of(numerator: i64, denominator: i64) -> MusicalPosition {
+        MusicalPosition(RationalTime::new(numerator, denominator).unwrap())
+    }
+
+    /// An InsertEvent of a rest at an explicit metric span.
+    fn insert_at(
+        replica: u64,
+        counter: u64,
+        event: u64,
+        voice: u64,
+        position: MusicalPosition,
+        duration: MusicalDuration,
+        ctx: CausalContext,
+    ) -> OperationEnvelope {
+        prim_env(
+            replica,
+            counter,
+            (counter as i64 + 1) * 10,
+            ctx,
+            OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: StaffInstanceId::new(ReplicaId(9), 0),
+                event: crate::valuegen::insert_event_value(
+                    EventId::new(ReplicaId(replica), event),
+                    VoiceId::new(ReplicaId(9), voice),
+                    position,
+                    duration,
+                    &[],
+                ),
+            }),
+        )
+    }
+
+    /// A ModifyEvent that re-places `event` (a rest) at a new metric span.
+    fn modify_to(
+        replica: u64,
+        counter: u64,
+        event: u64,
+        voice: u64,
+        position: MusicalPosition,
+        duration: MusicalDuration,
+        ctx: CausalContext,
+    ) -> OperationEnvelope {
+        prim_env(
+            replica,
+            counter,
+            (counter as i64 + 1) * 10,
+            ctx,
+            OperationKind::ModifyEvent(crate::payload::ModifyEventOp {
+                event: crate::valuegen::insert_event_value(
+                    EventId::new(ReplicaId(replica), event),
+                    VoiceId::new(ReplicaId(9), voice),
+                    position,
+                    duration,
+                    &[],
+                ),
+            }),
+        )
+    }
+
+    fn effect_at(state: &MaterializedState, counter: u64) -> Option<&OperationEffect> {
+        state
+            .effects
+            .iter()
+            .find(|(id, _)| *id == OperationId::new(ReplicaId(1), counter))
+            .map(|(_, effect)| effect)
+    }
+
+    #[test]
+    fn modify_event_trim_frees_the_voice_slot() {
+        // e1 fills [0, 1). Trim it to [0, 1/2), then insert e2 into the freed [1/2, 1):
+        // the insert only fits if the trim updated the voice-occupancy index.
+        let e1 = insert(1, 0, 10, 1, 100, 0);
+        let trim = modify_to(
+            1,
+            1,
+            100,
+            1,
+            position_of(0, 1),
+            musical(1, 2),
+            CausalContext::new().with_seen(ReplicaId(1), 0),
+        );
+        let e2 = insert_at(
+            1,
+            2,
+            101,
+            1,
+            position_of(1, 2),
+            musical(1, 2),
+            CausalContext::new().with_seen(ReplicaId(1), 1),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![e1, trim, e2]);
+        let state = set.reduce();
+        assert!(
+            matches!(effect_at(&state, 1), Some(OperationEffect::Applied)),
+            "the trim applies"
+        );
+        assert!(
+            matches!(effect_at(&state, 2), Some(OperationEffect::Applied)),
+            "the insert fits the span the trim freed (occupancy was updated)"
+        );
+    }
+
+    #[test]
+    fn modify_event_move_onto_a_sibling_is_refused() {
+        // e1 [0, 1), e2 [1, 2). Moving e1 onto e2's span would break invariant 3, so
+        // it is refused (a clean NoOp), not silently skipped.
+        let e1 = insert(1, 0, 10, 1, 100, 0);
+        let e2 = insert(1, 1, 20, 1, 101, 1);
+        let onto_sibling = modify_to(
+            1,
+            2,
+            100,
+            1,
+            position_of(1, 1),
+            musical(1, 1),
+            CausalContext::new().with_seen(ReplicaId(1), 1),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![e1, e2, onto_sibling]);
+        let state = set.reduce();
+        assert!(
+            matches!(
+                effect_at(&state, 2),
+                Some(OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::EventDurationInvalid,
+                    },
+                })
+            ),
+            "a move onto a live sibling is refused"
+        );
+        assert!(
+            state.is_clean(),
+            "a refused move records no conflict/anomaly (like an insert overlap no-op)"
+        );
+    }
+
+    #[test]
+    fn modify_event_trim_materializes_in_the_graph() {
+        use epiphany_core::check_invariants;
+        use epiphany_core::generators::valid_score;
+
+        // Shrink the first metric event's duration; the change must now reach the
+        // graph (it was previously deferred) and leave the voice invariant-3 valid.
+        let base = valid_score(0x5EED);
+        let (event_id, duration) = base
+            .voices()
+            .flat_map(|(_, _, v)| v.events.clone())
+            .find_map(|eid| {
+                let ev = base.events.get(eid)?;
+                match (ev.position(), ev.duration()) {
+                    (EventPosition::Musical(_), EventDuration::Musical(d)) => {
+                        Some((eid, d.clone()))
+                    }
+                    _ => None,
+                }
+            })
+            .expect("the fixture has a metric event");
+        let half = MusicalDuration(duration.0.mul(&RationalTime::new(1, 2).unwrap()));
+        let mut shrunk = base.events.get(event_id).unwrap().clone();
+        match &mut shrunk {
+            Event::Pitched(pe) => pe.duration = EventDuration::Musical(half.clone()),
+            Event::Rest(rest) => rest.duration = EventDuration::Musical(half.clone()),
+            _ => panic!("a metric event is pitched or a rest"),
+        }
+        let modify = prim_env(
+            2,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::ModifyEvent(crate::payload::ModifyEventOp { event: shrunk }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![modify]);
+        let result = set.reduce_onto(&base);
+        assert_eq!(
+            result.score.events.get(event_id).map(Event::duration),
+            Some(&EventDuration::Musical(half)),
+            "the trimmed duration is materialized in the graph"
+        );
+        assert!(
+            check_invariants(&result.score).is_empty(),
+            "the trimmed voice stays sorted and non-overlapping"
+        );
+    }
+
+    #[test]
+    fn modify_event_does_not_rewrite_a_non_metric_event_as_metric() {
+        use epiphany_core::check_invariants;
+        use epiphany_core::generators::valid_score_rich;
+
+        // A ModifyEvent that rewrites a wall-clock event (a proportional region) into a
+        // metric one must stay deferred — materializing it would re-place a non-metric
+        // event onto a musical grid, breaking the region's time-model invariant.
+        let base = valid_score_rich(0x5EED);
+        let event_id = base
+            .voices()
+            .flat_map(|(_, _, v)| v.events.clone())
+            .find(|eid| {
+                matches!(
+                    base.events.get(*eid).map(Event::position),
+                    Some(EventPosition::WallClock(_))
+                )
+            })
+            .expect("the fixture has a proportional region with a wall-clock event");
+        let voice = base.events.get(event_id).unwrap().voice();
+        let as_metric = crate::valuegen::insert_event_value(
+            event_id,
+            voice,
+            position_of(0, 1),
+            musical(1, 2),
+            &[],
+        );
+        let modify = prim_env(
+            2,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::ModifyEvent(crate::payload::ModifyEventOp { event: as_metric }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![modify]);
+        let result = set.reduce_onto(&base);
+        assert!(
+            matches!(
+                result.score.events.get(event_id).map(Event::position),
+                Some(EventPosition::WallClock(_))
+            ),
+            "the non-metric event is left as-is, not rewritten onto the musical grid"
+        );
+        assert!(
+            check_invariants(&result.score).is_empty(),
+            "the graph stays invariant-valid"
+        );
+    }
+
+    #[test]
+    fn modify_event_malformed_move_does_not_free_the_slot() {
+        // A ModifyEvent rewriting e1 (filling [0, 1)) to an *empty* (malformed) pitched
+        // event at [0, 1/2) is not materialized in the graph — so it must not move the
+        // occupancy index either. A later insert into [1/2, 1) is therefore refused,
+        // since e1 still occupies [0, 1).
+        let e1 = insert(1, 0, 10, 1, 100, 0);
+        let empty = Event::Pitched(epiphany_core::PitchedEvent {
+            id: EventId::new(ReplicaId(1), 100),
+            voice: VoiceId::new(ReplicaId(9), 1),
+            position: EventPosition::Musical(position_of(0, 1)),
+            duration: EventDuration::Musical(musical(1, 2)),
+            pitches: vec![],
+            articulations: vec![],
+            dynamic: None,
+            ornaments: vec![],
+            stem: epiphany_core::StemConfiguration,
+            grace: None,
+        });
+        let malformed = prim_env(
+            1,
+            1,
+            20,
+            CausalContext::new().with_seen(ReplicaId(1), 0),
+            OperationKind::ModifyEvent(crate::payload::ModifyEventOp { event: empty }),
+        );
+        let e2 = insert_at(
+            1,
+            2,
+            101,
+            1,
+            position_of(1, 2),
+            musical(1, 2),
+            CausalContext::new().with_seen(ReplicaId(1), 1),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![e1, malformed, e2]);
+        let state = set.reduce();
+        assert!(
+            matches!(
+                effect_at(&state, 2),
+                Some(OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction { .. },
+                })
+            ),
+            "the malformed trim did not free the slot, so the later insert is refused"
+        );
     }
 
     #[test]
