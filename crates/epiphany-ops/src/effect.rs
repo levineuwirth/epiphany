@@ -36,6 +36,11 @@ pub enum OperationEffect {
     Conflicted { conflict: ConflictId },
     /// The target was tombstoned; preserved in the operation set, no graph
     /// effect beyond the recorded effect.
+    ///
+    /// Reserved: the current reducer expresses this outcome as
+    /// [`NoOpReason::TargetTombstoned`] instead; no reduction path produces
+    /// this variant yet. It stays in the vocabulary (and its discriminant
+    /// stays pinned) because the spec's effect table names it.
     TombstonedTarget { target: TypedObjectId },
     /// Reduces to no effect; the reason is recorded and is canonical.
     NoOp { reason: NoOpReason },
@@ -75,6 +80,11 @@ pub enum NoOpReason {
     /// Duplicates a causally-prior operation's effect.
     AlreadyApplied,
     /// A later operation in canonical order subsumed this one's effect.
+    ///
+    /// Reserved: no reduction path produces this yet — Pass 11 item 2.2
+    /// decided the winner carries `Conflicted` while the superseded loser
+    /// keeps `Applied`. Retagging losers with this reason is an open
+    /// disposition (see the item's rationale in the ratification log).
     SupersededByLaterOperation { superseder: OperationId },
     /// An invariant precondition satisfied at authoring time fails under
     /// concurrent reduction; the intent is not preserved.
@@ -127,8 +137,14 @@ pub enum PreconditionFailureReason {
     EventDurationInvalid,
     /// The target position falls outside the region declared by the envelope,
     /// or the region does not exist.
+    ///
+    /// Reserved: producing this requires resolving positions against region
+    /// extents, which is the deferred P11-C5 resolved-position machinery.
     PositionOutsideRegion,
     /// A pitch-space or tuning-context precondition failed.
+    ///
+    /// Reserved: producing this requires the Chapter 4 tuning catalog
+    /// (pitch-space registry), which is deferred Track-C work.
     PitchSpaceMismatch,
     /// The operation targeted a voice that does not exist or is tombstoned.
     VoiceMissing,
@@ -322,6 +338,10 @@ impl CanonicalEncode for TupletCompensationKind {
 /// The result of the re-anchor function for one referencing object
 /// (Chapter 6 §6.5). The reduction maps each result to a [`RepairKind`] (or a
 /// conflict) on the triggering operation's effect.
+///
+/// Reserved: the current reducer constructs [`RepairKind`] values directly
+/// rather than routing through this intermediate; it becomes load-bearing when
+/// the full "nearest surviving anchor" ordering (P11-C5) lands.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ReanchorResult {
     /// The reference is replaced with a reference to a new target.

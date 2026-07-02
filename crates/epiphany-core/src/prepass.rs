@@ -17,7 +17,12 @@
 //!   [`SpellingSourceKind::Inferred`] in the score's [`SpellingPrecedence`])
 //!   takes precedence over the algorithm's default. The default is *derived*;
 //!   the override is *authored*. H formalizes the precedence rule, not the model
-//!   (see [`resolve_spelling`]).
+//!   (see [`resolve_spelling`]). The decomposition side is governed the same way
+//!   (Chapter 3: "same sources, same precedence machinery, same pre-pass
+//!   discipline"): an authored [`DecompositionAttachment`] in
+//!   `Score::decomposition_attachments` whose source outranks
+//!   [`DecompositionSource::Inferred`] outranks the derived decomposition (see
+//!   [`resolve_decomposition`]).
 //! * **Algorithm version is part of the derivation key.** The
 //!   [`SpellingAlgorithmId`] / [`DecompositionAlgorithmId`] in [`PrePassProfile`]
 //!   key the derivation; a profile-declared change deterministically
@@ -113,8 +118,15 @@ pub struct TaxonomyReport {
     pub spelling_unavailable: usize,
 
     // --- Decomposition outcomes (over events). ---
-    /// Events that received a decomposition.
+    /// Eligible events whose effective decomposition is the pre-pass's inferred
+    /// one.
     pub decompositions_inferred: usize,
+    /// Eligible events whose effective decomposition came from an authored
+    /// [`DecompositionAttachment`] whose source outranks
+    /// [`DecompositionSource::Inferred`] (mirroring `spellings_authored`).
+    /// Counted distinctly from `decompositions_inferred`: the derived map holds
+    /// the authored components for these events, not the pre-pass's.
+    pub decompositions_authored: usize,
     /// Metric-region events whose duration is wall-clock or indeterminate (no
     /// determinate musical duration to decompose).
     pub decomposition_skipped_nonmusical: usize,
@@ -195,6 +207,7 @@ impl DerivedAnnotations {
             t.spellings_authored,
             t.spelling_unavailable,
             t.decompositions_inferred,
+            t.decompositions_authored,
             t.decomposition_skipped_nonmusical,
             t.decomposition_deferred_nonmetric,
             t.decomposition_inapplicable,
@@ -257,11 +270,18 @@ pub fn derive_annotations(score: &Score, profile: &PrePassProfile) -> DerivedAnn
     }
 
     // --- Decomposition pre-pass. ---
-    let decompositions = if decomposition_supported {
-        infer_decompositions(score, &layout, &mut taxonomy)
-    } else {
-        BTreeMap::new()
-    };
+    let mut decompositions = BTreeMap::new();
+    if decomposition_supported {
+        let inferred = infer_decompositions(score, &layout, &mut taxonomy);
+        for (eid, inferred_attachment) in inferred {
+            let resolved = resolve_decomposition(score, eid, inferred_attachment);
+            match resolved.source {
+                DecompositionSource::Inferred => taxonomy.decompositions_inferred += 1,
+                _ => taxonomy.decompositions_authored += 1,
+            }
+            decompositions.insert(eid, resolved);
+        }
+    }
 
     DerivedAnnotations {
         spellings,
@@ -1042,8 +1062,11 @@ fn resolve_measure_units(score: &Score, region: &crate::graph::Region) -> i64 {
     GRID_DEN
 }
 
-/// Builds the decomposition attachments for every eligible event, counting
-/// ineligible / deferred / skipped cases into the taxonomy.
+/// Runs the decomposition pre-pass over every eligible event, returning the
+/// inferred (pre-precedence) attachment per event. Counts ineligible / deferred
+/// / skipped cases into the taxonomy; the inferred/authored split is counted by
+/// [`derive_annotations`] after [`resolve_decomposition`], mirroring
+/// [`infer_spellings`].
 fn infer_decompositions(
     score: &Score,
     layout: &ScoreLayout,
@@ -1133,10 +1156,72 @@ fn infer_decompositions(
                 source: DecompositionSource::Inferred,
             },
         );
-        taxonomy.decompositions_inferred += 1;
     }
 
     out
+}
+
+/// The precedence rank of a decomposition source: the spec's default order
+/// `UserChosen > Imported > Propagated > Inferred` (Chapter 3 §"Sounding
+/// Duration and Notational Decomposition" mirrors Chapter 2 §"Configurable
+/// Precedence": "same sources, same precedence machinery"). Lower rank wins.
+/// The score carries no decomposition-specific precedence configuration (there
+/// is no `DecompositionPrecedence` analogue of [`SpellingPrecedence`] in the
+/// graph model), so the spec's default order is the fixed rank here; a
+/// configurable decomposition precedence is a Pass-12 candidate.
+fn decomposition_source_rank(source: &DecompositionSource) -> usize {
+    match source {
+        DecompositionSource::UserChosen => 0,
+        DecompositionSource::Imported { .. } => 1,
+        DecompositionSource::Propagated { .. } => 2,
+        DecompositionSource::Inferred => 3,
+    }
+}
+
+/// Resolves the *effective* decomposition for an event: an authored
+/// [`DecompositionAttachment`] in `Score::decomposition_attachments` whose
+/// source outranks [`DecompositionSource::Inferred`] wins; otherwise the
+/// algorithm's inferred decomposition stands. This is the decomposition
+/// analogue of [`resolve_spelling`] — Chapter 3: the pre-pass produces inferred
+/// decompositions only "for events that lack a higher-precedence attachment",
+/// with the "same precedence machinery" as spelling, minus the axes the
+/// attachment does not carry (no analysis layers, no `priority` field). Among
+/// competing authored attachments the lowest [`decomposition_source_rank`]
+/// wins; a remaining tie keeps the first candidate in the score's
+/// `decomposition_attachments` order, which is canonical (codec-fixed), so the
+/// resolution is deterministic across replicas.
+pub fn resolve_decomposition(
+    score: &Score,
+    event: EventId,
+    inferred: DecompositionAttachment,
+) -> DecompositionAttachment {
+    let inferred_rank = decomposition_source_rank(&DecompositionSource::Inferred);
+    let mut best: Option<(usize, &DecompositionAttachment)> = None;
+    for att in &score.decomposition_attachments {
+        if att.target != event {
+            continue;
+        }
+        let rank = decomposition_source_rank(&att.source);
+        if rank >= inferred_rank {
+            continue; // does not outrank the inferred default
+        }
+        best = match best {
+            None => Some((rank, att)),
+            // Lower rank wins; a full tie keeps `cur` (the earlier attachment
+            // in canonical order).
+            Some(cur) => {
+                if rank < cur.0 {
+                    Some((rank, att))
+                } else {
+                    Some(cur)
+                }
+            }
+        };
+    }
+    match best {
+        Some((_, att)) => att.clone(),
+        None => inferred,
+    }
 }
 
 #[cfg(test)]

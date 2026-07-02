@@ -109,15 +109,18 @@ impl ChunkKind {
 }
 
 /// Per-chunk compression metadata (Chapter 8 §"Compression"). **Not** part of
-/// content identity. v0 writes only [`CompressionAlgorithm::None`] (the
-/// QUICKSTART defers compression: *"Don't implement compression in the bundle …
-/// add zstd later as a non-breaking minor version"*); the other variants are
-/// modeled for forward compatibility and reading.
+/// content identity. v0 *writes* only [`CompressionAlgorithm::None`] (the
+/// QUICKSTART defers compression on the write path: *"Don't implement
+/// compression in the bundle … add zstd later as a non-breaking minor
+/// version"*), but *reading* zstd-compressed chunks is a conformance MUST and
+/// is supported. The manifest chunk is mandatorily uncompressed either way
+/// (Chapter 8 §"Manifest Encoding").
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum CompressionAlgorithm {
     /// No compression. Stored bytes equal the uncompressed payload.
     None,
-    /// Zstandard at the given level. (Reading is deferred in v0.)
+    /// Zstandard at the given level. Readers MUST support any level zstd
+    /// defines; the level byte is writer metadata the decoder does not need.
     Zstd { level: u8 },
     /// Reserved for future format major versions.
     Reserved(u8),

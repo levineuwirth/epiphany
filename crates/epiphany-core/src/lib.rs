@@ -74,18 +74,18 @@ pub use time::{
 };
 
 pub use pitch::{
-    derive_system_pitch_id, spell, AccidentalId, AccidentalRegistryId, AcousticPitch,
-    AcousticRealization, CmnNominal, DecompositionAlgorithmId, ForeignFormatId, IdentifiedPitch,
-    NominalRegistryId, Pitch, PitchSpaceId, PitchSpacePosition, PitchSpelling, PositionRegistryId,
-    ReferencePitch, ScalePosition, SpellingAlgorithmId, SpellingAttachment, SpellingContext,
-    SpellingDirective, SpellingNominal, SpellingPrecedence, SpellingRenderHints, SpellingRule,
-    SpellingRuleSetId, SpellingScope, SpellingSource, SpellingSourceKind, StaffGroupKindRegistryId,
-    TieClassRegistryId, TuningReference, TuningSystemId, VoiceSelector,
+    canonical_pitch_bytes, derive_system_pitch_id, spell, AccidentalId, AccidentalRegistryId,
+    AcousticPitch, AcousticRealization, CmnNominal, DecompositionAlgorithmId, ForeignFormatId,
+    IdentifiedPitch, NominalRegistryId, Pitch, PitchSpaceId, PitchSpacePosition, PitchSpelling,
+    PositionRegistryId, ReferencePitch, ScalePosition, SpellingAlgorithmId, SpellingAttachment,
+    SpellingContext, SpellingDirective, SpellingNominal, SpellingPrecedence, SpellingRenderHints,
+    SpellingRule, SpellingRuleSetId, SpellingScope, SpellingSource, SpellingSourceKind,
+    StaffGroupKindRegistryId, TieClassRegistryId, TuningReference, TuningSystemId, VoiceSelector,
 };
 
 pub use prepass::{
-    derive_annotations, resolve_spelling, simplest_spelling, DerivedAnnotations, PrePassProfile,
-    ResolvedSpelling, SpellingProvenance, TaxonomyReport,
+    derive_annotations, resolve_decomposition, resolve_spelling, simplest_spelling,
+    DerivedAnnotations, PrePassProfile, ResolvedSpelling, SpellingProvenance, TaxonomyReport,
 };
 
 pub use event::{
@@ -112,8 +112,8 @@ pub use graph::{
 };
 
 pub use tempo::{
-    Tempo, TempoError, TempoMap, TempoSegment, TempoShape, INVERSION_MAX_DENOMINATOR,
-    INVERSION_MAX_ITERATIONS, INVERSION_TOLERANCE_WHOLE_NOTES,
+    inversion_tolerance, Tempo, TempoError, TempoMap, TempoSegment, TempoShape,
+    INVERSION_MAX_DENOMINATOR, INVERSION_MAX_ITERATIONS,
 };
 
 pub use codec::{CanonicalValue, ScoreDecodeError};

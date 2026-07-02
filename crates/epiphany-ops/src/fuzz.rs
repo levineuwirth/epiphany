@@ -40,7 +40,7 @@ use crate::payload::{
 use crate::stamp::{HybridLogicalClock, OperationStamp};
 use crate::support::AuthorId;
 use crate::valuegen;
-use crate::IntegrityAnomalyKind;
+use crate::{EnvelopeHash, IntegrityAnomalyKind, OperationEffect};
 
 /// Number of replicas the generator draws authors from.
 const REPLICAS: u64 = 3;
@@ -410,6 +410,137 @@ pub fn run_equivocation_fuzz(iters: u64, seed: u64) {
     }
 }
 
+/// Runs `iters` equivocation-*resolution* iterations from `seed` (the
+/// `ResolveEquivocation` sibling of [`run_equivocation_fuzz`]). Each iteration
+/// builds two distinct canonical envelopes under one `OperationId` plus a
+/// `ResolveEquivocation`, embeds them in random noise, and asserts across four
+/// random acceptance orders:
+///
+/// * with a **valid** resolve (`chosen` names a real candidate): the resolved
+///   slot contributes an effect at its own id, no `OperationSlotEquivocated`
+///   anomaly is recorded for it, the resolve itself applies, and every
+///   permutation reduces to byte-identical [`crate::MaterializedState`];
+/// * with an **invalid** resolve (`chosen` names no candidate): behavior is
+///   exactly today's unresolved equivocation — the slot contributes nothing,
+///   the anomaly is recorded, the resolve is a precondition no-op — and the
+///   permutation invariance still holds.
+pub fn run_equivocation_resolution_fuzz(iters: u64, seed: u64) {
+    let mut rng = SplitMix64::new(seed);
+    for _ in 0..iters {
+        let id = OperationId::new(ReplicaId(1 + rng.below(REPLICAS)), rng.below(5));
+
+        let mk = |rng: &mut SplitMix64, spelling: u8| OperationEnvelope {
+            id,
+            author: AuthorId(0),
+            stamp: OperationStamp::new(
+                HybridLogicalClock::new(epiphany_core::WallClockTime(rng.below(100) as i64), 0),
+                id,
+            ),
+            causal_context: CausalContext::new(),
+            transaction: None,
+            payload: OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
+                pitch: pitch(0),
+                spelling: valuegen::spelling(spelling),
+            })),
+        };
+        let a = mk(&mut rng, 1);
+        let b = mk(&mut rng, 2); // distinct canonical bytes (different spelling)
+        debug_assert_ne!(a.envelope_hash(), b.envelope_hash());
+
+        // Valid two-thirds of the time; otherwise a hash naming no candidate.
+        let valid = !rng.chance(3);
+        let chosen = if !valid {
+            EnvelopeHash([0xEE; 32])
+        } else if rng.chance(2) {
+            a.envelope_hash()
+        } else {
+            b.envelope_hash()
+        };
+        // The resolve lives on a replica the noise generator never draws
+        // (noise uses 1..=REPLICAS), so its own slot can neither equivocate
+        // nor land in a quarantined segment.
+        let resolve_id = OperationId::new(ReplicaId(REPLICAS + 2), 0);
+        let resolve = OperationEnvelope {
+            id: resolve_id,
+            author: AuthorId(0),
+            stamp: OperationStamp::new(
+                HybridLogicalClock::new(epiphany_core::WallClockTime(rng.below(100) as i64), 0),
+                resolve_id,
+            ),
+            causal_context: CausalContext::new(),
+            transaction: None,
+            payload: OperationPayload::ResolveEquivocation(
+                crate::payload::ResolveEquivocationPayload { target: id, chosen },
+            ),
+        };
+
+        let noise_count = rng.below(4) as usize;
+        let noise = gen_envelope_set(&mut rng, noise_count)
+            .into_iter()
+            .filter(|e| e.id != id)
+            .collect::<Vec<_>>();
+
+        let mut items = vec![a.clone(), b.clone(), resolve.clone()];
+        items.extend(noise);
+
+        let mut reference: Option<Vec<u8>> = None;
+        for _ in 0..4 {
+            shuffle(&mut items, &mut rng);
+            let mut set = OperationSet::new();
+            set.accept_all(items.iter().cloned());
+            let state = set.reduce();
+
+            let slot_contributes = state.effects.iter().any(|(e, _)| *e == id);
+            let anomalous = state.anomalies.iter().any(|an| matches!(
+                an.kind,
+                IntegrityAnomalyKind::OperationSlotEquivocated { operation_id } if operation_id == id
+            ));
+            let resolve_effect = state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == resolve_id)
+                .map(|(_, eff)| eff);
+            if valid {
+                assert!(
+                    slot_contributes,
+                    "a resolved slot must contribute its chosen candidate's effect"
+                );
+                assert!(
+                    !anomalous,
+                    "a resolved slot must record no OperationSlotEquivocated anomaly"
+                );
+                assert_eq!(
+                    resolve_effect,
+                    Some(&OperationEffect::Applied),
+                    "the governing resolve must apply"
+                );
+            } else {
+                assert!(
+                    !slot_contributes,
+                    "an unresolved equivocated slot must contribute nothing"
+                );
+                assert!(
+                    anomalous,
+                    "an unresolved equivocated slot must record its anomaly"
+                );
+                assert!(
+                    matches!(resolve_effect, Some(OperationEffect::NoOp { .. })),
+                    "an invalid resolve must be a precondition no-op, got {resolve_effect:?}"
+                );
+            }
+
+            let bytes = state.canonical_bytes();
+            match &reference {
+                None => reference = Some(bytes),
+                Some(reference) => assert_eq!(
+                    &bytes, reference,
+                    "equivocation resolution is not permutation-invariant"
+                ),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,6 +553,11 @@ mod tests {
     #[test]
     fn equivocation_smoke() {
         run_equivocation_fuzz(500, 0x1234_5678);
+    }
+
+    #[test]
+    fn equivocation_resolution_smoke() {
+        run_equivocation_resolution_fuzz(500, 0x9E50_1AE5);
     }
 
     #[test]

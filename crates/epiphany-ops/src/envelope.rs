@@ -16,7 +16,7 @@
 //! foremost `stamp.id == id`.
 
 use epiphany_core::{OperationId, TransactionId};
-use epiphany_determinism::{CanonicalEncode, DomainTag, Preimage};
+use epiphany_determinism::{CanonicalDecode, CanonicalEncode, DomainTag, Preimage};
 
 use crate::causal::CausalContext;
 use crate::encode::{push_canon, push_tag};
@@ -104,6 +104,24 @@ impl CanonicalEncode for OperationEnvelope {
         }
         push_canon(out, &self.payload);
     }
+}
+
+/// Reads the [`OperationId`] a canonically encoded envelope declares from its
+/// **leading 16 bytes** alone, without decoding the rest of the envelope.
+///
+/// The canonical envelope encoding leads with the id
+/// ([`OperationEnvelope::encode_canonical`] pushes `id` first, and an
+/// `OperationId`'s canonical form is exactly 16 big-endian bytes), so this is a
+/// total, allocation-free peek. Returns `None` when fewer than 16 bytes are
+/// present. It deliberately performs **no** validation of the remaining bytes —
+/// full decoding stays the caller's job — which is exactly the contract the
+/// bundle's operation index (Chapter 8 §"The Operation Index") needs: the
+/// bundle layer keys index entries on the raw 16 id bytes without ever
+/// interpreting an envelope, and this helper is the one place the ops layer
+/// vouches that those bytes really are the id.
+pub fn peek_operation_id(envelope_bytes: &[u8]) -> Option<OperationId> {
+    let head = envelope_bytes.get(..16)?;
+    OperationId::decode_canonical(head).ok()
 }
 
 /// Why an envelope failed the well-formedness check (Chapter 6 §6.4). A
@@ -245,6 +263,21 @@ mod tests {
             well_formed(&e),
             Err(WellFormednessError::NegativePhysicalTime)
         );
+    }
+
+    #[test]
+    fn peek_operation_id_reads_the_leading_canonical_bytes() {
+        let id = OperationId::new(ReplicaId(0x0102_0304_0506_0708), 0x1122_3344_5566_7788);
+        let e = env(id, id);
+        let bytes = e.to_canonical_bytes();
+        // The canonical envelope encoding truly *leads* with the id's 16
+        // canonical bytes — the invariant `peek_operation_id` (and the bundle's
+        // operation index built on it) depends on.
+        assert_eq!(&bytes[..16], &id.canonical_bytes());
+        assert_eq!(peek_operation_id(&bytes), Some(id));
+        // A short buffer has no id to peek.
+        assert_eq!(peek_operation_id(&bytes[..15]), None);
+        assert_eq!(peek_operation_id(&[]), None);
     }
 
     #[test]

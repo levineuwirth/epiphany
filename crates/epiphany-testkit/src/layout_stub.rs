@@ -727,6 +727,17 @@ pub fn gen_layout_constraint(rng: &mut Rng) -> LayoutConstraint {
     }
 }
 
+/// A constraint strength (both variants).
+pub fn gen_constraint_strength(rng: &mut Rng) -> ConstraintStrength {
+    if rng.boolean() {
+        ConstraintStrength::Required
+    } else {
+        ConstraintStrength::Preferred {
+            weight: (rng.range(1, 1_000) as f64) / 100.0,
+        }
+    }
+}
+
 /// A bundled glyph metric (drawn from the in-tree Bravura table).
 pub fn gen_glyph_metric(rng: &mut Rng) -> GlyphMetric {
     BRAVURA_METRICS[rng.below(BRAVURA_METRICS.len() as u64) as usize].clone()
@@ -790,6 +801,21 @@ pub fn gen_override_target(rng: &mut Rng) -> OverrideTarget {
     }
 }
 
+/// A break anchor for a generated break override (a representative subset: a
+/// wall-clock instant or an event anchor without offset).
+pub fn gen_break_anchor(rng: &mut Rng) -> epiphany_core::TimeAnchor {
+    if rng.boolean() {
+        epiphany_core::TimeAnchor::WallClock {
+            time: epiphany_core::WallClockTime(rng.range(0, 10_000) as i64),
+        }
+    } else {
+        epiphany_core::TimeAnchor::Event {
+            id: epiphany_core::EventId::from_raw(rng.next_u64() as u128),
+            offset: epiphany_core::AnchorOffset::Zero,
+        }
+    }
+}
+
 pub fn gen_override_kind(rng: &mut Rng) -> OverrideKind {
     match rng.below(9) {
         0 => OverrideKind::StemDirection(if rng.boolean() {
@@ -799,8 +825,12 @@ pub fn gen_override_kind(rng: &mut Rng) -> OverrideKind {
         }),
         1 => OverrideKind::AccidentalParenthesized(rng.boolean()),
         2 => OverrideKind::AccidentalVisible(rng.boolean()),
-        3 => OverrideKind::SystemBreak,
-        4 => OverrideKind::PageBreak,
+        3 => OverrideKind::SystemBreak {
+            anchor: gen_break_anchor(rng),
+        },
+        4 => OverrideKind::PageBreak {
+            anchor: gen_break_anchor(rng),
+        },
         5 => OverrideKind::HiddenObject,
         6 => OverrideKind::CustomPosition(gen_point(rng)),
         7 => OverrideKind::LedgerLineSuppression,
@@ -1287,6 +1317,43 @@ mod tests {
     use epiphany_determinism::CanonicalEncode;
 
     #[test]
+    fn edit_barrier_blob_codec_round_trips_generated_barriers() {
+        // Property gate for the provisional manifest-blob byte form
+        // (`ExtensionDeclaration.edit_barriers` / `.affected_object_kinds`):
+        // any generated barrier set encodes to a blob that decodes and
+        // re-encodes byte-identically, and each decoded barrier's own canonical
+        // bytes round-trip through the single-barrier decoder.
+        let mut rng = Rng::new(0xBA22_1E2C_0DEC);
+        for _ in 0..256 {
+            let barriers: Vec<EditBarrier> = (0..rng.range_usize(0, 4))
+                .map(|_| gen_edit_barrier(&mut rng))
+                .collect();
+            let blob = encode_edit_barriers(&barriers);
+            let decoded = decode_edit_barriers(&blob).expect("a canonical blob decodes");
+            assert_eq!(
+                encode_edit_barriers(&decoded),
+                blob,
+                "decode → re-encode is byte-identical"
+            );
+            for barrier in &decoded {
+                let bytes = barrier.to_canonical_bytes();
+                assert_eq!(
+                    EditBarrier::decode_canonical_bytes(&bytes).as_ref(),
+                    Ok(barrier)
+                );
+            }
+
+            let kinds: Vec<ObjectKind> = (0..rng.range_usize(0, 6))
+                .map(|_| gen_object_kind(&mut rng))
+                .collect();
+            let kind_blob = encode_affected_object_kinds(&kinds);
+            let decoded_kinds =
+                decode_affected_object_kinds(&kind_blob).expect("a canonical blob decodes");
+            assert_eq!(encode_affected_object_kinds(&decoded_kinds), kind_blob);
+        }
+    }
+
+    #[test]
     fn ir_generators_are_deterministic_and_well_formed() {
         let mut a = Rng::new(13);
         let mut b = Rng::new(13);
@@ -1295,11 +1362,14 @@ mod tests {
         let generated = gen_logical_layout_ir(&mut Rng::new(14));
         let constrained = try_to_constrained(&generated)
             .expect("generated logical IR must be structurally transformable");
+        // The spacing stage emits real constraints, which the stub does not
+        // evaluate: the solve is renderable either way, and satisfaction is
+        // claimed exactly when the problem is constraint-free.
+        let report = StubSolver.solve(&constrained, &SolverConfig::default());
+        assert!(report.status.is_renderable());
         assert_eq!(
-            StubSolver
-                .solve(&constrained, &SolverConfig::default())
-                .status,
-            SolveStatus::Solved
+            report.satisfied_hard_constraints,
+            constrained.constraints.is_empty()
         );
         // Provenance ids are consistent with their synthesis: a projected one
         // (no synthesis) carries the source-only id; a synthesized one does not.
@@ -1404,6 +1474,7 @@ mod tests {
             let _ = gen_spring_slot(&mut rng);
             let _ = gen_constrained_layout_region(&mut rng);
             let _ = gen_layout_constraint(&mut rng);
+            let _ = gen_constraint_strength(&mut rng);
             let _ = gen_engraving_override(&mut rng);
             let _ = gen_resolved_staff(&mut rng);
             let _ = gen_resolved_measure(&mut rng);

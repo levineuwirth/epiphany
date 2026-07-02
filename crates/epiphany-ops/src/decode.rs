@@ -194,6 +194,7 @@ fn pending_reason(reader: &mut Reader<'_>) -> Result<PendingReason> {
         1 => Ok(PendingReason::DependsOnEquivocated { on: blocker }),
         2 => Ok(PendingReason::DependsOnExcluded { on: blocker }),
         3 => Ok(PendingReason::DependsOnPending { on: blocker }),
+        4 => Ok(PendingReason::HaltedBySystemCollision { at: blocker }),
         tag => Err(MaterializedDecodeError::InvalidTag {
             kind: "PendingReason",
             tag,

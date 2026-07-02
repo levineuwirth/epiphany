@@ -30,6 +30,17 @@ P12-H/K rows await G's ratification alongside Phase 2's open questions and are
 reduction-rule behavior text). Core spec: revision-history row "Pass 12
 tranche 1 (audit spec-alignment)" appended.
 
+## Tranche 1 addendum (2026-07-02, Push-3 enablers)
+
+Two further ratifications landed the same day as spec-side *enablers* for the
+Push-3 wiring work — each defines normative text the implementation then built
+against (spec-first, per the batch discipline):
+
+| Item | Disposition | Spec locus | Consumer |
+|---|---|---|---|
+| `ResolveEquivocation` meta-operation | **fixed (dangling prose reference)** — the core spec named the operation only in prose (§Equivocation, resolution path 2) with no payload schema, no catalog entry, no K1 slot. Ratified: catalog §ResolveEquivocation pins `ResolveEquivocationPayload { target: OperationId, chosen: EnvelopeHash }`, order-independent earliest-resolve-governs promotion, `AlreadyApplied` idempotence, `StructuralFieldCollision` on `equivocation_resolution` for differing resolves, precondition no-ops, and the equivocated-resolve exclusion; core spec `OperationPayload` gains the variant. Catalog 0.3.0 → 0.4.0. The profile-policy path stays open (P12-K5) | operation_catalog §ResolveEquivocation; core_spec §Operation Envelope | `epiphany-ops` (payload discriminant 3 appended; set-level promotion pre-pass) |
+| Anchored break overrides | **fixed (representational gap)** — `OverrideKind::SystemBreak`/`PageBreak` were nullary, so a break's *position* was unrepresentable and the logical-stage projection required by §Engraving Overrides could not exist. Ratified: both kinds carry `anchor: TimeAnchor`; the `ScoreGraph` target names the owning region; projected break overrides carry `Internal` origin (authorship lives in the op log, P11-C8) | core_spec Ch7 §Engraving Overrides listing + note | `epiphany-layout-ir` (`to_logical` projection + paired `UserOverride` decisions) |
+
 **Deliberately not touched here** (still open in `PASS12_BATCH.md`): every
 P12-H/K row (algorithm-id ratification, decomposition precedence
 configurability, authored decompositions for ineligible events, system-pitch

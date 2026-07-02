@@ -24,9 +24,10 @@
 //! **Determinism and tolerance.** The inverse [`TempoMap::wallclock_to_musical`]
 //! uses a deterministic continued-fraction rational approximation with
 //! documented bounds ([`INVERSION_MAX_ITERATIONS`], [`INVERSION_MAX_DENOMINATOR`],
-//! [`INVERSION_TOLERANCE_WHOLE_NOTES`]) — the documented tolerance and iteration
+//! [`inversion_tolerance`]) — the documented tolerance and iteration
 //! bounds Chapter 3 §"Conversion" requires of any numerical inversion. The
-//! residual is governed by [`epiphany_determinism::ToleranceClass::TempoIntegration`].
+//! residual is a typed [`Tolerance`] of class
+//! [`epiphany_determinism::ToleranceClass::TempoIntegration`].
 //!
 //! Conversion here is **advisory** (it uses `f64`), not canonical state:
 //! musical time is the exact rational and wall-clock is exact nanoseconds
@@ -152,11 +153,28 @@ pub const INVERSION_MAX_ITERATIONS: u32 = 64;
 /// Maximum denominator the inverse will introduce, in whole-note units. Keeps
 /// recovered rhythms simple (`1/3`, `1/12`, …) instead of spurious large ratios.
 pub const INVERSION_MAX_DENOMINATOR: u64 = 1_000_000;
-/// Absolute residual tolerance of the inverse, in whole notes
-/// ([`epiphany_determinism::ToleranceClass::TempoIntegration`]). Comfortably
+/// Absolute residual magnitude of the inverse, in whole notes. Comfortably
 /// larger than the half-nanosecond rounding of the forward direction, so an
 /// ordinary rhythm round-trips, yet far smaller than any musical distinction.
-pub const INVERSION_TOLERANCE_WHOLE_NOTES: f64 = 1e-6;
+/// The typed tolerance built on it is [`inversion_tolerance`]; this raw value
+/// never leaves the module.
+const INVERSION_TOLERANCE_WHOLE_NOTES: f64 = 1e-6;
+
+/// The typed absolute residual tolerance of the inverse conversion
+/// ([`TempoMap::wallclock_to_musical`]): a [`Tolerance`] of class
+/// [`ToleranceClass::TempoIntegration`] (Appendix D §"Tolerance Classes" — no
+/// ad-hoc epsilons), absolute bound [`INVERSION_TOLERANCE_WHOLE_NOTES`] whole
+/// notes, no relative bound, governing validation (it decides whether a
+/// continued-fraction candidate is accepted; conversion is advisory, never
+/// canonical state).
+pub fn inversion_tolerance() -> Tolerance {
+    Tolerance::absolute(
+        ToleranceClass::TempoIntegration,
+        INVERSION_TOLERANCE_WHOLE_NOTES,
+        ToleranceGovernance::Validation,
+    )
+    .expect("constant inversion tolerance is finite and non-negative")
+}
 
 /// Relative tolerance below which two segment speeds count as *equal*, so the
 /// integration takes the numerically-stable constant-speed limit instead of the
@@ -323,7 +341,7 @@ impl TempoMap {
     /// §"Conversion"), using `region_relative_resolve` for segment boundaries.
     /// The inverse uses a deterministic continued-fraction rational
     /// approximation with the documented bounds [`INVERSION_MAX_ITERATIONS`] /
-    /// [`INVERSION_MAX_DENOMINATOR`] / [`INVERSION_TOLERANCE_WHOLE_NOTES`], so an
+    /// [`INVERSION_MAX_DENOMINATOR`] / [`inversion_tolerance`], so an
     /// ordinary rhythm (a triplet `1/12`, a dotted `3/8`) round-trips exactly
     /// rather than being quantized to a fixed grid.
     pub fn wallclock_to_musical(&self, time: WallClockTime) -> Result<MusicalPosition, TempoError> {
@@ -343,7 +361,7 @@ impl TempoMap {
         rational_from_f64(
             whole_notes,
             INVERSION_MAX_DENOMINATOR,
-            INVERSION_TOLERANCE_WHOLE_NOTES,
+            inversion_tolerance().absolute.get(),
         )
         .map(MusicalPosition)
         .ok_or(TempoError::ConversionOverflow)
@@ -690,6 +708,19 @@ mod tests {
         assert!(Tempo::quarter(-60.0).is_none());
         assert!(Tempo::quarter(f64::NAN).is_none());
         assert!(Tempo::new(120.0, MusicalDuration::zero()).is_none());
+    }
+
+    #[test]
+    fn inversion_tolerance_is_a_typed_tempo_integration_tolerance() {
+        // The inverse's residual bound is a named `Tolerance` of class
+        // `TempoIntegration` (Appendix D §"Tolerance Classes": no ad-hoc epsilon
+        // constants), pinned to the documented magnitude: absolute 1e-6 whole
+        // notes, no relative bound, validation governance.
+        let t = inversion_tolerance();
+        assert_eq!(t.class, ToleranceClass::TempoIntegration);
+        assert_eq!(t.absolute.get(), 1e-6);
+        assert_eq!(t.relative, None);
+        assert_eq!(t.governance, ToleranceGovernance::Validation);
     }
 
     #[test]

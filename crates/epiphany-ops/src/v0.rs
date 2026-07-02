@@ -22,7 +22,7 @@ use epiphany_core::{
 };
 use epiphany_determinism::ContentHash;
 
-use crate::payload::{ResolveConflictPayload, TransactionDescriptor};
+use crate::payload::{ResolveConflictPayload, ResolveEquivocationPayload, TransactionDescriptor};
 use crate::support::OperationKindRegistryId;
 use crate::undo::UndoTransactionPayload;
 use crate::OperationEnvelope;
@@ -49,6 +49,10 @@ pub enum V0OperationPayload {
     ResolveConflict(ResolveConflictPayload),
     /// Value-complete in v0 already; unchanged in v1.
     UndoTransaction(UndoTransactionPayload),
+    /// v1-native (no identifier-only v0 predecessor existed — v0 predates the
+    /// catalog's equivocation-resolution entry); carried verbatim so the
+    /// migration round-trips it by identity, like the Group 1–4 kinds below.
+    ResolveEquivocation(ResolveEquivocationPayload),
 }
 
 /// Frozen v0 primitive kinds (the representative §6.10 set).

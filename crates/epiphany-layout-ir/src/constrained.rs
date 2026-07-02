@@ -13,8 +13,8 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
-    Clef, EventId, KeySignature, MusicalDuration, NoteValue, PitchId, PitchSpelling,
-    SpellingNominal, StaffId, TypedObjectId, WallClockTime,
+    Clef, EventId, KeySignature, MeasureId, MeasurePosition, MusicalDuration, NoteValue, PitchId,
+    PitchSpelling, SpellingNominal, StaffId, TimeAnchor, TypedObjectId, WallClockTime,
 };
 use epiphany_determinism::{DomainTag, Preimage};
 
@@ -22,18 +22,18 @@ use crate::engrave_theory::{
     accidental_glyph, clef_glyph, has_stem, key_signature, notehead_glyph, rest_glyph,
     staff_position, KeyAccidental, StaffStep,
 };
-use crate::engraving::EngravingDecision;
+use crate::engraving::{EngravingDecision, OverrideKind, OverridePriority, OverrideTarget};
 use crate::glyph::{metrics, BravuraCatalog, GlyphCatalog, GlyphCatalogIdentity, GlyphReference};
 use crate::logical::{
-    BarlineKind, LayoutContent, LogicalLayoutIR, PlacedClef, PlacedKeySignature, ScoreVersion,
-    StaffContent,
+    apply_offset, BarlineKind, LayoutContent, LogicalLayoutIR, PlacedClef, PlacedKeySignature,
+    ScoreVersion, StaffContent,
 };
 use crate::provenance::{
     manifestation_layout_id, LayoutObjectId, Provenance, SynthesisInstanceKey, SynthesisKind,
     SynthesisRegistryId,
 };
-use crate::solver::SpringSlotId;
-use crate::spatial::{BoundingBox, Point, Rect, StaffSpace};
+use crate::solver::{ConstraintStrength, SpringSlotId};
+use crate::spatial::{BoundingBox, Point, Rect, Size2D, StaffSpace};
 use crate::time_axis::{time_cmp, SlotPlacement, TimeAxisModel, TimePoint};
 use crate::vertical_band::{inter_staff_gap_id, VerticalBand, VerticalBandId};
 
@@ -206,6 +206,47 @@ pub enum LayoutConstraint {
         kind: BreakKind,
     },
     Registered(ConstraintRegistryId, ConstraintParameters),
+}
+
+impl LayoutConstraint {
+    /// The strength this constraint binds the solver with (Chapter 9 §"Strength
+    /// Levels": [`ConstraintStrength`]).
+    ///
+    /// The spec's `LayoutConstraint` enum carries no strength field, and the
+    /// "normalized form" Chapter 9 says the solver consumes does not specify how
+    /// strength attaches to a constraint instance (a genuine spec gap — see
+    /// DECISIONS.md), so v0 attaches strength **by rule** rather than widening
+    /// the IR shape: a break constraint's own [`BreakKind`] is its strength
+    /// (`Hard` → `Required`, `Soft` → `Preferred` at the default weight), the
+    /// geometric constraints (no-collision, alignment, containment) are hard
+    /// engraving obligations (`Required`), and a `Registered` extension
+    /// constraint is conservatively `Required` — an obligation a solver cannot
+    /// verify must not be silently demoted (Chapter 9: a solver MUST NOT treat
+    /// `Required` as `Preferred`).
+    pub fn strength(&self) -> ConstraintStrength {
+        match self {
+            LayoutConstraint::SystemBreakAt {
+                kind: BreakKind::Soft,
+                ..
+            }
+            | LayoutConstraint::PageBreakAt {
+                kind: BreakKind::Soft,
+                ..
+            } => ConstraintStrength::Preferred { weight: 1.0 },
+            LayoutConstraint::NoCollision { .. }
+            | LayoutConstraint::Align { .. }
+            | LayoutConstraint::PositionWithin { .. }
+            | LayoutConstraint::SystemBreakAt {
+                kind: BreakKind::Hard,
+                ..
+            }
+            | LayoutConstraint::PageBreakAt {
+                kind: BreakKind::Hard,
+                ..
+            }
+            | LayoutConstraint::Registered(_, _) => ConstraintStrength::Required,
+        }
+    }
 }
 
 /// A structural defect in [`ConstrainedLayoutIR`] that prevents a solver from
@@ -455,6 +496,17 @@ const KEY_ACC_X: f32 = 0.9; // x advance per key-signature accidental
 const TIME_SIG_X: f32 = 0.5; // a time signature sits this far right of its barline
 const TIME_DIGIT_X: f32 = 0.8; // x advance per time-signature digit
 
+/// The horizontal half-reach of an emitted `PositionWithin` region, in staff
+/// spaces. v0 performs no casting-off, so a region imposes no *horizontal*
+/// bound on its glyphs — a conformant solver may re-space columns freely along
+/// the open canvas. The containment obligation v0 can honestly state is the
+/// **vertical** envelope (which the spacing pass computes from the very glyph
+/// geometry the solvers preserve), so the emitted rect pins that envelope and
+/// leaves the horizontal span at canvas scale: wide enough for any plausible
+/// re-spacing, finite because the validator rejects non-finite constraint
+/// regions.
+const POSITION_WITHIN_X_REACH: f32 = 1.0e6;
+
 /// The registry id for the engraver's **structural-line synthesis** (staff
 /// lines). The normative [`SynthesisKind`] set names *musical* synthesized
 /// objects (cancellation accidentals, generated rests, …) but no purely visual
@@ -530,6 +582,7 @@ pub fn try_to_constrained(
     let mut diagnostics = Vec::new();
     let mut vertical_bands = Vec::new();
     let mut horizontal_slots = Vec::new();
+    let mut constraints = Vec::new();
     let mut constrained_regions = Vec::new();
     // Regions tile left-to-right; this advances by each region's width so all
     // coordinates stay globally monotonic (the solver's coordinate remap relies
@@ -807,6 +860,9 @@ pub fn try_to_constrained(
                 )
                 .collect();
 
+        // Where this region's glyphs begin in the global vector, so constraint
+        // emission below can see exactly the glyphs pass 2 produced for it.
+        let region_glyph_start = glyphs.len();
         let mut emit = Emit {
             glyphs: &mut glyphs,
             strokes: &mut strokes,
@@ -1156,6 +1212,144 @@ pub fn try_to_constrained(
             }
         }
 
+        // --- Constraint emission (Chapter 7 §"Pipeline Overview": the spacing
+        // pass "build[s] collision constraints"). Everything emitted here is
+        // satisfiable on well-formed input by construction — the source layout
+        // separates columns collision-free and a conformant re-spacing keeps
+        // them so — and the order is deterministic: per region, no-collision
+        // pairs (staff emission order, then column x / glyph id), containment
+        // (glyph stable-id order), then projected breaks (override order).
+        let region_glyph_objects = &glyphs[region_glyph_start..];
+        let glyph_by_id: BTreeMap<GlyphObjectId, &GlyphObject> = region_glyph_objects
+            .iter()
+            .map(|glyph| (glyph.id(), glyph))
+            .collect();
+
+        // NoCollision between *successive notehead columns* within each staff:
+        // adjacent pairs in (column x, id) order, one linear chain per staff,
+        // not O(n²). Chord members share a column slot — a second or unison may
+        // genuinely overlap by design — so only cross-column neighbours carry
+        // the obligation.
+        for staff in &staves_in_order {
+            let mut heads: Vec<&GlyphObject> = staff_members
+                .get(staff)
+                .into_iter()
+                .flatten()
+                .filter_map(|id| glyph_by_id.get(id).copied())
+                .filter(|glyph| glyph.glyph.as_str().starts_with("notehead"))
+                .collect();
+            heads.sort_by(|a, b| {
+                a.baseline
+                    .x
+                    .0
+                    .total_cmp(&b.baseline.x.0)
+                    .then_with(|| a.id().cmp(&b.id()))
+            });
+            for pair in heads.windows(2) {
+                if pair[0].horizontal_slot != pair[1].horizontal_slot {
+                    constraints.push(LayoutConstraint::NoCollision {
+                        a: pair[0].id(),
+                        b: pair[1].id(),
+                    });
+                }
+            }
+        }
+
+        // PositionWithin: every glyph must stay inside its owning region's
+        // envelope. The vertical extent is the exact envelope of the region's
+        // own glyph boxes (both v0 solvers preserve glyph `y` verbatim, so this
+        // is a real obligation a vertical pass must renegotiate); the
+        // horizontal span is the open v0 canvas (see
+        // [`POSITION_WITHIN_X_REACH`]).
+        if !region_glyph_objects.is_empty() {
+            let mut bottom = f32::INFINITY;
+            let mut top = f32::NEG_INFINITY;
+            for glyph in region_glyph_objects {
+                bottom = bottom.min(glyph.baseline.y.0 + glyph.bounding_box.bottom.0);
+                top = top.max(glyph.baseline.y.0 + glyph.bounding_box.top.0);
+            }
+            let envelope = Rect {
+                origin: Point::new(-POSITION_WITHIN_X_REACH, bottom),
+                size: Size2D {
+                    width: StaffSpace(2.0 * POSITION_WITHIN_X_REACH),
+                    height: StaffSpace(top - bottom),
+                },
+            };
+            let mut ids: Vec<GlyphObjectId> = glyph_by_id.keys().copied().collect();
+            ids.sort();
+            for glyph in ids {
+                constraints.push(LayoutConstraint::PositionWithin {
+                    glyph,
+                    region: envelope,
+                });
+            }
+        }
+
+        // Projected break overrides (the logical stage's `SystemBreak` /
+        // `PageBreak` engraving overrides, Chapter 7 §"Engraving Overrides")
+        // become break constraints on the spring slot that carries the break
+        // anchor's onset — the barline column at that time when one exists
+        // (a break belongs at the boundary), else the note column. An anchor
+        // no realized column represents — an event or measure outside this
+        // region, a measure *end* (Minimal resolves measure starts only), a
+        // region edge, or a column no glyph landed in — is skipped silently:
+        // there is no slot for a solver to break at.
+        let mut event_onsets: BTreeMap<EventId, TimePoint> = BTreeMap::new();
+        let mut measure_starts: BTreeMap<MeasureId, TimePoint> = BTreeMap::new();
+        for object in &region.objects {
+            match (object.provenance().source, object.content()) {
+                (TypedObjectId::Event(eid), LayoutContent::Note(note)) => {
+                    event_onsets.insert(eid, note.position.clone());
+                }
+                (TypedObjectId::Event(eid), LayoutContent::Rest(rest)) => {
+                    event_onsets.insert(eid, rest.position.clone());
+                }
+                (TypedObjectId::Measure(mid), LayoutContent::Measure(measure)) => {
+                    measure_starts.insert(mid, measure.start.clone());
+                }
+                _ => {}
+            }
+        }
+        for override_record in &logical.overrides {
+            if override_record.target
+                != OverrideTarget::ScoreGraph(TypedObjectId::Region(region_id))
+            {
+                continue;
+            }
+            let (anchor, system) = match &override_record.kind {
+                OverrideKind::SystemBreak { anchor } => (anchor, true),
+                OverrideKind::PageBreak { anchor } => (anchor, false),
+                _ => continue,
+            };
+            let Some(time) = break_anchor_time(anchor, &event_onsets, &measure_starts) else {
+                continue;
+            };
+            let slot = [ColumnRole::Barline, ColumnRole::Note]
+                .iter()
+                .find_map(|role| {
+                    let info = columns.get(&ColumnKey::Timed(time.clone(), *role))?;
+                    column_members
+                        .get(&info.slot)
+                        .filter(|members| !members.is_empty())
+                        .map(|_| info.slot)
+                });
+            let Some(slot) = slot else {
+                continue;
+            };
+            // The override's binding strength is the break's kind: a `Hard`
+            // override MUST be honored or error, a `Soft` one is a preference
+            // (Chapter 7 §"Override Resolution"; the projection emits `Soft`).
+            let kind = match override_record.priority {
+                OverridePriority::Hard => BreakKind::Hard,
+                OverridePriority::Soft => BreakKind::Soft,
+            };
+            constraints.push(if system {
+                LayoutConstraint::SystemBreakAt { slot, kind }
+            } else {
+                LayoutConstraint::PageBreakAt { slot, kind }
+            });
+        }
+
         // A staff band per manifested staff that carries glyphs, in first-glyph
         // order; an (empty) inter-staff gap band between adjacent staves; and a
         // margin band for any region-level glyphs.
@@ -1203,7 +1397,7 @@ pub fn try_to_constrained(
         glyphs,
         strokes,
         vertical_bands,
-        constraints: Vec::new(),
+        constraints,
         engraving_decisions: logical.engraving_decisions.clone(),
         diagnostics,
         catalog,
@@ -1419,6 +1613,30 @@ fn component_provenance(base: &Provenance, comp: usize) -> Provenance {
             SynthesisInstanceKey(comp as u128),
             base.dependencies.clone(),
         )
+    }
+}
+
+/// Resolves a projected break override's [`TimeAnchor`] to the region-local
+/// [`TimePoint`] whose spacing column carries it, using the onsets this
+/// region's own objects resolved to. Returns `None` — the break is skipped
+/// silently — when the anchor addresses something no spacing column
+/// represents: an event or measure outside this region, a measure *end* (the
+/// Minimal slice resolves measure starts only), a region edge, or an offset
+/// whose clock does not match its base.
+fn break_anchor_time(
+    anchor: &TimeAnchor,
+    event_onsets: &BTreeMap<EventId, TimePoint>,
+    measure_starts: &BTreeMap<MeasureId, TimePoint>,
+) -> Option<TimePoint> {
+    match anchor {
+        TimeAnchor::WallClock { time } => Some(TimePoint::WallClock(*time)),
+        TimeAnchor::Event { id, offset } => apply_offset(event_onsets.get(id)?.clone(), offset),
+        TimeAnchor::Measure {
+            id,
+            position: MeasurePosition::Start,
+            offset,
+        } => apply_offset(measure_starts.get(id)?.clone(), offset),
+        TimeAnchor::Measure { .. } | TimeAnchor::Region { .. } => None,
     }
 }
 
@@ -1699,6 +1917,191 @@ mod tests {
     use crate::time_axis::TimeAxis;
     use epiphany_core::generators::valid_score_rich;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn constraint_strength_attaches_by_rule() {
+        // The spec's constraint enum carries no strength field, so strength is
+        // a rule over the constraint's own shape (Chapter 9 §"Strength Levels").
+        let glyph = GlyphObjectId(1);
+        let slot = SpringSlotId(2);
+        let required = [
+            LayoutConstraint::NoCollision { a: glyph, b: glyph },
+            LayoutConstraint::Align {
+                a: glyph,
+                b: glyph,
+                axis: Axis::Vertical,
+            },
+            LayoutConstraint::PositionWithin {
+                glyph,
+                region: Rect {
+                    origin: Point::ORIGIN,
+                    size: Size2D::default(),
+                },
+            },
+            LayoutConstraint::SystemBreakAt {
+                slot,
+                kind: BreakKind::Hard,
+            },
+            LayoutConstraint::PageBreakAt {
+                slot,
+                kind: BreakKind::Hard,
+            },
+            // Conservative: an unverifiable extension obligation is never demoted.
+            LayoutConstraint::Registered(ConstraintRegistryId(3), ConstraintParameters::default()),
+        ];
+        for constraint in required {
+            assert_eq!(constraint.strength(), ConstraintStrength::Required);
+        }
+        // A soft break is a preference at the default weight.
+        for soft in [
+            LayoutConstraint::SystemBreakAt {
+                slot,
+                kind: BreakKind::Soft,
+            },
+            LayoutConstraint::PageBreakAt {
+                slot,
+                kind: BreakKind::Soft,
+            },
+        ] {
+            assert_eq!(
+                soft.strength(),
+                ConstraintStrength::Preferred { weight: 1.0 }
+            );
+        }
+    }
+
+    #[test]
+    fn constraint_emission_is_deterministic_and_principled() {
+        let logical = to_logical(&valid_score_rich(11));
+        let a = try_to_constrained(&logical).expect("well-formed logical IR");
+        let b = try_to_constrained(&logical).expect("well-formed logical IR");
+        assert_eq!(
+            a.constraints, b.constraints,
+            "two runs emit identical constraint vectors"
+        );
+        assert!(!a.constraints.is_empty(), "the pipeline emits constraints");
+        // Every constraint references real glyphs/slots and finite geometry.
+        assert!(a.validate().is_ok());
+
+        // Containment: one PositionWithin per glyph, against its region envelope.
+        let contained = a
+            .constraints
+            .iter()
+            .filter(|c| matches!(c, LayoutConstraint::PositionWithin { .. }))
+            .count();
+        assert_eq!(contained, a.glyphs.len());
+
+        // No-collision: a linear chain over successive notehead columns, never
+        // the O(n²) all-pairs closure.
+        let pairs = a
+            .constraints
+            .iter()
+            .filter(|c| matches!(c, LayoutConstraint::NoCollision { .. }))
+            .count();
+        let noteheads = a
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("notehead"))
+            .count();
+        assert!(pairs > 0, "successive noteheads earn no-collision pairs");
+        assert!(pairs < noteheads, "the chain is linear in the noteheads");
+        // Every no-collision endpoint is a notehead in a distinct column slot.
+        let by_id: BTreeMap<GlyphObjectId, &GlyphObject> =
+            a.glyphs.iter().map(|g| (g.id(), g)).collect();
+        for constraint in &a.constraints {
+            if let LayoutConstraint::NoCollision {
+                a: first,
+                b: second,
+            } = constraint
+            {
+                let (first, second) = (by_id[first], by_id[second]);
+                assert!(first.glyph.as_str().starts_with("notehead"));
+                assert!(second.glyph.as_str().starts_with("notehead"));
+                assert_ne!(first.horizontal_slot, second.horizontal_slot);
+            }
+        }
+        // No break constraints without projected break overrides.
+        assert!(!a.constraints.iter().any(|c| matches!(
+            c,
+            LayoutConstraint::SystemBreakAt { .. } | LayoutConstraint::PageBreakAt { .. }
+        )));
+    }
+
+    #[test]
+    fn user_break_overrides_become_soft_break_constraints() {
+        use epiphany_core::generators::valid_score;
+        use epiphany_core::{AnchorOffset, Event, RegionEdge, TimeAnchor};
+
+        let mut score = valid_score(3);
+        let region_id = score.canvas.regions[0].id;
+        // A pitched event in region 0 whose onset column is realized (it draws
+        // noteheads), so the break has a spring slot to land on.
+        let event = score.canvas.regions[0]
+            .staff_instances()
+            .iter()
+            .flat_map(|si| si.voices.iter())
+            .flat_map(|voice| voice.events.iter().copied())
+            .find(|eid| {
+                matches!(score.events.get(*eid), Some(Event::Pitched(p)) if !p.pitches.is_empty())
+            })
+            .expect("valid_score has a pitched event");
+        let anchor = TimeAnchor::Event {
+            id: event,
+            offset: AnchorOffset::Zero,
+        };
+        let content = score.canvas.regions[0]
+            .content
+            .staff_based_mut()
+            .expect("valid_score is staff based");
+        content.user_system_breaks.push(anchor.clone());
+        content.user_page_breaks.push(anchor);
+        // An anchor no spacing column represents — a region edge — is skipped
+        // silently rather than mis-assigned to some column.
+        content.user_system_breaks.push(TimeAnchor::Region {
+            id: region_id,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Zero,
+        });
+
+        let constrained = to_constrained(&to_logical(&score));
+        assert!(constrained.validate().is_ok());
+        let system_breaks: Vec<&LayoutConstraint> = constrained
+            .constraints
+            .iter()
+            .filter(|c| matches!(c, LayoutConstraint::SystemBreakAt { .. }))
+            .collect();
+        let page_breaks: Vec<&LayoutConstraint> = constrained
+            .constraints
+            .iter()
+            .filter(|c| matches!(c, LayoutConstraint::PageBreakAt { .. }))
+            .collect();
+        assert_eq!(
+            system_breaks.len(),
+            1,
+            "the event-anchored break lands; the region-edge one is skipped"
+        );
+        assert_eq!(page_breaks.len(), 1);
+        for projected in system_breaks.iter().chain(&page_breaks) {
+            let (LayoutConstraint::SystemBreakAt { slot, kind }
+            | LayoutConstraint::PageBreakAt { slot, kind }) = projected
+            else {
+                unreachable!("filtered to break constraints");
+            };
+            // A Soft override projects a Soft break — a Preferred obligation.
+            assert_eq!(*kind, BreakKind::Soft);
+            assert_eq!(
+                projected.strength(),
+                ConstraintStrength::Preferred { weight: 1.0 }
+            );
+            // The slot is the event's own (realized) onset column.
+            let slot = constrained
+                .horizontal_slots
+                .iter()
+                .find(|s| s.id == *slot)
+                .expect("break constraints name realized slots");
+            assert!(!slot.members.is_empty());
+        }
+    }
 
     #[test]
     fn ledger_steps_cover_only_lines_outside_the_staff() {

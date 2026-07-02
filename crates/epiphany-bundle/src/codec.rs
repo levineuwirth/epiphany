@@ -309,9 +309,13 @@ impl<'a> Reader<'a> {
         Ok(i64::from_le_bytes(self.take_array()?))
     }
 
-    /// A `u32`-length-prefixed byte string, copied out. The length prefix is
-    /// checked against the bytes remaining *before* any allocation.
-    pub fn get_var_bytes(&mut self) -> Result<Vec<u8>, DecodeError> {
+    /// A `u32`-length-prefixed byte string, *borrowed* from the input rather
+    /// than copied. The length prefix is checked against the bytes remaining
+    /// before the slice is taken. The zero-copy counterpart of
+    /// [`Reader::get_var_bytes`], for callers that need positions or slices
+    /// into the original buffer (e.g. the per-envelope offsets the operation
+    /// index records).
+    pub fn get_var_slice(&mut self) -> Result<&'a [u8], DecodeError> {
         let len = self.get_u32()? as usize;
         if len > self.remaining() {
             return Err(DecodeError::LengthOverflow {
@@ -319,7 +323,13 @@ impl<'a> Reader<'a> {
                 remaining: self.remaining(),
             });
         }
-        Ok(self.take(len)?.to_vec())
+        self.take(len)
+    }
+
+    /// A `u32`-length-prefixed byte string, copied out. The length prefix is
+    /// checked against the bytes remaining *before* any allocation.
+    pub fn get_var_bytes(&mut self) -> Result<Vec<u8>, DecodeError> {
+        Ok(self.get_var_slice()?.to_vec())
     }
 
     /// A `u32`-length-prefixed UTF-8 string.

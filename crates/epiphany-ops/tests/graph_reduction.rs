@@ -2,18 +2,20 @@
 //! graph rather than only the Chapter 6 bookkeeping projection.
 
 use epiphany_core::{
-    check_invariants, derive_promoted_voice_id, AnchorOffset, EventId, MusicalDuration,
-    MusicalPosition, OperationId, PitchId, RationalTime, RegionEdge, RegionTimeModel, ReplicaId,
-    Score, SlurId, StaffInstanceId, TimeAnchor, TransactionId, TypedObjectId, VoiceId, VoiceOrigin,
-    WallClockTime,
+    check_invariants, derive_promoted_voice_id, AnalyticalAnnotation, AnalyticalAnnotationId,
+    AnchorOffset, AnnotationAnchor, Comment, CommentId, CueEvent, CueRendering, Event,
+    EventDuration, EventId, EventPosition, GestureAnchoring, GraphicGesture, GraphicGestureId,
+    Marker, MarkerId, MusicalDuration, MusicalPosition, OperationId, PitchId, RationalTime,
+    RegionEdge, RegionTimeModel, ReplicaId, Score, SlurId, StaffInstanceId, TimeAnchor,
+    TransactionId, TypedObjectId, VoiceId, VoiceOrigin, WallClockTime,
 };
 use epiphany_ops::{
     valuegen, AuthorId, CausalContext, ChangeRegionTimeModelOp, ConflictKind, CreateCrossCuttingOp,
     CrossCuttingValue, DeleteEventOp, HybridLogicalClock, InsertEventOp, NoOpReason,
     OperationEffect, OperationEnvelope, OperationKind, OperationPayload, OperationSet,
-    OperationStamp, PositionRemapping, PreconditionFailureReason, SetUserSystemBreakOp,
-    TransactionCategory, TransactionDescriptor, TupletCompensation, UndoPolicy,
-    UndoTransactionPayload,
+    OperationStamp, PositionRemapping, PreconditionFailureReason, ReanchorReason, RepairKind,
+    RepairRecord, SetUserSystemBreakOp, TransactionCategory, TransactionDescriptor,
+    TupletCompensation, UndoPolicy, UndoTransactionPayload,
 };
 
 fn envelope(
@@ -1031,6 +1033,76 @@ fn deleting_both_slur_endpoints_cascades_in_both_graph_and_ledger() {
     assert!(check_invariants(&result.score).is_empty());
 }
 
+#[test]
+fn cascade_delete_tuplet_prunes_dangling_decompositions() {
+    // `valid_score_rich`'s metric region is a 3:2 triplet whose first member carries an
+    // in-tuplet decomposition. Cascade-deleting the tuplet — member 0 carries the
+    // `CascadeDeleteTuplets`, the rest delete as ordinary (no-longer-tuplet) events —
+    // must also drop that decomposition; otherwise its tuplet reference would dangle
+    // (invariant 6, cross-cutting refs resolve).
+    let base = epiphany_core::generators::valid_score_rich(0x5EED);
+    let tuplet = base.cross_cutting.tuplets[0].id;
+    let members = base.cross_cutting.tuplets[0].members.clone();
+    assert_eq!(members.len(), 3, "the fixture triplet has three members");
+    assert!(
+        base.decomposition_attachments
+            .iter()
+            .any(|d| d.components.iter().any(|c| c.tuplet == Some(tuplet))),
+        "the fixture has an in-tuplet decomposition referencing the triplet"
+    );
+
+    // Three deletes in causal order: the structure-removing cascade first, so the
+    // remaining members then delete as ordinary events.
+    let mut ops = Vec::new();
+    for (i, &member) in members.iter().enumerate() {
+        let counter = (i + 1) as u64;
+        let compensation = if i == 0 {
+            TupletCompensation::CascadeDeleteTuplets {
+                tuplets: vec![tuplet],
+            }
+        } else {
+            TupletCompensation::NotInTuplet
+        };
+        ops.push(envelope(
+            70,
+            counter,
+            10 + i as i64,
+            CausalContext::new(),
+            None,
+            OperationPayload::Primitive(OperationKind::DeleteEvent(DeleteEventOp {
+                event: member,
+                tuplet_compensation: compensation,
+            })),
+        ));
+    }
+    let mut set = OperationSet::new();
+    set.accept_all(ops);
+    let result = set.reduce_onto(&base);
+
+    assert!(
+        result.score.cross_cutting.tuplets.is_empty(),
+        "the tuplet structure is removed"
+    );
+    assert!(
+        !result
+            .score
+            .decomposition_attachments
+            .iter()
+            .any(|d| d.components.iter().any(|c| c.tuplet == Some(tuplet))),
+        "the now-orphaned decomposition is pruned"
+    );
+    for &member in &members {
+        assert!(
+            matches!(
+                result.state.objects.get(&TypedObjectId::Event(member)),
+                Some(epiphany_ops::ObjectState::Tombstoned { .. })
+            ),
+            "each member is tombstoned"
+        );
+    }
+    assert!(check_invariants(&result.score).is_empty());
+}
+
 /// Helper: the effect recorded for `id` in a reduction.
 fn effect_of(result: &epiphany_ops::GraphMaterialization, id: OperationId) -> OperationEffect {
     result
@@ -1827,4 +1899,855 @@ fn create_rejects_carried_non_hierarchy_children() {
         "a staff instance carrying a measure is rejected"
     );
     assert!(check_invariants(&result.score).is_empty());
+}
+
+// === Re-anchoring rule-table coverage: markers, cue events, comments,
+// analytical annotations, graphic gestures (core_spec §"The Re-Anchoring Rule
+// Table", §"Total Ordering for Nearest"). All five kinds exist only via seeded
+// base graphs (no operation creates them), so every scenario reduces onto a
+// base. ========================================================================
+
+/// The repairs of an `AppliedWithRepair` effect.
+fn repairs_of(result: &epiphany_ops::GraphMaterialization, id: OperationId) -> Vec<RepairRecord> {
+    match effect_of(result, id) {
+        OperationEffect::AppliedWithRepair { repairs } => repairs,
+        other => panic!("expected AppliedWithRepair, got {other:?}"),
+    }
+}
+
+/// A plain (non-tuplet) DeleteEvent envelope.
+fn delete_event(
+    replica: u64,
+    counter: u64,
+    physical: i64,
+    ctx: CausalContext,
+    event: EventId,
+) -> OperationEnvelope {
+    envelope(
+        replica,
+        counter,
+        physical,
+        ctx,
+        None,
+        OperationPayload::Primitive(OperationKind::DeleteEvent(DeleteEventOp {
+            event,
+            tuplet_compensation: TupletCompensation::NotInTuplet,
+        })),
+    )
+}
+
+/// The first voice's event list (the fixture voice all these scenarios edit).
+fn first_voice_events(base: &Score) -> Vec<EventId> {
+    base.canvas.regions[0].staff_instances()[0].voices[0]
+        .events
+        .clone()
+}
+
+/// Adds a cue event sourcing `sources` to `base`'s first voice at whole-note
+/// `position` (clear of the fixture's quarter-note content in `[0, 1)`).
+fn push_cue(base: &mut Score, id: EventId, sources: Vec<EventId>, position: i32) {
+    let (_, voice) = target(base);
+    base.events
+        .insert(Event::Cue(CueEvent {
+            id,
+            voice,
+            position: EventPosition::Musical(MusicalPosition(RationalTime::from_int(position))),
+            duration: EventDuration::Musical(MusicalDuration::whole()),
+            source: sources,
+            rendering: CueRendering,
+        }))
+        .expect("fresh cue id");
+    base.canvas.regions[0]
+        .content
+        .staff_instances_mut()
+        .expect("fixture is staff based")[0]
+        .voices[0]
+        .events
+        .push(id);
+}
+
+#[test]
+fn deleting_a_cue_source_cascade_deletes_the_cue() {
+    // Rule table, "Cue event / Source event": cascade-delete ("a cue with no
+    // source is meaningless") — ledger tombstone, graph removal, and a
+    // CascadeDeleted repair in the triggering delete's effect, all in the same
+    // reduction step.
+    let mut base = epiphany_core::generators::valid_score(100);
+    let source = first_voice_events(&base)[0];
+    let cue = EventId::new(ReplicaId(90), 0);
+    push_cue(&mut base, cue, vec![source], 40);
+
+    let del = delete_event(91, 0, 10, CausalContext::new(), source);
+    let mut set = OperationSet::new();
+    set.accept(del.clone());
+    let result = set.reduce_onto(&base);
+
+    assert!(
+        repairs_of(&result, del.id)
+            .iter()
+            .any(|r| r.kind == RepairKind::CascadeDeleted && r.target == TypedObjectId::Event(cue)),
+        "the cue cascade is recorded in the triggering delete's effect"
+    );
+    assert!(
+        matches!(
+            result.state.objects.get(&TypedObjectId::Event(cue)),
+            Some(epiphany_ops::ObjectState::Tombstoned { .. })
+        ),
+        "the cue's event id is tombstoned in the ledger"
+    );
+    assert!(
+        !result.score.events.contains(cue),
+        "the cue is removed from the event arena"
+    );
+    assert!(
+        result.score.tombstoned_events.contains(&cue),
+        "the cue is a graph tombstone"
+    );
+    assert!(
+        !first_voice_events(&result.score).contains(&cue),
+        "the cue is removed from its voice"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn a_cue_with_multiple_sources_cascades_on_any_source_deletion() {
+    // The table's action is the plain "cascade-delete" on a source deletion —
+    // not truncate-while-any-source-survives (the rationale-vs-action tension
+    // for multi-source cues is a proposed Pass-12 row). Either source's
+    // deletion cascades the cue.
+    for victim_index in [0usize, 1] {
+        let mut base = epiphany_core::generators::valid_score(100);
+        let events = first_voice_events(&base);
+        let cue = EventId::new(ReplicaId(90), 1);
+        push_cue(&mut base, cue, vec![events[0], events[1]], 40);
+
+        let del = delete_event(91, 0, 10, CausalContext::new(), events[victim_index]);
+        let mut set = OperationSet::new();
+        set.accept(del.clone());
+        let result = set.reduce_onto(&base);
+
+        assert!(
+            repairs_of(&result, del.id)
+                .iter()
+                .any(|r| r.kind == RepairKind::CascadeDeleted
+                    && r.target == TypedObjectId::Event(cue)),
+            "deleting source #{victim_index} cascades the two-source cue"
+        );
+        assert!(!result.score.events.contains(cue));
+        assert!(check_invariants(&result.score).is_empty());
+    }
+}
+
+#[test]
+fn a_cascaded_cue_reanchors_its_own_referents_transitively() {
+    // A cascaded cue is itself a tombstoned event, so the same re-anchoring
+    // pass runs over *its* referents in the same reduction step: a cue-of-a-cue
+    // cascades along.
+    let mut base = epiphany_core::generators::valid_score(100);
+    let source = first_voice_events(&base)[0];
+    let cue1 = EventId::new(ReplicaId(90), 2);
+    let cue2 = EventId::new(ReplicaId(90), 3);
+    push_cue(&mut base, cue1, vec![source], 40);
+    push_cue(&mut base, cue2, vec![cue1], 44);
+
+    let del = delete_event(91, 0, 10, CausalContext::new(), source);
+    let mut set = OperationSet::new();
+    set.accept(del.clone());
+    let result = set.reduce_onto(&base);
+
+    let repairs = repairs_of(&result, del.id);
+    for cue in [cue1, cue2] {
+        assert!(
+            repairs
+                .iter()
+                .any(|r| r.kind == RepairKind::CascadeDeleted
+                    && r.target == TypedObjectId::Event(cue)),
+            "cue {cue:?} cascades in the same reduction step"
+        );
+        assert!(
+            matches!(
+                result.state.objects.get(&TypedObjectId::Event(cue)),
+                Some(epiphany_ops::ObjectState::Tombstoned { .. })
+            ),
+            "cue {cue:?} is tombstoned in the ledger"
+        );
+        assert!(!result.score.events.contains(cue));
+    }
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn deleting_a_comment_anchor_orphans_the_comment() {
+    // Rule table, "Comment / Anchor": orphan — user content never silently
+    // deleted. The comment survives (ledger Live, graph present); its anchor
+    // degrades to the containing region so invariant 10 keeps holding.
+    let mut base = epiphany_core::generators::valid_score(100);
+    let region = base.canvas.regions[0].id;
+    let anchor_event = first_voice_events(&base)[0];
+    let comment_id = CommentId::new(ReplicaId(90), 4);
+    base.cross_cutting.comments.push(Comment {
+        id: comment_id,
+        anchor: AnnotationAnchor::Event(anchor_event),
+        resolved: false,
+    });
+
+    let del = delete_event(91, 0, 10, CausalContext::new(), anchor_event);
+    let mut set = OperationSet::new();
+    set.accept(del.clone());
+    let result = set.reduce_onto(&base);
+
+    assert!(
+        repairs_of(&result, del.id)
+            .iter()
+            .any(|r| r.kind == RepairKind::Orphaned
+                && r.target == TypedObjectId::Comment(comment_id)),
+        "the orphaning is a recorded repair"
+    );
+    assert_eq!(
+        result
+            .state
+            .objects
+            .get(&TypedObjectId::Comment(comment_id)),
+        Some(&epiphany_ops::ObjectState::Live),
+        "the orphaned comment stays live in the ledger"
+    );
+    let comment = result
+        .score
+        .cross_cutting
+        .comments
+        .iter()
+        .find(|c| c.id == comment_id)
+        .expect("the orphaned comment survives in the graph");
+    assert_eq!(
+        comment.anchor,
+        AnnotationAnchor::Region(region),
+        "the dangling event anchor degrades to the containing region"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn annotation_reanchors_to_a_range_preserving_the_events_extent() {
+    // Rule table, "Analytical annotation / Anchor": re-anchor to a time range
+    // preserving the original extent. The fixture's second event spans
+    // [1/4, 1/2), so the reconstructed range is region-start + 1/4 .. + 1/2.
+    let mut base = epiphany_core::generators::valid_score(100);
+    let region = base.canvas.regions[0].id;
+    let anchor_event = first_voice_events(&base)[1];
+    let annotation_id = AnalyticalAnnotationId::new(ReplicaId(90), 5);
+    base.cross_cutting.analytical.push(AnalyticalAnnotation {
+        id: annotation_id,
+        anchor: AnnotationAnchor::Event(anchor_event),
+        layer: None,
+    });
+
+    let del = delete_event(91, 0, 10, CausalContext::new(), anchor_event);
+    let mut set = OperationSet::new();
+    set.accept(del.clone());
+    let result = set.reduce_onto(&base);
+
+    assert!(
+        repairs_of(&result, del.id).iter().any(|r| {
+            r.target == TypedObjectId::AnalyticalAnnotation(annotation_id)
+                && r.kind
+                    == RepairKind::Reanchored {
+                        from: TypedObjectId::Event(anchor_event),
+                        to: TypedObjectId::Region(region),
+                        reason: ReanchorReason::ExplicitFallback,
+                    }
+        }),
+        "the range reconstruction is a recorded repair"
+    );
+    let annotation = result
+        .score
+        .cross_cutting
+        .analytical
+        .iter()
+        .find(|a| a.id == annotation_id)
+        .expect("the annotation survives");
+    let offset_at = |num: i64, den: i64| {
+        AnchorOffset::Musical(MusicalDuration(RationalTime::new(num, den).unwrap()))
+    };
+    assert_eq!(
+        annotation.anchor,
+        AnnotationAnchor::Range {
+            start: TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: offset_at(1, 4),
+            },
+            end: TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: offset_at(1, 2),
+            },
+        },
+        "the reconstructed range covers the deleted event's exact span"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn annotation_orphans_when_the_range_cannot_be_reconstructed() {
+    // The extent of a wall-clock event is not expressible as a stored
+    // region-relative range in this prototype (the expressibility gap is a
+    // proposed Pass-12 row), so the annotation orphans: kept, anchor degraded
+    // to the containing region.
+    let mut base = epiphany_core::generators::valid_score_rich(0x5EED);
+    let (region, wall_clock_event) = base
+        .voices()
+        .find_map(|(region, _, v)| {
+            v.events
+                .iter()
+                .copied()
+                .find(|e| {
+                    matches!(
+                        base.events.get(*e).map(Event::position),
+                        Some(EventPosition::WallClock(_))
+                    )
+                })
+                .map(|e| (region, e))
+        })
+        .expect("the rich fixture has a proportional region with wall-clock events");
+    let annotation_id = AnalyticalAnnotationId::new(ReplicaId(90), 6);
+    base.cross_cutting.analytical.push(AnalyticalAnnotation {
+        id: annotation_id,
+        anchor: AnnotationAnchor::Event(wall_clock_event),
+        layer: None,
+    });
+
+    let del = delete_event(91, 0, 10, CausalContext::new(), wall_clock_event);
+    let mut set = OperationSet::new();
+    set.accept(del.clone());
+    let result = set.reduce_onto(&base);
+
+    assert!(
+        repairs_of(&result, del.id)
+            .iter()
+            .any(|r| r.kind == RepairKind::Orphaned
+                && r.target == TypedObjectId::AnalyticalAnnotation(annotation_id)),
+        "an unreconstructable range orphans the annotation"
+    );
+    let annotation = result
+        .score
+        .cross_cutting
+        .analytical
+        .iter()
+        .find(|a| a.id == annotation_id)
+        .expect("the orphaned annotation survives");
+    assert_eq!(annotation.anchor, AnnotationAnchor::Region(region));
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn gesture_event_references_retarget_to_the_nearest_survivor() {
+    // Rule table, "Graphic gesture / Anchor event": re-anchor to the nearest
+    // surviving event of the same staff instance.
+    let mut base = epiphany_core::generators::valid_score(100);
+    let events = first_voice_events(&base);
+    let (dead, survivor) = (events[0], events[1]);
+    let gesture_id = GraphicGestureId::new(ReplicaId(90), 7);
+    base.cross_cutting.graphic_gestures.push(GraphicGesture {
+        id: gesture_id,
+        objects: Vec::new(),
+        anchoring: GestureAnchoring::Events(vec![dead]),
+    });
+
+    let del = delete_event(91, 0, 10, CausalContext::new(), dead);
+    let mut set = OperationSet::new();
+    set.accept(del.clone());
+    let result = set.reduce_onto(&base);
+
+    assert!(
+        repairs_of(&result, del.id).iter().any(|r| {
+            r.target == TypedObjectId::GraphicGesture(gesture_id)
+                && r.kind
+                    == RepairKind::Reanchored {
+                        from: TypedObjectId::Event(dead),
+                        to: TypedObjectId::Event(survivor),
+                        reason: ReanchorReason::SameVoiceNearer,
+                    }
+        }),
+        "the gesture re-target is a recorded repair"
+    );
+    let gesture = result
+        .score
+        .cross_cutting
+        .graphic_gestures
+        .iter()
+        .find(|g| g.id == gesture_id)
+        .expect("the gesture survives");
+    assert_eq!(
+        gesture.anchoring,
+        GestureAnchoring::Events(vec![survivor]),
+        "the graph reference list agrees with the recorded repair"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn free_anchored_gestures_ignore_event_deletion() {
+    // Rule table: "for Free anchoring, no action" — a free gesture follows no
+    // score content, so the delete reduces with no gesture repair.
+    let mut base = epiphany_core::generators::valid_score(100);
+    let dead = first_voice_events(&base)[0];
+    let gesture_id = GraphicGestureId::new(ReplicaId(90), 8);
+    base.cross_cutting.graphic_gestures.push(GraphicGesture {
+        id: gesture_id,
+        objects: Vec::new(),
+        anchoring: GestureAnchoring::Free,
+    });
+
+    let del = delete_event(91, 0, 10, CausalContext::new(), dead);
+    let mut set = OperationSet::new();
+    set.accept(del.clone());
+    let result = set.reduce_onto(&base);
+
+    assert_eq!(
+        effect_of(&result, del.id),
+        OperationEffect::Applied,
+        "no repair is recorded for a free-anchored gesture"
+    );
+    let gesture = result
+        .score
+        .cross_cutting
+        .graphic_gestures
+        .iter()
+        .find(|g| g.id == gesture_id)
+        .expect("the gesture survives");
+    assert_eq!(gesture.anchoring, GestureAnchoring::Free);
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn gesture_range_anchoring_truncates_to_the_region_edge() {
+    // Rule table: "for Range anchoring, truncate" — the deterministic reading:
+    // a dead start endpoint moves to its region's start edge (an end endpoint
+    // would move to the end edge); the underdetermined "truncate" semantics is
+    // a proposed Pass-12 row.
+    let mut base = epiphany_core::generators::valid_score(100);
+    let region = base.canvas.regions[0].id;
+    let dead = first_voice_events(&base)[0];
+    let gesture_id = GraphicGestureId::new(ReplicaId(90), 9);
+    let end_anchor = TimeAnchor::Region {
+        id: region,
+        edge: RegionEdge::End,
+        offset: AnchorOffset::Zero,
+    };
+    base.cross_cutting.graphic_gestures.push(GraphicGesture {
+        id: gesture_id,
+        objects: Vec::new(),
+        anchoring: GestureAnchoring::Range {
+            start: TimeAnchor::Event {
+                id: dead,
+                offset: AnchorOffset::Zero,
+            },
+            end: end_anchor.clone(),
+            staves: Vec::new(),
+        },
+    });
+
+    let del = delete_event(91, 0, 10, CausalContext::new(), dead);
+    let mut set = OperationSet::new();
+    set.accept(del.clone());
+    let result = set.reduce_onto(&base);
+
+    assert!(
+        repairs_of(&result, del.id).iter().any(|r| {
+            r.target == TypedObjectId::GraphicGesture(gesture_id)
+                && r.kind
+                    == RepairKind::Reanchored {
+                        from: TypedObjectId::Event(dead),
+                        to: TypedObjectId::Region(region),
+                        reason: ReanchorReason::ExplicitFallback,
+                    }
+        }),
+        "the range truncation is a recorded repair"
+    );
+    let gesture = result
+        .score
+        .cross_cutting
+        .graphic_gestures
+        .iter()
+        .find(|g| g.id == gesture_id)
+        .expect("the gesture survives");
+    assert_eq!(
+        gesture.anchoring,
+        GestureAnchoring::Range {
+            start: TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Zero,
+            },
+            end: end_anchor,
+            staves: Vec::new(),
+        },
+        "the dead start endpoint moved to the region's start edge"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn marker_reanchor_breaks_full_ties_by_ascending_event_id() {
+    // Four-key ordering, key 4: with equal proximity rank, distance, and
+    // direction, the ascending typed-id byte order decides. The referent sits
+    // alone in its own voice; two candidates in two sibling voices share its
+    // exact position (rank 1, distance 0, forward) — the smaller EventId wins
+    // even though it was authored later and lives in the higher-id voice.
+    let mut base = epiphany_core::generators::valid_score(100);
+    let (staff_instance, _) = target(&base);
+    let referent_voice = VoiceId::new(ReplicaId(9), 77);
+    let voice_b = VoiceId::new(ReplicaId(9), 78);
+    let voice_c = VoiceId::new(ReplicaId(9), 79);
+    {
+        let instances = base.canvas.regions[0]
+            .content
+            .staff_instances_mut()
+            .expect("fixture is staff based");
+        instances[0].voices.push(valuegen::voice(referent_voice));
+        instances[0].voices.push(valuegen::voice(voice_b));
+        instances[0].voices.push(valuegen::voice(voice_c));
+    }
+    let referent = EventId::new(ReplicaId(95), 50);
+    let larger_id = EventId::new(ReplicaId(95), 9);
+    let smaller_id = EventId::new(ReplicaId(95), 3);
+    let marker_id = MarkerId::new(ReplicaId(90), 10);
+    base.cross_cutting.markers.push(Marker {
+        id: marker_id,
+        anchor: TimeAnchor::Event {
+            id: referent,
+            offset: AnchorOffset::Zero,
+        },
+    });
+
+    let ins = |counter: u64, event: EventId, voice: VoiceId, pitch: u64| {
+        let ctx = if counter == 0 {
+            CausalContext::new()
+        } else {
+            CausalContext::new().with_seen(ReplicaId(95), counter - 1)
+        };
+        envelope(
+            95,
+            counter,
+            10 + counter as i64,
+            ctx,
+            None,
+            insert(
+                staff_instance,
+                voice,
+                event,
+                PitchId::new(ReplicaId(95), 100 + pitch),
+                100,
+            ),
+        )
+    };
+    let del = delete_event(
+        95,
+        3,
+        20,
+        CausalContext::new().with_seen(ReplicaId(95), 2),
+        referent,
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(vec![
+        ins(0, referent, referent_voice, 0),
+        ins(1, larger_id, voice_b, 1),
+        ins(2, smaller_id, voice_c, 2),
+        del.clone(),
+    ]);
+    let result = set.reduce_onto(&base);
+
+    assert!(
+        repairs_of(&result, del.id).iter().any(|r| {
+            r.target == TypedObjectId::Marker(marker_id)
+                && r.kind
+                    == RepairKind::Reanchored {
+                        from: TypedObjectId::Event(referent),
+                        to: TypedObjectId::Event(smaller_id),
+                        reason: ReanchorReason::SameStaffInstanceNearer,
+                    }
+        }),
+        "a full tie falls to the ascending typed-id byte order"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn marker_orphans_when_the_staff_instance_has_no_other_live_event() {
+    // Rule table, "Marker / Anchor": proximity max is the same staff instance,
+    // orphan on failure. Every event of the marker's staff instance is deleted
+    // (the anchored one last), so no candidate survives within the bound; the
+    // marker is kept and its anchor degrades to the region start.
+    let mut base = epiphany_core::generators::valid_score(100);
+    let region = base.canvas.regions[0].id;
+    let instance_events: Vec<EventId> = base.canvas.regions[0].staff_instances()[0]
+        .voices
+        .iter()
+        .flat_map(|v| v.events.clone())
+        .collect();
+    let marked = instance_events[0];
+    let marker_id = MarkerId::new(ReplicaId(90), 11);
+    base.cross_cutting.markers.push(Marker {
+        id: marker_id,
+        anchor: TimeAnchor::Event {
+            id: marked,
+            offset: AnchorOffset::Zero,
+        },
+    });
+
+    let mut order: Vec<EventId> = instance_events
+        .iter()
+        .copied()
+        .filter(|e| *e != marked)
+        .collect();
+    order.push(marked);
+    let ops: Vec<OperationEnvelope> = order
+        .iter()
+        .enumerate()
+        .map(|(i, &event)| {
+            let ctx = if i == 0 {
+                CausalContext::new()
+            } else {
+                CausalContext::new().with_seen(ReplicaId(96), i as u64 - 1)
+            };
+            delete_event(96, i as u64, 10 + i as i64, ctx, event)
+        })
+        .collect();
+    let last = ops.last().expect("at least one delete").clone();
+    let mut set = OperationSet::new();
+    set.accept_all(ops);
+    let result = set.reduce_onto(&base);
+
+    assert!(
+        repairs_of(&result, last.id).iter().any(|r| r.kind == RepairKind::Orphaned
+            && r.target == TypedObjectId::Marker(marker_id)),
+        "the marker orphans when its staff instance has no other live event"
+    );
+    assert_eq!(
+        result.state.objects.get(&TypedObjectId::Marker(marker_id)),
+        Some(&epiphany_ops::ObjectState::Live),
+        "the orphaned marker stays live in the ledger"
+    );
+    let marker = result
+        .score
+        .cross_cutting
+        .markers
+        .iter()
+        .find(|m| m.id == marker_id)
+        .expect("the orphaned marker survives in the graph");
+    assert_eq!(
+        marker.anchor,
+        TimeAnchor::Region {
+            id: region,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Zero,
+        },
+        "the dangling anchor degrades to the region start"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn slur_reanchor_reason_names_the_survivors_containment_rank() {
+    // The Reanchored reason on a slur's surviving-endpoint collapse names the
+    // survivor's actual containment proximity to the tombstoned endpoint —
+    // same voice → SameVoiceNearer, sibling voice in the same staff instance →
+    // SameStaffInstanceNearer — instead of a hardcoded same-voice claim.
+    let mut base = epiphany_core::generators::valid_score(100);
+    let (staff_instance, voice_a) = target(&base);
+    let voice_b = VoiceId::new(ReplicaId(9), 80);
+    base.canvas.regions[0]
+        .content
+        .staff_instances_mut()
+        .expect("fixture is staff based")[0]
+        .voices
+        .push(valuegen::voice(voice_b));
+
+    let r = 97;
+    let e1 = EventId::new(ReplicaId(r), 0);
+    let e2 = EventId::new(ReplicaId(r), 1);
+    let e3 = EventId::new(ReplicaId(r), 2);
+    let cross_slur = SlurId::new(ReplicaId(r), 10);
+    let same_slur = SlurId::new(ReplicaId(r), 11);
+    let step = |counter: u64, payload: OperationPayload| {
+        let ctx = if counter == 0 {
+            CausalContext::new()
+        } else {
+            CausalContext::new().with_seen(ReplicaId(r), counter - 1)
+        };
+        envelope(r, counter, 10 + counter as i64, ctx, None, payload)
+    };
+    let create = |slur: SlurId, a: EventId, b: EventId| {
+        OperationPayload::Primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: CrossCuttingValue::Slur(valuegen::slur(slur, a, b)),
+        }))
+    };
+    let del = step(
+        5,
+        OperationPayload::Primitive(OperationKind::DeleteEvent(DeleteEventOp {
+            event: e1,
+            tuplet_compensation: TupletCompensation::NotInTuplet,
+        })),
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(vec![
+        step(
+            0,
+            insert(
+                staff_instance,
+                voice_a,
+                e1,
+                PitchId::new(ReplicaId(r), 100),
+                100,
+            ),
+        ),
+        step(
+            1,
+            insert(
+                staff_instance,
+                voice_b,
+                e2,
+                PitchId::new(ReplicaId(r), 101),
+                101,
+            ),
+        ),
+        step(
+            2,
+            insert(
+                staff_instance,
+                voice_a,
+                e3,
+                PitchId::new(ReplicaId(r), 102),
+                102,
+            ),
+        ),
+        step(3, create(cross_slur, e1, e2)),
+        step(4, create(same_slur, e3, e1)),
+        del.clone(),
+    ]);
+    let result = set.reduce_onto(&base);
+
+    let repairs = repairs_of(&result, del.id);
+    assert!(
+        repairs.iter().any(|rec| {
+            rec.target == TypedObjectId::Slur(cross_slur)
+                && rec.kind
+                    == RepairKind::Reanchored {
+                        from: TypedObjectId::Event(e1),
+                        to: TypedObjectId::Event(e2),
+                        reason: ReanchorReason::SameStaffInstanceNearer,
+                    }
+        }),
+        "a sibling-voice survivor is SameStaffInstanceNearer: {repairs:?}"
+    );
+    assert!(
+        repairs.iter().any(|rec| {
+            rec.target == TypedObjectId::Slur(same_slur)
+                && rec.kind
+                    == RepairKind::Reanchored {
+                        from: TypedObjectId::Event(e1),
+                        to: TypedObjectId::Event(e3),
+                        reason: ReanchorReason::SameVoiceNearer,
+                    }
+        }),
+        "a same-voice survivor is SameVoiceNearer: {repairs:?}"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn referent_reanchoring_is_permutation_invariant() {
+    // The new rule-table rows are functions of canonical order and canonical
+    // state: a marker re-anchor (with distance and direction tie-breaks), a
+    // cue cascade, and a comment orphan reduce to byte-identical materialized
+    // state under any delivery permutation.
+    let mut base = epiphany_core::generators::valid_score(100);
+    let (staff_instance, voice_a) = target(&base);
+    let source = first_voice_events(&base)[0];
+    let cue = EventId::new(ReplicaId(90), 20);
+    push_cue(&mut base, cue, vec![source], 40);
+    let comment_id = CommentId::new(ReplicaId(90), 21);
+    base.cross_cutting.comments.push(Comment {
+        id: comment_id,
+        anchor: AnnotationAnchor::Event(source),
+        resolved: false,
+    });
+    let referent = EventId::new(ReplicaId(98), 1);
+    let marker_id = MarkerId::new(ReplicaId(90), 22);
+    base.cross_cutting.markers.push(Marker {
+        id: marker_id,
+        anchor: TimeAnchor::Event {
+            id: referent,
+            offset: AnchorOffset::Zero,
+        },
+    });
+
+    let ins = |counter: u64, event: u64, position: i32| {
+        let ctx = if counter == 0 {
+            CausalContext::new()
+        } else {
+            CausalContext::new().with_seen(ReplicaId(98), counter - 1)
+        };
+        envelope(
+            98,
+            counter,
+            10 + counter as i64,
+            ctx,
+            None,
+            insert(
+                staff_instance,
+                voice_a,
+                EventId::new(ReplicaId(98), event),
+                PitchId::new(ReplicaId(98), 100 + event),
+                position,
+            ),
+        )
+    };
+    let envelopes = vec![
+        ins(0, 0, 10),
+        ins(1, 1, 12),
+        ins(2, 2, 14),
+        delete_event(
+            98,
+            3,
+            20,
+            CausalContext::new().with_seen(ReplicaId(98), 2),
+            referent,
+        ),
+        delete_event(
+            98,
+            4,
+            21,
+            CausalContext::new().with_seen(ReplicaId(98), 3),
+            source,
+        ),
+    ];
+
+    let mut reference_set = OperationSet::new();
+    reference_set.accept_all(envelopes.clone());
+    let reference = reference_set.reduce_onto(&base);
+    assert!(check_invariants(&reference.score).is_empty());
+    // Non-vacuity: all three rows actually fired.
+    assert!(!reference.score.events.contains(cue), "the cue cascaded");
+    let permutations: [[usize; 5]; 4] = [
+        [4, 3, 2, 1, 0],
+        [2, 4, 0, 3, 1],
+        [3, 0, 4, 1, 2],
+        [1, 2, 3, 4, 0],
+    ];
+    for (k, permutation) in permutations.iter().enumerate() {
+        let mut set = OperationSet::new();
+        set.accept_all(permutation.iter().map(|&i| envelopes[i].clone()));
+        let got = set.reduce_onto(&base);
+        assert_eq!(
+            got, reference,
+            "delivery permutation #{k} changed the materialized graph"
+        );
+        assert_eq!(
+            got.state.canonical_bytes(),
+            reference.state.canonical_bytes(),
+            "delivery permutation #{k} changed the canonical bytes"
+        );
+    }
 }

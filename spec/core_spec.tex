@@ -5678,6 +5678,12 @@ pub enum OperationPayload {
     /// transaction; the realization of "undo" (see
     /// Section~\ref{sec:semops:undo}).
     UndoTransaction(UndoTransactionPayload),
+
+    /// A meta-operation that resolves an equivocated operation slot
+    /// by naming the chosen candidate envelope (see
+    /// Section~\ref{sec:semops:equivocation}; payload schema in the
+    /// Operation Catalog companion).
+    ResolveEquivocation(ResolveEquivocationPayload),
 }
 
 /// The catalog of primitive operation kinds. The variants listed
@@ -8407,8 +8413,8 @@ pub enum OverrideKind {
     AccidentalVisible(bool),
     NoteheadShape(NoteheadShape),
     BeamGeometry(BeamGeometryOverride),
-    SystemBreak,
-    PageBreak,
+    SystemBreak { anchor: TimeAnchor },
+    PageBreak { anchor: TimeAnchor },
     HiddenObject,
     CustomPosition(Point2D),
     EnharmonicSpelling(PitchSpelling),
@@ -8416,6 +8422,16 @@ pub enum OverrideKind {
     DotPlacement(DotPlacement),
     // ... extensible
 }
+
+// System- and page-break overrides address a *position*, not an
+// object: the break kind carries the break's TimeAnchor, while the
+// override's ScoreGraph target names the owning region. They are
+// projected during the logical stage from the score graph's
+// authoritative user_system_breaks / user_page_breaks lists
+// (Chapter 5). Break authorship (author, timestamp) lives in the
+// operation log, not the materialized break lists, so projected
+// break overrides carry OverrideOrigin::Internal until the
+// snapshot-undo refinement (P11-C8) surfaces authorship.
 
 pub enum OverridePriority {
     /// The engraver MUST honor this override. Failure produces an
@@ -14517,6 +14533,25 @@ layouts they own versus inherit:
   voice-occupancy placement precondition). Dispositions logged in
   \texttt{spec/PASS12\_RATIFICATION\_LOG.md}; the Pass 12 batch
   itself remains open.
+  \\
+  \today & Pass 12 tranche 1 addendum (Push-3 enablers) &
+  Two enabler ratifications for the machinery-wiring work.
+  \texttt{ResolveEquivocation}, previously a dangling prose
+  reference in the equivocation section, is now a defined
+  meta-operation: \texttt{OperationPayload} gains the variant here,
+  and the Operation Catalog (0.3.0 $\rightarrow$ 0.4.0) pins its
+  payload schema (\texttt{\{ target: OperationId, chosen:
+  EnvelopeHash \}}), the order-independent
+  earliest-resolve-governs promotion, idempotence, differing-resolve
+  meta-conflict, and precondition no-ops; the profile-declared
+  selection-policy path remains open (P12-K5). Engraving break
+  overrides became position-addressable:
+  \texttt{OverrideKind::SystemBreak}/\texttt{PageBreak} carry the
+  break's \texttt{TimeAnchor} (the \texttt{ScoreGraph} target names
+  the owning region; projected break overrides carry
+  \texttt{Internal} origin pending P11-C8 authorship surfacing),
+  closing the representational gap that blocked the logical-stage
+  override projection §Engraving Overrides requires.
   \\
   \bottomrule
 \end{longtable}

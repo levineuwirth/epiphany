@@ -244,6 +244,127 @@ object is covered); the provenance-preservation contract itself is unchanged.
   is the next layer, but the axis machinery now genuinely consumes whatever times
   the spacing assigns.)
 
+- **`ConstraintStrength` is attached by rule, not by widening the IR.** Chapter 9
+  §"Strength Levels" defines `ConstraintStrength { Required, Preferred { weight } }`,
+  but the spec's `LayoutConstraint` enum carries no strength field and the
+  "normalized form" the solver consumes never says how strength attaches to a
+  constraint instance (a genuine gap — see Pass 12 candidates below). Rather than
+  invent an IR shape the spec doesn't have, `LayoutConstraint::strength()` derives
+  strength from the constraint's own shape: a break's `BreakKind` *is* its
+  strength (`Hard` → `Required`, `Soft` → `Preferred { weight: 1.0 }`), the
+  geometric constraints (no-collision / alignment / containment) are `Required`,
+  and a `Registered` extension constraint is conservatively `Required` — an
+  obligation a solver cannot verify must never be silently demoted (Chapter 9:
+  a solver MUST NOT treat `Required` as `Preferred`).
+
+- **The spacing pass emits real constraints (Chapter 7 pipeline: "Build collision
+  constraints").** `try_to_constrained` now populates `constraints`, per region and
+  in a deterministic order: (1) **NoCollision** chains over *successive notehead
+  columns* within each staff — adjacent pairs in (column x, glyph id) order, linear
+  in the noteheads, never the O(n²) closure; chord members share a slot (a second
+  or unison may genuinely overlap by design), so only cross-column neighbours carry
+  the obligation. These hold under both v0 solvers: the source layout separates
+  columns collision-free and the engraver's collision-aware advance keeps
+  successive columns separated after its remap. (2) **PositionWithin** per glyph
+  against its region's envelope: the vertical extent is the exact envelope of the
+  region's glyph boxes (both v0 solvers preserve glyph `y` verbatim, so this is a
+  genuine obligation a future vertical pass must renegotiate); the horizontal span
+  is the open v0 canvas (`POSITION_WITHIN_X_REACH`) because v0 does no casting-off
+  — a region imposes no honest horizontal bound. (3) **Soft break constraints**
+  projected from the logical stage's break overrides, on the spring slot carrying
+  the break anchor's onset (the barline column at that time when one exists, else
+  the note column); an anchor no realized column represents — an event/measure
+  outside the region, a measure *end*, a region edge — is skipped silently, since
+  there is no slot for a solver to break at. The four SVG golden snapshots'
+  `hard_constraint_count` moved off 0 accordingly; the golden SVG *bytes* are
+  unchanged (emission does not touch geometry).
+
+- **The stub stays honest — and renderable — under declared constraints.** The
+  old `StubSolver` flipped to `InternalError` whenever a constraint was present,
+  which conflated "constraints I did not evaluate" with "a malformed input". Now:
+  geometry still passes through verbatim, `satisfied_hard_constraints` is `false`
+  (nothing was checked), a warning names the gap, and the status is
+  `SolvedWithWarnings` — the closest *non-claiming* renderable status, since
+  Chapter 9 defines no status for "renderable, constraints unevaluated" (a Pass 12
+  candidate below). Editors gate on `SolveStatus::is_renderable()`, so stub-driven
+  pipelines (editor-core sessions, the edit-loop harness, the acceptance goldens)
+  keep working; the round-trip harness asserts the stub claims satisfaction
+  exactly when the problem is constraint-free.
+
+- **Break overrides carry their anchor; projected from the graph's break lists.**
+  Per the updated Chapter 7 §"Engraving Overrides", `OverrideKind::SystemBreak` /
+  `PageBreak` now carry `anchor: TimeAnchor` — a break addresses a *position*,
+  while the override's `ScoreGraph` target names the owning region. `to_logical`
+  projects each region's authoritative `user_system_breaks` / `user_page_breaks`
+  (Chapter 5) into `Soft`, `Internal`-origin overrides (authorship lives in the
+  op log until P11-C8), ordered by (region id, kind discriminant, anchor canonical
+  bytes), each with a paired `EngravingDecision` under
+  `DecisionSource::UserOverride(id)` (Chapter 7 §"Override Resolution" MUST). The
+  override id reuses the `MUSCLOID` derivation with a literal `engraving-override`
+  prefix (mirroring the decision id), keyed on (region, kind discriminant, anchor
+  canonical bytes). The variant-shape change is byte-visible only in memory:
+  overrides appear in **no** codec today (the layout IR chunks cache no override
+  records), so no stored or interchanged artifact changes — the stale
+  "graph exposes no override registry" comment this replaces predated the graph's
+  break lists.
+
+- **Edit-barrier decode mirrors + the manifest blob codec (PROVISIONAL byte
+  form, Push 3).** The barrier tree was encode-only; `barrier.rs` now carries
+  the exact inverse and the codec for the two opaque manifest fields the bundle
+  preserves verbatim (`ExtensionDeclaration.edit_barriers` /
+  `.affected_object_kinds` — the bundle stays semantics-free; no bundle change).
+  The spec defines **no normative byte form** for `EditBarrier`/`BarrierScope`/
+  `BarrierCondition`, so this is a provisional canonical encoding on the
+  established pattern (define concretely, golden-lock, submit to the Binary
+  Format companion): both blobs are canonical **sets** in the crate's existing
+  `push_set` framing — `u64` LE count, then per element a `u64` LE length
+  prefix and the element's canonical bytes, elements strictly ascending
+  byte-lexicographic, duplicates removed — an `edit_barriers` element being an
+  `EditBarrier`'s canonical bytes (scope, affected-kind set, prohibited-tag
+  set, condition, in that order), an `affected_object_kinds` element being the
+  kind's 2 LE bytes. Golden literal-byte tests
+  (`edit_barriers_blob_bytes_are_golden`,
+  `affected_object_kinds_blob_bytes_are_golden`) lock the layout; the testkit
+  adds a generator-driven round-trip gate. Decode discipline is
+  reject-never-normalize (`BarrierDecodeError`): unknown scope/condition/
+  operation-kind discriminants, unsorted or duplicated set elements, non-NFC
+  pitch-space text (`PitchSpaceId::new` would re-spell it, so the bytes are
+  non-canonical), truncation, and trailing bytes are all typed errors, and a
+  decoded barrier must re-encode byte-identically. Two deliberate choices:
+  (1) **`ObjectKind` decodes any `u16`** — the payload is an open discriminant
+  space (a future core kind or an extension-registered kind is a *value*, not
+  a decode branch), so there is nothing to reject without breaking append-only
+  forward compatibility; (2) **`MAX_CONDITION_DEPTH = 64`** bounds the
+  recursive `BarrierCondition` decode — the spec places no bound on the tree,
+  a decoder needs one against adversarial bytes, and 64 is far past any real
+  barrier (spec examples are depth 1–2). Both are named Binary Format
+  companion candidates. Evaluation wiring (the §"Behavior Under Unknown
+  Extensions" MUST) lives in epiphany-editor-core, which decodes injected
+  declarations and gates `apply`/`apply_transaction` through
+  `EditBarrier::prohibits_edit`.
+
+## Pass 12 candidates (ambiguities for the spec, not resolved in code)
+
+1. **Strength attachment to constraint instances.** Chapter 9 §"Strength Levels"
+   defines `ConstraintStrength`, and §"Constraint Families" says the solver
+   consumes constraints "in normalized form" — but the normalized form is never
+   specified, and Chapter 7's `LayoutConstraint` enum has no strength field, so
+   there is no normative channel by which a constraint instance carries its
+   strength. v0 attaches strength by rule (`LayoutConstraint::strength()`, above);
+   the spec should either bless that rule (breaks strength = `BreakKind`, all
+   other core families `Required`, extensions conservative) or add an explicit
+   strength/weight field to the normalized constraint record.
+
+2. **No renderable status for "constraints not evaluated".** A `Stub`-tier
+   (below-conformance) solver that preserves geometry but evaluates nothing has
+   no honest `SolveStatus`: every renderable status is documented as "all hard
+   constraints satisfied", and the failure statuses mark the layout
+   diagnostic-only, which a verbatim passthrough is not. v0 uses
+   `SolvedWithWarnings` with `satisfied_hard_constraints == false` and a warning;
+   the spec should either define the report shape for a non-evaluating tier or
+   state that `SolvedWithWarnings` + `satisfied_hard_constraints == false` is the
+   sanctioned encoding.
+
 ## Pass 11 candidates (ambiguities for the spec, not resolved in code)
 
 1. **Agent E's stated dependency set vs. the edit-barrier types.** The QUICKSTART

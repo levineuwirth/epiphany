@@ -127,6 +127,7 @@ fn payload_label(payload: &OperationPayload) -> &'static str {
         },
         OperationPayload::ResolveConflict(_) => "ResolveConflict",
         OperationPayload::UndoTransaction(_) => "UndoTransaction",
+        OperationPayload::ResolveEquivocation(_) => "ResolveEquivocation",
     }
 }
 

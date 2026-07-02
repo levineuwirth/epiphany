@@ -92,6 +92,7 @@ mod slot;
 mod stamp;
 mod support;
 mod v0;
+mod validate;
 pub mod valuegen;
 
 pub mod fuzz;
@@ -109,7 +110,9 @@ pub use effect::{
     NoOpReason, OperationEffect, PreconditionFailureReason, ReanchorReason, ReanchorResult,
     RepairKind, RepairRecord, TupletCompensationKind,
 };
-pub use envelope::{well_formed, EnvelopeHash, OperationEnvelope, WellFormednessError};
+pub use envelope::{
+    peek_operation_id, well_formed, EnvelopeHash, OperationEnvelope, WellFormednessError,
+};
 pub use migrate::{migrate_v0_envelope, project_v1_to_v0, MigrationError};
 pub use opset::{AcceptOutcome, OperationSet};
 pub use payload::{
@@ -117,9 +120,9 @@ pub use payload::{
     CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
     DeleteRegionOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
     ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationKindTag,
-    OperationPayload, PositionRemapping, ResolveConflictPayload, RespellPitchOp, SetMetadataOp,
-    SetMetricGridOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransactionCategory,
-    TransactionDescriptor, TransposeOp, TupletCompensation,
+    OperationPayload, PositionRemapping, ResolveConflictPayload, ResolveEquivocationPayload,
+    RespellPitchOp, SetMetadataOp, SetMetricGridOp, SetUserPageBreakOp, SetUserSystemBreakOp,
+    TransactionCategory, TransactionDescriptor, TransposeOp, TupletCompensation,
 };
 pub use reduce::{
     canonical_reduction_order, GraphMaterialization, MaterializedState, ObjectState, PendingReason,
@@ -135,5 +138,6 @@ pub use support::{
 
 pub use undo::{UndoPolicy, UndoTransactionPayload};
 pub use v0::V0OperationEnvelope;
+pub use validate::{advisory_violations, AdvisoryViolation, ValidationMode};
 
 mod undo;

@@ -226,7 +226,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.3.0 --- Phase 2 (K0 representative + broad-K0 M2 groups)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.4.0 --- Phase 2 (K0 representative + broad-K0 M2 groups)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -853,6 +853,54 @@ Pass~11 added \texttt{ResolutionAction::Dismiss} (item 2.5) precisely so the
 \texttt{Dismissed} state is reachable by an authored operation rather than merely
 representable. The catalog records that \texttt{Dismiss} is the action that
 selects it (resolving the v0 ambiguity P11-C10).
+\end{rationale}
+
+\section{ResolveEquivocation (meta-operation)}
+\label{sec:k0:resolve-equivocation}
+
+\textbf{Payload schema.} \texttt{ResolveEquivocationPayload \{ target:
+OperationId, chosen: EnvelopeHash \}} --- the equivocated slot and the
+candidate envelope (by canonical-bytes hash) that shall stand. Value-complete.
+
+\textbf{Canonical encoding.} \texttt{target} (16 canonical bytes), then
+\texttt{chosen} (32 bytes), per the codec baseline.
+
+\textbf{Reduction rule.} Order-independent promotion of an equivocated slot
+(core specification Chapter~6, \sectionsc{Equivocation}): when the operation
+set holds an \texttt{Equivocated} slot for \texttt{target} and \texttt{chosen}
+names one of its candidates, the slot reduces as if it had always been
+\texttt{Single} with the chosen envelope --- the chosen candidate contributes
+to canonical reduction at its own canonical position, and operations that were
+pending on the equivocated id unblock. Among multiple resolves naming the same
+slot, the one earliest in canonical order governs; a later resolve naming the
+\emph{same} candidate reduces idempotently (\texttt{AlreadyApplied}). The
+resolve operation must itself occupy a \texttt{Single} slot; an equivocated
+resolve is excluded from reduction like any other equivocated slot. A resolved
+slot records no \texttt{OperationSlotEquivocated} anomaly; the losing
+candidates remain in the diagnostic candidate store only.
+
+\textbf{Conflict cases.} Two resolves of one slot naming \emph{differing}
+candidates produce a \texttt{StructuralFieldCollision} meta-conflict on the
+field \texttt{equivocation\_resolution}, recording the governing resolve
+(earlier in canonical order) as winner and the later as loser, with both
+operations in \texttt{caused\_by} --- the same discipline as
+\texttt{ResolveConflict} meta-conflicts. Preconditions: a resolve whose
+\texttt{target} is not an equivocated slot, or whose \texttt{chosen} is not
+among the slot's candidates, is a precondition no-op.
+
+\textbf{Undo semantics.} Mints nothing; not inverted under the prototype's
+minted-object undo (P11-C8).
+
+\textbf{Re-anchoring.} Not applicable (the payload references an operation
+slot, not a graph object).
+
+\begin{rationale}
+The core specification names three resolution paths for an equivocated slot:
+transport-level reconciliation, this explicit operation, and a
+profile-declared deterministic selection policy. This entry pins the schema
+for the explicit-operation path, which the core specification previously named
+only in prose. The profile-policy path remains unpinned and unimplemented ---
+a Pass-12 question (P12-K5).
 \end{rationale}
 
 \section{UndoTransaction (meta-operation)}

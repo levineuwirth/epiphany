@@ -31,10 +31,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
-    derive_promoted_voice_id, AnchorOffset, CanonicalValue, Event, EventDuration, EventId,
-    EventPosition, MetricGrid, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId,
-    PitchSpelling, RegionEdge, RegionId, RegionTimeModel, Score, SpellingAttachment,
-    SpellingDirective, SpellingScope, SpellingSource, StaffInstance, StaffInstanceId, TimeAnchor,
+    canonical_pitch_bytes, derive_promoted_voice_id, AnchorOffset, AnnotationAnchor,
+    CanonicalValue, Event, EventDuration, EventId, EventPosition, GestureAnchoring, MetricGrid,
+    MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId, PitchSpelling, RationalTime,
+    RegionEdge, RegionId, RegionTimeModel, ReplicaId, Score, SpellingAttachment, SpellingDirective,
+    SpellingScope, SpellingSource, StaffId, StaffInstance, StaffInstanceId, TimeAnchor,
     TransactionId, TypedObjectId, Voice, VoiceId, VoiceOrigin,
 };
 use epiphany_determinism::CanonicalEncode;
@@ -58,6 +59,7 @@ use crate::payload::{
     RespellPitchOp, SetMetadataOp, SetMetricGridOp, SetUserPageBreakOp, TransposeOp,
     TupletCompensation,
 };
+use crate::support::{ObjectKind, SerializedCanonicalInputs};
 use crate::undo::{UndoPolicy, UndoTransactionPayload};
 
 /// Orders operation envelopes into the canonical reduction order (Chapter 6
@@ -163,6 +165,12 @@ pub enum PendingReason {
     DependsOnExcluded { on: OperationId },
     /// A causal predecessor is itself held pending.
     DependsOnPending { on: OperationId },
+    /// Reduction halted at a system-derived identifier collision (Chapter 5
+    /// §"System-Derived Counter Collisions"): this operation is at or past the
+    /// collision point in canonical order — or is the earlier occupant of the
+    /// collided counter — and is held pending external recovery. `at` is the
+    /// operation whose mint collided.
+    HaltedBySystemCollision { at: OperationId },
 }
 
 impl PendingReason {
@@ -172,6 +180,7 @@ impl PendingReason {
             PendingReason::DependsOnEquivocated { .. } => 1,
             PendingReason::DependsOnExcluded { .. } => 2,
             PendingReason::DependsOnPending { .. } => 3,
+            PendingReason::HaltedBySystemCollision { .. } => 4,
         }
     }
     fn blocker(&self) -> OperationId {
@@ -180,6 +189,7 @@ impl PendingReason {
             PendingReason::DependsOnEquivocated { on }
             | PendingReason::DependsOnExcluded { on }
             | PendingReason::DependsOnPending { on } => *on,
+            PendingReason::HaltedBySystemCollision { at } => *at,
         }
     }
 }
@@ -352,6 +362,11 @@ struct Reducer<'a> {
     // voice's live events are read from `voice_occupancy`.)
     region_instances: BTreeMap<RegionId, BTreeSet<StaffInstanceId>>,
     instance_voices: BTreeMap<StaffInstanceId, BTreeSet<VoiceId>>,
+    // The staff each staff instance manifests, for the containment-proximity
+    // key of the re-anchoring "nearest" ordering (same staff = rank 2). Kept
+    // base-free (seeded + maintained by CreateStaffInstance) so reduce() and
+    // reduce_onto() rank identically wherever both represent the scenario.
+    instance_staff: BTreeMap<StaffInstanceId, StaffId>,
     // Regions whose content carries a staff-based slot (staff-based or hybrid),
     // and so can hold a metric grid or user break. FreeGraphic regions cannot.
     // Tracking this lets SetMetricGrid / SetUserPageBreak / SetUserSystemBreak
@@ -367,8 +382,24 @@ struct Reducer<'a> {
     descriptors: BTreeMap<TransactionId, OperationId>,
     // Losing insert -> (promoted voice, winning insert).
     promotion: BTreeMap<OperationId, (VoiceId, OperationId)>,
+    // System-derived mint registry for the counter-collision check (Chapter 5
+    // §"System-Derived Counter Collisions"): (kind, derived counter) → the
+    // canonical inputs that derived it, plus the minting operation (None for
+    // an occupant seeded from the base graph). Consulted only by the pre-walk
+    // collision detection, never mutated during apply, so it needs no
+    // transaction snapshot.
+    system_mints: BTreeMap<(ObjectKind, u64), (SerializedCanonicalInputs, Option<OperationId>)>,
     tx_minted: BTreeMap<TransactionId, Vec<TypedObjectId>>,
     current_tx: Option<TransactionId>,
+    // ResolveEquivocation promotion results (operation_catalog
+    // §"ResolveEquivocation"), computed by the set-level pre-pass in `run`:
+    // target slot id → (governing resolve id, chosen candidate hash), and
+    // target slot id → the promoted candidate envelope (from the opset's
+    // diagnostic candidate store). Pure functions of the slot map — never
+    // mutated during apply — so, like `system_mints`, they need no transaction
+    // snapshot.
+    equivocation_resolutions: BTreeMap<OperationId, (OperationId, crate::EnvelopeHash)>,
+    promoted_singles: BTreeMap<OperationId, &'a OperationEnvelope>,
     graph: Option<Score>,
 }
 
@@ -390,6 +421,7 @@ struct WorkingSnapshot {
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     region_instances: BTreeMap<RegionId, BTreeSet<StaffInstanceId>>,
     instance_voices: BTreeMap<StaffInstanceId, BTreeSet<VoiceId>>,
+    instance_staff: BTreeMap<StaffInstanceId, StaffId>,
     staff_based_regions: BTreeSet<RegionId>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
@@ -422,6 +454,25 @@ fn apply_break_lww(breaks: &mut Vec<TimeAnchor>, anchor: &TimeAnchor, present: b
     }
 }
 
+/// The 64-byte canonical input preimage of a promoted-voice derivation
+/// (`MUSCSVCE`, Chapter 5 §"System-Promoted Voices"): staff_instance ‖
+/// original_voice ‖ winning_op ‖ losing_op, 16 big-endian bytes each — exactly
+/// the bytes [`derive_promoted_voice_id`] hashes. The collision check compares
+/// these inputs to distinguish two derivations contending for one counter.
+fn promoted_voice_inputs(
+    staff_instance: StaffInstanceId,
+    original_voice: VoiceId,
+    winning_op: OperationId,
+    losing_op: OperationId,
+) -> Vec<u8> {
+    let mut inputs = Vec::with_capacity(64);
+    inputs.extend_from_slice(&staff_instance.canonical_bytes());
+    inputs.extend_from_slice(&original_voice.canonical_bytes());
+    inputs.extend_from_slice(&winning_op.canonical_bytes());
+    inputs.extend_from_slice(&losing_op.canonical_bytes());
+    inputs
+}
+
 fn intervals_overlap(
     a_position: &MusicalPosition,
     a_duration: &MusicalDuration,
@@ -445,7 +496,7 @@ fn insert_intervals_overlap(a: &InsertEventOp, b: &InsertEventOp) -> bool {
     )
 }
 
-fn graph_voice_location(score: &Score, voice: VoiceId) -> Option<(usize, usize, usize)> {
+pub(crate) fn graph_voice_location(score: &Score, voice: VoiceId) -> Option<(usize, usize, usize)> {
     for (region_index, region) in score.canvas.regions.iter().enumerate() {
         for (instance_index, instance) in region.staff_instances().iter().enumerate() {
             if let Some(voice_index) = instance
@@ -488,6 +539,112 @@ fn graph_event_from_insert(op: &InsertEventOp, target_voice: VoiceId) -> Event {
     event
 }
 
+// --- Re-anchoring referent support (Chapter 6 §"Total Ordering for Nearest",
+// §"The Re-Anchoring Rule Table"). --------------------------------------------
+
+/// The tombstoned referent's resolved placement and containment, captured from
+/// the graph at the moment [`Reducer::materialize_graph_delete`] removes it —
+/// the referent side of the four-key "nearest" ordering and of the range
+/// reconstructions in the re-anchoring rule table.
+struct ReferentContext {
+    voice: VoiceId,
+    region: Option<RegionId>,
+    position: EventPosition,
+    duration: EventDuration,
+}
+
+/// Proximity bound "same staff instance" (the rule table's declared maximum for
+/// markers and graphic gestures): candidates ranked farther than the referent's
+/// staff instance are excluded from "nearest".
+const PROXIMITY_SAME_STAFF_INSTANCE: u8 = 1;
+
+/// Maps an achieved containment-proximity rank (k1 of the "nearest" ordering)
+/// to the ratified [`ReanchorReason`] vocabulary. Rank 4 (same canvas) has no
+/// ratified reason variant, so a beyond-region survivor is recorded as the
+/// explicit fallback rather than appending a new discriminant (see
+/// DECISIONS.md — a spec-vocabulary question, batched for Pass 12).
+fn reason_for_rank(rank: u8) -> ReanchorReason {
+    match rank {
+        0 => ReanchorReason::SameVoiceNearer,
+        1 => ReanchorReason::SameStaffInstanceNearer,
+        2 => ReanchorReason::SameStaffNearer,
+        3 => ReanchorReason::SameRegionNearer,
+        _ => ReanchorReason::ExplicitFallback,
+    }
+}
+
+/// The event references among a set of [`TimeAnchor`]s (the referent-index
+/// entries a tombstone must repair). Non-event anchors contribute nothing.
+fn anchor_event_refs<'a>(anchors: impl IntoIterator<Item = &'a TimeAnchor>) -> Vec<TypedObjectId> {
+    anchors
+        .into_iter()
+        .filter_map(|anchor| match anchor {
+            TimeAnchor::Event { id, .. } => Some(TypedObjectId::Event(*id)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The event references an annotation anchor carries: its point event, or any
+/// event-anchored range endpoints. Region anchors reference no event.
+fn annotation_anchor_event_refs(anchor: &AnnotationAnchor) -> Vec<TypedObjectId> {
+    match anchor {
+        AnnotationAnchor::Event(event) => vec![TypedObjectId::Event(*event)],
+        AnnotationAnchor::Range { start, end } => anchor_event_refs([start, end]),
+        AnnotationAnchor::Region(_) => Vec::new(),
+    }
+}
+
+/// The event references a gesture anchoring carries. `Free` anchoring follows
+/// no score content and so never enters the referent index (table row: "for
+/// Free anchoring, no action").
+fn gesture_event_refs(anchoring: &GestureAnchoring) -> Vec<TypedObjectId> {
+    match anchoring {
+        GestureAnchoring::Events(events) => {
+            events.iter().copied().map(TypedObjectId::Event).collect()
+        }
+        GestureAnchoring::Range { start, end, .. } => anchor_event_refs([start, end]),
+        GestureAnchoring::Free => Vec::new(),
+    }
+}
+
+/// Replaces a range endpoint anchored to the tombstoned event with the
+/// containing region's edge — the deterministic "truncate" reading for
+/// range-anchored referents (start endpoints move to the region start, end
+/// endpoints to the region end; see DECISIONS.md and the proposed Pass-12 row
+/// on the underdetermined "truncate" semantics).
+fn retarget_dead_endpoint(
+    endpoint: &mut TimeAnchor,
+    deleted: EventId,
+    region: RegionId,
+    edge: RegionEdge,
+) {
+    if matches!(endpoint, TimeAnchor::Event { id, .. } if *id == deleted) {
+        *endpoint = TimeAnchor::Region {
+            id: region,
+            edge,
+            offset: AnchorOffset::Zero,
+        };
+    }
+}
+
+/// Degrades an orphaned annotation anchor's dead event references to the
+/// containing-region forms, so the orphaned (kept) referent stays
+/// reference-clean under invariant 10. The ledger records `Orphaned`; this is
+/// anchor hygiene, not a re-anchoring choice.
+fn orphan_annotation_anchor(anchor: &mut AnnotationAnchor, deleted: EventId, region: RegionId) {
+    match anchor {
+        AnnotationAnchor::Event(event) if *event == deleted => {
+            *anchor = AnnotationAnchor::Region(region);
+        }
+        AnnotationAnchor::Range { start, end } => {
+            retarget_dead_endpoint(start, deleted, region, RegionEdge::Start);
+            retarget_dead_endpoint(end, deleted, region, RegionEdge::End);
+        }
+        _ => {}
+    }
+}
+
 impl<'a> Reducer<'a> {
     fn new(op_set: &'a OperationSet) -> Self {
         Reducer {
@@ -510,13 +667,17 @@ impl<'a> Reducer<'a> {
             structures: BTreeMap::new(),
             region_instances: BTreeMap::new(),
             instance_voices: BTreeMap::new(),
+            instance_staff: BTreeMap::new(),
             staff_based_regions: BTreeSet::new(),
             migrated_regions: BTreeSet::new(),
             region_migrator: BTreeMap::new(),
             descriptors: BTreeMap::new(),
             promotion: BTreeMap::new(),
+            system_mints: BTreeMap::new(),
             tx_minted: BTreeMap::new(),
             current_tx: None,
+            equivocation_resolutions: BTreeMap::new(),
+            promoted_singles: BTreeMap::new(),
             graph: None,
         }
     }
@@ -581,6 +742,7 @@ impl<'a> Reducer<'a> {
             for instance in region.staff_instances() {
                 self.objects
                     .insert(TypedObjectId::StaffInstance(instance.id), ObjectState::Live);
+                self.instance_staff.insert(instance.id, instance.staff);
                 let voice_set = self.instance_voices.entry(instance.id).or_default();
                 for voice in &instance.voices {
                     voice_set.insert(voice.id);
@@ -592,6 +754,30 @@ impl<'a> Reducer<'a> {
                 for voice in &instance.voices {
                     self.objects
                         .insert(TypedObjectId::Voice(voice.id), ObjectState::Live);
+                    // Register base system-promoted voices in the mint registry
+                    // so a promotion minted by this reduction is collision-checked
+                    // against them (Chapter 5 §"System-Derived Counter Collisions").
+                    // Base-internal duplicates keep the first registration: a base
+                    // that already collided is invariant-11/18 territory, not a
+                    // reduction-time mint.
+                    if voice.id.replica() == ReplicaId::SYSTEM_DERIVED {
+                        if let VoiceOrigin::SystemPromoted {
+                            winning_operation,
+                            losing_operation,
+                            original_voice,
+                        } = &voice.origin
+                        {
+                            let inputs = promoted_voice_inputs(
+                                instance.id,
+                                *original_voice,
+                                *winning_operation,
+                                *losing_operation,
+                            );
+                            self.system_mints
+                                .entry((ObjectKind::Voice, voice.id.counter()))
+                                .or_insert((SerializedCanonicalInputs(inputs), None));
+                        }
+                    }
                 }
             }
         }
@@ -607,6 +793,16 @@ impl<'a> Reducer<'a> {
                 pitch_ids.push(pitch.id);
                 self.objects
                     .insert(TypedObjectId::Pitch(pitch.id), ObjectState::Live);
+                // Register base synthetic pitches in the mint registry (same
+                // rule as promoted voices above).
+                if pitch.id.replica() == ReplicaId::SYSTEM_DERIVED {
+                    self.system_mints
+                        .entry((ObjectKind::Pitch, pitch.id.counter()))
+                        .or_insert((
+                            SerializedCanonicalInputs(canonical_pitch_bytes(&pitch.pitch)),
+                            None,
+                        ));
+                }
             }
             self.event_pitches.insert(event_id, pitch_ids);
 
@@ -617,6 +813,22 @@ impl<'a> Reducer<'a> {
                     .entry(event.voice())
                     .or_default()
                     .push((position.clone(), duration.clone(), event_id));
+            }
+
+            // A cue event *references* its source events (Chapter 5 §"Cue
+            // Events"), so it enters the referent index: a source tombstone
+            // cascade-deletes the cue through the re-anchoring rule table.
+            if let Event::Cue(cue) = event {
+                if !cue.source.is_empty() {
+                    self.structures.insert(
+                        TypedObjectId::Event(event_id),
+                        cue.source
+                            .iter()
+                            .copied()
+                            .map(TypedObjectId::Event)
+                            .collect(),
+                    );
+                }
             }
         }
 
@@ -684,23 +896,47 @@ impl<'a> Reducer<'a> {
                     .collect(),
             );
         }
+        // The remaining referent kinds of the re-anchoring rule table enter the
+        // same index as slurs/ties/beams/spanners, keyed by their typed id and
+        // listing the event references a tombstone must repair. Non-event
+        // anchorings (region, measure, wall-clock, free) contribute no entry.
         for marker in &score.cross_cutting.markers {
             self.objects
                 .insert(TypedObjectId::Marker(marker.id), ObjectState::Live);
+            let refs = anchor_event_refs([&marker.anchor]);
+            if !refs.is_empty() {
+                self.structures
+                    .insert(TypedObjectId::Marker(marker.id), refs);
+            }
         }
         for annotation in &score.cross_cutting.analytical {
             self.objects.insert(
                 TypedObjectId::AnalyticalAnnotation(annotation.id),
                 ObjectState::Live,
             );
+            let refs = annotation_anchor_event_refs(&annotation.anchor);
+            if !refs.is_empty() {
+                self.structures
+                    .insert(TypedObjectId::AnalyticalAnnotation(annotation.id), refs);
+            }
         }
         for comment in &score.cross_cutting.comments {
             self.objects
                 .insert(TypedObjectId::Comment(comment.id), ObjectState::Live);
+            let refs = annotation_anchor_event_refs(&comment.anchor);
+            if !refs.is_empty() {
+                self.structures
+                    .insert(TypedObjectId::Comment(comment.id), refs);
+            }
         }
         for gesture in &score.cross_cutting.graphic_gestures {
             self.objects
                 .insert(TypedObjectId::GraphicGesture(gesture.id), ObjectState::Live);
+            let refs = gesture_event_refs(&gesture.anchoring);
+            if !refs.is_empty() {
+                self.structures
+                    .insert(TypedObjectId::GraphicGesture(gesture.id), refs);
+            }
         }
         for repeat in &score.cross_cutting.repeats {
             self.objects
@@ -718,7 +954,7 @@ impl<'a> Reducer<'a> {
 
     fn run(mut self) -> (MaterializedState, Option<Score>) {
         let singles = self.op_set.single_envelopes();
-        let equivocated: BTreeSet<OperationId> =
+        let equivocated_all: BTreeSet<OperationId> =
             self.op_set.equivocated_ids().into_iter().collect();
 
         // 1. HLC monotonicity: exclude anomalous segments.
@@ -731,21 +967,81 @@ impl<'a> Reducer<'a> {
                 first_bad_counter: seg.first_bad_counter,
             });
         }
+
+        // 1b. ResolveEquivocation promotion (operation_catalog
+        // §"ResolveEquivocation"): a set-level, order-independent pre-pass.
+        // Among the Single-slot, non-excluded resolves whose `target` is an
+        // Equivocated slot and whose `chosen` names one of its candidates, the
+        // resolve earliest in canonical order (smallest reduction tuple — the
+        // same total HLC order `canonical_reduction_order` selects ready
+        // operations by) governs. The chosen candidate envelope joins the
+        // reducible set at its own canonical position — the slot reduces as if
+        // it had always been Single — and no `OperationSlotEquivocated`
+        // anomaly is recorded for it. The verdict is a pure function of the
+        // slot map (never of arrival order), so every replica agrees. A
+        // resolve that is itself equivocated occupies no Single slot and thus
+        // never governs; a resolve in a quarantined segment is excluded from
+        // reduction and likewise never governs.
+        let mut governing: BTreeMap<OperationId, &OperationEnvelope> = BTreeMap::new();
+        for &env in &singles {
+            if excluded.contains(&env.id) {
+                continue;
+            }
+            let OperationPayload::ResolveEquivocation(op) = &env.payload else {
+                continue;
+            };
+            let Some(slot) = self.op_set.slot(op.target) else {
+                continue;
+            };
+            if !slot.is_equivocated() || !slot.candidates().any(|c| c == op.chosen) {
+                continue;
+            }
+            governing
+                .entry(op.target)
+                .and_modify(|current| {
+                    if env.stamp.reduction_tuple() < current.stamp.reduction_tuple() {
+                        *current = env;
+                    }
+                })
+                .or_insert(env);
+        }
+        for (target, resolve) in &governing {
+            let OperationPayload::ResolveEquivocation(op) = &resolve.payload else {
+                unreachable!("only ResolveEquivocation envelopes govern a promotion");
+            };
+            let candidate = self
+                .op_set
+                .candidate(op.chosen)
+                .expect("every candidate hash of an equivocated slot is retained in the store");
+            self.promoted_singles.insert(*target, candidate);
+            self.equivocation_resolutions
+                .insert(*target, (resolve.id, op.chosen));
+        }
+        // The losing candidates remain only in the opset's diagnostic
+        // candidate store; a resolved slot records no equivocation anomaly.
+        let equivocated: BTreeSet<OperationId> = equivocated_all
+            .into_iter()
+            .filter(|id| !governing.contains_key(id))
+            .collect();
         for id in &equivocated {
             self.record_anomaly(IntegrityAnomalyKind::OperationSlotEquivocated {
                 operation_id: *id,
             });
         }
 
-        // 2. Reducible candidates = Single slots minus excluded.
+        // 2. Reducible candidates = Single slots minus excluded, plus the
+        // promoted candidates (each at its own canonical position).
         let reducible: Vec<&OperationEnvelope> = singles
             .iter()
             .copied()
             .filter(|e| !excluded.contains(&e.id))
+            .chain(self.promoted_singles.values().copied())
             .collect();
         let reducible_ids: BTreeSet<OperationId> = reducible.iter().map(|e| e.id).collect();
         let declared_transactions: BTreeSet<TransactionId> = singles
             .iter()
+            .copied()
+            .chain(self.promoted_singles.values().copied())
             .filter_map(|env| match &env.payload {
                 OperationPayload::Primitive(OperationKind::DeclareTransaction(descriptor)) => {
                     Some(descriptor.id)
@@ -774,9 +1070,54 @@ impl<'a> Reducer<'a> {
         // 5. Walk active ops in canonical reduction order; group transactions.
         let order = canonical_reduction_order(&active);
         let tx_members = transaction_members(&active);
+
+        // 5a. System-derived counter collision check (Chapter 5 §"System-Derived
+        // Counter Collisions"): on a collision, reduction does not continue past
+        // the collision point, and neither colliding input set occupies the
+        // collided counter. Held operations stay in the (grow-only) operation
+        // set and surface in `pending` for external recovery.
+        let mut held: BTreeMap<OperationId, PendingReason> = BTreeMap::new();
+        if let Some((halt_index, at, earlier_owner)) = self.detect_system_collision(&order) {
+            for env in &order[halt_index..] {
+                held.insert(env.id, PendingReason::HaltedBySystemCollision { at });
+            }
+            if let Some(owner) = earlier_owner {
+                held.insert(owner, PendingReason::HaltedBySystemCollision { at });
+            }
+            // Transitive closure: a transaction with a held member is wholly
+            // held (atomicity), and an operation causally covering a held
+            // operation is held behind it.
+            loop {
+                let mut changed = false;
+                for env in &order {
+                    if held.contains_key(&env.id) {
+                        continue;
+                    }
+                    let tx_blocked = member_transaction(env)
+                        .and_then(|tx| tx_members.get(&tx))
+                        .and_then(|members| {
+                            members
+                                .iter()
+                                .map(|m| m.id)
+                                .filter(|id| held.contains_key(id))
+                                .min()
+                        });
+                    let causal_blocked =
+                        held.keys().copied().find(|h| env.causal_context.covers(*h));
+                    if let Some(on) = tx_blocked.into_iter().chain(causal_blocked).min() {
+                        held.insert(env.id, PendingReason::DependsOnPending { on });
+                        changed = true;
+                    }
+                }
+                if !changed {
+                    break;
+                }
+            }
+        }
+
         let mut processed: BTreeSet<OperationId> = BTreeSet::new();
         for env in &order {
-            if processed.contains(&env.id) {
+            if processed.contains(&env.id) || held.contains_key(&env.id) {
                 continue;
             }
             if let Some(tx) = member_transaction(env) {
@@ -790,7 +1131,8 @@ impl<'a> Reducer<'a> {
             }
         }
 
-        let mut pending_vec: Vec<(OperationId, PendingReason)> = pending.into_iter().collect();
+        let mut pending_vec: Vec<(OperationId, PendingReason)> =
+            pending.into_iter().chain(held).collect();
         pending_vec.sort_by_key(|(id, _)| *id);
 
         let graph = self.graph.take();
@@ -813,7 +1155,12 @@ impl<'a> Reducer<'a> {
     }
 
     fn env_of(&self, id: OperationId) -> Option<&'a OperationEnvelope> {
-        self.op_set.slot(id).and_then(|s| s.single())
+        // A slot promoted by a governing ResolveEquivocation reduces as if it
+        // had always been Single with the chosen candidate.
+        self.op_set
+            .slot(id)
+            .and_then(|s| s.single())
+            .or_else(|| self.promoted_singles.get(&id).copied())
     }
 
     // --- Voice promotion pre-pass (Chapter 6 §6.10 InsertEvent). ------------
@@ -864,6 +1211,107 @@ impl<'a> Reducer<'a> {
                 }
             }
         }
+    }
+
+    // --- System-derived counter collision check (Chapter 5 §"System-Derived
+    // Counter Collisions"). ---------------------------------------------------
+
+    /// The system-derived identifiers an operation would admit into canonical
+    /// state, each with the canonical inputs of its derivation: the promoted
+    /// voice assigned by the promotion pre-pass, and any `SYSTEM_DERIVED`-
+    /// namespace pitch carried by a minting payload (InsertEvent,
+    /// InsertIdentifiedPitch). Non-minting references to system-derived ids —
+    /// e.g. a ModifyEvent rewriting a live pitch's content in place — are
+    /// deliberately not treated as mints (that is Invariant-11 territory, not a
+    /// derivation collision).
+    fn prospective_system_mints(
+        &self,
+        env: &OperationEnvelope,
+    ) -> Vec<((ObjectKind, u64), SerializedCanonicalInputs)> {
+        let mut mints = Vec::new();
+        let OperationPayload::Primitive(kind) = &env.payload else {
+            return mints;
+        };
+        match kind {
+            OperationKind::InsertEvent(op) => {
+                if let Some((promoted, winner)) = self.promotion.get(&env.id) {
+                    mints.push((
+                        (ObjectKind::Voice, promoted.counter()),
+                        SerializedCanonicalInputs(promoted_voice_inputs(
+                            op.staff_instance,
+                            op.voice(),
+                            *winner,
+                            env.id,
+                        )),
+                    ));
+                }
+                let mut pitches = Vec::new();
+                op.event.collect_identified_pitches(&mut pitches);
+                for pitch in pitches {
+                    if pitch.id.replica() == ReplicaId::SYSTEM_DERIVED {
+                        mints.push((
+                            (ObjectKind::Pitch, pitch.id.counter()),
+                            SerializedCanonicalInputs(canonical_pitch_bytes(&pitch.pitch)),
+                        ));
+                    }
+                }
+            }
+            OperationKind::InsertIdentifiedPitch(op)
+                if op.pitch.id.replica() == ReplicaId::SYSTEM_DERIVED =>
+            {
+                mints.push((
+                    (ObjectKind::Pitch, op.pitch.id.counter()),
+                    SerializedCanonicalInputs(canonical_pitch_bytes(&op.pitch.pitch)),
+                ));
+            }
+            _ => {}
+        }
+        mints
+    }
+
+    /// Walks the canonical order checking every prospective system-derived
+    /// mint against the registry (base-seeded occupants plus earlier mints in
+    /// the walk). On the first collision — the same `(kind, counter)` claimed
+    /// by *different* canonical inputs — records the
+    /// `SystemIdentifierCollision` anomaly and returns the halt point
+    /// `(index, colliding op, earlier occupant op)`: reduction must not
+    /// continue past the collision, and neither input set may occupy the
+    /// collided counter (§"System-Derived Counter Collisions"). The earlier
+    /// occupant is `None` when it was seeded from the base graph, which cannot
+    /// be evicted by this reduction and is left to diagnostic recovery.
+    ///
+    /// The check is conservative: a claimed mint participates even if the
+    /// operation would later fail an unrelated apply-time precondition —
+    /// two input sets contending for one counter is a structural identity
+    /// failure regardless of which contender ultimately materializes.
+    fn detect_system_collision(
+        &mut self,
+        order: &[&OperationEnvelope],
+    ) -> Option<(usize, OperationId, Option<OperationId>)> {
+        for (index, env) in order.iter().enumerate() {
+            for (key, inputs) in self.prospective_system_mints(env) {
+                match self.system_mints.get(&key) {
+                    None => {
+                        self.system_mints.insert(key, (inputs, Some(env.id)));
+                    }
+                    Some((existing, _)) if existing.0 == inputs.0 => {
+                        // The same derivation re-observed: not a collision.
+                    }
+                    Some((existing, owner)) => {
+                        let owner = *owner;
+                        let existing = existing.clone();
+                        self.record_anomaly(IntegrityAnomalyKind::SystemIdentifierCollision {
+                            kind: key.0,
+                            colliding_counter: key.1,
+                            input_set_a: existing,
+                            input_set_b: inputs,
+                        });
+                        return Some((index, env.id, owner));
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn graph_insert_precondition(
@@ -1011,16 +1459,38 @@ impl<'a> Reducer<'a> {
         }
     }
 
-    fn materialize_graph_delete(&mut self, op: &DeleteEventOp) {
+    /// Removes the deleted event from the materialized graph and keeps it
+    /// reference-clean. Returns the repair records for the re-anchoring this
+    /// performs beyond the bookkeeping rules — the rule-table rows for the
+    /// graph-only referent kinds (markers, cue events, comments, analytical
+    /// annotations, graphic gestures) via [`Self::reanchor_event_referents`] —
+    /// so the triggering operation's effect can record them (Chapter 6
+    /// §Re-Anchoring: "Re-anchoring actions MUST be recorded as RepairRecord
+    /// entries in the triggering operation's effect").
+    fn materialize_graph_delete(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &DeleteEventOp,
+    ) -> Vec<RepairRecord> {
         let Some(score) = self.graph.as_mut() else {
-            return;
+            return Vec::new();
         };
         let Some(event) = score.events.remove(op.event) else {
-            return;
+            return Vec::new();
         };
         let voice_id = event.voice();
         let location = graph_voice_location(score, voice_id);
         let region_id = location.map(|(region, _, _)| score.canvas.regions[region].id);
+        // The referent side of the four-key "nearest" ordering, captured before
+        // any mutation: the tombstoned event's containment and resolved
+        // placement (positions are region-relative; exact rational time in
+        // metric regions).
+        let referent = ReferentContext {
+            voice: voice_id,
+            region: region_id,
+            position: event.position().clone(),
+            duration: event.duration().clone(),
+        };
         let removed_event_index = location.and_then(|(region, instance, voice)| {
             score.canvas.regions[region].staff_instances()[instance].voices[voice]
                 .events
@@ -1086,6 +1556,17 @@ impl<'a> Reducer<'a> {
                     .cross_cutting
                     .tuplets
                     .retain(|tuplet| !removed.contains(&tuplet.id));
+                // A decomposition component records its tuplet by id; once that tuplet is
+                // gone the reference would dangle (invariant 6, cross-cutting refs
+                // resolve), so drop any attachment that names a removed tuplet. The
+                // member it described is being tombstoned in the same cascade, so the
+                // decomposition has nothing left to describe.
+                score.decomposition_attachments.retain(|attachment| {
+                    !attachment
+                        .components
+                        .iter()
+                        .any(|component| component.tuplet.is_some_and(|t| removed.contains(&t)))
+                });
             }
             TupletCompensation::NotInTuplet | TupletCompensation::RewriteTuplets { .. } => {}
         }
@@ -1182,21 +1663,19 @@ impl<'a> Reducer<'a> {
             line.events.retain(|event| *event != op.event);
             !line.events.is_empty()
         });
-        if let Some(region) = region_id {
-            let fallback = TimeAnchor::Region {
-                id: region,
-                edge: RegionEdge::Start,
-                offset: AnchorOffset::Zero,
-            };
-            for marker in &mut score.cross_cutting.markers {
-                if matches!(marker.anchor, TimeAnchor::Event { id, .. } if id == op.event) {
-                    marker.anchor = fallback.clone();
-                }
-            }
-        }
+        // The remaining rule-table rows — markers, cue events, comments,
+        // analytical annotations, graphic gestures — are decided and applied
+        // together (ledger record + graph mutation) once the event is out of
+        // the graph, so the two can never disagree.
+        self.reanchor_event_referents(env, op.event, &referent)
     }
 
-    fn materialize_graph_tombstones(&mut self, targets: &[TypedObjectId]) {
+    fn materialize_graph_tombstones(
+        &mut self,
+        env: &OperationEnvelope,
+        targets: &[TypedObjectId],
+    ) -> Vec<RepairRecord> {
+        let mut repairs = Vec::new();
         let events: Vec<EventId> = targets
             .iter()
             .filter_map(|target| match target {
@@ -1210,14 +1689,17 @@ impl<'a> Reducer<'a> {
             }
             self.voice_occupancy
                 .retain(|_, placements| !placements.is_empty());
-            self.materialize_graph_delete(&DeleteEventOp {
-                event,
-                tuplet_compensation: TupletCompensation::NotInTuplet,
-            });
+            repairs.extend(self.materialize_graph_delete(
+                env,
+                &DeleteEventOp {
+                    event,
+                    tuplet_compensation: TupletCompensation::NotInTuplet,
+                },
+            ));
         }
 
         let Some(score) = self.graph.as_mut() else {
-            return;
+            return repairs;
         };
         for target in targets {
             match target {
@@ -1247,6 +1729,7 @@ impl<'a> Reducer<'a> {
                 _ => {}
             }
         }
+        repairs
     }
 
     fn materialize_graph_cross_cutting(
@@ -1312,6 +1795,7 @@ impl<'a> Reducer<'a> {
             },
             OperationPayload::ResolveConflict(op) => self.resolve_conflict(env, op),
             OperationPayload::UndoTransaction(op) => self.undo_transaction(env, op),
+            OperationPayload::ResolveEquivocation(op) => self.resolve_equivocation(env, op),
         }
     }
 
@@ -1502,6 +1986,22 @@ impl<'a> Reducer<'a> {
                 }
             }
         };
+        // Pitch-id freshness in base-free reduction: a carried pitch id that
+        // already exists in canonical state (live or tombstoned) is not fresh.
+        // The graph-aware precondition above already enforces this (with the
+        // same reason), so this only fires when no graph is present — it keeps
+        // the two reduction APIs in agreement on the same operation set.
+        if op
+            .pitch_ids()
+            .iter()
+            .any(|pitch| self.objects.contains_key(&TypedObjectId::Pitch(*pitch)))
+        {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetTombstoned,
+                },
+            };
+        }
         let voice_obj = TypedObjectId::Voice(orig_voice);
         match self.objects.get(&voice_obj) {
             Some(ObjectState::Tombstoned { .. }) => {
@@ -1620,7 +2120,20 @@ impl<'a> Reducer<'a> {
                 .find(|(_, _, event)| *event == op.event)
                 .map(|(position, duration, _)| (*voice, position.clone(), duration.clone()))
         });
-        self.materialize_graph_delete(op);
+        // The tombstoned referent's voice, for the containment-proximity key of
+        // the re-anchoring reasons below: the occupancy index (base-free) with
+        // the graph as fallback for non-metric events. Captured before the
+        // graph delete removes the event.
+        let referent_voice = deleted_placement
+            .as_ref()
+            .map(|(voice, _, _)| *voice)
+            .or_else(|| {
+                self.graph
+                    .as_ref()
+                    .and_then(|score| score.events.get(op.event))
+                    .map(Event::voice)
+            });
+        let graph_repairs = self.materialize_graph_delete(env, op);
 
         let minter = self.minted_by.get(&ev_obj).copied().unwrap_or(env.id);
         self.objects.insert(
@@ -1634,7 +2147,7 @@ impl<'a> Reducer<'a> {
             events.retain(|(_, _, event)| *event != op.event);
         }
         self.voice_occupancy.retain(|_, events| !events.is_empty());
-        let mut repairs = Vec::new();
+        let mut repairs = graph_repairs;
 
         // Tombstone contained pitches.
         if let Some(pitches) = self.event_pitches.get(&op.event).cloned() {
@@ -1713,7 +2226,7 @@ impl<'a> Reducer<'a> {
         }
 
         // Re-anchor cross-cutting structures referencing the tombstoned event.
-        self.reanchor_for_tombstone(env, ev_obj, &mut repairs);
+        self.reanchor_for_tombstone(env, ev_obj, &mut repairs, referent_voice);
 
         if repairs.is_empty() {
             OperationEffect::Applied
@@ -2138,6 +2651,8 @@ impl<'a> Reducer<'a> {
             .or_default()
             .insert(op.instance_id());
         self.instance_voices.entry(op.instance_id()).or_default();
+        self.instance_staff
+            .insert(op.instance_id(), op.instance.staff);
         OperationEffect::Applied
     }
 
@@ -2524,20 +3039,26 @@ impl<'a> Reducer<'a> {
                 }
                 OperationEffect::Applied
             }
-            Some(RS::Resolved { action, .. }) => {
+            Some(RS::Resolved { by, action }) => {
                 if action == op.action {
                     OperationEffect::NoOp {
                         reason: NoOpReason::AlreadyApplied,
                     }
                 } else {
-                    // Differing concurrent resolution → meta-conflict.
+                    // Differing concurrent resolution → meta-conflict. The
+                    // earlier resolve stands (its action materialized), so it
+                    // is the record's winner; this op is the loser, and both
+                    // resolvers are named as causes ("at least two for a true
+                    // conflict", Chapter 6 §Conflict Records). A conflict
+                    // record has no TypedObjectId, so `affected_objects`
+                    // cannot name the contested conflict and stays empty.
                     let conflict = ConflictRecord::new(
                         ConflictKind::StructuralFieldCollision {
-                            winner: env.id,
+                            winner: by,
                             loser: env.id,
                             field: FieldPath("conflict_resolution".to_string()),
                         },
-                        vec![env.id],
+                        vec![by, env.id],
                         vec![],
                     );
                     let cid = conflict.id;
@@ -2548,6 +3069,73 @@ impl<'a> Reducer<'a> {
             Some(RS::Dismissed { .. }) => OperationEffect::NoOp {
                 reason: NoOpReason::AlreadyApplied,
             },
+        }
+    }
+
+    /// The recorded effect of a `ResolveEquivocation` (operation_catalog
+    /// §"ResolveEquivocation"). The slot promotion itself happened in the
+    /// set-level pre-pass ([`Reducer::run`] step 1b); this only records the
+    /// per-resolve verdict, mirroring [`Reducer::resolve_conflict`]'s
+    /// discipline: the governing (earliest-in-canonical-order) resolve is
+    /// `Applied`; a later resolve naming the same candidate reduces
+    /// idempotently; a later valid resolve naming a differing candidate is a
+    /// `StructuralFieldCollision` meta-conflict on `equivocation_resolution`.
+    /// A resolve whose target is not an equivocated slot, or whose chosen is
+    /// not among the slot's candidates, is a precondition no-op
+    /// (`TargetMissing` — the named target/candidate pair does not exist).
+    fn resolve_equivocation(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &crate::payload::ResolveEquivocationPayload,
+    ) -> OperationEffect {
+        let precondition_noop = OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::TargetMissing,
+            },
+        };
+        match self.equivocation_resolutions.get(&op.target) {
+            // No governing resolve exists for the target: it is absent, holds
+            // a Single slot, or is equivocated with no valid resolve — in
+            // every case this resolve's precondition ("an Equivocated slot for
+            // `target` with `chosen` among its candidates") failed, or it
+            // would have governed.
+            None => precondition_noop,
+            Some((winner, chosen)) => {
+                if env.id == *winner {
+                    OperationEffect::Applied
+                } else if op.chosen == *chosen {
+                    // A later resolve naming the same candidate: idempotent.
+                    OperationEffect::NoOp {
+                        reason: NoOpReason::AlreadyApplied,
+                    }
+                } else if !self
+                    .op_set
+                    .slot(op.target)
+                    .is_some_and(|slot| slot.candidates().any(|c| c == op.chosen))
+                {
+                    // A differing `chosen` that never named a real candidate
+                    // is a failed precondition, not a contested resolution.
+                    precondition_noop
+                } else {
+                    // Two valid resolves naming differing candidates: the
+                    // governing (earlier) resolve stands as the record's
+                    // winner; this op is the loser, both named as causes. A
+                    // slot is not a TypedObjectId, so `affected_objects`
+                    // stays empty (the ResolveConflict discipline).
+                    let conflict = ConflictRecord::new(
+                        ConflictKind::StructuralFieldCollision {
+                            winner: *winner,
+                            loser: env.id,
+                            field: FieldPath("equivocation_resolution".to_string()),
+                        },
+                        vec![*winner, env.id],
+                        vec![],
+                    );
+                    let cid = conflict.id;
+                    self.conflicts.insert(conflict);
+                    OperationEffect::Conflicted { conflict: cid }
+                }
+            }
         }
     }
 
@@ -2585,7 +3173,7 @@ impl<'a> Reducer<'a> {
                             target: *t,
                         });
                     }
-                    self.materialize_graph_tombstones(&targets);
+                    repairs.extend(self.materialize_graph_tombstones(env, &targets));
                     OperationEffect::AppliedWithRepair { repairs }
                 } else {
                     // A target was already tombstoned/modified: strict undo conflicts.
@@ -2627,7 +3215,7 @@ impl<'a> Reducer<'a> {
                         tombstoned.push(*t);
                     }
                 }
-                self.materialize_graph_tombstones(&tombstoned);
+                repairs.extend(self.materialize_graph_tombstones(env, &tombstoned));
                 OperationEffect::AppliedWithRepair { repairs }
             }
         }
@@ -2815,28 +3403,45 @@ impl<'a> Reducer<'a> {
     }
 
     fn transpose(&mut self, _env: &OperationEnvelope, op: &TransposeOp) -> OperationEffect {
-        // Precondition: every target pitch is live. Transpose is order-dependent
-        // (transpositions do not commute); its canonical footprint is the
-        // effect-log entry. The transposed values are materialized in the graph.
-        for pitch in &op.targets {
-            match self.objects.get(&TypedObjectId::Pitch(*pitch)) {
-                Some(ObjectState::Live) => {}
-                Some(ObjectState::Tombstoned { .. }) => {
-                    return OperationEffect::NoOp {
-                        reason: NoOpReason::TargetTombstoned,
-                    }
-                }
-                None => {
-                    return OperationEffect::NoOp {
-                        reason: NoOpReason::PreconditionFailedUnderReduction {
-                            reason: PreconditionFailureReason::TargetMissing,
-                        },
-                    }
-                }
-            }
+        // Precondition: a target that never entered canonical state is a
+        // dangling reference — the whole operation refuses. Tombstoned targets
+        // are *skipped* per the catalog's re-anchoring rule ("the transpose
+        // applies only to live pitches", Operation Catalog §Transpose); the
+        // shift still applies to the remaining live targets. Transpose is
+        // order-dependent (transpositions do not commute); its canonical
+        // footprint is the effect-log entry. The transposed values are
+        // materialized in the graph.
+        if op
+            .targets
+            .iter()
+            .any(|pitch| !self.objects.contains_key(&TypedObjectId::Pitch(*pitch)))
+        {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
         }
-        for pitch in &op.targets {
-            self.graph_transpose_pitch(*pitch, op.chromatic_steps);
+        let live: Vec<PitchId> = op
+            .targets
+            .iter()
+            .copied()
+            .filter(|pitch| {
+                matches!(
+                    self.objects.get(&TypedObjectId::Pitch(*pitch)),
+                    Some(ObjectState::Live)
+                )
+            })
+            .collect();
+        if live.is_empty() {
+            // Every target was tombstoned by a causally-prior delete: the
+            // skip-all case degenerates to no effect.
+            return OperationEffect::NoOp {
+                reason: NoOpReason::TargetTombstoned,
+            };
+        }
+        for pitch in live {
+            self.graph_transpose_pitch(pitch, op.chromatic_steps);
         }
         OperationEffect::Applied
     }
@@ -3149,6 +3754,7 @@ impl<'a> Reducer<'a> {
         env: &OperationEnvelope,
         tombstoned: TypedObjectId,
         repairs: &mut Vec<RepairRecord>,
+        referent_voice: Option<VoiceId>,
     ) {
         // Find structures referencing the tombstoned object.
         let referencing: Vec<TypedObjectId> = self
@@ -3163,13 +3769,18 @@ impl<'a> Reducer<'a> {
                     // A tie's existence requires both endpoints: cascade-delete.
                     self.cascade_structure(env, sid, repairs);
                 }
-                TypedObjectId::Comment(_) | TypedObjectId::AnalyticalAnnotation(_) => {
-                    // User content is never silently deleted: orphan.
-                    repairs.push(RepairRecord {
-                        kind: RepairKind::Orphaned,
-                        target: sid,
-                    });
-                }
+                // The graph-only referent kinds — markers, cue events,
+                // comments, analytical annotations, graphic gestures — are
+                // repaired where their graph mutation happens
+                // (`reanchor_event_referents`, run from
+                // `materialize_graph_delete`), so the ledger record and the
+                // graph always agree. They only exist under graph-aware
+                // reduction (none is creatable by an operation).
+                TypedObjectId::Marker(_)
+                | TypedObjectId::Comment(_)
+                | TypedObjectId::AnalyticalAnnotation(_)
+                | TypedObjectId::GraphicGesture(_)
+                | TypedObjectId::Event(_) => {}
                 TypedObjectId::Beam(_) => {
                     let survivors = self.surviving_endpoints(sid, tombstoned);
                     if survivors < 2 {
@@ -3188,11 +3799,29 @@ impl<'a> Reducer<'a> {
                     if survivors < 1 {
                         self.cascade_structure(env, sid, repairs);
                     } else if let Some(to) = self.nearest_survivor(sid, tombstoned) {
+                        // The survivor is fixed (the structure's other
+                        // endpoint — surviving-endpoint collapse per the rule
+                        // table), so only the containment key applies: the
+                        // reason names the survivor's actual proximity rank to
+                        // the tombstoned endpoint rather than a hardcoded
+                        // same-voice claim.
+                        let survivor_voice = match to {
+                            TypedObjectId::Event(event) => self.event_voice(event),
+                            _ => None,
+                        };
+                        let reason = match (referent_voice, survivor_voice) {
+                            (Some(referent), Some(survivor)) => {
+                                reason_for_rank(self.containment_rank(referent, survivor))
+                            }
+                            // No indexed placement for either side (a
+                            // non-metric endpoint): the pre-four-key default.
+                            _ => ReanchorReason::SameVoiceNearer,
+                        };
                         repairs.push(RepairRecord {
                             kind: RepairKind::Reanchored {
                                 from: tombstoned,
                                 to,
-                                reason: ReanchorReason::SameVoiceNearer,
+                                reason,
                             },
                             target: sid,
                         });
@@ -3249,9 +3878,13 @@ impl<'a> Reducer<'a> {
         sid: TypedObjectId,
         just_tombstoned: TypedObjectId,
     ) -> Option<TypedObjectId> {
-        // Deterministic "nearest" stand-in: the lexicographically-smallest
-        // surviving endpoint (the spec's full proximity ordering needs resolved
-        // positions; see DECISIONS.md).
+        // For slurs/spanners the rule table prescribes surviving-endpoint
+        // collapse, so the candidate set is the structure's own endpoints; the
+        // lexicographically-smallest survivor realizes the id tie-break (a
+        // two-endpoint structure has exactly one). Proximity-aware re-targeting
+        // beyond the endpoints stays a deferred refinement (the table says so
+        // explicitly); the open-candidate four-key ordering lives in
+        // `nearest_live_event`.
         self.structures.get(&sid).and_then(|eps| {
             eps.iter()
                 .filter(|e| {
@@ -3261,6 +3894,594 @@ impl<'a> Reducer<'a> {
                 .min()
                 .copied()
         })
+    }
+
+    // --- The four-key "nearest" ordering (Chapter 6 §"Total Ordering for
+    // Nearest") and the graph-only rule-table rows. ---------------------------
+
+    /// The staff instance a voice lives in, from the base-free ledger index.
+    fn voice_instance(&self, voice: VoiceId) -> Option<StaffInstanceId> {
+        self.instance_voices
+            .iter()
+            .find_map(|(instance, voices)| voices.contains(&voice).then_some(*instance))
+    }
+
+    /// The region a staff instance lives in, from the base-free ledger index.
+    fn instance_region_of(&self, instance: StaffInstanceId) -> Option<RegionId> {
+        self.region_instances
+            .iter()
+            .find_map(|(region, instances)| instances.contains(&instance).then_some(*region))
+    }
+
+    /// The voice of a live event with an indexed metric placement.
+    fn event_voice(&self, event: EventId) -> Option<VoiceId> {
+        self.voice_occupancy.iter().find_map(|(voice, placements)| {
+            placements
+                .iter()
+                .any(|(_, _, placed)| *placed == event)
+                .then_some(*voice)
+        })
+    }
+
+    /// Containment proximity (key 1 of the "nearest" ordering): same voice 0,
+    /// same staff instance 1, same staff 2, same region 3, same canvas 4.
+    /// Computed from the base-free ledger indices, so `reduce()` and
+    /// `reduce_onto()` rank identically wherever both represent the scenario.
+    fn containment_rank(&self, referent_voice: VoiceId, candidate_voice: VoiceId) -> u8 {
+        if referent_voice == candidate_voice {
+            return 0;
+        }
+        let (Some(referent), Some(candidate)) = (
+            self.voice_instance(referent_voice),
+            self.voice_instance(candidate_voice),
+        ) else {
+            return 4;
+        };
+        if referent == candidate {
+            return 1;
+        }
+        if let (Some(a), Some(b)) = (
+            self.instance_staff.get(&referent),
+            self.instance_staff.get(&candidate),
+        ) {
+            if a == b {
+                return 2;
+            }
+        }
+        if let (Some(a), Some(b)) = (
+            self.instance_region_of(referent),
+            self.instance_region_of(candidate),
+        ) {
+            if a == b {
+                return 3;
+            }
+        }
+        4
+    }
+
+    /// The nearest surviving live event to the tombstoned referent under the
+    /// four-key total order (Chapter 6 §"Total Ordering for Nearest"): the
+    /// strict lexicographic minimum of (containment proximity, absolute time
+    /// distance from the referent's resolved position, forward before
+    /// backward, typed id bytes ascending — an `EventId`'s numeric order *is*
+    /// its canonical 16-byte order). Candidates ranked farther than `max_rank`
+    /// are excluded. Read entirely from the canonical ledger indices, so the
+    /// choice is a function of canonical state (permutation-invariant). Only
+    /// *metric* placements are indexed; wall-clock distance (proportional
+    /// regions) is a deferred refinement, so a wall-clock referent finds no
+    /// candidate and falls to the kind's declared failure action.
+    fn nearest_live_event(
+        &self,
+        referent: &ReferentContext,
+        exclude: EventId,
+        max_rank: u8,
+    ) -> Option<(EventId, u8)> {
+        let EventPosition::Musical(referent_position) = &referent.position else {
+            return None;
+        };
+        let mut best: Option<(u8, RationalTime, u8, EventId)> = None;
+        for (voice, placements) in &self.voice_occupancy {
+            let rank = self.containment_rank(referent.voice, *voice);
+            if rank > max_rank {
+                continue;
+            }
+            for (position, _, event) in placements {
+                if *event == exclude
+                    || !matches!(
+                        self.objects.get(&TypedObjectId::Event(*event)),
+                        Some(ObjectState::Live)
+                    )
+                {
+                    continue;
+                }
+                let signed = position.0.sub(&referent_position.0);
+                let (direction, distance) = if signed.is_negative() {
+                    (1u8, RationalTime::zero().sub(&signed))
+                } else {
+                    (0u8, signed)
+                };
+                let key = (rank, distance, direction, *event);
+                if best.as_ref().map_or(true, |current| key < *current) {
+                    best = Some(key);
+                }
+            }
+        }
+        best.map(|(rank, _, _, event)| (event, rank))
+    }
+
+    /// Drops `dead` from `sid`'s referent-index entry, removing the entry when
+    /// no event reference remains.
+    fn drop_structure_ref(&mut self, sid: TypedObjectId, dead: TypedObjectId) {
+        if let Some(refs) = self.structures.get_mut(&sid) {
+            refs.retain(|existing| *existing != dead);
+            if refs.is_empty() {
+                self.structures.remove(&sid);
+            }
+        }
+    }
+
+    /// The rule-table rows for the graph-only referent kinds — markers, cue
+    /// events, comments, analytical annotations, graphic gestures (Chapter 6
+    /// §"The Re-Anchoring Rule Table"). Runs from
+    /// [`Self::materialize_graph_delete`], so both the DeleteEvent path and the
+    /// undo path record the same repairs in the triggering operation's effect.
+    /// Each row's ledger record and graph mutation are decided together, in
+    /// canonical id order ("the graph follows the ledger").
+    fn reanchor_event_referents(
+        &mut self,
+        env: &OperationEnvelope,
+        deleted: EventId,
+        referent: &ReferentContext,
+    ) -> Vec<RepairRecord> {
+        let mut repairs = Vec::new();
+        let deleted_obj = TypedObjectId::Event(deleted);
+        // The deleted event's own referent entry (a cue's source list) dies
+        // with it.
+        self.structures.remove(&deleted_obj);
+        let referencing: Vec<TypedObjectId> = self
+            .structures
+            .iter()
+            .filter(|(sid, refs)| {
+                matches!(
+                    sid,
+                    TypedObjectId::Marker(_)
+                        | TypedObjectId::Comment(_)
+                        | TypedObjectId::AnalyticalAnnotation(_)
+                        | TypedObjectId::GraphicGesture(_)
+                        | TypedObjectId::Event(_)
+                ) && refs.contains(&deleted_obj)
+                    && matches!(self.objects.get(sid), Some(ObjectState::Live))
+            })
+            .map(|(sid, _)| *sid)
+            .collect();
+        for sid in referencing {
+            match sid {
+                TypedObjectId::Marker(_) => {
+                    self.reanchor_marker(deleted, referent, sid, &mut repairs)
+                }
+                TypedObjectId::Event(cue) => self.cascade_cue(env, cue, &mut repairs),
+                TypedObjectId::Comment(_) => {
+                    self.orphan_comment(deleted, referent, sid, &mut repairs)
+                }
+                TypedObjectId::AnalyticalAnnotation(_) => {
+                    self.reanchor_annotation(deleted, referent, sid, &mut repairs)
+                }
+                TypedObjectId::GraphicGesture(_) => {
+                    self.reanchor_gesture(deleted, referent, sid, &mut repairs)
+                }
+                _ => {}
+            }
+        }
+        repairs
+    }
+
+    /// Row "Marker / Anchor": re-anchor to the nearest event in the same staff
+    /// instance (proximity max: same staff instance); orphan on failure.
+    fn reanchor_marker(
+        &mut self,
+        deleted: EventId,
+        referent: &ReferentContext,
+        sid: TypedObjectId,
+        repairs: &mut Vec<RepairRecord>,
+    ) {
+        let TypedObjectId::Marker(marker) = sid else {
+            return;
+        };
+        match self.nearest_live_event(referent, deleted, PROXIMITY_SAME_STAFF_INSTANCE) {
+            Some((to, rank)) => {
+                if let Some(score) = self.graph.as_mut() {
+                    if let Some(value) = score
+                        .cross_cutting
+                        .markers
+                        .iter_mut()
+                        .find(|value| value.id == marker)
+                    {
+                        if let TimeAnchor::Event { id, .. } = &mut value.anchor {
+                            if *id == deleted {
+                                // The anchor offset is preserved: the survivor
+                                // shares the staff instance, hence the region
+                                // and its offset discipline (invariant 9).
+                                *id = to;
+                            }
+                        }
+                    }
+                }
+                self.structures.insert(sid, vec![TypedObjectId::Event(to)]);
+                repairs.push(RepairRecord {
+                    kind: RepairKind::Reanchored {
+                        from: TypedObjectId::Event(deleted),
+                        to: TypedObjectId::Event(to),
+                        reason: reason_for_rank(rank),
+                    },
+                    target: sid,
+                });
+            }
+            None => {
+                // Orphan: the marker (user content) is kept. Invariant 10
+                // rejects a dangling event anchor, so the graph anchor degrades
+                // to the containing region's start — anchor hygiene, not a
+                // re-anchoring choice; the ledger records the orphaning.
+                if let Some(region) = referent.region {
+                    if let Some(score) = self.graph.as_mut() {
+                        if let Some(value) = score
+                            .cross_cutting
+                            .markers
+                            .iter_mut()
+                            .find(|value| value.id == marker)
+                        {
+                            if matches!(value.anchor, TimeAnchor::Event { id, .. } if id == deleted)
+                            {
+                                value.anchor = TimeAnchor::Region {
+                                    id: region,
+                                    edge: RegionEdge::Start,
+                                    offset: AnchorOffset::Zero,
+                                };
+                            }
+                        }
+                    }
+                }
+                self.structures.remove(&sid);
+                repairs.push(RepairRecord {
+                    kind: RepairKind::Orphaned,
+                    target: sid,
+                });
+            }
+        }
+    }
+
+    /// Row "Cue event / Source event": cascade-delete — the plain normative
+    /// action, on *any* source deletion (the multi-source rationale tension is
+    /// a proposed Pass-12 row). The cascaded cue is itself a tombstoned event,
+    /// so the full re-anchoring pass — the graph-only rows via the recursive
+    /// `materialize_graph_delete`, and the tie/beam/slur/spanner ledger arm via
+    /// `reanchor_for_tombstone` — runs over its own referents transitively, in
+    /// the same reduction step.
+    fn cascade_cue(
+        &mut self,
+        env: &OperationEnvelope,
+        cue: EventId,
+        repairs: &mut Vec<RepairRecord>,
+    ) {
+        let sid = TypedObjectId::Event(cue);
+        // A cue this pass already cascaded transitively (a cue-of-a-cue chain
+        // reaching back into the referencing list) must not double-record.
+        if !matches!(self.objects.get(&sid), Some(ObjectState::Live)) {
+            return;
+        }
+        let cue_voice = self.event_voice(cue);
+        self.cascade_structure(env, sid, repairs);
+        self.structures.remove(&sid);
+        for events in self.voice_occupancy.values_mut() {
+            events.retain(|(_, _, event)| *event != cue);
+        }
+        self.voice_occupancy.retain(|_, events| !events.is_empty());
+        self.event_pitches.remove(&cue);
+        let cue_delete = DeleteEventOp {
+            event: cue,
+            tuplet_compensation: TupletCompensation::NotInTuplet,
+        };
+        repairs.extend(self.materialize_graph_delete(env, &cue_delete));
+        self.reanchor_for_tombstone(env, sid, repairs, cue_voice);
+    }
+
+    /// Row "Comment / Anchor": orphan — user content is never silently
+    /// deleted. The comment stays live in ledger and graph; its dangling
+    /// anchor references degrade to the containing-region forms so invariant
+    /// 10 keeps holding.
+    fn orphan_comment(
+        &mut self,
+        deleted: EventId,
+        referent: &ReferentContext,
+        sid: TypedObjectId,
+        repairs: &mut Vec<RepairRecord>,
+    ) {
+        let TypedObjectId::Comment(comment) = sid else {
+            return;
+        };
+        if let Some(region) = referent.region {
+            if let Some(score) = self.graph.as_mut() {
+                if let Some(value) = score
+                    .cross_cutting
+                    .comments
+                    .iter_mut()
+                    .find(|value| value.id == comment)
+                {
+                    orphan_annotation_anchor(&mut value.anchor, deleted, region);
+                }
+            }
+        }
+        self.drop_structure_ref(sid, TypedObjectId::Event(deleted));
+        repairs.push(RepairRecord {
+            kind: RepairKind::Orphaned,
+            target: sid,
+        });
+    }
+
+    /// Row "Analytical annotation / Anchor": re-anchor to a time range
+    /// preserving the original extent; orphan when the range cannot be
+    /// reconstructed. Reconstruction needs the containing region plus an exact
+    /// musical placement — the range endpoints become region-start offsets, so
+    /// they resolve to the deleted event's exact span. A wall-clock or
+    /// indeterminate span is not expressible as a stored region-relative range
+    /// (the expressibility gap is a proposed Pass-12 row), so it orphans.
+    fn reanchor_annotation(
+        &mut self,
+        deleted: EventId,
+        referent: &ReferentContext,
+        sid: TypedObjectId,
+        repairs: &mut Vec<RepairRecord>,
+    ) {
+        let TypedObjectId::AnalyticalAnnotation(annotation) = sid else {
+            return;
+        };
+        let deleted_obj = TypedObjectId::Event(deleted);
+        let current = self.graph.as_ref().and_then(|score| {
+            score
+                .cross_cutting
+                .analytical
+                .iter()
+                .find(|value| value.id == annotation)
+                .map(|value| value.anchor.clone())
+        });
+        let Some(current) = current else {
+            self.drop_structure_ref(sid, deleted_obj);
+            return;
+        };
+        // A stale index entry (the anchor no longer references the deleted
+        // event) drops the reference with no repair.
+        if !annotation_anchor_event_refs(&current).contains(&deleted_obj) {
+            self.drop_structure_ref(sid, deleted_obj);
+            return;
+        }
+        let musical_span = match (&referent.position, &referent.duration) {
+            (EventPosition::Musical(position), EventDuration::Musical(duration)) => {
+                Some((position.0.clone(), duration.0.clone()))
+            }
+            _ => None,
+        };
+        let range_point = |resolved: RationalTime, region: RegionId| TimeAnchor::Region {
+            id: region,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Musical(MusicalDuration(resolved)),
+        };
+        let reconstructed: Option<AnnotationAnchor> = match &current {
+            AnnotationAnchor::Event(event) if *event == deleted => {
+                match (musical_span.as_ref(), referent.region) {
+                    (Some((position, duration)), Some(region)) => Some(AnnotationAnchor::Range {
+                        start: range_point(position.clone(), region),
+                        end: range_point(position.add(duration), region),
+                    }),
+                    _ => None,
+                }
+            }
+            AnnotationAnchor::Range { start, end } => {
+                // Per endpoint: an event-anchored endpoint of the deleted event
+                // is rebuilt at its resolved position (the event's position
+                // plus any musical anchor offset); live endpoints are kept.
+                let rebuild = |endpoint: &TimeAnchor| -> Option<TimeAnchor> {
+                    match endpoint {
+                        TimeAnchor::Event { id, offset } if *id == deleted => {
+                            let (position, _) = musical_span.as_ref()?;
+                            let region = referent.region?;
+                            let resolved = match offset {
+                                AnchorOffset::Zero => position.clone(),
+                                AnchorOffset::Musical(delta) => position.add(&delta.0),
+                                AnchorOffset::WallClock(_) => return None,
+                            };
+                            Some(range_point(resolved, region))
+                        }
+                        other => Some(other.clone()),
+                    }
+                };
+                match (rebuild(start), rebuild(end)) {
+                    (Some(start), Some(end)) => Some(AnnotationAnchor::Range { start, end }),
+                    _ => None,
+                }
+            }
+            // Stale index entry (the anchor no longer references the deleted
+            // event): drop the reference, no repair.
+            _ => {
+                self.drop_structure_ref(sid, deleted_obj);
+                return;
+            }
+        };
+        match reconstructed {
+            Some(anchor) => {
+                let region = referent
+                    .region
+                    .expect("range reconstruction required the containing region");
+                if let Some(score) = self.graph.as_mut() {
+                    if let Some(value) = score
+                        .cross_cutting
+                        .analytical
+                        .iter_mut()
+                        .find(|value| value.id == annotation)
+                    {
+                        value.anchor = anchor;
+                    }
+                }
+                self.drop_structure_ref(sid, deleted_obj);
+                repairs.push(RepairRecord {
+                    kind: RepairKind::Reanchored {
+                        from: deleted_obj,
+                        to: TypedObjectId::Region(region),
+                        reason: ReanchorReason::ExplicitFallback,
+                    },
+                    target: sid,
+                });
+            }
+            None => {
+                if let Some(region) = referent.region {
+                    if let Some(score) = self.graph.as_mut() {
+                        if let Some(value) = score
+                            .cross_cutting
+                            .analytical
+                            .iter_mut()
+                            .find(|value| value.id == annotation)
+                        {
+                            orphan_annotation_anchor(&mut value.anchor, deleted, region);
+                        }
+                    }
+                }
+                self.drop_structure_ref(sid, deleted_obj);
+                repairs.push(RepairRecord {
+                    kind: RepairKind::Orphaned,
+                    target: sid,
+                });
+            }
+        }
+    }
+
+    /// Row "Graphic gesture / Anchor event": re-anchor each deleted event
+    /// reference to the nearest surviving event of the same staff instance
+    /// (proximity max: same staff instance); with no candidate the reference is
+    /// dropped — truncation while references remain, orphaning when the list
+    /// empties. Range anchoring truncates (dead endpoints move to the region
+    /// edges); Free anchoring is never indexed.
+    fn reanchor_gesture(
+        &mut self,
+        deleted: EventId,
+        referent: &ReferentContext,
+        sid: TypedObjectId,
+        repairs: &mut Vec<RepairRecord>,
+    ) {
+        let TypedObjectId::GraphicGesture(gesture) = sid else {
+            return;
+        };
+        let deleted_obj = TypedObjectId::Event(deleted);
+        let current = self.graph.as_ref().and_then(|score| {
+            score
+                .cross_cutting
+                .graphic_gestures
+                .iter()
+                .find(|value| value.id == gesture)
+                .map(|value| value.anchoring.clone())
+        });
+        let Some(anchoring) = current else {
+            self.drop_structure_ref(sid, deleted_obj);
+            return;
+        };
+        let set_anchoring = |reducer: &mut Self, anchoring: GestureAnchoring| {
+            if let Some(score) = reducer.graph.as_mut() {
+                if let Some(value) = score
+                    .cross_cutting
+                    .graphic_gestures
+                    .iter_mut()
+                    .find(|value| value.id == gesture)
+                {
+                    value.anchoring = anchoring;
+                }
+            }
+        };
+        match anchoring {
+            GestureAnchoring::Events(events) => {
+                if !events.contains(&deleted) {
+                    self.drop_structure_ref(sid, deleted_obj);
+                    return;
+                }
+                match self.nearest_live_event(referent, deleted, PROXIMITY_SAME_STAFF_INSTANCE) {
+                    Some((to, rank)) => {
+                        let retargeted: Vec<EventId> = events
+                            .iter()
+                            .map(|event| if *event == deleted { to } else { *event })
+                            .collect();
+                        self.structures.insert(
+                            sid,
+                            retargeted
+                                .iter()
+                                .copied()
+                                .map(TypedObjectId::Event)
+                                .collect(),
+                        );
+                        set_anchoring(self, GestureAnchoring::Events(retargeted));
+                        repairs.push(RepairRecord {
+                            kind: RepairKind::Reanchored {
+                                from: deleted_obj,
+                                to: TypedObjectId::Event(to),
+                                reason: reason_for_rank(rank),
+                            },
+                            target: sid,
+                        });
+                    }
+                    None => {
+                        let remaining: Vec<EventId> = events
+                            .iter()
+                            .copied()
+                            .filter(|event| *event != deleted)
+                            .collect();
+                        let emptied = remaining.is_empty();
+                        if emptied {
+                            self.structures.remove(&sid);
+                        } else {
+                            self.structures.insert(
+                                sid,
+                                remaining
+                                    .iter()
+                                    .copied()
+                                    .map(TypedObjectId::Event)
+                                    .collect(),
+                            );
+                        }
+                        set_anchoring(self, GestureAnchoring::Events(remaining));
+                        repairs.push(RepairRecord {
+                            kind: if emptied {
+                                // The reference list emptied: the gesture (user
+                                // content) is kept, reference-free.
+                                RepairKind::Orphaned
+                            } else {
+                                RepairKind::SpannerTruncated {
+                                    removed_members: vec![deleted_obj],
+                                }
+                            },
+                            target: sid,
+                        });
+                    }
+                }
+            }
+            GestureAnchoring::Range { start, end, staves } => {
+                let Some(region) = referent.region else {
+                    self.drop_structure_ref(sid, deleted_obj);
+                    return;
+                };
+                let mut start = start;
+                let mut end = end;
+                retarget_dead_endpoint(&mut start, deleted, region, RegionEdge::Start);
+                retarget_dead_endpoint(&mut end, deleted, region, RegionEdge::End);
+                set_anchoring(self, GestureAnchoring::Range { start, end, staves });
+                self.drop_structure_ref(sid, deleted_obj);
+                repairs.push(RepairRecord {
+                    kind: RepairKind::Reanchored {
+                        from: deleted_obj,
+                        to: TypedObjectId::Region(region),
+                        reason: ReanchorReason::ExplicitFallback,
+                    },
+                    target: sid,
+                });
+            }
+            GestureAnchoring::Free => {
+                self.drop_structure_ref(sid, deleted_obj);
+            }
+        }
     }
 
     // --- Transactions (Chapter 6 §6.6). -------------------------------------
@@ -3375,6 +4596,7 @@ impl<'a> Reducer<'a> {
             structures: self.structures.clone(),
             region_instances: self.region_instances.clone(),
             instance_voices: self.instance_voices.clone(),
+            instance_staff: self.instance_staff.clone(),
             staff_based_regions: self.staff_based_regions.clone(),
             migrated_regions: self.migrated_regions.clone(),
             region_migrator: self.region_migrator.clone(),
@@ -3401,6 +4623,7 @@ impl<'a> Reducer<'a> {
         self.structures = s.structures;
         self.region_instances = s.region_instances;
         self.instance_voices = s.instance_voices;
+        self.instance_staff = s.instance_staff;
         self.staff_based_regions = s.staff_based_regions;
         self.migrated_regions = s.migrated_regions;
         self.region_migrator = s.region_migrator;
@@ -4252,5 +5475,883 @@ mod tests {
             state.conflicts.records()[0].kind,
             ConflictKind::StructuralFieldCollision { .. }
         ));
+    }
+
+    // --- Push-1 spec-compliance fixes (Transpose skip, meta-conflict record,
+    // marker re-anchor repair, system-derived counter collisions). -----------
+
+    /// An InsertEvent envelope whose event carries exactly one identified
+    /// pitch with the given id and intrinsic content.
+    #[allow(clippy::too_many_arguments)]
+    fn insert_with_pitch_content(
+        replica: u64,
+        counter: u64,
+        physical: i64,
+        voice: u64,
+        event: u64,
+        pos_units: i64,
+        pitch_id: PitchId,
+        content: &Pitch,
+    ) -> OperationEnvelope {
+        let mut env = insert(replica, counter, physical, voice, event, pos_units);
+        if let OperationPayload::Primitive(OperationKind::InsertEvent(ref mut op)) = env.payload {
+            op.event = crate::valuegen::insert_event_value(
+                op.event_id(),
+                op.voice(),
+                pos(pos_units),
+                epiphany_core::MusicalDuration::whole(),
+                &[pitch_id],
+            );
+            if let Event::Pitched(pe) = &mut op.event {
+                pe.pitches[0].pitch = content.clone();
+            }
+        }
+        env
+    }
+
+    #[test]
+    fn transpose_skips_tombstoned_targets_and_shifts_the_live_ones() {
+        // Operation Catalog §Transpose (re-anchoring): "Tombstoned targets are
+        // skipped (the transpose applies only to live pitches)."
+        let p1 = PitchId::new(ReplicaId(9), 501);
+        let p2 = PitchId::new(ReplicaId(9), 502);
+        let neutral = crate::valuegen::pitch_value();
+        let a = insert_with_pitch_content(1, 0, 10, 1, 100, 0, p1, &neutral);
+        let b = insert_with_pitch_content(1, 1, 11, 2, 101, 0, p2, &neutral);
+        let del = prim_env(
+            1,
+            2,
+            20,
+            CausalContext::new().with_seen(ReplicaId(1), 1),
+            OperationKind::DeleteEvent(DeleteEventOp {
+                event: EventId::new(ReplicaId(1), 100),
+                tuplet_compensation: TupletCompensation::NotInTuplet,
+            }),
+        );
+        let after_delete = CausalContext::new().with_seen(ReplicaId(1), 2);
+        // Mixed live/tombstoned targets: skips p1, shifts p2, applies.
+        let t_mixed = prim_env(
+            3,
+            0,
+            30,
+            after_delete.clone(),
+            OperationKind::Transpose(TransposeOp {
+                targets: vec![p1, p2],
+                chromatic_steps: 2,
+            }),
+        );
+        // All targets tombstoned: degenerates to no effect.
+        let t_dead = prim_env(
+            4,
+            0,
+            31,
+            after_delete.clone(),
+            OperationKind::Transpose(TransposeOp {
+                targets: vec![p1],
+                chromatic_steps: 2,
+            }),
+        );
+        // A target that never existed: dangling reference, whole op refuses.
+        let t_missing = prim_env(
+            5,
+            0,
+            32,
+            after_delete,
+            OperationKind::Transpose(TransposeOp {
+                targets: vec![p2, PitchId::new(ReplicaId(9), 999)],
+                chromatic_steps: 2,
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            a,
+            b,
+            del,
+            t_mixed.clone(),
+            t_dead.clone(),
+            t_missing.clone(),
+        ]);
+        let state = set.reduce();
+        let effect = |id: OperationId| {
+            state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == id)
+                .map(|(_, eff)| eff)
+                .expect("effect recorded")
+        };
+        assert_eq!(effect(t_mixed.id), &OperationEffect::Applied);
+        assert_eq!(
+            effect(t_dead.id),
+            &OperationEffect::NoOp {
+                reason: NoOpReason::TargetTombstoned,
+            }
+        );
+        assert_eq!(
+            effect(t_missing.id),
+            &OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn differing_concurrent_resolves_name_both_resolvers_in_the_meta_conflict() {
+        // Chapter 6 §Conflict Resolution Operations: a later differing resolve
+        // reduces to Conflicted with a meta-conflict record; the record names
+        // the earlier resolver (whose action stands) as winner and both
+        // resolvers as causes.
+        use crate::conflict::ResolutionAction;
+        use crate::payload::{ResolveConflictPayload, RespellPitchOp};
+
+        let pitch = PitchId::new(ReplicaId(9), 500);
+        let mut insert_env = insert(1, 0, 10, 1, 100, 0);
+        if let OperationPayload::Primitive(OperationKind::InsertEvent(ref mut op)) =
+            insert_env.payload
+        {
+            op.event = crate::valuegen::insert_event_value(
+                op.event_id(),
+                op.voice(),
+                op.musical_position(),
+                op.musical_duration(),
+                &[pitch],
+            );
+        }
+        let respell = |replica: u64, physical: i64, byte: u8| {
+            prim_env(
+                replica,
+                0,
+                physical,
+                CausalContext::new().with_seen(ReplicaId(1), 0),
+                OperationKind::RespellPitch(RespellPitchOp {
+                    pitch,
+                    spelling: crate::valuegen::spelling(byte),
+                }),
+            )
+        };
+        let respell_a = respell(2, 20, 0xAA);
+        let respell_b = respell(3, 21, 0xBB);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            insert_env.clone(),
+            respell_a.clone(),
+            respell_b.clone(),
+        ]);
+        let cid = set.reduce().conflicts.records()[0].id;
+
+        let resolve = |replica: u64, physical: i64, action: ResolutionAction| {
+            let id = OperationId::new(ReplicaId(replica), 0);
+            OperationEnvelope {
+                id,
+                author: AuthorId(0),
+                stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(physical), 0), id),
+                causal_context: CausalContext::new()
+                    .with_dot(respell_a.id)
+                    .with_dot(respell_b.id),
+                transaction: None,
+                payload: OperationPayload::ResolveConflict(ResolveConflictPayload {
+                    target: cid,
+                    action,
+                }),
+            }
+        };
+        let first = resolve(4, 30, ResolutionAction::KeepWinner);
+        let second = resolve(5, 31, ResolutionAction::AcceptLoser);
+        let mut set2 = OperationSet::new();
+        set2.accept_all(vec![
+            insert_env,
+            respell_a,
+            respell_b,
+            first.clone(),
+            second.clone(),
+        ]);
+        let state = set2.reduce();
+        let meta = state
+            .conflicts
+            .records()
+            .iter()
+            .find(|r| r.id != cid)
+            .expect("a meta-conflict record exists");
+        assert_eq!(
+            meta.kind,
+            ConflictKind::StructuralFieldCollision {
+                winner: first.id,
+                loser: second.id,
+                field: FieldPath("conflict_resolution".to_string()),
+            },
+            "the earlier resolver's action stands, so it is the winner"
+        );
+        assert_eq!(
+            meta.caused_by,
+            vec![first.id, second.id],
+            "both resolvers are named as causes"
+        );
+    }
+
+    #[test]
+    fn deleting_an_event_records_the_marker_reanchor_repair() {
+        // Chapter 6 §Re-Anchoring: "Re-anchoring actions MUST be recorded as
+        // RepairRecord entries in the triggering operation's effect", and the
+        // rule table's marker row: re-anchor to the *nearest event in the same
+        // staff instance* (four-key ordering). The fixture voice's events sit
+        // at ascending quarter positions, so deleting the first re-anchors the
+        // marker to the second (same voice: proximity rank 0 dominates any
+        // closer event in a sibling voice).
+        use epiphany_core::generators::valid_score;
+        let mut base = valid_score(0x5EED);
+        let voice_events = base
+            .voices()
+            .map(|(_, _, v)| v.events.clone())
+            .next()
+            .expect("the fixture has a voice");
+        let event_id = voice_events[0];
+        let expected = voice_events[1];
+        let marker_id = epiphany_core::MarkerId::new(ReplicaId(9), 700);
+        base.cross_cutting.markers.push(epiphany_core::Marker {
+            id: marker_id,
+            anchor: TimeAnchor::Event {
+                id: event_id,
+                offset: AnchorOffset::Zero,
+            },
+        });
+
+        let del = prim_env(
+            2,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::DeleteEvent(DeleteEventOp {
+                event: event_id,
+                tuplet_compensation: TupletCompensation::NotInTuplet,
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![del.clone()]);
+        let result = set.reduce_onto(&base);
+
+        let effect = result
+            .state
+            .effects
+            .iter()
+            .find(|(id, _)| *id == del.id)
+            .map(|(_, e)| e)
+            .expect("delete effect recorded");
+        let OperationEffect::AppliedWithRepair { repairs } = effect else {
+            panic!("expected AppliedWithRepair, got {effect:?}");
+        };
+        assert!(
+            repairs.iter().any(|r| {
+                r.target == TypedObjectId::Marker(marker_id)
+                    && r.kind
+                        == RepairKind::Reanchored {
+                            from: TypedObjectId::Event(event_id),
+                            to: TypedObjectId::Event(expected),
+                            reason: ReanchorReason::SameVoiceNearer,
+                        }
+            }),
+            "the marker re-anchor to the nearest same-voice event is a recorded \
+             repair, not a silent mutation: {repairs:?}"
+        );
+        let marker = result
+            .score
+            .cross_cutting
+            .markers
+            .iter()
+            .find(|m| m.id == marker_id)
+            .expect("marker survives");
+        assert!(
+            matches!(marker.anchor, TimeAnchor::Event { id, .. } if id == expected),
+            "the graph agrees with the recorded repair"
+        );
+        assert!(epiphany_core::check_invariants(&result.score).is_empty());
+    }
+
+    #[test]
+    fn marker_reanchor_prefers_the_forward_survivor_on_distance_ties() {
+        // Four-key ordering, key 3: forward (0) before backward (1). Three
+        // whole-note events at positions 10/12/14 in the base's first voice;
+        // deleting the middle one leaves survivors at equal distance 2 on both
+        // sides, so the *forward* neighbor (position 14) wins.
+        use epiphany_core::generators::valid_score;
+        let mut base = valid_score(0x5EED);
+        let (staff_instance, voice) = {
+            let instance = &base.canvas.regions[0].staff_instances()[0];
+            (instance.id, instance.voices[0].id)
+        };
+        let backward = EventId::new(ReplicaId(3), 0);
+        let referent = EventId::new(ReplicaId(3), 1);
+        let forward = EventId::new(ReplicaId(3), 2);
+        let insert_at = |counter: u64, event: EventId, position: i64| {
+            let ctx = if counter == 0 {
+                CausalContext::new()
+            } else {
+                CausalContext::new().with_seen(ReplicaId(3), counter - 1)
+            };
+            prim_env(
+                3,
+                counter,
+                10 + counter as i64,
+                ctx,
+                OperationKind::InsertEvent(InsertEventOp {
+                    staff_instance,
+                    event: crate::valuegen::insert_event_value(
+                        event,
+                        voice,
+                        pos(position),
+                        epiphany_core::MusicalDuration::whole(),
+                        &[],
+                    ),
+                }),
+            )
+        };
+        let marker_id = epiphany_core::MarkerId::new(ReplicaId(9), 701);
+        base.cross_cutting.markers.push(epiphany_core::Marker {
+            id: marker_id,
+            anchor: TimeAnchor::Event {
+                id: referent,
+                offset: AnchorOffset::Zero,
+            },
+        });
+        let del = prim_env(
+            3,
+            3,
+            20,
+            CausalContext::new().with_seen(ReplicaId(3), 2),
+            OperationKind::DeleteEvent(DeleteEventOp {
+                event: referent,
+                tuplet_compensation: TupletCompensation::NotInTuplet,
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            insert_at(0, backward, 10),
+            insert_at(1, referent, 12),
+            insert_at(2, forward, 14),
+            del.clone(),
+        ]);
+        let result = set.reduce_onto(&base);
+        let effect = result
+            .state
+            .effects
+            .iter()
+            .find(|(id, _)| *id == del.id)
+            .map(|(_, e)| e)
+            .expect("delete effect recorded");
+        let OperationEffect::AppliedWithRepair { repairs } = effect else {
+            panic!("expected AppliedWithRepair, got {effect:?}");
+        };
+        assert!(
+            repairs.iter().any(|r| {
+                r.target == TypedObjectId::Marker(marker_id)
+                    && r.kind
+                        == RepairKind::Reanchored {
+                            from: TypedObjectId::Event(referent),
+                            to: TypedObjectId::Event(forward),
+                            reason: ReanchorReason::SameVoiceNearer,
+                        }
+            }),
+            "equal distances tie-break forward before backward: {repairs:?}"
+        );
+        assert!(
+            matches!(
+                result
+                    .score
+                    .cross_cutting
+                    .markers
+                    .iter()
+                    .find(|m| m.id == marker_id)
+                    .expect("marker survives")
+                    .anchor,
+                TimeAnchor::Event { id, .. } if id == forward
+            ),
+            "the graph agrees with the recorded repair"
+        );
+        assert!(epiphany_core::check_invariants(&result.score).is_empty());
+    }
+
+    #[test]
+    fn system_pitch_counter_collision_halts_reduction() {
+        // Chapter 5 §"System-Derived Counter Collisions": two different
+        // canonical input sets claiming one system-derived counter record a
+        // SystemIdentifierCollision, reduction does not continue past the
+        // collision, and neither input set occupies the collided counter.
+        use epiphany_core::derive_system_pitch_id;
+        let content_x = crate::valuegen::pitch_value_nth(1);
+        let content_y = crate::valuegen::pitch_value_nth(2);
+        let system_id = derive_system_pitch_id(&content_x);
+        assert_eq!(system_id.replica(), ReplicaId::SYSTEM_DERIVED);
+
+        let before = insert(3, 0, 5, 4, 400, 0);
+        let legit = insert_with_pitch_content(1, 0, 10, 1, 100, 0, system_id, &content_x);
+        let claim = insert_with_pitch_content(2, 0, 20, 2, 200, 5, system_id, &content_y);
+        let after = insert(1, 1, 30, 3, 300, 9);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            before.clone(),
+            legit.clone(),
+            claim.clone(),
+            after.clone(),
+        ]);
+        let state = set.reduce();
+
+        assert_eq!(state.anomalies.len(), 1, "exactly one collision recorded");
+        match &state.anomalies[0].kind {
+            IntegrityAnomalyKind::SystemIdentifierCollision {
+                kind,
+                colliding_counter,
+                input_set_a,
+                input_set_b,
+            } => {
+                assert_eq!(*kind, ObjectKind::Pitch);
+                assert_eq!(*colliding_counter, system_id.counter());
+                let mut sets = [input_set_a.0.clone(), input_set_b.0.clone()];
+                sets.sort();
+                let mut expected = [
+                    canonical_pitch_bytes(&content_x),
+                    canonical_pitch_bytes(&content_y),
+                ];
+                expected.sort();
+                assert_eq!(sets, expected, "the anomaly retains both input sets");
+            }
+            other => panic!("expected SystemIdentifierCollision, got {other:?}"),
+        }
+        // Only the operation before the collision point reduced.
+        assert_eq!(state.effects.len(), 1);
+        assert_eq!(state.effects[0].0, before.id);
+        // Neither input set occupies the collided counter.
+        assert!(!state.objects.contains_key(&TypedObjectId::Pitch(system_id)));
+        assert!(!state
+            .objects
+            .contains_key(&TypedObjectId::Event(EventId::new(ReplicaId(1), 100))));
+        // The colliding pair and everything past the halt are held pending.
+        let pending: BTreeMap<_, _> = state.pending.iter().copied().collect();
+        let halted = PendingReason::HaltedBySystemCollision { at: claim.id };
+        assert_eq!(pending.get(&legit.id), Some(&halted));
+        assert_eq!(pending.get(&claim.id), Some(&halted));
+        assert_eq!(pending.get(&after.id), Some(&halted));
+        // Determinism: any permutation reduces to identical bytes.
+        let mut reversed = OperationSet::new();
+        reversed.accept_all(vec![after, claim, legit, before]);
+        assert_eq!(state.canonical_bytes(), reversed.reduce().canonical_bytes());
+    }
+
+    #[test]
+    fn reobserving_the_same_system_derivation_is_not_a_collision() {
+        // The same (counter, inputs) pair re-observed is idempotent, not a
+        // collision; the duplicate insert is refused by pitch-id freshness
+        // (base-free parity with the graph-aware precondition).
+        use epiphany_core::derive_system_pitch_id;
+        let content_x = crate::valuegen::pitch_value_nth(1);
+        let system_id = derive_system_pitch_id(&content_x);
+        let a = insert_with_pitch_content(1, 0, 10, 1, 100, 0, system_id, &content_x);
+        let b = insert_with_pitch_content(2, 0, 20, 2, 200, 5, system_id, &content_x);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![a.clone(), b.clone()]);
+        let state = set.reduce();
+        assert!(state.anomalies.is_empty(), "same derivation: no collision");
+        assert!(state.pending.is_empty(), "nothing is held");
+        let effect = |id: OperationId| {
+            state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == id)
+                .map(|(_, eff)| eff)
+                .expect("effect recorded")
+        };
+        assert_eq!(effect(a.id), &OperationEffect::Applied);
+        assert_eq!(
+            effect(b.id),
+            &OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetTombstoned,
+                },
+            },
+            "a reused pitch id is not fresh, in base-free reduction too"
+        );
+    }
+
+    #[test]
+    fn base_seeded_system_pitch_collides_with_an_op_claim() {
+        // The registry seeds from the base graph: an operation claiming a
+        // base-occupied system counter with different content collides. The
+        // base occupant is graph state (not an operation of this reduction),
+        // so it is left in place for diagnostic recovery.
+        use epiphany_core::generators::valid_score;
+        use epiphany_core::{derive_system_pitch_id, IdentifiedPitch};
+
+        let content_x = crate::valuegen::pitch_value_nth(1);
+        let content_y = crate::valuegen::pitch_value_nth(2);
+        let system_id = derive_system_pitch_id(&content_x);
+
+        let mut base = valid_score(0x5EED);
+        let pitched_id = base
+            .voices()
+            .flat_map(|(_, _, v)| v.events.clone())
+            .find(|e| matches!(base.events.get(*e), Some(Event::Pitched(_))))
+            .expect("the fixture has a pitched event");
+        if let Some(Event::Pitched(pe)) = base.events.get_mut(pitched_id) {
+            pe.pitches[0] = IdentifiedPitch {
+                id: system_id,
+                pitch: content_x.clone(),
+            };
+        }
+
+        let claim = insert_with_pitch_content(2, 0, 10, 2, 200, 5, system_id, &content_y);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![claim.clone()]);
+        let result = set.reduce_onto(&base);
+
+        assert_eq!(result.state.anomalies.len(), 1);
+        assert!(matches!(
+            &result.state.anomalies[0].kind,
+            IntegrityAnomalyKind::SystemIdentifierCollision {
+                kind: ObjectKind::Pitch,
+                ..
+            }
+        ));
+        assert!(result.state.effects.is_empty(), "reduction halted");
+        let pending: BTreeMap<_, _> = result.state.pending.iter().copied().collect();
+        assert_eq!(
+            pending.get(&claim.id),
+            Some(&PendingReason::HaltedBySystemCollision { at: claim.id })
+        );
+        assert!(
+            result.score.events.get(pitched_id).is_some(),
+            "the base occupant stays; recovery is external"
+        );
+    }
+
+    // --- ResolveEquivocation (operation_catalog §"ResolveEquivocation"). -----
+
+    /// A `RespellPitch` envelope at `id` with an explicit causal context.
+    fn respell_at(
+        id: OperationId,
+        physical: i64,
+        spelling: u8,
+        ctx: CausalContext,
+    ) -> OperationEnvelope {
+        use crate::payload::RespellPitchOp;
+        OperationEnvelope {
+            id,
+            author: AuthorId(0),
+            stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(physical), 0), id),
+            causal_context: ctx,
+            transaction: None,
+            payload: OperationPayload::Primitive(OperationKind::RespellPitch(RespellPitchOp {
+                pitch: epiphany_core::PitchId::new(ReplicaId(9), 500),
+                spelling: crate::valuegen::spelling(spelling),
+            })),
+        }
+    }
+
+    /// A `ResolveEquivocation` envelope at `id` naming `(target, chosen)`.
+    fn resolve_equivocation_env(
+        id: OperationId,
+        physical: i64,
+        target: OperationId,
+        chosen: crate::EnvelopeHash,
+    ) -> OperationEnvelope {
+        OperationEnvelope {
+            id,
+            author: AuthorId(0),
+            stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(physical), 0), id),
+            causal_context: CausalContext::new(),
+            transaction: None,
+            payload: OperationPayload::ResolveEquivocation(
+                crate::payload::ResolveEquivocationPayload { target, chosen },
+            ),
+        }
+    }
+
+    fn effect_of(state: &MaterializedState, id: OperationId) -> Option<&OperationEffect> {
+        state
+            .effects
+            .iter()
+            .find(|(e, _)| *e == id)
+            .map(|(_, eff)| eff)
+    }
+
+    #[test]
+    fn resolve_equivocation_promotes_the_chosen_candidate_and_unblocks_dependents() {
+        let pitch = epiphany_core::PitchId::new(ReplicaId(9), 500);
+
+        // An InsertEvent carrying `pitch` makes the pitch Live.
+        let mut insert_env = insert(1, 0, 10, 1, 100, 0);
+        if let OperationPayload::Primitive(OperationKind::InsertEvent(ref mut op)) =
+            insert_env.payload
+        {
+            op.event = crate::valuegen::insert_event_value(
+                op.event_id(),
+                op.voice(),
+                op.musical_position(),
+                op.musical_duration(),
+                &[pitch],
+            );
+        }
+
+        // An equivocated pair of respellings under one id, both after the insert.
+        let eq_id = OperationId::new(ReplicaId(9), 0);
+        let after_insert = CausalContext::new().with_seen(ReplicaId(1), 0);
+        let cand_a = respell_at(eq_id, 20, 0xAA, after_insert.clone());
+        let cand_b = respell_at(eq_id, 20, 0xBB, after_insert.clone());
+        assert_ne!(cand_a.envelope_hash(), cand_b.envelope_hash());
+
+        // A dependent causally covering the equivocated id: previously held
+        // pending (DependsOnEquivocated); must unblock and reduce.
+        let dependent = respell_at(
+            OperationId::new(ReplicaId(2), 0),
+            30,
+            0xCC,
+            CausalContext::new()
+                .with_seen(ReplicaId(1), 0)
+                .with_seen(ReplicaId(9), 0),
+        );
+
+        // Baseline (no resolve): the slot is anomalous, the dependent pending.
+        let mut without = OperationSet::new();
+        without.accept_all(vec![
+            insert_env.clone(),
+            cand_a.clone(),
+            cand_b.clone(),
+            dependent.clone(),
+        ]);
+        let state = without.reduce();
+        assert!(state.anomalies.iter().any(|an| matches!(
+            an.kind,
+            IntegrityAnomalyKind::OperationSlotEquivocated { operation_id } if operation_id == eq_id
+        )));
+        let pending: BTreeMap<_, _> = state.pending.iter().copied().collect();
+        assert_eq!(
+            pending.get(&dependent.id),
+            Some(&PendingReason::DependsOnEquivocated { on: eq_id })
+        );
+
+        // With a resolve choosing candidate A: the slot reduces as if it had
+        // always been Single with A — A contributes at its own canonical
+        // position, the dependent unblocks, and no anomaly is recorded.
+        let resolve = resolve_equivocation_env(
+            OperationId::new(ReplicaId(3), 0),
+            40,
+            eq_id,
+            cand_a.envelope_hash(),
+        );
+        let all = vec![
+            insert_env.clone(),
+            cand_a.clone(),
+            cand_b.clone(),
+            dependent.clone(),
+            resolve.clone(),
+        ];
+        let mut set = OperationSet::new();
+        set.accept_all(all.clone());
+        let state = set.reduce();
+        assert!(
+            state.is_clean(),
+            "no conflict, anomaly, or pending: {state:?}"
+        );
+        assert_eq!(effect_of(&state, eq_id), Some(&OperationEffect::Applied));
+        assert_eq!(
+            effect_of(&state, dependent.id),
+            Some(&OperationEffect::Applied)
+        );
+        assert_eq!(
+            effect_of(&state, resolve.id),
+            Some(&OperationEffect::Applied)
+        );
+        // The dependent respell is causally after the promoted candidate, so
+        // its spelling (0xCC) is the resolved value — an intentional overwrite.
+        assert_eq!(
+            state.spellings.get(&pitch),
+            Some(&crate::valuegen::spelling(0xCC))
+        );
+        // Losing candidate B remains only in the diagnostic candidate store.
+        assert!(set.candidate(cand_b.envelope_hash()).is_some());
+
+        // Order-independent: a reversed acceptance order reduces to the bytes.
+        let mut reversed = OperationSet::new();
+        let mut rev = all;
+        rev.reverse();
+        reversed.accept_all(rev);
+        assert_eq!(reversed.reduce().canonical_bytes(), state.canonical_bytes());
+    }
+
+    #[test]
+    fn later_resolves_reduce_idempotently_or_collide_on_equivocation_resolution() {
+        let eq_id = OperationId::new(ReplicaId(9), 0);
+        let cand_a = respell_at(eq_id, 10, 0xAA, CausalContext::new());
+        let cand_b = respell_at(eq_id, 10, 0xBB, CausalContext::new());
+
+        // Three resolves: the earliest (in canonical order) governs; a later
+        // one naming the same candidate is idempotent; a later one naming a
+        // differing candidate collides.
+        let first = resolve_equivocation_env(
+            OperationId::new(ReplicaId(2), 0),
+            20,
+            eq_id,
+            cand_a.envelope_hash(),
+        );
+        let same = resolve_equivocation_env(
+            OperationId::new(ReplicaId(3), 0),
+            30,
+            eq_id,
+            cand_a.envelope_hash(),
+        );
+        let differing = resolve_equivocation_env(
+            OperationId::new(ReplicaId(4), 0),
+            40,
+            eq_id,
+            cand_b.envelope_hash(),
+        );
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            cand_a.clone(),
+            cand_b.clone(),
+            first.clone(),
+            same.clone(),
+            differing.clone(),
+        ]);
+        let state = set.reduce();
+
+        assert_eq!(effect_of(&state, first.id), Some(&OperationEffect::Applied));
+        assert_eq!(
+            effect_of(&state, same.id),
+            Some(&OperationEffect::NoOp {
+                reason: NoOpReason::AlreadyApplied,
+            })
+        );
+        assert!(matches!(
+            effect_of(&state, differing.id),
+            Some(OperationEffect::Conflicted { .. })
+        ));
+        assert_eq!(state.conflicts.records().len(), 1);
+        let record = &state.conflicts.records()[0];
+        assert_eq!(
+            record.kind,
+            ConflictKind::StructuralFieldCollision {
+                winner: first.id,
+                loser: differing.id,
+                field: FieldPath("equivocation_resolution".to_string()),
+            }
+        );
+        assert_eq!(record.caused_by, vec![first.id, differing.id]);
+        assert!(record.affected_objects.is_empty());
+        // The slot still promoted A; no anomaly for it.
+        assert!(state.anomalies.is_empty());
+        assert!(effect_of(&state, eq_id).is_some());
+    }
+
+    #[test]
+    fn resolve_without_a_matching_equivocation_is_a_precondition_noop() {
+        let precondition_noop = OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::TargetMissing,
+            },
+        };
+
+        // (a) Target id entirely absent from the operation set.
+        let absent = resolve_equivocation_env(
+            OperationId::new(ReplicaId(2), 0),
+            20,
+            OperationId::new(ReplicaId(9), 7),
+            crate::EnvelopeHash([1; 32]),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![absent.clone()]);
+        let state = set.reduce();
+        assert_eq!(effect_of(&state, absent.id), Some(&precondition_noop));
+
+        // (b) Target occupies an ordinary Single slot (no equivocation).
+        let single = respell_at(
+            OperationId::new(ReplicaId(9), 0),
+            10,
+            0xAA,
+            CausalContext::new(),
+        );
+        let not_equivocated = resolve_equivocation_env(
+            OperationId::new(ReplicaId(2), 0),
+            20,
+            single.id,
+            single.envelope_hash(),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![single.clone(), not_equivocated.clone()]);
+        let state = set.reduce();
+        assert_eq!(
+            effect_of(&state, not_equivocated.id),
+            Some(&precondition_noop)
+        );
+
+        // (c) Target is equivocated but `chosen` names no candidate: the slot
+        // stays equivocated (anomaly recorded, dependents still pending) and
+        // the resolve is a precondition no-op — behavior is otherwise exactly
+        // the unresolved baseline.
+        let eq_id = OperationId::new(ReplicaId(9), 0);
+        let cand_a = respell_at(eq_id, 10, 0xAA, CausalContext::new());
+        let cand_b = respell_at(eq_id, 10, 0xBB, CausalContext::new());
+        let dependent = respell_at(
+            OperationId::new(ReplicaId(4), 0),
+            30,
+            0xCC,
+            CausalContext::new().with_seen(ReplicaId(9), 0),
+        );
+        let bogus = resolve_equivocation_env(
+            OperationId::new(ReplicaId(2), 0),
+            20,
+            eq_id,
+            crate::EnvelopeHash([0xEE; 32]),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            cand_a.clone(),
+            cand_b.clone(),
+            dependent.clone(),
+            bogus.clone(),
+        ]);
+        let state = set.reduce();
+        assert_eq!(effect_of(&state, bogus.id), Some(&precondition_noop));
+        assert!(effect_of(&state, eq_id).is_none());
+        assert!(state.anomalies.iter().any(|an| matches!(
+            an.kind,
+            IntegrityAnomalyKind::OperationSlotEquivocated { operation_id } if operation_id == eq_id
+        )));
+        let pending: BTreeMap<_, _> = state.pending.iter().copied().collect();
+        assert_eq!(
+            pending.get(&dependent.id),
+            Some(&PendingReason::DependsOnEquivocated { on: eq_id })
+        );
+    }
+
+    #[test]
+    fn an_equivocated_resolve_is_excluded_like_any_equivocated_slot() {
+        let eq_id = OperationId::new(ReplicaId(9), 0);
+        let cand_a = respell_at(eq_id, 10, 0xAA, CausalContext::new());
+        let cand_b = respell_at(eq_id, 10, 0xBB, CausalContext::new());
+
+        // Two distinct resolve envelopes under one id (differing `chosen`):
+        // the resolve slot itself equivocates, so it never governs.
+        let resolve_id = OperationId::new(ReplicaId(5), 0);
+        let resolve_a = resolve_equivocation_env(resolve_id, 20, eq_id, cand_a.envelope_hash());
+        let resolve_b = resolve_equivocation_env(resolve_id, 20, eq_id, cand_b.envelope_hash());
+        assert_ne!(resolve_a.envelope_hash(), resolve_b.envelope_hash());
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![cand_a, cand_b, resolve_a, resolve_b]);
+        let state = set.reduce();
+
+        // Neither slot contributes; both record equivocation anomalies.
+        assert!(state.effects.is_empty());
+        for id in [eq_id, resolve_id] {
+            assert!(
+                state.anomalies.iter().any(|an| matches!(
+                    an.kind,
+                    IntegrityAnomalyKind::OperationSlotEquivocated { operation_id } if operation_id == id
+                )),
+                "expected an equivocation anomaly for {id:?}"
+            );
+        }
     }
 }

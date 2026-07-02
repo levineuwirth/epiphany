@@ -37,10 +37,12 @@
 //!
 //! ## Scope (per QUICKSTART "Don't do these")
 //!
-//! v0 writes only uncompressed chunks (zstd is deferred), does not implement the
-//! text-projection *content* (only carries its root), and does not *evaluate*
-//! edit barriers (their operand types live in other crates). The manifest is
-//! mandatory-uncompressed in this format version regardless. See `DECISIONS.md`
+//! v0 writes only uncompressed chunks (compression on write is deferred), but
+//! *reads* zstd-compressed chunks and blobs, as the spec's §Compression MUST
+//! requires. It does not implement the text-projection *content* (only carries
+//! its root), and does not *evaluate* edit barriers (their operand types live
+//! in other crates). The manifest is mandatory-uncompressed in this format
+//! version regardless, and a compressed manifest is rejected. See `DECISIONS.md`
 //! for the prototype byte-layout choices that anticipate the deferred Binary
 //! Format companion, and the batched Pass 11 candidates.
 
@@ -53,13 +55,15 @@ mod error;
 mod header;
 mod ids;
 mod manifest;
+mod opindex;
 mod store;
 mod superblock;
 
 pub mod fuzz;
 
 pub use block::{
-    decode_block, encode_block, pack_operation_blocks, BLOCK_SOFT_LIMIT, MAX_BLOCK_DEFAULT,
+    decode_block, encode_block, envelope_offsets, pack_operation_blocks, BLOCK_SOFT_LIMIT,
+    MAX_BLOCK_DEFAULT,
 };
 pub use bundle::{
     manifest_chunk_hash, Bundle, CommitContext, StagedChunk, BODY_START, MAX_BLOB_BYTES,
@@ -86,6 +90,9 @@ pub use ids::{
 pub use manifest::{
     BlobRef, ExtensionDeclaration, Manifest, OperationBlockSummary, ProfileConstraints,
     ProfileDeclaration, RetentionPolicy, SnapshotRef,
+};
+pub use opindex::{
+    IndexedBlock, OperationIdBytes, OperationIndex, OperationIndexBuildError, OperationIndexEntry,
 };
 pub use store::{BlockStore, CrashPoint, FaultStore, MemStore, Tear};
 pub use superblock::{

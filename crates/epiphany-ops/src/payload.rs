@@ -33,18 +33,19 @@
 
 use epiphany_core::{
     Beam, CanonicalValue, Event, EventDuration, EventId, EventPosition, IdentifiedPitch,
-    MetricGrid, MusicalDuration, MusicalPosition, Pitch, PitchId, PitchSpelling, Region, RegionId,
-    RegionTimeModel, Rest, ScoreMetadata, Slur, Spanner, StaffInstance, StaffInstanceId, Tie,
-    TimeAnchor, TransactionId, TupletId, TypedObjectId, Voice, VoiceId,
+    MetricGrid, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId, PitchSpelling,
+    Region, RegionId, RegionTimeModel, Rest, ScoreMetadata, Slur, Spanner, StaffInstance,
+    StaffInstanceId, Tie, TimeAnchor, TransactionId, TupletId, TypedObjectId, Voice, VoiceId,
 };
-use epiphany_determinism::{sorted_canonical, CanonicalEncode};
+use epiphany_determinism::{sorted_canonical, CanonicalDecode, CanonicalEncode, DecodeError};
 
 use crate::conflict::{ConflictId, ResolutionAction};
 use crate::encode::{push_canon, push_lp_bytes, push_seq, push_str, push_tag, push_u8_bool};
+use crate::envelope::EnvelopeHash;
 use crate::support::OperationKindRegistryId;
 use crate::undo::UndoTransactionPayload;
 
-/// The full payload of an operation envelope: a primitive, or one of the two
+/// The full payload of an operation envelope: a primitive, or one of the
 /// meta-operations (Chapter 6 §"Operation Envelopes").
 // v1 payloads carry whole graph values, so the `Primitive` variant is
 // intentionally larger than the meta-operations — the durability the catalog
@@ -60,6 +61,10 @@ pub enum OperationPayload {
     /// A meta-operation that compensates for a previously-committed
     /// transaction; the realization of "undo".
     UndoTransaction(UndoTransactionPayload),
+    /// A meta-operation that resolves an equivocated operation slot by naming
+    /// the chosen candidate envelope (operation_catalog
+    /// §"ResolveEquivocation").
+    ResolveEquivocation(ResolveEquivocationPayload),
 }
 
 impl OperationPayload {
@@ -68,6 +73,8 @@ impl OperationPayload {
             OperationPayload::Primitive(_) => 0,
             OperationPayload::ResolveConflict(_) => 1,
             OperationPayload::UndoTransaction(_) => 2,
+            // Appended (ResolveEquivocation); the ratified 0..=2 stay stable.
+            OperationPayload::ResolveEquivocation(_) => 3,
         }
     }
 }
@@ -79,6 +86,7 @@ impl CanonicalEncode for OperationPayload {
             OperationPayload::Primitive(k) => k.encode_canonical(out),
             OperationPayload::ResolveConflict(p) => p.encode_canonical(out),
             OperationPayload::UndoTransaction(p) => p.encode_canonical(out),
+            OperationPayload::ResolveEquivocation(p) => p.encode_canonical(out),
         }
     }
 }
@@ -315,6 +323,63 @@ impl CanonicalEncode for OperationKindTag {
         if let OperationKindTag::Registered(id) = self {
             push_canon(out, id);
         }
+    }
+}
+
+impl CanonicalDecode for OperationKindTag {
+    /// Decodes exactly the canonical form [`CanonicalEncode`] produces: the
+    /// discriminant byte, plus — for [`OperationKindTag::Registered`] only —
+    /// the registry id's 16 big-endian bytes. Variable-width, so the input
+    /// length must match the decoded variant exactly (trailing bytes are an
+    /// error). An unknown discriminant is rejected, never normalized —
+    /// [`DecodeError::MalformedDomainTag`], the same unknown-discriminant
+    /// rejection [`TypedObjectId::decode_canonical`] uses.
+    fn decode_canonical(bytes: &[u8]) -> Result<Self, DecodeError> {
+        let (&tag, rest) = bytes.split_first().ok_or(DecodeError::UnexpectedLength {
+            expected: 1,
+            actual: 0,
+        })?;
+        if tag == 16 {
+            let arr: [u8; 16] = rest.try_into().map_err(|_| DecodeError::UnexpectedLength {
+                expected: 17,
+                actual: bytes.len(),
+            })?;
+            return Ok(OperationKindTag::Registered(OperationKindRegistryId(
+                u128::from_be_bytes(arr),
+            )));
+        }
+        if !rest.is_empty() {
+            return Err(DecodeError::UnexpectedLength {
+                expected: 1,
+                actual: bytes.len(),
+            });
+        }
+        Ok(match tag {
+            0 => OperationKindTag::InsertEvent,
+            1 => OperationKindTag::DeleteEvent,
+            2 => OperationKindTag::ModifyEvent,
+            3 => OperationKindTag::RespellPitch,
+            4 => OperationKindTag::Transpose,
+            5 => OperationKindTag::CreateCrossCutting,
+            6 => OperationKindTag::DeleteCrossCutting,
+            7 => OperationKindTag::ModifyCrossCutting,
+            8 => OperationKindTag::ChangeRegionTimeModel,
+            9 => OperationKindTag::InsertRegion,
+            10 => OperationKindTag::DeleteRegion,
+            11 => OperationKindTag::InsertStaffInstance,
+            12 => OperationKindTag::DeleteStaffInstance,
+            13 => OperationKindTag::SetUserSystemBreak,
+            14 => OperationKindTag::SetUserPageBreak,
+            15 => OperationKindTag::DeclareTransaction,
+            17 => OperationKindTag::InsertIdentifiedPitch,
+            18 => OperationKindTag::DeleteIdentifiedPitch,
+            19 => OperationKindTag::ModifyIdentifiedPitch,
+            20 => OperationKindTag::CreateVoice,
+            21 => OperationKindTag::DeleteVoice,
+            22 => OperationKindTag::SetMetadata,
+            23 => OperationKindTag::SetMetricGrid,
+            _ => return Err(DecodeError::MalformedDomainTag),
+        })
     }
 }
 
@@ -731,6 +796,25 @@ impl CanonicalEncode for ResolveConflictPayload {
     }
 }
 
+/// The payload of an equivocation-resolution meta-operation (operation_catalog
+/// §"ResolveEquivocation"): the equivocated slot and the candidate envelope (by
+/// canonical-bytes hash) that shall stand. Value-complete.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct ResolveEquivocationPayload {
+    /// The `OperationId` of the equivocated slot to resolve.
+    pub target: OperationId,
+    /// The [`EnvelopeHash`] of the candidate envelope that shall stand.
+    pub chosen: EnvelopeHash,
+}
+
+impl CanonicalEncode for ResolveEquivocationPayload {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        // Catalog: `target` (16 canonical bytes), then `chosen` (32 bytes).
+        push_canon(out, &self.target);
+        push_canon(out, &self.chosen);
+    }
+}
+
 // --- Group 1 (M2): event & pitch leaf-field ops (Chapter 6 §6.10). -----------
 
 /// Overwrite a live event's value (Chapter 6 §6.10 ModifyEvent). Carries the
@@ -1054,6 +1138,247 @@ mod tests {
     use epiphany_core::{ReplicaId, SlurId};
 
     #[test]
+    fn operation_kind_wire_discriminants_are_golden() {
+        // GOLDEN LOCK: the discriminant byte leads every canonically-encoded
+        // primitive payload (operation_catalog §"Value-Typed Payloads"), so the
+        // literal values are normative wire facts. Encodings are append-only:
+        // new kinds append past 23; the values below never change.
+        use crate::valuegen;
+        use epiphany_core::{MusicalDuration, MusicalPosition, StaffId};
+
+        let r = ReplicaId(1);
+        let event_a = EventId::new(r, 1);
+        let event_b = EventId::new(r, 2);
+        let pitch = PitchId::new(r, 3);
+        let region = RegionId::new(r, 4);
+        let staff = StaffId::new(r, 5);
+        let instance = StaffInstanceId::new(r, 6);
+        let voice = VoiceId::new(r, 7);
+        let slur_id = SlurId::new(r, 8);
+        let event_value = || {
+            valuegen::insert_event_value(
+                event_a,
+                voice,
+                MusicalPosition::origin(),
+                MusicalDuration::whole(),
+                &[],
+            )
+        };
+        let slur_value = || CrossCuttingValue::Slur(valuegen::slur(slur_id, event_a, event_b));
+        let anchor = || valuegen::region_start_anchor(region, MusicalPosition::origin());
+
+        let table: [(OperationKind, u8); 24] = [
+            (
+                OperationKind::InsertEvent(InsertEventOp {
+                    staff_instance: instance,
+                    event: event_value(),
+                }),
+                0,
+            ),
+            (
+                OperationKind::DeleteEvent(DeleteEventOp {
+                    event: event_a,
+                    tuplet_compensation: TupletCompensation::NotInTuplet,
+                }),
+                1,
+            ),
+            (
+                OperationKind::RespellPitch(RespellPitchOp {
+                    pitch,
+                    spelling: valuegen::spelling(1),
+                }),
+                2,
+            ),
+            (
+                OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                    structure: slur_value(),
+                }),
+                3,
+            ),
+            (
+                OperationKind::ChangeRegionTimeModel(ChangeRegionTimeModelOp {
+                    region,
+                    new_time_model: valuegen::metric_model(),
+                    declared_incompatible: vec![],
+                    remapping: PositionRemapping::PreserveTime,
+                }),
+                4,
+            ),
+            (
+                OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
+                    region,
+                    anchor: anchor(),
+                    present: true,
+                }),
+                5,
+            ),
+            (
+                OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: TransactionId::new(r, 9),
+                    label: String::new(),
+                    category: None,
+                }),
+                6,
+            ),
+            (
+                OperationKind::Registered(OperationKindRegistryId(0), vec![]),
+                7,
+            ),
+            (
+                OperationKind::ModifyEvent(ModifyEventOp {
+                    event: event_value(),
+                }),
+                8,
+            ),
+            (
+                OperationKind::Transpose(TransposeOp {
+                    targets: vec![pitch],
+                    chromatic_steps: 0,
+                }),
+                9,
+            ),
+            (
+                OperationKind::InsertIdentifiedPitch(InsertIdentifiedPitchOp {
+                    event: event_a,
+                    pitch: valuegen::identified_pitch(pitch),
+                }),
+                10,
+            ),
+            (
+                OperationKind::DeleteIdentifiedPitch(DeleteIdentifiedPitchOp { pitch }),
+                11,
+            ),
+            (
+                OperationKind::ModifyIdentifiedPitch(ModifyIdentifiedPitchOp {
+                    pitch,
+                    value: valuegen::pitch_value(),
+                }),
+                12,
+            ),
+            (
+                OperationKind::DeleteCrossCutting(DeleteCrossCuttingOp {
+                    structure: TypedObjectId::Slur(slur_id),
+                }),
+                13,
+            ),
+            (
+                OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+                    structure: slur_value(),
+                }),
+                14,
+            ),
+            (
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: valuegen::region(region),
+                }),
+                15,
+            ),
+            (OperationKind::DeleteRegion(DeleteRegionOp { region }), 16),
+            (
+                OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                    region,
+                    instance: valuegen::staff_instance(instance, staff),
+                }),
+                17,
+            ),
+            (
+                OperationKind::DeleteStaffInstance(DeleteStaffInstanceOp {
+                    staff_instance: instance,
+                }),
+                18,
+            ),
+            (
+                OperationKind::CreateVoice(CreateVoiceOp {
+                    staff_instance: instance,
+                    voice: valuegen::voice(voice),
+                }),
+                19,
+            ),
+            (OperationKind::DeleteVoice(DeleteVoiceOp { voice }), 20),
+            (
+                OperationKind::SetMetadata(SetMetadataOp {
+                    metadata: valuegen::score_metadata(0),
+                }),
+                21,
+            ),
+            (
+                OperationKind::SetMetricGrid(SetMetricGridOp { region, grid: None }),
+                22,
+            ),
+            (
+                OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+                    region,
+                    anchor: anchor(),
+                    present: true,
+                }),
+                23,
+            ),
+        ];
+        for (kind, expected) in &table {
+            assert_eq!(
+                kind.discriminant(),
+                *expected,
+                "wire discriminant for {:?} moved — canonical encodings are append-only",
+                kind.tag(),
+            );
+            // The discriminant byte truly leads the canonical encoding.
+            assert_eq!(kind.to_canonical_bytes()[0], *expected);
+        }
+    }
+
+    #[test]
+    fn operation_payload_discriminants_are_golden() {
+        // GOLDEN LOCK: the payload-union discriminant byte leads every
+        // canonically-encoded envelope payload. 0..=2 are the ratified v1
+        // values; 3 (ResolveEquivocation) is appended by the catalog entry
+        // §"ResolveEquivocation". Append-only; never renumber.
+        use crate::undo::UndoPolicy;
+        use epiphany_core::OperationId;
+
+        let r = ReplicaId(1);
+        let primitive = OperationPayload::Primitive(OperationKind::DeleteEvent(DeleteEventOp {
+            event: EventId::new(r, 1),
+            tuplet_compensation: TupletCompensation::NotInTuplet,
+        }));
+        let resolve_conflict = OperationPayload::ResolveConflict(ResolveConflictPayload {
+            target: ConflictId(0),
+            action: ResolutionAction::Dismiss,
+        });
+        let undo = OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: TransactionId::new(r, 2),
+            policy: UndoPolicy::BestEffort,
+        });
+        let resolve_equivocation =
+            OperationPayload::ResolveEquivocation(ResolveEquivocationPayload {
+                target: OperationId::new(r, 3),
+                chosen: EnvelopeHash([0; 32]),
+            });
+        for (payload, expected) in [
+            (&primitive, 0u8),
+            (&resolve_conflict, 1),
+            (&undo, 2),
+            (&resolve_equivocation, 3),
+        ] {
+            assert_eq!(payload.discriminant(), expected);
+            assert_eq!(payload.to_canonical_bytes()[0], expected);
+        }
+    }
+
+    #[test]
+    fn resolve_equivocation_payload_encodes_target_then_hash() {
+        // Catalog §"ResolveEquivocation": the canonical encoding is exactly the
+        // target's 16 canonical bytes followed by the 32 hash bytes.
+        use epiphany_core::OperationId;
+        let target = OperationId::new(ReplicaId(0x0102_0304_0506_0708), 0x1122_3344_5566_7788);
+        let chosen = EnvelopeHash([0xAB; 32]);
+        let p = ResolveEquivocationPayload { target, chosen };
+        let bytes = p.to_canonical_bytes();
+        assert_eq!(bytes.len(), 48);
+        assert_eq!(&bytes[..16], &target.canonical_bytes());
+        assert_eq!(&bytes[16..], &[0xAB; 32]);
+    }
+
+    #[test]
     fn transaction_category_discriminants_are_golden() {
         // RATIFIED by Pass 11 (item 2.4, req:semops:transaction-category): the
         // declaration-order discriminants are normative and canonically encoded.
@@ -1111,6 +1436,48 @@ mod tests {
             .map(CanonicalEncode::to_canonical_bytes)
             .collect();
         assert_eq!(encoded.len(), tags.len());
+    }
+
+    #[test]
+    fn operation_kind_tag_decode_mirrors_encode_exactly() {
+        // Every non-registered variant round-trips through its 1-byte form, and
+        // the registered variant through its 17-byte (tag + registry id) form.
+        let mut tags: Vec<OperationKindTag> = (0u8..24)
+            .filter(|d| *d != 16)
+            .map(|d| OperationKindTag::decode_canonical(&[d]).expect("known discriminant"))
+            .collect();
+        tags.push(OperationKindTag::Registered(OperationKindRegistryId(
+            0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10,
+        )));
+        assert_eq!(tags.len(), 24, "the full v1 tag vocabulary");
+        for tag in tags {
+            let bytes = tag.to_canonical_bytes();
+            let decoded = OperationKindTag::decode_canonical(&bytes).expect("round-trips");
+            assert_eq!(decoded, tag);
+            assert_eq!(
+                decoded.to_canonical_bytes(),
+                bytes,
+                "re-encode is byte-identical"
+            );
+        }
+    }
+
+    #[test]
+    fn operation_kind_tag_decode_rejects_malformed_bytes() {
+        use epiphany_determinism::DecodeError;
+        // Unknown discriminant (24 is one past the v1 vocabulary): rejected,
+        // never normalized.
+        assert_eq!(
+            OperationKindTag::decode_canonical(&[24]),
+            Err(DecodeError::MalformedDomainTag)
+        );
+        // Empty input.
+        assert!(OperationKindTag::decode_canonical(&[]).is_err());
+        // Trailing byte after a payload-less tag.
+        assert!(OperationKindTag::decode_canonical(&[0, 0]).is_err());
+        // A truncated (and an oversized) Registered payload.
+        assert!(OperationKindTag::decode_canonical(&[16; 16]).is_err());
+        assert!(OperationKindTag::decode_canonical(&[16; 19]).is_err());
     }
 
     #[test]

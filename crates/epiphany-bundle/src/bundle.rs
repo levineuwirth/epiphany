@@ -21,6 +21,7 @@ use crate::error::{BundleError, IntegrityAnomaly};
 use crate::header::{FixedHeader, SLOT_A_OFFSET, SLOT_B_OFFSET};
 use crate::ids::{BlobId, FileUuid, ReductionAlgorithmVersion, SchemaVersion, WallClockTime};
 use crate::manifest::{BlobRef, Manifest, ProfileDeclaration};
+use crate::opindex::OperationIndex;
 use crate::store::{read_vec, BlockStore, MemStore};
 use crate::superblock::{
     select_active, CommitState, ProfileId, Slot, SlotParse, SlotReject, Superblock, SUPERBLOCK_LEN,
@@ -74,6 +75,19 @@ impl StagedChunk {
     pub fn operation_block(payload: Vec<u8>) -> Self {
         StagedChunk {
             kind: ChunkKind::OperationEnvelopeBlock,
+            schema_version: SchemaVersion::V0,
+            payload,
+        }
+    }
+
+    /// A staged operation-index chunk at the current schema version (Chapter 8
+    /// §"The Operation Index") — a non-canonical accelerator; the payload is an
+    /// [`OperationIndex::encode`](crate::OperationIndex::encode). v0 writes it
+    /// uncompressed, like every chunk (the spec's *MAY* compress indexes is a
+    /// write-path option this version defers).
+    pub fn operation_index(payload: Vec<u8>) -> Self {
+        StagedChunk {
+            kind: ChunkKind::OperationIndex,
             schema_version: SchemaVersion::V0,
             payload,
         }
@@ -407,6 +421,47 @@ impl<S: BlockStore> Bundle<S> {
         }
         let payload = self.read_chunk(r)?;
         block::decode_block(&payload).map_err(BundleError::Decode)
+    }
+
+    /// Reads and decodes an operation-index chunk (Chapter 8 §"The Operation
+    /// Index"). Rejects a reference of the wrong kind; the read itself is
+    /// bounded by the reader's [`MAX_CHUNK_BYTES`] policy and hash-verified
+    /// like any chunk read.
+    ///
+    /// **The index is not canonical**: a failure here — corrupt bytes, a
+    /// malformed payload, even an I/O error on the index region — must NOT be
+    /// treated as bundle corruption. The spec's discipline is *reject and
+    /// rebuild from blocks*; [`Bundle::usable_operation_index`] packages it
+    /// (including the staleness check). Call this directly only when the
+    /// underlying failure itself is wanted, e.g. for diagnostics.
+    pub fn read_operation_index(&self, r: &ChunkRef) -> Result<OperationIndex, BundleError> {
+        if r.kind != ChunkKind::OperationIndex {
+            return Err(BundleError::Decode(DecodeError::Malformed(
+                "chunk reference is not an operation index",
+            )));
+        }
+        let payload = self.read_chunk(r)?;
+        OperationIndex::decode(&payload).map_err(BundleError::Decode)
+    }
+
+    /// The manifest's operation index, if — and only if — it is *usable*:
+    /// declared, readable, hash-intact, well-formed, and covering exactly the
+    /// manifest's current `operation_roots` ([`OperationIndex::covers`]).
+    /// `None` on **any** defect: absent, stale (its block set differs from the
+    /// operation roots), corrupt, malformed, or unreadable.
+    ///
+    /// `None` always means "rebuild by scanning all blocks", never "the bundle
+    /// is corrupt": the operation index is an acceleration structure, not
+    /// canonical (Chapter 8 §"The Operation Index"), and failed verification
+    /// of a non-canonical chunk MUST NOT be surfaced as bundle corruption
+    /// (Chapter 8 §"Canonical and Non-Canonical Manifest Roots") — the reader
+    /// discards the index and rebuilds it from the blocks.
+    pub fn usable_operation_index(&self) -> Option<OperationIndex> {
+        let root = self.manifest.operation_index_root.as_ref()?;
+        let index = self.read_operation_index(root).ok()?;
+        index
+            .covers(&self.manifest.operation_roots)
+            .then_some(index)
     }
 
     /// The active profile's maximum uncompressed operation-block size
@@ -753,10 +808,17 @@ fn reduction_version_for(manifest: &Manifest) -> ReductionAlgorithmVersion {
 
 /// Reads and fully verifies a chunk against its reference — the shared core of
 /// [`Bundle::read_chunk`] and the commit-time canonical-root validation. Checks
-/// body-placement, schema-major support, declared length, the content hash, and
-/// the `id == hash` redundancy (Chapter 8 §"Chunks").
+/// compression support (decompressing zstd payloads), body-placement,
+/// schema-major support, declared length, the content hash, and the
+/// `id == hash` redundancy (Chapter 8 §"Chunks").
 fn read_and_verify_chunk(store: &dyn BlockStore, r: &ChunkRef) -> Result<Vec<u8>, BundleError> {
-    if r.compression != CompressionAlgorithm::None {
+    // The manifest chunk is mandatorily uncompressed in this format version
+    // (Chapter 8 §"Manifest Encoding"): a compressed manifest reference is
+    // rejected outright, before any bytes are read.
+    if r.kind == ChunkKind::Manifest && r.compression != CompressionAlgorithm::None {
+        return Err(BundleError::CompressedManifest);
+    }
+    if let CompressionAlgorithm::Reserved(_) = r.compression {
         return Err(BundleError::UnsupportedCompression);
     }
     // A chunk reference must point into the body, never the fixed prelude.
@@ -773,16 +835,11 @@ fn read_and_verify_chunk(store: &dyn BlockStore, r: &ChunkRef) -> Result<Vec<u8>
             version: r.schema_version,
         });
     }
-    // Bound the allocation by the reader's policy before touching the length.
+    // Bound both allocations by the reader's policy before touching a length.
     enforce_limit(r.compressed_length, MAX_CHUNK_BYTES)?;
     enforce_limit(r.uncompressed_length, MAX_CHUNK_BYTES)?;
-    let payload = read_chunk_bytes(store, r.offset, r.compressed_length)?;
-    if payload.len() as u64 != r.uncompressed_length {
-        return Err(BundleError::ChunkLengthMismatch {
-            expected: r.uncompressed_length,
-            actual: payload.len() as u64,
-        });
-    }
+    let stored = read_chunk_bytes(store, r.offset, r.compressed_length)?;
+    let payload = decode_stored_payload(stored, r.compression, r.uncompressed_length)?;
     let actual = content_hash_for(r.kind, r.schema_version, &payload);
     if actual != r.hash {
         return Err(BundleError::ChunkHashMismatch {
@@ -809,13 +866,16 @@ fn read_and_verify_blob(
     b: &BlobRef,
     max_bytes: u64,
 ) -> Result<Vec<u8>, BundleError> {
-    if b.compression != CompressionAlgorithm::None {
+    if let CompressionAlgorithm::Reserved(_) = b.compression {
         return Err(BundleError::UnsupportedCompression);
     }
     let limit = b
         .declared_max_uncompressed_length
         .unwrap_or(u64::MAX)
         .min(max_bytes);
+    // Chapter 8 §"Blobs": the declared uncompressed length is checked against
+    // the reader's policy *before decompression begins* (and before any
+    // allocation keyed on it).
     enforce_limit(b.uncompressed_length, limit)?;
     enforce_limit(b.compressed_length, max_bytes)?;
     if b.offset < BODY_START {
@@ -825,13 +885,8 @@ fn read_and_verify_blob(
             file_len: store.len(),
         });
     }
-    let payload = read_chunk_bytes(store, b.offset, b.compressed_length)?;
-    if payload.len() as u64 != b.uncompressed_length {
-        return Err(BundleError::ChunkLengthMismatch {
-            expected: b.uncompressed_length,
-            actual: payload.len() as u64,
-        });
-    }
+    let stored = read_chunk_bytes(store, b.offset, b.compressed_length)?;
+    let payload = decode_stored_payload(stored, b.compression, b.uncompressed_length)?;
     let actual = BlobId::of_payload(&payload).0;
     if actual != b.hash || b.blob_id.0 != b.hash {
         return Err(BundleError::ChunkHashMismatch {
@@ -848,6 +903,70 @@ fn enforce_limit(length: u64, limit: u64) -> Result<(), BundleError> {
         Err(BundleError::ResourceLimitExceeded { length, limit })
     } else {
         Ok(())
+    }
+}
+
+/// Recovers a chunk's uncompressed payload from its stored (possibly
+/// compressed) bytes, verifying it is *exactly* `declared_len` bytes long
+/// (Chapter 8 §"Compression" / §"Chunks": a decompressed size that disagrees
+/// with the declared `uncompressed_length` is corruption). The caller has
+/// already validated `declared_len` against its resource-limit policy, so
+/// every allocation here is bounded. Content hashing happens strictly *after*
+/// this step, over the uncompressed bytes — compression is `ChunkRef`
+/// metadata, never part of content identity.
+fn decode_stored_payload(
+    stored: Vec<u8>,
+    compression: CompressionAlgorithm,
+    declared_len: u64,
+) -> Result<Vec<u8>, BundleError> {
+    match compression {
+        CompressionAlgorithm::None => {
+            if stored.len() as u64 != declared_len {
+                return Err(BundleError::ChunkLengthMismatch {
+                    expected: declared_len,
+                    actual: stored.len() as u64,
+                });
+            }
+            Ok(stored)
+        }
+        // Reading zstd at any level is a conformance MUST (Chapter 8
+        // §"Compression"); the declared level byte is advisory metadata the
+        // decoder does not need.
+        CompressionAlgorithm::Zstd { .. } => decompress_zstd(&stored, declared_len),
+        CompressionAlgorithm::Reserved(_) => Err(BundleError::UnsupportedCompression),
+    }
+}
+
+/// Decompresses a zstd frame sequence into a buffer sized *exactly* by the
+/// declared uncompressed length, so a hostile stream can never allocate past
+/// the (already limit-checked) declaration:
+///
+/// * a stream that would exceed `declared_len` hits libzstd's
+///   destination-full error → [`BundleError::Decompression`];
+/// * a stream that ends short of `declared_len` →
+///   [`BundleError::ChunkLengthMismatch`];
+/// * a truncated or otherwise malformed stream (including trailing garbage
+///   after the final frame) → [`BundleError::Decompression`].
+///
+/// No path panics or allocates beyond `declared_len` plus libzstd's own
+/// bounded decoding context (whose window is capped internally).
+fn decompress_zstd(stored: &[u8], declared_len: u64) -> Result<Vec<u8>, BundleError> {
+    let declared = usize::try_from(declared_len).map_err(|_| {
+        // Unreachable on 64-bit targets; on narrower ones an unaddressable
+        // declaration is a resource-limit refusal, not a wrap.
+        BundleError::ResourceLimitExceeded {
+            length: declared_len,
+            limit: usize::MAX as u64,
+        }
+    })?;
+    let mut payload = vec![0u8; declared];
+    match zstd::bulk::decompress_to_buffer(stored, payload.as_mut_slice()) {
+        Ok(n) if n as u64 == declared_len => Ok(payload),
+        Ok(n) => Err(BundleError::ChunkLengthMismatch {
+            expected: declared_len,
+            actual: n as u64,
+        }),
+        Err(e) => Err(BundleError::Decompression(e)),
     }
 }
 
@@ -911,6 +1030,14 @@ fn validate_canonical_roots(
 /// the body — Chapter 8 fixes the prelude layout, so a "manifest" overlapping a
 /// header or superblock slot is foreign — and within the reader's manifest size
 /// limit, before allocating.
+///
+/// The manifest chunk is mandatorily *uncompressed* in this format version
+/// (Chapter 8 §"Manifest Encoding"): the superblock deliberately carries no
+/// compression field, so the stored bytes ARE the payload. A bundle whose
+/// manifest bytes are compressed anyway therefore fails downstream as
+/// malformed: hash verification (over the uncompressed preimage) rejects the
+/// slot, and even a colluding hash-over-compressed-bytes cannot survive
+/// `Manifest::decode`.
 fn read_manifest_payload(store: &dyn BlockStore, sb: &Superblock) -> Result<Vec<u8>, BundleError> {
     if sb.manifest_offset < BODY_START {
         return Err(BundleError::ChunkOutOfBounds {
@@ -1855,6 +1982,325 @@ mod tests {
         assert!(matches!(
             bundle.commit(&[], |ctx| ctx.previous_manifest.clone()),
             Err(BundleError::GenerationExhausted)
+        ));
+    }
+
+    // ------------------------------------------------------------------
+    // Zstd read support (Chapter 8 §"Compression": reading zstd-compressed
+    // chunks is a conformance MUST; this crate's writer still emits only
+    // uncompressed chunks, so tests plant externally-compressed bytes).
+    // ------------------------------------------------------------------
+
+    /// Appends externally-zstd-compressed bytes to the bundle body (as a
+    /// foreign compressing writer would have) and returns the reference
+    /// describing them. `declared_len` lets a test lie about the uncompressed
+    /// length; honest callers pass `payload.len()`.
+    fn plant_zstd_chunk(
+        bundle: &mut Bundle<MemStore>,
+        kind: ChunkKind,
+        payload: &[u8],
+        declared_len: u64,
+    ) -> ChunkRef {
+        let compressed = zstd::bulk::compress(payload, 3).unwrap();
+        let offset = bundle.write_cursor;
+        bundle.store.write_at(offset, &compressed).unwrap();
+        bundle.write_cursor += compressed.len() as u64;
+        let hash = content_hash_for(kind, SchemaVersion::V0, payload);
+        ChunkRef {
+            id: ChunkId(hash),
+            kind,
+            schema_version: SchemaVersion::V0,
+            offset,
+            compressed_length: compressed.len() as u64,
+            uncompressed_length: declared_len,
+            compression: CompressionAlgorithm::Zstd { level: 3 },
+            hash,
+        }
+    }
+
+    /// Like [`plant_zstd_chunk`], but for a blob (bare `MUSCBLOB` addressing).
+    fn plant_zstd_blob(
+        bundle: &mut Bundle<MemStore>,
+        payload: &[u8],
+        declared_len: u64,
+    ) -> BlobRef {
+        let r = plant_zstd_chunk(bundle, ChunkKind::Blob, payload, declared_len);
+        BlobRef {
+            blob_id: BlobId(r.hash),
+            media_type: "application/octet-stream".to_string(),
+            offset: r.offset,
+            compressed_length: r.compressed_length,
+            uncompressed_length: declared_len,
+            compression: r.compression,
+            hash: r.hash,
+            declared_max_uncompressed_length: None,
+        }
+    }
+
+    #[test]
+    fn zstd_compressed_chunk_round_trips_with_hash_verified() {
+        // §Compression round-trip: an externally-compressed chunk reads back
+        // byte-identical, and the content hash is verified over the
+        // *uncompressed* bytes (the preimage rule: compression is metadata).
+        let mut bundle = fresh_bundle();
+        let payload: Vec<u8> = b"layout-cache-bytes ".repeat(64); // compressible
+        let r = plant_zstd_chunk(
+            &mut bundle,
+            ChunkKind::LayoutCache,
+            &payload,
+            payload.len() as u64,
+        );
+        assert!(
+            r.compressed_length < r.uncompressed_length,
+            "fixture actually compressed"
+        );
+        assert_eq!(bundle.read_chunk(&r).unwrap(), payload);
+
+        // The hash check runs on the decompressed payload: a tampered declared
+        // hash is caught even though the stored (compressed) bytes are intact.
+        let mut tampered = r;
+        tampered.hash = ContentHash([0; 32]);
+        tampered.id = ChunkId(ContentHash([0; 32])); // keep id == hash
+        assert!(matches!(
+            bundle.read_chunk(&tampered),
+            Err(BundleError::ChunkHashMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn compressed_operation_root_commits_and_reopens() {
+        // End to end: a compressed operation block can be published as a
+        // canonical root (commit-time validation decompresses + verifies it),
+        // survives a reopen, and streams back through read_operation_block.
+        let mut bundle = fresh_bundle();
+        let envelopes = vec![b"env-1".to_vec(), b"env-2".to_vec()];
+        let payload = block::encode_block(&envelopes);
+        let root = plant_zstd_chunk(
+            &mut bundle,
+            ChunkKind::OperationEnvelopeBlock,
+            &payload,
+            payload.len() as u64,
+        );
+        bundle
+            .commit(&[], |ctx| {
+                let mut m = ctx.previous_manifest.clone();
+                m.operation_roots.push(root);
+                m
+            })
+            .unwrap();
+
+        let image = bundle.into_store().into_bytes();
+        let reopened = Bundle::open(MemStore::from_bytes(image)).unwrap();
+        reopened.verify_canonical_chunks().unwrap();
+        let stored_root = reopened.manifest().operation_roots[0];
+        assert_eq!(
+            stored_root.compression,
+            CompressionAlgorithm::Zstd { level: 3 }
+        );
+        assert_eq!(
+            reopened.read_operation_block(&stored_root).unwrap(),
+            envelopes
+        );
+    }
+
+    #[test]
+    fn zstd_stream_ending_short_of_declared_length_is_rejected() {
+        // §Compression: "Decompression MUST verify the output length against
+        // the declared uncompressed_length" — a stream that ends short of the
+        // declaration is corruption, reported with both lengths.
+        let mut bundle = fresh_bundle();
+        let payload = b"short-stream".to_vec();
+        let r = plant_zstd_chunk(
+            &mut bundle,
+            ChunkKind::LayoutCache,
+            &payload,
+            payload.len() as u64 + 5, // declares more than the stream yields
+        );
+        assert!(matches!(
+            bundle.read_chunk(&r),
+            Err(BundleError::ChunkLengthMismatch {
+                expected: 17,
+                actual: 12,
+            })
+        ));
+    }
+
+    #[test]
+    fn zstd_stream_exceeding_declared_length_is_rejected() {
+        // The dual failure: a stream that would decompress *past* the declared
+        // length must be refused without allocating beyond the declaration
+        // (the output buffer is sized by the declared length, so libzstd hits
+        // destination-full and errors).
+        let mut bundle = fresh_bundle();
+        let payload: Vec<u8> = b"overlong ".repeat(32);
+        let r = plant_zstd_chunk(
+            &mut bundle,
+            ChunkKind::LayoutCache,
+            &payload,
+            payload.len() as u64 - 1, // declares less than the stream yields
+        );
+        assert!(matches!(
+            bundle.read_chunk(&r),
+            Err(BundleError::Decompression(_))
+        ));
+    }
+
+    #[test]
+    fn corrupt_or_truncated_zstd_stream_is_a_typed_error() {
+        let mut bundle = fresh_bundle();
+        let payload: Vec<u8> = b"to-be-corrupted ".repeat(16);
+        let r = plant_zstd_chunk(
+            &mut bundle,
+            ChunkKind::LayoutCache,
+            &payload,
+            payload.len() as u64,
+        );
+
+        // Corrupt the frame header magic in the stored bytes: malformed stream.
+        bundle.store.write_at(r.offset, &[0xFF]).unwrap();
+        assert!(matches!(
+            bundle.read_chunk(&r),
+            Err(BundleError::Decompression(_))
+        ));
+
+        // Truncated stream: same compressed bytes, but the reference claims
+        // fewer of them than the frame needs.
+        let mut bundle = fresh_bundle();
+        let mut truncated = plant_zstd_chunk(
+            &mut bundle,
+            ChunkKind::LayoutCache,
+            &payload,
+            payload.len() as u64,
+        );
+        truncated.compressed_length /= 2;
+        assert!(matches!(
+            bundle.read_chunk(&truncated),
+            Err(BundleError::Decompression(_))
+        ));
+    }
+
+    #[test]
+    fn zstd_compressed_blob_round_trips_and_fails_typed() {
+        // The blob path shares the decode: round-trip, short-stream, corrupt.
+        let mut bundle = fresh_bundle();
+        let payload: Vec<u8> = b"blob-audio-bytes ".repeat(64);
+        let b = plant_zstd_blob(&mut bundle, &payload, payload.len() as u64);
+        assert_eq!(bundle.read_blob(&b).unwrap(), payload);
+
+        // Declared length beyond the stream's yield → typed error.
+        let mut short = b.clone();
+        short.uncompressed_length = payload.len() as u64 + 3;
+        assert!(matches!(
+            bundle.read_blob(&short),
+            Err(BundleError::ChunkLengthMismatch { .. })
+        ));
+
+        // The declared_max cap still applies *before* decompression begins.
+        let mut capped = b.clone();
+        capped.declared_max_uncompressed_length = Some(4);
+        assert!(matches!(
+            bundle.read_blob(&capped),
+            Err(BundleError::ResourceLimitExceeded { .. })
+        ));
+
+        // Corrupt stored stream → typed error, no panic.
+        bundle.store.write_at(b.offset, &[0xFF]).unwrap();
+        assert!(matches!(
+            bundle.read_blob(&b),
+            Err(BundleError::Decompression(_))
+        ));
+    }
+
+    #[test]
+    fn reserved_compression_is_still_unsupported() {
+        // §Compression: Reserved algorithms belong to future format majors.
+        let mut bundle = fresh_bundle();
+        op_block(&mut bundle, &[b"env"]);
+        let mut r = bundle.manifest().operation_roots[0];
+        r.compression = CompressionAlgorithm::Reserved(7);
+        assert!(matches!(
+            bundle.read_chunk(&r),
+            Err(BundleError::UnsupportedCompression)
+        ));
+
+        commit_blob(&mut bundle, b"blob");
+        let mut b = bundle.manifest().blob_roots[0].clone();
+        b.compression = CompressionAlgorithm::Reserved(7);
+        assert!(matches!(
+            bundle.read_blob(&b),
+            Err(BundleError::UnsupportedCompression)
+        ));
+    }
+
+    #[test]
+    fn compressed_manifest_chunk_ref_is_rejected() {
+        // §Manifest Encoding: the manifest chunk MUST be stored uncompressed in
+        // this format version. A manifest reference declaring compression is
+        // refused outright — even when the compressed bytes are a perfectly
+        // valid zstd stream of a perfectly valid manifest.
+        let mut bundle = fresh_bundle();
+        let manifest_payload = Manifest::empty(DocumentId([7; 16])).encode();
+        let r = plant_zstd_chunk(
+            &mut bundle,
+            ChunkKind::Manifest,
+            &manifest_payload,
+            manifest_payload.len() as u64,
+        );
+        assert!(matches!(
+            bundle.read_chunk(&r),
+            Err(BundleError::CompressedManifest)
+        ));
+    }
+
+    /// A minimal image whose superblock points at `stored` as the manifest
+    /// payload, declaring `manifest_hash` for it.
+    fn craft_image_with_manifest_bytes(stored: &[u8], manifest_hash: ContentHash) -> Vec<u8> {
+        let mut image = vec![0u8; BODY_START as usize];
+        image.extend_from_slice(stored);
+        let sb = Superblock {
+            generation: 0,
+            manifest_offset: BODY_START,
+            manifest_length: stored.len() as u64,
+            manifest_hash,
+            manifest_schema_version: SchemaVersion::V0,
+            reduction_algorithm_version: ReductionAlgorithmVersion(0),
+            profile_id: ProfileId::Full,
+            commit_state: CommitState::Committed,
+            commit_timestamp: WallClockTime(0),
+        };
+        image[0..crate::header::HEADER_LEN as usize]
+            .copy_from_slice(&FixedHeader::new(FileUuid([1; 16])).encode());
+        image[SLOT_A_OFFSET as usize..SLOT_A_OFFSET as usize + SUPERBLOCK_LEN as usize]
+            .copy_from_slice(&sb.encode());
+        image
+    }
+
+    #[test]
+    fn open_rejects_a_bundle_whose_manifest_bytes_are_compressed() {
+        // §Manifest Encoding: "Implementations MUST reject as malformed any
+        // bundle whose manifest payload is not directly parseable as a
+        // canonical manifest chunk's uncompressed bytes." The superblock
+        // carries no compression field, so the stored bytes are treated as the
+        // payload — a compressed manifest fails with a typed error either way
+        // a hostile writer declares its hash.
+        let payload = Manifest::empty(DocumentId([1; 16])).encode();
+        let compressed = zstd::bulk::compress(&payload, 3).unwrap();
+
+        // (a) Hash declared over the true (uncompressed) manifest content:
+        //     the stored bytes fail hash verification → no valid superblock.
+        let image = craft_image_with_manifest_bytes(&compressed, manifest_chunk_hash(&payload));
+        assert!(matches!(
+            Bundle::open(MemStore::from_bytes(image)),
+            Err(BundleError::NoValidSuperblock)
+        ));
+
+        // (b) Colluding hash over the compressed bytes: the slot verifies, but
+        //     the payload is not parseable as a manifest → rejected as
+        //     malformed.
+        let image = craft_image_with_manifest_bytes(&compressed, manifest_chunk_hash(&compressed));
+        assert!(matches!(
+            Bundle::open(MemStore::from_bytes(image)),
+            Err(BundleError::Decode(_))
         ));
     }
 }

@@ -88,8 +88,10 @@ cargo run --release --example fuzz_crash -- 1000000        # extended crash soak
 
 ## Scope boundaries (per QUICKSTART "Don't do these")
 
-v0 writes only uncompressed chunks (zstd is deferred; the manifest is
-mandatory-uncompressed regardless). It carries the text-projection *root* but does
+v0 writes only uncompressed chunks (compression on the *write* path is deferred),
+but *reading* zstd-compressed chunks and blobs is supported, per the spec's
+§Compression MUST (the manifest is mandatory-uncompressed regardless, and a
+compressed manifest is rejected). It carries the text-projection *root* but does
 not implement the s-expression projection content, and it *preserves* extension
 declarations and chunks but does not *evaluate* edit barriers — barrier operands
 (`OperationKindTag`, `ObjectKind`, `EditBarrier`) are owned by Agents C and E.

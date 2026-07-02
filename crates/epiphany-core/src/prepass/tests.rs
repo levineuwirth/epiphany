@@ -1019,6 +1019,227 @@ fn decomposition_components_sum_to_event_duration() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Decomposition precedence: authored attachments outrank the derived default
+// ---------------------------------------------------------------------------
+
+/// A two-event metric score — two half notes on beats 1 and 3 — plus the two
+/// event ids. Each half note sits on a boundary of its own strength, so the
+/// pre-pass infers a single (undotted) half for both.
+fn two_half_note_score() -> (Score, crate::ids::EventId, crate::ids::EventId) {
+    let mut ids = Vec::new();
+    let score = metric_score(|idc, voice| {
+        let mut events = Vec::new();
+        for i in 0..2i64 {
+            let eid = idc.mint();
+            let pid = idc.mint::<PitchId>();
+            ids.push(eid);
+            events.push(pitched(
+                eid,
+                voice,
+                r(i, 2),
+                r(1, 2),
+                vec![IdentifiedPitch {
+                    id: pid,
+                    pitch: integer_pitch(48 + i as i32),
+                }],
+            ));
+        }
+        (events, vec![])
+    });
+    (score, ids[0], ids[1])
+}
+
+/// An authored two-tied-quarters decomposition for `target` — a legitimate
+/// alternative to the inferred single half note (components sum to `1/2`).
+fn tied_quarters(
+    target: crate::ids::EventId,
+    source: DecompositionSource,
+) -> DecompositionAttachment {
+    let quarter = |tied_to_next| NotatedComponent {
+        base_value: NoteValue::Quarter,
+        dots: 0,
+        tuplet: None,
+        tied_to_next,
+    };
+    DecompositionAttachment {
+        target,
+        components: vec![quarter(true), quarter(false)],
+        source,
+    }
+}
+
+/// Another authored alternative summing to `1/2`: dotted quarter tied to an
+/// eighth. Distinct from [`tied_quarters`] so rank ties are observable.
+fn dotted_quarter_eighth(
+    target: crate::ids::EventId,
+    source: DecompositionSource,
+) -> DecompositionAttachment {
+    DecompositionAttachment {
+        target,
+        components: vec![
+            NotatedComponent {
+                base_value: NoteValue::Quarter,
+                dots: 1,
+                tuplet: None,
+                tied_to_next: true,
+            },
+            NotatedComponent {
+                base_value: NoteValue::Eighth,
+                dots: 0,
+                tuplet: None,
+                tied_to_next: false,
+            },
+        ],
+        source,
+    }
+}
+
+#[test]
+fn authored_decomposition_outranks_the_inferred_default() {
+    // Chapter 3: the pre-pass produces inferred decompositions only "for events
+    // that lack a higher-precedence attachment" — an authored UserChosen
+    // attachment must not be shadowed by the derived one.
+    let (mut score, e1, e2) = two_half_note_score();
+    let authored = tied_quarters(e1, DecompositionSource::UserChosen);
+    score.decomposition_attachments.push(authored.clone());
+
+    let ann = derive_annotations(&score, &PrePassProfile::default());
+    // The authored attachment is the effective decomposition for its event; no
+    // derived (single-half-note) decomposition shadows it.
+    assert_eq!(ann.decompositions[&e1], authored, "authored override wins");
+    // The un-overridden event keeps the algorithm's inferred half note.
+    let other = &ann.decompositions[&e2];
+    assert_eq!(other.source, DecompositionSource::Inferred);
+    assert_eq!(other.components.len(), 1);
+    assert_eq!(other.components[0].base_value, NoteValue::Half);
+    // Taxonomy counts the two outcomes distinctly, and together they cover the
+    // effective map (the accounting the H harness checks).
+    assert_eq!(ann.taxonomy.decompositions_authored, 1);
+    assert_eq!(ann.taxonomy.decompositions_inferred, 1);
+    assert_eq!(
+        ann.decompositions.len(),
+        ann.taxonomy.decompositions_inferred + ann.taxonomy.decompositions_authored
+    );
+}
+
+#[test]
+fn inferred_source_attachment_does_not_outrank_the_prepass() {
+    // An attachment whose source is `Inferred` does not outrank the pre-pass's
+    // own output (the rank gate, mirroring `resolve_spelling`): the derived
+    // half note stands.
+    let (mut score, e1, _e2) = two_half_note_score();
+    score
+        .decomposition_attachments
+        .push(tied_quarters(e1, DecompositionSource::Inferred));
+
+    let ann = derive_annotations(&score, &PrePassProfile::default());
+    let dec = &ann.decompositions[&e1];
+    assert_eq!(dec.components.len(), 1, "the pre-pass's half note stands");
+    assert_eq!(dec.components[0].base_value, NoteValue::Half);
+    assert_eq!(dec.source, DecompositionSource::Inferred);
+    assert_eq!(ann.taxonomy.decompositions_authored, 0);
+    assert_eq!(ann.taxonomy.decompositions_inferred, 2);
+}
+
+#[test]
+fn decomposition_precedence_ranks_sources_then_canonical_order() {
+    // UserChosen outranks Imported regardless of attachment order (the spec's
+    // default precedence over the decomposition sources)...
+    let (mut score, e1, _) = two_half_note_score();
+    let imported = dotted_quarter_eighth(
+        e1,
+        DecompositionSource::Imported {
+            format: crate::pitch::ForeignFormatId::new("musicxml"),
+        },
+    );
+    let user = tied_quarters(e1, DecompositionSource::UserChosen);
+    score.decomposition_attachments.push(imported); // listed first — must lose
+    score.decomposition_attachments.push(user.clone());
+    let ann = derive_annotations(&score, &PrePassProfile::default());
+    assert_eq!(
+        ann.decompositions[&e1], user,
+        "UserChosen outranks Imported regardless of attachment order"
+    );
+
+    // ...and a full rank tie keeps the first attachment in the score's
+    // canonical `decomposition_attachments` order (deterministic across
+    // replicas; the attachment carries no `priority` axis).
+    let (mut score2, f1, _) = two_half_note_score();
+    let first = tied_quarters(f1, DecompositionSource::UserChosen);
+    let second = dotted_quarter_eighth(f1, DecompositionSource::UserChosen);
+    score2.decomposition_attachments.push(first.clone());
+    score2.decomposition_attachments.push(second);
+    let ann2 = derive_annotations(&score2, &PrePassProfile::default());
+    assert_eq!(
+        ann2.decompositions[&f1], first,
+        "rank ties keep the earlier attachment in canonical order"
+    );
+}
+
+#[test]
+fn derivation_with_authored_decomposition_is_deterministic() {
+    // The authored override is reflected deterministically: the same overridden
+    // score derives byte-identically twice, and the fingerprint distinguishes
+    // the overridden derivation from the un-overridden one.
+    let build = || {
+        let (mut score, e1, _) = two_half_note_score();
+        score
+            .decomposition_attachments
+            .push(tied_quarters(e1, DecompositionSource::UserChosen));
+        score
+    };
+    let a = derive_annotations(&build(), &PrePassProfile::default());
+    let b = derive_annotations(&build(), &PrePassProfile::default());
+    assert_eq!(a, b);
+    assert_eq!(a.canonical_fingerprint(), b.canonical_fingerprint());
+
+    let (plain, _, _) = two_half_note_score();
+    let c = derive_annotations(&plain, &PrePassProfile::default());
+    assert_ne!(
+        a.canonical_fingerprint(),
+        c.canonical_fingerprint(),
+        "the override is visible in the derivation fingerprint"
+    );
+}
+
+#[test]
+fn authored_attachment_on_an_ungriddable_event_does_not_surface() {
+    // The resolution step mirrors the spelling side: it layers authored
+    // overrides above the pre-pass's *inferred* output. An event the pre-pass
+    // cannot grid emits nothing to override, so an authored attachment for it
+    // stays in canonical score state without surfacing as a derived annotation,
+    // and the event stays honestly counted as ungriddable. (Whether authored
+    // decompositions should surface for events the algorithm cannot infer for
+    // is a Pass-12 question — see DECISIONS.md.)
+    let mut ids = Vec::new();
+    let mut score = metric_score(|idc, voice| {
+        let eid = idc.mint();
+        let pid = idc.mint::<PitchId>();
+        ids.push(eid);
+        let ev = pitched(
+            eid,
+            voice,
+            r(0, 1),
+            r(1, 128), // finer than a sixty-fourth: ungriddable
+            vec![IdentifiedPitch {
+                id: pid,
+                pitch: integer_pitch(48),
+            }],
+        );
+        (vec![ev], vec![])
+    });
+    score
+        .decomposition_attachments
+        .push(tied_quarters(ids[0], DecompositionSource::UserChosen));
+
+    let ann = derive_annotations(&score, &PrePassProfile::default());
+    assert!(ann.decompositions.is_empty());
+    assert_eq!(ann.taxonomy.decomposition_ungriddable, 1);
+    assert_eq!(ann.taxonomy.decompositions_authored, 0);
+    assert_eq!(ann.taxonomy.decompositions_inferred, 0);
+}
+
 #[test]
 fn unknown_algorithm_ids_are_not_honored() {
     // A profile requesting an algorithm the pre-pass does not implement must not

@@ -5,14 +5,16 @@
 //! > all provenance preserved.
 //!
 //! [`round_trip`] runs the whole pipeline and asserts the contract every IR
-//! stage must satisfy: the stub solver reports [`SolveStatus::Solved`] with all
-//! hard constraints satisfied; the **complete** [`Provenance`] of every object
-//! survives every stage unchanged; no two objects share a stable id; the stub
-//! solver returns the input geometry verbatim; and the *set* of score-graph
-//! sources recovered from the RenderIR is exactly the set laid out — a surjection
-//! onto graph identity (one source may back several manifestations, each a
-//! distinct layout object). This is the contract the testkit's layout harness
-//! drives, now against the real crate.
+//! stage must satisfy: the solver reports a renderable status (the stub, which
+//! evaluates no constraints, honestly claims hard-constraint satisfaction only
+//! for a constraint-free problem; a conformant tier must claim it outright);
+//! the **complete** [`Provenance`] of every object survives every stage
+//! unchanged; no two objects share a stable id; the stub solver returns the
+//! input geometry verbatim; and the *set* of score-graph sources recovered from
+//! the RenderIR is exactly the set laid out — a surjection onto graph identity
+//! (one source may back several manifestations, each a distinct layout object).
+//! This is the contract the testkit's layout harness drives, now against the
+//! real crate.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -97,8 +99,8 @@ fn provenance_map<'a>(
 /// completes without panic and **without losing provenance back-references**.
 /// Specifically:
 ///
-/// * the stub solver returns [`SolveStatus::Solved`] with all hard constraints
-///   satisfied;
+/// * the stub solver returns a renderable status, claiming hard-constraint
+///   satisfaction exactly when no constraint is declared (it evaluates none);
 /// * the complete [`Provenance`] of every object — `source`, `synthesis`,
 ///   `dependencies`, and `stable_id` — survives every stage unchanged (compared
 ///   as `stable_id -> Provenance` maps, so a dropped dependency or synthesis
@@ -175,10 +177,21 @@ pub fn round_trip_with<S: ConstraintSolver>(score: &Score, solver: &S) -> RoundT
         "the solver must return a renderable layout, got {:?}",
         report.status
     );
-    assert!(
-        report.satisfied_hard_constraints,
-        "the solver must satisfy all hard constraints"
-    );
+    if solver.tier() == SolverTier::Stub {
+        // The interface-only stub evaluates no constraints, so it may claim
+        // hard-constraint satisfaction only for a constraint-free problem —
+        // with any declared, an honest report claims none.
+        assert_eq!(
+            report.satisfied_hard_constraints,
+            constrained.constraints.is_empty(),
+            "the stub must claim satisfaction exactly when no constraint is declared"
+        );
+    } else {
+        assert!(
+            report.satisfied_hard_constraints,
+            "a conformant solver must satisfy all hard constraints"
+        );
+    }
 
     // The Stub tier's geometry contract: it returns the input geometry *verbatim*
     // — each resolved glyph's position is exactly its constrained baseline (Chapter
@@ -404,8 +417,10 @@ mod tests {
             .collect();
         assert_eq!(manifestations.len(), 2);
         assert_ne!(manifestations[0], manifestations[1]);
+        // The pipeline declares real constraints for this score, which the stub
+        // does not evaluate — renderable, but not exactly `Solved`.
         let report = round_trip(&score);
-        assert_eq!(report.status, SolveStatus::Solved);
+        assert!(report.status.is_renderable());
     }
 
     /// Across a multi-region score, `to_logical` never emits two layout objects

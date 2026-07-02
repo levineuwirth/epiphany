@@ -46,11 +46,53 @@ pub fn encode_block(envelopes: &[Vec<u8>]) -> Vec<u8> {
 
 /// Splits a block payload back into its opaque envelope byte strings. Total and
 /// bounds-checked: a corrupt payload yields a [`DecodeError`], never a panic.
+/// Implemented over [`envelope_offsets`], so the two apply *identical*
+/// validation.
 pub fn decode_block(payload: &[u8]) -> Result<Vec<Vec<u8>>, DecodeError> {
+    Ok(envelope_offsets(payload)?
+        .into_iter()
+        .map(|(_, bytes)| bytes.to_vec())
+        .collect())
+}
+
+/// Splits a block payload into each envelope's `(offset, bytes)` pair, under
+/// exactly the validation [`decode_block`] applies (they share one code path).
+///
+/// The offset is the byte offset of the envelope's **first content byte**
+/// within the uncompressed (decoded) block payload — that is,
+/// `payload[offset .. offset + bytes.len()]` *is* the envelope's encoded
+/// bytes, and the envelope's `u32` length prefix sits at `offset - 4`. This is
+/// the coordinate the operation index records (Chapter 8 §"The Operation
+/// Index": the `ChunkRef` of the enclosing block plus an offset within it),
+/// deterministically recoverable from the block framing alone.
+pub fn envelope_offsets(payload: &[u8]) -> Result<Vec<(u32, &[u8])>, DecodeError> {
+    // Offsets are recorded as `u32`; a payload past that range is far beyond
+    // every profile's block bound and unrepresentable in the index.
+    if payload.len() > u32::MAX as usize {
+        return Err(DecodeError::Malformed(
+            "block payload exceeds the u32 offset range",
+        ));
+    }
     let mut r = Reader::new(payload);
-    let envelopes = r.get_seq(|r| r.get_var_bytes())?;
+    // Mirror `Reader::get_seq`'s pre-allocation guards: the declared count is
+    // checked against the bytes remaining (each envelope costs at least its
+    // length prefix), and the reservation is capped.
+    const MAX_RESERVE: usize = 1024;
+    let count = r.get_u32()? as usize;
+    if count > r.remaining() {
+        return Err(DecodeError::LengthOverflow {
+            declared: count as u64,
+            remaining: r.remaining(),
+        });
+    }
+    let mut out = Vec::with_capacity(count.min(MAX_RESERVE));
+    for _ in 0..count {
+        let prefix_at = payload.len() - r.remaining();
+        let bytes = r.get_var_slice()?;
+        out.push((prefix_at as u32 + ENVELOPE_FRAMING as u32, bytes));
+    }
     r.finish()?;
-    Ok(envelopes)
+    Ok(out)
 }
 
 /// Packs opaque envelope byte strings into block payloads at the 1 MiB soft
@@ -107,6 +149,48 @@ mod tests {
         let envs = vec![b"a".to_vec(), b"bb".to_vec(), b"ccc".to_vec()];
         let payload = encode_block(&envs);
         assert_eq!(decode_block(&payload).unwrap(), envs);
+    }
+
+    #[test]
+    fn envelope_offsets_address_each_first_content_byte() {
+        let envs = vec![b"aa".to_vec(), b"b".to_vec(), b"cccc".to_vec()];
+        let payload = encode_block(&envs);
+        let got = envelope_offsets(&payload).unwrap();
+        assert_eq!(got.len(), 3);
+        // The first envelope's content begins after the u32 count and its own
+        // u32 length prefix: offset 8. Each subsequent offset advances by the
+        // previous content plus the next 4-byte prefix.
+        assert_eq!(got[0].0, 8);
+        assert_eq!(got[1].0, 8 + 2 + 4);
+        assert_eq!(got[2].0, 8 + 2 + 4 + 1 + 4);
+        for ((off, bytes), env) in got.iter().zip(&envs) {
+            assert_eq!(bytes, env, "the returned slice is the envelope");
+            // The offset definition: payload[offset .. offset+len] IS the
+            // envelope's encoded bytes within the decoded block payload.
+            let start = *off as usize;
+            assert_eq!(&payload[start..start + env.len()], &env[..]);
+        }
+    }
+
+    #[test]
+    fn envelope_offsets_validate_like_decode_block() {
+        let payload = encode_block(&[b"xyz".to_vec()]);
+        // Truncation fails both, with the same verdict.
+        let cut = &payload[..payload.len() - 1];
+        assert!(envelope_offsets(cut).is_err());
+        assert!(decode_block(cut).is_err());
+        // Trailing garbage fails both.
+        let mut long = payload.clone();
+        long.push(0);
+        assert!(envelope_offsets(&long).is_err());
+        assert!(decode_block(&long).is_err());
+        // A corrupt count cannot over-allocate in either.
+        let mut bytes = u32::MAX.to_le_bytes().to_vec();
+        bytes.push(0);
+        assert!(matches!(
+            envelope_offsets(&bytes),
+            Err(DecodeError::LengthOverflow { .. })
+        ));
     }
 
     #[test]

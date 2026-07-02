@@ -229,11 +229,14 @@ pub fn assert_decompositions_reconstruct(score: &Score, ann: &DerivedAnnotations
         );
     }
 
-    // Map and taxonomy count agree.
+    // Map and taxonomy counts agree: the effective map is exactly the inferred
+    // plus authored-override outcomes (an authored `DecompositionAttachment`
+    // outranking `Inferred` replaces the derived one and is counted
+    // distinctly, mirroring the spelling buckets).
     assert_eq!(
         ann.decompositions.len(),
-        ann.taxonomy.decompositions_inferred,
-        "decomposition map size disagrees with the taxonomy count"
+        ann.taxonomy.decompositions_inferred + ann.taxonomy.decompositions_authored,
+        "decomposition map size disagrees with the taxonomy counts"
     );
 }
 

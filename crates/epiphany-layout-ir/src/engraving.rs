@@ -8,7 +8,7 @@
 //! provenance and override interfaces (the QUICKSTART scope item); production
 //! engraving algorithms remain layered specifications beyond the v0 stub.
 
-use epiphany_core::{StemDirection, TypedObjectId};
+use epiphany_core::{CanonicalValue, RegionId, StemDirection, TimeAnchor, TypedObjectId};
 use epiphany_determinism::{DomainTag, Preimage};
 
 use crate::provenance::LayoutObjectId;
@@ -72,17 +72,39 @@ pub enum OverrideOrigin {
 
 /// Core override vocabulary. More detailed engraving payloads are represented
 /// by stable registered ids until their companion algorithm specifications land.
+///
+/// A break override addresses a *position*, not an object (Chapter 7
+/// §"Engraving Overrides"): the kind carries the break's [`TimeAnchor`], while
+/// the override's `ScoreGraph` target names the owning region.
 #[derive(Clone, PartialEq, Debug)]
 pub enum OverrideKind {
     StemDirection(StemDirection),
     AccidentalParenthesized(bool),
     AccidentalVisible(bool),
-    SystemBreak,
-    PageBreak,
+    SystemBreak { anchor: TimeAnchor },
+    PageBreak { anchor: TimeAnchor },
     HiddenObject,
     CustomPosition(Point),
     LedgerLineSuppression,
     Registered(u128),
+}
+
+impl OverrideKind {
+    /// A stable discriminant byte, part of the override-id preimage and the
+    /// projection's deterministic ordering key.
+    pub(crate) fn discriminant(&self) -> u8 {
+        match self {
+            OverrideKind::StemDirection(_) => 0,
+            OverrideKind::AccidentalParenthesized(_) => 1,
+            OverrideKind::AccidentalVisible(_) => 2,
+            OverrideKind::SystemBreak { .. } => 3,
+            OverrideKind::PageBreak { .. } => 4,
+            OverrideKind::HiddenObject => 5,
+            OverrideKind::CustomPosition(_) => 6,
+            OverrideKind::LedgerLineSuppression => 7,
+            OverrideKind::Registered(_) => 8,
+        }
+    }
 }
 
 /// A projected engraving override (Chapter 7 §"Engraving Overrides").
@@ -93,6 +115,59 @@ pub struct EngravingOverride {
     pub kind: OverrideKind,
     pub priority: OverridePriority,
     pub origin: OverrideOrigin,
+}
+
+impl EngravingOverride {
+    /// A system-break override projected from a region's authoritative
+    /// `user_system_breaks` list (Chapter 5 §"Staff-Based Content").
+    pub fn projected_system_break(region: RegionId, anchor: TimeAnchor) -> Self {
+        Self::projected_break(region, OverrideKind::SystemBreak { anchor })
+    }
+
+    /// A page-break override projected from a region's authoritative
+    /// `user_page_breaks` list (Chapter 5 §"Staff-Based Content").
+    pub fn projected_page_break(region: RegionId, anchor: TimeAnchor) -> Self {
+        Self::projected_break(region, OverrideKind::PageBreak { anchor })
+    }
+
+    /// The shared shape of a projected break override (Chapter 7 §"Engraving
+    /// Overrides"): the kind carries the break's anchor, the `ScoreGraph`
+    /// target names the owning region, the binding is `Soft` (the layout
+    /// SHOULD honor it), and the origin is `Internal` — break authorship
+    /// (author, timestamp) lives in the operation log, not the materialized
+    /// break lists, until the snapshot-undo refinement (P11-C8) surfaces it.
+    fn projected_break(region: RegionId, kind: OverrideKind) -> Self {
+        EngravingOverride {
+            id: derive_break_override_id(region, &kind),
+            target: OverrideTarget::ScoreGraph(TypedObjectId::Region(region)),
+            kind,
+            priority: OverridePriority::Soft,
+            origin: OverrideOrigin::Internal,
+        }
+    }
+}
+
+/// Derives an [`EngravingOverrideId`] for a projected break override from its
+/// owning region, its kind discriminant, and the break anchor's canonical
+/// bytes — so equal breaks share an id across re-projection and distinct ones
+/// never collide.
+///
+/// Like the engraving-decision id, the override is a non-canonical
+/// layout-namespace object, so the preimage is domain-separated under
+/// [`DomainTag::LAYOUT_OBJECT_ID`] (`MUSCLOID`) with a literal
+/// `engraving-override` discriminator prefix, so an override id can alias
+/// neither a layout-object id nor a decision id within that namespace.
+fn derive_break_override_id(region: RegionId, kind: &OverrideKind) -> EngravingOverrideId {
+    let anchor = match kind {
+        OverrideKind::SystemBreak { anchor } | OverrideKind::PageBreak { anchor } => anchor,
+        _ => unreachable!("projected break overrides carry a break kind"),
+    };
+    let mut p = Preimage::new(DomainTag::LAYOUT_OBJECT_ID);
+    p.push_bytes(b"engraving-override");
+    p.push_bytes(&region.canonical_bytes());
+    p.push_u64_le(kind.discriminant() as u64);
+    p.push_bytes(&anchor.canonical_bytes());
+    EngravingOverrideId(p.finish_trunc128())
 }
 
 /// Where an engraving decision came from (Chapter 7 §"Note Layout":
@@ -256,6 +331,43 @@ mod tests {
             auto.id, over.id,
             "the decision source participates in the id"
         );
+    }
+
+    #[test]
+    fn projected_break_override_ids_are_content_derived() {
+        use epiphany_core::{RegionId, WallClockTime};
+        let region = RegionId::from_raw(9);
+        let anchor = TimeAnchor::WallClock {
+            time: WallClockTime(7),
+        };
+        let a = EngravingOverride::projected_system_break(region, anchor.clone());
+        let b = EngravingOverride::projected_system_break(region, anchor.clone());
+        assert_eq!(a, b, "equal breaks share an id across re-projection");
+        // A page break at the same anchor is a distinct override…
+        let page = EngravingOverride::projected_page_break(region, anchor.clone());
+        assert_ne!(a.id, page.id);
+        // …as is the same break at a different anchor…
+        let other = EngravingOverride::projected_system_break(
+            region,
+            TimeAnchor::WallClock {
+                time: WallClockTime(8),
+            },
+        );
+        assert_ne!(a.id, other.id);
+        // …or in a different owning region.
+        let elsewhere =
+            EngravingOverride::projected_system_break(RegionId::from_raw(10), anchor.clone());
+        assert_ne!(a.id, elsewhere.id);
+        // The projected shape the spec pins: the kind carries the break anchor,
+        // the ScoreGraph target names the owning region, the binding is Soft,
+        // and the origin is Internal (authorship lives in the op log, P11-C8).
+        assert_eq!(a.kind, OverrideKind::SystemBreak { anchor });
+        assert_eq!(
+            a.target,
+            OverrideTarget::ScoreGraph(TypedObjectId::Region(region))
+        );
+        assert_eq!(a.priority, OverridePriority::Soft);
+        assert_eq!(a.origin, OverrideOrigin::Internal);
     }
 
     #[test]

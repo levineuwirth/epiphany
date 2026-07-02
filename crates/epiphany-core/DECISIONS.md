@@ -337,3 +337,74 @@ Phase 2). The rule itself is value-independent and final.
   question). H spells pitches region-independently (pitch identity does not depend
   on the time model) but performs no region-specific aleatoric spelling; defer if
   the algorithm does not generalise cleanly.
+
+## Audit follow-up (2026-07-01): decomposition precedence + typed inversion tolerance
+
+### Authored decomposition attachments outrank the pre-pass (`resolve_decomposition`)
+
+Audit finding: `infer_decompositions` never consulted
+`Score.decomposition_attachments`, so an authored decomposition was silently
+shadowed by the derived one — violating Chapter 3 §"Sounding Duration and
+Notational Decomposition": the pre-pass "produces inferred decompositions for
+events that **lack a higher-precedence attachment**", with the "same sources,
+same precedence machinery, same pre-pass discipline" as spelling.
+
+Fixed by `resolve_decomposition`, the decomposition analogue of
+`resolve_spelling`: for each event the pre-pass inferred a decomposition for,
+an authored `DecompositionAttachment` targeting that event whose source
+**outranks `Inferred`** replaces the derived one in
+`DerivedAnnotations.decompositions` (the effective attachment keeps its
+authored source, so provenance is visible and enters the derivation
+fingerprint). Precedence is the spec's default source order — `UserChosen >
+Imported > Propagated > Inferred` — as a fixed rank, because the graph model
+carries **no** `DecompositionPrecedence` configuration and the attachment has
+no `priority`/`layer` axes (unlike `SpellingAttachment`); among competing
+authored attachments the lowest rank wins, and a full rank tie keeps the first
+in the score's canonical (codec-fixed) `decomposition_attachments` order, so
+resolution is deterministic across replicas.
+
+**Taxonomy decision:** authored-override events are counted **distinctly** in a
+new `TaxonomyReport::decompositions_authored` bucket (mirroring
+`spellings_authored`); `decompositions_inferred` now counts only events whose
+*effective* decomposition is the pre-pass's own. The effective map size equals
+`decompositions_inferred + decompositions_authored` (the H harness's accounting
+check was updated accordingly). The new bucket is serialized in
+`DerivedAnnotations::canonical_fingerprint` with the other counts.
+
+**Scope, mirroring spelling:** resolution layers overrides above the pre-pass's
+*inferred* output only. An authored attachment on an event the pre-pass emits
+nothing for (ungriddable / non-metric / inapplicable kind) does not surface as
+a derived annotation — exactly as a spelling attachment on a
+spelling-unavailable pitch does not (the attachment still lives in canonical
+`Score` state either way). Two genuine ambiguities are batched, not improvised:
+
+- **P12-H6 — Decomposition precedence configurability.** Chapter 3 says "same
+  precedence machinery" as spelling, and Chapter 2 makes the spelling order
+  *configurable* per score (`SpellingPrecedence`, plus `priority`/timestamp
+  tie-breaks); but the graph model has no `DecompositionPrecedence` field and
+  `DecompositionAttachment` has no `priority`. Whether decomposition precedence
+  should be configurable (a new canonical `Score` field — a codec/ratification
+  change), share `SpellingPrecedence`, or stay the fixed spec default needs a
+  spec disposition. Until then the fixed default order is implemented.
+- **P12-H7 — Authored decompositions for events the pre-pass cannot infer
+  for.** An authored attachment is precisely how a user would notate an event
+  the algorithm reports ungriddable, yet the derived-annotation surface only
+  resolves overrides where an inferred output exists (the spelling mirror).
+  Whether authored attachments should surface in `DerivedAnnotations` for
+  inference-ineligible events (and how the taxonomy should count them) is a
+  spec question for both pre-passes.
+
+### Typed inversion tolerance (`tempo::inversion_tolerance`)
+
+`INVERSION_TOLERANCE_WHOLE_NOTES` was a bare public `f64` documented as
+belonging to tolerance class `TempoIntegration` but never constructed as a
+`Tolerance` (Appendix D §"Tolerance Classes": no ad-hoc epsilons). It is now
+the private raw magnitude behind the public `inversion_tolerance()` — a
+`Tolerance { class: TempoIntegration, absolute: 1e-6, relative: None,
+governance: Validation }` (the same construction pattern as the existing
+`speed_degeneracy_tolerance`). Behavior is numerically identical: the inverse
+conversion passes `inversion_tolerance().absolute.get()` (exactly `1e-6`) to
+the continued-fraction approximation. Note the class's *non-normative* unit
+label is "wallclock seconds" while this residual is measured in whole notes;
+the class identity (`TempoIntegration`: conversion residual in either
+direction) is what is normative.

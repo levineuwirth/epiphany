@@ -147,6 +147,16 @@ a faithfulness gap the graph convergence gate (criterion 1) would surface.
   records each seeded spanner's event-anchored endpoints in `structures` (as it
   already did for slurs/ties/beams), so a base spanner re-anchors through the same
   rule as a created one rather than being left dangling.
+- **A `CascadeDeleteTuplets` also drops decompositions that named the tuplet.** A
+  notated decomposition component records its tuplet by id (`NotatedComponent.tuplet`),
+  so once the cascade removes the tuplet structure, any attachment naming it would
+  dangle — `check_invariants` flags it as a cross-cutting reference that no longer
+  resolves (invariant 6). `materialize_graph_delete` therefore prunes, in the same
+  step, every decomposition attachment whose components reference a removed tuplet.
+  Those members are tombstoned in the same cascade, so the decomposition has nothing
+  left to describe. This is what lets the editor's atomic tuplet overwrite (a pencil
+  insert over a triplet member removes the whole triplet) leave an invariant-valid
+  graph even when a member carried an in-tuplet decomposition.
 
 This consistency is what lets `graph_edit_session` create cross-cutting structures
 and delete their endpoints, giving the Group-2 CRUD ops (and slur re-anchoring)
@@ -327,6 +337,17 @@ cascade) is implemented faithfully; only the metric "nearest" is approximated.
 **For the spec:** no change needed — this resolves once the graph mutation phase
 tracks positions; recorded so the approximation is explicit.
 
+*Push-3 update (2026-07): the four-key "nearest" metric is now implemented
+(`nearest_live_event` + `containment_rank`, over the canonical ledger indices)
+and drives the marker and graphic-gesture rows plus the slur/spanner
+`Reanchored` reason; see "Re-anchoring rule-table completion" below. For
+slurs/spanners the table itself prescribes surviving-endpoint collapse, so
+`nearest_survivor` legitimately remains the endpoint-set minimum (proximity-
+aware re-targeting beyond the endpoints stays the table's own "deferred
+refinement"). Wall-clock distance in proportional regions remains
+unimplemented — the occupancy index is metric-only — so a wall-clock referent
+falls to the kind's declared failure action.*
+
 ### P11-C6 — time-model compatibility is computed when a graph is available
 
 `ChangeRegionTimeModel` retains a `declared_incompatible` list for base-free
@@ -409,3 +430,281 @@ conflict-id derivation, and the materialized-state bytes are testable now. This
 is deterministic and unambiguous but **provisional**: when the Binary Format
 companion lands, reconcile `encode.rs` and the per-type `CanonicalEncode` impls
 with it. A failing cross-crate round-trip test is the trigger.
+
+## Spec-compliance audit follow-up (2026-07, Push 1)
+
+Four reduction-semantics fixes closing MUST-level gaps the six-agent spec audit
+confirmed, plus one parity check. Each changes canonical effect bytes only in
+the scenario it fixes; all determinism gates (permutation invariance, 10k fuzz,
+migration equivalence) stay green.
+
+- **Transpose skips tombstoned targets.** The catalog (§Transpose,
+  re-anchoring) says "tombstoned targets are skipped (the transpose applies
+  only to live pitches)"; the code refused the whole operation on any dead
+  target. Now: missing target → whole-op `TargetMissing` refusal (a dangling
+  reference is malformed authorship, unchanged); tombstoned targets are
+  skipped and the live remainder shifts (`Applied`); all-tombstoned
+  degenerates to `NoOp { TargetTombstoned }` (byte-identical to the old
+  behavior for that sub-case). The skip is not recorded as a repair: no
+  compensating change is performed on the skipped target.
+
+- **Marker re-anchoring is a recorded repair.** Chapter 6 §Re-Anchoring:
+  "Re-anchoring actions MUST be recorded as RepairRecord entries in the
+  triggering operation's effect." The graph materializer re-pointed
+  event-anchored markers to their region start silently;
+  `materialize_graph_delete` now returns those re-anchors as
+  `RepairKind::Reanchored { …, reason: ExplicitFallback }` records
+  (`ExplicitFallback` because region-start is the documented P11-C5 stand-in
+  for the table's "nearest event in same staff instance" metric, which stays
+  deferred). Delete and undo effects carry them. Bookkeeping-only `reduce()`
+  cannot see markers (they are graph state), so the records appear only under
+  graph-aware reduction — same documented asymmetry class as base-only
+  regions.
+
+- **System-derived counter collision check** (Chapter 5 §"System-Derived
+  Counter Collisions" — the audit's top reduction MUST gap). The reducer now
+  keeps a mint registry `(ObjectKind, counter) → (canonical inputs, minting
+  op)` seeded from the base graph (`SystemPromoted` voices via the `MUSCSVCE`
+  preimage, `SYSTEM_DERIVED` pitches via `canonical_pitch_bytes`, now public
+  in epiphany-core for exactly this) and checked by a pre-walk over the
+  canonical order before any effect is applied. Prospective mints are the
+  promotion pre-pass assignments plus `SYSTEM_DERIVED` pitches carried by
+  minting payloads (InsertEvent, InsertIdentifiedPitch). On the first
+  differing-inputs collision: a `SystemIdentifierCollision` anomaly is
+  recorded (both input sets retained), reduction does not continue past the
+  collision point, and the earlier occupant op is held too, so *neither*
+  input set occupies the collided counter. Held ops surface in `pending` under
+  the new `PendingReason::HaltedBySystemCollision { at }` (discriminant 4,
+  additive); transactions with a held member are wholly held, and causal
+  dependents hold behind them (`DependsOnPending`). Scope decisions, made
+  deliberately: (a) the pre-walk is conservative — a claimed mint participates
+  even if the op would fail an unrelated apply-time precondition, since two
+  input sets contending for one counter is a structural identity failure
+  regardless of which contender materializes; (b) a base occupant (owner =
+  None) cannot be evicted by this reduction and is left to diagnostic
+  recovery; (c) in-place content rewrites of a live system pitch (ModifyEvent /
+  ModifyIdentifiedPitch) are *not* treated as mints — that is Invariant-11
+  territory. **For Pass 12:** should reduction refuse content modification of
+  a `SYSTEM_DERIVED` pitch outright (it silently invalidates the id's
+  content-derivation)? Reader-side diagnostic-recovery gating on a bundle
+  whose state carries this anomaly is bundle/editor work, tracked with the
+  edit-barrier seam.
+
+- **ResolveConflict meta-conflict names both resolvers.** The spec requires a
+  true conflict's `caused_by` to name "at least two" operations; the
+  meta-conflict for a differing later resolve had `winner == loser == self`
+  and one cause. Now: winner = the earlier resolver (its action stands),
+  loser = the later differing resolver, `caused_by` = both. `affected_objects`
+  stays empty — a conflict record has no `TypedObjectId` kind, so the
+  contested conflict cannot be named there (spec-side gap, Pass-12-adjacent).
+  The related asymmetries (a causally-later resolve cannot supersede; a
+  differing resolve against `Dismissed` reads `AlreadyApplied`) are spec-gray
+  and deliberately unchanged.
+
+- **Base-free pitch-id freshness.** `insert_event` now refuses a carried pitch
+  id that already exists in canonical state under bookkeeping-only `reduce()`
+  too (the graph-aware precondition already did, with the same
+  `TargetTombstoned` reason), closing one base-free/graph-aware divergence
+  from the audit. Placed after the graph precondition so graph-aware effect
+  bytes are unchanged.
+
+Reserved effect vocabulary (`OperationEffect::TombstonedTarget`,
+`NoOpReason::SupersededByLaterOperation`, `PositionOutsideRegion`,
+`PitchSpaceMismatch`, `ReanchorResult`) is now annotated as reserved at the
+type definitions with the condition under which each becomes load-bearing.
+
+## Re-anchoring rule-table completion (2026-07, Push 3)
+
+The remaining referent rows of the re-anchoring rule table (core_spec §"The
+Re-Anchoring Rule Table") are now implemented: **marker**, **cue event**,
+**comment**, **analytical annotation**, and **graphic gesture** — together with
+the four-key "nearest" total ordering (§"Total Ordering for Nearest") they
+depend on. No discriminant was added or renumbered anywhere; every record uses
+the ratified `RepairKind`/`ReanchorReason` vocabulary.
+
+- **The four-key "nearest" is computed from the canonical ledger indices.**
+  `nearest_live_event` takes the strict lexicographic minimum of (containment
+  proximity, absolute rational time distance from the referent's resolved
+  position, forward-before-backward, ascending `EventId` — whose numeric order
+  *is* its canonical 16-byte order) over live events within the kind's declared
+  proximity bound. Proximity (`containment_rank`: same voice 0, staff instance
+  1, staff 2, region 3, canvas 4) reads `instance_voices`, the new
+  `instance_staff` map (seeded + maintained by `CreateStaffInstance`), and
+  `region_instances`; distance/direction read `voice_occupancy`. All are
+  base-free indices, so `reduce()` and `reduce_onto()` rank identically
+  wherever both can represent a scenario. Occupancy is metric-only, so
+  wall-clock distance (proportional regions) is a deferred refinement: a
+  wall-clock referent finds no candidate and falls to the kind's declared
+  failure action.
+- **Where the rows run: the graph arm, one decision per row.** None of the five
+  kinds is creatable by an operation — they exist only in seeded base graphs —
+  so their rows run in `reanchor_event_referents`, called from
+  `materialize_graph_delete` (hence from both the `DeleteEvent` path and undo's
+  `materialize_graph_tombstones`). Each row's ledger record and graph mutation
+  are decided together, in canonical id order, keeping "the graph follows the
+  ledger" (above) intact; `reanchor_for_tombstone` explicitly skips these kinds
+  so no row is double-recorded. The referents are indexed in the same
+  `structures` map as slurs/ties/beams/spanners (markers by event anchor,
+  comments/annotations by event-anchored annotation anchors, gestures by
+  `Events`/`Range` event references, cues — keyed by their own `EventId` — by
+  their source lists); the four creatable kinds' create/modify/delete paths are
+  unchanged.
+- **Marker: nearest event in the same staff instance replaces the Push-1
+  region-start fallback.** The re-anchored anchor keeps its offset (the
+  survivor shares the staff instance, hence the region and its offset
+  discipline), and the recorded reason names the *achieved* proximity rank
+  (`SameVoiceNearer` when the survivor shares the voice). On failure the marker
+  **orphans**: kept live in ledger and graph with `RepairKind::Orphaned`; the
+  graph anchor degrades to the containing region's start purely as reference
+  hygiene (invariant 10 rejects a dangling event anchor) — that form is no
+  longer presented as a re-anchor choice.
+- **Cue event: plain-text cascade on any source deletion.** Deleting *any*
+  event in a live cue's `source` cascade-deletes the cue — ledger tombstone,
+  graph removal, `CascadeDeleted` repair — in the same reduction step. The
+  cascaded cue is itself a tombstoned event, so the full pass runs over its own
+  referents transitively (a cue-of-a-cue cascades along; ties/slurs on the cue
+  re-anchor through the ordinary ledger arm). The rationale-vs-action tension
+  for multi-source cues ("no source is meaningless" suggests truncate-while-
+  any-survives) is deliberately *not* resolved in code — proposed Pass-12 row.
+- **Comment: orphan, with deterministic anchor hygiene.** The ledger records
+  `Orphaned` and the comment survives everywhere; because invariant 10 rejects
+  dangling anchors, the graph anchor degrades deterministically — an `Event`
+  anchor to `AnnotationAnchor::Region(containing region)`, a dead `Range`
+  endpoint to the region edge on its side (start → `Start`, end → `End`).
+- **Analytical annotation: extent-preserving range reconstruction, else
+  orphan.** An event-anchored annotation whose event dies re-anchors to
+  `AnnotationAnchor::Range` with both endpoints as region-start `Musical`
+  offsets covering the event's exact span (positions are region-relative, so
+  the resolved extent is preserved); recorded as `Reanchored { to:
+  Region(region), reason: ExplicitFallback }` (the row is a declared fallback,
+  not a proximity choice). Range-anchored annotations get the same treatment
+  per dead endpoint (event position plus any musical anchor offset). A
+  wall-clock or indeterminate span is not expressible as a stored
+  region-relative range — the annotation orphans with the comment's anchor
+  hygiene; the expressibility gap is a proposed Pass-12 row.
+- **Graphic gesture: nearest re-target / truncate / orphan.** `Events`
+  references to the dead event re-target to the nearest survivor in the same
+  staff instance (`Reanchored`, reason per achieved rank); with no candidate
+  the reference drops — `SpannerTruncated { removed_members: [event] }` while
+  references remain (the vocabulary's own definition, "lost members but enough
+  remained", fits), `Orphaned` when the list empties (gesture kept, user
+  content). `Range` anchoring "truncates": a dead endpoint moves to its region
+  edge (start → `Start`, end → `End`, offset zero) with `Reanchored { to:
+  Region, reason: ExplicitFallback }` — the least-surprising deterministic
+  reading of the table's one-word action; proposed Pass-12 row. `Free` is never
+  indexed (table: "no action").
+- **Slur/spanner `Reanchored` reason is computed, not hardcoded.** The
+  surviving-endpoint collapse itself is unchanged, but the reason now names the
+  survivor's actual containment rank relative to the tombstoned endpoint
+  (`containment_rank` over the same ledger indices; `SameVoiceNearer` remains
+  the default when neither side has an indexed metric placement). Rank 4 (same
+  canvas) has no ratified `ReanchorReason` variant, so it is recorded as
+  `ExplicitFallback` rather than appending a discriminant — spec-vocabulary
+  question, proposed Pass-12 row.
+- **Known asymmetries, kept deliberately.** (a) The five rows fire only under
+  graph-aware reduction — the same documented asymmetry class as the Push-1
+  marker fix (base-free `reduce()` cannot see these kinds at all). (b) The
+  tie/beam/slur/spanner *ledger* arm still does not run in the undo path
+  (pre-existing gap, unchanged by this slice; the graph-only rows *do* run
+  there via `materialize_graph_delete`).
+
+## ResolveEquivocation + validation modes (2026-07, Push 3)
+
+Two Push-3 items land together: the **ResolveEquivocation** meta-operation
+(operation_catalog §"ResolveEquivocation", ratified this pass) and the
+**validation-mode** seam (core_spec §"Validation Modes"). One payload
+discriminant was appended (`OperationPayload::ResolveEquivocation` = 3); the
+ratified 0..=2 and every other discriminant table are untouched. Canonical
+reduction changes **only** for scenarios containing a valid resolve of an
+equivocated slot — everything else reduces byte-identically (the extended
+equivocation fuzz plus the unchanged `run_equivocation_fuzz` gate this).
+
+- **Promotion is a set-level pre-pass, not a walk step.** The catalog's rule
+  ("when the operation set holds an Equivocated slot for `target` and `chosen`
+  names one of its candidates, the slot reduces as if it had always been
+  Single") conditions on the *operation set*, so `Reducer::run` resolves it in
+  step 1b, before pending computation and ordering: among Single-slot,
+  non-quarantined resolves whose `(target, chosen)` is valid, the smallest
+  reduction tuple — the same total HLC order `canonical_reduction_order`
+  selects ready ops by — governs. The chosen candidate envelope then joins the
+  reducible set *at its own canonical position*: it flows through
+  `compute_pending` (its own causal gaps still hold it), transactions, voice
+  promotion, and the walk exactly like a native Single, and dependents that
+  were `DependsOnEquivocated` unblock. A resolved slot records no
+  `OperationSlotEquivocated` anomaly; losing candidates stay only in the
+  opset's diagnostic candidate store.
+- **No `OperationSet` API extension was needed.** The promotion needs the
+  candidate *envelope*, and `OperationSet::candidate(hash)` already exposes
+  the retained diagnostic store (the CRDT property forbids dropping
+  candidates, so every hash in an `Equivocated` slot resolves). `accept`
+  transitions are untouched — the opset still holds the slot as `Equivocated`;
+  the promoted view lives only in the reducer (`promoted_singles`, consulted
+  by `env_of` so concurrency checks see the slot "as if always Single").
+- **Resolve effects mirror `resolve_conflict`.** Governing resolve →
+  `Applied`; later resolve naming the same candidate → `NoOp(AlreadyApplied)`;
+  later *valid* resolve naming a differing candidate →
+  `StructuralFieldCollision` on `FieldPath("equivocation_resolution")` with
+  winner = governing, loser = later, both in `caused_by`, `affected_objects`
+  empty (a slot is not a `TypedObjectId`) → `Conflicted`. A resolve whose
+  target is absent, holds a Single slot, or whose `chosen` names no candidate
+  is a precondition no-op reusing `TargetMissing` — the named target/candidate
+  pair does not exist — rather than a new appended reason.
+- **Deliberate single-pass simplifications (proposed Pass-12 rows).** (a) A
+  promoted candidate that is itself a `ResolveEquivocation` does not govern a
+  further promotion (no cascade/fixpoint; the catalog names none). (b) The
+  promoted candidate is not re-subjected to HLC-monotonicity segmentation
+  (quarantine detection runs over native singles first; "as if it had always
+  been Single" vs. the quarantine pass ordering is a spec question). (c) A
+  resolve held pending by its own causal gaps still governs promotion — the
+  set-level rule needs no walk position — while its recorded effect stays
+  subject to the ordinary pending rules.
+- **v0 migration.** v0 predates the entry, so `V0OperationPayload` gains a
+  `ResolveEquivocation` variant carried **verbatim** — the same "v1-native,
+  round-trip by identity" treatment as the Group 1–4 kinds. `project_v1_to_v0`
+  stays total; `migrate_v0_envelope` maps it back by identity (deterministic,
+  trivially equivalence-preserving).
+- **Golden locks added.** `operation_kind_wire_discriminants_are_golden` pins
+  all 24 `OperationKind` literals (0..=23),
+  `operation_payload_discriminants_are_golden` pins the payload union
+  (0..=3 incl. the appended variant), and
+  `resolve_equivocation_payload_encodes_target_then_hash` pins the 16+32-byte
+  layout — the append-only discipline is now enforced by test, not convention.
+- **Validation modes: the reducer *is* replay mode.** `src/validate.rs` adds
+  `ValidationMode { Authoring, Replay }` and
+  `advisory_violations(kind, score)`. `reduce`/`reduce_onto` enforce exactly
+  the invariant preconditions in every context; authoring enforcement happens
+  in epiphany-editor-core, which runs `advisory_violations` against its
+  current materialized score *before minting* and refuses with a new
+  `EditorError::AdvisoryViolation` (no envelope enters the log). Canonical
+  reduction behavior and bytes are untouched by the mode machinery;
+  `AdvisoryViolation` is deliberately **non-canonical** (no encoding, no
+  discriminants — it never enters effects or state).
+- **Advisory inventory (core_spec §6.10).** Implemented: InsertEvent /
+  ModifyEvent *duration-not-crossing-region-boundary* (the span straddles the
+  region's musical end bound — resolvable when the extent's end anchor is
+  region-start-anchored with a `Musical` offset, the same sound-but-incomplete
+  discipline as `Region::overlaps_in_time`), and CreateCrossCutting(Slur)
+  *not-spanning-a-region-boundary* (endpoint events resolve to different
+  regions). Blocked on the truncated data model, documented in the module
+  docs: InsertEvent *pitch-within-instrument-range* (`Instrument` carries no
+  range field; staged to the Binary Format companion) and the Slur rule's
+  "unless explicitly permitted by region configuration" (no such flag on
+  `Region`; spanning is treated as never permitted until it lands). A
+  wall-clock or symbolic region extent yields no musical bound, so the
+  boundary check passes vacuously there (deferred tempo/measure resolution,
+  P11-C5).
+
+## Edit-barrier bridge: `OperationKindTag` decode (2026-07, Push 3)
+
+- **`OperationKindTag` gains its decode mirror.** The tag had `CanonicalEncode`
+  only (the discriminant byte, plus the registry id's 16 big-endian bytes for
+  `Registered`); the edit-barrier blob codec (epiphany-layout-ir, the barrier
+  owner) needs the inverse to read `prohibited_operation_kinds` back out of a
+  manifest declaration. `CanonicalDecode` now decodes exactly the encoder's
+  image: variable width (1 byte, or 17 for `Registered`), length mismatches and
+  trailing bytes rejected, and an **unknown discriminant rejected** — via
+  `DecodeError::MalformedDomainTag`, the same unknown-discriminant rejection
+  `TypedObjectId::decode_canonical` already uses, so no new error variant and
+  no change to the determinism crate. No encoding changed and no discriminant
+  was appended; `operation_kind_tag_decode_mirrors_encode_exactly` /
+  `operation_kind_tag_decode_rejects_malformed_bytes` pin the contract.

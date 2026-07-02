@@ -446,7 +446,13 @@ impl Pitch {
 /// system pitch identifier. Strings are length-prefixed and already NFC (the
 /// catalog ids normalize on construction); the layout is fixed-shape so equal
 /// pitches encode to equal bytes (Appendix D §"Canonical serialization").
-fn canonical_pitch_bytes(p: &Pitch) -> Vec<u8> {
+///
+/// Public because these bytes are the normative "canonical inputs" of the
+/// `MUSCSPCH` derivation (`req:graph:system-derived-pitch-id`): the reduction's
+/// system-derived counter-collision check (Chapter 5 §"System-Derived Counter
+/// Collisions") compares exactly these input bytes to distinguish two pitches
+/// contending for one derived counter.
+pub fn canonical_pitch_bytes(p: &Pitch) -> Vec<u8> {
     // Length-prefixed UTF-8, normalized to NFC at the derivation boundary so the
     // canonical input is NFC regardless of how the string was obtained (Appendix
     // D §"Text and Unicode"). Catalog ids are already NFC at construction, so this

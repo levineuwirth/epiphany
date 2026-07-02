@@ -17,15 +17,17 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::prepass::{derive_annotations, DerivedAnnotations, PrePassProfile};
 use epiphany_core::{
-    AleatoricAnchoringDiscipline, AnchorOffset, AnnotationAnchor, Clef, CoordinateDiscipline,
-    Event, EventId, EventPosition, KeySignature, MeasurePosition, MusicalDuration, MusicalPosition,
-    NotatedComponent, PitchId, PitchSpelling, Region, RegionEdge, RegionId, RegionTimeModel, Score,
-    StaffId, StaffPosition, TimeAnchor, TimeSignatureDisplay, TupletId, TupletRatio, TypedObjectId,
-    WallClockTime,
+    AleatoricAnchoringDiscipline, AnchorOffset, AnnotationAnchor, CanonicalValue, Clef,
+    CoordinateDiscipline, Event, EventId, EventPosition, KeySignature, MeasurePosition,
+    MusicalDuration, MusicalPosition, NotatedComponent, PitchId, PitchSpelling, Region, RegionEdge,
+    RegionId, RegionTimeModel, Score, StaffId, StaffPosition, TimeAnchor, TimeSignatureDisplay,
+    TupletId, TupletRatio, TypedObjectId, WallClockTime,
 };
 use epiphany_determinism::{DomainTag, Preimage};
 
-use crate::engraving::{EngravingDecision, EngravingDecisionKind, EngravingOverride};
+use crate::engraving::{
+    DecisionSource, EngravingDecision, EngravingDecisionKind, EngravingOverride, OverrideKind,
+};
 use crate::provenance::{LayoutObjectId, Provenance};
 use crate::spatial::Transform2D;
 use crate::time_axis::{time_axis_of, TimeAxisModel, TimePoint};
@@ -367,8 +369,12 @@ pub struct LogicalLayoutIR {
     /// Engraving decisions made during the engraving pass (Chapter 7
     /// §"Engraving Decisions"), carried forward through the pipeline.
     pub engraving_decisions: Vec<EngravingDecision>,
-    /// User engraving overrides projected from the score graph. Agent B's
-    /// current graph exposes no override registry, so the projection is empty.
+    /// User engraving overrides projected from the score graph: each region's
+    /// authoritative `user_system_breaks` / `user_page_breaks` lists (Chapter 5
+    /// §"Staff-Based Content") become Soft, `Internal`-origin break overrides
+    /// targeting the owning region, ordered by (region id, kind, anchor
+    /// canonical bytes). Each carries a paired [`EngravingDecision`] with
+    /// [`DecisionSource::UserOverride`] in `engraving_decisions`.
     pub overrides: Vec<EngravingOverride>,
     /// Objects spanning two or more layout regions.
     pub cross_region: Vec<CrossRegionObject>,
@@ -394,6 +400,9 @@ pub struct LogicalLayoutIR {
 pub fn to_logical(score: &Score) -> LogicalLayoutIR {
     let mut regions = Vec::new();
     let mut engraving_decisions = Vec::new();
+    // The projected break overrides, keyed by owning region for the final
+    // deterministic ordering (canvas order need not be region-id order).
+    let mut projected_breaks: Vec<(RegionId, EngravingOverride)> = Vec::new();
     let mut cross_region = Vec::new();
     let mut seen: BTreeSet<LayoutObjectId> = BTreeSet::new();
     // The resolved spellings and decompositions the notation engraving consumes
@@ -538,6 +547,34 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
             region_provenance.stable_id,
             EngravingDecisionKind::SystemBreak,
         ));
+        // The region's authoritative user break lists project as engraving
+        // overrides (Chapter 7 §"Engraving Overrides": a break override
+        // addresses a *position* — its kind carries the break's `TimeAnchor`,
+        // its `ScoreGraph` target names the owning region). Each applied
+        // override records a paired decision with
+        // `DecisionSource::UserOverride(id)` (Chapter 7 §"Override
+        // Resolution") against the region's stable layout id.
+        if let Some(content) = region.content.staff_based() {
+            for anchor in &content.user_system_breaks {
+                let projected =
+                    EngravingOverride::projected_system_break(region_id, anchor.clone());
+                engraving_decisions.push(EngravingDecision::with_source(
+                    region_provenance.stable_id,
+                    EngravingDecisionKind::SystemBreak,
+                    DecisionSource::UserOverride(projected.id),
+                ));
+                projected_breaks.push((region_id, projected));
+            }
+            for anchor in &content.user_page_breaks {
+                let projected = EngravingOverride::projected_page_break(region_id, anchor.clone());
+                engraving_decisions.push(EngravingDecision::with_source(
+                    region_provenance.stable_id,
+                    EngravingDecisionKind::PageBreak,
+                    DecisionSource::UserOverride(projected.id),
+                ));
+                projected_breaks.push((region_id, projected));
+            }
+        }
         regions.push(LayoutRegion {
             provenance: region_provenance,
             coordinate_system: LocalCoordinateSystem::default(),
@@ -609,13 +646,38 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
         }
     }
 
+    // Deterministic override order: by (region id, kind discriminant, anchor
+    // canonical bytes) — independent of canvas order and of the break lists'
+    // internal order.
+    projected_breaks.sort_by(|(region_a, a), (region_b, b)| {
+        (region_a, a.kind.discriminant(), break_anchor_bytes(a)).cmp(&(
+            region_b,
+            b.kind.discriminant(),
+            break_anchor_bytes(b),
+        ))
+    });
+
     let source = derive_score_version(score);
     LogicalLayoutIR {
         source,
         regions,
         engraving_decisions,
-        overrides: Vec::new(),
+        overrides: projected_breaks
+            .into_iter()
+            .map(|(_, projected)| projected)
+            .collect(),
         cross_region,
+    }
+}
+
+/// The canonical bytes of a projected break override's anchor (its ordering
+/// key alongside the owning region and kind).
+fn break_anchor_bytes(projected: &EngravingOverride) -> Vec<u8> {
+    match &projected.kind {
+        OverrideKind::SystemBreak { anchor } | OverrideKind::PageBreak { anchor } => {
+            anchor.canonical_bytes()
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -790,7 +852,10 @@ fn resolve_time_anchor_inner(score: &Score, anchor: &TimeAnchor, depth: u8) -> O
     }
 }
 
-fn apply_offset(base: TimePoint, offset: &AnchorOffset) -> Option<TimePoint> {
+/// Applies an [`AnchorOffset`] to a resolved base time; `None` when the
+/// offset's clock does not match the base. Shared with the constrained stage's
+/// break-anchor resolution.
+pub(crate) fn apply_offset(base: TimePoint, offset: &AnchorOffset) -> Option<TimePoint> {
     match (base, offset) {
         (base, AnchorOffset::Zero) => Some(base),
         (TimePoint::Musical(position), AnchorOffset::Musical(duration)) => {
@@ -1290,6 +1355,73 @@ mod tests {
             to_logical(&edited).source,
             "a content edit with unchanged ids must change the score version"
         );
+    }
+
+    #[test]
+    fn user_breaks_project_as_overrides_with_paired_decisions() {
+        use crate::engraving::{
+            DecisionSource, EngravingDecisionKind, OverrideKind, OverrideOrigin, OverridePriority,
+            OverrideTarget,
+        };
+        let mut score = valid_score(5);
+        let region_id = score.canvas.regions[0].id;
+        let anchor = TimeAnchor::WallClock {
+            time: WallClockTime(42),
+        };
+        let content = score.canvas.regions[0]
+            .content
+            .staff_based_mut()
+            .expect("valid_score is staff based");
+        content.user_system_breaks.push(anchor.clone());
+        content.user_page_breaks.push(anchor.clone());
+
+        // Deterministic across two runs.
+        let ir = to_logical(&score);
+        assert_eq!(ir.overrides, to_logical(&score).overrides);
+
+        // One override per break, in the pinned projected shape: the kind
+        // carries the anchor, the ScoreGraph target names the owning region,
+        // Soft binding, Internal origin.
+        assert_eq!(ir.overrides.len(), 2);
+        for projected in &ir.overrides {
+            assert_eq!(
+                projected.target,
+                OverrideTarget::ScoreGraph(TypedObjectId::Region(region_id))
+            );
+            assert_eq!(projected.priority, OverridePriority::Soft);
+            assert_eq!(projected.origin, OverrideOrigin::Internal);
+        }
+        assert!(ir.overrides.iter().any(|o| matches!(
+            &o.kind,
+            OverrideKind::SystemBreak { anchor: got } if *got == anchor
+        )));
+        assert!(ir.overrides.iter().any(|o| matches!(
+            &o.kind,
+            OverrideKind::PageBreak { anchor: got } if *got == anchor
+        )));
+        assert_ne!(ir.overrides[0].id, ir.overrides[1].id);
+
+        // Each applied override records a paired decision sourced to it
+        // (Chapter 7 §"Override Resolution").
+        for projected in &ir.overrides {
+            let kind = match &projected.kind {
+                OverrideKind::SystemBreak { .. } => EngravingDecisionKind::SystemBreak,
+                OverrideKind::PageBreak { .. } => EngravingDecisionKind::PageBreak,
+                other => panic!("unexpected projected override kind {other:?}"),
+            };
+            assert!(
+                ir.engraving_decisions.iter().any(|decision| decision.source
+                    == DecisionSource::UserOverride(projected.id)
+                    && decision.kind == kind),
+                "no paired UserOverride decision for {projected:?}"
+            );
+        }
+        // The automatic per-region system-break decision is still present.
+        assert!(ir
+            .engraving_decisions
+            .iter()
+            .any(|decision| decision.source == DecisionSource::Automatic
+                && decision.kind == EngravingDecisionKind::SystemBreak));
     }
 
     #[test]

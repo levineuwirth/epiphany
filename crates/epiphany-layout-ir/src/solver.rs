@@ -9,7 +9,9 @@
 //! a [`SolveReport`] with its full diagnostic surface (unsatisfied constraints,
 //! warnings, a [`QualityMetricVector`], budget used, state) — and a
 //! [`StubSolver`] that, per the QUICKSTART, "returns `SolveStatus::Solved` with
-//! the input geometry verbatim."
+//! the input geometry verbatim" — for a constraint-free problem; with
+//! constraints declared it stays a renderable passthrough but claims no
+//! satisfaction (see [`StubSolver`]).
 //!
 //! **Quality-metric *computation* is deliberately not implemented** (QUICKSTART:
 //! "only the interface — don't implement quality metrics"): the
@@ -273,10 +275,28 @@ pub enum InvalidationScope {
 pub struct SpringSlotId(pub u128);
 
 /// A constraint identifier referenced by [`SolveReport::unsatisfied_constraints`]
-/// (Chapter 9: `ConstraintId`). The stub never reports any because it rejects
-/// explicit constraints it cannot evaluate.
+/// (Chapter 9: `ConstraintId`). The stub never reports any: it evaluates no
+/// constraints, so it neither claims one satisfied nor names one unsatisfied.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct ConstraintId(pub u128);
+
+/// The strength a constraint binds the solver with (Chapter 9 §"Strength
+/// Levels": `ConstraintStrength`). Constraints do not carry this in the IR —
+/// the spec's [`crate::LayoutConstraint`] enum has no strength field — so it is
+/// attached by rule via [`crate::LayoutConstraint::strength`].
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum ConstraintStrength {
+    /// Hard constraint. The solver MUST satisfy it or return
+    /// [`SolveStatus::Unsatisfiable`], and MUST NOT treat it as if it were
+    /// `Preferred` for any reason, including quality optimization (Chapter 9
+    /// §"Strength Levels").
+    Required,
+    /// Soft constraint with an associated weight. The solver minimizes the
+    /// weighted violation when optimizing; an unhonoured preference is a
+    /// warning ([`SolverWarningKind::LargeSoftConstraintViolation`]), never an
+    /// `Unsatisfiable`.
+    Preferred { weight: f64 },
+}
 
 /// A declared invalidation (Chapter 9: `InvalidationSet`) over the invalidated
 /// slots, bands, constraints, and glyphs.
@@ -384,6 +404,15 @@ pub trait ConstraintSolver: Send + Sync {
 /// (Chapter 7 §7.3.2). A glyph whose metrics are not bundled, or a catalog hash
 /// that does not match its glyphs, is a well-formedness failure reported as
 /// [`SolveStatus::InternalError`] (never a panic).
+///
+/// **Declared constraints are not evaluated** ([`SolverTier::Stub`]), and the
+/// report is honest about it in both directions: the solve stays renderable
+/// (geometry passes through; unevaluated constraints are not a defect in the
+/// *input*), but `satisfied_hard_constraints` is `false` and a warning names
+/// the gap — the stub never claims satisfaction it did not check. Chapter 9
+/// has no status for "renderable, constraints unevaluated", so the closest
+/// non-claiming renderable status, [`SolveStatus::SolvedWithWarnings`], is
+/// used (see DECISIONS.md).
 pub struct StubSolver;
 
 impl StubSolver {
@@ -398,10 +427,31 @@ impl StubSolver {
             .collect();
         let metrics_available = all_available(names.iter().copied());
         let catalog_valid = metrics_available && input.catalog == BravuraCatalog.identity(&names);
+        let well_formed = structural_valid && catalog_valid;
         // This interface-only solver can preserve already-resolved geometry but
         // does not evaluate explicit constraints. It must not claim those are
         // satisfied merely because the input is structurally well formed.
-        let well_formed = structural_valid && catalog_valid && input.constraints.is_empty();
+        let unevaluated = input.constraints.len();
+
+        let status = if !well_formed {
+            SolveStatus::InternalError
+        } else if unevaluated > 0 {
+            SolveStatus::SolvedWithWarnings
+        } else {
+            SolveStatus::Solved
+        };
+        let warnings = if well_formed && unevaluated > 0 {
+            vec![SolverWarning {
+                kind: SolverWarningKind::UnusualLayoutDecision(format!(
+                    "the interface-only stub solver evaluated none of the {unevaluated} \
+                     declared constraint(s); satisfaction is not claimed"
+                )),
+                affected_objects: Vec::new(),
+                message: "declared constraints were not evaluated".to_owned(),
+            }]
+        } else {
+            Vec::new()
+        };
 
         let glyphs: Vec<ResolvedGlyph> = if structural_valid {
             input
@@ -452,12 +502,10 @@ impl StubSolver {
             .collect();
 
         SolveReport {
-            status: if well_formed {
-                SolveStatus::Solved
-            } else {
-                SolveStatus::InternalError
-            },
-            satisfied_hard_constraints: well_formed,
+            status,
+            // Honest in both directions: false when the input is malformed *and*
+            // when constraints were declared but not evaluated.
+            satisfied_hard_constraints: well_formed && unevaluated == 0,
             layout: ResolvedLayoutIR {
                 source: input.source,
                 pages,
@@ -467,7 +515,7 @@ impl StubSolver {
                 catalog: input.catalog.clone(),
             },
             unsatisfied_constraints: Vec::new(),
-            warnings: Vec::new(),
+            warnings,
             metric_vector: QualityMetricVector::unmeasured(),
             // The stub does no iterative work; its deterministic budget use is zero.
             budget_used: SolverBudgetUsed::default(),
@@ -613,14 +661,14 @@ mod tests {
             ))
         );
 
-        // A well-formed constraint reference validates — even though the stub
-        // solver still refuses to *evaluate* it (it cannot claim it satisfied).
+        // A well-formed constraint reference validates — and the stub solver
+        // still does not *evaluate* it: the solve stays renderable, but it does
+        // not claim the constraint satisfied.
         input.constraints = vec![LayoutConstraint::NoCollision { a: real, b: real }];
         assert!(input.validate().is_ok());
-        assert_eq!(
-            StubSolver.solve(&input, &SolverConfig::default()).status,
-            SolveStatus::InternalError
-        );
+        let report = StubSolver.solve(&input, &SolverConfig::default());
+        assert_eq!(report.status, SolveStatus::SolvedWithWarnings);
+        assert!(!report.satisfied_hard_constraints);
     }
 
     #[test]
@@ -741,8 +789,15 @@ mod tests {
             .constraints
             .push(crate::LayoutConstraint::NoCollision { a: glyph, b: glyph });
         let report = StubSolver.solve(&input, &SolverConfig::default());
-        assert_eq!(report.status, SolveStatus::InternalError);
+        // Unevaluated constraints are not a defect in the input, so the solve is
+        // renderable — but satisfaction is not claimed, and a warning names the gap.
+        assert_eq!(report.status, SolveStatus::SolvedWithWarnings);
+        assert!(report.status.is_renderable());
         assert!(!report.satisfied_hard_constraints);
+        assert_eq!(report.warnings.len(), 1);
+        assert!(report.unsatisfied_constraints.is_empty());
+        // The geometry still passes through verbatim.
+        assert_eq!(report.layout.glyphs[0].position, input.glyphs[0].baseline);
     }
 
     #[test]

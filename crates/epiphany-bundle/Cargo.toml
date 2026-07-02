@@ -9,6 +9,11 @@ description = "The Epiphany .musc bundle file format (spec Chapter 8): fixed hea
 
 [dependencies]
 epiphany-determinism.workspace = true
+# Decode-only in production code: the read path MUST support zstd-compressed
+# chunks (spec Chapter 8 §"Compression"); the writer still emits every chunk
+# uncompressed (the documented Phase-3 deferral). See DECISIONS.md for why the
+# libzstd binding was chosen over a pure-Rust decoder.
+zstd.workspace = true
 
 [[example]]
 name = "fuzz_crash"

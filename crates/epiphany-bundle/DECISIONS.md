@@ -148,6 +148,123 @@ items batched."*).
 - **Generation exhaustion** returns `BundleError::GenerationExhausted` rather
   than overflow-panicking at `u64::MAX`.
 
+- **Zstd chunk *reading* is supported; the write path stays uncompressed
+  (2026-07-01 spec-audit fix).** A spec audit flagged the read paths as the
+  file-format chapter's only exercised-path MUST violation: Chapter 8
+  §"Compression" requires conforming implementations to support *reading*
+  chunks "compressed with Zstandard at any level zstd defines", but
+  `read_and_verify_chunk`/`read_and_verify_blob` returned
+  `UnsupportedCompression` for anything but `None`. They now decompress
+  `Zstd` payloads (`Reserved` remains `UnsupportedCompression`; the writer
+  still emits only `None` — the QUICKSTART's compression deferral is about
+  the *write* path, which the spec leaves as MAY). Decisions taken:
+  - **Dependency: the `zstd` crate (libzstd bindings), not pure-Rust
+    `ruzstd`.** (1) `zstd::bulk::decompress_to_buffer` writes into a
+    caller-allocated buffer sized *exactly* from the declared
+    `uncompressed_length` — which is validated against the reader's
+    resource limits *before* allocation — so a hostile stream has a hard
+    output bound, and libzstd's decoding window is capped internally;
+    (2) libzstd is the reference implementation, battle-tested against
+    malformed frames, matching this crate's hostile-input posture;
+    (3) the workspace already requires a C toolchain (`blake3`'s `cc`
+    build), so pure Rust bought nothing here; (4) tests need an *encoder*
+    to produce fixtures and `ruzstd` is decode-only, so picking it would
+    have pulled `zstd` in anyway as a dev-dependency — two zstd
+    implementations in one build graph. The read-only mandate is enforced
+    at the call sites instead: production code never calls the encoder.
+  - **Length rule (spec: "reject chunks whose decompressed size
+    disagrees").** The output buffer is sized exactly by the declared
+    length: a stream that ends short yields a precise
+    `ChunkLengthMismatch`; one that would exceed the declaration hits
+    libzstd's destination-full error; malformed, truncated, and
+    trailing-garbage streams all fail — the latter three as the new typed
+    `BundleError::Decompression`. No path panics or allocates past the
+    declaration. Hashing (including the `id == hash` redundancy) is
+    unchanged and runs strictly *after* decompression, over the
+    uncompressed bytes — compression stays outside content identity.
+  - **The manifest stays mandatorily uncompressed** (§"Manifest
+    Encoding"). The superblock deliberately has no compression field, so
+    stored manifest bytes are the payload; an image whose manifest bytes
+    are compressed anyway fails to open (hash mismatch →
+    `NoValidSuperblock`, or, with a colluding hash over the compressed
+    bytes, a manifest decode failure). A `ChunkKind::Manifest` *chunk
+    reference* declaring compression is additionally refused outright with
+    the new typed `BundleError::CompressedManifest`, before any bytes are
+    read.
+  - `CompressionAlgorithm`'s golden-locked two-byte encoding
+    (`req:format:chunkkind-discriminants`) is untouched; the ratified
+    discriminants already modeled `Zstd { level } = 1`.
+
+- **The operation index is implemented with a provisional, golden-locked
+  payload (Push-3).** Chapter 8 §"The Operation Index" defines the semantics —
+  an *optional, non-canonical* accelerator mapping each `OperationId` to the
+  `ChunkRef` of its enclosing block plus an offset within the block, O(log n)
+  lookup, absent → rebuild by scanning, present-but-corrupt-or-stale → MUST
+  reject and rebuild — but defers the byte format to the Binary Format
+  companion (P11-D2). Until that lands, `OperationIndex` encodes under this
+  crate's fixed codec conventions and the exact bytes are **golden-locked**
+  (`opindex::tests::payload_encoding_is_golden`), so a layout change breaks
+  deliberately:
+
+  ```text
+  u32 block_count
+    block_count × ChunkRef            — strictly ascending canonical order
+                                        (kind discriminant, hash, offset)
+  u32 entry_count
+    entry_count × { id: [u8;16], block: u32 LE, offset: u32 LE }
+                                      — strictly ascending by id bytes
+  ```
+
+  `block` is an ordinal into the block vector; `offset` is the byte offset of
+  the envelope's **first content byte** within the block's *decoded*
+  (uncompressed) payload — exactly the coordinate `envelope_offsets` reports
+  (its `u32` length prefix sits at `offset - 4`). Decisions taken:
+  - **Layering: raw id bytes in the bundle, the peek in ops.** The bundle
+    stays semantics-free — entries key on the opaque 16 canonical id bytes.
+    That a canonical envelope *leads* with those bytes is an `epiphany-ops`
+    invariant, vouched for by ops' `peek_operation_id` (tested against
+    `encode_canonical`); builders pair it with the bundle's
+    `envelope_offsets` (which shares `decode_block`'s exact validation) to
+    produce index entries. The same "ops computes, bundle carries" split as
+    the block-summary metadata.
+  - **Reject, never normalize.** `OperationIndex::decode` rejects unsorted or
+    duplicated blocks or ids, a non-`OperationEnvelopeBlock` reference, an
+    out-of-range ordinal, and trailing bytes — the manifest decoder's
+    discipline, so accepted bytes are byte-stable. `build` rejects duplicate
+    ids (an `OperationId` occupies exactly one slot in one block) and
+    duplicate blocks at construction.
+  - **Staleness is coverage equality over full `ChunkRef`s.**
+    `OperationIndex::covers` is true iff the index's block set equals the
+    manifest's `operation_roots` set as *full references*, not just chunk
+    ids: `locate` hands out the index's stored refs for reading, so a ref
+    agreeing in hash but differing in any locator field (offset, lengths,
+    compression) is not the manifest's block and must count as stale rather
+    than steering reads elsewhere. `false` = stale → reject and rebuild.
+  - **A defective index is never bundle corruption** (Chapter 8 §"Canonical
+    and Non-Canonical Manifest Roots"). `Bundle::usable_operation_index`
+    packages the whole discipline: `Some` only for a declared, readable,
+    hash-intact, well-formed index covering the current operation roots;
+    `None` on *any* defect, meaning "rebuild by scanning all blocks".
+    `Bundle::read_operation_index` exposes the underlying failure for
+    diagnostics only. The testkit proves the boundary: a garbage or
+    byte-flipped index chunk leaves the bundle opening cleanly with all
+    canonical reads intact
+    (`bundle_harness::assert_corrupt_operation_index_is_not_bundle_corruption`).
+  - **The commit-time SHOULD is a builder, not a policy.** The spec says
+    writers SHOULD rebuild/update the index at commit when the operation set
+    has grown significantly. v0 deliberately ships the *mechanism* —
+    `OperationIndex::build` from per-block `(id bytes, offset)` lists,
+    `StagedChunk::operation_index`, and the testkit's commit-time
+    rebuild-and-wire demonstration
+    (`bundle_harness::assert_operation_index_end_to_end` /
+    `scan_rebuild_operation_index`) — and no automatic "grown significantly"
+    heuristic; when/how often to refresh is editor policy layered above this
+    crate.
+  - **The write path stays uncompressed.** The spec's *MAY* compress
+    operation indexes is honored on the read side (an index chunk reads
+    through the same zstd-capable `read_chunk` path as any chunk); writing
+    compressed indexes is deferred with the rest of write-path compression.
+
 ## Known v0 limitations (deliberately deferred, not defects)
 
 These are bounded by v0 scope (QUICKSTART "Don't do these" / "decisions you'll

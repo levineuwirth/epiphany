@@ -82,8 +82,10 @@ pub mod time_axis;
 pub mod vertical_band;
 
 pub use barrier::{
-    AlwaysLiveOracle, BarrierCondition, BarrierConditionRegistryId, BarrierScope,
-    BarrierScopeRegistryId, EditBarrier, EditContext, EditOracle, ExtensionRef, ObjectKind,
+    decode_affected_object_kinds, decode_edit_barriers, encode_affected_object_kinds,
+    encode_edit_barriers, AlwaysLiveOracle, BarrierCondition, BarrierConditionRegistryId,
+    BarrierDecodeError, BarrierScope, BarrierScopeRegistryId, EditBarrier, EditContext, EditOracle,
+    ExtensionRef, ObjectKind, MAX_CONDITION_DEPTH,
 };
 pub use cache::{
     ConstrainedRegionCache, DependencyIndex, FineLayoutCache, LayoutCache, LogicalRegionCache,
@@ -134,11 +136,11 @@ pub use resolved::{
 };
 pub use roundtrip::{laid_out_object_ids, round_trip, round_trip_with, RoundTripReport};
 pub use solver::{
-    ConstraintId, ConstraintSolver, ExtensionMetric, ExtensionMetricId, ExtensionWarningId,
-    InvalidationScope, InvalidationSet, NormalizedMetric, QualityMetricKind, QualityMetricVector,
-    SolveReport, SolveStatus, SolverBudget, SolverBudgetUsed, SolverConfig, SolverProfile,
-    SolverState, SolverTier, SolverVersion, SolverWarning, SolverWarningKind, SpringSlotId,
-    StubSolver, TieBreakingWeights,
+    ConstraintId, ConstraintSolver, ConstraintStrength, ExtensionMetric, ExtensionMetricId,
+    ExtensionWarningId, InvalidationScope, InvalidationSet, NormalizedMetric, QualityMetricKind,
+    QualityMetricVector, SolveReport, SolveStatus, SolverBudget, SolverBudgetUsed, SolverConfig,
+    SolverProfile, SolverState, SolverTier, SolverVersion, SolverWarning, SolverWarningKind,
+    SpringSlotId, StubSolver, TieBreakingWeights,
 };
 pub use spatial::{
     BoundingBox, Margins, Point, Rect, ScaleContext, Size2D, StaffSpace, Transform2D,

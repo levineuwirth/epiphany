@@ -83,9 +83,23 @@ pub enum BundleError {
     /// an untrusted length in a (possibly sparse) file cannot drive an OOM.
     ResourceLimitExceeded { length: u64, limit: u64 },
 
-    /// A compressed chunk was encountered. v0 writes only uncompressed chunks
-    /// and does not implement decompression (QUICKSTART: zstd is deferred).
+    /// A chunk declared a `Reserved` compression algorithm. This format version
+    /// defines only `None` and `Zstd`; further algorithms require a new format
+    /// major version (Chapter 8 §"Compression").
     UnsupportedCompression,
+
+    /// A zstd-compressed chunk's stream failed to decompress: malformed,
+    /// truncated, or producing more bytes than the declared
+    /// `uncompressed_length` (Chapter 8 §"Compression": decompression MUST
+    /// verify the output length against the declared length). Surfaced as
+    /// typed corruption — never a panic or an unbounded allocation.
+    Decompression(std::io::Error),
+
+    /// A manifest chunk reference declared compression. The manifest chunk
+    /// MUST be stored uncompressed in this format version (Chapter 8
+    /// §"Manifest Encoding"): it is the bootstrap entry into the chunk graph,
+    /// decodable from header + superblock information alone.
+    CompressedManifest,
 
     /// A chunk declared a schema major version this reader cannot parse
     /// (Chapter 8 §"Schema Versioning").
@@ -154,9 +168,13 @@ impl core::fmt::Display for BundleError {
                     "declared length {length} exceeds the reader limit {limit}"
                 )
             }
-            BundleError::UnsupportedCompression => {
-                f.write_str("compressed chunk encountered; v0 supports only uncompressed chunks")
-            }
+            BundleError::UnsupportedCompression => f.write_str(
+                "reserved compression algorithm; this format version defines None and Zstd",
+            ),
+            BundleError::Decompression(e) => write!(f, "zstd decompression failed: {e}"),
+            BundleError::CompressedManifest => f.write_str(
+                "manifest chunk is compressed; the manifest MUST be stored uncompressed in this format version",
+            ),
             BundleError::UnsupportedSchemaVersion { version } => {
                 write!(
                     f,
@@ -177,6 +195,7 @@ impl std::error::Error for BundleError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             BundleError::Io(e) => Some(e),
+            BundleError::Decompression(e) => Some(e),
             BundleError::Decode(e) => Some(e),
             _ => None,
         }

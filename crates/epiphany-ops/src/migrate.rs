@@ -95,6 +95,8 @@ fn project_payload(p: &OperationPayload) -> V0OperationPayload {
         OperationPayload::Primitive(kind) => V0OperationPayload::Primitive(project_kind(kind)),
         OperationPayload::ResolveConflict(rc) => V0OperationPayload::ResolveConflict(*rc),
         OperationPayload::UndoTransaction(u) => V0OperationPayload::UndoTransaction(*u),
+        // v1-native (no v0 predecessor): projected verbatim, like Group 1–4.
+        OperationPayload::ResolveEquivocation(re) => V0OperationPayload::ResolveEquivocation(*re),
     }
 }
 
@@ -231,6 +233,9 @@ fn migrate_payload(
         }
         V0OperationPayload::ResolveConflict(rc) => OperationPayload::ResolveConflict(*rc),
         V0OperationPayload::UndoTransaction(u) => OperationPayload::UndoTransaction(*u),
+        // v1-native: round-trips by identity (deterministic and trivially
+        // equivalence-preserving; no context needed).
+        V0OperationPayload::ResolveEquivocation(re) => OperationPayload::ResolveEquivocation(*re),
     })
 }
 

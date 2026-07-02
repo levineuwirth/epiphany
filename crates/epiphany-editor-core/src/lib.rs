@@ -44,8 +44,12 @@
 //! GUI plugs in the real `Engraver`, the stub, or any conformant solver. It
 //! produces a [`RenderIR`]; turning that into pixels is the renderer's job.
 
+mod barriers;
+
+pub use barriers::ActiveExtension;
+
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 
 use epiphany_core::prepass::{derive_annotations, DerivedAnnotations, PrePassProfile};
@@ -55,20 +59,20 @@ use epiphany_core::{
     PitchSpaceId, PitchSpacePosition, PitchSpelling, PitchedEvent, RationalTime, RegionId,
     RegionTimeModel, ReplicaId, ScalePosition, Score, SpellingDirective, SpellingNominal,
     SpellingScope, SpellingSourceKind, StaffId, StaffInstance, StaffInstanceId, StemConfiguration,
-    TimeSignature, TimeSignatureDisplay, TransactionId, TuningReference, TypedObjectId, VoiceId,
-    WallClockTime,
+    TimeSignature, TimeSignatureDisplay, TransactionId, TuningReference, TupletId, TypedObjectId,
+    VoiceId, WallClockTime,
 };
 use epiphany_layout_ir::{
     active_clef, manifestation_layout_id, staff_step_pitch, to_constrained, to_logical, to_render,
-    ConstraintSolver, HitTestMap, LayoutContent, LayoutObjectId, LogicalLayoutIR, Point, RenderIR,
-    ResolvedLayoutIR, SolverConfig, TimePoint,
+    ConstraintSolver, ExtensionRef, HitTestMap, LayoutContent, LayoutObjectId, LogicalLayoutIR,
+    Point, RenderIR, ResolvedLayoutIR, SolverConfig, TimePoint,
 };
 use epiphany_ops::{
-    AcceptOutcome, AuthorId, CausalContext, DeleteEventOp, DeleteIdentifiedPitchOp,
-    HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp, ModifyEventOp,
-    ModifyIdentifiedPitchOp, OperationEnvelope, OperationKind, OperationPayload, OperationSet,
-    OperationStamp, RespellPitchOp, TransactionCategory, TransactionDescriptor, TransposeOp,
-    TupletCompensation,
+    advisory_violations, AcceptOutcome, AuthorId, CausalContext, DeleteEventOp,
+    DeleteIdentifiedPitchOp, HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp,
+    ModifyEventOp, ModifyIdentifiedPitchOp, OperationEnvelope, OperationKind, OperationKindTag,
+    OperationPayload, OperationSet, OperationStamp, RespellPitchOp, TransactionCategory,
+    TransactionDescriptor, TransposeOp, TupletCompensation,
 };
 
 /// The current selection: the score-graph object to act on, plus the stable layout
@@ -175,11 +179,14 @@ pub enum EditorError {
     /// region is non-metric or has too few rendered events to place a position, or the
     /// staff has no voice / no diatonic clef. Nothing is inserted.
     NoInsertTarget,
-    /// A click-to-insert's make-room would have to trim or delete a **tuplet member**,
-    /// whose duration is governed by the tuplet's ratio. Compensating a tuplet on a
-    /// pencil overwrite is a later refinement, so the insert is refused rather than
-    /// leaving the tuplet inconsistent. Also raised by a duration edit of a tuplet
-    /// member itself.
+    /// A make-room overwrite could not treat an overlapped tuplet atomically. Tuplets are
+    /// atomic: a pencil overwrite touching any member of a *flat* tuplet cascades the whole
+    /// tuplet away (every member tombstoned, structure removed), freeing its span for the
+    /// new note. This error is raised only when that cascade is not available — the
+    /// overlapped member belongs to a **nested** tuplet (parent or child), whose ratio
+    /// arithmetic a flat cascade would misstate. Also raised by a *resize*
+    /// ([`set_selection_duration`](EditorSession::set_selection_duration)) of a tuplet
+    /// member itself: in-place rescaling of a member is a later refinement.
     OverlapsTuplet,
     /// A duration edit was given a non-positive duration, which is not a valid written
     /// note value. Nothing changes.
@@ -190,6 +197,29 @@ pub enum EditorError {
     /// later refinement, so the edit is refused rather than left inconsistent. (A delete
     /// is fine; the tombstoned target's decomposition is no longer checked.)
     DecomposedEvent,
+    /// The operation failed an advisory precondition against the current materialized
+    /// score (Chapter 6 §"Validation Modes"). The session is **authoring mode**: all
+    /// preconditions are enforced, and advisory failures refuse the edit *before an
+    /// envelope is minted* — nothing enters the op log, and a peer never sees the
+    /// operation. (Replay/remote reduction enforces only invariant preconditions, so
+    /// the same envelope, had it been minted elsewhere, would reduce cleanly.)
+    AdvisoryViolation {
+        /// Every advisory precondition the operation failed.
+        violations: Vec<epiphany_ops::AdvisoryViolation>,
+    },
+    /// The edit matches an active edit barrier (Chapter 8 §"Behavior Under
+    /// Unknown Extensions": *edits MUST be checked against every active edit
+    /// barrier; a match is prohibited unless the user explicitly performs an
+    /// unsafe edit*). Nothing is minted and nothing changes. Crossing the
+    /// barrier deliberately is [`EditorSession::apply_unsafe`] /
+    /// [`EditorSession::apply_transaction_unsafe`], which acknowledges the loss
+    /// of the named extension's data.
+    BarrierProhibited {
+        /// The extension whose edit barrier prohibits the edit.
+        extension: ExtensionRef,
+        /// The prohibited operation class.
+        operation: OperationKindTag,
+    },
 }
 
 impl fmt::Display for EditorError {
@@ -219,11 +249,29 @@ impl fmt::Display for EditorError {
                 f.write_str("the click resolved to no insert target (off-staff, non-metric, or no voice)")
             }
             EditorError::OverlapsTuplet => {
-                f.write_str("the edit would have to trim or delete a tuplet member")
+                f.write_str("the edit would have to alter a nested tuplet, or resize a tuplet member")
             }
             EditorError::InvalidDuration => f.write_str("a non-positive duration is not a note value"),
             EditorError::DecomposedEvent => {
                 f.write_str("the edit would change the duration of an event with a decomposition")
+            }
+            EditorError::AdvisoryViolation { violations } => {
+                write!(
+                    f,
+                    "the edit failed {} advisory precondition(s) (authoring mode): {violations:?}",
+                    violations.len()
+                )
+            }
+            EditorError::BarrierProhibited {
+                extension,
+                operation,
+            } => {
+                write!(
+                    f,
+                    "the edit ({operation:?}) is prohibited by an edit barrier declared by \
+                     extension {extension:?}; only an explicit unsafe edit may cross it \
+                     (tombstoning that extension's data)"
+                )
             }
         }
     }
@@ -282,6 +330,16 @@ pub struct EditorSession {
     // active prefix. (`applied` is always a — possibly non-contiguous, after a fork —
     // subsequence of `authored`.)
     authored: Vec<OperationEnvelope>,
+    // The active extension declarations whose edit barriers gate edits (Chapter 8
+    // §"Behavior Under Unknown Extensions"). Injected via `set_active_extensions`
+    // (the session opens on a bare `Score`, so it never reads a manifest itself);
+    // empty means no barriers, i.e. every edit passes the gate.
+    active_extensions: Vec<ActiveExtension>,
+    // Extensions crossed by an unsafe edit. Per the spec, an unsafe edit MUST
+    // tombstone the crossed extension's chunks; the session has no bundle
+    // plumbing, so it records the obligation here (see
+    // `extensions_requiring_tombstone`) and deactivates the extension's barriers.
+    pending_extension_tombstones: BTreeSet<ExtensionRef>,
 }
 
 /// One materialization of the op log: the reduced score and everything derived from it
@@ -316,6 +374,8 @@ impl EditorSession {
             undo_units: Vec::new(),
             redo_stack: Vec::new(),
             authored: Vec::new(),
+            active_extensions: Vec::new(),
+            pending_extension_tombstones: BTreeSet::new(),
         })
     }
 
@@ -387,6 +447,74 @@ impl EditorSession {
     /// [`Self::applied_operations`]).
     pub fn last_applied(&self) -> Option<&OperationEnvelope> {
         self.applied.last()
+    }
+
+    /// Installs the active extension set whose edit barriers gate subsequent
+    /// edits (Chapter 8 §"Behavior Under Unknown Extensions": edits MUST be
+    /// checked against every active edit barrier). Replaces any previous set.
+    ///
+    /// The session opens on a bare [`Score`], not a bundle, so it never reads a
+    /// manifest itself: whoever opened the bundle decodes each declaration's
+    /// `edit_barriers` blob ([`epiphany_layout_ir::decode_edit_barriers`]) and
+    /// injects the result here. A session with no active extensions (the
+    /// default) has no barriers, and every edit passes the gate.
+    pub fn set_active_extensions(&mut self, extensions: Vec<ActiveExtension>) {
+        self.active_extensions = extensions;
+    }
+
+    /// The currently active extension declarations (barriers included). An
+    /// extension crossed by an unsafe edit is removed from this set — its data
+    /// is bound for tombstoning, so its barriers no longer bind.
+    pub fn active_extensions(&self) -> &[ActiveExtension] {
+        &self.active_extensions
+    }
+
+    /// Extensions crossed by an unsafe edit in this session, whose chunks MUST
+    /// be tombstoned per the spec (§"Behavior Under Unknown Extensions": *the
+    /// unsafe-edit operation MUST tombstone the relevant extension chunks (so
+    /// they are no longer preserved) rather than silently breaking extension
+    /// invariants*). The session has no bundle plumbing of its own, so it
+    /// records the obligation: the next bundle write reads this set and drops
+    /// the named extensions' declarations (and with them their
+    /// `preserved_chunk_roots`) from the manifest it commits.
+    pub fn extensions_requiring_tombstone(&self) -> &BTreeSet<ExtensionRef> {
+        &self.pending_extension_tombstones
+    }
+
+    /// The first active-barrier match for `kind`, as the refusal `apply` /
+    /// `apply_transaction` surface (spec: a matching edit *is prohibited*).
+    fn barrier_refusal(&self, kind: &OperationKind) -> Option<EditorError> {
+        self.crossed_extensions(kind)
+            .into_iter()
+            .next()
+            .map(|extension| EditorError::BarrierProhibited {
+                extension,
+                operation: kind.tag(),
+            })
+    }
+
+    /// Every active extension with a barrier prohibiting `kind` against the
+    /// current materialized score — the extensions an unsafe edit crosses.
+    fn crossed_extensions(&self, kind: &OperationKind) -> Vec<ExtensionRef> {
+        if self.active_extensions.is_empty() {
+            return Vec::new();
+        }
+        let subjects = barriers::subjects_of(kind, &self.score);
+        barriers::prohibiting_extensions(
+            &self.active_extensions,
+            kind.tag(),
+            &subjects,
+            &barriers::ScoreOracle(&self.score),
+        )
+    }
+
+    /// Records that an unsafe edit crossed `extension`: its chunks are now
+    /// bound for tombstoning ([`Self::extensions_requiring_tombstone`]), and —
+    /// since its data will no longer be preserved — its barriers no longer
+    /// bind, so the declaration leaves the active set.
+    fn record_unsafe_crossing(&mut self, extension: ExtensionRef) {
+        self.pending_extension_tombstones.insert(extension);
+        self.active_extensions.retain(|e| e.extension != extension);
     }
 
     /// The staff and diatonic pitch at a world `point` — the **vertical half** of a
@@ -797,9 +925,60 @@ impl EditorSession {
     /// Applies a single primitive operation: mints an envelope and commits it. A
     /// [`OperationKind::DeclareTransaction`] is not a primitive mutation — the session
     /// declares transactions via [`Self::apply_transaction`] — so it is refused here.
+    ///
+    /// Two pre-mint gates run, in order (both refuse with the op log untouched):
+    ///
+    /// 1. **Edit barriers** (Chapter 8 §"Behavior Under Unknown Extensions"):
+    ///    the edit is checked against every active barrier; a match is refused
+    ///    ([`EditorError::BarrierProhibited`]). The barrier gate runs *first*
+    ///    because its prohibition is the spec's normative MUST and its refusal
+    ///    names the unsafe-edit escape ([`Self::apply_unsafe`]); the advisory
+    ///    check is the author's local policy.
+    /// 2. **Advisory preconditions** (Chapter 6 §"Validation Modes"): the
+    ///    session is authoring mode, so advisory preconditions are checked
+    ///    against the current materialized score, and any violation refuses the
+    ///    edit ([`EditorError::AdvisoryViolation`]). Reduction itself stays pure
+    ///    replay mode — it never consults advisory checks.
     pub fn apply(&mut self, kind: OperationKind) -> Result<EditOutcome, EditorError> {
         if matches!(kind, OperationKind::DeclareTransaction(_)) {
             return Err(EditorError::DeclareTransactionNotAllowed);
+        }
+        if let Some(refusal) = self.barrier_refusal(&kind) {
+            return Err(refusal);
+        }
+        self.apply_past_barriers(kind)
+    }
+
+    /// Applies a single primitive operation as an **unsafe edit** (Chapter 8
+    /// §"Behavior Under Unknown Extensions"): the explicit user action that
+    /// crosses matching edit barriers, acknowledging the loss of the crossed
+    /// extensions' data. Everything else about [`Self::apply`] holds — the
+    /// advisory gate still runs, and a failed edit changes nothing (including
+    /// the tombstone record: an edit that did not land loses no data).
+    ///
+    /// On success, every crossed extension is recorded in
+    /// [`Self::extensions_requiring_tombstone`] (the spec's MUST: its chunks
+    /// are tombstoned rather than silently invalidated) and removed from the
+    /// active set. An unsafe apply that crosses no barrier is an ordinary
+    /// apply.
+    pub fn apply_unsafe(&mut self, kind: OperationKind) -> Result<EditOutcome, EditorError> {
+        if matches!(kind, OperationKind::DeclareTransaction(_)) {
+            return Err(EditorError::DeclareTransactionNotAllowed);
+        }
+        let crossed = self.crossed_extensions(&kind);
+        let outcome = self.apply_past_barriers(kind)?;
+        for extension in crossed {
+            self.record_unsafe_crossing(extension);
+        }
+        Ok(outcome)
+    }
+
+    /// The shared tail of [`Self::apply`] / [`Self::apply_unsafe`]: everything
+    /// past the barrier gate (advisory gate, mint, commit).
+    fn apply_past_barriers(&mut self, kind: OperationKind) -> Result<EditOutcome, EditorError> {
+        let violations = advisory_violations(&kind, &self.score);
+        if !violations.is_empty() {
+            return Err(EditorError::AdvisoryViolation { violations });
         }
         // The next id is one past every id ever minted (monotonic across undo), and the
         // context covers the currently-applied ops.
@@ -828,6 +1007,47 @@ impl EditorSession {
         category: Option<TransactionCategory>,
         kinds: Vec<OperationKind>,
     ) -> Result<EditOutcome, EditorError> {
+        Self::check_transaction_shape(&kinds)?;
+        // The barrier gate (see `apply` for the gate ordering): the descriptor
+        // the session will mint and every member are each checked against every
+        // active barrier; any match refuses the whole transaction before
+        // anything is minted.
+        if let Some(refusal) = self.transaction_barrier_refusal(&kinds) {
+            return Err(refusal);
+        }
+        self.apply_transaction_past_barriers(label, category, kinds)
+    }
+
+    /// [`Self::apply_transaction`] as an **unsafe edit** — the transaction
+    /// sibling of [`Self::apply_unsafe`]: matching edit barriers are crossed
+    /// rather than refused, and on success every crossed extension is recorded
+    /// for tombstoning and deactivated. The structural checks and the advisory
+    /// gate still apply, and a transaction that fails to commit records
+    /// nothing.
+    pub fn apply_transaction_unsafe(
+        &mut self,
+        label: &str,
+        category: Option<TransactionCategory>,
+        kinds: Vec<OperationKind>,
+    ) -> Result<EditOutcome, EditorError> {
+        Self::check_transaction_shape(&kinds)?;
+        let mut crossed = self.crossed_extensions(&Self::descriptor_probe());
+        for kind in &kinds {
+            for extension in self.crossed_extensions(kind) {
+                if !crossed.contains(&extension) {
+                    crossed.push(extension);
+                }
+            }
+        }
+        let outcome = self.apply_transaction_past_barriers(label, category, kinds)?;
+        for extension in crossed {
+            self.record_unsafe_crossing(extension);
+        }
+        Ok(outcome)
+    }
+
+    /// The structural refusals shared by both transaction entry points.
+    fn check_transaction_shape(kinds: &[OperationKind]) -> Result<(), EditorError> {
         // A member-less transaction would log a descriptor-only no-op (a dead
         // undo/sync unit). Refuse before minting anything.
         if kinds.is_empty() {
@@ -840,6 +1060,49 @@ impl EditorSession {
             .any(|k| matches!(k, OperationKind::DeclareTransaction(_)))
         {
             return Err(EditorError::DeclareTransactionNotAllowed);
+        }
+        Ok(())
+    }
+
+    /// The first active-barrier match across the transaction the session is
+    /// about to mint: the `DeclareTransaction` descriptor (a score-level
+    /// operation a score-wide barrier can prohibit), then each member in order.
+    fn transaction_barrier_refusal(&self, kinds: &[OperationKind]) -> Option<EditorError> {
+        self.barrier_refusal(&Self::descriptor_probe())
+            .or_else(|| kinds.iter().find_map(|kind| self.barrier_refusal(kind)))
+    }
+
+    /// A stand-in `DeclareTransaction` for gating: barrier matching reads only
+    /// the operation *class* (and, for a descriptor, no payload-named object),
+    /// so the placeholder id and label never influence the verdict.
+    fn descriptor_probe() -> OperationKind {
+        OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: TransactionId::new(ReplicaId(0), 0),
+            label: String::new(),
+            category: None,
+        })
+    }
+
+    /// The shared tail of [`Self::apply_transaction`] /
+    /// [`Self::apply_transaction_unsafe`]: everything past the barrier gate.
+    fn apply_transaction_past_barriers(
+        &mut self,
+        label: &str,
+        category: Option<TransactionCategory>,
+        kinds: Vec<OperationKind>,
+    ) -> Result<EditOutcome, EditorError> {
+        // Authoring mode (see `apply`): every member must pass its advisory
+        // preconditions before anything is minted. Members are checked against
+        // the current materialized score — the pre-transaction state — which is
+        // conservative for the rare member that only violates against another
+        // member's intermediate effect (advisory checks are the author's local
+        // policy, not canonical state, so this cannot diverge replicas).
+        let violations: Vec<_> = kinds
+            .iter()
+            .flat_map(|kind| advisory_violations(kind, &self.score))
+            .collect();
+        if !violations.is_empty() {
+            return Err(EditorError::AdvisoryViolation { violations });
         }
         let envelopes = self.transaction_envelopes(label, category, kinds);
         self.commit(envelopes)
@@ -1187,12 +1450,14 @@ impl EditorSession {
     /// goes into the staff's primary voice and **makes room** under an overwrite policy
     /// — an existing note/rest the new note fully covers is deleted, one it partially
     /// overlaps is trimmed, and one it lands inside is split (head trimmed, tail
-    /// re-inserted) — all as one transaction, so it applies atomically or not at all.
+    /// re-inserted), and a **tuplet** any part of the new note overlaps is cascaded away
+    /// whole (every member tombstoned, structure removed — tuplets are atomic) — all as
+    /// one transaction, so it applies atomically or not at all.
     ///
     /// Errors with [`EditorError::NoInsertTarget`] when the click resolves to no metric
     /// staff/position (or the overlap includes a non-note/rest event there is no
-    /// make-room rule for), or [`EditorError::OverlapsTuplet`] when make-room would have
-    /// to disturb a tuplet member (its duration is ratio-governed).
+    /// make-room rule for), or [`EditorError::OverlapsTuplet`] when the overlapped member
+    /// belongs to a *nested* tuplet, which the flat cascade cannot treat atomically.
     pub fn insert_note_at(
         &mut self,
         point: Point,
@@ -1257,10 +1522,12 @@ impl EditorSession {
     /// Sets the selected event's written **duration** (a notation duration-palette
     /// gesture; the selection may be a notehead or a rest/stem). Shrinking just frees
     /// the space after the event; **lengthening makes room** under the overwrite policy
-    /// — the events it grows over are trimmed, deleted, or split, atomically with the
-    /// resize. Errors: [`InvalidDuration`](EditorError::InvalidDuration) for a
-    /// non-positive duration, [`OverlapsTuplet`](EditorError::OverlapsTuplet) when the
-    /// event (or one it grows over) is a tuplet member, and
+    /// — the events it grows over are trimmed, deleted, or split, and a tuplet it grows
+    /// over is cascaded away whole (tuplets are atomic), atomically with the resize.
+    /// Errors: [`InvalidDuration`](EditorError::InvalidDuration) for a non-positive
+    /// duration, [`OverlapsTuplet`](EditorError::OverlapsTuplet) when the *selected* event
+    /// is itself a tuplet member (in-place rescaling of a member is a later refinement) or
+    /// it grows over a *nested* tuplet the flat cascade cannot treat atomically, and
     /// [`WrongSelection`](EditorError::WrongSelection) when nothing apt is selected or
     /// the event is not metric.
     pub fn set_selection_duration(
@@ -1348,8 +1615,13 @@ impl EditorSession {
 
     /// The events make-room must change to clear `[start, end)` in `voice` (other than
     /// `exclude`, the event being inserted/resized): whole-event deletes, in-place
-    /// trims, and splits. Errors on a tuplet member or a non-note/rest overlap there is
-    /// no make-room rule for.
+    /// trims, splits, and whole-tuplet cascade deletes. A tuplet is **atomic** — an
+    /// overlap with any of its members removes the whole tuplet (every member, plus the
+    /// structure), since a member's duration is ratio-bound and cannot be trimmed in
+    /// place. Errors with [`OverlapsTuplet`](EditorError::OverlapsTuplet) for a *nested*
+    /// tuplet (cascading one level only is not yet safe), [`NoInsertTarget`] for a
+    /// non-note/rest overlap, and [`DecomposedEvent`](EditorError::DecomposedEvent) for a
+    /// trim/split of a (non-tuplet) decomposed event.
     fn make_room(
         &self,
         voice: VoiceId,
@@ -1358,6 +1630,8 @@ impl EditorSession {
         exclude: Option<EventId>,
     ) -> Result<MakeRoom, EditorError> {
         let mut room = MakeRoom::default();
+        let mut cascade_tuplets: std::collections::BTreeSet<TupletId> =
+            std::collections::BTreeSet::new();
         for event in self.score.events.iter() {
             if event.voice() != voice || Some(event.id()) == exclude {
                 continue;
@@ -1376,8 +1650,17 @@ impl EditorSession {
             if !(ep < end && start < &event_end) {
                 continue; // disjoint from [start, end)
             }
-            if self.event_in_tuplet(event.id()) {
-                return Err(EditorError::OverlapsTuplet);
+            // A tuplet member: mark its (flat) tuplet for whole-tuplet cascade deletion,
+            // and stop treating it as an ordinary overlap. A nested tuplet is refused.
+            let containing = self.tuplets_containing(event.id());
+            if !containing.is_empty() {
+                for tuplet in containing {
+                    if !self.is_flat_tuplet(tuplet) {
+                        return Err(EditorError::OverlapsTuplet);
+                    }
+                    cascade_tuplets.insert(tuplet);
+                }
+                continue;
             }
             if !matches!(event, Event::Pitched(_) | Event::Rest(_)) {
                 return Err(EditorError::NoInsertTarget); // no make-room rule for this kind
@@ -1412,7 +1695,62 @@ impl EditorSession {
                 )),
             }
         }
+        // Expand each cascade tuplet into deletes of all its live members. The first
+        // member removes the tuplet structure (so the rest no longer belong to a tuplet
+        // and delete as ordinary events); the order is preserved by `make_room_ops`.
+        for tuplet in cascade_tuplets {
+            for (i, member) in self.tuplet_members(tuplet).into_iter().enumerate() {
+                let compensation = if i == 0 {
+                    TupletCompensation::CascadeDeleteTuplets {
+                        tuplets: vec![tuplet],
+                    }
+                } else {
+                    TupletCompensation::NotInTuplet
+                };
+                room.cascade_deletes.push((member, compensation));
+            }
+        }
         Ok(room)
+    }
+
+    /// The ids of the tuplets `event` is a member of.
+    fn tuplets_containing(&self, event: EventId) -> Vec<TupletId> {
+        self.score
+            .cross_cutting
+            .tuplets
+            .iter()
+            .filter(|tuplet| tuplet.members.contains(&event))
+            .map(|tuplet| tuplet.id)
+            .collect()
+    }
+
+    /// Whether `tuplet` is flat — not nested inside another and not the parent of one.
+    /// Cascade-deleting a nested tuplet would leave the parent referencing tombstoned
+    /// members, so make-room refuses it for now.
+    fn is_flat_tuplet(&self, tuplet: TupletId) -> bool {
+        let tuplets = &self.score.cross_cutting.tuplets;
+        tuplets
+            .iter()
+            .find(|t| t.id == tuplet)
+            .is_some_and(|t| t.parent.is_none())
+            && !tuplets.iter().any(|t| t.parent == Some(tuplet))
+    }
+
+    /// `tuplet`'s live member events, in member order.
+    fn tuplet_members(&self, tuplet: TupletId) -> Vec<EventId> {
+        self.score
+            .cross_cutting
+            .tuplets
+            .iter()
+            .find(|t| t.id == tuplet)
+            .map(|t| {
+                t.members
+                    .iter()
+                    .copied()
+                    .filter(|m| self.score.events.get(*m).is_some())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Turns a [`MakeRoom`] into operations: trims (`ModifyEvent`), deletes
@@ -1426,6 +1764,14 @@ impl EditorSession {
         minter: &mut Minter,
     ) -> Vec<OperationKind> {
         let mut ops: Vec<OperationKind> = Vec::new();
+        // Cascade-delete whole tuplets first, in order — the structure-removing delete
+        // must precede the members that then delete as ordinary (no-longer-tuplet) events.
+        for (event, tuplet_compensation) in room.cascade_deletes {
+            ops.push(OperationKind::DeleteEvent(DeleteEventOp {
+                event,
+                tuplet_compensation,
+            }));
+        }
         for event in room.trims {
             ops.push(OperationKind::ModifyEvent(ModifyEventOp { event }));
         }
@@ -1802,6 +2148,12 @@ struct MakeRoom {
     trims: Vec<Event>,
     deletes: Vec<EventId>,
     tails: Vec<(Event, MusicalPosition, MusicalDuration)>,
+    /// Whole-tuplet cascade deletes: every member of each overlapped tuplet, paired with
+    /// its delete compensation. The first member of a tuplet carries
+    /// [`TupletCompensation::CascadeDeleteTuplets`] (which removes the tuplet structure);
+    /// the rest are then ordinary [`NotInTuplet`](TupletCompensation::NotInTuplet)
+    /// deletes, so they must apply in this order.
+    cascade_deletes: Vec<(EventId, TupletCompensation)>,
 }
 
 /// Mints fresh event/pitch ids within one intent, advancing local counters (checked,
@@ -2991,20 +3343,76 @@ mod tests {
     }
 
     #[test]
-    fn insert_note_at_refuses_to_disturb_a_tuplet() {
+    fn insert_note_at_cascades_a_whole_tuplet() {
         let mut session = open_rich(0x5EED);
-        // The rich fixture's first metric region is an eighth-note triplet; covering a
-        // member would need tuplet compensation, so the insert is refused.
+        // The rich fixture's first metric region is a 3:2 eighth-note triplet over
+        // [0, 1/4), and its first member carries an in-tuplet decomposition. Tuplets are
+        // atomic: a pencil overwrite touching any member removes the *whole* tuplet —
+        // every member, the structure, and the now-orphaned decomposition — freeing the
+        // span for the new note and leaving an invariant-valid graph.
         let region = a_region_with(&session, true);
+        let voice = primary_voice(&session, region);
+        let members: Vec<EventId> = voice_events(&session, voice)
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        assert_eq!(members.len(), 3, "the region is a three-member triplet");
         assert!(
-            session
-                .score()
-                .cross_cutting
-                .tuplets
-                .iter()
-                .any(|t| !t.members.is_empty()),
-            "the fixture region is a tuplet"
+            !session.score().cross_cutting.tuplets.is_empty(),
+            "the region starts as a tuplet"
         );
+
+        // Click the first member's onset with a grid of its own (eighth-note) value, so
+        // the new note overlaps just that one member — yet the whole triplet cascades.
+        let (_, pos, dur) = voice_events(&session, voice).into_iter().next().unwrap();
+        let (_, _, origin_y) = region_staff_line(&session, region);
+        let at = click_for_position(&session, region, &pos, origin_y + 1.0);
+        session
+            .insert_note_at(at, &GridResolution { step: dur.clone() })
+            .expect("the overwrite cascades the tuplet and inserts the note");
+
+        let after = voice_events(&session, voice);
+        assert!(
+            members
+                .iter()
+                .all(|m| !after.iter().any(|(id, _, _)| id == m)),
+            "every original triplet member is gone"
+        );
+        assert!(
+            session.score().cross_cutting.tuplets.is_empty(),
+            "the tuplet structure is removed"
+        );
+        let inserted = after
+            .iter()
+            .find(|(id, _, _)| !members.contains(id))
+            .expect("the new note was inserted");
+        assert_eq!(inserted.1, pos, "the new note sits at the clicked onset");
+        assert_eq!(inserted.2, dur, "the new note has the grid duration");
+        assert!(
+            epiphany_core::check_invariants(session.score()).is_empty(),
+            "the cascaded graph is invariant-valid"
+        );
+    }
+
+    #[test]
+    fn insert_note_at_over_a_nested_tuplet_is_refused() {
+        use epiphany_core::{Tuplet, TupletRatio};
+        // A nested tuplet's ratio arithmetic a flat cascade cannot restate, so make-room
+        // refuses rather than corrupt it. Give the fixture's flat triplet a child tuplet
+        // so it is no longer flat, then try to overwrite one of its members.
+        let mut score = valid_score_rich(0x5EED);
+        let triplet_id = score.cross_cutting.tuplets[0].id;
+        let replica = score.identity.replica_id;
+        score.cross_cutting.tuplets.push(Tuplet {
+            id: TupletId::new(replica, 7_000_002),
+            ratio: TupletRatio::new(3, 2).unwrap(),
+            members: vec![],
+            parent: Some(triplet_id),
+            required_total: MusicalDuration(RationalTime::new(1, 8).unwrap()),
+        });
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+
+        let region = a_region_with(&session, true);
         let voice = primary_voice(&session, region);
         let (_, pos, dur) = voice_events(&session, voice).into_iter().next().unwrap();
         let (_, _, origin_y) = region_staff_line(&session, region);
@@ -3642,6 +4050,86 @@ mod tests {
         assert!(
             materialized.state.is_clean(),
             "sequential same-target moves must replay without a conflict or pending op"
+        );
+    }
+
+    #[test]
+    fn advisory_violating_edit_is_refused_in_authoring_but_reduces_in_replay() {
+        // Chapter 6 §"Validation Modes": the session is authoring mode — an
+        // advisory-violating operation is refused before an envelope is minted
+        // — while the same operation, minted elsewhere, reduces cleanly through
+        // raw OperationSet reduction (replay mode enforces only invariant
+        // preconditions; advisory ones fail silently).
+        use epiphany_core::{
+            AnchorOffset, MusicalDuration, MusicalPosition, RationalTime, RegionEdge, TimeAnchor,
+            WallClockTime,
+        };
+
+        // The plain fixture, with its single region given a *musical* end
+        // bound of 12 whole units (the fixture's own extent is wall-clock,
+        // which the advisory boundary check cannot resolve).
+        let mut score = valid_score(0x5EED);
+        let region_id = score.canvas.regions[0].id;
+        score.canvas.regions[0].time_extent.end = TimeAnchor::Region {
+            id: region_id,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(12))),
+        };
+        let instance = score.canvas.regions[0].staff_instances()[0].id;
+        let voice = score.canvas.regions[0].staff_instances()[0].voices[0].id;
+
+        // An insert whose span straddles the bound: starts at 10, ends at 14 —
+        // applying it would require splitting the event across the boundary.
+        let event_id = EventId::new(ReplicaId(50), 999);
+        let kind = OperationKind::InsertEvent(InsertEventOp {
+            staff_instance: instance,
+            event: epiphany_ops::valuegen::insert_event_value(
+                event_id,
+                voice,
+                MusicalPosition(RationalTime::from_int(10)),
+                MusicalDuration(RationalTime::from_int(4)),
+                &[PitchId::new(ReplicaId(50), 998)],
+            ),
+        });
+
+        // Authoring: refused pre-mint, on both the single-op and the
+        // transaction seam; the op log stays untouched.
+        let mut session =
+            EditorSession::open(score.clone(), Box::new(StubSolver)).expect("the fixture renders");
+        let err = session
+            .apply(kind.clone())
+            .expect_err("an advisory violation must refuse the edit");
+        assert!(matches!(err, EditorError::AdvisoryViolation { .. }));
+        assert!(session.applied_operations().is_empty());
+        let err = session
+            .apply_transaction("cross-boundary insert", None, vec![kind.clone()])
+            .expect_err("an advisory-violating member must refuse the transaction");
+        assert!(matches!(err, EditorError::AdvisoryViolation { .. }));
+        assert!(session.applied_operations().is_empty());
+
+        // Replay: the same operation in an envelope reduces cleanly and the
+        // event materializes — the advisory check has no channel into
+        // reduction.
+        let id = epiphany_core::OperationId::new(ReplicaId(50), 0);
+        let env = OperationEnvelope {
+            id,
+            author: AuthorId(7),
+            stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(1), 0), id),
+            causal_context: CausalContext::new(),
+            transaction: None,
+            payload: OperationPayload::Primitive(kind),
+        };
+        let mut set = OperationSet::new();
+        assert_eq!(set.accept(env), AcceptOutcome::Accepted);
+        let materialized = set.reduce_onto(&score);
+        assert!(
+            materialized.state.is_clean(),
+            "replay applies the advisory-violating insert cleanly: {:?}",
+            materialized.state
+        );
+        assert!(
+            materialized.score.events.get(event_id).is_some(),
+            "the event materializes under replay"
         );
     }
 
@@ -4609,6 +5097,309 @@ mod tests {
             &before,
             session.score(),
             "a rejected edit leaves the document untouched"
+        );
+    }
+
+    // --- The edit-barrier gate (Chapter 8 §"Behavior Under Unknown Extensions") ---
+
+    use epiphany_layout_ir::{BarrierCondition, BarrierScope, EditBarrier, ObjectKind};
+
+    /// A whole-score barrier prohibiting one operation class (no object-kind or
+    /// condition narrowing), as extension `ext` would declare it.
+    fn extension_prohibiting(ext: u128, op: OperationKindTag) -> ActiveExtension {
+        ActiveExtension {
+            extension: ExtensionRef(ext),
+            barriers: vec![EditBarrier {
+                scope: BarrierScope::WholeScore,
+                affected_object_kinds: vec![],
+                prohibited_operation_kinds: vec![op],
+                condition: BarrierCondition::Always,
+            }],
+        }
+    }
+
+    /// The first event in the plain fixture's (single) voice, and a delete of it.
+    fn first_event_delete(session: &EditorSession) -> (EventId, OperationKind) {
+        let event = session
+            .score()
+            .voices()
+            .find_map(|(_, _, v)| v.events.first().copied())
+            .expect("the fixture has an event");
+        let delete = OperationKind::DeleteEvent(DeleteEventOp {
+            event,
+            tuplet_compensation: TupletCompensation::NotInTuplet,
+        });
+        (event, delete)
+    }
+
+    #[test]
+    fn a_barrier_matching_edit_is_refused_and_a_non_matching_edit_proceeds() {
+        let mut session = open_plain(7);
+        let (_, delete) = first_event_delete(&session);
+        session.set_active_extensions(vec![extension_prohibiting(
+            0xE1,
+            OperationKindTag::DeleteEvent,
+        )]);
+
+        // The matching edit is refused, naming the declaring extension, with
+        // nothing minted (the op log untouched).
+        assert_eq!(
+            session.apply(delete.clone()),
+            Err(EditorError::BarrierProhibited {
+                extension: ExtensionRef(0xE1),
+                operation: OperationKindTag::DeleteEvent,
+            })
+        );
+        assert!(session.applied_operations().is_empty());
+
+        // An edit of a different operation class proceeds.
+        let pitch = last_event_pitch(&session);
+        let transpose = OperationKind::Transpose(TransposeOp {
+            targets: vec![pitch],
+            chromatic_steps: 1,
+        });
+        session
+            .apply(transpose)
+            .expect("a non-prohibited class passes the gate");
+        assert_eq!(session.applied_operations().len(), 1);
+    }
+
+    #[test]
+    fn a_region_scoped_barrier_gates_by_the_targets_real_containment() {
+        // A barrier scoped to a *different* region does not prohibit deleting
+        // an event here — known scopes are evaluated precisely against the
+        // target's containment, not conservatively.
+        let mut session = open_plain(7);
+        let (_, delete) = first_event_delete(&session);
+        let elsewhere = RegionId::from_raw(u128::MAX);
+        let scoped = |region| ActiveExtension {
+            extension: ExtensionRef(0xE2),
+            barriers: vec![EditBarrier {
+                scope: BarrierScope::Region(region),
+                affected_object_kinds: vec![],
+                prohibited_operation_kinds: vec![OperationKindTag::DeleteEvent],
+                condition: BarrierCondition::Always,
+            }],
+        };
+        session.set_active_extensions(vec![scoped(elsewhere)]);
+        session
+            .apply(delete.clone())
+            .expect("a barrier over another region does not bind here");
+
+        // The same barrier scoped to the event's own region refuses the edit.
+        let mut session = open_plain(7);
+        let (_, delete) = first_event_delete(&session);
+        let here = session.score().canvas.regions[0].id;
+        session.set_active_extensions(vec![scoped(here)]);
+        assert_eq!(
+            session.apply(delete),
+            Err(EditorError::BarrierProhibited {
+                extension: ExtensionRef(0xE2),
+                operation: OperationKindTag::DeleteEvent,
+            })
+        );
+    }
+
+    #[test]
+    fn an_object_kind_narrowed_barrier_matches_only_that_kind() {
+        // A barrier protecting only Pitch objects prohibits a transpose but not
+        // an event delete, even under the same prohibited class list.
+        let mut session = open_plain(7);
+        let pitch = last_event_pitch(&session);
+        let pitch_kind = ObjectKind::of(&TypedObjectId::Pitch(pitch));
+        session.set_active_extensions(vec![ActiveExtension {
+            extension: ExtensionRef(0xE3),
+            barriers: vec![EditBarrier {
+                scope: BarrierScope::WholeScore,
+                affected_object_kinds: vec![pitch_kind],
+                prohibited_operation_kinds: vec![
+                    OperationKindTag::Transpose,
+                    OperationKindTag::DeleteEvent,
+                ],
+                condition: BarrierCondition::Always,
+            }],
+        }]);
+        let transpose = OperationKind::Transpose(TransposeOp {
+            targets: vec![pitch],
+            chromatic_steps: 1,
+        });
+        assert!(matches!(
+            session.apply(transpose),
+            Err(EditorError::BarrierProhibited { .. })
+        ));
+        let (_, delete) = first_event_delete(&session);
+        session
+            .apply(delete)
+            .expect("an Event target does not match a Pitch-kind barrier");
+    }
+
+    #[test]
+    fn an_unsafe_edit_crosses_the_barrier_and_records_the_tombstone_obligation() {
+        let mut session = open_plain(7);
+        let (_, delete) = first_event_delete(&session);
+        session.set_active_extensions(vec![extension_prohibiting(
+            0xE4,
+            OperationKindTag::DeleteEvent,
+        )]);
+        assert!(matches!(
+            session.apply(delete.clone()),
+            Err(EditorError::BarrierProhibited { .. })
+        ));
+
+        // The explicit unsafe edit proceeds ...
+        let outcome = session.apply_unsafe(delete).expect("the unsafe edit lands");
+        assert!(outcome.graph_changed);
+        // ... records that the crossed extension's chunks MUST be tombstoned
+        // (spec §"Behavior Under Unknown Extensions") ...
+        assert!(session
+            .extensions_requiring_tombstone()
+            .contains(&ExtensionRef(0xE4)));
+        // ... and deactivates the extension (its data is gone, so its barriers
+        // no longer bind): the next matching edit passes the ordinary gate.
+        assert!(session.active_extensions().is_empty());
+        let (_, next_delete) = first_event_delete(&session);
+        session
+            .apply(next_delete)
+            .expect("the crossed extension's barriers no longer bind");
+    }
+
+    #[test]
+    fn an_unsafe_edit_crossing_no_barrier_records_nothing() {
+        let mut session = open_plain(7);
+        session.set_active_extensions(vec![extension_prohibiting(
+            0xE5,
+            OperationKindTag::DeleteEvent,
+        )]);
+        let pitch = last_event_pitch(&session);
+        session
+            .apply_unsafe(OperationKind::Transpose(TransposeOp {
+                targets: vec![pitch],
+                chromatic_steps: 1,
+            }))
+            .expect("an unsafe apply of a non-matching edit is an ordinary apply");
+        assert!(session.extensions_requiring_tombstone().is_empty());
+        assert_eq!(session.active_extensions().len(), 1);
+    }
+
+    #[test]
+    fn the_barrier_gate_and_the_advisory_gate_coexist() {
+        use epiphany_core::{AnchorOffset, RegionEdge, ReplicaId};
+        // The plain fixture with its region's end bound declared at 12 whole
+        // units — the shape under which an event spanning 10..14 fails the
+        // InsertEvent advisory precondition (Chapter 6 §6.10).
+        let mut score = valid_score(7);
+        let region_id = score.canvas.regions[0].id;
+        score.canvas.regions[0].time_extent.end = epiphany_core::TimeAnchor::Region {
+            id: region_id,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(12))),
+        };
+        let instance = score.canvas.regions[0].staff_instances()[0].id;
+        let voice = score.canvas.regions[0].staff_instances()[0].voices[0].id;
+        let mut session =
+            EditorSession::open(score, Box::new(StubSolver)).expect("the bounded fixture renders");
+        let crossing_insert = |duration: i32| {
+            OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: instance,
+                event: epiphany_ops::valuegen::insert_event_value(
+                    EventId::new(ReplicaId(50), 999),
+                    voice,
+                    MusicalPosition(RationalTime::from_int(10)),
+                    MusicalDuration(RationalTime::from_int(duration)),
+                    &[PitchId::new(ReplicaId(50), 998)],
+                ),
+            })
+        };
+
+        // With no barriers, the advisory gate alone refuses the crossing span.
+        assert!(matches!(
+            session.apply(crossing_insert(4)),
+            Err(EditorError::AdvisoryViolation { .. })
+        ));
+
+        // With a matching barrier, the barrier gate fires first (its refusal is
+        // the spec's MUST and names the unsafe-edit escape).
+        session.set_active_extensions(vec![extension_prohibiting(
+            0xE6,
+            OperationKindTag::InsertEvent,
+        )]);
+        assert!(matches!(
+            session.apply(crossing_insert(4)),
+            Err(EditorError::BarrierProhibited { .. })
+        ));
+
+        // The unsafe path crosses the barrier but still enforces the advisory
+        // gate — and a refused edit loses no data, so nothing is recorded.
+        assert!(matches!(
+            session.apply_unsafe(crossing_insert(4)),
+            Err(EditorError::AdvisoryViolation { .. })
+        ));
+        assert!(session.extensions_requiring_tombstone().is_empty());
+        assert_eq!(session.active_extensions().len(), 1, "nothing was crossed");
+
+        // A span inside the bound passes the advisory gate; unsafely applying
+        // it crosses the barrier and records the obligation.
+        let outcome = session
+            .apply_unsafe(crossing_insert(2))
+            .expect("within the bound, only the barrier stood in the way");
+        assert!(outcome.graph_changed);
+        assert!(session
+            .extensions_requiring_tombstone()
+            .contains(&ExtensionRef(0xE6)));
+    }
+
+    #[test]
+    fn a_transaction_is_gated_per_member_and_has_an_unsafe_sibling() {
+        let mut session = open_plain(7);
+        let pitch = last_event_pitch(&session);
+        let transpose = OperationKind::Transpose(TransposeOp {
+            targets: vec![pitch],
+            chromatic_steps: 1,
+        });
+        session.set_active_extensions(vec![extension_prohibiting(
+            0xE7,
+            OperationKindTag::Transpose,
+        )]);
+
+        // A member matching a barrier refuses the whole transaction, unminted.
+        assert_eq!(
+            session.apply_transaction("sharpen", None, vec![transpose.clone()]),
+            Err(EditorError::BarrierProhibited {
+                extension: ExtensionRef(0xE7),
+                operation: OperationKindTag::Transpose,
+            })
+        );
+        assert!(session.applied_operations().is_empty());
+
+        // The unsafe sibling crosses and records.
+        session
+            .apply_transaction_unsafe("sharpen", None, vec![transpose])
+            .expect("the unsafe transaction lands");
+        assert!(session
+            .extensions_requiring_tombstone()
+            .contains(&ExtensionRef(0xE7)));
+
+        // A score-wide barrier on the descriptor class gates transactions as a
+        // whole: DeclareTransaction is a score-level operation.
+        let mut session = open_plain(7);
+        let pitch = last_event_pitch(&session);
+        session.set_active_extensions(vec![extension_prohibiting(
+            0xE8,
+            OperationKindTag::DeclareTransaction,
+        )]);
+        assert_eq!(
+            session.apply_transaction(
+                "sharpen",
+                None,
+                vec![OperationKind::Transpose(TransposeOp {
+                    targets: vec![pitch],
+                    chromatic_steps: 1,
+                })],
+            ),
+            Err(EditorError::BarrierProhibited {
+                extension: ExtensionRef(0xE8),
+                operation: OperationKindTag::DeclareTransaction,
+            })
         );
     }
 }

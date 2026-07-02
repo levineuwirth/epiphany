@@ -14,11 +14,16 @@
 //! [`Engraver`] runs a genuine deterministic **horizontal spacing pass** (see
 //! [`spacing`]) — placing each glyph-bearing slot left-to-right by a
 //! collision-aware advance (its preferred width floored by the real glyph
-//! bearings) — and **evaluates the IR's declared hard constraints** against the
-//! resolved geometry (no-collision, alignment, position-within; a hard break or
-//! unverifiable extension constraint it cannot honour is reported unsatisfied).
-//! A solve is [`SolveStatus::Solved`] only when every hard constraint is
-//! satisfied; otherwise it is a diagnostic layout naming the ones it could not.
+//! bearings) — and **evaluates the IR's declared constraints** against the
+//! resolved geometry, routed by [`LayoutConstraint::strength`] (Chapter 9
+//! §"Strength Levels"): a violated `Required` constraint (no-collision,
+//! alignment, position-within, a hard break, an unverifiable extension
+//! constraint) is reported unsatisfied and the solve is
+//! [`SolveStatus::Unsatisfiable`]; a violated `Preferred` constraint (a soft
+//! break this single-system solve does not honour) surfaces as a
+//! [`SolverWarningKind::LargeSoftConstraintViolation`] warning under
+//! [`SolveStatus::SolvedWithWarnings`], never a failure. A solve is
+//! [`SolveStatus::Solved`] only when every declared constraint holds.
 //!
 //! Having earned it, [`Engraver::tier`] reports [`SolverTier::Minimal`] — which
 //! (Chapter 9 §"Conformance Tiers" / QUICKSTART) means *hard constraints
@@ -44,11 +49,11 @@ mod spacing;
 use std::collections::BTreeMap;
 
 use epiphany_layout_ir::{
-    all_available, Axis, BravuraCatalog, BreakKind, ConstrainedLayoutIR, ConstraintId,
-    ConstraintSolver, GlyphCatalog, GlyphObject, GlyphObjectId, InvalidationSet, LayoutConstraint,
-    Margins, Point, QualityMetricVector, Rect, ResolvedGlyph, ResolvedLayoutIR, ResolvedPage,
-    ResolvedSystem, Size2D, SolveReport, SolveStatus, SolverBudgetUsed, SolverConfig, SolverState,
-    SolverTier, SolverVersion, SolverWarning, SolverWarningKind, Stroke,
+    all_available, Axis, BravuraCatalog, ConstrainedLayoutIR, ConstraintId, ConstraintSolver,
+    ConstraintStrength, GlyphCatalog, GlyphObject, GlyphObjectId, InvalidationSet,
+    LayoutConstraint, Margins, Point, QualityMetricVector, Rect, ResolvedGlyph, ResolvedLayoutIR,
+    ResolvedPage, ResolvedSystem, Size2D, SolveReport, SolveStatus, SolverBudgetUsed, SolverConfig,
+    SolverState, SolverTier, SolverVersion, SolverWarning, SolverWarningKind, Stroke,
 };
 
 /// The glyph a fixed-width stroke (a ledger line) belongs to: the same-source glyph
@@ -82,11 +87,13 @@ pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(1);
 impl Engraver {
     /// Resolves geometry: a deterministic horizontal spacing pass over the spring
     /// slots (each glyph to its slot's `x`, baseline `y` preserved), then
-    /// evaluation of the declared hard constraints. A malformed input — an unknown
-    /// glyph, a forged catalog identity, or invalid structure — yields
-    /// [`SolveStatus::InternalError`]; a valid problem whose hard constraints
-    /// cannot all be satisfied yields [`SolveStatus::Unsatisfiable`] (naming the
-    /// unsatisfied constraints). Both are diagnostic-only; neither panics.
+    /// evaluation of the declared constraints by strength. A malformed input — an
+    /// unknown glyph, a forged catalog identity, or invalid structure — yields
+    /// [`SolveStatus::InternalError`]; a valid problem whose `Required`
+    /// constraints cannot all be satisfied yields [`SolveStatus::Unsatisfiable`]
+    /// (naming the unsatisfied constraints). Both are diagnostic-only; neither
+    /// panics. Violated `Preferred` constraints yield soft-violation warnings
+    /// under [`SolveStatus::SolvedWithWarnings`] — a valid, renderable layout.
     fn resolve(&self, input: &ConstrainedLayoutIR) -> SolveReport {
         let structural_valid = input.validate().is_ok();
 
@@ -110,31 +117,43 @@ impl Engraver {
         };
         let resolved_glyphs = glyphs.len();
 
-        // Evaluate every declared hard constraint against the *resolved* geometry.
-        // A Minimal solve is `Solved` only when all are satisfied. A structurally
-        // invalid or bad-catalog input is not evaluated — there is no trustworthy
-        // geometry — so it reports no evaluation work.
-        let (constraints_satisfied, unsatisfied_constraints, constraints_evaluated) =
-            if structural_valid && catalog_valid {
-                let (satisfied, unsatisfied) = evaluate_constraints(&input.constraints, &glyphs);
-                (satisfied, unsatisfied, input.constraints.len() as u64)
-            } else {
-                (false, Vec::new(), 0)
-            };
-        let well_formed = structural_valid && catalog_valid && constraints_satisfied;
+        // Evaluate every declared constraint against the *resolved* geometry,
+        // routed by its strength (Chapter 9 §"Strength Levels"): a violated
+        // `Required` constraint is unsatisfied (the solve is `Unsatisfiable`);
+        // a violated `Preferred` one is a soft-violation *warning*, never a
+        // failure. A structurally invalid or bad-catalog input is not evaluated
+        // — there is no trustworthy geometry — so it reports no evaluation work.
+        let (evaluation, constraints_evaluated) = if structural_valid && catalog_valid {
+            (
+                evaluate_constraints(&input.constraints, &glyphs),
+                input.constraints.len() as u64,
+            )
+        } else {
+            (ConstraintEvaluation::not_evaluated(), 0)
+        };
+        let ConstraintEvaluation {
+            required_satisfied,
+            unsatisfied: unsatisfied_constraints,
+            soft_violations,
+        } = evaluation;
+        let well_formed = structural_valid && catalog_valid && required_satisfied;
         // Distinguish a *malformed/unusable* input (InternalError — a structural or
         // catalog defect the solver cannot proceed past) from a *valid problem
         // whose declared hard constraints cannot all be satisfied* (Unsatisfiable),
-        // per the solver-report contract (Chapter 9 §"The Solver Report").
+        // per the solver-report contract (Chapter 9 §"The Solver Report"). Hard
+        // constraints all satisfied but soft ones violated is a valid layout
+        // worth flagging: SolvedWithWarnings.
         let status = if !structural_valid || !catalog_valid {
             SolveStatus::InternalError
-        } else if constraints_satisfied {
-            SolveStatus::Solved
-        } else {
+        } else if !required_satisfied {
             SolveStatus::Unsatisfiable
+        } else if !soft_violations.is_empty() {
+            SolveStatus::SolvedWithWarnings
+        } else {
+            SolveStatus::Solved
         };
 
-        let mut warnings = Vec::new();
+        let mut warnings = soft_violations;
         if structural_valid && catalog_valid && !unsatisfied_constraints.is_empty() {
             warnings.push(SolverWarning {
                 kind: SolverWarningKind::UnusualLayoutDecision(
@@ -313,27 +332,53 @@ fn interp((s0, t0): (f32, f32), (s1, t1): (f32, f32), x: f32) -> f32 {
     }
 }
 
-/// Evaluates the IR's declared hard constraints against the *resolved* geometry,
-/// returning whether all are satisfied and the ids of those that are not — a
-/// constraint's id is its index in the IR's constraint list.
+/// What evaluating the declared constraints found, routed by strength: whether
+/// every `Required` constraint held, the ids of those that did not, and a
+/// soft-violation warning per unhonoured `Preferred` constraint.
+struct ConstraintEvaluation {
+    required_satisfied: bool,
+    unsatisfied: Vec<ConstraintId>,
+    soft_violations: Vec<SolverWarning>,
+}
+
+impl ConstraintEvaluation {
+    /// The result for an input that was never evaluated (malformed structure or
+    /// catalog): nothing is claimed satisfied, nothing is named unsatisfied.
+    fn not_evaluated() -> Self {
+        ConstraintEvaluation {
+            required_satisfied: false,
+            unsatisfied: Vec::new(),
+            soft_violations: Vec::new(),
+        }
+    }
+}
+
+/// Evaluates the IR's declared constraints against the *resolved* geometry — a
+/// constraint's id is its index in the IR's constraint list — routing each
+/// violation by [`LayoutConstraint::strength`] (Chapter 9 §"Strength Levels"):
+/// a violated `Required` constraint is reported unsatisfied, a violated
+/// `Preferred` one becomes a [`SolverWarningKind::LargeSoftConstraintViolation`]
+/// warning and never fails the solve.
 ///
 /// Geometric constraints (no-collision, alignment, position-within) are checked
-/// against the resolved glyph boxes. A *hard* break is reported unsatisfied — a
-/// single-system, single-page Minimal solve casts off nothing, so it cannot force
-/// a break (a *soft* break imposes no obligation). An extension `Registered`
-/// constraint this solver cannot interpret is likewise not claimed satisfied
-/// (Chapter 7 §"Behavior Under Unknown Extensions": conservative).
+/// against the resolved glyph boxes. A break is never *honoured* — a
+/// single-system, single-page Minimal solve casts off nothing — so a hard break
+/// (`Required`) is unsatisfied and a soft break (`Preferred`) is a warning. An
+/// extension `Registered` constraint this solver cannot interpret is likewise
+/// not claimed satisfied (Chapter 7 §"Behavior Under Unknown Extensions":
+/// conservative).
 fn evaluate_constraints(
     constraints: &[LayoutConstraint],
     glyphs: &[ResolvedGlyph],
-) -> (bool, Vec<ConstraintId>) {
+) -> ConstraintEvaluation {
     let by_id: BTreeMap<GlyphObjectId, &ResolvedGlyph> = glyphs
         .iter()
         .map(|g| (GlyphObjectId(g.provenance.stable_id.0), g))
         .collect();
     let mut unsatisfied = Vec::new();
+    let mut soft_violations = Vec::new();
     for (index, constraint) in constraints.iter().enumerate() {
-        let satisfied = match constraint {
+        let holds = match constraint {
             LayoutConstraint::NoCollision { a, b } => match (by_id.get(a), by_id.get(b)) {
                 (Some(a), Some(b)) => !overlaps(a, b),
                 // A referenced glyph was dropped (a diagnostic layout): not claimed.
@@ -347,15 +392,34 @@ fn evaluate_constraints(
                 Some(g) => within(g, region),
                 None => false,
             },
-            LayoutConstraint::SystemBreakAt { kind, .. }
-            | LayoutConstraint::PageBreakAt { kind, .. } => matches!(kind, BreakKind::Soft),
+            LayoutConstraint::SystemBreakAt { .. } | LayoutConstraint::PageBreakAt { .. } => false,
             LayoutConstraint::Registered(_, _) => false,
         };
-        if !satisfied {
-            unsatisfied.push(ConstraintId(index as u128));
+        if holds {
+            continue;
+        }
+        let id = ConstraintId(index as u128);
+        match constraint.strength() {
+            ConstraintStrength::Required => unsatisfied.push(id),
+            ConstraintStrength::Preferred { .. } => soft_violations.push(SolverWarning {
+                kind: SolverWarningKind::LargeSoftConstraintViolation {
+                    constraint: id,
+                    // A break preference is binary — honoured or not — so an
+                    // unhonoured one is a full (1.0) violation.
+                    magnitude: 1.0,
+                },
+                affected_objects: Vec::new(),
+                message: "a preferred (soft) constraint is not honoured by this \
+                          single-system Minimal solve"
+                    .to_owned(),
+            }),
         }
     }
-    (unsatisfied.is_empty(), unsatisfied)
+    ConstraintEvaluation {
+        required_satisfied: unsatisfied.is_empty(),
+        unsatisfied,
+        soft_violations,
+    }
 }
 
 /// A resolved glyph's absolute bounding box `[left, bottom, right, top]`.
@@ -519,14 +583,23 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_constraint_set_is_vacuously_satisfied() {
-        let report = Engraver.solve(&fixture(), &SolverConfig::default());
+    fn the_pipelines_emitted_constraints_are_satisfied() {
+        // The spacing stage now emits real constraints (no-collision chains,
+        // per-glyph containment) — this is *not* a vacuous empty-set solve. The
+        // collision-aware spacing satisfies every one of them, and the solve
+        // honestly reports the evaluation work it did.
+        let input = fixture();
+        assert!(
+            !input.constraints.is_empty(),
+            "the pipeline declares real constraints"
+        );
+        let report = Engraver.solve(&input, &SolverConfig::default());
         assert_eq!(report.status, SolveStatus::Solved);
         assert!(report.satisfied_hard_constraints);
         assert!(report.unsatisfied_constraints.is_empty());
         assert_eq!(
             report.budget_used.constraint_evaluations,
-            fixture().constraints.len() as u64
+            input.constraints.len() as u64
         );
     }
 
@@ -583,6 +656,8 @@ mod tests {
     #[test]
     fn a_hard_break_cannot_be_honoured_by_single_system_minimal() {
         use epiphany_layout_ir::{BreakKind, LayoutConstraint};
+        // A hard break maps to ConstraintStrength::Required: a single-system
+        // solve cannot honour it, so the solve is Unsatisfiable.
         let input = with_constraints(|c| {
             let slot = c.horizontal_slots[0].id;
             vec![LayoutConstraint::SystemBreakAt {
@@ -594,7 +669,9 @@ mod tests {
         assert_eq!(report.status, SolveStatus::Unsatisfiable);
         assert_eq!(report.unsatisfied_constraints.len(), 1);
 
-        // …but a *soft* break imposes no obligation, so it solves.
+        // …but a *soft* break is ConstraintStrength::Preferred: not honouring it
+        // is a soft-violation warning on a valid, renderable layout — a
+        // Preferred violation is a warning, never a failure.
         let soft = with_constraints(|c| {
             let slot = c.horizontal_slots[0].id;
             vec![LayoutConstraint::SystemBreakAt {
@@ -602,10 +679,68 @@ mod tests {
                 kind: BreakKind::Soft,
             }]
         });
-        assert_eq!(
-            Engraver.solve(&soft, &SolverConfig::default()).status,
-            SolveStatus::Solved
+        let report = Engraver.solve(&soft, &SolverConfig::default());
+        assert_eq!(report.status, SolveStatus::SolvedWithWarnings);
+        assert!(report.status.is_renderable());
+        assert!(
+            report.satisfied_hard_constraints,
+            "a soft-break violation must not flip hard-constraint satisfaction"
         );
+        assert!(report.unsatisfied_constraints.is_empty());
+        assert!(report.warnings.iter().any(|w| matches!(
+            w.kind,
+            SolverWarningKind::LargeSoftConstraintViolation {
+                constraint: ConstraintId(0),
+                magnitude,
+            } if magnitude == 1.0
+        )));
+    }
+
+    #[test]
+    fn a_users_break_flows_to_a_soft_violation_not_a_failure() {
+        // End to end: a user system break on the score graph projects through
+        // the logical stage's break override into a Soft break constraint,
+        // which this single-system solve does not honour — surfacing as a
+        // Preferred-violation warning on a valid, renderable layout.
+        use epiphany_core::generators::valid_score;
+        use epiphany_core::{AnchorOffset, Event, TimeAnchor};
+        let mut score = valid_score(3);
+        let event = score.canvas.regions[0]
+            .staff_instances()
+            .iter()
+            .flat_map(|si| si.voices.iter())
+            .flat_map(|voice| voice.events.iter().copied())
+            .find(|eid| {
+                matches!(score.events.get(*eid), Some(Event::Pitched(p)) if !p.pitches.is_empty())
+            })
+            .expect("valid_score has a pitched event");
+        score.canvas.regions[0]
+            .content
+            .staff_based_mut()
+            .expect("valid_score is staff based")
+            .user_system_breaks
+            .push(TimeAnchor::Event {
+                id: event,
+                offset: AnchorOffset::Zero,
+            });
+
+        let constrained = to_constrained(&to_logical(&score));
+        assert!(
+            constrained
+                .constraints
+                .iter()
+                .any(|c| matches!(c, LayoutConstraint::SystemBreakAt { .. })),
+            "the user break projects into a break constraint"
+        );
+        let report = Engraver.solve(&constrained, &SolverConfig::default());
+        assert_eq!(report.status, SolveStatus::SolvedWithWarnings);
+        assert!(report.status.is_renderable());
+        assert!(report.satisfied_hard_constraints);
+        assert!(report.unsatisfied_constraints.is_empty());
+        assert!(report.warnings.iter().any(|w| matches!(
+            w.kind,
+            SolverWarningKind::LargeSoftConstraintViolation { .. }
+        )));
     }
 
     #[test]

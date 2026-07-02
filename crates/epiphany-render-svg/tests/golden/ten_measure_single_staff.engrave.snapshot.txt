@@ -5,7 +5,7 @@ fallback_rect_count=0
 stroke_count=91
 provenance_count=142
 layer_count=1
-hard_constraint_count=0
+hard_constraint_count=90
 xml_well_formed=true
 view_box=[-3.059857 -3.632 102.98304 11.024]
 class_counts:
