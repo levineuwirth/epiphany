@@ -28,7 +28,8 @@
 //! deferred to the Operation Catalog (§6.11); see `DECISIONS.md` for the exact
 //! boundary.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use epiphany_core::{
     canonical_pitch_bytes, derive_promoted_voice_id, AnchorOffset, AnnotationAnchor,
@@ -59,6 +60,7 @@ use crate::payload::{
     RespellPitchOp, SetMetadataOp, SetMetricGridOp, SetUserPageBreakOp, TransposeOp,
     TupletCompensation,
 };
+use crate::stamp::StampTuple;
 use crate::support::{ObjectKind, SerializedCanonicalInputs};
 use crate::undo::{UndoPolicy, UndoTransactionPayload};
 
@@ -71,7 +73,296 @@ use crate::undo::{UndoPolicy, UndoTransactionPayload};
 /// coverage, choosing the smallest HLC reduction tuple among ready operations.
 /// A malformed causal cycle has no valid topological order; the smallest HLC
 /// tuple deterministically breaks the cycle so every replica still converges.
+///
+/// ## Subquadratic construction (worklist F1 → K fix)
+///
+/// The order is *defined* pairwise: an edge `p → s` exists iff `p != s` and
+/// `s.causal_context.covers(p.id)`; an envelope is *ready* when every present
+/// covered predecessor has been emitted; the smallest reduction tuple among
+/// ready envelopes emits next (slice position breaks the — duplicate-id-only —
+/// tuple ties, matching `min_by_key`'s first-minimum rule, which the retained
+/// test-only `canonical_reduction_order_reference` oracle implements literally
+/// in O(n²)). Materializing the edges is inherently quadratic for the common
+/// chain-context shape (every DVV floor covers the full replica prefix), so
+/// this implementation never enumerates pairs. It decomposes each context into
+/// *requirement terms* whose conjunction is exactly pairwise readiness:
+///
+/// * A **vector floor** `(r, n)` covers precisely the present envelopes of
+///   replica `r` with counter `<= n` (the zero-based DVV floor, P11-C7) —
+///   a *prefix* of the replica's lane sorted by `(counter, slice index)`.
+///   The term is satisfied when the lane's emission frontier (the first
+///   unemitted lane slot) passes the prefix; a floor that covers the
+///   envelope's *own* id exempts only the self-pair, so that term is instead
+///   "frontier at own slot and *second* frontier past the prefix". Both
+///   frontiers are monotone, so each term is woken exactly once from a
+///   `BTreeMap` keyed by the threshold slot.
+/// * An **explicit dot** covers precisely the present envelopes bearing that
+///   id; the term is satisfied when the id's unemitted multiplicity reaches
+///   zero (or one, for a dot naming the envelope's own id). A dot also lying
+///   under one of the context's own floors yields a (redundant) second term —
+///   harmless, because readiness is the conjunction of terms, not a
+///   predecessor count, so no per-pair dedup is needed.
+///
+/// Context entries covering no present envelope (absent replicas, floors below
+/// every present counter, absent dots) yield no term, exactly as they yield no
+/// edge pairwise. Total work is `O((n + Σ context entries) · log n)`.
 pub fn canonical_reduction_order<'a>(
+    envelopes: &[&'a OperationEnvelope],
+) -> Vec<&'a OperationEnvelope> {
+    let len = envelopes.len();
+    let keys: Vec<StampTuple> = envelopes
+        .iter()
+        .map(|env| env.stamp.reduction_tuple())
+        .collect();
+
+    // Static indexes over the present set: per-replica lanes sorted by
+    // (counter, slice index), each envelope's (lane, slot) position, and the
+    // per-id unemitted multiplicity (> 1 only for duplicate ids, e.g.
+    // equivocation twins fed to this function directly).
+    let mut lane_of: BTreeMap<ReplicaId, usize> = BTreeMap::new();
+    let mut lanes: Vec<OrderLane> = Vec::new();
+    let mut position = vec![(0usize, 0usize); len];
+    {
+        let mut sorted: Vec<(ReplicaId, u64, usize)> = envelopes
+            .iter()
+            .enumerate()
+            .map(|(index, env)| (env.id.replica, env.id.counter, index))
+            .collect();
+        sorted.sort_unstable();
+        for (replica, counter, index) in sorted {
+            let lane_index = *lane_of.entry(replica).or_insert_with(|| {
+                lanes.push(OrderLane::default());
+                lanes.len() - 1
+            });
+            let lane = &mut lanes[lane_index];
+            position[index] = (lane_index, lane.slots.len());
+            lane.slots.push(index);
+            lane.counters.push(counter);
+        }
+        for lane in &mut lanes {
+            // All slots start unemitted: frontier 0, second frontier 1
+            // (clamped to the lane length, the "exhausted" sentinel).
+            lane.second = 1.min(lane.slots.len());
+        }
+    }
+    let mut id_slots: BTreeMap<OperationId, IdSlot> = BTreeMap::new();
+    for env in envelopes {
+        id_slots.entry(env.id).or_default().unemitted += 1;
+    }
+
+    // One requirement term per covering context entry; `remaining` counts the
+    // currently-unsatisfied terms. Terms already satisfied here (they cover
+    // nothing, or nothing beyond the envelope itself) register no watcher.
+    let mut remaining = vec![0usize; len];
+    for (index, env) in envelopes.iter().enumerate() {
+        for (&replica, &floor) in &env.causal_context.vector {
+            let Some(&lane_index) = lane_of.get(&replica) else {
+                continue;
+            };
+            let lane = &mut lanes[lane_index];
+            let prefix = lane.counters.partition_point(|&counter| counter <= floor);
+            if prefix == 0 {
+                continue;
+            }
+            if env.id.replica == replica && env.id.counter <= floor {
+                // The floor covers this envelope's own id; only the self-pair
+                // is exempt. Required: every other prefix slot emitted, i.e.
+                // frontier at the own slot *and* second frontier past the
+                // prefix (the own slot stays unemitted until emission).
+                let own_slot = position[index].1;
+                if lane.frontier < own_slot {
+                    remaining[index] += 1;
+                    lane.frontier_watchers.entry(own_slot).or_default().push(
+                        FloorWatcher::ExceptSelf {
+                            node: index,
+                            prefix,
+                        },
+                    );
+                } else if lane.second < prefix {
+                    remaining[index] += 1;
+                    lane.second_watchers.entry(prefix).or_default().push(index);
+                }
+            } else if lane.frontier < prefix {
+                remaining[index] += 1;
+                lane.frontier_watchers
+                    .entry(prefix)
+                    .or_default()
+                    .push(FloorWatcher::Whole { node: index });
+            }
+        }
+        for dot in env.causal_context.dots() {
+            let Some(id_slot) = id_slots.get_mut(&dot) else {
+                continue; // absent id: covers nothing present, no edge
+            };
+            if dot == env.id {
+                // A dot naming the envelope's own id covers only duplicates.
+                if id_slot.unemitted > 1 {
+                    remaining[index] += 1;
+                    id_slot.watch_one.push(index);
+                }
+            } else {
+                remaining[index] += 1;
+                id_slot.watch_zero.push(index);
+            }
+        }
+    }
+
+    // Deterministic Kahn walk. The heap holds every envelope whose terms are
+    // all satisfied (pushed exactly at the transition; entries for envelopes
+    // already emitted through cycle-breaking are skipped lazily), keyed by
+    // (reduction tuple, slice index) — the reference's `min_by_key` order.
+    let mut heap: BinaryHeap<Reverse<(StampTuple, usize)>> = (0..len)
+        .filter(|&index| remaining[index] == 0)
+        .map(|index| Reverse((keys[index], index)))
+        .collect();
+    let mut by_key: Vec<usize> = (0..len).collect();
+    by_key.sort_unstable_by_key(|&index| (keys[index], index));
+    let mut cycle_cursor = 0usize;
+
+    let mut emitted = vec![false; len];
+    let mut ordered = Vec::with_capacity(len);
+    let mut woken: Vec<usize> = Vec::new();
+    while ordered.len() < len {
+        let mut ready = None;
+        while let Some(Reverse((_, index))) = heap.pop() {
+            if !emitted[index] {
+                ready = Some(index);
+                break;
+            }
+        }
+        let next = match ready {
+            Some(index) => index,
+            None => {
+                // A cycle is malformed, but selecting by the canonical
+                // tie-breaker keeps reduction deterministic and unlocks the
+                // forced envelope's dependents.
+                while emitted[by_key[cycle_cursor]] {
+                    cycle_cursor += 1;
+                }
+                by_key[cycle_cursor]
+            }
+        };
+        emitted[next] = true;
+        ordered.push(envelopes[next]);
+
+        // Dot wake-ups: the id's unemitted multiplicity dropped by one.
+        let id_slot = id_slots
+            .get_mut(&envelopes[next].id)
+            .expect("every present id has a slot");
+        id_slot.unemitted -= 1;
+        if id_slot.unemitted <= 1 {
+            woken.append(&mut id_slot.watch_one);
+        }
+        if id_slot.unemitted == 0 {
+            woken.append(&mut id_slot.watch_zero);
+        }
+
+        // Floor wake-ups: advance the lane frontiers (both point at unemitted
+        // slots — or the lane length — by invariant, so an emission below the
+        // second frontier is at one of them) and drain the passed watchers.
+        let (lane_index, slot) = position[next];
+        let lane = &mut lanes[lane_index];
+        if slot == lane.frontier {
+            lane.frontier = lane.second;
+            lane.second = next_unemitted(&lane.slots, &emitted, lane.frontier + 1);
+        } else if slot == lane.second {
+            lane.second = next_unemitted(&lane.slots, &emitted, slot + 1);
+        }
+        while let Some(entry) = lane.frontier_watchers.first_entry() {
+            if *entry.key() > lane.frontier {
+                break;
+            }
+            for watcher in entry.remove() {
+                match watcher {
+                    FloorWatcher::Whole { node } => woken.push(node),
+                    FloorWatcher::ExceptSelf { node, prefix } => {
+                        if lane.second >= prefix {
+                            woken.push(node);
+                        } else {
+                            lane.second_watchers.entry(prefix).or_default().push(node);
+                        }
+                    }
+                }
+            }
+        }
+        while let Some(entry) = lane.second_watchers.first_entry() {
+            if *entry.key() > lane.second {
+                break;
+            }
+            for node in entry.remove() {
+                woken.push(node);
+            }
+        }
+
+        for node in woken.drain(..) {
+            remaining[node] -= 1;
+            if remaining[node] == 0 && !emitted[node] {
+                heap.push(Reverse((keys[node], node)));
+            }
+        }
+    }
+    ordered
+}
+
+/// One replica's present envelopes in [`canonical_reduction_order`], sorted by
+/// `(counter, slice index)`, with the two monotone emission frontiers and the
+/// floor-term watchers keyed by the frontier slot they wait for.
+#[derive(Default)]
+struct OrderLane {
+    /// Envelope slice indexes, sorted by `(counter, slice index)`.
+    slots: Vec<usize>,
+    /// The slots' counters (parallel to `slots`, ascending).
+    counters: Vec<u64>,
+    /// First unemitted slot (== `slots.len()` once exhausted).
+    frontier: usize,
+    /// Second unemitted slot (>= `slots.len()` once fewer than two remain).
+    second: usize,
+    /// Floor terms waiting for `frontier >= key`.
+    frontier_watchers: BTreeMap<usize, Vec<FloorWatcher>>,
+    /// Self-exempt floor terms waiting for `second >= key`.
+    second_watchers: BTreeMap<usize, Vec<usize>>,
+}
+
+/// One present `OperationId`'s bookkeeping in [`canonical_reduction_order`]:
+/// its unemitted multiplicity and the dot terms watching it.
+#[derive(Default)]
+struct IdSlot {
+    /// Present envelopes bearing this id that are not yet emitted.
+    unemitted: usize,
+    /// Dot terms satisfied when `unemitted` reaches zero.
+    watch_zero: Vec<usize>,
+    /// Self-dot terms (duplicate ids) satisfied when `unemitted` reaches one.
+    watch_one: Vec<usize>,
+}
+
+/// A floor term parked in [`OrderLane::frontier_watchers`].
+enum FloorWatcher {
+    /// Satisfied outright when the frontier reaches its key (the prefix end).
+    Whole { node: usize },
+    /// A floor covering the node's own id: when the frontier reaches the
+    /// node's own slot (its key), the term is satisfied if the second
+    /// frontier already passed `prefix`, else it re-parks on the second
+    /// frontier.
+    ExceptSelf { node: usize, prefix: usize },
+}
+
+/// The first unemitted slot position at or after `from` (== `slots.len()` when
+/// exhausted). Frontier scans only ever move forward, so the total scan work
+/// per lane is linear.
+fn next_unemitted(slots: &[usize], emitted: &[bool], from: usize) -> usize {
+    let mut at = from.min(slots.len());
+    while at < slots.len() && emitted[slots[at]] {
+        at += 1;
+    }
+    at
+}
+
+/// The pre-F1 O(n²) implementation, retained verbatim as the property-test
+/// oracle for [`canonical_reduction_order`]: it materializes every covered
+/// `(predecessor, successor)` pair and re-scans the whole set per emission,
+/// which *is* the order's pairwise definition, executed literally.
+#[cfg(test)]
+pub(crate) fn canonical_reduction_order_reference<'a>(
     envelopes: &[&'a OperationEnvelope],
 ) -> Vec<&'a OperationEnvelope> {
     let len = envelopes.len();
@@ -4837,6 +5128,346 @@ mod tests {
                 ),
             })),
         }
+    }
+
+    // --- Subquadratic canonical order vs. the retained O(n²) oracle. --------
+
+    /// A minimal envelope for pure ordering tests: payload content never
+    /// affects the canonical reduction order.
+    fn order_env(
+        replica: ReplicaId,
+        counter: u64,
+        physical: i64,
+        logical: u32,
+        ctx: CausalContext,
+    ) -> OperationEnvelope {
+        let id = OperationId::new(replica, counter);
+        OperationEnvelope {
+            id,
+            author: AuthorId(1),
+            stamp: OperationStamp::new(
+                HybridLogicalClock::new(WallClockTime(physical), logical),
+                id,
+            ),
+            causal_context: ctx,
+            transaction: None,
+            payload: OperationPayload::Primitive(OperationKind::DeleteEvent(DeleteEventOp {
+                event: EventId::new(ReplicaId(7), counter % 5),
+                tuplet_compensation: TupletCompensation::NotInTuplet,
+            })),
+        }
+    }
+
+    /// Asserts the subquadratic order equals the reference oracle's
+    /// element-for-element — by slice element identity (pointer equality), the
+    /// strictest possible check: it distinguishes even byte-identical
+    /// duplicate envelopes, whose tuple ties both implementations must break
+    /// by slice position.
+    fn assert_order_matches_reference(envelopes: &[OperationEnvelope]) {
+        let refs: Vec<&OperationEnvelope> = envelopes.iter().collect();
+        let fast = canonical_reduction_order(&refs);
+        let oracle = canonical_reduction_order_reference(&refs);
+        assert_eq!(fast.len(), oracle.len());
+        for (at, (a, b)) in fast.iter().zip(&oracle).enumerate() {
+            assert!(
+                std::ptr::eq(*a, *b),
+                "canonical order diverges from the reference at position {at}: \
+                 {:?} vs {:?} (n = {})",
+                a.id,
+                b.id,
+                envelopes.len()
+            );
+        }
+    }
+
+    /// In-place Fisher–Yates driven by the seeded generator (slice order is an
+    /// input to the tuple tie-break, so permutations must be exercised too).
+    fn shuffle_envelopes(
+        envelopes: &mut [OperationEnvelope],
+        rng: &mut epiphany_determinism::fuzz::SplitMix64,
+    ) {
+        for i in (1..envelopes.len()).rev() {
+            let j = (rng.next_u64() % (i as u64 + 1)) as usize;
+            envelopes.swap(i, j);
+        }
+    }
+
+    /// A hostile ordering input the crate's well-formed generators avoid:
+    /// floors that cover the envelope's own id or absent counters, dots to
+    /// present / absent / own ids, duplicate ids (byte-identical twins),
+    /// `SYSTEM_DERIVED` replicas, colliding stamps that contradict the causal
+    /// edges (so the topological pass and the cycle-breaker both engage), and
+    /// empty contexts.
+    fn adversarial_set(
+        rng: &mut epiphany_determinism::fuzz::SplitMix64,
+        n: usize,
+    ) -> Vec<OperationEnvelope> {
+        let replicas = 1 + rng.next_u64() % 4;
+        let mut next_counter: BTreeMap<ReplicaId, u64> = BTreeMap::new();
+        let mut envs: Vec<OperationEnvelope> = Vec::with_capacity(n);
+        for _ in 0..n {
+            if !envs.is_empty() && rng.next_u64() % 8 == 0 {
+                // A duplicate id — and a byte-identical stamp, so the
+                // reduction tuple genuinely ties.
+                let victim = envs[(rng.next_u64() % envs.len() as u64) as usize].clone();
+                envs.push(victim);
+                continue;
+            }
+            let replica = if rng.next_u64() % 16 == 0 {
+                ReplicaId::SYSTEM_DERIVED
+            } else {
+                ReplicaId(1 + rng.next_u64() % replicas)
+            };
+            let slot = next_counter.entry(replica).or_insert(0);
+            // Occasionally skip counters so floors assert absent predecessors.
+            let counter = *slot + rng.next_u64() % 2;
+            *slot = counter + 1;
+            let id = OperationId::new(replica, counter);
+
+            let mut ctx = CausalContext::new();
+            for _ in 0..rng.next_u64() % 3 {
+                let target = match rng.next_u64() % 5 {
+                    0 => replica,      // may cover the envelope's own id
+                    1 => ReplicaId(9), // absent replica
+                    2 => ReplicaId::SYSTEM_DERIVED,
+                    _ => ReplicaId(1 + rng.next_u64() % replicas),
+                };
+                // May exceed every present counter (covering future authoring
+                // of that replica — a causal cycle) or fall below all of them.
+                ctx = ctx.with_seen(target, rng.next_u64() % 8);
+            }
+            for _ in 0..rng.next_u64() % 3 {
+                let dot = if !envs.is_empty() && rng.next_u64() % 2 == 0 {
+                    envs[(rng.next_u64() % envs.len() as u64) as usize].id
+                } else if rng.next_u64() % 4 == 0 {
+                    id // the envelope's own id
+                } else {
+                    OperationId::new(ReplicaId(1 + rng.next_u64() % 5), rng.next_u64() % 10)
+                };
+                ctx = ctx.with_dot(dot);
+            }
+
+            // Tiny stamp ranges force heavy tuple collisions and stamps that
+            // contradict the causal edges.
+            envs.push(order_env(
+                replica,
+                counter,
+                (rng.next_u64() % 6) as i64,
+                (rng.next_u64() % 3) as u32,
+                ctx,
+            ));
+        }
+        envs
+    }
+
+    #[test]
+    fn canonical_order_matches_reference_on_fuzz_sets() {
+        // The crate's own well-formed generator: multi-replica meshes of
+        // vector floors, occasional equivocation twins (duplicate ids) and
+        // HLC-monotonicity anomalies, empty contexts on counter-0 roots.
+        let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xF1_0DE2_0001);
+        for _ in 0..250 {
+            let n = 1 + (rng.next_u64() % 40) as usize;
+            let mut envs = crate::fuzz::gen_envelope_set(&mut rng, n);
+            assert_order_matches_reference(&envs);
+            shuffle_envelopes(&mut envs, &mut rng);
+            assert_order_matches_reference(&envs);
+        }
+    }
+
+    #[test]
+    fn canonical_order_matches_reference_on_adversarial_sets() {
+        let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xADE5_A71A_0002);
+        assert_order_matches_reference(&[]);
+        for iteration in 0..400 {
+            let n = 1 + (rng.next_u64() % 60) as usize;
+            let mut envs = adversarial_set(&mut rng, n);
+            assert_order_matches_reference(&envs);
+            if iteration % 4 == 0 {
+                shuffle_envelopes(&mut envs, &mut rng);
+                assert_order_matches_reference(&envs);
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_order_matches_reference_on_directed_shapes() {
+        let r = ReplicaId(1);
+
+        // A 2,000-envelope single-replica chain whose every DVV floor covers
+        // the full replica prefix — the inherently-quadratic-pairs shape the
+        // subquadratic construction exists for — with *descending* stamps, so
+        // the causal edges (not the HLC) decide every single emission.
+        let full_chain: Vec<OperationEnvelope> = (0..2_000)
+            .map(|c| {
+                let ctx = if c == 0 {
+                    CausalContext::new()
+                } else {
+                    CausalContext::new().with_seen(r, c - 1)
+                };
+                order_env(r, c, 2_000 - c as i64, 0, ctx)
+            })
+            .collect();
+        assert_order_matches_reference(&full_chain);
+
+        // A self-covering chain: every floor also covers the envelope's own
+        // id (the exempted self-pair).
+        let self_chain: Vec<OperationEnvelope> = (0..600)
+            .map(|c| {
+                order_env(
+                    r,
+                    c,
+                    600 - c as i64,
+                    0,
+                    CausalContext::new().with_seen(r, c),
+                )
+            })
+            .collect();
+        assert_order_matches_reference(&self_chain);
+
+        // A dot-only chain (no vector floors at all).
+        let dot_chain: Vec<OperationEnvelope> = (0..600)
+            .map(|c| {
+                let ctx = if c == 0 {
+                    CausalContext::new()
+                } else {
+                    CausalContext::new().with_dot(OperationId::new(r, c - 1))
+                };
+                order_env(r, c, 600 - c as i64, 0, ctx)
+            })
+            .collect();
+        assert_order_matches_reference(&dot_chain);
+
+        // Malformed dot cycles (2-cycle and 3-cycle) among bystanders with
+        // empty contexts and identical stamps.
+        let id = |rep: u64, c: u64| OperationId::new(ReplicaId(rep), c);
+        let cycles = vec![
+            order_env(
+                ReplicaId(2),
+                0,
+                5,
+                0,
+                CausalContext::new().with_dot(id(2, 1)),
+            ),
+            order_env(
+                ReplicaId(2),
+                1,
+                5,
+                0,
+                CausalContext::new().with_dot(id(2, 0)),
+            ),
+            order_env(
+                ReplicaId(3),
+                0,
+                5,
+                0,
+                CausalContext::new().with_dot(id(3, 2)),
+            ),
+            order_env(
+                ReplicaId(3),
+                1,
+                5,
+                0,
+                CausalContext::new().with_dot(id(3, 0)),
+            ),
+            order_env(
+                ReplicaId(3),
+                2,
+                5,
+                0,
+                CausalContext::new().with_dot(id(3, 1)),
+            ),
+            order_env(ReplicaId(4), 0, 5, 0, CausalContext::new()),
+            order_env(ReplicaId(5), 0, 5, 0, CausalContext::new()),
+        ];
+        assert_order_matches_reference(&cycles);
+
+        // Mutual full-coverage floors (a floor cycle where each envelope also
+        // covers itself), plus coverage of absent ids on an absent replica.
+        let floor_cycle = vec![
+            order_env(
+                ReplicaId(6),
+                0,
+                9,
+                0,
+                CausalContext::new().with_seen(ReplicaId(6), 1),
+            ),
+            order_env(
+                ReplicaId(6),
+                1,
+                8,
+                0,
+                CausalContext::new().with_seen(ReplicaId(6), 1),
+            ),
+            order_env(
+                ReplicaId(6),
+                2,
+                7,
+                0,
+                CausalContext::new()
+                    .with_seen(ReplicaId(40), 12)
+                    .with_dot(id(41, 3)),
+            ),
+        ];
+        assert_order_matches_reference(&floor_cycle);
+
+        // Byte-identical duplicate ids (tuple ties broken by slice position)
+        // in several slice orders, including a dot and a floor onto the
+        // duplicated id.
+        let twin = order_env(ReplicaId(2), 3, 1, 0, CausalContext::new());
+        let mut twins = vec![
+            twin.clone(),
+            twin.clone(),
+            order_env(
+                ReplicaId(2),
+                4,
+                0,
+                0,
+                CausalContext::new().with_dot(id(2, 3)),
+            ),
+            order_env(
+                ReplicaId(3),
+                0,
+                0,
+                0,
+                CausalContext::new().with_seen(ReplicaId(2), 3),
+            ),
+            // A twin that dots its own id: covers only its duplicate.
+            order_env(
+                ReplicaId(2),
+                3,
+                1,
+                0,
+                CausalContext::new().with_dot(id(2, 3)),
+            ),
+        ];
+        assert_order_matches_reference(&twins);
+        twins.reverse();
+        assert_order_matches_reference(&twins);
+        twins.swap(0, 2);
+        assert_order_matches_reference(&twins);
+
+        // SYSTEM_DERIVED authoring under floors and dots from user replicas.
+        let sys = ReplicaId::SYSTEM_DERIVED;
+        let system = vec![
+            order_env(sys, 0, 3, 0, CausalContext::new()),
+            order_env(sys, 1, 2, 0, CausalContext::new().with_seen(sys, 0)),
+            order_env(
+                ReplicaId(2),
+                0,
+                1,
+                0,
+                CausalContext::new().with_seen(sys, 1),
+            ),
+            order_env(
+                ReplicaId(2),
+                1,
+                0,
+                0,
+                CausalContext::new().with_dot(id(u64::MAX, 0)),
+            ),
+        ];
+        assert_order_matches_reference(&system);
     }
 
     #[test]

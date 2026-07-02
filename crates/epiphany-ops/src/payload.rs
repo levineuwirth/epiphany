@@ -709,7 +709,7 @@ pub(crate) fn resolved_anchor_position(anchor: &TimeAnchor) -> MusicalPosition {
 
 impl SetUserSystemBreakOp {
     /// The anchor's resolved musical position — the canonical LWW bucketing key
-    /// (see [`resolved_anchor_position`]).
+    /// (see the private `resolved_anchor_position` helper).
     pub fn resolved_position(&self) -> MusicalPosition {
         resolved_anchor_position(&self.anchor)
     }
@@ -1118,7 +1118,7 @@ pub struct SetUserPageBreakOp {
 
 impl SetUserPageBreakOp {
     /// The anchor's resolved musical position — the canonical LWW bucketing key
-    /// (see [`resolved_anchor_position`]).
+    /// (see the private `resolved_anchor_position` helper).
     pub fn resolved_position(&self) -> MusicalPosition {
         resolved_anchor_position(&self.anchor)
     }

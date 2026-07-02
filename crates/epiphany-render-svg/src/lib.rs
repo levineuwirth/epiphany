@@ -3,7 +3,7 @@
 //!
 //! Agent I's **SVG renderer** behind the Epiphany `RenderIR` interface (spec
 //! **Chapter 7** §"RenderIR"): it turns a
-//! [`ResolvedLayoutIR`](epiphany_layout_ir::ResolvedLayoutIR) into well-formed
+//! [`ResolvedLayoutIR`] into well-formed
 //! **SVG 1.1**, drawing each glyph from **genuine Bravura SMuFL** data: inline
 //! outline `<path>`s by default, or `<text>` set in an `@font-face`-embedded
 //! subset. It is the visible end of the v0 `Score → layout IR` pipeline: from a
@@ -15,7 +15,7 @@
 //! the renderer was golden-locked against the **stub solver's** output first, then
 //! against the real [`epiphany_engrave`](../epiphany_engrave/index.html) solver
 //! once real notation and re-spacing landed. The renderer consumes any solver's
-//! [`ResolvedLayoutIR`](epiphany_layout_ir::ResolvedLayoutIR): it preserves the
+//! [`ResolvedLayoutIR`]: it preserves the
 //! resolved geometry, provenance traces, XML validity, deterministic output, and
 //! glyph-mode choice without making engraving-semantic decisions.
 //!
@@ -24,8 +24,9 @@
 //! The bundled outlines are extracted from the official OFL `Bravura.otf` (see
 //! `tools/extract_bravura_outlines.py` and `tools/OFL.txt`) in staff-space,
 //! y-up coordinates. The renderer makes SVG-encoding choices only and never
-//! engraving-semantic ones; see [`svg`] for the coordinate system, the
-//! provenance-tracing contract, and the diagnostic-not-paper-over rule.
+//! engraving-semantic ones; see the private `svg` module for the coordinate
+//! system, the provenance-tracing contract, and the diagnostic-not-paper-over
+//! rule.
 //!
 //! ## Font availability
 //!

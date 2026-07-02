@@ -105,6 +105,17 @@ jobs:
       - name: Run conformance suite
         run: cargo run --release -p epiphany-testkit --example conformance_suite 1
 
+      # The Chapter 10 performance-budget gates (Phase 2 worklist F1), in
+      # release with reduced sampling (EPIPHANY_BENCH_QUICK): the 1K and 10K
+      # reduction points and both bundle budgets must pass; known-pending
+      # points are documented xfails inside the benches ("F surfaces, K
+      # fixes"). The heaviest (50K) reduction point runs only in the nightly
+      # soak below.
+      - name: Performance budget gates (quick)
+        env:
+          EPIPHANY_BENCH_QUICK: "1"
+        run: cargo bench -p epiphany-testkit
+
   # Track A, Agent H's merge gate (Phase 2). A discrete job so a spelling /
   # decomposition pre-pass regression is attributable to H, not buried in the
   # workspace test run. Asserts H's PHASE2_QUICKSTART acceptance criterion: the
@@ -138,3 +149,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run conformance soak
         run: cargo run --release -p epiphany-testkit --example conformance_suite 10
+      # The full budget-gate run, including the minute-scale 50K reduction
+      # point (a documented xfail until the O(n²) reducer fix lands).
+      - name: Performance budget gates (full)
+        run: cargo bench -p epiphany-testkit

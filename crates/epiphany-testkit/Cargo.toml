@@ -16,7 +16,25 @@ epiphany-ops.workspace = true
 # now drives the real crate instead of an in-tree stub.
 epiphany-layout-ir.workspace = true
 
+# The Chapter 10 performance benches (worklist F1) are the only dev-dependency
+# user: the budget-gate logic itself lives in `src/budget.rs` on plain `std`,
+# so the library builds without criterion.
+[dev-dependencies]
+criterion.workspace = true
+
 # Drives the whole suite at scale outside the unit-test timeout — the analogue
 # of epiphany-determinism's `fuzz_roundtrip` and epiphany-bundle's `fuzz_crash`.
 [[example]]
 name = "conformance_suite"
+
+# The Chapter 10 performance-budget benches (worklist F1; DECISIONS.md F0/F1).
+# `harness = false`: each bench owns `main()`, running criterion's measurements
+# first and then the budget gate — the assertion layer criterion cannot express
+# — exiting nonzero on an unexpected budget miss.
+[[bench]]
+name = "reduction"
+harness = false
+
+[[bench]]
+name = "bundle"
+harness = false

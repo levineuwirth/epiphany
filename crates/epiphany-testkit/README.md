@@ -147,6 +147,40 @@ Per the QUICKSTART, implementation-discovered gaps are batched, not improvised:
   remaining layout-specific Pass 11 candidates (the `OperationKindTag` variant set
   and the layout-object id derivation).
 
+## Performance benches (Chapter 10 budgets, worklist F1)
+
+`benches/` holds the criterion benches for the spec's measurable Chapter 10
+budgets (see `DECISIONS.md` F0 for why they live in this crate, F1 for every
+call made). Criterion measures; the **budget gate** (`src/budget.rs`) asserts:
+each bench's `main()` ends by re-timing every budget row and exiting nonzero if
+a `Pass`-marked row misses its threshold. Known-pending rows are marked
+`Xfail(reason)` *in the bench source* next to the numeric budget — a miss is
+reported and tolerated, and a pass prints a loud promotion notice so stale
+markings cannot linger. This is the "F surfaces, K fixes" handshake, and its
+inaugural round has completed: the bench documented the reducer's O(n²)
+`canonical_reduction_order` failure at scale, and Agent K's subquadratic
+rewrite (see `epiphany-ops/DECISIONS.md`) flipped the xfail row to `Pass`.
+
+| row | budget (spec Chapter 10) | expectation |
+|-----|--------------------------|-------------|
+| `reduction/1000` | > 10,000 envelopes/s, cold | Pass (~674K env/s measured) |
+| `reduction/10000` | > 10,000 envelopes/s, cold | Pass (~257K env/s measured) |
+| `reduction/50000` | > 10,000 envelopes/s, cold | Pass (~87K env/s measured; promoted from Xfail by Agent K's reducer fix — was ~1.7K env/s) |
+| `bundle/typical_edit_commit` | ≤ 50 ms (append + manifest + superblock flip, fsync'd) | Pass (~15 ms) |
+| `bundle/open_bootstrap_read` | ≤ 200 ms (manifest + bootstrap chunks) | Pass (moderate-corpus stand-in) |
+
+```sh
+# Full run (includes the 50K cold-reduction point, ~0.6 s per iteration):
+cargo bench -p epiphany-testkit
+
+# The reduced CI shape: smaller sampling, 50K point skipped (PR CI runs this):
+EPIPHANY_BENCH_QUICK=1 cargo bench -p epiphany-testkit
+```
+
+The gate is a calibrated median over a few iterations, deliberately not the
+spec's p99-over-1000-iterations conformance methodology (that is the reference
+suite's job; the deviation is documented in `src/budget.rs`).
+
 ## Running
 
 ```sh

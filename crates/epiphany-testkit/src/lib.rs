@@ -92,6 +92,11 @@
 
 pub mod rng;
 
+// Phase 2, Agent F (worklist F1): the Chapter 10 performance-budget gate the
+// `benches/` targets assert through (Pass / Xfail rows with thresholds written
+// in the bench source; see `DECISIONS.md` F0/F1).
+pub mod budget;
+
 pub mod fixtures;
 pub mod generators;
 pub mod roundtrip;

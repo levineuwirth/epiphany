@@ -343,6 +343,12 @@ object is covered); the provenance-preservation contract itself is unchanged.
   declarations and gates `apply`/`apply_transaction` through
   `EditBarrier::prohibits_edit`.
 
+  > **Ratified (2026-07-02):** `spec/binary_format.tex` v0.1.0 Chapter 8
+  > ratifies the blob byte form (P12-E1, `req:binfmt:ext-blobs`), pins
+  > `MAX_CONDITION_DEPTH = 64` as the normative recursion bound (P12-E2,
+  > `req:binfmt:condition-depth`), and adopts the open-value `ObjectKind`
+  > decode stance (P12-E3, `req:binfmt:object-kind-open`).
+
 ## Pass 12 candidates (ambiguities for the spec, not resolved in code)
 
 1. **Strength attachment to constraint instances.** Chapter 9 §"Strength Levels"

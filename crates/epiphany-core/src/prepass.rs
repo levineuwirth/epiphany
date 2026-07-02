@@ -1186,7 +1186,7 @@ fn decomposition_source_rank(source: &DecompositionSource) -> usize {
 /// decompositions only "for events that lack a higher-precedence attachment",
 /// with the "same precedence machinery" as spelling, minus the axes the
 /// attachment does not carry (no analysis layers, no `priority` field). Among
-/// competing authored attachments the lowest [`decomposition_source_rank`]
+/// competing authored attachments the lowest `decomposition_source_rank`
 /// wins; a remaining tie keeps the first candidate in the score's
 /// `decomposition_attachments` order, which is canonical (codec-fixed), so the
 /// resolution is deterministic across replicas.

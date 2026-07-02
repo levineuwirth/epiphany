@@ -4,7 +4,7 @@
 //! Agent I's **engraving constraint solver** (spec **Chapter 9**, "Constraint-
 //! Solver Interface"): it turns a [`ConstrainedLayoutIR`] into a
 //! [`ResolvedLayoutIR`] with real geometry. It is the production-side replacement
-//! for `epiphany-layout-ir`'s interface-only [`StubSolver`] — the QUICKSTART puts
+//! for `epiphany-layout-ir`'s interface-only `StubSolver` — the QUICKSTART puts
 //! the *interface* (`layout-ir`) and the *algorithm* (`engrave`) in separate
 //! crates so the core/product boundary stays sharp (`spec/PHASE2_QUICKSTART.md`,
 //! crate topology).
@@ -12,7 +12,7 @@
 //! ## Phase status — `Minimal` tier
 //!
 //! [`Engraver`] runs a genuine deterministic **horizontal spacing pass** (see
-//! [`spacing`]) — placing each glyph-bearing slot left-to-right by a
+//! the private `spacing` module) — placing each glyph-bearing slot left-to-right by a
 //! collision-aware advance (its preferred width floored by the real glyph
 //! bearings) — and **evaluates the IR's declared constraints** against the
 //! resolved geometry, routed by [`LayoutConstraint::strength`] (Chapter 9

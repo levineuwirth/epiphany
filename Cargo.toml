@@ -88,6 +88,13 @@ unicode-normalization = "0.1"
 # produce compressed fixtures. Default features (legacy formats, dictionary
 # building) are off — none are needed to decode standard frames.
 zstd = { version = "0.13", default-features = false }
+# Criterion drives the Chapter 10 performance benches (Phase 2 worklist F1) in
+# epiphany-testkit/benches (see that crate's DECISIONS.md, F0/F1). Pinned to
+# the 0.5 line: its MSRV (1.70) fits the workspace's pinned 1.77, while
+# criterion 0.6+ requires 1.80. Default features are off — the plotting stack
+# (plotters) and rayon are dead weight for budget gates — keeping only
+# `cargo_bench_support` so plain `cargo bench` remains the entry point.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 
 # Determinism-sensitive: never enable fast-math-style codegen on canonical
 # numerical paths (Appendix D, "Rounding and CPU Behavior"). The default

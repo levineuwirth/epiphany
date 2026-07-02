@@ -1,0 +1,2525 @@
+% !TEX program = xelatex
+%
+% Epiphany --- Binary Format (companion specification)
+% Companion to the Core Specification. Compile with XeLaTeX.
+%
+% This document is versioned independently of the Core Specification
+% (independent semver; see the Versioning note in the front matter). Its preamble
+% is intentionally a self-contained copy of the core specification's preamble so
+% the two documents build independently; factoring a shared preamble file is a
+% later cleanup, not a v0.1 deliverable.
+
+\documentclass[11pt,letterpaper]{report}
+
+% ---------------------------------------------------------------------------
+% Packages
+% ---------------------------------------------------------------------------
+\usepackage{fontspec}
+\usepackage{geometry}
+\geometry{
+  letterpaper,
+  top=1.05in,
+  bottom=1.05in,
+  left=1.15in,
+  right=1.15in,
+  headheight=15pt
+}
+
+\usepackage[english]{babel}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{listings}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable, skins}
+
+% ---------------------------------------------------------------------------
+% Color palette (shared with the core specification)
+% ---------------------------------------------------------------------------
+\definecolor{epiphanyteal}{HTML}{1A4044}
+\definecolor{epiphanygold}{HTML}{8E6E2E}
+\definecolor{epiphanyink}{HTML}{1F1B16}
+\definecolor{epiphanyslate}{HTML}{6B6660}
+\definecolor{epiphanycream}{HTML}{F8F4ED}
+\definecolor{epiphanymist}{HTML}{ECE8E0}
+\definecolor{epiphanycode}{HTML}{2A2520}
+\definecolor{epiphanycrimson}{HTML}{7A2424}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=epiphanyteal,
+  citecolor=epiphanyteal,
+  urlcolor=epiphanygold,
+  pdftitle={Epiphany --- Binary Format},
+  pdfauthor={The Epiphany Project},
+  pdfsubject={Binary Format companion for the Epiphany music notation platform},
+  pdfkeywords={music notation, binary format, serialization, wire format, canonical encoding},
+  bookmarksnumbered=true,
+  bookmarksopen=true
+}
+
+% ---------------------------------------------------------------------------
+% Typography (shared with the core specification)
+% ---------------------------------------------------------------------------
+\setmainfont{TeX Gyre Pagella}[Numbers={OldStyle, Proportional}, Ligatures={TeX, Common}]
+\setsansfont{TeX Gyre Heros}[Scale=0.94, Ligatures={TeX, Common}]
+\setmonofont{TeX Gyre Cursor}[Scale=0.88, Ligatures={TeX}]
+\newfontfamily\titlefont{TeX Gyre Pagella}[Numbers={OldStyle}, Ligatures={TeX, Common}]
+\newcommand{\tablenums}[1]{{\addfontfeatures{Numbers={Lining,Tabular}}#1}}
+\newcommand{\sectionsc}[1]{{\addfontfeatures{Letters=SmallCaps}#1}}
+
+% ---------------------------------------------------------------------------
+% Section styling (shared with the core specification)
+% ---------------------------------------------------------------------------
+\titleformat{\chapter}[display]
+  {\normalfont\filright}
+  {\raggedright\color{epiphanygold}\fontsize{14pt}{16pt}\selectfont
+    \scshape Chapter\ \thechapter}
+  {16pt}
+  {\raggedright\color{epiphanyteal}\fontsize{32pt}{36pt}\selectfont\bfseries}
+  [\vspace{4pt}{\color{epiphanygold}\rule{2in}{0.6pt}}]
+\titlespacing*{\chapter}{0pt}{-20pt}{30pt}
+\titleformat{\section}
+  {\normalfont\Large\bfseries\color{epiphanyteal}}
+  {\color{epiphanygold}\thesection}{1em}{}
+\titleformat{\subsection}
+  {\normalfont\large\bfseries\color{epiphanyteal}}
+  {\color{epiphanygold}\thesubsection}{1em}{}
+\titleformat{\subsubsection}
+  {\normalfont\normalsize\bfseries\color{epiphanyink}}
+  {\thesubsubsection}{1em}{}
+
+% ---------------------------------------------------------------------------
+% Headers and footers (shared with the core specification)
+% ---------------------------------------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\fancyhead[L]{\small\scshape\color{epiphanyslate}Epiphany --- Binary Format}
+\fancyhead[R]{\small\itshape\color{epiphanyslate}\leftmark}
+\fancyfoot[C]{\small\color{epiphanyslate}\thepage}
+\renewcommand{\headrule}{
+  \color{epiphanygold!50}\hrule width\headwidth height 0.4pt
+  \vspace{1pt}
+  \color{epiphanygold!30}\hrule width\headwidth height 0.2pt
+}
+
+% ---------------------------------------------------------------------------
+% Code listing style (shared with the core specification)
+% ---------------------------------------------------------------------------
+\lstdefinelanguage{Rust}{
+  keywords={fn,let,mut,pub,struct,enum,impl,trait,for,in,if,else,match,return,
+           use,mod,crate,self,Self,as,where,move,async,await,const,static,
+           ref,type,unsafe,extern,dyn,box,break,continue,loop,while},
+  keywordstyle=\color{epiphanyteal}\bfseries,
+  ndkeywords={i8,i16,i32,i64,i128,u8,u16,u32,u64,u128,f32,f64,bool,char,str,
+              String,Vec,Option,Result,Box,Rc,Arc,HashMap,BTreeMap,
+              NonZeroU16,NonZeroU32,NonZeroU64,Duration,Timestamp},
+  ndkeywordstyle=\color{epiphanygold}\bfseries,
+  sensitive=true,
+  comment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  commentstyle=\color{epiphanyslate}\itshape,
+  stringstyle=\color{epiphanycrimson},
+  morestring=[b]",
+  morestring=[b]'
+}
+\lstset{
+  basicstyle=\ttfamily\small\color{epiphanycode},
+  backgroundcolor=\color{epiphanycream},
+  frame=leftline,
+  rulecolor=\color{epiphanygold!60},
+  framesep=8pt,
+  framerule=1.5pt,
+  xleftmargin=10pt,
+  xrightmargin=4pt,
+  breaklines=true,
+  showstringspaces=false,
+  numberstyle=\tiny\color{epiphanyslate},
+  numbersep=10pt,
+  captionpos=b,
+  aboveskip=10pt,
+  belowskip=10pt,
+  language=Rust
+}
+
+% ---------------------------------------------------------------------------
+% Custom environments (shared with the core specification)
+% ---------------------------------------------------------------------------
+\newtcolorbox{openquestion}[1][]{
+  enhanced, breakable,
+  colback=epiphanymist, colframe=epiphanycrimson,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Open Question},
+  coltitle=white, colbacktitle=epiphanycrimson,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+\newtcolorbox{rationale}[1][]{
+  enhanced, breakable,
+  colback=epiphanymist, colframe=epiphanyteal,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Rationale},
+  coltitle=white, colbacktitle=epiphanyteal,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+\newtcolorbox{requirement}[1][]{
+  enhanced, breakable,
+  colback=white, colframe=epiphanygold,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Requirement},
+  coltitle=white, colbacktitle=epiphanygold,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+\newtcolorbox{nongoal}[1][]{
+  enhanced, breakable,
+  colback=epiphanymist, colframe=epiphanyslate,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Non-Goal},
+  coltitle=white, colbacktitle=epiphanyslate,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+
+\newcommand{\MUST}{\textbf{MUST}}
+\newcommand{\MUSTNOT}{\textbf{MUST}\nobreak\ \textbf{NOT}}
+\newcommand{\SHOULD}{\textbf{SHOULD}}
+\newcommand{\SHOULDNOT}{\textbf{SHOULD}\nobreak\ \textbf{NOT}}
+\newcommand{\MAY}{\textbf{MAY}}
+
+% Byte concatenation within a wire layout.
+\newcommand{\cat}{\ensuremath{\,\Vert\,}}
+% A breakable underscore for long monospace anchor names.
+\newcommand{\ub}{\_\allowbreak}
+% Long monospace tokens (requirement names, test paths) cannot hyphenate;
+% allow loose lines instead of overfull ones.
+\emergencystretch=3em
+\tolerance=2000
+
+\setlist[itemize]{topsep=2pt, itemsep=3pt, parsep=0pt}
+\setlist[enumerate]{topsep=2pt, itemsep=3pt, parsep=0pt}
+\setlist[description]{topsep=2pt, itemsep=5pt, parsep=0pt}
+\AtBeginDocument{\color{epiphanyink}}
+
+% ---------------------------------------------------------------------------
+% Document
+% ---------------------------------------------------------------------------
+\begin{document}
+
+\begin{titlepage}
+  \thispagestyle{empty}
+  \centering
+  \vspace*{2.2in}
+  {\color{epiphanygold}\rule{3in}{0.8pt}}\\[18pt]
+  {\titlefont\fontsize{34pt}{38pt}\selectfont\color{epiphanyteal}\bfseries Epiphany}\\[10pt]
+  {\Large\scshape\color{epiphanyslate}Binary Format}\\[6pt]
+  {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
+  {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
+  {\normalsize\color{epiphanyink}Version 0.1.0 --- Phase 2 (canonical wire format: primitives through bundle physical layout + K0 payload framing)}\\[4pt]
+  {\small\color{epiphanyslate}Normative for the byte layouts it defines}
+  \vfill
+\end{titlepage}
+
+\tableofcontents
+
+% ===========================================================================
+\chapter{About This Companion}
+\label{ch:about}
+
+The \emph{Binary Format} document is a companion to the Epiphany Core
+Specification. It fulfils the core specification's delegation in Chapter~8,
+\sectionsc{Binary Format Companion} (the \texttt{sec:format:binary} section):
+the byte-level encoding --- integer conventions, exact field widths, record
+alignment, endianness, string encoding details, struct layouts --- is delivered
+here. In the core specification's words: \emph{``The Binary Format document is
+normative; an implementation cannot conform to the file format specification
+without conforming to the Binary Format specification.''}
+
+This release (v0.1.0) delivers the full \textbf{K-independent} encoding
+surface --- identifier and derivation layouts, primitive value encodings, the
+whole-\texttt{Score} composite value codec, the operation-layer wire forms,
+the bundle physical layout, and the extension-declaration blob forms ---
+\emph{plus} the \textbf{K0/M2 operation-payload wire framing}. The Operation
+Catalog's K0 set (the representative primitives and the M2 broad-K0 groups,
+catalog version 0.4.0) now exists in ratified form, so the historical ``waits
+for Agent~K'' clause in the Phase-2 charter is discharged: every operation
+kind the catalog defines has its literal wire form pinned in
+Chapter~\ref{ch:ops}.
+
+This document does \emph{not} cover:
+
+\begin{itemize}
+  \item the canonical s-expression form --- that is the \emph{Text Projection}
+    companion's;
+  \item per-profile feature lists --- the \emph{Profile Conformance}
+    companion's;
+  \item the Chapter-4 tuning-catalog values (pitch-space and tuning-system
+    registries), which are undelivered Track-C work and have no wire form yet;
+  \item the required conformance harnesses (the cross-implementation decoder
+    test and the wire-format fuzzer). Those are \emph{implementation}
+    deliverables tracked in the Phase-2 process documents, not part of this
+    document's normative text; Chapter~\ref{ch:goldens} records the golden
+    anchors that any such harness must reproduce.
+\end{itemize}
+
+\section{Relationship to the Core Specification and the Operation Catalog}
+\label{sec:about:relationship}
+
+This companion \emph{inherits} --- it never re-derives --- the core
+specification's ratified convention baseline: core specification Chapter~8,
+\sectionsc{Binary Format Companion}, requirement
+\texttt{req:format:codec-conventions}, together with the
+\sectionsc{Canonical Byte-Layout Reference} appendix (\texttt{app:bytes}).
+That appendix consolidates every discriminant table, derivation preimage, and
+primitive encoding Pass~11 and Pass~12 ratified, precisely so that this
+document could import it as a starting point rather than recovering the
+layouts from the crates. Chapter~\ref{ch:ids} therefore reproduces only
+\emph{compact} normative tables, each with a citation back to the appendix
+row and requirement that governs it; where this document and a ratified core
+requirement disagree, \textbf{the core requirement governs} and the
+discrepancy is a defect in this document.
+
+What this document adds is the completion of the appendix's deferred list
+(core specification, \sectionsc{Layouts deferred to the companions},
+\texttt{sec:bytes:deferred}): the \texttt{OperationKind} and
+\texttt{OperationKindTag} discriminants and full per-operation payload
+encodings; the full composite struct layouts (whole-\texttt{Score}, operation
+envelopes, the manifest body's field order); schema-version wire evolution;
+and the varint question, which Chapter~\ref{ch:conventions} settles.
+
+The division of labour with the \emph{Operation Catalog} is exact: the
+catalog fixes each operation's \textbf{field set and order} (Operation
+Catalog, \sectionsc{Per-Primitive Schema Template}) and its semantics; this
+document pins the \textbf{bytes} of those fields. Chapter~\ref{ch:ops} cites
+the catalog section for every payload rather than restating what the fields
+mean. Likewise, graph \emph{types} are the core specification's Chapters 2--5,
+and the structural layer of the bundle --- what a header, superblock, chunk
+graph, or manifest \emph{is} and how it behaves --- is core Chapter~8; this
+document specifies only how those structures' bits are laid out.
+
+\begin{rationale}
+\textbf{Versioning.} This companion is versioned independently of the core
+specification (independent semver), like the Operation Catalog --- but tied
+tighter to it: the binary-format \textsc{major} version tracks the core
+specification's major version (both are pre-1.0 working drafts today, hence
+v0.1.0), while \textsc{minor} versions diverge freely. Byte layouts change on
+a slower, more deliberate cadence than prose; a core-spec minor revision that
+touches no wire fact requires no revision here, and an additive discriminant
+append here (Chapter~\ref{ch:evolution}) requires no core-spec revision.
+\end{rationale}
+
+\section{Conformance}
+\label{sec:about:conformance}
+
+The byte layouts in this document are \textbf{normative}. An implementation
+conforms to the Epiphany binary format if and only if, for every layout this
+document defines, it produces exactly the specified bytes when encoding and
+accepts exactly the specified language of byte strings when decoding.
+
+Decode discipline is \textbf{reject, never normalize} --- the workspace-wide
+convention the core specification establishes in Appendix~D (canonical
+serialization determinism and ordered iteration). Concretely, each of the
+following is a \emph{decode error}, never an input to be repaired:
+
+\begin{itemize}
+  \item an unknown discriminant in any tagged union;
+  \item a set- or map-valued field whose elements are not in strictly
+    ascending canonical order, or which contains duplicates;
+  \item text that is not in Unicode NFC where NFC is required (catalog
+    identifiers, barrier pitch-space names, operation labels);
+  \item trailing bytes after a complete top-level value
+    (Requirement~\ref{req:binfmt:trailing-bytes});
+  \item recursion beyond a normative depth bound
+    (Requirement~\ref{req:binfmt:condition-depth}).
+\end{itemize}
+
+A decoder \MUSTNOT{} silently sort, deduplicate, NFC-fold, truncate, or
+otherwise canonicalize non-canonical input: two implementations that disagree
+on repair would disagree on canonical state.
+
+The \textbf{golden anchor registry} (Chapter~\ref{ch:goldens}) is the
+conformance contract binding this text to the reference implementation: every
+layout in this document is anchored by at least one named test in the
+reference crates, and a change that breaks an anchor is either a defect or a
+deliberate, versioned format revision (Chapter~\ref{ch:evolution}).
+
+% ===========================================================================
+\chapter{Encoding Conventions}
+\label{ch:conventions}
+
+This chapter restates the ratified convention baseline (core specification,
+requirement \texttt{req:format:codec-conventions}) as normative fact and
+completes it: the three prefix/endianness regimes, the primitive composition
+rules, the varint disposition, and the trailing-bytes rule.
+
+\section{The Three Encoding Regimes}
+\label{sec:conventions:regimes}
+
+Three internally consistent regimes coexist in the format. Every layout in
+this document belongs to exactly one of them, and each layout's chapter says
+which.
+
+\begin{longtable}{p{0.55in} p{2.25in} p{2.85in}}
+  \toprule
+  \textbf{Regime} & \textbf{Surfaces} & \textbf{Rules} \\
+  \midrule
+  \endhead
+  (a) & Canonical document encodings: the core value codec
+        (Chapter~\ref{ch:values}), the operation layer
+        (Chapter~\ref{ch:ops}), the bundle codec
+        (Chapter~\ref{ch:bundle}). &
+        Little-endian fixed-width integers; \texttt{u32} little-endian counts
+        and length prefixes on every variable-width field. \\
+  (b) & Layout-side pinned encodings: the extension-declaration blobs and
+        edit-barrier trees (Chapter~\ref{ch:barriers}) and the
+        \texttt{ResolvedLayoutIR} canonical output
+        (Chapter~\ref{ch:noncanon}). &
+        Little-endian integers; \texttt{u64} little-endian counts and length
+        prefixes. Deliberate, golden-locked divergence from regime (a). \\
+  (c) & Identifiers and hash-derived forms: the 128-bit identifier family,
+        \texttt{ReplicaId}, \texttt{OperationId}, \texttt{ConflictId}, the
+        \texttt{TypedObjectId} discriminant, digest truncations
+        (Chapter~\ref{ch:ids}). &
+        Big-endian fixed width. Numeric order equals canonical byte order,
+        which is what Appendix~D's ordered iteration requires. \\
+  \bottomrule
+\end{longtable}
+
+\begin{rationale}
+Regimes (a) and (b) differ only in prefix width, and the divergence is
+\emph{tolerated rather than repaired}: the two surfaces were golden-locked
+independently (the barrier blobs and the resolved-layout output carry their
+own literal-byte anchors), they never embed one another's framing, and
+unifying the prefix width now would break locked bytes for zero benefit. The
+divergence is recorded as an open question for the next schema-major revision
+(Chapter~\ref{ch:evolution}). Regime (c) is not a divergence at all: an
+identifier's byte form \emph{is} its sort key, so big-endian is load-bearing.
+\end{rationale}
+
+\section{Primitive Composition Rules}
+\label{sec:conventions:primitives}
+
+The following rules apply throughout regime (a); regimes (b) and (c) state
+their deltas in their own chapters.
+
+\begin{description}
+  \item[Booleans.] A single byte: \texttt{0} = false, \texttt{1} = true. Any
+    other value is a decode error.
+  \item[Integers.] Fixed-width little-endian two's complement
+    (\texttt{u8}/\texttt{i8} through \texttt{u128}), except within regime (c).
+  \item[\texttt{Option<T>}.] A presence byte: \texttt{0} = absent (no further
+    bytes), \texttt{1} = present, followed by \texttt{T}'s encoding. A
+    presence byte greater than~1 is a decode error.
+  \item[Sequences, sets, maps.] A \texttt{u32} little-endian element count,
+    then each element (for maps: key then value). Set- and map-valued fields
+    are emitted in canonical iteration order --- ascending by the key's
+    canonical byte form --- and decoders reject out-of-order or duplicated
+    elements wherever the field is a set or map (as opposed to an
+    order-significant list).
+  \item[Free text.] A \texttt{u32} little-endian byte length, then the raw
+    UTF-8 bytes. Free-text fields (e.g.\ a score title) are \textbf{never}
+    NFC-folded by the codec: $\mathrm{decode}(\mathrm{encode}(x)) = x$ is the
+    round-trip identity, and folding would break it. By contrast,
+    \emph{catalog identifiers} (pitch-space ids, tuning-system ids, and the
+    other \texttt{catalog\_id} newtypes) are NFC-normalized \emph{at
+    construction}, so their stored form is already NFC; the codec encodes the
+    stored string verbatim. Operation-layer text fields (the transaction
+    label, conflict field paths) are NFC-normalized at encode time
+    (Chapter~\ref{ch:ops}).
+  \item[Structs.] Positional, unframed concatenation of the fields' encodings
+    in declaration order. No field tags, no per-field lengths, no padding, no
+    alignment. (This is the layout the frozen-layout rule,
+    Requirement~\ref{req:binfmt:frozen-layout}, freezes.)
+  \item[Tagged unions.] A single discriminant byte, then the selected
+    variant's payload encoded positionally. Two documented exceptions:
+    \texttt{TypedObjectId} uses a \emph{16-bit big-endian} discriminant
+    (core requirement \texttt{req:graph:typed-object-id-discriminants};
+    Chapter~\ref{ch:ids}), and the bundle's \texttt{ProfileId} uses a
+    \texttt{u32} little-endian discriminant (core requirement
+    \texttt{req:format:profileid-discriminants}; Chapter~\ref{ch:bundle}).
+  \item[Determinism-canonical leaves.] Where a composite codec embeds a value
+    whose canonical byte form is owned by the determinism layer or the
+    identifier layer (a graph identifier, \texttt{ContentHash},
+    \texttt{CanonicalF64}, \texttt{RationalTime}, a wall-clock integer), the
+    core value codec frames it as a \texttt{u32} little-endian length prefix
+    followed by the leaf's own canonical bytes --- even when the leaf is
+    fixed-width. The leaf's bytes are then self-describing under its own
+    decoder. (The operation layer instead embeds fixed-width leaves
+    \emph{raw}, unprefixed; Chapter~\ref{ch:ops} states this explicitly.)
+\end{description}
+
+\begin{requirement}
+\label{req:binfmt:no-varint}
+\textbf{No varint.} Schema major~0 defines \emph{no} variable-length integer
+encoding. Every integer field in every layout in this document is
+fixed-width. The core specification's ``varint conventions'' language
+(Chapter~8, \sectionsc{Binary Format Companion}) is hereby discharged as
+\emph{none}: an encoder \MUSTNOT{} emit, and a decoder \MUSTNOT{} accept, any
+LEB128-style or otherwise variable-width integer under schema major~0.
+Variable width in this format comes only from explicit \texttt{u32}/%
+\texttt{u64} length prefixes and from \texttt{RationalTime}'s length-prefixed
+big-integer magnitudes (Chapter~\ref{ch:primitives}).
+\end{requirement}
+
+\begin{requirement}
+\label{req:binfmt:trailing-bytes}
+\textbf{Trailing bytes.} Every top-level decode entry point --- a
+whole-\texttt{Score} value, a per-value \texttt{CanonicalValue} decode, an
+\texttt{OperationKindTag}, a \texttt{MaterializedState}, a manifest payload,
+an operation-index payload, a block payload, an extension-declaration blob, a
+fixed-width primitive --- \MUST{} reject input with bytes remaining after the
+complete value has been decoded. Trailing bytes are a decode error, never
+ignored padding.
+\end{requirement}
+
+% ===========================================================================
+\chapter{Identifiers and Derivations}
+\label{ch:ids}
+
+This chapter is an \emph{import-by-citation} of the core specification's
+\sectionsc{Canonical Byte-Layout Reference} appendix (\texttt{app:bytes}):
+that appendix and its golden anchors govern every table in this chapter, and
+the tables here are compact restatements for self-containedness, not a second
+source of truth. All layouts in this chapter are regime (c): big-endian,
+fixed width.
+
+\section{The 128-Bit Identifier Family}
+\label{sec:ids:family}
+
+\begin{description}
+  \item[\texttt{ReplicaId}.] 8 bytes, big-endian \texttt{u64}. The reserved
+    system namespace is \texttt{ReplicaId::SYSTEM\ub DERIVED} =
+    \texttt{0xFFFF\ub FFFF\ub FFFF\ub FFFF}; user-authored replicas
+    \MUSTNOT{} use it.
+  \item[Typed graph identifiers.] Every typed 128-bit graph identifier
+    (\texttt{EventId}, \texttt{PitchId}, \texttt{VoiceId},
+    \texttt{RegionId}, \texttt{StaffInstanceId}, \texttt{TransactionId},
+    \ldots{} --- the \texttt{graph\_id} family) packs the 64-bit replica
+    into the high half and the counter into the low half, and encodes as
+    exactly 16~bytes: replica big-endian (8) \cat{} counter big-endian (8).
+    Numeric order, canonical byte order, and Appendix-D iteration order
+    coincide.
+  \item[\texttt{OperationId}.] The same 16-byte form: replica big-endian (8)
+    \cat{} counter big-endian (8). Ordering is $(\mathit{replica},
+    \mathit{counter})$ lexicographic, which equals byte order.
+  \item[Registry and author identifiers (operation layer).] The opaque
+    128-bit registry newtypes (\texttt{OperationKind\allowbreak RegistryId},
+    \texttt{ConflictKind\allowbreak RegistryId},
+    \texttt{Resolution\allowbreak RegistryId},
+    \texttt{RepairKind\allowbreak RegistryId},
+    \texttt{ReanchorReason\allowbreak RegistryId},
+    \texttt{ReplicaAnomaly\allowbreak RegistryId},
+    \texttt{IntegrityAnomaly\allowbreak RegistryId},
+    \texttt{Extension\allowbreak PreconditionId},
+    \texttt{PreconditionFailure\allowbreak RegistryId}) and \texttt{AuthorId}
+    all encode as 16 big-endian bytes.
+\end{description}
+
+\section{\texttt{TypedObjectId}}
+\label{sec:ids:typed-object-id}
+
+Canonical form: a \textbf{16-bit big-endian discriminant} \cat{} the variant
+payload (core requirement \texttt{req:graph:typed-object-id-discriminants}).
+Non-\texttt{Registered} variants carry one 16-byte identifier, for a total of
+\textbf{18~bytes}; \texttt{Registered} carries the
+\texttt{ObjectKindRegistryId} (16 big-endian bytes) \cat{} the extension's
+own raw \texttt{u128} (16 big-endian bytes), for a total of \textbf{34~bytes}.
+An unknown discriminant is a decode error.
+
+\begingroup\small
+\begin{longtable}{p{0.5in} p{1.6in} p{0.5in} p{1.6in}}
+  \toprule
+  \textbf{Disc} & \textbf{Variant} & \textbf{Disc} & \textbf{Variant} \\
+  \midrule
+  \endhead
+  \tablenums{0} & \texttt{Event} & \tablenums{14} & \texttt{Spanner} \\
+  \tablenums{1} & \texttt{Pitch} & \tablenums{15} & \texttt{Marker} \\
+  \tablenums{2} & \texttt{Voice} & \tablenums{16} & \texttt{AnalyticalAnnotation} \\
+  \tablenums{3} & \texttt{Staff} & \tablenums{17} & \texttt{Comment} \\
+  \tablenums{4} & \texttt{StaffInstance} & \tablenums{18} & \texttt{GraphicObject} \\
+  \tablenums{5} & \texttt{StaffGroup} & \tablenums{19} & \texttt{GraphicGesture} \\
+  \tablenums{6} & \texttt{Region} & \tablenums{20} & \texttt{TimeSignature} \\
+  \tablenums{7} & \texttt{Instrument} & \tablenums{21} & \texttt{AnalysisLayer} \\
+  \tablenums{8} & \texttt{PartDefinition} & \tablenums{22} & \texttt{Tuplet} \\
+  \tablenums{9} & \texttt{Measure} & \tablenums{23} & \texttt{RepeatStructure} \\
+  \tablenums{10} & \texttt{BarlineAlignmentGroup} & \tablenums{24} & \texttt{LyricLine} \\
+  \tablenums{11} & \texttt{Slur} & \tablenums{25} & \texttt{ChordSymbol} \\
+  \tablenums{12} & \texttt{Tie} & \tablenums{26} & \texttt{View} \\
+  \tablenums{13} & \texttt{Beam} & \tablenums{27} & \texttt{Registered} \\
+  \bottomrule
+\end{longtable}
+\endgroup
+
+\section{System-Derived Counters and Digest Truncations}
+\label{sec:ids:derivations}
+
+All content derivation uses BLAKE3-256 over a domain-separated preimage: the
+8-byte domain tag is always the first bytes hashed. Two truncations recur,
+both taking the digest's \emph{leading} bytes big-endian:
+
+\begin{itemize}
+  \item $\mathrm{trunc64}(d) = \mathtt{u64::from\_be\_bytes}(d[0..8])$ ---
+    the counter of a system-derived identifier;
+  \item $\mathrm{trunc128}(d) = \mathtt{u128::from\_be\_bytes}(d[0..16])$ ---
+    content-derived 128-bit identifiers.
+\end{itemize}
+
+The system-derived counter function is
+$\mathrm{trunc64}(\mathrm{BLAKE3}(\mathit{tag} \cat \mathit{inputs}))$; the
+resulting identifier is
+$\texttt{from\_parts}(\texttt{ReplicaId::SYSTEM\_DERIVED}, \mathit{counter})$.
+Only a system domain tag (prefix \texttt{MUSCS}) may seed it. The ratified
+instances (governed by \texttt{app:bytes} and the cited requirements):
+
+\begingroup\small
+\begin{longtable}{p{1.35in} p{0.7in} p{3.5in}}
+  \toprule
+  \textbf{Identifier} & \textbf{Tag} & \textbf{Canonical inputs} \\
+  \midrule
+  \endhead
+  Promoted \texttt{VoiceId} & \texttt{MUSCSVCE} &
+    64-byte preimage: \texttt{staff\_instance} (16 BE) \cat{}
+    \texttt{original\_voice} (16 BE) \cat{} \texttt{winning\_op} (16 BE)
+    \cat{} \texttt{losing\_op} (16 BE). Core \sectionsc{System-Promoted
+    Voices}. \\
+  System \texttt{PitchId} & \texttt{MUSCSPCH} &
+    The pitch's intrinsic canonical bytes (core requirement
+    \texttt{req:graph:system-derived-pitch-id}). \\
+  \texttt{IntegrityAnomalyId} & \texttt{MUSCSANM} &
+    The anomaly kind's canonical bytes (Chapter~\ref{ch:ops}; core
+    requirement \texttt{req:graph:integrity-anomaly-id}). \\
+  \bottomrule
+\end{longtable}
+\endgroup
+
+The 128-bit content-derived identifiers:
+
+\begingroup\small
+\begin{longtable}{p{1.1in} p{0.75in} p{3.7in}}
+  \toprule
+  \textbf{Identifier} & \textbf{Tag} & \textbf{Preimage after the tag} \\
+  \midrule
+  \endhead
+  \texttt{ConflictId} & \texttt{MUSCCONF} &
+    \texttt{kind.canonical\_bytes()} \cat{} causing operations (each 16 BE,
+    sorted by canonical bytes) \cat{} affected objects (each
+    \texttt{TypedObjectId} canonical bytes, sorted); $\mathrm{trunc128}$.
+    Wire form of the id itself: 16 big-endian bytes. \\
+  \texttt{ManifestId} & \texttt{MUSCMNIF} &
+    \texttt{document\_id} (16) \cat{} \texttt{generation} (\texttt{u64} LE)
+    \cat{} manifest body bytes (body excludes the \texttt{manifest\_id}
+    field); $\mathrm{trunc128}$. Restated normatively in
+    Chapter~\ref{ch:bundle} (core requirement
+    \texttt{req:format:manifest-id}). Note the \emph{on-disk} field encodes
+    little-endian (Chapter~\ref{ch:bundle}). \\
+  \texttt{EnvelopeHash} & \texttt{MUSCENVH} &
+    The envelope's complete canonical bytes; the full 32-byte digest (no
+    truncation). Chapter~\ref{ch:ops}. \\
+  \texttt{LayoutObjectId} & \texttt{MUSCLOID} &
+    Non-canonical; three preimage shapes, Chapter~\ref{ch:noncanon}
+    (core requirement \texttt{req:layoutir:object-id-derivation}). \\
+  \texttt{BlobId} & \texttt{MUSCBLOB} &
+    The blob payload, bare (\texttt{req:format:blob-hash-shape}); full
+    32-byte digest. Chapter~\ref{ch:primitives}. \\
+  \bottomrule
+\end{longtable}
+\endgroup
+
+\section{The Domain-Tag Registry}
+\label{sec:ids:tags}
+
+Every domain tag is exactly 8 printable-ASCII bytes beginning \texttt{MUSC};
+the vocabulary is closed (governed by \texttt{app:bytes},
+\sectionsc{Domain-tag registry}). Extension system tags \MUST{} begin
+\texttt{MUSCS}, be exactly 8 bytes, and collide with neither the built-ins
+nor the file magics.
+
+\begingroup\small
+\begin{longtable}{p{1.05in} p{1.55in} p{3.0in}}
+  \toprule
+  \textbf{Tag} & \textbf{Name} & \textbf{Use} \\
+  \midrule
+  \endhead
+  \texttt{MUSCCHNK} & chunk & non-manifest chunk hash preimages \\
+  \texttt{MUSCMANI} & manifest & manifest chunk hash preimages \\
+  \texttt{MUSCBLOB} & blob & \texttt{BlobId} (bare $\mathit{tag} \cat \mathit{payload}$) \\
+  \texttt{MUSCCONF} & conflict & \texttt{ConflictId} derivation \\
+  \texttt{MUSCENVH} & envelope & \texttt{EnvelopeHash} \\
+  \texttt{MUSCFNTM} & font metrics & glyph-catalog metrics hash (non-canonical) \\
+  \texttt{MUSCMNIF} & manifest id & \texttt{ManifestId} derivation \\
+  \texttt{MUSCSVCE} & system voice & promoted-voice counters \\
+  \texttt{MUSCSPCH} & system pitch & system-derived pitch counters \\
+  \texttt{MUSCSANM} & system anomaly & \texttt{IntegrityAnomalyId} \\
+  \texttt{MUSCLOID} & layout object id & \texttt{LayoutObjectId} (non-canonical) \\
+  \midrule
+  \texttt{MUSCBND\textbackslash0} & bundle magic & file magic, \emph{not} a hash tag (note the trailing NUL) \\
+  \texttt{MUSCSUPR} & superblock magic & slot magic, \emph{not} a hash tag \\
+  \bottomrule
+\end{longtable}
+\endgroup
+
+\section{\texttt{SnapshotId}}
+\label{sec:ids:snapshot-id}
+
+The core specification's support-type identity table says \emph{``the Binary
+Format companion defines the exact derivation''} of \texttt{SnapshotId}. v0
+has no snapshot producer --- pruning and canonical-base creation are deferred
+--- so there is nothing to derive \emph{from} yet.
+
+\begin{requirement}
+\label{req:binfmt:snapshot-id-opaque}
+In schema major~0, \texttt{SnapshotId} is an \textbf{opaque 16-byte
+identifier}: 16 raw bytes on the wire (Chapter~\ref{ch:primitives}), with no
+normative derivation function. Readers \MUST{} treat two
+\texttt{SnapshotId}s as equal iff their 16 bytes are equal and \MUSTNOT{}
+attempt to derive or verify a snapshot id from snapshot content.
+\end{requirement}
+
+\begin{openquestion}
+The \texttt{SnapshotId} derivation (presumably a content derivation in the
+\texttt{trunc128} family, over the snapshot's canonical payload and its
+covering frontier) is deferred together with the pruning/garbage-collection
+track that will produce the first snapshots. It must be pinned before any
+writer emits a \texttt{canonical\_base}; until then the opaque reading above
+is complete.
+\end{openquestion}
+
+% ===========================================================================
+\chapter{Primitive Value Encodings}
+\label{ch:primitives}
+
+The leaf encodings owned by the determinism layer and the small fixed
+identifier types. These byte forms are what the framings of
+Chapters~\ref{ch:values}--\ref{ch:bundle} embed.
+
+\begingroup\small
+\begin{longtable}{>{\raggedright\arraybackslash}p{1.7in} p{0.5in} p{3.45in}}
+  \toprule
+  \textbf{Type} & \textbf{Width} & \textbf{Encoding} \\
+  \midrule
+  \endhead
+  \texttt{CanonicalF64} & 8 &
+    IEEE-754 binary64, little-endian. $-0.0$ is canonicalized to $+0.0$ at
+    construction, so the negative-zero bit pattern never appears in canonical
+    bytes. Decode rejects NaN and $\pm\infty$ (non-finite floats are
+    corruption). \\
+  \texttt{QuantizedCoord} & 8 &
+    \texttt{i64} little-endian, in units of $1/1024$ staff space
+    (\texttt{STAFF\_SPACE\_GRID} = 1024). Construction from a float rounds
+    ties-to-even and rejects non-finite or out-of-range input. \\
+  \texttt{ContentHash} & 32 & Raw BLAKE3-256 digest bytes. \\
+  \texttt{ChunkId} & 32 & Raw digest bytes (a \texttt{ContentHash} newtype). \\
+  \texttt{DomainTag} & 8 &
+    The raw ASCII tag bytes. Decode validates against the closed vocabulary
+    of Section~\ref{sec:ids:tags}; foreign bytes are a decode error. \\
+  \texttt{WallClockTime} & 8 &
+    \texttt{i64} little-endian, nanoseconds. Floating-point wall-clock time
+    is forbidden in stored data. \\
+  \texttt{WallClockDuration} & 8 & \texttt{i64} little-endian, nanoseconds. \\
+  \texttt{SchemaVersion} & 4 &
+    \texttt{major} \texttt{u16} LE \cat{} \texttt{minor} \texttt{u16} LE. \\
+  \texttt{SemVer} & 12 &
+    \texttt{major} \texttt{u32} LE \cat{} \texttt{minor} \texttt{u32} LE
+    \cat{} \texttt{patch} \texttt{u32} LE. Canonical \emph{ordering} of
+    \texttt{SemVer}-keyed collections is \textbf{numeric} on
+    $(\mathit{major},\mathit{minor},\mathit{patch})$, never byte-lexicographic
+    on the little-endian encoding (which would order 256.0.0 before 1.0.0). \\
+  \texttt{Reduction\allowbreak AlgorithmVersion} & 4 & \texttt{u32}
+    little-endian. \\
+  \texttt{FileUuid}, \texttt{DocumentId}, \texttt{LineageId},
+  \texttt{SnapshotId}, \texttt{ExtensionId}, \texttt{ProfileRegistryId} & 16 &
+    16 raw opaque bytes each. No internal structure is interpreted;
+    equality is byte equality. \\
+  \texttt{BlobId} & 32 &
+    Raw digest bytes: $\mathrm{BLAKE3}(\texttt{MUSCBLOB} \cat
+    \mathit{payload})$, the only bare $\mathit{tag} \cat \mathit{payload}$
+    content hash in the format (core requirement
+    \texttt{req:format:blob-hash-shape}). \\
+  \texttt{FrontierBytes} & var &
+    \texttt{u32} LE length \cat{} opaque bytes (an ops-computed causal
+    frontier the bundle carries verbatim). \\
+  \bottomrule
+\end{longtable}
+\endgroup
+
+\section{\texttt{RationalTime}}
+\label{sec:primitives:rationaltime}
+
+Restating core requirement \texttt{req:format:rationaltime-encoding}, which
+governs. \texttt{RationalTime} is an arbitrary-precision rational, always
+stored \emph{reduced} (equal rationals encode identically; the sign lives on
+the numerator; the denominator is strictly positive). Its canonical byte
+form:
+
+\begin{center}
+\begin{tabular}{l l}
+  \toprule
+  \textbf{Field} & \textbf{Encoding} \\
+  \midrule
+  sign & 1 byte: \tablenums{0} = zero, \tablenums{1} = positive,
+    \tablenums{2} = negative \\
+  numerator & \texttt{u32} LE magnitude byte length \cat{} big-endian
+    magnitude bytes \\
+  denominator & \texttt{u32} LE magnitude byte length \cat{} big-endian
+    magnitude bytes \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+Decode rejects a sign byte greater than~2, a zero denominator, and trailing
+bytes. \texttt{MusicalPosition} and \texttt{MusicalDuration} are newtypes
+whose canonical bytes are exactly their inner \texttt{RationalTime}'s.
+Wall-clock integers deliberately do \emph{not} use this form: they are the
+fixed-width little-endian integers of the table above, matching
+\texttt{QuantizedCoord}'s convention.
+
+% ===========================================================================
+\chapter{Graph Value Layouts}
+\label{ch:values}
+
+This chapter defines the schema-major-0 wire form of every value reachable
+from a \texttt{Score} --- the whole-document composite codec. The core
+specification's \texttt{DECISIONS} record (P11-4) held this codec
+\emph{provisional} pending this companion;
+Requirement~\ref{req:binfmt:score-envelope} and
+Requirement~\ref{req:binfmt:frozen-layout} \textbf{ratify} it: the reference
+implementation's layout, as specified here, \emph{is} the schema-major-0 wire
+form, and P11-4's provisional status is discharged.
+
+All layouts in this chapter are regime (a): little-endian, \texttt{u32}
+prefixes.
+
+\section{The \texttt{Score} Envelope}
+\label{sec:values:score}
+
+\begin{requirement}
+\label{req:binfmt:score-envelope}
+The canonical bytes of a \texttt{Score} are the bare positional
+concatenation of its nineteen fields' encodings, in exactly this order:
+
+\begin{enumerate}
+  \item \texttt{metadata}
+  \item \texttt{canvas}
+  \item \texttt{instruments}
+  \item \texttt{staves}
+  \item \texttt{staff\_groups}
+  \item \texttt{parts}
+  \item \texttt{cross\_cutting}
+  \item \texttt{time\_signatures}
+  \item \texttt{tuning\_context}
+  \item \texttt{tempo\_map}
+  \item \texttt{events}
+  \item \texttt{spelling\_attachments}
+  \item \texttt{decomposition\_attachments}
+  \item \texttt{spelling\_precedence}
+  \item \texttt{analysis\_layers}
+  \item \texttt{views}
+  \item \texttt{identity}
+  \item \texttt{tombstoned\_pitches}
+  \item \texttt{tombstoned\_events}
+\end{enumerate}
+
+There is \textbf{no magic} and \textbf{no version prefix} at the value
+level: format identification lives in the bundle's fixed header
+(Chapter~\ref{ch:bundle}) and versioning lives at the chunk layer
+(\texttt{SchemaVersion} in every \texttt{ChunkRef} and superblock;
+Chapter~\ref{ch:evolution}). Decoders \MUST{} reject trailing bytes after
+the nineteenth field.
+\end{requirement}
+
+\section{Composition Rules as Normative Encoding Facts}
+\label{sec:values:composition}
+
+The reference codec is built from a small set of conventions; each is a
+normative statement about the bytes, not an implementation detail:
+
+\begin{description}
+  \item[Positional structs.] Every struct in this chapter encodes as its
+    fields in declaration order, unframed
+    (Section~\ref{sec:conventions:primitives}). Zero-field structs encode as
+    zero bytes.
+  \item[C-style enums.] A fieldless enum is a single discriminant byte
+    (tables in Section~\ref{sec:values:discriminants}).
+  \item[Tagged unions.] A discriminant byte, then the variant's fields
+    positionally.
+  \item[Leaf framing.] The determinism-canonical leaf types ---
+    \texttt{ReplicaId}, \texttt{OperationId}, every embedded typed graph
+    identifier (\texttt{EventId}, \texttt{PitchId}, \texttt{VoiceId},
+    \texttt{StaffId}, \texttt{StaffInstanceId}, \texttt{StaffGroupId},
+    \texttt{RegionId}, \texttt{InstrumentId}, \texttt{PartDefinitionId},
+    \texttt{MeasureId}, \texttt{BarlineAlignmentGroupId}, \texttt{SlurId},
+    \texttt{TieId}, \texttt{BeamId}, \texttt{SpannerId}, \texttt{TupletId},
+    \texttt{MarkerId}, \texttt{AnalyticalAnnotationId}, \texttt{CommentId},
+    \texttt{RepeatStructureId}, \texttt{LyricLineId}, \texttt{ChordSymbolId},
+    \texttt{GraphicObjectId}, \texttt{GraphicGestureId},
+    \texttt{TimeSignatureId}, \texttt{AnalysisLayerId}, \texttt{ViewId}) ---
+    plus \texttt{ContentHash}, \texttt{CanonicalF64}, \texttt{RationalTime},
+    \texttt{MusicalPosition}, \texttt{MusicalDuration},
+    \texttt{WallClockTime}, and \texttt{WallClockDuration}, are each emitted
+    as \texttt{u32} LE length \cat{} the leaf's canonical bytes
+    (Chapters~\ref{ch:ids} and \ref{ch:primitives}). An embedded 16-byte
+    identifier therefore occupies 20 bytes inside a \texttt{Score}. Decode
+    runs the leaf's own validating decoder over the framed region.
+  \item[Catalog identifiers.] The \texttt{catalog\_id} newtypes
+    (\texttt{PitchSpaceId}, \texttt{TuningSystemId}, \texttt{AccidentalId},
+    registry-name ids, \ldots) encode as their stored NFC string under the
+    String rule (\texttt{u32} LE length \cat{} UTF-8).
+  \item[\texttt{EventArena}.] \texttt{u32} LE event count, then each
+    \texttt{Event} in ascending-\texttt{EventId} order (identity travels
+    inside each event; the arena adds no per-event framing).
+  \item[Validated reconstruction.] Types with checked constructors decode
+    through them: \texttt{TupletRatio} rejects degenerate ratios,
+    \texttt{KeySignature} encodes its \texttt{fifths()} as \texttt{i8} and
+    rejects out-of-range values, \texttt{TimeSignature} re-validates that
+    beat groups sum to the measure duration, \texttt{NonZeroU16} rejects
+    zero, \texttt{EventOrderingDAG} rejects cyclic edge maps,
+    \texttt{ReferencePitch}, \texttt{Tempo}, and
+    \texttt{SpellingPrecedence} re-validate their invariants. Structurally
+    well-formed bytes that fail a type invariant are a decode error
+    (reject-never-normalize).
+\end{description}
+
+\section{Discriminant Tables}
+\label{sec:values:discriminants}
+
+The complete discriminant assignment for schema major~0. Every table is
+governed by Requirement~\ref{req:binfmt:frozen-layout}: an unknown
+discriminant is a decode error; changes are gated by
+Chapter~\ref{ch:evolution}.
+
+\subsection{C-style enums (one byte, no payload)}
+
+\begingroup\small
+\begin{longtable}{p{1.9in} p{3.7in}}
+  \toprule
+  \textbf{Type} & \textbf{Discriminants} \\
+  \midrule
+  \endhead
+  \texttt{MeasurePosition} & \tablenums{0} Start, \tablenums{1} End \\
+  \texttt{RegionEdge} & \tablenums{0} Start, \tablenums{1} End \\
+  \texttt{CmnNominal} & \tablenums{0} C, \tablenums{1} D, \tablenums{2} E,
+    \tablenums{3} F, \tablenums{4} G, \tablenums{5} A, \tablenums{6} B \\
+  \texttt{SpellingSourceKind} & \tablenums{0} UserChosen,
+    \tablenums{1} Imported, \tablenums{2} Propagated, \tablenums{3} Inferred,
+    \tablenums{4} Analytical \\
+  \texttt{TempoShape} & \tablenums{0} Constant, \tablenums{1} Linear,
+    \tablenums{2} Exponential, \tablenums{3} Curve \\
+  \texttt{StemDirection} & \tablenums{0} Up, \tablenums{1} Down \\
+  \texttt{MeasureNumberVisibility} & \tablenums{0} Auto,
+    \tablenums{1} Always, \tablenums{2} Never \\
+  \texttt{Aleatoric\allowbreak AnchoringDiscipline} & \tablenums{0} Musical,
+    \tablenums{1} WallClock, \tablenums{2} EitherPerEvent,
+    \tablenums{3} FreelyMixed \\
+  \texttt{NoteValue} & \tablenums{0} Whole, \tablenums{1} Half,
+    \tablenums{2} Quarter, \tablenums{3} Eighth, \tablenums{4} Sixteenth,
+    \tablenums{5} ThirtySecond, \tablenums{6} SixtyFourth \\
+  \texttt{ClefShape} & \tablenums{0} G, \tablenums{1} F, \tablenums{2} C,
+    \tablenums{3} Percussion \\
+  \bottomrule
+\end{longtable}
+\endgroup
+
+\subsection{Tagged unions (one byte, then the variant payload)}
+
+\begingroup\small
+\begin{longtable}{p{1.9in} p{3.7in}}
+  \toprule
+  \textbf{Type} & \textbf{Discriminants} \\
+  \midrule
+  \endhead
+  \texttt{AnchorOffset} & \tablenums{0} Musical, \tablenums{1} WallClock,
+    \tablenums{2} Zero \\
+  \texttt{TimeAnchor} & \tablenums{0} Event, \tablenums{1} Measure,
+    \tablenums{2} Region, \tablenums{3} WallClock
+    (Section~\ref{sec:values:representative}) \\
+  \texttt{EventPosition} & \tablenums{0} Musical, \tablenums{1} WallClock \\
+  \texttt{ConcreteDuration} & \tablenums{0} Musical, \tablenums{1} WallClock \\
+  \texttt{EventDuration} & \tablenums{0} Musical, \tablenums{1} WallClock,
+    \tablenums{2} Indeterminate \\
+  \texttt{TimeBounds} & \tablenums{0} MusicalRange,
+    \tablenums{1} WallClockRange, \tablenums{2} Unbounded \\
+  \texttt{PitchSpacePosition} & \tablenums{0} Cmn, \tablenums{1} Integer,
+    \tablenums{2} JiVector, \tablenums{3} Registered \\
+  \texttt{TuningReference} & \tablenums{0} Inherit, \tablenums{1} Explicit \\
+  \texttt{AcousticRealization} & \tablenums{0} Implicit,
+    \tablenums{1} CentsOffset, \tablenums{2} AbsoluteHz \\
+  \texttt{SpellingNominal} & \tablenums{0} Cmn, \tablenums{1} Integer,
+    \tablenums{2} Registered \\
+  \texttt{SpellingSource} & \tablenums{0} UserChosen, \tablenums{1} Inferred,
+    \tablenums{2} Imported, \tablenums{3} Propagated,
+    \tablenums{4} Analytical \\
+  \texttt{SpellingScope} & \tablenums{0} Pitch, \tablenums{1} Range \\
+  \texttt{SpellingDirective} & \tablenums{0} Explicit, \tablenums{1} Rule \\
+  \texttt{VoiceSelector} & \tablenums{0} All, \tablenums{1} Voices \\
+  \texttt{GraceKind} & \tablenums{0} Acciaccatura, \tablenums{1} Appoggiatura,
+    \tablenums{2} Unmeasured, \tablenums{3} MeasuredFraction \\
+  \texttt{IndeterminacyKind} & \tablenums{0} Pitch, \tablenums{1} Duration,
+    \tablenums{2} Choice, \tablenums{3} Compound \\
+  \texttt{TrajectoryEndpoint} & \tablenums{0} EventPitch,
+    \tablenums{1} ExplicitPitch \\
+  \texttt{TrajectoryShape} & \tablenums{0} Linear, \tablenums{1} Exponential,
+    \tablenums{2} Curve, \tablenums{3} Stepwise \\
+  \texttt{Event} & \tablenums{0} Pitched, \tablenums{1} Unpitched,
+    \tablenums{2} Rest, \tablenums{3} Indeterminate, \tablenums{4} Trajectory,
+    \tablenums{5} Graphic, \tablenums{6} Cue
+    (Section~\ref{sec:values:representative}) \\
+  \texttt{RegionTimeModel} & \tablenums{0} Metric, \tablenums{1} Proportional,
+    \tablenums{2} Aleatoric \\
+  \texttt{RegionContent} & \tablenums{0} StaffBased, \tablenums{1} FreeGraphic,
+    \tablenums{2} Hybrid \\
+  \texttt{VoiceOrigin} & \tablenums{0} UserDeclared, \tablenums{1} Imported,
+    \tablenums{2} SystemPromoted \\
+  \texttt{StaffGroupKind} & \tablenums{0} GrandStaff, \tablenums{1} Bracket,
+    \tablenums{2} SubBracket, \tablenums{3} Choral, \tablenums{4} Registered \\
+  \texttt{TieClass} & \tablenums{0} Standard, \tablenums{1} Editorial,
+    \tablenums{2} CrossVoice, \tablenums{3} LaissezVibrer,
+    \tablenums{4} Registered \\
+  \texttt{AnnotationAnchor} & \tablenums{0} Event, \tablenums{1} Range,
+    \tablenums{2} Region \\
+  \texttt{GestureAnchoring} & \tablenums{0} Events, \tablenums{1} Range,
+    \tablenums{2} Free \\
+  \texttt{DecompositionSource} & \tablenums{0} UserChosen,
+    \tablenums{1} Inferred, \tablenums{2} Imported, \tablenums{3} Propagated \\
+  \texttt{TimeSignatureDisplay} & \tablenums{0} Standard,
+    \tablenums{1} Compound, \tablenums{2} Irrational,
+    \tablenums{3} MixedDenominators, \tablenums{4} None,
+    \tablenums{5} Symbolic \\
+  \bottomrule
+\end{longtable}
+\endgroup
+
+\begin{requirement}
+\label{req:binfmt:spelling-source-order}
+\textbf{The \texttt{SpellingSource} / \texttt{SpellingSourceKind} trap.}
+These two vocabularies name the same five provenance concepts but assign
+them \emph{different} discriminants: \texttt{SpellingSourceKind} (the
+C-style precedence-list element) is \tablenums{0}~UserChosen,
+\tablenums{1}~Imported, \tablenums{2}~Propagated, \tablenums{3}~Inferred,
+\tablenums{4}~Analytical, while \texttt{SpellingSource} (the payload-carrying
+attachment provenance) is \tablenums{0}~UserChosen, \tablenums{1}~Inferred,
+\tablenums{2}~Imported, \tablenums{3}~Propagated, \tablenums{4}~Analytical.
+The orders differ (\texttt{Inferred} is 3 in one and 1 in the other), both
+are golden-locked, and an implementation \MUSTNOT{} share one discriminant
+function between them.
+\end{requirement}
+
+\section{Representative Complete Layouts}
+\label{sec:values:representative}
+
+The following layouts are spelled byte-by-byte both as worked examples of the
+composition rules and as normative fact. Recall that inside this chapter's
+codec every leaf is framed (\texttt{u32} LE length \cat{} bytes), so an
+embedded 16-byte identifier occupies $4+16=20$ bytes.
+
+\subsection{\texttt{RationalTime}}
+As a leaf inside a composite: \texttt{u32} LE length \cat{} the canonical
+form of Section~\ref{sec:primitives:rationaltime} (sign \cat{}
+length-prefixed big-endian numerator magnitude \cat{} length-prefixed
+big-endian denominator magnitude).
+
+\subsection{\texttt{TimeAnchor}}
+One discriminant byte, then:
+\begin{description}
+  \item[\tablenums{0} Event] \texttt{id} (\texttt{EventId} leaf, 20) \cat{}
+    \texttt{offset} (\texttt{AnchorOffset}: tag byte, then for Musical a
+    \texttt{MusicalDuration} leaf, for WallClock a
+    \texttt{WallClockDuration} leaf ($4+8=12$), for Zero nothing).
+  \item[\tablenums{1} Measure] \texttt{id} (\texttt{MeasureId} leaf, 20)
+    \cat{} \texttt{position} (\texttt{MeasurePosition}, 1) \cat{}
+    \texttt{offset} (\texttt{AnchorOffset}).
+  \item[\tablenums{2} Region] \texttt{id} (\texttt{RegionId} leaf, 20) \cat{}
+    \texttt{edge} (\texttt{RegionEdge}, 1) \cat{} \texttt{offset}
+    (\texttt{AnchorOffset}).
+  \item[\tablenums{3} WallClock] \texttt{time} (\texttt{WallClockTime} leaf,
+    12).
+\end{description}
+
+\subsection{\texttt{Pitch}}
+Positional struct: \texttt{scale\_position} \cat{} \texttt{acoustic}.
+\begin{itemize}
+  \item \texttt{ScalePosition} = \texttt{space} (\texttt{PitchSpaceId}: NFC
+    string, \texttt{u32} LE length \cat{} UTF-8) \cat{} \texttt{position}
+    (\texttt{PitchSpacePosition}: tag byte, then Cmn = \texttt{nominal}
+    (\texttt{CmnNominal}, 1) \cat{} \texttt{alteration} (\texttt{i8}, 1)
+    \cat{} \texttt{octave} (\texttt{i8}, 1); Integer =
+    \texttt{space\_size} (\texttt{u16} LE, 2) \cat{} \texttt{index}
+    (\texttt{i32} LE, 4); JiVector = \texttt{u32} LE count \cat{} that many
+    \texttt{i32} LE components; Registered = a catalog-id string).
+  \item \texttt{AcousticPitch} = \texttt{tuning} (\texttt{TuningReference}:
+    tag byte; Explicit carries a \texttt{TuningSystemId} catalog-id string)
+    \cat{} \texttt{realization} (\texttt{AcousticRealization}: tag byte;
+    CentsOffset and AbsoluteHz each carry a \texttt{CanonicalF64} leaf,
+    $4+8=12$).
+\end{itemize}
+
+\subsection{\texttt{Event}}
+One discriminant byte (\tablenums{0}--\tablenums{6}), then the variant struct
+positionally. All seven variants share the prefix \texttt{id}
+(\texttt{EventId} leaf) \cat{} \texttt{voice} (\texttt{VoiceId} leaf) \cat{}
+\texttt{position} (\texttt{EventPosition}) \cat{} \texttt{duration}
+(\texttt{EventDuration}); the remaining fields, in order:
+
+\begingroup\small
+\begin{longtable}{p{0.35in} p{1.35in} p{3.8in}}
+  \toprule
+  \textbf{Disc} & \textbf{Variant} & \textbf{Fields after the common prefix} \\
+  \midrule
+  \endhead
+  \tablenums{0} & \texttt{Pitched} &
+    \texttt{pitches} \cat{} \texttt{articulations} \cat{} \texttt{dynamic}
+    \cat{} \texttt{ornaments} \cat{} \texttt{stem} \cat{} \texttt{grace} \\
+  \tablenums{1} & \texttt{Unpitched} &
+    \texttt{staff\_position} \cat{} \texttt{instrument\_member} \cat{}
+    \texttt{articulations} \cat{} \texttt{dynamic} \cat{} \texttt{stem}
+    \cat{} \texttt{grace} \\
+  \tablenums{2} & \texttt{Rest} &
+    \texttt{vertical\_position} \cat{} \texttt{visible} \\
+  \tablenums{3} & \texttt{Indeterminate} &
+    \texttt{indeterminacy} \cat{} \texttt{hints} \\
+  \tablenums{4} & \texttt{Trajectory} &
+    \texttt{start} \cat{} \texttt{end} \cat{} \texttt{shape} \cat{}
+    \texttt{display} \\
+  \tablenums{5} & \texttt{Graphic} &
+    \texttt{graphics} \cat{} \texttt{playback\_bindings} \\
+  \tablenums{6} & \texttt{Cue} &
+    \texttt{source} \cat{} \texttt{rendering} \\
+  \bottomrule
+\end{longtable}
+\endgroup
+
+Each field encodes under this chapter's rules for its type (vectors are
+\texttt{u32}-counted, options carry a presence byte, embedded identifiers are
+leaves, unions carry their tag byte).
+
+\subsection{\texttt{Slur}}
+Positional struct of three leaves: \texttt{id} (\texttt{SlurId} leaf, 20)
+\cat{} \texttt{start\_event} (\texttt{EventId} leaf, 20) \cat{}
+\texttt{end\_event} (\texttt{EventId} leaf, 20) --- 60 bytes total.
+
+\section{The \texttt{CanonicalValue} Seam}
+\label{sec:values:canonical-value}
+
+The public per-value codec --- the seam between this document and the
+Operation Catalog's value-typed payloads (Operation Catalog,
+\sectionsc{Value-Typed Payloads}, requirement
+\texttt{req:catalog:value-encoding}) --- is defined for exactly these
+eighteen types:
+
+\begin{quote}
+\texttt{Event}, \texttt{Rest}, \texttt{Pitch}, \texttt{IdentifiedPitch},
+\texttt{PitchSpelling}, \texttt{Tie}, \texttt{Slur}, \texttt{Beam},
+\texttt{Spanner}, \texttt{RegionTimeModel}, \texttt{TimeAnchor},
+\texttt{Region}, \texttt{StaffInstance}, \texttt{Voice},
+\texttt{DecompositionAttachment}, \texttt{SpellingSourceKind},
+\texttt{ScoreMetadata}, \texttt{MetricGrid}.
+\end{quote}
+
+The seam introduces \textbf{no new bytes}: a value's stand-alone canonical
+bytes are byte-for-byte the bytes the whole-\texttt{Score} codec embeds for
+that value. Stand-alone decode applies the same validation and rejects
+trailing bytes.
+
+\section{The Frozen-Layout Rule}
+\label{sec:values:frozen}
+
+\begin{requirement}
+\label{req:binfmt:frozen-layout}
+\textbf{Frozen positional layouts (the schema-evolution keystone).} Within
+schema major~0, every positional struct layout in this chapter is
+\textbf{frozen}: there is no field-addition mechanism at the value level ---
+no per-field framing, no optional-field encoding, no trailing-field
+tolerance. Any change to any struct's field \emph{set} or field \emph{order}
+is a schema-\textsc{major} change and requires a documented migration in this
+document's revision history (Chapter~\ref{ch:evolution}).
+
+Appending a \emph{new variant} to an \textbf{open} discriminant vocabulary is
+a schema-\textsc{minor} change under the rules of
+Chapter~\ref{ch:evolution}. At the value layer, the open vocabularies are
+those with a \texttt{Registered} escape variant ---
+\texttt{PitchSpacePosition}, \texttt{SpellingNominal},
+\texttt{StaffGroupKind}, \texttt{TieClass} --- through which extensions
+attach without any wire change at all; every \emph{other} union in
+Section~\ref{sec:values:discriminants} (including \texttt{Event},
+\texttt{TimeAnchor}, \texttt{TimeSignatureDisplay}) is closed in v0 and may
+grow only by an append ratified in a revision of this document.
+
+This rule ratifies the project's staging decision that data-model payload
+expansion --- \texttt{SlurKind}, beam geometry, voltas, instrument bodies,
+score-metadata growth, and their kin --- lands as a coordinated
+schema-\textsc{major} revision of this document, not as ad-hoc field
+insertion.
+\end{requirement}
+
+% ===========================================================================
+\chapter{Operation Wire Forms}
+\label{ch:ops}
+
+This chapter pins the operation layer: envelopes, payloads, stamps, causal
+contexts, effects, and materialized state. It \textbf{ratifies} the
+encodings the ops crate's \texttt{DECISIONS} record held as ``provisional
+canonical encoding'' (mirroring core P11-4); that provisional status is
+discharged.
+
+Regime (a) applies, with one composition difference from
+Chapter~\ref{ch:values}: the operation layer embeds \emph{fixed-width}
+canonical leaves (identifiers, hashes, \texttt{ConflictId}) \textbf{raw},
+without a length prefix (\texttt{push\_canon}); only variable-width parts
+carry \texttt{u32} LE length prefixes (\texttt{push\_lp\_bytes}). Sequences
+(\texttt{push\_seq}) are a \texttt{u32} LE count, then each element
+individually length-prefixed (\texttt{u32} LE), regardless of element width.
+Text (\texttt{push\_str}) is NFC-normalized at encode time, then
+length-prefixed UTF-8. Embedded graph values are the
+\texttt{CanonicalValue} bytes of Section~\ref{sec:values:canonical-value},
+framed by a \texttt{u32} LE length prefix (Operation Catalog requirement
+\texttt{req:catalog:value-encoding}).
+
+\section{The Operation Envelope}
+\label{sec:ops:envelope}
+
+\begin{requirement}
+\label{req:binfmt:envelope}
+An \texttt{OperationEnvelope}'s canonical bytes are, in order:
+
+\begin{center}
+\begin{tabular}{p{1.35in} p{3.9in}}
+  \toprule
+  \textbf{Field} & \textbf{Encoding} \\
+  \midrule
+  \texttt{id} & \texttt{OperationId}, 16 big-endian bytes, raw \\
+  \texttt{author} & \texttt{AuthorId}, 16 big-endian bytes, raw \\
+  \texttt{stamp} & \texttt{OperationStamp}, 28 bytes
+    (Section~\ref{sec:ops:stamp}) \\
+  \texttt{causal\_context} & \texttt{CausalContext}
+    (Section~\ref{sec:ops:causal}) \\
+  \texttt{transaction} & option tag byte (\tablenums{0} absent /
+    \tablenums{1} present), then \texttt{TransactionId} 16 BE if present \\
+  \texttt{payload} & \texttt{OperationPayload}
+    (Section~\ref{sec:ops:payload}) \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Id-leads property.} The envelope's first 16 bytes \emph{are} the
+\texttt{OperationId}'s canonical bytes. This is load-bearing: the operation
+index (Chapter~\ref{ch:bundle}, Section~\ref{sec:bundle:opindex}) keys its
+entries on those leading 16 bytes without decoding envelopes, and the
+sanctioned partial read (\emph{peek}) of an envelope is exactly its leading
+16 bytes. Any future envelope revision \MUST{} preserve id-leads or revise
+the operation index in the same schema-major step.
+\end{requirement}
+
+$\texttt{EnvelopeHash} = \mathrm{BLAKE3}(\texttt{MUSCENVH} \cat
+\mathit{envelope\ canonical\ bytes})$ --- the full 32-byte digest.
+
+Envelopes are \textbf{encode-only} at this layer, deliberately: once
+committed, an envelope is stored and transported as opaque bytes and is
+never reconstructed into typed form by the storage layer; the peek above is
+the only sanctioned partial read. (Reducers decode payloads they authored or
+received through the ops layer's own typed surface; the wire contract is
+that stored envelope bytes are preserved verbatim, since
+\texttt{EnvelopeHash} commits to them.)
+
+\section{\texttt{OperationPayload} and the Meta-Operations}
+\label{sec:ops:payload}
+
+\texttt{OperationPayload}: one discriminant byte, then the variant.
+
+\begin{center}
+\small
+\begin{tabular}{p{0.35in} p{1.55in} p{3.3in}}
+  \toprule
+  \textbf{Disc} & \textbf{Variant} & \textbf{Payload} \\
+  \midrule
+  \tablenums{0} & \texttt{Primitive} & an \texttt{OperationKind}
+    (Section~\ref{sec:ops:kinds}) \\
+  \tablenums{1} & \texttt{ResolveConflict} & \texttt{target}
+    (\texttt{ConflictId}, 16 BE) \cat{} \texttt{action}
+    (\texttt{ResolutionAction}) \\
+  \tablenums{2} & \texttt{UndoTransaction} & \texttt{target}
+    (\texttt{TransactionId}, 16 BE) \cat{} \texttt{policy}
+    (\texttt{UndoPolicy}, 1 byte) \\
+  \tablenums{3} & \texttt{ResolveEquivocation} & \texttt{target}
+    (\texttt{OperationId}, 16 BE) \cat{} \texttt{chosen}
+    (\texttt{EnvelopeHash}, 32) \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+Discriminants \tablenums{0}--\tablenums{2} are the ratified v1 values;
+\tablenums{3} was appended by the catalog's \sectionsc{ResolveEquivocation
+(meta-operation)} entry. The vocabulary is append-only: new meta-operations
+take $\geq 4$.
+
+\texttt{UndoPolicy} is one byte: \tablenums{0} StrictInverse,
+\tablenums{1} BestEffort, \tablenums{2} Cascade.
+\texttt{ResolutionAction} is one byte then an optional payload
+(\texttt{app:bytes}, core requirement
+\texttt{req:semops:\allowbreak resolution-action-discriminants}): \tablenums{0}
+AcceptLoser, \tablenums{1} KeepWinner, \tablenums{2} Override
+(\cat{} \texttt{OperationId} 16 BE), \tablenums{3} Reanchor (\cat{}
+\texttt{TypedObjectId}), \tablenums{4} Dismiss, \tablenums{5} Registered
+(\cat{} \texttt{ResolutionRegistryId} 16 BE).
+
+\section{\texttt{OperationKind}: the Primitive Wire Discriminants}
+\label{sec:ops:kinds}
+
+\begin{requirement}
+\label{req:binfmt:kind-discriminants}
+The \texttt{OperationKind} wire discriminant is one byte, golden-locked to
+the table below. The vocabulary is \textbf{append-only}: new primitive kinds
+take discriminants past \tablenums{23}; the assignments below never change.
+\end{requirement}
+
+Each row also pins the payload's byte layout; the field \emph{set and order}
+is the Operation Catalog's (the cited section governs semantics).
+``$\mathrm{lp}(T)$'' means the \texttt{u32}-LE-length-prefixed
+\texttt{CanonicalValue} bytes of a \texttt{T}
+(Section~\ref{sec:values:canonical-value}); bare identifiers are raw 16
+big-endian bytes; ``$\mathrm{seq}^{\uparrow}$'' is a \texttt{push\_seq}
+sequence sorted ascending by canonical bytes.
+
+\begingroup\footnotesize
+\begin{longtable}{p{0.32in} >{\raggedright\arraybackslash}p{1.5in} >{\raggedright\arraybackslash}p{2.35in} >{\raggedright\arraybackslash}p{1.35in}}
+  \toprule
+  \textbf{Disc} & \textbf{Kind} & \textbf{Payload layout} &
+    \textbf{Catalog section} \\
+  \midrule
+  \endhead
+  \tablenums{0} & \texttt{InsertEvent} &
+    \texttt{staff\_instance} (16) \cat{} $\mathrm{lp}$(\texttt{Event}) &
+    \sectionsc{InsertEvent} \\
+  \tablenums{1} & \texttt{DeleteEvent} &
+    \texttt{event} (16) \cat{} \texttt{TupletCompensation} &
+    \sectionsc{DeleteEvent} \\
+  \tablenums{2} & \texttt{RespellPitch} &
+    \texttt{pitch} (16) \cat{} $\mathrm{lp}$(\texttt{PitchSpelling}) &
+    \sectionsc{RespellPitch} \\
+  \tablenums{3} & \texttt{CreateCrossCutting} &
+    \texttt{CrossCuttingValue} &
+    \sectionsc{CreateCrossCutting} \\
+  \tablenums{4} & \texttt{ChangeRegionTimeModel} &
+    \texttt{region} (16) \cat{} $\mathrm{lp}$(\texttt{RegionTimeModel})
+    \cat{} $\mathrm{seq}^{\uparrow}$(\texttt{EventId}) \cat{}
+    \texttt{PositionRemapping} &
+    \sectionsc{ChangeRegion\allowbreak TimeModel} \\
+  \tablenums{5} & \texttt{SetUserSystemBreak} &
+    \texttt{region} (16) \cat{} $\mathrm{lp}$(\texttt{TimeAnchor}) \cat{}
+    \texttt{present} (bool, 1) &
+    \sectionsc{SetUserSystemBreak} \\
+  \tablenums{6} & \texttt{DeclareTransaction} &
+    \texttt{id} (16) \cat{} \texttt{label} (NFC string) \cat{} option tag
+    \cat{} \texttt{TransactionCategory} if present &
+    \sectionsc{DeclareTransaction} \\
+  \tablenums{7} & \texttt{Registered} &
+    \texttt{OperationKindRegistryId} (16) \cat{}
+    $\mathrm{lp}$(opaque bytes) &
+    \sectionsc{K1 --- Framework Slots} \\
+  \tablenums{8} & \texttt{ModifyEvent} &
+    $\mathrm{lp}$(\texttt{Event}) &
+    \sectionsc{ModifyEvent} \\
+  \tablenums{9} & \texttt{Transpose} &
+    $\mathrm{seq}^{\uparrow}$(\texttt{PitchId}) \cat{}
+    \texttt{chromatic\_steps} (\texttt{i32} LE, 4) &
+    \sectionsc{Transpose} \\
+  \tablenums{10} & \texttt{InsertIdentifiedPitch} &
+    \texttt{event} (16) \cat{} $\mathrm{lp}$(\texttt{IdentifiedPitch}) &
+    \sectionsc{Identified-Pitch Operations} \\
+  \tablenums{11} & \texttt{DeleteIdentifiedPitch} &
+    \texttt{pitch} (16) &
+    \sectionsc{Identified-Pitch Operations} \\
+  \tablenums{12} & \texttt{ModifyIdentifiedPitch} &
+    \texttt{pitch} (16) \cat{} $\mathrm{lp}$(\texttt{Pitch}) &
+    \sectionsc{Identified-Pitch Operations} \\
+  \tablenums{13} & \texttt{DeleteCrossCutting} &
+    \texttt{structure} (\texttt{TypedObjectId}, 18/34) &
+    \sectionsc{DeleteCrossCutting} \\
+  \tablenums{14} & \texttt{ModifyCrossCutting} &
+    \texttt{CrossCuttingValue} &
+    \sectionsc{ModifyCrossCutting} \\
+  \tablenums{15} & \texttt{CreateRegion} &
+    $\mathrm{lp}$(\texttt{Region}) &
+    \sectionsc{Structural Containers} \\
+  \tablenums{16} & \texttt{DeleteRegion} &
+    \texttt{region} (16) &
+    \sectionsc{Structural Containers} \\
+  \tablenums{17} & \texttt{CreateStaffInstance} &
+    \texttt{region} (16) \cat{} $\mathrm{lp}$(\texttt{StaffInstance}) &
+    \sectionsc{Structural Containers} \\
+  \tablenums{18} & \texttt{DeleteStaffInstance} &
+    \texttt{staff\_instance} (16) &
+    \sectionsc{Structural Containers} \\
+  \tablenums{19} & \texttt{CreateVoice} &
+    \texttt{staff\_instance} (16) \cat{} $\mathrm{lp}$(\texttt{Voice}) &
+    \sectionsc{Structural Containers} \\
+  \tablenums{20} & \texttt{DeleteVoice} &
+    \texttt{voice} (16) &
+    \sectionsc{Structural Containers} \\
+  \tablenums{21} & \texttt{SetMetadata} &
+    $\mathrm{lp}$(\texttt{ScoreMetadata}) &
+    \sectionsc{Score Settings} \\
+  \tablenums{22} & \texttt{SetMetricGrid} &
+    \texttt{region} (16) \cat{} option tag (\tablenums{0}/\tablenums{1})
+    \cat{} $\mathrm{lp}$(\texttt{MetricGrid}) if present &
+    \sectionsc{Score Settings} \\
+  \tablenums{23} & \texttt{SetUserPageBreak} &
+    \texttt{region} (16) \cat{} $\mathrm{lp}$(\texttt{TimeAnchor}) \cat{}
+    \texttt{present} (bool, 1) &
+    \sectionsc{Score Settings} \\
+  \bottomrule
+\end{longtable}
+\endgroup
+
+Sub-vocabularies used above (one discriminant byte, then the listed
+payload):
+
+\begin{description}
+  \item[\texttt{TupletCompensation}.] \tablenums{0} NotInTuplet (empty);
+    \tablenums{1} ReplaceWithRest \cat{} $\mathrm{lp}$(\texttt{Rest});
+    \tablenums{2} RewriteTuplets \cat{}
+    $\mathrm{seq}^{\uparrow}$(\texttt{TupletId});
+    \tablenums{3} CascadeDeleteTuplets \cat{}
+    $\mathrm{seq}^{\uparrow}$(\texttt{TupletId}).
+  \item[\texttt{CrossCuttingValue}.] \tablenums{0} Tie, \tablenums{1} Slur,
+    \tablenums{2} Beam, \tablenums{3} Spanner; in every case the tag is
+    followed by $\mathrm{lp}$(the typed structure's \texttt{CanonicalValue}
+    bytes).
+  \item[\texttt{PositionRemapping}.] \tablenums{0} PreserveTime (empty);
+    \tablenums{1} Reassign \cat{} \texttt{u32} LE entry count \cat{}
+    entries, each \texttt{EventId} (16, raw) \cat{}
+    $\mathrm{lp}$(\texttt{MusicalPosition}), ascending by \texttt{EventId}.
+  \item[\texttt{TransactionCategory}.] \tablenums{0} NoteEntry,
+    \tablenums{1} Structural, \tablenums{2} Layout, \tablenums{3} Import,
+    \tablenums{4} Registered \cat{} \texttt{OperationKindRegistryId} (16 BE)
+    --- governed by \texttt{app:bytes} (core requirement
+    \texttt{req:semops:transaction-category}).
+\end{description}
+
+\texttt{OperationKind} is encode-only at the storage boundary, like the
+envelope that carries it.
+
+\section{\texttt{OperationKindTag}: a Separate Discriminant Space}
+\label{sec:ops:kind-tag}
+
+\begin{requirement}
+\label{req:binfmt:kind-tag}
+\texttt{OperationKindTag} --- the payload-free projection of an operation
+kind, stored by edit barriers
+(Chapter~\ref{ch:barriers}) --- has its \textbf{own} discriminant space,
+assigned independently of Section~\ref{sec:ops:kinds}, with both encode and
+validating decode. One byte; only \texttt{Registered} carries a payload (its
+\texttt{OperationKindRegistryId}, 16 big-endian bytes, total 17). Unknown
+discriminants and wrong lengths are decode errors. Append-only past
+\tablenums{23}.
+\end{requirement}
+
+\begingroup\small
+\begin{longtable}{p{0.5in} p{2.0in} p{0.5in} p{2.0in}}
+  \toprule
+  \textbf{Disc} & \textbf{Tag} & \textbf{Disc} & \textbf{Tag} \\
+  \midrule
+  \endhead
+  \tablenums{0} & \texttt{InsertEvent} & \tablenums{12} & \texttt{DeleteStaffInstance} \\
+  \tablenums{1} & \texttt{DeleteEvent} & \tablenums{13} & \texttt{SetUserSystemBreak} \\
+  \tablenums{2} & \texttt{ModifyEvent} & \tablenums{14} & \texttt{SetUserPageBreak} \\
+  \tablenums{3} & \texttt{RespellPitch} & \tablenums{15} & \texttt{DeclareTransaction} \\
+  \tablenums{4} & \texttt{Transpose} & \tablenums{16} & \texttt{Registered} \\
+  \tablenums{5} & \texttt{CreateCrossCutting} & \tablenums{17} & \texttt{InsertIdentifiedPitch} \\
+  \tablenums{6} & \texttt{DeleteCrossCutting} & \tablenums{18} & \texttt{DeleteIdentifiedPitch} \\
+  \tablenums{7} & \texttt{ModifyCrossCutting} & \tablenums{19} & \texttt{ModifyIdentifiedPitch} \\
+  \tablenums{8} & \texttt{ChangeRegionTimeModel} & \tablenums{20} & \texttt{CreateVoice} \\
+  \tablenums{9} & \texttt{InsertRegion} & \tablenums{21} & \texttt{DeleteVoice} \\
+  \tablenums{10} & \texttt{DeleteRegion} & \tablenums{22} & \texttt{SetMetadata} \\
+  \tablenums{11} & \texttt{InsertStaffInstance} & \tablenums{23} & \texttt{SetMetricGrid} \\
+  \bottomrule
+\end{longtable}
+\endgroup
+
+\textbf{Naming mapping.} The kind-to-tag projection renames two pairs:
+\texttt{OperationKind::\allowbreak CreateRegion} projects to
+\texttt{OperationKindTag::\allowbreak InsertRegion}, and
+\texttt{OperationKind::\allowbreak CreateStaffInstance} projects to
+\texttt{OperationKindTag::\allowbreak InsertStaffInstance}. The mismatch is
+intentional
+(the tag space predates the M2c naming) and is pinned here so barrier
+authors target the right tag.
+
+\section{Stamps and Causal Contexts}
+\label{sec:ops:stamp}
+
+\texttt{HybridLogicalClock}: \texttt{physical\_time} (\texttt{WallClockTime},
+\texttt{i64} LE, 8) \cat{} \texttt{logical\_counter} (\texttt{u32} LE, 4).
+\texttt{OperationStamp}: \texttt{hlc} (12) \cat{} \texttt{id}
+(\texttt{OperationId}, 16 BE) --- \textbf{28 bytes} total, fixed width. The
+canonical reduction tuple orders stamps as $(\mathit{physical\_time},
+\mathit{logical\_counter}, \mathit{replica}, \mathit{counter})$, ascending;
+the replica comparison equals big-endian byte order.
+
+\label{sec:ops:causal}
+\texttt{CausalContext} (dotted version vector):
+
+\begin{center}
+\begin{tabular}{p{0.7in} p{4.55in}}
+  \toprule
+  \textbf{Field} & \textbf{Encoding} \\
+  \midrule
+  vector & \texttt{u32} LE entry count \cat{} entries, each
+    \texttt{replica} (8 BE) \cat{} \texttt{counter} (\texttt{u64} LE, 8),
+    ascending by replica \\
+  dots & \texttt{u32} LE count \cat{} \texttt{OperationId}s (16 BE each),
+    ascending \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+The vector is \emph{zero-based-floor} (P11-C7): an entry $(r, c)$ covers
+counters $0..=c$ of replica $r$; absence of a replica covers nothing.
+
+\section{Effects, Conflicts, Anomalies, and Materialized State}
+\label{sec:ops:effects}
+
+These types are canonical \emph{materialized} facts: they appear in
+\texttt{MaterializedState}'s canonical bytes, so their discriminants and
+layouts are normative wire facts even though they are never stored inside
+envelopes. All decode validation is performed by the ops layer's validating
+decoder; unknown discriminants, bad lengths, non-canonical orders, and
+trailing bytes are decode errors.
+
+\begingroup\footnotesize
+\begin{longtable}{>{\raggedright\arraybackslash}p{1.6in} p{4.1in}}
+  \toprule
+  \textbf{Type} & \textbf{Layout (tag byte, then payload)} \\
+  \midrule
+  \endhead
+  \texttt{OperationEffect} &
+    \tablenums{0} Applied (empty);
+    \tablenums{1} AppliedWithRepair \cat{} seq(\texttt{RepairRecord});
+    \tablenums{2} Conflicted \cat{} \texttt{ConflictId} (16 BE);
+    \tablenums{3} TombstonedTarget \cat{} \texttt{TypedObjectId};
+    \tablenums{4} NoOp \cat{} \texttt{NoOpReason}. \\
+  \texttt{NoOpReason} &
+    \tablenums{0} TargetTombstoned; \tablenums{1} AlreadyApplied;
+    \tablenums{2} SupersededByLaterOperation \cat{} \texttt{OperationId}
+    (16 BE); \tablenums{3} PreconditionFailedUnderReduction \cat{}
+    \texttt{PreconditionFailureReason}; \tablenums{4} TransactionConflict. \\
+  \texttt{Precondition\allowbreak FailureReason} &
+    \tablenums{0} TargetMissing; \tablenums{1} TargetTombstoned;
+    \tablenums{2} WrongRegionTimeModel;
+    \tablenums{3} TupletCompensationInvalid;
+    \tablenums{4} EventDurationInvalid; \tablenums{5} PositionOutsideRegion;
+    \tablenums{6} PitchSpaceMismatch; \tablenums{7} VoiceMissing;
+    \tablenums{8} ExtensionPrecondition \cat{} id (16 BE);
+    \tablenums{9} Registered \cat{} id (16 BE);
+    \tablenums{10} ContainerNotEmpty. \\
+  \texttt{RepairRecord} &
+    (struct) \texttt{kind} (\texttt{RepairKind}) \cat{} \texttt{target}
+    (\texttt{TypedObjectId}). \\
+  \texttt{RepairKind} &
+    \tablenums{0} Reanchored \cat{} \texttt{from} (\texttt{TypedObjectId})
+    \cat{} \texttt{to} (\texttt{TypedObjectId}) \cat{}
+    \texttt{ReanchorReason};
+    \tablenums{1} SpannerTruncated \cat{} seq(\texttt{TypedObjectId});
+    \tablenums{2} Orphaned; \tablenums{3} CascadeDeleted;
+    \tablenums{4} AttachmentTombstoned;
+    \tablenums{5} VoicePromoted \cat{} \texttt{from} (\texttt{VoiceId},
+    16 BE) \cat{} \texttt{to} (\texttt{VoiceId}, 16 BE);
+    \tablenums{6} TupletCompensated \cat{} \texttt{TupletCompensationKind};
+    \tablenums{7} Registered \cat{} id (16 BE). \\
+  \texttt{ReanchorReason} &
+    \tablenums{0} SameVoiceNearer; \tablenums{1} SameStaffInstanceNearer;
+    \tablenums{2} SameStaffNearer; \tablenums{3} SameRegionNearer;
+    \tablenums{4} ExplicitFallback;
+    \tablenums{5} DeclaredByExtension \cat{} id (16 BE). \\
+  \texttt{TupletCompensationKind} &
+    \tablenums{0} ReplaceWithRest; \tablenums{1} RewriteTuplets;
+    \tablenums{2} CascadeDeleteTuplets. (No payload; distinct from the
+    payload-carrying \texttt{TupletCompensation} of
+    Section~\ref{sec:ops:kinds}.) \\
+  \texttt{PendingReason} &
+    tag \cat{} blocker (\texttt{OperationId}, 16 BE) in every variant:
+    \tablenums{0} MissingCausalPredecessor; \tablenums{1}
+    DependsOnEquivocated; \tablenums{2} DependsOnExcluded;
+    \tablenums{3} DependsOnPending; \tablenums{4} HaltedBySystemCollision. \\
+  \texttt{ConflictKind} &
+    \tablenums{0} StructuralFieldCollision \cat{} \texttt{winner} (16 BE)
+    \cat{} \texttt{loser} (16 BE) \cat{} \texttt{FieldPath} (NFC string);
+    \tablenums{1} TransactionConflict \cat{} \texttt{transaction} (16 BE)
+    \cat{} $\mathrm{seq}^{\uparrow}$(\texttt{OperationId});
+    \tablenums{2} TombstonedTarget \cat{} \texttt{TypedObjectId} \cat{}
+    \texttt{OperationId} (16 BE);
+    \tablenums{3} ReanchorFailure \cat{} \texttt{original\_referent}
+    (\texttt{TypedObjectId}) \cat{} \texttt{referencing\_object}
+    (\texttt{TypedObjectId});
+    \tablenums{4} TimeModelMigrationFailure \cat{} \texttt{region} (16 BE)
+    \cat{} $\mathrm{seq}^{\uparrow}$(\texttt{TypedObjectId});
+    \tablenums{5} ExtensionConflict \cat{} \texttt{kind\_id} (16 BE) \cat{}
+    $\mathrm{lp}$(opaque details). \\
+  \texttt{ConflictResolutionState} &
+    \tablenums{0} Unresolved; \tablenums{1} Resolved \cat{} \texttt{by}
+    (16 BE) \cat{} \texttt{ResolutionAction}; \tablenums{2} Dismissed \cat{}
+    \texttt{by} (16 BE). \\
+  \texttt{ConflictRecord} &
+    (struct) \texttt{id} (\texttt{ConflictId}, 16 BE) \cat{}
+    seq(\texttt{caused\_by}: \texttt{OperationId}, stored sorted) \cat{}
+    \texttt{kind} \cat{} seq(\texttt{affected\_objects}:
+    \texttt{TypedObjectId}, stored sorted) \cat{}
+    \texttt{resolution\_state}. \\
+  \texttt{IntegrityAnomaly} &
+    (struct) \texttt{id} (\texttt{IntegrityAnomalyId}, 16 BE) \cat{}
+    \texttt{kind}. \\
+  \texttt{IntegrityAnomalyKind} &
+    \tablenums{0} SystemIdentifierCollision \cat{} \texttt{ObjectKind}
+    \cat{} \texttt{colliding\_counter} (\texttt{u64} LE) \cat{} the two
+    input-set blobs, each $\mathrm{lp}$(bytes), emitted lo${}\leq{}$hi by
+    byte comparison;
+    \tablenums{1} OperationSlotEquivocated \cat{} \texttt{OperationId}
+    (16 BE);
+    \tablenums{2} ReplicaStreamQuarantined \cat{} \texttt{replica} (8 BE)
+    \cat{} \texttt{first\_bad\_counter} (\texttt{u64} LE);
+    \tablenums{3} Registered \cat{} id (16 BE). \\
+  \texttt{AnomalousReplicaSegment} &
+    (struct) \texttt{replica} (8 BE) \cat{} \texttt{first\_bad\_counter}
+    (\texttt{u64} LE) \cat{} \texttt{ReplicaAnomalyReason}
+    (\tablenums{0} HlcMonotonicityViolation \cat{} two
+    \texttt{OperationId}s; \tablenums{1} Registered \cat{} id 16 BE)
+    \cat{} seq(\texttt{excluded}: \texttt{OperationId}, ascending counter). \\
+  \texttt{FieldPath} &
+    an NFC string (\texttt{u32} LE length \cat{} UTF-8). \\
+  \texttt{ObjectState} &
+    \tablenums{0} Live (empty); \tablenums{1} Tombstoned \cat{}
+    \texttt{deleted\_by} (\texttt{OperationId}, 16 BE) \cat{}
+    \texttt{minted\_by} (\texttt{OperationId}, 16 BE). \\
+  \texttt{ObjectKind} (ops) &
+    \tablenums{0} Voice; \tablenums{1} Pitch; \tablenums{2} Registered
+    \cat{} \texttt{OperationKindRegistryId} (16 BE) --- governed by
+    \texttt{app:bytes} (core requirement
+    \texttt{req:graph:object-kind-vocab}). Distinct from the barrier layer's
+    2-byte \texttt{ObjectKind} (Chapter~\ref{ch:barriers}). \\
+  \bottomrule
+\end{longtable}
+\endgroup
+
+\subsection{\texttt{MaterializedState}}
+\label{sec:ops:materialized}
+
+The canonical bytes of a reduction's materialized state are eight sections,
+concatenated; every section is \texttt{u32}-LE-counted (the conflict
+registry carries its own count) and in the stated normative order, so the
+bytes are identical across any permutation of the input operation set:
+
+\begin{enumerate}
+  \item \textbf{effects} --- count, then per entry \texttt{OperationId}
+    (16 BE, raw) \cat{} $\mathrm{lp}$(\texttt{OperationEffect}); in
+    canonical reduction order;
+  \item \textbf{conflict registry} --- a seq of
+    $\mathrm{lp}$(\texttt{ConflictRecord}), ascending \texttt{ConflictId};
+  \item \textbf{anomalies} --- count, then each
+    $\mathrm{lp}$(\texttt{IntegrityAnomaly}), ascending
+    \texttt{IntegrityAnomalyId};
+  \item \textbf{objects} --- count, then per entry \texttt{TypedObjectId}
+    (raw) \cat{} \texttt{ObjectState}, ascending \texttt{TypedObjectId};
+  \item \textbf{spellings} --- count, then per entry \texttt{PitchId}
+    (16 BE, raw) \cat{} $\mathrm{lp}$(\texttt{PitchSpelling}), ascending
+    \texttt{PitchId};
+  \item \textbf{breaks} --- count, then per entry \texttt{RegionId}
+    (16 BE, raw) \cat{} \texttt{MusicalPosition} (raw \texttt{RationalTime}
+    form, self-describing, \emph{not} leaf-framed) \cat{} \texttt{present}
+    (bool, 1); ascending $(\mathit{region}, \mathit{position})$;
+  \item \textbf{page breaks} --- same shape and order as breaks;
+  \item \textbf{pending} --- count, then per entry \texttt{OperationId}
+    (16 BE, raw) \cat{} \texttt{PendingReason}, ascending
+    \texttt{OperationId}.
+\end{enumerate}
+
+Decode is fully validating (orders, tags, lengths, trailing bytes) and
+rejects non-canonical input.
+
+\section{v0 Payloads Have No Wire Form}
+\label{sec:ops:v0}
+
+The prototype's v0 identifier-projection payload types are an
+\textbf{in-memory migration guard only}: they carry no canonical encoding,
+and no v0 wire form was ever shipped. The v0${\to}$v1 migration is
+\emph{semantic} --- typed value reconstruction, specified in the Operation
+Catalog's \sectionsc{v0 $\rightarrow$ v1 Payload Migration} chapter --- not a
+byte-level translation, and nothing in this document defines bytes for a v0
+payload.
+
+% ===========================================================================
+\chapter{Bundle Physical Layout}
+\label{ch:bundle}
+
+The physical file: the fixed prelude, chunks, blocks, the manifest, and the
+operation index. This chapter \textbf{ratifies} the bundle crate's
+provisional encodings (its \texttt{DECISIONS} entries P11-D2, P11-D4, and
+P11-D5 pending-companion status is discharged) and the operation-index
+byte form (P12-D1). Structural \emph{semantics} --- superblock selection,
+commit protocol, recovery, retention --- are core specification Chapter~8;
+this chapter pins bytes only. Regime (a) applies except where a table says
+otherwise.
+
+\section{The Fixed Header (64 bytes)}
+\label{sec:bundle:header}
+
+Offset 0 of every bundle. Written at creation, never rewritten within a
+format major version. All integers little-endian.
+
+\begingroup\small
+\begin{longtable}{p{0.8in} p{1.7in} p{3.1in}}
+  \toprule
+  \textbf{Range} & \textbf{Field} & \textbf{Value / rule} \\
+  \midrule
+  \endhead
+  \tablenums{0..8} & magic & \texttt{MUSCBND\textbackslash0} (8 bytes, ASCII,
+    trailing NUL) \\
+  \tablenums{8..10} & \texttt{format\_major} (\texttt{u16}) & \tablenums{0}
+    in this version; readers reject other values \\
+  \tablenums{10..12} & \texttt{format\_minor} (\texttt{u16}) & \tablenums{1}
+    written in this version \\
+  \tablenums{12..16} & \texttt{header\_length} (\texttt{u32}) &
+    \tablenums{64}; readers reject other values \\
+  \tablenums{16..24} & \texttt{superblock\_a\_offset} (\texttt{u64}) &
+    \tablenums{64}; readers reject other values \\
+  \tablenums{24..32} & \texttt{superblock\_b\_offset} (\texttt{u64}) &
+    \tablenums{320}; readers reject other values \\
+  \tablenums{32..48} & \texttt{file\_uuid} & 16 opaque bytes \\
+  \tablenums{48..60} & reserved & written zero; ignored on read \\
+  \tablenums{60..64} & \texttt{header\_crc} & CRC-32C of bytes
+    \tablenums{0..60}, \texttt{u32} LE \\
+  \bottomrule
+\end{longtable}
+\endgroup
+
+Readers \MUST{} verify the magic and the CRC before consulting any other part
+of the file.
+
+\section{The Superblock Slots (256 bytes each)}
+\label{sec:bundle:superblock}
+
+Two slots, at offsets 64 (A) and 320 (B); the only mutable on-disk objects.
+Selection \emph{semantics} (highest valid committed generation, the
+equal-generation rule, torn-write fallback) are core Chapter~8,
+\sectionsc{Superblock Selection}; the bytes:
+
+\begingroup\small
+\begin{longtable}{p{0.9in} p{2.15in} p{2.55in}}
+  \toprule
+  \textbf{Range} & \textbf{Field} & \textbf{Encoding} \\
+  \midrule
+  \endhead
+  \tablenums{0..8} & magic & \texttt{MUSCSUPR} (8 ASCII bytes) \\
+  \tablenums{8..16} & \texttt{generation} & \texttt{u64} LE \\
+  \tablenums{16..24} & \texttt{manifest\_offset} & \texttt{u64} LE \\
+  \tablenums{24..32} & \texttt{manifest\_length} & \texttt{u64} LE (also the
+    uncompressed length; the manifest is mandatorily uncompressed) \\
+  \tablenums{32..64} & \texttt{manifest\_hash} & 32 raw digest bytes \\
+  \tablenums{64..68} & \texttt{manifest\_schema\_version} &
+    \texttt{SchemaVersion} (\texttt{u16} LE \cat{} \texttt{u16} LE) \\
+  \tablenums{68..72} & \texttt{reduction\_algorithm\_version} &
+    \texttt{u32} LE \\
+  \tablenums{72..92} & \texttt{profile\_id} & 20 bytes: \texttt{u32} LE
+    discriminant (\tablenums{0} Full, \tablenums{1} ReadOnly,
+    \tablenums{2} Lite, \tablenums{3} Custom) \cat{}
+    \texttt{ProfileRegistryId} (16 raw bytes; writers \MUST{} emit zero
+    unless Custom, readers ignore it unless Custom). Core requirement
+    \texttt{req:format:profileid-discriminants}. \\
+  \tablenums{92..100} & \texttt{commit\_state} & two \texttt{u32} LE words:
+    Committed $= (\tablenums{0}, \tablenums{0})$; any tag
+    ${}\neq \tablenums{0}$ decodes as Reserved(value) and the slot is
+    invalid for ordinary selection. Writers in this version \MUST{} produce
+    only Committed. \\
+  \tablenums{100..108} & \texttt{commit\_timestamp} & \texttt{i64} LE
+    nanoseconds; advisory --- selection never consults it \\
+  \tablenums{108..252} & reserved & written zero; ignored on read \\
+  \tablenums{252..256} & \texttt{superblock\_crc} & CRC-32C of bytes
+    \tablenums{0..252}, \texttt{u32} LE \\
+  \bottomrule
+\end{longtable}
+\endgroup
+
+\section{Chunks}
+\label{sec:bundle:chunks}
+
+The bundle body begins at
+$\texttt{BODY\_START} = 320 + 256 = \tablenums{576}$. A chunk's on-disk form
+is its raw (possibly compressed) payload bytes at a byte offset ---
+\textbf{no per-chunk length prefix, magic, or trailer on disk}; the offset,
+lengths, compression, and hash live in the referencing \texttt{ChunkRef}. A
+chunk reference whose offset is below \texttt{BODY\_START} is malformed.
+
+\textbf{Content hash preimage} (core Chapter~8, \sectionsc{Domain-Separated
+Preimages}; governs identity):
+\[
+  \mathrm{BLAKE3}\bigl(\mathit{domain} \cat \mathit{kind}\,(1) \cat
+  \mathit{schema}\,(4) \cat \mathit{uncompressed\_length}\,
+  (\texttt{u64}\ \mathrm{LE}) \cat \mathit{payload}\bigr)
+\]
+where $\mathit{domain}$ is \texttt{MUSCMANI} for \texttt{Manifest} chunks and
+\texttt{MUSCCHNK} otherwise. Compression is \emph{not} in the preimage.
+Blob chunks are addressed by the bare \texttt{BlobId} form instead
+(Chapter~\ref{ch:primitives}).
+
+\textbf{\texttt{ChunkKind}} is a single byte, a \textbf{closed} vocabulary
+(no \texttt{Registered} variant; core requirement
+\texttt{req:format:chunkkind-discriminants}): \tablenums{0}
+OperationEnvelopeBlock, \tablenums{1} OperationIndex, \tablenums{2}
+Snapshot, \tablenums{3} Blob, \tablenums{4} ExtensionData, \tablenums{5}
+TextProjection, \tablenums{6} LayoutCache, \tablenums{7} IntegrityIndex,
+\tablenums{8} Manifest.
+
+\textbf{\texttt{CompressionAlgorithm}} is a fixed two bytes, discriminant
+\cat{} parameter: None $= (\tablenums{0},\tablenums{0})$;
+Zstd$\{$level$\}$ $= (\tablenums{1}, \mathit{level})$; Reserved$(v)$ $=
+(\tablenums{2}, v)$. \texttt{None} is \emph{not} a bare tag --- its zero
+parameter byte is always present.
+
+\textbf{Read rules.} Writers in this format version emit \texttt{None} only;
+\emph{reading} zstd at any level is a conformance \MUST{}. A zstd payload is
+decompressed into a buffer sized \emph{exactly} by the declared
+\texttt{uncompressed\_length} (checked against the reader's resource policy
+before allocation): a stream that would exceed the declaration, ends short of
+it, or carries trailing garbage is corruption. After decompression the
+content hash is verified over the uncompressed bytes, and
+$\mathit{id} = \mathit{hash}$ is checked. A chunk whose declared schema
+major differs from the reader's supported major is rejected
+(Chapter~\ref{ch:evolution}). \texttt{Reserved} compression is rejected.
+The \textbf{manifest chunk is mandatorily uncompressed}: a compressed
+manifest reference is rejected before any bytes are read. The reference
+reader bounds any single chunk at 256\,MiB
+(\texttt{MAX\_CHUNK\_BYTES}); the bound is reader policy, not a wire fact.
+
+\subsection{\texttt{ChunkRef} (95 bytes)}
+\label{sec:bundle:chunkref}
+
+\begingroup\small
+\begin{longtable}{p{0.9in} p{1.9in} p{2.8in}}
+  \toprule
+  \textbf{Range} & \textbf{Field} & \textbf{Encoding} \\
+  \midrule
+  \endhead
+  \tablenums{0..32} & \texttt{id} & 32 raw digest bytes \\
+  \tablenums{32..33} & \texttt{kind} & \texttt{ChunkKind} byte \\
+  \tablenums{33..37} & \texttt{schema\_version} & \texttt{u16} LE \cat{}
+    \texttt{u16} LE \\
+  \tablenums{37..45} & \texttt{offset} & \texttt{u64} LE \\
+  \tablenums{45..53} & \texttt{compressed\_length} & \texttt{u64} LE \\
+  \tablenums{53..61} & \texttt{uncompressed\_length} & \texttt{u64} LE \\
+  \tablenums{61..63} & \texttt{compression} & 2 bytes \\
+  \tablenums{63..95} & \texttt{hash} & 32 raw digest bytes (restates
+    \texttt{id}) \\
+  \bottomrule
+\end{longtable}
+\endgroup
+
+The canonical sort key for chunk-reference collections is
+$(\mathit{kind\ discriminant}, \mathit{hash}, \mathit{offset})$, ascending
+--- the Appendix-D chunk-reference order. Every set-valued
+\texttt{ChunkRef} field in this chapter is sorted by it and deduplicated
+before encoding.
+
+\section{Operation-Envelope Block Payloads}
+\label{sec:bundle:blocks}
+
+The uncompressed payload of an \texttt{OperationEnvelopeBlock} chunk:
+
+\begin{center}
+\texttt{u32} LE envelope count \cat{} per envelope
+\{\texttt{u32} LE byte length \cat{} envelope bytes\}
+\end{center}
+
+Envelope bytes are opaque to the bundle (their internal form is
+Chapter~\ref{ch:ops}). Each envelope's offset --- the byte offset of its
+\emph{first content byte} within the uncompressed block payload, with its
+length prefix at $\mathit{offset}-4$ --- is deterministically recoverable
+from this framing alone; it is the coordinate the operation index records.
+Writers \SHOULD{} begin a new block rather than let an uncompressed payload
+exceed 1\,MiB (an individual envelope larger than that occupies its own
+block); readers \MUST{} accept blocks up to the active profile's bound
+(default 64\,MiB). Block boundaries are storage artifacts: the envelope set
+is the union across blocks.
+
+\section{The Manifest}
+\label{sec:bundle:manifest}
+
+On-disk manifest chunk payload:
+
+\begin{center}
+\texttt{manifest\_id} (16 bytes, \texttt{u128} \emph{little-endian}) \cat{}
+\emph{body}
+\end{center}
+
+(The little-endian on-disk field is a deliberate, golden-locked quirk: the
+\emph{derivation} truncates big-endian like every content-derived id, but
+the bundle codec serializes the resulting \texttt{u128} under its
+little-endian integer rule.)
+
+\begin{requirement}
+\label{req:binfmt:manifest-id}
+Restating core requirement \texttt{req:format:manifest-id}, which governs:
+\[
+  \texttt{ManifestId} = \mathrm{trunc128}\bigl(\mathrm{BLAKE3}(
+  \texttt{MUSCMNIF} \cat \mathit{document\_id} \cat
+  \mathit{generation} \cat \mathit{body}\bigr)\bigr)
+\]
+with $\mathit{document\_id}$ as its 16 raw bytes, $\mathit{generation}$ as
+\texttt{u64} little-endian, and $\mathit{body}$ the complete manifest body
+below (which itself opens with \texttt{document\_id} and
+\texttt{generation} --- the double commitment is intentional and locked).
+Writers re-derive the id from the body at encode time; decoders verify it.
+\end{requirement}
+
+\textbf{The body} is a positional struct of thirteen fields:
+
+\begingroup\small
+\begin{longtable}{p{0.3in} p{1.9in} p{3.45in}}
+  \toprule
+  \textbf{\#} & \textbf{Field} & \textbf{Encoding and canonical order} \\
+  \midrule
+  \endhead
+  \tablenums{1} & \texttt{document\_id} & 16 raw bytes \\
+  \tablenums{2} & \texttt{lineage\_id} & option tag \cat{} 16 raw bytes if
+    present \\
+  \tablenums{3} & \texttt{generation} & \texttt{u64} LE \\
+  \tablenums{4} & \texttt{operation\_roots} & \texttt{u32} LE count \cat{}
+    \texttt{ChunkRef}s, sorted by the canonical chunk-reference key,
+    deduplicated \\
+  \tablenums{5} & \texttt{operation\_block\_summaries} & \texttt{u32} LE
+    count \cat{} entries \{\texttt{chunk\_id} (32) \cat{}
+    \texttt{OperationBlockSummary}\}, ascending \texttt{chunk\_id} \\
+  \tablenums{6} & \texttt{operation\_index\_root} & option tag \cat{}
+    \texttt{ChunkRef} \\
+  \tablenums{7} & \texttt{canonical\_base} & option tag \cat{}
+    \texttt{SnapshotRef} \\
+  \tablenums{8} & \texttt{acceleration\_snapshots} & \texttt{u32} LE count
+    \cat{} \texttt{SnapshotRef}s, sorted ascending by their full encoded
+    bytes, deduplicated \\
+  \tablenums{9} & \texttt{blob\_roots} & \texttt{u32} LE count \cat{}
+    \texttt{BlobRef}s, sorted ascending by encoded bytes, deduplicated \\
+  \tablenums{10} & \texttt{profile\_declarations} & \texttt{u32} LE count
+    \cat{} \texttt{ProfileDeclaration}s, sorted by the key
+    $(\texttt{profile\_id}, \texttt{version})$ with \texttt{SemVer} compared
+    \emph{numerically}, deduplicated \\
+  \tablenums{11} & \texttt{extension\_declarations} & \texttt{u32} LE count
+    \cat{} \texttt{ExtensionDeclaration}s, sorted by
+    $(\texttt{extension\_id}, \texttt{version})$, \texttt{SemVer} numeric,
+    deduplicated \\
+  \tablenums{12} & \texttt{text\_projection\_root} & option tag \cat{}
+    \texttt{ChunkRef} \\
+  \tablenums{13} & \texttt{integrity\_root} & option tag \cat{}
+    \texttt{ChunkRef} \\
+  \bottomrule
+\end{longtable}
+\endgroup
+
+Sub-records, positionally:
+
+\begin{description}
+  \item[\texttt{OperationBlockSummary}] = \texttt{dvv\_summary}
+    (\texttt{FrontierBytes}: \texttt{u32}-LE-prefixed opaque bytes) \cat{}
+    \texttt{min\_stamp} (\texttt{u32}-LE-prefixed opaque stamp bytes) \cat{}
+    \texttt{max\_stamp} (same). The contents are ops-computed
+    (Chapter~\ref{ch:ops}); the bundle carries them verbatim.
+  \item[\texttt{SnapshotRef}] = \texttt{snapshot\_id} (16 raw) \cat{}
+    \texttt{covers\_causal\_frontier} (\texttt{FrontierBytes}) \cat{}
+    \texttt{reduction\_algorithm\_version} (\texttt{u32} LE) \cat{}
+    \texttt{profile\_id} (20 bytes, as in the superblock) \cat{}
+    \texttt{root} (\texttt{ChunkRef}, 95) \cat{} \texttt{hash} (32 raw).
+  \item[\texttt{BlobRef}] = \texttt{blob\_id} (32 raw) \cat{}
+    \texttt{media\_type} (\texttt{u32}-LE-prefixed ASCII; decode validates a
+    well-formed RFC~6838 \texttt{type/subtype} restricted name) \cat{}
+    \texttt{offset} (\texttt{u64} LE) \cat{} \texttt{compressed\_length}
+    (\texttt{u64} LE) \cat{} \texttt{uncompressed\_length} (\texttt{u64} LE)
+    \cat{} \texttt{compression} (2) \cat{} \texttt{hash} (32 raw) \cat{}
+    option tag \cat{} \texttt{declared\_max\_uncompressed\_length}
+    (\texttt{u64} LE) if present.
+  \item[\texttt{ProfileDeclaration}] = \texttt{profile\_id} (20) \cat{}
+    \texttt{version} (\texttt{SemVer}, 12) \cat{} \texttt{constraints}
+    (\texttt{ProfileConstraints} =
+    \texttt{max\_uncompressed\_block\_size} (\texttt{u64} LE) \cat{}
+    \texttt{RetentionPolicy}). \texttt{RetentionPolicy} =
+    \texttt{retain\_previous\_manifests} (\texttt{u32} LE) \cat{} option tag
+    \cat{} \texttt{retain\_duration} (\texttt{i64} LE) if present \cat{}
+    \texttt{retain\_named\_checkpoints} (bool, 1).
+  \item[\texttt{ExtensionDeclaration}] = \texttt{extension\_id} (16 raw)
+    \cat{} \texttt{version} (\texttt{SemVer}, 12) \cat{} \texttt{required}
+    (bool, 1) \cat{} \texttt{u32} LE count \cat{}
+    \texttt{preserved\_chunk\_roots} (\texttt{ChunkRef}s, canonical order,
+    deduplicated) \cat{} \texttt{affected\_object\_kinds}
+    (\texttt{u32}-LE-prefixed opaque blob) \cat{} \texttt{edit\_barriers}
+    (\texttt{u32}-LE-prefixed opaque blob). The two blobs' internal form is
+    Chapter~\ref{ch:barriers}; the bundle preserves them verbatim.
+\end{description}
+
+\begin{requirement}
+\label{req:binfmt:manifest-canonical}
+\textbf{Reject non-canonical manifests.} A decoder \MUST{} accept a manifest
+payload only if re-encoding the decoded manifest reproduces the input
+byte-for-byte. This single check subsumes: the stored \texttt{manifest\_id}
+matching the body-derived id, every set-valued vector being in its canonical
+order with no duplicates, and every optional field using presence byte
+\tablenums{0}/\tablenums{1}. Unsorted, duplicated, or wrongly-identified
+manifest bytes are malformed --- never re-sorted or repaired.
+\end{requirement}
+
+\section{The Operation Index}
+\label{sec:bundle:opindex}
+
+\begin{requirement}
+\label{req:binfmt:opindex}
+\textbf{Operation-index payload (ratifies P12-D1).} The uncompressed payload
+of an \texttt{OperationIndex} chunk is:
+
+\begin{center}
+\texttt{u32} LE \texttt{block\_count} \cat{} that many \texttt{ChunkRef}s
+(95 bytes each, strictly ascending canonical order) \cat{}
+\texttt{u32} LE \texttt{entry\_count} \cat{} that many entries, each
+\{\texttt{id} (16 raw operation-id bytes) \cat{} \texttt{block}
+(\texttt{u32} LE ordinal into the block vector) \cat{} \texttt{offset}
+(\texttt{u32} LE)\}, strictly ascending by \texttt{id} bytes.
+\end{center}
+
+The empty index is exactly 8 zero bytes. \texttt{offset} is the byte offset
+of the envelope's \emph{first content byte} within the uncompressed payload
+of the named block (the envelope's \texttt{u32} length prefix sits at
+$\mathit{offset}-4$) --- well-defined by the id-leads property
+(Requirement~\ref{req:binfmt:envelope}) and the block framing
+(Section~\ref{sec:bundle:blocks}).
+
+\textbf{One slot per id.} Strict ascent makes duplicate ids unrepresentable:
+an index payload containing two entries with equal id bytes is malformed.
+Equivocation candidates (multiple envelopes claiming one
+\texttt{OperationId}) live \emph{inside} the operation set's slot model
+(core Chapter~6), never as duplicate index rows.
+
+\textbf{Staleness.} An index \emph{covers} a manifest iff its block vector
+equals the manifest's deduplicated, canonically sorted
+\texttt{operation\_roots} under \textbf{full \texttt{ChunkRef} equality} ---
+every field, not just the content hash, since the index hands out its stored
+references for reading. A reader that finds the index stale \MUST{} reject
+it and rebuild from the blocks.
+
+A rejected or stale index is \textbf{never bundle corruption}: the index is
+a non-canonical accelerator, and rebuild-from-blocks is always sound.
+
+Decoders \MUST{} reject: unsorted or duplicated blocks or entry ids, a block
+reference whose kind is not \texttt{OperationEnvelopeBlock}, an entry whose
+block ordinal is out of range, and trailing bytes.
+\end{requirement}
+
+The core specification's commit-time \SHOULD{} --- refresh the index when
+the operation log has ``grown significantly'' since it was built --- has an
+\textbf{implementation-defined} threshold in v0: this document deliberately
+does not pin a number, and conforming writers may use any policy (including
+always or never refreshing at commit), because the index is non-canonical.
+
+\begin{openquestion}
+Whether to pin a normative refresh threshold (e.g.\ a block-count or
+byte-size ratio) or leave it permanently implementation-defined. Leaving it
+open costs only lookup performance on stale-index bundles; pinning it too
+early would constrain writers for no interoperability gain. Revisit when a
+second writer implementation exists.
+\end{openquestion}
+
+% ===========================================================================
+\chapter{Extension Declaration Blobs and Edit Barriers}
+\label{ch:barriers}
+
+The two opaque blobs a manifest \texttt{ExtensionDeclaration} carries ---
+\texttt{affected\_object\_kinds} and \texttt{edit\_barriers} --- have their
+internal byte form pinned here. This chapter \textbf{ratifies} P12-E1
+(the blob and barrier-tree byte form), P12-E2 (the recursion bound), and
+P12-E3 (the barrier \texttt{ObjectKind} representation). Barrier
+\emph{semantics} --- scope matching, prohibited-edit evaluation,
+conservative treatment of unknown extensions --- are core Chapter~8
+(\sectionsc{Forward Compatibility and Edit Barriers}); this chapter pins
+bytes only.
+
+These layouts are \textbf{regime (b)}: all counts and length prefixes are
+\texttt{u64} little-endian --- a deliberate, golden-locked divergence from
+the \texttt{u32} regime (Section~\ref{sec:conventions:regimes}).
+
+\section{Framing}
+\label{sec:barriers:framing}
+
+\begin{description}
+  \item[element] $\mathrm{elem}(x)$ = \texttt{u64} LE byte length \cat{}
+    $x$'s canonical bytes.
+  \item[set] $\mathrm{set}(xs)$ = elements' canonical byte strings, sorted
+    ascending byte-lexicographic and \emph{deduplicated}; then \texttt{u64}
+    LE element count \cat{} each element as $\mathrm{elem}$. Order and
+    repetition in the source collection cannot affect the bytes; decoders
+    reject unsorted or duplicated elements.
+  \item[list] $\mathrm{list}(xs)$ = \texttt{u64} LE count \cat{} each
+    element as $\mathrm{elem}$, order-significant (used only for condition
+    subtrees).
+\end{description}
+
+\begin{requirement}
+\label{req:binfmt:ext-blobs}
+\textbf{The two blobs (ratifies P12-E1).} The
+\texttt{affected\_object\_kinds} blob is $\mathrm{set}$ of barrier
+\texttt{ObjectKind} elements; the \texttt{edit\_barriers} blob is
+$\mathrm{set}$ of \texttt{EditBarrier} elements. Both decode under
+reject-never-normalize with trailing bytes forbidden.
+\end{requirement}
+
+\begin{requirement}
+\label{req:binfmt:object-kind-open}
+\textbf{Barrier \texttt{ObjectKind} (ratifies P12-E3).} A barrier
+\texttt{ObjectKind} is the \texttt{TypedObjectId} discriminant of
+Section~\ref{sec:ids:typed-object-id}, encoded as \textbf{2 little-endian
+bytes}. Decode is \textbf{open-value}: every \texttt{u16} decodes
+successfully --- an unknown kind (a future core kind or an
+extension-registered kind) is a \emph{value}, not a decode branch, and
+simply never matches any object the reader knows. This is the format's
+forward-compatibility stance for barrier kinds: unknown kinds are preserved
+and re-emitted verbatim, never dropped or rejected.
+\end{requirement}
+
+\section{\texttt{EditBarrier}}
+\label{sec:barriers:barrier}
+
+An \texttt{EditBarrier}'s canonical bytes, positionally:
+
+\begin{center}
+\texttt{scope} \cat{} $\mathrm{set}$(\texttt{affected\_object\_kinds}:
+\texttt{ObjectKind}) \cat{}
+$\mathrm{set}$(\texttt{prohibited\_operation\_kinds}:
+\texttt{OperationKindTag}, Section~\ref{sec:ops:kind-tag}) \cat{}
+\texttt{condition}
+\end{center}
+
+\texttt{BarrierScope}: one discriminant byte, then the payload:
+
+\begingroup\small
+\begin{longtable}{p{0.35in} p{1.35in} p{3.8in}}
+  \toprule
+  \textbf{Disc} & \textbf{Variant} & \textbf{Payload} \\
+  \midrule
+  \endhead
+  \tablenums{0} & \texttt{WholeScore} & (none) \\
+  \tablenums{1} & \texttt{Region} & \texttt{RegionId}, 16 big-endian bytes \\
+  \tablenums{2} & \texttt{StaffInstance} & \texttt{StaffInstanceId}, 16 BE \\
+  \tablenums{3} & \texttt{AnalysisLayer} & \texttt{AnalysisLayerId}, 16 BE \\
+  \tablenums{4} & \texttt{ObjectSet} & $\mathrm{set}$ of
+    \texttt{TypedObjectId} canonical bytes (18/34 each) \\
+  \tablenums{5} & \texttt{PitchSpace} & \texttt{u64} LE byte length \cat{}
+    the pitch-space id's NFC UTF-8 bytes; decoders reject non-NFC input \\
+  \tablenums{6} & \texttt{TuningContext} & (none) \\
+  \tablenums{7} & \texttt{Registered} & \texttt{BarrierScopeRegistryId},
+    \texttt{u128} \emph{little-endian} (16 bytes) \\
+  \bottomrule
+\end{longtable}
+\endgroup
+
+\texttt{BarrierCondition}: one discriminant byte, then the payload; the tree
+is recursive:
+
+\begingroup\small
+\begin{longtable}{p{0.35in} p{1.85in} p{3.3in}}
+  \toprule
+  \textbf{Disc} & \textbf{Variant} & \textbf{Payload} \\
+  \midrule
+  \endhead
+  \tablenums{0} & \texttt{Always} & (none) \\
+  \tablenums{1} & \texttt{ObjectExists} & \texttt{TypedObjectId} \\
+  \tablenums{2} & \texttt{ObjectHasExtensionData} & \texttt{object}
+    (\texttt{TypedObjectId}) \cat{} \texttt{extension}
+    (\texttt{ExtensionRef}, \texttt{u128} LE, 16) \\
+  \tablenums{3} & \texttt{All} & $\mathrm{list}$ of conditions \\
+  \tablenums{4} & \texttt{Any} & $\mathrm{list}$ of conditions \\
+  \tablenums{5} & \texttt{Not} & one $\mathrm{elem}$-framed condition \\
+  \tablenums{6} & \texttt{Registered} &
+    \texttt{BarrierConditionRegistryId}, \texttt{u128} LE (16) \\
+  \bottomrule
+\end{longtable}
+\endgroup
+
+Note the endianness: the barrier layer's registry identifiers
+(\texttt{BarrierScopeRegistryId}, \texttt{BarrierConditionRegistryId},
+\texttt{ExtensionRef}) encode \texttt{u128} \emph{little-endian}, unlike the
+big-endian identifier family of Chapter~\ref{ch:ids}. This is part of the
+golden-locked regime-(b) surface.
+
+\begin{requirement}
+\label{req:binfmt:condition-depth}
+\textbf{Recursion bound (ratifies P12-E2).}
+$\texttt{MAX\_CONDITION\_DEPTH} = \tablenums{64}$ is the normative bound on
+\texttt{BarrierCondition} nesting. Decoders \MUST{} reject a condition tree
+nested deeper than 64 levels of \texttt{All}/\texttt{Any}/\texttt{Not};
+writers \MUSTNOT{} emit one. The bound exists so adversarial bytes cannot
+drive unbounded recursion; real barriers are depth 1--2.
+\end{requirement}
+
+% ===========================================================================
+\chapter{Schema Evolution}
+\label{ch:evolution}
+
+The core specification delegates schema evolution to this document (core
+Chapter~8, \sectionsc{Schema Versioning}: \emph{``Schema evolution is
+governed by the Binary Format companion specification, which defines the
+wire encoding for each schema version''}). This chapter defines the wire
+rules for schema major~0.
+
+\section{The Chunk-Level Gate}
+\label{sec:evolution:gate}
+
+Every chunk declares a \texttt{SchemaVersion} (major, minor) in its
+\texttt{ChunkRef} and the superblock declares the manifest's. The gate:
+
+\begin{itemize}
+  \item \textbf{Major} = incompatible. A reader \MUST{} reject a chunk whose
+    schema major it does not support. The current major is~\tablenums{0}.
+  \item \textbf{Minor} = additive. v0 readers verify the major only; the
+    minor is a \emph{record}, not a gate --- but it is a mandatory record:
+    a writer \MUST{} raise the chunk schema minor when it emits any
+    discriminant appended after the minor it otherwise declares, so that a
+    decode failure on an unknown appended discriminant is attributable to a
+    version skew rather than corruption.
+\end{itemize}
+
+\section{What ``Additive'' Means Here}
+\label{sec:evolution:additive}
+
+Under the frozen-layout rule (Requirement~\ref{req:binfmt:frozen-layout}),
+positional struct layouts admit \emph{no} additive change: there is no
+optional-field or trailing-field mechanism at the value level. In
+particular, and stated honestly: \textbf{the manifest body cannot grow a
+fourteenth field within major~0}. The manifest is a positional struct whose
+decoder rejects trailing bytes, so manifest-body extension is
+major-gated in v0 exactly like every other struct.
+
+The \emph{only} minor-additive mechanism in schema major~0 is
+\textbf{appending discriminants to open vocabularies}:
+
+\begin{itemize}
+  \item \texttt{OperationKind}: append at ${\geq}\,\tablenums{24}$
+    (Requirement~\ref{req:binfmt:kind-discriminants});
+  \item \texttt{OperationKindTag}: append at ${\geq}\,\tablenums{24}$
+    (Requirement~\ref{req:binfmt:kind-tag});
+  \item \texttt{OperationPayload}: append at ${\geq}\,\tablenums{4}$
+    (Section~\ref{sec:ops:payload});
+  \item the value-layer unions enumerated as closed in
+    Requirement~\ref{req:binfmt:frozen-layout} may gain appended variants
+    only through a ratified revision of this document, also minor-additive.
+\end{itemize}
+
+\texttt{ChunkKind} is \textbf{closed} --- it has no \texttt{Registered}
+variant and no append story inside major~0, because its discriminant enters
+every chunk's hash preimage; a new chunk kind is a format-major event.
+
+Separately, many vocabularies carry a \texttt{Registered} \emph{escape
+variant} (\texttt{RepairKind}, \texttt{ReanchorReason},
+\texttt{PreconditionFailureReason}, \texttt{IntegrityAnomalyKind},
+\texttt{ReplicaAnomalyReason}, \texttt{TransactionCategory},
+\texttt{ResolutionAction}, \texttt{ConflictKind} via
+\texttt{ExtensionConflict}, \texttt{BarrierScope}/\texttt{BarrierCondition},
+\texttt{TieClass}, \texttt{StaffGroupKind}, \texttt{PitchSpacePosition},
+\texttt{SpellingNominal}, \texttt{TypedObjectId}, and the barrier
+\texttt{ObjectKind}'s open value space). Extension through an escape variant
+is \textbf{not} a schema change at all: the wire form is already defined.
+
+\section{Migration Discipline}
+\label{sec:evolution:migration}
+
+A schema-\textsc{major} bump \MUST{} ship with a migration documented in
+this document's revision history (Chapter~\ref{ch:history}): what changed,
+byte-for-byte, and the deterministic translation from the old form. The
+precedent is the v0${\to}$v1 operation-payload migration, which lives in the
+Operation Catalog (\sectionsc{v0 $\rightarrow$ v1 Payload Migration})
+because it was semantic rather than byte-level
+(Section~\ref{sec:ops:v0}); byte-level migrations belong here.
+
+\begin{openquestion}
+Whether the \texttt{u64}/\texttt{u32} length-prefix divergence between
+regimes (a) and (b) (Section~\ref{sec:conventions:regimes}) gets unified at
+the next schema major. Unification would simplify decoders and cost one
+coordinated re-lock of the barrier-blob and resolved-layout goldens;
+leaving it is free but permanent. Decide when the first major bump is
+scheduled for other reasons --- the divergence alone does not justify one.
+\end{openquestion}
+
+% ===========================================================================
+\chapter{Non-Canonical Pinned Encodings}
+\label{ch:noncanon}
+
+\textbf{Non-canonical} means: never part of document identity. Nothing in
+this chapter enters a content hash that canonical state depends on, and all
+of it can be discarded and rebuilt without changing the document. The
+encodings are pinned for \emph{reproducibility} --- byte-equal conformance
+claims and cache correctness --- not for durability.
+
+\section{\texttt{LayoutObjectId} (\texttt{MUSCLOID})}
+\label{sec:noncanon:muscloid}
+
+Governed by core requirement \texttt{req:layoutir:object-id-derivation}.
+$\texttt{LayoutObjectId} = \mathrm{trunc128}(\mathrm{BLAKE3}(
+\texttt{MUSCLOID} \cat \mathit{inputs}))$, with three preimage shapes:
+
+\begin{description}
+  \item[stable] $\mathit{inputs}$ = the source
+    \texttt{TypedObjectId}'s canonical bytes.
+  \item[manifestation] $\mathit{inputs}$ = source canonical bytes \cat{}
+    \texttt{RegionId} canonical bytes (16 BE) --- distinct regions give one
+    source distinct manifestation ids.
+  \item[synthesized] $\mathit{inputs}$ = source canonical bytes \cat{}
+    five \texttt{u64} LE words: the \texttt{SynthesisKind} discriminant,
+    the registry id's high and low 64 bits (zero unless
+    \texttt{Registered}), and the instance key's high and low 64 bits.
+\end{description}
+
+\texttt{SynthesisKind} discriminants: \tablenums{0} CancellationAccidental,
+\tablenums{1} KeySignatureNatural, \tablenums{2} GeneratedRest,
+\tablenums{3} EngravedBreak, \tablenums{4} MultimeasureRest,
+\tablenums{5} Cautionary, \tablenums{6} Registered.
+
+\section{\texttt{ResolvedLayoutIR} Canonical Output}
+\label{sec:noncanon:resolved}
+
+The resolved layout's canonical bytes are the \textbf{byte-equal conformance
+surface} of core Chapter~7: two conforming engravers given the same score,
+profile, and glyph catalog must produce identical bytes. The encoding is
+regime (b) --- \texttt{u64} LE counts and length prefixes --- with every
+geometric coordinate quantized to the $1/1024$ staff-space grid as a
+\texttt{QuantizedCoord} (8 LE bytes; Chapter~\ref{ch:primitives});
+a non-finite or out-of-range coordinate is a determinism violation and
+\MUST{} be rejected, never normalized. The top-level section order is:
+source score version \cat{} pages \cat{} glyphs \cat{} strokes \cat{}
+engraving decisions \cat{} glyph-catalog identity; within each section,
+elements carry their provenance (built on \texttt{MUSCLOID} ids) and their
+quantized geometry. The full leaf grammar is pinned by the reference
+implementation's golden and round-trip anchors (Chapter~\ref{ch:goldens})
+rather than restated field-by-field here, because the surface is
+non-canonical and evolves with the engraving feature set.
+
+\section{Layout Caches and Font Metrics}
+\label{sec:noncanon:caches}
+
+\texttt{LayoutCache} chunks (\texttt{ChunkKind} \tablenums{6}) hold cached
+layout artifacts; they are \textbf{always discardable}, and a reader
+\MUSTNOT{} treat a missing, stale, or undecodable layout cache as bundle
+corruption. The glyph-metrics identity hash is domain-separated under
+\texttt{MUSCFNTM} (a reserved built-in, non-canonical tag): it names the
+metrics a layout was computed against, so caches and conformance runs can
+detect font drift; it never enters canonical state.
+
+% ===========================================================================
+\chapter{Golden Anchor Registry}
+\label{ch:goldens}
+
+The conformance contract binding this document to the reference
+implementation. Three lock classes:
+
+\begin{description}
+  \item[literal-byte] the test asserts exact expected bytes or exact
+    discriminant literals --- the strongest lock;
+  \item[round-trip] the test asserts $\mathrm{decode} \circ \mathrm{encode} =
+    \mathrm{id}$ and re-encode byte-stability over a corpus;
+  \item[canonical-equality] the test asserts that semantically equal values
+    encode identically (order-independence, reduction identities).
+\end{description}
+
+The first block restates the anchors already recorded in the core
+specification's \texttt{app:bytes} \sectionsc{Reference-implementation
+locks} table (which governs them); the second block adds the anchors this
+document introduces, which \texttt{app:bytes} predates.
+
+Each anchor names its crate file, then the test on a second line.
+
+\begingroup\footnotesize
+\begin{longtable}{>{\raggedright\arraybackslash}p{1.5in} >{\raggedright\arraybackslash}p{3.0in} p{1.0in}}
+  \toprule
+  \textbf{Layout} & \textbf{Anchor} & \textbf{Class} \\
+  \midrule
+  \endhead
+  \multicolumn{3}{l}{\emph{Imported from \texttt{app:bytes}:}} \\
+  \addlinespace[2pt]
+  \texttt{TypedObjectId} &
+    \texttt{epiphany-core/src/ids.rs}\newline
+    \texttt{::typed\ub object\ub id\ub byte\ub form\ub is\ub locked} &
+    literal-byte \\
+  Promoted \texttt{VoiceId} &
+    \texttt{epiphany-core/src/graph.rs}\newline
+    \texttt{::promoted\ub voice\ub id\ub byte\ub form\ub is\ub locked} &
+    literal-byte \\
+  System \texttt{PitchId} &
+    \texttt{epiphany-core/src/pitch.rs}\newline
+    \texttt{::system\ub pitch\ub id\ub byte\ub form\ub is\ub locked} &
+    literal-byte \\
+  \texttt{IntegrityAnomalyId} &
+    \texttt{epiphany-ops/src/anomaly.rs}\newline
+    \texttt{::integrity\ub anomaly\ub id\ub byte\ub form\ub is\ub locked} &
+    literal-byte \\
+  \texttt{ObjectKind} (ops) &
+    \texttt{epiphany-ops/src/support.rs}\newline
+    \texttt{::object\ub kind\ub discriminants\ub are\ub golden} &
+    literal-byte \\
+  \texttt{ChunkKind} &
+    \texttt{epiphany-bundle/src/chunk.rs}\newline
+    \texttt{::chunk\ub kind\ub discriminants\ub are\ub golden} &
+    literal-byte \\
+  \texttt{Compression\allowbreak Algorithm} &
+    \texttt{epiphany-bundle/src/chunk.rs}\newline
+    \texttt{::compression\ub algorithm\ub encoding\ub is\ub golden} &
+    literal-byte \\
+  \texttt{ProfileId} &
+    \texttt{epiphany-bundle/src/superblock.rs}\newline
+    \texttt{::profile\ub id\ub discriminants\ub are\ub golden} &
+    literal-byte \\
+  \texttt{ManifestId} &
+    \texttt{epiphany-bundle/src/ids.rs}\newline
+    \texttt{::manifest\ub id\ub is\ub content\ub derived\ub and\ub deterministic} &
+    canonical-equality \\
+  \texttt{TransactionCategory} &
+    \texttt{epiphany-ops/src/payload.rs}\newline
+    \texttt{::transaction\ub category\ub discriminants\ub are\ub golden} &
+    literal-byte \\
+  \texttt{ResolutionAction} &
+    \texttt{epiphany-ops/src/conflict.rs}\newline
+    \texttt{::resolution\ub action\ub discriminants\ub are\ub golden} &
+    literal-byte \\
+  \texttt{BlobId} &
+    \texttt{epiphany-determinism/src/hash.rs}\newline
+    \texttt{ContentHash::of\ub blob} tests &
+    round-trip \\
+  \texttt{RationalTime} &
+    \texttt{epiphany-core/src/time.rs}\newline
+    \texttt{::equal\ub rationals\ub encode\ub identically} &
+    canonical-equality \\
+  \texttt{MUSCLOID} derivation &
+    \texttt{epiphany-layout-ir/src/provenance.rs}\newline
+    \texttt{::stable\ub id\ub uses\ub the\ub ratified\ub muscloid\ub derivation} &
+    literal-byte \\
+  Domain-tag spellings &
+    \texttt{epiphany-determinism/src/domain.rs}\newline
+    \texttt{::exact\ub tag\ub spellings\ub match\ub spec} &
+    literal-byte \\
+  \addlinespace[4pt]
+  \multicolumn{3}{l}{\emph{Added by this document:}} \\
+  \addlinespace[2pt]
+  \texttt{OperationKind} discriminants (\S\ref{sec:ops:kinds}) &
+    \texttt{epiphany-ops/src/payload.rs}\newline
+    \texttt{::operation\ub kind\ub wire\ub discriminants\ub are\ub golden} &
+    literal-byte \\
+  \texttt{OperationPayload} discriminants (\S\ref{sec:ops:payload}) &
+    \texttt{epiphany-ops/src/payload.rs}\newline
+    \texttt{::operation\ub payload\ub discriminants\ub are\ub golden} &
+    literal-byte \\
+  \texttt{OperationKindTag} (\S\ref{sec:ops:kind-tag}) &
+    \texttt{epiphany-ops/src/payload.rs}\newline
+    \texttt{::operation\ub kind\ub tag\ub decode\ub mirrors\ub encode\ub exactly} &
+    round-trip \\
+  \texttt{ResolveEquivocation} payload (\S\ref{sec:ops:payload}) &
+    \texttt{epiphany-ops/src/payload.rs}\newline
+    \texttt{::resolve\ub equivocation\ub payload\ub encodes\ub target\ub then\ub hash} &
+    literal-byte \\
+  \texttt{OperationStamp} (\S\ref{sec:ops:stamp}) &
+    \texttt{epiphany-ops/src/stamp.rs}\newline
+    \texttt{::stamp\ub encode\ub is\ub stable} &
+    literal-byte \\
+  \texttt{CausalContext} (\S\ref{sec:ops:causal}) &
+    \texttt{epiphany-ops/src/causal.rs}\newline
+    \texttt{::canonical\ub encoding\ub is\ub build\ub order\ub independent} &
+    canonical-equality \\
+  \texttt{MaterializedState} (\S\ref{sec:ops:materialized}) &
+    \texttt{epiphany-ops/src/decode.rs}\newline
+    \texttt{::reduced\ub states\ub decode\ub and\ub reencode} &
+    round-trip \\
+  Operation-index payload (\S\ref{sec:bundle:opindex}) &
+    \texttt{epiphany-bundle/src/opindex.rs}\newline
+    \texttt{::payload\ub encoding\ub is\ub golden} &
+    literal-byte \\
+  Fixed header (\S\ref{sec:bundle:header}) &
+    \texttt{epiphany-bundle/src/header.rs}\newline
+    \texttt{::header\ub round\ub trips} &
+    round-trip \\
+  Superblock (\S\ref{sec:bundle:superblock}) &
+    \texttt{epiphany-bundle/src/superblock.rs}\newline
+    \texttt{::superblock\ub round\ub trips\ub through\ub 256\ub bytes} &
+    round-trip \\
+  Chunk hash preimage (\S\ref{sec:bundle:chunks}) &
+    \texttt{epiphany-bundle/src/chunk.rs}\newline
+    \texttt{::hash\ub preimage\ub matches\ub the\ub spec\ub layout} &
+    literal-byte \\
+  \texttt{ChunkRef} (\S\ref{sec:bundle:chunkref}) &
+    \texttt{epiphany-bundle/src/chunk.rs}\newline
+    \texttt{::chunk\ub ref\ub round\ub trips} &
+    round-trip \\
+  Manifest body (\S\ref{sec:bundle:manifest}) &
+    \texttt{epiphany-bundle/src/manifest.rs}\newline
+    \texttt{::re\ub encode\ub is\ub byte\ub identical},
+    \texttt{::manifest\ub round\ub trips},
+    \texttt{::duplicate\ub roots\ub collapse\ub on\ub encode},
+    \texttt{::semver\ub orders\ub numerically\ub not\ub byte\ub wise} &
+    round-trip + canonical-equality \\
+  Barrier kinds blob (\S\ref{sec:barriers:framing}) &
+    \texttt{epiphany-layout-ir/src/barrier.rs}\newline
+    \texttt{::affected\ub object\ub kinds\ub blob\ub bytes\ub are\ub golden} &
+    literal-byte \\
+  Barriers blob (\S\ref{sec:barriers:barrier}) &
+    \texttt{epiphany-layout-ir/src/barrier.rs}\newline
+    \texttt{::edit\ub barriers\ub blob\ub bytes\ub are\ub golden} &
+    literal-byte \\
+  Barrier variants (\S\ref{sec:barriers:barrier}) &
+    \texttt{epiphany-layout-ir/src/barrier.rs}\newline
+    \texttt{::every\ub scope\ub and\ub condition\ub variant\ub round\ub trips\ub byte\ub identically} &
+    round-trip \\
+  Whole-\texttt{Score} codec (\S\ref{sec:values:score}) &
+    \texttt{epiphany-core/src/codec.rs}\newline
+    \texttt{::generator\ub scores\ub round\ub trip},
+    \texttt{::trailing\ub and\ub truncated\ub bytes\ub are\ub rejected} &
+    round-trip \\
+  \texttt{CanonicalValue} seam (\S\ref{sec:values:canonical-value}) &
+    \texttt{epiphany-core/src/codec.rs}\newline
+    \texttt{::value\ub types\ub round\ub trip\ub over\ub generator\ub corpus} &
+    round-trip \\
+  \bottomrule
+\end{longtable}
+\endgroup
+
+Struct \emph{bodies} in Chapter~\ref{ch:values} are round-trip-locked rather
+than literal-byte-locked: their byte identity follows from the frozen
+positional rule plus the literal-byte locks on every discriminant and leaf
+they embed. A future cross-implementation decoder test (the deferred
+conformance harness) should add literal-byte vectors for the representative
+layouts of Section~\ref{sec:values:representative}.
+
+% ===========================================================================
+\chapter{Revision History}
+\label{ch:history}
+
+\begin{longtable}{p{2cm} p{2.5cm} p{9cm}}
+  \toprule
+  \textbf{Date} & \textbf{Section} & \textbf{Change} \\
+  \midrule
+  \endhead
+  \today & All & 0.1.0 --- Initial companion: ratifies the previously
+  provisional whole-\texttt{Score} value codec (core P11-4), operation-layer
+  wire forms (ops), bundle physical layout (bundle P11-D2/D4/D5),
+  operation-index payload (P12-D1), and extension-blob/edit-barrier byte
+  forms (P12-E1/E2/E3); pins the no-varint rule, the frozen-positional
+  schema-evolution keystone, and the id-leads envelope property;
+  \texttt{SnapshotId} derivation deferred (open question). \\
+  \bottomrule
+\end{longtable}
+
+\end{document}

@@ -163,7 +163,7 @@ const INVERSION_TOLERANCE_WHOLE_NOTES: f64 = 1e-6;
 /// The typed absolute residual tolerance of the inverse conversion
 /// ([`TempoMap::wallclock_to_musical`]): a [`Tolerance`] of class
 /// [`ToleranceClass::TempoIntegration`] (Appendix D §"Tolerance Classes" — no
-/// ad-hoc epsilons), absolute bound [`INVERSION_TOLERANCE_WHOLE_NOTES`] whole
+/// ad-hoc epsilons), absolute bound `INVERSION_TOLERANCE_WHOLE_NOTES` whole
 /// notes, no relative bound, governing validation (it decides whether a
 /// continued-fraction candidate is accepted; conversion is advisory, never
 /// canonical state).

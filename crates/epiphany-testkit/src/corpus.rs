@@ -177,7 +177,7 @@ pub struct Fixture {
     pub tier: Tier,
     pub build: fn() -> Score,
     /// Buckets this fixture must drive non-zero (validated per-fixture, and
-    /// aggregated for corpus coverage). For the [`UNUSUAL_BUCKETS`] this list is
+    /// aggregated for corpus coverage). For the crate-private `UNUSUAL_BUCKETS` this list is
     /// also an *exact whitelist*: a fixture that lands an event in a
     /// loss/deferral bucket it did not declare fails the harness.
     pub expect: &'static [Bucket],

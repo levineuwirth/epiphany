@@ -351,6 +351,14 @@ When that companion lands, reconcile this crate's `header`, `superblock`,
 round-trip would be the trigger, per the QUICKSTART process notes). This is the
 file-format analogue of `epiphany-core`'s P11-4.
 
+> **Ratified (2026-07-02):** `spec/binary_format.tex` v0.1.0 Chapter 7 pins
+> this crate's header (64-byte table), superblock (256-byte table), chunk
+> framing and hash preimages, `ChunkRef`, block framing, the manifest body
+> order with its sort/dedup rules, and the operation-index payload (P12-D1,
+> `req:binfmt:opindex`) exactly as implemented and golden-locked here. The
+> reconciliation trigger never fired: the companion was transcribed from this
+> crate.
+
 ### P11-D3 — Blob hashing shape is ambiguous
 
 Chapter 8 §"Blobs" says blobs are *"content-addressed identically to chunks

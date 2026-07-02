@@ -269,7 +269,7 @@ pub fn region(id: RegionId) -> Region {
 }
 
 /// Score metadata with a `nth`-distinct title (M2d) — distinct `nth` give
-/// distinct [`ScoreMetadata`] values so a harness can drive concurrent
+/// distinct `ScoreMetadata` values so a harness can drive concurrent
 /// `SetMetadata`s, an advisory LWW field that resolves by canonical order with
 /// no conflict.
 pub fn score_metadata(nth: u8) -> epiphany_core::ScoreMetadata {

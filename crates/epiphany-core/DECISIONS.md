@@ -139,6 +139,14 @@ companion lands, reconcile this crate's `CanonicalEncode`/`CanonicalDecode` and
 the whole-score `codec` with it (a failing cross-crate round-trip test would be
 the trigger, per the QUICKSTART process notes).
 
+> **Ratified (2026-07-02):** the Binary Format companion now exists
+> (`spec/binary_format.tex`, v0.1.0). Its Chapter 5 ratifies this crate's
+> whole-`Score` positional codec, the convention macros, every discriminant
+> table, and the `CanonicalValue` seam as the schema-major-0 wire form, with
+> the frozen-layout rule (a field-set change is a schema-major change). No
+> reconciliation was needed: the companion was transcribed from this codec and
+> its golden anchors, so the trigger never fired.
+
 **Phase 2 — Agent K (Operation Catalog): the `CanonicalValue` seam.** Track B's
 Operation Catalog shifts `epiphany-ops` from identifier-only operation payloads
 to *value-typed* ones (an `InsertEvent` carrying the real `Event`, a

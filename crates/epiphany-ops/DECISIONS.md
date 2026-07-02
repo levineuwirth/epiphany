@@ -431,6 +431,15 @@ is deterministic and unambiguous but **provisional**: when the Binary Format
 companion lands, reconcile `encode.rs` and the per-type `CanonicalEncode` impls
 with it. A failing cross-crate round-trip test is the trigger.
 
+> **Ratified (2026-07-02):** `spec/binary_format.tex` v0.1.0 Chapter 6 pins
+> this crate's wire forms exactly as implemented — the envelope field order and
+> its normative id-leads property, the `OperationPayload` (0..=3) and
+> `OperationKind` (0..=23, append-only) discriminant tables, per-payload
+> framing, `OperationKindTag`'s separate space, the 28-byte stamp, the DVV
+> layout, and the full effects/conflict/anomaly/`MaterializedState` vocabulary.
+> The reconciliation trigger never fired: the companion was transcribed from
+> this crate and its golden anchors.
+
 ## Spec-compliance audit follow-up (2026-07, Push 1)
 
 Four reduction-semantics fixes closing MUST-level gaps the six-agent spec audit
@@ -708,3 +717,69 @@ equivocation fuzz plus the unchanged `run_equivocation_fuzz` gate this).
   no change to the determinism crate. No encoding changed and no discriminant
   was appended; `operation_kind_tag_decode_mirrors_encode_exactly` /
   `operation_kind_tag_decode_rejects_malformed_bytes` pin the contract.
+
+## Subquadratic `canonical_reduction_order` (2026-07, the F1 → K fix)
+
+- **The defect (F surfaces, K fixes).** The testkit's F1 bench
+  (`crates/epiphany-testkit/benches/reduction.rs`, Chapter 10: > 10,000
+  envelopes/s cold) documented `canonical_reduction_order` as O(n²) twice
+  over: a literal double loop over all (predecessor, successor) pairs to
+  build indegrees, and a full ready-scan per emission. Measured pre-fix:
+  ~155K / ~12.5K / ~1.7K env/s at 1K / 10K / 50K envelopes (50K ≈ 29 s per
+  cold reduce — the documented xfail row).
+- **The algorithm: term decomposition + monotone thresholds, never pairs.**
+  Materializing edges is inherently quadratic for the common chain shape
+  (every DVV floor covers the whole replica prefix, so covered *pairs* are
+  Θ(n²)); the rewrite therefore never enumerates pairs. Each causal-context
+  entry becomes one *requirement term* over the present set:
+  - *Vector floor `(r, n)`* — covers exactly the present envelopes of replica
+    `r` with counter `<= n` (zero-based floor, P11-C7): a **prefix** of the
+    replica's lane sorted by `(counter, slice index)`. The term is satisfied
+    when the lane's emission **frontier** (first unemitted slot, monotone)
+    passes the prefix; if the floor covers the envelope's own id, only the
+    self-pair is exempt, so that term instead reads "frontier at own slot and
+    **second frontier** past the prefix" (both monotone). Terms park in
+    per-lane `BTreeMap`s keyed by the threshold slot and are drained exactly
+    once as the frontiers advance.
+  - *Explicit dot* — covers exactly the present envelopes bearing that id;
+    satisfied when the id's unemitted multiplicity reaches 0 (1 for a
+    self-dot, which covers only duplicate-id twins).
+  An envelope is ready when its unsatisfied-term count reaches zero; ready
+  envelopes sit in a `BinaryHeap` keyed by `(reduction tuple, slice index)`.
+  A pre-sorted `(tuple, index)` list with a cursor supplies the malformed-
+  cycle fallback (heap empty, envelopes remain). Total work is
+  `O((n + Σ|context|) log n)`.
+- **Why the order is byte-identical (the consensus argument).** The order is
+  *defined* by: edge `p → s` iff `p != s` and `s.context.covers(p.id)`;
+  ready iff every present covered predecessor emitted; emit the minimum
+  `(reduction tuple, slice index)` among ready (slice index reproduces
+  `min_by_key`'s first-minimum rule — reachable only under duplicate-id
+  tuple ties); if none is ready, the same minimum over all unemitted (cycle
+  break). The rewrite computes the *same readiness predicate*: each term is
+  satisfied iff all envelopes it covers are emitted, every covered
+  predecessor is covered by at least one term, and terms cover only covered
+  predecessors — so "all terms satisfied" ⇔ "all covered predecessors
+  emitted", including the exempt self-pair (a floor/dot naming the
+  envelope's own id) and envelopes covered by both a dot and a floor (the
+  conjunction needs no per-pair dedup; the redundant term is harmless).
+  Absent context entries (unknown replicas, floors below every present
+  counter, absent dots) yield no term, exactly as they yield no edge. Same
+  edge relation, same ready set, same total order on ready ⇒ the same
+  emission sequence, element for element.
+- **The retained oracle + regression gate.** The pre-fix implementation is
+  kept verbatim as `canonical_reduction_order_reference` (`#[cfg(test)]`),
+  and three property tests assert element-for-element *pointer* equality of
+  both orders (the strictest check — it distinguishes byte-identical twins):
+  `canonical_order_matches_reference_on_fuzz_sets` (the crate's well-formed
+  fuzz generator, 250 seeds × 2 slice orders),
+  `..._on_adversarial_sets` (400 randomized hostile sets: self-covering
+  floors, dots to present/absent/own ids, duplicate ids with tied stamps,
+  `SYSTEM_DERIVED` replicas, stamps contradicting the causal edges, empty
+  contexts), and `..._on_directed_shapes` (a 2,000-envelope full-coverage
+  chain with descending stamps, self-covering and dot-only chains, dot
+  2-/3-cycles, mutual-floor cycles, twin permutations). Mutation-checked:
+  breaking the self-exemption or the self-dot threshold fails the suite.
+- **Measured post-fix (same bench, dev profile 2026-07):** ~674K / ~257K /
+  ~87K env/s at 1K / 10K / 50K — the 50K row cleared its budget by ~8.7x,
+  the gate printed its XPASS promotion notice, and the row was flipped to
+  `Pass` in the same change (see `epiphany-testkit/DECISIONS.md` F1).

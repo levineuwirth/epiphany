@@ -1000,7 +1000,7 @@ impl EditorSession {
     /// replaying the log reconstructs the same atomic unit. This is the substrate for
     /// intents that must land several primitives together (e.g. a value change with a
     /// matching respelling); editor-level atomicity (commit only on full success) is
-    /// inherited from [`Self::commit`].
+    /// inherited from the private `commit` path.
     pub fn apply_transaction(
         &mut self,
         label: &str,

@@ -11,7 +11,7 @@
 //! ## Coordinate frame
 //!
 //! Shapes are in **staff-space, y-up world** coordinates — the same frame as
-//! [`RenderPrimitive::position`] and [`Stroke`] endpoints, *before* any
+//! [`RenderPrimitive::position`] and stroke endpoints, *before* any
 //! renderer's world→screen transform. A GUI maps a screen point to this frame
 //! with the inverse of the same transform its renderer uses for display (for the
 //! SVG renderer, the inverse of its single `translate(-min_x, max_y) scale(1,-1)`
