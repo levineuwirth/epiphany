@@ -487,7 +487,7 @@ identity.
   \endhead
   Score & --- & Document root. Carries metadata, instruments,
     global staves, staff groups, tuning context, tempo map,
-    canvas, conflict registry. \\
+    canvas. \\
   Canvas & --- & Spatial root. Partitioned into regions. \\
   Region & \texttt{RegionId} & Spatial-temporal container.
     Declares time model (metric/proportional/aleatoric) and
@@ -661,7 +661,7 @@ orthogonal to file-format profiles
   \ref{ch:graph} & Score graph, event arena, cross-cutting
     structures, regions, staff identity (Staff vs.
     StaffInstance), polymeter via per-staff metric grids, voice
-    origin, conflict registry, graph invariants. \\
+    origin, graph invariants. \\
   \ref{ch:semops} & Operation framework, canonical reduction,
     DVV causal contexts, operation effects, tombstones, conflict
     records, transactions, re-anchoring, undo, LWW discipline. \\
@@ -1221,8 +1221,9 @@ pub enum SpellingSource {
     UserChosen,
 
     /// Inferred by the spelling pre-pass from key signature and
-    /// context. Lower precedence; may be revised by re-running the
-    /// pre-pass.
+    /// context. Lowest default precedence. The pre-pass does not
+    /// store attachments (its output is a derived annotation);
+    /// this variant ranks that output in the precedence order.
     Inferred,
 
     /// Imported from a foreign format.
@@ -1240,9 +1241,13 @@ pub enum SpellingSource {
   Editing operations that respell a pitch \MUST{} produce attachments
   with source \texttt{UserChosen}. Editing operations that move or
   transpose a pitch \MUST{} produce attachments with source
-  \texttt{Propagated}. The spelling pre-pass (Section~\ref{sec:pitch:prepass})
-  \MUST{} produce attachments with source \texttt{Inferred}. Foreign-format
-  importers \MUST{} produce attachments with source \texttt{Imported}.
+  \texttt{Propagated}. Foreign-format importers \MUST{} produce
+  attachments with source \texttt{Imported}. The spelling pre-pass
+  (Section~\ref{sec:pitch:prepass}) \MUSTNOT{} mint attachments: its
+  inferred spellings are derived annotations reported with
+  \texttt{Inferred} provenance, promoted to a stored
+  \texttt{UserChosen} attachment only by an explicit editing
+  operation.
 \end{requirement}
 
 \subsection{Configurable Precedence}
@@ -1266,17 +1271,29 @@ precedence is:
   default; for example, a workflow that treats MusicXML imports as
   authoritative may rank \texttt{Imported} above \texttt{UserChosen}.
   Conflicts are broken first by precedence, then by the \texttt{priority}
-  field of the attachment, then by attachment creation timestamp.
+  field of the attachment (higher wins), then by canonical attachment
+  order (the attachment appearing earliest in the score's canonical
+  serialization wins). Attachments carry no creation timestamp: a
+  timestamp tie-break would hang resolution on non-canonical state.
 \end{requirement}
 
 \subsection{The Spelling Pre-Pass}
 \label{sec:pitch:prepass}
 
-When a score is loaded, edited, or about to be rendered, the spelling
-pre-pass produces \texttt{Inferred}-source attachments for every pitch
-that lacks a higher-precedence attachment. The pre-pass \MUST{} be
-deterministic: given the same score graph and the same precedence
-configuration, it \MUST{} produce identical attachments.
+When a score is materialized (on load, after an edit, or ahead of
+rendering), the spelling pre-pass computes an inferred spelling for
+every spelling-eligible pitch. Its output is a \emph{canonical
+derived annotation}: a deterministic function of the materialized
+score graph, the active profile, and the versioned
+\texttt{SpellingAlgorithmId}, recomputed on materialization and
+never stored as graph state or serialized into canonical chunks.
+Where a stored attachment targets the pitch, the resolved annotation
+reports that attachment's spelling and provenance per the precedence
+configuration (Section~\ref{sec:pitch:precedence}); the pre-pass
+supplies the \texttt{Inferred}-provenance spelling that applies when
+no attachment outranks it. The pre-pass \MUST{} be deterministic:
+given the same materialized graph, precedence configuration, and
+algorithm version, it \MUST{} produce identical annotations.
 
 The pre-pass operates as follows:
 
@@ -1293,19 +1310,30 @@ The pre-pass operates as follows:
       \item The harmonic context (concurrent pitches in other voices).
       \item Any active scope-level \texttt{Rule} attachments.
     \end{enumerate}
-  \item Write an \texttt{Inferred}-source attachment for each pitch.
+  \item Report an \texttt{Inferred}-provenance derived annotation for
+    each pitch.
 \end{enumerate}
 
-The pre-pass \MUST{} be incremental: an edit to a single pitch \MUST{}
-re-run the pre-pass only on the affected measure and voice (and forward
-through measures whose context is altered, until the context stabilizes).
+Because derived annotations are not stored, a change to the algorithm
+version deterministically invalidates them without any state
+migration. Implementations \MAY{} cache derived annotations and
+\MAY{} recompute incrementally (re-running only the affected measure
+and voice, and forward through measures whose context is altered,
+until the context stabilizes); a cache \MUST{} be invalidated when
+the derivation key --- graph, profile, algorithm version --- changes,
+and neither caching nor incrementality may be observable in the
+annotations produced.
 
 \begin{rationale}
-  Storing inferred spellings as attachments---rather than computing them
-  at draw time---makes spellings inspectable in the UI, editable by
-  promotion to \texttt{UserChosen}, and deterministic for serialization
-  diffs. The cost is one attachment per unspelled pitch, which is
-  negligible.
+  Deriving inferred spellings---rather than storing them as
+  attachments---keeps algorithm output out of canonical state: two
+  replicas at the same (graph, profile, algorithm version) agree on
+  annotations byte-for-byte without ever exchanging them, an
+  algorithm upgrade cannot strand stale inferred state, and
+  serialization never churns on re-inference. Inferred spellings
+  remain inspectable in the UI and editable by promotion: accepting
+  one mints a \texttt{UserChosen} attachment through an editing
+  operation, which then outranks the pre-pass.
 \end{rationale}
 
 \begin{openquestion}
@@ -1491,11 +1519,11 @@ proportional, and aleatoric time models simultaneously.
     interchangeable. The algebra (position $+$ duration $\rightarrow$ position;
     position $-$ position $\rightarrow$ duration; position $+$ position is
     undefined) is enforced at the type level.
-  \item[Sounding duration is data; notational rhythm is attached.]
+  \item[Sounding duration is data; notational rhythm is derived.]
     A note's sounding duration is intrinsic; its notated decomposition
     (notehead values, ties, dots, tuplet membership) is produced by a
     deterministic pre-pass analogous to the spelling pre-pass and is
-    overridable per-event.
+    overridable per-event by an authored attachment.
   \item[Multiple time models coexist.] A score \MUST{} support metric,
     proportional, and aleatoric regions, possibly concurrent on
     different staves. The region's declared time model determines the
@@ -2097,9 +2125,12 @@ Its \emph{notational decomposition} is the sequence of notehead values,
 augmentation dots, and ties used to draw that duration on the staff.
 
 The decomposition is computed from the sounding duration by a
-deterministic pre-pass and stored as an attachment on the event. The
-attachment is overridable by the user; the pre-pass produces an
-inferred decomposition that the user may accept or replace.
+deterministic pre-pass as a \emph{canonical derived annotation} ---
+recomputed on materialization, never stored graph state --- under the
+same output model as the spelling pre-pass
+(Section~\ref{sec:pitch:prepass}). The user may accept the inferred
+decomposition or override it by authoring a decomposition attachment,
+which takes precedence.
 
 \subsection{The Notational Decomposition}
 
@@ -2141,9 +2172,10 @@ machinery, same pre-pass discipline.
 
 \subsection{The Decomposition Pre-Pass}
 
-When a score is loaded or edited, the decomposition pre-pass produces
-inferred decompositions for events that lack a higher-precedence
-attachment. The algorithm is, in outline:
+When a score is materialized, the decomposition pre-pass computes
+inferred decompositions, reported as derived annotations; an authored
+higher-precedence attachment overrides the inferred value in the
+resolved annotation. The algorithm is, in outline:
 
 \begin{enumerate}
   \item For each event in time order within a voice and measure,
@@ -2161,11 +2193,14 @@ attachment. The algorithm is, in outline:
 \end{enumerate}
 
 \begin{requirement}
-  The decomposition pre-pass \MUST{} be deterministic: given identical
-  score graph and identical configuration, it \MUST{} produce identical
-  decompositions. The pre-pass \MUST{} be incremental: an edit to one
-  event \MUST{} re-run the pre-pass only on the affected voice and
-  measure, with propagation only as far as the context is altered.
+  The decomposition pre-pass \MUST{} be deterministic: given
+  identical materialized graph, configuration, and algorithm
+  version, it \MUST{} produce identical decompositions. Its output
+  is a derived annotation, never stored graph state. Implementations
+  \MAY{} cache and \MAY{} recompute incrementally (re-running only
+  the affected voice and measure, with propagation only as far as
+  the context is altered); neither may be observable in the
+  annotations produced.
 \end{requirement}
 
 \begin{openquestion}
@@ -3298,7 +3333,12 @@ Chapters~\ref{ch:pitch}--\ref{ch:tuning} into a coherent whole.
 \label{sec:graph:score}
 
 The score is the root object. All other objects in the specification
-exist within or reference into a score.
+exist within or reference into a score. Conflict records are
+deliberately \emph{not} part of the score graph: the
+\texttt{ConflictRegistry} produced by canonical reduction is a
+component of the canonical \emph{materialized state}
+(Chapter~\ref{ch:semops}), recomputed with it, and persisting there
+until resolved or dismissed by explicit operations.
 
 \begin{lstlisting}[language=Rust]
 pub struct Score {
@@ -3325,11 +3365,6 @@ pub struct Score {
     /// Cross-cutting structures: slurs, ties, hairpins, markers,
     /// graphic gestures, comments, and analytical annotations.
     pub cross_cutting: CrossCuttingRegistry,
-
-    /// Conflict records produced by the canonical reduction
-    /// (Chapter~\ref{ch:semops}). Conflict records persist until
-    /// resolved or dismissed by explicit operations.
-    pub conflicts: ConflictRegistry,
 
     /// Tuning systems, pitch spaces, and reference pitch.
     pub tuning_context: ScoreTuningContext,
@@ -6349,9 +6384,9 @@ yields a deletion record rather than the original object.
 
 When an operation cannot apply cleanly, the reduction produces a
 \texttt{Conflicted} effect referencing a \texttt{ConflictRecord} in
-the score's conflict registry. Conflict records are first-class
-graph objects: stable, addressable, visible to users, and
-addressable by subsequent operations.
+the canonical conflict registry (a component of materialized state;
+see below). Conflict records are first-class: stable, addressable,
+visible to users, and addressable by subsequent operations.
 
 \subsection{Conflict Record Type}
 
@@ -6503,8 +6538,9 @@ pub enum ResolutionAction {
 
 \subsection{The Conflict Registry}
 
-The score graph carries a top-level conflict registry alongside the
-cross-cutting registry:
+Canonical materialized state carries a top-level conflict registry
+(the score graph does not --- conflict records are a reduction
+product, not authored content):
 
 \begin{lstlisting}[language=Rust]
 pub struct ConflictRegistry {
@@ -6876,9 +6912,11 @@ table is normative.
   \endhead
 
   Slur & Endpoint event &
-  Re-anchor to nearest forward event in same voice; cascade-delete
-  if fewer than two members survive &
-  proximity max: same voice; direction: forward preferred \\
+  Re-anchor to the nearest surviving endpoint; cascade-delete only
+  when no endpoint survives &
+  a two-endpoint slur collapses onto its sole survivor (a
+  reference-clean degenerate form); proximity-aware re-targeting
+  is a deferred refinement \\
 
   Slur & Interior event &
   No action &
@@ -6899,9 +6937,10 @@ table is normative.
   --- \\
 
   Spanner & Anchor &
-  Re-anchor to nearest surviving anchor of same kind; cascade-delete
-  if no surviving anchor within proximity bound &
-  proximity max: same staff instance; bound: per-spanner-kind \\
+  Re-anchor to the nearest surviving anchor; cascade-delete only
+  when no anchor survives &
+  as for slurs (surviving-endpoint collapse); per-spanner-kind
+  proximity bounds are a deferred refinement \\
 
   Marker & Anchor &
   Re-anchor to nearest event in same staff instance &
@@ -7324,18 +7363,14 @@ pub enum TupletCompensation {
     ReplaceWithRest { new_rest: Rest },
 
     /// Rewrite the enclosing tuplet(s) to remain structurally
-    /// consistent. The list specifies the rewritten tuplets in full.
-    RewriteTuplets { rewrites: Vec<TupletRewrite> },
+    /// consistent. The v1 payload names the affected tuplets by
+    /// id only; it does not carry rewritten values (see the
+    /// precondition below).
+    RewriteTuplets { tuplets: Vec<TupletId> },
 
     /// Cascade-delete the entire tuplet group(s) containing the
     /// target event. The listed tuplet ids are cascaded.
     CascadeDeleteTuplets { tuplets: Vec<TupletId> },
-}
-
-pub struct TupletRewrite {
-    pub tuplet: TupletId,
-    pub new_ratio: TupletRatio,
-    pub new_members: Vec<EventId>,
 }
 \end{lstlisting}
 
@@ -7354,9 +7389,17 @@ pub struct TupletRewrite {
   \item For \texttt{ReplaceWithRest}: the replacement rest's
     duration \MUST{} equal the deleted event's duration; the rest's
     voice and position \MUST{} match the deleted event.
-  \item For \texttt{RewriteTuplets}: every listed tuplet's resulting
-    member-duration sum \MUST{} match the tuplet's
-    structurally-required total.
+  \item For \texttt{RewriteTuplets}: the v1 payload carries only
+    tuplet ids, not the rewritten ratio and member values a reducer
+    would need to demonstrate that the resulting structure preserves
+    the tuplet consistency invariant. Graph-aware reduction \MUST{}
+    therefore refuse the variant as an ill-formed compensation (a
+    precondition no-op) rather than fabricate rewritten values. A
+    future payload revision carrying full rewrites (per-tuplet ratio
+    and members, each of whose member-duration sums \MUST{} match
+    the tuplet's structurally-required total) reopens the variant;
+    until then \texttt{ReplaceWithRest} and
+    \texttt{CascadeDeleteTuplets} are the applicable compensations.
   \item For \texttt{CascadeDeleteTuplets}: every tuplet listed
     \MUST{} contain the target event as a member.
 \end{itemize}
@@ -7366,8 +7409,9 @@ voice's event list. The event's \texttt{EventId} and every contained
 \texttt{PitchId} are tombstoned in their respective identity
 indexes: they remain resolvable to ``deleted'' markers and \MUSTNOT{}
 be reused for new objects. The chosen tuplet compensation is applied
-in the same delta: a replacement rest is inserted, the tuplet is
-rewritten, or the tuplets are cascade-deleted as specified.
+in the same delta: a replacement rest is inserted or the tuplets are
+cascade-deleted as specified (a \texttt{RewriteTuplets} compensation
+is refused at precondition check; see above).
 Cross-cutting structures referencing the event or its pitches are
 re-anchored per the rule table (Section~\ref{sec:semops:reanchor}).
 Live attachments targeting the event or its pitches transition to
@@ -9286,9 +9330,21 @@ pub struct Manifest {
 
     /// Operation-envelope blocks defining the canonical document.
     /// Block ordering is irrelevant for canonical state (envelopes
-    /// are a set), but writers SHOULD order blocks by min_stamp
-    /// for predictable scanning.
+    /// are a set), and the canonical manifest encoding sorts chunk
+    /// references ascending by their encoded form (Appendix D), so
+    /// a writer cannot order this list by stamp; stamp-ordered
+    /// scanning goes through operation_block_summaries below.
     pub operation_roots: Vec<ChunkRef>,
+
+    /// Per-block summary metadata (Section on operation-envelope
+    /// blocks below), keyed by the block's ChunkId in canonical
+    /// ascending order. Supplied by the operation layer and carried
+    /// opaquely by the storage layer; non-canonical and optional (a
+    /// block need not have an entry). Lets a reader select or skip
+    /// a block by causal frontier or stamp range without decoding
+    /// its envelopes.
+    pub operation_block_summaries:
+        BTreeMap<ChunkId, OperationBlockSummary>,
 
     /// Optional operation index chunk: maps OperationId to
     /// (block, offset) for fast random access. If absent,
@@ -9735,20 +9791,30 @@ pub struct ChunkId(pub ContentHash);
 \label{sec:format:opblocks}
 
 The canonical document is stored as operation-envelope blocks. Each
-block is a chunk of kind \texttt{OperationEnvelopeBlock} containing
-a vector of envelopes, with summary metadata.
+block is a chunk of kind \texttt{OperationEnvelopeBlock} whose
+payload is a vector of envelopes. A block is identified by its
+\texttt{ChunkId}; because chunks are content-addressed, that
+identifier cannot appear inside the block payload itself. Summary
+metadata for a block travels in the \emph{manifest}
+(\texttt{operation\_block\_summaries}), keyed by the block's chunk
+id: the summary is computed by the operation layer from the block's
+envelopes, and the storage layer carries it as opaque bytes without
+interpreting it.
 
 \begin{lstlisting}[language=Rust]
 pub struct OperationEnvelopeBlock {
-    /// Block identifier (same as its ChunkId in the chunk store).
-    pub block_id: ChunkId,
-
     /// Operation envelopes in this block. Order within a block is
     /// not normative for canonical reduction (envelopes are a set)
     /// but writers SHOULD preserve authoring order within a block
     /// for diagnostic purposes.
     pub envelopes: Vec<OperationEnvelope>,
+}
 
+/// Manifest-side summary of one block, keyed by the block's
+/// ChunkId. Non-canonical and optional: a reader MUST NOT rely
+/// on a summary being present, and canonical state never depends
+/// on one.
+pub struct OperationBlockSummary {
     /// DVV summary covering the envelopes in this block. Enables
     /// readers to determine causal coverage without parsing every
     /// envelope.
@@ -11099,6 +11165,11 @@ and the two axes are independent.
 
 \begin{lstlisting}[language=Rust]
 pub enum SolverTier {
+    /// Not a conformance tier: an interface-only / passthrough
+    /// solver that evaluates no constraints and computes no
+    /// quality metrics. Ordered below every conformant tier.
+    Stub,
+
     /// Minimal Layout Solver.
     Minimal,
 
@@ -11109,6 +11180,11 @@ pub enum SolverTier {
     Advanced,
 }
 \end{lstlisting}
+
+The \texttt{Stub} variant exists so scaffolding, harnesses, and
+not-yet-conformant pipelines can label themselves honestly: it makes
+no conformance claim, and a document requiring any conformant tier
+is never satisfied by a solver declaring \texttt{Stub}.
 
 \subsection{Minimal Layout Solver}
 
@@ -14404,6 +14480,43 @@ layouts they own versus inherit:
   (\texttt{AcceptLoser}~=~0~$\dots$~\texttt{Registered}~=~5; feeds the
   operation content hash) were golden-locked in code but unpinned in
   spec text.
+  \\
+  \today & Pass 12 tranche 1 (audit spec-alignment) &
+  Aligned spec text with dispositions the project had already made
+  and the reference implementation exercises; no byte-layout or
+  architecture change. The re-anchoring rule table's Slur and
+  Spanner rows now state the Operation Catalog's surviving-endpoint
+  semantics (re-anchor while $\geq 1$ endpoint survives,
+  cascade-delete only when none does; proximity-aware re-targeting
+  deferred). \texttt{TupletCompensation::RewriteTuplets} adopts the
+  catalog's id-only v1 payload (\texttt{TupletRewrite} removed):
+  graph-aware reduction refuses the variant rather than fabricate
+  rewritten values, and a value-carrying payload revision reopens
+  it. Operation-envelope blocks are pure envelope vectors (a
+  content-addressed chunk cannot embed its own id); the per-block
+  summary metadata
+  (\texttt{dvv\_summary}/\texttt{min\_stamp}/\texttt{max\_stamp})
+  relocated to the manifest's \texttt{operation\_block\_summaries}
+  map (opaque ops-supplied bytes, non-canonical, ChunkId-keyed),
+  and the order-blocks-by-\texttt{min\_stamp} \SHOULD{} was dropped
+  because the canonical manifest encoding sorts chunk references by
+  encoded form. The spelling and decomposition pre-passes are now
+  specified as producing \emph{canonical derived annotations} ---
+  deterministic functions of (materialized graph, profile,
+  versioned algorithm id), recomputed on materialization and never
+  stored --- replacing the stored-\texttt{Inferred}-attachment
+  model; the incremental re-run requirement is demoted from
+  \MUST{} to \MAY{} with caching and incrementality required to be
+  unobservable. Spelling-precedence ties now break by canonical
+  attachment order (attachments carry no creation timestamp). The
+  \texttt{ConflictRegistry} moved off the \texttt{Score} root into
+  canonical materialized state, matching Chapter~6.
+  \texttt{SolverTier} gains the non-conformance \texttt{Stub}
+  variant. Companion: Operation Catalog 0.2.0 $\rightarrow$ 0.3.0
+  (ModifyEvent materializes metric placement changes behind a
+  voice-occupancy placement precondition). Dispositions logged in
+  \texttt{spec/PASS12\_RATIFICATION\_LOG.md}; the Pass 12 batch
+  itself remains open.
   \\
   \bottomrule
 \end{longtable}

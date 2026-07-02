@@ -226,7 +226,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.2.0 --- Phase 2 (K0 representative + broad-K0 M2 groups)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.3.0 --- Phase 2 (K0 representative + broad-K0 M2 groups)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -493,13 +493,23 @@ is read from the value.
 Precondition: the event is live. The resolved value is the one carried by the
 operation latest in canonical order; two causally ordered modifications overwrite
 intentionally, and two \emph{concurrent} modifications with \emph{equal} value
-reduce idempotently. Graph-aware reduction overwrites the event in place. A
-modification that \emph{moves} the event (a different region-local position or
-duration) is recorded in the bookkeeping but its placement change is \emph{not}
-applied to the graph: re-sorting a voice on a placement change is a deferred
-refinement, and an in-place move would break \texttt{VoiceEventsSortedNonOverlap}
-(Chapter~5 invariant~3). A malformed (empty pitched) replacement is likewise
-recorded but not materialised.
+reduce idempotently. Graph-aware reduction overwrites the event in place, and a
+modification that \emph{moves} a metric event (a different region-local
+\texttt{Musical} position or duration) is \emph{materialised}: the owning voice
+is re-sorted by ascending position (id-tiebroken --- the same order an insert
+maintains), preserving \texttt{VoiceEventsSortedNonOverlap} (Chapter~5
+invariant~3). To keep that invariant, a placement change carries a
+\emph{placement precondition}, read from the reducer's canonical voice-occupancy
+index (graph-independent, so graph-free and graph-aware reduction agree): a move
+with a non-positive span, or one that would overlap another live event in the
+voice, is refused as a clean precondition no-op (\texttt{EventDurationInvalid})
+rather than skipped silently. A materialised move updates the occupancy index,
+so a later insert sees the freed or changed span. A placement change of a
+\emph{non-metric} event is recorded in the bookkeeping but not applied to the
+graph (re-sorting a non-metric voice is a deferred refinement); a malformed
+(empty pitched) replacement is likewise recorded but not materialised;
+same-placement field edits apply in place, preserving voice membership. Partial
+trimming of a tuplet member remains a later refinement.
 
 \textbf{Conflict cases.} Two concurrent modifications of one event with
 \emph{differing} values produce a \texttt{StructuralFieldCollision} on the field
