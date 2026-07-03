@@ -48,3 +48,15 @@ content modification, ResolveConflict beyond the concurrent case, RespellPitch
 v0 migration fallback, Transpose interval algebra), plus the audit's Push-3
 wiring tracks (constraints, overrides, validation modes, edit barriers,
 operation index) — those are code work, not spec alignment.
+
+## P12-I11 resolution (2026-07-03) — no spec change
+
+The batch's one measured-and-tracked conformance miss, **P12-I11** (RS-1
+honestly failed the Minimal `casting_off_quality` threshold — greedy first-fit
+left a two-measure stub last system, width CV 0.6145 clamped to 1.0 > 0.90),
+is resolved **entirely on the implementation side**, so it appears here only to
+record that the Quality Metric Catalog and the core spec were **not** changed.
+
+| Item | Disposition | Spec locus | Consumer |
+|---|---|---|---|
+| P12-I11 casting-off stub last system | **no spec change (engrave fix)** — casting-off gained a second **widow-rebalance** phase (`epiphany-engrave` v3): it moves whole trailing measures from a region's penultimate system into its final one, choosing the shift that minimizes the larger of the two distribution penalties the catalog already defines for the break family (`casting_off_quality` width imbalance vs `system_break_penalty` non-final underfill; both share the 0.5 anchor). RS-1 casts six/four instead of eight/two — `casting_off` 1.0 → 0.4463, every axis ≤ 0.90 — so the suite's asserted Xfail row is promoted to a plain Pass. This is the deliberately-chosen *honest* resolution: the `casting_off` 0.5 anchor and the Minimal 0.90 column were **vindicated, not relaxed** (the engraver improved, no anchor rescale / threshold loosening / RS-1 per-entry override). Core spec Chapter 9's "Minimal makes no optimality claim" already permits the heuristic; nothing normative changed | — (no spec locus; core spec + Quality Metric Catalog unchanged) | `epiphany-engrave` (`casting::rebalance_widows`, `ENGRAVER_VERSION` 3); `epiphany-testkit` (RS-1 xfail row removed); render goldens regenerated |

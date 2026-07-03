@@ -31,8 +31,11 @@
 //! [`SuiteEntry::minimal_xfail`] is a *documented, measured* threshold miss —
 //! asserted to still miss, so the marking cannot rot (an `XPASS` fails the
 //! harness demanding promotion), and reported for spec-side resolution rather
-//! than silently waived. v0.1 ships exactly one such row (RS-1's
-//! `casting_off_quality`; see the entry and the crate's DECISIONS).
+//! than silently waived. As of engrave v3 every v0.1 entry passes every Minimal
+//! threshold, so no entry carries an xfail row: RS-1's original
+//! `casting_off_quality` miss (P12-I11 — greedy first-fit's stub last system)
+//! was cleared by the engraver's casting-off widow-rebalance phase, the machinery
+//! that would have asserted the miss now stands ready for the next one.
 //!
 //! Following the testkit's library-module-per-harness policy (DECISIONS F0),
 //! this module holds the machinery and `tests/reference_suite.rs` asserts it —
@@ -118,24 +121,16 @@ pub fn entries() -> Vec<SuiteEntry> {
             title: "Ten-measure single staff",
             construction: "fixtures::ten_measure_single_staff(0x000A_11CE)",
             build: rs1,
-            // Measured 2026-07 (engrave v2, QMC v0.1.0 anchors): greedy
-            // first-fit casting-off leaves a two-measure stub last system
-            // (glyph spans ~78.6 vs ~18.8 staff spaces, width CV 0.61 >= the
-            // 0.5 anchor, clamped to 1.0 > the Minimal 0.90 threshold). The
-            // metric is truthful — this is the exact stub-last-line failure
-            // the catalog says the axis exists to catch — and the layout is
-            // byte-locked by the render goldens, so the miss is recorded here
-            // pending either a casting-off balance pass (a coordinated
-            // golden-regenerating change) or a QMC anchor/threshold revision
-            // (the catalog's own threshold-tuning open question). See
-            // DECISIONS.md.
-            minimal_xfail: &[MinimalXfail {
-                axis: QualityMetricKind::CastingOff,
-                reason: "greedy first-fit leaves a stub last system (width CV \
-                         0.61 >= the 0.5 anchor -> 1.0 > 0.90); tracked for a \
-                         casting-off balance pass or a QMC v0.1 threshold \
-                         revision",
-            }],
+            // Passes every Minimal threshold under the reference engraver
+            // (engrave v3, QMC v0.1.0 anchors). Greedy first-fit alone left a
+            // two-measure stub last system (width CV 0.61 -> clamped 1.0 > the
+            // 0.90 threshold, the original P12-I11 miss); casting-off's
+            // widow-rebalance phase now evens the split to a six/four
+            // distribution (width CV ~0.22 -> casting_off ~0.45), clearing the
+            // miss the honest way — an engrave-side balance pass, goldens
+            // regenerated, no QMC anchor/threshold relaxation. See DECISIONS.md
+            // and the engrave casting module.
+            minimal_xfail: &[],
         },
         SuiteEntry {
             id: "RS-2",

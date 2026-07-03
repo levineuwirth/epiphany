@@ -17,9 +17,11 @@
 //! bearings) — then a **casting-off pass** (the [`casting`] module; Chapter 9
 //! §"The Constraint-Solving Stage": the solver "resolve\[s\] page and system
 //! breaks"): greedy first-fit system breaking at measure boundaries against a
-//! [`PageGeometry`], vertical system stacking at the vertical-band model's
-//! inter-system gap, page assignment by content height, and a real populated
-//! page/system tree (Chapter 7 §"ResolvedLayoutIR"). Every chosen break is
+//! [`PageGeometry`], a widow-rebalance phase that evens a region's system widths
+//! so the final system is not left a stub, vertical system stacking at the
+//! vertical-band model's inter-system gap, page assignment by content height,
+//! and a real populated page/system tree (Chapter 7 §"ResolvedLayoutIR"). Every
+//! chosen break is
 //! recorded as an [`epiphany_layout_ir::EngravingDecision`] whose target is a
 //! `MUSCLOID` id synthesized under
 //! [`epiphany_layout_ir::SynthesisKind::EngravedBreak`], attributed to the user
@@ -116,8 +118,11 @@ pub struct Engraver {
 /// The implementation version of this solver (Chapter 9: within a fixed version,
 /// identical input produces identical output). Distinct from the stub's `0`;
 /// bumped to `2` when the casting-off pass landed (the resolved geometry of a
-/// wrapping score differs from version `1`'s single endless system).
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(2);
+/// wrapping score differs from version `1`'s single endless system), and to `3`
+/// when casting-off gained its widow-rebalance phase (a wrapping score's system
+/// breaks — and so its baked geometry — differ again from version `2`'s pure
+/// greedy first-fit).
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(3);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

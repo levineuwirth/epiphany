@@ -162,12 +162,44 @@ inputs the solver cannot measure.
    with the user's override id). The pathological-soft path keeps the old
    warning semantics under a new, honest name
    (`a_pathological_soft_break_is_skipped_and_recorded_as_ir_override`).
-9. **Deferred refinements** (named, not implied): per-system justification
+9. **Widow rebalance (casting-off phase 2) — the honest P12-I11 fix.** Greedy
+   first-fit (decision 1) is optimal for *page fill* — it packs each non-final
+   system as full as the width allows — but that leaves a region's **final**
+   system whatever is left over, often a narrow stub (a "widow") the
+   `casting_off_quality` axis penalizes as a global casting-off failure. A
+   second phase (`casting::rebalance_widows`) evens the split: it moves whole
+   trailing measures from a region's penultimate system into its final one,
+   choosing the shift that **minimizes the larger of the two distribution
+   penalties the Quality Metric Catalog defines for the break family** — the
+   width imbalance (`casting_off_quality`, the CV of the region's system widths)
+   and the non-final break penalty (`system_break_penalty`, the mean of
+   `|W − w|/W` over non-final systems) — each computed by the same formula as
+   the axis it stands in for, so the rebalance optimizes the values the metric
+   census will report, not a proxy. The
+   two axes pull against each other (filling non-final systems worsens
+   imbalance; equalizing widths worsens underfill) and both share the catalog's
+   `0.5` anchor, so the raw quantities compare directly and the minimizer of
+   their maximum is the width that best satisfies both. Scope: only a region's
+   **last** boundary moves, and only when greedy placed it (an `Automatic`
+   boundary with no break requirement or page force pinned to its slot); a
+   user/IR-anchored or page-forced boundary is never disturbed, the penultimate
+   system keeps ≥ 1 measure, and the final system never grows past its
+   predecessor. The **system count is unchanged**, so decision 2's break
+   structure, decision 5's page assignment, and every break-count test invariant
+   hold. Result on **P12-I11**: RS-1 casts six/four instead of eight/two
+   (`casting_off` 1.0 → 0.4463, every axis ≤ 0.90), the suite's asserted Xfail
+   row is promoted to a plain Pass, with **no Quality Metric Catalog change** —
+   the engraver improved, the `0.5` anchor and the `0.90` Minimal column stood.
+   `ENGRAVER_VERSION` 2 → 3 (a wrapping score's baked geometry differs from pure
+   greedy); the `ten_measure` render goldens were regenerated. Still a Minimal
+   heuristic, not an optimality claim.
+10. **Deferred refinements** (named, not implied): per-system justification
    (stretching the soft springs so every full system ends at the right
    margin); the vertical spring solve (band heights are carried, not yet
-   renegotiated; systems stack by real content extents); widow/orphan control
-   and optimal/lookahead casting-off quality (a `Standard`-tier concern, with
-   `casting_off_quality` in the metric vector); casting-off caching /
+   renegotiated; systems stack by real content extents); orphan control and
+   optimal/lookahead casting-off quality beyond decision 9's tail-only widow
+   rebalance — a `Standard`-tier concern (full-region rebalancing, and
+   justification-aware casting-off once systems can stretch); casting-off caching /
    incremental re-cast (the spec's incremental-layout section names the
    casting-off cache; `solve_incremental` currently re-solves from scratch,
    which remains observationally equivalent); per-system clef/key restatement
@@ -298,27 +330,30 @@ testkit's reference-suite harness.
    the tests' actual claim (an honoured break is not a *soft violation*) is
    preserved exactly.
 7. **Measured reality on the reference suite (first real vectors).** The six
-   v0.1 entries measure clean on every axis except two findings the catalog's
-   threshold-tuning open question anticipated (both reported as Pass-12/QMC
-   candidates below): RS-1's `casting_off_quality` = 1.0 (the greedy stub
-   last line, above the Minimal 0.90 threshold — tracked as a documented
-   xfail row in the testkit harness), and `spacing_distortion` on 3–8-column
-   entries (0.36–0.41) sits above the Standard column's 0.32 warning floor,
-   so short scores warn under the default Standard profile.
+   v0.1 entries now measure clean on every Minimal axis. RS-1's
+   `casting_off_quality` was 1.0 under engraver **v2**'s pure greedy first-fit
+   (the stub last line, above the Minimal 0.90 threshold — carried as a
+   documented xfail row in the testkit harness, P12-I11); the **v3**
+   widow-rebalance phase (casting-off decision 9) evens the split to
+   `casting_off` = 0.4463, clearing the miss with no catalog change, and the
+   xfail row is promoted to a plain Pass. One finding the catalog's
+   threshold-tuning open question anticipated remains (a Pass-12/QMC candidate
+   below, P12-I12): `spacing_distortion` on 3–8-column entries (0.36–0.41) sits
+   above the Standard column's 0.32 warning floor, so short scores warn under
+   the default Standard profile — a *diagnostic* floor, not a Minimal failure.
 
 ### Pass 12 candidates (quality metrics)
 
-- **P12 (proposed) — QMC: RS-1 fails the Minimal casting-off threshold under
-  the reference engraver.** First measured vectors (this crate, engraver v2):
-  greedy first-fit casts the RS-1 fixture into glyph spans ~78.6/18.8 staff
-  spaces → width CV 0.61 ≥ the 0.5 anchor → clamped 1.0 > the Minimal 0.90
-  threshold. Two consistent resolutions: (a) a casting-off balance pass in
-  the engraver (a geometry change requiring golden regeneration and a solver
-  version bump), or (b) a QMC minor revision (raise the `casting_off_quality`
-  anchor toward ~1.0, or give Minimal a per-axis relaxation / the Reference
-  Suite an RS-1 override). Until ratified either way, the testkit harness
-  carries the miss as an asserted Xfail row (budget-harness discipline), so
-  it cannot rot silently.
+- **P12-I11 — RESOLVED (engraver v3 widow rebalance).** First measured vectors
+  (engraver v2) cast the RS-1 fixture into glyph spans ~78.6/18.8 staff spaces
+  → width CV 0.61 ≥ the 0.5 anchor → clamped 1.0 > the Minimal 0.90 threshold.
+  Resolved the **honest way (option (a))**: casting-off decision 9's
+  widow-rebalance phase evens the split to ~59.5/37.8 (`casting_off` = 0.4463),
+  so every axis passes and the testkit Xfail row is promoted to a Pass. Option
+  (b) (a QMC anchor/threshold revision — raise the anchor, relax Minimal, or add
+  an RS-1 override) was deliberately **not** taken: the `0.5` anchor and the
+  `0.90` Minimal column stood. `ENGRAVER_VERSION` 2 → 3; `ten_measure` render
+  goldens regenerated.
 - **P12 (proposed) — QMC: the Standard spacing floor warns on short scores.**
   With uniform preferred widths, few-column systems (3–8 columns with a wide
   clef/key lead) measure spacing CV 0.36–0.41 — above the Standard column's

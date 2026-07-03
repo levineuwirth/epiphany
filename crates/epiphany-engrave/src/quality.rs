@@ -538,12 +538,16 @@ mod tests {
         // The ten-measure fixture under the default geometry, measured for
         // real (values pinned loosely; the goldens pin the geometry itself):
         // no cross-column collisions; regular spacing; a single page (the
-        // page-fill axis degenerates to exactly 0.0); and — the honest part —
-        // greedy first-fit leaves a two-measure stub last system (glyph spans
-        // ~78.6 vs ~18.8 staff spaces), which the casting-off axis measures at
-        // its clamped worst (CV 0.61 >= the 0.5 anchor -> 1.0). That is the
-        // exact "stub final system" failure the catalog says the axis exists
-        // to catch; the value is truthful, not a defect in the census.
+        // page-fill axis degenerates to exactly 0.0). Greedy first-fit alone
+        // would leave a two-measure stub last system (width CV 0.61 -> the
+        // clamped worst 1.0); casting-off's widow-rebalance evens that into a
+        // six/four split (system widths ~59.5 vs ~37.8 staff spaces, CV ~0.22),
+        // so casting_off measures ~0.45 — comfortably inside the Minimal 0.90
+        // threshold. The trade-off is on the break axis: the non-final system
+        // is deliberately left ~66% full (not greedy's ~87%), so system_break
+        // rises to ~0.68 — still well inside Minimal. Both axes sit above the
+        // Standard profile's floor (0.8 x 0.35 = 0.28), so both fire the
+        // SHOULD-level diagnostic, which per the catalog never changes status.
         let report = Engraver::default().solve(&ten_measure(), &SolverConfig::default());
         let vector = &report.metric_vector;
         assert_eq!(vector.collision_penalty.0, 0.0);
@@ -552,28 +556,31 @@ mod tests {
         assert_eq!(vector.beam_slope_penalty.0, 0.0, "vacuous: no drawn beams");
         assert_eq!(vector.page_fill_efficiency.0, 0.0, "vacuous: single page");
         assert!(
-            vector.system_break_penalty.0 > 0.0 && vector.system_break_penalty.0 < 0.35,
-            "the non-final system is nearly full: {}",
+            (0.55..0.85).contains(&vector.system_break_penalty.0),
+            "the non-final system is evened below full: {}",
             vector.system_break_penalty.0
         );
-        assert_eq!(
-            vector.casting_off_quality.0, 1.0,
-            "the stub last line is honestly at the clamped worst"
+        assert!(
+            (0.3..0.6).contains(&vector.casting_off_quality.0),
+            "the rebalanced split is even, not a clamped-worst stub: {}",
+            vector.casting_off_quality.0
         );
         assert!(
             vector.symbol_density_uniformity.0 < 0.1,
             "density is even though widths are not: {}",
             vector.symbol_density_uniformity.0
         );
-        // The casting-off axis exceeds 0.8 x its threshold in every ratified
-        // column, so the SHOULD-level floor diagnostic fires — and, per the
-        // catalog, the status is untouched by it.
-        assert!(report.warnings.iter().any(|w| matches!(
-            w.kind,
-            SolverWarningKind::QualityFloorApproached {
-                metric: QualityMetricKind::CastingOff
-            }
-        )));
+        // Both the casting-off and the system-break axes exceed 0.8 x their
+        // Standard threshold, so the SHOULD-level floor diagnostic fires for
+        // each — the two sides of the rebalance trade-off, honestly reported —
+        // and, per the catalog, the status is untouched by them.
+        let floored = |metric: QualityMetricKind| {
+            report.warnings.iter().any(|w| {
+                matches!(w.kind, SolverWarningKind::QualityFloorApproached { metric: m } if m == metric)
+            })
+        };
+        assert!(floored(QualityMetricKind::CastingOff));
+        assert!(floored(QualityMetricKind::SystemBreak));
         assert_eq!(report.status, SolveStatus::Solved);
     }
 
