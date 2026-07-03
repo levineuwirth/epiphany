@@ -16,11 +16,17 @@ epiphany-ops.workspace = true
 # now drives the real crate instead of an in-tree stub.
 epiphany-layout-ir.workspace = true
 
-# The Chapter 10 performance benches (worklist F1) are the only dev-dependency
-# user: the budget-gate logic itself lives in `src/budget.rs` on plain `std`,
-# so the library builds without criterion.
+# The Chapter 10 performance benches (worklist F1) run under criterion; the
+# budget-gate logic itself lives in `src/budget.rs` on plain `std`, so the
+# library builds without it. The editor-core + engrave pair drives the
+# multi-system click-to-insert regression test (`tests/multisystem_click.rs`)
+# over the real casting-off engraver — dev-only, so the library dependency
+# graph is unchanged (engrave's own dev-dependency on this crate makes the
+# cycle dev-only, which cargo permits).
 [dev-dependencies]
 criterion.workspace = true
+epiphany-editor-core.workspace = true
+epiphany-engrave.workspace = true
 
 # Drives the whole suite at scale outside the unit-test timeout — the analogue
 # of epiphany-determinism's `fuzz_roundtrip` and epiphany-bundle's `fuzz_crash`.

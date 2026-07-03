@@ -45,10 +45,17 @@
 //! Having earned it, [`Engraver::tier`] reports [`SolverTier::Minimal`] — which
 //! (Chapter 9 §"Conformance Tiers" / QUICKSTART) means *hard constraints
 //! satisfied, no claim about optimality* — greedy first-fit casting-off is
-//! legitimate at this tier. It therefore makes **no normalized-metric claim**:
-//! the quality-metric vector stays the conservative all-worst "no claim"
-//! placeholder ([`QualityMetricVector::unmeasured`]) until the Quality Metric
-//! Catalog lands (Phase 3 / `Standard`). Still deferred to a later tier: the
+//! legitimate at this tier. The solve reports a **real quality-metric vector**:
+//! the private `quality` module computes all nine normative axes per the
+//! ratified *Quality Metric Catalog* companion (collision census, spacing
+//! regularity, break/page/casting-off distribution, vertical gap deviation;
+//! slur/beam shape are vacuous-`0.0` because no drawn slur/beam geometry exists
+//! yet), normalized through the catalog's pinned anchors
+//! ([`epiphany_layout_ir::quality`]), with
+//! [`SolverWarningKind::QualityFloorApproached`] diagnostics against the
+//! threshold column the config's profile selects. The all-worst
+//! [`QualityMetricVector::unmeasured`] placeholder remains only for malformed
+//! inputs the solver cannot measure. Still deferred to a later tier: the
 //! **vertical spring pass** (glyph `y` within a system is the constrained
 //! natural staff layout, preserved verbatim; systems stack by real content
 //! extents), per-system justification/stretch, and optimal break search.
@@ -63,16 +70,17 @@
 //! [`epiphany-render-svg`]: ../epiphany_render_svg/index.html
 
 pub mod casting;
+mod quality;
 mod spacing;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_layout_ir::{
-    all_available, Axis, BravuraCatalog, ConstrainedLayoutIR, ConstraintId, ConstraintSolver,
-    ConstraintStrength, GlyphCatalog, GlyphObject, GlyphObjectId, InvalidationSet,
-    LayoutConstraint, Point, QualityMetricVector, Rect, ResolvedGlyph, ResolvedLayoutIR,
-    SolveReport, SolveStatus, SolverBudgetUsed, SolverConfig, SolverState, SolverTier,
-    SolverVersion, SolverWarning, SolverWarningKind, SpringSlotId, Stroke,
+    all_available, profile_thresholds, Axis, BravuraCatalog, ConstrainedLayoutIR, ConstraintId,
+    ConstraintSolver, ConstraintStrength, GlyphCatalog, GlyphObject, GlyphObjectId,
+    InvalidationSet, LayoutConstraint, Point, QualityMetricVector, Rect, ResolvedGlyph,
+    ResolvedLayoutIR, SolveReport, SolveStatus, SolverBudgetUsed, SolverConfig, SolverState,
+    SolverTier, SolverVersion, SolverWarning, SolverWarningKind, SpringSlotId, Stroke,
 };
 
 pub use casting::{PageGeometry, INTER_PAGE_GAP, SYSTEM_CONTINUATION_SYNTHESIS};
@@ -128,14 +136,20 @@ impl Engraver {
     /// slots (each glyph to its slot's `x`, baseline `y` preserved), then the
     /// casting-off pass (system breaking, vertical stacking, page assignment —
     /// see [`casting`]), then evaluation of the declared constraints by
-    /// strength. A malformed input — an unknown glyph, a forged catalog
-    /// identity, or invalid structure — yields [`SolveStatus::InternalError`]; a
-    /// valid problem whose `Required` constraints cannot all be satisfied yields
-    /// [`SolveStatus::Unsatisfiable`] (naming the unsatisfied constraints). Both
-    /// are diagnostic-only; neither panics. Violated `Preferred` constraints
-    /// yield soft-violation warnings under [`SolveStatus::SolvedWithWarnings`]
-    /// — a valid, renderable layout.
-    fn resolve(&self, input: &ConstrainedLayoutIR) -> SolveReport {
+    /// strength, then the **quality-metric census** (the private `quality`
+    /// module): all nine normative axes of the Quality Metric Catalog computed
+    /// over the cast geometry, with `QualityFloorApproached` warnings against
+    /// the threshold column the config's profile selects (diagnostic — per the
+    /// catalog they never change the status). A malformed input — an unknown
+    /// glyph, a forged catalog identity, or invalid structure — yields
+    /// [`SolveStatus::InternalError`] with the all-worst unmeasured vector
+    /// (nothing trustworthy to measure); a valid problem whose `Required`
+    /// constraints cannot all be satisfied yields
+    /// [`SolveStatus::Unsatisfiable`] (naming the unsatisfied constraints), its
+    /// real geometry measured honestly. Neither panics. Violated `Preferred`
+    /// constraints yield soft-violation warnings under
+    /// [`SolveStatus::SolvedWithWarnings`] — a valid, renderable layout.
+    fn resolve(&self, input: &ConstrainedLayoutIR, config: &SolverConfig) -> SolveReport {
         let structural_valid = input.validate().is_ok();
 
         // Short-circuit before catalog construction so an unknown glyph yields a
@@ -237,6 +251,27 @@ impl Engraver {
             });
         }
 
+        // The quality-metric census (Quality Metric Catalog): measured whenever
+        // the geometry is trustworthy — structure valid (the cast ran) and the
+        // catalog identity genuine (the glyph boxes the census sweeps are the
+        // real bundled metrics). A malformed input keeps the all-worst
+        // unmeasured placeholder: there is nothing honest to measure. The
+        // floor warnings reference the threshold column the config's profile
+        // selects (Draft -> Minimal, Standard/Publication -> Standard); per the
+        // catalog they are diagnostic and never change `status`, which was
+        // fixed above.
+        let metric_vector = match (&cast, catalog_valid) {
+            (Some(cast), true) => {
+                let vector = quality::measure(input, cast, &self.geometry);
+                warnings.extend(quality::floor_warnings(
+                    &vector,
+                    profile_thresholds(config.profile),
+                ));
+                vector
+            }
+            _ => QualityMetricVector::unmeasured(),
+        };
+
         // The final layout is the cast world frame: real pages and systems,
         // glyph/stroke positions baked, the engraver's break decisions appended
         // to the pipeline's (Chapter 7 §"ResolvedLayoutIR": decisions "including
@@ -268,11 +303,9 @@ impl Engraver {
             },
             unsatisfied_constraints,
             warnings,
-            // Minimal makes no normalized-metric claim (Chapter 9 / QUICKSTART:
-            // "satisfies hard constraints but makes no normalized-metric claims";
-            // the Quality Metric Catalog is Phase 3), so the vector is the
-            // conservative all-worst "no claim" placeholder, like the stub's.
-            metric_vector: QualityMetricVector::unmeasured(),
+            // The real nine-axis census computed above (or the honest all-worst
+            // placeholder for a malformed input the solver could not measure).
+            metric_vector,
             budget_used: SolverBudgetUsed {
                 // The horizontal pass and the casting-off walk each touch every
                 // slot once; report the spacing pass's touch honestly.
@@ -547,9 +580,11 @@ fn within(g: &ResolvedGlyph, region: &Rect) -> bool {
 impl ConstraintSolver for Engraver {
     fn tier(&self) -> SolverTier {
         // Minimal (Chapter 9): it evaluates and satisfies the IR's declared hard
-        // constraints, reporting honestly which (if any) it cannot. It makes no
-        // normalized-metric claim — `Minimal` means hard constraints satisfied,
-        // not optimal quality (the Quality Metric Catalog is Phase 3 / `Standard`).
+        // constraints, reporting honestly which (if any) it cannot, and computes
+        // real quality-metric vectors per the Quality Metric Catalog — accurate
+        // reports being part of the Minimal claim. `Minimal` still makes no
+        // optimality claim (greedy first-fit casting-off is legitimate here);
+        // the Standard tier's tighter thresholds are not claimed.
         SolverTier::Minimal
     }
 
@@ -557,8 +592,8 @@ impl ConstraintSolver for Engraver {
         ENGRAVER_VERSION
     }
 
-    fn solve(&self, input: &ConstrainedLayoutIR, _config: &SolverConfig) -> SolveReport {
-        self.resolve(input)
+    fn solve(&self, input: &ConstrainedLayoutIR, config: &SolverConfig) -> SolveReport {
+        self.resolve(input, config)
     }
 
     fn solve_incremental(
@@ -566,13 +601,13 @@ impl ConstraintSolver for Engraver {
         input: &ConstrainedLayoutIR,
         _prior: &SolverState,
         _invalidations: &InvalidationSet,
-        _config: &SolverConfig,
+        config: &SolverConfig,
     ) -> SolveReport {
         // The scaffold recomputes spacing from scratch, which is trivially
         // observationally equivalent to a scoped incremental solve (Chapter 9
         // §"Observational Equivalence"). Real incremental scoping is Minimal-tier
         // work.
-        self.resolve(input)
+        self.resolve(input, config)
     }
 }
 
@@ -588,14 +623,33 @@ mod tests {
 
     #[test]
     fn reports_the_minimal_tier_it_has_earned() {
+        use epiphany_layout_ir::{MINIMAL_THRESHOLDS, QUALITY_METRIC_KINDS};
         // It evaluates the declared hard constraints, so it reports Minimal — above
-        // the interface-only stub, below the metric-claiming Standard tier.
+        // the interface-only stub, below the tighter-threshold Standard tier.
         assert_eq!(Engraver::default().tier(), SolverTier::Minimal);
         assert!(Engraver::default().tier() > StubSolver.tier());
         assert!(Engraver::default().tier() < SolverTier::Standard);
-        // Minimal makes no normalized-metric claim (the catalog is Phase 3).
+        // Accurate metric vectors are part of the Minimal claim (Chapter 9;
+        // Quality Metric Catalog): the vector is *real* — never the all-worst
+        // unmeasured placeholder — collision-free on this clean fixture, and
+        // every axis is a valid NormalizedMetric within the catalog's Minimal
+        // threshold column (the fixture's three regions each cast onto a
+        // single system, so the break-family axes degenerate to exactly 0.0
+        // under the vacuous-geometry rule).
         let report = Engraver::default().solve(&fixture(), &SolverConfig::default());
-        assert_eq!(report.metric_vector, QualityMetricVector::unmeasured());
+        assert_ne!(report.metric_vector, QualityMetricVector::unmeasured());
+        assert_eq!(report.metric_vector.collision_penalty.0, 0.0);
+        for kind in QUALITY_METRIC_KINDS {
+            let value = report.metric_vector.axis(kind).0;
+            assert!(
+                value.is_finite() && (0.0..=1.0).contains(&value),
+                "{kind:?}"
+            );
+            assert!(
+                value <= MINIMAL_THRESHOLDS.axis(kind),
+                "{kind:?} = {value} exceeds its Minimal threshold"
+            );
+        }
         assert_eq!(Engraver::default().version(), ENGRAVER_VERSION);
         assert_ne!(Engraver::default().version(), StubSolver.version());
     }
@@ -795,7 +849,19 @@ mod tests {
         });
         let report = Engraver::default().solve(&input, &SolverConfig::default());
         assert_eq!(report.status, SolveStatus::Solved, "{:?}", report.warnings);
-        assert!(report.warnings.is_empty());
+        // The honoured break is never reported as a soft violation. (The
+        // report legitimately carries QualityFloorApproached diagnostics: this
+        // two-note micro-score casts off into wildly uneven system widths,
+        // which the casting-off axis honestly measures — quality warnings are
+        // diagnostic and, per the catalog, never change the status.)
+        assert!(
+            !report.warnings.iter().any(|w| matches!(
+                w.kind,
+                SolverWarningKind::LargeSoftConstraintViolation { .. }
+            )),
+            "an honoured break must not surface as a soft violation: {:?}",
+            report.warnings
+        );
         assert!(report.satisfied_hard_constraints);
         assert_eq!(system_count(&report.layout), 2);
         assert!(report
@@ -906,7 +972,19 @@ mod tests {
         let engraver = Engraver::default();
         let report = engraver.solve(&constrained, &SolverConfig::default());
         assert_eq!(report.status, SolveStatus::Solved, "{:?}", report.warnings);
-        assert!(report.warnings.is_empty(), "an honoured break never warns");
+        // An honoured break never warns *about the break* (no soft violation).
+        // The report may carry QualityFloorApproached diagnostics — this
+        // few-note score's user break honestly leaves a stub last system,
+        // which the casting-off axis measures; quality warnings never change
+        // the status per the catalog.
+        assert!(
+            !report.warnings.iter().any(|w| matches!(
+                w.kind,
+                SolverWarningKind::LargeSoftConstraintViolation { .. }
+            )),
+            "an honoured break never surfaces as a soft violation: {:?}",
+            report.warnings
+        );
         assert!(report.satisfied_hard_constraints);
         assert!(report.unsatisfied_constraints.is_empty());
         assert!(
@@ -1216,8 +1294,11 @@ mod tests {
             assert_eq!(resolved.provenance, original.provenance);
             assert_eq!(resolved.glyph, original.glyph);
         }
-        // The metric vector is the honest all-worst placeholder (no metrics yet).
-        assert_eq!(report.metric_vector, QualityMetricVector::unmeasured());
+        // The metric vector is real — computed per the Quality Metric Catalog,
+        // never the all-worst placeholder — and this clean pipeline fixture is
+        // collision-free under the full same-system census.
+        assert_ne!(report.metric_vector, QualityMetricVector::unmeasured());
+        assert_eq!(report.metric_vector.collision_penalty.0, 0.0);
     }
 
     #[test]

@@ -1280,6 +1280,8 @@ dependencies = [
  "epiphany-bundle",
  "epiphany-core",
  "epiphany-determinism",
+ "epiphany-editor-core",
+ "epiphany-engrave",
  "epiphany-layout-ir",
  "epiphany-ops",
 ]

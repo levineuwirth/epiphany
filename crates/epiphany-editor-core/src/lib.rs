@@ -65,7 +65,7 @@ use epiphany_core::{
 use epiphany_layout_ir::{
     active_clef, manifestation_layout_id, staff_step_pitch, to_constrained, to_logical, to_render,
     ConstraintSolver, ExtensionRef, HitTestMap, LayoutContent, LayoutObjectId, LogicalLayoutIR,
-    Point, RenderIR, ResolvedLayoutIR, SolverConfig, TimePoint,
+    Point, Rect, RenderIR, ResolvedLayoutIR, ResolvedSystem, SolverConfig, TimePoint,
 };
 use epiphany_ops::{
     advisory_violations, AcceptOutcome, AuthorId, CausalContext, DeleteEventOp,
@@ -543,14 +543,23 @@ impl EditorSession {
         })
     }
 
-    /// The manifested staff a world `point` is nearest, by 2D proximity — its
-    /// `(region, staff instance)` and the staff's step-origin `y`. Horizontal span
-    /// first (which region — one staff tiles across regions that can share a y band),
-    /// then the vertical band (which staff within it). The bottom staff line carries
-    /// the staff's manifestation id as its stroke `stable_id`, which is how a rendered
-    /// line maps back to `(region, staff_instance)`. Both halves of click-to-insert —
-    /// [`Self::staff_pitch_at`] (pitch) and [`Self::position_at`] (position) — select
-    /// the staff/region through this. `None` on a non-finite point or no staff line.
+    /// The manifested staff a world `point` is nearest — its `(region, staff
+    /// instance)` and the staff's step-origin `y`. Both halves of click-to-insert —
+    /// [`Self::staff_pitch_at`] (pitch) and [`Self::position_at`] (position) —
+    /// select the staff/region through this. `None` on a non-finite point or no
+    /// staff line.
+    ///
+    /// When the layout carries real cast-off page geometry, the staff is resolved
+    /// *within the system under the click* ([`Self::system_manifestation`]):
+    /// casting-off splits a staff's lines per system, and only the first segment
+    /// keeps the manifestation `stable_id`, so the flat scan below would always
+    /// answer with system 1's origin/span. Without cast geometry (a solver that
+    /// does not cast off, e.g. the stub), the flat scan is the whole story:
+    /// horizontal span first (which region — one staff tiles across regions that
+    /// can share a y band), then the vertical band (which staff within it). The
+    /// bottom staff line carries the staff's manifestation id as its stroke
+    /// `stable_id`, which is how a rendered line maps back to
+    /// `(region, staff_instance)`.
     fn nearest_manifestation(&self, point: Point) -> Option<(RegionId, &StaffInstance, f32)> {
         // Reject a non-finite click up front: `dist_to_band`'s `<`/`>` would let a
         // NaN fall through as distance 0 (matching every staff), and downstream a
@@ -559,8 +568,9 @@ impl EditorSession {
         if !point.x.0.is_finite() || !point.y.0.is_finite() {
             return None;
         }
-        // A 5-line staff spans four staff spaces above its bottom line.
-        const STAFF_SPAN: f32 = 4.0;
+        if let Some(found) = self.system_manifestation(point) {
+            return Some(found);
+        }
         let mut best: Option<(RegionId, &StaffInstance, f32)> = None;
         let mut best_dist = (f32::INFINITY, f32::INFINITY);
         for (region, si) in self.score.staff_instances() {
@@ -592,14 +602,114 @@ impl EditorSession {
         best
     }
 
+    /// The manifested staff under `point`, resolved through the cast-off page tree
+    /// — the multi-system path of [`Self::nearest_manifestation`]. Finds the system
+    /// under the click ([`Self::containing_system`]), reads the region it manifests
+    /// from its provenance, picks the vertically nearest staff band among the
+    /// system's staff records, and recovers that staff's step origin **in this
+    /// system**. `None` when no system carries real geometry (the caller then falls
+    /// back to the flat stroke scan), or when the containing system carries no
+    /// usable staff record.
+    fn system_manifestation(&self, point: Point) -> Option<(RegionId, &StaffInstance, f32)> {
+        let system = self.containing_system(point)?;
+        // A system manifests one region, and carries it as its provenance source
+        // whether it is the region's first system (the region's own provenance) or
+        // a later one (synthesized under `EngravedBreak` *from the region*) — read
+        // the identity from the data rather than assuming which system this is.
+        let TypedObjectId::Region(region) = system.provenance.source else {
+            return None;
+        };
+        // The nearest staff band vertically: within one system the region is fixed,
+        // and its staves are stacked in disjoint y bands, so — unlike the flat
+        // scan, where x picks the region first — the vertical distance alone is
+        // the discriminator.
+        let staff = system
+            .staves
+            .iter()
+            .filter(|s| rect_is_real(&s.bounding_box))
+            .min_by(|a, b| {
+                let da = dist_to_band(point.y.0, rect_y_band(&a.bounding_box));
+                let db = dist_to_band(point.y.0, rect_y_band(&b.bounding_box));
+                da.total_cmp(&db)
+            })?;
+        // The staff record's provenance is its bottom-most rendered line *in this
+        // system* (`build_system` in the engraver's casting pass); that stroke's
+        // height is the exact step origin the pitch math expects. Fall back to
+        // deriving it from the staff's box, whose vertical extent is the 5-line
+        // span padded by the line half-thickness on both sides — the bottom line
+        // sits half the (span + padding) height above the box bottom, minus half
+        // the span.
+        let origin = self
+            .resolved
+            .strokes
+            .iter()
+            .find(|s| s.provenance.stable_id == staff.provenance.stable_id)
+            .map(|s| s.from.y.0)
+            .unwrap_or_else(|| {
+                let b = &staff.bounding_box;
+                b.origin.y.0 + b.size.height.0 / 2.0 - STAFF_SPAN / 2.0
+            });
+        let si = self
+            .score
+            .staff_instances()
+            .find(|(r, si)| *r == region && si.staff == staff.staff)
+            .map(|(_, si)| si)?;
+        Some((region, si, origin))
+    }
+
+    /// The cast-off system whose bounding box contains `point`, or — when the
+    /// point is in the gutter between systems — the **nearest system by vertical
+    /// distance**: systems on a page all start at the left margin, so they overlap
+    /// in x and are disjoint in y, making the y band the discriminator (and a
+    /// click slightly above/below a system still resolves, mirroring the flat
+    /// path's nearest-staff tolerance). Only a system with real (non-degenerate)
+    /// geometry is a candidate: a solver that does not cast off (the stub) emits
+    /// zero-size boxes, and those must not capture clicks — `None` sends the
+    /// caller down the flat single-system path unchanged.
+    fn containing_system(&self, point: Point) -> Option<&ResolvedSystem> {
+        if !point.x.0.is_finite() || !point.y.0.is_finite() {
+            return None;
+        }
+        let mut nearest: Option<&ResolvedSystem> = None;
+        let mut nearest_dy = f32::INFINITY;
+        for system in self.resolved.pages.iter().flat_map(|p| p.systems.iter()) {
+            let bounds = &system.bounding_box;
+            if !rect_is_real(bounds) {
+                continue;
+            }
+            if rect_contains(bounds, point) {
+                return Some(system);
+            }
+            let dy = dist_to_band(point.y.0, rect_y_band(bounds));
+            // Strict `<`: on a tie, the earlier system in page/reading order wins
+            // (deterministic, and the gutter midpoint resolves upward).
+            if dy < nearest_dy {
+                nearest_dy = dy;
+                nearest = Some(system);
+            }
+        }
+        nearest
+    }
+
     /// The musical position a world `point` snaps to on the beat grid — the
     /// **horizontal half** of a click-to-insert. Finds the metric region under the
     /// cursor, inverts the click's `x` to a raw musical position (piecewise-linear
     /// through the region's rendered event anchors), then snaps it to `grid`. `None`
     /// if the click is off any staff, the region is non-metric (a proportional or
     /// aleatoric region has no musical position to land on), `grid` is non-positive,
-    /// or the region has fewer than two rendered metric events to fix a scale from.
+    /// or there are fewer than two rendered metric events to fix a scale from.
     /// The vertical half (the pitch) is [`Self::staff_pitch_at`].
+    ///
+    /// In a cast-off multi-system layout the inverse works **within the system
+    /// under the click**: each system restarts at the page's left margin, so one x
+    /// names a different time on each system. A click right of a system's last
+    /// anchor extrapolates that system's end segment (the empty staff after its
+    /// last note — the same end-extrapolation as the flat layout, and it may name
+    /// a time that *renders* on the next system: the result is a musical position,
+    /// not a system-local one); a click left of its first anchor extrapolates
+    /// backward and clamps at the region origin; and a system rendering fewer than
+    /// two of the region's anchors yields `None`, the per-system reading of the
+    /// two-anchor rule above.
     pub fn position_at(&self, point: Point, grid: &GridResolution) -> Option<GridPosition> {
         if !grid.step.is_positive() {
             return None;
@@ -610,9 +720,16 @@ impl EditorSession {
         if !self.region_is_metric(region) {
             return None;
         }
+        // Constrain the anchors to the system under the click: casting-off bakes
+        // every system back to the left margin, so the region-wide anchor list is
+        // x-non-monotonic in time, and inverting through it would map a later
+        // system's click onto the first system's times. Without cast geometry
+        // (`containing_system` is `None` — the stub) the whole region is one flat
+        // monotonic run, unchanged.
+        let system_box = self.containing_system(point).map(|s| s.bounding_box);
         // Two anchors fix the x→time scale; with fewer, the spacing density is
         // unknown, so there is nothing to extrapolate an empty-space position from.
-        let anchors = self.position_anchors(region);
+        let anchors = self.position_anchors(region, system_box.as_ref());
         if anchors.len() < 2 {
             return None;
         }
@@ -672,7 +789,17 @@ impl EditorSession {
     /// in ascending time order — the samples the horizontal inverse interpolates. A
     /// glyph maps to its onset through its `Pitch`/`Event` provenance source; the
     /// leftmost glyph at an onset (the notehead/stem column) fixes that onset's x.
-    fn position_anchors(&self, region: RegionId) -> Vec<(MusicalPosition, f32)> {
+    ///
+    /// With `within` (a cast-off system's bounding box), only glyphs positioned
+    /// inside that box are sampled: casting-off restarts every system at the left
+    /// margin, so the region-wide list is x-non-monotonic in time, and the inverse
+    /// must see a single system's monotonic run. `None` samples the whole region —
+    /// the flat single-system behavior.
+    fn position_anchors(
+        &self,
+        region: RegionId,
+        within: Option<&Rect>,
+    ) -> Vec<(MusicalPosition, f32)> {
         // Source id (event or one of its pitches) → the event's metric onset.
         let mut onset: HashMap<TypedObjectId, MusicalPosition> = HashMap::new();
         let mut pitches: Vec<&IdentifiedPitch> = Vec::new();
@@ -703,6 +830,11 @@ impl EditorSession {
             // `Pitch` source but is placed *left* of the notehead, so taking it as the
             // anchor would pull the onset's x off the time column.
             if glyph.provenance.synthesis.is_some() {
+                continue;
+            }
+            // Constrain to the requested system's box: a glyph on another system
+            // must not contribute an anchor to this system's monotonic run.
+            if within.is_some_and(|bounds| !rect_contains(bounds, glyph.position)) {
                 continue;
             }
             if let Some(at) = onset.get(&glyph.provenance.source) {
@@ -1995,6 +2127,9 @@ fn staff_step(pitch: &Pitch, steps: i32) -> Option<Pitch> {
     Some(moved)
 }
 
+/// A 5-line staff spans four staff spaces above its bottom line.
+const STAFF_SPAN: f32 = 4.0;
+
 /// The distance from height `y` to a staff's line band `(bottom, top)`: zero inside
 /// the band, else the gap to the nearer edge. Used to pick the staff a click is over.
 fn dist_to_band(y: f32, (bottom, top): (f32, f32)) -> f32 {
@@ -2005,6 +2140,35 @@ fn dist_to_band(y: f32, (bottom, top): (f32, f32)) -> f32 {
     } else {
         0.0
     }
+}
+
+/// Whether a resolved bounding box carries **real** cast-off geometry: finite
+/// origin and strictly positive extent on both axes. A solver that does not cast
+/// off (the stub) emits `Rect::default()` — zero-size — boxes, which must not
+/// capture clicks; the callers fall back to the flat single-system paths instead.
+fn rect_is_real(rect: &Rect) -> bool {
+    let width = rect.size.width.0;
+    let height = rect.size.height.0;
+    rect.origin.x.0.is_finite()
+        && rect.origin.y.0.is_finite()
+        && width.is_finite()
+        && height.is_finite()
+        && width > 0.0
+        && height > 0.0
+}
+
+/// A rect's vertical band as `(bottom, top)`, the shape [`dist_to_band`] takes.
+fn rect_y_band(rect: &Rect) -> (f32, f32) {
+    (rect.origin.y.0, rect.origin.y.0 + rect.size.height.0)
+}
+
+/// Whether `point` lies within `rect`, edges included (a glyph exactly on a
+/// system's edge belongs to that system).
+fn rect_contains(rect: &Rect, point: Point) -> bool {
+    point.x.0 >= rect.origin.x.0
+        && point.x.0 <= rect.origin.x.0 + rect.size.width.0
+        && point.y.0 >= rect.origin.y.0
+        && point.y.0 <= rect.origin.y.0 + rect.size.height.0
 }
 
 /// Inverts an `x` coordinate to a raw musical position through `(onset, x)` anchors
@@ -2734,6 +2898,13 @@ mod tests {
     }
 
     /// `region`'s rendered bottom staff line as `(left_x, right_x, origin_y)`.
+    ///
+    /// **Flat-layout (stub) helper**: it finds the stroke carrying the staff's
+    /// manifestation id, which in a cast-off layout is only the *first* system's
+    /// segment. Every test here runs on the [`StubSolver`], which never splits a
+    /// line, so the first segment is the whole line; multi-system geometry is
+    /// exercised via [`install_two_system_geometry`] and, over the real engraver,
+    /// by the testkit's `multisystem_click` integration test.
     fn region_staff_line(session: &EditorSession, region: RegionId) -> (f32, f32, f32) {
         let (_, si) = session
             .score()
@@ -2765,7 +2936,7 @@ mod tests {
     fn position_at_snaps_a_click_to_the_beat_grid() {
         let session = open_rich(0x5EED);
         let region = a_region_with(&session, true);
-        let anchors = session.position_anchors(region);
+        let anchors = session.position_anchors(region, None);
         assert!(
             anchors.len() >= 2,
             "the metric region renders multiple notes"
@@ -2861,7 +3032,7 @@ mod tests {
             // The onset's anchor must be the notehead x, not the (leftmost) accidental
             // — the exact check, independent of how coarse the grid is.
             let anchor_x = session
-                .position_anchors(region)
+                .position_anchors(region, None)
                 .into_iter()
                 .find(|(o, _)| o == onset)
                 .map(|(_, x)| x)
@@ -2914,6 +3085,293 @@ mod tests {
             step: MusicalDuration(RationalTime::zero()),
         };
         assert_eq!(session.position_at(at, &zero), None);
+    }
+
+    /// Where [`install_two_system_geometry`] puts each system's staff bottom line
+    /// (the step origin), in world y: system 1 on top, system 2 below it.
+    const SYS1_ORIGIN_Y: f32 = 0.0;
+    const SYS2_ORIGIN_Y: f32 = -20.0;
+
+    /// Overwrites `session`'s resolved geometry with a hand-built **two-system
+    /// cast-off layout** over its single metric region — the shape the real
+    /// engraver produces and the stub never does. The first half of the region's
+    /// onsets renders on system 1, the rest on system 2; both systems start at the
+    /// same left margin (x restarts, so the region-wide anchor list is
+    /// x-non-monotonic in time) and sit in disjoint y bands. Each system carries a
+    /// staff record whose provenance is its own bottom-line stroke — system 1 the
+    /// staff's manifestation provenance, system 2 a synthesized continuation —
+    /// exactly as the engraver's casting pass writes them. Only the resolved
+    /// geometry is replaced (render/hit-test stay the stub's): these tests
+    /// exercise the resolved-geometry queries alone.
+    ///
+    /// Returns the region, each event as `(onset, anchor x, system index)` in
+    /// onset order, and the two system bounding boxes.
+    fn install_two_system_geometry(
+        session: &mut EditorSession,
+    ) -> (RegionId, Vec<(MusicalPosition, f32, usize)>, Rect, Rect) {
+        use epiphany_layout_ir::{
+            BoundingBox, GlyphReference, GlyphStyle, Margins, Provenance, ResolvedGlyph,
+            ResolvedPage, ResolvedStaff, Size2D, StaffSpace, Stroke, SynthesisInstanceKey,
+            SynthesisKind,
+        };
+
+        let region = a_region_with(session, true);
+        let staff = session
+            .score()
+            .staff_instances()
+            .find(|(r, _)| *r == region)
+            .map(|(_, si)| si.staff)
+            .expect("the metric region has a staff instance");
+        let events = region_pitched_events(session, region);
+        assert!(
+            events.len() >= 4,
+            "four onsets give each system two anchors to fix a scale"
+        );
+        assert!(
+            events.windows(2).all(|w| w[0].0 < w[1].0),
+            "onsets are strictly ascending (distinct)"
+        );
+        let half = events.len() / 2;
+
+        let staff_source = TypedObjectId::Staff(staff);
+        // System 1 keeps the staff's manifestation provenance; system 2's line is
+        // an engraver-synthesized continuation with its own stable id — the split
+        // casting-off performs on a system-spanning stroke.
+        let line_provenance = [
+            Provenance::manifested(staff_source, region, vec![]),
+            Provenance::synthesized(
+                staff_source,
+                SynthesisKind::EngravedBreak,
+                SynthesisInstanceKey(1),
+                vec![],
+            ),
+        ];
+        let origins = [SYS1_ORIGIN_Y, SYS2_ORIGIN_Y];
+
+        let systems: Vec<ResolvedSystem> = origins
+            .iter()
+            .zip(&line_provenance)
+            .enumerate()
+            .map(|(s, (&origin, provenance))| ResolvedSystem {
+                provenance: if s == 0 {
+                    Provenance::projected(TypedObjectId::Region(region), vec![])
+                } else {
+                    Provenance::synthesized(
+                        TypedObjectId::Region(region),
+                        SynthesisKind::EngravedBreak,
+                        SynthesisInstanceKey(2),
+                        vec![],
+                    )
+                },
+                bounding_box: Rect {
+                    origin: Point::new(0.0, origin - 2.0),
+                    size: Size2D {
+                        width: StaffSpace(90.0),
+                        height: StaffSpace(STAFF_SPAN + 4.0),
+                    },
+                },
+                staves: vec![ResolvedStaff {
+                    provenance: provenance.clone(),
+                    staff,
+                    bounding_box: Rect {
+                        origin: Point::new(0.0, origin - 0.05),
+                        size: Size2D {
+                            width: StaffSpace(88.0),
+                            height: StaffSpace(STAFF_SPAN + 0.1),
+                        },
+                    },
+                }],
+                measures: Vec::new(),
+            })
+            .collect();
+        let strokes: Vec<Stroke> = origins
+            .iter()
+            .zip(&line_provenance)
+            .map(|(&y, provenance)| Stroke {
+                provenance: provenance.clone(),
+                from: Point::new(0.0, y),
+                to: Point::new(88.0, y),
+                thickness: StaffSpace(0.1),
+                layer: 0,
+                style: GlyphStyle::default(),
+            })
+            .collect();
+
+        let mut placed: Vec<(MusicalPosition, f32, usize)> = Vec::new();
+        let glyphs: Vec<ResolvedGlyph> = events
+            .iter()
+            .enumerate()
+            .map(|(i, (onset, pid))| {
+                let system = usize::from(i >= half);
+                let local = if system == 0 { i } else { i - half };
+                // 20 staff spaces per quarter, both systems restarting at x = 10.
+                let x = 10.0 + 20.0 * local as f32;
+                placed.push((onset.clone(), x, system));
+                ResolvedGlyph {
+                    provenance: Provenance::manifested(TypedObjectId::Pitch(*pid), region, vec![]),
+                    glyph: GlyphReference::borrowed("noteheadBlack"),
+                    position: Point::new(x, origins[system] + 1.0),
+                    transform: None,
+                    bounding_box: BoundingBox::new(0.0, -0.5, 1.2, 0.5),
+                    style: GlyphStyle::default(),
+                    layer: 0,
+                }
+            })
+            .collect();
+
+        let (sys1_box, sys2_box) = (systems[0].bounding_box, systems[1].bounding_box);
+        session.resolved.pages = vec![ResolvedPage {
+            provenance: Provenance::projected(TypedObjectId::Region(region), vec![]),
+            number: 1,
+            size: Size2D::default(),
+            margins: Margins::default(),
+            systems,
+            free_objects: Vec::new(),
+        }];
+        session.resolved.glyphs = glyphs;
+        session.resolved.strokes = strokes;
+        (region, placed, sys1_box, sys2_box)
+    }
+
+    #[test]
+    fn containing_system_requires_real_cast_geometry() {
+        // The stub's page tree carries only degenerate (zero-size) system boxes:
+        // no system may capture a click, and the flat single-system path stays in
+        // charge — which is what keeps every pre-casting behavior unchanged.
+        let session = open_plain(1);
+        assert!(
+            !session.resolved().pages.is_empty(),
+            "the stub emits a page tree"
+        );
+        assert!(session.containing_system(Point::new(1.0, 0.0)).is_none());
+        let region = a_region_with(&session, true);
+        let at = point_on_region_staff(&session, region);
+        assert!(
+            session.staff_pitch_at(at).is_some(),
+            "the flat path still resolves the click"
+        );
+    }
+
+    #[test]
+    fn staff_pitch_at_reads_the_clicked_system_origin() {
+        let mut session = open_plain(1);
+        let (_region, _placed, sys1, sys2) = install_two_system_geometry(&mut session);
+
+        // Same staff-relative height, one click per system: the pitch must match —
+        // system 2's step origin is its own bottom line, not system 1's. (The
+        // regression: only the first line segment keeps the manifestation stable
+        // id, so the flat path read every system-2 click against system 1's
+        // origin, ~20 staff spaces off.)
+        let p1 = session
+            .staff_pitch_at(Point::new(30.0, SYS1_ORIGIN_Y + 1.0))
+            .expect("a staff under the system-1 click");
+        let p2 = session
+            .staff_pitch_at(Point::new(30.0, SYS2_ORIGIN_Y + 1.0))
+            .expect("a staff under the system-2 click");
+        assert_eq!(
+            p1.staff_instance, p2.staff_instance,
+            "one staff, two systems"
+        );
+        assert_eq!(
+            (p2.nominal, p2.octave),
+            (p1.nominal, p1.octave),
+            "the same staff-relative height names the same pitch in either system"
+        );
+
+        // The containing system is keyed on the click's y — full containment first…
+        let in_sys2 = session
+            .containing_system(Point::new(30.0, SYS2_ORIGIN_Y + 1.0))
+            .expect("system 2 contains the point");
+        assert_eq!(in_sys2.bounding_box, sys2);
+        // …and a click in the inter-system gutter resolves to the nearest system
+        // by vertical distance (mirroring the nearest-staff tolerance), never to
+        // nothing.
+        let just_under_sys1 = Point::new(30.0, rect_y_band(&sys1).0 - 1.0);
+        assert_eq!(
+            session
+                .containing_system(just_under_sys1)
+                .expect("the gutter still resolves")
+                .bounding_box,
+            sys1
+        );
+        let just_over_sys2 = Point::new(30.0, rect_y_band(&sys2).1 + 1.0);
+        assert_eq!(
+            session
+                .containing_system(just_over_sys2)
+                .expect("the gutter still resolves")
+                .bounding_box,
+            sys2
+        );
+    }
+
+    #[test]
+    fn position_at_inverts_within_the_clicked_system() {
+        let mut session = open_plain(1);
+        let (region, placed, _sys1, sys2) = install_two_system_geometry(&mut session);
+        let half = placed.iter().filter(|(_, _, s)| *s == 0).count();
+        // The fixture's onsets are consecutive quarters, so a quarter grid puts
+        // every rendered onset on the grid.
+        let quarter = grid(1, 4);
+        let step = MusicalDuration(RationalTime::new(1, 4).unwrap());
+
+        // Every anchor click snaps to its own onset — in both systems.
+        for (onset, x, system) in &placed {
+            let y = if *system == 0 {
+                SYS1_ORIGIN_Y
+            } else {
+                SYS2_ORIGIN_Y
+            } + 1.0;
+            let gp = session
+                .position_at(Point::new(*x, y), &quarter)
+                .expect("a metric position under the click");
+            assert_eq!(
+                &gp.position, onset,
+                "the click snaps to the clicked system's onset"
+            );
+        }
+        // The regression pinned directly: system 2's first anchor shares its x
+        // with system 1's first anchor but is a *later* time.
+        let (first_sys2_onset, x0, _) = placed[half].clone();
+        let gp = session
+            .position_at(Point::new(x0, SYS2_ORIGIN_Y + 1.0), &quarter)
+            .expect("a metric position under the click");
+        assert_eq!(gp.position, first_sys2_onset);
+        assert!(
+            gp.position > placed[0].0,
+            "a system-2 click is not a system-1 time"
+        );
+
+        // Anchor filtering: within system 2's box the run is monotonic in x and
+        // carries exactly the second half of the onsets; the unfiltered
+        // region-wide list is x-non-monotonic (the hazard the filter removes).
+        let filtered = session.position_anchors(region, Some(&sys2));
+        assert_eq!(filtered.len(), placed.len() - half);
+        assert!(filtered.windows(2).all(|w| w[0].1 < w[1].1));
+        assert_eq!(filtered[0].0, first_sys2_onset);
+        let flat = session.position_anchors(region, None);
+        assert_eq!(flat.len(), placed.len());
+        assert!(
+            !flat.windows(2).all(|w| w[0].1 < w[1].1),
+            "the region-wide anchor list is x-non-monotonic across systems"
+        );
+
+        // End extrapolation stays within the clicked system: one anchor gap right
+        // of a system's last note is that system's next grid slot. For system 1
+        // that names the time system 2 renders first — the result is a musical
+        // position, not a system-local one.
+        let (last_onset, last_x, _) = placed.last().cloned().unwrap();
+        let past = session
+            .position_at(Point::new(last_x + 20.0, SYS2_ORIGIN_Y + 1.0), &quarter)
+            .expect("empty space past the last note still resolves");
+        assert_eq!(past.position, last_onset + step.clone());
+        let (sys1_last_onset, sys1_last_x, _) = placed[half - 1].clone();
+        let hang = session
+            .position_at(
+                Point::new(sys1_last_x + 20.0, SYS1_ORIGIN_Y + 1.0),
+                &quarter,
+            )
+            .expect("system 1's trailing space still resolves");
+        assert_eq!(hang.position, sys1_last_onset + step);
     }
 
     #[test]
@@ -3088,7 +3546,7 @@ mod tests {
         position: &MusicalPosition,
         y: f32,
     ) -> Point {
-        let anchors = session.position_anchors(region);
+        let anchors = session.position_anchors(region, None);
         let (p0, x0) = (anchors[0].0 .0.to_f64(), anchors[0].1 as f64);
         let last = anchors.last().unwrap();
         let (p1, x1) = (last.0 .0.to_f64(), last.1 as f64);

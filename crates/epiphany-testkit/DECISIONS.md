@@ -211,3 +211,53 @@ once ≥3 ambiguities accumulate (same rule as v0 → Pass 11). Agent H's landin
 contributed five candidates (P12-H1…P12-H5, recorded in
 `crates/epiphany-core/DECISIONS.md`), which crosses the threshold, so the batch is
 open. F does not resolve these; F collects them.
+
+## F5 — The Reference Suite harness (`src/reference_suite.rs`, 2026-07)
+
+The Reference Suite companion (v0.1.0) charters the v0.1 entry set — six
+scores named by reference-implementation **builder and seed** — and its
+non-normative Harness Binding chapter says the executable binding "is
+delivered with the reference implementation." This module is that binding,
+in the F0 shape: a library module holding the machinery
+(`entries`/`evaluate_minimal`/`table`), asserted by
+`tests/reference_suite.rs` with **one test per entry** so a failure names its
+entry, plus pins for the entry-set shape, the declared A4 default geometry
+(the companion's solve-configuration requirement — asserted against
+`Engraver::default().geometry()`), and RS-2's builder identity
+(`corpus gen_valid_score_rich` ≡ `generators::valid_score_rich(0xF302)`,
+byte-for-byte).
+
+**Solver-parametric on purpose.** The library module takes
+`&dyn ConstraintSolver`; the integration test supplies the real `Engraver`.
+This keeps `epiphany-engrave` a dev-only dependency (the library dependency
+graph is unchanged, mirroring the multi-system click test) while the harness
+itself stays reusable against any solver claiming Minimal.
+
+**The four-condition pass rule, with the F1 Pass/Xfail discipline on
+condition 4.** `evaluate_minimal` asserts the companion's per-entry rule
+exactly: hard-constraint satisfaction (renderable, non-partial,
+`satisfied_hard_constraints`, nothing unsatisfied); internal determinism
+(byte-identical `ResolvedLayoutIR` canonical bytes *and* bitwise-identical
+metric vectors across repeated solves); a well-formed, accurate report
+(Minimal tier claim, every axis a finite `[0,1]` value, never the unmeasured
+placeholder); and every axis at or below the Quality Metric Catalog's
+Minimal-column threshold. The first real measurement (2026-07) found exactly
+one miss: **RS-1's `casting_off_quality` = 1.0** — greedy first-fit leaves a
+two-measure stub last system (glyph spans ~78.6/18.8 staff spaces, width CV
+0.61 ≥ the 0.5 anchor), the exact failure the axis exists to catch, on a
+layout that is byte-locked by the render goldens. Waiving it silently would
+fake conformance; failing the workspace would misreport a ratified-spec
+tension as a code bug. So condition 4 carries the budget harness's (F1)
+discipline: the miss is a **documented `minimal_xfail` row asserted to still
+miss** — if the layout or the catalog changes and RS-1 comes within
+threshold, the harness fails demanding promotion (remove the row), exactly
+like an F1 `XPASS`. The row's resolution is spec-side and tracked in
+`epiphany-engrave/DECISIONS.md`'s Pass-12 candidates (casting-off balance
+pass with golden regeneration, or a QMC anchor/threshold minor revision —
+the catalog's own threshold-tuning open question anticipated this).
+
+**Eligibility tiers vs. solver tiers.** The corpus `Tier`
+(Common/Edge/Torture) is Agent H's eligibility taxonomy; the suite's tiers
+(Minimal/Standard) are Chapter 9 conformance tiers. The companion carries the
+same caution; the harness resolves corpus entries by `name` string only and
+never reads the corpus tier.

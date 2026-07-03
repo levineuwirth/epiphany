@@ -178,6 +178,14 @@ pub(crate) struct CastLayout {
     pub system_start_slots: BTreeSet<SpringSlotId>,
     /// Slots at which a page begins: the first slot of each page's first system.
     pub page_start_slots: BTreeSet<SpringSlotId>,
+    /// Which system (global index, page order) each realized slot landed in —
+    /// the casting pass's own assignment, which the quality-metric census
+    /// ranges over (a slot absent here was claimed by no region and its glyphs
+    /// belong to no per-system aggregate).
+    pub system_of_slot: BTreeMap<SpringSlotId, usize>,
+    /// The region each system slices, indexed by global system index (the
+    /// per-region grouping the casting-off quality metrics aggregate by).
+    pub region_of_system: Vec<usize>,
 }
 
 /// One realized spring slot in spaced (pre-casting) coordinates, with the
@@ -759,6 +767,8 @@ pub(crate) fn cast_off(
         decisions,
         system_start_slots,
         page_start_slots,
+        system_of_slot,
+        region_of_system: systems.iter().map(|plan| plan.region).collect(),
     }
 }
 

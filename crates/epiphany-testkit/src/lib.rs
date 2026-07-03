@@ -108,6 +108,12 @@ pub mod roundtrip;
 pub mod corpus;
 pub mod prepass_harness;
 
+// Phase 3: the Reference Suite companion's executable binding — the six-entry
+// v0.1 set solved by the real engraver under the declared configuration, with
+// the four-condition Minimal pass rule (`tests/reference_suite.rs` asserts it
+// per entry). Library-module-per-harness per DECISIONS F0.
+pub mod reference_suite;
+
 pub mod convergence;
 pub mod equivocation;
 pub mod migration;

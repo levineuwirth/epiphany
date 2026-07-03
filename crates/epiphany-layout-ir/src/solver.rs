@@ -13,11 +13,12 @@
 //! constraints declared it stays a renderable passthrough but claims no
 //! satisfaction (see [`StubSolver`]).
 //!
-//! **Quality-metric *computation* is deliberately not implemented** (QUICKSTART:
-//! "only the interface — don't implement quality metrics"): the
+//! **The stub computes no quality metrics** (QUICKSTART: "only the interface —
+//! don't implement quality metrics"): the
 //! [`QualityMetricVector`]/[`NormalizedMetric`] *types* and the
-//! [`TieBreakingWeights`] exist (the interface requires them), but the
-//! normalization functions of the Quality Metric Catalog are not. The
+//! [`TieBreakingWeights`] exist (the interface requires them), and the Quality
+//! Metric Catalog's normative anchors and threshold tables are transcribed in
+//! [`crate::quality`] for solvers that do measure (`epiphany-engrave`). The
 //! `StubSolver` is not a conformant solver and passes no reference suite, so it
 //! reports the [`SolverTier::Stub`] tier (the honest non-conformance rung, below
 //! `Minimal`) and an all-worst metric vector. Those values are deliberately
@@ -90,8 +91,9 @@ pub struct SolverVersion(pub u32);
 
 /// The conformance profile under which to solve (Chapter 9 §"The Solver
 /// Interface": `SolverConfig.profile` — selects metric thresholds and the active
-/// constraint/extension set). The per-profile thresholds live in the Quality
-/// Metric Catalog, deferred with the quality metrics.
+/// constraint/extension set). The registered profile catalog and each profile's
+/// threshold column are the Quality Metric Catalog's Chapter 6, transcribed as
+/// [`crate::quality::profile_thresholds`].
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub enum SolverProfile {
     /// Fast, low-quality (draft) profile.
@@ -104,8 +106,9 @@ pub enum SolverProfile {
 }
 
 /// Tie-breaking weights among layouts of equivalent quality (Chapter 9
-/// §"Quality Metrics": `TieBreakingWeights`). The normative defaults live in the
-/// Quality Metric Catalog (deferred); v0 defaults every weight to `1.0`.
+/// §"Quality Metrics": `TieBreakingWeights`). The normative defaults are the
+/// Quality Metric Catalog's Chapter 4: every weight `1.0` — exactly this
+/// type's [`Default`].
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct TieBreakingWeights {
     pub collision: f64,
@@ -206,13 +209,14 @@ pub struct ExtensionMetric {
 }
 
 /// The quality metric vector for a layout (Chapter 9 §"Quality Metrics":
-/// `QualityMetricVector`). v0 carries the type but computes **no** values: an
-/// interface-only solver reports the conservative all-worst placeholder
+/// `QualityMetricVector`). An interface-only solver that computes no metrics
+/// reports the conservative all-worst placeholder
 /// ([`QualityMetricVector::unmeasured`], every metric `1.0`), never a measured
 /// value, so a caller cannot mistake an unmeasured layout for a good one. (The
 /// derived [`Default`] is all-`0.0`/nominal-best and is *not* what the stub
-/// reports; the normalization functions of the Quality Metric Catalog are
-/// deferred.)
+/// reports.) A measuring solver computes each axis per the Quality Metric
+/// Catalog's formulas, normalized through [`crate::quality::normalize`] with
+/// the catalog's pinned anchors ([`crate::quality::anchors`]).
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct QualityMetricVector {
     pub collision_penalty: NormalizedMetric,

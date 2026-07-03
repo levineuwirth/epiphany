@@ -36,9 +36,12 @@ report `SolverTier::Stub`, never `Minimal` (Chapter 9 §"Conformance Tiers").
 landed and now reports `Minimal` — which it fully earns after casting-off: the
 break constraint family is genuinely supported (spec §"Conformance Tiers",
 Minimal row), and `Minimal` makes no optimality claim, so greedy first-fit
-casting-off is legitimate. The quality-metric vector stays the conservative
-all-worst placeholder (`QualityMetricVector::unmeasured`) until the Quality Metric
-Catalog lands (`Standard` tier work).
+casting-off is legitimate. Since the Quality Metric Catalog companion's
+ratification, the solve also reports a **real quality-metric vector** —
+accurate metric vectors are part of the Minimal claim — computed per the
+catalog's formulas (see "Quality metrics (2026-07)" below). The all-worst
+placeholder (`QualityMetricVector::unmeasured`) remains only for malformed
+inputs the solver cannot measure.
 
 ## Implementation decisions (QUICKSTART "Decisions you'll need to make")
 
@@ -221,3 +224,106 @@ resolved:
   itself, not its artefacts). Carried as
   `Registered(SYSTEM_CONTINUATION_SYNTHESIS)`; the spec should either add a
   continuation kind or bless the registered id.
+
+## Quality metrics (2026-07) — decisions
+
+The Quality Metric Catalog companion (v0.1.0) ratified the nine normative
+axes' formal definitions, anchors, thresholds, and the
+`QualityFloorApproached` trigger; `Engraver::resolve` now computes the real
+vector (the private `quality` module), replacing the all-worst placeholder.
+The catalog's normative constants (anchors, the Minimal/Standard threshold
+table, the 0.8 warning fraction, the tier/profile→column mappings) are
+transcribed once in `epiphany_layout_ir::quality` and consumed here and by the
+testkit's reference-suite harness.
+
+1. **Where each axis's inputs come from.** All nine are pure functions of the
+   constrained input, the cast layout, and the declared page geometry — data
+   the pipeline already had (see the `quality` module docs for the per-axis
+   map). The casting pass exposes its own glyph→system assignment
+   (`CastLayout::system_of_slot`, `region_of_system`) so the census ranges
+   over what the solve actually did, never a reconstruction. Slot identity
+   (the collision axis's same-column exclusion) is the glyph's
+   `horizontal_slot` in the constrained input, index-parallel to the resolved
+   glyph list. Widths/columns/densities use glyph **ink boxes** per the
+   catalog's measurement domain (strokes are not glyphs); page spans use the
+   resolved page tree's system bounding boxes.
+2. **Vacuous axes.** `slur_shape_penalty` and `beam_slope_penalty` are exactly
+   `0.0`: the pipeline draws no slur or beam geometry (both exist logically,
+   not as curves/segments), so their contributing-unit sets are empty and the
+   catalog's vacuous-geometry rule (`req:qmc:vacuous`) applies. The catalog's
+   "notated-but-unrendered" open question explicitly owns this honesty edge;
+   the axes are wired so the first slur/beam-drawing release is measured from
+   day one.
+3. **Vertical density's unit set.** `to_constrained` declares `InterStaffGap`
+   bands but **no** `InterSystemGap` bands (the casting pass reads
+   `VerticalBand::inter_system_gap` directly). Implemented units: (a) the
+   input's `InterStaffGap` bands, adjacency reconstructed from
+   `inter_staff_gap_id(region, g)` (gap *g* separates the region's staves
+   *g−1*/*g*), realized separation measured between the adjacent staff bands'
+   resolved ink extents within a common system — i.e. what the resolved
+   geometry actually shows, since constrained `y` is pass-through; (b) the
+   casting pass's realized inter-system gaps (consecutive systems on a page),
+   measured from the resolved page tree against the same constructor's
+   preferred height the stacking consulted. Today (b) measures realized ≡
+   preferred (raw 0), and (a) is empty for every single-staff-per-region
+   score; a multi-staff region honestly measures ~1.0 because the constrained
+   stage's fixed 12-staff-space pitch is far from the band model's preferred
+   2.0 gap — the metric is truthful, the vertical spring solve that would
+   negotiate it is the deferred work.
+4. **Floor warnings never change the status.** Catalog
+   `req:qmc:floor-warning`: the `QualityFloorApproached` warning "is
+   diagnostic: emitting it does not change the solve's status". Implemented
+   literally: `status` is computed before the metric census, and quality
+   warnings are appended after — a solve with clean constraints stays
+   `Solved` even when it carries quality diagnostics. (This is also
+   load-bearing for downstream regression locks that assert `Solved` on
+   fixtures whose casting-off quality honestly warns.) The applicable
+   threshold column is the one the config's profile selects
+   (`profile_thresholds`: Draft→Minimal, Standard/Publication→Standard;
+   default profile Standard), so `SolverConfig` is now threaded into
+   `resolve`.
+5. **Malformed inputs stay unmeasured.** A structurally invalid or
+   forged-catalog input has no trustworthy geometry (the census would sweep
+   unverified boxes), so it keeps `QualityMetricVector::unmeasured()` and
+   earns no floor diagnostics. An `Unsatisfiable` solve of a *valid* problem
+   is measured honestly — its real geometry exists.
+6. **No-flip verification.** Existing tests asserting `Solved` on healthy
+   fixtures were re-run against the real metrics: none flipped (warnings
+   cannot flip status, and no metric enters the status computation). Two
+   engrave tests asserting `warnings.is_empty()` after an honoured break were
+   narrowed to "no `LargeSoftConstraintViolation`": their micro-fixtures
+   (two-note scores broken at the last note column) honestly cast off into
+   wildly uneven system widths, so the casting-off axis fires its SHOULD-level
+   floor diagnostic — the metric is telling the truth about the layout, and
+   the tests' actual claim (an honoured break is not a *soft violation*) is
+   preserved exactly.
+7. **Measured reality on the reference suite (first real vectors).** The six
+   v0.1 entries measure clean on every axis except two findings the catalog's
+   threshold-tuning open question anticipated (both reported as Pass-12/QMC
+   candidates below): RS-1's `casting_off_quality` = 1.0 (the greedy stub
+   last line, above the Minimal 0.90 threshold — tracked as a documented
+   xfail row in the testkit harness), and `spacing_distortion` on 3–8-column
+   entries (0.36–0.41) sits above the Standard column's 0.32 warning floor,
+   so short scores warn under the default Standard profile.
+
+### Pass 12 candidates (quality metrics)
+
+- **P12 (proposed) — QMC: RS-1 fails the Minimal casting-off threshold under
+  the reference engraver.** First measured vectors (this crate, engraver v2):
+  greedy first-fit casts the RS-1 fixture into glyph spans ~78.6/18.8 staff
+  spaces → width CV 0.61 ≥ the 0.5 anchor → clamped 1.0 > the Minimal 0.90
+  threshold. Two consistent resolutions: (a) a casting-off balance pass in
+  the engraver (a geometry change requiring golden regeneration and a solver
+  version bump), or (b) a QMC minor revision (raise the `casting_off_quality`
+  anchor toward ~1.0, or give Minimal a per-axis relaxation / the Reference
+  Suite an RS-1 override). Until ratified either way, the testkit harness
+  carries the miss as an asserted Xfail row (budget-harness discipline), so
+  it cannot rot silently.
+- **P12 (proposed) — QMC: the Standard spacing floor warns on short scores.**
+  With uniform preferred widths, few-column systems (3–8 columns with a wide
+  clef/key lead) measure spacing CV 0.36–0.41 — above the Standard column's
+  0.8 × 0.40 = 0.32 warning floor, so the default profile emits
+  `QualityFloorApproached(Spacing)` on tiny, healthy scores. Consider either
+  a duration/lead-aware refinement of the axis (the catalog's optical-spacing
+  open question) or excluding the lead column from the advance sequence in a
+  QMC minor revision.

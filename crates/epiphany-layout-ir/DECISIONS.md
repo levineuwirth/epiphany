@@ -421,3 +421,27 @@ object is covered); the provenance-preservation contract itself is unchanged.
    P12-I2 wired it: `epiphany-determinism` reserves the built-in
    `DomainTag::LAYOUT_OBJECT_ID` and `provenance.rs` (and the engraving-decision
    id) route through it. See the ratified-block note at the top of this file.
+
+## Quality Metric Catalog constants (`src/quality.rs`, 2026-07)
+
+**Decision: the catalog's normative constants live in this crate, as a pure
+transcription.** The Quality Metric Catalog companion (v0.1.0) pins the nine
+axes' normalization anchors (`R_worst`), the clamped-linear normalization form
+`n = min(1, raw / R_worst)`, the Minimal/Standard threshold table, the
+`QualityFloorApproached` warning fraction (0.8), and the tier/profile →
+threshold-column mappings (Minimal has its own column; Standard and Advanced
+use the Standard column; profiles Draft → Minimal column, Standard and
+Publication → Standard column, Standard the default). Both consumers — the
+`epiphany-engrave` solver (computing vectors and floor diagnostics) and the
+`epiphany-testkit` reference-suite harness (asserting per-tier thresholds) —
+need the same numbers, and this crate is the only one both already depend on,
+so the constants live here (`quality.rs`) with doc comments citing the
+companion by chapter/section. **Every value is transcribed, none invented**;
+a change to any of them is a catalog revision first, mirrored here. The
+module is additive: no canonical encoding is touched (metric values remain
+diagnostic-only, structurally outside `ResolvedLayoutIR` — the catalog's own
+requirement), and the `StubSolver` still computes nothing and keeps its
+all-worst `unmeasured()` vector, which a transcription test pins as excluded
+by the Minimal column ("measuring is part of the Minimal claim"). The catalog
+also blesses the existing `TieBreakingWeights::default()` (all 1.0) as the
+normative defaults — pinned by test rather than re-declared.

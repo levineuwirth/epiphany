@@ -66,6 +66,8 @@ code instead is the failure mode this batch exists to prevent.
 | P12-I8 | `epiphany-engrave` I | Break-constraint satisfaction predicate: implemented as "a `SystemBreakAt`/`PageBreakAt` is satisfied iff the final layout starts a system/page at that slot" (a region-first slot is trivially satisfied). Ch7/Ch9 never define satisfaction for break constraints; ratify the predicate. | G / Pass 12 (solver) |
 | P12-I9 | `epiphany-layout-ir` I | Honouring a user break must attribute the decision to its override (`DecisionSource::UserOverride(id)`), but constraints carry no override identity; implemented via a `ConstrainedLayoutIR.break_origins` sidecar populated by `to_constrained`. Bless the sidecar or widen the normalized constraint record. | G / Pass 12 (solver) |
 | P12-I10 | `epiphany-layout-ir` I | System-spanning strokes split at system boundaries need synthesized provenance for continuation segments; implemented as `SynthesisKind::Registered(SYSTEM_CONTINUATION_SYNTHESIS)` with a deterministic `(original, ordinal)` instance key. Add a first-class continuation synthesis kind or bless the registered id. | G / Pass 12 (provenance) |
+| P12-I11 | `epiphany-engrave` I | RS-1 honestly fails the Minimal casting-off threshold under the reference engraver (measured 1.0 vs 0.90): greedy first-fit leaves a two-measure stub last system (width CV 0.6145 ≥ the 0.5 anchor). Resolutions: an engrave-side casting-off balance pass (golden regeneration + solver version bump), or a Quality Metric Catalog minor revision (anchor rescale / Minimal relaxation / RS-1 per-entry override). Tracked bidirectionally by the suite harness's asserted Xfail row. | G / Pass 12 (quality) |
+| P12-I12 | `epiphany-engrave` I | The Standard-tier spacing floor warns on short healthy scores: 3–8-column entries with a wide clef/key lead measure spacing CV 0.36–0.41 > the 0.32 Standard floor. Consider a lead-aware or duration-aware refinement of the spacing_distortion raw measurement (the catalog's optical-spacing open question). | G / Pass 12 (quality) |
 
 
 ## Not yet open elsewhere
@@ -76,6 +78,9 @@ spec-compliance audit follow-up, alongside K3/K4). The 2026-07 Push-3 wiring
 work added C1..C4 (re-anchoring), D1 (bundle operation index), and E1..E5
 (edit barriers). The Phase-3 first tranche (casting-off + K1 schema-fill +
 value-restoring undo, 2026-07-02) added C5, K8..K11, and I7..I10.
+The second tranche (Quality Metric Catalog 0.1.0 + Reference Suite 0.1.0 +
+real engraver metrics + the suite harness + the multi-system click fix,
+2026-07-03) added I11..I12.
 Agent J's Binary Format companion now exists
 (`spec/binary_format.tex`, v0.1.0): it ratified the P12-D1/E1/E2/E3 inputs
 (struck through above) and discharged the crates' provisional-codec notes

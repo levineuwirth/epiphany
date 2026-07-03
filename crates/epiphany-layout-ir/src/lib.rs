@@ -73,6 +73,7 @@ pub mod glyph;
 pub mod hittest;
 pub mod logical;
 pub mod provenance;
+pub mod quality;
 pub mod render;
 pub mod resolved;
 pub mod roundtrip;
@@ -125,6 +126,10 @@ pub use logical::{
 pub use provenance::{
     continuation_instance_key, manifestation_layout_id, stable_layout_id, synthesized_layout_id,
     LayoutObjectId, Provenance, SynthesisInstanceKey, SynthesisKind, SynthesisRegistryId,
+};
+pub use quality::{
+    normalize, profile_thresholds, r_worst, tier_thresholds, MetricThresholds, MINIMAL_THRESHOLDS,
+    QUALITY_FLOOR_FRACTION, QUALITY_METRIC_KINDS, STANDARD_THRESHOLDS,
 };
 pub use render::{
     to_render, ColorConfiguration, ColorSpace, PassthroughRenderProducer,

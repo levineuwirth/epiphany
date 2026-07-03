@@ -1,0 +1,1308 @@
+% !TEX program = xelatex
+%
+% Epiphany --- Quality Metric Catalog (companion specification)
+% Companion to the Core Specification. Compile with XeLaTeX.
+%
+% This document is versioned independently of the Core Specification
+% (independent semver; see the Versioning note in the front matter). Its preamble
+% is intentionally a self-contained copy of the core specification's preamble so
+% the two documents build independently; factoring a shared preamble file is a
+% later cleanup, not a v0.1 deliverable.
+
+\documentclass[11pt,letterpaper]{report}
+
+% ---------------------------------------------------------------------------
+% Packages
+% ---------------------------------------------------------------------------
+\usepackage{fontspec}
+\usepackage{geometry}
+\geometry{
+  letterpaper,
+  top=1.05in,
+  bottom=1.05in,
+  left=1.15in,
+  right=1.15in,
+  headheight=15pt
+}
+
+\usepackage[english]{babel}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{listings}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable, skins}
+
+% ---------------------------------------------------------------------------
+% Color palette (shared with the core specification)
+% ---------------------------------------------------------------------------
+\definecolor{epiphanyteal}{HTML}{1A4044}
+\definecolor{epiphanygold}{HTML}{8E6E2E}
+\definecolor{epiphanyink}{HTML}{1F1B16}
+\definecolor{epiphanyslate}{HTML}{6B6660}
+\definecolor{epiphanycream}{HTML}{F8F4ED}
+\definecolor{epiphanymist}{HTML}{ECE8E0}
+\definecolor{epiphanycode}{HTML}{2A2520}
+\definecolor{epiphanycrimson}{HTML}{7A2424}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=epiphanyteal,
+  citecolor=epiphanyteal,
+  urlcolor=epiphanygold,
+  pdftitle={Epiphany --- Quality Metric Catalog},
+  pdfauthor={The Epiphany Project},
+  pdfsubject={Quality Metric Catalog companion for the Epiphany music notation platform},
+  pdfkeywords={music notation, engraving, quality metrics, normalization, conformance tiers, solver profiles},
+  bookmarksnumbered=true,
+  bookmarksopen=true
+}
+
+% ---------------------------------------------------------------------------
+% Typography (shared with the core specification)
+% ---------------------------------------------------------------------------
+\setmainfont{TeX Gyre Pagella}[Numbers={OldStyle, Proportional}, Ligatures={TeX, Common}]
+\setsansfont{TeX Gyre Heros}[Scale=0.94, Ligatures={TeX, Common}]
+\setmonofont{TeX Gyre Cursor}[Scale=0.88, Ligatures={TeX}]
+\newfontfamily\titlefont{TeX Gyre Pagella}[Numbers={OldStyle}, Ligatures={TeX, Common}]
+\newcommand{\tablenums}[1]{{\addfontfeatures{Numbers={Lining,Tabular}}#1}}
+\newcommand{\sectionsc}[1]{{\addfontfeatures{Letters=SmallCaps}#1}}
+
+% ---------------------------------------------------------------------------
+% Section styling (shared with the core specification)
+% ---------------------------------------------------------------------------
+\titleformat{\chapter}[display]
+  {\normalfont\filright}
+  {\raggedright\color{epiphanygold}\fontsize{14pt}{16pt}\selectfont
+    \scshape Chapter\ \thechapter}
+  {16pt}
+  {\raggedright\color{epiphanyteal}\fontsize{32pt}{36pt}\selectfont\bfseries}
+  [\vspace{4pt}{\color{epiphanygold}\rule{2in}{0.6pt}}]
+\titlespacing*{\chapter}{0pt}{-20pt}{30pt}
+\titleformat{\section}
+  {\normalfont\Large\bfseries\color{epiphanyteal}}
+  {\color{epiphanygold}\thesection}{1em}{}
+\titleformat{\subsection}
+  {\normalfont\large\bfseries\color{epiphanyteal}}
+  {\color{epiphanygold}\thesubsection}{1em}{}
+\titleformat{\subsubsection}
+  {\normalfont\normalsize\bfseries\color{epiphanyink}}
+  {\thesubsubsection}{1em}{}
+
+% ---------------------------------------------------------------------------
+% Headers and footers (shared with the core specification)
+% ---------------------------------------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\fancyhead[L]{\small\scshape\color{epiphanyslate}Epiphany --- Quality Metric Catalog}
+\fancyhead[R]{\small\itshape\color{epiphanyslate}\leftmark}
+\fancyfoot[C]{\small\color{epiphanyslate}\thepage}
+\renewcommand{\headrule}{
+  \color{epiphanygold!50}\hrule width\headwidth height 0.4pt
+  \vspace{1pt}
+  \color{epiphanygold!30}\hrule width\headwidth height 0.2pt
+}
+
+% ---------------------------------------------------------------------------
+% Code listing style (shared with the core specification)
+% ---------------------------------------------------------------------------
+\lstdefinelanguage{Rust}{
+  keywords={fn,let,mut,pub,struct,enum,impl,trait,for,in,if,else,match,return,
+           use,mod,crate,self,Self,as,where,move,async,await,const,static,
+           ref,type,unsafe,extern,dyn,box,break,continue,loop,while},
+  keywordstyle=\color{epiphanyteal}\bfseries,
+  ndkeywords={i8,i16,i32,i64,i128,u8,u16,u32,u64,u128,f32,f64,bool,char,str,
+              String,Vec,Option,Result,Box,Rc,Arc,HashMap,BTreeMap,
+              NonZeroU16,NonZeroU32,NonZeroU64,Duration,Timestamp},
+  ndkeywordstyle=\color{epiphanygold}\bfseries,
+  sensitive=true,
+  comment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  commentstyle=\color{epiphanyslate}\itshape,
+  stringstyle=\color{epiphanycrimson},
+  morestring=[b]",
+  morestring=[b]'
+}
+\lstset{
+  basicstyle=\ttfamily\small\color{epiphanycode},
+  backgroundcolor=\color{epiphanycream},
+  frame=leftline,
+  rulecolor=\color{epiphanygold!60},
+  framesep=8pt,
+  framerule=1.5pt,
+  xleftmargin=10pt,
+  xrightmargin=4pt,
+  breaklines=true,
+  showstringspaces=false,
+  numberstyle=\tiny\color{epiphanyslate},
+  numbersep=10pt,
+  captionpos=b,
+  aboveskip=10pt,
+  belowskip=10pt,
+  language=Rust
+}
+
+% ---------------------------------------------------------------------------
+% Custom environments (shared with the core specification)
+% ---------------------------------------------------------------------------
+\newtcolorbox{openquestion}[1][]{
+  enhanced, breakable,
+  colback=epiphanymist, colframe=epiphanycrimson,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Open Question},
+  coltitle=white, colbacktitle=epiphanycrimson,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+\newtcolorbox{rationale}[1][]{
+  enhanced, breakable,
+  colback=epiphanymist, colframe=epiphanyteal,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Rationale},
+  coltitle=white, colbacktitle=epiphanyteal,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+\newtcolorbox{requirement}[1][]{
+  enhanced, breakable,
+  colback=white, colframe=epiphanygold,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Requirement},
+  coltitle=white, colbacktitle=epiphanygold,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+\newtcolorbox{nongoal}[1][]{
+  enhanced, breakable,
+  colback=epiphanymist, colframe=epiphanyslate,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Non-Goal},
+  coltitle=white, colbacktitle=epiphanyslate,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+
+\newcommand{\MUST}{\textbf{MUST}}
+\newcommand{\MUSTNOT}{\textbf{MUST}\nobreak\ \textbf{NOT}}
+\newcommand{\SHOULD}{\textbf{SHOULD}}
+\newcommand{\SHOULDNOT}{\textbf{SHOULD}\nobreak\ \textbf{NOT}}
+\newcommand{\MAY}{\textbf{MAY}}
+
+\setlist[itemize]{topsep=2pt, itemsep=3pt, parsep=0pt}
+\setlist[enumerate]{topsep=2pt, itemsep=3pt, parsep=0pt}
+\setlist[description]{topsep=2pt, itemsep=5pt, parsep=0pt}
+\AtBeginDocument{\color{epiphanyink}}
+
+% ---------------------------------------------------------------------------
+% Document
+% ---------------------------------------------------------------------------
+\begin{document}
+
+\begin{titlepage}
+  \thispagestyle{empty}
+  \centering
+  \vspace*{2.2in}
+  {\color{epiphanygold}\rule{3in}{0.8pt}}\\[18pt]
+  {\titlefont\fontsize{34pt}{38pt}\selectfont\color{epiphanyteal}\bfseries Epiphany}\\[10pt]
+  {\Large\scshape\color{epiphanyslate}Quality Metric Catalog}\\[6pt]
+  {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
+  {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
+  {\normalsize\color{epiphanyink}Version 0.1.0 --- Phase 3 (the normative metric set: formal definitions, normalization, weights, tier thresholds, profile registry)}\\[4pt]
+  {\small\color{epiphanyslate}Normative for the metrics and thresholds it defines}
+  \vfill
+\end{titlepage}
+
+\tableofcontents
+
+% ===========================================================================
+\chapter{About This Companion}
+\label{ch:about}
+
+The \emph{Quality Metric Catalog} is a companion to the Epiphany Core
+Specification. It fulfils the delegation of the core specification's
+\sectionsc{Companion Specifications} appendix --- the section labeled
+\texttt{sec:deferred:companions} --- which charters this document to
+deliver ``per-metric normalization functions mapping raw measurements to
+\texttt{NormalizedMetric} values, default tie-breaking weights, per-tier
+metric thresholds, and the formal definition of each quality metric in the
+normative metric set.''
+
+This release (v0.1.0) delivers all four chartered items, plus two small
+registries the core specification names but defers here:
+
+\begin{itemize}
+  \item the formal definition of each of the \textbf{nine normative metric
+    axes} --- the measured phenomenon, the raw measurement over resolved
+    layout geometry, and the normalization function with its pinned anchor
+    constant (Chapter~\ref{ch:metrics});
+  \item the \textbf{default tie-breaking weights}
+    (Chapter~\ref{ch:weights});
+  \item the \textbf{per-tier metric thresholds} for the Minimal and
+    Standard conformance tiers, the Advanced-tier extension rule, and the
+    \texttt{QualityFloorApproached} warning trigger
+    (Chapter~\ref{ch:thresholds});
+  \item the \texttt{QualityMetricKind} enumeration, which the core
+    specification references (as the payload of the
+    \texttt{QualityFloorApproached} solver warning) but never lists
+    (Section~\ref{sec:model:kind});
+  \item the \textbf{registered \texttt{SolverProfile} catalog}, which the
+    core specification's vocabulary appendix explicitly defers to this
+    companion (Chapter~\ref{ch:profiles});
+  \item the \textbf{Standard-tier constraint family} declaration, which the
+    core specification's Standard-tier requirement points at this companion
+    (Section~\ref{sec:thresholds:families}).
+\end{itemize}
+
+This document does \emph{not} cover:
+
+\begin{itemize}
+  \item the reference suite's test scores, per-tier entry inclusion, and any
+    per-entry threshold overrides --- those are the \emph{Reference Suite}
+    companion's;
+  \item performance conformance (edit traces, frame budgets) --- the
+    \emph{Performance Reference Suite} companion's;
+  \item the reference solving algorithm --- the non-normative
+    \emph{Reference Algorithm} companion's.
+\end{itemize}
+
+\section{Relationship to the Core Specification}
+\label{sec:about:relationship}
+
+This companion does not restate the metric framework; it \emph{references}
+it. The framework --- the \texttt{NormalizedMetric} validity rules (finite,
+in $[0.0, 1.0]$, lower is better), the \texttt{QualityMetricVector} field
+set, extension metrics, the \texttt{TieBreakingWeights} structure, the
+Pareto-frontier design target, the conformance-tier ladder, and the
+suite-based conformance model --- is the core specification's Chapter~9
+(\sectionsc{The Constraint Solver Interface}, the \texttt{ch:solver}
+chapter), in particular its \sectionsc{Quality Metrics},
+\sectionsc{Conformance Tiers}, and \sectionsc{Conformance: The Reference
+Suite} sections (\texttt{sec:solver:quality},
+\texttt{sec:solver:tiers}, \texttt{sec:solver:conformance}).
+
+Two core requirements bind this document into the conformance story:
+
+\begin{itemize}
+  \item The core \sectionsc{Quality Metrics} normalization requirement:
+    ``Per-metric normalization functions (mapping raw measurements to
+    $[0.0,1.0]$) are specified in the Quality Metric Catalog companion
+    document. Implementations \MUST{} use the catalog's normalization;
+    arbitrary normalization is non-conforming.'' Chapter~\ref{ch:metrics}
+    is that normalization.
+  \item The core tie-breaking requirement: ``Tie-breaking weights \MUST{}
+    have normative defaults specified in the Quality Metric Catalog.''
+    Chapter~\ref{ch:weights} is those defaults.
+\end{itemize}
+
+Where this document and a ratified core requirement disagree, \textbf{the
+core requirement governs} and the discrepancy is a defect in this document.
+Graph types, the layout IR pipeline
+(\texttt{LogicalLayoutIR} $\rightarrow$ \texttt{ConstrainedLayoutIR}
+$\rightarrow$ \texttt{ResolvedLayoutIR}),
+the spring-slot and vertical-band models, and the built-in
+\texttt{LayoutConstraint} kinds are the core specification's Chapter~7
+(\texttt{ch:layout-ir}); this document's formulas range over those
+structures without redefining them.
+
+\begin{rationale}
+\textbf{Versioning.} This companion is versioned independently of the core
+specification (independent semver), like the Operation Catalog and the
+Binary Format companions. Metric definitions and thresholds are expected to
+be tuned on a faster cadence than the solver framework: threshold revisions
+informed by reference-suite experience are \textsc{minor} revisions here and
+require no core-spec change, while a change to the metric \emph{field set}
+(a new normative axis) is a core-spec change first, mirrored here.
+\end{rationale}
+
+\section{Conformance}
+\label{sec:about:conformance}
+
+The metric definitions, normalization functions, default weights, threshold
+tables, and profile registry in this document are \textbf{normative}. A
+solver that reports a \texttt{QualityMetricVector} computed by any function
+other than the ones defined here is non-conforming, per the core
+\sectionsc{Quality Metrics} requirement quoted above.
+
+Conformance \emph{claims} are evaluated on the Reference Suite companion's
+entry set: a solver claiming tier $T$ must keep every normative metric
+within tier $T$'s threshold (Chapter~\ref{ch:thresholds}) on every suite
+entry required at tier $T$. This document defines \emph{what is measured
+and how much is tolerable}; the Reference Suite companion defines
+\emph{on which scores}.
+
+Two boundaries of that claim, developed in Chapter~\ref{ch:model}:
+
+\begin{itemize}
+  \item Metric values are \emph{diagnostic}, never canonical state
+    (Section~\ref{sec:model:diagnostic}). No byte of canonical document
+    state depends on them.
+  \item Numeric agreement across implementations is \emph{not} required
+    (Section~\ref{sec:model:determinism}). The cross-implementation
+    contract is threshold conformance, not value equality.
+\end{itemize}
+
+% ===========================================================================
+\chapter{The Metric Model}
+\label{ch:model}
+
+\section{Diagnostic Status}
+\label{sec:model:diagnostic}
+
+The quality metric vector rides on the \texttt{SolveReport} (core
+specification Chapter~9, \sectionsc{The Solver Report}:
+\texttt{SolveReport.metric\_vector}). It describes the layout; it is not
+part of the layout. The solver's canonical output ---
+\texttt{ResolvedLayoutIR} --- carries no metric field, and the core
+specification's observational-equivalence rule is stated over
+\texttt{ResolvedLayoutIR} bytes alone.
+
+\begin{requirement}
+\label{req:qmc:diagnostic}
+Quality metrics are \textbf{diagnostic output}, never canonical state.
+
+\begin{itemize}
+  \item A \texttt{QualityMetricVector} appears only on the
+    \texttt{SolveReport}. The canonical serialized form of
+    \texttt{ResolvedLayoutIR} \MUSTNOT{} contain quality-metric values,
+    and a \texttt{NormalizedMetric} value \MUSTNOT{} enter canonical
+    document bytes by any other path.
+  \item Two solves whose \texttt{ResolvedLayoutIR} values are
+    byte-identical under canonical serialization are observationally
+    equivalent regardless of their metric vectors. A metric value
+    \MUSTNOT{} be an input to any canonical-state decision.
+\end{itemize}
+\end{requirement}
+
+\begin{rationale}
+Keeping metrics off the canonical path is what makes them safely
+improvable. A solver revision that measures more honestly (or a catalog
+revision that tunes a formula) changes reports, warnings, and conformance
+verdicts --- but not one byte of any document. The reference implementation
+already has this shape: \texttt{ResolvedLayoutIR} has no metric field, the
+\texttt{SolveReport} is never serialized, and no consumer reads the vector
+to make a state decision.
+\end{rationale}
+
+\section{Determinism and Numeric Agreement}
+\label{sec:model:determinism}
+
+\begin{requirement}
+\label{req:qmc:determinism}
+Within one implementation version, metric computation \MUST{} be
+deterministic: identical solve inputs (the same
+\texttt{ConstrainedLayoutIR}, configuration, and declared page geometry)
+\MUST{} yield bitwise-identical \texttt{QualityMetricVector} values.
+
+Across implementations (and across versions of one implementation),
+numeric agreement is \textbf{not} required. Two conforming solvers \MAY{}
+report different metric values for the same score; the
+cross-implementation contract is the core specification's four
+suite-conformance conditions --- in particular, that every metric is within
+the claimed tier's threshold on every required suite entry --- not value
+equality.
+
+Metric values are ordinary IEEE~754 \texttt{f64} values subject to the
+core \texttt{NormalizedMetric} validity rules (finite, in $[0.0, 1.0]$).
+This document imposes no additional quantization, rounding, or evaluation-
+order discipline on their computation.
+\end{requirement}
+
+\begin{rationale}
+Different conforming solvers legitimately produce different layouts, so
+their metric values differ even under identical formulas; demanding numeric
+agreement would smuggle cross-implementation layout equality in through the
+diagnostics. Within-implementation determinism, by contrast, is load-
+bearing: reproducible reports are what make threshold conformance testable
+and regressions attributable.
+\end{rationale}
+
+\section{The Normative Metric Set and \texttt{QualityMetricKind}}
+\label{sec:model:kind}
+
+The nine normative metric axes are the nine non-extension fields of the
+core specification's \texttt{QualityMetricVector}. The core references a
+\texttt{QualityMetricKind} enumeration (the payload of
+\texttt{SolverWarningKind::QualityFloorApproached}) without listing it;
+this catalog pins it.
+
+\begin{requirement}
+\label{req:qmc:kind}
+The \texttt{QualityMetricKind} enumeration is exactly:
+
+\begin{lstlisting}[language=Rust]
+pub enum QualityMetricKind {
+    Collision,
+    Spacing,
+    SlurShape,
+    BeamSlope,
+    VerticalDensity,
+    SystemBreak,
+    PageFill,
+    CastingOff,
+    SymbolDensity,
+}
+\end{lstlisting}
+
+Each kind names exactly one \texttt{QualityMetricVector} field and exactly
+one \texttt{TieBreakingWeights} field, per
+Table~\ref{tab:kind-mapping}. Extension metrics are not
+\texttt{QualityMetricKind} values; they are identified by
+\texttt{ExtensionMetricId}.
+\end{requirement}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+\textbf{Kind} & \textbf{Vector field} & \textbf{Weight field} \\
+\midrule
+\texttt{Collision}       & \texttt{collision\_penalty}          & \texttt{collision} \\
+\texttt{Spacing}         & \texttt{spacing\_distortion}         & \texttt{spacing} \\
+\texttt{SlurShape}       & \texttt{slur\_shape\_penalty}        & \texttt{slur\_shape} \\
+\texttt{BeamSlope}       & \texttt{beam\_slope\_penalty}        & \texttt{beam\_slope} \\
+\texttt{VerticalDensity} & \texttt{vertical\_density\_penalty}  & \texttt{vertical\_density} \\
+\texttt{SystemBreak}     & \texttt{system\_break\_penalty}      & \texttt{system\_break} \\
+\texttt{PageFill}        & \texttt{page\_fill\_efficiency}      & \texttt{page\_fill} \\
+\texttt{CastingOff}      & \texttt{casting\_off\_quality}       & \texttt{casting\_off} \\
+\texttt{SymbolDensity}   & \texttt{symbol\_density\_uniformity} & \texttt{symbol\_density} \\
+\bottomrule
+\end{tabular}
+\caption{The nine normative axes: kind, vector field, tie-breaking weight.}
+\label{tab:kind-mapping}
+\end{table}
+
+A naming caution: three field names read as higher-is-better words ---
+\begin{center}
+\texttt{page\_fill\_efficiency},\ \texttt{casting\_off\_quality},\ \texttt{symbol\_density\_uniformity}
+\end{center}
+--- but they are not. The core specification fixes the orientation of
+\emph{every} normative metric ($0.0$ best, $1.0$ worst tolerable), and
+the definitions in Chapter~\ref{ch:metrics} follow it: each of the three
+measures a \emph{deficiency} (unfilled page area, uneven casting-off,
+uneven density).
+
+\section{The Measurement Domain}
+\label{sec:model:domain}
+
+Every raw measurement in Chapter~\ref{ch:metrics} is a deterministic
+function of three inputs, all of which exist at the moment the solver
+assembles its \texttt{SolveReport}:
+
+\begin{enumerate}
+  \item the solve's resolved output $L$ (a \texttt{ResolvedLayoutIR}:
+    positioned glyphs with bounding boxes, strokes, and the page/system
+    tree);
+  \item the solve's constrained input $C$ (a \texttt{ConstrainedLayoutIR}:
+    horizontal spring slots, vertical bands, declared constraints);
+  \item the declared page geometry the solve was configured with: the
+    content width $W$ and content height $H$, in staff spaces. (The score
+    graph has no home for page geometry yet --- the core names
+    \texttt{Canvas.layout\_defaults} without defining it, tracked as
+    Pass-12 row P12-I7 --- so the geometry is a solver parameter, and the
+    Reference Suite companion requires each suite entry to declare it.)
+\end{enumerate}
+
+Notation used throughout Chapter~\ref{ch:metrics}:
+
+\begin{itemize}
+  \item $G$ is the set of resolved glyphs of $L$. For $g \in G$, the
+    \emph{ink box} $B(g) = [l_g, r_g] \times [b_g, t_g]$ is the glyph's
+    bounding box translated to its resolved position. Strokes (staff
+    lines, ledger lines, stems, barline strokes) are not members of $G$.
+  \item $\mathit{sys}(g)$ is the system that positioned $g$ under the
+    solve's casting-off; every system belongs to exactly one region, and
+    every page carries an ordered list of systems. A glyph positioned by
+    no system belongs to no collision pair and to no per-system
+    aggregate.
+  \item $\mathit{slot}(g)$ is the horizontal spring slot of $g$'s source
+    glyph in $C$ --- the musical time column that groups a chord's
+    noteheads with their accidentals, dots, and same-column symbols.
+  \item For a system $s$: its \emph{columns} are the ascending sequence of
+    distinct resolved baseline $x$-coordinates
+    $x^s_1 < \dots < x^s_{m_s}$ of the glyph-bearing slots realized in
+    $s$; its \emph{advances} are $a^s_i = x^s_{i+1} - x^s_i$ for
+    $i = 1, \dots, m_s - 1$ (equivalently, the spacing pass's per-slot
+    advances); $w_s$ is the width of $s$'s content extent (the horizontal
+    span of the ink boxes assigned to $s$); $n_s$ is the number of glyphs
+    assigned to $s$.
+  \item $\mathrm{CV}(v_1, \dots, v_k)$, defined for $k \ge 2$ with
+    $\operatorname{mean} > 0$, is the population standard deviation
+    divided by the arithmetic mean.
+  \item The arithmetic mean over an \emph{empty} index set is defined as
+    $0$ (this is the vacuous-geometry rule of
+    Section~\ref{sec:model:vacuous} in aggregate form).
+\end{itemize}
+
+Because numeric agreement across implementations is not required
+(Requirement~\ref{req:qmc:determinism}), a formula may reference the
+solve's \emph{own} internal assignments --- which glyph landed in which
+system, which columns a system realizes --- without threatening
+conformance: the assignments are deterministic within an implementation
+version, which is all the metric contract needs. No formula in this
+catalog requires an optical-spacing model, font metrics beyond glyph
+bounding boxes, or any geometry class the layout pipeline does not
+produce.
+
+\section{The Vacuous-Geometry Rule}
+\label{sec:model:vacuous}
+
+Each axis in Chapter~\ref{ch:metrics} names its \emph{contributing units}:
+the glyph pairs, systems, pages, gaps, slurs, or beams the raw measurement
+ranges over. A layout may simply not contain a metric's geometry class ---
+no drawn slurs, no beams, a single system, a single page.
+
+\begin{requirement}
+\label{req:qmc:vacuous}
+When a normative metric's contributing-unit set is empty for a given
+layout, the metric \MUST{} evaluate to exactly $0.0$: where there is
+nothing to penalize, the penalty is zero. In particular:
+
+\begin{itemize}
+  \item a layout containing no drawn slur geometry has
+    $\texttt{slur\_shape\_penalty} = 0.0$;
+  \item a layout containing no drawn beam geometry has
+    $\texttt{beam\_slope\_penalty} = 0.0$;
+  \item a region cast onto a single system contributes no units to
+    \texttt{system\_break\_penalty}, \texttt{casting\_off\_quality}, or
+    \texttt{symbol\_density\_uniformity}, and a single-page layout
+    contributes no units to \texttt{page\_fill\_efficiency} --- each axis
+    degenerates exactly as its per-axis definition states;
+  \item a solve configured without positive finite content bounds ($W$ or
+    $H$) has an empty contributing set for every axis defined over that
+    bound.
+\end{itemize}
+
+An implementation \MUSTNOT{} report a sentinel (such as $1.0$) for a
+metric whose contributing-unit set is empty. The all-worst placeholder
+vector remains correct only for a solver that \emph{computes no metrics at
+all} and claims no conformance tier (the core's \texttt{Stub} tier).
+\end{requirement}
+
+\begin{openquestion}
+\textbf{The notated-but-unrendered honesty edge.} A score whose
+\emph{source} notates slurs, engraved by a solver that draws no slur
+geometry, scores $\texttt{slur\_shape\_penalty} = 0.0$ under this rule ---
+the axis sees no drawn slurs and finds nothing to penalize, even though
+the output is arguably \emph{worse} than a badly-drawn slur. v0.1
+deliberately pins vacuous-$0.0$: the metric axes evaluate the geometry the
+solver produced, and \emph{rendering completeness} --- whether notated
+content is realized at all --- is governed by constraint families and
+visual acceptance testing, not by the quality metrics. Should a future
+revision instead score notated-but-unrendered geometry classes at the
+worst value, so that the metric vector cannot flatter an incomplete
+renderer? Resolving this requires a normative definition of ``notated
+content that demands drawn geometry,'' which does not exist yet.
+\end{openquestion}
+
+\section{Normalization Form}
+\label{sec:model:normalization}
+
+Every normative axis uses the same one-parameter normalization shape, so
+that anchors --- not curve families --- are the entire tuning surface.
+
+\begin{requirement}
+\label{req:qmc:normalization-form}
+Each normative metric defines a raw measurement
+$\mathit{raw} \ge 0$ (dimensionless, per its axis definition) and a pinned
+anchor constant $R_{\mathrm{worst}} > 0$. The normalized value is the
+clamped-linear map
+\[
+  n \;=\; \min\!\left(1,\; \frac{\mathit{raw}}{R_{\mathrm{worst}}}\right),
+\]
+so that $\mathit{raw} = 0$ (the ideal) normalizes to $0.0$ and
+$\mathit{raw} \ge R_{\mathrm{worst}}$ (the worst-tolerable anchor and
+beyond) normalizes to $1.0$. Implementations \MUST{} use the per-axis raw
+measurements and anchors of Chapter~\ref{ch:metrics} exactly; per the core
+specification, arbitrary normalization is non-conforming. Extension
+metrics \MAY{} use other normalization shapes but \MUSTNOT{} change
+orientation or range.
+\end{requirement}
+
+% ===========================================================================
+\chapter{The Nine Normative Metrics}
+\label{ch:metrics}
+
+Each section below defines one axis under a fixed template: the
+\emph{phenomenon} (what an engraver would point at), the \emph{contributing
+units} (what the raw measurement ranges over --- the set whose emptiness
+triggers Requirement~\ref{req:qmc:vacuous}), the \emph{raw measurement},
+and the \emph{normalization anchor} with a brief justification. All
+lengths are in staff spaces; all raw measurements are dimensionless
+ratios.
+
+Four axes measure horizontal-distribution phenomena at different
+granularities, and the boundaries are deliberate:
+
+\begin{itemize}
+  \item \texttt{spacing\_distortion} is \emph{within-system} advance
+    regularity;
+  \item \texttt{system\_break\_penalty} is the \emph{per-break} absolute
+    cost of each chosen system break (looseness or overflow of
+    non-final systems);
+  \item \texttt{casting\_off\_quality} is \emph{across-system} width
+    evenness, including the final system (the stub-last-line failure);
+  \item \texttt{symbol\_density\_uniformity} is \emph{across-system}
+    crowding evenness (equal widths can hide very different symbol
+    densities).
+\end{itemize}
+
+\section{\texttt{collision\_penalty}}
+\label{sec:metrics:collision}
+
+\textbf{Phenomenon.} Overlapping ink between symbols that belong to
+different musical time columns: a notehead striking the previous column's
+accidental, a chord symbol over a barline, any cross-column ink contact.
+Professional engraving contains none.
+
+\begin{requirement}
+\label{req:qmc:collision}
+\textbf{Contributing units:} unordered glyph pairs $\{g, h\} \subseteq G$
+with $\mathit{sys}(g) = \mathit{sys}(h)$ and
+$\mathit{slot}(g) \ne \mathit{slot}(h)$.
+
+A pair \emph{collides} when its ink boxes intersect with positive area in
+both axes:
+\[
+\begin{gathered}
+  \min(r_g, r_h) - \max(l_g, l_h) > 0
+  \quad\text{and}\\
+  \min(t_g, t_h) - \max(b_g, b_h) > 0 .
+\end{gathered}
+\]
+Edge-touching boxes do not collide. Pairs sharing a horizontal spring slot
+are \textbf{excluded}: a column's internal cluster --- a chord's noteheads,
+their accidentals, dots, and other same-slot symbols --- is arranged by the
+constrained stage, and its legitimate internal ink contact is not a
+spacing failure of the solver. Strokes are not glyphs and join no pair:
+staff lines legitimately cross every notehead.
+
+\textbf{Raw measurement:} with $P$ the set of colliding pairs,
+\[
+  \mathit{raw} \;=\; \frac{|P|}{|G|}
+  \qquad (\mathit{raw} = 0 \text{ when } G = \emptyset).
+\]
+
+\textbf{Normalization:} $R_{\mathrm{worst}} = 0.05$;
+$n = \min(1, \mathit{raw} / 0.05)$.
+\end{requirement}
+
+\begin{rationale}
+The anchor says: one cross-column collision per twenty glyphs is
+unmistakably broken layout --- the worst a report should be able to
+distinguish. The count is divided by the glyph population, not by the pair
+population, so that the measure does not vanish quadratically on large
+scores: a score with one collision per page stays visible. The reference
+pipeline evaluates overlap today only for \emph{declared}
+\texttt{NoCollision} constraints; this axis is the full pairwise
+same-system sweep over ink boxes, which is new but cheap work over data
+the resolved layout already carries.
+\end{rationale}
+
+\section{\texttt{spacing\_distortion}}
+\label{sec:metrics:spacing}
+
+\textbf{Phenomenon.} Uneven horizontal distribution within a system:
+columns bunched together here and stretched apart there, where the
+underlying spring model asked for near-uniform advances.
+
+\begin{requirement}
+\label{req:qmc:spacing}
+\textbf{Contributing units:} systems $s$ with $m_s \ge 3$ (at least two
+advances).
+
+\textbf{Raw measurement:} per unit,
+$\mathit{raw}_s = \mathrm{CV}(a^s_1, \dots, a^s_{m_s - 1})$; the axis raw
+value is the arithmetic mean of $\mathit{raw}_s$ over contributing units.
+
+\textbf{Normalization:} $R_{\mathrm{worst}} = 1.0$;
+$n = \min(1, \mathit{raw})$.
+\end{requirement}
+
+\begin{rationale}
+A coefficient of variation of $1.0$ means the typical column advance
+deviates from the mean by the whole mean --- spacing with no discernible
+regularity. v0.1 defines \emph{geometric} regularity deliberately: the
+reference spring model's preferred widths are uniform, so regular advances
+are exactly what its ideal output looks like, and the collision minima
+(accidental overhangs, wide columns) that legitimately perturb advances
+are modest on realistic scores.
+\end{rationale}
+
+\begin{openquestion}
+\textbf{Optical spacing at the Standard tier.} Mature engraving spaces
+columns proportionally to musical duration (with an optical correction),
+not uniformly; under a duration-proportional model, this axis's ideal
+would be ``advances proportional to the column's duration share,'' and a
+perfectly optically-spaced line would score \emph{worse} than a uniform
+one under the v0.1 definition. When the layout pipeline gains
+duration-aware preferred widths, should the Standard tier redefine
+$\mathit{raw}_s$ as deviation from the duration-proportional ideal while
+Minimal keeps geometric regularity? v0.1 defines geometric regularity
+only.
+\end{openquestion}
+
+\section{\texttt{slur\_shape\_penalty}}
+\label{sec:metrics:slur}
+
+\textbf{Phenomenon.} Badly-shaped slur arcs: flat, tape-like slurs or
+bulging semicircles, measured against the shallow-arc norm of engraving
+practice.
+
+\begin{requirement}
+\label{req:qmc:slur}
+\textbf{Contributing units:} drawn slur curves in $L$ with chord length
+$c > 0$, where the \emph{chord} is the segment between the curve's
+endpoints and the \emph{apex height} $h \ge 0$ is the maximum
+perpendicular distance from the curve to its chord.
+
+\textbf{Raw measurement:} per unit, with arc ratio $\rho = h / c$,
+\[
+  \mathit{raw}_u \;=\; \max\bigl(0,\;\; 0.08 - \rho,\;\; \rho - 0.25\bigr),
+\]
+i.e.\ the shortfall below the ideal band $[0.08, 0.25]$ or the excess
+above it; the axis raw value is the arithmetic mean over contributing
+units.
+
+\textbf{Normalization:} $R_{\mathrm{worst}} = 0.25$;
+$n = \min(1, \mathit{raw} / 0.25)$.
+\end{requirement}
+
+\begin{rationale}
+The band $[0.08, 0.25]$ brackets the shallow arcs engraving practice
+prefers: an arc rising less than about $1/12$ of its span reads as a
+straight line; one rising more than a quarter of its span begins to bulge.
+The anchor makes a semicircular slur ($\rho = 0.5$, $\mathit{raw}_u =
+0.25$) exactly worst-tolerable, and a completely flat slur ($\rho = 0$,
+$\mathit{raw}_u = 0.08$) roughly a third of the way to failing.
+
+The v0.1 reference pipeline draws no slur geometry (slurs exist logically,
+not as curves), so this axis evaluates to $0.0$ today under the
+vacuous-geometry rule --- the definition is pinned now so that the first
+implementation to draw slurs is measured from its first release.
+\end{rationale}
+
+\section{\texttt{beam\_slope\_penalty}}
+\label{sec:metrics:beam}
+
+\textbf{Phenomenon.} Over-steep beams. Engraving practice keeps beam
+slants gentle regardless of the melodic interval they span.
+
+\begin{requirement}
+\label{req:qmc:beam}
+\textbf{Contributing units:} drawn beam segments in $L$ with horizontal
+run $\Delta x > 0$ (endpoint-to-endpoint).
+
+\textbf{Raw measurement:} per unit, with absolute slope
+$\sigma = |\Delta y| / \Delta x$,
+\[
+  \mathit{raw}_u \;=\; \max\bigl(0,\; \sigma - 0.25\bigr);
+\]
+the axis raw value is the arithmetic mean over contributing units.
+
+\textbf{Normalization:} $R_{\mathrm{worst}} = 0.25$;
+$n = \min(1, \mathit{raw} / 0.25)$.
+\end{requirement}
+
+\begin{rationale}
+Slopes up to $0.25$ (about $14^\circ$) are penalty-free --- within the
+range engraving manuals tolerate for short, wide-interval beams --- and the
+anchor places $\sigma = 0.5$ (about $27^\circ$, roughly double any
+published maximum) at worst-tolerable. Like the slur axis, this is pinned
+ahead of implementation: the v0.1 reference pipeline draws no beam
+geometry, so the axis evaluates to $0.0$ under the vacuous-geometry rule.
+\end{rationale}
+
+\section{\texttt{vertical\_density\_penalty}}
+\label{sec:metrics:vertical}
+
+\textbf{Phenomenon.} Vertical crowding or sprawl: inter-staff and
+inter-system gaps realized far from the spacing the band model asked for.
+
+\begin{requirement}
+\label{req:qmc:vertical}
+\textbf{Contributing units:} vertical bands of $C$ of kind
+\texttt{InterStaffGap} or \texttt{InterSystemGap} with preferred height
+$p > 0$ that are realized in $L$ (the adjacent content they separate was
+laid out).
+
+\textbf{Raw measurement:} per unit, with $r \ge 0$ the realized vertical
+separation between the adjacent content extents the band separates
+(measured in resolved coordinates),
+\[
+  \mathit{raw}_u \;=\; \frac{|r - p|}{p};
+\]
+the axis raw value is the arithmetic mean over contributing units.
+
+\textbf{Normalization:} $R_{\mathrm{worst}} = 1.0$;
+$n = \min(1, \mathit{raw})$.
+\end{requirement}
+
+\begin{rationale}
+A gap off by its own preferred size --- staves twice as far apart as asked,
+or fully collapsed --- is unambiguous vertical failure; proportional
+deviation makes one anchor serve both tight inter-staff gaps and wide
+inter-system gaps. The v0.1 reference pipeline preserves constrained $y$
+verbatim (the vertical spring solve is deferred), so realized gaps equal
+preferred gaps wherever bands are realized and the axis reports its
+honest near-zero; the definition is what makes a future vertical solve
+measurable.
+\end{rationale}
+
+\section{\texttt{system\_break\_penalty}}
+\label{sec:metrics:system-break}
+
+\textbf{Phenomenon.} Bad break choices, one system at a time: a non-final
+system left loose (broken far short of the available width) or overfull
+(content past the content width).
+
+\begin{requirement}
+\label{req:qmc:system-break}
+\textbf{Contributing units:} non-final systems --- for each region, every
+system the casting-off produced except the region's last --- defined only
+when the declared content width $W$ is finite and positive.
+
+\textbf{Raw measurement:} per unit,
+\[
+  \mathit{raw}_s \;=\; \frac{|W - w_s|}{W},
+\]
+penalizing looseness ($w_s < W$) and overflow ($w_s > W$) alike; the axis
+raw value is the arithmetic mean over contributing units.
+
+\textbf{Normalization:} $R_{\mathrm{worst}} = 0.5$;
+$n = \min(1, \mathit{raw} / 0.5)$.
+
+A region cast onto a single system contributes no units (the break axis
+degenerates to nothing-to-penalize, per
+Requirement~\ref{req:qmc:vacuous}); the final system of each region is
+never a unit, because a short last line is not a break failure.
+\end{requirement}
+
+\begin{rationale}
+Non-final systems half-empty on average --- or overflowing by half the
+content width --- mark casting-off that has effectively failed, hence the
+$0.5$ anchor. The raw quantities are exactly what the reference
+casting-off pass already computes: per-system content extents against the
+declared content width, with breaks chosen among barline candidates.
+\end{rationale}
+
+\section{\texttt{page\_fill\_efficiency}}
+\label{sec:metrics:page-fill}
+
+\textbf{Phenomenon.} Underfilled non-final pages: vertical white space a
+better page-break policy would have used. Despite the field's name, the
+metric follows the fixed orientation --- it measures \emph{unfilled}
+fraction, so $0.0$ is best.
+
+\begin{requirement}
+\label{req:qmc:page-fill}
+\textbf{Contributing units:} non-final pages of $L$, defined only when
+the declared content height $H$ is finite and positive.
+
+\textbf{Raw measurement:} per unit, with $\mathit{span}_p$ the vertical
+extent of page $p$'s content (from the top of its first system's content
+extent to the bottom of its last system's content extent) and fill
+fraction $f_p = \min(1, \mathit{span}_p / H)$,
+\[
+  \mathit{raw}_p \;=\; 1 - f_p;
+\]
+the axis raw value is the arithmetic mean over contributing units.
+
+\textbf{Normalization:} $R_{\mathrm{worst}} = 0.75$;
+$n = \min(1, \mathit{raw} / 0.75)$.
+
+A single-page layout contributes no units; the final page is never a
+unit, because a short last page is not a fill failure.
+\end{requirement}
+
+\begin{rationale}
+A non-final page three-quarters empty is a page break with no plausible
+justification --- worst-tolerable. The span-based fill fraction is
+computable directly from the casting-off pass's vertical cursor walk and
+per-system extents, and clamping $f_p$ at $1$ keeps slight margin
+overshoot from producing a negative raw value.
+\end{rationale}
+
+\section{\texttt{casting\_off\_quality}}
+\label{sec:metrics:casting-off}
+
+\textbf{Phenomenon.} Uneven casting-off across a region's systems taken as
+a whole: some lines full, others sparse --- including the classic failure
+this axis exists to catch, a stub final system carrying one straggling
+measure. Despite the field's name, $0.0$ is best.
+
+\begin{requirement}
+\label{req:qmc:casting-off}
+\textbf{Contributing units:} regions whose casting-off produced at least
+two systems, each with content-extent width $w_s > 0$.
+
+\textbf{Raw measurement:} per unit region $R$,
+\[
+  \mathit{raw}_R \;=\; \mathrm{CV}\bigl(\, w_s : s \in \mathrm{systems}(R) \,\bigr),
+\]
+over \emph{all} of the region's systems, the final system included; the
+axis raw value is the arithmetic mean over contributing units.
+
+\textbf{Normalization:} $R_{\mathrm{worst}} = 0.5$;
+$n = \min(1, \mathit{raw} / 0.5)$.
+
+A single-system region contributes no units.
+\end{requirement}
+
+\begin{rationale}
+Including the final system is the deliberate difference from
+\texttt{system\_break\_penalty} (which exempts it): a lone stub last line
+drags the width spread up and is penalized \emph{here}, as a global
+casting-off failure rather than a per-break one. The anchor: per-system
+widths whose standard deviation is half their mean describe a page where
+line lengths visibly disagree.
+\end{rationale}
+
+\section{\texttt{symbol\_density\_uniformity}}
+\label{sec:metrics:symbol-density}
+
+\textbf{Phenomenon.} Uneven crowding across systems: one line crammed with
+symbols, the next sparse --- even when the lines' widths agree. Despite the
+field's name, $0.0$ is best.
+
+\begin{requirement}
+\label{req:qmc:symbol-density}
+\textbf{Contributing units:} regions whose casting-off produced at least
+two systems with $w_s > 0$.
+
+\textbf{Raw measurement:} per unit region $R$, with per-system symbol
+density $\rho_s = n_s / w_s$ (glyphs per staff space of content width),
+\[
+  \mathit{raw}_R \;=\; \mathrm{CV}\bigl(\, \rho_s : s \in \mathrm{systems}(R),\ w_s > 0 \,\bigr);
+\]
+the axis raw value is the arithmetic mean over contributing units.
+
+\textbf{Normalization:} $R_{\mathrm{worst}} = 0.5$;
+$n = \min(1, \mathit{raw} / 0.5)$.
+
+A single-system region contributes no units.
+\end{requirement}
+
+\begin{rationale}
+Width evenness (\texttt{casting\_off\_quality}) and density evenness are
+independent failures: equal-width systems can still alternate between
+sixteenth-note walls and whole-note deserts when break choices ignore
+content weight. Density varying by half its mean across systems reads as
+visibly uneven engraving, hence the shared $0.5$ anchor.
+\end{rationale}
+
+% ===========================================================================
+\chapter{Default Tie-Breaking Weights}
+\label{ch:weights}
+
+The core specification requires normative default
+\texttt{TieBreakingWeights}: they select among Pareto-equivalent layouts,
+deterministically, and are ``the basis for reference-suite conformance.''
+
+\begin{requirement}
+\label{req:qmc:weights}
+The normative default tie-breaking weights are $1.0$ for every one of the
+nine fields of \texttt{TieBreakingWeights}:
+
+\begin{center}
+\small
+\begin{tabular}{lc@{\hspace{2.5em}}lc}
+\toprule
+\textbf{Weight} & \textbf{Default} & \textbf{Weight} & \textbf{Default} \\
+\midrule
+\texttt{collision}         & \tablenums{1.0} & \texttt{system\_break}   & \tablenums{1.0} \\
+\texttt{spacing}           & \tablenums{1.0} & \texttt{page\_fill}      & \tablenums{1.0} \\
+\texttt{slur\_shape}       & \tablenums{1.0} & \texttt{casting\_off}    & \tablenums{1.0} \\
+\texttt{beam\_slope}       & \tablenums{1.0} & \texttt{symbol\_density} & \tablenums{1.0} \\
+\texttt{vertical\_density} & \tablenums{1.0} &                          &                 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Implementations \MAY{} let users customize weights, per the core
+specification; conformance evaluation on the reference suite uses these
+defaults.
+\end{requirement}
+
+\begin{rationale}
+No aesthetic priority ordering among the nine axes has been ratified, and
+inventing one ahead of measurement experience would encode a preference no
+evidence supports. Uniform weights are the honest neutral default --- they
+make tie-breaking deterministic (the core's actual requirement) without
+pretending to a house style. They also bless the reference
+implementation's existing \texttt{Default} for \texttt{TieBreakingWeights}
+(every field $1.0$). Revisions of this catalog are expected to tune the
+defaults once reference-suite experience shows which axes dominate
+perceived quality.
+\end{rationale}
+
+% ===========================================================================
+\chapter{Per-Tier Metric Thresholds}
+\label{ch:thresholds}
+
+\section{The Default Threshold Table}
+\label{sec:thresholds:table}
+
+A tier's threshold for an axis is the maximum permitted
+\texttt{NormalizedMetric} value on a reference-suite entry evaluated at
+that tier. The core specification fixes the relationship: Minimal-tier
+thresholds are relaxed relative to Standard; the Standard tier corresponds
+to professional engraving quality.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{Axis} & \textbf{Minimal (max)} & \textbf{Standard (max)} \\
+\midrule
+\texttt{collision\_penalty}          & \tablenums{0.90} & \tablenums{0.25} \\
+\texttt{spacing\_distortion}         & \tablenums{0.90} & \tablenums{0.40} \\
+\texttt{slur\_shape\_penalty}        & \tablenums{0.90} & \tablenums{0.30} \\
+\texttt{beam\_slope\_penalty}        & \tablenums{0.90} & \tablenums{0.30} \\
+\texttt{vertical\_density\_penalty}  & \tablenums{0.90} & \tablenums{0.40} \\
+\texttt{system\_break\_penalty}      & \tablenums{0.90} & \tablenums{0.35} \\
+\texttt{page\_fill\_efficiency}      & \tablenums{0.90} & \tablenums{0.40} \\
+\texttt{casting\_off\_quality}       & \tablenums{0.90} & \tablenums{0.35} \\
+\texttt{symbol\_density\_uniformity} & \tablenums{0.90} & \tablenums{0.40} \\
+\bottomrule
+\end{tabular}
+\caption{Default per-tier maximum \texttt{NormalizedMetric} values.
+Minimal is uniformly more permissive than Standard on every axis.}
+\label{tab:tier-thresholds}
+\end{table}
+
+\begin{requirement}
+\label{req:qmc:thresholds}
+The default per-tier thresholds are given by
+Table~\ref{tab:tier-thresholds}. A solver claiming a tier \MUST{} keep
+every normative metric at or below the tier's threshold on every
+reference-suite entry required at that tier, per the core specification's
+suite-conformance conditions. The Reference Suite companion \MAY{}
+override these defaults for individual entries; absent an override, the
+values of Table~\ref{tab:tier-thresholds} govern.
+\end{requirement}
+
+\begin{rationale}
+\textbf{Minimal = 0.90 everywhere: relaxed but non-vacuous.} A Minimal
+solver may be aesthetically mediocre --- the core says so --- but it must
+not be \emph{pathological}, and its metric vectors must be accurate. A
+uniform $0.90$ admits every honestly-mediocre layout while excluding two
+things: layouts at an axis's worst-tolerable anchor, and the all-worst
+placeholder vector of a solver that computes nothing. That second
+exclusion is deliberate --- a solver reporting the unmeasured $1.0$
+placeholder cannot pass the Minimal suite, which is exactly the
+honest-tier discipline: measuring is part of the Minimal claim.
+
+\textbf{Standard = 0.25--0.40 per axis: professional quality.} Collisions
+get the tightest bound ($0.25$: at most one cross-column collision per
+eighty glyphs) because they are the most jarring single defect. The
+break-family axes ($0.35$) sit slightly tighter than the distribution and
+vertical axes ($0.40$), whose v0.1 definitions are coarser proxies
+(geometric spacing regularity; a not-yet-solved vertical dimension). Slurs
+and beams ($0.30$) allow modest shape deviation across a piece. All values
+are round v0.1 defaults chosen to be defensible, not optimal; the tuning
+open question below owns their evolution.
+\end{rationale}
+
+\section{The Advanced Tier}
+\label{sec:thresholds:advanced}
+
+\begin{requirement}
+\label{req:qmc:advanced}
+The Advanced tier imposes the Standard-tier thresholds of
+Table~\ref{tab:tier-thresholds} on the nine normative axes, \emph{plus}
+per-extension thresholds on extension metrics: a registered extension
+whose layout requirements are part of the Advanced reference suite
+\MUST{} declare, in its extension declaration, a maximum
+\texttt{NormalizedMetric} value for each extension metric it contributes,
+and an Advanced-tier solver \MUST{} meet each declared threshold on every
+Advanced suite entry that exercises that extension. An extension metric
+with no declared threshold imposes no Advanced-tier obligation.
+\end{requirement}
+
+\section{The \texttt{QualityFloorApproached} Warning}
+\label{sec:thresholds:floor}
+
+The core specification gives \texttt{SolverWarningKind} a
+\texttt{QualityFloorApproached} variant carrying a
+\texttt{QualityMetricKind} payload, without defining its trigger. This
+catalog pins it.
+
+\begin{requirement}
+\label{req:qmc:floor-warning}
+A solver \SHOULD{} emit a \texttt{QualityFloorApproached} warning for
+metric kind $k$ when the computed value of $k$'s axis exceeds
+$\mathbf{0.8}$ times the applicable threshold for that axis. The
+applicable threshold is the one selected by the solve's
+\texttt{SolverProfile} (Chapter~\ref{ch:profiles});
+the warning fraction is pinned at $0.8$ exactly. The warning is
+diagnostic: emitting it does not change the solve's status, and a value
+\emph{over} the threshold still warns (it exceeds $0.8$ of it a
+fortiori) --- threshold \emph{enforcement} exists only in reference-suite
+evaluation, not in ordinary solves.
+\end{requirement}
+
+\section{Standard-Tier Constraint Families}
+\label{sec:thresholds:families}
+
+The core specification's Standard-tier requirement obliges a Standard
+solver to ``support every Standard-tier constraint family declared in the
+Quality Metric Catalog.'' This section is that declaration.
+
+\begin{requirement}
+\label{req:qmc:standard-families}
+The Standard-tier constraint families are the core specification's
+built-in layout-constraint surface (Chapter~7,
+\sectionsc{ConstrainedLayoutIR}):
+
+\begin{itemize}
+  \item the \textbf{spring families}: horizontal spring slots and vertical
+    bands, with their min/preferred/max and stretch/compress parameters;
+  \item the five built-in \texttt{LayoutConstraint} kinds:
+    \texttt{NoCollision}, \texttt{Align}, \texttt{PositionWithin},
+    \texttt{SystemBreakAt}, and \texttt{PageBreakAt} (both
+    \texttt{Hard} and \texttt{Soft} break kinds).
+\end{itemize}
+
+These same families constitute ``the standard constraint families'' of
+the core's Minimal-tier requirement: Minimal and Standard support the
+same family set and differ in metric thresholds and incremental-solving
+obligations, not in constraint vocabulary.
+\texttt{LayoutConstraint::Registered} (extension-contributed) families
+are per-extension obligations of the Advanced tier only.
+\end{requirement}
+
+\begin{openquestion}
+\textbf{Threshold tuning.} Every number in
+Table~\ref{tab:tier-thresholds} and every anchor constant in
+Chapter~\ref{ch:metrics} is a v0.1 default pinned ahead of measurement
+experience: no implementation has yet reported real vectors across the
+reference suite. Once the reference implementation computes real metrics
+on the v0.1 entry set, are the Standard columns achievable-but-meaningful
+(neither trivially passed nor unreachable), and do any anchors need
+rescaling? Threshold and anchor revisions are \textsc{minor} versions of
+this catalog and are expected.
+\end{openquestion}
+
+% ===========================================================================
+\chapter{The Registered Profile Catalog}
+\label{ch:profiles}
+
+The core specification's vocabulary appendix defines
+\texttt{SolverProfile} as a registered profile identifier that ``selects
+the solver's hard-constraint set, normalized-metric thresholds,
+tie-breaking weights, and active extension catalog,'' and defers the
+registry to this companion.
+
+\begin{requirement}
+\label{req:qmc:profiles}
+The registered \texttt{SolverProfile} catalog is exactly three profiles:
+\texttt{Draft}, \texttt{Standard}, and \texttt{Publication}. Their
+selections:
+
+\begin{center}
+\small
+\begin{tabular}{lllll}
+\toprule
+\textbf{Profile} & \textbf{Constraint families} & \textbf{Threshold column} &
+\textbf{Weights} & \textbf{Extensions} \\
+\midrule
+\texttt{Draft}       & Standard-tier set & Minimal
+  & defaults & none required \\
+\texttt{Standard}    & Standard-tier set & Standard
+  & defaults & none required \\
+\texttt{Publication} & Standard-tier set & Standard
+  & defaults & none required \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{itemize}
+  \item \emph{Constraint families}: all three profiles activate the
+    Standard-tier constraint families of
+    Requirement~\ref{req:qmc:standard-families}; hard constraints are
+    never traded away by any profile (the core's
+    hard-constraints-are-inviolable rule).
+  \item \emph{Threshold column}: the column of
+    Table~\ref{tab:tier-thresholds} the profile selects --- the thresholds
+    against which Requirement~\ref{req:qmc:floor-warning}'s warning
+    fraction is evaluated during ordinary solves. \texttt{Draft} selects
+    the Minimal column (few warnings, fast iteration);
+    \texttt{Standard} and \texttt{Publication} select the Standard
+    column. In v0.1 no column tighter than Standard is ratified;
+    \texttt{Publication} is registered now so that documents and
+    configurations can name it, and a future revision \MAY{} give it a
+    tighter column without a schema change.
+  \item \emph{Weights}: all three profiles use the default tie-breaking
+    weights of Requirement~\ref{req:qmc:weights}.
+  \item \emph{Extensions}: no profile requires an active extension
+    catalog; extensions activate by document declaration, not by
+    profile.
+\end{itemize}
+
+\texttt{Standard} is the default profile.
+\end{requirement}
+
+\begin{rationale}
+\textbf{Profiles are configuration; tiers are claims.} A
+\texttt{SolverProfile} is a runtime input (\texttt{SolverConfig.profile})
+that any solver may be asked to run under; a conformance tier is a claim
+about the solver evaluated on the reference suite. The two meet in
+exactly one place: the profile's threshold column determines which
+thresholds the solver's own \texttt{QualityFloorApproached} diagnostics
+reference during ordinary solves. Suite evaluation at a claimed tier
+always uses that \emph{tier's} column, whatever profile the solver runs
+under day to day. The three-profile registry matches the reference
+implementation's existing \texttt{SolverProfile} enum
+(\texttt{Draft} / \texttt{Standard} / \texttt{Publication}, default
+\texttt{Standard}) so that registration blesses shipped reality rather
+than inventing a parallel one.
+\end{rationale}
+
+% ===========================================================================
+\chapter{Revision History}
+\label{ch:history}
+
+\begin{longtable}{p{2cm} p{2.5cm} p{9cm}}
+  \toprule
+  \textbf{Date} & \textbf{Section} & \textbf{Change} \\
+  \midrule
+  \endhead
+  \today & All & 0.1.0 --- Initial companion: pins the diagnostic-only
+  status of quality metrics, within-implementation determinism without
+  cross-implementation numeric agreement, the \texttt{QualityMetricKind}
+  enumeration, the measurement domain, and the vacuous-geometry rule;
+  defines all nine normative axes (phenomenon, raw measurement over
+  resolved geometry, clamped-linear normalization with pinned anchors);
+  sets the default tie-breaking weights (all $1.0$); establishes the
+  Minimal/Standard threshold table, the Advanced extension rule, the
+  \texttt{QualityFloorApproached} trigger ($0.8\times$ threshold), and
+  the Standard-tier constraint family declaration; registers the
+  \texttt{Draft}/\texttt{Standard}/\texttt{Publication} profile catalog.
+  Open questions: the notated-but-unrendered honesty edge, optical
+  spacing at the Standard tier, threshold tuning pending reference-suite
+  experience. \\
+\bottomrule
+\end{longtable}
+
+\end{document}

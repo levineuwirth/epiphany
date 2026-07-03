@@ -1,0 +1,756 @@
+% !TEX program = xelatex
+%
+% Epiphany --- Reference Suite (companion specification)
+% Companion to the Core Specification. Compile with XeLaTeX.
+%
+% This document is versioned independently of the Core Specification
+% (independent semver; see the Versioning note in the front matter). Its preamble
+% is intentionally a self-contained copy of the core specification's preamble so
+% the two documents build independently; factoring a shared preamble file is a
+% later cleanup, not a v0.1 deliverable.
+
+\documentclass[11pt,letterpaper]{report}
+
+% ---------------------------------------------------------------------------
+% Packages
+% ---------------------------------------------------------------------------
+\usepackage{fontspec}
+\usepackage{geometry}
+\geometry{
+  letterpaper,
+  top=1.05in,
+  bottom=1.05in,
+  left=1.15in,
+  right=1.15in,
+  headheight=15pt
+}
+
+\usepackage[english]{babel}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{listings}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable, skins}
+
+% ---------------------------------------------------------------------------
+% Color palette (shared with the core specification)
+% ---------------------------------------------------------------------------
+\definecolor{epiphanyteal}{HTML}{1A4044}
+\definecolor{epiphanygold}{HTML}{8E6E2E}
+\definecolor{epiphanyink}{HTML}{1F1B16}
+\definecolor{epiphanyslate}{HTML}{6B6660}
+\definecolor{epiphanycream}{HTML}{F8F4ED}
+\definecolor{epiphanymist}{HTML}{ECE8E0}
+\definecolor{epiphanycode}{HTML}{2A2520}
+\definecolor{epiphanycrimson}{HTML}{7A2424}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=epiphanyteal,
+  citecolor=epiphanyteal,
+  urlcolor=epiphanygold,
+  pdftitle={Epiphany --- Reference Suite},
+  pdfauthor={The Epiphany Project},
+  pdfsubject={Reference Suite companion for the Epiphany music notation platform},
+  pdfkeywords={music notation, engraving, reference suite, conformance, solver tiers, test scores},
+  bookmarksnumbered=true,
+  bookmarksopen=true
+}
+
+% ---------------------------------------------------------------------------
+% Typography (shared with the core specification)
+% ---------------------------------------------------------------------------
+\setmainfont{TeX Gyre Pagella}[Numbers={OldStyle, Proportional}, Ligatures={TeX, Common}]
+\setsansfont{TeX Gyre Heros}[Scale=0.94, Ligatures={TeX, Common}]
+\setmonofont{TeX Gyre Cursor}[Scale=0.88, Ligatures={TeX}]
+\newfontfamily\titlefont{TeX Gyre Pagella}[Numbers={OldStyle}, Ligatures={TeX, Common}]
+\newcommand{\tablenums}[1]{{\addfontfeatures{Numbers={Lining,Tabular}}#1}}
+\newcommand{\sectionsc}[1]{{\addfontfeatures{Letters=SmallCaps}#1}}
+
+% ---------------------------------------------------------------------------
+% Section styling (shared with the core specification)
+% ---------------------------------------------------------------------------
+\titleformat{\chapter}[display]
+  {\normalfont\filright}
+  {\raggedright\color{epiphanygold}\fontsize{14pt}{16pt}\selectfont
+    \scshape Chapter\ \thechapter}
+  {16pt}
+  {\raggedright\color{epiphanyteal}\fontsize{32pt}{36pt}\selectfont\bfseries}
+  [\vspace{4pt}{\color{epiphanygold}\rule{2in}{0.6pt}}]
+\titlespacing*{\chapter}{0pt}{-20pt}{30pt}
+\titleformat{\section}
+  {\normalfont\Large\bfseries\color{epiphanyteal}}
+  {\color{epiphanygold}\thesection}{1em}{}
+\titleformat{\subsection}
+  {\normalfont\large\bfseries\color{epiphanyteal}}
+  {\color{epiphanygold}\thesubsection}{1em}{}
+\titleformat{\subsubsection}
+  {\normalfont\normalsize\bfseries\color{epiphanyink}}
+  {\thesubsubsection}{1em}{}
+
+% ---------------------------------------------------------------------------
+% Headers and footers (shared with the core specification)
+% ---------------------------------------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\fancyhead[L]{\small\scshape\color{epiphanyslate}Epiphany --- Reference Suite}
+\fancyhead[R]{\small\itshape\color{epiphanyslate}\leftmark}
+\fancyfoot[C]{\small\color{epiphanyslate}\thepage}
+\renewcommand{\headrule}{
+  \color{epiphanygold!50}\hrule width\headwidth height 0.4pt
+  \vspace{1pt}
+  \color{epiphanygold!30}\hrule width\headwidth height 0.2pt
+}
+
+% ---------------------------------------------------------------------------
+% Code listing style (shared with the core specification)
+% ---------------------------------------------------------------------------
+\lstdefinelanguage{Rust}{
+  keywords={fn,let,mut,pub,struct,enum,impl,trait,for,in,if,else,match,return,
+           use,mod,crate,self,Self,as,where,move,async,await,const,static,
+           ref,type,unsafe,extern,dyn,box,break,continue,loop,while},
+  keywordstyle=\color{epiphanyteal}\bfseries,
+  ndkeywords={i8,i16,i32,i64,i128,u8,u16,u32,u64,u128,f32,f64,bool,char,str,
+              String,Vec,Option,Result,Box,Rc,Arc,HashMap,BTreeMap,
+              NonZeroU16,NonZeroU32,NonZeroU64,Duration,Timestamp},
+  ndkeywordstyle=\color{epiphanygold}\bfseries,
+  sensitive=true,
+  comment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  commentstyle=\color{epiphanyslate}\itshape,
+  stringstyle=\color{epiphanycrimson},
+  morestring=[b]",
+  morestring=[b]'
+}
+\lstset{
+  basicstyle=\ttfamily\small\color{epiphanycode},
+  backgroundcolor=\color{epiphanycream},
+  frame=leftline,
+  rulecolor=\color{epiphanygold!60},
+  framesep=8pt,
+  framerule=1.5pt,
+  xleftmargin=10pt,
+  xrightmargin=4pt,
+  breaklines=true,
+  showstringspaces=false,
+  numberstyle=\tiny\color{epiphanyslate},
+  numbersep=10pt,
+  captionpos=b,
+  aboveskip=10pt,
+  belowskip=10pt,
+  language=Rust
+}
+
+% ---------------------------------------------------------------------------
+% Custom environments (shared with the core specification)
+% ---------------------------------------------------------------------------
+\newtcolorbox{openquestion}[1][]{
+  enhanced, breakable,
+  colback=epiphanymist, colframe=epiphanycrimson,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Open Question},
+  coltitle=white, colbacktitle=epiphanycrimson,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+\newtcolorbox{rationale}[1][]{
+  enhanced, breakable,
+  colback=epiphanymist, colframe=epiphanyteal,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Rationale},
+  coltitle=white, colbacktitle=epiphanyteal,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+\newtcolorbox{requirement}[1][]{
+  enhanced, breakable,
+  colback=white, colframe=epiphanygold,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Requirement},
+  coltitle=white, colbacktitle=epiphanygold,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+\newtcolorbox{nongoal}[1][]{
+  enhanced, breakable,
+  colback=epiphanymist, colframe=epiphanyslate,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Non-Goal},
+  coltitle=white, colbacktitle=epiphanyslate,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+
+\newcommand{\MUST}{\textbf{MUST}}
+\newcommand{\MUSTNOT}{\textbf{MUST}\nobreak\ \textbf{NOT}}
+\newcommand{\SHOULD}{\textbf{SHOULD}}
+\newcommand{\SHOULDNOT}{\textbf{SHOULD}\nobreak\ \textbf{NOT}}
+\newcommand{\MAY}{\textbf{MAY}}
+
+\setlist[itemize]{topsep=2pt, itemsep=3pt, parsep=0pt}
+\setlist[enumerate]{topsep=2pt, itemsep=3pt, parsep=0pt}
+\setlist[description]{topsep=2pt, itemsep=5pt, parsep=0pt}
+\AtBeginDocument{\color{epiphanyink}}
+
+% ---------------------------------------------------------------------------
+% Document
+% ---------------------------------------------------------------------------
+\begin{document}
+
+\begin{titlepage}
+  \thispagestyle{empty}
+  \centering
+  \vspace*{2.2in}
+  {\color{epiphanygold}\rule{3in}{0.8pt}}\\[18pt]
+  {\titlefont\fontsize{34pt}{38pt}\selectfont\color{epiphanyteal}\bfseries Epiphany}\\[10pt]
+  {\Large\scshape\color{epiphanyslate}Reference Suite}\\[6pt]
+  {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
+  {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
+  {\normalsize\color{epiphanyink}Version 0.1.0 --- Phase 3 (the initial entry set: six scores, required at Minimal, declared for Standard)}\\[4pt]
+  {\small\color{epiphanyslate}Normative for solver conformance claims}
+  \vfill
+\end{titlepage}
+
+\tableofcontents
+
+% ===========================================================================
+\chapter{About This Companion}
+\label{ch:about}
+
+The \emph{Reference Suite} is a companion to the Epiphany Core
+Specification. It fulfils the core specification's delegation in its
+\sectionsc{Companion Specifications} appendix (the
+\texttt{sec:deferred:companions} section), which charters this document as
+``the collection of test scores against which solver conformance is
+established, with per-tier inclusion, per-tier metric thresholds, and any
+fixed-expectation tests. Versioned with this specification.''
+
+This release (v0.1.0) delivers:
+
+\begin{itemize}
+  \item the \textbf{suite entry model} --- how entries name their test
+    scores, how each solve is configured, what passing an entry and
+    passing the suite mean, and how fixed-expectation tests work
+    (Chapter~\ref{ch:model});
+  \item the \textbf{v0.1 entry set}: six scores, every one required for
+    Minimal-tier conformance and the same six constituting the
+    Standard-tier subset (Chapter~\ref{ch:entries});
+  \item a non-normative note on the reference implementation's suite
+    harness (Chapter~\ref{ch:harness}).
+\end{itemize}
+
+This document does \emph{not} cover:
+
+\begin{itemize}
+  \item the definition, normalization, and default thresholds of the
+    quality metrics --- those are the \emph{Quality Metric Catalog}
+    companion's, and this document consumes them;
+  \item performance conformance (edit traces, frame budgets) --- the
+    \emph{Performance Reference Suite} companion's, per the core
+    specification's explicit boundary;
+  \item the reference solving algorithm --- the non-normative
+    \emph{Reference Algorithm} companion's.
+\end{itemize}
+
+\section{Relationship to the Core Specification}
+\label{sec:about:relationship}
+
+The suite's charter is the core specification's Chapter~9
+(\sectionsc{The Constraint Solver Interface}, the \texttt{ch:solver}
+chapter), \sectionsc{Conformance: The Reference Suite} section
+(\texttt{sec:solver:conformance}). That section's suite-entry requirement
+fixes what every entry consists of --- a test score in canonical
+\texttt{.musc} form; per-tier inclusion; per-tier metric thresholds; and
+optional fixed-expectation tests, used sparingly --- and fixes the pass
+rule: ``A solver claiming a given tier \MUST{} pass every entry required
+at that tier. Failure on any single entry is conformance failure at the
+claimed tier.''
+
+Three more core anchors bind this document:
+
+\begin{itemize}
+  \item The \sectionsc{Cross-Implementation Conformance} requirement (in
+    the core's solver-determinism section) enumerates the four conditions
+    a conforming solver meets across the suite; this document's
+    per-entry evaluation rule (Section~\ref{sec:model:pass}) is those
+    conditions applied entry-by-entry.
+  \item The \sectionsc{Reference Algorithm} section makes
+    fixed-expectation tests the \emph{only} place the suite may force a
+    particular layout; everywhere else, any algorithm within thresholds
+    conforms. Section~\ref{sec:model:fixed} inherits that discipline.
+  \item The \emph{Quality Metric Catalog} companion defines every metric,
+    its normalization, and the default per-tier thresholds this suite's
+    entries reference. This document never restates a threshold; it
+    names the catalog's defaults and records per-entry overrides (v0.1:
+    none).
+\end{itemize}
+
+Where this document and a ratified core requirement disagree, \textbf{the
+core requirement governs} and the discrepancy is a defect in this
+document. One deliberate v0.1 deviation from the charter's letter ---
+naming scores by deterministic builder rather than shipping
+\texttt{.musc} bundles --- is called out as such, with its open question,
+in Section~\ref{sec:model:referencing}.
+
+\section{Conformance}
+\label{sec:about:conformance}
+
+The entry set, entry construction rules, solve configurations, and tier
+inclusions in this document are \textbf{normative}. A solver conformance
+claim at a tier is a claim about \emph{this} suite at \emph{this}
+version:
+
+\begin{itemize}
+  \item claiming tier $T$ means passing every entry
+    (Section~\ref{sec:model:pass}) that Chapter~\ref{ch:entries} requires
+    at tier $T$ --- failure on any single entry is conformance failure at
+    the claimed tier;
+  \item per the core specification, suite versions are tied to
+    specification versions, and a conforming implementation \MUST{}
+    declare which suite version it passes
+    (Section~\ref{sec:model:versioning}).
+\end{itemize}
+
+% ===========================================================================
+\chapter{The Suite Entry Model}
+\label{ch:model}
+
+\section{Score Referencing}
+\label{sec:model:referencing}
+
+\begin{requirement}
+\label{req:refsuite:referencing}
+A v0.1 suite entry names its test score by \textbf{reference-implementation
+builder and seed}: a deterministic constructor exported by the reference
+implementation's test kit (the \texttt{epiphany-testkit} crate), together
+with any seed argument, reproduces the score graph bit-for-bit. Two
+referencing forms are used:
+
+\begin{itemize}
+  \item a \textbf{seeded builder}: a public function taking a \texttt{u64}
+    seed (e.g.\ \texttt{fixtures::ten\_measure\_single\_staff}, or a
+    generator re-exported through the test kit), with the entry pinning
+    the exact seed value;
+  \item a \textbf{corpus name}: the \texttt{name} string of an entry of
+    the test kit's tagged corpus (\texttt{corpus()}), whose builder takes
+    no arguments and is deterministic by construction.
+\end{itemize}
+
+The constructed score graph --- not any serialized artifact of it --- is
+the entry's test score. Implementations under test \MUST{} evaluate the
+entry against a score graph identical to the one the named builder
+produces with the named seed.
+\end{requirement}
+
+\begin{rationale}
+The core charter describes each entry as ``a test score in canonical
+\texttt{.musc} form.'' v0.1 deliberately references builders instead of
+shipping bundles, because today \emph{the builders are the canonical
+definition}: they are versioned, reviewed, deterministic (seeded
+\texttt{SplitMix64} identity minting), asserted invariant-clean, and
+reproducible bit-for-bit by anyone building the reference crates --- while
+the \texttt{.musc} byte format is still absorbing schema-major evolution,
+so a shipped bundle would rot faster than the builder that made it. A
+corpus caution: the test kit tags corpus fixtures with an
+\emph{eligibility-taxonomy} tier (\texttt{Common} / \texttt{Edge} /
+\texttt{Torture}); that taxonomy is unrelated to solver conformance tiers
+(Minimal / Standard / Advanced) and carries no normative weight in this
+suite.
+\end{rationale}
+
+\begin{openquestion}
+\textbf{Builder references versus shipped \texttt{.musc} bundles.} The
+charter's letter --- entries in canonical \texttt{.musc} form --- is not met
+by v0.1: builder-plus-seed is implementation-anchored, which makes the
+suite awkward for an independent implementation that does not link the
+reference test kit (it must re-derive the score graphs from the builders'
+sources). A future revision \MAY{} ship canonical \texttt{.musc} bundles
+for every entry, exactly as the charter describes, once schema-major
+bytes are stable enough that shipped bundles do not rot; at that point
+builder references would remain as the bundles' provenance record. Until
+then, the deviation is deliberate and this open question owns it.
+\end{openquestion}
+
+\section{Solve Configuration}
+\label{sec:model:solve-config}
+
+A suite entry is only reproducible if the solve it prescribes is fully
+specified: the same score under a different page geometry casts off into
+different systems, and several metric axes are defined over the declared
+content bounds.
+
+\begin{requirement}
+\label{req:refsuite:solve-config}
+Each suite entry declares the full solve configuration it is evaluated
+under:
+
+\begin{itemize}
+  \item the \textbf{page geometry}: page size and margins, in staff
+    spaces. In v0.1 every entry uses the reference implementation's
+    documented default --- A4 portrait at an 8\,mm staff height: page
+    $105 \times 148.5$ staff spaces, margins $7.5$ staff spaces on all
+    four sides, hence a content area of $90 \times 133.5$ staff spaces.
+    (The score graph has no home for page geometry yet: the core names
+    \texttt{Canvas.layout\_defaults} without defining a type, tracked as
+    Pass-12 row P12-I7, so geometry is declared per entry as a solver
+    parameter.)
+  \item the \textbf{solver configuration}: the \texttt{SolverConfig}
+    fields. In v0.1 every entry uses the default configuration --- the
+    \texttt{Standard} profile, an unbounded deterministic budget, and
+    the Quality Metric Catalog's default tie-breaking weights.
+\end{itemize}
+
+An implementation \MUSTNOT{} substitute its own defaults for a declared
+configuration when evaluating an entry.
+\end{requirement}
+
+\section{Passing an Entry, Passing the Suite}
+\label{sec:model:pass}
+
+\begin{requirement}
+\label{req:refsuite:pass}
+A solver \textbf{passes an entry at tier $T$} when, solving the entry's
+score under the entry's declared configuration, all four of the core
+specification's cross-implementation conformance conditions hold for that
+solve:
+
+\begin{enumerate}
+  \item every hard constraint of the solve is satisfied;
+  \item the result is internally deterministic per the core's
+    within-implementation rule (byte-identical
+    \texttt{ResolvedLayoutIR} for repeated identical solves within one
+    implementation version);
+  \item the \texttt{SolveReport} is well-formed and diagnostically
+    accurate --- in particular the metric vector is computed per the
+    Quality Metric Catalog, never a placeholder;
+  \item every normative quality metric is at or below tier $T$'s
+    threshold for its axis --- the Quality Metric Catalog's default
+    per-tier threshold table, unless the entry declares a per-entry
+    override (no v0.1 entry does);
+\end{enumerate}
+
+and additionally every fixed-expectation test the entry declares is
+reproduced exactly (no v0.1 entry declares any).
+
+A solver \textbf{passes the suite at tier $T$} when it passes every entry
+required at tier $T$. Per the core specification, failure on any single
+entry is conformance failure at the claimed tier; a status of
+\texttt{Unsatisfiable} or a budget-exhausted partial solve on a suite
+entry is a failure of condition~(1) or~(3), not an exemption.
+\end{requirement}
+
+\section{Fixed-Expectation Tests}
+\label{sec:model:fixed}
+
+The core specification permits an entry to pin specific layout properties
+--- a particular bar's width, a specific system-break location --- that all
+conforming solvers must reproduce, and directs that they be used
+sparingly. In the resolved layout such expectations are checkable against
+concrete structures: a bar's width against its \texttt{ResolvedMeasure}
+bounding box, a system count or break location against the
+\texttt{ResolvedSystem} list and the slots at which systems begin.
+
+\begin{requirement}
+\label{req:refsuite:fixed-expectations}
+v0.1 declares \textbf{no fixed-expectation tests}. The mechanism is
+deliberately unused: every v0.1 entry is evaluated by validity,
+determinism, report accuracy, and thresholds alone. An entry of a future
+suite revision that adds a fixed expectation \MUST{} state the expected
+value, the resolved structure it is checked against, and the exact
+comparison (including any tolerance).
+\end{requirement}
+
+\begin{rationale}
+A fixed expectation binds \emph{every conforming solver} to one layout
+fact forever after; it is the only place the suite may force a layout,
+and none is warranted yet --- no cross-implementation ambiguity has
+surfaced that thresholds fail to resolve. The reference implementation's
+golden files (SVG snapshots, byte-anchored layouts) are
+\emph{implementation regression locks}: they pin what \emph{that}
+implementation produced so its own drift is caught, and they are
+deliberately not suite conformance --- promoting them to fixed
+expectations would freeze the ecosystem to the reference algorithm's
+choices, exactly what the core's threshold-based conformance model
+exists to avoid.
+\end{rationale}
+
+\section{Suite Versioning}
+\label{sec:model:versioning}
+
+\begin{requirement}
+\label{req:refsuite:versioning}
+Per the core specification, suite versions are tied to specification
+versions: each release of this companion names the core-specification
+version whose conformance story it serves, and a revision of the core's
+solver chapter that changes tier obligations requires a corresponding
+suite revision. This v0.1.0 suite serves the pre-1.0 core working draft.
+A conforming implementation \MUST{} declare which suite version it
+passes; a claim without a suite version is not a conformance claim.
+\end{requirement}
+
+This document keeps its own revision history (Chapter~\ref{ch:history}),
+independent of the Quality Metric Catalog's: entry-set growth and
+threshold-override changes are suite revisions, while metric definitions
+and default thresholds revise in the catalog.
+
+% ===========================================================================
+\chapter{The v0.1 Entry Set}
+\label{ch:entries}
+
+\section{Overview}
+\label{sec:entries:overview}
+
+\begin{requirement}
+\label{req:refsuite:entries}
+The v0.1 entry set is exactly the six entries of
+Table~\ref{tab:entries}. Every entry is \textbf{required at the Minimal
+tier}. The \textbf{Standard-tier subset is the same six entries},
+evaluated against the Quality Metric Catalog's Standard threshold
+column. No entry declares a per-entry threshold override; no entry
+declares a fixed-expectation test. No entry is designated
+Advanced-only in v0.1 (the Advanced tier adds obligations, not
+entries, until an extension's layout requirements enter the suite).
+\end{requirement}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lp{4.2cm}p{6.6cm}}
+\toprule
+\textbf{Id} & \textbf{Entry} & \textbf{Construction} \\
+\midrule
+RS-1 & Ten-measure single staff &
+  \texttt{fixtures::ten\_measure\_single\_staff} with seed
+  \texttt{0x000A\_11CE} \\
+RS-2 & Rich multi-region score &
+  \texttt{generators::valid\_score\_rich} with seed \texttt{0xF302}
+  (= corpus entry \texttt{gen\_valid\_score\_rich}) \\
+RS-3 & B-flat major scale &
+  corpus entry \texttt{b\_flat\_major\_scale} \\
+RS-4 & Two-voice counterpoint &
+  corpus entry \texttt{two\_voice\_counterpoint} \\
+RS-5 & Notes and rests &
+  corpus entry \texttt{notes\_and\_rests} \\
+RS-6 & Three-four meter line &
+  corpus entry \texttt{meter\_three\_four} \\
+\bottomrule
+\end{tabular}
+\caption{The v0.1 entry set. All six entries are required at Minimal;
+the same six constitute the Standard subset. Solve configuration for
+every entry: the declared default geometry and solver configuration of
+Requirement~\ref{req:refsuite:solve-config}.}
+\label{tab:entries}
+\end{table}
+
+No implementation claims Standard-tier conformance as of this suite
+version; the Standard listing exists so that the first Standard claim is
+made against a pre-declared bar rather than a bar negotiated after the
+fact. Where an entry's layout lacks a metric's geometry class (a single
+system, a single page, no drawn slurs or beams), the affected axes
+evaluate to $0.0$ under the catalog's vacuous-geometry rule and the
+entry's threshold on those axes is trivially met; each entry's coverage
+note below says which axes it exercises non-degenerately.
+
+\section{RS-1: Ten-Measure Single Staff}
+\label{sec:entries:rs1}
+
+\begin{description}
+  \item[Construction.]
+    \texttt{epiphany\_testkit::fixtures::ten\_measure\_single\_staff(0x000A\_11CE)}
+    --- the seed the reference implementation's engraving and rendering
+    acceptance goldens document.
+  \item[Content.] A 10-measure, single-staff, single-voice metric score:
+    40 quarter notes (four per measure, all C4), plus a tie, a spanner, a
+    marker, and a chord symbol. Invariant-clean by construction.
+  \item[Coverage.] The multi-system workhorse. Under the declared
+    geometry the spaced line (about 99 staff spaces) exceeds the content
+    width of 90 staff spaces and casts off into \textbf{two systems},
+    chosen among the barline break candidates --- so the
+    \texttt{SystemBreak}, \texttt{CastingOff}, and
+    \texttt{SymbolDensity} axes are exercised non-degenerately,
+    alongside \texttt{Collision} and \texttt{Spacing} (axis names per
+    the catalog's \texttt{QualityMetricKind} mapping). The
+    cross-cutting objects (tie, spanner, marker, chord symbol) ride
+    through the projection. Single page: the \texttt{PageFill} axis
+    degenerates.
+  \item[Tiers, thresholds, expectations.] Required at Minimal; in the
+    Standard subset. Catalog default thresholds; no overrides; no fixed
+    expectations.
+\end{description}
+
+\section{RS-2: Rich Multi-Region Score}
+\label{sec:entries:rs2}
+
+\begin{description}
+  \item[Construction.]
+    \texttt{generators::valid\_score\_rich(0xF302)} (the core crate's
+    generator), identically reachable as the test-kit corpus entry
+    \texttt{gen\_valid\_score\_rich} (the corpus pins the same seed).
+  \item[Content.] Three \emph{concurrent} regions on disjoint staves: a
+    metric region (measures, an eighth-note triplet tuplet, a tie, a
+    spanner, a marker, a chord symbol, a decomposition attachment), a
+    proportional region (wall-clock events), and an aleatoric region
+    (musical-discipline events) --- plus tombstoned pitch and event ids
+    and a spelling attachment resolving to a tombstoned pitch. Every
+    core graph invariant holds.
+  \item[Coverage.] Multi-region, multi-staff validity: concurrent
+    regions must each be cast off and placed without cross-region
+    interference. At the Minimal tier this entry demands validity and
+    honest diagnostics on the projection it induces --- the non-metric
+    regions reach the solver as ordinary constrained IR (their
+    decompositions deferred upstream), so the entry does \emph{not}
+    smuggle the Advanced tier's proportional/aleatoric layout obligation
+    into Minimal; it guards that a multi-region document neither breaks
+    hard constraints nor corrupts the report.
+  \item[Tiers, thresholds, expectations.] Required at Minimal; in the
+    Standard subset. Catalog default thresholds; no overrides; no fixed
+    expectations.
+\end{description}
+
+\section{RS-3: B-flat Major Scale}
+\label{sec:entries:rs3}
+
+\begin{description}
+  \item[Construction.] Corpus entry \texttt{b\_flat\_major\_scale}
+    (zero-argument deterministic builder).
+  \item[Content.] Seven quarter notes ascending through B-flat major
+    (B$\flat$ C D E$\flat$ F G A) in one metric region, one staff, one
+    voice --- accidentals inferred in a flat context.
+  \item[Coverage.] The accidental entry: flats produce glyph clusters
+    with left overhang, exercising overhang-aware spacing, the same-column
+    cluster of accidental and notehead (the collision axis's same-slot
+    exclusion), and the \texttt{Spacing} axis under uneven column
+    ink. Single system and page: the break-family and page axes
+    degenerate.
+  \item[Tiers, thresholds, expectations.] Required at Minimal; in the
+    Standard subset. Catalog default thresholds; no overrides; no fixed
+    expectations.
+\end{description}
+
+\section{RS-4: Two-Voice Counterpoint}
+\label{sec:entries:rs4}
+
+\begin{description}
+  \item[Construction.] Corpus builder \texttt{two\_voice\_counterpoint}
+    (zero-argument, deterministic).
+  \item[Content.] Two voices in one staff instance: an upper quarter-note
+    line and a lower quarter-note line two octaves beneath it, sounding
+    simultaneously.
+  \item[Coverage.] Simultaneity: both voices' notes share musical time
+    columns, so each spring slot carries a two-voice cluster, and the
+    low line sits below the staff (ledger territory). Exercises
+    same-column stacking, the collision sweep across a vertically spread
+    texture, and column-advance regularity when columns are ink-heavy.
+    Single system and page: the break-family and page axes degenerate.
+  \item[Tiers, thresholds, expectations.] Required at Minimal; in the
+    Standard subset. Catalog default thresholds; no overrides; no fixed
+    expectations.
+\end{description}
+
+\section{RS-5: Notes and Rests}
+\label{sec:entries:rs5}
+
+\begin{description}
+  \item[Construction.] Corpus entry \texttt{notes\_and\_rests}
+    (zero-argument deterministic builder).
+  \item[Content.] Note, rest, note, rest --- quarter values in one metric
+    region, one staff, one voice.
+  \item[Coverage.] Rest glyphs interleaved with noteheads: rest columns
+    carry different ink boxes than note columns, exercising the spacing
+    pass's treatment of mixed column content and the collision sweep over
+    non-notehead glyphs. Single system and page: the break-family and
+    page axes degenerate.
+  \item[Tiers, thresholds, expectations.] Required at Minimal; in the
+    Standard subset. Catalog default thresholds; no overrides; no fixed
+    expectations.
+\end{description}
+
+\section{RS-6: Three-Four Meter Line}
+\label{sec:entries:rs6}
+
+\begin{description}
+  \item[Construction.] Corpus entry \texttt{meter\_three\_four}
+    (zero-argument deterministic builder).
+  \item[Content.] Three quarter notes under a declared
+    $\tfrac{3}{4}$ time signature (three quarter-beat groups), in one
+    metric region, one staff, one voice.
+  \item[Coverage.] Meter variety: the declared time signature drives
+    measure length past the whole-note default, exercising the
+    meter-resolution path that feeds the layout projection. Guards that
+    a non-default meter neither breaks hard constraints nor perturbs
+    spacing regularity. Single system and page: the break-family and
+    page axes degenerate.
+  \item[Tiers, thresholds, expectations.] Required at Minimal; in the
+    Standard subset. Catalog default thresholds; no overrides; no fixed
+    expectations.
+\end{description}
+
+% ===========================================================================
+\chapter{Harness Binding (Non-Normative)}
+\label{ch:harness}
+
+This chapter is informative. The reference implementation binds this
+suite to executable checks in its test kit, following the test kit's
+established library-module-per-harness pattern (one public module per
+harness, mirroring the corpus and prepass harnesses, with an integration
+test driving it). The suite harness constructs each Chapter~\ref{ch:entries}
+entry from its named builder and seed, solves it under the declared
+configuration, and asserts the Minimal-tier pass of
+Requirement~\ref{req:refsuite:pass}; it is delivered with the reference
+implementation.
+
+\begin{nongoal}
+The harness is not part of this document's normative surface. Conformance
+is defined by Chapters~\ref{ch:model} and~\ref{ch:entries} alone; an
+independent implementation may bind the suite with any machinery that
+evaluates the same entries under the same configurations. Likewise, the
+reference implementation's golden files (SVG snapshots, byte-anchored
+layouts) are that implementation's regression locks, not suite
+conformance (Section~\ref{sec:model:fixed}).
+\end{nongoal}
+
+% ===========================================================================
+\chapter{Revision History}
+\label{ch:history}
+
+\begin{longtable}{p{2cm} p{2.5cm} p{9cm}}
+  \toprule
+  \textbf{Date} & \textbf{Section} & \textbf{Change} \\
+  \midrule
+  \endhead
+  \today & All & 0.1.0 --- Initial companion: pins the suite entry model
+  (builder-and-seed score referencing with the \texttt{.musc}-bundle open
+  question, per-entry solve configuration over the declared A4/8\,mm
+  default geometry, the four-condition per-entry pass rule, the
+  deliberately empty fixed-expectation set, suite-version declaration);
+  delivers the six-entry v0.1 set
+  (\texttt{ten\_measure\_single\_staff} seed \texttt{0x000A\_11CE},
+  \texttt{valid\_score\_rich} seed \texttt{0xF302},
+  \texttt{b\_flat\_major\_scale}, \texttt{two\_voice\_counterpoint},
+  \texttt{notes\_and\_rests}, \texttt{meter\_three\_four}), all required
+  at Minimal and all constituting the Standard subset under the Quality
+  Metric Catalog's default thresholds, with no per-entry overrides. \\
+\bottomrule
+\end{longtable}
+
+\end{document}
