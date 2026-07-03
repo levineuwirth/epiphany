@@ -33,17 +33,18 @@ use epiphany_ops::{
     AnomalousReplicaSegment, AuthorId, CausalContext, ChangeRegionTimeModelOp, ConflictId,
     ConflictKind, ConflictKindRegistryId, ConflictRecord, ConflictRegistry,
     ConflictResolutionState, CreateCrossCuttingOp, CreateRegionOp, CreateStaffInstanceOp,
-    CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
-    DeleteRegionOp, DeleteStaffInstanceOp, DeleteVoiceOp, ExtensionPreconditionId, FieldPath,
-    HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp, IntegrityAnomaly,
-    IntegrityAnomalyKind, IntegrityAnomalyRegistryId, MaterializedState, ModifyCrossCuttingOp,
-    ModifyEventOp, ModifyIdentifiedPitchOp, NoOpReason, ObjectKind, ObjectState, OperationEffect,
-    OperationEnvelope, OperationKind, OperationKindRegistryId, OperationPayload, OperationSet,
-    OperationStamp, PendingReason, PositionRemapping, PreconditionFailureReason,
-    PreconditionFailureRegistryId, ReanchorReason, ReanchorReasonRegistryId, ReanchorResult,
-    RepairKind, RepairKindRegistryId, RepairRecord, ReplicaAnomalyReason, ReplicaAnomalyRegistryId,
-    ResolutionAction, ResolutionRegistryId, ResolveConflictPayload, RespellPitchOp,
-    SerializedCanonicalInputs, SetMetadataOp, SetMetricGridOp, SetUserPageBreakOp,
+    CreateStaffOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp,
+    DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteStaffInstanceOp, DeleteVoiceOp,
+    ExtensionPreconditionId, FieldPath, HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp,
+    IntegrityAnomaly, IntegrityAnomalyKind, IntegrityAnomalyRegistryId, MaterializedState,
+    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, NoOpReason, ObjectKind,
+    ObjectState, OperationEffect, OperationEnvelope, OperationKind, OperationKindRegistryId,
+    OperationPayload, OperationSet, OperationStamp, PendingReason, PositionRemapping,
+    PreconditionFailureReason, PreconditionFailureRegistryId, ReanchorReason,
+    ReanchorReasonRegistryId, ReanchorResult, RepairKind, RepairKindRegistryId, RepairRecord,
+    ReplicaAnomalyReason, ReplicaAnomalyRegistryId, ResolutionAction, ResolutionRegistryId,
+    ResolveConflictPayload, RespellPitchOp, SerializedCanonicalInputs, SetMetadataOp,
+    SetMetricGridOp, SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp, SetUserPageBreakOp,
     SetUserSystemBreakOp, TransactionCategory, TransactionDescriptor, TransposeOp,
     TupletCompensation, TupletCompensationKind, UndoPolicy, UndoTransactionPayload,
 };
@@ -409,7 +410,7 @@ pub fn conflict_registry(rng: &mut Rng) -> ConflictRegistry {
 
 /// A typed precondition failure (every core and registered variant).
 pub fn precondition_failure_reason(rng: &mut Rng) -> PreconditionFailureReason {
-    match rng.below(10) {
+    match rng.below(12) {
         0 => PreconditionFailureReason::TargetMissing,
         1 => PreconditionFailureReason::TargetTombstoned,
         2 => PreconditionFailureReason::WrongRegionTimeModel,
@@ -418,7 +419,9 @@ pub fn precondition_failure_reason(rng: &mut Rng) -> PreconditionFailureReason {
         5 => PreconditionFailureReason::PositionOutsideRegion,
         6 => PreconditionFailureReason::PitchSpaceMismatch,
         7 => PreconditionFailureReason::VoiceMissing,
-        8 => PreconditionFailureReason::ExtensionPrecondition(ExtensionPreconditionId(
+        8 => PreconditionFailureReason::ContainerNotEmpty,
+        9 => PreconditionFailureReason::TempoMapMalformed,
+        10 => PreconditionFailureReason::ExtensionPrecondition(ExtensionPreconditionId(
             rng.next_u64() as u128,
         )),
         _ => PreconditionFailureReason::Registered(PreconditionFailureRegistryId(
@@ -637,7 +640,7 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
         }
         _ => {}
     }
-    let kind = match rng.below(24) {
+    let kind = match rng.below(28) {
         0 => {
             let pitches = if rng.boolean() {
                 vec![obj_pitch(rng.below(pitches))]
@@ -773,6 +776,52 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
             ),
             present: rng.boolean(),
         }),
+        // Phase-3 tranche: staff mint, meter/tempo overwrites, layout advisory
+        // over the shared id space. The signature's value derives from its id
+        // so an id re-carry is byte-identical (the idempotent mint branch);
+        // distinct ids give distinct values (the differing-value branch).
+        23 => OperationKind::CreateStaff(CreateStaffOp {
+            staff: valuegen::staff(
+                StaffId::new(OBJ_REPLICA, rng.below(2)),
+                InstrumentId::new(OBJ_REPLICA, 0),
+            ),
+        }),
+        24 => {
+            let region = RegionId::new(OBJ_REPLICA, rng.below(2));
+            let signature = rng.below(2);
+            OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region,
+                anchor: valuegen::region_start_anchor(
+                    region,
+                    MusicalPosition(RationalTime::from_int(rng.below(3) as i32 * 4)),
+                ),
+                time_signature: rng.boolean().then(|| {
+                    valuegen::time_signature(
+                        TimeSignatureId::new(OBJ_REPLICA, signature),
+                        signature as u16 + 3,
+                    )
+                }),
+            })
+        }
+        25 => {
+            let region = RegionId::new(OBJ_REPLICA, rng.below(2));
+            let at = MusicalPosition(RationalTime::from_int(rng.below(3) as i32 * 4));
+            OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                region: rng.boolean().then_some(region),
+                start: valuegen::region_start_anchor(region, at.clone()),
+                segment: rng.boolean().then(|| {
+                    valuegen::tempo_segment(region, at, 60.0 + rng.below(4) as f64 * 30.0)
+                }),
+            })
+        }
+        26 => OperationKind::SetStaffLayout(SetStaffLayoutOp {
+            staff_instance: StaffInstanceId::new(OBJ_REPLICA, rng.below(2)),
+            instrument_override: None,
+            staff_lines_override: rng
+                .boolean()
+                .then(epiphany_core::StaffLineConfiguration::default),
+            visible: rng.boolean(),
+        }),
         _ => OperationKind::Registered(
             OperationKindRegistryId(rng.next_u64() as u128),
             rng.byte_vec(0, 16),
@@ -831,6 +880,19 @@ impl Session {
     /// predecessor) with a prior-history DVV (own history always seen; others
     /// sampled).
     fn author(&mut self, rng: &mut Rng, r: usize, payload: OperationPayload) {
+        self.author_tx(rng, r, None, payload);
+    }
+
+    /// As [`Session::author`], additionally stamping the envelope as a member
+    /// of `tx`. Same-replica sequential authorship makes each member causally
+    /// cover its transaction descriptor (the descriptor-precedence rule).
+    fn author_tx(
+        &mut self,
+        rng: &mut Rng,
+        r: usize,
+        tx: Option<TransactionId>,
+        payload: OperationPayload,
+    ) {
         let n_replicas = self.counters.len();
         let replica = ReplicaId(r as u64 + 1);
         let c = self.counters[r];
@@ -875,7 +937,7 @@ impl Session {
             author: AuthorId(replica.0 as u128),
             stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(l), logical), id),
             causal_context: ctx,
-            transaction: None,
+            transaction: tx,
             payload,
         };
         debug_assert!(epiphany_ops::well_formed(&env).is_ok());
@@ -1122,13 +1184,83 @@ pub fn graph_edit_session(
         );
     }
 
+    // Phase-3 tranche: the targeted tx-then-undo flow. One declared transaction
+    // overwrites LWW keys across the families (spelling, meter, tempo, staff
+    // layout) and is then undone, so the convergence gates genuinely exercise
+    // value-restoring undo (a randomly-generated undo almost always hits
+    // TargetMissing). The overwrite keys (position 400) are disjoint from the
+    // random-edit keys below, so the undo's verdict — restore vs. superseded —
+    // stays a pure function of this deterministic seed.
+    let region = base.canvas.regions[0].id;
+    let instrument = base.instruments[0].id;
+    let far = MusicalPosition(RationalTime::from_int(400));
+    let undo_tx = TransactionId::new(OBJ_REPLICA, 7001);
+    session.author(
+        rng,
+        0,
+        OperationPayload::Primitive(OperationKind::CreateStaff(CreateStaffOp {
+            staff: valuegen::staff(StaffId::new(OBJ_REPLICA, 7000), instrument),
+        })),
+    );
+    session.author_tx(
+        rng,
+        0,
+        Some(undo_tx),
+        OperationPayload::Primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: undo_tx,
+            label: String::from("tx-then-undo flow"),
+            category: Some(TransactionCategory::Layout),
+        })),
+    );
+    for kind in [
+        OperationKind::RespellPitch(RespellPitchOp {
+            pitch: obj_pitch(0),
+            spelling: valuegen::spelling(6),
+        }),
+        OperationKind::SetTimeSignature(SetTimeSignatureOp {
+            region,
+            anchor: valuegen::region_start_anchor(region, far.clone()),
+            time_signature: Some(valuegen::time_signature(
+                TimeSignatureId::new(OBJ_REPLICA, 7002),
+                5,
+            )),
+        }),
+        OperationKind::SetTempoSegment(SetTempoSegmentOp {
+            region: None,
+            start: valuegen::region_start_anchor(region, far.clone()),
+            segment: Some(valuegen::tempo_segment(region, far.clone(), 132.0)),
+        }),
+        OperationKind::SetStaffLayout(SetStaffLayoutOp {
+            staff_instance: targets[0].0,
+            instrument_override: None,
+            staff_lines_override: None,
+            visible: false,
+        }),
+    ] {
+        session.author_tx(rng, 0, Some(undo_tx), OperationPayload::Primitive(kind));
+    }
+    let policy = if rng.boolean() {
+        UndoPolicy::StrictInverse
+    } else {
+        UndoPolicy::BestEffort
+    };
+    session.author(
+        rng,
+        0,
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: undo_tx,
+            policy,
+        }),
+    );
+
     for _ in 0..80 {
         let r = rng.below(2) as usize;
-        // Mix the original edit kinds with the Group-1/2 (M2) ops so the real-Score
-        // gate exercises their *graph* materialization (reduce_onto +
+        // Mix the original edit kinds with the Group-1/2 (M2) ops — and the
+        // Phase-3 meter/tempo/layout overwrites — so the real-Score gate
+        // exercises their *graph* materialization (reduce_onto +
         // check_invariants), not just the bookkeeping projection. Each targets a
-        // live object minted by the phases above.
-        let kind = match rng.below(9) {
+        // live object minted by the phases above (or the base region).
+        let kind = match rng.below(12) {
             0 => OperationKind::DeleteEvent(DeleteEventOp {
                 event: obj_event(rng.below(total)),
                 tuplet_compensation: TupletCompensation::NotInTuplet,
@@ -1181,7 +1313,7 @@ pub fn graph_edit_session(
             7 => OperationKind::DeleteCrossCutting(DeleteCrossCuttingOp {
                 structure: TypedObjectId::Slur(SlurId::new(OBJ_REPLICA, rng.below(n_slurs))),
             }),
-            _ => {
+            8 => {
                 let k = rng.below(n_slurs);
                 OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
                     // Re-point the slur's end to another even (replica-0) event.
@@ -1192,6 +1324,44 @@ pub fn graph_edit_session(
                     )),
                 })
             }
+            // Phase-3 tranche: meter / tempo / layout overwrites on the base
+            // region, keyed away from the tx-then-undo flow's key (400). The
+            // signature value derives from its id so an id re-carry is
+            // byte-identical (mint idempotence) while distinct ids differ.
+            9 => {
+                let signature = rng.below(2);
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region,
+                    anchor: valuegen::region_start_anchor(
+                        region,
+                        MusicalPosition(RationalTime::from_int(rng.below(3) as i32 * 8 + 200)),
+                    ),
+                    time_signature: rng.boolean().then(|| {
+                        valuegen::time_signature(
+                            TimeSignatureId::new(OBJ_REPLICA, 7100 + signature),
+                            signature as u16 + 3,
+                        )
+                    }),
+                })
+            }
+            10 => {
+                let at = MusicalPosition(RationalTime::from_int(rng.below(3) as i32 * 8 + 200));
+                OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                    region: rng.boolean().then_some(region),
+                    start: valuegen::region_start_anchor(region, at.clone()),
+                    segment: rng.boolean().then(|| {
+                        valuegen::tempo_segment(region, at, 60.0 + rng.below(4) as f64 * 20.0)
+                    }),
+                })
+            }
+            _ => OperationKind::SetStaffLayout(SetStaffLayoutOp {
+                staff_instance: targets[rng.below(targets.len() as u64) as usize].0,
+                instrument_override: None,
+                staff_lines_override: rng
+                    .boolean()
+                    .then(epiphany_core::StaffLineConfiguration::default),
+                visible: rng.boolean(),
+            }),
         };
         session.author(rng, r, OperationPayload::Primitive(kind));
     }

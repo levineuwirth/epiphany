@@ -92,6 +92,11 @@ pub enum V0OperationKind {
     SetMetadata(crate::payload::SetMetadataOp),
     SetMetricGrid(crate::payload::SetMetricGridOp),
     SetUserPageBreak(crate::payload::SetUserPageBreakOp),
+    // Phase-3 first tranche — also v1-native; round-trip by identity.
+    CreateStaff(crate::payload::CreateStaffOp),
+    SetTimeSignature(crate::payload::SetTimeSignatureOp),
+    SetTempoSegment(crate::payload::SetTempoSegmentOp),
+    SetStaffLayout(crate::payload::SetStaffLayoutOp),
 }
 
 /// v0 `InsertEvent`: the event was a bare [`EventId`] plus the reduction-relevant

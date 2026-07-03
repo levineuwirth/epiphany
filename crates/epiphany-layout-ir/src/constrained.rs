@@ -106,6 +106,12 @@ pub struct ConstrainedLayoutIR {
     pub strokes: Vec<Stroke>,
     pub vertical_bands: Vec<VerticalBand>,
     pub constraints: Vec<LayoutConstraint>,
+    /// The user-override attributions behind the projected break constraints in
+    /// `constraints` (one entry per break constraint that originated in a user
+    /// break override), so a casting-off solver can cite the override id in the
+    /// decision it records. Engraver-independent constraints (tests, tools) have
+    /// no entry here and are attributed `DecisionSource::Automatic`.
+    pub break_origins: Vec<BreakOrigin>,
     pub engraving_decisions: Vec<EngravingDecision>,
     /// Engraving-coverage gaps surfaced rather than hidden: a pitch with no
     /// resolved spelling, a glyph the bundled metrics do not carry. Not a hard
@@ -174,6 +180,29 @@ pub enum Axis {
 pub enum BreakKind {
     Hard,
     Soft,
+}
+
+/// Which break-constraint family a [`BreakOrigin`] attributes: a
+/// [`LayoutConstraint::SystemBreakAt`] or a [`LayoutConstraint::PageBreakAt`].
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum BreakClass {
+    System,
+    Page,
+}
+
+/// The user-override origin of a projected break constraint (Chapter 7
+/// §"Engraving Overrides"): the spring slot the override's anchor realized to,
+/// which break family it projected into, and the override id. The
+/// [`LayoutConstraint`] enum is the spec's normative shape and carries no
+/// origin, so the projection records the attribution alongside the constraint
+/// list; a casting-off solver that honours the break cites this id in its
+/// engraving-decision record (`DecisionSource::UserOverride`, Chapter 7
+/// §"Note Layout"). Non-canonical, like every constrained-stage value.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct BreakOrigin {
+    pub slot: SpringSlotId,
+    pub class: BreakClass,
+    pub override_id: crate::engraving::EngravingOverrideId,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -497,14 +526,18 @@ const TIME_SIG_X: f32 = 0.5; // a time signature sits this far right of its barl
 const TIME_DIGIT_X: f32 = 0.8; // x advance per time-signature digit
 
 /// The horizontal half-reach of an emitted `PositionWithin` region, in staff
-/// spaces. v0 performs no casting-off, so a region imposes no *horizontal*
-/// bound on its glyphs — a conformant solver may re-space columns freely along
-/// the open canvas. The containment obligation v0 can honestly state is the
-/// **vertical** envelope (which the spacing pass computes from the very glyph
-/// geometry the solvers preserve), so the emitted rect pins that envelope and
-/// leaves the horizontal span at canvas scale: wide enough for any plausible
-/// re-spacing, finite because the validator rejects non-finite constraint
-/// regions.
+/// spaces. The constrained stage performs no casting-off, so a region imposes
+/// no *horizontal* bound on its glyphs — a conformant solver may re-space
+/// columns freely along the open canvas. The containment obligation this stage
+/// can honestly state is the **vertical** envelope (which the spacing pass
+/// computes from the very glyph geometry it emits), so the emitted rect pins
+/// that envelope and leaves the horizontal span at canvas scale: wide enough
+/// for any plausible re-spacing, finite because the validator rejects
+/// non-finite constraint regions. Geometric constraints are expressed — and
+/// evaluated — in *this stage's frame*: a casting-off solver that relocates
+/// whole systems (a per-system rigid motion) evaluates them against its
+/// pre-casting spaced geometry, where the obligation is meaningful (see
+/// `epiphany-engrave`).
 const POSITION_WITHIN_X_REACH: f32 = 1.0e6;
 
 /// The registry id for the engraver's **structural-line synthesis** (staff
@@ -583,6 +616,7 @@ pub fn try_to_constrained(
     let mut vertical_bands = Vec::new();
     let mut horizontal_slots = Vec::new();
     let mut constraints = Vec::new();
+    let mut break_origins = Vec::new();
     let mut constrained_regions = Vec::new();
     // Regions tile left-to-right; this advances by each region's width so all
     // coordinates stay globally monotonic (the solver's coordinate remap relies
@@ -1348,6 +1382,17 @@ pub fn try_to_constrained(
             } else {
                 LayoutConstraint::PageBreakAt { slot, kind }
             });
+            // Record the attribution so the casting-off solver's decision can
+            // cite the user override that asked for this break.
+            break_origins.push(BreakOrigin {
+                slot,
+                class: if system {
+                    BreakClass::System
+                } else {
+                    BreakClass::Page
+                },
+                override_id: override_record.id,
+            });
         }
 
         // A staff band per manifested staff that carries glyphs, in first-glyph
@@ -1398,6 +1443,7 @@ pub fn try_to_constrained(
         strokes,
         vertical_bands,
         constraints,
+        break_origins,
         engraving_decisions: logical.engraving_decisions.clone(),
         diagnostics,
         catalog,

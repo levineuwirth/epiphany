@@ -783,3 +783,136 @@ equivocation fuzz plus the unchanged `run_equivocation_fuzz` gate this).
   ~87K env/s at 1K / 10K / 50K — the 50K row cleared its budget by ~8.7x,
   the gate printed its XPASS promotion notice, and the row was flipped to
   `Pass` in the same change (see `epiphany-testkit/DECISIONS.md` F1).
+
+## Phase-3 first tranche: staff/meter/tempo/layout ops + value-restoring undo (2026-07)
+
+The ratified catalog text (operation_catalog §CreateStaff, §"Meter and Tempo
+Overwrites", §SetStaffLayout, and the **rewritten** §UndoTransaction) is the
+contract for this tranche. Wire facts are strictly additive:
+`OperationKind` discriminants `CreateStaff = 24`, `SetTimeSignature = 25`,
+`SetTempoSegment = 26`, `SetStaffLayout = 27`; `OperationKindTag`
+discriminants `InsertStaff = 24` (Create→Insert tag naming, cf.
+`InsertRegion`), `SetTimeSignature = 25`, `SetTempoSegment = 26`,
+`SetStaffLayout = 27`; `PreconditionFailureReason::TempoMapMalformed = 11`.
+No other discriminant table changed. Decisions the catalog left to the
+implementation:
+
+- **The differing-value re-create / re-carry precondition reason is
+  `TargetMissing`.** §CreateStaff makes a byte-identical re-create idempotent
+  (`AlreadyApplied`) and a differing value under a live id "a precondition
+  no-op", without naming a reason; the reducer reuses `TargetMissing` (the
+  generic dangling/unusable-target reason `ModifyCrossCutting`'s malformed
+  branch already uses) rather than minting a new discriminant. The same
+  discipline (and reason) applies to the `TimeSignature` value a
+  `SetTimeSignature` carries. A tombstoned id refuses as `TargetTombstoned`.
+- **Tempo-map well-formedness is checked against the chain state, under the
+  coarse resolved-position key.** The resulting-map precondition
+  (`TempoMapMalformed`) evaluates the scope's prospective segment list built
+  from the tempo write chains (base-seeded under `reduce_onto`), ordered by
+  the same `resolved_anchor_position` key the LWW slot uses: carried-start /
+  key agreement, per-shape end data (a non-constant shape needs `end` +
+  `end_tempo`; a constant `end_tempo` must equal `start_tempo` — the graph
+  invariant checker's rules), resolved ends ≥ their start and ≤ the next
+  key. Removals cannot malform a map (the gap rule holds the prior tempo) and
+  always apply.
+- **Graph normalization on removal.** A meter removal that empties a grid the
+  meter writes themselves created normalizes the region's
+  `default_metric_grid` back to `None` (unless a whole-grid write or the base
+  holds a grid independently); a tempo-segment removal that leaves a region's
+  local map empty and `initial`-less normalizes `local_tempo_map` to `None`
+  (an empty local map would *shadow* the score map rather than fall back to
+  it). Both keep "create on set" and "remove last" inverses of each other.
+- **`CreateStaffInstance` now preconditions a live staff — graph-aware only.**
+  §CreateStaff makes the check normative now that staves are mintable; like
+  the insert preconditions, it is enforced when a graph is present (base-free
+  reduction has no staff universe), which keeps every existing seeded-base
+  scenario vacuously green. `CreateStaff`'s own instrument/group resolution
+  preconditions are graph-aware for the same reason.
+
+### Value-restoring undo: the write-chain design
+
+Every LWW overwrite family now maintains, per key, the **canonical-order write
+chain** `WriteChain<V> { base: Option<V>, writes: Vec<(op, tx, value)> }`
+(replacing the former `last_*` last-writer maps; each chain's last write is
+still the LWW concurrent-differing comparison point). Families: event modify,
+identified-pitch modify, respell, cross-cutting modify, metadata, metric grid,
+meter change (new), tempo segment (new), staff layout (new), and the user
+system/page breaks. The reducer applies operations in canonical order, so
+appends are inherently canonical and every verdict below is
+permutation-invariant by construction (pinned by
+`undo_restoration_is_permutation_invariant` and the convergence gates).
+
+- **Seeding.** `seed_from_graph` seeds each chain's `base` with the base-graph
+  value (events, pitch values, cross-cutting values, metadata, grids, meter
+  changes, tempo segments, staff-instance layout fields, break anchors, and
+  explicit user-chosen per-pitch spelling attachments). Mints seed the chains
+  they create state for (`InsertEvent` → event + pitch chains,
+  `InsertIdentifiedPitch` → pitch chain, `CreateCrossCutting` → structure
+  chain, `CreateRegion` → grid/meter/break/tempo chains from the carried
+  content, `CreateStaffInstance` → layout chain), so a chain-predecessor is
+  defined identically under `reduce()` and `reduce_onto()` for op-minted
+  objects. Only base objects in base-free reduction lack seeds — the
+  established API-divergence caveat (see M2d) applies unchanged.
+- **Undo verdict per written key** (`WriteChain::undo_verdict`): if the target
+  transaction's write is still the key's last, restore the chain-predecessor —
+  the latest non-member write, else the base value, else *absence*; if a later
+  writer superseded it, `StrictInverse` refuses the **whole** undo with a
+  `TransactionConflict` (`caused_by` = undo + the canonically-first
+  superseding writer) while `BestEffort` restores the still-last keys and
+  skips the superseded. Keys whose owning object is tombstoned — or is itself
+  one of the transaction's mints, about to be tombstoned by the same undo —
+  are skipped entirely (no live slot to restore; not a conflict).
+- **Absence semantics per key.** Optional slots restore literal absence: the
+  grid clears, the meter change / tempo segment / break is removed (with the
+  normalizations above). The canonical bookkeeping maps (`spellings`,
+  `breaks`, `page_breaks`) return to **key-absence** whenever the predecessor
+  is the *base* value — base state lives in the graph, not the operational
+  ledger — while the graph restores the base value (spelling attachment,
+  break anchor). Always-valued families (event, pitch, cross-cutting,
+  metadata, staff layout) with no known predecessor (reachable only base-free,
+  for pre-horizon objects) restore nothing — a bookkeeping-only outcome.
+- **Effects.** A fully clean compensation is `Applied`; `AppliedWithRepair`
+  carries **only** the minted-object tombstone repairs (`CascadeDeleted`), per
+  the catalog — restorations add no repair vocabulary. A transaction that
+  minted nothing and wrote nothing this reduction knows of stays the
+  `TargetMissing` no-op (the pre-tranche behavior); a transaction that *did*
+  write chains is now genuinely undoable — the sanctioned semantic change to
+  previously-TargetMissing overwrite-transaction undos.
+- **Mixed transactions** compose both passes; `StrictInverse` refuses the
+  whole undo if *either* part fails (a tombstoned mint keeps the pre-existing
+  `TombstonedTarget` conflict; a superseded key raises the
+  `TransactionConflict` above), and the refusal applies nothing. Two new
+  strand guards protect the mint pass: a minted `Staff` still manifested by a
+  live non-member instance, and a minted `TimeSignature` still referenced by
+  a meter change that survives the restoration pass, refuse under
+  `StrictInverse` (a `TransactionConflict` naming the blocked object and its
+  referencer — reusing ratified conflict vocabulary rather than minting a new
+  kind; a dedicated "stranded reference" kind is a Pass-12 question) and are
+  skipped (left live) under `BestEffort`.
+- **Undo-of-undo (pinned).** A restoration that restores a *value* enters the
+  key's chain as a new write by the undo operation. Consequences, both
+  pinned by tests: (i) undoing the first undo's own enclosing transaction
+  restores the value the first undo removed
+  (`undo_of_undo_restores_the_pre_undo_value`); (ii) a *second* undo of the
+  same target transaction finds the key superseded by the first undo —
+  `Conflicted` under `StrictInverse`, skipped under `BestEffort`
+  (`a_second_undo_of_the_same_transaction_sees_the_first_as_superseding`).
+  An *absence* restoration is not representable as a chain write and leaves
+  the chain unchanged, so repeating it is idempotent — the one asymmetry,
+  accepted until a chain-native absence entry is worth its weight.
+- **Deferred residue** (unchanged from the catalog's "Still deferred"):
+  delete resurrection (P11-C8), `Transpose` inversion (P12-K2) — so a
+  transpose between a write and its undo is *not* re-applied on top of the
+  restored value (the chain predecessor wins; transpose composition is not a
+  chain write) — and `Cascade`'s dependent closure (`Cascade` remains
+  `StrictInverse` over the same set).
+
+Proposed Pass-12 rows from this tranche: (1) the `TargetMissing` reuse for
+differing-value re-creates/re-carries (vs. a dedicated reason discriminant);
+(2) a conflict-kind vocabulary for undo strand-blocks (live-reference
+tombstone refusal) instead of `TransactionConflict` reuse; (3) whether an
+undo's chain write should carry a distinguished provenance so a second undo
+of the same transaction could be defined as idempotent rather than
+conflicting; (4) P12-C5 stands as filed (the decomposition pre-pass still
+honors only the first governing meter — the reduction semantics are pinned
+here and tested under `a_mid_region_meter_change_reduces_cleanly_p12_c5`).

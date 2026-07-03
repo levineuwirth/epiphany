@@ -288,6 +288,74 @@ pub fn metric_grid() -> epiphany_core::MetricGrid {
     }
 }
 
+/// A minimal global [`Staff`](epiphany_core::Staff) (Phase-3 tranche) — the
+/// value a `CreateStaff` mints: a five-line staff named for its counter,
+/// referencing `instrument`, with no abbreviation or group.
+pub fn staff(id: StaffId, instrument: epiphany_core::InstrumentId) -> epiphany_core::Staff {
+    epiphany_core::Staff {
+        id,
+        name: format!("staff-{}", id.counter()),
+        abbreviation: None,
+        instrument,
+        default_staff_lines: epiphany_core::StaffLineConfiguration::default(),
+        group: None,
+    }
+}
+
+/// A well-formed `numerator`/4 [`TimeSignature`](epiphany_core::TimeSignature)
+/// (Phase-3 tranche): `numerator` quarter-note beat groups summing exactly to
+/// the measure duration, so [`epiphany_core::TimeSignature::new`]'s beat-group
+/// invariant holds by construction. Distinct numerators give distinct values,
+/// letting a harness drive the set-union mint's identical/differing re-carry
+/// branches deterministically.
+pub fn time_signature(
+    id: epiphany_core::TimeSignatureId,
+    numerator: u16,
+) -> epiphany_core::TimeSignature {
+    let numerator = numerator.max(1);
+    let quarter = MusicalDuration(epiphany_core::RationalTime::new(1, 4).expect("1/4 is valid"));
+    let measure = MusicalDuration(
+        epiphany_core::RationalTime::new(numerator as i64, 4).expect("n/4 is valid"),
+    );
+    let beat_groups = (0..numerator)
+        .map(|i| epiphany_core::BeatGroup {
+            duration: quarter.clone(),
+            subdivision: None,
+            accent: u8::from(i == 0),
+        })
+        .collect();
+    epiphany_core::TimeSignature::new(
+        id,
+        epiphany_core::TimeSignatureDisplay::Standard {
+            numerator,
+            denominator: epiphany_core::PowerOfTwo::new(4).expect("4 is a power of two"),
+        },
+        measure,
+        beat_groups,
+    )
+    .expect("beat groups sum to the measure duration by construction")
+}
+
+/// A constant [`TempoSegment`](epiphany_core::TempoSegment) (Phase-3 tranche)
+/// starting at the given region-relative musical position, open-ended, at
+/// `bpm` quarter-note beats per minute. Its start anchor resolves (under the
+/// operation layer's coarse anchor resolution) to exactly `start`, so it
+/// satisfies `SetTempoSegment`'s start-key agreement precondition when keyed
+/// by the same anchor.
+pub fn tempo_segment(
+    region: RegionId,
+    start: MusicalPosition,
+    bpm: f64,
+) -> epiphany_core::TempoSegment {
+    epiphany_core::TempoSegment {
+        start: region_start_anchor(region, start),
+        end: None,
+        start_tempo: epiphany_core::Tempo::quarter(bpm).expect("positive finite bpm"),
+        end_tempo: None,
+        shape: epiphany_core::TempoShape::Constant,
+    }
+}
+
 /// An explicit, user-chosen per-pitch [`SpellingAttachment`] — the engraved-layer
 /// spelling a materialized score carries after a `RespellPitch`. The v0 → v1
 /// migration recovers a respell's spelling from exactly these attachments

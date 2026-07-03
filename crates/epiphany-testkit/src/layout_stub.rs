@@ -372,6 +372,7 @@ pub fn gen_constrained_layout_ir(rng: &mut Rng) -> ConstrainedLayoutIR {
             .collect(),
         vertical_bands: vec![band],
         constraints: vec![],
+        break_origins: vec![],
         engraving_decisions: (0..decisions)
             .map(|_| gen_engraving_decision(rng))
             .collect(),

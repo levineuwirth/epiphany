@@ -5713,10 +5713,16 @@ pub enum OperationKind {
     DeleteRegion(DeleteRegionOp),
     InsertStaffInstance(InsertStaffInstanceOp),
     DeleteStaffInstance(DeleteStaffInstanceOp),
+    InsertStaff(InsertStaffOp),
+
+    // Metric-model operations
+    SetTimeSignature(SetTimeSignatureOp),
+    SetTempoSegment(SetTempoSegmentOp),
 
     // Layout-semantic operations
     SetUserSystemBreak(SetUserSystemBreakOp),
     SetUserPageBreak(SetUserPageBreakOp),
+    SetStaffLayout(SetStaffLayoutOp),
 
     // Transaction declaration. Carries metadata; member primitives
     // reference the transaction by id in their envelopes.
@@ -14552,6 +14558,25 @@ layouts they own versus inherit:
   \texttt{Internal} origin pending P11-C8 authorship surfacing),
   closing the representational gap that blocked the logical-stage
   override projection §Engraving Overrides requires.
+  \\
+  \today & Phase-3 first tranche (casting-off + catalog) &
+  Companion movements, no core-spec byte or architecture change. The
+  Operation Catalog (0.4.0 $\rightarrow$ 0.5.0) gains the Phase-3
+  schema-fill tranche --- \texttt{CreateStaff} (set-union global-staff
+  mint, plus a staff-liveness precondition on
+  \texttt{CreateStaffInstance}), \texttt{SetTimeSignature} and
+  \texttt{SetTempoSegment} (LWW structural overwrites beneath the
+  whole-grid \texttt{SetMetricGrid}), \texttt{SetStaffLayout} (LWW
+  advisory) --- and a rewritten \sectionsc{UndoTransaction}:
+  \texttt{StrictInverse}/\texttt{BestEffort} now perform
+  \emph{value restoration} for overwrite primitives via
+  canonical-order write chains (delete resurrection, Transpose
+  inversion, and Cascade closure stay deferred, P11-C8 narrowed).
+  The Binary Format companion (0.1.0 $\rightarrow$ 0.2.0) appends
+  the corresponding wire discriminants. This document's
+  \texttt{OperationKind} listing gains the four kinds. The create
+  score/canvas slots remain deliberately unavailable pending an
+  addressable root model (P12-K8).
   \\
   \bottomrule
 \end{longtable}

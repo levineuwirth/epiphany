@@ -33,11 +33,13 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use epiphany_core::{
     canonical_pitch_bytes, derive_promoted_voice_id, AnchorOffset, AnnotationAnchor,
-    CanonicalValue, Event, EventDuration, EventId, EventPosition, GestureAnchoring, MetricGrid,
-    MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId, PitchSpelling, RationalTime,
-    RegionEdge, RegionId, RegionTimeModel, ReplicaId, Score, SpellingAttachment, SpellingDirective,
-    SpellingScope, SpellingSource, StaffId, StaffInstance, StaffInstanceId, TimeAnchor,
-    TransactionId, TypedObjectId, Voice, VoiceId, VoiceOrigin,
+    CanonicalValue, Event, EventDuration, EventId, EventPosition, GestureAnchoring, InstrumentId,
+    MeterChange, MetricGrid, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId,
+    PitchSpelling, RationalTime, RegionEdge, RegionId, RegionTimeModel, ReplicaId, Score,
+    ScoreMetadata, SpellingAttachment, SpellingDirective, SpellingScope, SpellingSource, Staff,
+    StaffId, StaffInstance, StaffInstanceId, StaffLineConfiguration, TempoMap, TempoSegment,
+    TempoShape, TimeAnchor, TimeSignature, TimeSignatureId, TransactionId, TypedObjectId, Voice,
+    VoiceId, VoiceOrigin,
 };
 use epiphany_determinism::CanonicalEncode;
 
@@ -53,11 +55,12 @@ use crate::encode::{push_canon, push_len, push_lp_bytes, push_u8_bool};
 use crate::envelope::OperationEnvelope;
 use crate::opset::OperationSet;
 use crate::payload::{
-    CreateCrossCuttingOp, CreateRegionOp, CreateStaffInstanceOp, CreateVoiceOp, CrossCuttingValue,
-    DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
-    DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
-    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationPayload,
-    RespellPitchOp, SetMetadataOp, SetMetricGridOp, SetUserPageBreakOp, TransposeOp,
+    resolved_anchor_position, CreateCrossCuttingOp, CreateRegionOp, CreateStaffInstanceOp,
+    CreateStaffOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp,
+    DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
+    InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
+    OperationKind, OperationPayload, RespellPitchOp, SetMetadataOp, SetMetricGridOp,
+    SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp, SetUserPageBreakOp, TransposeOp,
     TupletCompensation,
 };
 use crate::stamp::StampTuple;
@@ -618,6 +621,220 @@ pub fn reduce_operation_set_onto(op_set: &OperationSet, base: &Score) -> GraphMa
     }
 }
 
+/// One write in a per-key canonical-order write chain (operation_catalog
+/// §UndoTransaction, "Value restoration"): the writer, the transaction it was a
+/// member of (if any), and the value it wrote.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct ChainWrite<V> {
+    op: OperationId,
+    tx: Option<TransactionId>,
+    value: V,
+}
+
+/// The canonical-order write chain of one LWW-overwritten key (operation_catalog
+/// §UndoTransaction). `base` is the key's pre-operational value — seeded from
+/// the base graph (`seed_from_graph`) or from the value a mint carried — so a
+/// chain-predecessor is defined for keys that exist before the first overwrite;
+/// a key with no base entry restores to *absence*. `writes` append in canonical
+/// processing order (the reducer applies operations in canonical order, so
+/// appends are inherently canonical and the chain is permutation-invariant).
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct WriteChain<V> {
+    base: Option<V>,
+    writes: Vec<ChainWrite<V>>,
+}
+
+impl<V: Clone> WriteChain<V> {
+    fn new() -> Self {
+        WriteChain {
+            base: None,
+            writes: Vec::new(),
+        }
+    }
+
+    /// Seeds the base value only if the chain has neither a base nor writes
+    /// (idempotent seeding; a mint never clobbers recorded history).
+    fn seed(&mut self, base: V) {
+        if self.base.is_none() && self.writes.is_empty() {
+            self.base = Some(base);
+        }
+    }
+
+    /// Appends a write in canonical processing order.
+    fn record(&mut self, op: OperationId, tx: Option<TransactionId>, value: V) {
+        self.writes.push(ChainWrite { op, tx, value });
+    }
+
+    /// The most recent write, if any (the LWW concurrency comparison point;
+    /// the base entry never participates in conflict detection).
+    fn last_write(&self) -> Option<&ChainWrite<V>> {
+        self.writes.last()
+    }
+
+    /// The key's current resolved value: the last write, falling back to the
+    /// base entry.
+    fn current(&self) -> Option<&V> {
+        self.last_write()
+            .map(|write| &write.value)
+            .or(self.base.as_ref())
+    }
+
+    /// The undo verdict for transaction `tx` on this key (operation_catalog
+    /// §UndoTransaction, "Value restoration").
+    fn undo_verdict(&self, tx: TransactionId) -> ChainUndoVerdict<V> {
+        if !self.writes.iter().any(|w| w.tx == Some(tx)) {
+            return ChainUndoVerdict::NotWritten;
+        }
+        let last = self.writes.last().expect("chain has a write by `tx`");
+        if last.tx != Some(tx) {
+            return ChainUndoVerdict::Superseded { by: last.op };
+        }
+        // Chain-predecessor: the latest entry not written by the transaction,
+        // falling back to the base value, else absence.
+        let predecessor = self
+            .writes
+            .iter()
+            .rev()
+            .find(|w| w.tx != Some(tx))
+            .map(|w| Predecessor::Write(w.value.clone()))
+            .or_else(|| self.base.clone().map(Predecessor::Base));
+        ChainUndoVerdict::Restore(predecessor)
+    }
+}
+
+/// The chain-predecessor an undo restores: a prior operational write, or the
+/// key's base (pre-operational) value. The distinction matters for the
+/// canonical bookkeeping maps (`spellings`, `breaks`, `page_breaks`), which
+/// return to key-*absence* when the predecessor is the base value — the base
+/// state lives in the graph, not in the operational ledger.
+#[derive(Clone, Debug)]
+enum Predecessor<V> {
+    Write(V),
+    Base(V),
+}
+
+impl<V> Predecessor<V> {
+    fn into_value(self) -> V {
+        match self {
+            Predecessor::Write(v) | Predecessor::Base(v) => v,
+        }
+    }
+}
+
+/// The per-key outcome of undoing a transaction's write chain.
+enum ChainUndoVerdict<V> {
+    /// The transaction never wrote this key.
+    NotWritten,
+    /// The transaction wrote the key but a later write superseded it.
+    Superseded { by: OperationId },
+    /// The transaction's write is still last: restore the chain-predecessor
+    /// (`None` = the transaction introduced the first value; restore absence).
+    Restore(Option<Predecessor<V>>),
+}
+
+/// The staff-instance layout advisories `SetStaffLayout` overwrites as a unit
+/// (operation_catalog §SetStaffLayout).
+type StaffLayoutValue = (Option<InstrumentId>, Option<StaffLineConfiguration>, bool);
+
+/// One key restoration a value-restoring undo applies (operation_catalog
+/// §UndoTransaction "Value restoration"). For the always-valued families
+/// (event, pitch, cross-cutting, metadata, staff layout) `None` means the
+/// chain knows no predecessor (an object minted before this reduction's
+/// horizon, reachable only base-free): the undo verdict stands but there is no
+/// value to write back — a bookkeeping-only restoration. For the optional
+/// families (grid, meter change, tempo segment) the flattened `None` *is* the
+/// restoration: clear/remove at the key. The canonical bookkeeping families
+/// (spelling, breaks) keep the [`Predecessor`] distinction: a base predecessor
+/// returns the ledger map to key-absence while the graph restores the base
+/// value.
+enum ValueRestoration {
+    Event {
+        event: EventId,
+        value: Option<Event>,
+    },
+    Pitch {
+        pitch: PitchId,
+        value: Option<Pitch>,
+    },
+    Spelling {
+        pitch: PitchId,
+        predecessor: Option<Predecessor<PitchSpelling>>,
+    },
+    CrossCutting {
+        id: TypedObjectId,
+        value: Option<CrossCuttingValue>,
+    },
+    Metadata {
+        value: Option<ScoreMetadata>,
+    },
+    MetricGrid {
+        region: RegionId,
+        value: Option<MetricGrid>,
+    },
+    MeterChange {
+        region: RegionId,
+        position: MusicalPosition,
+        value: Option<MeterChange>,
+    },
+    TempoSegment {
+        region: Option<RegionId>,
+        position: MusicalPosition,
+        value: Option<TempoSegment>,
+    },
+    StaffLayout {
+        instance: StaffInstanceId,
+        value: Option<StaffLayoutValue>,
+    },
+    SystemBreak {
+        region: RegionId,
+        position: MusicalPosition,
+        predecessor: Option<Predecessor<(TimeAnchor, bool)>>,
+    },
+    PageBreak {
+        region: RegionId,
+        position: MusicalPosition,
+        predecessor: Option<Predecessor<(TimeAnchor, bool)>>,
+    },
+}
+
+/// Whether a tempo segment's shape carries the end data it requires
+/// (operation_catalog §"Meter and Tempo Overwrites"): a non-constant shape
+/// needs both an explicit `end` and an `end_tempo`; a constant segment's
+/// `end_tempo`, when present, must equal its `start_tempo` (the same structural
+/// rules the graph-invariant checker applies to tempo maps).
+fn tempo_segment_shape_well_formed(segment: &TempoSegment) -> bool {
+    match segment.shape {
+        TempoShape::Constant => segment
+            .end_tempo
+            .as_ref()
+            .map_or(true, |end| end == &segment.start_tempo),
+        TempoShape::Linear | TempoShape::Exponential | TempoShape::Curve => {
+            segment.end_tempo.is_some() && segment.end.is_some()
+        }
+    }
+}
+
+/// Replaces (or removes, for `None`) the segment at `position` in `map`,
+/// keeping the segment list ordered by resolved start position — the same
+/// coarse anchor resolution the LWW key uses, so one resolved position holds
+/// exactly one segment.
+fn edit_tempo_map_segments(
+    map: &mut TempoMap,
+    position: &MusicalPosition,
+    segment: &Option<TempoSegment>,
+) {
+    map.segments
+        .retain(|existing| resolved_anchor_position(&existing.start) != *position);
+    if let Some(segment) = segment {
+        let index = map
+            .segments
+            .iter()
+            .position(|existing| resolved_anchor_position(&existing.start) > *position)
+            .unwrap_or(map.segments.len());
+        map.segments.insert(index, segment.clone());
+    }
+}
+
 /// The working state of one reduction pass.
 struct Reducer<'a> {
     op_set: &'a OperationSet,
@@ -633,20 +850,33 @@ struct Reducer<'a> {
     minted_by: BTreeMap<TypedObjectId, OperationId>,
     event_pitches: BTreeMap<EventId, Vec<PitchId>>,
     voice_occupancy: BTreeMap<VoiceId, Vec<(MusicalPosition, MusicalDuration, EventId)>>,
-    last_respell: BTreeMap<PitchId, OperationId>,
-    // LWW working state for the Group-1 field-overwrite ops: the last modifier
-    // and the value it wrote, used to detect concurrent *differing* modifications
-    // (the resolved value itself lives in the graph, not in MaterializedState).
-    last_event_modify: BTreeMap<EventId, (OperationId, Event)>,
-    last_pitch_modify: BTreeMap<PitchId, (OperationId, Pitch)>,
-    // LWW working state for ModifyCrossCutting (Group 2), mirroring the leaf-field
-    // modify maps above: last modifier + value it wrote, keyed by structure id.
-    last_cross_cutting_modify: BTreeMap<TypedObjectId, (OperationId, CrossCuttingValue)>,
-    // LWW working state for SetMetricGrid (Group 4, M2d): the last writer and the
-    // grid it wrote, used to detect concurrent *differing* grids (the resolved
-    // value lives in the graph). SetMetadata is advisory LWW — no working state,
-    // no conflict — so the latest write in canonical order silently wins.
-    last_metric_grid: BTreeMap<RegionId, (OperationId, Option<MetricGrid>)>,
+    // Per-key canonical-order write chains for every LWW overwrite family
+    // (operation_catalog §UndoTransaction "Value restoration"). Each chain's
+    // last write doubles as the LWW working state the concurrent-differing
+    // conflict detection reads (formerly the `last_*` maps); the full chain is
+    // what value-restoring undo walks. Advisory families (metadata, breaks,
+    // staff layout) keep chains for undo but record no conflicts.
+    respell_chain: BTreeMap<PitchId, WriteChain<PitchSpelling>>,
+    event_modify_chain: BTreeMap<EventId, WriteChain<Event>>,
+    pitch_modify_chain: BTreeMap<PitchId, WriteChain<Pitch>>,
+    cross_cutting_modify_chain: BTreeMap<TypedObjectId, WriteChain<CrossCuttingValue>>,
+    metric_grid_chain: BTreeMap<RegionId, WriteChain<Option<MetricGrid>>>,
+    metadata_chain: WriteChain<ScoreMetadata>,
+    break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
+    page_break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
+    // Meter/tempo overwrite chains (Phase-3 tranche): `Some` = a set/replace at
+    // the key, `None` = an explicit removal. The meter value is the graph-level
+    // `MeterChange` (anchor + signature id) so a restoration can re-install it.
+    meter_change_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<Option<MeterChange>>>,
+    tempo_segment_chain:
+        BTreeMap<(Option<RegionId>, MusicalPosition), WriteChain<Option<TempoSegment>>>,
+    staff_layout_chain: BTreeMap<StaffInstanceId, WriteChain<StaffLayoutValue>>,
+    // Carried values of set-union-minted staves and time signatures, for the
+    // byte-identical-re-carry idempotence check (operation_catalog §CreateStaff:
+    // identical re-create is idempotent; a differing value under a live id is a
+    // precondition no-op). Seeded from the base graph.
+    staff_values: BTreeMap<StaffId, Staff>,
+    time_signature_values: BTreeMap<TimeSignatureId, TimeSignature>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     // Live child sets for the structural-container empty-only delete (Group 3):
     // a region's live staff instances, and a staff instance's live voices. (A
@@ -704,11 +934,20 @@ struct WorkingSnapshot {
     minted_by: BTreeMap<TypedObjectId, OperationId>,
     event_pitches: BTreeMap<EventId, Vec<PitchId>>,
     voice_occupancy: BTreeMap<VoiceId, Vec<(MusicalPosition, MusicalDuration, EventId)>>,
-    last_respell: BTreeMap<PitchId, OperationId>,
-    last_event_modify: BTreeMap<EventId, (OperationId, Event)>,
-    last_pitch_modify: BTreeMap<PitchId, (OperationId, Pitch)>,
-    last_cross_cutting_modify: BTreeMap<TypedObjectId, (OperationId, CrossCuttingValue)>,
-    last_metric_grid: BTreeMap<RegionId, (OperationId, Option<MetricGrid>)>,
+    respell_chain: BTreeMap<PitchId, WriteChain<PitchSpelling>>,
+    event_modify_chain: BTreeMap<EventId, WriteChain<Event>>,
+    pitch_modify_chain: BTreeMap<PitchId, WriteChain<Pitch>>,
+    cross_cutting_modify_chain: BTreeMap<TypedObjectId, WriteChain<CrossCuttingValue>>,
+    metric_grid_chain: BTreeMap<RegionId, WriteChain<Option<MetricGrid>>>,
+    metadata_chain: WriteChain<ScoreMetadata>,
+    break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
+    page_break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
+    meter_change_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<Option<MeterChange>>>,
+    tempo_segment_chain:
+        BTreeMap<(Option<RegionId>, MusicalPosition), WriteChain<Option<TempoSegment>>>,
+    staff_layout_chain: BTreeMap<StaffInstanceId, WriteChain<StaffLayoutValue>>,
+    staff_values: BTreeMap<StaffId, Staff>,
+    time_signature_values: BTreeMap<TimeSignatureId, TimeSignature>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     region_instances: BTreeMap<RegionId, BTreeSet<StaffInstanceId>>,
     instance_voices: BTreeMap<StaffInstanceId, BTreeSet<VoiceId>>,
@@ -950,11 +1189,19 @@ impl<'a> Reducer<'a> {
             minted_by: BTreeMap::new(),
             event_pitches: BTreeMap::new(),
             voice_occupancy: BTreeMap::new(),
-            last_respell: BTreeMap::new(),
-            last_event_modify: BTreeMap::new(),
-            last_pitch_modify: BTreeMap::new(),
-            last_cross_cutting_modify: BTreeMap::new(),
-            last_metric_grid: BTreeMap::new(),
+            respell_chain: BTreeMap::new(),
+            event_modify_chain: BTreeMap::new(),
+            pitch_modify_chain: BTreeMap::new(),
+            cross_cutting_modify_chain: BTreeMap::new(),
+            metric_grid_chain: BTreeMap::new(),
+            metadata_chain: WriteChain::new(),
+            break_chain: BTreeMap::new(),
+            page_break_chain: BTreeMap::new(),
+            meter_change_chain: BTreeMap::new(),
+            tempo_segment_chain: BTreeMap::new(),
+            staff_layout_chain: BTreeMap::new(),
+            staff_values: BTreeMap::new(),
+            time_signature_values: BTreeMap::new(),
             structures: BTreeMap::new(),
             region_instances: BTreeMap::new(),
             instance_voices: BTreeMap::new(),
@@ -996,6 +1243,9 @@ impl<'a> Reducer<'a> {
         for staff in &score.staves {
             self.objects
                 .insert(TypedObjectId::Staff(staff.id), ObjectState::Live);
+            // The carried value backs CreateStaff's byte-identical-re-carry
+            // idempotence check against base staves.
+            self.staff_values.insert(staff.id, staff.clone());
         }
         for group in &score.staff_groups {
             self.objects
@@ -1010,6 +1260,8 @@ impl<'a> Reducer<'a> {
                 TypedObjectId::TimeSignature(signature.id),
                 ObjectState::Live,
             );
+            self.time_signature_values
+                .insert(signature.id, signature.clone());
         }
         for layer in &score.analysis_layers {
             self.objects
@@ -1020,11 +1272,54 @@ impl<'a> Reducer<'a> {
                 .insert(TypedObjectId::View(view.id), ObjectState::Live);
         }
 
+        // The score-level LWW chains seed with the base values so a
+        // value-restoring undo of the first operational write can restore the
+        // pre-operational state (operation_catalog §UndoTransaction).
+        self.metadata_chain.seed(score.metadata.clone());
+        for segment in &score.tempo_map.segments {
+            self.tempo_segment_chain
+                .entry((None, resolved_anchor_position(&segment.start)))
+                .or_insert_with(WriteChain::new)
+                .seed(Some(segment.clone()));
+        }
+
         for region in &score.canvas.regions {
             self.objects
                 .insert(TypedObjectId::Region(region.id), ObjectState::Live);
-            if region.content.staff_based().is_some() {
+            if let Some(content) = region.content.staff_based() {
                 self.staff_based_regions.insert(region.id);
+                self.metric_grid_chain
+                    .entry(region.id)
+                    .or_insert_with(WriteChain::new)
+                    .seed(content.default_metric_grid.clone());
+                if let Some(grid) = &content.default_metric_grid {
+                    for change in &grid.meter_sequence {
+                        self.meter_change_chain
+                            .entry((region.id, resolved_anchor_position(&change.anchor)))
+                            .or_insert_with(WriteChain::new)
+                            .seed(Some(change.clone()));
+                    }
+                }
+                for anchor in &content.user_system_breaks {
+                    self.break_chain
+                        .entry((region.id, resolved_anchor_position(anchor)))
+                        .or_insert_with(WriteChain::new)
+                        .seed((anchor.clone(), true));
+                }
+                for anchor in &content.user_page_breaks {
+                    self.page_break_chain
+                        .entry((region.id, resolved_anchor_position(anchor)))
+                        .or_insert_with(WriteChain::new)
+                        .seed((anchor.clone(), true));
+                }
+            }
+            if let Some(local) = &region.local_tempo_map {
+                for segment in &local.segments {
+                    self.tempo_segment_chain
+                        .entry((Some(region.id), resolved_anchor_position(&segment.start)))
+                        .or_insert_with(WriteChain::new)
+                        .seed(Some(segment.clone()));
+                }
             }
             let instance_set = self.region_instances.entry(region.id).or_default();
             for instance in region.staff_instances() {
@@ -1034,6 +1329,14 @@ impl<'a> Reducer<'a> {
                 self.objects
                     .insert(TypedObjectId::StaffInstance(instance.id), ObjectState::Live);
                 self.instance_staff.insert(instance.id, instance.staff);
+                self.staff_layout_chain
+                    .entry(instance.id)
+                    .or_insert_with(WriteChain::new)
+                    .seed((
+                        instance.instrument_override,
+                        instance.staff_lines_override.clone(),
+                        instance.visible,
+                    ));
                 let voice_set = self.instance_voices.entry(instance.id).or_default();
                 for voice in &instance.voices {
                     voice_set.insert(voice.id);
@@ -1077,6 +1380,10 @@ impl<'a> Reducer<'a> {
             let event_id = event.id();
             self.objects
                 .insert(TypedObjectId::Event(event_id), ObjectState::Live);
+            self.event_modify_chain
+                .entry(event_id)
+                .or_insert_with(WriteChain::new)
+                .seed(event.clone());
             let mut pitch_ids = Vec::new();
             let mut pitches = Vec::new();
             event.collect_identified_pitches(&mut pitches);
@@ -1084,6 +1391,10 @@ impl<'a> Reducer<'a> {
                 pitch_ids.push(pitch.id);
                 self.objects
                     .insert(TypedObjectId::Pitch(pitch.id), ObjectState::Live);
+                self.pitch_modify_chain
+                    .entry(pitch.id)
+                    .or_insert_with(WriteChain::new)
+                    .seed(pitch.pitch.clone());
                 // Register base synthetic pitches in the mint registry (same
                 // rule as promoted voices above).
                 if pitch.id.replica() == ReplicaId::SYSTEM_DERIVED {
@@ -1126,6 +1437,10 @@ impl<'a> Reducer<'a> {
         for slur in &score.cross_cutting.slurs {
             let id = TypedObjectId::Slur(slur.id);
             self.objects.insert(id, ObjectState::Live);
+            self.cross_cutting_modify_chain
+                .entry(id)
+                .or_insert_with(WriteChain::new)
+                .seed(CrossCuttingValue::Slur(slur.clone()));
             self.structures.insert(
                 id,
                 vec![
@@ -1137,6 +1452,10 @@ impl<'a> Reducer<'a> {
         for tie in &score.cross_cutting.ties {
             let id = TypedObjectId::Tie(tie.id);
             self.objects.insert(id, ObjectState::Live);
+            self.cross_cutting_modify_chain
+                .entry(id)
+                .or_insert_with(WriteChain::new)
+                .seed(CrossCuttingValue::Tie(tie.clone()));
             self.structures.insert(
                 id,
                 vec![
@@ -1148,6 +1467,10 @@ impl<'a> Reducer<'a> {
         for beam in &score.cross_cutting.beams {
             let id = TypedObjectId::Beam(beam.id);
             self.objects.insert(id, ObjectState::Live);
+            self.cross_cutting_modify_chain
+                .entry(id)
+                .or_insert_with(WriteChain::new)
+                .seed(CrossCuttingValue::Beam(beam.clone()));
             self.structures.insert(
                 id,
                 beam.events
@@ -1173,6 +1496,10 @@ impl<'a> Reducer<'a> {
         for spanner in &score.cross_cutting.spanners {
             let id = TypedObjectId::Spanner(spanner.id);
             self.objects.insert(id, ObjectState::Live);
+            self.cross_cutting_modify_chain
+                .entry(id)
+                .or_insert_with(WriteChain::new)
+                .seed(CrossCuttingValue::Spanner(spanner.clone()));
             // Record the spanner's event-anchored endpoints so a later event
             // tombstone re-anchors it through the same rule table as a created
             // spanner (keeping the graph and ledger consistent on delete).
@@ -1240,6 +1567,24 @@ impl<'a> Reducer<'a> {
         for chord in &score.cross_cutting.chord_symbols {
             self.objects
                 .insert(TypedObjectId::ChordSymbol(chord.id), ObjectState::Live);
+        }
+        // The base score's explicit user-chosen per-pitch spellings seed the
+        // respell chains, so undoing the first operational respell restores
+        // the base attachment value rather than dropping it (the bookkeeping
+        // `spellings` map still returns to key-absence — base state lives in
+        // the graph, not the operational ledger).
+        for attachment in &score.spelling_attachments {
+            if attachment.layer.is_none() && matches!(attachment.source, SpellingSource::UserChosen)
+            {
+                if let (SpellingScope::Pitch(pitch), SpellingDirective::Explicit(spelling)) =
+                    (&attachment.scope, &attachment.directive)
+                {
+                    self.respell_chain
+                        .entry(*pitch)
+                        .or_insert_with(WriteChain::new)
+                        .seed(spelling.clone());
+                }
+            }
         }
     }
 
@@ -2017,6 +2362,14 @@ impl<'a> Reducer<'a> {
                 TypedObjectId::Beam(id) => {
                     score.cross_cutting.beams.retain(|value| value.id != *id);
                 }
+                // Phase-3 mints: a tombstoned staff / time signature leaves the
+                // graph (the undo path preconditions no live reference remains).
+                TypedObjectId::Staff(id) => {
+                    score.staves.retain(|value| value.id != *id);
+                }
+                TypedObjectId::TimeSignature(id) => {
+                    score.time_signatures.retain(|value| value.id != *id);
+                }
                 _ => {}
             }
         }
@@ -2059,7 +2412,7 @@ impl<'a> Reducer<'a> {
                 OperationKind::RespellPitch(op) => self.respell_pitch(env, op),
                 OperationKind::CreateCrossCutting(op) => self.create_cross_cutting(env, op),
                 OperationKind::ChangeRegionTimeModel(op) => self.change_region_time_model(env, op),
-                OperationKind::SetUserSystemBreak(op) => self.set_user_system_break(op),
+                OperationKind::SetUserSystemBreak(op) => self.set_user_system_break(env, op),
                 OperationKind::DeclareTransaction(desc) => {
                     self.descriptors.insert(desc.id, env.id);
                     OperationEffect::Applied
@@ -2080,9 +2433,13 @@ impl<'a> Reducer<'a> {
                 OperationKind::DeleteStaffInstance(op) => self.delete_staff_instance(env, op),
                 OperationKind::CreateVoice(op) => self.create_voice(env, op),
                 OperationKind::DeleteVoice(op) => self.delete_voice(env, op),
-                OperationKind::SetMetadata(op) => self.set_metadata(op),
+                OperationKind::SetMetadata(op) => self.set_metadata(env, op),
                 OperationKind::SetMetricGrid(op) => self.set_metric_grid(env, op),
-                OperationKind::SetUserPageBreak(op) => self.set_user_page_break(op),
+                OperationKind::SetUserPageBreak(op) => self.set_user_page_break(env, op),
+                OperationKind::CreateStaff(op) => self.create_staff(env, op),
+                OperationKind::SetTimeSignature(op) => self.set_time_signature(env, op),
+                OperationKind::SetTempoSegment(op) => self.set_tempo_segment(env, op),
+                OperationKind::SetStaffLayout(op) => self.set_staff_layout(env, op),
             },
             OperationPayload::ResolveConflict(op) => self.resolve_conflict(env, op),
             OperationPayload::UndoTransaction(op) => self.undo_transaction(env, op),
@@ -2094,6 +2451,7 @@ impl<'a> Reducer<'a> {
 
     fn set_user_system_break(
         &mut self,
+        env: &OperationEnvelope,
         op: &crate::payload::SetUserSystemBreakOp,
     ) -> OperationEffect {
         if let Some(effect) = self.layout_region_slot(op.region) {
@@ -2108,8 +2466,12 @@ impl<'a> Reducer<'a> {
         }
 
         // The LWW bucketing key is the anchor's resolved musical position.
-        self.breaks
-            .insert((op.region, op.resolved_position()), op.present);
+        let key = (op.region, op.resolved_position());
+        self.breaks.insert(key.clone(), op.present);
+        self.break_chain
+            .entry(key)
+            .or_insert_with(WriteChain::new)
+            .record(env.id, env.transaction, (op.anchor.clone(), op.present));
         OperationEffect::Applied
     }
 
@@ -2146,9 +2508,12 @@ impl<'a> Reducer<'a> {
         }
     }
 
-    fn set_metadata(&mut self, op: &SetMetadataOp) -> OperationEffect {
+    fn set_metadata(&mut self, env: &OperationEnvelope, op: &SetMetadataOp) -> OperationEffect {
         // Advisory LWW: no conflict, no idempotence short-circuit. The resolved
-        // value is the last write in canonical order, held in the graph.
+        // value is the last write in canonical order, held in the graph. The
+        // write chain backs value-restoring undo only.
+        self.metadata_chain
+            .record(env.id, env.transaction, op.metadata.clone());
         if let Some(score) = self.graph.as_mut() {
             score.metadata = op.metadata.clone();
         }
@@ -2184,9 +2549,10 @@ impl<'a> Reducer<'a> {
             }
         }
         let prev = self
-            .last_metric_grid
+            .metric_grid_chain
             .get(&op.region)
-            .map(|(o, g)| (*o, g.clone()));
+            .and_then(|chain| chain.last_write())
+            .map(|write| (write.op, write.value.clone()));
         let effect = match prev {
             Some((prev_op, prev_grid)) if self.concurrent(env.id, prev_op) => {
                 if prev_grid == op.grid {
@@ -2209,8 +2575,10 @@ impl<'a> Reducer<'a> {
             }
             _ => OperationEffect::Applied,
         };
-        self.last_metric_grid
-            .insert(op.region, (env.id, op.grid.clone()));
+        self.metric_grid_chain
+            .entry(op.region)
+            .or_insert_with(WriteChain::new)
+            .record(env.id, env.transaction, op.grid.clone());
         self.graph_set_metric_grid(op.region, &op.grid);
         effect
     }
@@ -2226,7 +2594,11 @@ impl<'a> Reducer<'a> {
         }
     }
 
-    fn set_user_page_break(&mut self, op: &SetUserPageBreakOp) -> OperationEffect {
+    fn set_user_page_break(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &SetUserPageBreakOp,
+    ) -> OperationEffect {
         if let Some(effect) = self.layout_region_slot(op.region) {
             return effect;
         }
@@ -2237,8 +2609,12 @@ impl<'a> Reducer<'a> {
                 }
             }
         }
-        self.page_breaks
-            .insert((op.region, op.resolved_position()), op.present);
+        let key = (op.region, op.resolved_position());
+        self.page_breaks.insert(key.clone(), op.present);
+        self.page_break_chain
+            .entry(key)
+            .or_insert_with(WriteChain::new)
+            .record(env.id, env.transaction, (op.anchor.clone(), op.present));
         OperationEffect::Applied
     }
 
@@ -2359,6 +2735,21 @@ impl<'a> Reducer<'a> {
         self.objects.insert(ev_obj, ObjectState::Live);
         self.minted_by.insert(ev_obj, env.id);
         self.note_minted(env, ev_obj);
+        // Seed the write chains with the minted values (the same value the
+        // graph materializes), so a later modify's chain-predecessor is the
+        // inserted state in graph-free and graph-aware reduction alike.
+        self.event_modify_chain
+            .entry(event_id)
+            .or_insert_with(WriteChain::new)
+            .seed(graph_event_from_insert(op, target_voice));
+        let mut carried: Vec<&epiphany_core::IdentifiedPitch> = Vec::new();
+        op.event.collect_identified_pitches(&mut carried);
+        for ip in &carried {
+            self.pitch_modify_chain
+                .entry(ip.id)
+                .or_insert_with(WriteChain::new)
+                .seed(ip.pitch.clone());
+        }
         let mut pitches = Vec::new();
         for p in op.pitch_ids() {
             let p_obj = TypedObjectId::Pitch(p);
@@ -2544,7 +2935,12 @@ impl<'a> Reducer<'a> {
             Some(ObjectState::Live) => {}
         }
 
-        match self.last_respell.get(&op.pitch).copied() {
+        let prev_op = self
+            .respell_chain
+            .get(&op.pitch)
+            .and_then(|chain| chain.last_write())
+            .map(|write| write.op);
+        match prev_op {
             None => {
                 self.materialize_respell(env, op);
                 OperationEffect::Applied
@@ -2595,7 +2991,10 @@ impl<'a> Reducer<'a> {
     /// in `MaterializedState.spellings` and lost before annotation derivation.
     fn materialize_respell(&mut self, env: &OperationEnvelope, op: &RespellPitchOp) {
         self.spellings.insert(op.pitch, op.spelling.clone());
-        self.last_respell.insert(op.pitch, env.id);
+        self.respell_chain
+            .entry(op.pitch)
+            .or_insert_with(WriteChain::new)
+            .record(env.id, env.transaction, op.spelling.clone());
         self.graph_respell_pitch(op.pitch, &op.spelling);
     }
 
@@ -2661,6 +3060,12 @@ impl<'a> Reducer<'a> {
         self.objects.insert(sid, ObjectState::Live);
         self.minted_by.insert(sid, env.id);
         self.note_minted(env, sid);
+        // Seed the write chain with the minted value, so a later modify's
+        // chain-predecessor is the created state.
+        self.cross_cutting_modify_chain
+            .entry(sid)
+            .or_insert_with(WriteChain::new)
+            .seed(op.structure.clone());
         self.structures.insert(sid, endpoints);
         OperationEffect::Applied
     }
@@ -2710,9 +3115,11 @@ impl<'a> Reducer<'a> {
             },
         );
         // Drop the transient endpoint/LWW indices so a later event tombstone's
-        // re-anchoring pass never re-processes the deleted structure.
+        // re-anchoring pass never re-processes the deleted structure. The write
+        // chain goes with it: a delete is not inverted (P11-C8), so a
+        // tombstoned structure's chain can never be restored.
         self.structures.remove(&sid);
-        self.last_cross_cutting_modify.remove(&sid);
+        self.cross_cutting_modify_chain.remove(&sid);
         self.graph_delete_cross_cutting(sid);
         OperationEffect::Applied
     }
@@ -2763,9 +3170,10 @@ impl<'a> Reducer<'a> {
         // the graph; MaterializedState records only the effect and, on a
         // concurrent differing write, a StructuralFieldCollision.
         let prev = self
-            .last_cross_cutting_modify
+            .cross_cutting_modify_chain
             .get(&sid)
-            .map(|(o, v)| (*o, v.clone()));
+            .and_then(|chain| chain.last_write())
+            .map(|write| (write.op, write.value.clone()));
         let effect = match prev {
             Some((prev_op, prev_value)) if self.concurrent(env.id, prev_op) => {
                 if prev_value == op.structure {
@@ -2788,8 +3196,10 @@ impl<'a> Reducer<'a> {
             }
             _ => OperationEffect::Applied,
         };
-        self.last_cross_cutting_modify
-            .insert(sid, (env.id, op.structure.clone()));
+        self.cross_cutting_modify_chain
+            .entry(sid)
+            .or_insert_with(WriteChain::new)
+            .record(env.id, env.transaction, op.structure.clone());
         self.structures.insert(sid, endpoints);
         self.graph_modify_cross_cutting(&op.structure);
         effect
@@ -2905,8 +3315,47 @@ impl<'a> Reducer<'a> {
         self.graph_create_region(&op.region);
         self.mint_container(env, robj);
         self.region_instances.entry(op.region_id()).or_default();
-        if op.region.content.staff_based().is_some() {
+        if let Some(content) = op.region.content.staff_based() {
             self.staff_based_regions.insert(op.region_id());
+            // Seed the region's layout/metric write chains from the carried
+            // content (empty of typed children, but it may carry a grid or
+            // break advisories), so a later overwrite's chain-predecessor is
+            // the created state.
+            self.metric_grid_chain
+                .entry(op.region_id())
+                .or_insert_with(WriteChain::new)
+                .seed(content.default_metric_grid.clone());
+            if let Some(grid) = &content.default_metric_grid {
+                for change in &grid.meter_sequence {
+                    self.meter_change_chain
+                        .entry((op.region_id(), resolved_anchor_position(&change.anchor)))
+                        .or_insert_with(WriteChain::new)
+                        .seed(Some(change.clone()));
+                }
+            }
+            for anchor in &content.user_system_breaks {
+                self.break_chain
+                    .entry((op.region_id(), resolved_anchor_position(anchor)))
+                    .or_insert_with(WriteChain::new)
+                    .seed((anchor.clone(), true));
+            }
+            for anchor in &content.user_page_breaks {
+                self.page_break_chain
+                    .entry((op.region_id(), resolved_anchor_position(anchor)))
+                    .or_insert_with(WriteChain::new)
+                    .seed((anchor.clone(), true));
+            }
+        }
+        if let Some(local) = &op.region.local_tempo_map {
+            for segment in &local.segments {
+                self.tempo_segment_chain
+                    .entry((
+                        Some(op.region_id()),
+                        resolved_anchor_position(&segment.start),
+                    ))
+                    .or_insert_with(WriteChain::new)
+                    .seed(Some(segment.clone()));
+            }
         }
         OperationEffect::Applied
     }
@@ -2935,6 +3384,23 @@ impl<'a> Reducer<'a> {
         if !op.instance.voices.is_empty() || !op.instance.measures.is_empty() {
             return container_not_empty();
         }
+        // With staves mintable (operation_catalog §CreateStaff), the instance's
+        // referenced global Staff must be live — the mint must leave the graph
+        // satisfying reference resolution. Graph-aware only (like the insert
+        // preconditions): base-free reduction has no staff universe to check
+        // against, and the base-seeded scenarios satisfy this vacuously.
+        if self.graph.is_some()
+            && !matches!(
+                self.objects.get(&TypedObjectId::Staff(op.instance.staff)),
+                Some(ObjectState::Live)
+            )
+        {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
         self.graph_create_staff_instance(op.region, &op.instance);
         self.mint_container(env, iobj);
         self.region_instances
@@ -2944,6 +3410,16 @@ impl<'a> Reducer<'a> {
         self.instance_voices.entry(op.instance_id()).or_default();
         self.instance_staff
             .insert(op.instance_id(), op.instance.staff);
+        // Seed the layout-advisory chain with the minted instance's fields, so
+        // a later SetStaffLayout's chain-predecessor is the created state.
+        self.staff_layout_chain
+            .entry(op.instance_id())
+            .or_insert_with(WriteChain::new)
+            .seed((
+                op.instance.instrument_override,
+                op.instance.staff_lines_override.clone(),
+                op.instance.visible,
+            ));
         OperationEffect::Applied
     }
 
@@ -2973,6 +3449,457 @@ impl<'a> Reducer<'a> {
             .or_default()
             .insert(op.voice_id());
         OperationEffect::Applied
+    }
+
+    // --- Phase-3 first tranche (operation_catalog §CreateStaff, §"Meter and
+    // Tempo Overwrites", §SetStaffLayout). ------------------------------------
+
+    /// Set-union creation of a global `Staff` on the score root
+    /// (operation_catalog §CreateStaff): fresh id mints; a byte-identical
+    /// re-carry is idempotent; a differing value under a live id is a
+    /// precondition no-op. Graph-aware reduction additionally preconditions
+    /// that the referenced instrument is live and, when `group` is present,
+    /// that the staff group resolves.
+    fn create_staff(&mut self, env: &OperationEnvelope, op: &CreateStaffOp) -> OperationEffect {
+        let sobj = TypedObjectId::Staff(op.staff_id());
+        match self.objects.get(&sobj) {
+            Some(ObjectState::Live) => {
+                let identical = self
+                    .staff_values
+                    .get(&op.staff_id())
+                    .is_some_and(|known| known == &op.staff);
+                return if identical {
+                    OperationEffect::NoOp {
+                        reason: NoOpReason::AlreadyApplied,
+                    }
+                } else {
+                    OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::TargetMissing,
+                        },
+                    }
+                };
+            }
+            Some(ObjectState::Tombstoned { .. }) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::TargetTombstoned,
+                }
+            }
+            None => {}
+        }
+        // Reference-resolution preconditions are graph-aware (like the insert
+        // preconditions): base-free reduction has no instrument/group universe
+        // to check against.
+        if self.graph.is_some() {
+            if !matches!(
+                self.objects
+                    .get(&TypedObjectId::Instrument(op.staff.instrument)),
+                Some(ObjectState::Live)
+            ) {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                };
+            }
+            if let Some(group) = op.staff.group {
+                if !matches!(
+                    self.objects.get(&TypedObjectId::StaffGroup(group)),
+                    Some(ObjectState::Live)
+                ) {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::TargetMissing,
+                        },
+                    };
+                }
+            }
+        }
+        if let Some(score) = self.graph.as_mut() {
+            score.staves.push(op.staff.clone());
+        }
+        self.mint_container(env, sobj);
+        self.staff_values.insert(op.staff_id(), op.staff.clone());
+        OperationEffect::Applied
+    }
+
+    /// Set-union mint of a `TimeSignature` carried by a `SetTimeSignature`
+    /// (operation_catalog §"Meter and Tempo Overwrites"): fresh id mints;
+    /// byte-identical re-carry is idempotent; a differing value under a live
+    /// id — or a tombstoned id — refuses the whole operation.
+    fn mint_time_signature(
+        &mut self,
+        env: &OperationEnvelope,
+        signature: &TimeSignature,
+    ) -> Result<(), OperationEffect> {
+        let obj = TypedObjectId::TimeSignature(signature.id);
+        match self.objects.get(&obj) {
+            Some(ObjectState::Live) => {
+                let identical = self
+                    .time_signature_values
+                    .get(&signature.id)
+                    .is_some_and(|known| known == signature);
+                if identical {
+                    Ok(())
+                } else {
+                    Err(OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::TargetMissing,
+                        },
+                    })
+                }
+            }
+            Some(ObjectState::Tombstoned { .. }) => Err(OperationEffect::NoOp {
+                reason: NoOpReason::TargetTombstoned,
+            }),
+            None => {
+                self.mint_container(env, obj);
+                self.time_signature_values
+                    .insert(signature.id, signature.clone());
+                if let Some(score) = self.graph.as_mut() {
+                    if !score.time_signatures.iter().any(|t| t.id == signature.id) {
+                        score.time_signatures.push(signature.clone());
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Sets, replaces, or removes the single meter change at the anchor's
+    /// resolved position in the region's default metric grid — an LWW
+    /// structural overwrite keyed by `(region, resolved position)`
+    /// (operation_catalog §"Meter and Tempo Overwrites"). The carried
+    /// signature's beat-group sum is validated at construction and at decode,
+    /// so a malformed value never reaches this reduction.
+    fn set_time_signature(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &SetTimeSignatureOp,
+    ) -> OperationEffect {
+        if let Some(effect) = self.layout_region_slot(op.region) {
+            return effect;
+        }
+        if let Some(signature) = &op.time_signature {
+            if let Err(effect) = self.mint_time_signature(env, signature) {
+                return effect;
+            }
+        }
+        let key = (op.region, op.resolved_position());
+        let written: Option<MeterChange> =
+            op.time_signature.as_ref().map(|signature| MeterChange {
+                anchor: op.anchor.clone(),
+                time_signature: signature.id,
+            });
+        let prev = self
+            .meter_change_chain
+            .get(&key)
+            .and_then(|chain| chain.last_write())
+            .map(|write| (write.op, write.value.clone()));
+        let effect = match prev {
+            Some((prev_op, prev_value)) if self.concurrent(env.id, prev_op) => {
+                if prev_value == written {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::AlreadyApplied,
+                    };
+                }
+                let conflict = ConflictRecord::new(
+                    ConflictKind::StructuralFieldCollision {
+                        winner: env.id,
+                        loser: prev_op,
+                        field: FieldPath("meter_sequence".to_string()),
+                    },
+                    vec![env.id, prev_op],
+                    vec![TypedObjectId::Region(op.region)],
+                );
+                let cid = conflict.id;
+                self.conflicts.insert(conflict);
+                OperationEffect::Conflicted { conflict: cid }
+            }
+            _ => OperationEffect::Applied,
+        };
+        self.meter_change_chain
+            .entry(key.clone())
+            .or_insert_with(WriteChain::new)
+            .record(env.id, env.transaction, written.clone());
+        self.graph_apply_meter_change(op.region, &key.1, &written);
+        effect
+    }
+
+    /// Applies a meter-change overwrite (or removal) to the region's default
+    /// metric grid, keeping the sequence ordered by resolved position. A set
+    /// on a region whose grid is `None` creates the grid; a removal that
+    /// empties the sequence normalizes the slot back to `None` unless a
+    /// whole-grid write (or the base) holds a grid value independently.
+    fn graph_apply_meter_change(
+        &mut self,
+        region: RegionId,
+        position: &MusicalPosition,
+        change: &Option<MeterChange>,
+    ) {
+        let baseline_grid = self
+            .metric_grid_chain
+            .get(&region)
+            .and_then(|chain| chain.current())
+            .is_some_and(|grid| grid.is_some());
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        let Some(region) = score.canvas.regions.iter_mut().find(|r| r.id == region) else {
+            return;
+        };
+        let Some(content) = region.content.staff_based_mut() else {
+            return;
+        };
+        match change {
+            Some(meter) => {
+                let grid = content
+                    .default_metric_grid
+                    .get_or_insert_with(MetricGrid::default);
+                grid.meter_sequence
+                    .retain(|existing| resolved_anchor_position(&existing.anchor) != *position);
+                let index = grid
+                    .meter_sequence
+                    .iter()
+                    .position(|existing| resolved_anchor_position(&existing.anchor) > *position)
+                    .unwrap_or(grid.meter_sequence.len());
+                grid.meter_sequence.insert(index, meter.clone());
+            }
+            None => {
+                if let Some(grid) = content.default_metric_grid.as_mut() {
+                    grid.meter_sequence
+                        .retain(|existing| resolved_anchor_position(&existing.anchor) != *position);
+                    if grid.meter_sequence.is_empty() && !baseline_grid {
+                        content.default_metric_grid = None;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whether the scope's *resulting* tempo map is well-formed with `written`
+    /// installed at `key` (operation_catalog §"Meter and Tempo Overwrites"):
+    /// the carried segment's own start equals the operation's key, every
+    /// segment's shape carries its end data, and resolved ends neither precede
+    /// their own start nor overlap the next segment. Read purely from the
+    /// tempo chains' current values (which seed from the base map), so
+    /// graph-free and graph-aware reduction agree wherever both represent the
+    /// scope.
+    fn prospective_tempo_write_well_formed(
+        &self,
+        key: &(Option<RegionId>, MusicalPosition),
+        written: &TempoSegment,
+    ) -> bool {
+        if resolved_anchor_position(&written.start) != key.1 {
+            return false;
+        }
+        let mut segments: Vec<(MusicalPosition, &TempoSegment)> = Vec::new();
+        for ((scope, position), chain) in &self.tempo_segment_chain {
+            if scope != &key.0 || *position == key.1 {
+                continue;
+            }
+            if let Some(Some(segment)) = chain.current() {
+                segments.push((position.clone(), segment));
+            }
+        }
+        segments.push((key.1.clone(), written));
+        segments.sort_by(|(a, _), (b, _)| a.cmp(b));
+        for (index, (position, segment)) in segments.iter().enumerate() {
+            if !tempo_segment_shape_well_formed(segment) {
+                return false;
+            }
+            if let Some(end) = &segment.end {
+                let resolved_end = resolved_anchor_position(end);
+                if resolved_end < *position {
+                    return false;
+                }
+                if let Some((next_position, _)) = segments.get(index + 1) {
+                    if resolved_end > *next_position {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Sets, replaces, or removes the single tempo segment starting at the
+    /// resolved position in the scoped tempo map — an LWW structural overwrite
+    /// keyed by `(scope, resolved start)` (operation_catalog §"Meter and Tempo
+    /// Overwrites"). A write that would malform the resulting map is refused
+    /// (`TempoMapMalformed`).
+    fn set_tempo_segment(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &SetTempoSegmentOp,
+    ) -> OperationEffect {
+        if let Some(region) = op.region {
+            if !matches!(
+                self.objects.get(&TypedObjectId::Region(region)),
+                Some(ObjectState::Live)
+            ) {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                };
+            }
+        }
+        let key = (op.region, op.resolved_start());
+        if let Some(segment) = &op.segment {
+            if !self.prospective_tempo_write_well_formed(&key, segment) {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TempoMapMalformed,
+                    },
+                };
+            }
+        }
+        let prev = self
+            .tempo_segment_chain
+            .get(&key)
+            .and_then(|chain| chain.last_write())
+            .map(|write| (write.op, write.value.clone()));
+        let effect = match prev {
+            Some((prev_op, prev_value)) if self.concurrent(env.id, prev_op) => {
+                if prev_value == op.segment {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::AlreadyApplied,
+                    };
+                }
+                let affected = match op.region {
+                    Some(region) => vec![TypedObjectId::Region(region)],
+                    None => vec![],
+                };
+                let conflict = ConflictRecord::new(
+                    ConflictKind::StructuralFieldCollision {
+                        winner: env.id,
+                        loser: prev_op,
+                        field: FieldPath("tempo_segments".to_string()),
+                    },
+                    vec![env.id, prev_op],
+                    affected,
+                );
+                let cid = conflict.id;
+                self.conflicts.insert(conflict);
+                OperationEffect::Conflicted { conflict: cid }
+            }
+            _ => OperationEffect::Applied,
+        };
+        self.tempo_segment_chain
+            .entry(key.clone())
+            .or_insert_with(WriteChain::new)
+            .record(env.id, env.transaction, op.segment.clone());
+        self.graph_apply_tempo_segment(op.region, &key.1, &op.segment);
+        effect
+    }
+
+    /// Applies a tempo-segment overwrite (or removal) to the scoped map. A set
+    /// on a region with no local map creates one; an empty, `initial`-less
+    /// local map left behind by a removal normalizes back to `None` (an empty
+    /// local map would shadow the score map instead of falling back to it).
+    fn graph_apply_tempo_segment(
+        &mut self,
+        scope: Option<RegionId>,
+        position: &MusicalPosition,
+        segment: &Option<TempoSegment>,
+    ) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        match scope {
+            None => edit_tempo_map_segments(&mut score.tempo_map, position, segment),
+            Some(region_id) => {
+                let Some(region) = score.canvas.regions.iter_mut().find(|r| r.id == region_id)
+                else {
+                    return;
+                };
+                if segment.is_some() && region.local_tempo_map.is_none() {
+                    region.local_tempo_map = Some(TempoMap::default());
+                }
+                if let Some(map) = region.local_tempo_map.as_mut() {
+                    edit_tempo_map_segments(map, position, segment);
+                }
+                if region
+                    .local_tempo_map
+                    .as_ref()
+                    .is_some_and(|map| map.initial.is_none() && map.segments.is_empty())
+                {
+                    region.local_tempo_map = None;
+                }
+            }
+        }
+    }
+
+    /// Overwrites a staff instance's three inline layout advisories as a unit
+    /// — an LWW *advisory* keyed by `staff_instance` (operation_catalog
+    /// §SetStaffLayout): no conflicts; the latest write in canonical order
+    /// wins. A present `instrument_override` must resolve to a live instrument
+    /// under graph-aware reduction.
+    fn set_staff_layout(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &SetStaffLayoutOp,
+    ) -> OperationEffect {
+        match self
+            .objects
+            .get(&TypedObjectId::StaffInstance(op.staff_instance))
+        {
+            None => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                }
+            }
+            Some(ObjectState::Tombstoned { .. }) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::TargetTombstoned,
+                }
+            }
+            Some(ObjectState::Live) => {}
+        }
+        if self.graph.is_some() {
+            if let Some(instrument) = op.instrument_override {
+                if !matches!(
+                    self.objects.get(&TypedObjectId::Instrument(instrument)),
+                    Some(ObjectState::Live)
+                ) {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::TargetMissing,
+                        },
+                    };
+                }
+            }
+        }
+        let value: StaffLayoutValue = (
+            op.instrument_override,
+            op.staff_lines_override.clone(),
+            op.visible,
+        );
+        self.staff_layout_chain
+            .entry(op.staff_instance)
+            .or_insert_with(WriteChain::new)
+            .record(env.id, env.transaction, value.clone());
+        self.graph_set_staff_layout(op.staff_instance, &value);
+        OperationEffect::Applied
+    }
+
+    fn graph_set_staff_layout(&mut self, instance_id: StaffInstanceId, value: &StaffLayoutValue) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        for region in &mut score.canvas.regions {
+            if let Some(instances) = region.content.staff_instances_mut() {
+                if let Some(instance) = instances.iter_mut().find(|i| i.id == instance_id) {
+                    instance.instrument_override = value.0;
+                    instance.staff_lines_override = value.1.clone();
+                    instance.visible = value.2;
+                    return;
+                }
+            }
+        }
     }
 
     /// `Some(effect)` when `obj` cannot be deleted (missing, idempotent
@@ -3430,49 +4357,39 @@ impl<'a> Reducer<'a> {
         }
     }
 
+    /// Forward compensating undo (operation_catalog §UndoTransaction): the
+    /// minted-object tombstoning pass plus, per this revision, the
+    /// value-restoration pass over every LWW write chain the target
+    /// transaction wrote. `StrictInverse` refuses the whole undo if *either*
+    /// part fails; `BestEffort` compensates what it cleanly can. A fully
+    /// clean compensation is `Applied`; `AppliedWithRepair` carries only the
+    /// tombstone repairs from minted objects.
     fn undo_transaction(
         &mut self,
         env: &OperationEnvelope,
         op: &UndoTransactionPayload,
     ) -> OperationEffect {
         let targets = self.tx_minted.get(&op.target).cloned().unwrap_or_default();
-        if targets.is_empty() {
+        let (restorations, superseded) = self.collect_restorations(op.target, &targets);
+        if targets.is_empty() && restorations.is_empty() && superseded.is_empty() {
+            // The transaction minted nothing and overwrote nothing this
+            // reduction knows of (unknown, rolled back, or all its written
+            // keys are gone): nothing to compensate.
             return OperationEffect::NoOp {
                 reason: NoOpReason::PreconditionFailedUnderReduction {
                     reason: PreconditionFailureReason::TargetMissing,
                 },
             };
         }
-        let all_live = targets
-            .iter()
-            .all(|t| matches!(self.objects.get(t), Some(ObjectState::Live)));
         match op.policy {
             UndoPolicy::StrictInverse | UndoPolicy::Cascade => {
-                if all_live {
-                    let mut repairs = Vec::new();
-                    for t in &targets {
-                        let minter = self.minted_by.get(t).copied().unwrap_or(env.id);
-                        self.objects.insert(
-                            *t,
-                            ObjectState::Tombstoned {
-                                deleted_by: env.id,
-                                minted_by: minter,
-                            },
-                        );
-                        repairs.push(RepairRecord {
-                            kind: RepairKind::CascadeDeleted,
-                            target: *t,
-                        });
-                    }
-                    repairs.extend(self.materialize_graph_tombstones(env, &targets));
-                    OperationEffect::AppliedWithRepair { repairs }
-                } else {
-                    // A target was already tombstoned/modified: strict undo conflicts.
-                    let stuck = targets
-                        .iter()
-                        .find(|t| !matches!(self.objects.get(t), Some(ObjectState::Live)))
-                        .copied()
-                        .unwrap_or(targets[0]);
+                // A minted target already tombstoned: strict undo conflicts
+                // (the pre-existing minted-object discipline).
+                if let Some(stuck) = targets
+                    .iter()
+                    .find(|t| !matches!(self.objects.get(t), Some(ObjectState::Live)))
+                    .copied()
+                {
                     let conflict = ConflictRecord::new(
                         ConflictKind::TombstonedTarget {
                             target: stuck,
@@ -3483,33 +4400,580 @@ impl<'a> Reducer<'a> {
                     );
                     let cid = conflict.id;
                     self.conflicts.insert(conflict);
-                    OperationEffect::Conflicted { conflict: cid }
+                    return OperationEffect::Conflicted { conflict: cid };
+                }
+                // A minted staff still manifested by a live instance, or a
+                // minted time signature still referenced by a surviving meter
+                // change: tombstoning it would strand the reference
+                // (operation_catalog §CreateStaff undo semantics).
+                if let Some((blocked, referencer)) = targets
+                    .iter()
+                    .find_map(|t| self.undo_strand_block(t, &targets, &restorations))
+                {
+                    let conflict = ConflictRecord::new(
+                        ConflictKind::TransactionConflict {
+                            transaction: op.target,
+                            failed_members: vec![env.id],
+                        },
+                        vec![env.id],
+                        vec![blocked, referencer],
+                    );
+                    let cid = conflict.id;
+                    self.conflicts.insert(conflict);
+                    return OperationEffect::Conflicted { conflict: cid };
+                }
+                // A written key superseded by a later writer: strict undo
+                // refuses the whole compensation, naming the undo and the
+                // (canonically first) superseding writer.
+                if let Some(by) = superseded.first().copied() {
+                    let conflict = ConflictRecord::new(
+                        ConflictKind::TransactionConflict {
+                            transaction: op.target,
+                            failed_members: vec![env.id],
+                        },
+                        vec![env.id, by],
+                        vec![],
+                    );
+                    let cid = conflict.id;
+                    self.conflicts.insert(conflict);
+                    return OperationEffect::Conflicted { conflict: cid };
+                }
+                let repairs = self.tombstone_undo_targets(env, &targets);
+                self.apply_restorations(env, restorations);
+                if repairs.is_empty() {
+                    OperationEffect::Applied
+                } else {
+                    OperationEffect::AppliedWithRepair { repairs }
                 }
             }
             UndoPolicy::BestEffort => {
-                let mut repairs = Vec::new();
-                let mut tombstoned = Vec::new();
-                for t in &targets {
-                    if matches!(self.objects.get(t), Some(ObjectState::Live)) {
-                        let minter = self.minted_by.get(t).copied().unwrap_or(env.id);
-                        self.objects.insert(
-                            *t,
-                            ObjectState::Tombstoned {
-                                deleted_by: env.id,
-                                minted_by: minter,
-                            },
-                        );
-                        repairs.push(RepairRecord {
-                            kind: RepairKind::CascadeDeleted,
-                            target: *t,
-                        });
-                        tombstoned.push(*t);
-                    }
+                // Tombstone the still-live, non-stranding mints; restore the
+                // still-last-written keys; skip the rest.
+                let tombstonable: Vec<TypedObjectId> = targets
+                    .iter()
+                    .filter(|t| matches!(self.objects.get(t), Some(ObjectState::Live)))
+                    .filter(|t| self.undo_strand_block(t, &targets, &restorations).is_none())
+                    .copied()
+                    .collect();
+                let repairs = self.tombstone_undo_targets(env, &tombstonable);
+                self.apply_restorations(env, restorations);
+                if repairs.is_empty() {
+                    OperationEffect::Applied
+                } else {
+                    OperationEffect::AppliedWithRepair { repairs }
                 }
-                repairs.extend(self.materialize_graph_tombstones(env, &tombstoned));
-                OperationEffect::AppliedWithRepair { repairs }
             }
         }
+    }
+
+    /// Tombstones the minted objects of an undone transaction and materializes
+    /// the graph-side removals, returning the `CascadeDeleted` repair records.
+    fn tombstone_undo_targets(
+        &mut self,
+        env: &OperationEnvelope,
+        targets: &[TypedObjectId],
+    ) -> Vec<RepairRecord> {
+        let mut repairs = Vec::new();
+        for t in targets {
+            let minter = self.minted_by.get(t).copied().unwrap_or(env.id);
+            self.objects.insert(
+                *t,
+                ObjectState::Tombstoned {
+                    deleted_by: env.id,
+                    minted_by: minter,
+                },
+            );
+            repairs.push(RepairRecord {
+                kind: RepairKind::CascadeDeleted,
+                target: *t,
+            });
+        }
+        repairs.extend(self.materialize_graph_tombstones(env, targets));
+        repairs
+    }
+
+    /// `Some((blocked, referencer))` when tombstoning `target` under undo
+    /// would strand a live reference: a minted `Staff` still manifested by a
+    /// live staff instance (operation_catalog §CreateStaff), or a minted
+    /// `TimeSignature` still referenced by a meter change that survives the
+    /// restoration pass. References held by objects the same undo tombstones
+    /// do not block.
+    fn undo_strand_block(
+        &self,
+        target: &TypedObjectId,
+        targets: &[TypedObjectId],
+        restorations: &[ValueRestoration],
+    ) -> Option<(TypedObjectId, TypedObjectId)> {
+        match target {
+            TypedObjectId::Staff(staff) => {
+                self.instance_staff
+                    .iter()
+                    .find_map(|(instance, manifested)| {
+                        let iobj = TypedObjectId::StaffInstance(*instance);
+                        (manifested == staff
+                            && !targets.contains(&iobj)
+                            && matches!(self.objects.get(&iobj), Some(ObjectState::Live)))
+                        .then_some((*target, iobj))
+                    })
+            }
+            TypedObjectId::TimeSignature(id) => {
+                self.meter_change_chain
+                    .iter()
+                    .find_map(|((region, position), chain)| {
+                        // The prospective post-undo value at this key: the
+                        // restoration's value where one applies, else the
+                        // chain's current value.
+                        let prospective: Option<MeterChange> = restorations
+                            .iter()
+                            .find_map(|restoration| match restoration {
+                                ValueRestoration::MeterChange {
+                                    region: r,
+                                    position: p,
+                                    value,
+                                } if r == region && p == position => Some(value.clone()),
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| chain.current().cloned().flatten());
+                        prospective.and_then(|meter| {
+                            (meter.time_signature == *id)
+                                .then_some((*target, TypedObjectId::Region(*region)))
+                        })
+                    })
+            }
+            _ => None,
+        }
+    }
+
+    /// Walks every write chain and collects, for the target transaction: the
+    /// keys still last-written by it (with their chain-predecessor
+    /// restorations) and the operations that superseded its other writes
+    /// (sorted, deduplicated). Keys whose owning object is tombstoned — or is
+    /// itself one of the transaction's mints, about to be tombstoned by this
+    /// undo — are skipped entirely: there is no live slot to restore.
+    fn collect_restorations(
+        &self,
+        tx: TransactionId,
+        targets: &[TypedObjectId],
+    ) -> (Vec<ValueRestoration>, Vec<OperationId>) {
+        let mut restorations = Vec::new();
+        let mut superseded: Vec<OperationId> = Vec::new();
+        let slot_live = |obj: TypedObjectId| {
+            matches!(self.objects.get(&obj), Some(ObjectState::Live)) && !targets.contains(&obj)
+        };
+
+        for (event, chain) in &self.event_modify_chain {
+            if !slot_live(TypedObjectId::Event(*event)) {
+                continue;
+            }
+            match chain.undo_verdict(tx) {
+                ChainUndoVerdict::NotWritten => {}
+                ChainUndoVerdict::Superseded { by } => superseded.push(by),
+                ChainUndoVerdict::Restore(predecessor) => {
+                    restorations.push(ValueRestoration::Event {
+                        event: *event,
+                        value: predecessor.map(Predecessor::into_value),
+                    })
+                }
+            }
+        }
+        for (pitch, chain) in &self.pitch_modify_chain {
+            if !slot_live(TypedObjectId::Pitch(*pitch)) {
+                continue;
+            }
+            match chain.undo_verdict(tx) {
+                ChainUndoVerdict::NotWritten => {}
+                ChainUndoVerdict::Superseded { by } => superseded.push(by),
+                ChainUndoVerdict::Restore(predecessor) => {
+                    restorations.push(ValueRestoration::Pitch {
+                        pitch: *pitch,
+                        value: predecessor.map(Predecessor::into_value),
+                    })
+                }
+            }
+        }
+        for (pitch, chain) in &self.respell_chain {
+            if !slot_live(TypedObjectId::Pitch(*pitch)) {
+                continue;
+            }
+            match chain.undo_verdict(tx) {
+                ChainUndoVerdict::NotWritten => {}
+                ChainUndoVerdict::Superseded { by } => superseded.push(by),
+                ChainUndoVerdict::Restore(predecessor) => {
+                    restorations.push(ValueRestoration::Spelling {
+                        pitch: *pitch,
+                        predecessor,
+                    })
+                }
+            }
+        }
+        for (id, chain) in &self.cross_cutting_modify_chain {
+            if !slot_live(*id) {
+                continue;
+            }
+            match chain.undo_verdict(tx) {
+                ChainUndoVerdict::NotWritten => {}
+                ChainUndoVerdict::Superseded { by } => superseded.push(by),
+                ChainUndoVerdict::Restore(predecessor) => {
+                    restorations.push(ValueRestoration::CrossCutting {
+                        id: *id,
+                        value: predecessor.map(Predecessor::into_value),
+                    })
+                }
+            }
+        }
+        match self.metadata_chain.undo_verdict(tx) {
+            ChainUndoVerdict::NotWritten => {}
+            ChainUndoVerdict::Superseded { by } => superseded.push(by),
+            ChainUndoVerdict::Restore(predecessor) => {
+                restorations.push(ValueRestoration::Metadata {
+                    value: predecessor.map(Predecessor::into_value),
+                })
+            }
+        }
+        for (region, chain) in &self.metric_grid_chain {
+            if !slot_live(TypedObjectId::Region(*region)) {
+                continue;
+            }
+            match chain.undo_verdict(tx) {
+                ChainUndoVerdict::NotWritten => {}
+                ChainUndoVerdict::Superseded { by } => superseded.push(by),
+                ChainUndoVerdict::Restore(predecessor) => {
+                    // Flattened: no predecessor and a cleared-grid predecessor
+                    // both restore "no grid".
+                    restorations.push(ValueRestoration::MetricGrid {
+                        region: *region,
+                        value: match predecessor {
+                            Some(p) => p.into_value(),
+                            None => None,
+                        },
+                    })
+                }
+            }
+        }
+        for ((region, position), chain) in &self.meter_change_chain {
+            if !slot_live(TypedObjectId::Region(*region)) {
+                continue;
+            }
+            match chain.undo_verdict(tx) {
+                ChainUndoVerdict::NotWritten => {}
+                ChainUndoVerdict::Superseded { by } => superseded.push(by),
+                ChainUndoVerdict::Restore(predecessor) => {
+                    restorations.push(ValueRestoration::MeterChange {
+                        region: *region,
+                        position: position.clone(),
+                        value: match predecessor {
+                            Some(p) => p.into_value(),
+                            None => None,
+                        },
+                    })
+                }
+            }
+        }
+        for ((scope, position), chain) in &self.tempo_segment_chain {
+            if let Some(region) = scope {
+                if !slot_live(TypedObjectId::Region(*region)) {
+                    continue;
+                }
+            }
+            match chain.undo_verdict(tx) {
+                ChainUndoVerdict::NotWritten => {}
+                ChainUndoVerdict::Superseded { by } => superseded.push(by),
+                ChainUndoVerdict::Restore(predecessor) => {
+                    restorations.push(ValueRestoration::TempoSegment {
+                        region: *scope,
+                        position: position.clone(),
+                        value: match predecessor {
+                            Some(p) => p.into_value(),
+                            None => None,
+                        },
+                    })
+                }
+            }
+        }
+        for (instance, chain) in &self.staff_layout_chain {
+            if !slot_live(TypedObjectId::StaffInstance(*instance)) {
+                continue;
+            }
+            match chain.undo_verdict(tx) {
+                ChainUndoVerdict::NotWritten => {}
+                ChainUndoVerdict::Superseded { by } => superseded.push(by),
+                ChainUndoVerdict::Restore(predecessor) => {
+                    restorations.push(ValueRestoration::StaffLayout {
+                        instance: *instance,
+                        value: predecessor.map(Predecessor::into_value),
+                    })
+                }
+            }
+        }
+        for ((region, position), chain) in &self.break_chain {
+            if !slot_live(TypedObjectId::Region(*region)) {
+                continue;
+            }
+            match chain.undo_verdict(tx) {
+                ChainUndoVerdict::NotWritten => {}
+                ChainUndoVerdict::Superseded { by } => superseded.push(by),
+                ChainUndoVerdict::Restore(predecessor) => {
+                    restorations.push(ValueRestoration::SystemBreak {
+                        region: *region,
+                        position: position.clone(),
+                        predecessor,
+                    })
+                }
+            }
+        }
+        for ((region, position), chain) in &self.page_break_chain {
+            if !slot_live(TypedObjectId::Region(*region)) {
+                continue;
+            }
+            match chain.undo_verdict(tx) {
+                ChainUndoVerdict::NotWritten => {}
+                ChainUndoVerdict::Superseded { by } => superseded.push(by),
+                ChainUndoVerdict::Restore(predecessor) => {
+                    restorations.push(ValueRestoration::PageBreak {
+                        region: *region,
+                        position: position.clone(),
+                        predecessor,
+                    })
+                }
+            }
+        }
+        superseded.sort();
+        superseded.dedup();
+        (restorations, superseded)
+    }
+
+    /// Applies the collected restorations to the bookkeeping and the graph,
+    /// recording each restored *value* into its chain as a new write by the
+    /// undo operation (so a later undo sees the restoration as the key's last
+    /// writer — the pinned undo-of-undo discipline; see DECISIONS.md). An
+    /// absence restoration (no predecessor at all) leaves the chain
+    /// unchanged: a repeated undo of the same transaction re-restores absence
+    /// idempotently.
+    fn apply_restorations(&mut self, env: &OperationEnvelope, restorations: Vec<ValueRestoration>) {
+        for restoration in restorations {
+            match restoration {
+                ValueRestoration::Event { event, value } => {
+                    if let Some(value) = value {
+                        self.apply_event_value(&value);
+                        self.event_modify_chain
+                            .entry(event)
+                            .or_insert_with(WriteChain::new)
+                            .record(env.id, env.transaction, value);
+                    }
+                }
+                ValueRestoration::Pitch { pitch, value } => {
+                    if let Some(value) = value {
+                        self.graph_modify_pitch(pitch, &value);
+                        self.pitch_modify_chain
+                            .entry(pitch)
+                            .or_insert_with(WriteChain::new)
+                            .record(env.id, env.transaction, value);
+                    }
+                }
+                ValueRestoration::Spelling { pitch, predecessor } => match predecessor {
+                    Some(Predecessor::Write(spelling)) => {
+                        self.spellings.insert(pitch, spelling.clone());
+                        self.respell_chain
+                            .entry(pitch)
+                            .or_insert_with(WriteChain::new)
+                            .record(env.id, env.transaction, spelling.clone());
+                        self.graph_respell_pitch(pitch, &spelling);
+                    }
+                    Some(Predecessor::Base(spelling)) => {
+                        // The ledger returns to key-absence (the base state
+                        // lives in the graph); the graph attachment restores
+                        // the base value.
+                        self.spellings.remove(&pitch);
+                        self.respell_chain
+                            .entry(pitch)
+                            .or_insert_with(WriteChain::new)
+                            .record(env.id, env.transaction, spelling.clone());
+                        self.graph_respell_pitch(pitch, &spelling);
+                    }
+                    None => {
+                        self.spellings.remove(&pitch);
+                        self.graph_remove_respell(pitch);
+                    }
+                },
+                ValueRestoration::CrossCutting { id, value } => {
+                    if let Some(value) = value {
+                        self.structures.insert(id, value.endpoints());
+                        self.graph_modify_cross_cutting(&value);
+                        self.cross_cutting_modify_chain
+                            .entry(id)
+                            .or_insert_with(WriteChain::new)
+                            .record(env.id, env.transaction, value);
+                    }
+                }
+                ValueRestoration::Metadata { value } => {
+                    if let Some(value) = value {
+                        if let Some(score) = self.graph.as_mut() {
+                            score.metadata = value.clone();
+                        }
+                        self.metadata_chain.record(env.id, env.transaction, value);
+                    }
+                }
+                ValueRestoration::MetricGrid { region, value } => {
+                    self.metric_grid_chain
+                        .entry(region)
+                        .or_insert_with(WriteChain::new)
+                        .record(env.id, env.transaction, value.clone());
+                    self.graph_set_metric_grid(region, &value);
+                }
+                ValueRestoration::MeterChange {
+                    region,
+                    position,
+                    value,
+                } => {
+                    self.meter_change_chain
+                        .entry((region, position.clone()))
+                        .or_insert_with(WriteChain::new)
+                        .record(env.id, env.transaction, value.clone());
+                    self.graph_apply_meter_change(region, &position, &value);
+                }
+                ValueRestoration::TempoSegment {
+                    region,
+                    position,
+                    value,
+                } => {
+                    self.tempo_segment_chain
+                        .entry((region, position.clone()))
+                        .or_insert_with(WriteChain::new)
+                        .record(env.id, env.transaction, value.clone());
+                    self.graph_apply_tempo_segment(region, &position, &value);
+                }
+                ValueRestoration::StaffLayout { instance, value } => {
+                    if let Some(value) = value {
+                        self.graph_set_staff_layout(instance, &value);
+                        self.staff_layout_chain
+                            .entry(instance)
+                            .or_insert_with(WriteChain::new)
+                            .record(env.id, env.transaction, value);
+                    }
+                }
+                ValueRestoration::SystemBreak {
+                    region,
+                    position,
+                    predecessor,
+                } => self.restore_break(env, region, position, predecessor, false),
+                ValueRestoration::PageBreak {
+                    region,
+                    position,
+                    predecessor,
+                } => self.restore_break(env, region, position, predecessor, true),
+            }
+        }
+    }
+
+    /// Restores one user-break key: a write predecessor re-enters the ledger
+    /// map; a base predecessor returns the map to key-absence while the graph
+    /// restores the base anchor; no predecessor removes the key from map and
+    /// graph alike.
+    fn restore_break(
+        &mut self,
+        env: &OperationEnvelope,
+        region: RegionId,
+        position: MusicalPosition,
+        predecessor: Option<Predecessor<(TimeAnchor, bool)>>,
+        page: bool,
+    ) {
+        let key = (region, position.clone());
+        match predecessor {
+            Some(Predecessor::Write((anchor, present))) => {
+                if page {
+                    self.page_breaks.insert(key.clone(), present);
+                    self.page_break_chain
+                        .entry(key)
+                        .or_insert_with(WriteChain::new)
+                        .record(env.id, env.transaction, (anchor.clone(), present));
+                } else {
+                    self.breaks.insert(key.clone(), present);
+                    self.break_chain
+                        .entry(key)
+                        .or_insert_with(WriteChain::new)
+                        .record(env.id, env.transaction, (anchor.clone(), present));
+                }
+                self.graph_apply_break(region, &anchor, present, page);
+            }
+            Some(Predecessor::Base((anchor, present))) => {
+                if page {
+                    self.page_breaks.remove(&key);
+                    self.page_break_chain
+                        .entry(key)
+                        .or_insert_with(WriteChain::new)
+                        .record(env.id, env.transaction, (anchor.clone(), present));
+                } else {
+                    self.breaks.remove(&key);
+                    self.break_chain
+                        .entry(key)
+                        .or_insert_with(WriteChain::new)
+                        .record(env.id, env.transaction, (anchor.clone(), present));
+                }
+                self.graph_apply_break(region, &anchor, present, page);
+            }
+            None => {
+                if page {
+                    self.page_breaks.remove(&key);
+                } else {
+                    self.breaks.remove(&key);
+                }
+                self.graph_clear_break(region, &position, page);
+            }
+        }
+    }
+
+    fn graph_apply_break(
+        &mut self,
+        region: RegionId,
+        anchor: &TimeAnchor,
+        present: bool,
+        page: bool,
+    ) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        if let Some(region) = score.canvas.regions.iter_mut().find(|r| r.id == region) {
+            if let Some(content) = region.content.staff_based_mut() {
+                let list = if page {
+                    &mut content.user_page_breaks
+                } else {
+                    &mut content.user_system_breaks
+                };
+                apply_break_lww(list, anchor, present);
+            }
+        }
+    }
+
+    fn graph_clear_break(&mut self, region: RegionId, position: &MusicalPosition, page: bool) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        if let Some(region) = score.canvas.regions.iter_mut().find(|r| r.id == region) {
+            if let Some(content) = region.content.staff_based_mut() {
+                let list = if page {
+                    &mut content.user_page_breaks
+                } else {
+                    &mut content.user_system_breaks
+                };
+                list.retain(|existing| resolved_anchor_position(existing) != *position);
+            }
+        }
+    }
+
+    /// Removes the user-chosen explicit spelling attachment for `pitch` — the
+    /// inverse of the attachment `graph_respell_pitch` installs, used when a
+    /// respell restoration has no predecessor (the operation introduced the
+    /// first spelling).
+    fn graph_remove_respell(&mut self, pitch: PitchId) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        score.spelling_attachments.retain(|a| {
+            !(a.layer.is_none()
+                && matches!(a.source, SpellingSource::UserChosen)
+                && matches!(&a.scope, SpellingScope::Pitch(p) if *p == pitch)
+                && matches!(a.directive, SpellingDirective::Explicit(_)))
+        });
     }
 
     // --- Group 1 (M2): event & pitch leaf-field ops. ------------------------
@@ -3554,9 +5018,10 @@ impl<'a> Reducer<'a> {
             };
         }
         let prev = self
-            .last_event_modify
+            .event_modify_chain
             .get(&event_id)
-            .map(|(o, e)| (*o, e.clone()));
+            .and_then(|chain| chain.last_write())
+            .map(|write| (write.op, write.value.clone()));
         let effect = match prev {
             Some((prev_op, prev_event)) if self.concurrent(env.id, prev_op) => {
                 if prev_event == op.event {
@@ -3582,15 +5047,27 @@ impl<'a> Reducer<'a> {
             // First modify, or a causally-ordered intentional overwrite.
             _ => OperationEffect::Applied,
         };
-        self.last_event_modify
-            .insert(event_id, (env.id, op.event.clone()));
-        // Materialize a move only when it is a sanctioned metric move (`Moved`) *and*
-        // the replacement is well-formed — so the graph and the occupancy index move
-        // together. A malformed (empty) pitched replacement is not materialized in the
-        // graph (`graph_replace_event` skips it), so it must not move occupancy either.
+        self.event_modify_chain
+            .entry(event_id)
+            .or_insert_with(WriteChain::new)
+            .record(env.id, env.transaction, op.event.clone());
+        self.apply_event_value(&op.event);
+        effect
+    }
+
+    /// Applies an event *value* (a modify's replacement, or an undo's restored
+    /// predecessor) to the graph and the occupancy index. A move materializes
+    /// only when it is a sanctioned metric move (`Moved`) *and* the value is
+    /// well-formed — so the graph and the occupancy index move together. A
+    /// malformed (empty) pitched value is not materialized in the graph
+    /// (`graph_replace_event` skips it), so it must not move occupancy either;
+    /// a refused or non-metric placement leaves placement untouched (only
+    /// same-placement field edits apply).
+    fn apply_event_value(&mut self, value: &Event) {
+        let placement = self.metric_placement_verdict(value);
         let materialize_move = matches!(placement, PlacementVerdict::Moved { .. })
-            && !matches!(&op.event, Event::Pitched(pe) if !pe.is_well_formed());
-        self.graph_replace_event(&op.event, materialize_move);
+            && !matches!(value, Event::Pitched(pe) if !pe.is_well_formed());
+        self.graph_replace_event(value, materialize_move);
         // Keep the voice-occupancy index in step with a materialized move, so a later
         // insert sees the freed/changed span (the same index its overlap check reads).
         if materialize_move {
@@ -3601,14 +5078,13 @@ impl<'a> Reducer<'a> {
             } = placement
             {
                 if let Some(events) = self.voice_occupancy.get_mut(&voice) {
-                    for slot in events.iter_mut().filter(|slot| slot.2 == event_id) {
+                    for slot in events.iter_mut().filter(|slot| slot.2 == value.id()) {
                         slot.0 = position.clone();
                         slot.1 = duration.clone();
                     }
                 }
             }
         }
-        effect
     }
 
     /// The verdict on a [`ModifyEvent`](OperationKind::ModifyEvent)'s placement: does
@@ -3771,6 +5247,12 @@ impl<'a> Reducer<'a> {
         self.objects.insert(p_obj, ObjectState::Live);
         self.minted_by.insert(p_obj, env.id);
         self.note_minted(env, p_obj);
+        // Seed the pitch's write chain with the minted value, so a later
+        // modify's chain-predecessor is the inserted state.
+        self.pitch_modify_chain
+            .entry(pitch_id)
+            .or_insert_with(WriteChain::new)
+            .seed(op.pitch.pitch.clone());
         self.event_pitches
             .entry(op.event)
             .or_default()
@@ -3836,9 +5318,10 @@ impl<'a> Reducer<'a> {
             Some(ObjectState::Live) => {}
         }
         let prev = self
-            .last_pitch_modify
+            .pitch_modify_chain
             .get(&op.pitch)
-            .map(|(o, v)| (*o, v.clone()));
+            .and_then(|chain| chain.last_write())
+            .map(|write| (write.op, write.value.clone()));
         let effect = match prev {
             Some((prev_op, prev_value)) if self.concurrent(env.id, prev_op) => {
                 if prev_value == op.value {
@@ -3861,8 +5344,10 @@ impl<'a> Reducer<'a> {
             }
             _ => OperationEffect::Applied,
         };
-        self.last_pitch_modify
-            .insert(op.pitch, (env.id, op.value.clone()));
+        self.pitch_modify_chain
+            .entry(op.pitch)
+            .or_insert_with(WriteChain::new)
+            .record(env.id, env.transaction, op.value.clone());
         self.graph_modify_pitch(op.pitch, &op.value);
         effect
     }
@@ -4879,11 +6364,19 @@ impl<'a> Reducer<'a> {
             minted_by: self.minted_by.clone(),
             event_pitches: self.event_pitches.clone(),
             voice_occupancy: self.voice_occupancy.clone(),
-            last_respell: self.last_respell.clone(),
-            last_event_modify: self.last_event_modify.clone(),
-            last_pitch_modify: self.last_pitch_modify.clone(),
-            last_cross_cutting_modify: self.last_cross_cutting_modify.clone(),
-            last_metric_grid: self.last_metric_grid.clone(),
+            respell_chain: self.respell_chain.clone(),
+            event_modify_chain: self.event_modify_chain.clone(),
+            pitch_modify_chain: self.pitch_modify_chain.clone(),
+            cross_cutting_modify_chain: self.cross_cutting_modify_chain.clone(),
+            metric_grid_chain: self.metric_grid_chain.clone(),
+            metadata_chain: self.metadata_chain.clone(),
+            break_chain: self.break_chain.clone(),
+            page_break_chain: self.page_break_chain.clone(),
+            meter_change_chain: self.meter_change_chain.clone(),
+            tempo_segment_chain: self.tempo_segment_chain.clone(),
+            staff_layout_chain: self.staff_layout_chain.clone(),
+            staff_values: self.staff_values.clone(),
+            time_signature_values: self.time_signature_values.clone(),
             structures: self.structures.clone(),
             region_instances: self.region_instances.clone(),
             instance_voices: self.instance_voices.clone(),
@@ -4906,11 +6399,19 @@ impl<'a> Reducer<'a> {
         self.minted_by = s.minted_by;
         self.event_pitches = s.event_pitches;
         self.voice_occupancy = s.voice_occupancy;
-        self.last_respell = s.last_respell;
-        self.last_event_modify = s.last_event_modify;
-        self.last_pitch_modify = s.last_pitch_modify;
-        self.last_cross_cutting_modify = s.last_cross_cutting_modify;
-        self.last_metric_grid = s.last_metric_grid;
+        self.respell_chain = s.respell_chain;
+        self.event_modify_chain = s.event_modify_chain;
+        self.pitch_modify_chain = s.pitch_modify_chain;
+        self.cross_cutting_modify_chain = s.cross_cutting_modify_chain;
+        self.metric_grid_chain = s.metric_grid_chain;
+        self.metadata_chain = s.metadata_chain;
+        self.break_chain = s.break_chain;
+        self.page_break_chain = s.page_break_chain;
+        self.meter_change_chain = s.meter_change_chain;
+        self.tempo_segment_chain = s.tempo_segment_chain;
+        self.staff_layout_chain = s.staff_layout_chain;
+        self.staff_values = s.staff_values;
+        self.time_signature_values = s.time_signature_values;
         self.structures = s.structures;
         self.region_instances = s.region_instances;
         self.instance_voices = s.instance_voices;
@@ -6982,6 +8483,563 @@ mod tests {
                     IntegrityAnomalyKind::OperationSlotEquivocated { operation_id } if operation_id == id
                 )),
                 "expected an equivocation anomaly for {id:?}"
+            );
+        }
+    }
+
+    // =========================================================================
+    // Phase-3 first tranche: CreateStaff, SetTimeSignature, SetTempoSegment,
+    // SetStaffLayout, and value-restoring undo (operation_catalog
+    // §CreateStaff, §"Meter and Tempo Overwrites", §SetStaffLayout, §undo).
+    // =========================================================================
+
+    fn tx_member(
+        replica: u64,
+        counter: u64,
+        physical: i64,
+        ctx: CausalContext,
+        tx: TransactionId,
+        kind: OperationKind,
+    ) -> OperationEnvelope {
+        let mut env = prim_env(replica, counter, physical, ctx, kind);
+        env.transaction = Some(tx);
+        env
+    }
+
+    fn declare_transaction(
+        replica: u64,
+        counter: u64,
+        physical: i64,
+        ctx: CausalContext,
+        tx: TransactionId,
+    ) -> OperationEnvelope {
+        tx_member(
+            replica,
+            counter,
+            physical,
+            ctx,
+            tx,
+            OperationKind::DeclareTransaction(crate::payload::TransactionDescriptor {
+                id: tx,
+                label: String::from("phase-3 undo scenario"),
+                category: None,
+            }),
+        )
+    }
+
+    fn undo_env(
+        replica: u64,
+        counter: u64,
+        physical: i64,
+        ctx: CausalContext,
+        target: TransactionId,
+        policy: UndoPolicy,
+    ) -> OperationEnvelope {
+        let id = OperationId::new(ReplicaId(replica), counter);
+        OperationEnvelope {
+            id,
+            author: AuthorId(0),
+            stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(physical), 0), id),
+            causal_context: ctx,
+            transaction: None,
+            payload: OperationPayload::UndoTransaction(UndoTransactionPayload { target, policy }),
+        }
+    }
+
+    fn seen_r1(counter: u64) -> CausalContext {
+        CausalContext::new().with_seen(ReplicaId(1), counter)
+    }
+
+    fn respell_kind(pitch: PitchId, nth: u8) -> OperationKind {
+        OperationKind::RespellPitch(RespellPitchOp {
+            pitch,
+            spelling: crate::valuegen::spelling(nth),
+        })
+    }
+
+    #[test]
+    fn create_staff_set_union_mint_discipline() {
+        let staff_id = StaffId::new(ReplicaId(9), 7);
+        let instrument = InstrumentId::new(ReplicaId(9), 1);
+        let value = crate::valuegen::staff(staff_id, instrument);
+        let create = prim_env(
+            1,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::CreateStaff(CreateStaffOp {
+                staff: value.clone(),
+            }),
+        );
+        let identical = prim_env(
+            2,
+            0,
+            20,
+            CausalContext::new(),
+            OperationKind::CreateStaff(CreateStaffOp {
+                staff: value.clone(),
+            }),
+        );
+        let mut differing_value = value.clone();
+        differing_value.name = String::from("something else");
+        let differing = prim_env(
+            3,
+            0,
+            30,
+            CausalContext::new(),
+            OperationKind::CreateStaff(CreateStaffOp {
+                staff: differing_value,
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![differing.clone(), identical.clone(), create.clone()]);
+        let state = set.reduce();
+
+        let effect_of = |id: OperationId| {
+            state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == id)
+                .map(|(_, eff)| eff)
+        };
+        assert_eq!(effect_of(create.id), Some(&OperationEffect::Applied));
+        assert_eq!(
+            effect_of(identical.id),
+            Some(&OperationEffect::NoOp {
+                reason: NoOpReason::AlreadyApplied,
+            }),
+            "a byte-identical re-create reduces idempotently"
+        );
+        assert_eq!(
+            effect_of(differing.id),
+            Some(&OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            }),
+            "a differing value under a live id is a precondition no-op"
+        );
+        assert!(matches!(
+            state.objects.get(&TypedObjectId::Staff(staff_id)),
+            Some(ObjectState::Live)
+        ));
+    }
+
+    fn create_region_env(
+        replica: u64,
+        counter: u64,
+        physical: i64,
+        region: RegionId,
+    ) -> OperationEnvelope {
+        prim_env(
+            replica,
+            counter,
+            physical,
+            CausalContext::new(),
+            OperationKind::CreateRegion(CreateRegionOp {
+                region: crate::valuegen::region(region),
+            }),
+        )
+    }
+
+    fn set_meter_kind(
+        region: RegionId,
+        at: MusicalPosition,
+        signature: Option<TimeSignature>,
+    ) -> OperationKind {
+        OperationKind::SetTimeSignature(SetTimeSignatureOp {
+            region,
+            anchor: crate::valuegen::region_start_anchor(region, at),
+            time_signature: signature,
+        })
+    }
+
+    #[test]
+    fn concurrent_differing_meter_writes_collide_on_meter_sequence() {
+        let region = RegionId::new(ReplicaId(9), 3);
+        let create = create_region_env(1, 0, 10, region);
+        let seen = seen_r1(0);
+        let ts_a = crate::valuegen::time_signature(TimeSignatureId::new(ReplicaId(9), 1), 4);
+        let ts_b = crate::valuegen::time_signature(TimeSignatureId::new(ReplicaId(9), 2), 3);
+        let set_a = prim_env(
+            2,
+            0,
+            20,
+            seen.clone(),
+            set_meter_kind(region, pos(0), Some(ts_a)),
+        );
+        let set_b = prim_env(3, 0, 20, seen, set_meter_kind(region, pos(0), Some(ts_b)));
+        let mut set = OperationSet::new();
+        set.accept_all(vec![set_b.clone(), set_a.clone(), create]);
+        let state = set.reduce();
+
+        assert_eq!(state.conflicts.records().len(), 1);
+        assert!(matches!(
+            &state.conflicts.records()[0].kind,
+            ConflictKind::StructuralFieldCollision { field, winner, loser }
+                if field.0 == "meter_sequence" && *winner == set_b.id && *loser == set_a.id
+        ));
+    }
+
+    #[test]
+    fn identical_concurrent_meter_writes_reduce_idempotently() {
+        let region = RegionId::new(ReplicaId(9), 3);
+        let create = create_region_env(1, 0, 10, region);
+        let seen = seen_r1(0);
+        let ts = crate::valuegen::time_signature(TimeSignatureId::new(ReplicaId(9), 1), 4);
+        let set_a = prim_env(
+            2,
+            0,
+            20,
+            seen.clone(),
+            set_meter_kind(region, pos(0), Some(ts.clone())),
+        );
+        let set_b = prim_env(3, 0, 20, seen, set_meter_kind(region, pos(0), Some(ts)));
+        let mut set = OperationSet::new();
+        set.accept_all(vec![set_b.clone(), set_a.clone(), create]);
+        let state = set.reduce();
+
+        assert!(state.conflicts.is_empty());
+        let effect_of = |id: OperationId| {
+            state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == id)
+                .map(|(_, eff)| eff)
+        };
+        assert_eq!(effect_of(set_a.id), Some(&OperationEffect::Applied));
+        assert_eq!(
+            effect_of(set_b.id),
+            Some(&OperationEffect::NoOp {
+                reason: NoOpReason::AlreadyApplied,
+            })
+        );
+    }
+
+    #[test]
+    fn a_differing_recarry_of_a_live_time_signature_is_refused() {
+        let region = RegionId::new(ReplicaId(9), 3);
+        let signature_id = TimeSignatureId::new(ReplicaId(9), 1);
+        let create = create_region_env(1, 0, 10, region);
+        let set_a = prim_env(
+            1,
+            1,
+            20,
+            seen_r1(0),
+            set_meter_kind(
+                region,
+                pos(0),
+                Some(crate::valuegen::time_signature(signature_id, 4)),
+            ),
+        );
+        // Causally later, same signature id, different value, different key.
+        let set_b = prim_env(
+            1,
+            2,
+            30,
+            seen_r1(1),
+            set_meter_kind(
+                region,
+                pos(4),
+                Some(crate::valuegen::time_signature(signature_id, 3)),
+            ),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![create, set_a, set_b.clone()]);
+        let state = set.reduce();
+
+        assert_eq!(
+            state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == set_b.id)
+                .map(|(_, eff)| eff),
+            Some(&OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            }),
+            "a differing value under a live signature id is a precondition no-op"
+        );
+    }
+
+    #[test]
+    fn set_tempo_segment_refuses_writes_that_would_malform_the_map() {
+        let region = RegionId::new(ReplicaId(9), 0);
+        let anchor_at = |at: i64| crate::valuegen::region_start_anchor(region, pos(at));
+        let malformed = |counter: u64, op: SetTempoSegmentOp| {
+            prim_env(
+                1,
+                counter,
+                (counter as i64 + 1) * 10,
+                if counter == 0 {
+                    CausalContext::new()
+                } else {
+                    seen_r1(counter - 1)
+                },
+                OperationKind::SetTempoSegment(op),
+            )
+        };
+        // (0) A clean open constant segment at 0 applies (score scope).
+        let clean = malformed(
+            0,
+            SetTempoSegmentOp {
+                region: None,
+                start: anchor_at(0),
+                segment: Some(crate::valuegen::tempo_segment(region, pos(0), 120.0)),
+            },
+        );
+        // (1) Carried segment start disagrees with the operation's key.
+        let key_mismatch = malformed(
+            1,
+            SetTempoSegmentOp {
+                region: None,
+                start: anchor_at(2),
+                segment: Some(crate::valuegen::tempo_segment(region, pos(3), 90.0)),
+            },
+        );
+        // (2) A non-constant shape missing its end data.
+        let mut ramp = crate::valuegen::tempo_segment(region, pos(4), 60.0);
+        ramp.shape = epiphany_core::TempoShape::Linear;
+        let missing_end = malformed(
+            2,
+            SetTempoSegmentOp {
+                region: None,
+                start: anchor_at(4),
+                segment: Some(ramp),
+            },
+        );
+        // (3) An explicit end overlapping the next segment: a segment at -4
+        // whose end (at 2) runs past the existing segment's start at 0.
+        let mut overlapping = crate::valuegen::tempo_segment(region, pos(-4), 100.0);
+        overlapping.end = Some(anchor_at(2));
+        let overlap = malformed(
+            3,
+            SetTempoSegmentOp {
+                region: None,
+                start: anchor_at(-4),
+                segment: Some(overlapping),
+            },
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            clean.clone(),
+            key_mismatch.clone(),
+            missing_end.clone(),
+            overlap.clone(),
+        ]);
+        let state = set.reduce();
+
+        let effect_of = |id: OperationId| {
+            state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == id)
+                .map(|(_, eff)| eff)
+        };
+        assert_eq!(effect_of(clean.id), Some(&OperationEffect::Applied));
+        let refused = OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::TempoMapMalformed,
+            },
+        };
+        assert_eq!(effect_of(key_mismatch.id), Some(&refused));
+        assert_eq!(effect_of(missing_end.id), Some(&refused));
+        assert_eq!(effect_of(overlap.id), Some(&refused));
+    }
+
+    /// The base scenario of the value-restoring undo unit tests: an event with
+    /// one pitch (r1c0), a pre-transaction respell to `spelling(1)` (r1c1), a
+    /// transaction T (declared r1c2) whose member respells to `spelling(2)`
+    /// (r1c3).
+    fn respell_undo_fixture(tx: TransactionId) -> (PitchId, Vec<OperationEnvelope>) {
+        let pitch = PitchId::new(ReplicaId(1), 50);
+        let e0 =
+            insert_with_pitch_content(1, 0, 10, 1, 100, 0, pitch, &crate::valuegen::pitch_value());
+        let pre = prim_env(1, 1, 20, seen_r1(0), respell_kind(pitch, 1));
+        let declare = declare_transaction(1, 2, 30, seen_r1(1), tx);
+        let member = tx_member(1, 3, 40, seen_r1(2), tx, respell_kind(pitch, 2));
+        (pitch, vec![e0, pre, declare, member])
+    }
+
+    #[test]
+    fn undo_restores_the_chain_predecessor_spelling() {
+        let tx = TransactionId::from_raw(21);
+        let (pitch, mut envelopes) = respell_undo_fixture(tx);
+        envelopes.push(undo_env(
+            1,
+            4,
+            50,
+            seen_r1(3),
+            tx,
+            UndoPolicy::StrictInverse,
+        ));
+        let mut set = OperationSet::new();
+        set.accept_all(envelopes);
+        let state = set.reduce();
+
+        assert!(state.conflicts.is_empty());
+        assert_eq!(
+            state.spellings.get(&pitch),
+            Some(&crate::valuegen::spelling(1)),
+            "undo must restore the pre-transaction spelling"
+        );
+        // A pure value restoration (no mints) is a clean `Applied`.
+        assert_eq!(effect_at(&state, 4), Some(&OperationEffect::Applied));
+    }
+
+    #[test]
+    fn undo_removes_a_first_spelling_write() {
+        // No pre-transaction respell: the transaction introduced the first
+        // spelling, so undo restores absence.
+        let tx = TransactionId::from_raw(22);
+        let pitch = PitchId::new(ReplicaId(1), 50);
+        let e0 =
+            insert_with_pitch_content(1, 0, 10, 1, 100, 0, pitch, &crate::valuegen::pitch_value());
+        let declare = declare_transaction(1, 1, 20, seen_r1(0), tx);
+        let member = tx_member(1, 2, 30, seen_r1(1), tx, respell_kind(pitch, 2));
+        let undo = undo_env(1, 3, 40, seen_r1(2), tx, UndoPolicy::StrictInverse);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![undo, member, declare, e0]);
+        let state = set.reduce();
+
+        assert!(state.conflicts.is_empty());
+        assert_eq!(state.spellings.get(&pitch), None);
+        assert_eq!(effect_at(&state, 3), Some(&OperationEffect::Applied));
+    }
+
+    #[test]
+    fn superseded_undo_conflicts_strict_and_skips_best_effort() {
+        let tx = TransactionId::from_raw(23);
+        let (pitch, mut envelopes) = respell_undo_fixture(tx);
+        // A causally-later respell supersedes the transaction's write.
+        let superseder = prim_env(1, 4, 50, seen_r1(3), respell_kind(pitch, 3));
+        let strict = undo_env(1, 5, 60, seen_r1(4), tx, UndoPolicy::StrictInverse);
+        let best_effort = undo_env(1, 6, 70, seen_r1(5), tx, UndoPolicy::BestEffort);
+        envelopes.extend([superseder.clone(), strict.clone(), best_effort.clone()]);
+        let mut set = OperationSet::new();
+        set.accept_all(envelopes);
+        let state = set.reduce();
+
+        // StrictInverse refuses the whole undo, naming the undo and the
+        // superseding writer.
+        assert!(matches!(
+            effect_at(&state, 5),
+            Some(OperationEffect::Conflicted { .. })
+        ));
+        let record = state
+            .conflicts
+            .records()
+            .iter()
+            .find(|record| record.caused_by.contains(&strict.id))
+            .expect("the strict undo records a conflict");
+        assert!(matches!(
+            &record.kind,
+            ConflictKind::TransactionConflict { transaction, .. } if *transaction == tx
+        ));
+        assert!(record.caused_by.contains(&superseder.id));
+        // BestEffort skips the superseded key: applied, nothing restored.
+        assert_eq!(effect_at(&state, 6), Some(&OperationEffect::Applied));
+        assert_eq!(
+            state.spellings.get(&pitch),
+            Some(&crate::valuegen::spelling(3)),
+            "the superseding write stands"
+        );
+    }
+
+    #[test]
+    fn undo_of_undo_restores_the_pre_undo_value() {
+        // PINNED (see DECISIONS.md): an undo's restoration enters the write
+        // chain as a new write by the undo operation. Undoing the undo's own
+        // enclosing transaction therefore restores the value the first undo
+        // removed.
+        let tx = TransactionId::from_raw(24);
+        let (pitch, mut envelopes) = respell_undo_fixture(tx);
+        let undo_tx = TransactionId::from_raw(25);
+        let declare_undo_tx = declare_transaction(1, 4, 50, seen_r1(3), undo_tx);
+        let mut first_undo = undo_env(1, 5, 60, seen_r1(4), tx, UndoPolicy::StrictInverse);
+        first_undo.transaction = Some(undo_tx);
+        let second_undo = undo_env(1, 6, 70, seen_r1(5), undo_tx, UndoPolicy::StrictInverse);
+        envelopes.extend([declare_undo_tx, first_undo, second_undo]);
+        let mut set = OperationSet::new();
+        set.accept_all(envelopes);
+        let state = set.reduce();
+
+        assert!(state.conflicts.is_empty());
+        assert_eq!(
+            state.spellings.get(&pitch),
+            Some(&crate::valuegen::spelling(2)),
+            "undoing the undo restores the originally-undone spelling"
+        );
+    }
+
+    #[test]
+    fn a_second_undo_of_the_same_transaction_sees_the_first_as_superseding() {
+        // PINNED (see DECISIONS.md): the first undo's restoration is a write,
+        // so a repeated strict undo of the same transaction conflicts rather
+        // than double-restoring.
+        let tx = TransactionId::from_raw(26);
+        let (pitch, mut envelopes) = respell_undo_fixture(tx);
+        let first = undo_env(1, 4, 50, seen_r1(3), tx, UndoPolicy::StrictInverse);
+        let second = undo_env(1, 5, 60, seen_r1(4), tx, UndoPolicy::StrictInverse);
+        envelopes.extend([first, second]);
+        let mut set = OperationSet::new();
+        set.accept_all(envelopes);
+        let state = set.reduce();
+
+        assert_eq!(
+            state.spellings.get(&pitch),
+            Some(&crate::valuegen::spelling(1)),
+            "the first undo's restoration stands"
+        );
+        assert!(matches!(
+            effect_at(&state, 5),
+            Some(OperationEffect::Conflicted { .. })
+        ));
+    }
+
+    #[test]
+    fn undo_restoration_is_permutation_invariant() {
+        // The write chains append in canonical processing order, so the undo's
+        // restoration verdict and restored values are pure functions of the
+        // operation set: any delivery order reduces to byte-identical state.
+        let tx = TransactionId::from_raw(27);
+        let (_, mut envelopes) = respell_undo_fixture(tx);
+        // Add a meter overwrite + undo flavor alongside the respell flavor.
+        let region = RegionId::new(ReplicaId(9), 3);
+        envelopes.push(prim_env(
+            2,
+            0,
+            15,
+            CausalContext::new(),
+            OperationKind::CreateRegion(CreateRegionOp {
+                region: crate::valuegen::region(region),
+            }),
+        ));
+        envelopes.push(undo_env(
+            1,
+            4,
+            50,
+            seen_r1(3),
+            tx,
+            UndoPolicy::StrictInverse,
+        ));
+
+        let baseline = {
+            let mut set = OperationSet::new();
+            set.accept_all(envelopes.clone());
+            set.reduce().canonical_bytes()
+        };
+        let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0x9E37_79B9_7F4A_7C15);
+        for _ in 0..4 {
+            let mut shuffled = envelopes.clone();
+            shuffle_envelopes(&mut shuffled, &mut rng);
+            let mut set = OperationSet::new();
+            set.accept_all(shuffled);
+            assert_eq!(
+                set.reduce().canonical_bytes(),
+                baseline,
+                "value-restoring undo must be permutation-invariant"
             );
         }
     }

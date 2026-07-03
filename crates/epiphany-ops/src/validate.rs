@@ -40,6 +40,14 @@
 //! applies to it identically (the replacement's span must not straddle the
 //! region boundary any more than an inserted one may).
 //!
+//! The Phase-3 first tranche (`CreateStaff`, `SetTimeSignature`,
+//! `SetTempoSegment`, `SetStaffLayout` — operation_catalog §CreateStaff,
+//! §"Meter and Tempo Overwrites", §SetStaffLayout) declares **no advisory
+//! preconditions**: every precondition those entries name (reference
+//! resolution, mint freshness, resulting-map well-formedness, target
+//! liveness) is invariant and enforced by the reducer in all modes, so this
+//! module gains no new checks for them.
+//!
 //! ### Implemented here
 //!
 //! * InsertEvent / ModifyEvent duration-not-crossing-region-boundary

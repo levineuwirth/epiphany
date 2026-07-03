@@ -235,7 +235,7 @@
   {\Large\scshape\color{epiphanyslate}Binary Format}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.1.0 --- Phase 2 (canonical wire format: primitives through bundle physical layout + K0 payload framing)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.2.0 --- Phase 2/3 (canonical wire format: primitives through bundle physical layout + K0 and Phase-3-tranche payload framing)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the byte layouts it defines}
   \vfill
 \end{titlepage}
@@ -1287,7 +1287,7 @@ AcceptLoser, \tablenums{1} KeepWinner, \tablenums{2} Override
 \label{req:binfmt:kind-discriminants}
 The \texttt{OperationKind} wire discriminant is one byte, golden-locked to
 the table below. The vocabulary is \textbf{append-only}: new primitive kinds
-take discriminants past \tablenums{23}; the assignments below never change.
+take discriminants past \tablenums{27}; the assignments below never change.
 \end{requirement}
 
 Each row also pins the payload's byte layout; the field \emph{set and order}
@@ -1385,6 +1385,25 @@ sequence sorted ascending by canonical bytes.
     \texttt{region} (16) \cat{} $\mathrm{lp}$(\texttt{TimeAnchor}) \cat{}
     \texttt{present} (bool, 1) &
     \sectionsc{Score Settings} \\
+  \tablenums{24} & \texttt{CreateStaff} &
+    $\mathrm{lp}$(\texttt{Staff}) &
+    \sectionsc{CreateStaff} \\
+  \tablenums{25} & \texttt{SetTimeSignature} &
+    \texttt{region} (16) \cat{} $\mathrm{lp}$(\texttt{TimeAnchor}) \cat{}
+    option tag (\tablenums{0}/\tablenums{1}) \cat{}
+    $\mathrm{lp}$(\texttt{TimeSignature}) if present &
+    \sectionsc{Meter and Tempo Overwrites} \\
+  \tablenums{26} & \texttt{SetTempoSegment} &
+    option tag \cat{} \texttt{region} (16) if present \cat{}
+    $\mathrm{lp}$(\texttt{TimeAnchor}) \cat{} option tag \cat{}
+    $\mathrm{lp}$(\texttt{TempoSegment}) if present &
+    \sectionsc{Meter and Tempo Overwrites} \\
+  \tablenums{27} & \texttt{SetStaffLayout} &
+    \texttt{staff\_instance} (16) \cat{} option tag \cat{}
+    \texttt{instrument\_override} (16) if present \cat{} option tag \cat{}
+    $\mathrm{lp}$(\texttt{StaffLineConfiguration}) if present \cat{}
+    \texttt{visible} (bool, 1) &
+    \sectionsc{SetStaffLayout} \\
   \bottomrule
 \end{longtable}
 \endgroup
@@ -1429,7 +1448,7 @@ assigned independently of Section~\ref{sec:ops:kinds}, with both encode and
 validating decode. One byte; only \texttt{Registered} carries a payload (its
 \texttt{OperationKindRegistryId}, 16 big-endian bytes, total 17). Unknown
 discriminants and wrong lengths are decode errors. Append-only past
-\tablenums{23}.
+\tablenums{27}.
 \end{requirement}
 
 \begingroup\small
@@ -1450,15 +1469,19 @@ discriminants and wrong lengths are decode errors. Append-only past
   \tablenums{9} & \texttt{InsertRegion} & \tablenums{21} & \texttt{DeleteVoice} \\
   \tablenums{10} & \texttt{DeleteRegion} & \tablenums{22} & \texttt{SetMetadata} \\
   \tablenums{11} & \texttt{InsertStaffInstance} & \tablenums{23} & \texttt{SetMetricGrid} \\
+  \tablenums{24} & \texttt{InsertStaff} & \tablenums{25} & \texttt{SetTimeSignature} \\
+  \tablenums{26} & \texttt{SetTempoSegment} & \tablenums{27} & \texttt{SetStaffLayout} \\
   \bottomrule
 \end{longtable}
 \endgroup
 
-\textbf{Naming mapping.} The kind-to-tag projection renames two pairs:
+\textbf{Naming mapping.} The kind-to-tag projection renames three pairs:
 \texttt{OperationKind::\allowbreak CreateRegion} projects to
 \texttt{OperationKindTag::\allowbreak InsertRegion}, and
 \texttt{OperationKind::\allowbreak CreateStaffInstance} projects to
-\texttt{OperationKindTag::\allowbreak InsertStaffInstance}. The mismatch is
+\texttt{OperationKindTag::\allowbreak InsertStaffInstance}, and
+\texttt{OperationKind::\allowbreak CreateStaff} projects to
+\texttt{OperationKindTag::\allowbreak InsertStaff}. The mismatch is
 intentional
 (the tag space predates the M2c naming) and is pinned here so barrier
 authors target the right tag.
@@ -1529,7 +1552,8 @@ trailing bytes are decode errors.
     \tablenums{6} PitchSpaceMismatch; \tablenums{7} VoiceMissing;
     \tablenums{8} ExtensionPrecondition \cat{} id (16 BE);
     \tablenums{9} Registered \cat{} id (16 BE);
-    \tablenums{10} ContainerNotEmpty. \\
+    \tablenums{10} ContainerNotEmpty;
+    \tablenums{11} TempoMapMalformed. \\
   \texttt{RepairRecord} &
     (struct) \texttt{kind} (\texttt{RepairKind}) \cat{} \texttt{target}
     (\texttt{TypedObjectId}). \\
@@ -2519,7 +2543,20 @@ layouts of Section~\ref{sec:values:representative}.
   forms (P12-E1/E2/E3); pins the no-varint rule, the frozen-positional
   schema-evolution keystone, and the id-leads envelope property;
   \texttt{SnapshotId} derivation deferred (open question). \\
-  \bottomrule
+    \today & Operation wire forms & 0.2.0 --- Phase-3 first tranche: appended
+  \texttt{OperationKind} wire discriminants \tablenums{24}--\tablenums{27}
+  (\texttt{CreateStaff}, \texttt{SetTimeSignature},
+  \texttt{SetTempoSegment}, \texttt{SetStaffLayout}) with their payload
+  layouts, the matching \texttt{OperationKindTag} discriminants
+  \tablenums{24}--\tablenums{27} (kind-to-tag naming gains
+  \texttt{CreateStaff}~$\rightarrow$~\texttt{InsertStaff}), and
+  \texttt{PreconditionFailureReason} \tablenums{11}
+  (\texttt{TempoMapMalformed}) --- a schema-\emph{minor} evolution under this
+  document's own append-only rules (Chapter~\ref{ch:evolution}); no existing
+  assignment changed. Semantics: Operation Catalog 0.5.0 (\sectionsc{CreateStaff},
+  \sectionsc{Meter and Tempo Overwrites}, \sectionsc{SetStaffLayout}, and the
+  value-restoring \sectionsc{UndoTransaction} revision). \\
+\bottomrule
 \end{longtable}
 
 \end{document}

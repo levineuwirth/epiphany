@@ -5234,6 +5234,90 @@ mod tests {
     }
 
     #[test]
+    fn phase3_operation_kinds_derive_subjects_and_gate_on_barriers() {
+        // The Phase-3 tranche (CreateStaff / SetTimeSignature / SetTempoSegment
+        // / SetStaffLayout) participates in the barrier gate: a whole-score
+        // barrier naming each tag refuses the matching edit before minting.
+        let mut session = open_plain(7);
+        let region = session.score().canvas.regions[0].id;
+        let instance = session.score().canvas.regions[0].staff_instances()[0].id;
+        let staff = session.score().staves[0].id;
+        let instrument = session.score().staves[0].instrument;
+        let anchor = epiphany_core::TimeAnchor::Region {
+            id: region,
+            edge: epiphany_core::RegionEdge::Start,
+            offset: epiphany_core::AnchorOffset::Zero,
+        };
+        let edits: Vec<(OperationKindTag, OperationKind)> = vec![
+            (
+                OperationKindTag::InsertStaff,
+                OperationKind::CreateStaff(epiphany_ops::CreateStaffOp {
+                    staff: epiphany_ops::valuegen::staff(staff, instrument),
+                }),
+            ),
+            (
+                OperationKindTag::SetTimeSignature,
+                OperationKind::SetTimeSignature(epiphany_ops::SetTimeSignatureOp {
+                    region,
+                    anchor: anchor.clone(),
+                    time_signature: None,
+                }),
+            ),
+            (
+                OperationKindTag::SetTempoSegment,
+                OperationKind::SetTempoSegment(epiphany_ops::SetTempoSegmentOp {
+                    region: Some(region),
+                    start: anchor,
+                    segment: None,
+                }),
+            ),
+            (
+                OperationKindTag::SetStaffLayout,
+                OperationKind::SetStaffLayout(epiphany_ops::SetStaffLayoutOp {
+                    staff_instance: instance,
+                    instrument_override: None,
+                    staff_lines_override: None,
+                    visible: false,
+                }),
+            ),
+        ];
+        for (tag, kind) in &edits {
+            session.set_active_extensions(vec![extension_prohibiting(0xE7, *tag)]);
+            assert_eq!(
+                session.apply(kind.clone()),
+                Err(EditorError::BarrierProhibited {
+                    extension: ExtensionRef(0xE7),
+                    operation: *tag,
+                }),
+                "a whole-score barrier naming {tag:?} must refuse the edit"
+            );
+        }
+        assert!(session.applied_operations().is_empty());
+
+        // With no barriers active, the layout advisory applies end to end (the
+        // spec declares no advisory preconditions for the tranche).
+        session.set_active_extensions(vec![]);
+        session
+            .apply(OperationKind::SetStaffLayout(
+                epiphany_ops::SetStaffLayoutOp {
+                    staff_instance: instance,
+                    instrument_override: None,
+                    staff_lines_override: None,
+                    visible: false,
+                },
+            ))
+            .expect("an unbarred layout write applies");
+        let materialized = session
+            .score()
+            .staff_instances()
+            .find(|(_, si)| si.id == instance)
+            .expect("instance survives")
+            .1
+            .clone();
+        assert!(!materialized.visible);
+    }
+
+    #[test]
     fn an_unsafe_edit_crosses_the_barrier_and_records_the_tombstone_obligation() {
         let mut session = open_plain(7);
         let (_, delete) = first_event_delete(&session);

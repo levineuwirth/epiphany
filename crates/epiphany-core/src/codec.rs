@@ -2124,6 +2124,15 @@ canonical_value! {
     // Score settings (M2d) — value-typed set-* payloads embed these.
     ScoreMetadata,
     MetricGrid,
+    // Phase-3 ops tranche — value-typed create/set payloads embed these.
+    // `TimeSignature::dec` re-validates the beat-group sum through
+    // `TimeSignature::new` (the "reject at construction *and* at decode"
+    // discipline the operation catalog's §"Meter and Tempo Overwrites"
+    // requires), so a malformed value never round-trips.
+    Staff,
+    TimeSignature,
+    TempoSegment,
+    StaffLineConfiguration,
 }
 
 #[cfg(test)]

@@ -194,10 +194,48 @@ pub fn synthesized_layout_id(
     LayoutObjectId(p.finish_trunc128())
 }
 
+/// Derives the [`SynthesisInstanceKey`] for an engraver-synthesized
+/// **continuation** of an existing layout object — e.g. the segment of a
+/// region-spanning staff line that a casting-off system break places in a later
+/// system. Keyed on the original object's stable id (which already encodes its
+/// full semantic identity — source, manifestation, line index) and the 1-based
+/// continuation ordinal, hashed under the layout domain tag so keys from
+/// different originals can never collide for one `(source, kind)` pair. The
+/// ordinal names *which continuation of that object* the key identifies (its
+/// second system's segment, its third's, …), which is the segment's semantic
+/// identity — a casting-off artefact exists only relative to the break
+/// structure that created it.
+pub fn continuation_instance_key(original: LayoutObjectId, ordinal: u32) -> SynthesisInstanceKey {
+    let mut p = Preimage::new(DomainTag::LAYOUT_OBJECT_ID);
+    p.push_bytes(b"synthesis-instance/continuation");
+    p.push_u64_le((original.0 >> 64) as u64);
+    p.push_u64_le(original.0 as u64);
+    p.push_u64_le(ordinal as u64);
+    SynthesisInstanceKey(p.finish_trunc128())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use epiphany_core::{EventId, RegionId};
+
+    #[test]
+    fn continuation_keys_are_stable_and_distinct() {
+        let a = LayoutObjectId(0x1111);
+        let b = LayoutObjectId(0x2222);
+        assert_eq!(
+            continuation_instance_key(a, 1),
+            continuation_instance_key(a, 1)
+        );
+        assert_ne!(
+            continuation_instance_key(a, 1),
+            continuation_instance_key(a, 2)
+        );
+        assert_ne!(
+            continuation_instance_key(a, 1),
+            continuation_instance_key(b, 1)
+        );
+    }
 
     #[test]
     fn stable_id_is_a_pure_function_of_source() {

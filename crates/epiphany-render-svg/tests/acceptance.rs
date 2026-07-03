@@ -263,7 +263,7 @@ fn engrave_pipeline(score: &Score) -> (ConstrainedLayoutIR, RenderOutput) {
     use epiphany_engrave::Engraver;
 
     let constrained = to_constrained(&to_logical(score));
-    let layout = Engraver
+    let layout = Engraver::default()
         .solve(&constrained, &SolverConfig::default())
         .layout;
     let out = render(&layout, &RenderOptions::default());
@@ -285,7 +285,7 @@ fn engraver_output_is_golden_locked_well_formed_with_every_glyph_drawn() {
 
     for (fixture, score) in fixtures() {
         let constrained = to_constrained(&to_logical(&score));
-        let report = Engraver.solve(&constrained, &SolverConfig::default());
+        let report = Engraver::default().solve(&constrained, &SolverConfig::default());
         assert_eq!(
             report.status,
             SolveStatus::Solved,

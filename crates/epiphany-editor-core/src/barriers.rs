@@ -378,6 +378,35 @@ pub(crate) fn subjects_of(kind: &OperationKind, score: &Score) -> BarrierSubject
                 ctx(location.map(|(r, _)| r), location.map(|(_, si)| si)),
             )
         }
+        // Phase-3 first tranche. A staff is a global (score-root) object with
+        // no regional containment; a meter overwrite edits its region's grid
+        // slot and names the carried signature it mints; a tempo overwrite
+        // names its region scope (the score-level map is score-wide state); a
+        // layout overwrite names its staff instance.
+        OperationKind::CreateStaff(op) => {
+            one(TypedObjectId::Staff(op.staff_id()), EditContext::default())
+        }
+        OperationKind::SetTimeSignature(op) => {
+            let mut objects = vec![(TypedObjectId::Region(op.region), ctx(Some(op.region), None))];
+            if let Some(signature) = &op.time_signature {
+                objects.push((
+                    TypedObjectId::TimeSignature(signature.id),
+                    ctx(Some(op.region), None),
+                ));
+            }
+            BarrierSubjects::Objects(objects)
+        }
+        OperationKind::SetTempoSegment(op) => match op.region {
+            Some(region) => one(TypedObjectId::Region(region), ctx(Some(region), None)),
+            None => BarrierSubjects::ScoreWide,
+        },
+        OperationKind::SetStaffLayout(op) => one(
+            TypedObjectId::StaffInstance(op.staff_instance),
+            ctx(
+                region_of_staff_instance(score, op.staff_instance),
+                Some(op.staff_instance),
+            ),
+        ),
         OperationKind::SetMetadata(_) | OperationKind::DeclareTransaction(_) => {
             BarrierSubjects::ScoreWide
         }

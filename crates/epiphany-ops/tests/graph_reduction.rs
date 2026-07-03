@@ -6,16 +6,18 @@ use epiphany_core::{
     AnchorOffset, AnnotationAnchor, Comment, CommentId, CueEvent, CueRendering, Event,
     EventDuration, EventId, EventPosition, GestureAnchoring, GraphicGesture, GraphicGestureId,
     Marker, MarkerId, MusicalDuration, MusicalPosition, OperationId, PitchId, RationalTime,
-    RegionEdge, RegionTimeModel, ReplicaId, Score, SlurId, StaffInstanceId, TimeAnchor,
-    TransactionId, TypedObjectId, VoiceId, VoiceOrigin, WallClockTime,
+    RegionEdge, RegionId, RegionTimeModel, ReplicaId, Score, SlurId, StaffId, StaffInstanceId,
+    TimeAnchor, TimeSignatureId, TransactionId, TypedObjectId, VoiceId, VoiceOrigin, WallClockTime,
 };
 use epiphany_ops::{
     valuegen, AuthorId, CausalContext, ChangeRegionTimeModelOp, ConflictKind, CreateCrossCuttingOp,
-    CrossCuttingValue, DeleteEventOp, HybridLogicalClock, InsertEventOp, NoOpReason,
-    OperationEffect, OperationEnvelope, OperationKind, OperationPayload, OperationSet,
-    OperationStamp, PositionRemapping, PreconditionFailureReason, ReanchorReason, RepairKind,
-    RepairRecord, SetUserSystemBreakOp, TransactionCategory, TransactionDescriptor,
-    TupletCompensation, UndoPolicy, UndoTransactionPayload,
+    CreateStaffInstanceOp, CreateStaffOp, CrossCuttingValue, DeleteEventOp, DeleteStaffInstanceOp,
+    HybridLogicalClock, InsertEventOp, ModifyEventOp, NoOpReason, OperationEffect,
+    OperationEnvelope, OperationKind, OperationPayload, OperationSet, OperationStamp,
+    PositionRemapping, PreconditionFailureReason, ReanchorReason, RepairKind, RepairRecord,
+    RespellPitchOp, SetMetricGridOp, SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp,
+    SetUserSystemBreakOp, TransactionCategory, TransactionDescriptor, TupletCompensation,
+    UndoPolicy, UndoTransactionPayload,
 };
 
 fn envelope(
@@ -2750,4 +2752,902 @@ fn referent_reanchoring_is_permutation_invariant() {
             "delivery permutation #{k} changed the canonical bytes"
         );
     }
+}
+
+// ===========================================================================
+// Phase-3 first tranche: CreateStaff, SetTimeSignature, SetTempoSegment,
+// SetStaffLayout (operation_catalog §CreateStaff, §"Meter and Tempo
+// Overwrites", §SetStaffLayout), and value-restoring undo (§UndoTransaction).
+// ===========================================================================
+
+fn seen(replica: u64, counter: u64) -> CausalContext {
+    CausalContext::new().with_seen(ReplicaId(replica), counter)
+}
+
+fn prim(kind: OperationKind) -> OperationPayload {
+    OperationPayload::Primitive(kind)
+}
+
+/// A single-replica causal chain of primitives (each member sees its
+/// predecessor), optionally under one transaction.
+fn chain(
+    replica: u64,
+    start_physical: i64,
+    tx: Option<TransactionId>,
+    kinds: Vec<OperationKind>,
+) -> Vec<OperationEnvelope> {
+    kinds
+        .into_iter()
+        .enumerate()
+        .map(|(index, kind)| {
+            let counter = index as u64;
+            let ctx = if counter == 0 {
+                CausalContext::new()
+            } else {
+                seen(replica, counter - 1)
+            };
+            envelope(
+                replica,
+                counter,
+                start_physical + counter as i64,
+                ctx,
+                tx,
+                prim(kind),
+            )
+        })
+        .collect()
+}
+
+fn set_meter(
+    region: RegionId,
+    at: i32,
+    signature: Option<epiphany_core::TimeSignature>,
+) -> OperationKind {
+    OperationKind::SetTimeSignature(SetTimeSignatureOp {
+        region,
+        anchor: valuegen::region_start_anchor(region, MusicalPosition(RationalTime::from_int(at))),
+        time_signature: signature,
+    })
+}
+
+fn set_tempo(
+    region_scope: Option<RegionId>,
+    anchor_region: RegionId,
+    at: i32,
+    segment: Option<epiphany_core::TempoSegment>,
+) -> OperationKind {
+    OperationKind::SetTempoSegment(SetTempoSegmentOp {
+        region: region_scope,
+        start: valuegen::region_start_anchor(
+            anchor_region,
+            MusicalPosition(RationalTime::from_int(at)),
+        ),
+        segment,
+    })
+}
+
+fn effect_for(result: &epiphany_ops::GraphMaterialization, id: OperationId) -> &OperationEffect {
+    result
+        .state
+        .effects
+        .iter()
+        .find(|(e, _)| *e == id)
+        .map(|(_, effect)| effect)
+        .expect("every accepted operation produces an effect")
+}
+
+fn precondition_noop(reason: PreconditionFailureReason) -> OperationEffect {
+    OperationEffect::NoOp {
+        reason: NoOpReason::PreconditionFailedUnderReduction { reason },
+    }
+}
+
+#[test]
+fn create_staff_mints_into_the_graph_and_checks_references() {
+    let base = epiphany_core::generators::valid_score(300);
+    let instrument = base.instruments[0].id;
+    let staff_id = StaffId::new(ReplicaId(60), 1);
+    let envelopes = chain(
+        60,
+        10,
+        None,
+        vec![
+            OperationKind::CreateStaff(CreateStaffOp {
+                staff: valuegen::staff(staff_id, instrument),
+            }),
+            // A staff naming an undeclared instrument is refused (graph-aware
+            // reference-resolution precondition).
+            OperationKind::CreateStaff(CreateStaffOp {
+                staff: valuegen::staff(
+                    StaffId::new(ReplicaId(60), 2),
+                    epiphany_core::InstrumentId::new(ReplicaId(60), 99),
+                ),
+            }),
+        ],
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(envelopes.clone());
+    let result = set.reduce_onto(&base);
+
+    assert_eq!(
+        effect_for(&result, envelopes[0].id),
+        &OperationEffect::Applied
+    );
+    assert_eq!(
+        effect_for(&result, envelopes[1].id),
+        &precondition_noop(PreconditionFailureReason::TargetMissing),
+    );
+    assert!(result.score.staves.iter().any(|s| s.id == staff_id));
+    assert!(matches!(
+        result.state.objects.get(&TypedObjectId::Staff(staff_id)),
+        Some(epiphany_ops::ObjectState::Live)
+    ));
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn create_staff_instance_now_requires_a_live_staff() {
+    let base = epiphany_core::generators::valid_score(301);
+    let region = base.canvas.regions[0].id;
+    let instrument = base.instruments[0].id;
+    let minted_staff = StaffId::new(ReplicaId(61), 1);
+    let envelopes = chain(
+        61,
+        10,
+        None,
+        vec![
+            // Referencing a staff that was never minted: refused.
+            OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region,
+                instance: valuegen::staff_instance(
+                    StaffInstanceId::new(ReplicaId(61), 5),
+                    StaffId::new(ReplicaId(61), 9),
+                ),
+            }),
+            // Mint the staff, then an instance referencing it applies.
+            OperationKind::CreateStaff(CreateStaffOp {
+                staff: valuegen::staff(minted_staff, instrument),
+            }),
+            OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region,
+                instance: valuegen::staff_instance(
+                    StaffInstanceId::new(ReplicaId(61), 6),
+                    minted_staff,
+                ),
+            }),
+        ],
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(envelopes.clone());
+    let result = set.reduce_onto(&base);
+
+    assert_eq!(
+        effect_for(&result, envelopes[0].id),
+        &precondition_noop(PreconditionFailureReason::TargetMissing),
+    );
+    assert_eq!(
+        effect_for(&result, envelopes[2].id),
+        &OperationEffect::Applied
+    );
+    assert!(result
+        .score
+        .staff_instances()
+        .any(|(_, si)| si.id == StaffInstanceId::new(ReplicaId(61), 6)));
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn set_time_signature_sets_replaces_and_removes_in_the_grid() {
+    let base = epiphany_core::generators::valid_score(302);
+    let region = base.canvas.regions[0].id;
+    let ts_a = valuegen::time_signature(TimeSignatureId::new(ReplicaId(62), 1), 4);
+    let ts_b = valuegen::time_signature(TimeSignatureId::new(ReplicaId(62), 2), 3);
+    let envelopes = chain(
+        62,
+        10,
+        None,
+        vec![
+            set_meter(region, 0, Some(ts_a.clone())),
+            set_meter(region, 0, Some(ts_b.clone())),
+            set_meter(region, 0, None),
+        ],
+    );
+
+    // Set: the grid is created around the meter change; the signature mints.
+    let mut set = OperationSet::new();
+    set.accept_all(envelopes[..1].to_vec());
+    let result = set.reduce_onto(&base);
+    let grid = |result: &epiphany_ops::GraphMaterialization| {
+        result.score.canvas.regions[0]
+            .content
+            .staff_based()
+            .expect("fixture is staff based")
+            .default_metric_grid
+            .clone()
+    };
+    let after_set = grid(&result).expect("a set creates the grid");
+    assert_eq!(after_set.meter_sequence.len(), 1);
+    assert_eq!(after_set.meter_sequence[0].time_signature, ts_a.id);
+    assert!(result.score.time_signatures.iter().any(|t| t.id == ts_a.id));
+    assert!(check_invariants(&result.score).is_empty());
+
+    // Replace: the causally-later write overwrites the single slot.
+    let mut set = OperationSet::new();
+    set.accept_all(envelopes[..2].to_vec());
+    let result = set.reduce_onto(&base);
+    let after_replace = grid(&result).expect("still present after replace");
+    assert_eq!(after_replace.meter_sequence.len(), 1);
+    assert_eq!(after_replace.meter_sequence[0].time_signature, ts_b.id);
+    assert!(check_invariants(&result.score).is_empty());
+
+    // Remove: the slot empties; the grid the set created normalizes away.
+    let mut set = OperationSet::new();
+    set.accept_all(envelopes.to_vec());
+    let result = set.reduce_onto(&base);
+    assert_eq!(grid(&result), None);
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn a_mid_region_meter_change_reduces_cleanly_p12_c5() {
+    // P12-C5: a mid-region SetTimeSignature reduces cleanly and materializes
+    // into the grid; the decomposition pre-pass still honors only the first
+    // governing meter (P12-H4) but must not crash on the multi-meter grid.
+    let base = epiphany_core::generators::valid_score(303);
+    let region = base.canvas.regions[0].id;
+    let ts_a = valuegen::time_signature(TimeSignatureId::new(ReplicaId(63), 1), 4);
+    let ts_b = valuegen::time_signature(TimeSignatureId::new(ReplicaId(63), 2), 3);
+    let envelopes = chain(
+        63,
+        10,
+        None,
+        vec![
+            set_meter(region, 0, Some(ts_a.clone())),
+            set_meter(region, 8, Some(ts_b.clone())),
+        ],
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(envelopes.clone());
+    let result = set.reduce_onto(&base);
+
+    for env in &envelopes {
+        assert_eq!(effect_for(&result, env.id), &OperationEffect::Applied);
+    }
+    let grid = result.score.canvas.regions[0]
+        .content
+        .staff_based()
+        .expect("fixture is staff based")
+        .default_metric_grid
+        .as_ref()
+        .expect("the sets created the grid");
+    assert_eq!(
+        grid.meter_sequence
+            .iter()
+            .map(|m| m.time_signature)
+            .collect::<Vec<_>>(),
+        vec![ts_a.id, ts_b.id],
+        "meter changes stay ordered by resolved position"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+    // The pre-pass tolerates the multi-meter grid (P12-H4 owns honoring it).
+    let _ =
+        epiphany_core::derive_annotations(&result.score, &epiphany_core::PrePassProfile::default());
+}
+
+#[test]
+fn set_tempo_segment_materializes_in_score_and_region_scope() {
+    let base = epiphany_core::generators::valid_score(304);
+    let region = base.canvas.regions[0].id;
+    let score_seg = valuegen::tempo_segment(region, MusicalPosition::origin(), 120.0);
+    let local_seg = valuegen::tempo_segment(region, MusicalPosition::origin(), 90.0);
+    let mut ramp =
+        valuegen::tempo_segment(region, MusicalPosition(RationalTime::from_int(4)), 60.0);
+    ramp.shape = epiphany_core::TempoShape::Linear; // no end data: malformed
+    let envelopes = chain(
+        64,
+        10,
+        None,
+        vec![
+            set_tempo(None, region, 0, Some(score_seg.clone())),
+            set_tempo(Some(region), region, 0, Some(local_seg.clone())),
+            set_tempo(None, region, 4, Some(ramp)),
+            set_tempo(Some(region), region, 0, None),
+        ],
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(envelopes.clone());
+    let result = set.reduce_onto(&base);
+
+    assert_eq!(
+        effect_for(&result, envelopes[0].id),
+        &OperationEffect::Applied
+    );
+    assert_eq!(
+        effect_for(&result, envelopes[1].id),
+        &OperationEffect::Applied
+    );
+    assert_eq!(
+        effect_for(&result, envelopes[2].id),
+        &precondition_noop(PreconditionFailureReason::TempoMapMalformed),
+    );
+    assert_eq!(
+        effect_for(&result, envelopes[3].id),
+        &OperationEffect::Applied
+    );
+    assert_eq!(result.score.tempo_map.segments, vec![score_seg]);
+    // The local map was created by the set and normalized away by the remove.
+    assert_eq!(result.score.canvas.regions[0].local_tempo_map, None);
+    assert!(check_invariants(&result.score).is_empty());
+
+    // The region-scoped set alone creates (and keeps) the local map.
+    let mut set = OperationSet::new();
+    set.accept_all(envelopes[..2].to_vec());
+    let result = set.reduce_onto(&base);
+    let local = result.score.canvas.regions[0]
+        .local_tempo_map
+        .as_ref()
+        .expect("a set on a region with no local map creates one");
+    assert_eq!(local.segments, vec![local_seg]);
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+#[test]
+fn set_staff_layout_is_an_advisory_lww_with_tombstone_noop() {
+    let base = epiphany_core::generators::valid_score(305);
+    let region = base.canvas.regions[0].id;
+    let instance = base.canvas.regions[0].staff_instances()[0].id;
+    let staff = base.canvas.regions[0].staff_instances()[0].staff;
+    let instrument = base.instruments[0].id;
+
+    // Two concurrent differing writes: advisory LWW — no conflict; the later
+    // in canonical order (greater replica at an equal stamp) wins.
+    let earlier = envelope(
+        65,
+        0,
+        10,
+        CausalContext::new(),
+        None,
+        prim(OperationKind::SetStaffLayout(SetStaffLayoutOp {
+            staff_instance: instance,
+            instrument_override: Some(instrument),
+            staff_lines_override: None,
+            visible: true,
+        })),
+    );
+    let later = envelope(
+        66,
+        0,
+        10,
+        CausalContext::new(),
+        None,
+        prim(OperationKind::SetStaffLayout(SetStaffLayoutOp {
+            staff_instance: instance,
+            instrument_override: None,
+            staff_lines_override: Some(epiphany_core::StaffLineConfiguration { line_count: 1 }),
+            visible: false,
+        })),
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(vec![earlier.clone(), later.clone()]);
+    let result = set.reduce_onto(&base);
+
+    assert!(
+        result.state.conflicts.is_empty(),
+        "advisory LWW never conflicts"
+    );
+    assert_eq!(effect_for(&result, earlier.id), &OperationEffect::Applied);
+    assert_eq!(effect_for(&result, later.id), &OperationEffect::Applied);
+    let materialized = result
+        .score
+        .staff_instances()
+        .find(|(_, si)| si.id == instance)
+        .expect("instance survives")
+        .1
+        .clone();
+    assert_eq!(materialized.instrument_override, None);
+    assert_eq!(
+        materialized.staff_lines_override,
+        Some(epiphany_core::StaffLineConfiguration { line_count: 1 })
+    );
+    assert!(!materialized.visible);
+    assert!(check_invariants(&result.score).is_empty());
+
+    // A tombstoned target is a no-op: mint an empty instance, delete it, then
+    // aim a layout write at it.
+    let fresh = StaffInstanceId::new(ReplicaId(67), 1);
+    let envelopes = chain(
+        67,
+        10,
+        None,
+        vec![
+            OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region,
+                instance: valuegen::staff_instance(fresh, staff),
+            }),
+            OperationKind::DeleteStaffInstance(DeleteStaffInstanceOp {
+                staff_instance: fresh,
+            }),
+            OperationKind::SetStaffLayout(SetStaffLayoutOp {
+                staff_instance: fresh,
+                instrument_override: None,
+                staff_lines_override: None,
+                visible: false,
+            }),
+        ],
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(envelopes.clone());
+    let result = set.reduce_onto(&base);
+    assert_eq!(
+        effect_for(&result, envelopes[2].id),
+        &OperationEffect::NoOp {
+            reason: NoOpReason::TargetTombstoned,
+        },
+    );
+}
+
+/// The full value-restoring undo sweep: one transaction overwrites every LWW
+/// family (and mints an event), and its undo restores each family to the base
+/// state (operation_catalog §UndoTransaction "Value restoration").
+#[test]
+fn undo_restores_overwritten_values_across_every_family() {
+    let base = epiphany_core::generators::valid_score(306);
+    let region = base.canvas.regions[0].id;
+    let (staff_instance, target_voice) = target(&base);
+    let base_instance = base
+        .staff_instances()
+        .find(|(_, si)| si.id == staff_instance)
+        .expect("fixture instance")
+        .1
+        .clone();
+    let base_event_id = base_instance.voices[0].events[0];
+    let base_event = base.events.get(base_event_id).expect("base event").clone();
+    let mut pitches = Vec::new();
+    base_event.collect_identified_pitches(&mut pitches);
+    let base_pitch = pitches[0].id;
+
+    // A same-placement replacement value with different pitch content.
+    let mut replacement = base_event.clone();
+    if let Event::Pitched(pe) = &mut replacement {
+        pe.pitches[0].pitch = valuegen::pitch_value_nth(5);
+    }
+    let ts = valuegen::time_signature(TimeSignatureId::new(ReplicaId(70), 1), 4);
+    let segment = valuegen::tempo_segment(region, MusicalPosition::origin(), 120.0);
+    let inserted_event = EventId::new(ReplicaId(70), 100);
+    let inserted_pitch = PitchId::new(ReplicaId(70), 101);
+
+    let tx = TransactionId::from_raw(70);
+    let mut kinds = vec![
+        OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("overwrite everything"),
+            category: Some(TransactionCategory::Structural),
+        }),
+        OperationKind::ModifyEvent(ModifyEventOp {
+            event: replacement.clone(),
+        }),
+        OperationKind::RespellPitch(RespellPitchOp {
+            pitch: base_pitch,
+            spelling: valuegen::spelling(3),
+        }),
+        OperationKind::SetMetricGrid(SetMetricGridOp {
+            region,
+            grid: Some(valuegen::metric_grid()),
+        }),
+        OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
+            region,
+            anchor: valuegen::region_start_anchor(
+                region,
+                MusicalPosition(RationalTime::from_int(8)),
+            ),
+            present: true,
+        }),
+        set_meter(region, 0, Some(ts.clone())),
+        set_tempo(None, region, 0, Some(segment)),
+        OperationKind::SetStaffLayout(SetStaffLayoutOp {
+            staff_instance,
+            instrument_override: None,
+            staff_lines_override: None,
+            visible: false,
+        }),
+        OperationKind::SetMetadata(epiphany_ops::SetMetadataOp {
+            metadata: valuegen::score_metadata(7),
+        }),
+    ];
+    kinds.push(OperationKind::InsertEvent(InsertEventOp {
+        staff_instance,
+        event: valuegen::insert_event_value(
+            inserted_event,
+            target_voice,
+            MusicalPosition(RationalTime::from_int(100)),
+            MusicalDuration::whole(),
+            &[inserted_pitch],
+        ),
+    }));
+    let n = kinds.len() as u64;
+    let mut envelopes = chain(70, 10, Some(tx), kinds);
+    let undo = envelope(
+        70,
+        n,
+        10 + n as i64,
+        seen(70, n - 1),
+        None,
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    envelopes.push(undo.clone());
+
+    let mut set = OperationSet::new();
+    set.accept_all(envelopes);
+    let result = set.reduce_onto(&base);
+
+    // Effect: the tombstone repairs only (the inserted event + pitch, and the
+    // transaction-minted time signature); restorations are not repairs.
+    match effect_for(&result, undo.id) {
+        OperationEffect::AppliedWithRepair { repairs } => {
+            assert!(repairs
+                .iter()
+                .all(|r| matches!(r.kind, RepairKind::CascadeDeleted)));
+            let targets: Vec<TypedObjectId> = repairs.iter().map(|r| r.target).collect();
+            assert!(targets.contains(&TypedObjectId::Event(inserted_event)));
+            assert!(targets.contains(&TypedObjectId::TimeSignature(ts.id)));
+        }
+        other => panic!("expected AppliedWithRepair, got {other:?}"),
+    }
+    assert!(result.state.conflicts.is_empty());
+
+    // Every overwritten family is back at its base value.
+    assert_eq!(
+        result.score.events.get(base_event_id),
+        Some(&base_event),
+        "the modified event's base value is restored"
+    );
+    assert_eq!(result.state.spellings.get(&base_pitch), None);
+    assert!(result.score.spelling_attachments.is_empty());
+    let content = result.score.canvas.regions[0]
+        .content
+        .staff_based()
+        .expect("fixture is staff based");
+    assert_eq!(content.default_metric_grid, None);
+    assert!(content.user_system_breaks.is_empty());
+    assert!(result.state.breaks.is_empty());
+    assert!(result.score.tempo_map.segments.is_empty());
+    assert!(!result.score.time_signatures.iter().any(|t| t.id == ts.id));
+    let restored_instance = result
+        .score
+        .staff_instances()
+        .find(|(_, si)| si.id == staff_instance)
+        .expect("instance survives")
+        .1
+        .clone();
+    assert_eq!(
+        (
+            restored_instance.instrument_override,
+            restored_instance.staff_lines_override.clone(),
+            restored_instance.visible
+        ),
+        (
+            base_instance.instrument_override,
+            base_instance.staff_lines_override.clone(),
+            base_instance.visible
+        )
+    );
+    assert_eq!(result.score.metadata, base.metadata);
+    assert!(!result.score.events.contains(inserted_event));
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+/// Replaced (rather than first-written) keys restore the *pre-transaction*
+/// writes, not absence.
+#[test]
+fn undo_restores_the_pre_transaction_writes_for_replaced_keys() {
+    let base = epiphany_core::generators::valid_score(307);
+    let region = base.canvas.regions[0].id;
+    let (staff_instance, _) = target(&base);
+    let ts_pre = valuegen::time_signature(TimeSignatureId::new(ReplicaId(71), 1), 4);
+    let ts_tx = valuegen::time_signature(TimeSignatureId::new(ReplicaId(71), 2), 3);
+    let seg_pre = valuegen::tempo_segment(region, MusicalPosition::origin(), 120.0);
+    let seg_tx = valuegen::tempo_segment(region, MusicalPosition::origin(), 90.0);
+    let tx = TransactionId::from_raw(71);
+
+    let kinds = vec![
+        // Pre-transaction writers.
+        set_meter(region, 0, Some(ts_pre.clone())),
+        set_tempo(None, region, 0, Some(seg_pre.clone())),
+        OperationKind::SetStaffLayout(SetStaffLayoutOp {
+            staff_instance,
+            instrument_override: None,
+            staff_lines_override: None,
+            visible: false,
+        }),
+        // The transaction replaces all three keys.
+        OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("replace"),
+            category: None,
+        }),
+        set_meter(region, 0, Some(ts_tx.clone())),
+        set_tempo(None, region, 0, Some(seg_tx)),
+        OperationKind::SetStaffLayout(SetStaffLayoutOp {
+            staff_instance,
+            instrument_override: None,
+            staff_lines_override: None,
+            visible: true,
+        }),
+    ];
+    let mut envelopes: Vec<OperationEnvelope> = kinds
+        .into_iter()
+        .enumerate()
+        .map(|(index, kind)| {
+            let counter = index as u64;
+            let ctx = if counter == 0 {
+                CausalContext::new()
+            } else {
+                seen(71, counter - 1)
+            };
+            let tx_of = (counter >= 3).then_some(tx);
+            envelope(71, counter, 10 + counter as i64, ctx, tx_of, prim(kind))
+        })
+        .collect();
+    let undo = envelope(
+        71,
+        7,
+        20,
+        seen(71, 6),
+        None,
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    envelopes.push(undo.clone());
+
+    let mut set = OperationSet::new();
+    set.accept_all(envelopes);
+    let result = set.reduce_onto(&base);
+
+    assert!(result.state.conflicts.is_empty());
+    let grid = result.score.canvas.regions[0]
+        .content
+        .staff_based()
+        .expect("fixture is staff based")
+        .default_metric_grid
+        .as_ref()
+        .expect("the pre-transaction meter survives");
+    assert_eq!(grid.meter_sequence.len(), 1);
+    assert_eq!(grid.meter_sequence[0].time_signature, ts_pre.id);
+    // The transaction-minted signature is tombstoned and gone; the
+    // pre-transaction one survives.
+    assert!(!result
+        .score
+        .time_signatures
+        .iter()
+        .any(|t| t.id == ts_tx.id));
+    assert!(result
+        .score
+        .time_signatures
+        .iter()
+        .any(|t| t.id == ts_pre.id));
+    assert_eq!(result.score.tempo_map.segments, vec![seg_pre]);
+    let instance = result
+        .score
+        .staff_instances()
+        .find(|(_, si)| si.id == staff_instance)
+        .expect("instance survives")
+        .1
+        .clone();
+    assert!(
+        !instance.visible,
+        "the pre-transaction layout write returns"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+/// A mixed mint + overwrite transaction: both compensation parts compose, and
+/// `StrictInverse` refuses the whole undo when *either* part fails while
+/// `BestEffort` compensates what it cleanly can.
+#[test]
+fn mixed_transaction_undo_composes_and_conflicts_by_policy() {
+    let base = epiphany_core::generators::valid_score(308);
+    let (staff_instance, target_voice) = target(&base);
+    let base_instance = base
+        .staff_instances()
+        .find(|(_, si)| si.id == staff_instance)
+        .expect("fixture instance")
+        .1
+        .clone();
+    let base_pitch = {
+        let event = base.events.get(base_instance.voices[0].events[0]).unwrap();
+        let mut pitches = Vec::new();
+        event.collect_identified_pitches(&mut pitches);
+        pitches[0].id
+    };
+    let inserted_event = EventId::new(ReplicaId(72), 100);
+    let tx = TransactionId::from_raw(72);
+    let tx_ops = |replica: u64| {
+        chain(
+            replica,
+            10,
+            Some(tx),
+            vec![
+                OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("mixed"),
+                    category: None,
+                }),
+                OperationKind::InsertEvent(InsertEventOp {
+                    staff_instance,
+                    event: valuegen::insert_event_value(
+                        EventId::new(ReplicaId(replica), 100),
+                        target_voice,
+                        MusicalPosition(RationalTime::from_int(100)),
+                        MusicalDuration::whole(),
+                        &[PitchId::new(ReplicaId(replica), 101)],
+                    ),
+                }),
+                OperationKind::RespellPitch(RespellPitchOp {
+                    pitch: base_pitch,
+                    spelling: valuegen::spelling(2),
+                }),
+            ],
+        )
+    };
+
+    // (A) A superseding respell after the transaction: StrictInverse refuses
+    // the whole undo — the minted event is NOT tombstoned either.
+    let mut envelopes = tx_ops(72);
+    envelopes.push(envelope(
+        72,
+        3,
+        20,
+        seen(72, 2),
+        None,
+        prim(OperationKind::RespellPitch(RespellPitchOp {
+            pitch: base_pitch,
+            spelling: valuegen::spelling(4),
+        })),
+    ));
+    let strict = envelope(
+        72,
+        4,
+        30,
+        seen(72, 3),
+        None,
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    envelopes.push(strict.clone());
+    let mut set = OperationSet::new();
+    set.accept_all(envelopes.clone());
+    let result = set.reduce_onto(&base);
+    assert!(matches!(
+        effect_for(&result, strict.id),
+        OperationEffect::Conflicted { .. }
+    ));
+    assert!(
+        result.score.events.contains(inserted_event),
+        "a refused strict undo tombstones nothing"
+    );
+    assert_eq!(
+        result.state.spellings.get(&base_pitch),
+        Some(&valuegen::spelling(4))
+    );
+    assert!(check_invariants(&result.score).is_empty());
+
+    // (B) The same set under BestEffort: the mint is tombstoned, the
+    // superseded spelling is skipped.
+    let best = envelope(
+        72,
+        5,
+        40,
+        seen(72, 4),
+        None,
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::BestEffort,
+        }),
+    );
+    envelopes.push(best.clone());
+    let mut set = OperationSet::new();
+    set.accept_all(envelopes);
+    let result = set.reduce_onto(&base);
+    assert!(matches!(
+        effect_for(&result, best.id),
+        OperationEffect::AppliedWithRepair { .. }
+    ));
+    assert!(!result.score.events.contains(inserted_event));
+    assert_eq!(
+        result.state.spellings.get(&base_pitch),
+        Some(&valuegen::spelling(4)),
+        "the superseding write stands under BestEffort"
+    );
+    assert!(check_invariants(&result.score).is_empty());
+}
+
+/// Undoing a staff mint refuses while a live (non-member) instance still
+/// references the staff (operation_catalog §CreateStaff undo semantics), and
+/// `BestEffort` keeps the staff alive rather than stranding the instance.
+#[test]
+fn undo_of_a_staff_mint_refuses_while_an_instance_references_it() {
+    let base = epiphany_core::generators::valid_score(309);
+    let region = base.canvas.regions[0].id;
+    let instrument = base.instruments[0].id;
+    let staff_id = StaffId::new(ReplicaId(73), 1);
+    let instance_id = StaffInstanceId::new(ReplicaId(73), 2);
+    let tx = TransactionId::from_raw(73);
+    let mut envelopes = chain(
+        73,
+        10,
+        Some(tx),
+        vec![
+            OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("staff mint"),
+                category: None,
+            }),
+            OperationKind::CreateStaff(CreateStaffOp {
+                staff: valuegen::staff(staff_id, instrument),
+            }),
+        ],
+    );
+    // A non-member instance referencing the minted staff.
+    let mut instance_env = envelope(
+        73,
+        2,
+        20,
+        seen(73, 1),
+        None,
+        prim(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region,
+            instance: valuegen::staff_instance(instance_id, staff_id),
+        })),
+    );
+    instance_env.transaction = None;
+    envelopes.push(instance_env);
+    let strict = envelope(
+        73,
+        3,
+        30,
+        seen(73, 2),
+        None,
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let best = envelope(
+        73,
+        4,
+        40,
+        seen(73, 3),
+        None,
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::BestEffort,
+        }),
+    );
+    envelopes.push(strict.clone());
+    envelopes.push(best.clone());
+
+    let mut set = OperationSet::new();
+    set.accept_all(envelopes);
+    let result = set.reduce_onto(&base);
+
+    assert!(matches!(
+        effect_for(&result, strict.id),
+        OperationEffect::Conflicted { .. }
+    ));
+    // BestEffort skips the stranding tombstone: nothing left to compensate,
+    // but the undo itself applies cleanly with no repairs.
+    assert_eq!(effect_for(&result, best.id), &OperationEffect::Applied);
+    assert!(result.score.staves.iter().any(|s| s.id == staff_id));
+    assert!(matches!(
+        result.state.objects.get(&TypedObjectId::Staff(staff_id)),
+        Some(epiphany_ops::ObjectState::Live)
+    ));
+    assert!(check_invariants(&result.score).is_empty());
 }

@@ -220,6 +220,7 @@ fn precondition_reason(reader: &mut Reader<'_>) -> Result<PreconditionFailureRea
             PreconditionFailureRegistryId,
         )?)),
         10 => Ok(PreconditionFailureReason::ContainerNotEmpty),
+        11 => Ok(PreconditionFailureReason::TempoMapMalformed),
         tag => Err(MaterializedDecodeError::InvalidTag {
             kind: "PreconditionFailureReason",
             tag,

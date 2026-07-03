@@ -117,11 +117,12 @@ pub use migrate::{migrate_v0_envelope, project_v1_to_v0, MigrationError};
 pub use opset::{AcceptOutcome, OperationSet};
 pub use payload::{
     ChangeRegionTimeModelOp, CreateCrossCuttingOp, CreateRegionOp, CreateStaffInstanceOp,
-    CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
-    DeleteRegionOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
-    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationKindTag,
-    OperationPayload, PositionRemapping, ResolveConflictPayload, ResolveEquivocationPayload,
-    RespellPitchOp, SetMetadataOp, SetMetricGridOp, SetUserPageBreakOp, SetUserSystemBreakOp,
+    CreateStaffOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp,
+    DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
+    InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
+    OperationKind, OperationKindTag, OperationPayload, PositionRemapping, ResolveConflictPayload,
+    ResolveEquivocationPayload, RespellPitchOp, SetMetadataOp, SetMetricGridOp, SetStaffLayoutOp,
+    SetTempoSegmentOp, SetTimeSignatureOp, SetUserPageBreakOp, SetUserSystemBreakOp,
     TransactionCategory, TransactionDescriptor, TransposeOp, TupletCompensation,
 };
 pub use reduce::{

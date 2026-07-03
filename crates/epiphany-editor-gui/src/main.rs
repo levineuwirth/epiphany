@@ -123,6 +123,10 @@ fn payload_label(payload: &OperationPayload) -> &'static str {
             OperationKind::InsertEvent(_) => "InsertEvent",
             OperationKind::RespellPitch(_) => "RespellPitch",
             OperationKind::DeclareTransaction(_) => "DeclareTransaction",
+            OperationKind::CreateStaff(_) => "CreateStaff",
+            OperationKind::SetTimeSignature(_) => "SetTimeSignature",
+            OperationKind::SetTempoSegment(_) => "SetTempoSegment",
+            OperationKind::SetStaffLayout(_) => "SetStaffLayout",
             _ => "primitive",
         },
         OperationPayload::ResolveConflict(_) => "ResolveConflict",
@@ -176,7 +180,7 @@ struct EditorApp {
 impl EditorApp {
     fn new() -> Self {
         let score = epiphany_testkit::fixtures::ten_measure_single_staff(0);
-        let session = EditorSession::open(score, Box::new(Engraver))
+        let session = EditorSession::open(score, Box::new(Engraver::default()))
             .expect("the ten-measure fixture renders under the real engraver");
         EditorApp {
             session,

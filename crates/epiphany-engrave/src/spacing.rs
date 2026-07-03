@@ -15,8 +15,10 @@
 //! accidental zone). Reserving the next slot's left overhang against *this* slot's
 //! advance is what protects a note's accidental from overlapping the previous
 //! note — a single per-slot `preferred_width` could only reserve space to the
-//! right of a slot's source. The vertical pass, the soft-spring stretch/compress
-//! solve, and constraint evaluation remain `Minimal`-tier work (next phase).
+//! right of a slot's source. The casting-off pass (`crate::casting`) then breaks
+//! this spaced line into systems and pages; the vertical soft-spring
+//! stretch/compress solve and per-system justification remain deferred (see
+//! `DECISIONS.md`).
 
 use std::collections::BTreeMap;
 

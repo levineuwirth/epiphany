@@ -152,6 +152,11 @@ pub enum PreconditionFailureReason {
     /// has live children (an empty-only delete; the caller deletes contents
     /// first).
     ContainerNotEmpty,
+    /// A `SetTempoSegment` write whose *resulting* tempo map would be malformed
+    /// — segments out of order or overlapping, a non-constant shape missing its
+    /// end data, or a carried segment whose own start disagrees with the
+    /// operation's start key (operation_catalog §"Meter and Tempo Overwrites").
+    TempoMapMalformed,
     /// An extension-declared precondition failed.
     ExtensionPrecondition(ExtensionPreconditionId),
     /// A registered precondition code from a versioned registry.
@@ -173,6 +178,8 @@ impl PreconditionFailureReason {
             PreconditionFailureReason::Registered(_) => 9,
             // Additive (Group 3); keeps the ratified 0..=9 discriminants stable.
             PreconditionFailureReason::ContainerNotEmpty => 10,
+            // Additive (Phase-3 tranche, SetTempoSegment); appended past 10.
+            PreconditionFailureReason::TempoMapMalformed => 11,
         }
     }
 }

@@ -349,6 +349,35 @@ object is covered); the provenance-preservation contract itself is unchanged.
   > `req:binfmt:condition-depth`), and adopts the open-value `ObjectKind`
   > decode stance (P12-E3, `req:binfmt:object-kind-open`).
 
+- **Casting-off support surface (2026-07, the engrave casting-off slice).**
+  Three small, non-canonical additions made for `epiphany-engrave`'s
+  casting-off pass, kept here because they are IR-shape/contract concerns:
+  1. **`ConstrainedLayoutIR.break_origins` (`BreakOrigin`)** — the spec's
+     `LayoutConstraint` enum is normative and carries no origin field, but a
+     casting-off solver that honours a user break must record the decision with
+     `DecisionSource::UserOverride(id)` (Chapter 7 §"Note Layout" /
+     §"Engraving Overrides"), and the override id would otherwise be lost at the
+     logical→constrained boundary. The projection therefore records the
+     attribution *alongside* the constraint list (slot, break class, override
+     id) rather than widening the normative enum. Non-canonical, like every
+     constrained-stage value.
+  2. **`continuation_instance_key`** — the stable
+     `SynthesisInstanceKey` derivation for engraver-synthesized *continuations*
+     of an existing object (the per-system segments a casting-off break cuts a
+     region-spanning staff line into): keyed on the original object's stable id
+     plus the 1-based continuation ordinal, hashed under `MUSCLOID` domain
+     separation so segments of different lines cannot collide for one
+     `(source, kind)` pair.
+  3. **Round-trip contract: solver-synthesized additions.** `round_trip_with`
+     previously asserted the constrained→resolved provenance maps *equal*; a
+     casting-off solver legitimately synthesizes new objects (staff-line
+     continuation segments), which Chapter 7 §"Provenance" explicitly allows
+     for engraver-synthesized objects. The contract is now: every constrained
+     object survives with its exact provenance (containment, not equality);
+     every solver addition must declare a `SynthesisKind` and derive from an
+     already-laid-out source (so the recovered source set is unchanged); the
+     `Stub` tier must add nothing.
+
 ## Pass 12 candidates (ambiguities for the spec, not resolved in code)
 
 1. **Strength attachment to constraint instances.** Chapter 9 §"Strength Levels"

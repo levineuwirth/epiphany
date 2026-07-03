@@ -30,12 +30,12 @@ use crate::causal::CausalContext;
 use crate::envelope::OperationEnvelope;
 use crate::opset::OperationSet;
 use crate::payload::{
-    CreateCrossCuttingOp, CreateRegionOp, CreateStaffInstanceOp, CreateVoiceOp, CrossCuttingValue,
-    DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
-    DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
+    CreateCrossCuttingOp, CreateRegionOp, CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp,
+    CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
+    DeleteRegionOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
     ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationPayload,
-    RespellPitchOp, SetMetadataOp, SetMetricGridOp, SetUserPageBreakOp, SetUserSystemBreakOp,
-    TransposeOp, TupletCompensation,
+    RespellPitchOp, SetMetadataOp, SetMetricGridOp, SetStaffLayoutOp, SetTempoSegmentOp,
+    SetTimeSignatureOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransposeOp, TupletCompensation,
 };
 use crate::stamp::{HybridLogicalClock, OperationStamp};
 use crate::support::AuthorId;
@@ -85,7 +85,7 @@ fn pitch(n: u64) -> PitchId {
 
 /// Generates a random payload over the shared id space.
 fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
-    let kind = match rng.below(21) {
+    let kind = match rng.below(25) {
         0 => {
             let voice = VoiceId::new(ReplicaId(7), rng.below(3));
             let position = MusicalPosition(RationalTime::from_int(rng.below(4) as i32));
@@ -196,13 +196,64 @@ fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
             region: RegionId::new(ReplicaId(7), rng.below(3)),
             grid: rng.chance(2).then(valuegen::metric_grid),
         }),
-        _ => OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+        20 => OperationKind::SetUserPageBreak(SetUserPageBreakOp {
             region: RegionId::new(ReplicaId(7), 0),
             anchor: valuegen::region_start_anchor(
                 RegionId::new(ReplicaId(7), 0),
                 MusicalPosition(RationalTime::from_int(rng.below(4) as i32)),
             ),
             present: rng.chance(2),
+        }),
+        // Phase-3 first tranche: staff mint, meter/tempo overwrites, layout
+        // advisory — over the same shared id space so mints, re-carries,
+        // overwrites, and removals genuinely interact.
+        21 => OperationKind::CreateStaff(CreateStaffOp {
+            staff: valuegen::staff(
+                StaffId::new(ReplicaId(7), rng.below(3)),
+                epiphany_core::InstrumentId::new(ReplicaId(7), rng.below(2)),
+            ),
+        }),
+        22 => {
+            let region = RegionId::new(ReplicaId(7), rng.below(3));
+            OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region,
+                anchor: valuegen::region_start_anchor(
+                    region,
+                    MusicalPosition(RationalTime::from_int(rng.below(3) as i32 * 4)),
+                ),
+                time_signature: (!rng.chance(3)).then(|| {
+                    valuegen::time_signature(
+                        epiphany_core::TimeSignatureId::new(ReplicaId(7), rng.below(3)),
+                        rng.below(3) as u16 + 2,
+                    )
+                }),
+            })
+        }
+        23 => {
+            let region = RegionId::new(ReplicaId(7), rng.below(3));
+            let at = rng.below(3) as i32 * 4;
+            OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                region: rng.chance(2).then_some(region),
+                start: valuegen::region_start_anchor(
+                    region,
+                    MusicalPosition(RationalTime::from_int(at)),
+                ),
+                segment: (!rng.chance(3)).then(|| {
+                    valuegen::tempo_segment(
+                        region,
+                        MusicalPosition(RationalTime::from_int(at)),
+                        60.0 + rng.below(4) as f64 * 30.0,
+                    )
+                }),
+            })
+        }
+        _ => OperationKind::SetStaffLayout(SetStaffLayoutOp {
+            staff_instance: StaffInstanceId::new(ReplicaId(7), rng.below(3)),
+            instrument_override: None,
+            staff_lines_override: rng
+                .chance(2)
+                .then(epiphany_core::StaffLineConfiguration::default),
+            visible: rng.chance(2),
         }),
     };
     OperationPayload::Primitive(kind)

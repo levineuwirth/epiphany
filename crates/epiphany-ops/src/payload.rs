@@ -33,9 +33,10 @@
 
 use epiphany_core::{
     Beam, CanonicalValue, Event, EventDuration, EventId, EventPosition, IdentifiedPitch,
-    MetricGrid, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId, PitchSpelling,
-    Region, RegionId, RegionTimeModel, Rest, ScoreMetadata, Slur, Spanner, StaffInstance,
-    StaffInstanceId, Tie, TimeAnchor, TransactionId, TupletId, TypedObjectId, Voice, VoiceId,
+    InstrumentId, MetricGrid, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId,
+    PitchSpelling, Region, RegionId, RegionTimeModel, Rest, ScoreMetadata, Slur, Spanner, Staff,
+    StaffId, StaffInstance, StaffInstanceId, StaffLineConfiguration, TempoSegment, Tie, TimeAnchor,
+    TimeSignature, TransactionId, TupletId, TypedObjectId, Voice, VoiceId,
 };
 use epiphany_determinism::{sorted_canonical, CanonicalDecode, CanonicalEncode, DecodeError};
 
@@ -154,6 +155,21 @@ pub enum OperationKind {
     /// Set a user page-break preference (LWW advisory; the page-break sibling of
     /// `SetUserSystemBreak`).
     SetUserPageBreak(SetUserPageBreakOp),
+    // --- Phase-3 first tranche: staff mint, meter/tempo overwrites, layout
+    // advisory (operation_catalog §CreateStaff, §"Meter and Tempo Overwrites",
+    // §SetStaffLayout). Discriminants extend additively past 23. ---
+    /// Mint a global staff on the score root (set-union creation).
+    CreateStaff(CreateStaffOp),
+    /// Set, replace, or remove the single meter change at a resolved position
+    /// in a region's default metric grid (LWW structural overwrite).
+    SetTimeSignature(SetTimeSignatureOp),
+    /// Set, replace, or remove the single tempo segment starting at a resolved
+    /// position in the score-level or region-local tempo map (LWW structural
+    /// overwrite).
+    SetTempoSegment(SetTempoSegmentOp),
+    /// Overwrite a staff instance's inline layout advisories as a unit (LWW
+    /// advisory).
+    SetStaffLayout(SetStaffLayoutOp),
 }
 
 impl OperationKind {
@@ -183,6 +199,11 @@ impl OperationKind {
             OperationKind::SetMetadata(_) => 21,
             OperationKind::SetMetricGrid(_) => 22,
             OperationKind::SetUserPageBreak(_) => 23,
+            // Phase-3 first tranche; appended past the golden-locked 0..=23.
+            OperationKind::CreateStaff(_) => 24,
+            OperationKind::SetTimeSignature(_) => 25,
+            OperationKind::SetTempoSegment(_) => 26,
+            OperationKind::SetStaffLayout(_) => 27,
         }
     }
 
@@ -215,6 +236,11 @@ impl OperationKind {
             OperationKind::SetMetadata(_) => OperationKindTag::SetMetadata,
             OperationKind::SetMetricGrid(_) => OperationKindTag::SetMetricGrid,
             OperationKind::SetUserPageBreak(_) => OperationKindTag::SetUserPageBreak,
+            // Create→Insert tag-naming convention, cf. `InsertRegion`.
+            OperationKind::CreateStaff(_) => OperationKindTag::InsertStaff,
+            OperationKind::SetTimeSignature(_) => OperationKindTag::SetTimeSignature,
+            OperationKind::SetTempoSegment(_) => OperationKindTag::SetTempoSegment,
+            OperationKind::SetStaffLayout(_) => OperationKindTag::SetStaffLayout,
         }
     }
 }
@@ -250,6 +276,10 @@ impl CanonicalEncode for OperationKind {
             OperationKind::SetMetadata(op) => op.encode_canonical(out),
             OperationKind::SetMetricGrid(op) => op.encode_canonical(out),
             OperationKind::SetUserPageBreak(op) => op.encode_canonical(out),
+            OperationKind::CreateStaff(op) => op.encode_canonical(out),
+            OperationKind::SetTimeSignature(op) => op.encode_canonical(out),
+            OperationKind::SetTempoSegment(op) => op.encode_canonical(out),
+            OperationKind::SetStaffLayout(op) => op.encode_canonical(out),
         }
     }
 }
@@ -284,6 +314,12 @@ pub enum OperationKindTag {
     DeleteVoice,
     SetMetadata,
     SetMetricGrid,
+    // Phase-3 first tranche. `InsertStaff` follows the tag layer's
+    // Create→Insert naming convention (cf. `InsertRegion` for `CreateRegion`).
+    InsertStaff,
+    SetTimeSignature,
+    SetTempoSegment,
+    SetStaffLayout,
 }
 
 impl OperationKindTag {
@@ -313,6 +349,11 @@ impl OperationKindTag {
             OperationKindTag::DeleteVoice => 21,
             OperationKindTag::SetMetadata => 22,
             OperationKindTag::SetMetricGrid => 23,
+            // Phase-3 first tranche; appended past the golden-locked 0..=23.
+            OperationKindTag::InsertStaff => 24,
+            OperationKindTag::SetTimeSignature => 25,
+            OperationKindTag::SetTempoSegment => 26,
+            OperationKindTag::SetStaffLayout => 27,
         }
     }
 }
@@ -378,6 +419,10 @@ impl CanonicalDecode for OperationKindTag {
             21 => OperationKindTag::DeleteVoice,
             22 => OperationKindTag::SetMetadata,
             23 => OperationKindTag::SetMetricGrid,
+            24 => OperationKindTag::InsertStaff,
+            25 => OperationKindTag::SetTimeSignature,
+            26 => OperationKindTag::SetTempoSegment,
+            27 => OperationKindTag::SetStaffLayout,
             _ => return Err(DecodeError::MalformedDomainTag),
         })
     }
@@ -1132,6 +1177,150 @@ impl CanonicalEncode for SetUserPageBreakOp {
     }
 }
 
+// --- Phase-3 first tranche (operation_catalog §CreateStaff, §"Meter and Tempo
+// Overwrites", §SetStaffLayout). ----------------------------------------------
+
+/// Mint a global [`Staff`] on the score root (operation_catalog §CreateStaff).
+/// Carries the full global-staff value (v1): identity, name, abbreviation,
+/// instrument reference, default staff-line configuration, and optional group
+/// membership. Set-union creation, completing the structural-container family
+/// upward: staff *instances* reference global staves. A repeat create carrying
+/// a byte-identical value is idempotent; a differing value under a live id is a
+/// precondition no-op.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CreateStaffOp {
+    pub staff: Staff,
+}
+
+impl CreateStaffOp {
+    /// The minted staff's identifier.
+    pub fn staff_id(&self) -> StaffId {
+        self.staff.id
+    }
+}
+
+impl CanonicalEncode for CreateStaffOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_lp_bytes(out, &self.staff.canonical_bytes());
+    }
+}
+
+/// Set, replace, or (`None`) remove the single meter change at the anchor's
+/// resolved musical position in a region's default metric grid
+/// (operation_catalog §"Meter and Tempo Overwrites"). Carries the full
+/// [`TimeSignature`] value (v1), minted set-union under the same discipline as
+/// `CreateStaff`. LWW structural overwrite keyed by `(region, resolved
+/// position)`; concurrent differing writes collide on the field
+/// `meter_sequence`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SetTimeSignatureOp {
+    pub region: RegionId,
+    pub anchor: TimeAnchor,
+    pub time_signature: Option<TimeSignature>,
+}
+
+impl SetTimeSignatureOp {
+    /// The anchor's resolved musical position — the canonical LWW key (the
+    /// same coarse resolution the user-break advisories use).
+    pub fn resolved_position(&self) -> MusicalPosition {
+        resolved_anchor_position(&self.anchor)
+    }
+}
+
+impl CanonicalEncode for SetTimeSignatureOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_canon(out, &self.region);
+        push_lp_bytes(out, &self.anchor.canonical_bytes());
+        match &self.time_signature {
+            None => push_tag(out, 0),
+            Some(signature) => {
+                push_tag(out, 1);
+                push_lp_bytes(out, &signature.canonical_bytes());
+            }
+        }
+    }
+}
+
+/// Set, replace, or (`None`) remove the single tempo segment starting at the
+/// resolved position, in the score-level tempo map (`region: None`) or the
+/// region's local map (`Some`; a set on a region with no local map creates
+/// one) (operation_catalog §"Meter and Tempo Overwrites"). LWW structural
+/// overwrite keyed by `(scope, resolved start)`; a write that would malform
+/// the resulting map is refused
+/// ([`PreconditionFailureReason::TempoMapMalformed`](crate::PreconditionFailureReason)).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SetTempoSegmentOp {
+    pub region: Option<RegionId>,
+    pub start: TimeAnchor,
+    pub segment: Option<TempoSegment>,
+}
+
+impl SetTempoSegmentOp {
+    /// The start anchor's resolved musical position — the canonical LWW key's
+    /// position half (the scope is the other half).
+    pub fn resolved_start(&self) -> MusicalPosition {
+        resolved_anchor_position(&self.start)
+    }
+}
+
+impl CanonicalEncode for SetTempoSegmentOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        // Catalog: an Option discriminant and (when present) `region`, then the
+        // length-framed `start`, then an Option discriminant and (when present)
+        // the length-framed `segment`.
+        match &self.region {
+            None => push_tag(out, 0),
+            Some(region) => {
+                push_tag(out, 1);
+                push_canon(out, region);
+            }
+        }
+        push_lp_bytes(out, &self.start.canonical_bytes());
+        match &self.segment {
+            None => push_tag(out, 0),
+            Some(segment) => {
+                push_tag(out, 1);
+                push_lp_bytes(out, &segment.canonical_bytes());
+            }
+        }
+    }
+}
+
+/// Overwrite a staff instance's inline layout advisories as a unit
+/// (operation_catalog §SetStaffLayout): the three non-break layout advisories
+/// with a graph home (`instrument_override`, `staff_lines_override`,
+/// `visible`). LWW *advisory* keyed by `staff_instance` — no conflicts. The
+/// richer engraving-override vocabulary has no durable graph home yet and
+/// remains projected layout state.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SetStaffLayoutOp {
+    pub staff_instance: StaffInstanceId,
+    pub instrument_override: Option<InstrumentId>,
+    pub staff_lines_override: Option<StaffLineConfiguration>,
+    pub visible: bool,
+}
+
+impl CanonicalEncode for SetStaffLayoutOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_canon(out, &self.staff_instance);
+        match &self.instrument_override {
+            None => push_tag(out, 0),
+            Some(instrument) => {
+                push_tag(out, 1);
+                push_canon(out, instrument);
+            }
+        }
+        match &self.staff_lines_override {
+            None => push_tag(out, 0),
+            Some(lines) => {
+                push_tag(out, 1);
+                push_lp_bytes(out, &lines.canonical_bytes());
+            }
+        }
+        push_u8_bool(out, self.visible);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1142,9 +1331,9 @@ mod tests {
         // GOLDEN LOCK: the discriminant byte leads every canonically-encoded
         // primitive payload (operation_catalog §"Value-Typed Payloads"), so the
         // literal values are normative wire facts. Encodings are append-only:
-        // new kinds append past 23; the values below never change.
+        // new kinds append past 27; the values below never change.
         use crate::valuegen;
-        use epiphany_core::{MusicalDuration, MusicalPosition, StaffId};
+        use epiphany_core::{MusicalDuration, MusicalPosition, TimeSignatureId};
 
         let r = ReplicaId(1);
         let event_a = EventId::new(r, 1);
@@ -1155,6 +1344,7 @@ mod tests {
         let instance = StaffInstanceId::new(r, 6);
         let voice = VoiceId::new(r, 7);
         let slur_id = SlurId::new(r, 8);
+        let instrument = InstrumentId::new(r, 10);
         let event_value = || {
             valuegen::insert_event_value(
                 event_a,
@@ -1167,7 +1357,7 @@ mod tests {
         let slur_value = || CrossCuttingValue::Slur(valuegen::slur(slur_id, event_a, event_b));
         let anchor = || valuegen::region_start_anchor(region, MusicalPosition::origin());
 
-        let table: [(OperationKind, u8); 24] = [
+        let table: [(OperationKind, u8); 28] = [
             (
                 OperationKind::InsertEvent(InsertEventOp {
                     staff_instance: instance,
@@ -1313,6 +1503,41 @@ mod tests {
                 }),
                 23,
             ),
+            (
+                OperationKind::CreateStaff(CreateStaffOp {
+                    staff: valuegen::staff(staff, instrument),
+                }),
+                24,
+            ),
+            (
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region,
+                    anchor: anchor(),
+                    time_signature: Some(valuegen::time_signature(TimeSignatureId::new(r, 11), 4)),
+                }),
+                25,
+            ),
+            (
+                OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                    region: Some(region),
+                    start: anchor(),
+                    segment: Some(valuegen::tempo_segment(
+                        region,
+                        MusicalPosition::origin(),
+                        120.0,
+                    )),
+                }),
+                26,
+            ),
+            (
+                OperationKind::SetStaffLayout(SetStaffLayoutOp {
+                    staff_instance: instance,
+                    instrument_override: Some(instrument),
+                    staff_lines_override: None,
+                    visible: true,
+                }),
+                27,
+            ),
         ];
         for (kind, expected) in &table {
             assert_eq!(
@@ -1430,6 +1655,10 @@ mod tests {
             OperationKindTag::DeleteVoice,
             OperationKindTag::SetMetadata,
             OperationKindTag::SetMetricGrid,
+            OperationKindTag::InsertStaff,
+            OperationKindTag::SetTimeSignature,
+            OperationKindTag::SetTempoSegment,
+            OperationKindTag::SetStaffLayout,
         ];
         let encoded: std::collections::BTreeSet<_> = tags
             .iter()
@@ -1442,14 +1671,14 @@ mod tests {
     fn operation_kind_tag_decode_mirrors_encode_exactly() {
         // Every non-registered variant round-trips through its 1-byte form, and
         // the registered variant through its 17-byte (tag + registry id) form.
-        let mut tags: Vec<OperationKindTag> = (0u8..24)
+        let mut tags: Vec<OperationKindTag> = (0u8..28)
             .filter(|d| *d != 16)
             .map(|d| OperationKindTag::decode_canonical(&[d]).expect("known discriminant"))
             .collect();
         tags.push(OperationKindTag::Registered(OperationKindRegistryId(
             0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10,
         )));
-        assert_eq!(tags.len(), 24, "the full v1 tag vocabulary");
+        assert_eq!(tags.len(), 28, "the full v1 tag vocabulary");
         for tag in tags {
             let bytes = tag.to_canonical_bytes();
             let decoded = OperationKindTag::decode_canonical(&bytes).expect("round-trips");
@@ -1465,10 +1694,10 @@ mod tests {
     #[test]
     fn operation_kind_tag_decode_rejects_malformed_bytes() {
         use epiphany_determinism::DecodeError;
-        // Unknown discriminant (24 is one past the v1 vocabulary): rejected,
+        // Unknown discriminant (28 is one past the v1 vocabulary): rejected,
         // never normalized.
         assert_eq!(
-            OperationKindTag::decode_canonical(&[24]),
+            OperationKindTag::decode_canonical(&[28]),
             Err(DecodeError::MalformedDomainTag)
         );
         // Empty input.
@@ -1478,6 +1707,21 @@ mod tests {
         // A truncated (and an oversized) Registered payload.
         assert!(OperationKindTag::decode_canonical(&[16; 16]).is_err());
         assert!(OperationKindTag::decode_canonical(&[16; 19]).is_err());
+    }
+
+    #[test]
+    fn phase3_tag_discriminants_are_golden() {
+        // GOLDEN LOCK (Phase-3 first tranche): appended past the ratified
+        // 0..=23; the values below never change.
+        for (tag, expected) in [
+            (OperationKindTag::InsertStaff, 24u8),
+            (OperationKindTag::SetTimeSignature, 25),
+            (OperationKindTag::SetTempoSegment, 26),
+            (OperationKindTag::SetStaffLayout, 27),
+        ] {
+            assert_eq!(tag.discriminant(), expected);
+            assert_eq!(tag.to_canonical_bytes(), vec![expected]);
+        }
     }
 
     #[test]

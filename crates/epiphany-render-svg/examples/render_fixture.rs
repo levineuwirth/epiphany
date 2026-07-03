@@ -85,7 +85,10 @@ fn main() -> ExitCode {
     let config = SolverConfig::default();
     let (report, tier) = match solver.as_str() {
         "stub" => (StubSolver.solve(&constrained, &config), StubSolver.tier()),
-        "real" => (Engraver.solve(&constrained, &config), Engraver.tier()),
+        "real" => (
+            Engraver::default().solve(&constrained, &config),
+            Engraver::default().tier(),
+        ),
         other => return fail(&format!("unknown solver {other:?}; known: {SOLVERS}")),
     };
 

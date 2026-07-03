@@ -128,6 +128,12 @@ pub fn round_trip(score: &Score) -> RoundTripReport {
 /// and `stable_id` — must survive that re-spacing unchanged, and the recovered
 /// source set must still be exactly the set laid out. This is the strictly stronger
 /// statement: a solver may move geometry, never lose a provenance trace.
+///
+/// A conformant solver may also **synthesize** additional objects of its own — a
+/// casting-off pass splits a region-spanning staff line into per-system segments —
+/// provided each addition declares a [`SynthesisKind`](crate::SynthesisKind) and
+/// derives from a source that is already laid out (so the recovered source set is
+/// unchanged); the stub passthrough must add nothing.
 pub fn round_trip_with<S: ConstraintSolver>(score: &Score, solver: &S) -> RoundTripReport {
     let logical = to_logical(score);
     let constrained = to_constrained(&logical);
@@ -231,10 +237,39 @@ pub fn round_trip_with<S: ConstraintSolver>(score: &Score, solver: &S) -> RoundT
             .map(|g| &g.provenance)
             .chain(report.layout.strokes.iter().map(|s| &s.provenance)),
     );
-    assert_eq!(
-        constrained_map, resolved_map,
-        "provenance not preserved constrained -> resolved"
-    );
+    // Every constrained object survives into the resolved layout with its exact
+    // provenance. A conformant solver may additionally *synthesize* objects of
+    // its own — a casting-off pass splits a region-spanning staff line into
+    // per-system segments (Chapter 7 §"Provenance": engraver-synthesized
+    // objects declare a `SynthesisKind`) — so the resolved map may be a strict
+    // superset; the stub tier, a verbatim passthrough, must add nothing.
+    for (id, provenance) in &constrained_map {
+        assert_eq!(
+            resolved_map.get(id),
+            Some(provenance),
+            "constrained object {id:?} is not preserved (with its exact provenance) in resolved"
+        );
+    }
+    let constrained_sources: BTreeSet<TypedObjectId> =
+        constrained_map.values().map(|p| p.source).collect();
+    for (id, provenance) in &resolved_map {
+        if constrained_map.contains_key(id) {
+            continue;
+        }
+        assert_ne!(
+            solver.tier(),
+            SolverTier::Stub,
+            "the stub passthrough must not add objects (added {id:?})"
+        );
+        assert!(
+            provenance.synthesis.is_some(),
+            "solver-added object {id:?} must declare a synthesis kind"
+        );
+        assert!(
+            constrained_sources.contains(&provenance.source),
+            "solver-added object {id:?} must derive from a laid-out source, not invent one"
+        );
+    }
 
     let render = to_render(&report.layout);
     for (resolved_glyph, primitive) in report.layout.glyphs.iter().zip(&render.primitives) {

@@ -9,31 +9,49 @@
 //! crates so the core/product boundary stays sharp (`spec/PHASE2_QUICKSTART.md`,
 //! crate topology).
 //!
-//! ## Phase status — `Minimal` tier
+//! ## Phase status — `Minimal` tier, with casting-off
 //!
-//! [`Engraver`] runs a genuine deterministic **horizontal spacing pass** (see
-//! the private `spacing` module) — placing each glyph-bearing slot left-to-right by a
-//! collision-aware advance (its preferred width floored by the real glyph
-//! bearings) — and **evaluates the IR's declared constraints** against the
-//! resolved geometry, routed by [`LayoutConstraint::strength`] (Chapter 9
-//! §"Strength Levels"): a violated `Required` constraint (no-collision,
-//! alignment, position-within, a hard break, an unverifiable extension
-//! constraint) is reported unsatisfied and the solve is
-//! [`SolveStatus::Unsatisfiable`]; a violated `Preferred` constraint (a soft
-//! break this single-system solve does not honour) surfaces as a
+//! [`Engraver`] runs a genuine deterministic **horizontal spacing pass** (the
+//! private `spacing` module) — placing each glyph-bearing slot left-to-right by
+//! a collision-aware advance (its preferred width floored by the real glyph
+//! bearings) — then a **casting-off pass** (the [`casting`] module; Chapter 9
+//! §"The Constraint-Solving Stage": the solver "resolve\[s\] page and system
+//! breaks"): greedy first-fit system breaking at measure boundaries against a
+//! [`PageGeometry`], vertical system stacking at the vertical-band model's
+//! inter-system gap, page assignment by content height, and a real populated
+//! page/system tree (Chapter 7 §"ResolvedLayoutIR"). Every chosen break is
+//! recorded as an [`epiphany_layout_ir::EngravingDecision`] whose target is a
+//! `MUSCLOID` id synthesized under
+//! [`epiphany_layout_ir::SynthesisKind::EngravedBreak`], attributed to the user
+//! override that asked for it when one did
+//! ([`epiphany_layout_ir::DecisionSource::UserOverride`]).
+//!
+//! The declared constraints are **evaluated**, routed by
+//! [`LayoutConstraint::strength`] (Chapter 9 §"Strength Levels"). Geometric
+//! constraints (no-collision, alignment, position-within) are evaluated in the
+//! **pre-casting spaced frame** — they are region-frame obligations, and
+//! casting-off relocates whole systems by rigid motions that cannot un-satisfy
+//! them within a system (see `DECISIONS.md`). Break constraints are evaluated
+//! against the **final break structure**: a `SystemBreakAt`/`PageBreakAt` is
+//! satisfied iff the cast layout breaks (starts a system/page) at that slot. A
+//! violated `Required` constraint makes the solve
+//! [`SolveStatus::Unsatisfiable`]; a violated `Preferred` one (a soft break
+//! skipped on the documented pathological path) surfaces as a
 //! [`SolverWarningKind::LargeSoftConstraintViolation`] warning under
-//! [`SolveStatus::SolvedWithWarnings`], never a failure. A solve is
-//! [`SolveStatus::Solved`] only when every declared constraint holds.
+//! [`SolveStatus::SolvedWithWarnings`] plus an `IrOverride`-sourced decision,
+//! never a failure. A solve is [`SolveStatus::Solved`] only when every declared
+//! constraint holds.
 //!
 //! Having earned it, [`Engraver::tier`] reports [`SolverTier::Minimal`] — which
 //! (Chapter 9 §"Conformance Tiers" / QUICKSTART) means *hard constraints
-//! satisfied, no claim about optimality*. It therefore makes **no
-//! normalized-metric claim**: the quality-metric vector stays the conservative
-//! all-worst "no claim" placeholder ([`QualityMetricVector::unmeasured`]) until
-//! the Quality Metric Catalog lands (Phase 3 / `Standard`). Still deferred to a
-//! later tier: the **vertical spring pass** (glyph `y` is the constrained natural
-//! staff layout, preserved verbatim) and **casting-off** (a single system, so it
-//! cannot honour a forced system/page break).
+//! satisfied, no claim about optimality* — greedy first-fit casting-off is
+//! legitimate at this tier. It therefore makes **no normalized-metric claim**:
+//! the quality-metric vector stays the conservative all-worst "no claim"
+//! placeholder ([`QualityMetricVector::unmeasured`]) until the Quality Metric
+//! Catalog lands (Phase 3 / `Standard`). Still deferred to a later tier: the
+//! **vertical spring pass** (glyph `y` within a system is the constrained
+//! natural staff layout, preserved verbatim; systems stack by real content
+//! extents), per-system justification/stretch, and optimal break search.
 //!
 //! ## Architecture decision (see `DECISIONS.md`)
 //!
@@ -44,17 +62,20 @@
 //!
 //! [`epiphany-render-svg`]: ../epiphany_render_svg/index.html
 
+pub mod casting;
 mod spacing;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_layout_ir::{
     all_available, Axis, BravuraCatalog, ConstrainedLayoutIR, ConstraintId, ConstraintSolver,
     ConstraintStrength, GlyphCatalog, GlyphObject, GlyphObjectId, InvalidationSet,
-    LayoutConstraint, Margins, Point, QualityMetricVector, Rect, ResolvedGlyph, ResolvedLayoutIR,
-    ResolvedPage, ResolvedSystem, Size2D, SolveReport, SolveStatus, SolverBudgetUsed, SolverConfig,
-    SolverState, SolverTier, SolverVersion, SolverWarning, SolverWarningKind, Stroke,
+    LayoutConstraint, Point, QualityMetricVector, Rect, ResolvedGlyph, ResolvedLayoutIR,
+    SolveReport, SolveStatus, SolverBudgetUsed, SolverConfig, SolverState, SolverTier,
+    SolverVersion, SolverWarning, SolverWarningKind, SpringSlotId, Stroke,
 };
+
+pub use casting::{PageGeometry, INTER_PAGE_GAP, SYSTEM_CONTINUATION_SYNTHESIS};
 
 /// The glyph a fixed-width stroke (a ledger line) belongs to: the same-source glyph
 /// whose baseline falls within the stroke's horizontal span (its accidentals sit
@@ -75,25 +96,45 @@ pub(crate) fn owning_glyph<'a>(
 }
 
 /// The Epiphany engraving solver (Chapter 9). A `Minimal`-tier solver: it spaces
-/// glyphs horizontally and satisfies the IR's declared hard constraints. See the
-/// crate docs for what each tier claims and what remains deferred.
+/// glyphs horizontally, casts the result off into systems and pages against its
+/// [`PageGeometry`], and satisfies the IR's declared hard constraints — break
+/// constraints included. See the crate docs for what each tier claims and what
+/// remains deferred.
 #[derive(Copy, Clone, Debug, Default)]
-pub struct Engraver;
+pub struct Engraver {
+    geometry: PageGeometry,
+}
 
 /// The implementation version of this solver (Chapter 9: within a fixed version,
-/// identical input produces identical output). Distinct from the stub's `0`.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(1);
+/// identical input produces identical output). Distinct from the stub's `0`;
+/// bumped to `2` when the casting-off pass landed (the resolved geometry of a
+/// wrapping score differs from version `1`'s single endless system).
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(2);
 
 impl Engraver {
+    /// An engraver casting off against the given page geometry.
+    /// [`Engraver::default`] uses [`PageGeometry::default`] (A4 portrait at an
+    /// 8 mm staff — see its docs for the arithmetic).
+    pub fn with_geometry(geometry: PageGeometry) -> Self {
+        Engraver { geometry }
+    }
+
+    /// The page geometry this engraver casts off against.
+    pub fn geometry(&self) -> PageGeometry {
+        self.geometry
+    }
+
     /// Resolves geometry: a deterministic horizontal spacing pass over the spring
-    /// slots (each glyph to its slot's `x`, baseline `y` preserved), then
-    /// evaluation of the declared constraints by strength. A malformed input — an
-    /// unknown glyph, a forged catalog identity, or invalid structure — yields
-    /// [`SolveStatus::InternalError`]; a valid problem whose `Required`
-    /// constraints cannot all be satisfied yields [`SolveStatus::Unsatisfiable`]
-    /// (naming the unsatisfied constraints). Both are diagnostic-only; neither
-    /// panics. Violated `Preferred` constraints yield soft-violation warnings
-    /// under [`SolveStatus::SolvedWithWarnings`] — a valid, renderable layout.
+    /// slots (each glyph to its slot's `x`, baseline `y` preserved), then the
+    /// casting-off pass (system breaking, vertical stacking, page assignment —
+    /// see [`casting`]), then evaluation of the declared constraints by
+    /// strength. A malformed input — an unknown glyph, a forged catalog
+    /// identity, or invalid structure — yields [`SolveStatus::InternalError`]; a
+    /// valid problem whose `Required` constraints cannot all be satisfied yields
+    /// [`SolveStatus::Unsatisfiable`] (naming the unsatisfied constraints). Both
+    /// are diagnostic-only; neither panics. Violated `Preferred` constraints
+    /// yield soft-violation warnings under [`SolveStatus::SolvedWithWarnings`]
+    /// — a valid, renderable layout.
     fn resolve(&self, input: &ConstrainedLayoutIR) -> SolveReport {
         let structural_valid = input.validate().is_ok();
 
@@ -109,23 +150,51 @@ impl Engraver {
         // stem behind. Both gate on structural validity: a malformed input must
         // not leak geometry into the diagnostic layout (which reaches
         // canonical_bytes / the renderer).
-        let (glyphs, strokes): (Vec<ResolvedGlyph>, Vec<Stroke>) = if structural_valid {
+        let (spaced_glyphs, spaced_strokes): (Vec<ResolvedGlyph>, Vec<Stroke>) = if structural_valid
+        {
             let remap = HorizontalRemap::build(input);
             (remap.glyphs(input), remap.strokes(input))
         } else {
             (Vec::new(), Vec::new())
         };
-        let resolved_glyphs = glyphs.len();
+        // Casting-off: break the spaced line into systems, stack them, assign
+        // pages, and bake every position into the single world frame. Pure
+        // geometry, so it runs whenever the structure is trustworthy (the
+        // catalog gate below only guards constraint *evaluation*).
+        let cast = if structural_valid {
+            Some(casting::cast_off(
+                input,
+                &spaced_glyphs,
+                &spaced_strokes,
+                &self.geometry,
+            ))
+        } else {
+            None
+        };
+        let resolved_glyphs = spaced_glyphs.len();
 
-        // Evaluate every declared constraint against the *resolved* geometry,
-        // routed by its strength (Chapter 9 §"Strength Levels"): a violated
-        // `Required` constraint is unsatisfied (the solve is `Unsatisfiable`);
-        // a violated `Preferred` one is a soft-violation *warning*, never a
-        // failure. A structurally invalid or bad-catalog input is not evaluated
-        // — there is no trustworthy geometry — so it reports no evaluation work.
+        // Evaluate every declared constraint, routed by its strength (Chapter 9
+        // §"Strength Levels"): geometric constraints against the *pre-casting*
+        // spaced geometry (their frame of expression — casting-off relocates
+        // whole systems rigidly), break constraints against the final break
+        // structure. A violated `Required` constraint is unsatisfied (the solve
+        // is `Unsatisfiable`); a violated `Preferred` one is a soft-violation
+        // *warning*, never a failure. A structurally invalid or bad-catalog
+        // input is not evaluated — there is no trustworthy geometry — so it
+        // reports no evaluation work.
         let (evaluation, constraints_evaluated) = if structural_valid && catalog_valid {
+            let cast = cast
+                .as_ref()
+                .expect("casting ran on structurally valid input");
             (
-                evaluate_constraints(&input.constraints, &glyphs),
+                evaluate_constraints(
+                    &input.constraints,
+                    &spaced_glyphs,
+                    &BreakOutcome {
+                        system_starts: &cast.system_start_slots,
+                        page_starts: &cast.page_start_slots,
+                    },
+                ),
                 input.constraints.len() as u64,
             )
         } else {
@@ -157,9 +226,10 @@ impl Engraver {
         if structural_valid && catalog_valid && !unsatisfied_constraints.is_empty() {
             warnings.push(SolverWarning {
                 kind: SolverWarningKind::UnusualLayoutDecision(
-                    "one or more declared hard constraints are not satisfiable by this \
-                     single-system Minimal solve (e.g. a forced break, or an unverifiable \
-                     extension constraint); see unsatisfied_constraints"
+                    "one or more declared hard constraints are not satisfied by this \
+                     Minimal solve (e.g. an unverifiable extension constraint, or \
+                     colliding geometry the spacing pass cannot separate); see \
+                     unsatisfied_constraints"
                         .to_owned(),
                 ),
                 affected_objects: Vec::new(),
@@ -167,28 +237,23 @@ impl Engraver {
             });
         }
 
-        let pages = input
-            .regions
-            .first()
-            .map(|first| ResolvedPage {
-                provenance: first.provenance.clone(),
-                number: 1,
-                size: Size2D::default(),
-                margins: Margins::default(),
-                systems: input
-                    .regions
-                    .iter()
-                    .map(|region| ResolvedSystem {
-                        provenance: region.provenance.clone(),
-                        bounding_box: Rect::default(),
-                        staves: Vec::new(),
-                        measures: Vec::new(),
-                    })
-                    .collect(),
-                free_objects: Vec::new(),
-            })
-            .into_iter()
-            .collect();
+        // The final layout is the cast world frame: real pages and systems,
+        // glyph/stroke positions baked, the engraver's break decisions appended
+        // to the pipeline's (Chapter 7 §"ResolvedLayoutIR": decisions "including
+        // any the solver itself made").
+        let (glyphs, strokes, pages, engraving_decisions) = match cast {
+            Some(cast) => {
+                let mut decisions = input.engraving_decisions.clone();
+                decisions.extend(cast.decisions);
+                (cast.glyphs, cast.strokes, cast.pages, decisions)
+            }
+            None => (
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                input.engraving_decisions.clone(),
+            ),
+        };
 
         SolveReport {
             status,
@@ -198,7 +263,7 @@ impl Engraver {
                 pages,
                 glyphs,
                 strokes,
-                engraving_decisions: input.engraving_decisions.clone(),
+                engraving_decisions,
                 catalog: input.catalog.clone(),
             },
             unsatisfied_constraints,
@@ -209,7 +274,8 @@ impl Engraver {
             // conservative all-worst "no claim" placeholder, like the stub's.
             metric_vector: QualityMetricVector::unmeasured(),
             budget_used: SolverBudgetUsed {
-                // The horizontal pass touches each slot once; report that honestly.
+                // The horizontal pass and the casting-off walk each touch every
+                // slot once; report the spacing pass's touch honestly.
                 iterations: input.horizontal_slots.len() as u64,
                 nodes: resolved_glyphs as u64,
                 constraint_evaluations: constraints_evaluated,
@@ -353,23 +419,37 @@ impl ConstraintEvaluation {
     }
 }
 
-/// Evaluates the IR's declared constraints against the *resolved* geometry — a
-/// constraint's id is its index in the IR's constraint list — routing each
-/// violation by [`LayoutConstraint::strength`] (Chapter 9 §"Strength Levels"):
-/// a violated `Required` constraint is reported unsatisfied, a violated
-/// `Preferred` one becomes a [`SolverWarningKind::LargeSoftConstraintViolation`]
-/// warning and never fails the solve.
+/// The break structure the casting-off pass produced, for constraint
+/// evaluation: the slots at which the final layout starts a system, and the
+/// subset at which it starts a page.
+struct BreakOutcome<'a> {
+    system_starts: &'a BTreeSet<SpringSlotId>,
+    page_starts: &'a BTreeSet<SpringSlotId>,
+}
+
+/// Evaluates the IR's declared constraints — a constraint's id is its index in
+/// the IR's constraint list — routing each violation by
+/// [`LayoutConstraint::strength`] (Chapter 9 §"Strength Levels"): a violated
+/// `Required` constraint is reported unsatisfied, a violated `Preferred` one
+/// becomes a [`SolverWarningKind::LargeSoftConstraintViolation`] warning and
+/// never fails the solve.
 ///
 /// Geometric constraints (no-collision, alignment, position-within) are checked
-/// against the resolved glyph boxes. A break is never *honoured* — a
-/// single-system, single-page Minimal solve casts off nothing — so a hard break
-/// (`Required`) is unsatisfied and a soft break (`Preferred`) is a warning. An
-/// extension `Registered` constraint this solver cannot interpret is likewise
-/// not claimed satisfied (Chapter 7 §"Behavior Under Unknown Extensions":
+/// against the **pre-casting spaced** glyph boxes — the frame the constraints
+/// are expressed in; casting-off then relocates whole systems by rigid motions
+/// (see `DECISIONS.md`, frame of evaluation). Break constraints are checked
+/// against the **cast break structure**: `SystemBreakAt`/`PageBreakAt` is
+/// satisfied iff the final layout starts a system/page at that slot — so a hard
+/// break is `Unsatisfiable` only if casting-off failed to honour it (which
+/// cannot happen for a feasible, structurally valid input), and a soft break is
+/// a warning exactly when it was skipped on the documented pathological path.
+/// An extension `Registered` constraint this solver cannot interpret is not
+/// claimed satisfied (Chapter 7 §"Behavior Under Unknown Extensions":
 /// conservative).
 fn evaluate_constraints(
     constraints: &[LayoutConstraint],
     glyphs: &[ResolvedGlyph],
+    breaks: &BreakOutcome,
 ) -> ConstraintEvaluation {
     let by_id: BTreeMap<GlyphObjectId, &ResolvedGlyph> = glyphs
         .iter()
@@ -392,7 +472,8 @@ fn evaluate_constraints(
                 Some(g) => within(g, region),
                 None => false,
             },
-            LayoutConstraint::SystemBreakAt { .. } | LayoutConstraint::PageBreakAt { .. } => false,
+            LayoutConstraint::SystemBreakAt { slot, .. } => breaks.system_starts.contains(slot),
+            LayoutConstraint::PageBreakAt { slot, .. } => breaks.page_starts.contains(slot),
             LayoutConstraint::Registered(_, _) => false,
         };
         if holds {
@@ -409,8 +490,9 @@ fn evaluate_constraints(
                     magnitude: 1.0,
                 },
                 affected_objects: Vec::new(),
-                message: "a preferred (soft) constraint is not honoured by this \
-                          single-system Minimal solve"
+                message: "a preferred (soft) break is not honoured by this solve \
+                          (skipped on the pathological-system path; an IrOverride \
+                          decision records it)"
                     .to_owned(),
             }),
         }
@@ -508,14 +590,14 @@ mod tests {
     fn reports_the_minimal_tier_it_has_earned() {
         // It evaluates the declared hard constraints, so it reports Minimal — above
         // the interface-only stub, below the metric-claiming Standard tier.
-        assert_eq!(Engraver.tier(), SolverTier::Minimal);
-        assert!(Engraver.tier() > StubSolver.tier());
-        assert!(Engraver.tier() < SolverTier::Standard);
+        assert_eq!(Engraver::default().tier(), SolverTier::Minimal);
+        assert!(Engraver::default().tier() > StubSolver.tier());
+        assert!(Engraver::default().tier() < SolverTier::Standard);
         // Minimal makes no normalized-metric claim (the catalog is Phase 3).
-        let report = Engraver.solve(&fixture(), &SolverConfig::default());
+        let report = Engraver::default().solve(&fixture(), &SolverConfig::default());
         assert_eq!(report.metric_vector, QualityMetricVector::unmeasured());
-        assert_eq!(Engraver.version(), ENGRAVER_VERSION);
-        assert_ne!(Engraver.version(), StubSolver.version());
+        assert_eq!(Engraver::default().version(), ENGRAVER_VERSION);
+        assert_ne!(Engraver::default().version(), StubSolver.version());
     }
 
     /// Builds a tiny valid constrained IR — a clef and a single note — and lets
@@ -593,7 +675,7 @@ mod tests {
             !input.constraints.is_empty(),
             "the pipeline declares real constraints"
         );
-        let report = Engraver.solve(&input, &SolverConfig::default());
+        let report = Engraver::default().solve(&input, &SolverConfig::default());
         assert_eq!(report.status, SolveStatus::Solved);
         assert!(report.satisfied_hard_constraints);
         assert!(report.unsatisfied_constraints.is_empty());
@@ -623,7 +705,7 @@ mod tests {
                 .id();
             vec![LayoutConstraint::NoCollision { a: clef, b: head }]
         });
-        let report = Engraver.solve(&input, &SolverConfig::default());
+        let report = Engraver::default().solve(&input, &SolverConfig::default());
         assert_eq!(report.status, SolveStatus::Solved, "{:?}", report.warnings);
         assert!(report.satisfied_hard_constraints);
         assert!(report.unsatisfied_constraints.is_empty());
@@ -644,7 +726,7 @@ mod tests {
                 .id();
             vec![LayoutConstraint::NoCollision { a: g, b: g }]
         });
-        let report = Engraver.solve(&input, &SolverConfig::default());
+        let report = Engraver::default().solve(&input, &SolverConfig::default());
         // A valid problem whose hard constraint cannot be met is Unsatisfiable,
         // not an InternalError (which is reserved for solver/structure failures).
         assert_eq!(report.status, SolveStatus::Unsatisfiable);
@@ -653,33 +735,94 @@ mod tests {
         assert_eq!(report.budget_used.constraint_evaluations, 1);
     }
 
+    /// Total systems across all pages of a resolved layout.
+    fn system_count(layout: &ResolvedLayoutIR) -> usize {
+        layout.pages.iter().map(|p| p.systems.len()).sum()
+    }
+
     #[test]
-    fn a_hard_break_cannot_be_honoured_by_single_system_minimal() {
-        use epiphany_layout_ir::{BreakKind, LayoutConstraint};
-        // A hard break maps to ConstraintStrength::Required: a single-system
-        // solve cannot honour it, so the solve is Unsatisfiable.
+    fn a_hard_break_is_honoured_by_casting_off() {
+        use epiphany_layout_ir::{BreakKind, DecisionSource, EngravingDecisionKind};
+        // Inverse of the pre-casting-off pin (`a_hard_break_cannot_be_honoured_
+        // by_single_system_minimal`): a hard break maps to
+        // ConstraintStrength::Required, and the casting-off pass ALWAYS breaks
+        // at it — even though that leaves a clef-only first system — so the
+        // solve is Solved and the system count increases.
+        let baseline =
+            Engraver::default().solve(&with_constraints(|_| vec![]), &SolverConfig::default());
+        assert_eq!(baseline.status, SolveStatus::Solved);
+        assert_eq!(system_count(&baseline.layout), 1);
+
         let input = with_constraints(|c| {
-            let slot = c.horizontal_slots[0].id;
+            // Slot 0 is the clef lead (trivially at a boundary); the note
+            // column is the non-trivial break target.
+            let slot = c.horizontal_slots[1].id;
             vec![LayoutConstraint::SystemBreakAt {
                 slot,
                 kind: BreakKind::Hard,
             }]
         });
-        let report = Engraver.solve(&input, &SolverConfig::default());
-        assert_eq!(report.status, SolveStatus::Unsatisfiable);
-        assert_eq!(report.unsatisfied_constraints.len(), 1);
+        let report = Engraver::default().solve(&input, &SolverConfig::default());
+        assert_eq!(report.status, SolveStatus::Solved, "{:?}", report.warnings);
+        assert!(report.satisfied_hard_constraints);
+        assert!(report.unsatisfied_constraints.is_empty());
+        assert_eq!(
+            system_count(&report.layout),
+            2,
+            "the hard break splits the line into two systems"
+        );
+        // The chosen break is recorded as an engraved decision; no user
+        // override projected this constraint, so it is attributed Automatic.
+        assert!(report
+            .layout
+            .engraving_decisions
+            .iter()
+            .any(|d| d.kind == EngravingDecisionKind::SystemBreak
+                && d.source == DecisionSource::Automatic));
+    }
 
-        // …but a *soft* break is ConstraintStrength::Preferred: not honouring it
-        // is a soft-violation warning on a valid, renderable layout — a
-        // Preferred violation is a warning, never a failure.
-        let soft = with_constraints(|c| {
-            let slot = c.horizontal_slots[0].id;
+    #[test]
+    fn a_soft_break_with_content_before_it_is_honoured() {
+        use epiphany_layout_ir::{BreakKind, DecisionSource, EngravingDecisionKind};
+        // A soft break whose closing system carries musical content is simply
+        // honoured: a clean Solved two-system layout, no soft-violation
+        // warning, and an Automatic engraved decision.
+        let mut input = two_off_staff_whole_notes();
+        let slot = input.horizontal_slots[2].id; // the second note column
+        input.constraints.push(LayoutConstraint::SystemBreakAt {
+            slot,
+            kind: BreakKind::Soft,
+        });
+        let report = Engraver::default().solve(&input, &SolverConfig::default());
+        assert_eq!(report.status, SolveStatus::Solved, "{:?}", report.warnings);
+        assert!(report.warnings.is_empty());
+        assert!(report.satisfied_hard_constraints);
+        assert_eq!(system_count(&report.layout), 2);
+        assert!(report
+            .layout
+            .engraving_decisions
+            .iter()
+            .any(|d| d.kind == EngravingDecisionKind::SystemBreak
+                && d.source == DecisionSource::Automatic));
+    }
+
+    #[test]
+    fn a_pathological_soft_break_is_skipped_and_recorded_as_ir_override() {
+        use epiphany_layout_ir::{BreakKind, DecisionSource, EngravingDecisionKind};
+        // A soft break at the first note column would close a system containing
+        // only the clef — no musical content. The documented exceptional path
+        // skips it: still renderable (a Preferred violation is a warning, never
+        // a failure), the constraint is reported as a soft violation, and the
+        // unhonoured preference is recorded as an IrOverride-sourced decision
+        // (the spec's override-resolution rule: record, don't drop).
+        let input = with_constraints(|c| {
+            let slot = c.horizontal_slots[1].id;
             vec![LayoutConstraint::SystemBreakAt {
                 slot,
                 kind: BreakKind::Soft,
             }]
         });
-        let report = Engraver.solve(&soft, &SolverConfig::default());
+        let report = Engraver::default().solve(&input, &SolverConfig::default());
         assert_eq!(report.status, SolveStatus::SolvedWithWarnings);
         assert!(report.status.is_renderable());
         assert!(
@@ -694,24 +837,45 @@ mod tests {
                 magnitude,
             } if magnitude == 1.0
         )));
+        assert_eq!(
+            system_count(&report.layout),
+            1,
+            "the pathological break was skipped, not honoured"
+        );
+        assert!(report
+            .layout
+            .engraving_decisions
+            .iter()
+            .any(|d| d.kind == EngravingDecisionKind::SystemBreak
+                && d.source == DecisionSource::IrOverride));
     }
 
     #[test]
-    fn a_users_break_flows_to_a_soft_violation_not_a_failure() {
-        // End to end: a user system break on the score graph projects through
-        // the logical stage's break override into a Soft break constraint,
-        // which this single-system solve does not honour — surfacing as a
-        // Preferred-violation warning on a valid, renderable layout.
+    fn a_users_break_is_honoured_and_recorded_with_its_override() {
+        // Inverse of the pre-casting-off pin (`a_users_break_flows_to_a_soft_
+        // violation_not_a_failure`). End to end: a user system break on the
+        // score graph projects through the logical stage's break override into
+        // a Soft break constraint, which casting-off HONOURS — the anchored
+        // column starts a new system at the left margin, the solve is clean
+        // (Solved, no warnings), and the engraved decision cites the user's
+        // override id (DecisionSource::UserOverride).
         use epiphany_core::generators::valid_score;
-        use epiphany_core::{AnchorOffset, Event, TimeAnchor};
+        use epiphany_core::{AnchorOffset, Event, EventPosition, TimeAnchor};
+        use epiphany_layout_ir::{DecisionSource, EngravingDecisionKind};
         let mut score = valid_score(3);
+        // The latest pitched onset: a mid-region break target, so the closing
+        // system carries musical content (the honoured, non-pathological path).
         let event = score.canvas.regions[0]
             .staff_instances()
             .iter()
             .flat_map(|si| si.voices.iter())
             .flat_map(|voice| voice.events.iter().copied())
-            .find(|eid| {
+            .filter(|eid| {
                 matches!(score.events.get(*eid), Some(Event::Pitched(p)) if !p.pitches.is_empty())
+            })
+            .max_by_key(|eid| match score.events.get(*eid).map(|e| e.position()) {
+                Some(EventPosition::Musical(p)) => Some(p.clone()),
+                _ => None,
             })
             .expect("valid_score has a pitched event");
         score.canvas.regions[0]
@@ -725,22 +889,55 @@ mod tests {
             });
 
         let constrained = to_constrained(&to_logical(&score));
-        assert!(
-            constrained
-                .constraints
-                .iter()
-                .any(|c| matches!(c, LayoutConstraint::SystemBreakAt { .. })),
-            "the user break projects into a break constraint"
-        );
-        let report = Engraver.solve(&constrained, &SolverConfig::default());
-        assert_eq!(report.status, SolveStatus::SolvedWithWarnings);
-        assert!(report.status.is_renderable());
+        let break_slot = constrained
+            .constraints
+            .iter()
+            .find_map(|c| match c {
+                LayoutConstraint::SystemBreakAt { slot, .. } => Some(*slot),
+                _ => None,
+            })
+            .expect("the user break projects into a break constraint");
+        let origin = constrained
+            .break_origins
+            .iter()
+            .find(|o| o.slot == break_slot)
+            .expect("the projection records the override attribution");
+
+        let engraver = Engraver::default();
+        let report = engraver.solve(&constrained, &SolverConfig::default());
+        assert_eq!(report.status, SolveStatus::Solved, "{:?}", report.warnings);
+        assert!(report.warnings.is_empty(), "an honoured break never warns");
         assert!(report.satisfied_hard_constraints);
         assert!(report.unsatisfied_constraints.is_empty());
-        assert!(report.warnings.iter().any(|w| matches!(
-            w.kind,
-            SolverWarningKind::LargeSoftConstraintViolation { .. }
-        )));
+        assert!(
+            system_count(&report.layout) >= 2,
+            "the honoured break increases the system count"
+        );
+        // The break lands at the anchor's column: the anchored slot's glyphs
+        // now start their system at the page's left content edge (up to the
+        // ledger-line extension, 0.3 staff spaces, which also participates in
+        // the system's extent and may sit left of the notehead box).
+        let left_edge = report
+            .layout
+            .glyphs
+            .iter()
+            .zip(&constrained.glyphs)
+            .filter(|(_, c)| c.horizontal_slot == break_slot)
+            .map(|(r, c)| r.position.x.0 + c.bounding_box.left.0)
+            .fold(f32::INFINITY, f32::min);
+        let margin = engraver.geometry().margins.left.0;
+        assert!(
+            left_edge >= margin - 1e-3 && left_edge <= margin + 0.5,
+            "the anchored column starts its system at the left margin \
+             (edge {left_edge}, margin {margin})"
+        );
+        // The decision record cites the user's override.
+        assert!(report
+            .layout
+            .engraving_decisions
+            .iter()
+            .any(|d| d.kind == EngravingDecisionKind::SystemBreak
+                && d.source == DecisionSource::UserOverride(origin.override_id)));
     }
 
     #[test]
@@ -760,7 +957,7 @@ mod tests {
             if widths.is_empty() {
                 continue;
             }
-            let report = Engraver.solve(&input, &SolverConfig::default());
+            let report = Engraver::default().solve(&input, &SolverConfig::default());
             for s in report
                 .layout
                 .strokes
@@ -885,7 +1082,7 @@ mod tests {
             "off-staff whole notes earn ledger strokes"
         );
 
-        let report = Engraver.solve(&input, &SolverConfig::default());
+        let report = Engraver::default().solve(&input, &SolverConfig::default());
         // The wide whole-note columns re-space (their deltas differ), so a midpoint-
         // anchored ledger would translate by a neighbouring column's delta and drift.
         // The owning-glyph anchor keeps every ledger at its notehead's offset.
@@ -920,7 +1117,7 @@ mod tests {
         let mut checked = 0;
         for seed in 0..16 {
             let input = to_constrained(&to_logical(&valid_score_rich(seed)));
-            let report = Engraver.solve(&input, &SolverConfig::default());
+            let report = Engraver::default().solve(&input, &SolverConfig::default());
             for s_in in input.strokes.iter().filter(|s| is_rigid_width_stroke(s)) {
                 let lo = s_in.from.x.0.min(s_in.to.x.0);
                 let hi = s_in.from.x.0.max(s_in.to.x.0);
@@ -968,7 +1165,7 @@ mod tests {
         let mut ledgers = 0;
         let mut pairs = 0;
         for seed in 0..32 {
-            let report = Engraver.solve(
+            let report = Engraver::default().solve(
                 &to_constrained(&to_logical(&valid_score_rich(seed))),
                 &SolverConfig::default(),
             );
@@ -1010,7 +1207,7 @@ mod tests {
     #[test]
     fn solves_the_stub_pipeline_and_preserves_provenance() {
         let input = fixture();
-        let report = Engraver.solve(&input, &SolverConfig::default());
+        let report = Engraver::default().solve(&input, &SolverConfig::default());
         assert_eq!(report.status, SolveStatus::Solved);
         assert!(report.satisfied_hard_constraints);
         assert_eq!(report.layout.glyphs.len(), input.glyphs.len());
@@ -1049,7 +1246,7 @@ mod tests {
             input.validate().is_err(),
             "the out-of-range stroke is invalid"
         );
-        let report = Engraver.solve(&input, &SolverConfig::default());
+        let report = Engraver::default().solve(&input, &SolverConfig::default());
         assert_eq!(report.status, SolveStatus::InternalError);
         assert!(report.layout.glyphs.is_empty());
         assert!(
@@ -1069,7 +1266,9 @@ mod tests {
         // from the stub's verbatim baselines.
         let input = fixture();
         assert!(input.glyphs.len() >= 2);
-        let engraved = Engraver.solve(&input, &SolverConfig::default()).layout;
+        let engraved = Engraver::default()
+            .solve(&input, &SolverConfig::default())
+            .layout;
         let stub = StubSolver.solve(&input, &SolverConfig::default()).layout;
         assert_ne!(
             engraved
@@ -1092,7 +1291,9 @@ mod tests {
         // The spacing pass re-places glyphs; the strokes that track them must move
         // by the same horizontal map, not stay at their constrained coordinates.
         let input = fixture();
-        let engraved = Engraver.solve(&input, &SolverConfig::default()).layout;
+        let engraved = Engraver::default()
+            .solve(&input, &SolverConfig::default())
+            .layout;
 
         // Constrained x -> engraved x, per glyph.
         let glyph_map: Vec<(f32, f32)> = input
@@ -1134,8 +1335,12 @@ mod tests {
     #[test]
     fn solve_is_deterministic_and_quantizable() {
         let input = fixture();
-        let a = Engraver.solve(&input, &SolverConfig::default()).layout;
-        let b = Engraver.solve(&input, &SolverConfig::default()).layout;
+        let a = Engraver::default()
+            .solve(&input, &SolverConfig::default())
+            .layout;
+        let b = Engraver::default()
+            .solve(&input, &SolverConfig::default())
+            .layout;
         // Byte-identical canonical output across solves (Chapter 9 determinism).
         assert_eq!(a.canonical_bytes(), b.canonical_bytes());
     }
@@ -1210,7 +1415,7 @@ mod tests {
         };
 
         let constrained = to_constrained(&logical);
-        let engraved = Engraver
+        let engraved = Engraver::default()
             .solve(&constrained, &SolverConfig::default())
             .layout;
         let mut noteheads: Vec<_> = engraved
@@ -1300,7 +1505,7 @@ mod tests {
         };
 
         let constrained = to_constrained(&logical);
-        let engraved = Engraver
+        let engraved = Engraver::default()
             .solve(&constrained, &SolverConfig::default())
             .layout;
         let x_of = |name: &str| {
@@ -1342,8 +1547,8 @@ mod tests {
     #[test]
     fn incremental_is_observationally_equivalent_to_full() {
         let input = fixture();
-        let full = Engraver.solve(&input, &SolverConfig::default());
-        let inc = Engraver.solve_incremental(
+        let full = Engraver::default().solve(&input, &SolverConfig::default());
+        let inc = Engraver::default().solve_incremental(
             &input,
             &full.state,
             &InvalidationSet {
@@ -1386,7 +1591,7 @@ mod tests {
                 // round_trip_with asserts the full provenance contract; a Solved
                 // status also confirms the Engraver satisfied the pipeline's hard
                 // constraints (the stub pipeline declares none, so vacuously).
-                let report = round_trip_with(&score, &Engraver);
+                let report = round_trip_with(&score, &Engraver::default());
                 assert_eq!(report.status, SolveStatus::Solved);
             }
         }
@@ -1396,7 +1601,7 @@ mod tests {
         // survived a real geometry change rather than a pass-through.
         let constrained = to_constrained(&to_logical(&valid_score_rich(11)));
         assert!(constrained.glyphs.len() >= 2);
-        let engraved = Engraver
+        let engraved = Engraver::default()
             .solve(&constrained, &SolverConfig::default())
             .layout;
         let stub = StubSolver
@@ -1426,11 +1631,11 @@ mod tests {
     fn the_editing_loop_holds_through_the_real_engraver() {
         use epiphany_core::generators::valid_score_rich;
         for seed in 0..16u64 {
-            let report =
-                epiphany_testkit::editloop::run_edit_loop_with(&valid_score_rich(seed), &Engraver)
-                    .unwrap_or_else(|| {
-                        panic!("seed {seed}: no clickable notehead to drive the loop")
-                    });
+            let report = epiphany_testkit::editloop::run_edit_loop_with(
+                &valid_score_rich(seed),
+                &Engraver::default(),
+            )
+            .unwrap_or_else(|| panic!("seed {seed}: no clickable notehead to drive the loop"));
             assert!(report.graph_changed, "seed {seed}: graph unchanged");
             assert!(
                 report.selection_preserved,
@@ -1438,5 +1643,349 @@ mod tests {
             );
             assert!(report.render_changed, "seed {seed}: edit not visible");
         }
+    }
+
+    // ---- Casting-off (system breaking, stacking, page assignment) ----------
+
+    /// The QUICKSTART ten-measure hand-off fixture through the default page
+    /// geometry — the honest multi-system case the goldens lock.
+    fn ten_measure_constrained() -> ConstrainedLayoutIR {
+        to_constrained(&to_logical(
+            &epiphany_testkit::fixtures::ten_measure_single_staff(0x000A_11CE),
+        ))
+    }
+
+    #[test]
+    fn greedy_wrap_breaks_at_measure_boundaries() {
+        let input = ten_measure_constrained();
+        let engraver = Engraver::default();
+        let report = engraver.solve(&input, &SolverConfig::default());
+        assert_eq!(report.status, SolveStatus::Solved, "{:?}", report.warnings);
+
+        let layout = &report.layout;
+        assert_eq!(layout.pages.len(), 1, "two short systems fit one page");
+        let systems = &layout.pages[0].systems;
+        assert!(
+            systems.len() >= 2,
+            "the ten-measure fixture (≈99 staff spaces) wraps under the \
+             default 90-staff-space content width; got {} system(s)",
+            systems.len()
+        );
+        // Every wrapped system fits the content width (no measure in this
+        // fixture is wider than a page), and every system starts at the left
+        // content margin.
+        let geometry = engraver.geometry();
+        for system in systems {
+            assert!(
+                system.bounding_box.size.width.0 <= geometry.content_width() + 1e-3,
+                "an automatically wrapped system must fit the content width"
+            );
+            assert!(
+                (system.bounding_box.origin.x.0 - geometry.margins.left.0).abs() < 1e-3,
+                "every system starts at the left content margin"
+            );
+        }
+        // The greedy pass breaks at measure boundaries only: each wrapped
+        // system after the first begins with a barline column.
+        for system in &systems[1..] {
+            let top = system.bounding_box.origin.y.0 + system.bounding_box.size.height.0;
+            let bottom = system.bounding_box.origin.y.0;
+            let first_glyph = layout
+                .glyphs
+                .iter()
+                .filter(|g| g.position.y.0 >= bottom - 1e-3 && g.position.y.0 <= top + 1e-3)
+                .min_by(|a, b| a.position.x.0.total_cmp(&b.position.x.0))
+                .expect("a wrapped system has glyphs");
+            assert!(
+                first_glyph.glyph.as_str().starts_with("barline"),
+                "a greedy system boundary sits at a measure boundary, got {}",
+                first_glyph.glyph.as_str()
+            );
+        }
+        // One Automatic engraved decision per chosen boundary, *appended* to
+        // the pipeline's own decisions (which are carried through unchanged).
+        let appended = layout
+            .engraving_decisions
+            .iter()
+            .filter(|d| !input.engraving_decisions.contains(d))
+            .collect::<Vec<_>>();
+        assert_eq!(appended.len(), systems.len() - 1);
+        assert!(appended.iter().all(|d| {
+            d.kind == epiphany_layout_ir::EngravingDecisionKind::SystemBreak
+                && d.source == epiphany_layout_ir::DecisionSource::Automatic
+        }));
+    }
+
+    #[test]
+    fn a_hard_page_break_starts_a_new_page() {
+        use epiphany_layout_ir::{BreakKind, DecisionSource, EngravingDecisionKind};
+        let mut input = two_off_staff_whole_notes();
+        let slot = input.horizontal_slots[2].id; // the second note column
+        input.constraints.push(LayoutConstraint::PageBreakAt {
+            slot,
+            kind: BreakKind::Hard,
+        });
+        let engraver = Engraver::default();
+        let report = engraver.solve(&input, &SolverConfig::default());
+        assert_eq!(report.status, SolveStatus::Solved, "{:?}", report.warnings);
+        assert!(report.satisfied_hard_constraints);
+        assert_eq!(
+            report.layout.pages.len(),
+            2,
+            "the hard page break paginates"
+        );
+        assert_eq!(report.layout.pages[0].number, 1);
+        assert_eq!(report.layout.pages[1].number, 2);
+        assert_eq!(report.layout.pages[0].systems.len(), 1);
+        assert_eq!(report.layout.pages[1].systems.len(), 1);
+        // Page 2's system sits inside page 2's world frame (a full page height
+        // plus the inter-page gap below page 1's frame).
+        let geometry = engraver.geometry();
+        let page2_content_top =
+            -(geometry.size.height.0 + crate::INTER_PAGE_GAP) - geometry.margins.top.0;
+        let system2 = &report.layout.pages[1].systems[0];
+        let system2_top = system2.bounding_box.origin.y.0 + system2.bounding_box.size.height.0;
+        assert!(
+            (system2_top - page2_content_top).abs() < 1e-3,
+            "page 2's first system starts at page 2's content top \
+             ({system2_top} vs {page2_content_top})"
+        );
+        assert!(report
+            .layout
+            .engraving_decisions
+            .iter()
+            .any(|d| d.kind == EngravingDecisionKind::PageBreak
+                && d.source == DecisionSource::Automatic));
+    }
+
+    #[test]
+    fn vertical_stacking_respects_the_inter_system_gap() {
+        use epiphany_layout_ir::{VerticalBand, VerticalBandId};
+        let report =
+            Engraver::default().solve(&ten_measure_constrained(), &SolverConfig::default());
+        let systems = &report.layout.pages[0].systems;
+        assert!(systems.len() >= 2);
+        // The gap between consecutive systems' real extents is exactly the
+        // vertical-band model's preferred inter-system gap.
+        let preferred = VerticalBand::inter_system_gap(VerticalBandId(0))
+            .preferred_height
+            .0;
+        for pair in systems.windows(2) {
+            let upper_bottom = pair[0].bounding_box.origin.y.0;
+            let lower_top = pair[1].bounding_box.origin.y.0 + pair[1].bounding_box.size.height.0;
+            let gap = upper_bottom - lower_top;
+            assert!(
+                (gap - preferred).abs() < 1e-3,
+                "inter-system gap {gap} != preferred {preferred}"
+            );
+        }
+    }
+
+    #[test]
+    fn page_overflow_starts_a_second_page() {
+        use epiphany_layout_ir::{Margins, Size2D, StaffSpace};
+        // A deliberately small page: 50×10 staff spaces of content, so the
+        // ten-measure fixture wraps into systems (≈7 staff spaces tall) of
+        // which only one fits a page — the multi-page path.
+        let geometry = PageGeometry {
+            size: Size2D {
+                width: StaffSpace(60.0),
+                height: StaffSpace(20.0),
+            },
+            margins: Margins {
+                top: StaffSpace(5.0),
+                right: StaffSpace(5.0),
+                bottom: StaffSpace(5.0),
+                left: StaffSpace(5.0),
+            },
+        };
+        let engraver = Engraver::with_geometry(geometry);
+        let report = engraver.solve(&ten_measure_constrained(), &SolverConfig::default());
+        assert_eq!(report.status, SolveStatus::Solved, "{:?}", report.warnings);
+        let pages = &report.layout.pages;
+        assert!(pages.len() >= 2, "a 10-staff-space content page overflows");
+        for (index, page) in pages.iter().enumerate() {
+            assert_eq!(page.number, index as u32 + 1, "page numbers are 1-based");
+            assert!(!page.systems.is_empty(), "no page is emitted empty");
+            assert_eq!(page.size, geometry.size);
+            assert_eq!(page.margins, geometry.margins);
+            // Every system lies within its page's content frame.
+            let page_top = -(index as f32) * (geometry.size.height.0 + crate::INTER_PAGE_GAP);
+            let content_top = page_top - geometry.margins.top.0;
+            let content_bottom = content_top - geometry.content_height();
+            for system in &page.systems {
+                let top = system.bounding_box.origin.y.0 + system.bounding_box.size.height.0;
+                let bottom = system.bounding_box.origin.y.0;
+                assert!(
+                    top <= content_top + 1e-3 && bottom >= content_bottom - 1e-3,
+                    "system [{bottom}, {top}] escapes page {} content \
+                     [{content_bottom}, {content_top}]",
+                    page.number
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_resolved_page_tree_is_populated() {
+        use std::collections::BTreeSet;
+        let report =
+            Engraver::default().solve(&ten_measure_constrained(), &SolverConfig::default());
+        let page = &report.layout.pages[0];
+        assert_eq!(page.number, 1);
+        assert!(page.size.width.0 > 0.0 && page.size.height.0 > 0.0);
+        assert!(page.free_objects.is_empty());
+
+        let mut system_ids = BTreeSet::new();
+        let mut measure_ids = BTreeSet::new();
+        let mut measure_records = 0usize;
+        let mut previous_top = f32::INFINITY;
+        for system in &page.systems {
+            // Real, ordered bounding boxes: non-default, stacked top to bottom.
+            assert!(system.bounding_box.size.width.0 > 0.0);
+            assert!(system.bounding_box.size.height.0 > 0.0);
+            let top = system.bounding_box.origin.y.0 + system.bounding_box.size.height.0;
+            assert!(top < previous_top, "systems are ordered top to bottom");
+            previous_top = top;
+            assert!(
+                system_ids.insert(system.provenance.stable_id),
+                "each system has a distinct stable id"
+            );
+            // One staff record (the fixture is single-staff), spanning the
+            // system and standing four staff spaces tall (plus line thickness).
+            assert_eq!(system.staves.len(), 1);
+            let staff = &system.staves[0];
+            let staff_height = staff.bounding_box.size.height.0;
+            assert!(
+                (4.0..4.5).contains(&staff_height),
+                "a five-line staff spans four staff spaces, got {staff_height}"
+            );
+            assert!(staff.bounding_box.size.width.0 > 0.0);
+            // Measure records: within the system box, ordered by x, distinct.
+            let mut previous_x = f32::NEG_INFINITY;
+            for measure in &system.measures {
+                measure_records += 1;
+                assert!(measure_ids.insert(measure.measure), "measures are distinct");
+                let x = measure.bounding_box.origin.x.0;
+                assert!(x > previous_x, "measures are ordered by x");
+                previous_x = x;
+                assert!(measure.bounding_box.size.width.0 > 0.0);
+                assert!(
+                    x >= system.bounding_box.origin.x.0 - 1e-3
+                        && x + measure.bounding_box.size.width.0
+                            <= system.bounding_box.origin.x.0
+                                + system.bounding_box.size.width.0
+                                + 1e-3,
+                    "a measure record lies within its system"
+                );
+            }
+        }
+        // Nine of the fixture's ten measures are marked by a start barline
+        // column (the final-barline measure's start is not marked by any
+        // column in this projection, so its record is honestly omitted).
+        assert_eq!(measure_records, 9);
+    }
+
+    #[test]
+    fn casting_off_is_deterministic_byte_for_byte() {
+        // Chapter 9 determinism over the full multi-system output: two solves
+        // of the wrapping fixture produce byte-identical canonical layouts.
+        let input = ten_measure_constrained();
+        let a = Engraver::default()
+            .solve(&input, &SolverConfig::default())
+            .layout;
+        let b = Engraver::default()
+            .solve(&input, &SolverConfig::default())
+            .layout;
+        assert_eq!(a.canonical_bytes(), b.canonical_bytes());
+    }
+
+    #[test]
+    fn staff_lines_are_split_per_system_with_synthesized_continuations() {
+        use epiphany_layout_ir::SynthesisKind;
+        let input = ten_measure_constrained();
+        let report = Engraver::default().solve(&input, &SolverConfig::default());
+        let systems = &report.layout.pages[0].systems;
+        assert!(systems.len() >= 2);
+        // Five lines of one staff, one segment per system: the first segment of
+        // each keeps the original stroke's provenance; each later one is
+        // synthesized under the continuation registry kind.
+        let continuations = report
+            .layout
+            .strokes
+            .iter()
+            .filter(|s| {
+                s.provenance.synthesis
+                    == Some(SynthesisKind::Registered(SYSTEM_CONTINUATION_SYNTHESIS))
+            })
+            .count();
+        assert_eq!(
+            continuations,
+            5 * (systems.len() - 1),
+            "one synthesized continuation per staff line per later system"
+        );
+        // Every input stroke's provenance survives (the first segments).
+        for stroke in &input.strokes {
+            assert!(
+                report
+                    .layout
+                    .strokes
+                    .iter()
+                    .any(|s| s.provenance == stroke.provenance),
+                "an input stroke's provenance was lost in the split"
+            );
+        }
+        // Each system's staff-line segments stay within their system's box.
+        for system in systems {
+            let staff = &system.staves[0];
+            let box_left = system.bounding_box.origin.x.0;
+            let box_right = box_left + system.bounding_box.size.width.0;
+            assert!(staff.bounding_box.origin.x.0 >= box_left - 1e-3);
+            assert!(
+                staff.bounding_box.origin.x.0 + staff.bounding_box.size.width.0 <= box_right + 1e-3
+            );
+        }
+    }
+
+    #[test]
+    fn hit_testing_resolves_a_glyph_in_the_second_system() {
+        use epiphany_layout_ir::{to_render, HitShape, Point, PrimitiveRef};
+        let input = ten_measure_constrained();
+        let report = Engraver::default().solve(&input, &SolverConfig::default());
+        let first_system_bottom = report.layout.pages[0].systems[0].bounding_box.origin.y.0;
+        // A real notehead that wrapped into a later system (below the first).
+        let (index, glyph) = report
+            .layout
+            .glyphs
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| {
+                g.glyph.as_str().starts_with("notehead") && g.provenance.synthesis.is_none()
+            })
+            .min_by(|a, b| a.1.position.y.0.total_cmp(&b.1.position.y.0))
+            .expect("the fixture has noteheads");
+        assert!(
+            glyph.position.y.0 < first_system_bottom,
+            "the lowest notehead sits below the first system (it wrapped)"
+        );
+        // The baked world frame is the hit-test frame: clicking its box centre
+        // resolves to the same glyph and its score-graph source.
+        let render = to_render(&report.layout);
+        let map = render.hit_test_map();
+        let region = map
+            .regions
+            .iter()
+            .find(|r| r.primitive == PrimitiveRef::Glyph(index))
+            .expect("every glyph has a hit region");
+        let HitShape::Box(bounds) = region.shape else {
+            panic!("a glyph hit region is a box");
+        };
+        let click = Point::new(
+            (bounds.left.0 + bounds.right.0) / 2.0,
+            (bounds.bottom.0 + bounds.top.0) / 2.0,
+        );
+        let top = map.hit(click).into_iter().next().expect("the click hits");
+        assert_eq!(top.layout_object, glyph.provenance.stable_id);
+        assert_eq!(top.source, glyph.provenance.source);
     }
 }

@@ -167,6 +167,11 @@ fn project_kind(kind: &OperationKind) -> V0OperationKind {
         OperationKind::SetMetadata(op) => V0OperationKind::SetMetadata(op.clone()),
         OperationKind::SetMetricGrid(op) => V0OperationKind::SetMetricGrid(op.clone()),
         OperationKind::SetUserPageBreak(op) => V0OperationKind::SetUserPageBreak(op.clone()),
+        // v1-native (Phase-3 first tranche): projected verbatim.
+        OperationKind::CreateStaff(op) => V0OperationKind::CreateStaff(op.clone()),
+        OperationKind::SetTimeSignature(op) => V0OperationKind::SetTimeSignature(op.clone()),
+        OperationKind::SetTempoSegment(op) => V0OperationKind::SetTempoSegment(op.clone()),
+        OperationKind::SetStaffLayout(op) => V0OperationKind::SetStaffLayout(op.clone()),
     }
 }
 
@@ -309,6 +314,11 @@ fn migrate_kind(kind: &V0OperationKind, context: &Score) -> Result<OperationKind
         V0OperationKind::SetMetadata(op) => OperationKind::SetMetadata(op.clone()),
         V0OperationKind::SetMetricGrid(op) => OperationKind::SetMetricGrid(op.clone()),
         V0OperationKind::SetUserPageBreak(op) => OperationKind::SetUserPageBreak(op.clone()),
+        // v1-native (Phase-3 first tranche): identity round-trip.
+        V0OperationKind::CreateStaff(op) => OperationKind::CreateStaff(op.clone()),
+        V0OperationKind::SetTimeSignature(op) => OperationKind::SetTimeSignature(op.clone()),
+        V0OperationKind::SetTempoSegment(op) => OperationKind::SetTempoSegment(op.clone()),
+        V0OperationKind::SetStaffLayout(op) => OperationKind::SetStaffLayout(op.clone()),
     })
 }
 

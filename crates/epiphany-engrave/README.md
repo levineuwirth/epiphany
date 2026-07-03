@@ -6,29 +6,38 @@ production-side replacement for `epiphany-layout-ir`'s interface-only
 `StubSolver`; the two live in separate crates so the spec's core/product boundary
 stays sharp.
 
-## Status: honest scaffold (renderer-against-stub phase)
-
-Per the QUICKSTART development pattern, Agent I builds the SVG renderer
-([`epiphany-render-svg`](../epiphany-render-svg)) against the **stub solver**
-first, then grows this crate into the real two-pass spring solver. This commit is
-the first increment:
+## Status: `Minimal` tier, with casting-off
 
 - `Engraver` runs a deterministic **horizontal spacing pass** (the first axis of
-  the planned two-pass spring layout): each spring slot is placed left-to-right by
-  its preferred width instead of being echoed verbatim.
-- It honestly reports `SolverTier::Stub` — it does not yet evaluate the IR's
-  declared hard constraints or compute quality metrics, so it has not earned
-  `Minimal`. It is promoted to `Minimal` in the change that lands real constraint
-  satisfaction.
+  the two-pass spring layout): each spring slot is placed left-to-right by a
+  collision-aware advance derived from real glyph bearings.
+- A **casting-off pass** (Phase 3's layout track) then breaks the spaced line
+  into **systems** at measure boundaries (greedy first-fit against a
+  `PageGeometry` — default A4 portrait at an 8 mm staff), stacks systems
+  vertically at the vertical-band model's inter-system gap, assigns **pages**
+  by content height, and populates the real `ResolvedPage`/`ResolvedSystem`
+  tree. Every position is baked into a single y-up world frame (pages stacked
+  vertically), so the SVG renderer and hit-testing consume the flat
+  glyph/stroke lists unchanged.
+- The IR's declared constraints are **evaluated** — geometric families against
+  the pre-casting spaced frame, break constraints against the final break
+  structure (hard breaks are always honoured; a pathological soft break is
+  skipped and recorded as an `IrOverride` decision). Chosen breaks are recorded
+  as `EngravingDecision`s with `SynthesisKind::EngravedBreak` targets,
+  attributed to the user override that requested them when one did.
+- It reports `SolverTier::Minimal`: hard constraints (break family included)
+  satisfied, **no optimality claim** — the quality-metric vector stays the
+  honest all-worst placeholder until the Quality Metric Catalog lands.
 
-The vertical spring pass, soft-constraint solve, hard-constraint evaluation, and
-the quality-metric vector are the next-phase / Phase-3 work. See `DECISIONS.md`.
+Deferred: the vertical soft-spring solve, per-system justification/stretch,
+optimal break search, widow/orphan control, and casting-off caching. See
+`DECISIONS.md`.
 
 ```rust
 use epiphany_engrave::Engraver;
 use epiphany_layout_ir::{ConstraintSolver, SolverConfig};
 
-let report = Engraver.solve(&constrained_ir, &SolverConfig::default());
-assert!(report.satisfied_hard_constraints); // for constraint-free stub-pipeline input
-let resolved = report.layout;               // hand to epiphany-render-svg
+let report = Engraver::default().solve(&constrained_ir, &SolverConfig::default());
+assert!(report.satisfied_hard_constraints);
+let resolved = report.layout; // real pages/systems; hand to epiphany-render-svg
 ```

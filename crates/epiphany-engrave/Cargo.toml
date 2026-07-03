@@ -5,18 +5,18 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Agent I's Epiphany engraving solver (spec Chapter 9): turns a ConstrainedLayoutIR into a ResolvedLayoutIR with real geometry. A deterministic horizontal-spacing pass (the first axis of the planned two-pass spring layout) that evaluates the declared hard constraints and reports SolverTier::Minimal. The vertical spring pass and casting-off are deferred to a later tier."
+description = "Agent I's Epiphany engraving solver (spec Chapter 9): turns a ConstrainedLayoutIR into a ResolvedLayoutIR with real geometry. A deterministic horizontal-spacing pass plus Minimal-tier casting-off (greedy system breaking at measure boundaries, vertical system stacking, page assignment) that evaluates the declared hard constraints — break constraints included — and reports SolverTier::Minimal."
 
 [dependencies]
 # The solver consumes/produces the Chapter 7 IR stages and implements the
 # Chapter 9 `ConstraintSolver` interface — all defined in epiphany-layout-ir,
-# which re-exports the epiphany-core ids/types the solver references.
+# which re-exports most of the epiphany-core ids/types the solver references.
 epiphany-layout-ir.workspace = true
+# The casting-off pass matches provenance sources by their typed id (staves for
+# per-system staff records, measures for per-system measure records).
+epiphany-core.workspace = true
 
 [dev-dependencies]
-# Tests drive the solver from real score fixtures via epiphany-core's generators
-# (and a couple of leaf id/time types).
-epiphany-core.workspace = true
 # The criterion-6 round-trip test mirrors the hand-off gate's fixtures, including
 # epiphany-testkit's `ten_measure_single_staff` (testkit does not depend on this
 # crate, so this dev-dep introduces no cycle).
