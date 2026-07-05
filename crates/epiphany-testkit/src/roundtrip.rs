@@ -386,7 +386,11 @@ pub fn assert_score_serialization_stable(score: &Score, frontier: &[u8], seed: u
         "score bytes were not preserved through content-addressed storage"
     );
 
-    // deserialize → equal → reserialize byte-identically.
+    // deserialize → equal → reserialize byte-identically. (The canonical base
+    // is a major-0 chunk; the schema-version dispatch seam for the acceleration
+    // full-`Score` snapshot is exercised on its own read path in a later phase,
+    // where a properly-roled acceleration snapshot exists. This harness's base
+    // decodes with the current codec.)
     let decoded = Score::decode_canonical(&loaded).expect("loaded score must decode");
     assert_eq!(&decoded, score, "decoded score changed");
     assert_eq!(

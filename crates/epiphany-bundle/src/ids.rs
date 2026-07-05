@@ -168,8 +168,17 @@ pub struct SchemaVersion {
 }
 
 impl SchemaVersion {
-    /// The current prototype schema version.
+    /// The baseline prototype schema version (major 0). Every chunk whose
+    /// layout is unchanged by the schema-major-1 bump keeps this version.
     pub const V0: SchemaVersion = SchemaVersion { major: 0, minor: 1 };
+
+    /// Schema major 1 — the first data-model expansion major (Binary Format
+    /// companion §"Schema Major 1"). Stamped on chunks whose payload carries a
+    /// v1 layout: the acceleration full-`Score` snapshot, the resolved-layout
+    /// `LayoutCache`, and any operation-envelope block bearing a v1
+    /// `CreateRegion`. The canonical-base `MaterializedState`, the manifest,
+    /// and operation blocks without a changed payload stay at [`Self::V0`].
+    pub const V1: SchemaVersion = SchemaVersion { major: 1, minor: 0 };
 
     /// Constructs a schema version.
     #[inline]

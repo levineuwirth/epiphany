@@ -2031,12 +2031,65 @@ impl Score {
 
     /// Decodes the exact inverse of [`Score::canonical_bytes`], validating every
     /// tag, length, primitive, and type invariant. Trailing bytes are rejected.
+    ///
+    /// This is the **current (schema major 1)** layout. To decode bytes whose
+    /// schema major is not known to be current, use
+    /// [`Score::decode_canonical_versioned`].
     pub fn decode_canonical(bytes: &[u8]) -> Result<Score> {
         let mut r = Reader::new(bytes);
         let score = Score::dec(&mut r)?;
         r.finish()?;
         Ok(score)
     }
+
+    /// The **schema-version dispatch seam** (Binary Format companion
+    /// §"Schema Major 1"): decodes a full-`Score` snapshot whose bytes were
+    /// written under the given schema `major`, migrating a major-0 encoding up
+    /// to the current in-memory form on read. Major 1 is the current layout
+    /// ([`Score::decode_canonical`]); major 0 is decoded through the frozen v0
+    /// wire form (`decode_v0_score`) and then migrated (`migrate_v0_score`).
+    ///
+    /// At schema major 1's introduction the v0 and v1 layouts are **identical**,
+    /// so the v0 path is the identity today — the machinery is a behavioral
+    /// no-op. When a later phase grows a field on `Canvas`, `Instrument`, or
+    /// `Region`, the frozen pre-field decoder is added here (reading the old
+    /// layout) and `migrate_v0_score` default-fills the new field.
+    ///
+    /// The caller (the bundle read path) only reaches this after the chunk gate
+    /// has admitted the major into its accept-set, so a major outside `{0, 1}`
+    /// is a defensive error, not an expected path.
+    pub fn decode_canonical_versioned(bytes: &[u8], major: u16) -> Result<Score> {
+        match major {
+            1 => Score::decode_canonical(bytes),
+            0 => {
+                let v0 = decode_v0_score(bytes)?;
+                Ok(migrate_v0_score(v0))
+            }
+            _ => Err(ScoreDecodeError::InvalidValue("unsupported schema major")),
+        }
+    }
+}
+
+/// Decodes a `Score` from its **frozen schema-major-0** wire bytes.
+///
+/// At major 1's introduction the v0 layout equals the current layout, so this
+/// delegates to [`Score::decode_canonical`]. **Phase C/D freeze this by value:**
+/// when `Canvas`/`Instrument`/`Region` grow a field, this function is replaced
+/// by a copy of the pre-field positional decoder (reading the old layout), and a
+/// golden v0 byte fixture guards it against drift — so the migrate-on-read path
+/// decodes real historical bytes, not the current layout in disguise.
+fn decode_v0_score(bytes: &[u8]) -> Result<Score> {
+    Score::decode_canonical(bytes)
+}
+
+/// Migrates a `Score` decoded from schema major 0 up to the current in-memory
+/// form. Total and default-filling (no score context needed).
+///
+/// Identity today (v0 layout == v1 layout). **Phase C/D fill the new fields
+/// here:** `Canvas.layout_defaults` = the A4/8 mm default, `Instrument.range`
+/// = `None`, `Region.permits_spanning_slurs` = `false`.
+fn migrate_v0_score(score: Score) -> Score {
+    score
 }
 
 // ===========================================================================
@@ -2298,6 +2351,31 @@ mod tests {
                 seed.wrapping_mul(0x0100_0193).wrapping_add(7),
             ));
         }
+    }
+
+    #[test]
+    fn versioned_decode_is_identity_across_majors_at_major_1_introduction() {
+        // The schema-version dispatch seam (Binary Format §"Schema Major 1"):
+        // at major 1's introduction the v0 and v1 layouts are identical, so
+        // decoding the same bytes under either major yields the same score as
+        // the unversioned decoder. This pins the machinery as a behavioral
+        // no-op; a later phase that grows a field flips the major-0 path to a
+        // real frozen decode + default-fill, and this test moves with it.
+        for seed in 0..64u64 {
+            let score = valid_score(seed.wrapping_mul(0x9E37_79B9).wrapping_add(1));
+            let bytes = score.canonical_bytes();
+            let via_current = Score::decode_canonical(&bytes).expect("decodes");
+            let via_v1 = Score::decode_canonical_versioned(&bytes, 1).expect("major 1 decodes");
+            let via_v0 = Score::decode_canonical_versioned(&bytes, 0).expect("major 0 decodes");
+            assert_eq!(via_current, via_v1, "major 1 == unversioned");
+            assert_eq!(
+                via_current, via_v0,
+                "major 0 (identity migration) == unversioned"
+            );
+        }
+        // A major outside the accept-set is a defensive decode error (the gate
+        // rejects it upstream in practice).
+        assert!(Score::decode_canonical_versioned(&valid_score(1).canonical_bytes(), 2).is_err());
     }
 
     #[test]

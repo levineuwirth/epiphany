@@ -33,9 +33,20 @@ use std::collections::BTreeMap;
 /// superblock slots): 576 bytes.
 pub const BODY_START: u64 = SLOT_B_OFFSET + SUPERBLOCK_LEN;
 
-/// The schema major version this format version can parse (Chapter 8
-/// §"Schema Versioning"): a canonical chunk or manifest at a higher major is
-/// not interpretable by this reader.
+/// The schema major version this reader can parse for a **generic canonical
+/// chunk** (Chapter 8 §"Schema Versioning"). A chunk at a higher major is not
+/// interpretable by this reader as canonical state.
+///
+/// This stays `0` through the schema-major-1 machinery phase: schema major 1's
+/// wire form is *defined* (Binary Format companion §"Schema Major 1", and
+/// [`SchemaVersion::V1`]) and its dispatch seam exists in `epiphany-core`
+/// (`Score::decode_canonical_versioned`), but no chunk is
+/// produced at major 1 yet and the reader's per-role decoders (operation
+/// blocks, layout caches) are not yet versioned. Admission of major 1 is raised
+/// **per chunk role** by the later phases that add each role's versioned decode
+/// or discard-and-regenerate path — never as a blanket accept-set ahead of the
+/// decoders (which would let a spec-valid major-1 op block reach an unversioned
+/// decoder and be mis-read).
 pub const SUPPORTED_SCHEMA_MAJOR: u16 = 0;
 
 /// The conformance-profile major version this implementation understands
@@ -239,8 +250,12 @@ impl<S: BlockStore> Bundle<S> {
         let superblock = selection.superblock;
 
         // A manifest at an unsupported schema major cannot be interpreted as
-        // canonical state (Chapter 8 §"Schema Versioning").
-        if superblock.manifest_schema_version.major != SUPPORTED_SCHEMA_MAJOR {
+        // canonical state (Chapter 8 §"Schema Versioning"). The manifest stays
+        // at its own schema major across the schema-major-1 bump (its body is
+        // carried opaquely and never grows a v1 layout here), so this gate is
+        // exact to `Manifest::SCHEMA.major` — it must not admit a manifest major
+        // that has no defined wire form.
+        if superblock.manifest_schema_version.major != Manifest::SCHEMA.major {
             return Err(BundleError::UnsupportedSchemaVersion {
                 version: superblock.manifest_schema_version,
             });
@@ -829,7 +844,11 @@ fn read_and_verify_chunk(store: &dyn BlockStore, r: &ChunkRef) -> Result<Vec<u8>
             file_len: store.len(),
         });
     }
-    // Canonical chunks must be parseable: v0 supports schema major 0 only.
+    // A chunk at a schema major this reader cannot parse. The gate stays exact
+    // to `SUPPORTED_SCHEMA_MAJOR` (major 0) through the machinery phase; later
+    // phases raise admission per chunk role as each role's versioned decode or
+    // discard path lands, so a major-1 chunk is never admitted ahead of a
+    // decoder that can read it (Binary Format companion §"Schema Major 1").
     if r.schema_version.major != SUPPORTED_SCHEMA_MAJOR {
         return Err(BundleError::UnsupportedSchemaVersion {
             version: r.schema_version,
@@ -1144,6 +1163,24 @@ pub fn manifest_chunk_hash(payload: &[u8]) -> ContentHash {
 mod tests {
     use super::*;
     use crate::ids::DocumentId;
+
+    #[test]
+    fn schema_major_1_is_defined_but_not_yet_admitted_by_the_gates() {
+        // The schema-major-1 machinery phase: SchemaVersion::V1 and the dispatch
+        // seam exist, but no chunk is produced at major 1 and the gates stay
+        // exact to major 0 — admission is raised per chunk role by the later
+        // phases that add each role's versioned decoder (Binary Format
+        // companion §"Schema Major 1"). So the generic-chunk gate and the
+        // manifest gate both still reject major 1 here.
+        assert_eq!(SUPPORTED_SCHEMA_MAJOR, 0);
+        assert_eq!(Manifest::SCHEMA.major, 0);
+        assert_eq!(SchemaVersion::V1.major, 1, "v1 is defined as an identity");
+        assert_ne!(
+            SchemaVersion::V1.major,
+            SUPPORTED_SCHEMA_MAJOR,
+            "major 1 is defined but not yet admitted at the generic gate"
+        );
+    }
 
     fn fresh_bundle() -> Bundle<MemStore> {
         Bundle::create(
