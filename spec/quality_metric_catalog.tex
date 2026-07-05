@@ -226,7 +226,7 @@
   {\Large\scshape\color{epiphanyslate}Quality Metric Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.1.0 --- Phase 3 (the normative metric set: formal definitions, normalization, weights, tier thresholds, profile registry)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.2.0 --- Phase 3 (the normative metric set: formal definitions, normalization, weights, tier thresholds, profile registry; \texttt{spacing\_distortion} scoped to rhythmic columns)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the metrics and thresholds it defines}
   \vfill
 \end{titlepage}
@@ -246,7 +246,7 @@ deliver ``per-metric normalization functions mapping raw measurements to
 metric thresholds, and the formal definition of each quality metric in the
 normative metric set.''
 
-This release (v0.1.0) delivers all four chartered items, plus two small
+This companion (v0.2.0) delivers all four chartered items, plus two small
 registries the core specification names but defers here:
 
 \begin{itemize}
@@ -721,44 +721,62 @@ the resolved layout already carries.
 \section{\texttt{spacing\_distortion}}
 \label{sec:metrics:spacing}
 
-\textbf{Phenomenon.} Uneven horizontal distribution within a system:
-columns bunched together here and stretched apart there, where the
-underlying spring model asked for near-uniform advances.
+\textbf{Phenomenon.} Uneven horizontal distribution within a system: the
+\emph{rhythmic} columns --- those carrying notes and rests --- bunched
+together here and stretched apart there, where the underlying spring model
+asked for near-uniform advances.
 
 \begin{requirement}
 \label{req:qmc:spacing}
-\textbf{Contributing units:} systems $s$ with $m_s \ge 3$ (at least two
-advances).
+\textbf{Rhythmic columns.} A \emph{rhythmic column} of a system is a
+horizontal spring slot at least one of whose glyphs is a notehead or a
+rest. The clef, key-signature, and time-signature lead and the barlines are
+\textbf{not} rhythmic columns: their horizontal extent is notational
+furniture, fixed by their content rather than by rhythm.
 
-\textbf{Raw measurement:} per unit,
-$\mathit{raw}_s = \mathrm{CV}(a^s_1, \dots, a^s_{m_s - 1})$; the axis raw
-value is the arithmetic mean of $\mathit{raw}_s$ over contributing units.
+\textbf{Contributing units:} systems $s$ with at least three rhythmic
+columns (so at least two rhythmic advances).
+
+\textbf{Raw measurement:} let $x^s_1 < \dots < x^s_{k_s}$ be the reference
+x-positions of the system's $k_s$ rhythmic columns in order, and
+$a^s_i = x^s_{i+1} - x^s_i$ the advance between consecutive rhythmic columns
+(a note-to-note advance spans any barline or furniture that falls between
+the two, so barlines are transparent, not breaks in the sequence). Then
+$\mathit{raw}_s = \mathrm{CV}(a^s_1, \dots, a^s_{k_s - 1})$, and the axis
+raw value is the arithmetic mean of $\mathit{raw}_s$ over contributing
+units.
 
 \textbf{Normalization:} $R_{\mathrm{worst}} = 1.0$;
 $n = \min(1, \mathit{raw})$.
 \end{requirement}
 
 \begin{rationale}
-A coefficient of variation of $1.0$ means the typical column advance
-deviates from the mean by the whole mean --- spacing with no discernible
-regularity. v0.1 defines \emph{geometric} regularity deliberately: the
-reference spring model's preferred widths are uniform, so regular advances
-are exactly what its ideal output looks like, and the collision minima
-(accidental overhangs, wide columns) that legitimately perturb advances
-are modest on realistic scores.
+A coefficient of variation of $1.0$ means the typical advance deviates from
+the mean by the whole mean --- spacing with no discernible regularity. v0.2
+defines \emph{geometric} regularity over the \emph{rhythmic} columns
+deliberately: the reference spring model's preferred widths are uniform, so
+regular note/rest advances are exactly what its ideal output looks like,
+and the collision minima (accidental overhangs, wide columns) that
+legitimately perturb those advances are modest on realistic scores. The
+axis is scoped to rhythmic columns because a leading clef, key signature,
+or time signature is furniture whose width the spring model does not govern:
+folding the wide clef-to-first-note gap into the CV would flag a
+perfectly-spaced short line as distorted purely for carrying a clef ---
+measuring furniture, not spacing.
 \end{rationale}
 
 \begin{openquestion}
 \textbf{Optical spacing at the Standard tier.} Mature engraving spaces
-columns proportionally to musical duration (with an optical correction),
-not uniformly; under a duration-proportional model, this axis's ideal
-would be ``advances proportional to the column's duration share,'' and a
-perfectly optically-spaced line would score \emph{worse} than a uniform
-one under the v0.1 definition. When the layout pipeline gains
-duration-aware preferred widths, should the Standard tier redefine
+rhythmic columns proportionally to musical duration (with an optical
+correction), not uniformly; under a duration-proportional model, this
+axis's ideal would be ``advances proportional to the column's duration
+share,'' and a perfectly optically-spaced line would score \emph{worse}
+than a uniform one under the v0.2 definition. When the layout pipeline
+gains duration-aware preferred widths, should the Standard tier redefine
 $\mathit{raw}_s$ as deviation from the duration-proportional ideal while
-Minimal keeps geometric regularity? v0.1 defines geometric regularity
-only.
+Minimal keeps geometric regularity? v0.2 scopes the geometric definition to
+rhythmic columns (removing the leading-furniture false positive on short
+scores) but still measures geometric, not duration-proportional, regularity.
 \end{openquestion}
 
 \section{\texttt{slur\_shape\_penalty}}
@@ -1249,7 +1267,7 @@ selections:
     fraction is evaluated during ordinary solves. \texttt{Draft} selects
     the Minimal column (few warnings, fast iteration);
     \texttt{Standard} and \texttt{Publication} select the Standard
-    column. In v0.1 no column tighter than Standard is ratified;
+    column. As of v0.2 no column tighter than Standard is ratified;
     \texttt{Publication} is registered now so that documents and
     configurations can name it, and a future revision \MAY{} give it a
     tighter column without a schema change.
@@ -1302,6 +1320,18 @@ than inventing a parallel one.
   Open questions: the notated-but-unrendered honesty edge, optical
   spacing at the Standard tier, threshold tuning pending reference-suite
   experience. \\
+  \today & \hyperref[sec:metrics:spacing]{\texttt{spacing\_distortion}}
+  & 0.2.0 --- Scope the \texttt{spacing\_distortion} raw measurement to the
+  system's \emph{rhythmic} columns (slots bearing a notehead or rest),
+  excluding the clef / key-signature / time-signature lead and treating
+  barlines transparently (a note-to-note advance spans them). Resolves the
+  reference-suite false positive in which a short healthy line's wide
+  clef-to-first-note gap inflated the CV above the Standard warning floor
+  (measured 0.36--0.41 on the three- to eight-column entries $\to$
+  0.08--0.22, below the floor) without weakening the axis on real spacing
+  irregularity. Normalization anchor, orientation, range, thresholds, and
+  the eight other axes are unchanged; the optical-spacing open question
+  (duration-proportional spacing) stays open. Batch item P12-I12. \\
 \bottomrule
 \end{longtable}
 

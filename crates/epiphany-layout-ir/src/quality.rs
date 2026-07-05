@@ -1,7 +1,10 @@
 //! The Quality Metric Catalog's normative constants (companion specification
-//! *Epiphany — Quality Metric Catalog*, v0.1.0): the per-axis normalization
+//! *Epiphany — Quality Metric Catalog*, v0.2.0): the per-axis normalization
 //! anchors, the per-tier metric threshold table, the profile→threshold-column
-//! mapping, and the `QualityFloorApproached` warning fraction.
+//! mapping, and the `QualityFloorApproached` warning fraction. (The v0.2.0
+//! `spacing_distortion` refinement scoped that axis's *measurement domain* to
+//! rhythmic columns; it touched no anchor or threshold, so this transcription
+//! of the numeric constants is unchanged.)
 //!
 //! This module is a **transcription**, not an invention: every number here is
 //! pinned by the catalog and cited to its chapter. Solvers that compute real
@@ -202,7 +205,7 @@ pub fn tier_thresholds(tier: SolverTier) -> Option<&'static MetricThresholds> {
 /// The threshold column a **registered profile** selects (catalog Chapter 6,
 /// `req:qmc:profiles`): `Draft` → the Minimal column (few warnings, fast
 /// iteration); `Standard` and `Publication` → the Standard column (no column
-/// tighter than Standard is ratified in v0.1). This is the column the solver's
+/// tighter than Standard is ratified as of v0.2). This is the column the solver's
 /// own `QualityFloorApproached` diagnostics reference during ordinary solves;
 /// suite evaluation at a claimed tier always uses that *tier's* column
 /// ([`tier_thresholds`]).

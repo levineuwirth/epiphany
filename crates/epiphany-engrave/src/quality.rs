@@ -1,5 +1,5 @@
 //! **Real quality-metric computation** — the nine normative axes of the
-//! *Quality Metric Catalog* companion (v0.1.0, Chapter 3), measured over what
+//! *Quality Metric Catalog* companion (v0.2.0, Chapter 3), measured over what
 //! the pipeline already produced: the resolved world-frame geometry
 //! ([`CastLayout`]), the constrained input (slot identity, vertical bands), and
 //! the declared page geometry. Normalization anchors, threshold tables, and the
@@ -20,9 +20,12 @@
 //!   excluding same-slot pairs (slot identity = the glyph's
 //!   `horizontal_slot` in the constrained input; the resolved glyph list is
 //!   index-parallel to it) and strokes (not glyphs, never swept).
-//! * **`spacing_distortion`** — per-system column advances: the distinct
-//!   resolved x of each glyph-bearing slot realized in the system (its first
-//!   member's baseline — the spacing pass's own column reference).
+//! * **`spacing_distortion`** — per-system advances between **rhythmic**
+//!   columns: the distinct resolved x of each note/rest-bearing slot realized
+//!   in the system (its first member's baseline — the spacing pass's own column
+//!   reference). The clef/key/time lead and barlines bear no notehead or rest,
+//!   so they contribute no column and a note-to-note advance spans them
+//!   (catalog §`spacing_distortion` — measuring rhythmic spacing, not furniture).
 //! * **`slur_shape_penalty` / `beam_slope_penalty`** — **vacuous 0.0**: the
 //!   pipeline draws no slur or beam geometry (slurs/beams exist logically,
 //!   not as curves/segments), so the contributing-unit sets are empty. The
@@ -108,14 +111,33 @@ struct SystemCensus {
     members: Vec<Vec<usize>>,
     /// Glyph-ink span `w_s` per system (0 for a glyph-less system).
     width: Vec<f64>,
-    /// Column reference x per realized slot per system, ascending and distinct.
+    /// Reference x of each **rhythmic** column (a slot bearing a notehead or
+    /// rest) per system, ascending and distinct — the spacing axis's domain
+    /// (catalog §`spacing_distortion`: the clef/key/time lead and barlines are
+    /// furniture, not rhythmic columns).
     columns: Vec<Vec<f64>>,
+}
+
+/// Whether a glyph is a notehead or a rest — the mark that makes its slot a
+/// **rhythmic column** (catalog §`spacing_distortion`).
+fn is_rhythmic(name: &str) -> bool {
+    name.starts_with("notehead") || name.starts_with("rest")
 }
 
 fn census(input: &ConstrainedLayoutIR, cast: &CastLayout) -> SystemCensus {
     let count = cast.region_of_system.len();
     let mut members: Vec<Vec<usize>> = vec![Vec::new(); count];
     let mut spans: Vec<Option<(f64, f64)>> = vec![None; count];
+    // Rhythmic slots: those bearing a notehead or rest. Precomputed because a
+    // slot's rhythmic status depends on *all* its members (a note's accidental
+    // may precede its notehead in input order), and only rhythmic slots become
+    // spacing columns (catalog §`spacing_distortion`, "rhythmic column").
+    let rhythmic: BTreeSet<SpringSlotId> = input
+        .glyphs
+        .iter()
+        .filter(|glyph| is_rhythmic(glyph.glyph.as_str()))
+        .map(|glyph| glyph.horizontal_slot)
+        .collect();
     // Column reference: the slot's first member (input order) — the same
     // convention the spacing and casting passes use for a slot's reference x.
     let mut columns: Vec<BTreeMap<SpringSlotId, f64>> = vec![BTreeMap::new(); count];
@@ -131,9 +153,13 @@ fn census(input: &ConstrainedLayoutIR, cast: &CastLayout) -> SystemCensus {
             Some((lo, hi)) => (lo.min(left), hi.max(right)),
             None => (left, right),
         });
-        columns[system]
-            .entry(glyph.horizontal_slot)
-            .or_insert_with(|| f64::from(cast.glyphs[index].position.x.0));
+        // Only rhythmic columns carry spacing advances; a note-to-note advance
+        // spans any intervening barline or furniture (which contribute no column).
+        if rhythmic.contains(&glyph.horizontal_slot) {
+            columns[system]
+                .entry(glyph.horizontal_slot)
+                .or_insert_with(|| f64::from(cast.glyphs[index].position.x.0));
+        }
     }
     let width = spans
         .iter()
@@ -196,7 +222,8 @@ fn collision_raw(input: &ConstrainedLayoutIR, cast: &CastLayout, census: &System
 }
 
 /// `spacing_distortion` (catalog §`spacing_distortion`): mean per-system CV of
-/// column advances, over systems realizing at least three columns.
+/// **rhythmic** column advances, over systems realizing at least three rhythmic
+/// columns (note/rest-bearing slots — see [`census`]).
 fn spacing_raw(census: &SystemCensus) -> f64 {
     let mut per_system = Vec::new();
     for columns in &census.columns {
@@ -586,18 +613,17 @@ mod tests {
 
     #[test]
     fn floor_warnings_reference_the_profiles_threshold_column() {
-        // The b-flat scale's spacing distortion (~0.41: eight columns whose
-        // flat-bearing columns advance wider) sits between the Standard
-        // column's floor (0.8 x 0.40 = 0.32) and the Minimal column's
-        // (0.8 x 0.90 = 0.72) — so the default Standard profile warns about
-        // Spacing and the Draft profile (which selects the Minimal column per
-        // the catalog's profile registry) does not.
-        let score = epiphany_testkit::corpus::corpus()
-            .into_iter()
-            .find(|fixture| fixture.name == "b_flat_major_scale")
-            .expect("corpus entry exists");
-        let input = to_constrained(&to_logical(&(score.build)()));
-        let spacing_warned = |profile: SolverProfile| {
+        // The ten-measure fixture's casting-off distortion (~0.45: the
+        // six/four widow-rebalanced split) sits between the Standard column's
+        // floor (0.8 x 0.35 = 0.28) and the Minimal column's (0.8 x 0.90 =
+        // 0.72) — so the default Standard profile warns about CastingOff and
+        // the Draft profile (which selects the Minimal column per the catalog's
+        // profile registry) does not. (This is the profile-column contrast the
+        // b-flat scale's spacing used to show, before spacing_distortion was
+        // scoped to rhythmic columns and short scores stopped warning; the
+        // casting-off axis carries the demonstration now.)
+        let input = ten_measure();
+        let castoff_warned = |profile: SolverProfile| {
             let config = SolverConfig {
                 profile,
                 ..SolverConfig::default()
@@ -610,22 +636,55 @@ mod tests {
                     matches!(
                         w.kind,
                         SolverWarningKind::QualityFloorApproached {
-                            metric: QualityMetricKind::Spacing
+                            metric: QualityMetricKind::CastingOff
                         }
                     )
                 })
         };
-        assert!(spacing_warned(SolverProfile::Standard));
-        assert!(spacing_warned(SolverProfile::Publication));
-        assert!(!spacing_warned(SolverProfile::Draft));
+        assert!(castoff_warned(SolverProfile::Standard));
+        assert!(castoff_warned(SolverProfile::Publication));
+        assert!(!castoff_warned(SolverProfile::Draft));
         // The metric itself is profile-independent — only the diagnostic
         // column changes.
         let value = Engraver::default()
             .solve(&input, &SolverConfig::default())
             .metric_vector
-            .spacing_distortion
+            .casting_off_quality
             .0;
-        assert!((0.32..=0.72).contains(&value), "spacing = {value}");
+        assert!((0.28..=0.72).contains(&value), "casting_off = {value}");
+    }
+
+    #[test]
+    fn short_scores_do_not_trip_the_standard_spacing_floor() {
+        // P12-I12 regression. Before `spacing_distortion` was scoped to rhythmic
+        // columns, a short healthy line's wide clef-to-first-note lead advance
+        // inflated the CV above the Standard warning floor (0.8 x 0.40 = 0.32),
+        // so these three-to-eight-column corpus entries spuriously warned
+        // (measured 0.36-0.41). Scoped to note/rest columns — the clef/key/time
+        // lead bears no notehead, so it contributes no column — none does.
+        let floor = 0.8 * 0.40;
+        for name in ["b_flat_major_scale", "notes_and_rests", "meter_three_four"] {
+            let score = epiphany_testkit::corpus::corpus()
+                .into_iter()
+                .find(|fixture| fixture.name == name)
+                .expect("corpus entry exists");
+            let input = to_constrained(&to_logical(&(score.build)()));
+            let report = Engraver::default().solve(&input, &SolverConfig::default());
+            assert!(
+                report.metric_vector.spacing_distortion.0 < floor,
+                "{name}: spacing {} still above the Standard floor {floor}",
+                report.metric_vector.spacing_distortion.0
+            );
+            assert!(
+                !report.warnings.iter().any(|w| matches!(
+                    w.kind,
+                    SolverWarningKind::QualityFloorApproached {
+                        metric: QualityMetricKind::Spacing
+                    }
+                )),
+                "{name}: spurious spacing floor warning under the default Standard profile"
+            );
+        }
     }
 
     #[test]

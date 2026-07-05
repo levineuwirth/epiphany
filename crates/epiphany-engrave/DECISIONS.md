@@ -259,7 +259,7 @@ resolved:
 
 ## Quality metrics (2026-07) — decisions
 
-The Quality Metric Catalog companion (v0.1.0) ratified the nine normative
+The Quality Metric Catalog companion (v0.2.0) ratified the nine normative
 axes' formal definitions, anchors, thresholds, and the
 `QualityFloorApproached` trigger; `Engraver::resolve` now computes the real
 vector (the private `quality` module), replacing the all-worst placeholder.
@@ -336,11 +336,34 @@ testkit's reference-suite harness.
    documented xfail row in the testkit harness, P12-I11); the **v3**
    widow-rebalance phase (casting-off decision 9) evens the split to
    `casting_off` = 0.4463, clearing the miss with no catalog change, and the
-   xfail row is promoted to a plain Pass. One finding the catalog's
-   threshold-tuning open question anticipated remains (a Pass-12/QMC candidate
-   below, P12-I12): `spacing_distortion` on 3–8-column entries (0.36–0.41) sits
-   above the Standard column's 0.32 warning floor, so short scores warn under
-   the default Standard profile — a *diagnostic* floor, not a Minimal failure.
+   xfail row is promoted to a plain Pass. The second finding (P12-I12): three
+   short entries measured `spacing_distortion` 0.36–0.41, above the Standard
+   0.32 warning floor — a spurious *diagnostic* (never a Minimal failure). It
+   was resolved by a catalog refinement (QMC 0.1.0 → 0.2.0), see quality
+   decision 8: `spacing_distortion` is scoped to rhythmic (note/rest) columns,
+   dropping the three to 0.2188 / 0.0819 / 0.0856 — below the floor, no code
+   layout change.
+8. **Rhythmic-column spacing (`spacing_distortion` scoped) — the honest P12-I12
+   fix.** The measured false positive was that a short healthy line's wide
+   clef-to-first-note lead advance (furniture width, not note spacing) inflated
+   the per-system advance CV above the Standard warning floor. The catalog
+   (QMC 0.2.0) scopes the axis to **rhythmic columns** — spring slots bearing a
+   notehead or rest — excluding the clef/key/time lead and treating barlines
+   transparently (a note-to-note advance spans them). `quality::census` now
+   builds `columns` only from slots in the precomputed rhythmic set
+   (`is_rhythmic`: a `notehead*`/`rest*` glyph anywhere in the slot); the CV and
+   contributing-unit rule (≥ 3 rhythmic columns) are otherwise unchanged. This
+   is the mirror of the I11 resolution — measure the right thing rather than
+   relax the threshold — but here the defect lived in the normative metric
+   definition, so it *is* a catalog change (unlike I11). Measurement-only: the
+   resolved layout, canonical bytes, render goldens, and `ENGRAVER_VERSION` are
+   untouched; only the reported `spacing_distortion` value changes (RS-3/5/6
+   drop below the floor, RS-2/RS-4 go vacuous-0.0 as their systems carry < 3
+   rhythmic columns — honestly "too little to measure"). The floor-column
+   regression test was re-pointed from b-flat's spacing (which no longer warns)
+   to RS-1's casting-off (which still sits between the Standard and Minimal
+   floors); a new `short_scores_do_not_trip_the_standard_spacing_floor` locks
+   the fix. The duration-aware optical-spacing open question stays open.
 
 ### Pass 12 candidates (quality metrics)
 
@@ -354,11 +377,14 @@ testkit's reference-suite harness.
   an RS-1 override) was deliberately **not** taken: the `0.5` anchor and the
   `0.90` Minimal column stood. `ENGRAVER_VERSION` 2 → 3; `ten_measure` render
   goldens regenerated.
-- **P12 (proposed) — QMC: the Standard spacing floor warns on short scores.**
-  With uniform preferred widths, few-column systems (3–8 columns with a wide
-  clef/key lead) measure spacing CV 0.36–0.41 — above the Standard column's
-  0.8 × 0.40 = 0.32 warning floor, so the default profile emits
-  `QualityFloorApproached(Spacing)` on tiny, healthy scores. Consider either
-  a duration/lead-aware refinement of the axis (the catalog's optical-spacing
-  open question) or excluding the lead column from the advance sequence in a
-  QMC minor revision.
+- **P12-I12 — RESOLVED (QMC 0.2.0, rhythmic-column spacing).** With uniform
+  preferred widths, few-column systems (3–8 columns with a wide clef/key lead)
+  measured spacing CV 0.36–0.41 — above the Standard column's 0.8 × 0.40 = 0.32
+  warning floor, so the default profile emitted `QualityFloorApproached(Spacing)`
+  on tiny, healthy scores. Resolved the **lead-aware way**: the catalog scopes
+  `spacing_distortion` to rhythmic (note/rest) columns, excluding the
+  clef/key/time furniture lead and treating barlines transparently (quality
+  decision 8). The three entries drop to 0.2188 / 0.0819 / 0.0856 (below the
+  floor). The alternative — a duration-proportional (optical) redefinition —
+  needs the pipeline's deferred duration-aware preferred widths and stays the
+  catalog's open question.

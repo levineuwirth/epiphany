@@ -60,3 +60,17 @@ record that the Quality Metric Catalog and the core spec were **not** changed.
 | Item | Disposition | Spec locus | Consumer |
 |---|---|---|---|
 | P12-I11 casting-off stub last system | **no spec change (engrave fix)** — casting-off gained a second **widow-rebalance** phase (`epiphany-engrave` v3): it moves whole trailing measures from a region's penultimate system into its final one, choosing the shift that minimizes the larger of the two distribution penalties the catalog already defines for the break family (`casting_off_quality` width imbalance vs `system_break_penalty` non-final underfill; both share the 0.5 anchor). RS-1 casts six/four instead of eight/two — `casting_off` 1.0 → 0.4463, every axis ≤ 0.90 — so the suite's asserted Xfail row is promoted to a plain Pass. This is the deliberately-chosen *honest* resolution: the `casting_off` 0.5 anchor and the Minimal 0.90 column were **vindicated, not relaxed** (the engraver improved, no anchor rescale / threshold loosening / RS-1 per-entry override). Core spec Chapter 9's "Minimal makes no optimality claim" already permits the heuristic; nothing normative changed | — (no spec locus; core spec + Quality Metric Catalog unchanged) | `epiphany-engrave` (`casting::rebalance_widows`, `ENGRAVER_VERSION` 3); `epiphany-testkit` (RS-1 xfail row removed); render goldens regenerated |
+
+## P12-I12 resolution (2026-07-03) — Quality Metric Catalog 0.1.0 → 0.2.0
+
+Unlike P12-I11, the second measured finding's honest fix is a **catalog
+change**: the defect was in the metric's own definition, not the engraver.
+
+| Item | Disposition | Spec locus | Consumer |
+|---|---|---|---|
+| P12-I12 spacing floor on short scores | **fixed (metric measurement domain)** — `spacing_distortion`'s raw measurement is scoped to the system's **rhythmic columns** (spring slots bearing a notehead or rest); the clef / key-signature / time-signature lead and barlines contribute no column, so a note-to-note advance spans them. Rationale: the leading clef-to-first-note gap is furniture width, not note spacing, and folding it into the CV flagged perfectly-spaced short lines as distorted purely for carrying a clef. The three warning entries drop from 0.36–0.41 to 0.2188 / 0.0819 / 0.0856 (below the Standard 0.32 floor), and the axis stays live on real irregularity. The `1.0` anchor, orientation, range, tier thresholds, and the eight other axes are **unchanged**; this is measurement-only — no layout, canonical bytes, render golden, or `ENGRAVER_VERSION` change. Catalog **0.1.0 → 0.2.0** (a normative refinement of one axis's measurement domain). The duration-aware optical-spacing open question stays open | quality\_metric\_catalog §`spacing_distortion` (`req:qmc:spacing`); revision-history row 0.2.0 | `epiphany-engrave` (`quality::census` rhythmic-column filter, `is_rhythmic`); `epiphany-testkit` (RS-3/5/6 measured values drop, still Pass) |
+
+**Version movements.** Quality Metric Catalog 0.1.0 → 0.2.0
+(`spacing_distortion` scoped to rhythmic columns). Core spec unchanged (the
+axis's formal definition is delegated to the catalog; Chapter 9 carries only
+the field, which is unchanged).

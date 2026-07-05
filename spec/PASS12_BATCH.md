@@ -67,7 +67,7 @@ code instead is the failure mode this batch exists to prevent.
 | P12-I9 | `epiphany-layout-ir` I | Honouring a user break must attribute the decision to its override (`DecisionSource::UserOverride(id)`), but constraints carry no override identity; implemented via a `ConstrainedLayoutIR.break_origins` sidecar populated by `to_constrained`. Bless the sidecar or widen the normalized constraint record. | G / Pass 12 (solver) |
 | P12-I10 | `epiphany-layout-ir` I | System-spanning strokes split at system boundaries need synthesized provenance for continuation segments; implemented as `SynthesisKind::Registered(SYSTEM_CONTINUATION_SYNTHESIS)` with a deterministic `(original, ordinal)` instance key. Add a first-class continuation synthesis kind or bless the registered id. | G / Pass 12 (provenance) |
 | ~~P12-I11~~ **RESOLVED (engrave v3 widow-rebalance)** | `epiphany-engrave` I | RS-1 honestly failed the Minimal casting-off threshold under the reference engraver (measured 1.0 vs 0.90): greedy first-fit left a two-measure stub last system (width CV 0.6145 ≥ the 0.5 anchor). **Resolved the honest way — an engrave-side casting-off balance pass, no catalog change:** casting-off gained a second **widow-rebalance** phase that moves whole trailing measures from a region's penultimate system into its final one, choosing the shift that minimizes the larger of the two distribution penalties the catalog defines for the break family (width imbalance vs non-final underfill; both share the 0.5 anchor). RS-1 now casts six/four instead of eight/two: casting_off 1.0 → **0.4463**, system_break 0.254 → 0.677, every axis ≤ 0.90. `ENGRAVER_VERSION` 2 → 3; render goldens regenerated; the suite's Xfail row promoted to a plain Pass. The `casting_off` 0.5 anchor and the Minimal column stood — the engraver improved, not the threshold — so the Quality Metric Catalog is normatively unchanged. | ✅ done |
-| P12-I12 | `epiphany-engrave` I | The Standard-tier spacing floor warns on short healthy scores: 3–8-column entries with a wide clef/key lead measure spacing CV 0.36–0.41 > the 0.32 Standard floor. Consider a lead-aware or duration-aware refinement of the spacing_distortion raw measurement (the catalog's optical-spacing open question). | G / Pass 12 (quality) |
+| ~~P12-I12~~ **RESOLVED (QMC 0.2.0: rhythmic-column spacing)** | `epiphany-engrave` I | The Standard-tier spacing floor warned on short healthy scores: 3–8-column entries with a wide clef/key lead measured spacing CV 0.36–0.41 > the 0.32 Standard floor (a spurious *diagnostic* — the scores all passed Minimal). **Resolved by the lead-aware refinement (Quality Metric Catalog 0.1.0 → 0.2.0):** `spacing_distortion` is now scoped to the system's **rhythmic columns** (slots bearing a notehead or rest), excluding the clef / key-signature / time-signature lead and treating barlines transparently (a note-to-note advance spans them) — so the furniture-width lead gap no longer inflates the CV. The three entries drop to 0.2188 / 0.0819 / 0.0856 (all below the 0.32 floor), and the axis stays honest on real irregularity (RS-3 keeps 0.2188 from a mid-line accidental). Anchor, orientation, range, thresholds, and the eight other axes unchanged; no layout/golden change (measurement-only, `ENGRAVER_VERSION` untouched). The **duration-aware optical-spacing** open question (deviation from duration-proportional spacing) stays open — it needs the pipeline's deferred duration-proportional preferred widths. | ✅ done |
 
 
 ## Not yet open elsewhere
@@ -80,10 +80,12 @@ work added C1..C4 (re-anchoring), D1 (bundle operation index), and E1..E5
 value-restoring undo, 2026-07-02) added C5, K8..K11, and I7..I10.
 The second tranche (Quality Metric Catalog 0.1.0 + Reference Suite 0.1.0 +
 real engraver metrics + the suite harness + the multi-system click fix,
-2026-07-03) added I11..I12. A follow-up (2026-07-03) resolved I11 (struck
-through above): casting-off gained a widow-rebalance phase (engrave v3), so
-RS-1 passes every Minimal threshold with no catalog change — I12 (the
-Standard-tier spacing floor on short scores) stays open.
+2026-07-03) added I11..I12. Follow-ups (2026-07-03) resolved both (struck
+through above): I11 by an engrave-side casting-off widow-rebalance phase
+(engrave v3, no catalog change), and I12 by scoping `spacing_distortion` to
+rhythmic columns (Quality Metric Catalog 0.1.0 → 0.2.0). The only remaining
+spacing follow-up is the catalog's duration-aware optical-spacing open
+question, which lives in the companion, not as a batch row.
 Agent J's Binary Format companion now exists
 (`spec/binary_format.tex`, v0.1.0): it ratified the P12-D1/E1/E2/E3 inputs
 (struck through above) and discharged the crates' provisional-codec notes
