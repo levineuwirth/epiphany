@@ -515,11 +515,12 @@ assembles its \texttt{SolveReport}:
   \item the solve's constrained input $C$ (a \texttt{ConstrainedLayoutIR}:
     horizontal spring slots, vertical bands, declared constraints);
   \item the declared page geometry the solve was configured with: the
-    content width $W$ and content height $H$, in staff spaces. (The score
-    graph has no home for page geometry yet --- the core names
-    \texttt{Canvas.layout\_defaults} without defining it, tracked as
-    Pass-12 row P12-I7 --- so the geometry is a solver parameter, and the
-    Reference Suite companion requires each suite entry to declare it.)
+    content width $W$ and content height $H$, in staff spaces. (Schema
+    major~1 defines \texttt{Canvas.layout\_defaults} and its type
+    \texttt{CanvasLayoutDefaults}, P12-I7; the reference implementation's
+    code graph home lands in a later phase, so until then the geometry is a
+    solver parameter, and the Reference Suite companion requires each suite
+    entry to declare it.)
 \end{enumerate}
 
 Notation used throughout Chapter~\ref{ch:metrics}:

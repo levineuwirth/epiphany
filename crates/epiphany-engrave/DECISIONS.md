@@ -111,12 +111,14 @@ inputs the solver cannot measure.
    be the spec's intent. Break constraints are evaluated against the **final
    break structure**.
 4. **Page geometry is an engraver parameter (`PageGeometry`), defaulted to A4
-   at an 8 mm staff.** The spec names `Canvas.layout_defaults` ("paper size,
-   margins") but never defines the type, and core does not implement it;
-   adding a graph field now would violate the companion's frozen-layout rule,
-   so the graph home (`CanvasLayoutDefaults`) is **staged to the data-model
-   schema major** and the engraver takes the geometry as a constructor
-   parameter. Default arithmetic (1 staff space = staff height / 4 = 2.0 mm at
+   at an 8 mm staff.** Adding a `Canvas` graph field is a schema-major change
+   under the companion's frozen-layout rule, so it was staged to the data-model
+   schema major. **Schema major 1 now defines the type** (`CanvasLayoutDefaults
+   { page_size: CanvasSize, margins: CanvasMargins }`, staff spaces, A4/8mm
+   default) and ratifies its wire form (core spec + Binary Format 0.3.0,
+   Phase A); the **code graph home lands in Phase C** (`Canvas` gains the
+   field) and the engraver reads it in Phase C′. Until then the engraver takes
+   the geometry as a constructor parameter. Default arithmetic (1 staff space = staff height / 4 = 2.0 mm at
    an 8 mm staff): A4 210 × 297 mm → **105 × 148.5** staff spaces; 15 mm
    margins → **7.5** staff spaces; content area 180 × 267 mm → **90 × 133.5**
    staff spaces. 90 staff spaces wraps the ten-measure hand-off fixture

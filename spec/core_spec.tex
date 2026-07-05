@@ -883,6 +883,27 @@ the other in general.
   storage makes the pitch self-describing.
 \end{rationale}
 
+\begin{lstlisting}[language=Rust]
+/// A closed range of pitches, used for advisory declarations: an
+/// instrument's playable compass and an indeterminate event's pitch hint.
+/// Both bounds are full pitches.
+pub struct PitchRange {
+    pub lowest: Pitch,
+    pub highest: Pitch,
+}
+\end{lstlisting}
+
+A \texttt{PitchRange} is \emph{advisory}. Whether a given pitch lies within
+it is decidable only when the pitch and both bounds share a pitch space that
+defines an order (the common CMN case); cross-space or partially-ordered
+comparisons are treated as ``not out of range'' --- a sound-but-incomplete
+check, as with region time overlap. A range is well-formed when
+\texttt{lowest} does not sort above \texttt{highest} in a common ordered
+space. A solver \MAY{} flag an out-of-range pitch but \MUSTNOT{} treat the
+range as a hard constraint. The type is defined with schema major~1, closing
+the gap in which \texttt{IndeterminacyHints} and \texttt{Instrument} named a
+\texttt{PitchRange} that no section defined.
+
 \section{Scale Position}
 \label{sec:pitch:scale-position}
 
@@ -4228,7 +4249,39 @@ pub struct Canvas {
     /// system layout, page-break behavior.
     pub layout_defaults: CanvasLayoutDefaults,
 }
+
+/// Canvas-level layout defaults. Page size and margins are in staff
+/// spaces; a solver reads them as its default page geometry and MAY
+/// override per solve. The type is defined with schema major 1 (its field
+/// was named on the canvas from the first draft; only its type was
+/// undefined).
+pub struct CanvasLayoutDefaults {
+    pub page_size: CanvasSize,
+    pub margins: CanvasMargins,
+}
+
+/// A page size in staff spaces (1 staff space = staff height / 4).
+pub struct CanvasSize {
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Page margins in staff spaces.
+pub struct CanvasMargins {
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+    pub left: f64,
+}
 \end{lstlisting}
+
+The default is \textbf{A4 portrait at an 8\,mm staff} (1 staff space =
+2\,mm): page $105 \times 148.5$ staff spaces, $7.5$-staff-space margins,
+hence a $90 \times 133.5$ content area. Each staff-space scalar is realized
+canonically as a \texttt{CanonicalF64} leaf; the reference engraver maps a
+\texttt{CanvasLayoutDefaults} onto its internal page geometry. This closes
+the long-standing gap in which the canvas named \texttt{layout\_defaults} but
+no chapter defined \texttt{CanvasLayoutDefaults}.
 
 \subsection{Regions}
 
@@ -4254,6 +4307,12 @@ pub struct Region {
     /// Optional tempo and tuning overrides scoped to this region.
     pub local_tempo_map: Option<TempoMap>,
     pub local_tuning_overrides: Vec<TuningOverride>,
+
+    /// Whether spanners (slurs first of all) may cross this region's
+    /// boundary into an adjacent region. Default false: cross-region
+    /// spanning is not permitted unless a region opts in. Added with
+    /// schema major 1.
+    pub permits_spanning_slurs: bool,
 }
 
 pub enum RegionContent {
@@ -10452,9 +10511,17 @@ pub struct SchemaVersion {
     \item Minor version changes are backward-compatible. A reader
       supporting major version $N$ \MUST{} accept any minor version
       $N.\textit{m}$ for $m \leq$ the reader's supported minor.
-      Minor version changes \MUST{} only add optional fields or
-      enumeration variants in a way preserving the wire format of
-      prior values.
+      Under the positional, frozen-layout wire form, a minor change
+      \MUST{} only \emph{append discriminants to the append-safe
+      vocabularies the Binary Format companion defines} (its open
+      \texttt{Registered} vocabularies, plus ratified appends to
+      \texttt{OperationKind}, \texttt{OperationKindTag},
+      \texttt{OperationPayload}, and the closed value-layer unions), which
+      leaves the bytes of every prior value untouched; it \MUSTNOT{} add or
+      reorder a struct field --- adding a field, even an \texttt{Option},
+      occupies a new positional slot and shifts subsequent bytes, so it is a
+      \emph{major} change (Binary Format companion,
+      \sectionsc{What ``Additive'' Means Here}).
     \item The manifest's \texttt{manifest\_schema\_version} declares
       the schema of the manifest itself. Each chunk's
       \texttt{schema\_version} field declares the schema of that
@@ -10464,6 +10531,26 @@ pub struct SchemaVersion {
       for each schema version.
   \end{itemize}
 \end{requirement}
+
+Schema major~1 is the first data-model expansion major: it adds
+\texttt{Canvas.layout\_defaults}, \texttt{Instrument.range}, and
+\texttt{Region.permits\_spanning\_slurs} to the graph, and unifies the
+non-canonical resolved-layout length-prefix width. Its wire form and the
+byte-for-byte migration from major~0 are defined in the Binary Format
+companion. The canonical-base \texttt{MaterializedState} embeds none of these
+values, so it is byte-identical across the bump and stays major~0.
+\texttt{Canvas.layout\_defaults} and \texttt{Instrument.range} reach only the
+non-canonical acceleration (full-\texttt{Score}) snapshot; but
+\texttt{Region.permits\_spanning\_slurs} also reaches the \emph{canonical}
+operation layer, because \texttt{CreateRegion} embeds a full \texttt{Region},
+so an operation-envelope block bearing a v1 \texttt{CreateRegion} is major~1.
+Consequently a major-0-only reader opens a major-1 bundle \emph{fully} only
+when the bundle carries no v1 \texttt{CreateRegion} operation; otherwise it
+reads the major-0 canonical base and manifest but opens read-only (it cannot
+replay the v1 canonical operations), per the canonical/non-canonical rules
+above. It always discards the higher-major non-canonical caches. A major-1
+reader migrates a major-0 acceleration snapshot and a major-0
+\texttt{CreateRegion} payload on read (default-filling the new fields).
 
 \section{Format Profiles}
 \label{sec:format:profiles}
@@ -14577,6 +14664,23 @@ layouts they own versus inherit:
   \texttt{OperationKind} listing gains the four kinds. The create
   score/canvas slots remain deliberately unavailable pending an
   addressable root model (P12-K8).
+  \\
+  \today & Schema major 1 (data-model expansion) &
+  Defines the two referenced-but-undefined types
+  \texttt{CanvasLayoutDefaults} (with \texttt{CanvasSize} /
+  \texttt{CanvasMargins}, staff-space page geometry, A4/8\,mm default;
+  closes P12-I7) and \texttt{PitchRange} (advisory pitch compass, used by
+  \texttt{Instrument.range} and \texttt{IndeterminacyHints}); adds
+  \texttt{Region.permits\_spanning\_slurs} (default false, P12-K7). Records
+  that schema major~1 is the first data-model expansion major: the
+  canonical-base \texttt{MaterializedState} embeds none of these values and
+  stays major~0, byte-identical, but \texttt{Region.permits\_spanning\_slurs}
+  reaches the \emph{canonical} \texttt{CreateRegion} operation payload, so a
+  major-0 reader opens a bundle carrying v1 \texttt{CreateRegion} ops
+  read-only. The wire form, the resolved-layout length-prefix unification
+  (the manifest-embedded barrier blobs stay \texttt{u64}), and the
+  byte-for-byte v0${\to}$v1 migration are ratified in the Binary Format
+  companion (0.2.0 $\rightarrow$ 0.3.0).
   \\
   \bottomrule
 \end{longtable}

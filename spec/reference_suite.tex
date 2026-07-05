@@ -410,10 +410,10 @@ under:
     documented default --- A4 portrait at an 8\,mm staff height: page
     $105 \times 148.5$ staff spaces, margins $7.5$ staff spaces on all
     four sides, hence a content area of $90 \times 133.5$ staff spaces.
-    (The score graph has no home for page geometry yet: the core names
-    \texttt{Canvas.layout\_defaults} without defining a type, tracked as
-    Pass-12 row P12-I7, so geometry is declared per entry as a solver
-    parameter.)
+    (Schema major~1 defines \texttt{Canvas.layout\_defaults} and its type
+    \texttt{CanvasLayoutDefaults} (P12-I7); the reference implementation's
+    code graph home lands in a later phase, so until then geometry is
+    declared per entry as a solver parameter.)
   \item the \textbf{solver configuration}: the \texttt{SolverConfig}
     fields. In v0.1 every entry uses the default configuration --- the
     \texttt{Standard} profile, an unbounded deterministic budget, and
