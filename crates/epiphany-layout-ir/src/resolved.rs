@@ -114,18 +114,18 @@ impl ResolvedLayoutIR {
 impl CanonicalEncode for ResolvedLayoutIR {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.source.0);
-        push_u64(out, self.pages.len() as u64);
+        push_len(out, self.pages.len());
         for page in &self.pages {
             encode_page(out, page);
         }
-        push_u64(out, self.glyphs.len() as u64);
+        push_len(out, self.glyphs.len());
         for glyph in &self.glyphs {
             encode_provenance(out, &glyph.provenance);
             // The glyph reference itself (so swapping two glyphs' symbols, even
             // with the consulted-name set unchanged, changes the canonical bytes
             // — the encoding is injective in glyph identity).
             let name = glyph.glyph.as_str().as_bytes();
-            push_u64(out, name.len() as u64);
+            push_len(out, name.len());
             out.extend_from_slice(name);
             let (qx, qy) = quantize(glyph.position);
             qx.encode_canonical(out);
@@ -145,7 +145,7 @@ impl CanonicalEncode for ResolvedLayoutIR {
             out.extend_from_slice(&glyph.style.rgba.to_le_bytes());
             out.extend_from_slice(&glyph.layer.to_le_bytes());
         }
-        push_u64(out, self.strokes.len() as u64);
+        push_len(out, self.strokes.len());
         for stroke in &self.strokes {
             encode_provenance(out, &stroke.provenance);
             let (fx, fy) = quantize(stroke.from);
@@ -158,7 +158,7 @@ impl CanonicalEncode for ResolvedLayoutIR {
             out.extend_from_slice(&stroke.style.rgba.to_le_bytes());
             out.extend_from_slice(&stroke.layer.to_le_bytes());
         }
-        push_u64(out, self.engraving_decisions.len() as u64);
+        push_len(out, self.engraving_decisions.len());
         for decision in &self.engraving_decisions {
             encode_decision(out, decision);
         }
@@ -179,24 +179,24 @@ fn encode_page(out: &mut Vec<u8>, page: &ResolvedPage) {
     ] {
         encode_staff_space(out, margin);
     }
-    push_u64(out, page.systems.len() as u64);
+    push_len(out, page.systems.len());
     for system in &page.systems {
         encode_provenance(out, &system.provenance);
         encode_rect(out, system.bounding_box);
-        push_u64(out, system.staves.len() as u64);
+        push_len(out, system.staves.len());
         for staff in &system.staves {
             encode_provenance(out, &staff.provenance);
             out.extend_from_slice(&staff.staff.canonical_bytes());
             encode_rect(out, staff.bounding_box);
         }
-        push_u64(out, system.measures.len() as u64);
+        push_len(out, system.measures.len());
         for measure in &system.measures {
             encode_provenance(out, &measure.provenance);
             out.extend_from_slice(&measure.measure.canonical_bytes());
             encode_rect(out, measure.bounding_box);
         }
     }
-    push_u64(out, page.free_objects.len() as u64);
+    push_len(out, page.free_objects.len());
     for object in &page.free_objects {
         push_u128(out, object.0);
     }
@@ -229,8 +229,15 @@ fn encode_f32(out: &mut Vec<u8>, value: f32) {
         .encode_canonical(out);
 }
 
-fn push_u64(out: &mut Vec<u8>, v: u64) {
-    out.extend_from_slice(&v.to_le_bytes());
+/// Appends a `u32` little-endian length/count prefix (schema major 1: the
+/// resolved-layout unifies its length prefixes to `u32`, matching the core
+/// codec's `put_len`; no resolved-layout count nears 4 GB). The resolved layout
+/// is a non-canonical, encode-only determinism fingerprint (Appendix D
+/// §"Quantized Layout Coordinates"), so this width change has no persisted-format
+/// migration — a cross-major layout cache is regenerated, never decoded.
+fn push_len(out: &mut Vec<u8>, n: usize) {
+    debug_assert!(n <= u32::MAX as usize, "resolved-layout length exceeds u32");
+    out.extend_from_slice(&(n as u32).to_le_bytes());
 }
 
 fn push_u128(out: &mut Vec<u8>, v: u128) {
@@ -249,7 +256,7 @@ fn quantize(p: Point) -> (QuantizedCoord, QuantizedCoord) {
 /// Length-prefixes an id's canonical bytes (self-delimiting).
 fn encode_source(out: &mut Vec<u8>, source: &TypedObjectId) {
     let bytes = source.to_canonical_bytes();
-    push_u64(out, bytes.len() as u64);
+    push_len(out, bytes.len());
     out.extend_from_slice(&bytes);
 }
 
@@ -271,9 +278,9 @@ fn encode_provenance(out: &mut Vec<u8>, p: &Provenance) {
         .collect();
     deps.sort();
     deps.dedup();
-    push_u64(out, deps.len() as u64);
+    push_len(out, deps.len());
     for bytes in deps {
-        push_u64(out, bytes.len() as u64);
+        push_len(out, bytes.len());
         out.extend_from_slice(&bytes);
     }
 }
@@ -326,7 +333,7 @@ fn encode_catalog(out: &mut Vec<u8>, c: &GlyphCatalogIdentity) {
     out.extend_from_slice(&c.smufl_version.major.to_le_bytes());
     out.extend_from_slice(&c.smufl_version.minor.to_le_bytes());
     let font = c.font_id.0.as_bytes();
-    push_u64(out, font.len() as u64);
+    push_len(out, font.len());
     out.extend_from_slice(font);
     match c.font_version {
         None => out.push(0),
@@ -390,6 +397,34 @@ mod tests {
         let mut moved = base.clone();
         moved.glyphs[1].position = Point::new(2.5 + 1.0 / 1024.0, 0.0);
         assert_ne!(a, moved.canonical_bytes());
+    }
+
+    #[test]
+    fn count_prefixes_are_u32_width_locked() {
+        // Schema major 1 unifies the resolved-layout length/count prefixes to
+        // u32 (Binary Format companion §"Schema Major 1"). This locks the byte
+        // shape so a revert to the old u64 prefixes fails: an empty layout
+        // encodes its four counts — pages, glyphs, strokes, engraving_decisions
+        // — as u32 zeros (16 bytes) right after the 32-byte ScoreVersion source,
+        // then the catalog. Under u64 that region would be 32 bytes, shifting the
+        // catalog and lengthening the output by 16.
+        let bytes = ir(vec![], vec![]).canonical_bytes();
+        let source_len = ScoreVersion::default().0.len();
+        assert_eq!(source_len, 32, "ScoreVersion source is 32 bytes");
+        // The first count prefix (pages) is a 4-byte u32 zero — not 8 bytes.
+        assert_eq!(&bytes[source_len..source_len + 4], &0u32.to_le_bytes());
+        // The four count prefixes occupy exactly 4 × 4 bytes; then the catalog,
+        // whose length we recompute independently (no magic number).
+        let catalog_len = {
+            let mut c = Vec::new();
+            encode_catalog(&mut c, &GlyphCatalogIdentity::default());
+            c.len()
+        };
+        assert_eq!(
+            bytes.len(),
+            source_len + 4 * 4 + catalog_len,
+            "four u32 count prefixes (16 bytes), not u64 (32 bytes)"
+        );
     }
 
     #[test]
