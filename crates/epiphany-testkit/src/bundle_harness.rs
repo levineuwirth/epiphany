@@ -16,10 +16,27 @@
 use epiphany_bundle::{
     encode_block, envelope_offsets, pack_operation_blocks, BlockStore, Bundle, BundleError,
     CommitContext, CrashPoint, DocumentId, ExtensionDeclaration, ExtensionId, FaultStore, FileUuid,
-    IndexedBlock, Manifest, MemStore, OperationIndex, SemVer, Slot, StagedChunk, Tear,
+    IndexedBlock, Manifest, MemStore, OperationIndex, SchemaVersion, SemVer, Slot, StagedChunk,
+    Tear,
 };
 use epiphany_determinism::CanonicalEncode;
 use epiphany_ops::{peek_operation_id, OperationEnvelope};
+
+/// Stages real operation envelopes into a single op-envelope block, **deriving**
+/// the block's schema version from its operations: the block major is the max
+/// over `OperationEnvelope::schema_major` (a v1 `CreateRegion` → major 1),
+/// mapped to a version by [`SchemaVersion::for_major`]. This is the writer-side
+/// derivation every real-envelope staging path must use so a block carrying a
+/// v1 payload is never mis-stamped major 0.
+pub fn stage_operation_block(envelopes: &[OperationEnvelope]) -> StagedChunk {
+    let payloads: Vec<Vec<u8>> = envelopes.iter().map(|e| e.to_canonical_bytes()).collect();
+    let major = envelopes
+        .iter()
+        .map(|e| e.schema_major())
+        .max()
+        .unwrap_or(0);
+    StagedChunk::operation_block_versioned(encode_block(&payloads), SchemaVersion::for_major(major))
+}
 
 use crate::generators;
 use crate::rng::Rng;
@@ -251,12 +268,11 @@ pub fn run_manifest_selection(seed: u64) {
 /// `per_block` envelopes each (forcing a multi-block layout regardless of the
 /// 1 MiB soft target, so index ordinals are actually exercised).
 fn staged_envelope_blocks(envelopes: &[OperationEnvelope], per_block: usize) -> Vec<StagedChunk> {
+    // Each block derives its schema version from its own operations, so a group
+    // containing a v1 CreateRegion is stamped major 1 (not V0).
     envelopes
         .chunks(per_block)
-        .map(|group| {
-            let payloads: Vec<Vec<u8>> = group.iter().map(|e| e.to_canonical_bytes()).collect();
-            StagedChunk::operation_block(encode_block(&payloads))
-        })
+        .map(stage_operation_block)
         .collect()
 }
 

@@ -37,17 +37,34 @@ pub const BODY_START: u64 = SLOT_B_OFFSET + SUPERBLOCK_LEN;
 /// chunk** (Chapter 8 §"Schema Versioning"). A chunk at a higher major is not
 /// interpretable by this reader as canonical state.
 ///
-/// This stays `0` through the schema-major-1 machinery phase: schema major 1's
-/// wire form is *defined* (Binary Format companion §"Schema Major 1", and
-/// [`SchemaVersion::V1`]) and its dispatch seam exists in `epiphany-core`
-/// (`Score::decode_canonical_versioned`), but no chunk is
-/// produced at major 1 yet and the reader's per-role decoders (operation
-/// blocks, layout caches) are not yet versioned. Admission of major 1 is raised
-/// **per chunk role** by the later phases that add each role's versioned decode
-/// or discard-and-regenerate path — never as a blanket accept-set ahead of the
-/// decoders (which would let a spec-valid major-1 op block reach an unversioned
-/// decoder and be mis-read).
+/// This is the baseline for a **generic** chunk role. Admission of major 1 is
+/// raised **per chunk role** by `max_supported_major` as each role's versioned
+/// path lands — never as a blanket accept-set ahead of the decoders (which would
+/// let a spec-valid major-1 chunk reach an unversioned decoder and be mis-read).
+/// The operation-envelope-block role is raised to major 1 (schema-major track
+/// D2: a block bearing a v1 `CreateRegion`); the manifest and layout-cache roles
+/// stay at `0`.
 pub const SUPPORTED_SCHEMA_MAJOR: u16 = 0;
+
+/// The maximum schema major this reader admits for a chunk of `kind` — the upper
+/// bound of its per-role accept-set `[0, max]` (Binary Format companion
+/// §"Schema Major 1", "The accept-set gate").
+///
+/// `OperationEnvelopeBlock` admits major 1 (its v1 form embeds a v1
+/// `CreateRegion`; the reader treats the block bytes opaquely, so it parses a
+/// v1 block without decoding the payload). Every other role stays at
+/// [`SUPPORTED_SCHEMA_MAJOR`] until its own versioned path lands — including the
+/// payload-polymorphic `Snapshot` (the acceleration form's migrate-on-read is
+/// core-side; the canonical base stays major 0) and the manifest (carried
+/// opaquely, never grows a v1 layout). A chunk above its role's max is not
+/// admitted; for a **canonical** role that means the bundle opens read-only
+/// (a major-0-only reader meeting a v1 op block), not a hard reject.
+pub fn max_supported_major(kind: ChunkKind) -> u16 {
+    match kind {
+        ChunkKind::OperationEnvelopeBlock => 1,
+        _ => SUPPORTED_SCHEMA_MAJOR,
+    }
+}
 
 /// The conformance-profile major version this implementation understands
 /// (Chapter 8 §"Format Profiles"). A profile declared at a higher major is a
@@ -82,11 +99,24 @@ pub struct StagedChunk {
 }
 
 impl StagedChunk {
-    /// A staged operation-envelope block at the current schema version.
+    /// A staged operation-envelope block at schema major 0 (the baseline: no
+    /// operation in the block carries a schema-major-1 payload). Use
+    /// [`StagedChunk::operation_block_versioned`] for a block whose operations
+    /// may include a v1 `CreateRegion`.
     pub fn operation_block(payload: Vec<u8>) -> Self {
+        StagedChunk::operation_block_versioned(payload, SchemaVersion::V0)
+    }
+
+    /// A staged operation-envelope block at the given schema version. The version
+    /// is the maximum over the block's operations
+    /// (`OperationEnvelope::schema_major`, projected to `SchemaVersion`): a block
+    /// bearing a v1 `CreateRegion` is stamped [`SchemaVersion::V1`], so a
+    /// major-0-only reader opens the bundle read-only rather than
+    /// mis-parsing v1 op bytes as v0 (Binary Format companion §"Schema Major 1").
+    pub fn operation_block_versioned(payload: Vec<u8>, schema_version: SchemaVersion) -> Self {
         StagedChunk {
             kind: ChunkKind::OperationEnvelopeBlock,
-            schema_version: SchemaVersion::V0,
+            schema_version,
             payload,
         }
     }
@@ -337,6 +367,19 @@ impl<S: BlockStore> Bundle<S> {
         if manifest_forces_read_only(&manifest) {
             read_only = true;
             anomalies.push(IntegrityAnomaly::UnknownRequiredExtension);
+        }
+
+        // A canonical operation root at a schema major above this reader's
+        // accept-set forces read-only preservation (Binary Format companion
+        // §"Schema Major 1"): the reader still reads the canonical base and
+        // manifest (both major 0) but refuses to author against op history it
+        // cannot interpret. A cheap manifest-metadata scan; the beyond-accept
+        // blocks are never read (a lazy read would hit the accept-set gate).
+        if let Some(major) = unsupported_operation_root_major(&manifest) {
+            read_only = true;
+            anomalies.push(IntegrityAnomaly::UnsupportedCanonicalChunkMajor {
+                schema_major: major,
+            });
         }
 
         let write_cursor = store.len();
@@ -698,6 +741,17 @@ impl<S: BlockStore> Bundle<S> {
         self.superblock = superblock;
         self.read_only =
             manifest_forces_read_only(&manifest) || !profile_is_editable(&active_profile);
+        // A commit that publishes a canonical operation root beyond this reader's
+        // accept-set (a forward-compat write) makes the *live* bundle read-only
+        // at once — mirroring the open-time scan — so no further commit runs
+        // against canonical history this reader can no longer parse.
+        if let Some(major) = unsupported_operation_root_major(&manifest) {
+            self.read_only = true;
+            self.anomalies
+                .push(IntegrityAnomaly::UnsupportedCanonicalChunkMajor {
+                    schema_major: major,
+                });
+        }
         self.manifest = manifest;
         self.write_cursor = cursor;
         Ok(())
@@ -756,6 +810,22 @@ fn validate_emittable_manifest(manifest: &Manifest) -> Result<ProfileDeclaration
 /// Extensions").
 fn manifest_forces_read_only(manifest: &Manifest) -> bool {
     manifest.extension_declarations.iter().any(|e| e.required)
+}
+
+/// The schema major of a declared **canonical operation root** that is beyond
+/// this reader's accept-set for the op-block role, if any (Binary Format
+/// companion §"Schema Major 1", "Canonical chunks — parse or open read-only").
+/// Such a root forces read-only preservation: this reader cannot parse the newer
+/// op bytes, so it must not author against op history it cannot interpret. Both
+/// `open` (at load) and `commit` (a builder that publishes such a root, e.g. a
+/// forward-compat write) consult this so the in-memory bundle goes read-only
+/// immediately, not only on the next reopen.
+fn unsupported_operation_root_major(manifest: &Manifest) -> Option<u16> {
+    manifest
+        .operation_roots
+        .iter()
+        .map(|r| r.schema_version.major)
+        .find(|&m| m > max_supported_major(ChunkKind::OperationEnvelopeBlock))
 }
 
 /// Whether this implementation *understands* a profile (can interpret and honor
@@ -827,6 +897,23 @@ fn reduction_version_for(manifest: &Manifest) -> ReductionAlgorithmVersion {
 /// schema-major support, declared length, the content hash, and the
 /// `id == hash` redundancy (Chapter 8 §"Chunks").
 fn read_and_verify_chunk(store: &dyn BlockStore, r: &ChunkRef) -> Result<Vec<u8>, BundleError> {
+    read_and_verify_chunk_impl(store, r, true)
+}
+
+/// [`read_and_verify_chunk`] with the schema-major **accept-set** check made
+/// optional. The accept-set is a *reader-capability* gate, not a structural
+/// property: a bundle may legitimately carry a canonical root written by a
+/// newer writer at a major beyond this reader's accept-set. Commit-time
+/// canonical-root validation therefore checks a root's *structure* (resolves,
+/// hash-intact, right kind, decodes) with `enforce_accept_set = false` — it must
+/// not refuse to publish a root it merely cannot itself parse — while every read
+/// path enforces the accept-set (a beyond-accept-set canonical root instead
+/// opens the bundle read-only at `open`).
+fn read_and_verify_chunk_impl(
+    store: &dyn BlockStore,
+    r: &ChunkRef,
+    enforce_accept_set: bool,
+) -> Result<Vec<u8>, BundleError> {
     // The manifest chunk is mandatorily uncompressed in this format version
     // (Chapter 8 §"Manifest Encoding"): a compressed manifest reference is
     // rejected outright, before any bytes are read.
@@ -844,12 +931,16 @@ fn read_and_verify_chunk(store: &dyn BlockStore, r: &ChunkRef) -> Result<Vec<u8>
             file_len: store.len(),
         });
     }
-    // A chunk at a schema major this reader cannot parse. The gate stays exact
-    // to `SUPPORTED_SCHEMA_MAJOR` (major 0) through the machinery phase; later
-    // phases raise admission per chunk role as each role's versioned decode or
-    // discard path lands, so a major-1 chunk is never admitted ahead of a
-    // decoder that can read it (Binary Format companion §"Schema Major 1").
-    if r.schema_version.major != SUPPORTED_SCHEMA_MAJOR {
+    // A chunk at a schema major this reader cannot parse for its role. The
+    // accept-set is `[0, max_supported_major(kind)]`: the op-block role admits
+    // major 1 (D2), every other role stays exact-0 until its versioned path
+    // lands (Binary Format companion §"Schema Major 1"). A chunk above its
+    // role's max reaches this only on a direct read — a canonical root beyond
+    // the accept-set opens the bundle read-only at `open` instead, before any
+    // such read (see the operation-root scan there). Commit-time structural
+    // validation skips this gate (a newer writer's higher-major root is still
+    // structurally valid).
+    if enforce_accept_set && r.schema_version.major > max_supported_major(r.kind) {
         return Err(BundleError::UnsupportedSchemaVersion {
             version: r.schema_version,
         });
@@ -1016,7 +1107,11 @@ fn validate_canonical_roots(
                 "operation block exceeds the active profile's maximum size",
             )));
         }
-        let payload = read_and_verify_chunk(store, r)?;
+        // Structural verification only (`enforce_accept_set = false`): a commit
+        // may publish an op block at a major beyond this reader's accept-set (a
+        // newer writer's v1+ block). The accept-set is enforced on read, and a
+        // beyond-accept-set canonical root opens the bundle read-only at `open`.
+        let payload = read_and_verify_chunk_impl(store, r, false)?;
         // The block payload must be a well-formed envelope sequence.
         block::decode_block(&payload).map_err(BundleError::Decode)?;
     }
@@ -1165,21 +1260,63 @@ mod tests {
     use crate::ids::DocumentId;
 
     #[test]
-    fn schema_major_1_is_defined_but_not_yet_admitted_by_the_gates() {
-        // The schema-major-1 machinery phase: SchemaVersion::V1 and the dispatch
-        // seam exist, but no chunk is produced at major 1 and the gates stay
-        // exact to major 0 — admission is raised per chunk role by the later
-        // phases that add each role's versioned decoder (Binary Format
-        // companion §"Schema Major 1"). So the generic-chunk gate and the
-        // manifest gate both still reject major 1 here.
+    fn schema_major_1_admission_is_raised_per_role_op_blocks_only() {
+        // Admission of major 1 is raised **per chunk role**, never as a blanket
+        // accept-set (Binary Format companion §"Schema Major 1"). D2 raised the
+        // operation-envelope-block role to major 1 (a block bearing a v1
+        // CreateRegion); every other role stays exact-0 until its own versioned
+        // path lands, and the manifest stays major 0 forever.
+        assert_eq!(SchemaVersion::V1.major, 1);
+        // The op-block role admits [0, 1].
+        assert_eq!(max_supported_major(ChunkKind::OperationEnvelopeBlock), 1);
+        // Every other role stays at the generic baseline (major 0): the
+        // payload-polymorphic Snapshot (its migrate-on-read is core-side), the
+        // layout cache, and the operation index.
         assert_eq!(SUPPORTED_SCHEMA_MAJOR, 0);
+        assert_eq!(max_supported_major(ChunkKind::Snapshot), 0);
+        assert_eq!(max_supported_major(ChunkKind::LayoutCache), 0);
+        assert_eq!(max_supported_major(ChunkKind::OperationIndex), 0);
+        // The manifest gate is exact to the manifest's own major (0), independent
+        // of the per-role chunk accept-set.
         assert_eq!(Manifest::SCHEMA.major, 0);
-        assert_eq!(SchemaVersion::V1.major, 1, "v1 is defined as an identity");
-        assert_ne!(
-            SchemaVersion::V1.major,
-            SUPPORTED_SCHEMA_MAJOR,
-            "major 1 is defined but not yet admitted at the generic gate"
+    }
+
+    #[test]
+    fn committing_an_unsupported_major_op_root_makes_the_live_bundle_read_only() {
+        // A commit publishes an op block beyond this reader's accept-set (a
+        // forward-compat write): structural validation lets it through, but the
+        // LIVE bundle must go read-only at once — not only on the next reopen —
+        // so no further commit runs against canonical history it cannot parse.
+        let mut bundle = fresh_bundle();
+        let block = StagedChunk::operation_block_versioned(
+            crate::block::encode_block(&[vec![1u8, 2, 3]]),
+            SchemaVersion::new(2, 0),
         );
+        bundle
+            .commit(&[block], |ctx| {
+                let mut m = ctx.previous_manifest.clone();
+                m.operation_roots.push(ctx.new_chunks[0]);
+                m
+            })
+            .expect("a structurally-valid future-major root is publishable");
+
+        assert!(
+            bundle.is_read_only(),
+            "the live bundle is read-only immediately after the commit"
+        );
+        assert!(bundle.anomalies().iter().any(|a| matches!(
+            a,
+            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 2 }
+        )));
+        // A further commit against the now-read-only bundle is refused.
+        let more = StagedChunk::operation_block_versioned(
+            crate::block::encode_block(&[vec![9u8]]),
+            SchemaVersion::V0,
+        );
+        assert!(matches!(
+            bundle.commit(&[more], |ctx| ctx.previous_manifest.clone()),
+            Err(BundleError::ReadOnly)
+        ));
     }
 
     fn fresh_bundle() -> Bundle<MemStore> {

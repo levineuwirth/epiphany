@@ -2199,43 +2199,6 @@ fn dec_region_v0(r: &mut Reader<'_>) -> Result<Region> {
     })
 }
 
-/// Frozen v0 encoder for a `Region` element — the inverse of [`dec_region_v0`].
-/// Emits the six fields before `permits_spanning_slurs`; the flag is **not**
-/// written, so the bytes are byte-identical to schema major 0.
-fn enc_region_v0(reg: &Region, out: &mut Vec<u8>) {
-    reg.id.enc(out);
-    reg.time_model.enc(out);
-    reg.content.enc(out);
-    reg.time_extent.enc(out);
-    reg.staff_extent.enc(out);
-    reg.local_tempo_map.enc(out);
-    // v0: permits_spanning_slurs is not carried.
-}
-
-impl Region {
-    /// The **frozen schema-major-0** canonical bytes of this region: the six
-    /// fields before `permits_spanning_slurs`, which is *not* carried.
-    ///
-    /// The canonical `CreateRegion` operation payload embeds a region, and its
-    /// op-envelope block is stamped at schema major 0. To keep that block
-    /// byte-identical to schema major 0 — so a major-0 reader parses it and no
-    /// op-block migration is owed — the operation payload uses **this** surface,
-    /// not the full [`canonical_bytes`](CanonicalValue::canonical_bytes) (which
-    /// now carries `permits_spanning_slurs`, schema major 1). A region minted by
-    /// a `CreateRegion` therefore reduces with `permits_spanning_slurs = false`
-    /// regardless of the value passed — the only value any producer sets today.
-    ///
-    /// The op payload moves to the schema-major-1 encoding, and the op block to
-    /// major 1 with migrate-on-read, when the op-block schema-major machinery
-    /// lands (schema-major track, D2); the crate-private `dec_region_v0` is that
-    /// migration's frozen decoder.
-    pub fn canonical_bytes_v0(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        enc_region_v0(self, &mut out);
-        out
-    }
-}
-
 /// Frozen v0 decoder for `Score.instruments`: v0 `Instrument` was `{ id, name }`
 /// (no `range`), which is default-filled `None`. Mirrors the `Vec` framing (a
 /// `u32` count then each element).
@@ -2524,7 +2487,16 @@ mod tests {
     /// *wrong* layout would still round-trip, so the callers also anchor the v0
     /// byte length against the production v1 encoder (which this does not touch).
     fn encode_v0_score(s: &Score) -> Vec<u8> {
-        // Reuses the production frozen v0 region encoder (super::enc_region_v0).
+        // The inverse of dec_region_v0: the six fields before the schema-major-1
+        // permits_spanning_slurs (a full-Score snapshot's v0 region form).
+        fn enc_region_v0(reg: &Region, out: &mut Vec<u8>) {
+            reg.id.enc(out);
+            reg.time_model.enc(out);
+            reg.content.enc(out);
+            reg.time_extent.enc(out);
+            reg.staff_extent.enc(out);
+            reg.local_tempo_map.enc(out);
+        }
         let mut out = Vec::new();
         s.metadata.enc(&mut out);
         // Canvas v0: `regions` only (no `layout_defaults`).

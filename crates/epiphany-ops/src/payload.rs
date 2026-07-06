@@ -78,6 +78,19 @@ impl OperationPayload {
             OperationPayload::ResolveEquivocation(_) => 3,
         }
     }
+
+    /// The binary-format schema major this payload's canonical encoding requires
+    /// ([`OperationKind::schema_major`]). Only a primitive `CreateRegion` is
+    /// major 1; the meta-operations embed no schema-major-1 value, so they are
+    /// major 0.
+    pub fn schema_major(&self) -> u16 {
+        match self {
+            OperationPayload::Primitive(kind) => kind.schema_major(),
+            OperationPayload::ResolveConflict(_)
+            | OperationPayload::UndoTransaction(_)
+            | OperationPayload::ResolveEquivocation(_) => 0,
+        }
+    }
 }
 
 impl CanonicalEncode for OperationPayload {
@@ -173,6 +186,21 @@ pub enum OperationKind {
 }
 
 impl OperationKind {
+    /// The binary-format schema major this kind's canonical payload encodes at
+    /// (Binary Format companion §"Schema Major 1"). `CreateRegion` embeds a
+    /// [`Region`], which grew `permits_spanning_slurs` at schema major 1, so its
+    /// payload is major 1; every other kind's payload is unchanged from major 0.
+    ///
+    /// An op-envelope block's schema major is the maximum over the operations it
+    /// carries: a block bearing any `CreateRegion` is stamped major 1, and a
+    /// major-0-only reader opens such a bundle read-only.
+    pub fn schema_major(&self) -> u16 {
+        match self {
+            OperationKind::CreateRegion(_) => 1,
+            _ => 0,
+        }
+    }
+
     fn discriminant(&self) -> u8 {
         match self {
             OperationKind::InsertEvent(_) => 0,
@@ -1004,11 +1032,11 @@ impl CanonicalEncode for ModifyCrossCuttingOp {
 // deletes are empty-only delete-wins tombstones (the container must have no live
 // children — the caller deletes contents first). See `DECISIONS.md`.
 
-/// Mint an empty region into the canvas (Chapter 6 §6.10 InsertRegion). Holds
-/// the full [`Region`] value; the reduction preconditions it carries no staff
-/// instances (an empty container). Its canonical payload embeds the region's
-/// **schema-major-0** form (no `permits_spanning_slurs`) so the op-envelope
-/// block stays byte-v0 — see [`CreateRegionOp::encode_canonical`].
+/// Mint an empty region into the canvas (Chapter 6 §6.10 InsertRegion). Carries
+/// the full [`Region`] value (schema major 1, including `permits_spanning_slurs`);
+/// the reduction preconditions it carries no staff instances (an empty
+/// container). Its canonical encoding puts this op at schema major 1 — see
+/// [`CreateRegionOp::encode_canonical`] and [`OperationKind::schema_major`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CreateRegionOp {
     pub region: Region,
@@ -1023,15 +1051,13 @@ impl CreateRegionOp {
 
 impl CanonicalEncode for CreateRegionOp {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
-        // The op-envelope block is stamped schema major 0, so this payload stays
-        // byte-identical to schema major 0: it embeds the region's **v0**
-        // canonical form (no `permits_spanning_slurs`), not the schema-major-1
-        // `canonical_bytes`. A region minted here therefore reduces with the
-        // flag `false` — the only value any producer sets today. The op payload
-        // moves to the v1 encoding, and the block to major 1 with
-        // migrate-on-read, when the op-block schema-major machinery lands
-        // (schema-major track, D2). See `Region::canonical_bytes_v0`.
-        push_lp_bytes(out, &self.region.canonical_bytes_v0());
+        // Schema major 1: the payload embeds the region's full canonical form,
+        // carrying `permits_spanning_slurs`. Because this encoding changed at
+        // major 1, a `CreateRegion` operation encodes at schema major 1
+        // ([`OperationKind::schema_major`]), and any op-envelope block carrying
+        // one is stamped major 1 — a major-0-only reader opens such a bundle
+        // read-only (Binary Format companion §"Schema Major 1").
+        push_lp_bytes(out, &self.region.canonical_bytes());
     }
 }
 
@@ -1614,12 +1640,11 @@ mod tests {
     }
 
     #[test]
-    fn create_region_payload_is_byte_v0_and_omits_the_spanning_flag() {
-        // The op-envelope block is stamped schema major 0, so the CreateRegion
-        // payload must stay byte-identical to schema major 0 — it must NOT carry
-        // Region.permits_spanning_slurs (schema major 1). Encoding a region with
-        // the flag set produces the same bytes as with it clear, and equals the
-        // region's frozen v0 canonical form, length-prefixed.
+    fn create_region_payload_is_v1_and_carries_the_spanning_flag() {
+        // Schema major 1: the CreateRegion payload embeds the region's full
+        // canonical form, so permits_spanning_slurs IS carried — a region with
+        // the flag set encodes differently from one without, and the payload is
+        // exactly the region's (v1) canonical_bytes, length-prefixed.
         let rid = RegionId::new(ReplicaId(9), 3);
         let mut permit = crate::valuegen::region(rid);
         permit.permits_spanning_slurs = true;
@@ -1630,12 +1655,25 @@ mod tests {
             CreateRegionOp { region }.encode_canonical(&mut out);
             out
         };
-        // The flag is not carried: both encode identically.
-        assert_eq!(enc(permit.clone()), enc(forbid.clone()));
-        // And the payload is exactly the region's v0 canonical form, LP-framed.
+        // The flag is carried: the two encode differently.
+        assert_ne!(enc(permit.clone()), enc(forbid.clone()));
+        // And the payload is exactly the region's v1 canonical form, LP-framed.
         let mut expected = Vec::new();
-        push_lp_bytes(&mut expected, &forbid.canonical_bytes_v0());
+        push_lp_bytes(&mut expected, &forbid.canonical_bytes());
         assert_eq!(enc(forbid), expected);
+    }
+
+    #[test]
+    fn create_region_op_encodes_at_schema_major_1() {
+        // CreateRegion's canonical encoding changed at major 1, so the op reports
+        // schema major 1; a representative major-0 op reports 0.
+        let rid = RegionId::new(ReplicaId(9), 3);
+        let create = OperationKind::CreateRegion(CreateRegionOp {
+            region: crate::valuegen::region(rid),
+        });
+        assert_eq!(create.schema_major(), 1);
+        let delete = OperationKind::DeleteRegion(DeleteRegionOp { region: rid });
+        assert_eq!(delete.schema_major(), 0);
     }
 
     #[test]

@@ -555,6 +555,98 @@ mod tests {
         }
     }
 
+    /// A real `CreateRegion` operation envelope (schema major 1: its payload
+    /// carries `Region.permits_spanning_slurs`).
+    fn create_region_envelope() -> OperationEnvelope {
+        use epiphany_core::{OperationId, RegionId, ReplicaId, WallClockTime};
+        use epiphany_ops::{
+            AuthorId, CausalContext, CreateRegionOp, HybridLogicalClock, OperationKind,
+            OperationPayload, OperationStamp,
+        };
+        let rid = RegionId::new(ReplicaId(9), 3);
+        let mut region = epiphany_ops::valuegen::region(rid);
+        region.permits_spanning_slurs = true;
+        let id = OperationId::new(ReplicaId(9), 1);
+        OperationEnvelope {
+            id,
+            author: AuthorId(0),
+            stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(1), 0), id),
+            causal_context: CausalContext::new(),
+            transaction: None,
+            payload: OperationPayload::Primitive(OperationKind::CreateRegion(CreateRegionOp {
+                region,
+            })),
+        }
+    }
+
+    /// Commits a single already-staged operation block into a fresh bundle and
+    /// returns the reopened bundle.
+    fn reopen_with_op_block(seed: u64, block: StagedChunk) -> Bundle<MemStore> {
+        let mut rng = Rng::new(seed);
+        let mut bundle = Bundle::create(
+            MemStore::new(),
+            FileUuid(rng.array16()),
+            Manifest::empty(DocumentId(rng.array16())),
+        )
+        .expect("create bundle");
+        bundle
+            .commit(&[block], |ctx| {
+                let mut m = ctx.previous_manifest.clone();
+                m.operation_roots.push(ctx.new_chunks[0]);
+                m
+            })
+            .expect("commit op block");
+        let image = bundle.into_store().into_bytes();
+        Bundle::open(MemStore::from_bytes(image)).expect("reopen bundle")
+    }
+
+    #[test]
+    fn create_region_op_block_is_stamped_major_1_and_reopens_read_write() {
+        let env = create_region_envelope();
+        assert_eq!(
+            env.schema_major(),
+            1,
+            "CreateRegion encodes at schema major 1"
+        );
+        // The WRITER *derives* the block major from its operations — the same
+        // `stage_operation_block` the real-envelope harness uses — so this proves
+        // derivation, not a hand-picked version. A v1 CreateRegion → major 1.
+        let block = crate::bundle_harness::stage_operation_block(std::slice::from_ref(&env));
+        let reopened = reopen_with_op_block(0xD2_0001, block);
+        // Major 1 is within the op-block accept-set [0,1], so the bundle opens
+        // read-write and the block reads back opaquely.
+        assert_eq!(
+            reopened.manifest().operation_roots[0].schema_version,
+            SchemaVersion::V1
+        );
+        assert!(!reopened.is_read_only());
+        let blocks = reopened
+            .read_operation_block(&reopened.manifest().operation_roots[0])
+            .expect("major-1 op block is admitted by the accept-set");
+        assert_eq!(blocks, vec![env.to_canonical_bytes()]);
+    }
+
+    #[test]
+    fn op_block_beyond_the_accept_set_opens_read_only() {
+        use epiphany_bundle::IntegrityAnomaly;
+        // A newer writer's op block, stamped schema major 2 — beyond the reader's
+        // op-block accept-set [0,1]. The bundle opens read-only preservation (the
+        // canonical base and manifest still read) rather than hard-rejecting.
+        let block = StagedChunk::operation_block_versioned(
+            encode_block(&[vec![1u8, 2, 3, 4]]),
+            SchemaVersion::new(2, 0),
+        );
+        let reopened = reopen_with_op_block(0xD2_0002, block);
+        assert!(
+            reopened.is_read_only(),
+            "a beyond-accept-set canonical root opens read-only"
+        );
+        assert!(reopened.anomalies().iter().any(|a| matches!(
+            a,
+            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 2 }
+        )));
+    }
+
     #[test]
     fn corpus_round_trips() {
         run_roundtrip_corpus(60_000, 0x00C0_FFEE_1234_5678);

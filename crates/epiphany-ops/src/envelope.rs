@@ -87,6 +87,13 @@ impl OperationEnvelope {
         p.push_bytes(&self.to_canonical_bytes());
         EnvelopeHash(*p.finish().as_bytes())
     }
+
+    /// The binary-format schema major this envelope's canonical bytes require
+    /// ([`OperationPayload::schema_major`]). An op-envelope block's schema major
+    /// is the maximum over the envelopes it carries.
+    pub fn schema_major(&self) -> u16 {
+        self.payload.schema_major()
+    }
 }
 
 impl CanonicalEncode for OperationEnvelope {

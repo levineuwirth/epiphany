@@ -249,6 +249,15 @@ pub enum IntegrityAnomaly {
     /// version, or one demanding a block bound beyond the reader's limit
     /// (Chapter 8 §"Format Profiles"). The bundle opens read-only.
     UnsupportedProfile,
+
+    /// A declared **canonical** root — an operation-envelope block — is stamped
+    /// at a schema major above this reader's accept-set for that role
+    /// (Binary Format companion §"Schema Major 1", "Canonical chunks — parse or
+    /// open read-only"). The reader cannot interpret the newer op bytes, so it
+    /// opens the bundle read-only: it still reads the canonical base and
+    /// manifest (both stay major 0) but refuses to author against op history it
+    /// cannot parse. Carries the offending major.
+    UnsupportedCanonicalChunkMajor { schema_major: u16 },
 }
 
 impl core::fmt::Display for IntegrityAnomaly {
@@ -271,6 +280,10 @@ impl core::fmt::Display for IntegrityAnomaly {
             IntegrityAnomaly::UnsupportedProfile => {
                 f.write_str("the active profile is unsupported; opened read-only")
             }
+            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major } => write!(
+                f,
+                "a canonical operation block is at schema major {schema_major}, above this reader's accept-set; opened read-only"
+            ),
         }
     }
 }
