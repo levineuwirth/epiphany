@@ -22,3 +22,4 @@ spec/*.fls
 spec/*.log
 spec/*.out
 spec/*.toc
+spec/*.xdv

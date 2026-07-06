@@ -116,9 +116,11 @@ inputs the solver cannot measure.
    schema major. **Schema major 1 now defines the type** (`CanvasLayoutDefaults
    { page_size: CanvasSize, margins: CanvasMargins }`, staff spaces, A4/8mm
    default) and ratifies its wire form (core spec + Binary Format 0.3.0,
-   Phase A); the **code graph home lands in Phase C** (`Canvas` gains the
-   field) and the engraver reads it in Phase C′. Until then the engraver takes
-   the geometry as a constructor parameter. Default arithmetic (1 staff space = staff height / 4 = 2.0 mm at
+   Phase A); the **code graph home landed in Phase C** (`Canvas` gained the
+   field). Wiring the engraver to *read* it (Phase C′) is a byte-neutral
+   follow-up **deferred** until a custom-geometry producer exists, so the
+   engraver still takes the geometry as a constructor parameter (every score's
+   `layout_defaults` is the A4 default today). Default arithmetic (1 staff space = staff height / 4 = 2.0 mm at
    an 8 mm staff): A4 210 × 297 mm → **105 × 148.5** staff spaces; 15 mm
    margins → **7.5** staff spaces; content area 180 × 267 mm → **90 × 133.5**
    staff spaces. 90 staff spaces wraps the ten-measure hand-off fixture
@@ -390,3 +392,14 @@ testkit's reference-suite harness.
   floor). The alternative — a duration-proportional (optical) redefinition —
   needs the pipeline's deferred duration-aware preferred widths and stays the
   catalog's open question.
+
+## Break-constraint satisfaction predicate (Pass 12 P12-I8, ratified)
+
+The break-constraint satisfaction predicate — a `SystemBreakAt`/`PageBreakAt` at
+`slot` is satisfied iff the final `ResolvedLayoutIR` starts a system/page at that
+slot (a region-first slot trivially) — was ratified into the core spec by the
+schema-major-1 track's Phase F (2026-07-06; core spec
+`req:layoutir:break-satisfaction`; `spec/PASS12_RATIFICATION_LOG.md`,
+schema-major-1 tranche). Satisfaction is a predicate on the output layout, not
+the solver's spring state; casting-off evaluates the declared hard break
+constraints as part of its tier claim.

@@ -8042,6 +8042,22 @@ pub struct LayoutObjectId(pub u128);
 \end{requirement}
 
 \begin{requirement}
+  \label{req:layoutir:continuation-synthesis}
+  \textbf{System-spanning continuation.} A line primitive (stroke) that spans a
+  system boundary is split into per-system segments; the segments after the
+  first are engraver-synthesized and \MUST{} declare a \texttt{synthesis} kind.
+  The reserved registered kind
+  \texttt{SynthesisKind::Registered(SYSTEM\_CONTINUATION\_SYNTHESIS)} names this
+  continuation. Its \texttt{stable\_semantic\_instance\_key} (per
+  Requirement~\ref{req:layoutir:object-id-derivation}) is the pair
+  \texttt{(original,\,ordinal)} --- the pre-split stroke's object and the
+  segment's order within the split --- which is stable for a fixed set of system
+  breaks. Because \texttt{LayoutObjectId}s are non-canonical and re-derived per
+  layout, this key need only be stable within a layout, not across relayouts
+  that move the breaks.
+\end{requirement}
+
+\begin{requirement}
   \label{req:layoutir:object-id-derivation}
   A \texttt{LayoutObjectId} \MUST{} be stable across re-layouts whose
   underlying source is unchanged. It \MUST{} be derived by
@@ -8540,6 +8556,21 @@ pub enum OverrideOrigin {
   overrides without explicit user action.
 \end{requirement}
 
+\begin{requirement}
+  \label{req:layoutir:break-origin-attribution}
+  \textbf{Break-override attribution.} When the engraver honours a user break
+  override, the resulting decision \MUST{} carry
+  \texttt{DecisionSource::UserOverride(id)} naming the override. Because a
+  normalized break \emph{constraint} (\texttt{SystemBreakAt} /
+  \texttt{PageBreakAt}, Section~\ref{sec:layoutir:constrained}) carries no
+  override identity, this attribution is threaded through the projection: the
+  \texttt{ConstrainedLayoutIR} carries a \texttt{break\_origins} sidecar,
+  populated when the logical stage projects the break, mapping each user-anchored
+  break slot to its override id. The normalized constraint record is
+  deliberately \emph{not} widened to carry override identity --- attribution is a
+  projection concern, not a constraint-solver input.
+\end{requirement}
+
 \section{ConstrainedLayoutIR}
 \label{sec:layoutir:constrained}
 
@@ -8703,6 +8734,20 @@ pub enum BreakKind {
     Soft,
 }
 \end{lstlisting}
+
+\begin{requirement}
+  \label{req:layoutir:break-satisfaction}
+  \textbf{Break-constraint satisfaction.} A \texttt{SystemBreakAt} at
+  \texttt{slot} is \emph{satisfied} iff the final resolved layout starts a
+  system at that slot; a \texttt{PageBreakAt} iff the final layout starts a page
+  there. A slot that already begins a system (respectively page) --- in
+  particular a region's first slot --- is trivially satisfied. Satisfaction is a
+  predicate on the output \texttt{ResolvedLayoutIR}, evaluable by any consumer,
+  not on the solver's internal spring state. A solver's tier claim
+  (Section~\ref{sec:layoutir:resolved}) reports which \texttt{Hard} break
+  constraints its layout satisfies; a \texttt{Soft} break is advisory and MAY be
+  left unsatisfied.
+\end{requirement}
 
 \section{ResolvedLayoutIR}
 \label{sec:layoutir:resolved}
@@ -14681,6 +14726,23 @@ layouts they own versus inherit:
   (the manifest-embedded barrier blobs stay \texttt{u64}), and the
   byte-for-byte v0${\to}$v1 migration are ratified in the Binary Format
   companion (0.2.0 $\rightarrow$ 0.3.0).
+  \\
+  \today & Schema major 1 Phase F (engrave ratify-only) &
+  Ratifies three engrave/layout-ir dispositions the implementation already made
+  (Pass 12 batch I8/I9/I10, now struck), with no byte-layout or architecture
+  change: the \emph{break-constraint satisfaction} predicate
+  (Requirement~\ref{req:layoutir:break-satisfaction} --- a \texttt{SystemBreakAt}
+  / \texttt{PageBreakAt} is satisfied iff the final \texttt{ResolvedLayoutIR}
+  starts a system/page at that slot, a region-first slot trivially); \emph{break-override
+  attribution} threaded through a \texttt{ConstrainedLayoutIR.break\_origins}
+  sidecar, declining to widen the normalized constraint record
+  (Requirement~\ref{req:layoutir:break-origin-attribution}); and the
+  \emph{system-continuation} synthesis kind
+  \texttt{Registered(SYSTEM\_CONTINUATION\_SYNTHESIS)} with an
+  \texttt{(original,\,ordinal)} instance key
+  (Requirement~\ref{req:layoutir:continuation-synthesis}). Flags one open item:
+  which region governs a cross-region slur's spanning permission (implemented as
+  conservative AND, P12-K12).
   \\
   \bottomrule
 \end{longtable}

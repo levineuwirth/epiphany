@@ -445,3 +445,23 @@ all-worst `unmeasured()` vector, which a transcription test pins as excluded
 by the Minimal column ("measuring is part of the Minimal claim"). The catalog
 also blesses the existing `TieBreakingWeights::default()` (all 1.0) as the
 normative defaults — pinned by test rather than re-declared.
+
+## Break-origin attribution and system-continuation synthesis (Pass 12 P12-I9/I10, ratified)
+
+Two long-standing layout-ir dispositions were ratified into the core spec by the
+schema-major-1 track's Phase F (2026-07-06; `spec/PASS12_RATIFICATION_LOG.md`,
+schema-major-1 tranche):
+
+- **P12-I9 — break-override attribution via a sidecar.** Honouring a user break
+  carries `DecisionSource::UserOverride(id)`, but a normalized break *constraint*
+  (`SystemBreakAt`/`PageBreakAt`) carries no override identity. Attribution is
+  threaded through a `ConstrainedLayoutIR.break_origins` sidecar populated by
+  `to_constrained`; the normalized constraint record is deliberately **not**
+  widened (attribution is a projection concern, not a solver input). Ratified as
+  core spec `req:layoutir:break-origin-attribution`.
+- **P12-I10 — system-continuation synthesis.** A stroke spanning a system
+  boundary is split; the post-first segments are synthesized under
+  `SynthesisKind::Registered(SYSTEM_CONTINUATION_SYNTHESIS)` with a
+  `(original, ordinal)` `stable_semantic_instance_key`. Since `LayoutObjectId`s
+  are non-canonical and re-derived per layout, the key need only be stable within
+  a layout. Ratified as core spec `req:layoutir:continuation-synthesis`.

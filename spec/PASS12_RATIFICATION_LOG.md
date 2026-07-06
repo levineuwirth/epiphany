@@ -74,3 +74,32 @@ change**: the defect was in the metric's own definition, not the engraver.
 (`spacing_distortion` scoped to rhythmic columns). Core spec unchanged (the
 axis's formal definition is delegated to the catalog; Chapter 9 carries only
 the field, which is unchanged).
+
+## Schema-major-1 tranche (2026-07-06) — data-model growth + engrave ratify-only
+
+The first binary-format schema-major bump (v0 → v1, `binary_format` 0.3.0),
+built machinery-first on a small payload, landed the two data-model rows the
+batch parked behind the frozen-layout rule (**P12-I7**, **P12-K7**) and ratifies
+the three engrave/layout-ir dispositions the implementation already made
+(**P12-I8/I9/I10**). Delivered as the schema-major-1 Phase A–F commit series
+(from `f4a2f1f`); this tranche records Phase F.
+
+| Item | Disposition | Spec locus | Authority followed |
+|---|---|---|---|
+| P12-I7 page-geometry graph home | **landed (schema-major-1)** — `Canvas` gained `layout_defaults: CanvasLayoutDefaults { page_size: CanvasSize, margins: CanvasMargins }` (staff spaces, A4/8 mm default), defined in core spec (Phase A) and added to the graph + canonical wire form at major 1 (Phase C, byte-for-byte v0→v1 migrate-on-read, zero golden churn). The engraver still defaults to the same geometry; wiring it to *read* the graph field (C′) is a byte-neutral follow-up deferred until a custom-geometry producer exists | core_spec Ch5 §The Canvas (`CanvasLayoutDefaults`); binary_format §Schema Major 1 | `epiphany-core` (`graph.rs`, `codec.rs::decode_v0_score`) |
+| P12-K7 advisory-precondition catalog | **landed (schema-major-1) + adopt** — the two graph-model gaps the advisory catalog named are filled: `Instrument.range: Option<PitchRange>` and `Region.permits_spanning_slurs: bool` (major 1, Phases D1/D2), so `epiphany-ops` now enforces the InsertEvent pitch-in-range advisory (frame-guarded; "if any"/indeterminate → vacuous pass) and the CreateCrossCutting(Slur) region-spanning advisory. ModifyEvent's duration-boundary bucket is stated explicitly (it carries the full replacement value). Cross-region slur permission is read as **both** endpoint regions must permit (conservative AND) — see the open item below | core_spec Ch5 §Instruments / §Regions; Ch6 §6.10 advisory buckets; `PitchRange` | `epiphany-core` (`pitch.rs::PitchRange`, `graph.rs`); `epiphany-ops` (`validate.rs`) |
+| P12-I8 break-constraint satisfaction | **adopt** — Ch7 gains a normative predicate (Requirement `req:layoutir:break-satisfaction`): a `SystemBreakAt`/`PageBreakAt` at `slot` is satisfied iff the final `ResolvedLayoutIR` starts a system/page at that slot; a region-first slot is trivially satisfied; satisfaction is a predicate on the output, not the solver's spring state | core_spec Ch7 §ConstrainedLayoutIR (`req:layoutir:break-satisfaction`) | `epiphany-engrave` casting-off (evaluates hard break constraints for its tier claim) |
+| P12-I9 break-override attribution | **adopt (decline widening)** — Ch7 gains Requirement `req:layoutir:break-origin-attribution`: honouring a user break carries `DecisionSource::UserOverride(id)`, threaded through a `ConstrainedLayoutIR.break_origins` sidecar populated by the logical-stage projection. The normalized constraint record is deliberately **not** widened to carry override identity — attribution is a projection concern, not a solver input | core_spec Ch7 §Engraving Overrides (`req:layoutir:break-origin-attribution`) | `epiphany-layout-ir` (`constrained.rs::break_origins`, `to_constrained`) |
+| P12-I10 continuation synthesis | **adopt (bless registered id)** — Ch7 gains Requirement `req:layoutir:continuation-synthesis`: a system-spanning stroke's post-first segments are synthesized under `SynthesisKind::Registered(SYSTEM_CONTINUATION_SYNTHESIS)`, with `stable_semantic_instance_key = (original, ordinal)`; because `LayoutObjectId`s are non-canonical and re-derived per layout, the key need only be stable within a layout | core_spec Ch7 §Provenance (`req:layoutir:continuation-synthesis`) | `epiphany-layout-ir` (`provenance.rs`; `SYSTEM_CONTINUATION_SYNTHESIS`) |
+
+**Version movements.** Binary Format companion 0.2.0 → 0.3.0 (schema major 1
+wire form + migration; Phase A). Core spec: `CanvasLayoutDefaults` / `PitchRange`
+/ `Region.permits_spanning_slurs` data-model additions (Phase A) and the three
+engrave requirements above (Phase F); revision-history row appended.
+
+**Open item (flagged, not resolved).** Which region governs a *cross-region*
+slur's spanning permission is under-specified. The implementation chose the
+conservative **AND** (a boundary is permeable only when both endpoint regions set
+`permits_spanning_slurs`); a "the start region governs" or "either side" reading
+is equally defensible. Tracked for ratification; the advisory is authoring-only
+and never alters reduction, so the choice is not byte-affecting.
