@@ -185,6 +185,7 @@ fn metric_score(
     score.events = arena;
     score.canvas = Canvas {
         regions: vec![region_obj],
+        ..Default::default()
     };
     score
 }
@@ -785,6 +786,7 @@ fn nonmetric_region_defers_decomposition_but_still_spells() {
     score.events = arena;
     score.canvas = Canvas {
         regions: vec![region_obj],
+        ..Default::default()
     };
 
     let ann = derive_annotations(&score, &PrePassProfile::default());

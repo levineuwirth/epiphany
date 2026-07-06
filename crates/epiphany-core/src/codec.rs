@@ -48,16 +48,16 @@ use crate::event::{
 use crate::graph::{
     AleatoricAnchoringDiscipline, AleatoricTimeModel, AnalysisLayer, AnalyticalAnnotation,
     AnnotationAnchor, BarlineAlignmentGroup, BarlineAlignmentMember, Beam, BeatGroup, Canvas,
-    ChordSymbol, Clef, ClefChange, ClefShape, Comment, CrossCuttingRegistry,
-    DecompositionAttachment, DecompositionSource, EventOrderingDAG, GestureAnchoring,
-    GraphicContent, GraphicGesture, GraphicObject, Instrument, KeySignature, KeySignatureChange,
-    LyricLine, Marker, Measure, MeasureNumberVisibility, MeterChange, MetricGrid, MetricTimeModel,
-    NotatedComponent, NoteValue, PartDefinition, PowerOfTwo, ProportionalTimeModel, Region,
-    RegionContent, RegionTimeModel, RepeatStructure, Score, ScoreMetadata, ScoreTuningContext,
-    Slur, Spanner, Staff, StaffBasedContent, StaffExtent, StaffGroup, StaffGroupKind,
-    StaffInstance, StaffLineConfiguration, StemDirection, TempoMapReference, Tie, TieClass,
-    TimeExtent, TimeSignature, TimeSignatureDisplay, Tuplet, TupletRatio, ViewDefinition, Voice,
-    VoiceOrigin,
+    CanvasLayoutDefaults, CanvasMargins, CanvasSize, ChordSymbol, Clef, ClefChange, ClefShape,
+    Comment, CrossCuttingRegistry, DecompositionAttachment, DecompositionSource, EventOrderingDAG,
+    GestureAnchoring, GraphicContent, GraphicGesture, GraphicObject, Instrument, KeySignature,
+    KeySignatureChange, LyricLine, Marker, Measure, MeasureNumberVisibility, MeterChange,
+    MetricGrid, MetricTimeModel, NotatedComponent, NoteValue, PartDefinition, PowerOfTwo,
+    ProportionalTimeModel, Region, RegionContent, RegionTimeModel, RepeatStructure, Score,
+    ScoreMetadata, ScoreTuningContext, Slur, Spanner, Staff, StaffBasedContent, StaffExtent,
+    StaffGroup, StaffGroupKind, StaffInstance, StaffLineConfiguration, StemDirection,
+    TempoMapReference, Tie, TieClass, TimeExtent, TimeSignature, TimeSignatureDisplay, Tuplet,
+    TupletRatio, ViewDefinition, Voice, VoiceOrigin,
 };
 use crate::ids::{
     AnalysisLayerId, AnalyticalAnnotationId, BarlineAlignmentGroupId, BeamId, ChordSymbolId,
@@ -188,6 +188,12 @@ impl<'a> Reader<'a> {
         } else {
             Err(ScoreDecodeError::TrailingBytes)
         }
+    }
+
+    /// The cursor's current byte offset — used by the schema-major-0 migration
+    /// to locate a splice point after decoding a prefix of the bytes.
+    fn pos(&self) -> usize {
+        self.pos
     }
 }
 
@@ -1588,7 +1594,20 @@ struct_codec!(Region {
     staff_extent,
     local_tempo_map
 });
-struct_codec!(Canvas { regions });
+struct_codec!(CanvasSize { width, height });
+struct_codec!(CanvasMargins {
+    top,
+    right,
+    bottom,
+    left
+});
+struct_codec!(CanvasLayoutDefaults { page_size, margins });
+// Schema major 1: `Canvas` gained `layout_defaults` (appended after `regions`).
+// The frozen major-0 layout (`regions` only) is read by `decode_v0_score`.
+struct_codec!(Canvas {
+    regions,
+    layout_defaults
+});
 struct_codec!(CrossCuttingRegistry {
     slurs,
     ties,
@@ -2061,35 +2080,37 @@ impl Score {
     pub fn decode_canonical_versioned(bytes: &[u8], major: u16) -> Result<Score> {
         match major {
             1 => Score::decode_canonical(bytes),
-            0 => {
-                let v0 = decode_v0_score(bytes)?;
-                Ok(migrate_v0_score(v0))
-            }
+            0 => decode_v0_score(bytes),
             _ => Err(ScoreDecodeError::InvalidValue("unsupported schema major")),
         }
     }
 }
 
-/// Decodes a `Score` from its **frozen schema-major-0** wire bytes.
+/// Decodes **schema-major-0** `Score` bytes into the current-layout `Score`,
+/// migrating on read.
 ///
-/// At major 1's introduction the v0 layout equals the current layout, so this
-/// delegates to [`Score::decode_canonical`]. **Phase C/D freeze this by value:**
-/// when `Canvas`/`Instrument`/`Region` grow a field, this function is replaced
-/// by a copy of the pre-field positional decoder (reading the old layout), and a
-/// golden v0 byte fixture guards it against drift — so the migrate-on-read path
-/// decodes real historical bytes, not the current layout in disguise.
+/// The only major-0/major-1 difference in the `Score` graph is `Canvas`, which
+/// gained `layout_defaults` (schema major 1). `Canvas` is `Score` field 2 (right
+/// after `metadata`), and its v0 layout was **just `regions`**. So this reads the
+/// v0 prefix (`metadata`, then `canvas.regions`) to locate the splice point,
+/// inserts the default `CanvasLayoutDefaults` encoding there — the appended v1
+/// field — and decodes the resulting v1 bytes with [`Score::decode_canonical`].
+///
+/// The migration is **total and default-filling**: no score context is needed,
+/// and the new field takes its canonical default. It is frozen by value — it
+/// depends only on the v0 facts (canvas is field 2; v0 canvas = `regions`) and
+/// the current codec for the unchanged fields; a golden v0 byte fixture
+/// (`v0_score_migrates_by_default_filling_layout_defaults`) guards it.
 fn decode_v0_score(bytes: &[u8]) -> Result<Score> {
-    Score::decode_canonical(bytes)
-}
-
-/// Migrates a `Score` decoded from schema major 0 up to the current in-memory
-/// form. Total and default-filling (no score context needed).
-///
-/// Identity today (v0 layout == v1 layout). **Phase C/D fill the new fields
-/// here:** `Canvas.layout_defaults` = the A4/8 mm default, `Instrument.range`
-/// = `None`, `Region.permits_spanning_slurs` = `false`.
-fn migrate_v0_score(score: Score) -> Score {
-    score
+    let mut r = Reader::new(bytes);
+    let _metadata: ScoreMetadata = Codec::dec(&mut r)?; // Score field 1
+    let _regions: Vec<Region> = Codec::dec(&mut r)?; // v0 Canvas = regions only
+    let split = r.pos();
+    let mut v1 = Vec::with_capacity(bytes.len() + 128);
+    v1.extend_from_slice(&bytes[..split]);
+    CanvasLayoutDefaults::default().enc(&mut v1); // the appended v1 field
+    v1.extend_from_slice(&bytes[split..]);
+    Score::decode_canonical(&v1)
 }
 
 // ===========================================================================
@@ -2354,27 +2375,46 @@ mod tests {
     }
 
     #[test]
-    fn versioned_decode_is_identity_across_majors_at_major_1_introduction() {
+    fn v0_score_migrates_by_default_filling_layout_defaults() {
         // The schema-version dispatch seam (Binary Format §"Schema Major 1"):
-        // at major 1's introduction the v0 and v1 layouts are identical, so
-        // decoding the same bytes under either major yields the same score as
-        // the unversioned decoder. This pins the machinery as a behavioral
-        // no-op; a later phase that grows a field flips the major-0 path to a
-        // real frozen decode + default-fill, and this test moves with it.
+        // schema major 1 grew Canvas.layout_defaults, so a major-0 Score has no
+        // such field and migrate-on-read must reconstruct it with the A4
+        // default. We derive *real* v0 bytes by removing the layout_defaults
+        // from a v1 encoding (the inverse of the migration's splice), then check
+        // the versioned decoder reconstructs the original score (whose
+        // layout_defaults IS the default). A wrong splice offset corrupts the
+        // bytes and fails the decode, so this guards the frozen v0 assumptions.
+        let ld_len = {
+            let mut b = Vec::new();
+            CanvasLayoutDefaults::default().enc(&mut b);
+            b.len()
+        };
         for seed in 0..64u64 {
             let score = valid_score(seed.wrapping_mul(0x9E37_79B9).wrapping_add(1));
-            let bytes = score.canonical_bytes();
-            let via_current = Score::decode_canonical(&bytes).expect("decodes");
-            let via_v1 = Score::decode_canonical_versioned(&bytes, 1).expect("major 1 decodes");
-            let via_v0 = Score::decode_canonical_versioned(&bytes, 0).expect("major 0 decodes");
-            assert_eq!(via_current, via_v1, "major 1 == unversioned");
             assert_eq!(
-                via_current, via_v0,
-                "major 0 (identity migration) == unversioned"
+                score.canvas.layout_defaults,
+                CanvasLayoutDefaults::default(),
+                "the generator uses the default page geometry"
             );
+            let v1 = score.canonical_bytes();
+            // layout_defaults sits right after canvas.regions (Score field 2).
+            let split = {
+                let mut r = Reader::new(&v1);
+                let _m: ScoreMetadata = Codec::dec(&mut r).unwrap();
+                let _rg: Vec<Region> = Codec::dec(&mut r).unwrap();
+                r.pos()
+            };
+            let mut v0 = v1[..split].to_vec();
+            v0.extend_from_slice(&v1[split + ld_len..]);
+            assert_eq!(v0.len() + ld_len, v1.len(), "removed exactly the field");
+
+            // Major 1: the v1 bytes decode unchanged. Major 0: the shorter v0
+            // bytes migrate up, refilling the default layout_defaults.
+            assert_eq!(Score::decode_canonical_versioned(&v1, 1).unwrap(), score);
+            assert_eq!(Score::decode_canonical_versioned(&v0, 0).unwrap(), score);
         }
-        // A major outside the accept-set is a defensive decode error (the gate
-        // rejects it upstream in practice).
+        // A major outside {0, 1} is a defensive decode error (the gate rejects
+        // it upstream in practice).
         assert!(Score::decode_canonical_versioned(&valid_score(1).canonical_bytes(), 2).is_err());
     }
 

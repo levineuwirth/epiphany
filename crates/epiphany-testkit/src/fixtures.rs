@@ -186,6 +186,7 @@ pub fn ten_measure_single_staff(seed: u64) -> Score {
     score.cross_cutting = cross_cutting;
     score.canvas = Canvas {
         regions: vec![region],
+        ..Default::default()
     };
     score
 }

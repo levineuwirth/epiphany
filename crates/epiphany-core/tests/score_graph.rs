@@ -107,6 +107,7 @@ fn hand_built_score() -> Score {
     score.events = arena;
     score.canvas = Canvas {
         regions: vec![region],
+        ..Default::default()
     };
     score
 }

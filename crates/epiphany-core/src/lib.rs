@@ -99,16 +99,17 @@ pub use event::{
 pub use graph::{
     derive_promoted_voice_id, AleatoricAnchoringDiscipline, AleatoricTimeModel, AnalysisLayer,
     AnalyticalAnnotation, AnnotationAnchor, BarlineAlignmentGroup, BarlineAlignmentMember, Beam,
-    BeatGroup, Canvas, ChordSymbol, Clef, ClefChange, ClefShape, Comment, CoordinateDiscipline,
-    CrossCuttingRegistry, DecompositionAttachment, DecompositionSource, EventOrderingDAG,
-    GestureAnchoring, GraphicContent, GraphicGesture, GraphicObject, Instrument, KeySignature,
-    KeySignatureChange, LyricLine, Marker, Measure, MeasureNumberVisibility, MeterChange,
-    MetricGrid, MetricTimeModel, NotatedComponent, NoteValue, PartDefinition, PowerOfTwo,
-    ProportionalTimeModel, Region, RegionContent, RegionTimeModel, RepeatStructure, Score,
-    ScoreMetadata, ScoreTuningContext, Slur, Spanner, Staff, StaffBasedContent, StaffExtent,
-    StaffGroup, StaffGroupKind, StaffInstance, StaffLineConfiguration, StemDirection,
-    TempoMapReference, Tie, TieClass, TimeExtent, TimeSignature, TimeSignatureDisplay, Tuplet,
-    TupletRatio, ViewDefinition, Voice, VoiceOrigin,
+    BeatGroup, Canvas, CanvasLayoutDefaults, CanvasMargins, CanvasSize, ChordSymbol, Clef,
+    ClefChange, ClefShape, Comment, CoordinateDiscipline, CrossCuttingRegistry,
+    DecompositionAttachment, DecompositionSource, EventOrderingDAG, GestureAnchoring,
+    GraphicContent, GraphicGesture, GraphicObject, Instrument, KeySignature, KeySignatureChange,
+    LyricLine, Marker, Measure, MeasureNumberVisibility, MeterChange, MetricGrid, MetricTimeModel,
+    NotatedComponent, NoteValue, PartDefinition, PowerOfTwo, ProportionalTimeModel, Region,
+    RegionContent, RegionTimeModel, RepeatStructure, Score, ScoreMetadata, ScoreTuningContext,
+    Slur, Spanner, Staff, StaffBasedContent, StaffExtent, StaffGroup, StaffGroupKind,
+    StaffInstance, StaffLineConfiguration, StemDirection, TempoMapReference, Tie, TieClass,
+    TimeExtent, TimeSignature, TimeSignatureDisplay, Tuplet, TupletRatio, ViewDefinition, Voice,
+    VoiceOrigin,
 };
 
 pub use tempo::{

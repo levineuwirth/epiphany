@@ -177,6 +177,7 @@ pub fn valid_score(seed: u64) -> Score {
     score.events = arena;
     score.canvas = Canvas {
         regions: vec![region],
+        ..Default::default()
     };
     score
 }
@@ -459,6 +460,7 @@ pub fn valid_score_rich(seed: u64) -> Score {
     score.tombstoned_events.insert(tomb_event);
     score.canvas = Canvas {
         regions: vec![region_a, region_b, region_c],
+        ..Default::default()
     };
     score
 }

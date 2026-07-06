@@ -16,7 +16,7 @@
 use core::num::NonZeroU16;
 use std::collections::BTreeSet;
 
-use epiphany_determinism::SystemDomainTag;
+use epiphany_determinism::{CanonicalF64, SystemDomainTag};
 
 use crate::event::EventArena;
 use crate::ids::{
@@ -795,6 +795,57 @@ pub struct Staff {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Canvas {
     pub regions: Vec<Region>,
+
+    /// Canvas-level layout defaults — page size and margins (Chapter 5;
+    /// schema major 1). A solver reads these as its default page geometry and
+    /// MAY override per solve.
+    pub layout_defaults: CanvasLayoutDefaults,
+}
+
+/// Canvas-level layout defaults (Chapter 5 §"The Canvas"; schema major 1). Page
+/// size and margins are in staff spaces (1 staff space = staff height / 4). The
+/// [`Default`] is A4 portrait at an 8 mm staff.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct CanvasLayoutDefaults {
+    pub page_size: CanvasSize,
+    pub margins: CanvasMargins,
+}
+
+/// A page size in staff spaces.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct CanvasSize {
+    pub width: CanonicalF64,
+    pub height: CanonicalF64,
+}
+
+/// Page margins in staff spaces.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct CanvasMargins {
+    pub top: CanonicalF64,
+    pub right: CanonicalF64,
+    pub bottom: CanonicalF64,
+    pub left: CanonicalF64,
+}
+
+impl Default for CanvasLayoutDefaults {
+    /// **A4 portrait at an 8 mm staff** (1 staff space = 2 mm): page
+    /// 105 × 148.5 staff spaces, 7.5-staff-space margins (a 90 × 133.5 content
+    /// area) — the reference engraver's documented default geometry.
+    fn default() -> Self {
+        let ss = |v: f64| CanonicalF64::new(v).expect("finite staff-space default");
+        CanvasLayoutDefaults {
+            page_size: CanvasSize {
+                width: ss(105.0),
+                height: ss(148.5),
+            },
+            margins: CanvasMargins {
+                top: ss(7.5),
+                right: ss(7.5),
+                bottom: ss(7.5),
+                left: ss(7.5),
+            },
+        }
+    }
 }
 
 // --- Cross-cutting structures bearing graph references (Chapter 5). ---------

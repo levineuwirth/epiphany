@@ -517,6 +517,7 @@ impl OneStaff {
         score.time_signatures = time_signatures;
         score.canvas = Canvas {
             regions: vec![region_obj],
+            ..Default::default()
         };
         score
     }
