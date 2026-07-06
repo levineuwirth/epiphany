@@ -441,6 +441,48 @@ impl Pitch {
     }
 }
 
+/// A closed pitch range, `lowest..=highest` (Chapter 2; the type
+/// `core_spec` references for [`Instrument`](crate::Instrument)'s declared
+/// range). Both endpoints are full [`Pitch`] values, so a range is expressed in
+/// a specific pitch space; membership is only decidable when a candidate shares
+/// a comparison frame with the endpoints (the same "sound but incomplete"
+/// discipline as [`Pitch::enharmonic_equivalent`]). Derived `Eq` is structural.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct PitchRange {
+    /// The lowest sounding pitch admitted (inclusive).
+    pub lowest: Pitch,
+    /// The highest sounding pitch admitted (inclusive).
+    pub highest: Pitch,
+}
+
+impl PitchRange {
+    /// Whether `pitch` lies within `lowest..=highest`, decided by absolute
+    /// 12-TET semitone ([`Pitch::twelve_tet_semitone`]). Returns `None` — the
+    /// indeterminate case its advisory caller treats as a pass — when:
+    ///
+    /// * the three pitches do not all share a [`PitchSpaceId`] frame (absolute
+    ///   semitones across frames use different zero references and are not
+    ///   comparable);
+    /// * any pitch's semitone is not determinable without a tuning resolver; or
+    /// * the range is **malformed** in the comparable frame — `lowest` sorts
+    ///   strictly above `highest`. A range is well-formed only when `lowest`
+    ///   does not sort above `highest` (core spec §"Instrument"); a reversed
+    ///   range is undecidable, not "empty", so it must not reject every pitch.
+    pub fn contains(&self, pitch: &Pitch) -> Option<bool> {
+        let frame = &self.lowest.scale_position.space;
+        if &self.highest.scale_position.space != frame || &pitch.scale_position.space != frame {
+            return None;
+        }
+        let lo = self.lowest.twelve_tet_semitone()?;
+        let hi = self.highest.twelve_tet_semitone()?;
+        if lo > hi {
+            return None; // malformed (reversed) range: undecidable, not empty
+        }
+        let p = pitch.twelve_tet_semitone()?;
+        Some(lo <= p && p <= hi)
+    }
+}
+
 /// Canonical, deterministic bytes for a [`Pitch`]'s intrinsic content (scale
 /// position plus acoustic realization), used to derive a content-addressed
 /// system pitch identifier. Strings are length-prefixed and already NFC (the
@@ -813,6 +855,47 @@ mod tests {
         assert_eq!(CmnNominal::C.chromatic(), 0);
         assert_eq!(CmnNominal::E.chromatic(), 4);
         assert_eq!(CmnNominal::B.chromatic(), 11);
+    }
+
+    #[test]
+    fn pitch_range_contains_is_advisory_and_frame_aware() {
+        let range = PitchRange {
+            lowest: cmn(CmnNominal::C, 0, 2),
+            highest: cmn(CmnNominal::C, 0, 6),
+        };
+        // Interior and inclusive endpoints are in range.
+        assert_eq!(range.contains(&cmn(CmnNominal::C, 0, 4)), Some(true));
+        assert_eq!(range.contains(&cmn(CmnNominal::C, 0, 2)), Some(true));
+        assert_eq!(range.contains(&cmn(CmnNominal::C, 0, 6)), Some(true));
+        // Below and above are out of range.
+        assert_eq!(range.contains(&cmn(CmnNominal::C, 0, 1)), Some(false));
+        assert_eq!(range.contains(&cmn(CmnNominal::C, 0, 7)), Some(false));
+
+        // A malformed (reversed) range is *undecidable*, not "everything out of
+        // range" — it must not reject every comparable pitch.
+        let reversed = PitchRange {
+            lowest: cmn(CmnNominal::C, 0, 6),
+            highest: cmn(CmnNominal::C, 0, 2),
+        };
+        assert_eq!(reversed.contains(&cmn(CmnNominal::C, 0, 4)), None);
+
+        // A candidate in a different pitch-space frame is undecidable (absolute
+        // semitones across frames are not comparable).
+        let other_frame = Pitch {
+            scale_position: ScalePosition {
+                space: PitchSpaceId::new("cmn-19"),
+                position: PitchSpacePosition::Cmn {
+                    nominal: CmnNominal::C,
+                    alteration: 0,
+                    octave: 4,
+                },
+            },
+            acoustic: AcousticPitch {
+                tuning: TuningReference::Inherit,
+                realization: AcousticRealization::Implicit,
+            },
+        };
+        assert_eq!(range.contains(&other_frame), None);
     }
 
     #[test]

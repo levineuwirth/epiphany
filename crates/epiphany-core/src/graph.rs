@@ -26,7 +26,7 @@ use crate::ids::{
     TupletId, ViewId, VoiceId,
 };
 use crate::pitch::{
-    ForeignFormatId, PitchSpaceId, ReferencePitch, SpellingAttachment, TuningSystemId,
+    ForeignFormatId, PitchRange, PitchSpaceId, ReferencePitch, SpellingAttachment, TuningSystemId,
 };
 use crate::time::{MeasurePosition, MusicalDuration, TimeAnchor, WallClockDuration};
 
@@ -749,6 +749,14 @@ pub struct Region {
     pub time_extent: TimeExtent,
     pub staff_extent: StaffExtent,
     pub local_tempo_map: Option<crate::tempo::TempoMap>,
+
+    /// Whether slurs may cross this region's boundary (schema major 1). `false`
+    /// is the default and today's behavior — the CreateCrossCutting(Slur)
+    /// advisory precondition reports a slur whose endpoints lie in different
+    /// regions unless **both** endpoint regions set this flag (a boundary is
+    /// permeable only when neither side forbids it; core spec §6.10
+    /// CreateCrossCutting, Slur bucket). Advisory: it never alters reduction.
+    pub permits_spanning_slurs: bool,
 }
 
 impl Region {
@@ -1189,11 +1197,18 @@ pub struct ScoreMetadata {
 }
 
 /// An abstract instrument definition (Chapter 5 §"Instruments"). Baseline: the
-/// identity and name; sound configuration and ranges are the audio engine's.
+/// identity and name; sound configuration is the audio engine's.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Instrument {
     pub id: InstrumentId,
     pub name: String,
+
+    /// The instrument's declared playable pitch range, if any (schema major 1).
+    /// `None` is "no declared range" — the InsertEvent pitch-in-range advisory
+    /// precondition is then a vacuous pass (core spec §6.10, "if any"). A
+    /// spanning-frame candidate outside the range trips the advisory check in
+    /// authoring mode only (see [`PitchRange::contains`]).
+    pub range: Option<PitchRange>,
 }
 
 /// The kind of a staff grouping (Chapter 5 §"Top-Level Score Structure").
@@ -1385,6 +1400,7 @@ mod tests {
             time_extent: ext,
             staff_extent: StaffExtent { staves },
             local_tempo_map: None,
+            permits_spanning_slurs: false,
         }
     }
 

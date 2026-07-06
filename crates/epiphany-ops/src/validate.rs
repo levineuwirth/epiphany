@@ -53,22 +53,25 @@
 //! * InsertEvent / ModifyEvent duration-not-crossing-region-boundary
 //!   ([`AdvisoryViolation::DurationCrossesRegionBoundary`]), for regions whose
 //!   musical end bound is resolvable (see below).
+//! * InsertEvent / ModifyEvent pitch-within-instrument-range
+//!   ([`AdvisoryViolation::PitchOutsideInstrumentRange`]): each chord pitch is
+//!   checked against the event's instrument's declared
+//!   [`range`](epiphany_core::Instrument::range), resolved through
+//!   voice → staff instance → staff (honoring an instance `instrument_override`).
+//!   An instrument with no declared range is the "if any" vacuous pass, and a
+//!   pitch whose frame is not comparable with the range's (the
+//!   [`PitchRange::contains`](epiphany_core::PitchRange::contains) indeterminate
+//!   case) passes too — sound but incomplete.
 //! * CreateCrossCutting(Slur) not-spanning-a-region-boundary
 //!   ([`AdvisoryViolation::SlurSpansRegionBoundary`]): the slur's endpoint
-//!   events resolve to different regions.
+//!   events resolve to different regions, *unless* both endpoint regions set
+//!   [`permits_spanning_slurs`](epiphany_core::Region::permits_spanning_slurs)
+//!   — a boundary is permeable only when neither side forbids it (the
+//!   conservative reading of "explicitly permitted by region configuration",
+//!   pending spec ratification of which region governs a cross-region slur).
 //!
 //! ### Documented gaps (blocked on the truncated data model)
 //!
-//! * **InsertEvent pitch-within-instrument-range**: `epiphany_core::Instrument`
-//!   carries only `{ id, name }` — it has no declared range field. The
-//!   data-model completion is staged to the Binary Format companion; until the
-//!   field exists there is nothing to check against ("if any" in the spec text
-//!   makes the absent-range case a vacuous pass, which is exactly what this
-//!   module does by omission).
-//! * **Slur spanning "explicitly permitted by region configuration"**:
-//!   `epiphany_core::Region` has no such configuration flag. The check treats
-//!   spanning as never permitted; when the flag lands, it suppresses the
-//!   violation.
 //! * **Region musical end bound**: a region's `TimeExtent` is a pair of
 //!   `TimeAnchor`s. The bound is resolvable in musical time only when the end
 //!   anchor is region-start-anchored with a `Musical` offset (the same
@@ -79,8 +82,8 @@
 //!   machinery is deferred (P11-C5).
 
 use epiphany_core::{
-    AnchorOffset, EventDuration, EventId, EventPosition, MusicalPosition, Region, RegionEdge,
-    RegionId, Score, SlurId, TimeAnchor,
+    AnchorOffset, EventDuration, EventId, EventPosition, InstrumentId, MusicalPosition, Region,
+    RegionEdge, RegionId, Score, SlurId, TimeAnchor,
 };
 
 use crate::payload::{CrossCuttingValue, OperationKind};
@@ -138,9 +141,9 @@ pub enum AdvisoryViolation {
         region: RegionId,
     },
     /// A `CreateCrossCutting` slur's endpoint events lie in different regions
-    /// (core spec §6.10 CreateCrossCutting, Slur advisory bucket). Region
-    /// configuration cannot yet permit spanning (see the module docs' gap
-    /// list), so a cross-region slur always reports.
+    /// (core spec §6.10 CreateCrossCutting, Slur advisory bucket), and the two
+    /// regions do not both set
+    /// [`permits_spanning_slurs`](epiphany_core::Region::permits_spanning_slurs).
     SlurSpansRegionBoundary {
         /// The offending slur.
         slur: SlurId,
@@ -148,6 +151,17 @@ pub enum AdvisoryViolation {
         start_region: RegionId,
         /// The (different) region containing the end event.
         end_region: RegionId,
+    },
+    /// An `InsertEvent`/`ModifyEvent` pitched event carries a chord pitch outside
+    /// its instrument's declared range (core spec §6.10 InsertEvent, advisory
+    /// bucket). Only a pitch definitively out of range in a comparable frame
+    /// reports; an instrument with no declared range, or a pitch whose frame is
+    /// not comparable with the range's, is a vacuous pass.
+    PitchOutsideInstrumentRange {
+        /// The offending event.
+        event: EventId,
+        /// The instrument whose declared range the event's pitch exceeds.
+        instrument: InstrumentId,
     },
 }
 
@@ -168,16 +182,24 @@ pub fn advisory_violations(kind: &OperationKind, score: &Score) -> Vec<AdvisoryV
     match kind {
         OperationKind::InsertEvent(op) => {
             check_event_span(&op.event, score, &mut violations);
+            check_pitch_range(&op.event, score, &mut violations);
         }
         OperationKind::ModifyEvent(op) => {
             check_event_span(&op.event, score, &mut violations);
+            check_pitch_range(&op.event, score, &mut violations);
         }
         OperationKind::CreateCrossCutting(op) => {
             if let CrossCuttingValue::Slur(slur) = &op.structure {
                 let start = event_region(score, slur.start_event);
                 let end = event_region(score, slur.end_event);
                 if let (Some(start_region), Some(end_region)) = (start, end) {
-                    if start_region != end_region {
+                    // A cross-region slur reports unless BOTH regions permit
+                    // spanning — the boundary is permeable only when neither
+                    // side forbids it (see the module docs).
+                    if start_region != end_region
+                        && !(region_permits_spanning(score, start_region)
+                            && region_permits_spanning(score, end_region))
+                    {
                         violations.push(AdvisoryViolation::SlurSpansRegionBoundary {
                             slur: slur.id,
                             start_region,
@@ -224,6 +246,63 @@ fn check_event_span(
     }
 }
 
+/// Reports a violation when any chord pitch of `event` is definitively outside
+/// its instrument's declared range. The instrument is resolved through the
+/// event's voice → staff instance → staff (honoring an instance
+/// `instrument_override`); an unlocatable voice/staff/instrument, an instrument
+/// with no declared range, or a pitch whose frame is not comparable with the
+/// range's ([`epiphany_core::PitchRange::contains`] returns `None`) all pass
+/// vacuously — the same sound-but-incomplete stance as the span check.
+fn check_pitch_range(
+    event: &epiphany_core::Event,
+    score: &Score,
+    violations: &mut Vec<AdvisoryViolation>,
+) {
+    let Some((region_index, instance_index, _)) = graph_voice_location(score, event.voice()) else {
+        return;
+    };
+    let instance = &score.canvas.regions[region_index].staff_instances()[instance_index];
+    // Effective instrument: the instance override, else the staff's instrument.
+    let instrument_id = match instance.instrument_override {
+        Some(id) => id,
+        None => match score.staves.iter().find(|s| s.id == instance.staff) {
+            Some(staff) => staff.instrument,
+            None => return,
+        },
+    };
+    let Some(instrument) = score.instruments.iter().find(|i| i.id == instrument_id) else {
+        return;
+    };
+    // "If any": an instrument with no declared range vacuously passes.
+    let Some(range) = &instrument.range else {
+        return;
+    };
+    let mut pitches = Vec::new();
+    event.collect_identified_pitches(&mut pitches);
+    // One violation per event suffices; a single out-of-range chord pitch (in a
+    // comparable frame) is enough to report.
+    if pitches
+        .iter()
+        .any(|ip| range.contains(&ip.pitch) == Some(false))
+    {
+        violations.push(AdvisoryViolation::PitchOutsideInstrumentRange {
+            event: event.id(),
+            instrument: instrument_id,
+        });
+    }
+}
+
+/// Whether the region with `id` sets `permits_spanning_slurs` (a linear find;
+/// `false` when the id is not a live region, which the invariant preconditions
+/// own).
+fn region_permits_spanning(score: &Score, id: RegionId) -> bool {
+    score
+        .canvas
+        .regions
+        .iter()
+        .any(|r| r.id == id && r.permits_spanning_slurs)
+}
+
 /// The region's end bound as a region-local musical position, when its
 /// `TimeExtent`'s end anchor expresses one: anchored to this region's own
 /// start edge with a `Musical` offset. Any other shape (wall-clock, symbolic,
@@ -256,8 +335,8 @@ mod tests {
     use crate::valuegen;
     use epiphany_core::generators::valid_score;
     use epiphany_core::{
-        EventId, MusicalDuration, MusicalPosition, PitchId, RationalTime, ReplicaId, SlurId,
-        VoiceId,
+        EventId, MusicalDuration, MusicalPosition, PitchId, PitchRange, RationalTime, ReplicaId,
+        SlurId, VoiceId,
     };
 
     /// A fixture score whose (single) region declares a musical end bound of
@@ -365,10 +444,10 @@ mod tests {
         assert!(advisory_violations(&kind, &score).is_empty());
     }
 
-    #[test]
-    fn slur_spanning_two_regions_is_an_advisory_violation() {
-        // Two single-region fixture scores merged: distinct regions, each with
-        // its own events.
+    /// Two single-region fixture scores merged into one score with two distinct
+    /// regions (index 0 = start, index 1 = end), returning the ids for a
+    /// cross-region slur.
+    fn two_region_score() -> (Score, RegionId, RegionId, EventId, EventId) {
         let mut score = valid_score(7);
         let other = valid_score(8);
         let start_region = score.canvas.regions[0].id;
@@ -382,7 +461,12 @@ mod tests {
                 .insert(event.clone())
                 .expect("distinct seeds mint distinct event ids");
         }
+        (score, start_region, end_region, start_event, end_event)
+    }
 
+    #[test]
+    fn slur_spanning_two_regions_is_an_advisory_violation() {
+        let (score, start_region, end_region, start_event, end_event) = two_region_score();
         let slur_id = SlurId::new(ReplicaId(50), 1);
         let cross = OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
             structure: CrossCuttingValue::Slur(valuegen::slur(slur_id, start_event, end_event)),
@@ -402,6 +486,89 @@ mod tests {
             structure: CrossCuttingValue::Slur(valuegen::slur(slur_id, start_event, second)),
         });
         assert!(advisory_violations(&within, &score).is_empty());
+    }
+
+    #[test]
+    fn slur_spanning_two_permitting_regions_is_suppressed() {
+        // When BOTH endpoint regions permit spanning slurs, the boundary is
+        // permeable and the advisory violation is suppressed.
+        let (mut score, _start, _end, start_event, end_event) = two_region_score();
+        score.canvas.regions[0].permits_spanning_slurs = true;
+        score.canvas.regions[1].permits_spanning_slurs = true;
+        let slur_id = SlurId::new(ReplicaId(50), 1);
+        let cross = OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: CrossCuttingValue::Slur(valuegen::slur(slur_id, start_event, end_event)),
+        });
+        assert!(advisory_violations(&cross, &score).is_empty());
+    }
+
+    #[test]
+    fn slur_spanning_still_reports_when_only_one_region_permits() {
+        // AND semantics: one side opting in is not enough — the region that does
+        // not permit spanning still forbids the boundary crossing.
+        let (mut score, start_region, end_region, start_event, end_event) = two_region_score();
+        score.canvas.regions[0].permits_spanning_slurs = true; // start only
+        let slur_id = SlurId::new(ReplicaId(50), 1);
+        let cross = OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: CrossCuttingValue::Slur(valuegen::slur(slur_id, start_event, end_event)),
+        });
+        assert_eq!(
+            advisory_violations(&cross, &score),
+            vec![AdvisoryViolation::SlurSpansRegionBoundary {
+                slur: slur_id,
+                start_region,
+                end_region,
+            }]
+        );
+    }
+
+    #[test]
+    fn insert_event_with_pitch_outside_instrument_range_is_an_advisory_violation() {
+        let (mut score, _region, instance, voice) = bounded_score(12);
+        // Declare a range strictly above the fixture's C4 event pitch (C5..C6)
+        // on every instrument, so whichever the voice resolves to carries it.
+        let range = PitchRange {
+            lowest: valuegen::pitch_value_nth(35),  // C5
+            highest: valuegen::pitch_value_nth(42), // C6
+        };
+        for instrument in &mut score.instruments {
+            instrument.range = Some(range.clone());
+        }
+        // In-extent (span 0..1, bound 12) so only the pitch check can fire.
+        let kind = insert_kind(instance, voice, 0, 1);
+        let violations = advisory_violations(&kind, &score);
+        assert!(
+            matches!(
+                violations.as_slice(),
+                [AdvisoryViolation::PitchOutsideInstrumentRange { event, .. }]
+                    if *event == EventId::new(ReplicaId(50), 999)
+            ),
+            "expected a single pitch-range violation, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn insert_event_within_instrument_range_passes() {
+        let (mut score, _region, instance, voice) = bounded_score(12);
+        // C2..C6 brackets the C4 event pitch.
+        let range = PitchRange {
+            lowest: valuegen::pitch_value_nth(14),  // C2
+            highest: valuegen::pitch_value_nth(42), // C6
+        };
+        for instrument in &mut score.instruments {
+            instrument.range = Some(range.clone());
+        }
+        let kind = insert_kind(instance, voice, 0, 1);
+        assert!(advisory_violations(&kind, &score).is_empty());
+    }
+
+    #[test]
+    fn insert_event_with_no_declared_instrument_range_passes_vacuously() {
+        // The fixture's instruments declare no range — the "if any" vacuous pass.
+        let (score, _region, instance, voice) = bounded_score(12);
+        assert!(score.instruments.iter().all(|i| i.range.is_none()));
+        let kind = insert_kind(instance, voice, 0, 1);
+        assert!(advisory_violations(&kind, &score).is_empty());
     }
 
     #[test]

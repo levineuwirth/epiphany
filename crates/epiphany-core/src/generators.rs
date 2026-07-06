@@ -117,6 +117,7 @@ pub fn valid_score(seed: u64) -> Score {
         instruments.push(Instrument {
             id: instrument,
             name: String::from("instrument"),
+            range: None,
         });
         staves.push(Staff {
             id: staff_id,
@@ -168,6 +169,7 @@ pub fn valid_score(seed: u64) -> Score {
             staves: staff_extent,
         },
         local_tempo_map: None,
+        permits_spanning_slurs: false,
     };
 
     let mut score = Score::empty(idc.clone());
@@ -222,6 +224,7 @@ pub fn valid_score_rich(seed: u64) -> Score {
         instruments.push(Instrument {
             id: instrument,
             name: String::from("instrument"),
+            range: None,
         });
         staves.push(Staff {
             id,
@@ -351,6 +354,7 @@ pub fn valid_score_rich(seed: u64) -> Score {
             staves: vec![staff_a],
         },
         local_tempo_map: None,
+        permits_spanning_slurs: false,
     };
 
     // --- Proportional region on staff B: wall-clock events. ------------------
@@ -392,6 +396,7 @@ pub fn valid_score_rich(seed: u64) -> Score {
             staves: vec![staff_b],
         },
         local_tempo_map: None,
+        permits_spanning_slurs: false,
     };
 
     // --- Aleatoric region on staff C (musical discipline). -------------------
@@ -436,6 +441,7 @@ pub fn valid_score_rich(seed: u64) -> Score {
             staves: vec![staff_c],
         },
         local_tempo_map: None,
+        permits_spanning_slurs: false,
     };
 
     // --- Tombstones + a spelling attachment resolving to a tombstoned pitch. -

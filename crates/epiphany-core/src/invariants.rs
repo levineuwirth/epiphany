@@ -2542,6 +2542,7 @@ mod review_fix_tests {
                 staves: vec![staff],
             },
             local_tempo_map: None,
+            permits_spanning_slurs: false,
         };
         s.canvas.regions.push(region);
         assert!(fires(&s, GraphInvariant::RegionExtents));
@@ -2585,6 +2586,7 @@ mod review_fix_tests {
                 staves: vec![staff],
             },
             local_tempo_map: None,
+            permits_spanning_slurs: false,
         });
 
         // Sound: the undecidable overlap is NOT raised as a (false-positive)
@@ -2892,6 +2894,7 @@ mod review_fix_tests {
                 staves: vec![staff],
             },
             local_tempo_map: None,
+            permits_spanning_slurs: false,
         });
         assert!(check_invariants(&s).is_empty());
     }
@@ -2981,6 +2984,7 @@ mod review_fix_tests_2 {
             },
             staff_extent: crate::graph::StaffExtent { staves: vec![] },
             local_tempo_map: None,
+            permits_spanning_slurs: false,
         });
         // A gesture referencing a stored object resolves; a missing one fires.
         s.cross_cutting.graphic_gestures.push(GraphicGesture {
@@ -3113,10 +3117,12 @@ mod review_fix_tests_2 {
         s.instruments.push(Instrument {
             id: iid,
             name: "a".into(),
+            range: None,
         });
         s.instruments.push(Instrument {
             id: iid,
             name: "b".into(),
+            range: None,
         });
         assert!(fires(&s, GraphInvariant::UniqueIdentifiers));
 
@@ -3326,6 +3332,7 @@ mod review_fix_tests_3 {
         s.instruments.push(Instrument {
             id: InstrumentId::new(ReplicaId::SYSTEM_DERIVED, 1),
             name: "x".into(),
+            range: None,
         });
         assert!(fires(&s, GraphInvariant::UniqueIdentifiers));
     }
@@ -3404,6 +3411,7 @@ mod review_fix_tests_3 {
                 staves: vec![staff2],
             },
             local_tempo_map: None,
+            permits_spanning_slurs: false,
         });
         // Musical offset against a wall-clock event -> invariant 9 fires.
         s.cross_cutting.spanners.push(Spanner {
@@ -3652,6 +3660,7 @@ mod review_fix_tests_4 {
         s.instruments.push(crate::graph::Instrument {
             id: instr,
             name: "y".into(),
+            range: None,
         });
         s.staves.push(crate::graph::Staff {
             id: staff_y,
@@ -3673,6 +3682,7 @@ mod review_fix_tests_4 {
                 staves: vec![staff_y],
             },
             local_tempo_map: None,
+            permits_spanning_slurs: false,
         };
         // R1 spans event e0 (musical 0) .. e1 (musical 1/4): wall-clock [0, 5e8].
         let r1 = mk_region(

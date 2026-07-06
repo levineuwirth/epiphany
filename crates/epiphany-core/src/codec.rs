@@ -68,11 +68,11 @@ use crate::ids::{
 };
 use crate::pitch::{
     AccidentalId, AcousticPitch, AcousticRealization, CmnNominal, ForeignFormatId, IdentifiedPitch,
-    NominalRegistryId, Pitch, PitchSpaceId, PitchSpacePosition, PitchSpelling, PositionRegistryId,
-    ReferencePitch, ScalePosition, SpellingAttachment, SpellingDirective, SpellingNominal,
-    SpellingPrecedence, SpellingRenderHints, SpellingRule, SpellingRuleSetId, SpellingScope,
-    SpellingSource, SpellingSourceKind, StaffGroupKindRegistryId, TieClassRegistryId,
-    TuningReference, TuningSystemId, VoiceSelector,
+    NominalRegistryId, Pitch, PitchRange, PitchSpaceId, PitchSpacePosition, PitchSpelling,
+    PositionRegistryId, ReferencePitch, ScalePosition, SpellingAttachment, SpellingDirective,
+    SpellingNominal, SpellingPrecedence, SpellingRenderHints, SpellingRule, SpellingRuleSetId,
+    SpellingScope, SpellingSource, SpellingSourceKind, StaffGroupKindRegistryId,
+    TieClassRegistryId, TuningReference, TuningSystemId, VoiceSelector,
 };
 use crate::tempo::{Tempo, TempoMap, TempoSegment, TempoShape};
 use crate::time::{
@@ -188,12 +188,6 @@ impl<'a> Reader<'a> {
         } else {
             Err(ScoreDecodeError::TrailingBytes)
         }
-    }
-
-    /// The cursor's current byte offset — used by the schema-major-0 migration
-    /// to locate a splice point after decoding a prefix of the bytes.
-    fn pos(&self) -> usize {
-        self.pos
     }
 }
 
@@ -950,6 +944,8 @@ struct_codec!(AcousticPitch {
     tuning,
     realization
 });
+// Schema major 1: `Instrument.range` embeds this (appended after `name`).
+struct_codec!(PitchRange { lowest, highest });
 struct_codec!(Pitch {
     scale_position,
     acoustic
@@ -1432,7 +1428,9 @@ struct_codec!(ScoreMetadata {
     composer,
     copyright
 });
-struct_codec!(Instrument { id, name });
+// Schema major 1: `Instrument` gained `range` (appended after `name`). The
+// frozen major-0 layout (`id`, `name`) is read by `dec_instruments_v0`.
+struct_codec!(Instrument { id, name, range });
 struct_codec!(StaffLineConfiguration { line_count });
 struct_codec!(GraphicObject { id });
 struct_codec!(GraphicContent { objects });
@@ -1586,13 +1584,19 @@ struct_codec!(StaffBasedContent {
     user_system_breaks,
     user_page_breaks
 });
+// Schema major 1: `Region` gained `permits_spanning_slurs` (appended after
+// `local_tempo_map`). The frozen major-0 layout (the six fields before it) is
+// read by `dec_region_v0`. `Region` is also a `CanonicalValue` embedded in the
+// canonical `CreateRegion` op payload, so this byte change is canonical — the
+// op-block migration for it is a separate change (schema-major track, D2).
 struct_codec!(Region {
     id,
     time_model,
     content,
     time_extent,
     staff_extent,
-    local_tempo_map
+    local_tempo_map,
+    permits_spanning_slurs
 });
 struct_codec!(CanvasSize { width, height });
 struct_codec!(CanvasMargins {
@@ -2089,28 +2093,165 @@ impl Score {
 /// Decodes **schema-major-0** `Score` bytes into the current-layout `Score`,
 /// migrating on read.
 ///
-/// The only major-0/major-1 difference in the `Score` graph is `Canvas`, which
-/// gained `layout_defaults` (schema major 1). `Canvas` is `Score` field 2 (right
-/// after `metadata`), and its v0 layout was **just `regions`**. So this reads the
-/// v0 prefix (`metadata`, then `canvas.regions`) to locate the splice point,
-/// inserts the default `CanvasLayoutDefaults` encoding there — the appended v1
-/// field — and decodes the resulting v1 bytes with [`Score::decode_canonical`].
+/// This is the **frozen v0 wire form, decoded by value** — a hand-written walk
+/// of the 19 `Score` fields in declaration order, using the current [`Codec`]
+/// for every field whose layout is unchanged and a frozen v0 sub-decoder for the
+/// three that grew a field in schema major 1:
 ///
+/// * `Canvas` (field 2) — v0 was `regions` only; v1 appended `layout_defaults`.
+///   [`dec_canvas_v0`] reads the region vector and default-fills the defaults.
+/// * `Instrument` (inside field 3, `instruments: Vec<Instrument>`) — v0 was
+///   `{ id, name }`; v1 appended `range`. [`dec_instruments_v0`] default-fills
+///   `range: None`.
+/// * `Region` (inside `Canvas.regions`) — v0 was the six fields before
+///   `permits_spanning_slurs`; v1 appended it. [`dec_region_v0`] default-fills
+///   `false`.
+///
+/// A byte-splice sufficed while only `Canvas` (a single top-level field) had
+/// changed, but two of the three grown structs are nested inside `Vec`s, so
+/// there is no single splice point — the walk must reconstruct each element.
 /// The migration is **total and default-filling**: no score context is needed,
-/// and the new field takes its canonical default. It is frozen by value — it
-/// depends only on the v0 facts (canvas is field 2; v0 canvas = `regions`) and
-/// the current codec for the unchanged fields; a golden v0 byte fixture
-/// (`v0_score_migrates_by_default_filling_layout_defaults`) guards it.
+/// and every new field takes its canonical default. It is frozen by value — it
+/// depends only on the v0 field lists above and the current codec for unchanged
+/// fields; the `v0_score_migrates_*` golden tests guard it (they synthesize real
+/// v0 bytes via a mirror v0 encoder and check the migration reconstructs the
+/// original score with the new fields at their defaults).
 fn decode_v0_score(bytes: &[u8]) -> Result<Score> {
     let mut r = Reader::new(bytes);
-    let _metadata: ScoreMetadata = Codec::dec(&mut r)?; // Score field 1
-    let _regions: Vec<Region> = Codec::dec(&mut r)?; // v0 Canvas = regions only
-    let split = r.pos();
-    let mut v1 = Vec::with_capacity(bytes.len() + 128);
-    v1.extend_from_slice(&bytes[..split]);
-    CanvasLayoutDefaults::default().enc(&mut v1); // the appended v1 field
-    v1.extend_from_slice(&bytes[split..]);
-    Score::decode_canonical(&v1)
+    // The 19 Score fields in declaration order (codec.rs `struct_codec!(Score)`);
+    // only `canvas` (2) and `instruments` (3) differ from the current layout.
+    let metadata = Codec::dec(&mut r)?;
+    let canvas = dec_canvas_v0(&mut r)?;
+    let instruments = dec_instruments_v0(&mut r)?;
+    let staves = Codec::dec(&mut r)?;
+    let staff_groups = Codec::dec(&mut r)?;
+    let parts = Codec::dec(&mut r)?;
+    let cross_cutting = Codec::dec(&mut r)?;
+    let time_signatures = Codec::dec(&mut r)?;
+    let tuning_context = Codec::dec(&mut r)?;
+    let tempo_map = Codec::dec(&mut r)?;
+    let events = Codec::dec(&mut r)?;
+    let spelling_attachments = Codec::dec(&mut r)?;
+    let decomposition_attachments = Codec::dec(&mut r)?;
+    let spelling_precedence = Codec::dec(&mut r)?;
+    let analysis_layers = Codec::dec(&mut r)?;
+    let views = Codec::dec(&mut r)?;
+    let identity = Codec::dec(&mut r)?;
+    let tombstoned_pitches = Codec::dec(&mut r)?;
+    let tombstoned_events = Codec::dec(&mut r)?;
+    r.finish()?;
+    Ok(Score {
+        metadata,
+        canvas,
+        instruments,
+        staves,
+        staff_groups,
+        parts,
+        cross_cutting,
+        time_signatures,
+        tuning_context,
+        tempo_map,
+        events,
+        spelling_attachments,
+        decomposition_attachments,
+        spelling_precedence,
+        analysis_layers,
+        views,
+        identity,
+        tombstoned_pitches,
+        tombstoned_events,
+    })
+}
+
+/// Frozen v0 decoder for `Canvas`: the v0 layout was **just `regions`** (a
+/// `Vec<Region>` in v0 element form), with no `layout_defaults`. Reads the
+/// region vector via [`dec_region_v0`] and default-fills the new field.
+fn dec_canvas_v0(r: &mut Reader<'_>) -> Result<Canvas> {
+    let n = r.count()?;
+    let mut regions = Vec::with_capacity(n.min(1024));
+    for _ in 0..n {
+        regions.push(dec_region_v0(r)?);
+    }
+    Ok(Canvas {
+        regions,
+        layout_defaults: CanvasLayoutDefaults::default(),
+    })
+}
+
+/// Frozen v0 decoder for a `Region` element: the six fields before
+/// `permits_spanning_slurs`, which is default-filled `false`. (The `Vec`
+/// framing is the caller's; this reads one element.)
+fn dec_region_v0(r: &mut Reader<'_>) -> Result<Region> {
+    let id = Codec::dec(r)?;
+    let time_model = Codec::dec(r)?;
+    let content = Codec::dec(r)?;
+    let time_extent = Codec::dec(r)?;
+    let staff_extent = Codec::dec(r)?;
+    let local_tempo_map = Codec::dec(r)?;
+    Ok(Region {
+        id,
+        time_model,
+        content,
+        time_extent,
+        staff_extent,
+        local_tempo_map,
+        permits_spanning_slurs: false,
+    })
+}
+
+/// Frozen v0 encoder for a `Region` element — the inverse of [`dec_region_v0`].
+/// Emits the six fields before `permits_spanning_slurs`; the flag is **not**
+/// written, so the bytes are byte-identical to schema major 0.
+fn enc_region_v0(reg: &Region, out: &mut Vec<u8>) {
+    reg.id.enc(out);
+    reg.time_model.enc(out);
+    reg.content.enc(out);
+    reg.time_extent.enc(out);
+    reg.staff_extent.enc(out);
+    reg.local_tempo_map.enc(out);
+    // v0: permits_spanning_slurs is not carried.
+}
+
+impl Region {
+    /// The **frozen schema-major-0** canonical bytes of this region: the six
+    /// fields before `permits_spanning_slurs`, which is *not* carried.
+    ///
+    /// The canonical `CreateRegion` operation payload embeds a region, and its
+    /// op-envelope block is stamped at schema major 0. To keep that block
+    /// byte-identical to schema major 0 — so a major-0 reader parses it and no
+    /// op-block migration is owed — the operation payload uses **this** surface,
+    /// not the full [`canonical_bytes`](CanonicalValue::canonical_bytes) (which
+    /// now carries `permits_spanning_slurs`, schema major 1). A region minted by
+    /// a `CreateRegion` therefore reduces with `permits_spanning_slurs = false`
+    /// regardless of the value passed — the only value any producer sets today.
+    ///
+    /// The op payload moves to the schema-major-1 encoding, and the op block to
+    /// major 1 with migrate-on-read, when the op-block schema-major machinery
+    /// lands (schema-major track, D2); the crate-private `dec_region_v0` is that
+    /// migration's frozen decoder.
+    pub fn canonical_bytes_v0(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        enc_region_v0(self, &mut out);
+        out
+    }
+}
+
+/// Frozen v0 decoder for `Score.instruments`: v0 `Instrument` was `{ id, name }`
+/// (no `range`), which is default-filled `None`. Mirrors the `Vec` framing (a
+/// `u32` count then each element).
+fn dec_instruments_v0(r: &mut Reader<'_>) -> Result<Vec<Instrument>> {
+    let n = r.count()?;
+    let mut instruments = Vec::with_capacity(n.min(1024));
+    for _ in 0..n {
+        let id = Codec::dec(r)?;
+        let name = Codec::dec(r)?;
+        instruments.push(Instrument {
+            id,
+            name,
+            range: None,
+        });
+    }
+    Ok(instruments)
 }
 
 // ===========================================================================
@@ -2374,16 +2515,113 @@ mod tests {
         }
     }
 
+    /// A frozen **v0 encoder** — the byte-exact inverse of the [`decode_v0_score`]
+    /// field walk, used only by the migration tests to synthesize *genuine* v0
+    /// bytes (a score whose three schema-major-1 fields are absent). It mirrors
+    /// the v0 layout exactly: `Canvas` without `layout_defaults`, `Instrument`
+    /// without `range`, `Region` without `permits_spanning_slurs`; every other
+    /// field through the current `Codec`. A decoder/encoder that agreed on a
+    /// *wrong* layout would still round-trip, so the callers also anchor the v0
+    /// byte length against the production v1 encoder (which this does not touch).
+    fn encode_v0_score(s: &Score) -> Vec<u8> {
+        // Reuses the production frozen v0 region encoder (super::enc_region_v0).
+        let mut out = Vec::new();
+        s.metadata.enc(&mut out);
+        // Canvas v0: `regions` only (no `layout_defaults`).
+        put_len(&mut out, s.canvas.regions.len());
+        for reg in &s.canvas.regions {
+            enc_region_v0(reg, &mut out);
+        }
+        // Instruments v0: `{ id, name }` only (no `range`).
+        put_len(&mut out, s.instruments.len());
+        for inst in &s.instruments {
+            inst.id.enc(&mut out);
+            inst.name.enc(&mut out);
+        }
+        // Fields 4..19 are unchanged between v0 and v1.
+        s.staves.enc(&mut out);
+        s.staff_groups.enc(&mut out);
+        s.parts.enc(&mut out);
+        s.cross_cutting.enc(&mut out);
+        s.time_signatures.enc(&mut out);
+        s.tuning_context.enc(&mut out);
+        s.tempo_map.enc(&mut out);
+        s.events.enc(&mut out);
+        s.spelling_attachments.enc(&mut out);
+        s.decomposition_attachments.enc(&mut out);
+        s.spelling_precedence.enc(&mut out);
+        s.analysis_layers.enc(&mut out);
+        s.views.enc(&mut out);
+        s.identity.enc(&mut out);
+        s.tombstoned_pitches.enc(&mut out);
+        s.tombstoned_events.enc(&mut out);
+        out
+    }
+
+    /// A C-in-`cmn-12` pitch at the given octave, for a non-default
+    /// [`PitchRange`] (the generators never populate `Instrument.range`).
+    fn cmn_c(octave: i8) -> Pitch {
+        Pitch {
+            scale_position: ScalePosition {
+                space: PitchSpaceId::new("cmn-12"),
+                position: PitchSpacePosition::Cmn {
+                    nominal: CmnNominal::C,
+                    alteration: 0,
+                    octave,
+                },
+            },
+            acoustic: AcousticPitch {
+                tuning: crate::pitch::TuningReference::Inherit,
+                realization: AcousticRealization::Implicit,
+            },
+        }
+    }
+
     #[test]
-    fn v0_score_migrates_by_default_filling_layout_defaults() {
-        // The schema-version dispatch seam (Binary Format §"Schema Major 1"):
-        // schema major 1 grew Canvas.layout_defaults, so a major-0 Score has no
-        // such field and migrate-on-read must reconstruct it with the A4
-        // default. We derive *real* v0 bytes by removing the layout_defaults
-        // from a v1 encoding (the inverse of the migration's splice), then check
-        // the versioned decoder reconstructs the original score (whose
-        // layout_defaults IS the default). A wrong splice offset corrupts the
-        // bytes and fails the decode, so this guards the frozen v0 assumptions.
+    fn v1_round_trips_non_default_values_for_every_new_field() {
+        // The three schema-major-1 fields must survive a v1 round-trip at
+        // *non-default* values — not just vacuously when they equal the default
+        // (which is all the generators produce). This is what makes them real
+        // wire content rather than always-default padding.
+        let mut score = valid_score(5);
+        assert!(!score.instruments.is_empty() && !score.canvas.regions.is_empty());
+
+        let ss = |v: f64| CanonicalF64::new(v).expect("finite");
+        let custom = CanvasLayoutDefaults {
+            // US Letter (216 × 279.4 mm) in staff spaces, distinct margins.
+            page_size: CanvasSize {
+                width: ss(216.0),
+                height: ss(279.4),
+            },
+            margins: CanvasMargins {
+                top: ss(9.0),
+                right: ss(10.0),
+                bottom: ss(11.0),
+                left: ss(12.0),
+            },
+        };
+        assert_ne!(custom, CanvasLayoutDefaults::default());
+        score.canvas.layout_defaults = custom;
+        score.canvas.regions[0].permits_spanning_slurs = true;
+        score.instruments[0].range = Some(PitchRange {
+            lowest: cmn_c(2),
+            highest: cmn_c(6),
+        });
+
+        let bytes = score.canonical_bytes();
+        assert_eq!(Score::decode_canonical(&bytes).unwrap(), score);
+        assert_eq!(Score::decode_canonical_versioned(&bytes, 1).unwrap(), score);
+    }
+
+    #[test]
+    fn v0_score_migrates_default_filling_all_three_new_fields() {
+        // Schema major 1 grew three fields — Canvas.layout_defaults,
+        // Instrument.range, Region.permits_spanning_slurs — so a major-0 score
+        // has none of them, and migrate-on-read must reconstruct each with its
+        // canonical default. We synthesize *genuine* v0 bytes via a mirror v0
+        // encoder (the byte-exact inverse of decode_v0_score) and check the
+        // versioned decoder rebuilds the original score, whose three fields ARE
+        // the defaults.
         let ld_len = {
             let mut b = Vec::new();
             CanvasLayoutDefaults::default().enc(&mut b);
@@ -2391,31 +2629,67 @@ mod tests {
         };
         for seed in 0..64u64 {
             let score = valid_score(seed.wrapping_mul(0x9E37_79B9).wrapping_add(1));
+            // Precondition: the generator produces the v0-equivalent defaults, so
+            // the original IS what a v0→v1 migration should reconstruct.
             assert_eq!(
                 score.canvas.layout_defaults,
-                CanvasLayoutDefaults::default(),
-                "the generator uses the default page geometry"
+                CanvasLayoutDefaults::default()
             );
-            let v1 = score.canonical_bytes();
-            // layout_defaults sits right after canvas.regions (Score field 2).
-            let split = {
-                let mut r = Reader::new(&v1);
-                let _m: ScoreMetadata = Codec::dec(&mut r).unwrap();
-                let _rg: Vec<Region> = Codec::dec(&mut r).unwrap();
-                r.pos()
-            };
-            let mut v0 = v1[..split].to_vec();
-            v0.extend_from_slice(&v1[split + ld_len..]);
-            assert_eq!(v0.len() + ld_len, v1.len(), "removed exactly the field");
+            assert!(score.instruments.iter().all(|i| i.range.is_none()));
+            assert!(score
+                .canvas
+                .regions
+                .iter()
+                .all(|r| !r.permits_spanning_slurs));
 
-            // Major 1: the v1 bytes decode unchanged. Major 0: the shorter v0
-            // bytes migrate up, refilling the default layout_defaults.
+            let v1 = score.canonical_bytes();
+            let v0 = encode_v0_score(&score);
+            // Size anchor (independent of the v0 encoder's field order): v0 is
+            // exactly v1 minus the appended default bytes — layout_defaults once,
+            // plus one byte each for every instrument's range=None (Option tag)
+            // and every region's permits_spanning_slurs=false (bool).
+            let expected_removed = ld_len + score.instruments.len() + score.canvas.regions.len();
+            assert_eq!(
+                v1.len() - v0.len(),
+                expected_removed,
+                "v0 omits exactly the three new fields' default bytes"
+            );
+
+            // Major 0: the shorter v0 bytes migrate up, default-filling all three.
+            let migrated = Score::decode_canonical_versioned(&v0, 0).unwrap();
+            assert_eq!(migrated, score);
+            // The migrated score re-encodes to the production v1 bytes.
+            assert_eq!(migrated.canonical_bytes(), v1);
+            // Major 1: the v1 bytes decode unchanged.
             assert_eq!(Score::decode_canonical_versioned(&v1, 1).unwrap(), score);
-            assert_eq!(Score::decode_canonical_versioned(&v0, 0).unwrap(), score);
         }
         // A major outside {0, 1} is a defensive decode error (the gate rejects
         // it upstream in practice).
         assert!(Score::decode_canonical_versioned(&valid_score(1).canonical_bytes(), 2).is_err());
+    }
+
+    #[test]
+    fn v0_regions_inside_canvas_decode_after_region_grew() {
+        // The nested-Vec case the struct decoder exists for: multiple v0 Region
+        // elements inside Canvas.regions must each decode and default-fill
+        // permits_spanning_slurs. A wrong per-element size would desync the Vec
+        // after the first element (every later region would misparse), so a
+        // multi-region canvas is the discriminating fixture — valid_score_rich
+        // carries three regions.
+        let score = valid_score_rich(9);
+        assert!(
+            score.canvas.regions.len() >= 2,
+            "need a multi-region canvas to exercise the Vec walk"
+        );
+        let v0 = encode_v0_score(&score);
+        let migrated = Score::decode_canonical_versioned(&v0, 0).unwrap();
+        assert_eq!(migrated, score);
+        assert_eq!(migrated.canvas.regions.len(), score.canvas.regions.len());
+        assert!(migrated
+            .canvas
+            .regions
+            .iter()
+            .all(|r| !r.permits_spanning_slurs));
     }
 
     #[test]

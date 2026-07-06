@@ -88,6 +88,7 @@ fn hand_built_score() -> Score {
             staves: vec![staff_id],
         },
         local_tempo_map: None,
+        permits_spanning_slurs: false,
     };
 
     let mut score = Score::empty(idc.clone());
@@ -95,6 +96,7 @@ fn hand_built_score() -> Score {
     score.instruments = vec![Instrument {
         id: instrument,
         name: "Flute".into(),
+        range: None,
     }];
     score.staves = vec![Staff {
         id: staff_id,

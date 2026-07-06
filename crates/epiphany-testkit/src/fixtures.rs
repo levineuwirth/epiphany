@@ -166,6 +166,7 @@ pub fn ten_measure_single_staff(seed: u64) -> Score {
             staves: vec![staff_id],
         },
         local_tempo_map: None,
+        permits_spanning_slurs: false,
     };
 
     let mut score = Score::empty(idc.clone());
@@ -173,6 +174,7 @@ pub fn ten_measure_single_staff(seed: u64) -> Score {
     score.instruments = vec![Instrument {
         id: instrument,
         name: String::from("Flute"),
+        range: None,
     }];
     score.staves = vec![Staff {
         id: staff_id,

@@ -165,6 +165,7 @@ fn metric_score(
             staves: vec![staff],
         },
         local_tempo_map: None,
+        permits_spanning_slurs: false,
     };
 
     let mut score = Score::empty(idc.clone());
@@ -180,6 +181,7 @@ fn metric_score(
     score.instruments = vec![Instrument {
         id: instrument,
         name: String::from("Test"),
+        range: None,
     }];
     score.cross_cutting.tuplets = tuplets;
     score.events = arena;
@@ -768,6 +770,7 @@ fn nonmetric_region_defers_decomposition_but_still_spells() {
             staves: vec![staff],
         },
         local_tempo_map: None,
+        permits_spanning_slurs: false,
     };
     let mut score = Score::empty(idc.clone());
     score.identity = idc;
@@ -782,6 +785,7 @@ fn nonmetric_region_defers_decomposition_but_still_spells() {
     score.instruments = vec![Instrument {
         id: instrument,
         name: "T".into(),
+        range: None,
     }];
     score.events = arena;
     score.canvas = Canvas {

@@ -76,11 +76,12 @@ pub use time::{
 pub use pitch::{
     canonical_pitch_bytes, derive_system_pitch_id, spell, AccidentalId, AccidentalRegistryId,
     AcousticPitch, AcousticRealization, CmnNominal, DecompositionAlgorithmId, ForeignFormatId,
-    IdentifiedPitch, NominalRegistryId, Pitch, PitchSpaceId, PitchSpacePosition, PitchSpelling,
-    PositionRegistryId, ReferencePitch, ScalePosition, SpellingAlgorithmId, SpellingAttachment,
-    SpellingContext, SpellingDirective, SpellingNominal, SpellingPrecedence, SpellingRenderHints,
-    SpellingRule, SpellingRuleSetId, SpellingScope, SpellingSource, SpellingSourceKind,
-    StaffGroupKindRegistryId, TieClassRegistryId, TuningReference, TuningSystemId, VoiceSelector,
+    IdentifiedPitch, NominalRegistryId, Pitch, PitchRange, PitchSpaceId, PitchSpacePosition,
+    PitchSpelling, PositionRegistryId, ReferencePitch, ScalePosition, SpellingAlgorithmId,
+    SpellingAttachment, SpellingContext, SpellingDirective, SpellingNominal, SpellingPrecedence,
+    SpellingRenderHints, SpellingRule, SpellingRuleSetId, SpellingScope, SpellingSource,
+    SpellingSourceKind, StaffGroupKindRegistryId, TieClassRegistryId, TuningReference,
+    TuningSystemId, VoiceSelector,
 };
 
 pub use prepass::{

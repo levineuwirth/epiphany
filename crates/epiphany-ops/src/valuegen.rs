@@ -265,6 +265,7 @@ pub fn region(id: RegionId) -> Region {
         },
         staff_extent: StaffExtent { staves: Vec::new() },
         local_tempo_map: None,
+        permits_spanning_slurs: false,
     }
 }
 

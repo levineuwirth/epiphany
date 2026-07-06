@@ -1004,9 +1004,11 @@ impl CanonicalEncode for ModifyCrossCuttingOp {
 // deletes are empty-only delete-wins tombstones (the container must have no live
 // children — the caller deletes contents first). See `DECISIONS.md`.
 
-/// Mint an empty region into the canvas (Chapter 6 §6.10 InsertRegion). Carries
-/// the full [`Region`] value (v1); the reduction preconditions it carries no
-/// staff instances (an empty container).
+/// Mint an empty region into the canvas (Chapter 6 §6.10 InsertRegion). Holds
+/// the full [`Region`] value; the reduction preconditions it carries no staff
+/// instances (an empty container). Its canonical payload embeds the region's
+/// **schema-major-0** form (no `permits_spanning_slurs`) so the op-envelope
+/// block stays byte-v0 — see [`CreateRegionOp::encode_canonical`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CreateRegionOp {
     pub region: Region,
@@ -1021,7 +1023,15 @@ impl CreateRegionOp {
 
 impl CanonicalEncode for CreateRegionOp {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
-        push_lp_bytes(out, &self.region.canonical_bytes());
+        // The op-envelope block is stamped schema major 0, so this payload stays
+        // byte-identical to schema major 0: it embeds the region's **v0**
+        // canonical form (no `permits_spanning_slurs`), not the schema-major-1
+        // `canonical_bytes`. A region minted here therefore reduces with the
+        // flag `false` — the only value any producer sets today. The op payload
+        // moves to the v1 encoding, and the block to major 1 with
+        // migrate-on-read, when the op-block schema-major machinery lands
+        // (schema-major track, D2). See `Region::canonical_bytes_v0`.
+        push_lp_bytes(out, &self.region.canonical_bytes_v0());
     }
 }
 
@@ -1324,7 +1334,7 @@ impl CanonicalEncode for SetStaffLayoutOp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use epiphany_core::{ReplicaId, SlurId};
+    use epiphany_core::{RegionId, ReplicaId, SlurId};
 
     #[test]
     fn operation_kind_wire_discriminants_are_golden() {
@@ -1601,6 +1611,31 @@ mod tests {
         assert_eq!(bytes.len(), 48);
         assert_eq!(&bytes[..16], &target.canonical_bytes());
         assert_eq!(&bytes[16..], &[0xAB; 32]);
+    }
+
+    #[test]
+    fn create_region_payload_is_byte_v0_and_omits_the_spanning_flag() {
+        // The op-envelope block is stamped schema major 0, so the CreateRegion
+        // payload must stay byte-identical to schema major 0 — it must NOT carry
+        // Region.permits_spanning_slurs (schema major 1). Encoding a region with
+        // the flag set produces the same bytes as with it clear, and equals the
+        // region's frozen v0 canonical form, length-prefixed.
+        let rid = RegionId::new(ReplicaId(9), 3);
+        let mut permit = crate::valuegen::region(rid);
+        permit.permits_spanning_slurs = true;
+        let forbid = crate::valuegen::region(rid); // valuegen defaults the flag false
+
+        let enc = |region: Region| {
+            let mut out = Vec::new();
+            CreateRegionOp { region }.encode_canonical(&mut out);
+            out
+        };
+        // The flag is not carried: both encode identically.
+        assert_eq!(enc(permit.clone()), enc(forbid.clone()));
+        // And the payload is exactly the region's v0 canonical form, LP-framed.
+        let mut expected = Vec::new();
+        push_lp_bytes(&mut expected, &forbid.canonical_bytes_v0());
+        assert_eq!(enc(forbid), expected);
     }
 
     #[test]

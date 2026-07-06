@@ -495,6 +495,7 @@ impl OneStaff {
                 staves: vec![staff],
             },
             local_tempo_map: None,
+            permits_spanning_slurs: false,
         };
 
         let mut score = Score::empty(idc.clone());
@@ -510,6 +511,7 @@ impl OneStaff {
         score.instruments = vec![Instrument {
             id: instrument,
             name: String::from("F-corpus"),
+            range: None,
         }];
         score.events = arena;
         score.cross_cutting = cross_cutting;
