@@ -438,3 +438,22 @@ code tranche (authored-only resolution paths + distinct taxonomy buckets in
 both pre-passes). Also ratified here: system-derived intrinsic content is
 immutable under reduction (P12-K3; core Ch5 states it, the catalog pins the
 precondition, `epiphany-ops` implements).
+
+### G-pass follow-up (2026-07-07): unsupported algorithm ids now ERROR
+
+A post-commit review found the ratified requirement and the implementation
+disagreeing: `req:pitch:spelling-algorithm` / `req:time:decomposition-algorithm`
+say a profile requesting an unregistered id MUST **error**, but
+`derive_annotations` still implemented the pre-ratification behavior (that
+pre-pass "derives nothing" while the requested id stays in the result profile
+— the honest-cache-key rationale), and a test locked it. The MUST-error
+contract is the right one and stands: a silently-empty derivation is
+indistinguishable from a legitimately empty score, and an implementation that
+*does* support the requested algorithm would produce real annotations while
+this one quietly produced none — two "successful" results that disagree.
+Fixed: `derive_annotations` returns `Result<DerivedAnnotations, PrePassError>`
+(`UnsupportedSpellingAlgorithm` / `UnsupportedDecompositionAlgorithm`,
+rejected up front); every production caller uses the default profile and
+`.expect`s; the stale test is rewritten as `unknown_algorithm_ids_error`.
+CONFORMANCE.md's long-standing "errors" claim is now true rather than
+aspirational.

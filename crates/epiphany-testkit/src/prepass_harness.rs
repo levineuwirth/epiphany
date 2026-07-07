@@ -56,8 +56,10 @@ pub fn fingerprint(ann: &DerivedAnnotations) -> Vec<u8> {
 /// The same score derives identically twice (pure function), by structural
 /// equality and by fingerprint.
 pub fn assert_derivation_deterministic(score: &Score) {
-    let a = derive_annotations(score, &profile());
-    let b = derive_annotations(score, &profile());
+    let a = derive_annotations(score, &profile())
+        .expect("the default pre-pass algorithms are supported");
+    let b = derive_annotations(score, &profile())
+        .expect("the default pre-pass algorithms are supported");
     assert_eq!(a, b, "derivation is not a pure function of the score");
     assert_eq!(
         fingerprint(&a),
@@ -71,8 +73,10 @@ pub fn assert_derivation_deterministic(score: &Score) {
 /// pre-pass annotations" property at corpus scale.
 pub fn assert_corpus_deterministic() {
     for f in corpus::corpus() {
-        let a = derive_annotations(&(f.build)(), &profile());
-        let b = derive_annotations(&(f.build)(), &profile());
+        let a = derive_annotations(&(f.build)(), &profile())
+            .expect("the default pre-pass algorithms are supported");
+        let b = derive_annotations(&(f.build)(), &profile())
+            .expect("the default pre-pass algorithms are supported");
         assert_eq!(a, b, "fixture `{}` derivation not deterministic", f.name);
         assert_eq!(
             fingerprint(&a),
@@ -280,7 +284,8 @@ pub fn assert_respell_precedence() {
     let replica = score.identity.replica_id;
 
     // Baseline: no override → the algorithm's inferred spelling stands.
-    let base = derive_annotations(&score, &profile());
+    let base = derive_annotations(&score, &profile())
+        .expect("the default pre-pass algorithms are supported");
     let base_rs = base.spellings.get(&pid).expect("probe pitch is spelled");
     assert!(
         matches!(base_rs.provenance, SpellingProvenance::Inferred),
@@ -304,7 +309,8 @@ pub fn assert_respell_precedence() {
         priority: 0,
         layer: None,
     });
-    let ann2 = derive_annotations(&s2, &profile());
+    let ann2 =
+        derive_annotations(&s2, &profile()).expect("the default pre-pass algorithms are supported");
     let rs2 = ann2
         .spellings
         .get(&pid)
@@ -332,7 +338,8 @@ pub fn assert_respell_precedence() {
         priority: 0,
         layer: Some(AnalysisLayerId::new(replica, 1)),
     });
-    let ann3 = derive_annotations(&s3, &profile());
+    let ann3 =
+        derive_annotations(&s3, &profile()).expect("the default pre-pass algorithms are supported");
     let rs3 = ann3.spellings.get(&pid).expect("pitch is spelled");
     assert_eq!(
         rs3.spelling, inferred,
@@ -375,7 +382,8 @@ pub fn assert_respell_precedence() {
         priority: 9, // second, higher priority — must win
         layer: None,
     });
-    let ann4 = derive_annotations(&s4, &profile());
+    let ann4 =
+        derive_annotations(&s4, &profile()).expect("the default pre-pass algorithms are supported");
     let rs4 = ann4.spellings.get(&pid).expect("pitch is spelled");
     assert_eq!(
         rs4.spelling, fs4,
@@ -400,7 +408,8 @@ pub fn assert_respell_precedence() {
         priority: 100,
         layer: None,
     });
-    let ann5 = derive_annotations(&s5, &profile());
+    let ann5 =
+        derive_annotations(&s5, &profile()).expect("the default pre-pass algorithms are supported");
     let rs5 = ann5.spellings.get(&pid).expect("pitch is spelled");
     assert_eq!(
         rs5.spelling, inferred,
@@ -428,6 +437,7 @@ pub fn assert_reduced_respell_is_honored() {
 
     // Inferred baseline (no override).
     let inferred = derive_annotations(&score, &profile())
+        .expect("the default pre-pass algorithms are supported")
         .spellings
         .get(&pid)
         .expect("probe pitch is spelled")
@@ -463,7 +473,8 @@ pub fn assert_reduced_respell_is_honored() {
     set.accept(respell);
     let reduced = set.reduce_onto(&score);
 
-    let ann = derive_annotations(&reduced.score, &profile());
+    let ann = derive_annotations(&reduced.score, &profile())
+        .expect("the default pre-pass algorithms are supported");
     let rs = ann
         .spellings
         .get(&pid)
@@ -513,7 +524,8 @@ fn build_named(name: &str) -> Score {
 /// `BTreeMap` value order is melodic), the inferred spellings match the expected
 /// `(nominal, accidental)` sequence.
 fn assert_line(name: &str, expected: &[(CmnNominal, &str)]) {
-    let ann = derive_annotations(&build_named(name), &profile());
+    let ann = derive_annotations(&build_named(name), &profile())
+        .expect("the default pre-pass algorithms are supported");
     let got: Vec<(CmnNominal, String)> = ann
         .spellings
         .values()
@@ -739,7 +751,8 @@ pub fn assert_deterministic_in_materialization_pipeline(scale: u64) {
             seed.wrapping_mul(0x9E37_79B9).wrapping_add(101),
         );
         assert_derivation_deterministic(&score);
-        let ann = derive_annotations(&score, &profile());
+        let ann = derive_annotations(&score, &profile())
+            .expect("the default pre-pass algorithms are supported");
         if !ann.spellings.is_empty() {
             spelled_anywhere = true;
         }
@@ -767,7 +780,8 @@ pub fn run_all(scale: u64) {
     // Eligibility + reconstruction over every fixture.
     for f in corpus::corpus() {
         let score = (f.build)();
-        let ann = derive_annotations(&score, &profile());
+        let ann = derive_annotations(&score, &profile())
+            .expect("the default pre-pass algorithms are supported");
         assert_eligible_pitches_spelled(&score, &ann);
         assert_decompositions_reconstruct(&score, &ann);
     }

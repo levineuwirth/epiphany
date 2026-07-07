@@ -87,7 +87,8 @@ pub use pitch::{
 
 pub use prepass::{
     derive_annotations, resolve_decomposition, resolve_spelling, simplest_spelling,
-    DerivedAnnotations, PrePassProfile, ResolvedSpelling, SpellingProvenance, TaxonomyReport,
+    DerivedAnnotations, PrePassError, PrePassProfile, ResolvedSpelling, SpellingProvenance,
+    TaxonomyReport,
 };
 
 pub use event::{

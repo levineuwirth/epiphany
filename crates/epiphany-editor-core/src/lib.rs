@@ -1458,7 +1458,8 @@ impl EditorSession {
     /// inferred respelling is accounted for. Falls back to a note's raw pitch position
     /// when it has no resolved CMN spelling. `None` if the event has no CMN note.
     fn rendered_top_of_event(&self, event: EventId) -> Option<(Pitch, i64)> {
-        let annotations = derive_annotations(&self.score, &PrePassProfile::default());
+        let annotations = derive_annotations(&self.score, &PrePassProfile::default())
+            .expect("the default pre-pass algorithms are supported");
         let mut buf: Vec<&IdentifiedPitch> = Vec::new();
         self.score
             .events

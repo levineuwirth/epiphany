@@ -245,11 +245,71 @@ impl DerivedAnnotations {
 // Entry point
 // ===========================================================================
 
+/// Why a derivation was refused: the profile names an algorithm this
+/// implementation does not provide. Ratified Pass 12
+/// (`req:pitch:spelling-algorithm`, `req:time:decomposition-algorithm`): a
+/// profile requesting an unregistered identifier MUST **error** — neither
+/// silently substituting the default nor returning an empty derivation a
+/// caller cannot distinguish from a legitimately empty score. Erroring also
+/// fails loudly where silence would diverge: an implementation that *does*
+/// support the requested algorithm produces real annotations, so a quietly
+/// empty result here would disagree with it while both looked successful.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum PrePassError {
+    /// The profile's spelling algorithm id is not a registered algorithm.
+    UnsupportedSpellingAlgorithm(SpellingAlgorithmId),
+    /// The profile's decomposition algorithm id is not a registered algorithm.
+    UnsupportedDecompositionAlgorithm(DecompositionAlgorithmId),
+}
+
+impl std::fmt::Display for PrePassError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PrePassError::UnsupportedSpellingAlgorithm(id) => {
+                write!(f, "unsupported spelling algorithm id {:?}", id.as_str())
+            }
+            PrePassError::UnsupportedDecompositionAlgorithm(id) => {
+                write!(
+                    f,
+                    "unsupported decomposition algorithm id {:?}",
+                    id.as_str()
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for PrePassError {}
+
 /// Computes the [`DerivedAnnotations`] for `score` under `profile`. Pure and
 /// deterministic: byte-identical `(score, profile)` yields byte-identical
 /// output, independent of iteration incidentals (the derivation walks the graph
 /// in canonical id/position order).
-pub fn derive_annotations(score: &Score, profile: &PrePassProfile) -> DerivedAnnotations {
+///
+/// # Errors
+///
+/// A profile naming an algorithm this implementation does not register errors
+/// with [`PrePassError`] (ratified Pass 12; see the type's documentation) —
+/// nothing is silently substituted, and no empty-but-successful derivation is
+/// produced. The default profile always succeeds.
+pub fn derive_annotations(
+    score: &Score,
+    profile: &PrePassProfile,
+) -> Result<DerivedAnnotations, PrePassError> {
+    // The pre-passes implement exactly one algorithm each (the registered
+    // `"default"` id); any other id refuses up front per the ratified
+    // requirement.
+    if profile.spelling_algorithm != SpellingAlgorithmId::default_id() {
+        return Err(PrePassError::UnsupportedSpellingAlgorithm(
+            profile.spelling_algorithm.clone(),
+        ));
+    }
+    if profile.decomposition_algorithm != DecompositionAlgorithmId::default_id() {
+        return Err(PrePassError::UnsupportedDecompositionAlgorithm(
+            profile.decomposition_algorithm.clone(),
+        ));
+    }
+
     let mut taxonomy = TaxonomyReport::default();
 
     // Index regions: event -> (is the owning region metric?), and the event's
@@ -257,19 +317,9 @@ pub fn derive_annotations(score: &Score, profile: &PrePassProfile) -> DerivedAnn
     // position-sorted (invariant 3), so the per-voice order is canonical.
     let layout = ScoreLayout::build(score);
 
-    // The pre-passes implement exactly one algorithm each (the registered
-    // `"default"` id). A profile requesting any other id is **not honored**:
-    // rather than return default output labeled as the requested algorithm —
-    // which would let an unimplemented/future algorithm silently alias the
-    // default in a derivation cache — that pre-pass derives nothing. The
-    // requested id stays in the result's `profile`, so the cache key is honest.
-    let spelling_supported = profile.spelling_algorithm == SpellingAlgorithmId::default_id();
-    let decomposition_supported =
-        profile.decomposition_algorithm == DecompositionAlgorithmId::default_id();
-
     // --- Spelling pre-pass. ---
     let mut spellings = BTreeMap::new();
-    if spelling_supported {
+    {
         let inferred = infer_spellings(score, &layout, &mut taxonomy);
         let precedence = &score.spelling_precedence;
         for (pid, inferred_spelling) in inferred {
@@ -313,7 +363,7 @@ pub fn derive_annotations(score: &Score, profile: &PrePassProfile) -> DerivedAnn
 
     // --- Decomposition pre-pass. ---
     let mut decompositions = BTreeMap::new();
-    if decomposition_supported {
+    {
         let inferred = infer_decompositions(score, &layout, &mut taxonomy);
         for (eid, inferred_attachment) in inferred {
             let resolved = resolve_decomposition(score, eid, inferred_attachment);
@@ -342,12 +392,12 @@ pub fn derive_annotations(score: &Score, profile: &PrePassProfile) -> DerivedAnn
         }
     }
 
-    DerivedAnnotations {
+    Ok(DerivedAnnotations {
         spellings,
         decompositions,
         taxonomy,
         profile: profile.clone(),
-    }
+    })
 }
 
 // ===========================================================================

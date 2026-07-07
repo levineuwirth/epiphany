@@ -1231,7 +1231,8 @@ pub fn classify_corpus() -> CorpusReport {
         );
 
         // 2. Derive H's annotations + taxonomy.
-        let ann = derive_annotations(&score, &profile);
+        let ann = derive_annotations(&score, &profile)
+            .expect("the default pre-pass algorithms are supported");
         let t = &ann.taxonomy;
 
         // 3. Cross-check H's event-kind counts against an independent walk.

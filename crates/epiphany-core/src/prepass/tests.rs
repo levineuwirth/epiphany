@@ -564,7 +564,8 @@ fn derive_counts_sub_sixtyfourth_event_as_ungriddable() {
         (vec![ev], vec![])
     });
 
-    let ann = derive_annotations(&score, &PrePassProfile::default());
+    let ann = derive_annotations(&score, &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     assert_eq!(ann.spellings.len(), 1, "pitch still spells");
     assert_eq!(
         ann.decompositions.len(),
@@ -598,7 +599,8 @@ fn off_grid_position_is_ungriddable_not_downbeat_aligned() {
         (vec![ev], vec![])
     });
 
-    let ann = derive_annotations(&score, &PrePassProfile::default());
+    let ann = derive_annotations(&score, &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     assert_eq!(ann.spellings.len(), 1, "pitch still spells");
     assert_eq!(
         ann.decompositions.len(),
@@ -653,7 +655,8 @@ fn derive_spells_and_decomposes_a_simple_metric_score() {
         (events, vec![])
     });
 
-    let ann = derive_annotations(&score, &PrePassProfile::default());
+    let ann = derive_annotations(&score, &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     // Every pitch got a spelling; every event a single-quarter decomposition.
     assert_eq!(ann.spellings.len(), 4);
     assert_eq!(ann.decompositions.len(), 4);
@@ -705,7 +708,8 @@ fn taxonomy_classifies_each_kind_and_counts_ineligible_explicitly() {
         (vec![p, rst, unp, ji], vec![])
     });
 
-    let ann = derive_annotations(&score, &PrePassProfile::default());
+    let ann = derive_annotations(&score, &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     let t = &ann.taxonomy;
     assert_eq!(t.pitched_events, 2);
     assert_eq!(t.rest_events, 1);
@@ -793,7 +797,8 @@ fn nonmetric_region_defers_decomposition_but_still_spells() {
         ..Default::default()
     };
 
-    let ann = derive_annotations(&score, &PrePassProfile::default());
+    let ann = derive_annotations(&score, &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     assert_eq!(ann.spellings.len(), 1, "pitch is still spelled");
     assert_eq!(
         ann.decompositions.len(),
@@ -962,8 +967,10 @@ fn derivation_is_deterministic_across_runs() {
         })
     };
     // Same identity seed → identical scores → identical annotations, twice.
-    let a = derive_annotations(&build(), &PrePassProfile::default());
-    let b = derive_annotations(&build(), &PrePassProfile::default());
+    let a = derive_annotations(&build(), &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
+    let b = derive_annotations(&build(), &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     assert_eq!(a, b);
 }
 
@@ -999,7 +1006,8 @@ fn tuplet_member_event_decomposes_with_tuplet_membership() {
         (events, vec![tuplet])
     });
 
-    let ann = derive_annotations(&score, &PrePassProfile::default());
+    let ann = derive_annotations(&score, &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     assert_eq!(ann.decompositions.len(), 3);
     for dec in ann.decompositions.values() {
         assert_eq!(dec.components.len(), 1);
@@ -1110,7 +1118,8 @@ fn authored_decomposition_outranks_the_inferred_default() {
     let authored = tied_quarters(e1, DecompositionSource::UserChosen);
     score.decomposition_attachments.push(authored.clone());
 
-    let ann = derive_annotations(&score, &PrePassProfile::default());
+    let ann = derive_annotations(&score, &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     // The authored attachment is the effective decomposition for its event; no
     // derived (single-half-note) decomposition shadows it.
     assert_eq!(ann.decompositions[&e1], authored, "authored override wins");
@@ -1139,7 +1148,8 @@ fn inferred_source_attachment_does_not_outrank_the_prepass() {
         .decomposition_attachments
         .push(tied_quarters(e1, DecompositionSource::Inferred));
 
-    let ann = derive_annotations(&score, &PrePassProfile::default());
+    let ann = derive_annotations(&score, &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     let dec = &ann.decompositions[&e1];
     assert_eq!(dec.components.len(), 1, "the pre-pass's half note stands");
     assert_eq!(dec.components[0].base_value, NoteValue::Half);
@@ -1184,7 +1194,8 @@ fn authored_decomposition_surfaces_for_an_ungriddable_event_p12_h7() {
     };
     score.decomposition_attachments.push(authored.clone());
 
-    let ann = derive_annotations(&score, &PrePassProfile::default());
+    let ann = derive_annotations(&score, &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     assert_eq!(
         ann.decompositions[&eid], authored,
         "the authored attachment surfaces on its own"
@@ -1243,7 +1254,8 @@ fn inferred_source_attachment_does_not_surface_for_ineligible_events_p12_h7() {
             source: DecompositionSource::Inferred,
         });
 
-    let ann = derive_annotations(&score, &PrePassProfile::default());
+    let ann = derive_annotations(&score, &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     assert!(
         !ann.decompositions.contains_key(&eid),
         "an Inferred-source attachment does not surface"
@@ -1300,7 +1312,8 @@ fn authored_spelling_surfaces_for_an_unavailable_pitch_p12_h7() {
         layer: None,
     });
 
-    let ann = derive_annotations(&score, &PrePassProfile::default());
+    let ann = derive_annotations(&score, &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     let resolved = ann
         .spellings
         .get(&pid)
@@ -1319,7 +1332,8 @@ fn authored_spelling_surfaces_for_an_unavailable_pitch_p12_h7() {
         !ann.spellings.contains_key(&dangling),
         "an attachment on an absent pitch surfaces nothing"
     );
-    let again = derive_annotations(&score, &PrePassProfile::default());
+    let again = derive_annotations(&score, &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     assert_eq!(
         ann.canonical_fingerprint(),
         again.canonical_fingerprint(),
@@ -1341,7 +1355,8 @@ fn decomposition_precedence_ranks_sources_then_canonical_order() {
     let user = tied_quarters(e1, DecompositionSource::UserChosen);
     score.decomposition_attachments.push(imported); // listed first — must lose
     score.decomposition_attachments.push(user.clone());
-    let ann = derive_annotations(&score, &PrePassProfile::default());
+    let ann = derive_annotations(&score, &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     assert_eq!(
         ann.decompositions[&e1], user,
         "UserChosen outranks Imported regardless of attachment order"
@@ -1355,7 +1370,8 @@ fn decomposition_precedence_ranks_sources_then_canonical_order() {
     let second = dotted_quarter_eighth(f1, DecompositionSource::UserChosen);
     score2.decomposition_attachments.push(first.clone());
     score2.decomposition_attachments.push(second);
-    let ann2 = derive_annotations(&score2, &PrePassProfile::default());
+    let ann2 = derive_annotations(&score2, &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     assert_eq!(
         ann2.decompositions[&f1], first,
         "rank ties keep the earlier attachment in canonical order"
@@ -1374,13 +1390,16 @@ fn derivation_with_authored_decomposition_is_deterministic() {
             .push(tied_quarters(e1, DecompositionSource::UserChosen));
         score
     };
-    let a = derive_annotations(&build(), &PrePassProfile::default());
-    let b = derive_annotations(&build(), &PrePassProfile::default());
+    let a = derive_annotations(&build(), &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
+    let b = derive_annotations(&build(), &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     assert_eq!(a, b);
     assert_eq!(a.canonical_fingerprint(), b.canonical_fingerprint());
 
     let (plain, _, _) = two_half_note_score();
-    let c = derive_annotations(&plain, &PrePassProfile::default());
+    let c = derive_annotations(&plain, &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     assert_ne!(
         a.canonical_fingerprint(),
         c.canonical_fingerprint(),
@@ -1417,7 +1436,8 @@ fn authored_attachment_on_an_ungriddable_event_surfaces_p12_h7() {
     let authored = tied_quarters(ids[0], DecompositionSource::UserChosen);
     score.decomposition_attachments.push(authored.clone());
 
-    let ann = derive_annotations(&score, &PrePassProfile::default());
+    let ann = derive_annotations(&score, &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     assert_eq!(
         ann.decompositions.get(&ids[0]),
         Some(&authored),
@@ -1430,10 +1450,14 @@ fn authored_attachment_on_an_ungriddable_event_surfaces_p12_h7() {
 }
 
 #[test]
-fn unknown_algorithm_ids_are_not_honored() {
-    // A profile requesting an algorithm the pre-pass does not implement must not
-    // receive default output labeled as that algorithm; the unhonored pre-pass
-    // derives nothing while the requested id stays in the result profile.
+fn unknown_algorithm_ids_error() {
+    // Ratified Pass 12 (`req:pitch:spelling-algorithm`,
+    // `req:time:decomposition-algorithm`): a profile requesting an algorithm
+    // this implementation does not register MUST error — neither silently
+    // substituting the default nor returning an empty-but-successful
+    // derivation a caller cannot tell apart from a legitimately empty score.
+    // (This supersedes the pre-ratification "derives nothing under the
+    // requested profile" behavior this test previously locked.)
     let score = metric_score(|idc, voice| {
         let eid = idc.mint();
         let pid = idc.mint::<PitchId>();
@@ -1450,54 +1474,35 @@ fn unknown_algorithm_ids_are_not_honored() {
         (vec![ev], vec![])
     });
 
-    let default = derive_annotations(&score, &PrePassProfile::default());
+    let default = derive_annotations(&score, &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     assert!(!default.spellings.is_empty(), "the default profile spells");
     assert!(
         !default.decompositions.is_empty(),
         "the default profile decomposes"
     );
 
-    // Unknown spelling algorithm: no spellings; decomposition (still default) runs.
     let unknown_spelling = PrePassProfile {
         spelling_algorithm: SpellingAlgorithmId::new("future-v2"),
         decomposition_algorithm: DecompositionAlgorithmId::default_id(),
     };
-    let a = derive_annotations(&score, &unknown_spelling);
-    assert!(
-        a.spellings.is_empty(),
-        "an unknown spelling algorithm is not honored (no default output)"
-    );
     assert_eq!(
-        a.decompositions.len(),
-        default.decompositions.len(),
-        "the supported decomposition pre-pass still runs"
-    );
-    assert_eq!(
-        a.profile.spelling_algorithm,
-        SpellingAlgorithmId::new("future-v2"),
-        "the requested id is preserved in the result profile"
-    );
-    // The canonical fingerprint distinguishes differing derivations (it is not a
-    // degenerate constant the determinism gate would pass vacuously).
-    assert_ne!(
-        a.canonical_fingerprint(),
-        default.canonical_fingerprint(),
-        "the canonical fingerprint discriminates differing annotations"
+        derive_annotations(&score, &unknown_spelling),
+        Err(PrePassError::UnsupportedSpellingAlgorithm(
+            SpellingAlgorithmId::new("future-v2")
+        )),
+        "an unknown spelling algorithm errors; nothing is substituted"
     );
 
-    // Unknown decomposition algorithm: no decompositions; spelling runs.
     let unknown_decomp = PrePassProfile {
         spelling_algorithm: SpellingAlgorithmId::default_id(),
         decomposition_algorithm: DecompositionAlgorithmId::new("future-v2"),
     };
-    let b = derive_annotations(&score, &unknown_decomp);
-    assert!(
-        b.decompositions.is_empty(),
-        "an unknown decomposition algorithm is not honored"
-    );
     assert_eq!(
-        b.spellings.len(),
-        default.spellings.len(),
-        "the supported spelling pre-pass still runs"
+        derive_annotations(&score, &unknown_decomp),
+        Err(PrePassError::UnsupportedDecompositionAlgorithm(
+            DecompositionAlgorithmId::new("future-v2")
+        )),
+        "an unknown decomposition algorithm errors; nothing is substituted"
     );
 }

@@ -3031,7 +3031,8 @@ fn a_mid_region_meter_change_reduces_cleanly_p12_c5() {
     assert!(check_invariants(&result.score).is_empty());
     // The pre-pass tolerates the multi-meter grid (P12-H4 owns honoring it).
     let _ =
-        epiphany_core::derive_annotations(&result.score, &epiphany_core::PrePassProfile::default());
+        epiphany_core::derive_annotations(&result.score, &epiphany_core::PrePassProfile::default())
+            .expect("the default pre-pass algorithms are supported");
 }
 
 #[test]

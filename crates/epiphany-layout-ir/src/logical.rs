@@ -409,7 +409,8 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
     // (Agent H's pre-pass): which notehead a note draws, where its pitches sit,
     // and which accidentals its spelling carries. Recomputed deterministically
     // from the score with the default profile.
-    let annotations = derive_annotations(score, &PrePassProfile::default());
+    let annotations = derive_annotations(score, &PrePassProfile::default())
+        .expect("the default pre-pass algorithms are supported");
     // The last region index that manifests each staff, so a measure can tell a
     // mid-staff region boundary (continuation) from the true final barline.
     let mut staff_last_region: BTreeMap<StaffId, usize> = BTreeMap::new();

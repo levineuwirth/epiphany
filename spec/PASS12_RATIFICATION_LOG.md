@@ -167,3 +167,13 @@ references.
 buckets (`prepass.rs`); K3 `SystemDerivedContentImmutable` (12); K9
 `RecreateContentMismatch` (13); C4 `SameCanvasNearer` (6) — each with
 regression tests and wire goldens.
+
+### G-pass addendum (2026-07-07): pre-pass error contract aligned
+
+A post-commit review caught a spec↔code disagreement introduced by the H1/H4
+ratifications: the requirement text (MUST error on an unregistered algorithm
+id) had been adopted from CONFORMANCE.md's claim, but the implementation still
+returned a successful empty derivation under the requested profile. Resolution:
+the **spec text stands**; the code moved — `derive_annotations` now returns
+`Result` and rejects unregistered ids up front (`PrePassError`). No spec
+change; core DECISIONS records the reasoning.
