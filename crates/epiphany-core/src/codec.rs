@@ -2334,7 +2334,7 @@ impl Score {
     /// Decodes the exact inverse of [`Score::canonical_bytes`], validating every
     /// tag, length, primitive, and type invariant. Trailing bytes are rejected.
     ///
-    /// This is the **current (schema major 1)** layout. To decode bytes whose
+    /// This is the **current (schema major 2)** layout. To decode bytes whose
     /// schema major is not known to be current, use
     /// [`Score::decode_canonical_versioned`].
     ///

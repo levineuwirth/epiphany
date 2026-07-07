@@ -336,8 +336,12 @@ pub fn assert_score_serialization_stable(score: &Score, frontier: &[u8], seed: u
         "re-encoding the same score changed its bytes"
     );
 
-    // serialize: stage the canonical score as a real Snapshot chunk referenced
-    // from the manifest's canonical_base.
+    // serialize: stage the score as a properly-roled ACCELERATION snapshot
+    // (Binary Format §Schema Major 2): a `ChunkKind::Snapshot` stamped with
+    // the current schema major and referenced from the manifest's
+    // `acceleration_snapshots` — NOT the canonical base, which is the
+    // MaterializedState's role and stays major 0. (The `SnapshotId` here is a
+    // hash-truncation stand-in; its derivation is a companion open question.)
     let mut rng = Rng::new(seed);
     let uuid = FileUuid(rng.array16());
     let doc = DocumentId(rng.array16());
@@ -345,7 +349,7 @@ pub fn assert_score_serialization_stable(score: &Score, frontier: &[u8], seed: u
         Bundle::create(MemStore::new(), uuid, Manifest::empty(doc)).expect("create bundle");
     let snapshot = StagedChunk {
         kind: ChunkKind::Snapshot,
-        schema_version: SchemaVersion::V0,
+        schema_version: SchemaVersion::for_major(2),
         payload: canonical.clone(),
     };
     let frontier = frontier.to_vec();
@@ -355,7 +359,7 @@ pub fn assert_score_serialization_stable(score: &Score, frontier: &[u8], seed: u
             let root = ctx.new_chunks[0];
             let mut sid = [0u8; 16];
             sid.copy_from_slice(&root.hash.as_bytes()[..16]);
-            m.canonical_base = Some(SnapshotRef {
+            m.acceleration_snapshots.push(SnapshotRef {
                 snapshot_id: SnapshotId(sid),
                 covers_causal_frontier: FrontierBytes::from_bytes(frontier.clone()),
                 reduction_algorithm_version: ReductionAlgorithmVersion(0),
@@ -368,30 +372,36 @@ pub fn assert_score_serialization_stable(score: &Score, frontier: &[u8], seed: u
         .expect("commit snapshot");
     let image = bundle.into_store().into_bytes();
 
-    // load: reopen, hash-verify, read back byte-identically.
+    // load: reopen (read-write — an acceleration snapshot at the current
+    // major is within the snapshot role's accept-set), hash-verify, read the
+    // referenced chunk back byte-identically.
     let reopened = Bundle::open(MemStore::from_bytes(image)).expect("reopen bundle");
+    assert!(
+        !reopened.is_read_only(),
+        "a current-major acceleration snapshot must not force read-only"
+    );
     reopened
         .verify_canonical_chunks()
         .expect("canonical chunks intact");
-    let base = reopened
+    let accel = reopened
         .manifest()
-        .canonical_base
-        .as_ref()
-        .expect("a canonical base");
+        .acceleration_snapshots
+        .first()
+        .expect("an acceleration snapshot");
+    assert_eq!(accel.root.schema_version, SchemaVersion::for_major(2));
     let loaded = reopened
-        .read_chunk(&base.root)
+        .read_chunk(&accel.root)
         .expect("read snapshot chunk back");
     assert_eq!(
         loaded, canonical,
         "score bytes were not preserved through content-addressed storage"
     );
 
-    // deserialize → equal → reserialize byte-identically. (The canonical base
-    // is a major-0 chunk; the schema-version dispatch seam for the acceleration
-    // full-`Score` snapshot is exercised on its own read path in a later phase,
-    // where a properly-roled acceleration snapshot exists. This harness's base
-    // decodes with the current codec.)
-    let decoded = Score::decode_canonical(&loaded).expect("loaded score must decode");
+    // deserialize through the SCHEMA-VERSION DISPATCH SEAM, keyed by the
+    // chunk's stamped major — the read path a real acceleration-snapshot
+    // consumer uses — then re-serialize byte-identically.
+    let decoded = Score::decode_canonical_versioned(&loaded, accel.root.schema_version.major)
+        .expect("loaded score must decode at its stamped major");
     assert_eq!(&decoded, score, "decoded score changed");
     assert_eq!(
         decoded.canonical_bytes(),

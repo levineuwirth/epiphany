@@ -411,3 +411,20 @@ acceleration full-`Score` snapshot yet, so its role gate waits for a real
 producer (the core-side seam `decode_canonical_versioned` already handles
 {0,1,2}). `SchemaVersion::V2` added; beyond-accept-set tests moved to
 major 3.
+
+### Follow-up (review): the snapshot role gets its producer + the base gets a role bound
+
+A post-commit review caught the criterion-4 harness bypassing the versioned
+snapshot contract (current-major `Score` bytes stamped V0 in the
+`canonical_base` slot, decoded with the unversioned decoder). Fixed the
+substantive way: the harness now stages a **properly-roled acceleration
+snapshot** — `ChunkKind::Snapshot` stamped `SchemaVersion::for_major(2)`,
+referenced from `Manifest::acceleration_snapshots`, decoded through
+`Score::decode_canonical_versioned(bytes, root.schema_version.major)` — so
+the schema-major snapshot contract is exercised end-to-end through the
+bundle. Consequences: `max_supported_major(Snapshot)` → 2 (superseding the
+"waits for a producer" note above), and because the per-kind gate no longer
+implies it, the canonical-base-stays-major-0 rule is now enforced per ROLE
+(`mis_stamped_canonical_base`, consulted at open and commit → read-only +
+`UnsupportedCanonicalChunkMajor`, regression-locked). The `SnapshotId` in
+the harness remains a hash-truncation stand-in (companion open question).

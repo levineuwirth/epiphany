@@ -1062,10 +1062,12 @@ impl CanonicalEncode for ModifyCrossCuttingOp {
 // children — the caller deletes contents first). See `DECISIONS.md`.
 
 /// Mint an empty region into the canvas (Chapter 6 §6.10 InsertRegion). Carries
-/// the full [`Region`] value (schema major 1, including `permits_spanning_slurs`);
+/// the full [`Region`] value (`permits_spanning_slurs` since schema major 1);
 /// the reduction preconditions it carries no staff instances (an empty
-/// container). Its canonical encoding puts this op at schema major 1 — see
-/// [`CreateRegionOp::encode_canonical`] and [`OperationKind::schema_major`].
+/// container). Minimal stamping ([`OperationKind::schema_major`]): the payload
+/// is major 1, or major 2 iff a carried staff instance bears
+/// `Some(staff_lines_override)` (wire-representable though reduction refuses
+/// non-empty regions).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CreateRegionOp {
     pub region: Region,

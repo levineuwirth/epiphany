@@ -53,17 +53,25 @@ pub const SUPPORTED_SCHEMA_MAJOR: u16 = 0;
 /// `OperationEnvelopeBlock` admits major 2 (schema major 2 fills the
 /// cross-cutting/staff/metadata bodies its payloads embed; major 1 embedded a
 /// v1 `CreateRegion`; the reader treats the block bytes opaquely, so it
-/// parses a higher-major block without decoding the payload). Every other
-/// role stays at
-/// [`SUPPORTED_SCHEMA_MAJOR`] until its own versioned path lands — including the
-/// payload-polymorphic `Snapshot` (the acceleration form's migrate-on-read is
-/// core-side; the canonical base stays major 0) and the manifest (carried
-/// opaquely, never grows a v1 layout). A chunk above its role's max is not
+/// parses a higher-major block without decoding the payload). `Snapshot`
+/// admits major 2 for the acceleration full-`Score` form (decoded through
+/// the core versioned seam); the canonical BASE carried under the same kind
+/// must stay major 0, enforced per role. Every other role stays at
+/// [`SUPPORTED_SCHEMA_MAJOR`] until its own versioned path lands — the
+/// layout cache, the operation index, and the manifest (carried opaquely,
+/// never grows a versioned layout). A chunk above its role's max is not
 /// admitted; for a **canonical** role that means the bundle opens read-only
-/// (a major-0-only reader meeting a v1 op block), not a hard reject.
+/// (a lower-major-only reader meeting a newer op block), not a hard reject.
 pub fn max_supported_major(kind: ChunkKind) -> u16 {
     match kind {
         ChunkKind::OperationEnvelopeBlock => 2,
+        // The payload-polymorphic Snapshot role: the acceleration
+        // full-`Score` form is decoded through the core versioned seam
+        // (`Score::decode_canonical_versioned`, majors {0,1,2}). The
+        // *canonical base* must stay major 0 regardless — that is enforced
+        // per ROLE (`mis_stamped_canonical_base`, consulted at open and
+        // commit), not by this per-kind bound.
+        ChunkKind::Snapshot => 2,
         _ => SUPPORTED_SCHEMA_MAJOR,
     }
 }
@@ -102,9 +110,10 @@ pub struct StagedChunk {
 
 impl StagedChunk {
     /// A staged operation-envelope block at schema major 0 (the baseline: no
-    /// operation in the block carries a schema-major-1 payload). Use
+    /// operation in the block carries a versioned payload). Use
     /// [`StagedChunk::operation_block_versioned`] for a block whose operations
-    /// may include a v1 `CreateRegion`.
+    /// may carry a higher-major payload (a v1 `CreateRegion`; a v2
+    /// cross-cutting/staff/metadata value under minimal stamping).
     pub fn operation_block(payload: Vec<u8>) -> Self {
         StagedChunk::operation_block_versioned(payload, SchemaVersion::V0)
     }
@@ -378,6 +387,14 @@ impl<S: BlockStore> Bundle<S> {
         // cannot interpret. A cheap manifest-metadata scan; the beyond-accept
         // blocks are never read (a lazy read would hit the accept-set gate).
         if let Some(major) = unsupported_operation_root_major(&manifest) {
+            read_only = true;
+            anomalies.push(IntegrityAnomaly::UnsupportedCanonicalChunkMajor {
+                schema_major: major,
+            });
+        }
+        // The canonical base is role-bound to major 0 (see
+        // `mis_stamped_canonical_base`).
+        if let Some(major) = mis_stamped_canonical_base(&manifest) {
             read_only = true;
             anomalies.push(IntegrityAnomaly::UnsupportedCanonicalChunkMajor {
                 schema_major: major,
@@ -754,6 +771,13 @@ impl<S: BlockStore> Bundle<S> {
                     schema_major: major,
                 });
         }
+        if let Some(major) = mis_stamped_canonical_base(&manifest) {
+            self.read_only = true;
+            self.anomalies
+                .push(IntegrityAnomaly::UnsupportedCanonicalChunkMajor {
+                    schema_major: major,
+                });
+        }
         self.manifest = manifest;
         self.write_cursor = cursor;
         Ok(())
@@ -828,6 +852,21 @@ fn unsupported_operation_root_major(manifest: &Manifest) -> Option<u16> {
         .iter()
         .map(|r| r.schema_version.major)
         .find(|&m| m > max_supported_major(ChunkKind::OperationEnvelopeBlock))
+}
+
+/// The canonical base MUST stay schema major 0 across the data-model majors
+/// (Binary Format §Schema Major 1 / §Schema Major 2: the `MaterializedState`
+/// embeds none of the filled values, and re-stamping byte-identical content
+/// churns its content address). With the Snapshot *kind* now admitting the
+/// major-2 acceleration form, this per-ROLE check keeps the base constraint:
+/// a base ref stamped above major 0 forces read-only preservation, exactly
+/// like a beyond-accept-set op root.
+fn mis_stamped_canonical_base(manifest: &Manifest) -> Option<u16> {
+    manifest
+        .canonical_base
+        .as_ref()
+        .map(|b| b.root.schema_version.major)
+        .filter(|&m| m > 0)
 }
 
 /// Whether this implementation *understands* a profile (can interpret and honor
@@ -934,14 +973,15 @@ fn read_and_verify_chunk_impl(
         });
     }
     // A chunk at a schema major this reader cannot parse for its role. The
-    // accept-set is `[0, max_supported_major(kind)]`: the op-block role admits
-    // major 1 (D2), every other role stays exact-0 until its versioned path
-    // lands (Binary Format companion §"Schema Major 1"). A chunk above its
-    // role's max reaches this only on a direct read — a canonical root beyond
-    // the accept-set opens the bundle read-only at `open` instead, before any
-    // such read (see the operation-root scan there). Commit-time structural
-    // validation skips this gate (a newer writer's higher-major root is still
-    // structurally valid).
+    // accept-set is `[0, max_supported_major(kind)]`: the op-block and
+    // snapshot roles admit major 2, every other role stays exact-0 until its
+    // versioned path lands (Binary Format companion §"Schema Major 2"). A
+    // chunk above its role's max reaches this only on a direct read — a
+    // canonical root beyond the accept-set opens the bundle read-only at
+    // `open` instead, before any such read (see the operation-root and
+    // canonical-base scans there). Commit-time structural validation skips
+    // this gate (a newer writer's higher-major root is still structurally
+    // valid).
     if enforce_accept_set && r.schema_version.major > max_supported_major(r.kind) {
         return Err(BundleError::UnsupportedSchemaVersion {
             version: r.schema_version,
@@ -1259,7 +1299,8 @@ pub fn manifest_chunk_hash(payload: &[u8]) -> ContentHash {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::DocumentId;
+    use crate::ids::{DocumentId, FrontierBytes, ReductionAlgorithmVersion, SnapshotId};
+    use crate::manifest::SnapshotRef;
 
     #[test]
     fn schema_major_1_admission_is_raised_per_role_op_blocks_only() {
@@ -1274,11 +1315,12 @@ mod tests {
         assert_eq!(SchemaVersion::V2.major, 2);
         // The op-block role admits [0, 2].
         assert_eq!(max_supported_major(ChunkKind::OperationEnvelopeBlock), 2);
-        // Every other role stays at the generic baseline (major 0): the
-        // payload-polymorphic Snapshot (its migrate-on-read is core-side), the
-        // layout cache, and the operation index.
+        // The snapshot role admits the major-2 acceleration form (decoded
+        // through the core versioned seam); the canonical BASE stays major 0
+        // per role (`mis_stamped_canonical_base`). The remaining roles stay
+        // at the generic baseline: the layout cache and the operation index.
         assert_eq!(SUPPORTED_SCHEMA_MAJOR, 0);
-        assert_eq!(max_supported_major(ChunkKind::Snapshot), 0);
+        assert_eq!(max_supported_major(ChunkKind::Snapshot), 2);
         assert_eq!(max_supported_major(ChunkKind::LayoutCache), 0);
         assert_eq!(max_supported_major(ChunkKind::OperationIndex), 0);
         // The manifest gate is exact to the manifest's own major (0), independent
@@ -1322,6 +1364,57 @@ mod tests {
             bundle.commit(&[more], |ctx| ctx.previous_manifest.clone()),
             Err(BundleError::ReadOnly)
         ));
+    }
+
+    #[test]
+    fn a_canonical_base_stamped_above_major_0_opens_read_only() {
+        // The canonical base is role-bound to major 0 (Binary Format §Schema
+        // Major 2: the MaterializedState embeds no data-model-major values,
+        // and re-stamping byte-identical content churns its address). With
+        // the Snapshot KIND now admitting the major-2 acceleration form, the
+        // per-role check must catch a mis-stamped base: read-only + anomaly,
+        // at commit and again on reopen.
+        let mut bundle = fresh_bundle();
+        let base = StagedChunk {
+            kind: ChunkKind::Snapshot,
+            schema_version: SchemaVersion::V1,
+            payload: vec![7u8, 7, 7],
+        };
+        bundle
+            .commit(&[base], |ctx| {
+                let mut m = ctx.previous_manifest.clone();
+                let root = ctx.new_chunks[0];
+                let mut sid = [0u8; 16];
+                sid.copy_from_slice(&root.hash.as_bytes()[..16]);
+                m.canonical_base = Some(SnapshotRef {
+                    snapshot_id: SnapshotId(sid),
+                    covers_causal_frontier: FrontierBytes::from_bytes(vec![]),
+                    reduction_algorithm_version: ReductionAlgorithmVersion(0),
+                    profile_id: ProfileId::Full,
+                    hash: root.hash,
+                    root,
+                });
+                m
+            })
+            .expect("a structurally-valid mis-stamped base is publishable");
+        assert!(
+            bundle.is_read_only(),
+            "a mis-stamped canonical base forces read-only at commit"
+        );
+        assert!(bundle.anomalies().iter().any(|a| matches!(
+            a,
+            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 1 }
+        )));
+        let image = bundle.into_store().into_bytes();
+        let reopened = Bundle::open(MemStore::from_bytes(image)).expect("reopen");
+        assert!(
+            reopened.is_read_only(),
+            "a mis-stamped canonical base forces read-only at open"
+        );
+        assert!(reopened.anomalies().iter().any(|a| matches!(
+            a,
+            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 1 }
+        )));
     }
 
     fn fresh_bundle() -> Bundle<MemStore> {

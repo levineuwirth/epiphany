@@ -24,10 +24,11 @@ use epiphany_ops::{peek_operation_id, OperationEnvelope};
 
 /// Stages real operation envelopes into a single op-envelope block, **deriving**
 /// the block's schema version from its operations: the block major is the max
-/// over `OperationEnvelope::schema_major` (a v1 `CreateRegion` → major 1),
-/// mapped to a version by [`SchemaVersion::for_major`]. This is the writer-side
-/// derivation every real-envelope staging path must use so a block carrying a
-/// v1 payload is never mis-stamped major 0.
+/// over `OperationEnvelope::schema_major` under minimal stamping (a v1
+/// `CreateRegion` → major 1; a v2 cross-cutting/staff/metadata value →
+/// major 2), mapped to a version by [`SchemaVersion::for_major`]. This is the
+/// writer-side derivation every real-envelope staging path must use so a
+/// block carrying a versioned payload is never mis-stamped major 0.
 pub fn stage_operation_block(envelopes: &[OperationEnvelope]) -> StagedChunk {
     let payloads: Vec<Vec<u8>> = envelopes.iter().map(|e| e.to_canonical_bytes()).collect();
     let major = envelopes
