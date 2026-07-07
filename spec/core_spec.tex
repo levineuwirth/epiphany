@@ -6159,6 +6159,10 @@ pub enum OperationKind {
     DeleteCrossCutting(DeleteCrossCuttingPayload),
     ModifyCrossCutting(ModifyCrossCuttingPayload),
 
+    // Repeat-structure operations
+    CreateRepeatStructure(CreateRepeatStructureOp),
+    DeleteRepeatStructure(DeleteRepeatStructureOp),
+
     // Region and structure operations
     ChangeRegionTimeModel(ChangeRegionTimeModelOp),
     InsertRegion(InsertRegionOp),
@@ -7421,6 +7425,16 @@ table is normative.
   as for slurs (surviving-endpoint collapse); per-spanner-kind
   proximity bounds are a deferred refinement \\
 
+  Repeat structure & Anchor &
+  Re-anchor to the nearest surviving anchor; cascade-delete only
+  when no anchor survives &
+  as for spanners; the rule spans \emph{every} event-referencing
+  anchor site of the structure --- \texttt{start}/\texttt{end},
+  the kind's jump targets (\texttt{DaCapo.end\_target},
+  \texttt{DalSegno.segno}/\texttt{end\_target}), and each
+  volta's span (ratified with the repeat-authoring pair,
+  schema-major-2 revision) \\
+
   Marker & Anchor &
   Re-anchor to nearest event in same staff instance &
   proximity max: same staff instance; orphan on failure \\
@@ -7961,6 +7975,17 @@ pub enum CrossCuttingStructure {
     GraphicGesture(GraphicGesture),
 }
 \end{lstlisting}
+
+The enum above is the data model's full cross-cutting family; the
+\emph{wire} vocabulary the cross-cutting operations admit at this
+revision (\texttt{CrossCuttingValue}, Binary Format companion) is the
+four-kind subset \texttt{Tie}/\texttt{Slur}/\texttt{Beam}/%
+\texttt{Spanner}. A \texttt{RepeatStructure} is authored by the
+dedicated \texttt{CreateRepeatStructure}/%
+\texttt{DeleteRepeatStructure} pair (Operation Catalog
+\sectionsc{Repeat Structures}; ratified schema-major-2 revision), not
+through \texttt{CreateCrossCutting}; the remaining variants await
+their own authoring primitives.
 
 \textbf{Invariant preconditions} (Slur case):
 \begin{itemize}
@@ -10810,6 +10835,10 @@ pub enum OperationKindTag {
     SetTimeSignature,
     SetTempoSegment,
     SetStaffLayout,
+    // Schema-major-2 revision (repeat authoring). The pair keeps
+    // its kind names verbatim, as the cross-cutting tags do.
+    CreateRepeatStructure,
+    DeleteRepeatStructure,
 }
 
 pub enum BarrierScope {
@@ -11085,11 +11114,16 @@ truncated bodies of the cross-cutting structures (\texttt{Slur},
 Chapter~5 definitions. The same per-payload-type rules apply: the
 canonical-base \texttt{MaterializedState} embeds none of these values and
 stays major~0; the filled values reach the acceleration snapshot
-\emph{and}, through the seven operation payloads that embed them
+\emph{and}, through the eight operation payloads that embed them
 (\texttt{CreateCrossCutting}, \texttt{ModifyCrossCutting},
 \texttt{InsertStaff} and \texttt{InsertStaffInstance} (the Operation
 Catalog's \texttt{CreateStaff} / \texttt{CreateStaffInstance}),
-\texttt{SetStaffLayout}, \texttt{SetMetadata}, and --- transitively,
+\texttt{SetStaffLayout}, \texttt{SetMetadata},
+\texttt{CreateRepeatStructure} (the repeat-authoring revision --- it
+embeds the filled \texttt{RepeatStructure} unconditionally, so it is
+\emph{born at v2} and every block carrying one stamps major~2; its
+\texttt{DeleteRepeatStructure} sibling carries a bare identifier, a
+major-0 layout, and stamps major~0), and --- transitively,
 because an embedded \texttt{Region} may carry a \texttt{StaffInstance}
 whose \texttt{staff\_lines\_override} embeds the filled
 \texttt{StaffLineConfiguration} --- \texttt{InsertRegion}
@@ -15338,6 +15372,22 @@ layouts they own versus inherit:
   operation payloads, \texttt{InsertRegion} transitively). Wire forms and the
   total default-filling migration: Binary Format companion
   0.4.0~$\rightarrow$~0.5.0.
+  \\
+  \today & Schema major 2 (repeat authoring, Phase D) &
+  The dedicated \texttt{CreateRepeatStructure}/%
+  \texttt{DeleteRepeatStructure} pair enters the operation set:
+  Chapter~6's \texttt{OperationKind} enum and Chapter~8's
+  \texttt{OperationKindTag} listing gain the two variants (repeats are not
+  \texttt{CrossCuttingValue} kinds on the wire --- the reconciliation
+  note follows the \texttt{CrossCuttingStructure} listing), and the
+  re-anchoring rule table gains the Repeat-structure~/ Anchor row
+  (re-anchor to the nearest surviving anchor across \emph{every}
+  event-referencing anchor site --- \texttt{start}/\texttt{end}, jump
+  targets, volta spans --- cascade-delete only when none survives).
+  Six-part schemas: Operation Catalog \sectionsc{Repeat Structures},
+  0.6.0~$\rightarrow$~0.7.0. Wire discriminants 28/29 and the
+  per-payload stamping (create born at v2; delete a minor kind append
+  at major~0): Binary Format companion 0.5.0~$\rightarrow$~0.6.0.
   \\
   \bottomrule
 \end{longtable}

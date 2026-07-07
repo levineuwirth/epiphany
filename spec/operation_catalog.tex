@@ -226,7 +226,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.6.0 --- Pass-12 G-ratification (meta-operation edge semantics, system-derived immutability, recreate vocabulary, slot retirement)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.7.0 --- Schema-major-2 repeat authoring (the CreateRepeatStructure / DeleteRepeatStructure pair)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -842,6 +842,73 @@ anchor; there is no \texttt{DeleteStaff} in this catalogue revision --- an
 empty-only staff delete mirroring the container discipline is a later
 schema-fill).
 
+\section{Repeat Structures}
+\label{sec:k0:repeat-structures}
+
+Ratified with the schema-major-2 revision: the dedicated authoring pair for
+\texttt{RepeatStructure} (core specification Chapter~5
+\sectionsc{Repeat Structures}). Repeats live in the cross-cutting registry
+but are \emph{not} \texttt{CrossCuttingValue} kinds on the wire --- the
+cross-cutting operations admit only
+\texttt{Tie}/\texttt{Slur}/\texttt{Beam}/\texttt{Spanner}
+(Section~\ref{sec:k0:create-cross-cutting}) --- so the pair is a
+first-class primitive mirroring the cross-cutting disciplines.
+
+\textbf{Payload schema.} \texttt{CreateRepeatStructureOp \{ repeat:
+RepeatStructure \}} --- the full value (schema major 2): identity, the
+\texttt{start}/\texttt{end} anchors, the \texttt{RepeatKind}, and the
+volta list. \texttt{DeleteRepeatStructureOp \{ repeat: RepeatStructureId
+\}}.
+
+\textbf{Canonical encoding.} Create: the length-framed canonical bytes of
+\texttt{repeat} (the schema-major-2 layout). Delete: the bare identifier.
+The create's payload embeds the v2 \texttt{RepeatStructure} layout
+unconditionally (\texttt{kind} and \texttt{voltas} are not optional
+fields), so under minimal stamping a block carrying one stamps schema
+major~2 --- the create is \emph{born at v2}. The delete's payload is an
+identifier --- a major-0 layout --- so minimal stamping gives its blocks
+major~0; the kind discriminant itself is an append-only schema-\emph{minor}
+vocabulary event (the same append mechanism as the Phase-3 tranche; the
+stamp itself always follows minimal stamping over the payload, per the
+Binary Format companion \sectionsc{Schema Major 2}).
+
+\textbf{Reduction rule.} Set-union creation and a delete-wins tombstone,
+mirroring the cross-cutting family. A create mints the repeat live if its
+id is fresh and \emph{every} event-referencing anchor site resolves to a
+live event --- \texttt{start}/\texttt{end}, the kind's jump targets
+(\texttt{DaCapo.end\_target},
+\texttt{DalSegno.segno}/\texttt{end\_target}), and each volta's
+\texttt{start}/\texttt{end} --- since the mint must leave the graph
+satisfying the reference-resolution invariants; a dead anchor is a
+precondition no-op (\texttt{TargetMissing}). A repeat create of a live id
+reads \texttt{AlreadyApplied} without value comparison (the cross-cutting
+discipline; the \texttt{RecreateContentMismatch} scope of
+Section~\ref{sec:k0:create-staff} is unchanged). A delete tombstones the
+repeat (idempotent on re-delete, delete-wins); deleting a missing id is a
+no-op precondition failure. Graph-aware reduction adds or removes the
+structure from the cross-cutting registry.
+
+\textbf{Conflict cases.} None at reduction time (set-union creation;
+delete-wins is idempotent).
+
+\textbf{Undo semantics.} Undo of a create tombstones the minted repeat
+(Section~\ref{sec:k0:undo}). A delete mints nothing, so the prototype's
+minted-object undo does not re-introduce the tombstoned structure
+(P11-C8).
+
+\textbf{Re-anchoring.} The structure participates in the re-anchoring rule
+table when a referenced event is later tombstoned: re-anchor to the
+nearest surviving anchor, cascade-delete only when none survives --- as
+for spanners, spanning \emph{every} anchor site
+(\texttt{start}/\texttt{end}, jump targets, volta spans). The rule row is
+the core specification's (Chapter~6 re-anchoring rule table, ratified with
+this pair).
+
+\textbf{Authoring advisory.} The volta well-formedness constraints of
+core Chapter~5 (endings non-empty, 1-based, ascending) are
+\emph{advisory}: surfaced at authoring time under interactive validation,
+never enforced under reduction.
+
 \section{SetUserSystemBreak}
 \label{sec:k0:set-user-system-break}
 
@@ -1244,6 +1311,16 @@ a fresh design.
     Sections~\ref{sec:k0:create-staff}, \ref{sec:k0:meter-tempo}, and
     \ref{sec:k0:set-staff-layout}. The disciplines are as drafted: set-union
     creation, LWW structural overwrite, and LWW advisory respectively.
+\end{description}
+
+\section*{Added in the schema-major-2 revision (Chapter~\ref{ch:k0})}
+
+\begin{description}
+  \item[Create / delete repeat structure]
+    Section~\ref{sec:k0:repeat-structures} --- net-new primitives (never
+    drafted as framework slots). Set-union creation with the
+    all-anchors-live precondition and a delete-wins tombstone; the create
+    is born at v2, the delete stamps major~0.
 \end{description}
 
 \section*{Retired slots (ratified Pass~12: outside the operation set)}

@@ -235,7 +235,7 @@
   {\Large\scshape\color{epiphanyslate}Binary Format}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.5.0 --- Schema major 2 (data-model expansion: cross-cutting bodies, repeats/voltas, staff/instrument/metadata fills; total default-fill migration)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.6.0 --- Repeat authoring (OperationKind/Tag 28/29; the born-at-v2 create, the major-0 delete)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the byte layouts it defines}
   \vfill
 \end{titlepage}
@@ -1132,7 +1132,10 @@ The public per-value codec --- the seam between this document and the
 Operation Catalog's value-typed payloads (Operation Catalog,
 \sectionsc{Value-Typed Payloads}, requirement
 \texttt{req:catalog:value-encoding}) --- is defined for exactly these
-twenty-two types (the Phase-3 operation tranche added the last four):
+twenty-three types (the Phase-3 operation tranche added
+\texttt{Staff}/\texttt{TimeSignature}/\texttt{TempoSegment}/%
+\texttt{StaffLineConfiguration}; the repeat-authoring revision added
+\texttt{RepeatStructure}):
 
 \begin{quote}
 \texttt{Event}, \texttt{Rest}, \texttt{Pitch}, \texttt{IdentifiedPitch},
@@ -1142,7 +1145,7 @@ twenty-two types (the Phase-3 operation tranche added the last four):
 \texttt{DecompositionAttachment}, \texttt{SpellingSourceKind},
 \texttt{ScoreMetadata}, \texttt{MetricGrid}, \texttt{Staff},
 \texttt{TimeSignature}, \texttt{TempoSegment},
-\texttt{StaffLineConfiguration}.
+\texttt{StaffLineConfiguration}, \texttt{RepeatStructure}.
 \end{quote}
 
 The seam introduces \textbf{no new bytes}: a value's stand-alone canonical
@@ -1298,7 +1301,7 @@ AcceptLoser, \tablenums{1} KeepWinner, \tablenums{2} Override
 \label{req:binfmt:kind-discriminants}
 The \texttt{OperationKind} wire discriminant is one byte, golden-locked to
 the table below. The vocabulary is \textbf{append-only}: new primitive kinds
-take discriminants past \tablenums{27}; the assignments below never change.
+take discriminants past \tablenums{29}; the assignments below never change.
 \end{requirement}
 
 Each row also pins the payload's byte layout; the field \emph{set and order}
@@ -1415,6 +1418,14 @@ sequence sorted ascending by canonical bytes.
     $\mathrm{lp}$(\texttt{StaffLineConfiguration}) if present \cat{}
     \texttt{visible} (bool, 1) &
     \sectionsc{SetStaffLayout} \\
+  \tablenums{28} & \texttt{CreateRepeatStructure} &
+    $\mathrm{lp}$(\texttt{RepeatStructure}) --- the schema-major-2
+    layout, unconditionally (born at v2;
+    Section~\ref{sec:evolution:major2}) &
+    \sectionsc{Repeat Structures} \\
+  \tablenums{29} & \texttt{DeleteRepeatStructure} &
+    \texttt{repeat} (16) &
+    \sectionsc{Repeat Structures} \\
   \bottomrule
 \end{longtable}
 \endgroup
@@ -1459,7 +1470,7 @@ assigned independently of Section~\ref{sec:ops:kinds}, with both encode and
 validating decode. One byte; only \texttt{Registered} carries a payload (its
 \texttt{OperationKindRegistryId}, 16 big-endian bytes, total 17). Unknown
 discriminants and wrong lengths are decode errors. Append-only past
-\tablenums{27}.
+\tablenums{29}.
 \end{requirement}
 
 \begingroup\small
@@ -1482,6 +1493,7 @@ discriminants and wrong lengths are decode errors. Append-only past
   \tablenums{11} & \texttt{InsertStaffInstance} & \tablenums{23} & \texttt{SetMetricGrid} \\
   \tablenums{24} & \texttt{InsertStaff} & \tablenums{25} & \texttt{SetTimeSignature} \\
   \tablenums{26} & \texttt{SetTempoSegment} & \tablenums{27} & \texttt{SetStaffLayout} \\
+  \tablenums{28} & \texttt{CreateRepeatStructure} & \tablenums{29} & \texttt{DeleteRepeatStructure} \\
   \bottomrule
 \end{longtable}
 \endgroup
@@ -1495,7 +1507,9 @@ discriminants and wrong lengths are decode errors. Append-only past
 \texttt{OperationKindTag::\allowbreak InsertStaff}. The mismatch is
 intentional
 (the tag space predates the M2c naming) and is pinned here so barrier
-authors target the right tag.
+authors target the right tag. The repeat-structure pair projects
+name-verbatim (\texttt{CreateRepeatStructure}/%
+\texttt{DeleteRepeatStructure}), as the cross-cutting tags do.
 
 \section{Stamps and Causal Contexts}
 \label{sec:ops:stamp}
@@ -2292,9 +2306,16 @@ The \emph{only} minor-additive mechanism in schema major~0 is
 \textbf{appending discriminants to open vocabularies}:
 
 \begin{itemize}
-  \item \texttt{OperationKind}: append at ${\geq}\,\tablenums{24}$
-    (Requirement~\ref{req:binfmt:kind-discriminants});
-  \item \texttt{OperationKindTag}: append at ${\geq}\,\tablenums{24}$
+  \item \texttt{OperationKind}: append at ${\geq}\,\tablenums{30}$
+    (Requirement~\ref{req:binfmt:kind-discriminants}; the Phase-3
+    tranche took \tablenums{24}--\tablenums{27} under this mechanism,
+    and the repeat pair \tablenums{28}/\tablenums{29} in the
+    schema-major-2 revision --- the discriminant space is one append-only
+    table across majors, but a kind's \emph{block stamp} follows minimal
+    stamping over its payload: \tablenums{28}'s payload embeds a v2
+    layout, so its blocks stamp major~2,
+    Section~\ref{sec:evolution:major2});
+  \item \texttt{OperationKindTag}: append at ${\geq}\,\tablenums{30}$
     (Requirement~\ref{req:binfmt:kind-tag});
   \item \texttt{OperationPayload}: append at ${\geq}\,\tablenums{4}$
     (Section~\ref{sec:ops:payload});
@@ -2523,12 +2544,28 @@ The major is assigned per payload type, exactly as in major~1:
 
 \begin{itemize}
   \item \textbf{Snapshot-only:} \texttt{Instrument} (no operation embeds
-    one) and \texttt{RepeatStructure} (no operation embeds one \emph{at
-    this revision}; the repeat-authoring operations planned for the same
-    push are born at v2 and change nothing about lower majors). These
-    reach only the acceleration full-\texttt{Score} snapshot.
-  \item \textbf{Canonical operation layer:} seven existing operation
-    payloads embed filled values ---
+    one); it reaches only the acceleration full-\texttt{Score} snapshot.
+    (\texttt{RepeatStructure} was snapshot-only when this section was
+    first ratified; the repeat-authoring pair moved it to the canonical
+    operation layer --- next bullet.)
+  \item \textbf{Canonical operation layer:} eight operation
+    payloads embed filled values. \texttt{CreateRepeatStructure} (this
+    revision --- Operation Catalog \sectionsc{Repeat Structures},
+    discriminant \tablenums{28}) embeds the v2 \texttt{RepeatStructure}
+    layout unconditionally (\texttt{kind} and \texttt{voltas} are not
+    optional fields) and is \emph{born at v2}: no lower-major layout for
+    its payload exists, so every block carrying one stamps major~2 under
+    minimal stamping. Its sibling \texttt{DeleteRepeatStructure}
+    (\tablenums{29}) carries a bare identifier --- a major-0 layout ---
+    so minimal stamping gives its blocks major~0; the kind discriminant
+    itself is an append-only schema-\emph{minor} vocabulary event (the
+    same append mechanism the Phase-3 tranche used for
+    \tablenums{24}--\tablenums{27} --- a mechanism claim only: what a
+    kind's blocks \emph{stamp} always follows minimal stamping over its
+    payload, as discriminant \tablenums{24}'s always-major-2
+    \texttt{CreateStaff} shows). Neither changes anything about
+    lower-major layouts. The seven payloads of the first ratification
+    embed filled values ---
     \texttt{CreateCrossCutting} and \texttt{ModifyCrossCutting} (a
     \texttt{CrossCuttingValue} embedding \texttt{Slur}, \texttt{Tie},
     \texttt{Beam}, or \texttt{Spanner}); \texttt{CreateStaff} (a
@@ -2567,8 +2604,12 @@ The major is assigned per payload type, exactly as in major~1:
     \textbf{1} (the major-1 bool is always present);
     \texttt{CreateStaffInstance} / \texttt{SetStaffLayout}
     $\Rightarrow$ \textbf{2} iff their \texttt{staff\_lines\_override}
-    is \texttt{Some}, else \textbf{0}; every other payload keeps its
-    prior major. A block stamps the maximum over its payloads.
+    is \texttt{Some}, else \textbf{0};
+    \texttt{CreateRepeatStructure} $\Rightarrow$ always \textbf{2}
+    (born at v2); \texttt{DeleteRepeatStructure} $\Rightarrow$
+    \textbf{0} (a bare identifier under a minor kind append); every
+    other payload keeps its prior major. A block stamps the maximum
+    over its payloads.
     (Operation names are the Operation Catalog's; core Chapter~6's
     enum spells the creates \texttt{InsertStaff} /
     \texttt{InsertStaffInstance} / \texttt{InsertRegion}.)
@@ -3122,6 +3163,20 @@ layouts of Section~\ref{sec:values:representative}.
   implementation phases land). Semantics: core specification schema-major-2 revision
   (leaf-type definitions, clef/key content-model ratification,
   \texttt{ClefId} retirement, strictly-authored timestamp requirement). \\
+  \today & Operation vocabularies & 0.6.0 --- Repeat authoring
+  (schema-major-2 revision, Phase D): appends \texttt{OperationKind}
+  \tablenums{28} (\texttt{CreateRepeatStructure},
+  $\mathrm{lp}$(\texttt{RepeatStructure}), born at v2 --- every block
+  carrying one stamps major~2 under minimal stamping) and \tablenums{29}
+  (\texttt{DeleteRepeatStructure}, bare identifier --- minimal stamping
+  over its major-0 payload layout gives major~0; the discriminant itself
+  a schema-\emph{minor} vocabulary append), with the
+  matching \texttt{OperationKindTag} \tablenums{28}/\tablenums{29}
+  (name-verbatim projection). No existing assignment changed;
+  Section~\ref{sec:evolution:major2} restates the per-payload stamping
+  with the pair. Semantics: Operation Catalog \sectionsc{Repeat
+  Structures}, 0.7.0; re-anchoring row (nearest-surviving-anchor across
+  every anchor site, cascade when none): core Chapter~6 rule table. \\
 \bottomrule
 \end{longtable}
 
