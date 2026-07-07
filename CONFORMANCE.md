@@ -107,11 +107,14 @@ substituting a vendor heuristic:
 
 - **Spelling**: `SpellingAlgorithmId` `"default"` — a Temperley-style
   line-of-fifths preference algorithm, v1 (`epiphany-core/src/prepass.rs`).
-  The identifier is the crate's proposal pending ratification (P12-H1). A
-  profile requesting any other id errors; nothing is silently substituted.
+  The identifier is ratified normative (Pass 12,
+  `req:pitch:spelling-algorithm`). A profile requesting any other id errors;
+  nothing is silently substituted.
 - **Notational decomposition**: `DecompositionAlgorithmId` `"default"` — the
-  integer-grid metric splitter, v1, with its scope bounds recorded as
-  P12-H4 (single governing meter, `MAX_DOTS = 1`, tuplet-nesting deferred).
+  integer-grid metric splitter, v1, with its scope bounds ratified as
+  normative bounds of the versioned algorithm (Pass 12,
+  `req:time:decomposition-algorithm`: single governing meter, `MAX_DOTS = 1`,
+  tuplet-nesting deferred; a wider algorithm is a version bump).
   Same no-substitution rule.
 - Both pre-pass outputs are **canonical derived annotations**: deterministic
   functions of `(materialized graph, profile, algorithm id)` recomputed on

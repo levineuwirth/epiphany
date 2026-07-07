@@ -226,7 +226,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.5.0 --- Phase 2/3 (K0 representative + broad-K0 M2 groups + Phase-3 first tranche)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.6.0 --- Pass-12 G-ratification (meta-operation edge semantics, system-derived immutability, recreate vocabulary, slot retirement)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -287,10 +287,23 @@ specification revision. The core specification changes only when the
 A \textbf{Phase-2 profile} implementation \MUST{} implement every primitive in
 Chapter~\ref{ch:k0} --- the representative set and the M2 broad-K0 groups --- with
 the schema, reduction rule, conflict cases, undo semantics, and re-anchoring
-behaviour defined there. The remaining (Phase-3) framework slots of
-Chapter~\ref{ch:k1} are \emph{unavailable} under the Phase-2 profile: an
-implementation \MUST{} reject (not silently ignore) an operation whose kind is one
-of those slots it does not implement.
+behaviour defined there. The former create-score/create-canvas framework slots
+of Chapter~\ref{ch:k1} are \emph{retired} (Pass~12): they are permanently
+outside the operation set, so no operation kind exists to reject.
+
+\medskip
+
+\noindent\textbf{Version 0.6.0 (Pass-12 G-ratification).} No payload byte
+changes. Ratified: ResolveConflict beyond the concurrent case (P12-K4),
+ResolveEquivocation edge semantics (P12-K6) and the profile-policy deferral
+(P12-K5), the RespellPitch migration fallback as long-term (P12-K1), undo
+strand-block conflict-kind reuse (P12-K10) and the idempotence asymmetry
+(P12-K11), the Transpose prototype pin (P12-K2 deferral), the cross-region
+slur AND advisory (P12-K12), and the create-score/canvas retirement (P12-K8).
+Appended vocabulary (minor, append-only):
+\texttt{SystemDerivedContentImmutable} (12, P12-K3) and
+\texttt{RecreateContentMismatch} (13, P12-K9) in
+\texttt{PreconditionFailureReason}.
 
 % ===========================================================================
 \chapter{The Catalog Framework}
@@ -469,17 +482,17 @@ introduced the first one), under the active policy.
 \textbf{Re-anchoring.} If the target pitch is tombstoned, the respelling is a
 no-op (\texttt{TargetTombstoned}).
 
-\begin{openquestion}
-\textbf{P12-K1.} A v0 \texttt{RespellPitch} carried only a content-hash \emph{fingerprint} of the
-spelling. The fingerprint cannot be inverted to a \texttt{PitchSpelling} without
-a side table, so the v0$\rightarrow$v1 migration (Chapter~\ref{ch:migration})
-recovers the spelling from the score graph context --- an explicit per-pitch
-spelling attachment whose canonical bytes hash to the fingerprint --- and, when
-the context lacks it, declares the envelope unmigratable (the bundle opens
-read-only). This is the one representative payload that is not self-contained
-under migration; the disposition (whether a richer v0 corpus, or a documented
-read-only fallback, is the long-term answer) is a Pass-12 question.
-\end{openquestion}
+\emph{Migration (ratified Pass~12, closing P12-K1).} A v0
+\texttt{RespellPitch} carried only a content-hash \emph{fingerprint} of the
+spelling. The fingerprint cannot be inverted to a \texttt{PitchSpelling}
+without a side table, so the v0$\rightarrow$v1 migration
+(Chapter~\ref{ch:migration}) recovers the spelling from the score graph
+context --- an explicit per-pitch spelling attachment whose canonical bytes
+hash to the fingerprint --- and, when the context lacks it, declares the
+envelope unmigratable (the bundle opens read-only). This read-only fallback
+is the \emph{long-term} disposition: no richer v0 corpus is or will be
+required (no production v0 corpus exists). It remains the one representative
+payload that is not self-contained under migration.
 
 \section{ModifyEvent}
 \label{sec:k0:modify-event}
@@ -511,6 +524,17 @@ graph (re-sorting a non-metric voice is a deferred refinement); a malformed
 (empty pitched) replacement is likewise recorded but not materialised;
 same-placement field edits apply in place, preserving voice membership. Partial
 trimming of a tuplet member remains a later refinement.
+
+\emph{System-derived content immutability (ratified Pass~12, closing
+P12-K3).} A modification that would rewrite the \emph{intrinsic content} of a
+pitch whose identifier lives in the \texttt{SYSTEM\_DERIVED} namespace is
+refused as a clean precondition no-op with the appended reason
+\texttt{SystemDerivedContentImmutable} (discriminant 12): the identifier is
+content-derived, and an in-place rewrite would silently invalidate its
+derivation (core specification, Chapter~5 system-derived identity). The same
+precondition applies to \texttt{ModifyIdentifiedPitch}
+(Section~\ref{sec:k0:identified-pitch}). The sanctioned path is minting a
+replacement pitch.
 
 \textbf{Conflict cases.} Two concurrent modifications of one event with
 \emph{differing} values produce a \texttt{StructuralFieldCollision} on the field
@@ -581,7 +605,11 @@ general case (interval composition need not commute), so the resolved value is
 the composition in canonical reduction order. In this prototype
 \texttt{chromatic\_steps} is a minimal CMN alteration shift that commutes except
 at the alteration's \texttt{i8} saturation bound; rich interval algebra is
-deferred (Chapter~4 tuning catalog; P12-K2).
+deferred (Chapter~4 tuning catalog; P12-K2). \emph{Pinned (Pass~12):} the
+prototype semantics --- CMN alteration shift with documented \texttt{i8}
+saturation --- are the declared v1 behavior; replacing the payload with a
+faithful interval representation is a \emph{payload schema-major} under the
+Binary Format companion's evolution rule, landing with the tuning catalog.
 
 \textbf{Conflict cases.} None --- composition is deterministic in canonical order
 (a deterministic repair, not a conflict).
@@ -616,6 +644,13 @@ policy.
 
 \textbf{Re-anchoring.} The structure participates in the re-anchoring rule table
 when one of its endpoints is later tombstoned (see DeleteEvent).
+
+\textbf{Authoring advisory (ratified Pass~12, closing P12-K12).} The
+slur-spanning advisory reads
+\texttt{Region.permits\_spanning\_slurs} \emph{conjunctively}: a slur (or
+other spanner) whose endpoints lie in different regions passes the advisory
+only when \emph{both} endpoint regions permit spanning. The check is
+authoring-time only and never alters reduction.
 
 \textbf{Migration coverage.} The v0$\rightarrow$v1 migration
 (Chapter~\ref{ch:migration}) reconstructs the event-anchored \texttt{Tie},
@@ -772,7 +807,13 @@ reference global staves, and until this primitive existed a resolvable staff
 could only be base-seeded. A create mints the staff live if its id is fresh; a
 repeat create carrying a byte-identical value reduces idempotently, and a
 create whose id is already live with a \emph{differing} value is a
-precondition no-op. Graph-aware reduction additionally preconditions that the
+precondition no-op with the appended reason
+\texttt{RecreateContentMismatch} (discriminant 13; ratified Pass~12, closing
+P12-K9 --- the former \texttt{TargetMissing} reuse misnamed the situation:
+the target is not missing, its content disagrees). The same reason applies
+to every differing-value re-create: the carried \texttt{TimeSignature}
+(Section~\ref{sec:k0:meter-tempo}) and the structural-container creates
+(Section~\ref{sec:k0:structural-containers}). Graph-aware reduction additionally preconditions that the
 referenced instrument is live and, when \texttt{group} is present, that the
 staff group resolves --- the mint must leave the graph satisfying the
 reference-resolution invariants.
@@ -885,7 +926,8 @@ present) the length-framed \texttt{segment}.
 resolved start)} (tempo segment). A carried \texttt{TimeSignature} is minted
 set-union under the same discipline as \texttt{CreateStaff}: fresh id mints;
 byte-identical re-carry is idempotent; a differing value under a live id is a
-precondition no-op. The time-signature value's beat-group sum is validated at
+precondition no-op (\texttt{RecreateContentMismatch},
+Section~\ref{sec:k0:create-staff}). The time-signature value's beat-group sum is validated at
 construction and again at decode, so a malformed value never reaches
 reduction. A tempo-segment write preconditions that the \emph{resulting} map
 is well-formed (segments ordered and non-overlapping; a non-constant shape
@@ -976,6 +1018,19 @@ action of \texttt{Dismiss} reaches the \texttt{Dismissed} state; any other actio
 reaches \texttt{Resolved}. Re-resolving with the same action is idempotent; two
 concurrent resolves with differing actions produce a meta-conflict.
 
+\emph{Beyond the concurrent case (ratified Pass~12, closing P12-K4).} The
+earliest-applied-resolve-governs rule is \emph{universal}: a causally-later
+resolve with a differing action does not supersede the first --- it reduces
+\texttt{AlreadyApplied} --- and \emph{any} resolve targeting a
+\texttt{Dismissed} conflict likewise reads \texttt{AlreadyApplied}.
+Intentional re-resolution is deliberately outside the v1 operation set; a
+future dedicated operation (a \texttt{ReopenConflict}-class primitive) is the
+sanctioned path if it is ever needed. The meta-conflict record names both
+resolver operation ids in \texttt{caused\_by}; conflict records themselves
+have no \texttt{TypedObjectId} kind (deliberate --- they are materialized
+state, not graph objects), so the contested conflict is identified by the
+\texttt{equivocation}-style field key, not an object reference.
+
 \begin{rationale}
 Pass~11 added \texttt{ResolutionAction::Dismiss} (item 2.5) precisely so the
 \texttt{Dismissed} state is reachable by an authored operation rather than merely
@@ -1016,6 +1071,17 @@ operations in \texttt{caused\_by} --- the same discipline as
 \texttt{target} is not an equivocated slot, or whose \texttt{chosen} is not
 among the slot's candidates, is a precondition no-op.
 
+\textbf{Edge semantics (ratified Pass~12, closing P12-K6).} Promotion is
+\emph{single-pass}, not fixpoint: a promoted candidate that is itself a
+\texttt{ResolveEquivocation} does not govern a further promotion in the same
+reduction. A resolve in a \emph{quarantined} replica segment is excluded from
+reduction and never governs. A resolve held \emph{pending} by its own causal
+gaps still governs promotion --- the verdict is a pure function of the slot
+map (set-level), while the resolve's own effect stays pending. The
+invalid-target/invalid-chosen no-op reuses \texttt{TargetMissing}; a dedicated
+reason was considered and rejected (the appended-reason budget is spent where
+a distinct verdict changes caller behavior, which it does not here).
+
 \textbf{Undo semantics.} Mints nothing; not inverted under the prototype's
 minted-object undo (P11-C8).
 
@@ -1027,8 +1093,11 @@ The core specification names three resolution paths for an equivocated slot:
 transport-level reconciliation, this explicit operation, and a
 profile-declared deterministic selection policy. This entry pins the schema
 for the explicit-operation path, which the core specification previously named
-only in prose. The profile-policy path remains unpinned and unimplemented ---
-a Pass-12 question (P12-K5).
+only in prose. The profile-policy path is \emph{deferred with a named landing
+site} (Pass~12 disposition of P12-K5): v1 profiles declare \emph{no}
+selection function, and the hook's definition belongs to the Profile
+Conformance companion when it is written --- the reducer deliberately carries
+no policy hook until a profile can declare one.
 \end{rationale}
 
 \section{UndoTransaction (meta-operation)}
@@ -1065,6 +1134,25 @@ the superseded ones. Restorations are expressed in the effect status (a fully
 clean compensation is \texttt{Applied}; a mixed one is
 \texttt{AppliedWithRepair} carrying only the tombstone repairs) --- no new
 repair vocabulary.
+
+\emph{Strand-blocks (ratified Pass~12, closing P12-K10).} A
+\texttt{StrictInverse} undo that refuses to tombstone a minted object still
+referenced by a live non-member (e.g., a staff whose instance survives outside
+the transaction) records \texttt{ConflictKind::TransactionConflict} --- the
+reuse is blessed: the strand-block \emph{is} a transaction-scoped conflict of
+the undo, and the conflict record's affected objects and description carry the
+strand detail. No dedicated undo conflict kind is added.
+
+\emph{Idempotence asymmetry (ratified Pass~12, closing P12-K11).} An undo's
+value restorations enter the write chains as ordinary writes by the undo
+operation --- no distinguished undo provenance. Consequently a \emph{second}
+undo of the same transaction finds each restored key superseded by the first
+undo and refuses (\texttt{Conflicted} under \texttt{StrictInverse}, skipped
+under \texttt{BestEffort}), while \emph{absence} restorations (not
+representable as chain writes) repeat idempotently. The asymmetry is
+normative, documented behavior; a chain-native undo provenance would be
+revisited only under the deferred undo-as-operation (streaming-consistent
+undo) design, which subsumes this question.
 
 \emph{Still deferred} (P11-C8, narrowed): re-introducing content tombstoned by
 \emph{delete} primitives (a deterministic resurrection needs a system-derived
@@ -1151,17 +1239,18 @@ a fresh design.
     creation, LWW structural overwrite, and LWW advisory respectively.
 \end{description}
 
-\section*{Remaining framework slots (unavailable, MUST reject)}
+\section*{Retired slots (ratified Pass~12: outside the operation set)}
 
 \begin{description}
-  \item[Create score / canvas]
-    The document root and the canvas are \emph{inline singletons}, not
-    id-addressed objects: \texttt{TypedObjectId} has no Canvas kind, and the
-    root is never op-minted --- genesis today is the empty-document
-    constructor plus bundle creation, outside the operation set. Turning these
-    into operations requires an addressable root/canvas object model (a
-    graph-model decision for G, filed as a Pass-12 row), so the slots remain
-    deliberately unavailable rather than force-designed.
+  \item[Create score / canvas --- retired, closing P12-K8]
+    The document root and the canvas are \emph{structural givens}, not
+    operation products: \texttt{TypedObjectId} has no Canvas kind, the root is
+    never op-minted, and genesis is normatively the empty-document constructor
+    plus bundle creation, outside the operation set (core specification,
+    Chapter~5 \sectionsc{The Canvas}). These are not ``unavailable slots''
+    awaiting a design --- no operation kind will be assigned to them. The
+    decision is revisited only if an addressable multi-canvas model is adopted
+    at a future schema major.
 \end{description}
 
 \begin{nongoal}

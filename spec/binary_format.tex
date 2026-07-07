@@ -235,7 +235,7 @@
   {\Large\scshape\color{epiphanyslate}Binary Format}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.3.0 --- Phase 2/3 (canonical wire format: primitives through bundle physical layout + K0 and Phase-3-tranche payload framing; schema major~1 data-model expansion)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.4.0 --- Pass-12 G-ratification (appended effect-vocabulary discriminants; unsafe-edit tombstone encoding open question)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the byte layouts it defines}
   \vfill
 \end{titlepage}
@@ -1562,7 +1562,9 @@ trailing bytes are decode errors.
     \tablenums{8} ExtensionPrecondition \cat{} id (16 BE);
     \tablenums{9} Registered \cat{} id (16 BE);
     \tablenums{10} ContainerNotEmpty;
-    \tablenums{11} TempoMapMalformed. \\
+    \tablenums{11} TempoMapMalformed;
+    \tablenums{12} SystemDerivedContentImmutable (Pass~12, P12-K3);
+    \tablenums{13} RecreateContentMismatch (Pass~12, P12-K9). \\
   \texttt{RepairRecord} &
     (struct) \texttt{kind} (\texttt{RepairKind}) \cat{} \texttt{target}
     (\texttt{TypedObjectId}). \\
@@ -1581,7 +1583,10 @@ trailing bytes are decode errors.
     \tablenums{0} SameVoiceNearer; \tablenums{1} SameStaffInstanceNearer;
     \tablenums{2} SameStaffNearer; \tablenums{3} SameRegionNearer;
     \tablenums{4} ExplicitFallback;
-    \tablenums{5} DeclaredByExtension \cat{} id (16 BE). \\
+    \tablenums{5} DeclaredByExtension \cat{} id (16 BE);
+    \tablenums{6} SameCanvasNearer (Pass~12, P12-C4: semantically the
+    rank-4 proximity variant; appended at 6 because 5 was already
+    owned by DeclaredByExtension). \\
   \texttt{TupletCompensationKind} &
     \tablenums{0} ReplaceWithRest; \tablenums{1} RewriteTuplets;
     \tablenums{2} CascadeDeleteTuplets. (No payload; distinct from the
@@ -2094,6 +2099,20 @@ are carried \emph{opaquely inside the canonical manifest}
 (Section~\ref{sec:bundle:manifest}), which stays major~0, so a major-0 reader
 must continue to parse them as \texttt{u64}. Their unification waits for a
 future major that revises the manifest (Section~\ref{sec:evolution:major1}).
+
+\begin{openquestion}
+\textbf{Unsafe-edit tombstone encoding (from P12-E5).} Core Chapter~8 now
+ratifies the unsafe-edit tombstone \emph{semantics} (immediate deactivation of
+the crossed extension's remaining barriers; a durable record \MUST{} land at
+the next commit; \texttt{required = true} interaction). The manifest-side
+\emph{byte encoding} of that record is unresolved --- and constrained: the
+manifest schema is frozen at major~0, so the record cannot be a new manifest
+field. Candidate channels: a marker inside the extension-declaration blob
+layer (this chapter's regime-(b) surface), or a dedicated chunk kind
+referenced from \texttt{preserved\_chunk\_roots}. To be designed in the next
+bundle-format tranche; the editor-side producer
+(\texttt{extensions\_requiring\_tombstone()}) already exists.
+\end{openquestion}
 
 \section{Framing}
 \label{sec:barriers:framing}
@@ -2775,6 +2794,15 @@ layouts of Section~\ref{sec:values:representative}.
   ops read-only), and the total default-filling v0${\to}$v1 migration table.
   Clarifies that any field add is a major change regardless of
   \texttt{Option}-ness. \\
+  \today & Effect vocabularies / Extension blobs & 0.4.0 --- Pass-12
+  G-ratification: appends \texttt{PreconditionFailureReason}
+  \tablenums{12} (\texttt{SystemDerivedContentImmutable}, P12-K3) and
+  \tablenums{13} (\texttt{RecreateContentMismatch}, P12-K9), and
+  \texttt{ReanchorReason} \tablenums{6} (\texttt{SameCanvasNearer},
+  P12-C4) --- schema-\emph{minor} appends under Chapter~\ref{ch:evolution};
+  no existing assignment changed. Adds the unsafe-edit tombstone
+  \emph{encoding} open question (from P12-E5; semantics ratified in core
+  Chapter~8). Semantics: Operation Catalog 0.6.0. \\
 \bottomrule
 \end{longtable}
 

@@ -103,3 +103,67 @@ conservative **AND** (a boundary is permeable only when both endpoint regions se
 `permits_spanning_slurs`); a "the start region governs" or "either side" reading
 is equally defensible. Tracked for ratification; the advisory is authoring-only
 and never alters reduction, so the choice is not byte-affecting.
+
+## G-pass tranche (2026-07-07) — the batch pass
+
+The full G-ratification of the accumulated batch: all 28 open rows retired in
+one deliberate pass (worklist: `PASS12_WORKLIST.md`). Four rows carried genuine
+forks and were decided by the project lead; three rows defer to *named* landing
+sites; the rest bless implemented, DECISIONS-recorded readings. Spec-first: the
+normative text landed with this tranche; the small code tranche (H7 surfacing,
+K3/K9 reasons, C4 variant) follows in its own commit.
+
+**Key decisions (project lead, 2026-07-07):** P12-K12 cross-region slur
+permission = **AND** (both endpoint regions); P12-H7 authored annotations for
+inference-ineligible events **surface** in derived annotations; P12-K4
+ResolveConflict = **no supersede** (earliest applied resolve governs
+universally; re-resolution is a future dedicated op; no `TypedObjectId`
+Conflict kind); P12-K8 **genesis outside the operation set** (create-score/
+canvas slots retired, not "unavailable").
+
+| Item | Disposition | Spec locus | Authority followed |
+|---|---|---|---|
+| P12-H1 spelling algorithm id | **adopt** — `"default"` = Temperley-style line-of-fifths preference v1, ratified normative (`req:pitch:spelling-algorithm`); profile-declared disposition; no silent substitution. CONFORMANCE.md caveat dropped | core_spec Ch2 §Spelling Pre-Pass; Ch4 open question narrowed; Ch1 + App. D open-hooks lists updated | `epiphany-core/src/prepass.rs` |
+| P12-H2 key/clef model | **defer (premise stale, verified)** — the content model *exists* (I-0: `Clef`, `KeySignature`, content-bearing changes) and layout consumes it; what remains is algorithmic. Key-aware spelling → a spelling-algorithm **v2** (versioned rev, deterministically invalidates derived output); key-aware accidental display / cancelling naturals → the notation-refinement backlog (major-2 / Standard-tier neighborhood) | `req:pitch:spelling-algorithm` states v1 does not consult declared keys | verified: 0 `KeySignature` refs in `prepass.rs`; `PlacedKeySignature` in layout-ir |
+| P12-H3 chromatic-run convention | **adopt** — enharmonic choice absent tonal context is a property of the *versioned* algorithm; v1 = convention-as-tiebreak only; voice-leading refinement = future version, not a spec hole | `req:pitch:spelling-algorithm` | `prepass.rs` centre-of-gravity rule |
+| P12-H4 decomposition scope bounds (+P12-C5 folded) | **adopt** — the five v1 bounds (single governing meter; barline origin; dyadic compound grouping; no nested/cross-beat tuplets; `MAX_DOTS = 1`) become *declared normative bounds* of `DecompositionAlgorithmId "default"` v1 (`req:time:decomposition-algorithm`); a wider algorithm is a version bump. C5: `SetTimeSignature` reduction semantics already pinned (catalog §Meter and Tempo Overwrites); the derived-notation gap is subsumed by the single-meter bound | core_spec Ch3 §Decomposition Pre-Pass | `prepass.rs` integer-grid splitter; ops `reduce.rs` meter LWW |
+| P12-H5 aleatoric spelling | **adopt (open question closed)** — spelling is region-time-model-independent; no aleatoric-specific pass exists or is required; stated in the v1 algorithm definition | `req:pitch:spelling-algorithm` | `prepass.rs` (region-independent by construction) |
+| P12-H6 decomposition precedence | **decide: FIXED** — the fixed default order (`UserChosen > Imported > Propagated > Inferred`, canonical attachment order tie-break) is ratified; *not* configurable (a configurable order = new canonical `Score` field = schema-major with no consumer). "Same precedence machinery" reworded to "same source-rank discipline" | core_spec Ch3 §Notational Decomposition | `prepass.rs::resolve_decomposition` |
+| P12-H7 authored-uninferred surfacing | **decide: SURFACE (code follows)** — derived annotations MUST report the winning authored attachment for inference-ineligible targets, both pre-passes; taxonomy counts them distinctly (`req:pitch:authored-uninferred`). Derived-annotation-only: no canonical-byte impact | core_spec Ch2 (new requirement) + Ch3 cross-ref | decision reverses the implemented override-only mirror; code tranche implements |
+| P12-K1 RespellPitch migration | **adopt** — context-recovery + `Irreversible` → read-only is the *long-term* disposition; no richer v0 corpus required (none exists). Open-question box → ratified migration note | operation_catalog §RespellPitch | `epiphany-ops/src/migrate.rs` |
+| P12-K2 Transpose algebra | **defer (named site) + pin** — prototype semantics (CMN alteration shift, documented `i8` saturation) declared v1 behavior; faithful interval representation = *payload schema-major* landing with the Ch4 tuning catalog (Push 4) | operation_catalog §Transpose | `reduce.rs` transpose arm |
+| P12-K3 system-derived content rewrite | **decide: REFUSE (code follows)** — reduction MUST refuse intrinsic-content rewrites of `SYSTEM_DERIVED`-namespace pitches; appended `PreconditionFailureReason::SystemDerivedContentImmutable` (12). Core Ch5 states immutability; catalog pins the precondition for ModifyEvent + ModifyIdentifiedPitch | core_spec Ch5 §System-Derived Identifiers; operation_catalog §ModifyEvent; binary_format vocab (12) | protects Invariant 11; code tranche implements |
+| P12-K4 ResolveConflict beyond concurrent | **decide: NO SUPERSEDE** — earliest-applied-resolve governs universally; causally-later differing resolves + any resolve against `Dismissed` read `AlreadyApplied`; re-resolution = future `ReopenConflict`-class op; no `TypedObjectId` Conflict kind (meta-conflict names both resolvers) | operation_catalog §ResolveConflict | `reduce.rs` resolve arm (as implemented) |
+| P12-K5 equivocation selection policy | **defer (named site)** — v1 profiles declare *no* selection function (now stated); the hook's definition belongs to the Profile Conformance companion; no reducer policy hook until then | operation_catalog §ResolveEquivocation rationale | deliberate absence in `reduce.rs` |
+| P12-K6 equivocation edge semantics | **adopt** — single-pass promotion (no fixpoint); quarantined resolves never govern (verified in `reduce.rs` pre-pass comment + code); pending-by-causal-gaps resolves still govern (set-level); invalid-target/chosen no-op keeps `TargetMissing` (dedicated reason rejected — verdict does not change caller behavior) | operation_catalog §ResolveEquivocation (new Edge semantics block) | `reduce.rs` promotion pre-pass |
+| P12-K8 create score/canvas | **decide: GENESIS OUTSIDE OPS** — root + canvas are structural givens; genesis = empty-document constructor + bundle creation, normative; K1 slots *retired* (no kind will be assigned); revisit only under an addressable multi-canvas major | core_spec Ch5 §The Canvas; operation_catalog K1 chapter + Conformance Profiles | `Score::empty` + bundle creation path |
+| P12-K9 differing-value re-creates | **decide: DEDICATED REASON (code follows)** — appended `PreconditionFailureReason::RecreateContentMismatch` (13) replaces the misnaming `TargetMissing` reuse at every differing-value re-create site (CreateStaff, carried TimeSignature, container creates) | operation_catalog §CreateStaff + §Meter and Tempo Overwrites; binary_format vocab (13) | code tranche implements |
+| P12-K10 undo strand-blocks | **adopt (bless reuse)** — a StrictInverse strand-block *is* a transaction-scoped conflict; `TransactionConflict` reuse ratified; detail lives in the conflict record | operation_catalog §UndoTransaction | `undo.rs` |
+| P12-K11 undo idempotence asymmetry | **adopt** — restorations are ordinary chain writes (no distinguished undo provenance); second-undo conflict + idempotent absence-restores are normative; revisit only under undo-as-operation | operation_catalog §UndoTransaction | `undo.rs` write chains |
+| P12-K12 cross-region slur governance | **decide: AND** — boundary permeable only when both endpoint regions permit; advisory-only, never byte-affecting | core_spec Ch5 (after `Region` listing); operation_catalog §CreateCrossCutting | `validate.rs` conservative AND (as implemented) |
+| P12-C1 multi-source cue | **adopt** — cascade on *any* source deletion is normative; rationale prose fixed to match ("losing any source breaks quotation integrity"); truncate-while-any-survives recorded as rejected | core_spec §Re-Anchoring Rule Table (Cue row) | `reduce.rs` cue cascade |
+| P12-C2 Range truncate | **adopt** — truncate = dead event-anchored endpoint moves to its containing region's edge (start→Start, end→End, zero offset) | core_spec §Re-Anchoring Rule Table (graphic-gesture row) | `reduce.rs` re-anchor ledger |
+| P12-C3 annotation orphaning | **adopt** — orphaning is the sanctioned outcome for wall-clock/indeterminate spans inexpressible as stored `Range` anchors; an expressible form is future model work | core_spec §Re-Anchoring Rule Table (annotation row) | `reduce.rs` |
+| P12-C4 same-canvas reason | **decide: APPEND (code follows)** — `ReanchorReason::SameCanvasNearer` appended at discriminant **6** (5 was already owned by `DeclaredByExtension`); rank-4 survivors record it instead of `ExplicitFallback` | core_spec `ReanchorReason` listing + note; binary_format vocab (6) | code tranche implements |
+| P12-E4 barrier matching | **adopt** — target-free ops (`SetMetadata`, `DeclareTransaction`) match score-wide barriers only; opaque `Registered` ops match fully conservatively (`req:format:barrier-matching`) | core_spec Ch8 | `editor-core` barrier gate |
+| P12-E5 unsafe-edit tombstone | **adopt semantics + defer encoding (named site)** — `req:format:unsafe-tombstone`: immediate deactivation of the crossed extension's remaining barriers; durable record MUST land at next commit; `required = true` → read-only for dependents. The manifest-side *byte encoding* is a new binary_format open question (manifest frozen at major 0 → blob-layer or new chunk kind; next bundle-format tranche) | core_spec Ch8; binary_format §extension blobs (open question) | `editor-core::extensions_requiring_tombstone()` (producer exists) |
+| P12-I4 constraint strength | **adopt** — strength is *kind-determined*, no instance field (`req:solver:kind-strength`): breaks by `BreakKind` (Hard→Required, Soft→Preferred{1.0}), core families Required, `Registered` conservative Required; future families declare strength in their definitions. Deliberate Standard-tier design input | core_spec Ch9 §Strength Levels | `layout-ir` normalization |
+| P12-I5 sub-conformant report | **adopt** — `SolvedWithWarnings` + `satisfied_hard_constraints == false` + warning is the sanctioned constraints-present-but-unevaluated report; the one renderable status with unsatisfied-hard, because the field reports *evaluated* satisfaction (`req:solver:subconformant-report`) | core_spec Ch9 §SolveReport | `layout-ir` stub solver |
+| P12-I6 Minimal constraint floor | **adopt** — the implemented emission set (successive-notehead no-collision chains + per-glyph containment + user-break constraints) is the normative Minimal floor (`req:layoutir:constraint-floor`); higher-tier floors defined when those tiers land | core_spec Ch7 §ConstrainedLayoutIR | `constrained.rs` emission |
+
+**Ride-along staleness fix:** the Ch8 `OperationKindTag` listing gained the
+eleven appended tags the code has carried since M2/Phase-3 (append-only
+vocabulary; the listing had drifted).
+
+**Version movements.** Operation Catalog 0.5.0 → 0.6.0. Binary Format
+0.3.0 → 0.4.0 (vocab appends 12/13/6 + the E5 encoding open question). Core
+spec: revision-history row "Pass 12 G-ratification (the batch pass)"; two
+open-question boxes replaced by ratified requirements (spelling,
+decomposition), one narrowed (Ch4 spelling-catalog), one added
+(binary_format E5 encoding). All three PDFs rebuilt clean, zero undefined
+references.
+
+**Code tranche (follows this commit):** H7 authored-only surfacing + taxonomy
+buckets (`prepass.rs`); K3 `SystemDerivedContentImmutable` (12); K9
+`RecreateContentMismatch` (13); C4 `SameCanvasNearer` (6) — each with
+regression tests and wire goldens.

@@ -406,18 +406,22 @@ Section~\ref{sec:det:open}:
     the document have not yet been delivered:
     Appendix~\ref{app:deferred} catalogs them and distinguishes
     them from accidentally missing content.
-  \item Several algorithms affect canonical state and have not
+  \item Two algorithms affect canonical state and have not
     yet received one of the dispositions in
     Appendix~\ref{app:determinism}
-    Section~\ref{sec:det:open}: the spelling pre-pass, the
-    notational-decomposition algorithm, the tempo curve
-    integration algorithm, and the
+    Section~\ref{sec:det:open}: the tempo curve
+    integration algorithm and the
     \texttt{wallclock\_to\_musical} root-finding algorithm.
     Cross-implementation byte equality of canonical score state
     \MUSTNOT{} be claimed for outputs derived from these
     algorithms until they are normatively specified or
     profile-declared (Appendix~\ref{app:determinism}
-    Section~\ref{sec:det:layers}).
+    Section~\ref{sec:det:layers}). The spelling pre-pass and the
+    notational-decomposition algorithm received the
+    profile-declared-by-versioned-identifier disposition in
+    Pass~12
+    (Requirements~\ref{req:pitch:spelling-algorithm}
+    and~\ref{req:time:decomposition-algorithm}).
   \item Extension registry catalogs are referenced by typed
     identifier but not enumerated here; they are delivered as
     separate, versioned registry documents.
@@ -1322,7 +1326,9 @@ The pre-pass operates as follows:
   \item Collect all pitches in the score, partitioned by voice and
     measure.
   \item For each partition, in time order, resolve each pitch's spelling
-    using:
+    using the applicable context inputs (which of these a given
+    algorithm version consumes is part of its versioned definition;
+    see Requirement~\ref{req:pitch:spelling-algorithm}):
     \begin{enumerate}
       \item The active key signature for the staff.
       \item The accidental context of prior pitches in the same measure
@@ -1357,20 +1363,53 @@ annotations produced.
   operation, which then outranks the pre-pass.
 \end{rationale}
 
-\begin{openquestion}
-  The melodic and harmonic context rules above are stated
-  abstractly. The specific algorithm---whether based on
-  Longuet-Higgins line-of-fifths distance, Temperley's
-  preference rules, or another approach---is unresolved. The
-  choice affects canonical state and must therefore receive one
-  of the dispositions in Appendix~\ref{app:determinism}
-  Section~\ref{sec:det:open}: delivery as a normative algorithm
-  in a Spelling Pre-Pass companion specification,
-  profile-declared by versioned identifier, or explicitly marked
-  non-canonical (in which case automatic spellings are advisory
-  and \texttt{UserChosen} attachments are the only canonical
-  spellings).
-\end{openquestion}
+\begin{requirement}
+  \label{req:pitch:spelling-algorithm}
+  \textbf{Spelling algorithm disposition (ratified Pass 12).}
+  The spelling pre-pass receives the \emph{profile-declared by
+  versioned identifier} disposition of Appendix~\ref{app:determinism}
+  Section~\ref{sec:det:open}. The reserved identifier
+  \texttt{SpellingAlgorithmId} \texttt{"default"} denotes, at
+  version~1, a Temperley-style line-of-fifths preference
+  algorithm: each partition's tonal context is estimated as a
+  centre of gravity on the line of fifths from the accidental,
+  melodic, and harmonic context, and each pitch takes the
+  enharmonic spelling nearest that centre. The ascending-runs-take-
+  sharps / descending-runs-take-flats convention participates
+  \emph{only as a tiebreak} within the centre-of-gravity rule; an
+  isolated chromatic run with no tonal context may therefore
+  receive the enharmonic the convention alone would not pick, and
+  a voice-leading refinement is a future algorithm version, not a
+  deviation. Which of the context inputs enumerated above an
+  algorithm version consumes is part of its versioned definition:
+  \texttt{"default"} version~1 does \emph{not} consult declared
+  key signatures (a key-aware refinement is a future version) and
+  is region-time-model-independent --- pitches in aleatoric and
+  proportional regions are spelled by the same rule as metric
+  ones, and no region-specific spelling pass exists. A profile
+  requesting any other identifier \MUST{} error;
+  implementations \MUSTNOT{} silently substitute a different
+  algorithm.
+\end{requirement}
+
+\begin{requirement}
+  \label{req:pitch:authored-uninferred}
+  \textbf{Authored annotations for inference-ineligible targets
+  (ratified Pass 12).}
+  A stored spelling attachment whose target the pre-pass produces
+  \emph{no} inferred spelling for (an inference-ineligible pitch)
+  \MUST{} still surface in the resolved derived annotations: the
+  winning attachment under the precedence configuration
+  (Section~\ref{sec:pitch:precedence}) is reported with its
+  authored provenance, exactly as it would have been had it
+  outranked an inferred spelling. An authored attachment is
+  precisely how a user notates what the algorithm cannot infer;
+  the derived-annotation surface \MUSTNOT{} render it invisible.
+  Annotation taxonomy counts these authored-only resolutions
+  distinctly from authored-over-inferred overrides. The same rule
+  applies to the decomposition pre-pass
+  (Section~\ref{sec:time:notrhythm}).
+\end{requirement}
 
 \subsection{Absent Accidentals}
 \label{sec:pitch:absent-accidental}
@@ -2188,15 +2227,32 @@ pub enum DecompositionSource {
 \end{lstlisting}
 
 The structure deliberately mirrors the spelling attachment model
-(Section~\ref{sec:pitch:spelling}): same sources, same precedence
-machinery, same pre-pass discipline.
+(Section~\ref{sec:pitch:spelling}): same sources, same source-rank
+discipline, same pre-pass output model. Unlike spelling, decomposition
+precedence is \emph{not configurable} (ratified Pass~12): the fixed
+default source order \texttt{UserChosen} $>$ \texttt{Imported} $>$
+\texttt{Propagated} $>$ \texttt{Inferred} applies, with the score's
+canonical attachment order as tie-break among equal-rank authored
+attachments; \texttt{DecompositionAttachment} carries no
+\texttt{priority} field and the graph carries no
+\texttt{DecompositionPrecedence} configuration. Making precedence
+configurable would add a canonical \texttt{Score} field (a
+schema-major change under the Binary Format companion's evolution
+rule) for which no consumer exists; the decision may be revisited at
+a future schema major if a use case appears.
 
 \subsection{The Decomposition Pre-Pass}
 
 When a score is materialized, the decomposition pre-pass computes
 inferred decompositions, reported as derived annotations; an authored
 higher-precedence attachment overrides the inferred value in the
-resolved annotation. The algorithm is, in outline:
+resolved annotation. An authored attachment targeting an event the
+pre-pass produces \emph{no} inferred decomposition for (ungriddable,
+non-metric, or an inapplicable event kind) surfaces as the resolved
+annotation on its own, per
+Requirement~\ref{req:pitch:authored-uninferred} --- authoring is how
+a user notates exactly what the algorithm cannot infer. The
+algorithm is, in outline:
 
 \begin{enumerate}
   \item For each event in time order within a voice and measure,
@@ -2224,22 +2280,43 @@ resolved annotation. The algorithm is, in outline:
   annotations produced.
 \end{requirement}
 
-\begin{openquestion}
-  The specific algorithm for selecting decompositions when multiple
-  are valid (e.g., $\frac{3}{8}$ in $\frac{4}{4}$ may be a dotted
-  quarter or a quarter tied to an eighth depending on placement)
-  involves style choices. The default rules must be specified;
-  user-configurable alternate rule sets are likely needed. The
-  notational-decomposition algorithm affects canonical state and
-  must therefore receive one of the dispositions in
-  Appendix~\ref{app:determinism}
-  Section~\ref{sec:det:open}: delivery as a normative algorithm
-  in the Notational Decomposition companion specification, or
-  profile-declared by versioned identifier. Until that disposition
-  is made, the default-decomposition output is non-canonical and
-  cross-implementation byte equality \MUSTNOT{} be claimed for
-  derived layouts.
-\end{openquestion}
+\begin{requirement}
+  \label{req:time:decomposition-algorithm}
+  \textbf{Decomposition algorithm disposition (ratified Pass 12).}
+  The decomposition pre-pass receives the \emph{profile-declared
+  by versioned identifier} disposition of
+  Appendix~\ref{app:determinism} Section~\ref{sec:det:open}. The
+  reserved identifier \texttt{DecompositionAlgorithmId}
+  \texttt{"default"} denotes, at version~1, the integer-grid
+  metric splitter, whose scope bounds are part of its normative
+  definition:
+  \begin{itemize}
+    \item a single governing meter per region --- a mid-region
+      meter change reduces cleanly into the region's grid (the
+      Operation Catalog pins those semantics), but derived
+      notation honours only the first governing meter until a
+      wider algorithm version lands;
+    \item the region origin is assumed to fall on a barline
+      (anacrusis/pickup handling deferred);
+    \item compound-meter beat grouping uses the dyadic default;
+    \item tuplet nesting and cross-beat tuplet members are out of
+      scope;
+    \item at most one augmentation dot
+      (\texttt{MAX\_DOTS}~$=$~1); a double-dotted value is
+      written as tied components --- correct, if not the most
+      compact.
+  \end{itemize}
+  A wider algorithm is a \emph{version bump}, which
+  deterministically invalidates derived output under the
+  derived-annotation model --- no state migration. Style-choice
+  selection among multiple valid decompositions (e.g.,
+  $\frac{3}{8}$ in $\frac{4}{4}$ as a dotted quarter versus a
+  quarter tied to an eighth) is fixed by the versioned algorithm;
+  user-configurable alternate rule sets, if ever wanted, are new
+  registered identifiers. A profile requesting any identifier
+  other than a registered one \MUST{} error; implementations
+  \MUSTNOT{} silently substitute.
+\end{requirement}
 
 \section{Tuplets as Grouping Objects}
 \label{sec:time:tuplets}
@@ -2773,11 +2850,14 @@ pub struct SpellingRuleSet {
 \end{lstlisting}
 
 \begin{openquestion}
-  The catalog of registered spelling algorithms is the subject of the
-  open question parked in Section~\ref{sec:pitch:prepass}. Candidates
-  include Longuet-Higgins line-of-fifths distance, Temperley preference
-  rules, Cambouropoulos pitch-spelling, and Meredith PS13. The chosen
-  default and the parameter schemas are normative once decided.
+  The default spelling algorithm is now ratified
+  (Requirement~\ref{req:pitch:spelling-algorithm}:
+  \texttt{"default"} = Temperley-style line-of-fifths preference,
+  version~1). Still open: the catalog of \emph{additional}
+  registered spelling algorithms (candidates include
+  Longuet-Higgins line-of-fifths distance, Cambouropoulos
+  pitch-spelling, and Meredith PS13) and their parameter schemas,
+  which are normative once registered.
 \end{openquestion}
 
 \section{Accidental Registries}
@@ -3642,6 +3722,15 @@ reserves a dedicated replica namespace.
   regenerate the random portion until a non-reserved value is
   obtained.
 
+  Because a system-derived identifier is content-derived, the
+  identified object's intrinsic content is \emph{immutable}: a
+  reduction \MUST{} refuse an operation that would rewrite the
+  intrinsic content of a \texttt{SYSTEM\_DERIVED}-namespace object
+  in place (ratified Pass~12; the Operation Catalog pins the
+  precondition and its failure reason). Rewriting the content would
+  silently invalidate the id's content derivation; the sanctioned
+  path is minting a replacement object.
+
   System-derived identifiers within the
   \texttt{ReplicaId::SYSTEM\_DERIVED} namespace \MUST{} have their
   64-bit counter portion derived deterministically by BLAKE3
@@ -4239,6 +4328,17 @@ pub struct CueEvent {
 
 The canvas is the spatial root of the score. It contains regions.
 
+The score root and the canvas are \emph{structural givens}, not
+operation products (ratified Pass~12): genesis is the creation of an
+empty score together with its bundle, outside the operation set, and
+neither object is ever minted, addressed, or deleted by an operation
+(there is no \texttt{TypedObjectId} kind for either). This is
+deliberate --- a document that could mint its own root would admit a
+genesis race under concurrent editing, and every operation would need
+a defined semantics against a not-yet-existing root. The decision may
+be revisited only if an addressable multi-canvas model is adopted at
+a future schema major.
+
 \begin{lstlisting}[language=Rust]
 pub struct Canvas {
     /// Regions in this canvas. Each region declares its time and
@@ -4314,6 +4414,17 @@ pub struct Region {
     /// schema major 1.
     pub permits_spanning_slurs: bool,
 }
+\end{lstlisting}
+
+For a slur (or other spanner) whose endpoints lie in \emph{different}
+regions, permission is governed conjunctively (ratified Pass~12):
+the boundary is permeable only when \emph{both} endpoint regions set
+\texttt{permits\_spanning\_slurs} --- a region that forbids spanning
+is never crossed against its declaration, regardless of which side
+the spanner starts on. The check is an authoring-time advisory only;
+it never alters canonical reduction.
+
+\begin{lstlisting}[language=Rust]
 
 pub enum RegionContent {
     /// Staff-based notation: one or more staves carrying voices and
@@ -6926,8 +7037,17 @@ pub enum ReanchorReason {
     SameRegionNearer,
     ExplicitFallback,
     DeclaredByExtension(ReanchorReasonRegistryId),
+    /// A rank-4 (same-canvas) proximity survivor. Appended in
+    /// Pass 12 (P12-C4); its wire discriminant is 6 because
+    /// DeclaredByExtension already owned 5 when it was appended.
+    SameCanvasNearer,
 }
 \end{lstlisting}
+
+A re-anchor that selects a rank-4 (same-canvas) survivor records
+\texttt{SameCanvasNearer} (ratified Pass~12); before the variant was
+appended, such repairs were recorded \texttt{ExplicitFallback}, a
+recording this revision supersedes.
 
 \subsection{Total Ordering for "Nearest"}
 
@@ -7022,13 +7142,19 @@ table is normative.
   User content never silently deleted. \\
 
   Cue event & Source event &
-  Cascade-delete &
-  A cue with no source is meaningless. \\
+  Cascade-delete on any source deletion &
+  a multi-source cue cascades when \emph{any} source dies
+  (ratified Pass~12): losing any source breaks the cue's
+  quotation integrity; truncate-while-any-source-survives was
+  considered and rejected \\
 
   Graphic gesture & Anchor event &
   Re-anchor to nearest surviving event of same staff instance;
   for Free anchoring, no action; for Range anchoring, truncate &
-  proximity max: same staff instance \\
+  proximity max: same staff instance. Truncate (ratified
+  Pass~12): a dead event-anchored range endpoint moves to its
+  containing region's edge --- a start endpoint to the region
+  start, an end endpoint to the region end, zero offset \\
 
   Trajectory event & Endpoint pitch &
   Re-anchor: replace \texttt{EventPitch(PitchId)} with
@@ -7039,7 +7165,10 @@ table is normative.
   Analytical annotation & Anchor &
   Re-anchor to time range preserving original extent; orphan if
   range cannot be reconstructed &
-  --- \\
+  orphaning is the sanctioned outcome (ratified Pass~12) for a
+  wall-clock (region-relative) or indeterminate event span that
+  no stored \texttt{Range} anchor form can express without
+  region-origin resolution \\
 
   Spelling attachment & Target pitch &
   Transition to tombstoned-target state &
@@ -8578,6 +8707,21 @@ pub enum OverrideOrigin {
 logical IR with composite objects flattened to individual glyphs,
 each glyph carrying its bounding box, anchor, and constraint inputs
 to the solver.
+
+\begin{requirement}
+  \label{req:layoutir:constraint-floor}
+  \textbf{Minimal-tier constraint-emission floor (ratified Pass 12).}
+  The spacing pass \MUST{} emit at least the following constraint
+  set --- the \emph{Minimal-tier floor}, the testable acceptance
+  surface for the \texttt{Minimal} conformance tier
+  (Chapter~\ref{ch:solver}): no-collision chains between
+  successive notehead-bearing columns; per-glyph containment
+  within the owning region's frame; and one constraint per user
+  break override (system and page). Richer emission sets
+  (inter-band collision, kerned optical adjacency, duration-
+  proportional spring preferences) belong to higher tiers, whose
+  floors are defined when those tiers are ratified.
+\end{requirement}
 
 \subsection{Glyph-Level Objects}
 
@@ -10364,6 +10508,20 @@ pub enum OperationKindTag {
     SetUserPageBreak,
     DeclareTransaction,
     Registered(OperationKindRegistryId),
+    // Appended after Registered (append-only vocabulary; the
+    // tag's wire discriminants never reorder). Phase-2/Phase-3
+    // operation-catalog growth:
+    InsertIdentifiedPitch,
+    DeleteIdentifiedPitch,
+    ModifyIdentifiedPitch,
+    CreateVoice,
+    DeleteVoice,
+    SetMetadata,
+    SetMetricGrid,
+    InsertStaff,
+    SetTimeSignature,
+    SetTempoSegment,
+    SetStaffLayout,
 }
 
 pub enum BarrierScope {
@@ -10446,6 +10604,40 @@ pub enum BarrierCondition {
   The unsafe-edit mechanism prevents unknown extensions from
   rendering a document permanently unedittable while still
   preserving extension data by default.
+\end{requirement}
+
+\begin{requirement}
+  \label{req:format:barrier-matching}
+  \textbf{Barrier matching for target-free and opaque operations
+  (ratified Pass 12).}
+  An operation with no graph target (\texttt{SetMetadata},
+  \texttt{DeclareTransaction}) is matched by \emph{score-wide}
+  barriers only (\texttt{BarrierScope::WholeScore}); a barrier with
+  any narrower scope cannot match it, because there is no target to
+  test the scope against. An opaque \texttt{Registered} operation is
+  matched \emph{fully conservatively}: since its targets and effects
+  are unknown to a core implementation, it matches every active
+  barrier whose remaining predicates do not exclude it.
+\end{requirement}
+
+\begin{requirement}
+  \label{req:format:unsafe-tombstone}
+  \textbf{Unsafe-edit tombstone semantics (ratified Pass 12).}
+  Crossing a barrier by an unsafe edit immediately deactivates the
+  owning extension's \emph{remaining} barriers for the editing
+  session --- the extension's invariants are already forfeit, so its
+  other barriers no longer protect anything. The crossing \MUST{} be
+  durably recorded at the next bundle commit: the pending tombstone
+  set survives the session that performed the unsafe edit. A
+  tombstoned extension that was declared \texttt{required = true}
+  leaves the bundle openable read-only by implementations that
+  depended on that extension (its invariants can no longer be
+  trusted); implementations that never understood it proceed under
+  the unknown-extension rules above. The manifest-side \emph{byte
+  encoding} of the tombstone record is deferred to the Binary Format
+  companion (the manifest schema is frozen at major~0, so the record
+  must ride an append-safe channel); see the companion's open
+  questions.
 \end{requirement}
 
 \section{Text Projection}
@@ -11160,6 +11352,22 @@ pub enum SolverWarningKind {
   \texttt{Unsatisfiable}, with the partial layout marked as such.
 \end{requirement}
 
+\begin{requirement}
+  \label{req:solver:subconformant-report}
+  \textbf{Sub-conformant report shape (ratified Pass 12).}
+  A below-conformance passthrough solver (\texttt{SolverTier::Stub})
+  presented with declared constraints it does not evaluate reports
+  \texttt{SolvedWithWarnings} with
+  \texttt{satisfied\_hard\_constraints == false} and a warning
+  naming the unevaluated-constraint condition. The layout stays
+  renderable; the report makes no conformance claim and satisfies
+  no minimum-tier requirement. This is the one sanctioned case in
+  which a renderable status carries
+  \texttt{satisfied\_hard\_constraints == false}: the field reports
+  \emph{evaluated} satisfaction, and a non-evaluating solver has
+  nothing to claim.
+\end{requirement}
+
 \section{Constraint Families}
 \label{sec:solver:families}
 
@@ -11188,6 +11396,21 @@ pub enum ConstraintStrength {
   quality optimization. A layout that violates a \texttt{Required}
   constraint is not a valid layout, regardless of its quality
   vector.
+\end{requirement}
+
+\begin{requirement}
+  \label{req:solver:kind-strength}
+  \textbf{Strength is kind-determined (ratified Pass 12).}
+  A constraint instance carries no strength field; its strength is
+  determined by its kind. Break constraints take their strength
+  from \texttt{BreakKind}: \texttt{Hard} $\to$ \texttt{Required},
+  \texttt{Soft} $\to$ \texttt{Preferred} with weight $1.0$. Every
+  other core constraint family normalizes to \texttt{Required}.
+  \texttt{Registered} constraint kinds normalize conservatively to
+  \texttt{Required}. A future constraint family declares its
+  strength (and weight, if \texttt{Preferred}) in its normative
+  definition --- the strength channel is the \emph{kind}, not the
+  instance.
 \end{requirement}
 
 \subsection{Normative Constraint Families}
@@ -13555,13 +13778,16 @@ divergence. The specification fixes this at the encoding layer.
 \section{Open Algorithm Hooks}
 \label{sec:det:open}
 
-Several algorithms remain open questions in the body of the
-specification: the spelling pre-pass (Chapter~\ref{ch:pitch}),
-the notational decomposition algorithm
-(Chapter~\ref{ch:time}), tempo integration for arbitrary curves
+Two algorithms remain open questions in the body of the
+specification: tempo integration for arbitrary curves
 and root-finding for \texttt{wallclock\_to\_musical}
 (Chapter~\ref{ch:time}). These algorithms affect canonical
-state.
+state. The spelling pre-pass (Chapter~\ref{ch:pitch}) and the
+notational decomposition algorithm (Chapter~\ref{ch:time})
+were resolved in Pass~12 to the profile-declared disposition
+below, each with a ratified default identifier
+(Requirements~\ref{req:pitch:spelling-algorithm}
+and~\ref{req:time:decomposition-algorithm}).
 
 \begin{requirement}
   Any algorithm that affects canonical state \MUST{} satisfy one
@@ -14743,6 +14969,33 @@ layouts they own versus inherit:
   (Requirement~\ref{req:layoutir:continuation-synthesis}). Flags one open item:
   which region governs a cross-region slur's spanning permission (implemented as
   conservative AND, P12-K12).
+  \\
+  \today & Pass 12 G-ratification (the batch pass) &
+  Retires the open Pass-12 batch (28 rows; dispositions in
+  \texttt{PASS12\_RATIFICATION\_LOG.md}). Algorithm dispositions: the spelling
+  pre-pass and notational decomposition move to profile-declared-by-versioned-
+  identifier with ratified v1 defaults
+  (Requirements~\ref{req:pitch:spelling-algorithm}
+  and~\ref{req:time:decomposition-algorithm}; closes P12-H1/H3/H4/H5/C5);
+  decomposition precedence pinned fixed (P12-H6); authored annotations for
+  inference-ineligible targets surface
+  (Requirement~\ref{req:pitch:authored-uninferred}, P12-H7). Identity:
+  system-derived intrinsic content immutable under reduction (P12-K3). Genesis
+  ratified outside the operation set (P12-K8). Cross-region slur permission =
+  AND (P12-K12). Re-anchoring: cue cascade-on-any-source, Range truncate
+  defined, annotation orphaning sanctioned, \texttt{ReanchorReason::
+  SameCanvasNearer} appended (P12-C1/C2/C3/C4). Barriers: target-free and
+  opaque-operation matching (Requirement~\ref{req:format:barrier-matching},
+  P12-E4); unsafe-edit tombstone semantics
+  (Requirement~\ref{req:format:unsafe-tombstone}, P12-E5; encoding deferred to
+  the Binary Format companion). Solver: kind-determined strength
+  (Requirement~\ref{req:solver:kind-strength}, P12-I4), sub-conformant report
+  shape (Requirement~\ref{req:solver:subconformant-report}, P12-I5), the
+  Minimal-tier constraint floor
+  (Requirement~\ref{req:layoutir:constraint-floor}, P12-I6). The stale
+  \texttt{OperationKindTag} listing gains the eleven appended tags. Companion
+  movements: Operation Catalog 0.5.0~$\rightarrow$~0.6.0, Binary Format
+  0.3.0~$\rightarrow$~0.4.0.
   \\
   \bottomrule
 \end{longtable}

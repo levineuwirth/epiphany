@@ -416,3 +416,25 @@ the continued-fraction approximation. Note the class's *non-normative* unit
 label is "wallclock seconds" while this residual is measured in whole notes;
 the class identity (`TempoIntegration`: conversion residual in either
 direction) is what is normative.
+
+## Pass 12 G-pass (2026-07-07): the H rows are ratified
+
+All seven H rows are retired (dispositions in
+`spec/PASS12_RATIFICATION_LOG.md`, "G-pass tranche"; worklist
+`spec/PASS12_WORKLIST.md`). Summary: **H1** `"default"` = Temperley
+line-of-fifths v1 is ratified normative (`req:pitch:spelling-algorithm`);
+**H3** convention-as-tiebreak and **H5** region-time-model-independence are
+pinned as properties of that versioned algorithm; **H4** the five
+decomposition bounds are the declared normative bounds of `"default"` v1
+(`req:time:decomposition-algorithm`; C5's derived-notation gap is subsumed);
+**H6** decomposition precedence is ratified FIXED (not configurable — a
+configurable order would be a schema-major `Score` field with no consumer);
+**H2** narrowed (the content model landed in I-0; key-aware spelling is
+algorithm-v2 territory, cancelling naturals a notation refinement); **H7**
+decided the other way from the implementation: authored attachments on
+inference-ineligible targets MUST surface in derived annotations
+(`req:pitch:authored-uninferred`) — the code change lands with the G-pass
+code tranche (authored-only resolution paths + distinct taxonomy buckets in
+both pre-passes). Also ratified here: system-derived intrinsic content is
+immutable under reduction (P12-K3; core Ch5 states it, the catalog pins the
+precondition, `epiphany-ops` implements).

@@ -916,3 +916,27 @@ of the same transaction could be defined as idempotent rather than
 conflicting; (4) P12-C5 stands as filed (the decomposition pre-pass still
 honors only the first governing meter — the reduction semantics are pinned
 here and tested under `a_mid_region_meter_change_reduces_cleanly_p12_c5`).
+
+## Pass 12 G-pass (2026-07-07): the K and C rows are ratified
+
+All open K/C rows are retired (dispositions in
+`spec/PASS12_RATIFICATION_LOG.md`, "G-pass tranche"). Adopted as implemented:
+**K1** (migration read-only fallback is long-term), **K4** (earliest resolve
+governs universally — no supersede; re-resolution is a future dedicated op;
+no Conflict object kind), **K6** (single-pass promotion, quarantined resolves
+never govern, pending resolves govern set-level, `TargetMissing` reuse kept),
+**K10** (`TransactionConflict` reuse blessed for strand-blocks), **K11**
+(undo idempotence asymmetry is normative), **K12** (cross-region slur = AND),
+**C1** (cue cascades on any source death), **C2** (Range truncate = region
+edge, zero offset), **C3** (annotation orphaning sanctioned), **C5** (folded
+into H4's single-meter bound). Deferred with named sites: **K2** (tuning
+catalog; prototype pinned as declared v1 behavior, replacement = payload
+schema-major), **K5** (Profile Conformance companion; v1 profiles declare no
+selection function). Decided with code to land in the G-pass code tranche:
+**K3** refuse SYSTEM_DERIVED intrinsic-content rewrites
+(`PreconditionFailureReason::SystemDerivedContentImmutable`, discriminant 12),
+**K9** differing-value re-creates get `RecreateContentMismatch` (13),
+**C4** rank-4 re-anchors get `ReanchorReason::SameCanvasNearer` (6; 5 was
+already `DeclaredByExtension`). **K8** retired: genesis is outside the
+operation set (catalog K1 slots removed, core Ch5 states it). Catalog
+0.5.0 → 0.6.0; Binary Format 0.3.0 → 0.4.0.

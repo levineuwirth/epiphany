@@ -465,3 +465,18 @@ schema-major-1 tranche):
   `(original, ordinal)` `stable_semantic_instance_key`. Since `LayoutObjectId`s
   are non-canonical and re-derived per layout, the key need only be stable within
   a layout. Ratified as core spec `req:layoutir:continuation-synthesis`.
+
+## Pass 12 G-pass (2026-07-07): I4/I5/I6 are ratified
+
+Dispositions in `spec/PASS12_RATIFICATION_LOG.md` ("G-pass tranche"), all
+adopt-as-implemented; these are deliberate Standard-tier design inputs.
+**I4** strength is kind-determined (`req:solver:kind-strength`): no instance
+strength field; breaks by `BreakKind` (Hard→Required, Soft→Preferred{1.0}),
+other core families Required, `Registered` conservative Required; future
+constraint families declare their strength in their normative definitions.
+**I5** the stub's constraints-present-but-unevaluated report
+(`SolvedWithWarnings` + `satisfied_hard_constraints == false` + warning) is
+sanctioned (`req:solver:subconformant-report`). **I6** the implemented
+emission set (successive-notehead no-collision chains + per-glyph containment
++ user-break constraints) is the normative Minimal-tier floor
+(`req:layoutir:constraint-floor`).
