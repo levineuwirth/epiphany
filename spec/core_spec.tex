@@ -2606,8 +2606,11 @@ only the static time structure of the score.
     trajectory) is defined in Chapter~\ref{ch:graph}.
   \item Re-anchoring rules for time anchors when their targets are
     deleted are defined per-operation in Chapter~\ref{ch:semops}.
-  \item \texttt{SpaceUnit}, \texttt{TupletDisplay}, and other purely
-    display-oriented types are defined in Chapter~\ref{ch:layout-ir}.
+  \item \texttt{SpaceUnit} is defined normatively in
+    Chapter~\ref{ch:graph} as of schema major~2 (it entered canonical
+    state through \texttt{StaffLineConfiguration}).
+    \texttt{TupletDisplay} and other purely display-oriented types are
+    defined in Chapter~\ref{ch:layout-ir}.
 \end{itemize}
 
 % ===========================================================================
@@ -3531,11 +3534,47 @@ pub struct MetadataEntry {
     pub key: String,
     pub value: MetadataValue,
 }
+
+/// The value of an additional metadata entry (defined schema major 2).
+/// Closed small union; growth is by appended variant.
+pub enum MetadataValue {
+    Text(String),
+    Integer(i64),
+    Flag(bool),
+}
+
+/// A calendar timestamp (defined schema major 2): nanoseconds since the
+/// Unix epoch, UTC, no zone. Distinct from WallClockTime, which is
+/// *performance* time within a score. The zero value is the "unset"
+/// convention (genesis without a declared creation time).
+pub struct Timestamp(pub i64);
 \end{lstlisting}
 
 The metadata structure is deliberately small. Extended bibliographic,
 catalog, and editorial-apparatus metadata is the province of foreign-
 format mappings and analytical layers, not the core.
+\texttt{additional} is an \emph{ordered authored list}, not a map
+(defined schema major 2): entry order is preserved verbatim in
+canonical bytes, and duplicate keys are permitted --- foreign formats
+legitimately carry repeated keys (multiple contributors, multiple
+identifiers of one scheme). Consumers wanting map semantics take the
+first entry per key.
+
+\begin{requirement}
+  \label{req:graph:metadata-timestamps}
+  \textbf{Timestamps are strictly authored (ratified with schema
+  major 2).} \texttt{creation\_timestamp} and
+  \texttt{modification\_timestamp} are stored, \emph{authored} values:
+  genesis takes the creation timestamp explicitly (the empty-document
+  constructor defaults it to the epoch-zero unset convention), and a
+  \texttt{SetMetadata} operation carries both verbatim as part of the
+  metadata value. Implementations \MUSTNOT{} write either field
+  implicitly --- an automatic modification-time update would rewrite
+  canonical bytes on every edit, churning content addresses and breaking
+  replica byte-agreement for identical operation histories. A client
+  that wants a live modification time surfaces one from non-canonical
+  state (the operation log's stamps); it does not store it here.
+\end{requirement}
 
 \section{Identifiers}
 \label{sec:graph:ids}
@@ -4552,6 +4591,48 @@ pub struct StaffInstance {
     pub visible: bool,
 }
 
+/// The clef content model (ratified schema major 2; the value types
+/// landed with the visible slice and supersede the earlier ClefId
+/// identifier sketch). A clef is a value, not a registry reference.
+pub enum ClefShape {
+    /// G clef (treble family) -- reference pitch G4.
+    G,
+    /// F clef (bass family) -- reference pitch F3.
+    F,
+    /// C clef (alto / tenor family) -- reference pitch middle C (C4).
+    C,
+    /// Unpitched percussion clef -- no diatonic reference.
+    Percussion,
+}
+
+pub struct Clef {
+    pub shape: ClefShape,
+    /// The staff line (1 = bottom) the shape's reference pitch sits on.
+    pub line: i8,
+    /// Signed octave displacement (e.g., -1 for the vocal tenor G clef).
+    pub octave_shift: i8,
+}
+
+/// A key signature on the circle of fifths, validated to the
+/// conventional CMN range -7 (seven flats) ..= +7 (seven sharps).
+/// Constructed only through a checked constructor; decoders reject
+/// out-of-range values.
+pub struct KeySignature {
+    fifths: i8, // private; KeySignature::new rejects |fifths| > 7
+}
+
+/// A clef change at a point in a staff instance.
+pub struct ClefChange {
+    pub anchor: TimeAnchor,
+    pub clef: Clef,
+}
+
+/// A key-signature change at a point in a staff instance.
+pub struct KeySignatureChange {
+    pub anchor: TimeAnchor,
+    pub key: KeySignature,
+}
+
 /// A per-staff (or per-region-default) metric organization.
 pub struct MetricGrid {
     /// Sequence of meter changes within the scope of this grid.
@@ -4631,17 +4712,69 @@ pub struct Instrument {
     /// pitches; not a hard constraint.
     pub range: Option<PitchRange>,
 
-    /// Default clef and staff line count for staves of this
-    /// instrument.
-    pub default_clef: ClefId,
-    pub default_staff_lines: u8,
+    /// Default clef and staff line configuration for staves of this
+    /// instrument. The clef is the content-bearing Clef value defined
+    /// in this chapter (shape, line, octave shift) -- the value model
+    /// ratified with the visible slice supersedes the earlier ClefId
+    /// identifier sketch (reconciled schema major 2).
+    pub default_clef: Clef,
+    pub default_staff_lines: StaffLineConfiguration,
 
     /// For unpitched instruments: definitions of each playable
     /// member (snare, kick, ride bell, etc.) and their staff
     /// positions.
     pub unpitched_members: Vec<UnpitchedMember>,
 }
+
+/// Opaque sound configuration (defined schema major 2). The audio
+/// engine specification owns the structure; the core stores the bytes
+/// verbatim and never interprets them. Empty is the default.
+pub struct SoundConfiguration(pub Vec<u8>);
+
+/// A written-versus-sounding transposition (defined schema major 2).
+/// Structural only: the diatonic and chromatic step counts of the
+/// interval (e.g., B-flat clarinet = -1 diatonic, -2 chromatic).
+/// Semantically ADVISORY until the Chapter 4 tuning catalog pins
+/// interval algebra (the same P12-K2 pinning discipline as the
+/// Transpose operation); nothing in the core resolves it to
+/// frequencies or respells through it yet.
+pub struct TranspositionInterval {
+    pub diatonic_steps: i32,
+    pub chromatic_steps: i32,
+}
+
+/// One playable member of an unpitched instrument (defined schema
+/// major 2): the identifier UnpitchedEvent.instrument_member
+/// references, its display name, and its default staff position.
+pub struct UnpitchedMember {
+    pub member: UnpitchedMemberId,
+    pub name: String,
+    pub staff_position: StaffPosition,
+}
 \end{lstlisting}
+
+\texttt{UnpitchedMemberId} is an \emph{instrument-scoped small value}
+(a plain 32-bit integer), not a member of the 128-bit typed-identifier
+family --- it is minted by the author of the instrument definition, not
+by replicas, and participates in no content derivation. Member values
+\emph{should} be unique within one instrument's
+\texttt{unpitched\_members}; the authoring advisory layer flags a
+duplicate, and resolution is by first match in list order (canonical
+bytes preserve the authored order), so a duplicate is deterministic,
+merely shadowed. An \texttt{UnpitchedEvent.instrument\_member} with no
+matching entry resolves to \emph{no member definition}: the event still
+renders (its own \texttt{staff\_position} field governs placement ---
+the member's \texttt{staff\_position} is the \emph{authoring default}
+copied onto new events, not a render-time override), and sound mapping
+falls back to the instrument's \texttt{sound\_config}. This
+no-match tolerance is load-bearing: every pre-major-2 instrument has an
+empty member list while its events carry member values.
+\texttt{StaffPosition}'s vertical convention (which integer is which
+line, and its orientation) remains \emph{deliberately deferred} to the
+Chapter~\ref{ch:layout-ir} vertical model, with the unpitched-rendering
+tranche as its landing site; until then the field is preserved and
+compared verbatim, and no implementation may claim conformant unpitched
+\emph{rendering}.
 
 \subsection{Staves: Identity Versus Instance}
 \label{sec:graph:staff-identity}
@@ -4676,8 +4809,10 @@ pub struct Staff {
     /// overridden per-instance.
     pub instrument: InstrumentId,
 
-    /// Default clef for new instances of this staff.
-    pub default_clef: ClefId,
+    /// Default clef for new instances of this staff (the
+    /// content-bearing Clef value defined in this chapter; reconciled
+    /// schema major 2).
+    pub default_clef: Clef,
 
     /// Default staff line configuration.
     pub default_staff_lines: StaffLineConfiguration,
@@ -4692,6 +4827,26 @@ pub struct StaffLineConfiguration {
     pub line_spacing: SpaceUnit,
     pub line_style: LineStyle,
     pub bracket: Option<StaffBracketKind>,
+}
+
+/// A dimension in staff spaces (defined schema major 2). Staff line
+/// spacing is relative to the global staff space; 1.0 is a
+/// normal-size staff, smaller values yield cue/ossia staves.
+pub struct SpaceUnit(pub CanonicalF64);
+
+/// A line drawing style (defined schema major 2). Shared by staff
+/// lines and the slur/tie/spanner style records below.
+pub enum LineStyle {
+    Solid,
+    Dashed,
+    Dotted,
+}
+
+/// A per-staff bracket adornment (defined schema major 2), distinct
+/// from StaffGroup-level bracketing.
+pub enum StaffBracketKind {
+    Brace,
+    Bracket,
 }
 \end{lstlisting}
 
@@ -4929,7 +5084,46 @@ pub struct Slur {
     pub curvature_override: Option<CurvatureOverride>,
 
     /// Visual style: solid, dashed, dotted; line thickness curve.
-    pub style: SlurStyle,
+    pub style: SpanStyle,
+}
+
+/// The class of a slur (defined schema major 2). The v1-to-v2
+/// migration default is Legato.
+pub enum SlurKind {
+    /// An ordinary legato slur.
+    Legato,
+    /// A phrase mark (typically longer, over sub-phrases).
+    Phrase,
+    /// An articulation slur (e.g., over a two-note sigh figure).
+    Articulation,
+    /// An editorial slur (rendered distinctly, e.g., dashed).
+    Editorial,
+}
+
+/// Which side of the notes a curve arcs toward (defined schema
+/// major 2).
+pub enum CurveDirection {
+    Above,
+    Below,
+}
+
+/// An authored curvature override (defined schema major 2). The
+/// engraver computes default curvature; each present field overrides
+/// that component of it. Consumed by the Standard engraving tier;
+/// stored and preserved at every tier.
+pub struct CurvatureOverride {
+    pub direction: Option<CurveDirection>,
+    /// Arc height at the apex.
+    pub height: Option<SpaceUnit>,
+}
+
+/// The visual style of a spanning mark (defined schema major 2): one
+/// shared record for Slur.style, Tie.style, and Spanner.style.
+/// Defaults: solid, engraver-chosen thickness.
+pub struct SpanStyle {
+    pub line: LineStyle,
+    /// Line thickness; None = the engraver's default.
+    pub thickness: Option<SpaceUnit>,
 }
 \end{lstlisting}
 
@@ -4957,7 +5151,8 @@ pub struct Tie {
     /// cross-voice, or notation-specific use.
     pub class: TieClass,
 
-    pub style: TieStyle,
+    /// Visual style (the shared SpanStyle record, schema major 2).
+    pub style: SpanStyle,
 }
 
 pub enum TieClass {
@@ -5042,6 +5237,27 @@ pub struct Beam {
     /// Beam angle and stem-length overrides.
     pub geometry_override: Option<BeamGeometryOverride>,
 }
+
+/// A beam segment at a deeper subdivision level (defined schema
+/// major 2): a contiguous subset of the owning beam's events beamed
+/// together at `level` (strictly deeper than the owning beam's
+/// primary level).
+pub struct SubBeam {
+    pub level: u8,
+    pub events: Vec<EventId>,
+}
+
+/// An authored beam-geometry override (defined schema major 2). Each
+/// present field overrides the engraver's computed geometry. Consumed
+/// by the Standard engraving tier; stored and preserved at every tier.
+pub struct BeamGeometryOverride {
+    /// Beam slope: staff spaces of rise per staff space of run
+    /// (dimensionless, hence not a SpaceUnit).
+    pub slope: Option<CanonicalF64>,
+    /// Vertical displacement of the beam from its default placement
+    /// (positive = up).
+    pub offset: Option<SpaceUnit>,
+}
 \end{lstlisting}
 
 \subsection{Spanners}
@@ -5061,10 +5277,16 @@ pub struct Spanner {
     /// lines spanning grand staff) target multiple.
     pub staves: Vec<StaffId>,
 
-    pub style: SpannerStyle,
+    /// Visual style (the shared SpanStyle record, schema major 2).
+    pub style: SpanStyle,
 }
 
 pub enum SpannerKind {
+    /// An unclassified spanning mark: renders as a plain line or
+    /// bracket. First variant deliberately (schema major 2): it is
+    /// the v1-to-v2 migration default -- a v1 spanner carried no
+    /// kind, and Generic is the honest translation of that absence.
+    Generic,
     Hairpin(HairpinDirection),
     OctaveLine(OctaveOffset),
     PedalLine(PedalKind),
@@ -5073,6 +5295,37 @@ pub enum SpannerKind {
     Portamento,
     TextLine(TextLineDefinition),
     Bracket(BracketKind),
+}
+
+/// Hairpin orientation (defined schema major 2).
+pub enum HairpinDirection {
+    Crescendo,
+    Diminuendo,
+}
+
+/// Octave-line displacement in signed octaves (defined schema
+/// major 2): +1 = 8va, -1 = 8vb, +2 = 15ma, -2 = 15mb. Zero is
+/// representable but degenerate; the authoring advisory layer flags
+/// it, reduction does not.
+pub struct OctaveOffset(pub i8);
+
+/// Pedal-line kind (defined schema major 2).
+pub enum PedalKind {
+    Sustain,
+    Sostenuto,
+    UnaCorda,
+}
+
+/// A text line's content (defined schema major 2); the dash pattern
+/// comes from the spanner's style.
+pub struct TextLineDefinition {
+    pub text: String,
+}
+
+/// A bracket spanner's shape (defined schema major 2). Growth is by
+/// appended variant.
+pub enum BracketKind {
+    Square,
 }
 \end{lstlisting}
 
@@ -5122,7 +5375,30 @@ pub enum RepeatKind {
     DalSegno { segno: TimeAnchor, end_target: TimeAnchor },
     Volta,
 }
+
+/// One volta bracket (defined schema major 2): the passes it applies
+/// on and the time span it covers. A RepeatStructure of kind Volta
+/// carries one entry per ending (e.g., a first ending Volta with
+/// endings = [1] and a second with endings = [2]).
+pub struct Volta {
+    /// The pass numbers this ending plays on (1-based), ascending.
+    pub endings: Vec<u32>,
+    pub start: TimeAnchor,
+    pub end: TimeAnchor,
+}
 \end{lstlisting}
+
+The \texttt{endings} constraints (non-empty, 1-based, strictly
+ascending) are \emph{advisory}, on the \texttt{OctaveOffset} pattern:
+a violating value is representable, decoders and reduction accept it,
+and the authoring validation layer flags it. Rendering treats an
+unlistable ending set as a plain bracket.
+
+The v1-to-v2 migration default for a kindless v1 repeat structure is
+\texttt{SimpleRepeat} with \texttt{count}~$=$~2: a v1
+\texttt{RepeatStructure} \emph{meant} a repeat, and playing the span
+twice is the conventional semantics of an unadorned repeat sign.
+Voltas default empty.
 
 \subsection{Analytical Annotations}
 
@@ -5625,12 +5901,15 @@ construct additional indexes provided they are kept consistent.
     representation is defined in Chapter~\ref{ch:layout-ir}.
   \item The on-disk serialization of every type introduced in this
     chapter is defined in Chapter~\ref{ch:format}.
-  \item Engraving-specific types (\texttt{StemConfiguration},
-    \texttt{ClefId}, \texttt{ArticulationMark}, \texttt{ClefChange},
-    \texttt{KeySignatureChange}, \texttt{LineStyle}, and similar)
-    are introduced informally here and fully defined in
-    Chapter~\ref{ch:layout-ir} where their interaction with the
-    engraver is specified.
+  \item Some engraving-specific types (\texttt{StemConfiguration},
+    \texttt{ArticulationMark}, and similar) are introduced informally
+    here and fully defined in Chapter~\ref{ch:layout-ir} where their
+    interaction with the engraver is specified. The clef/key content
+    model (\texttt{Clef}, \texttt{ClefShape}, \texttt{KeySignature},
+    \texttt{ClefChange}, \texttt{KeySignatureChange}) and
+    \texttt{LineStyle} are defined normatively \emph{in this chapter}
+    as of schema major~2; the former \texttt{ClefId} identifier sketch
+    is retired in favour of embedded \texttt{Clef} values.
 \end{itemize}
 
 % ===========================================================================
@@ -5871,6 +6150,9 @@ pub enum OperationKind {
     // Pitch and tuning operations
     RespellPitch(RespellPitchOp),
     Transpose(TransposeOp),
+    InsertIdentifiedPitch(InsertIdentifiedPitchOp),
+    DeleteIdentifiedPitch(DeleteIdentifiedPitchOp),
+    ModifyIdentifiedPitch(ModifyIdentifiedPitchOp),
 
     // Cross-cutting operations
     CreateCrossCutting(CreateCrossCuttingPayload),
@@ -5884,10 +6166,16 @@ pub enum OperationKind {
     InsertStaffInstance(InsertStaffInstanceOp),
     DeleteStaffInstance(DeleteStaffInstanceOp),
     InsertStaff(InsertStaffOp),
+    CreateVoice(CreateVoiceOp),
+    DeleteVoice(DeleteVoiceOp),
 
     // Metric-model operations
     SetTimeSignature(SetTimeSignatureOp),
     SetTempoSegment(SetTempoSegmentOp),
+    SetMetricGrid(SetMetricGridOp),
+
+    // Score settings
+    SetMetadata(SetMetadataOp),
 
     // Layout-semantic operations
     SetUserSystemBreak(SetUserSystemBreakOp),
@@ -10789,6 +11077,30 @@ above. It always discards the higher-major non-canonical caches. A major-1
 reader migrates a major-0 acceleration snapshot and a major-0
 \texttt{CreateRegion} payload on read (default-filling the new fields).
 
+Schema major~2 is the second data-model expansion major: it fills the
+truncated bodies of the cross-cutting structures (\texttt{Slur},
+\texttt{Tie}, \texttt{Beam}, \texttt{Spanner}), \texttt{RepeatStructure}
+(kind and voltas), \texttt{Staff} and \texttt{StaffLineConfiguration},
+\texttt{Instrument}, and \texttt{ScoreMetadata}, per this revision's
+Chapter~5 definitions. The same per-payload-type rules apply: the
+canonical-base \texttt{MaterializedState} embeds none of these values and
+stays major~0; the filled values reach the acceleration snapshot
+\emph{and}, through the seven operation payloads that embed them
+(\texttt{CreateCrossCutting}, \texttt{ModifyCrossCutting},
+\texttt{InsertStaff} and \texttt{InsertStaffInstance} (the Operation
+Catalog's \texttt{CreateStaff} / \texttt{CreateStaffInstance}),
+\texttt{SetStaffLayout}, \texttt{SetMetadata}, and --- transitively,
+because an embedded \texttt{Region} may carry a \texttt{StaffInstance}
+whose \texttt{staff\_lines\_override} embeds the filled
+\texttt{StaffLineConfiguration} --- \texttt{InsertRegion}
+(\texttt{CreateRegion})), the canonical operation layer. A block is
+stamped with the \emph{lowest} schema major whose layouts decode its
+bytes (the companion's minimal-stamping rule --- deterministic, so
+identical content hashes identically): any v2-dependent bytes make it
+major~2, and a lower-major-only reader opens such a bundle read-only. The wire form
+and the total default-filling v1${\to}$v2 migration are defined in the
+Binary Format companion.
+
 \section{Format Profiles}
 \label{sec:format:profiles}
 
@@ -14996,6 +15308,36 @@ layouts they own versus inherit:
   \texttt{OperationKindTag} listing gains the eleven appended tags. Companion
   movements: Operation Catalog 0.5.0~$\rightarrow$~0.6.0, Binary Format
   0.3.0~$\rightarrow$~0.4.0.
+  \\
+  \today & Schema major 2 (data-model expansion, Phase A) &
+  Defines the leaf types Chapter~5's ratified shapes referenced but never
+  pinned: \texttt{SlurKind}, \texttt{CurveDirection},
+  \texttt{CurvatureOverride}, the shared \texttt{SpanStyle} record
+  (consolidating the formerly-sketched identical
+  \texttt{SlurStyle}/\texttt{TieStyle}/\texttt{SpannerStyle} triplet),
+  \texttt{SubBeam}, \texttt{BeamGeometryOverride}, the
+  \texttt{SpannerKind} payload types (\texttt{HairpinDirection},
+  \texttt{OctaveOffset}, \texttt{PedalKind}, \texttt{TextLineDefinition},
+  \texttt{BracketKind}) --- \texttt{SpannerKind}
+  gains a leading \texttt{Generic} variant as the honest migration default
+  --- \texttt{Volta}, \texttt{MetadataValue}, \texttt{Timestamp},
+  \texttt{SoundConfiguration}, \texttt{TranspositionInterval} (structural,
+  advisory until the Chapter~4 tuning catalog per the P12-K2 discipline),
+  \texttt{UnpitchedMember}, \texttt{SpaceUnit}, \texttt{LineStyle}, and
+  \texttt{StaffBracketKind}. Ratifies the clef/key content model into
+  Chapter~5 (\texttt{Clef}, \texttt{ClefShape}, \texttt{KeySignature},
+  \texttt{ClefChange}, \texttt{KeySignatureChange} --- the visible-slice
+  value types) and retires the \texttt{ClefId} identifier sketch:
+  \texttt{Staff.default\_clef} and \texttt{Instrument.default\_clef} embed
+  \texttt{Clef} values, and \texttt{Instrument.default\_staff\_lines} is
+  reconciled from \texttt{u8} to \texttt{StaffLineConfiguration}. Metadata
+  timestamps are pinned strictly authored
+  (Requirement~\ref{req:graph:metadata-timestamps}: nothing writes them
+  implicitly). Chapter~8 gains the schema-major-2 paragraph (canonical base
+  stays major~0; the filled values reach the snapshot and the seven embedding
+  operation payloads, \texttt{InsertRegion} transitively). Wire forms and the
+  total default-filling migration: Binary Format companion
+  0.4.0~$\rightarrow$~0.5.0.
   \\
   \bottomrule
 \end{longtable}

@@ -235,7 +235,7 @@
   {\Large\scshape\color{epiphanyslate}Binary Format}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.4.0 --- Pass-12 G-ratification (appended effect-vocabulary discriminants; unsafe-edit tombstone encoding open question)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.5.0 --- Schema major 2 (data-model expansion: cross-cutting bodies, repeats/voltas, staff/instrument/metadata fills; total default-fill migration)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the byte layouts it defines}
   \vfill
 \end{titlepage}
@@ -1132,7 +1132,7 @@ The public per-value codec --- the seam between this document and the
 Operation Catalog's value-typed payloads (Operation Catalog,
 \sectionsc{Value-Typed Payloads}, requirement
 \texttt{req:catalog:value-encoding}) --- is defined for exactly these
-eighteen types:
+twenty-two types (the Phase-3 operation tranche added the last four):
 
 \begin{quote}
 \texttt{Event}, \texttt{Rest}, \texttt{Pitch}, \texttt{IdentifiedPitch},
@@ -1140,7 +1140,9 @@ eighteen types:
 \texttt{Spanner}, \texttt{RegionTimeModel}, \texttt{TimeAnchor},
 \texttt{Region}, \texttt{StaffInstance}, \texttt{Voice},
 \texttt{DecompositionAttachment}, \texttt{SpellingSourceKind},
-\texttt{ScoreMetadata}, \texttt{MetricGrid}.
+\texttt{ScoreMetadata}, \texttt{MetricGrid}, \texttt{Staff},
+\texttt{TimeSignature}, \texttt{TempoSegment},
+\texttt{StaffLineConfiguration}.
 \end{quote}
 
 The seam introduces \textbf{no new bytes}: a value's stand-alone canonical
@@ -2237,7 +2239,9 @@ governed by the Binary Format companion specification, which defines the
 wire encoding for each schema version''}). This chapter defines the wire
 rules for schema evolution. Chapters~\ref{ch:values}--\ref{ch:barriers}
 specify the schema-major-0 layouts; Section~\ref{sec:evolution:major1}
-specifies the schema-major-1 delta and the migration between them.
+specifies the schema-major-1 delta and the migration between them, and
+Section~\ref{sec:evolution:major2} the schema-major-2 delta and its
+migration from major~1.
 
 \section{The Chunk-Level Gate}
 \label{sec:evolution:gate}
@@ -2251,9 +2255,11 @@ Every chunk declares a \texttt{SchemaVersion} (major, minor) in its
     $[\textsc{min}, \textsc{max}]$ of majors and rejects any chunk whose major
     falls \emph{outside} $[\textsc{min}, \textsc{max}]$ --- too new (above
     \textsc{max}) or, once \textsc{min} rises past a retired major, too old
-    (Section~\ref{sec:evolution:major1}). Two majors are defined:
-    \tablenums{0} and \tablenums{1}; the reference implementation's accept-set
-    is $\{0, 1\}$ ($\textsc{min} = 0$, $\textsc{max} = 1$).
+    (Section~\ref{sec:evolution:major1}). Three majors are defined:
+    \tablenums{0}, \tablenums{1} (Section~\ref{sec:evolution:major1}), and
+    \tablenums{2} (Section~\ref{sec:evolution:major2}); the reference
+    implementation's accept-set is $\{0, 1, 2\}$ ($\textsc{min} = 0$,
+    $\textsc{max} = 2$).
   \item \textbf{Minor} = additive. v0 readers verify the major only; the
     minor is a \emph{record}, not a gate --- but it is a mandatory record:
     a writer \MUST{} raise the chunk schema minor when it emits any
@@ -2402,9 +2408,10 @@ discards the higher-major non-canonical caches.
 
 \subsection{The accept-set gate}
 A reader supports a contiguous set of majors $[\textsc{min}, \textsc{max}]$
-(the reference implementation: $\{0, 1\}$, i.e. $\textsc{min} = 0$,
-$\textsc{max} = 1$). The chunk-level gate
-(Section~\ref{sec:evolution:gate}) rejects a chunk whose major falls outside
+(at the major-1 revision the reference implementation's set was $\{0, 1\}$;
+the \emph{current} set is stated once, in
+Section~\ref{sec:evolution:gate}, and is not repeated here). The
+chunk-level gate rejects a chunk whose major falls outside
 $[\textsc{min}, \textsc{max}]$ --- too new above \textsc{max}, or too old
 below \textsc{min} once a reader drops support for a retired major; it no
 longer rejects on inequality with a single supported major.
@@ -2498,6 +2505,295 @@ context-dependent operation-payload migration of Section~\ref{sec:ops:v0}
 A reader migrates a major-0 acceleration \texttt{Score} snapshot on read
 (cheaper than replaying the operation log); a writer emits only major-1 forms
 for the changed payloads and leaves the canonical base at major~0.
+
+\section{Schema Major 2}
+\label{sec:evolution:major2}
+
+Schema major~2 is the second data-model expansion major: it fills the
+truncated bodies the v0 baseline deliberately staged to this companion ---
+the cross-cutting structures (\texttt{Slur}, \texttt{Tie}, \texttt{Beam},
+\texttt{Spanner}), \texttt{RepeatStructure}, \texttt{Staff} and
+\texttt{StaffLineConfiguration}, \texttt{Instrument}, and
+\texttt{ScoreMetadata} --- to the shapes the core specification's Chapter~5
+ratifies (schema-major-2 revision). The leaf types those shapes reference
+are defined in the same core revision; their wire layouts are below.
+
+\subsection{Where the changed fields reach}
+The major is assigned per payload type, exactly as in major~1:
+
+\begin{itemize}
+  \item \textbf{Snapshot-only:} \texttt{Instrument} (no operation embeds
+    one) and \texttt{RepeatStructure} (no operation embeds one \emph{at
+    this revision}; the repeat-authoring operations planned for the same
+    push are born at v2 and change nothing about lower majors). These
+    reach only the acceleration full-\texttt{Score} snapshot.
+  \item \textbf{Canonical operation layer:} seven existing operation
+    payloads embed filled values ---
+    \texttt{CreateCrossCutting} and \texttt{ModifyCrossCutting} (a
+    \texttt{CrossCuttingValue} embedding \texttt{Slur}, \texttt{Tie},
+    \texttt{Beam}, or \texttt{Spanner}); \texttt{CreateStaff} (a
+    \texttt{Staff}, which also embeds the filled
+    \texttt{StaffLineConfiguration}); \texttt{CreateStaffInstance} (a
+    \texttt{StaffInstance}, whose \texttt{staff\_lines\_override} embeds
+    it); \texttt{SetStaffLayout} (whose \emph{own}
+    \texttt{staff\_lines\_override} field --- an op-payload field, not
+    part of a \texttt{StaffInstance} --- embeds it); \texttt{SetMetadata}
+    (a \texttt{ScoreMetadata}); and \texttt{CreateRegion}
+    \emph{transitively} --- its embedded \texttt{Region} may carry
+    \texttt{StaffInstance}s (\texttt{content.staff\_instances}), each
+    embedding the filled \texttt{StaffLineConfiguration}. (Reduction
+    preconditions a \emph{carried} region to be empty of typed children,
+    but the byte form is representable and preserved in the canonical
+    set, so the wire must define it.)
+
+    \textbf{Minimal stamping.} A writer \MUST{} stamp each
+    operation-envelope block with the \emph{lowest} schema major whose
+    layouts decode the block's bytes to the encoded values. The stamp
+    is therefore a pure function of the block's values --- two
+    conforming writers stamp identical content identically, which the
+    content hash requires (the schema version is in the chunk-hash
+    preimage). This is the same principle the major-1 section applies
+    to the canonical base: byte-identical content \MUSTNOT{} be
+    re-stamped at a higher major. A payload whose higher-major encoding
+    coincides byte-for-byte with its lower-major form takes the lower
+    major; a hidden embedding site (an \texttt{Option} that is
+    \texttt{None}, an empty \texttt{Vec}) contributes nothing.
+    Concretely, the per-payload minimal majors at this revision:
+    \texttt{CreateCrossCutting} / \texttt{ModifyCrossCutting} /
+    \texttt{CreateStaff} / \texttt{SetMetadata} $\Rightarrow$ always
+    \textbf{2} (their v2 fills are mandatory appended fields);
+    \texttt{CreateRegion} $\Rightarrow$ \textbf{2} iff a carried staff
+    instance's \texttt{staff\_lines\_override} is \texttt{Some}, else
+    \textbf{1} (the major-1 bool is always present);
+    \texttt{CreateStaffInstance} / \texttt{SetStaffLayout}
+    $\Rightarrow$ \textbf{2} iff their \texttt{staff\_lines\_override}
+    is \texttt{Some}, else \textbf{0}; every other payload keeps its
+    prior major. A block stamps the maximum over its payloads.
+    (Operation names are the Operation Catalog's; core Chapter~6's
+    enum spells the creates \texttt{InsertStaff} /
+    \texttt{InsertStaffInstance} / \texttt{InsertRegion}.)
+  \item \textbf{The canonical base is unchanged.} The
+    \texttt{MaterializedState} embeds none of the filled types (its
+    values are effects, conflicts, anomalies, object states, pitch
+    spellings, break keys, and pending records), so it remains major~0,
+    byte-identical across the bump --- the same keystone as major~1, and
+    a conformance test \SHOULD{} assert it again.
+  \item The manifest stays major~0 (nothing here touches it).
+\end{itemize}
+
+\subsection{Cross-major reader behaviour}
+The major-1 rules extend unchanged: non-canonical chunks at a foreign
+major are discarded and regenerated (or migrated on read, for the
+acceleration snapshot); canonical chunks parse or the bundle opens
+read-only. Migration \emph{composes}: a major-2 reader migrates a major-0
+snapshot v0${\to}$v1${\to}$v2 in one read, each step total and
+default-filling. A major-1-only reader opens a bundle read-only iff it
+carries an op block bearing a v2 value; a major-0-only reader
+additionally on v1 \texttt{CreateRegion} blocks, as before.
+
+\emph{Staging note.} As with major~1, the reference implementation
+raises chunk admission \emph{per role} as the implementation phases of
+this revision's push land (snapshot decode, then the canonical
+operation layer); the accept-set stated in
+Section~\ref{sec:evolution:gate} is the ratified end-state, not a claim
+that every intermediate commit already admits it.
+
+\subsection{Changed value layouts}
+As in major~1, \textbf{the wire form ratifies the code, not the model's
+presentational field order}: a struct's v2 layout appends its new fields
+\emph{after its existing major-0/major-1 fields}, even where Chapter~5's
+listing interleaves them. Concretely (every leaf under
+Chapter~\ref{ch:values} regime~(a) rules: LE integers, one discriminant
+byte per union, \texttt{u32} counts and length prefixes, one presence
+byte per \texttt{Option}, one bare byte per bool):
+
+\begin{itemize}
+  \item \texttt{Slur} $=$ \texttt{id} \cat{} \texttt{start\_event} \cat{}
+    \texttt{end\_event} \cat{} \textbf{\texttt{kind}} \cat{}
+    \textbf{\texttt{curvature\_override}} \cat{} \textbf{\texttt{style}}.
+  \item \texttt{Tie} $=$ (major-0 fields) \cat{} \textbf{\texttt{style}}.
+  \item \texttt{Beam} $=$ \texttt{id} \cat{} \texttt{events} \cat{}
+    \texttt{level} \cat{} \textbf{\texttt{sub\_beams}} \cat{}
+    \textbf{\texttt{geometry\_override}}.
+  \item \texttt{Spanner} $=$ \texttt{id} \cat{} \texttt{start} \cat{}
+    \texttt{end} \cat{} \texttt{staves} \cat{} \textbf{\texttt{kind}}
+    \cat{} \textbf{\texttt{style}} (the kind appends \emph{after}
+    \texttt{staves}; Chapter~5 lists it second, presentationally).
+  \item \texttt{RepeatStructure} $=$ \texttt{id} \cat{} \texttt{start}
+    \cat{} \texttt{end} \cat{} \textbf{\texttt{kind}} \cat{}
+    \textbf{\texttt{voltas}}.
+  \item \texttt{Staff} $=$ \texttt{id} \cat{} \texttt{name} \cat{}
+    \texttt{abbreviation} \cat{} \texttt{instrument} \cat{}
+    \texttt{default\_staff\_lines} \cat{} \texttt{group} \cat{}
+    \textbf{\texttt{default\_clef}} (appended last; Chapter~5 lists it
+    mid-struct).
+  \item \texttt{StaffLineConfiguration} $=$ \texttt{line\_count} \cat{}
+    \textbf{\texttt{line\_spacing}} \cat{} \textbf{\texttt{line\_style}}
+    \cat{} \textbf{\texttt{bracket}}. This value is embedded by
+    \texttt{Staff} \emph{and} by
+    \texttt{StaffInstance.staff\_lines\_override}, which is how
+    \texttt{CreateStaffInstance}, \texttt{SetStaffLayout}, and
+    (transitively, through a carried region's staff instances)
+    \texttt{CreateRegion} become v2 payloads without gaining fields of
+    their own (the \texttt{CreateRegion}-in-major-1 pattern).
+  \item \texttt{Instrument} $=$ \texttt{id} \cat{} \texttt{name} \cat{}
+    \texttt{range} \cat{} \textbf{\texttt{abbreviation}} \cat{}
+    \textbf{\texttt{sound\_config}} \cat{}
+    \textbf{\texttt{transposition}} \cat{}
+    \textbf{\texttt{default\_clef}} \cat{}
+    \textbf{\texttt{default\_staff\_lines}} \cat{}
+    \textbf{\texttt{unpitched\_members}} (appended after the major-1
+    order \texttt{id}/\texttt{name}/\texttt{range}; Chapter~5's listing
+    order is presentational).
+  \item \texttt{ScoreMetadata} $=$ \texttt{title} \cat{}
+    \texttt{composer} \cat{} \texttt{copyright} \cat{}
+    \textbf{\texttt{subtitle}} \cat{} \textbf{\texttt{lyricist}} \cat{}
+    \textbf{\texttt{arranger}} \cat{}
+    \textbf{\texttt{creation\_timestamp}} \cat{}
+    \textbf{\texttt{modification\_timestamp}} \cat{}
+    \textbf{\texttt{additional}} (appended after the major-0 order).
+\end{itemize}
+
+\subsection{New leaf-type layouts}
+\begin{itemize}
+  \item \texttt{SlurKind}: one byte --- \tablenums{0} Legato,
+    \tablenums{1} Phrase, \tablenums{2} Articulation,
+    \tablenums{3} Editorial.
+  \item \texttt{CurveDirection}: one byte --- \tablenums{0} Above,
+    \tablenums{1} Below.
+  \item \texttt{CurvatureOverride} $=$ \texttt{direction}
+    (\texttt{Option<CurveDirection>}) \cat{} \texttt{height}
+    (\texttt{Option<SpaceUnit>}).
+  \item \texttt{LineStyle}: one byte --- \tablenums{0} Solid,
+    \tablenums{1} Dashed, \tablenums{2} Dotted.
+  \item \texttt{SpanStyle} (one shared record: \texttt{Slur.style},
+    \texttt{Tie.style}, \texttt{Spanner.style}) $=$ \texttt{line}
+    (\texttt{LineStyle}) \cat{} \texttt{thickness}
+    (\texttt{Option<SpaceUnit>}).
+  \item \texttt{SubBeam} $=$ \texttt{level} (one byte) \cat{}
+    \texttt{events} (\texttt{u32} count \cat{} \texttt{EventId}
+    \emph{leaves}, each \texttt{u32}-length-framed 16 canonical bytes
+    $= 20$ bytes --- this chapter's leaf framing, exactly as
+    \texttt{Beam.events} encodes today).
+  \item \texttt{BeamGeometryOverride} $=$ \texttt{slope}
+    (\texttt{Option<CanonicalF64>}; dimensionless) \cat{}
+    \texttt{offset} (\texttt{Option<SpaceUnit>}).
+  \item \texttt{SpannerKind}: discriminant byte \cat{} payload ---
+    \tablenums{0} Generic; \tablenums{1} Hairpin \cat{}
+    \texttt{HairpinDirection} (one byte: \tablenums{0} Crescendo,
+    \tablenums{1} Diminuendo); \tablenums{2} OctaveLine \cat{}
+    \texttt{OctaveOffset} (one \texttt{i8}); \tablenums{3} PedalLine
+    \cat{} \texttt{PedalKind} (one byte: \tablenums{0} Sustain,
+    \tablenums{1} Sostenuto, \tablenums{2} UnaCorda);
+    \tablenums{4} TrillExtension; \tablenums{5} Glissando;
+    \tablenums{6} Portamento; \tablenums{7} TextLine \cat{}
+    \texttt{TextLineDefinition} ($=$ one length-prefixed raw-UTF-8
+    string); \tablenums{8} Bracket \cat{} \texttt{BracketKind} (one
+    byte: \tablenums{0} Square).
+  \item \texttt{RepeatKind}: discriminant byte \cat{} payload ---
+    \tablenums{0} SimpleRepeat \cat{} \texttt{count} (\texttt{u32} LE);
+    \tablenums{1} DaCapo \cat{} \texttt{end\_target}
+    (\texttt{TimeAnchor}); \tablenums{2} DalSegno \cat{} \texttt{segno}
+    \cat{} \texttt{end\_target}; \tablenums{3} Volta.
+  \item \texttt{Volta} $=$ \texttt{endings} (\texttt{u32} count \cat{}
+    bare \texttt{u32} LE values --- fixed-width primitives are
+    unframed) \cat{} \texttt{start} \cat{} \texttt{end}
+    (\texttt{TimeAnchor}s).
+  \item \texttt{SpaceUnit} $=$ one \texttt{CanonicalF64}, leaf-framed
+    ($12$ bytes) --- byte-identical to how \texttt{CanonicalF64} itself
+    encodes; the newtype adds no bytes.
+  \item \texttt{StaffBracketKind}: one byte --- \tablenums{0} Brace,
+    \tablenums{1} Bracket.
+  \item \texttt{SoundConfiguration} $=$ \texttt{u32} length \cat{} raw
+    bytes (opaque; never interpreted by the core).
+  \item \texttt{TranspositionInterval} $=$ \texttt{diatonic\_steps}
+    (\texttt{i32} LE) \cat{} \texttt{chromatic\_steps} (\texttt{i32} LE).
+  \item \texttt{UnpitchedMember} $=$ \texttt{member} (bare \texttt{u32}
+    LE --- \texttt{UnpitchedMemberId} is an instrument-scoped small
+    value, \emph{not} a 128-bit object identifier, so the
+    identifier-leaf framing does not apply; this matches how
+    \texttt{UnpitchedEvent.instrument\_member} has encoded since
+    major~0) \cat{} \texttt{name} (string) \cat{}
+    \texttt{staff\_position} (bare \texttt{i16} LE, likewise).
+  \item \texttt{Timestamp} $=$ one \texttt{i64} LE (nanoseconds since
+    the Unix epoch, UTC).
+  \item \texttt{MetadataEntry} $=$ \texttt{key} (string) \cat{}
+    \texttt{value}; \texttt{MetadataValue}: discriminant byte \cat{}
+    payload --- \tablenums{0} Text \cat{} string; \tablenums{1} Integer
+    \cat{} \texttt{i64} LE; \tablenums{2} Flag \cat{} bool.
+  \item \texttt{Clef}, \texttt{ClefShape}, \texttt{KeySignature},
+    \texttt{ClefChange}, \texttt{KeySignatureChange} are \emph{not new
+    wire forms}: they have carried major-0 layouts since the
+    visible-slice revision (empty sequences left \texttt{Score} bytes
+    unchanged). Major~2 only \emph{embeds} \texttt{Clef} in two more
+    places (\texttt{Staff.default\_clef},
+    \texttt{Instrument.default\_clef}). Its layout, for the record:
+    \texttt{shape} (one byte: \tablenums{0} G, \tablenums{1} F,
+    \tablenums{2} C, \tablenums{3} Percussion) \cat{} \texttt{line}
+    (\texttt{i8}) \cat{} \texttt{octave\_shift} (\texttt{i8});
+    \texttt{KeySignature} $=$ \texttt{fifths} (\texttt{i8}; decoders
+    \MUST{} reject $|\texttt{fifths}| > 7$).
+\end{itemize}
+
+As in major~1: every embedded \emph{leaf} keeps this chapter's framing
+(an identifier is a \texttt{u32} LE length \cat{} its 16 canonical
+bytes $= 20$; a \texttt{CanonicalF64} is a \texttt{u32} LE length
+\cat{} 8 bytes $= 12$); fixed-width primitive integers and bools inside
+structs are bare; every \texttt{Option} is one presence byte then the
+payload when present.
+
+\subsection{Migration from major 1}
+Total and default-filling, needing no score context; composes after the
+major-1 migration for major-0 input. The defaults reproduce today's
+rendering exactly: a migrated document draws byte-identically.
+
+\begin{center}
+\begin{tabular}{p{1.9in} p{3.4in}}
+  \toprule
+  \textbf{major-1 form} & \textbf{major-2 form} \\
+  \midrule
+  \texttt{Slur} & append \texttt{kind} $=$ Legato,
+    \texttt{curvature\_override} $=$ \texttt{None}, \texttt{style} $=$
+    (Solid, \texttt{None}) \\
+  \texttt{Tie} & append \texttt{style} $=$ (Solid, \texttt{None}) \\
+  \texttt{Beam} & append \texttt{sub\_beams} $=$ empty,
+    \texttt{geometry\_override} $=$ \texttt{None} \\
+  \texttt{Spanner} & append \texttt{kind} $=$ Generic, \texttt{style}
+    $=$ (Solid, \texttt{None}) \\
+  \texttt{RepeatStructure} & append \texttt{kind} $=$ SimpleRepeat
+    \{count $=$ 2\} (a v1 repeat \emph{meant} a repeat), \texttt{voltas}
+    $=$ empty \\
+  \texttt{Staff} & append \texttt{default\_clef} $=$ treble
+    (G, line 2, shift 0) \\
+  \texttt{StaffLineConfiguration} & append \texttt{line\_spacing} $=$
+    1.0, \texttt{line\_style} $=$ Solid, \texttt{bracket} $=$
+    \texttt{None} --- at \emph{every} embedding site:
+    \texttt{Staff.default\_staff\_lines},
+    \texttt{Instrument.default\_staff\_lines} (v2-new),
+    \texttt{StaffInstance.staff\_lines\_override}, and the
+    \texttt{SetStaffLayout} op payload's own
+    \texttt{staff\_lines\_override} field \\
+  \texttt{Instrument} & append \texttt{abbreviation} $=$ \texttt{None},
+    \texttt{sound\_config} $=$ empty, \texttt{transposition} $=$
+    \texttt{None}, \texttt{default\_clef} $=$ treble,
+    \texttt{default\_staff\_lines} $=$ the complete v2 default
+    (\texttt{line\_count} $=$ 5, \texttt{line\_spacing} $=$ 1.0,
+    \texttt{line\_style} $=$ Solid, \texttt{bracket} $=$ \texttt{None}),
+    \texttt{unpitched\_members} $=$ empty \\
+  \texttt{ScoreMetadata} & append \texttt{subtitle} / \texttt{lyricist}
+    / \texttt{arranger} $=$ \texttt{None}, both timestamps $=$
+    \tablenums{0} (the unset convention), \texttt{additional} $=$
+    empty \\
+  the seven embedding op payloads (incl.\ \texttt{CreateRegion}'s
+    transitively embedded staff instances) & default-fill the embedded
+    value(s) as above; \emph{canonical} --- a v0/v1 op block migrates on
+    read, and a block bearing any v2-dependent bytes is major~2 (a
+    lower-major-only reader opens the bundle read-only) \\
+  canonical-base \texttt{MaterializedState} & unchanged, byte-identical,
+    stays major~0 \\
+  \bottomrule
+\end{tabular}
+\end{center}
 
 % ===========================================================================
 \chapter{Non-Canonical Pinned Encodings}
@@ -2803,6 +3099,29 @@ layouts of Section~\ref{sec:values:representative}.
   no existing assignment changed. Adds the unsafe-edit tombstone
   \emph{encoding} open question (from P12-E5; semantics ratified in core
   Chapter~8). Semantics: Operation Catalog 0.6.0. \\
+  \today & Schema evolution / Graph value layouts & 0.5.0 --- Defines
+  \textbf{schema major~2}, the second data-model expansion major
+  (Section~\ref{sec:evolution:major2}): fills the staged truncations ---
+  \texttt{Slur} (kind / curvature override / style), \texttt{Tie} (style),
+  \texttt{Beam} (sub-beams / geometry override), \texttt{Spanner} (kind,
+  with the leading \texttt{Generic} migration default / style),
+  \texttt{RepeatStructure} (kind / voltas), \texttt{Staff}
+  (\texttt{default\_clef}), \texttt{StaffLineConfiguration} (spacing /
+  line style / bracket), \texttt{Instrument} (six appended fields), and
+  \texttt{ScoreMetadata} (six appended fields incl.\ the
+  strictly-authored timestamps) --- with layouts for the new leaf types
+  and the total default-filling v1${\to}$v2 migration table. Assigns the
+  major per payload type: snapshot-only for \texttt{Instrument} /
+  \texttt{RepeatStructure}; \emph{canonical} for the seven embedding op
+  payloads (\texttt{Create}/\texttt{ModifyCrossCutting},
+  \texttt{CreateStaff}, \texttt{CreateStaffInstance},
+  \texttt{SetStaffLayout}, \texttt{SetMetadata}, and
+  \texttt{CreateRegion} transitively through carried staff instances);
+  the canonical base and manifest stay major~0, byte-identical.
+  Accept-set widens to $\{0, 1, 2\}$ (staged per role as the
+  implementation phases land). Semantics: core specification schema-major-2 revision
+  (leaf-type definitions, clef/key content-model ratification,
+  \texttt{ClefId} retirement, strictly-authored timestamp requirement). \\
 \bottomrule
 \end{longtable}
 
