@@ -221,6 +221,8 @@ fn precondition_reason(reader: &mut Reader<'_>) -> Result<PreconditionFailureRea
         )?)),
         10 => Ok(PreconditionFailureReason::ContainerNotEmpty),
         11 => Ok(PreconditionFailureReason::TempoMapMalformed),
+        12 => Ok(PreconditionFailureReason::SystemDerivedContentImmutable),
+        13 => Ok(PreconditionFailureReason::RecreateContentMismatch),
         tag => Err(MaterializedDecodeError::InvalidTag {
             kind: "PreconditionFailureReason",
             tag,
@@ -257,6 +259,7 @@ fn reanchor_reason(reader: &mut Reader<'_>) -> Result<ReanchorReason> {
             reader,
             ReanchorReasonRegistryId,
         )?)),
+        6 => Ok(ReanchorReason::SameCanvasNearer),
         tag => Err(MaterializedDecodeError::InvalidTag {
             kind: "ReanchorReason",
             tag,
@@ -598,6 +601,25 @@ mod tests {
             assert_eq!(decoded.canonical_bytes(), bytes);
             assert_eq!(decoded, state);
         }
+    }
+
+    #[test]
+    fn pass12_appended_discriminants_decode() {
+        assert_eq!(
+            exact(&[12], precondition_reason).unwrap(),
+            PreconditionFailureReason::SystemDerivedContentImmutable
+        );
+        assert_eq!(
+            exact(&[13], precondition_reason).unwrap(),
+            PreconditionFailureReason::RecreateContentMismatch
+        );
+        assert_eq!(
+            exact(&[6], reanchor_reason).unwrap(),
+            ReanchorReason::SameCanvasNearer
+        );
+        // The vocabularies stay bounded: one past the append rejects.
+        assert!(exact(&[14], precondition_reason).is_err());
+        assert!(exact(&[7], reanchor_reason).is_err());
     }
 
     #[test]

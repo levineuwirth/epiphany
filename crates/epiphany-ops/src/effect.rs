@@ -161,6 +161,16 @@ pub enum PreconditionFailureReason {
     ExtensionPrecondition(ExtensionPreconditionId),
     /// A registered precondition code from a versioned registry.
     Registered(PreconditionFailureRegistryId),
+    /// A modify would rewrite the intrinsic content of a `SYSTEM_DERIVED`-
+    /// namespace object in place, invalidating its content derivation
+    /// (Pass 12, P12-K3; core spec Ch5 §System-Derived Identifiers). The
+    /// sanctioned path is minting a replacement object.
+    SystemDerivedContentImmutable,
+    /// A create re-carried a live id with *differing* content
+    /// (operation_catalog §CreateStaff): the target is not missing, its
+    /// content disagrees (Pass 12, P12-K9 — replaces the `TargetMissing`
+    /// misnomer at the value-retaining re-create sites).
+    RecreateContentMismatch,
 }
 
 impl PreconditionFailureReason {
@@ -180,6 +190,9 @@ impl PreconditionFailureReason {
             PreconditionFailureReason::ContainerNotEmpty => 10,
             // Additive (Phase-3 tranche, SetTempoSegment); appended past 10.
             PreconditionFailureReason::TempoMapMalformed => 11,
+            // Additive (Pass-12 G-pass, P12-K3/P12-K9); appended past 11.
+            PreconditionFailureReason::SystemDerivedContentImmutable => 12,
+            PreconditionFailureReason::RecreateContentMismatch => 13,
         }
     }
 }
@@ -291,6 +304,11 @@ pub enum ReanchorReason {
     SameRegionNearer,
     ExplicitFallback,
     DeclaredByExtension(ReanchorReasonRegistryId),
+    /// A rank-4 (same-canvas) proximity survivor (Pass 12, P12-C4).
+    /// Semantically the next rung after `SameRegionNearer`; its wire
+    /// discriminant is 6 because `DeclaredByExtension` already owned 5
+    /// when it was appended.
+    SameCanvasNearer,
 }
 
 impl ReanchorReason {
@@ -302,6 +320,8 @@ impl ReanchorReason {
             ReanchorReason::SameRegionNearer => 3,
             ReanchorReason::ExplicitFallback => 4,
             ReanchorReason::DeclaredByExtension(_) => 5,
+            // Additive (Pass-12 G-pass, P12-C4); appended past 5.
+            ReanchorReason::SameCanvasNearer => 6,
         }
     }
 }
@@ -395,6 +415,32 @@ mod tests {
             reason: PreconditionFailureReason::TargetMissing,
         };
         assert_ne!(a.to_canonical_bytes(), b.to_canonical_bytes());
+    }
+
+    #[test]
+    fn pass12_appended_discriminants_are_locked() {
+        // Pass-12 G-pass appends (binary_format 0.4.0): the wire bytes are
+        // the appended discriminants, nothing prior moved.
+        assert_eq!(
+            PreconditionFailureReason::SystemDerivedContentImmutable.to_canonical_bytes(),
+            vec![12]
+        );
+        assert_eq!(
+            PreconditionFailureReason::RecreateContentMismatch.to_canonical_bytes(),
+            vec![13]
+        );
+        assert_eq!(
+            ReanchorReason::SameCanvasNearer.to_canonical_bytes(),
+            vec![6]
+        );
+        assert_eq!(
+            PreconditionFailureReason::TempoMapMalformed.to_canonical_bytes(),
+            vec![11]
+        );
+        assert_eq!(
+            ReanchorReason::ExplicitFallback.to_canonical_bytes(),
+            vec![4]
+        );
     }
 
     #[test]

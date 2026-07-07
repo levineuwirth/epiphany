@@ -410,7 +410,7 @@ pub fn conflict_registry(rng: &mut Rng) -> ConflictRegistry {
 
 /// A typed precondition failure (every core and registered variant).
 pub fn precondition_failure_reason(rng: &mut Rng) -> PreconditionFailureReason {
-    match rng.below(12) {
+    match rng.below(14) {
         0 => PreconditionFailureReason::TargetMissing,
         1 => PreconditionFailureReason::TargetTombstoned,
         2 => PreconditionFailureReason::WrongRegionTimeModel,
@@ -421,7 +421,9 @@ pub fn precondition_failure_reason(rng: &mut Rng) -> PreconditionFailureReason {
         7 => PreconditionFailureReason::VoiceMissing,
         8 => PreconditionFailureReason::ContainerNotEmpty,
         9 => PreconditionFailureReason::TempoMapMalformed,
-        10 => PreconditionFailureReason::ExtensionPrecondition(ExtensionPreconditionId(
+        10 => PreconditionFailureReason::SystemDerivedContentImmutable,
+        11 => PreconditionFailureReason::RecreateContentMismatch,
+        12 => PreconditionFailureReason::ExtensionPrecondition(ExtensionPreconditionId(
             rng.next_u64() as u128,
         )),
         _ => PreconditionFailureReason::Registered(PreconditionFailureRegistryId(
@@ -447,12 +449,13 @@ pub fn no_op_reason(rng: &mut Rng) -> NoOpReason {
 
 /// A re-anchor reason covering every variant.
 pub fn reanchor_reason(rng: &mut Rng) -> ReanchorReason {
-    match rng.below(6) {
+    match rng.below(7) {
         0 => ReanchorReason::SameVoiceNearer,
         1 => ReanchorReason::SameStaffInstanceNearer,
         2 => ReanchorReason::SameStaffNearer,
         3 => ReanchorReason::SameRegionNearer,
         4 => ReanchorReason::ExplicitFallback,
+        5 => ReanchorReason::SameCanvasNearer,
         _ => ReanchorReason::DeclaredByExtension(ReanchorReasonRegistryId(rng.next_u64() as u128)),
     }
 }

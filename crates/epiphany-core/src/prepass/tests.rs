@@ -1149,6 +1149,185 @@ fn inferred_source_attachment_does_not_outrank_the_prepass() {
 }
 
 #[test]
+fn authored_decomposition_surfaces_for_an_ungriddable_event_p12_h7() {
+    // req:pitch:authored-uninferred (Pass 12, P12-H7): an authored attachment
+    // targeting an event the pre-pass cannot infer for (off-grid position →
+    // ungriddable) surfaces as the resolved annotation on its own, counted in
+    // the dedicated authored-uninferred bucket.
+    let mut captured = None;
+    let mut score = metric_score(|idc, voice| {
+        let eid = idc.mint();
+        captured = Some(eid);
+        let pid = idc.mint::<PitchId>();
+        let ev = pitched(
+            eid,
+            voice,
+            r(1, 3), // off-grid (non-dyadic) position → nothing inferred
+            r(1, 4),
+            vec![IdentifiedPitch {
+                id: pid,
+                pitch: integer_pitch(48),
+            }],
+        );
+        (vec![ev], vec![])
+    });
+    let eid = captured.expect("event minted");
+    let authored = DecompositionAttachment {
+        target: eid,
+        components: vec![NotatedComponent {
+            base_value: NoteValue::Quarter,
+            dots: 0,
+            tuplet: None,
+            tied_to_next: false,
+        }],
+        source: DecompositionSource::UserChosen,
+    };
+    score.decomposition_attachments.push(authored.clone());
+
+    let ann = derive_annotations(&score, &PrePassProfile::default());
+    assert_eq!(
+        ann.decompositions[&eid], authored,
+        "the authored attachment surfaces on its own"
+    );
+    assert_eq!(
+        ann.taxonomy.decomposition_ungriddable, 1,
+        "the event is still honestly classified ungriddable"
+    );
+    assert_eq!(ann.taxonomy.decompositions_authored_uninferred, 1);
+    assert_eq!(
+        ann.taxonomy.decompositions_authored, 0,
+        "not an override — there was nothing inferred to override"
+    );
+    assert_eq!(
+        ann.decompositions.len(),
+        ann.taxonomy.decompositions_inferred
+            + ann.taxonomy.decompositions_authored
+            + ann.taxonomy.decompositions_authored_uninferred,
+        "the harness accounting identity holds"
+    );
+}
+
+#[test]
+fn inferred_source_attachment_does_not_surface_for_ineligible_events_p12_h7() {
+    // The rank gate holds on the authored-only path too: a stored attachment
+    // whose source is `Inferred` does not outrank the pre-pass, so it does
+    // not surface for an inference-ineligible event either.
+    let mut captured = None;
+    let mut score = metric_score(|idc, voice| {
+        let eid = idc.mint();
+        captured = Some(eid);
+        let pid = idc.mint::<PitchId>();
+        let ev = pitched(
+            eid,
+            voice,
+            r(1, 3),
+            r(1, 4),
+            vec![IdentifiedPitch {
+                id: pid,
+                pitch: integer_pitch(48),
+            }],
+        );
+        (vec![ev], vec![])
+    });
+    let eid = captured.expect("event minted");
+    score
+        .decomposition_attachments
+        .push(DecompositionAttachment {
+            target: eid,
+            components: vec![NotatedComponent {
+                base_value: NoteValue::Quarter,
+                dots: 0,
+                tuplet: None,
+                tied_to_next: false,
+            }],
+            source: DecompositionSource::Inferred,
+        });
+
+    let ann = derive_annotations(&score, &PrePassProfile::default());
+    assert!(
+        !ann.decompositions.contains_key(&eid),
+        "an Inferred-source attachment does not surface"
+    );
+    assert_eq!(ann.taxonomy.decompositions_authored_uninferred, 0);
+}
+
+#[test]
+fn authored_spelling_surfaces_for_an_unavailable_pitch_p12_h7() {
+    // The spelling mirror of the surfacing rule: an authored explicit
+    // attachment on a pitch whose pitch space declares spelling unavailable
+    // (JI) surfaces with authored provenance; an attachment targeting a pitch
+    // absent from the score stays diagnostic-only. The derivation stays
+    // deterministic (byte-equal fingerprints).
+    let mut captured = None;
+    let mut score = metric_score(|idc, voice| {
+        let eid = idc.mint();
+        let pid = idc.mint::<PitchId>();
+        captured = Some(pid);
+        let ev = pitched(
+            eid,
+            voice,
+            r(0, 4),
+            r(1, 4),
+            vec![IdentifiedPitch {
+                id: pid,
+                pitch: ji_pitch(),
+            }],
+        );
+        (vec![ev], vec![])
+    });
+    let pid = captured.expect("pitch minted");
+    let authored_spelling = PitchSpelling {
+        nominal: SpellingNominal::Cmn(CmnNominal::D),
+        accidentals: vec![AccidentalId::new("flat")],
+        octave: 4,
+        render_hints: Default::default(),
+    };
+    score.spelling_attachments.push(SpellingAttachment {
+        scope: SpellingScope::Pitch(pid),
+        directive: SpellingDirective::Explicit(authored_spelling.clone()),
+        source: SpellingSource::UserChosen,
+        priority: 0,
+        layer: None,
+    });
+    // A second attachment targeting a pitch that exists nowhere in the score:
+    // preserved canonical state, but it surfaces no annotation.
+    let dangling = PitchId::new(ReplicaId(0xD00D), 1);
+    score.spelling_attachments.push(SpellingAttachment {
+        scope: SpellingScope::Pitch(dangling),
+        directive: SpellingDirective::Explicit(authored_spelling.clone()),
+        source: SpellingSource::UserChosen,
+        priority: 0,
+        layer: None,
+    });
+
+    let ann = derive_annotations(&score, &PrePassProfile::default());
+    let resolved = ann
+        .spellings
+        .get(&pid)
+        .expect("the authored spelling surfaces for the unavailable pitch");
+    assert_eq!(resolved.spelling, authored_spelling);
+    assert_eq!(
+        resolved.provenance,
+        SpellingProvenance::Authored(crate::pitch::SpellingSourceKind::UserChosen)
+    );
+    assert_eq!(ann.taxonomy.spellings_authored_uninferred, 1);
+    assert_eq!(
+        ann.taxonomy.spelling_unavailable, 1,
+        "the pitch is still honestly classified unavailable"
+    );
+    assert!(
+        !ann.spellings.contains_key(&dangling),
+        "an attachment on an absent pitch surfaces nothing"
+    );
+    let again = derive_annotations(&score, &PrePassProfile::default());
+    assert_eq!(
+        ann.canonical_fingerprint(),
+        again.canonical_fingerprint(),
+        "the surfacing path is deterministic"
+    );
+}
+
+#[test]
 fn decomposition_precedence_ranks_sources_then_canonical_order() {
     // UserChosen outranks Imported regardless of attachment order (the spec's
     // default precedence over the decomposition sources)...
@@ -1210,14 +1389,14 @@ fn derivation_with_authored_decomposition_is_deterministic() {
 }
 
 #[test]
-fn authored_attachment_on_an_ungriddable_event_does_not_surface() {
-    // The resolution step mirrors the spelling side: it layers authored
-    // overrides above the pre-pass's *inferred* output. An event the pre-pass
-    // cannot grid emits nothing to override, so an authored attachment for it
-    // stays in canonical score state without surfacing as a derived annotation,
-    // and the event stays honestly counted as ungriddable. (Whether authored
-    // decompositions should surface for events the algorithm cannot infer for
-    // is a Pass-12 question — see DECISIONS.md.)
+fn authored_attachment_on_an_ungriddable_event_surfaces_p12_h7() {
+    // The Pass-12 question this test used to park is DECIDED
+    // (`req:pitch:authored-uninferred`, P12-H7): an authored attachment on an
+    // event the pre-pass cannot grid SURFACES as the resolved annotation on
+    // its own — the pre-decision behavior (staying canonical-but-invisible)
+    // is the one this revision reverses. The event stays honestly counted
+    // ungriddable; the surfacing is counted in the authored-uninferred
+    // bucket, not as an override.
     let mut ids = Vec::new();
     let mut score = metric_score(|idc, voice| {
         let eid = idc.mint();
@@ -1235,13 +1414,17 @@ fn authored_attachment_on_an_ungriddable_event_does_not_surface() {
         );
         (vec![ev], vec![])
     });
-    score
-        .decomposition_attachments
-        .push(tied_quarters(ids[0], DecompositionSource::UserChosen));
+    let authored = tied_quarters(ids[0], DecompositionSource::UserChosen);
+    score.decomposition_attachments.push(authored.clone());
 
     let ann = derive_annotations(&score, &PrePassProfile::default());
-    assert!(ann.decompositions.is_empty());
+    assert_eq!(
+        ann.decompositions.get(&ids[0]),
+        Some(&authored),
+        "the authored attachment surfaces (P12-H7)"
+    );
     assert_eq!(ann.taxonomy.decomposition_ungriddable, 1);
+    assert_eq!(ann.taxonomy.decompositions_authored_uninferred, 1);
     assert_eq!(ann.taxonomy.decompositions_authored, 0);
     assert_eq!(ann.taxonomy.decompositions_inferred, 0);
 }

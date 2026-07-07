@@ -940,3 +940,38 @@ selection function). Decided with code to land in the G-pass code tranche:
 already `DeclaredByExtension`). **K8** retired: genesis is outside the
 operation set (catalog K1 slots removed, core Ch5 states it). Catalog
 0.5.0 → 0.6.0; Binary Format 0.3.0 → 0.4.0.
+
+### G-pass code-tranche review findings (2026-07-07, all fixed before commit)
+
+A high-effort review of the code tranche confirmed three correctness findings,
+each fixed with a regression test:
+
+1. **Transpose bypassed P12-K3** — it shifted a `SYSTEM_DERIVED` pitch's
+   alteration in place, desynchronizing content from the id's derivation
+   inputs and making the K3 verdict depend on where a snapshot was cut
+   (a full replay's registry holds the mint content; a post-transpose
+   snapshot's holds the shifted content). Fixed: system-derived targets are
+   **skipped** like tombstoned ones (id-namespace filter, so base-free and
+   graph-aware reduction agree); an all-system-derived transpose reduces as
+   `SystemDerivedContentImmutable`. Catalog §Transpose updated.
+2. **Unestablished rank-4 re-anchors were relabeled `SameCanvasNearer`** —
+   `containment_rank` returns 4 both for the established same-canvas case and
+   as the fallthrough when a voice's placement is unresolvable; the P12-C4
+   append must not launder the latter into a positive proximity claim. Fixed:
+   recording routes through `rank_reason`, which downgrades an unestablished
+   4 to the honest `ExplicitFallback`; **selection order is unchanged** (the
+   rank still compares as 4).
+3. **Vocabulary generators lagged the appends** — testkit
+   `precondition_failure_reason`/`reanchor_reason` never emitted discriminants
+   12/13/6, so fuzz gates could not catch a renumbering regression. Fixed.
+
+**Pass-13 candidate (P13-K1, filed not fixed):** the K3 verdict for a system
+pitch *introduced by a ModifyEvent replacement value* (never minted — the
+collision pre-walk deliberately excludes ModifyEvent) differs across a
+snapshot cut: in-session the pitch is not Live (`TargetMissing`); after a
+snapshot re-seeds objects + registry from the base graph, the same modify
+reads `SystemDerivedContentImmutable`. The asymmetry **predates K3** (the
+same split previously read `TargetMissing` vs a silent `Applied` rewrite) and
+is a ModifyEvent-introduction question — whether a replacement value may
+introduce never-minted pitch ids at all — batched for Pass 13, not
+improvised here.

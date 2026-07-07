@@ -116,6 +116,11 @@ pub struct TaxonomyReport {
     /// Pitches whose pitch space declares spelling unavailable (non-`cmn-12`-
     /// determinable positions: JI vectors, non-12 EDOs, registered grammars).
     pub spelling_unavailable: usize,
+    /// Pitches the algorithm produced *no* inferred spelling for whose
+    /// annotation is an authored attachment surfacing on its own
+    /// (`req:pitch:authored-uninferred`, Pass 12 P12-H7). Counted distinctly
+    /// from `spellings_authored` (an authored *override* of inferred output).
+    pub spellings_authored_uninferred: usize,
 
     // --- Decomposition outcomes (over events). ---
     /// Eligible events whose effective decomposition is the pre-pass's inferred
@@ -142,6 +147,12 @@ pub struct TaxonomyReport {
     /// skipped rather than mis-rendered. Expected to be zero for well-formed
     /// metric input.
     pub decomposition_ungriddable: usize,
+    /// Events the pre-pass produced *no* inferred decomposition for
+    /// (ungriddable, non-metric, non-musical, or an inapplicable kind) whose
+    /// annotation is an authored attachment surfacing on its own
+    /// (`req:pitch:authored-uninferred`, Pass 12 P12-H7). Counted distinctly
+    /// from `decompositions_authored` (an authored *override*).
+    pub decompositions_authored_uninferred: usize,
 }
 
 /// The canonical derived annotations for a score under a profile: the effective
@@ -206,12 +217,14 @@ impl DerivedAnnotations {
             t.spellings_inferred,
             t.spellings_authored,
             t.spelling_unavailable,
+            t.spellings_authored_uninferred,
             t.decompositions_inferred,
             t.decompositions_authored,
             t.decomposition_skipped_nonmusical,
             t.decomposition_deferred_nonmetric,
             t.decomposition_inapplicable,
             t.decomposition_ungriddable,
+            t.decompositions_authored_uninferred,
         ] {
             out.extend_from_slice(&(count as u64).to_le_bytes());
         }
@@ -267,6 +280,35 @@ pub fn derive_annotations(score: &Score, profile: &PrePassProfile) -> DerivedAnn
             }
             spellings.insert(pid, resolved);
         }
+        // Authored spellings for pitches the algorithm produced *no* inferred
+        // spelling for (`req:pitch:authored-uninferred`, Pass 12 P12-H7): the
+        // winning authored attachment surfaces on its own — an authored
+        // attachment is precisely how a user notates what the algorithm
+        // cannot infer, and the derived-annotation surface must not render it
+        // invisible. Only pitches that exist in the score surface (an
+        // attachment in tombstoned-target state stays diagnostic-only).
+        // Candidates come from the attachments first, so the common
+        // no-attachments case never walks the arena for the liveness set.
+        let mut uninferred: BTreeSet<PitchId> = BTreeSet::new();
+        for att in &score.spelling_attachments {
+            if let SpellingScope::Pitch(p) = &att.scope {
+                if !spellings.contains_key(p) {
+                    uninferred.insert(*p);
+                }
+            }
+        }
+        if !uninferred.is_empty() {
+            let live_pitches = score.live_pitch_ids();
+            for pid in uninferred {
+                if !live_pitches.contains(&pid) {
+                    continue;
+                }
+                if let Some(resolved) = best_authored_spelling(score, pid, precedence) {
+                    taxonomy.spellings_authored_uninferred += 1;
+                    spellings.insert(pid, resolved);
+                }
+            }
+        }
     }
 
     // --- Decomposition pre-pass. ---
@@ -280,6 +322,23 @@ pub fn derive_annotations(score: &Score, profile: &PrePassProfile) -> DerivedAnn
                 _ => taxonomy.decompositions_authored += 1,
             }
             decompositions.insert(eid, resolved);
+        }
+        // Authored decompositions for events the pre-pass produced *no*
+        // inferred decomposition for — ungriddable, non-metric, non-musical,
+        // or an inapplicable kind (`req:pitch:authored-uninferred`, Pass 12
+        // P12-H7). Mirrors the spelling surfacing above; only events that
+        // exist in the score surface.
+        let mut uninferred: BTreeSet<EventId> = BTreeSet::new();
+        for att in &score.decomposition_attachments {
+            if !decompositions.contains_key(&att.target) && score.events.get(att.target).is_some() {
+                uninferred.insert(att.target);
+            }
+        }
+        for eid in uninferred {
+            if let Some(resolved) = best_authored_decomposition(score, eid) {
+                taxonomy.decompositions_authored_uninferred += 1;
+                decompositions.insert(eid, resolved);
+            }
         }
     }
 
@@ -722,12 +781,30 @@ pub fn resolve_spelling(
     inferred: PitchSpelling,
     precedence: &SpellingPrecedence,
 ) -> ResolvedSpelling {
+    match best_authored_spelling(score, pitch, precedence) {
+        Some(resolved) => resolved,
+        None => ResolvedSpelling {
+            spelling: inferred,
+            provenance: SpellingProvenance::Inferred,
+        },
+    }
+}
+
+/// The winning authored spelling for `pitch`, if any: engraved layer,
+/// pitch-scoped, explicit, source outranking [`SpellingSourceKind::Inferred`]
+/// in `precedence`. Among candidates, lowest precedence rank wins, then
+/// highest priority; a remaining tie keeps the first candidate in the score's
+/// `spelling_attachments` order, which is canonical (codec-fixed), so the
+/// resolution is deterministic across replicas. Shared by
+/// [`resolve_spelling`] (authored *override* of an inferred spelling) and the
+/// authored-only surfacing path for inference-ineligible pitches
+/// (`req:pitch:authored-uninferred`, Pass 12 P12-H7).
+fn best_authored_spelling(
+    score: &Score,
+    pitch: PitchId,
+    precedence: &SpellingPrecedence,
+) -> Option<ResolvedSpelling> {
     let inferred_rank = precedence.rank(SpellingSourceKind::Inferred);
-    // The best authored override: engraved layer, pitch-scoped, explicit, source
-    // outranking Inferred. Among candidates, lowest precedence rank wins, then
-    // highest priority; a remaining tie keeps the first candidate in the score's
-    // `spelling_attachments` order, which is canonical (codec-fixed), so the
-    // resolution is deterministic across replicas.
     let mut best: Option<(usize, i32, &SpellingAttachment)> = None;
     for att in &score.spelling_attachments {
         if att.layer.is_some() {
@@ -760,22 +837,16 @@ pub fn resolve_spelling(
         };
     }
 
-    match best {
-        Some((_, _, att)) => {
-            if let SpellingDirective::Explicit(spelling) = &att.directive {
-                ResolvedSpelling {
-                    spelling: spelling.clone(),
-                    provenance: SpellingProvenance::Authored(att.source.kind()),
-                }
-            } else {
-                unreachable!("filtered to Explicit directives")
+    best.map(|(_, _, att)| {
+        if let SpellingDirective::Explicit(spelling) = &att.directive {
+            ResolvedSpelling {
+                spelling: spelling.clone(),
+                provenance: SpellingProvenance::Authored(att.source.kind()),
             }
+        } else {
+            unreachable!("filtered to Explicit directives")
         }
-        None => ResolvedSpelling {
-            spelling: inferred,
-            provenance: SpellingProvenance::Inferred,
-        },
-    }
+    })
 }
 
 // ===========================================================================
@@ -1195,6 +1266,17 @@ pub fn resolve_decomposition(
     event: EventId,
     inferred: DecompositionAttachment,
 ) -> DecompositionAttachment {
+    best_authored_decomposition(score, event).unwrap_or(inferred)
+}
+
+/// The winning authored decomposition for `event`, if any: source outranking
+/// [`DecompositionSource::Inferred`] under the fixed default order (ratified
+/// Pass 12, P12-H6 — decomposition precedence is not configurable); lowest
+/// rank wins; a full tie keeps the earlier attachment in the score's
+/// canonical `decomposition_attachments` order. Shared by
+/// [`resolve_decomposition`] (authored *override*) and the authored-only
+/// surfacing path for inference-ineligible events (Pass 12 P12-H7).
+fn best_authored_decomposition(score: &Score, event: EventId) -> Option<DecompositionAttachment> {
     let inferred_rank = decomposition_source_rank(&DecompositionSource::Inferred);
     let mut best: Option<(usize, &DecompositionAttachment)> = None;
     for att in &score.decomposition_attachments {
@@ -1218,10 +1300,7 @@ pub fn resolve_decomposition(
             }
         };
     }
-    match best {
-        Some((_, att)) => att.clone(),
-        None => inferred,
-    }
+    best.map(|(_, att)| att.clone())
 }
 
 #[cfg(test)]

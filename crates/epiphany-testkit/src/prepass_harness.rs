@@ -28,10 +28,10 @@
 //!   5 keeps passing with non-trivial pre-pass outputs downstream.
 
 use epiphany_core::{
-    derive_annotations, AccidentalId, AnalysisLayerId, CmnNominal, DerivedAnnotations, Event,
-    EventDuration, MusicalDuration, PitchSpelling, PrePassProfile, RationalTime, Score,
-    SpellingAttachment, SpellingDirective, SpellingNominal, SpellingProvenance, SpellingScope,
-    SpellingSource, SpellingSourceKind,
+    derive_annotations, AccidentalId, AnalysisLayerId, CmnNominal, DecompositionSource,
+    DerivedAnnotations, Event, EventDuration, MusicalDuration, PitchSpelling, PrePassProfile,
+    RationalTime, Score, SpellingAttachment, SpellingDirective, SpellingNominal,
+    SpellingProvenance, SpellingScope, SpellingSource, SpellingSourceKind,
 };
 
 use crate::corpus;
@@ -119,18 +119,26 @@ fn spelling_pitch_class(s: &PitchSpelling) -> Option<i32> {
 }
 
 /// Every *eligible* embedded pitch carries a non-trivial spelling that realizes
-/// its 12-TET pitch class; every spelling-unavailable pitch is left unspelled.
+/// its 12-TET pitch class. A spelling-unavailable pitch is never spelled by the
+/// *algorithm*, but an authored attachment MAY surface for it
+/// (`req:pitch:authored-uninferred`, Pass 12 P12-H7).
 pub fn assert_eligible_pitches_spelled(score: &Score, ann: &DerivedAnnotations) {
     for e in score.events.iter() {
         let mut pitches = Vec::new();
         e.collect_identified_pitches(&mut pitches);
         for ip in pitches {
             match ip.pitch.twelve_tet_class() {
-                None => assert!(
-                    !ann.spellings.contains_key(&ip.id),
-                    "spelling-unavailable pitch {:?} was spelled anyway",
-                    ip.id
-                ),
+                None => {
+                    // P12-H7: an authored spelling may surface for an
+                    // unavailable pitch; an *inferred* one is still a bug.
+                    if let Some(rs) = ann.spellings.get(&ip.id) {
+                        assert!(
+                            matches!(rs.provenance, SpellingProvenance::Authored(_)),
+                            "spelling-unavailable pitch {:?} was inferred-spelled anyway",
+                            ip.id
+                        );
+                    }
+                }
                 Some(class) => {
                     let rs = ann.spellings.get(&ip.id).unwrap_or_else(|| {
                         panic!(
@@ -175,9 +183,15 @@ pub fn assert_eligible_pitches_spelled(score: &Score, ann: &DerivedAnnotations) 
     }
 }
 
-/// Every decomposition H emits targets a decomposable event, has a consistent
-/// tie chain, and its components' **sounding** durations reconstruct the event's
-/// musical duration exactly (Chapter 3 invariant 15), recomputed independently.
+/// Every decomposition H's *algorithm* emits targets a decomposable event, has
+/// a consistent tie chain, and its components' **sounding** durations
+/// reconstruct the event's musical duration exactly (Chapter 3 invariant 15),
+/// recomputed independently. Authored entries (overrides and the P12-H7
+/// authored-uninferred surfacings) are exempt from the algorithm-output
+/// invariants: P12-H7 deliberately admits inference-ineligible targets
+/// (non-decomposable kinds, non-musical durations, ungriddable spans), and
+/// authored well-formedness is invariant 15's graph-level jurisdiction, not
+/// the pre-pass gate's.
 pub fn assert_decompositions_reconstruct(score: &Score, ann: &DerivedAnnotations) {
     for (eid, d) in &ann.decompositions {
         assert_eq!(
@@ -191,6 +205,12 @@ pub fn assert_decompositions_reconstruct(score: &Score, ann: &DerivedAnnotations
             .events
             .get(*eid)
             .unwrap_or_else(|| panic!("decomposition targets non-live event {eid:?}"));
+        if !matches!(d.source, DecompositionSource::Inferred) {
+            // Authored entry: surfaced under precedence (override) or P12-H7
+            // (authored-uninferred). The remaining checks are algorithm-output
+            // guarantees and do not apply.
+            continue;
+        }
         assert!(
             matches!(ev, Event::Pitched(_) | Event::Unpitched(_) | Event::Rest(_)),
             "decomposition targets a non-decomposable event kind ({eid:?})"
@@ -232,10 +252,14 @@ pub fn assert_decompositions_reconstruct(score: &Score, ann: &DerivedAnnotations
     // Map and taxonomy counts agree: the effective map is exactly the inferred
     // plus authored-override outcomes (an authored `DecompositionAttachment`
     // outranking `Inferred` replaces the derived one and is counted
-    // distinctly, mirroring the spelling buckets).
+    // distinctly, mirroring the spelling buckets), plus authored-only
+    // surfacings for inference-ineligible events (Pass 12 P12-H7,
+    // `req:pitch:authored-uninferred`).
     assert_eq!(
         ann.decompositions.len(),
-        ann.taxonomy.decompositions_inferred + ann.taxonomy.decompositions_authored,
+        ann.taxonomy.decompositions_inferred
+            + ann.taxonomy.decompositions_authored
+            + ann.taxonomy.decompositions_authored_uninferred,
         "decomposition map size disagrees with the taxonomy counts"
     );
 }

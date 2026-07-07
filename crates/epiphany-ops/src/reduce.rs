@@ -1088,17 +1088,21 @@ struct ReferentContext {
 /// staff instance are excluded from "nearest".
 const PROXIMITY_SAME_STAFF_INSTANCE: u8 = 1;
 
-/// Maps an achieved containment-proximity rank (k1 of the "nearest" ordering)
-/// to the ratified [`ReanchorReason`] vocabulary. Rank 4 (same canvas) has no
-/// ratified reason variant, so a beyond-region survivor is recorded as the
-/// explicit fallback rather than appending a new discriminant (see
-/// DECISIONS.md — a spec-vocabulary question, batched for Pass 12).
+/// Maps an *established* containment-proximity rank (k1 of the "nearest"
+/// ordering) to the ratified [`ReanchorReason`] vocabulary. Rank 4 (same
+/// canvas) records the appended `SameCanvasNearer` (Pass 12, P12-C4; wire
+/// discriminant 6 — `DeclaredByExtension` already owned 5). Callers with a
+/// possibly-*unestablished* rank 4 — `containment_rank` also returns 4 when a
+/// voice's placement is unresolvable, a selection-order tie the recording
+/// must not launder into a positive proximity claim — route through
+/// [`Reduction::rank_reason`], which downgrades those to `ExplicitFallback`.
 fn reason_for_rank(rank: u8) -> ReanchorReason {
     match rank {
         0 => ReanchorReason::SameVoiceNearer,
         1 => ReanchorReason::SameStaffInstanceNearer,
         2 => ReanchorReason::SameStaffNearer,
         3 => ReanchorReason::SameRegionNearer,
+        4 => ReanchorReason::SameCanvasNearer,
         _ => ReanchorReason::ExplicitFallback,
     }
 }
@@ -3475,7 +3479,7 @@ impl<'a> Reducer<'a> {
                 } else {
                     OperationEffect::NoOp {
                         reason: NoOpReason::PreconditionFailedUnderReduction {
-                            reason: PreconditionFailureReason::TargetMissing,
+                            reason: PreconditionFailureReason::RecreateContentMismatch,
                         },
                     }
                 };
@@ -3544,7 +3548,7 @@ impl<'a> Reducer<'a> {
                 } else {
                     Err(OperationEffect::NoOp {
                         reason: NoOpReason::PreconditionFailedUnderReduction {
-                            reason: PreconditionFailureReason::TargetMissing,
+                            reason: PreconditionFailureReason::RecreateContentMismatch,
                         },
                     })
                 }
@@ -4985,6 +4989,37 @@ impl<'a> Reducer<'a> {
     // write, a StructuralFieldCollision. The resolved value is materialized in the
     // graph by reduce_onto. The LWW key/diff uses `last_*_modify` working state.
 
+    /// A `SYSTEM_DERIVED` pitch's intrinsic content is immutable under
+    /// reduction (Pass 12, P12-K3; core spec Ch5 §System-Derived
+    /// Identifiers): its identifier is content-derived, so an in-place
+    /// rewrite would invalidate the derivation. The check compares the
+    /// replacement value's canonical pitch bytes against the id's
+    /// *registered derivation inputs* — the same `system_mints` registry the
+    /// collision pre-walk maintains (base-seeded occupants plus op mints),
+    /// so `reduce()` and `reduce_onto()` agree wherever the registry holds
+    /// the entry. An unregistered id (base-free reduction over a pitch the
+    /// base seeded) is unverifiable and passes, like the other
+    /// graph-aware-only preconditions.
+    ///
+    /// Known residue (filed as a Pass-13 candidate; see DECISIONS.md): a
+    /// system pitch *introduced into the graph by a ModifyEvent replacement*
+    /// (never minted — the pre-walk deliberately excludes ModifyEvent) gets
+    /// this verdict only after a snapshot re-seeds the registry from the
+    /// base graph; in-session it reads `TargetMissing` instead. That
+    /// checkpoint-cut asymmetry for ModifyEvent-introduced content predates
+    /// this precondition (pre-K3 the same split read `TargetMissing` vs a
+    /// silent `Applied` rewrite) and is a ModifyEvent-introduction question,
+    /// not a K3 one.
+    fn system_derived_rewrite(&self, id: PitchId, value: &Pitch) -> bool {
+        if id.replica() != ReplicaId::SYSTEM_DERIVED {
+            return false;
+        }
+        match self.system_mints.get(&(ObjectKind::Pitch, id.counter())) {
+            Some((inputs, _)) => inputs.0 != canonical_pitch_bytes(value),
+            None => false,
+        }
+    }
+
     fn modify_event(&mut self, env: &OperationEnvelope, op: &ModifyEventOp) -> OperationEffect {
         let event_id = op.event_id();
         let ev_obj = TypedObjectId::Event(event_id);
@@ -5002,6 +5037,21 @@ impl<'a> Reducer<'a> {
                 }
             }
             Some(ObjectState::Live) => {}
+        }
+        // Identity precondition (P12-K3) before the placement precondition:
+        // a replacement value that rewrites a system-derived pitch's
+        // intrinsic content in place is refused outright.
+        let mut carried = Vec::new();
+        op.event.collect_identified_pitches(&mut carried);
+        if carried
+            .iter()
+            .any(|ip| self.system_derived_rewrite(ip.id, &ip.pitch))
+        {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::SystemDerivedContentImmutable,
+                },
+            };
         }
         // A `ModifyEvent` that moves a metric event's span (a trim or move) is now
         // materialized, but it must keep invariant 3 (`VoiceEventsSortedNonOverlap`):
@@ -5207,7 +5257,26 @@ impl<'a> Reducer<'a> {
                 reason: NoOpReason::TargetTombstoned,
             };
         }
-        for pitch in live {
+        // P12-K3: a SYSTEM_DERIVED pitch's intrinsic content is immutable —
+        // an in-place alteration shift would desynchronize the content from
+        // the id's derivation inputs (and from the `system_mints` registry).
+        // System-derived targets are *skipped* like tombstoned ones (the
+        // shift still applies to the remaining targets); a transpose whose
+        // live targets are all system-derived reduces as a precondition
+        // no-op. The filter reads only the id's namespace, so base-free and
+        // graph-aware reduction agree.
+        let mutable: Vec<PitchId> = live
+            .into_iter()
+            .filter(|pitch| pitch.replica() != ReplicaId::SYSTEM_DERIVED)
+            .collect();
+        if mutable.is_empty() {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::SystemDerivedContentImmutable,
+                },
+            };
+        }
+        for pitch in mutable {
             self.graph_transpose_pitch(pitch, op.chromatic_steps);
         }
         OperationEffect::Applied
@@ -5316,6 +5385,15 @@ impl<'a> Reducer<'a> {
                 }
             }
             Some(ObjectState::Live) => {}
+        }
+        // Identity precondition (P12-K3): a system-derived pitch's intrinsic
+        // content is immutable in place.
+        if self.system_derived_rewrite(op.pitch, &op.value) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::SystemDerivedContentImmutable,
+                },
+            };
         }
         let prev = self
             .pitch_modify_chain
@@ -5586,9 +5664,11 @@ impl<'a> Reducer<'a> {
                             _ => None,
                         };
                         let reason = match (referent_voice, survivor_voice) {
-                            (Some(referent), Some(survivor)) => {
-                                reason_for_rank(self.containment_rank(referent, survivor))
-                            }
+                            (Some(referent), Some(survivor)) => self.rank_reason(
+                                self.containment_rank(referent, survivor),
+                                referent,
+                                Some(survivor),
+                            ),
                             // No indexed placement for either side (a
                             // non-metric endpoint): the pre-four-key default.
                             _ => ReanchorReason::SameVoiceNearer,
@@ -5703,6 +5783,45 @@ impl<'a> Reducer<'a> {
     /// same staff instance 1, same staff 2, same region 3, same canvas 4.
     /// Computed from the base-free ledger indices, so `reduce()` and
     /// `reduce_onto()` rank identically wherever both represent the scenario.
+    /// Whether a rank-4 verdict from [`Self::containment_rank`] was
+    /// *established* (both voices' placements resolve through instance and
+    /// region, so "same canvas" is a proven fact of the singleton canvas)
+    /// rather than the unresolvable-placement fallthrough. Recording reads
+    /// this so an unestablished 4 stays the honest `ExplicitFallback`
+    /// (Pass 12, P12-C4) — selection order is unaffected either way.
+    fn canvas_rank_established(&self, referent_voice: VoiceId, candidate_voice: VoiceId) -> bool {
+        let (Some(referent), Some(candidate)) = (
+            self.voice_instance(referent_voice),
+            self.voice_instance(candidate_voice),
+        ) else {
+            return false;
+        };
+        self.instance_region_of(referent).is_some() && self.instance_region_of(candidate).is_some()
+    }
+
+    /// The [`ReanchorReason`] to *record* for an achieved rank: ranks 0–3 map
+    /// directly; rank 4 records `SameCanvasNearer` only when the proximity
+    /// was established ([`Self::canvas_rank_established`]), else the honest
+    /// `ExplicitFallback`. `survivor_voice` is `None` when the winning
+    /// candidate's voice is itself unresolvable — never established.
+    fn rank_reason(
+        &self,
+        rank: u8,
+        referent_voice: VoiceId,
+        survivor_voice: Option<VoiceId>,
+    ) -> ReanchorReason {
+        if rank == 4 {
+            let established = survivor_voice
+                .is_some_and(|survivor| self.canvas_rank_established(referent_voice, survivor));
+            return if established {
+                ReanchorReason::SameCanvasNearer
+            } else {
+                ReanchorReason::ExplicitFallback
+            };
+        }
+        reason_for_rank(rank)
+    }
+
     fn containment_rank(&self, referent_voice: VoiceId, candidate_voice: VoiceId) -> u8 {
         if referent_voice == candidate_voice {
             return 0;
@@ -7730,6 +7849,69 @@ mod tests {
     }
 
     #[test]
+    fn transpose_skips_system_derived_targets_p12_k3() {
+        // Review finding on P12-K3: Transpose must not rewrite a
+        // SYSTEM_DERIVED pitch's intrinsic content in place — that would
+        // desynchronize the content from the id's derivation inputs (and from
+        // the `system_mints` registry the modify preconditions consult),
+        // making the K3 verdict depend on where a snapshot was cut. System
+        // targets are skipped like tombstoned ones; all-system degenerates to
+        // the K3 precondition no-op.
+        use epiphany_core::derive_system_pitch_id;
+        let content = crate::valuegen::pitch_value_nth(1);
+        let system_id = derive_system_pitch_id(&content);
+        let normal = PitchId::new(ReplicaId(9), 501);
+
+        let a = insert_with_pitch_content(1, 0, 10, 1, 100, 0, system_id, &content);
+        let b = insert_with_pitch_content(1, 1, 11, 2, 101, 0, normal, &content);
+        let after_inserts = CausalContext::new().with_seen(ReplicaId(1), 1);
+        // Mixed normal/system targets: the system pitch is skipped, the
+        // normal one shifts, the op applies.
+        let t_mixed = prim_env(
+            3,
+            0,
+            30,
+            after_inserts.clone(),
+            OperationKind::Transpose(TransposeOp {
+                targets: vec![system_id, normal],
+                chromatic_steps: 2,
+            }),
+        );
+        // All targets system-derived: the K3 precondition no-op.
+        let t_system = prim_env(
+            4,
+            0,
+            31,
+            after_inserts,
+            OperationKind::Transpose(TransposeOp {
+                targets: vec![system_id],
+                chromatic_steps: 2,
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![a, b, t_mixed.clone(), t_system.clone()]);
+        let state = set.reduce();
+        let effect = |id: OperationId| {
+            state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == id)
+                .map(|(_, eff)| eff)
+                .expect("effect recorded")
+        };
+        assert_eq!(effect(t_mixed.id), &OperationEffect::Applied);
+        assert_eq!(
+            effect(t_system.id),
+            &OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::SystemDerivedContentImmutable,
+                },
+            },
+            "an all-system-derived transpose refuses under P12-K3"
+        );
+    }
+
+    #[test]
     fn differing_concurrent_resolves_name_both_resolvers_in_the_meta_conflict() {
         // Chapter 6 §Conflict Resolution Operations: a later differing resolve
         // reduces to Conflicted with a meta-conflict record; the record names
@@ -8153,6 +8335,187 @@ mod tests {
         assert!(
             result.score.events.get(pitched_id).is_some(),
             "the base occupant stays; recovery is external"
+        );
+    }
+
+    #[test]
+    fn a_system_derived_pitch_content_rewrite_is_refused_p12_k3() {
+        // Pass 12 (P12-K3): a SYSTEM_DERIVED pitch's intrinsic content is
+        // immutable — an in-place rewrite would invalidate the id's content
+        // derivation. A modify carrying the *registered* derivation content
+        // still applies (nothing is rewritten).
+        use epiphany_core::derive_system_pitch_id;
+        let content = crate::valuegen::pitch_value_nth(1);
+        let rewritten = crate::valuegen::pitch_value_nth(2);
+        let system_id = derive_system_pitch_id(&content);
+
+        let mint = insert_with_pitch_content(1, 0, 10, 1, 100, 0, system_id, &content);
+        let rewrite = prim_env(
+            1,
+            1,
+            20,
+            seen_r1(0),
+            OperationKind::ModifyIdentifiedPitch(ModifyIdentifiedPitchOp {
+                pitch: system_id,
+                value: rewritten.clone(),
+            }),
+        );
+        let same = prim_env(
+            1,
+            2,
+            30,
+            seen_r1(1),
+            OperationKind::ModifyIdentifiedPitch(ModifyIdentifiedPitchOp {
+                pitch: system_id,
+                value: content.clone(),
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![mint.clone(), rewrite.clone(), same.clone()]);
+        let state = set.reduce();
+
+        let effect_of = |id: OperationId| {
+            state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == id)
+                .map(|(_, eff)| eff)
+        };
+        assert_eq!(
+            effect_of(rewrite.id),
+            Some(&OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::SystemDerivedContentImmutable,
+                },
+            }),
+            "rewriting a system-derived pitch's intrinsic content is refused"
+        );
+        assert_eq!(
+            effect_of(same.id),
+            Some(&OperationEffect::Applied),
+            "a modify carrying the registered derivation content passes"
+        );
+        // Determinism: any permutation reduces to identical bytes.
+        let mut reversed = OperationSet::new();
+        reversed.accept_all(vec![same, rewrite, mint]);
+        assert_eq!(state.canonical_bytes(), reversed.reduce().canonical_bytes());
+    }
+
+    #[test]
+    fn a_modify_event_rewriting_a_system_pitch_is_refused_p12_k3() {
+        // The same identity precondition through the ModifyEvent path: the
+        // replacement event carries the system pitch with rewritten content.
+        use epiphany_core::derive_system_pitch_id;
+        let content = crate::valuegen::pitch_value_nth(1);
+        let rewritten = crate::valuegen::pitch_value_nth(2);
+        let system_id = derive_system_pitch_id(&content);
+
+        let mint = insert_with_pitch_content(1, 0, 10, 1, 100, 0, system_id, &content);
+        let mut replacement = crate::valuegen::insert_event_value(
+            EventId::new(ReplicaId(1), 100),
+            VoiceId::new(ReplicaId(9), 1),
+            pos(0),
+            epiphany_core::MusicalDuration::whole(),
+            &[system_id],
+        );
+        if let Event::Pitched(pe) = &mut replacement {
+            pe.pitches[0].pitch = rewritten;
+        }
+        let modify = prim_env(
+            1,
+            1,
+            20,
+            seen_r1(0),
+            OperationKind::ModifyEvent(ModifyEventOp { event: replacement }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![mint, modify.clone()]);
+        let state = set.reduce();
+
+        assert_eq!(
+            state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == modify.id)
+                .map(|(_, eff)| eff),
+            Some(&OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::SystemDerivedContentImmutable,
+                },
+            }),
+            "a ModifyEvent rewriting a carried system pitch is refused"
+        );
+    }
+
+    #[test]
+    fn a_rank_four_reanchor_records_same_canvas_nearer_p12_c4() {
+        // Pass 12 (P12-C4): the rank-4 (same-canvas) proximity survivor has
+        // its own appended reason; ExplicitFallback stays the beyond-ladder
+        // recording only.
+        assert_eq!(reason_for_rank(4), ReanchorReason::SameCanvasNearer);
+        assert_eq!(reason_for_rank(3), ReanchorReason::SameRegionNearer);
+        assert_eq!(reason_for_rank(5), ReanchorReason::ExplicitFallback);
+    }
+
+    #[test]
+    fn an_unestablished_rank_four_reanchor_keeps_the_explicit_fallback() {
+        // Review finding on P12-C4: `containment_rank` also returns 4 when a
+        // voice's staff-instance placement is *unresolvable* (here: base-free
+        // reduction, where inserted voices have no op-created instance), and
+        // that conflated 4 must NOT be recorded as a positive
+        // `SameCanvasNearer` claim — the honest recording stays
+        // `ExplicitFallback`. Selection order is unchanged either way.
+        let e1 = EventId::new(ReplicaId(1), 100);
+        let e2 = EventId::new(ReplicaId(1), 101);
+        let slur = epiphany_core::SlurId::new(ReplicaId(1), 1);
+        let create = prim_env(
+            1,
+            2,
+            12,
+            CausalContext::new().with_seen(ReplicaId(1), 1),
+            create_slur(slur, e1, e2),
+        );
+        let del = prim_env(
+            1,
+            3,
+            13,
+            CausalContext::new().with_seen(ReplicaId(1), 2),
+            OperationKind::DeleteEvent(DeleteEventOp {
+                event: e1,
+                tuplet_compensation: TupletCompensation::NotInTuplet,
+            }),
+        );
+        // Different voices on different staff instances, neither instance
+        // op-created in a region: instance→region never resolves, so
+        // containment_rank falls through to its unestablished 4.
+        let a = insert(1, 0, 10, 1, 100, 0);
+        let mut b = insert(1, 1, 11, 2, 101, 1);
+        if let OperationPayload::Primitive(OperationKind::InsertEvent(ref mut op)) = b.payload {
+            op.staff_instance = StaffInstanceId::new(ReplicaId(9), 1);
+        }
+        let mut set = OperationSet::new();
+        set.accept_all(vec![a, b, create, del.clone()]);
+        let state = set.reduce();
+        let repair = state
+            .effects
+            .iter()
+            .find(|(id, _)| *id == del.id)
+            .and_then(|(_, eff)| match eff {
+                OperationEffect::AppliedWithRepair { repairs } => repairs
+                    .iter()
+                    .find(|r| r.target == TypedObjectId::Slur(slur))
+                    .cloned(),
+                _ => None,
+            })
+            .expect("the slur endpoint deletion records a re-anchor repair");
+        assert_eq!(
+            repair.kind,
+            RepairKind::Reanchored {
+                from: TypedObjectId::Event(e1),
+                to: TypedObjectId::Event(e2),
+                reason: ReanchorReason::ExplicitFallback,
+            },
+            "an unresolvable-placement rank 4 records the honest fallback"
         );
     }
 
@@ -8614,10 +8977,10 @@ mod tests {
             effect_of(differing.id),
             Some(&OperationEffect::NoOp {
                 reason: NoOpReason::PreconditionFailedUnderReduction {
-                    reason: PreconditionFailureReason::TargetMissing,
+                    reason: PreconditionFailureReason::RecreateContentMismatch,
                 },
             }),
-            "a differing value under a live id is a precondition no-op"
+            "a differing value under a live id is a precondition no-op (P12-K9)"
         );
         assert!(matches!(
             state.objects.get(&TypedObjectId::Staff(staff_id)),
@@ -8756,10 +9119,10 @@ mod tests {
                 .map(|(_, eff)| eff),
             Some(&OperationEffect::NoOp {
                 reason: NoOpReason::PreconditionFailedUnderReduction {
-                    reason: PreconditionFailureReason::TargetMissing,
+                    reason: PreconditionFailureReason::RecreateContentMismatch,
                 },
             }),
-            "a differing value under a live signature id is a precondition no-op"
+            "a differing value under a live signature id is a precondition no-op (P12-K9)"
         );
     }
 

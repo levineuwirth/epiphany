@@ -619,7 +619,11 @@ undo (Section~\ref{sec:k0:undo}) does not negate it; an inverse-interval undo is
 Phase-3 refinement (P11-C8).
 
 \textbf{Re-anchoring.} Tombstoned targets are skipped (the transpose applies only
-to live pitches).
+to live pitches). \texttt{SYSTEM\_DERIVED}-namespace targets are likewise
+\emph{skipped} (ratified Pass~12, P12-K3): their intrinsic content is immutable,
+and an in-place alteration shift would desynchronize the content from the id's
+derivation inputs. A transpose whose live targets are \emph{all} system-derived
+reduces as a precondition no-op (\texttt{SystemDerivedContentImmutable}).
 
 \section{CreateCrossCutting}
 \label{sec:k0:create-cross-cutting}
@@ -811,9 +815,12 @@ precondition no-op with the appended reason
 \texttt{RecreateContentMismatch} (discriminant 13; ratified Pass~12, closing
 P12-K9 --- the former \texttt{TargetMissing} reuse misnamed the situation:
 the target is not missing, its content disagrees). The same reason applies
-to every differing-value re-create: the carried \texttt{TimeSignature}
-(Section~\ref{sec:k0:meter-tempo}) and the structural-container creates
-(Section~\ref{sec:k0:structural-containers}). Graph-aware reduction additionally preconditions that the
+to the carried \texttt{TimeSignature} (Section~\ref{sec:k0:meter-tempo}),
+the other re-create site at which the reducer retains the carried value for
+comparison. The structural-container creates
+(Section~\ref{sec:k0:structural-containers}) are plain set-union --- any
+repeat create of a live id reads \texttt{AlreadyApplied} without value
+comparison, since the carried value is preconditioned empty of children. Graph-aware reduction additionally preconditions that the
 referenced instrument is live and, when \texttt{group} is present, that the
 staff group resolves --- the mint must leave the graph satisfying the
 reference-resolution invariants.
