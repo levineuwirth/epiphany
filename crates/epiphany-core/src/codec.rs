@@ -173,7 +173,21 @@ impl<'a> Reader<'a> {
     }
 
     fn count(&mut self) -> Result<usize> {
-        usize::try_from(self.u32()?).map_err(|_| ScoreDecodeError::LengthOverflow)
+        let n = usize::try_from(self.u32()?).map_err(|_| ScoreDecodeError::LengthOverflow)?;
+        // A count/length prefix can never exceed the bytes remaining, in both of
+        // its uses: a length-prefixed leaf needs exactly `n` further bytes
+        // (`lp`), and a collection prefix counts elements, each of which is at
+        // least one byte in this codec, so `n` elements need at least `n` bytes.
+        // (An empty leaf or collection has `n == 0`, which passes.) A larger `n`
+        // is corrupt or adversarial: reject it up front rather than looping
+        // element-by-element toward EOF — that bounds decode time on hostile
+        // input (a garbage `u32` count is otherwise a soft-DoS: e.g. misparsing
+        // v1 bytes as v0 reads a huge count and iterates ~remaining times) and
+        // caps the `Vec`/set allocation to a real size.
+        if n > self.bytes.len() - self.pos {
+            return Err(ScoreDecodeError::UnexpectedEof);
+        }
+        Ok(n)
     }
 
     /// A `u32`-length-prefixed byte slice.
@@ -2058,10 +2072,27 @@ impl Score {
     /// This is the **current (schema major 1)** layout. To decode bytes whose
     /// schema major is not known to be current, use
     /// [`Score::decode_canonical_versioned`].
+    ///
+    /// Decoding is **strictly canonical**: an accepted byte string is its own
+    /// canonical form (`req:format:codec-conventions`). Several leaf and
+    /// collection decoders are individually *lenient* — they normalize on decode
+    /// (an unreduced [`RationalTime`](crate::RationalTime) reduces to lowest
+    /// terms; a `BTreeSet`/`BTreeMap` re-sorts and de-duplicates; a
+    /// [`CanonicalF64`] / `ReferencePitch` / `Tempo` normalizes via its
+    /// constructor) — so decode alone is not injective. This entry point closes
+    /// that gap uniformly: it re-encodes the decoded score and rejects any input
+    /// that is not already canonical, so two byte strings can never map to one
+    /// score (which would break content-addressing). A valid encoder never emits
+    /// a non-canonical score, so this only rejects corrupted or adversarial bytes.
     pub fn decode_canonical(bytes: &[u8]) -> Result<Score> {
         let mut r = Reader::new(bytes);
         let score = Score::dec(&mut r)?;
         r.finish()?;
+        if score.canonical_bytes() != bytes {
+            return Err(ScoreDecodeError::InvalidValue(
+                "non-canonical Score encoding",
+            ));
+        }
         Ok(score)
     }
 
@@ -2140,7 +2171,7 @@ fn decode_v0_score(bytes: &[u8]) -> Result<Score> {
     let tombstoned_pitches = Codec::dec(&mut r)?;
     let tombstoned_events = Codec::dec(&mut r)?;
     r.finish()?;
-    Ok(Score {
+    let score = Score {
         metadata,
         canvas,
         instruments,
@@ -2160,7 +2191,71 @@ fn decode_v0_score(bytes: &[u8]) -> Result<Score> {
         identity,
         tombstoned_pitches,
         tombstoned_events,
-    })
+    };
+    // Strictly canonical on the **v0 wire form**, exactly as
+    // `Score::decode_canonical` is for v1: the frozen field walk above decodes
+    // leniently (the unchanged fields normalize on decode — an unreduced
+    // RationalTime, an unsorted set, …), so re-encode the migrated score to the
+    // frozen v0 form and reject any input that is not already its canonical v0
+    // encoding. This keeps the migration injective over v0 snapshots too (a
+    // major-0 chunk is content-addressed just like a major-1 one). A valid v0
+    // writer never emitted a non-canonical snapshot.
+    if encode_v0_score(&score) != bytes {
+        return Err(ScoreDecodeError::InvalidValue(
+            "non-canonical v0 Score encoding",
+        ));
+    }
+    Ok(score)
+}
+
+/// The **frozen schema-major-0** encoding of a score — the byte-exact inverse of
+/// [`decode_v0_score`]'s field walk: `Canvas` without `layout_defaults`,
+/// `Instrument` without `range`, `Region` without `permits_spanning_slurs`;
+/// every other field through the current [`Codec`]. Used by `decode_v0_score`
+/// to enforce strict v0 canonicality (and by the migration tests to synthesize
+/// genuine v0 bytes). A migrated score's schema-major-1 fields hold their
+/// defaults, so this simply omits them.
+pub(crate) fn encode_v0_score(s: &Score) -> Vec<u8> {
+    fn enc_region_v0(reg: &Region, out: &mut Vec<u8>) {
+        reg.id.enc(out);
+        reg.time_model.enc(out);
+        reg.content.enc(out);
+        reg.time_extent.enc(out);
+        reg.staff_extent.enc(out);
+        reg.local_tempo_map.enc(out);
+        // v0: no permits_spanning_slurs.
+    }
+    let mut out = Vec::new();
+    s.metadata.enc(&mut out);
+    // Canvas v0: `regions` only (no `layout_defaults`).
+    put_len(&mut out, s.canvas.regions.len());
+    for reg in &s.canvas.regions {
+        enc_region_v0(reg, &mut out);
+    }
+    // Instruments v0: `{ id, name }` only (no `range`).
+    put_len(&mut out, s.instruments.len());
+    for inst in &s.instruments {
+        inst.id.enc(&mut out);
+        inst.name.enc(&mut out);
+    }
+    // Fields 4..19 are unchanged between v0 and v1.
+    s.staves.enc(&mut out);
+    s.staff_groups.enc(&mut out);
+    s.parts.enc(&mut out);
+    s.cross_cutting.enc(&mut out);
+    s.time_signatures.enc(&mut out);
+    s.tuning_context.enc(&mut out);
+    s.tempo_map.enc(&mut out);
+    s.events.enc(&mut out);
+    s.spelling_attachments.enc(&mut out);
+    s.decomposition_attachments.enc(&mut out);
+    s.spelling_precedence.enc(&mut out);
+    s.analysis_layers.enc(&mut out);
+    s.views.enc(&mut out);
+    s.identity.enc(&mut out);
+    s.tombstoned_pitches.enc(&mut out);
+    s.tombstoned_events.enc(&mut out);
+    out
 }
 
 /// Frozen v0 decoder for `Canvas`: the v0 layout was **just `regions`** (a
@@ -2272,6 +2367,15 @@ macro_rules! canonical_value {
                     let mut r = Reader::new(bytes);
                     let v = <$ty as Codec>::dec(&mut r)?;
                     r.finish()?;
+                    // Strictly canonical, exactly as `Score::decode_canonical`:
+                    // reject a non-canonical encoding so per-value decode is
+                    // injective (these bytes are content-addressed inside
+                    // operation payloads).
+                    if v.canonical_bytes() != bytes {
+                        return Err(ScoreDecodeError::InvalidValue(
+                            "non-canonical value encoding",
+                        ));
+                    }
                     Ok(v)
                 }
             }
@@ -2478,58 +2582,6 @@ mod tests {
         }
     }
 
-    /// A frozen **v0 encoder** — the byte-exact inverse of the [`decode_v0_score`]
-    /// field walk, used only by the migration tests to synthesize *genuine* v0
-    /// bytes (a score whose three schema-major-1 fields are absent). It mirrors
-    /// the v0 layout exactly: `Canvas` without `layout_defaults`, `Instrument`
-    /// without `range`, `Region` without `permits_spanning_slurs`; every other
-    /// field through the current `Codec`. A decoder/encoder that agreed on a
-    /// *wrong* layout would still round-trip, so the callers also anchor the v0
-    /// byte length against the production v1 encoder (which this does not touch).
-    fn encode_v0_score(s: &Score) -> Vec<u8> {
-        // The inverse of dec_region_v0: the six fields before the schema-major-1
-        // permits_spanning_slurs (a full-Score snapshot's v0 region form).
-        fn enc_region_v0(reg: &Region, out: &mut Vec<u8>) {
-            reg.id.enc(out);
-            reg.time_model.enc(out);
-            reg.content.enc(out);
-            reg.time_extent.enc(out);
-            reg.staff_extent.enc(out);
-            reg.local_tempo_map.enc(out);
-        }
-        let mut out = Vec::new();
-        s.metadata.enc(&mut out);
-        // Canvas v0: `regions` only (no `layout_defaults`).
-        put_len(&mut out, s.canvas.regions.len());
-        for reg in &s.canvas.regions {
-            enc_region_v0(reg, &mut out);
-        }
-        // Instruments v0: `{ id, name }` only (no `range`).
-        put_len(&mut out, s.instruments.len());
-        for inst in &s.instruments {
-            inst.id.enc(&mut out);
-            inst.name.enc(&mut out);
-        }
-        // Fields 4..19 are unchanged between v0 and v1.
-        s.staves.enc(&mut out);
-        s.staff_groups.enc(&mut out);
-        s.parts.enc(&mut out);
-        s.cross_cutting.enc(&mut out);
-        s.time_signatures.enc(&mut out);
-        s.tuning_context.enc(&mut out);
-        s.tempo_map.enc(&mut out);
-        s.events.enc(&mut out);
-        s.spelling_attachments.enc(&mut out);
-        s.decomposition_attachments.enc(&mut out);
-        s.spelling_precedence.enc(&mut out);
-        s.analysis_layers.enc(&mut out);
-        s.views.enc(&mut out);
-        s.identity.enc(&mut out);
-        s.tombstoned_pitches.enc(&mut out);
-        s.tombstoned_events.enc(&mut out);
-        out
-    }
-
     /// A C-in-`cmn-12` pitch at the given octave, for a non-default
     /// [`PitchRange`] (the generators never populate `Instrument.range`).
     fn cmn_c(octave: i8) -> Pitch {
@@ -2662,6 +2714,30 @@ mod tests {
             .regions
             .iter()
             .all(|r| !r.permits_spanning_slurs));
+    }
+
+    #[test]
+    fn v0_decode_is_strictly_canonical_over_the_v0_wire_form() {
+        // The major-0 migration is strict, like the major-1 decoder: a canonical
+        // v0 encoding is accepted and re-encodes to itself in the frozen v0 form
+        // (`decode_v0_score` compares against `encode_v0_score`), while trailing
+        // or truncated bytes are rejected. This closes the injectivity gap for
+        // major-0 snapshots (content-addressed like major-1 ones).
+        for seed in 0..32u64 {
+            let score = valid_score(seed.wrapping_mul(0x9E37_79B9).wrapping_add(1));
+            let v0 = encode_v0_score(&score);
+            // Canonical v0 is accepted and re-encodes to the same v0 bytes.
+            let migrated = Score::decode_canonical_versioned(&v0, 0).unwrap();
+            assert_eq!(encode_v0_score(&migrated), v0);
+            // Trailing garbage is rejected.
+            let mut trailed = v0.clone();
+            trailed.push(0);
+            assert!(Score::decode_canonical_versioned(&trailed, 0).is_err());
+            // A truncation is rejected.
+            if !v0.is_empty() {
+                assert!(Score::decode_canonical_versioned(&v0[..v0.len() - 1], 0).is_err());
+            }
+        }
     }
 
     #[test]

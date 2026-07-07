@@ -55,6 +55,7 @@ mod pitch;
 mod tempo;
 mod time;
 
+pub mod fuzz;
 pub mod generators;
 pub mod prepass;
 
