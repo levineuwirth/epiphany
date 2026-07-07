@@ -975,3 +975,35 @@ same split previously read `TargetMissing` vs a silent `Applied` rewrite) and
 is a ModifyEvent-introduction question — whether a replacement value may
 introduce never-minted pitch ids at all — batched for Pass 13, not
 improvised here.
+
+## Schema major 2: minimal stamping (landed with core Phase B, deliberately)
+
+The live codec change makes CrossCutting/Staff/Metadata payload bytes v2
+immediately, so the honest stamps land in the SAME commit rather than a
+later phase (the major-1 D1/D2 byte-shim approach would have needed v1
+shims for nine transitively-embedded types, all throwaway).
+`OperationKind::schema_major` implements the ratified **minimal-stamping**
+rule (Binary Format §Schema Major 2): Create/ModifyCrossCutting, CreateStaff,
+SetMetadata → always 2 (mandatory appends); CreateRegion → 2 iff a carried
+staff instance bears Some(staff_lines_override) else 1; CreateStaffInstance/
+SetStaffLayout → 2 iff Some(override) else 0 (None encodes byte-identically
+to the prior major). Locked by `schema_majors_follow_the_minimal_stamping_rule`.
+`the_canonical_base_is_byte_identical_across_data_model_majors` golden-locks
+a seeded reduction's MaterializedState bytes — the companion's SHOULD that
+the canonical base never moves across data-model majors.
+
+**Review sharpening — the op-payload migrate-on-read deferral, stated
+precisely:** with the live codecs at v2, op-payload BYTES from a pre-major-2
+build (a persisted bundle whose CrossCutting/Staff/Metadata blocks were
+stamped major 0 under the old per-kind rule) have no in-build decoder — the
+frozen v1 layer covers whole-`Score` snapshots only, while binary_format's
+migration table ratifies "a v0/v1 op block migrates on read". This is
+ACCEPTABLE TODAY because (a) no production corpus exists (local repo, test
+bundles only), and (b) no code path decodes op-envelope bytes back to values
+(the bundle treats block bytes opaquely; reduction runs on in-memory
+envelopes; the opindex reads only the leading id). The moment a consumer
+byte-reconstructs op payloads (bundle replay of foreign documents, the P2
+ops-decoder fuzzer, MusicXML round-trip tooling), it MUST bring the
+op-payload migrate-on-read primitive with it — per-type frozen v1 payload
+decoders keyed by the block's stamped major. Tracked as the standing Phase-C
+remainder in the Push-2 plan.

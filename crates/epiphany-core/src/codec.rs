@@ -47,17 +47,21 @@ use crate::event::{
 };
 use crate::graph::{
     AleatoricAnchoringDiscipline, AleatoricTimeModel, AnalysisLayer, AnalyticalAnnotation,
-    AnnotationAnchor, BarlineAlignmentGroup, BarlineAlignmentMember, Beam, BeatGroup, Canvas,
-    CanvasLayoutDefaults, CanvasMargins, CanvasSize, ChordSymbol, Clef, ClefChange, ClefShape,
-    Comment, CrossCuttingRegistry, DecompositionAttachment, DecompositionSource, EventOrderingDAG,
-    GestureAnchoring, GraphicContent, GraphicGesture, GraphicObject, Instrument, KeySignature,
-    KeySignatureChange, LyricLine, Marker, Measure, MeasureNumberVisibility, MeterChange,
-    MetricGrid, MetricTimeModel, NotatedComponent, NoteValue, PartDefinition, PowerOfTwo,
-    ProportionalTimeModel, Region, RegionContent, RegionTimeModel, RepeatStructure, Score,
-    ScoreMetadata, ScoreTuningContext, Slur, Spanner, Staff, StaffBasedContent, StaffExtent,
-    StaffGroup, StaffGroupKind, StaffInstance, StaffLineConfiguration, StemDirection,
-    TempoMapReference, Tie, TieClass, TimeExtent, TimeSignature, TimeSignatureDisplay, Tuplet,
-    TupletRatio, ViewDefinition, Voice, VoiceOrigin,
+    AnnotationAnchor, BarlineAlignmentGroup, BarlineAlignmentMember, Beam, BeamGeometryOverride,
+    BeatGroup, BracketKind, Canvas, CanvasLayoutDefaults, CanvasMargins, CanvasSize, ChordSymbol,
+    Clef, ClefChange, ClefShape, Comment, CrossCuttingRegistry, CurvatureOverride, CurveDirection,
+    DecompositionAttachment, DecompositionSource, EventOrderingDAG, GestureAnchoring,
+    GraphicContent, GraphicGesture, GraphicObject, HairpinDirection, Instrument, KeySignature,
+    KeySignatureChange, LineStyle, LyricLine, Marker, Measure, MeasureNumberVisibility,
+    MetadataEntry, MetadataValue, MeterChange, MetricGrid, MetricTimeModel, NotatedComponent,
+    NoteValue, OctaveOffset, PartDefinition, PedalKind, PowerOfTwo, ProportionalTimeModel, Region,
+    RegionContent, RegionTimeModel, RepeatKind, RepeatStructure, Score, ScoreMetadata,
+    ScoreTuningContext, Slur, SlurKind, SoundConfiguration, SpaceUnit, SpanStyle, Spanner,
+    SpannerKind, Staff, StaffBasedContent, StaffBracketKind, StaffExtent, StaffGroup,
+    StaffGroupKind, StaffInstance, StaffLineConfiguration, StemDirection, SubBeam,
+    TempoMapReference, TextLineDefinition, Tie, TieClass, TimeExtent, TimeSignature,
+    TimeSignatureDisplay, Timestamp, TranspositionInterval, Tuplet, TupletRatio, UnpitchedMember,
+    ViewDefinition, Voice, VoiceOrigin, Volta,
 };
 use crate::ids::{
     AnalysisLayerId, AnalyticalAnnotationId, BarlineAlignmentGroupId, BeamId, ChordSymbolId,
@@ -311,6 +315,15 @@ impl Codec for i32 {
     }
     fn dec(r: &mut Reader<'_>) -> Result<Self> {
         Ok(r.u32()? as i32)
+    }
+}
+
+impl Codec for i64 {
+    fn enc(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.to_le_bytes());
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        Ok(r.u64()? as i64)
     }
 }
 
@@ -1437,26 +1450,258 @@ cstyle_enum_codec!(NoteValue {
     4 => Sixteenth, 5 => ThirtySecond, 6 => SixtyFourth,
 });
 
+// --- Schema-major-2 leaf types (Binary Format §Schema Major 2). -------------
+// Every layout below is the ratified v2 wire form: tag-only enums are one
+// discriminant byte; `SpaceUnit` rides its `CanonicalF64` leaf (framed 12);
+// `Timestamp` is one bare i64 LE; fixed-width primitives inside structs are
+// bare; identifiers keep the leaf framing.
+
+impl Codec for Timestamp {
+    fn enc(&self, out: &mut Vec<u8>) {
+        self.0.enc(out);
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        Ok(Timestamp(i64::dec(r)?))
+    }
+}
+
+impl Codec for SpaceUnit {
+    fn enc(&self, out: &mut Vec<u8>) {
+        self.0.enc(out);
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        Ok(SpaceUnit(Codec::dec(r)?))
+    }
+}
+
+impl Codec for SoundConfiguration {
+    fn enc(&self, out: &mut Vec<u8>) {
+        self.0.enc(out);
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        Ok(SoundConfiguration(Codec::dec(r)?))
+    }
+}
+
+impl Codec for OctaveOffset {
+    fn enc(&self, out: &mut Vec<u8>) {
+        self.0.enc(out);
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        Ok(OctaveOffset(i8::dec(r)?))
+    }
+}
+
+cstyle_enum_codec!(LineStyle { 0 => Solid, 1 => Dashed, 2 => Dotted });
+cstyle_enum_codec!(SlurKind {
+    0 => Legato,
+    1 => Phrase,
+    2 => Articulation,
+    3 => Editorial,
+});
+cstyle_enum_codec!(CurveDirection { 0 => Above, 1 => Below });
+cstyle_enum_codec!(HairpinDirection {
+    0 => Crescendo,
+    1 => Diminuendo,
+});
+cstyle_enum_codec!(PedalKind {
+    0 => Sustain,
+    1 => Sostenuto,
+    2 => UnaCorda,
+});
+cstyle_enum_codec!(BracketKind { 0 => Square });
+cstyle_enum_codec!(StaffBracketKind { 0 => Brace, 1 => Bracket });
+
+impl Codec for SpannerKind {
+    fn enc(&self, out: &mut Vec<u8>) {
+        match self {
+            SpannerKind::Generic => out.push(0),
+            SpannerKind::Hairpin(d) => {
+                out.push(1);
+                d.enc(out);
+            }
+            SpannerKind::OctaveLine(o) => {
+                out.push(2);
+                o.enc(out);
+            }
+            SpannerKind::PedalLine(p) => {
+                out.push(3);
+                p.enc(out);
+            }
+            SpannerKind::TrillExtension => out.push(4),
+            SpannerKind::Glissando => out.push(5),
+            SpannerKind::Portamento => out.push(6),
+            SpannerKind::TextLine(t) => {
+                out.push(7);
+                t.enc(out);
+            }
+            SpannerKind::Bracket(b) => {
+                out.push(8);
+                b.enc(out);
+            }
+        }
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        match r.u8()? {
+            0 => Ok(SpannerKind::Generic),
+            1 => Ok(SpannerKind::Hairpin(Codec::dec(r)?)),
+            2 => Ok(SpannerKind::OctaveLine(Codec::dec(r)?)),
+            3 => Ok(SpannerKind::PedalLine(Codec::dec(r)?)),
+            4 => Ok(SpannerKind::TrillExtension),
+            5 => Ok(SpannerKind::Glissando),
+            6 => Ok(SpannerKind::Portamento),
+            7 => Ok(SpannerKind::TextLine(Codec::dec(r)?)),
+            8 => Ok(SpannerKind::Bracket(Codec::dec(r)?)),
+            tag => Err(ScoreDecodeError::InvalidTag {
+                kind: "SpannerKind",
+                tag,
+            }),
+        }
+    }
+}
+
+impl Codec for RepeatKind {
+    fn enc(&self, out: &mut Vec<u8>) {
+        match self {
+            RepeatKind::SimpleRepeat { count } => {
+                out.push(0);
+                count.enc(out);
+            }
+            RepeatKind::DaCapo { end_target } => {
+                out.push(1);
+                end_target.enc(out);
+            }
+            RepeatKind::DalSegno { segno, end_target } => {
+                out.push(2);
+                segno.enc(out);
+                end_target.enc(out);
+            }
+            RepeatKind::Volta => out.push(3),
+        }
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        match r.u8()? {
+            0 => Ok(RepeatKind::SimpleRepeat {
+                count: Codec::dec(r)?,
+            }),
+            1 => Ok(RepeatKind::DaCapo {
+                end_target: Codec::dec(r)?,
+            }),
+            2 => Ok(RepeatKind::DalSegno {
+                segno: Codec::dec(r)?,
+                end_target: Codec::dec(r)?,
+            }),
+            3 => Ok(RepeatKind::Volta),
+            tag => Err(ScoreDecodeError::InvalidTag {
+                kind: "RepeatKind",
+                tag,
+            }),
+        }
+    }
+}
+
+impl Codec for MetadataValue {
+    fn enc(&self, out: &mut Vec<u8>) {
+        match self {
+            MetadataValue::Text(s) => {
+                out.push(0);
+                s.enc(out);
+            }
+            MetadataValue::Integer(i) => {
+                out.push(1);
+                i.enc(out);
+            }
+            MetadataValue::Flag(b) => {
+                out.push(2);
+                b.enc(out);
+            }
+        }
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        match r.u8()? {
+            0 => Ok(MetadataValue::Text(Codec::dec(r)?)),
+            1 => Ok(MetadataValue::Integer(Codec::dec(r)?)),
+            2 => Ok(MetadataValue::Flag(Codec::dec(r)?)),
+            tag => Err(ScoreDecodeError::InvalidTag {
+                kind: "MetadataValue",
+                tag,
+            }),
+        }
+    }
+}
+
+struct_codec!(CurvatureOverride { direction, height });
+struct_codec!(SpanStyle { line, thickness });
+struct_codec!(SubBeam { level, events });
+struct_codec!(BeamGeometryOverride { slope, offset });
+struct_codec!(TextLineDefinition { text });
+struct_codec!(Volta {
+    endings,
+    start,
+    end
+});
+struct_codec!(MetadataEntry { key, value });
+struct_codec!(TranspositionInterval {
+    diatonic_steps,
+    chromatic_steps
+});
+struct_codec!(UnpitchedMember {
+    member,
+    name,
+    staff_position
+});
+
+// Schema major 2: `ScoreMetadata` appended six fields after the major-0/1
+// order. The frozen prior layout (`title`, `composer`, `copyright`) is read
+// by `dec_metadata_v1`.
 struct_codec!(ScoreMetadata {
     title,
     composer,
-    copyright
+    copyright,
+    subtitle,
+    lyricist,
+    arranger,
+    creation_timestamp,
+    modification_timestamp,
+    additional
 });
-// Schema major 1: `Instrument` gained `range` (appended after `name`). The
+// Schema major 1: `Instrument` gained `range` (appended after `name`); the
 // frozen major-0 layout (`id`, `name`) is read by `dec_instruments_v0`.
-struct_codec!(Instrument { id, name, range });
-struct_codec!(StaffLineConfiguration { line_count });
+// Schema major 2 appended six more fields after `range`; the frozen major-1
+// layout (`id`, `name`, `range`) is read by `dec_instruments_v1`.
+struct_codec!(Instrument {
+    id,
+    name,
+    range,
+    abbreviation,
+    sound_config,
+    transposition,
+    default_clef,
+    default_staff_lines,
+    unpitched_members
+});
+// Schema major 2: three fields appended after `line_count`; the frozen prior
+// layout (`line_count` only) is read by `dec_staff_lines_v1`.
+struct_codec!(StaffLineConfiguration {
+    line_count,
+    line_spacing,
+    line_style,
+    bracket
+});
 struct_codec!(GraphicObject { id });
 struct_codec!(GraphicContent { objects });
 struct_codec!(TimeExtent { start, end });
 struct_codec!(StaffExtent { staves });
+// Schema major 2: `default_clef` appended last; the frozen prior layout is
+// read by `dec_staff_v1`.
 struct_codec!(Staff {
     id,
     name,
     abbreviation,
     instrument,
     default_staff_lines,
-    group
+    group,
+    default_clef
 });
 struct_codec!(PartDefinition { id, name, staves });
 struct_codec!(AnalysisLayer { id, name });
@@ -1510,12 +1755,23 @@ struct_codec!(ScoreTuningContext {
     default_tuning_system,
     reference
 });
+// Schema major 2: the cross-cutting bodies filled (appended fields); the
+// frozen prior layouts are read by the `dec_*_v1` sub-decoders.
 struct_codec!(Slur {
     id,
     start_event,
-    end_event
+    end_event,
+    kind,
+    curvature_override,
+    style
 });
-struct_codec!(Beam { id, events, level });
+struct_codec!(Beam {
+    id,
+    events,
+    level,
+    sub_beams,
+    geometry_override
+});
 // TupletRatio is not a plain struct_codec!: it has private fields and a checked
 // constructor that rejects degenerate ratios, so decode must validate too
 // (a malformed bundle cannot inject a degenerate ratio).
@@ -1543,10 +1799,18 @@ struct_codec!(Spanner {
     id,
     start,
     end,
-    staves
+    staves,
+    kind,
+    style
 });
 struct_codec!(Marker { id, anchor });
-struct_codec!(RepeatStructure { id, start, end });
+struct_codec!(RepeatStructure {
+    id,
+    start,
+    end,
+    kind,
+    voltas
+});
 struct_codec!(Comment {
     id,
     anchor,
@@ -1839,7 +2103,8 @@ struct_codec!(Tie {
     start_event,
     end_event,
     pitch_pairing,
-    class
+    class,
+    style
 });
 
 impl Codec for AnnotationAnchor {
@@ -2097,24 +2362,21 @@ impl Score {
     }
 
     /// The **schema-version dispatch seam** (Binary Format companion
-    /// §"Schema Major 1"): decodes a full-`Score` snapshot whose bytes were
-    /// written under the given schema `major`, migrating a major-0 encoding up
-    /// to the current in-memory form on read. Major 1 is the current layout
-    /// ([`Score::decode_canonical`]); major 0 is decoded through the frozen v0
-    /// wire form (`decode_v0_score`) and then migrated (`migrate_v0_score`).
-    ///
-    /// At schema major 1's introduction the v0 and v1 layouts are **identical**,
-    /// so the v0 path is the identity today — the machinery is a behavioral
-    /// no-op. When a later phase grows a field on `Canvas`, `Instrument`, or
-    /// `Region`, the frozen pre-field decoder is added here (reading the old
-    /// layout) and `migrate_v0_score` default-fills the new field.
+    /// §"Schema Major 1" / §"Schema Major 2"): decodes a full-`Score` snapshot
+    /// whose bytes were written under the given schema `major`, migrating a
+    /// lower-major encoding up to the current in-memory form on read. Major 2
+    /// is the current layout ([`Score::decode_canonical`]); majors 1 and 0 are
+    /// decoded through their frozen wire forms (`decode_v1_score`,
+    /// `decode_v0_score`), each a total default-filling migration — the
+    /// composed v0→v1→v2 translation happens in the one v0 read.
     ///
     /// The caller (the bundle read path) only reaches this after the chunk gate
-    /// has admitted the major into its accept-set, so a major outside `{0, 1}`
-    /// is a defensive error, not an expected path.
+    /// has admitted the major into its accept-set, so a major outside
+    /// `{0, 1, 2}` is a defensive error, not an expected path.
     pub fn decode_canonical_versioned(bytes: &[u8], major: u16) -> Result<Score> {
         match major {
-            1 => Score::decode_canonical(bytes),
+            2 => Score::decode_canonical(bytes),
+            1 => decode_v1_score(bytes),
             0 => decode_v0_score(bytes),
             _ => Err(ScoreDecodeError::InvalidValue("unsupported schema major")),
         }
@@ -2126,8 +2388,9 @@ impl Score {
 ///
 /// This is the **frozen v0 wire form, decoded by value** — a hand-written walk
 /// of the 19 `Score` fields in declaration order, using the current [`Codec`]
-/// for every field whose layout is unchanged and a frozen v0 sub-decoder for the
-/// three that grew a field in schema major 1:
+/// for every field whose layout is unchanged, the frozen **v1** sub-decoders
+/// (v0 == v1) for the types schema major 2 filled, and a frozen v0
+/// sub-decoder for the three that grew a field in schema major 1:
 ///
 /// * `Canvas` (field 2) — v0 was `regions` only; v1 appended `layout_defaults`.
 ///   [`dec_canvas_v0`] reads the region vector and default-fills the defaults.
@@ -2149,15 +2412,18 @@ impl Score {
 /// original score with the new fields at their defaults).
 fn decode_v0_score(bytes: &[u8]) -> Result<Score> {
     let mut r = Reader::new(bytes);
-    // The 19 Score fields in declaration order (codec.rs `struct_codec!(Score)`);
-    // only `canvas` (2) and `instruments` (3) differ from the current layout.
-    let metadata = Codec::dec(&mut r)?;
+    // The 19 Score fields in declaration order (codec.rs `struct_codec!(Score)`).
+    // `canvas` (2) and `instruments` (3) carry v0-specific sub-forms; the
+    // schema-major-2 fills route `metadata`, `staves`, `cross_cutting`, and
+    // (transitively, inside regions) the staff instances through the frozen
+    // v1 sub-decoders — v0 == v1 for every type major 2 changed.
+    let metadata = dec_metadata_v1(&mut r)?;
     let canvas = dec_canvas_v0(&mut r)?;
     let instruments = dec_instruments_v0(&mut r)?;
-    let staves = Codec::dec(&mut r)?;
+    let staves = dec_staves_v1(&mut r)?;
     let staff_groups = Codec::dec(&mut r)?;
     let parts = Codec::dec(&mut r)?;
-    let cross_cutting = Codec::dec(&mut r)?;
+    let cross_cutting = dec_ccr_v1(&mut r)?;
     let time_signatures = Codec::dec(&mut r)?;
     let tuning_context = Codec::dec(&mut r)?;
     let tempo_map = Codec::dec(&mut r)?;
@@ -2219,14 +2485,16 @@ pub(crate) fn encode_v0_score(s: &Score) -> Vec<u8> {
     fn enc_region_v0(reg: &Region, out: &mut Vec<u8>) {
         reg.id.enc(out);
         reg.time_model.enc(out);
-        reg.content.enc(out);
+        // Content through the frozen v1 (== v0) sub-form: its staff
+        // instances embed the pre-major-2 StaffLineConfiguration.
+        enc_content_v1(&reg.content, out);
         reg.time_extent.enc(out);
         reg.staff_extent.enc(out);
         reg.local_tempo_map.enc(out);
         // v0: no permits_spanning_slurs.
     }
     let mut out = Vec::new();
-    s.metadata.enc(&mut out);
+    enc_metadata_v1(&s.metadata, &mut out);
     // Canvas v0: `regions` only (no `layout_defaults`).
     put_len(&mut out, s.canvas.regions.len());
     for reg in &s.canvas.regions {
@@ -2238,11 +2506,12 @@ pub(crate) fn encode_v0_score(s: &Score) -> Vec<u8> {
         inst.id.enc(&mut out);
         inst.name.enc(&mut out);
     }
-    // Fields 4..19 are unchanged between v0 and v1.
-    s.staves.enc(&mut out);
+    // Fields 4..19: the schema-major-2-changed ones go through the frozen
+    // v1 (== v0) sub-encoders; the rest are unchanged since v0.
+    enc_staves_v1(&s.staves, &mut out);
     s.staff_groups.enc(&mut out);
     s.parts.enc(&mut out);
-    s.cross_cutting.enc(&mut out);
+    enc_ccr_v1(&s.cross_cutting, &mut out);
     s.time_signatures.enc(&mut out);
     s.tuning_context.enc(&mut out);
     s.tempo_map.enc(&mut out);
@@ -2279,7 +2548,7 @@ fn dec_canvas_v0(r: &mut Reader<'_>) -> Result<Canvas> {
 fn dec_region_v0(r: &mut Reader<'_>) -> Result<Region> {
     let id = Codec::dec(r)?;
     let time_model = Codec::dec(r)?;
-    let content = Codec::dec(r)?;
+    let content = dec_content_v1(r)?;
     let time_extent = Codec::dec(r)?;
     let staff_extent = Codec::dec(r)?;
     let local_tempo_map = Codec::dec(r)?;
@@ -2307,9 +2576,466 @@ fn dec_instruments_v0(r: &mut Reader<'_>) -> Result<Vec<Instrument>> {
             id,
             name,
             range: None,
+            abbreviation: None,
+            sound_config: SoundConfiguration::default(),
+            transposition: None,
+            default_clef: Clef::treble(),
+            default_staff_lines: StaffLineConfiguration::default(),
+            unpitched_members: Vec::new(),
         });
     }
     Ok(instruments)
+}
+
+// ===========================================================================
+// Frozen schema-major-1 wire form (Binary Format §Schema Major 2).
+// ===========================================================================
+//
+// Schema major 2 filled nine type bodies (Slur/Tie/Beam/Spanner,
+// RepeatStructure, Staff, StaffLineConfiguration, Instrument, ScoreMetadata).
+// The v1 (= v0, for all of these — major 1 touched none of them) layouts are
+// frozen here as `enc_*_v1`/`dec_*_v1` sub-codecs, shared by
+// [`decode_v1_score`]/[`encode_v1_score`] and the v0 pair (whose walk routes
+// the transitively-changed fields through these). Each `dec_*_v1`
+// default-fills the appended v2 fields per the companion's total migration
+// table. The chain is transitive where an Option/Vec hides the embedding:
+// Region → RegionContent → StaffBasedContent → StaffInstance →
+// `staff_lines_override`.
+
+fn enc_vec_v1<T>(items: &[T], out: &mut Vec<u8>, enc: impl Fn(&T, &mut Vec<u8>)) {
+    put_len(out, items.len());
+    for item in items {
+        enc(item, out);
+    }
+}
+
+fn dec_vec_v1<T>(r: &mut Reader<'_>, dec: impl Fn(&mut Reader<'_>) -> Result<T>) -> Result<Vec<T>> {
+    let n = r.count()?;
+    let mut items = Vec::with_capacity(n.min(1024));
+    for _ in 0..n {
+        items.push(dec(r)?);
+    }
+    Ok(items)
+}
+
+fn enc_metadata_v1(m: &ScoreMetadata, out: &mut Vec<u8>) {
+    m.title.enc(out);
+    m.composer.enc(out);
+    m.copyright.enc(out);
+}
+
+fn dec_metadata_v1(r: &mut Reader<'_>) -> Result<ScoreMetadata> {
+    Ok(ScoreMetadata {
+        title: Codec::dec(r)?,
+        composer: Codec::dec(r)?,
+        copyright: Codec::dec(r)?,
+        ..Default::default()
+    })
+}
+
+fn enc_staff_lines_v1(c: &StaffLineConfiguration, out: &mut Vec<u8>) {
+    c.line_count.enc(out);
+}
+
+fn dec_staff_lines_v1(r: &mut Reader<'_>) -> Result<StaffLineConfiguration> {
+    Ok(StaffLineConfiguration {
+        line_count: Codec::dec(r)?,
+        ..Default::default()
+    })
+}
+
+fn enc_staff_v1(s: &Staff, out: &mut Vec<u8>) {
+    s.id.enc(out);
+    s.name.enc(out);
+    s.abbreviation.enc(out);
+    s.instrument.enc(out);
+    enc_staff_lines_v1(&s.default_staff_lines, out);
+    s.group.enc(out);
+}
+
+fn dec_staff_v1(r: &mut Reader<'_>) -> Result<Staff> {
+    Ok(Staff {
+        id: Codec::dec(r)?,
+        name: Codec::dec(r)?,
+        abbreviation: Codec::dec(r)?,
+        instrument: Codec::dec(r)?,
+        default_staff_lines: dec_staff_lines_v1(r)?,
+        group: Codec::dec(r)?,
+        default_clef: Clef::treble(),
+    })
+}
+
+fn enc_staves_v1(staves: &[Staff], out: &mut Vec<u8>) {
+    enc_vec_v1(staves, out, enc_staff_v1);
+}
+
+fn dec_staves_v1(r: &mut Reader<'_>) -> Result<Vec<Staff>> {
+    dec_vec_v1(r, dec_staff_v1)
+}
+
+fn enc_slur_v1(s: &Slur, out: &mut Vec<u8>) {
+    s.id.enc(out);
+    s.start_event.enc(out);
+    s.end_event.enc(out);
+}
+
+fn dec_slur_v1(r: &mut Reader<'_>) -> Result<Slur> {
+    Ok(Slur {
+        id: Codec::dec(r)?,
+        start_event: Codec::dec(r)?,
+        end_event: Codec::dec(r)?,
+        kind: SlurKind::Legato,
+        curvature_override: None,
+        style: SpanStyle::default(),
+    })
+}
+
+fn enc_tie_v1(t: &Tie, out: &mut Vec<u8>) {
+    t.id.enc(out);
+    t.start_event.enc(out);
+    t.end_event.enc(out);
+    t.pitch_pairing.enc(out);
+    t.class.enc(out);
+}
+
+fn dec_tie_v1(r: &mut Reader<'_>) -> Result<Tie> {
+    Ok(Tie {
+        id: Codec::dec(r)?,
+        start_event: Codec::dec(r)?,
+        end_event: Codec::dec(r)?,
+        pitch_pairing: Codec::dec(r)?,
+        class: Codec::dec(r)?,
+        style: SpanStyle::default(),
+    })
+}
+
+fn enc_beam_v1(b: &Beam, out: &mut Vec<u8>) {
+    b.id.enc(out);
+    b.events.enc(out);
+    b.level.enc(out);
+}
+
+fn dec_beam_v1(r: &mut Reader<'_>) -> Result<Beam> {
+    Ok(Beam {
+        id: Codec::dec(r)?,
+        events: Codec::dec(r)?,
+        level: Codec::dec(r)?,
+        sub_beams: Vec::new(),
+        geometry_override: None,
+    })
+}
+
+fn enc_spanner_v1(s: &Spanner, out: &mut Vec<u8>) {
+    s.id.enc(out);
+    s.start.enc(out);
+    s.end.enc(out);
+    s.staves.enc(out);
+}
+
+fn dec_spanner_v1(r: &mut Reader<'_>) -> Result<Spanner> {
+    Ok(Spanner {
+        id: Codec::dec(r)?,
+        start: Codec::dec(r)?,
+        end: Codec::dec(r)?,
+        staves: Codec::dec(r)?,
+        kind: SpannerKind::Generic,
+        style: SpanStyle::default(),
+    })
+}
+
+fn enc_repeat_v1(rep: &RepeatStructure, out: &mut Vec<u8>) {
+    rep.id.enc(out);
+    rep.start.enc(out);
+    rep.end.enc(out);
+}
+
+fn dec_repeat_v1(r: &mut Reader<'_>) -> Result<RepeatStructure> {
+    Ok(RepeatStructure {
+        id: Codec::dec(r)?,
+        start: Codec::dec(r)?,
+        end: Codec::dec(r)?,
+        kind: RepeatKind::migration_default(),
+        voltas: Vec::new(),
+    })
+}
+
+fn enc_ccr_v1(c: &CrossCuttingRegistry, out: &mut Vec<u8>) {
+    enc_vec_v1(&c.slurs, out, enc_slur_v1);
+    enc_vec_v1(&c.ties, out, enc_tie_v1);
+    enc_vec_v1(&c.beams, out, enc_beam_v1);
+    c.tuplets.enc(out);
+    enc_vec_v1(&c.spanners, out, enc_spanner_v1);
+    c.markers.enc(out);
+    enc_vec_v1(&c.repeats, out, enc_repeat_v1);
+    c.analytical.enc(out);
+    c.comments.enc(out);
+    c.graphic_gestures.enc(out);
+    c.lyrics.enc(out);
+    c.chord_symbols.enc(out);
+}
+
+fn dec_ccr_v1(r: &mut Reader<'_>) -> Result<CrossCuttingRegistry> {
+    Ok(CrossCuttingRegistry {
+        slurs: dec_vec_v1(r, dec_slur_v1)?,
+        ties: dec_vec_v1(r, dec_tie_v1)?,
+        beams: dec_vec_v1(r, dec_beam_v1)?,
+        tuplets: Codec::dec(r)?,
+        spanners: dec_vec_v1(r, dec_spanner_v1)?,
+        markers: Codec::dec(r)?,
+        repeats: dec_vec_v1(r, dec_repeat_v1)?,
+        analytical: Codec::dec(r)?,
+        comments: Codec::dec(r)?,
+        graphic_gestures: Codec::dec(r)?,
+        lyrics: Codec::dec(r)?,
+        chord_symbols: Codec::dec(r)?,
+    })
+}
+
+fn enc_staff_instance_v1(si: &StaffInstance, out: &mut Vec<u8>) {
+    si.id.enc(out);
+    si.staff.enc(out);
+    si.voices.enc(out);
+    si.clef_sequence.enc(out);
+    si.key_sequence.enc(out);
+    si.local_metric_grid.enc(out);
+    si.measures.enc(out);
+    si.instrument_override.enc(out);
+    match &si.staff_lines_override {
+        None => out.push(0),
+        Some(c) => {
+            out.push(1);
+            enc_staff_lines_v1(c, out);
+        }
+    }
+    si.visible.enc(out);
+}
+
+fn dec_staff_instance_v1(r: &mut Reader<'_>) -> Result<StaffInstance> {
+    Ok(StaffInstance {
+        id: Codec::dec(r)?,
+        staff: Codec::dec(r)?,
+        voices: Codec::dec(r)?,
+        clef_sequence: Codec::dec(r)?,
+        key_sequence: Codec::dec(r)?,
+        local_metric_grid: Codec::dec(r)?,
+        measures: Codec::dec(r)?,
+        instrument_override: Codec::dec(r)?,
+        staff_lines_override: match r.u8()? {
+            0 => None,
+            1 => Some(dec_staff_lines_v1(r)?),
+            tag => {
+                return Err(ScoreDecodeError::InvalidTag {
+                    kind: "Option",
+                    tag,
+                })
+            }
+        },
+        visible: Codec::dec(r)?,
+    })
+}
+
+fn enc_sbc_v1(sbc: &StaffBasedContent, out: &mut Vec<u8>) {
+    enc_vec_v1(&sbc.staff_instances, out, enc_staff_instance_v1);
+    sbc.default_metric_grid.enc(out);
+    sbc.barline_alignment_groups.enc(out);
+    sbc.user_system_breaks.enc(out);
+    sbc.user_page_breaks.enc(out);
+}
+
+fn dec_sbc_v1(r: &mut Reader<'_>) -> Result<StaffBasedContent> {
+    Ok(StaffBasedContent {
+        staff_instances: dec_vec_v1(r, dec_staff_instance_v1)?,
+        default_metric_grid: Codec::dec(r)?,
+        barline_alignment_groups: Codec::dec(r)?,
+        user_system_breaks: Codec::dec(r)?,
+        user_page_breaks: Codec::dec(r)?,
+    })
+}
+
+fn enc_content_v1(content: &RegionContent, out: &mut Vec<u8>) {
+    match content {
+        RegionContent::StaffBased(s) => {
+            out.push(0);
+            enc_sbc_v1(s, out);
+        }
+        RegionContent::FreeGraphic(g) => {
+            out.push(1);
+            g.enc(out);
+        }
+        RegionContent::Hybrid {
+            staves,
+            overlay,
+            overlay_below_staves,
+        } => {
+            out.push(2);
+            enc_sbc_v1(staves, out);
+            overlay.enc(out);
+            overlay_below_staves.enc(out);
+        }
+    }
+}
+
+fn dec_content_v1(r: &mut Reader<'_>) -> Result<RegionContent> {
+    match r.u8()? {
+        0 => Ok(RegionContent::StaffBased(dec_sbc_v1(r)?)),
+        1 => Ok(RegionContent::FreeGraphic(Codec::dec(r)?)),
+        2 => Ok(RegionContent::Hybrid {
+            staves: dec_sbc_v1(r)?,
+            overlay: Codec::dec(r)?,
+            overlay_below_staves: Codec::dec(r)?,
+        }),
+        tag => Err(ScoreDecodeError::InvalidTag {
+            kind: "RegionContent",
+            tag,
+        }),
+    }
+}
+
+fn enc_region_v1(reg: &Region, out: &mut Vec<u8>) {
+    reg.id.enc(out);
+    reg.time_model.enc(out);
+    enc_content_v1(&reg.content, out);
+    reg.time_extent.enc(out);
+    reg.staff_extent.enc(out);
+    reg.local_tempo_map.enc(out);
+    reg.permits_spanning_slurs.enc(out);
+}
+
+fn dec_region_v1(r: &mut Reader<'_>) -> Result<Region> {
+    Ok(Region {
+        id: Codec::dec(r)?,
+        time_model: Codec::dec(r)?,
+        content: dec_content_v1(r)?,
+        time_extent: Codec::dec(r)?,
+        staff_extent: Codec::dec(r)?,
+        local_tempo_map: Codec::dec(r)?,
+        permits_spanning_slurs: Codec::dec(r)?,
+    })
+}
+
+fn enc_canvas_v1(c: &Canvas, out: &mut Vec<u8>) {
+    enc_vec_v1(&c.regions, out, enc_region_v1);
+    c.layout_defaults.enc(out);
+}
+
+fn dec_canvas_v1(r: &mut Reader<'_>) -> Result<Canvas> {
+    Ok(Canvas {
+        regions: dec_vec_v1(r, dec_region_v1)?,
+        layout_defaults: Codec::dec(r)?,
+    })
+}
+
+fn enc_instruments_v1(instruments: &[Instrument], out: &mut Vec<u8>) {
+    put_len(out, instruments.len());
+    for inst in instruments {
+        inst.id.enc(out);
+        inst.name.enc(out);
+        inst.range.enc(out);
+    }
+}
+
+fn dec_instruments_v1(r: &mut Reader<'_>) -> Result<Vec<Instrument>> {
+    let n = r.count()?;
+    let mut instruments = Vec::with_capacity(n.min(1024));
+    for _ in 0..n {
+        instruments.push(Instrument {
+            id: Codec::dec(r)?,
+            name: Codec::dec(r)?,
+            range: Codec::dec(r)?,
+            abbreviation: None,
+            sound_config: SoundConfiguration::default(),
+            transposition: None,
+            default_clef: Clef::treble(),
+            default_staff_lines: StaffLineConfiguration::default(),
+            unpitched_members: Vec::new(),
+        });
+    }
+    Ok(instruments)
+}
+
+/// The **frozen schema-major-1** encoding of a score — the byte-exact inverse
+/// of [`decode_v1_score`]'s field walk. Used by `decode_v1_score` to enforce
+/// strict v1 canonicality, and by migration tests and the decode fuzzer to
+/// synthesize genuine v1 bytes. A migrated score's schema-major-2 fields hold
+/// their defaults, so this simply omits them.
+pub(crate) fn encode_v1_score(s: &Score) -> Vec<u8> {
+    let mut out = Vec::new();
+    enc_metadata_v1(&s.metadata, &mut out);
+    enc_canvas_v1(&s.canvas, &mut out);
+    enc_instruments_v1(&s.instruments, &mut out);
+    enc_staves_v1(&s.staves, &mut out);
+    s.staff_groups.enc(&mut out);
+    s.parts.enc(&mut out);
+    enc_ccr_v1(&s.cross_cutting, &mut out);
+    s.time_signatures.enc(&mut out);
+    s.tuning_context.enc(&mut out);
+    s.tempo_map.enc(&mut out);
+    s.events.enc(&mut out);
+    s.spelling_attachments.enc(&mut out);
+    s.decomposition_attachments.enc(&mut out);
+    s.spelling_precedence.enc(&mut out);
+    s.analysis_layers.enc(&mut out);
+    s.views.enc(&mut out);
+    s.identity.enc(&mut out);
+    s.tombstoned_pitches.enc(&mut out);
+    s.tombstoned_events.enc(&mut out);
+    out
+}
+
+/// Decodes **schema-major-1** `Score` bytes into the current-layout `Score`,
+/// migrating on read (total, default-filling — Binary Format §Schema
+/// Major 2's migration table). Strictly canonical on the v1 wire form, like
+/// its v0 sibling: re-encodes through [`encode_v1_score`] and rejects any
+/// input that is not already its canonical v1 encoding.
+fn decode_v1_score(bytes: &[u8]) -> Result<Score> {
+    let mut r = Reader::new(bytes);
+    let metadata = dec_metadata_v1(&mut r)?;
+    let canvas = dec_canvas_v1(&mut r)?;
+    let instruments = dec_instruments_v1(&mut r)?;
+    let staves = dec_staves_v1(&mut r)?;
+    let staff_groups = Codec::dec(&mut r)?;
+    let parts = Codec::dec(&mut r)?;
+    let cross_cutting = dec_ccr_v1(&mut r)?;
+    let time_signatures = Codec::dec(&mut r)?;
+    let tuning_context = Codec::dec(&mut r)?;
+    let tempo_map = Codec::dec(&mut r)?;
+    let events = Codec::dec(&mut r)?;
+    let spelling_attachments = Codec::dec(&mut r)?;
+    let decomposition_attachments = Codec::dec(&mut r)?;
+    let spelling_precedence = Codec::dec(&mut r)?;
+    let analysis_layers = Codec::dec(&mut r)?;
+    let views = Codec::dec(&mut r)?;
+    let identity = Codec::dec(&mut r)?;
+    let tombstoned_pitches = Codec::dec(&mut r)?;
+    let tombstoned_events = Codec::dec(&mut r)?;
+    r.finish()?;
+    let score = Score {
+        metadata,
+        canvas,
+        instruments,
+        staves,
+        staff_groups,
+        parts,
+        cross_cutting,
+        time_signatures,
+        tuning_context,
+        tempo_map,
+        events,
+        spelling_attachments,
+        decomposition_attachments,
+        spelling_precedence,
+        analysis_layers,
+        views,
+        identity,
+        tombstoned_pitches,
+        tombstoned_events,
+    };
+    if encode_v1_score(&score) != bytes {
+        return Err(ScoreDecodeError::InvalidValue(
+            "non-canonical v1 Score encoding",
+        ));
+    }
+    Ok(score)
 }
 
 // ===========================================================================
@@ -2634,7 +3360,12 @@ mod tests {
 
         let bytes = score.canonical_bytes();
         assert_eq!(Score::decode_canonical(&bytes).unwrap(), score);
-        assert_eq!(Score::decode_canonical_versioned(&bytes, 1).unwrap(), score);
+        assert_eq!(Score::decode_canonical_versioned(&bytes, 2).unwrap(), score);
+        // The non-default major-1 values are representable at the frozen v1
+        // wire form too: the v1 encoding migrates back to the same score
+        // (its major-2 fields are all defaults here).
+        let v1 = encode_v1_score(&score);
+        assert_eq!(Score::decode_canonical_versioned(&v1, 1).unwrap(), score);
     }
 
     #[test]
@@ -2666,7 +3397,8 @@ mod tests {
                 .iter()
                 .all(|r| !r.permits_spanning_slurs));
 
-            let v1 = score.canonical_bytes();
+            let current = score.canonical_bytes();
+            let v1 = encode_v1_score(&score);
             let v0 = encode_v0_score(&score);
             // Size anchor (independent of the v0 encoder's field order): v0 is
             // exactly v1 minus the appended default bytes — layout_defaults once,
@@ -2679,17 +3411,266 @@ mod tests {
                 "v0 omits exactly the three new fields' default bytes"
             );
 
-            // Major 0: the shorter v0 bytes migrate up, default-filling all three.
+            // Major 0: the shorter v0 bytes migrate up, default-filling all three
+            // (and, composed, every schema-major-2 default).
             let migrated = Score::decode_canonical_versioned(&v0, 0).unwrap();
             assert_eq!(migrated, score);
-            // The migrated score re-encodes to the production v1 bytes.
-            assert_eq!(migrated.canonical_bytes(), v1);
-            // Major 1: the v1 bytes decode unchanged.
+            // The migrated score re-encodes to the production (major-2) bytes.
+            assert_eq!(migrated.canonical_bytes(), current);
+            // Major 1: the frozen v1 bytes migrate to the same score.
             assert_eq!(Score::decode_canonical_versioned(&v1, 1).unwrap(), score);
+            // Major 2: the current bytes decode unchanged.
+            assert_eq!(
+                Score::decode_canonical_versioned(&current, 2).unwrap(),
+                score
+            );
         }
-        // A major outside {0, 1} is a defensive decode error (the gate rejects
-        // it upstream in practice).
-        assert!(Score::decode_canonical_versioned(&valid_score(1).canonical_bytes(), 2).is_err());
+        // A major outside {0, 1, 2} is a defensive decode error (the gate
+        // rejects it upstream in practice).
+        assert!(Score::decode_canonical_versioned(&valid_score(1).canonical_bytes(), 3).is_err());
+    }
+
+    #[test]
+    fn v1_score_migrates_default_filling_the_major_2_fields() {
+        // Schema major 2 filled nine type bodies. A major-1 score carries none
+        // of the appended fields; migrate-on-read reconstructs each at its
+        // canonical default (Binary Format §Schema Major 2 migration table).
+        // Genuine v1 bytes come from the mirror v1 encoder; the size anchor
+        // pins that v1 omits exactly the appended default bytes, so the frozen
+        // encoder cannot silently drift from the pre-major-2 wire form.
+        for seed in 0..64u64 {
+            let score = valid_score(seed.wrapping_mul(0x9E37_79B9).wrapping_add(3));
+            let current = score.canonical_bytes();
+            let v1 = encode_v1_score(&score);
+
+            let c = &score.cross_cutting;
+            let override_sites: usize = score
+                .canvas
+                .regions
+                .iter()
+                .flat_map(|r| r.content.staff_instances())
+                .filter(|si| si.staff_lines_override.is_some())
+                .count();
+            // Appended default bytes per component: slur 4 (kind 1 +
+            // curvature presence 1 + style line 1 + thickness presence 1);
+            // tie 2 (style); beam 5 (sub_beams count 4 + geometry presence 1);
+            // spanner 3 (kind tag 1 + style 2); repeat 9 (SimpleRepeat tag 1 +
+            // count 4 + voltas count 4); staff 17 (clef 3 + config appends
+            // 14 = spacing 12 + style 1 + bracket 1); instrument 28
+            // (abbreviation 1 + sound count 4 + transposition 1 + clef 3 +
+            // full config 15 + members count 4); an overridden staff-instance
+            // config 14; metadata 23 (three presence bytes + two i64
+            // timestamps + additional count 4).
+            let expected_removed = c.slurs.len() * 4
+                + c.ties.len() * 2
+                + c.beams.len() * 5
+                + c.spanners.len() * 3
+                + c.repeats.len() * 9
+                + score.staves.len() * 17
+                + score.instruments.len() * 28
+                + override_sites * 14
+                + 23;
+            assert_eq!(
+                current.len() - v1.len(),
+                expected_removed,
+                "v1 omits exactly the appended major-2 default bytes"
+            );
+
+            let migrated = Score::decode_canonical_versioned(&v1, 1).unwrap();
+            assert_eq!(migrated, score);
+            assert_eq!(migrated.canonical_bytes(), current);
+        }
+    }
+
+    #[test]
+    fn current_major_round_trips_non_default_values_for_every_major_2_field() {
+        // One score carrying a non-default value for EVERY schema-major-2
+        // field (and every payload-carrying SpannerKind variant), so the live
+        // codec arms are exercised as real wire content, not always-default
+        // padding. Byte round-trip only — the standalone cross-cutting values
+        // reference fixture events for hygiene but invariants are not the
+        // subject here.
+        use crate::ids::{BeamId, RepeatStructureId, SlurId, SpannerId, TieId};
+        let mut score = valid_score(11);
+        let events: Vec<crate::ids::EventId> = score
+            .voices()
+            .flat_map(|(_, _, v)| v.events.clone())
+            .collect();
+        assert!(events.len() >= 2);
+        let ss = |v: f64| SpaceUnit(CanonicalF64::new(v).expect("finite"));
+        let anchor = |n: i64| crate::time::TimeAnchor::WallClock {
+            time: crate::time::WallClockTime(n),
+        };
+
+        score.cross_cutting.slurs.push(Slur {
+            id: SlurId::new(ReplicaId(9), 1),
+            start_event: events[0],
+            end_event: events[1],
+            kind: SlurKind::Phrase,
+            curvature_override: Some(CurvatureOverride {
+                direction: Some(CurveDirection::Below),
+                height: Some(ss(2.5)),
+            }),
+            style: SpanStyle {
+                line: LineStyle::Dashed,
+                thickness: Some(ss(0.25)),
+            },
+        });
+        score.cross_cutting.ties.push(Tie {
+            id: TieId::new(ReplicaId(9), 2),
+            start_event: events[0],
+            end_event: events[1],
+            pitch_pairing: None,
+            class: TieClass::Editorial,
+            style: SpanStyle {
+                line: LineStyle::Dotted,
+                thickness: None,
+            },
+        });
+        score.cross_cutting.beams.push(Beam {
+            id: BeamId::new(ReplicaId(9), 3),
+            events: events.clone(),
+            level: 1,
+            sub_beams: vec![SubBeam {
+                level: 2,
+                events: vec![events[0]],
+            }],
+            geometry_override: Some(BeamGeometryOverride {
+                slope: Some(CanonicalF64::new(0.5).expect("finite")),
+                offset: Some(ss(-1.0)),
+            }),
+        });
+        for (n, kind) in [
+            SpannerKind::Hairpin(HairpinDirection::Crescendo),
+            SpannerKind::OctaveLine(OctaveOffset(-1)),
+            SpannerKind::PedalLine(PedalKind::Sostenuto),
+            SpannerKind::TextLine(TextLineDefinition {
+                text: String::from("rit."),
+            }),
+            SpannerKind::Bracket(BracketKind::Square),
+            SpannerKind::TrillExtension,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            score.cross_cutting.spanners.push(Spanner {
+                id: SpannerId::new(ReplicaId(9), 10 + n as u64),
+                start: anchor(0),
+                end: anchor(1000),
+                staves: score.staves.iter().map(|st| st.id).collect(),
+                kind,
+                style: SpanStyle {
+                    line: LineStyle::Dashed,
+                    thickness: Some(ss(0.1)),
+                },
+            });
+        }
+        score.cross_cutting.repeats.push(RepeatStructure {
+            id: RepeatStructureId::new(ReplicaId(9), 20),
+            start: anchor(0),
+            end: anchor(500),
+            kind: RepeatKind::DalSegno {
+                segno: anchor(10),
+                end_target: anchor(400),
+            },
+            voltas: vec![Volta {
+                endings: vec![1, 2],
+                start: anchor(300),
+                end: anchor(500),
+            }],
+        });
+        // Every RepeatKind wire arm as real content: DaCapo (tag 1) and the
+        // payload-less Volta (tag 3); SimpleRepeat is the migration default
+        // exercised everywhere else.
+        score.cross_cutting.repeats.push(RepeatStructure {
+            id: RepeatStructureId::new(ReplicaId(9), 21),
+            start: anchor(500),
+            end: anchor(700),
+            kind: RepeatKind::DaCapo {
+                end_target: anchor(600),
+            },
+            voltas: vec![],
+        });
+        score.cross_cutting.repeats.push(RepeatStructure {
+            id: RepeatStructureId::new(ReplicaId(9), 22),
+            start: anchor(700),
+            end: anchor(900),
+            kind: RepeatKind::Volta,
+            voltas: vec![Volta {
+                endings: vec![3],
+                start: anchor(800),
+                end: anchor(900),
+            }],
+        });
+
+        score.staves[0].default_clef = Clef::bass();
+        score.staves[0].default_staff_lines = StaffLineConfiguration {
+            line_count: 1,
+            line_spacing: ss(0.6),
+            line_style: LineStyle::Dotted,
+            bracket: Some(StaffBracketKind::Brace),
+        };
+        let si = score.canvas.regions[0]
+            .content
+            .staff_instances_mut()
+            .expect("staff-based region")
+            .first_mut()
+            .expect("an instance");
+        si.staff_lines_override = Some(StaffLineConfiguration {
+            line_count: 4,
+            line_spacing: ss(0.8),
+            line_style: LineStyle::Dashed,
+            bracket: Some(StaffBracketKind::Bracket),
+        });
+
+        score.instruments[0].abbreviation = Some(String::from("Vln."));
+        score.instruments[0].sound_config = SoundConfiguration(vec![1, 2, 3]);
+        score.instruments[0].transposition = Some(TranspositionInterval {
+            diatonic_steps: -1,
+            chromatic_steps: -2,
+        });
+        score.instruments[0].default_clef = Clef::alto();
+        score.instruments[0].default_staff_lines = StaffLineConfiguration {
+            line_count: 5,
+            line_spacing: ss(1.2),
+            line_style: LineStyle::Solid,
+            bracket: None,
+        };
+        score.instruments[0].unpitched_members = vec![UnpitchedMember {
+            member: UnpitchedMemberId(3),
+            name: String::from("snare"),
+            staff_position: StaffPosition(2),
+        }];
+
+        score.metadata.subtitle = Some(String::from("a subtitle"));
+        score.metadata.lyricist = Some(String::from("a lyricist"));
+        score.metadata.arranger = Some(String::from("an arranger"));
+        score.metadata.creation_timestamp = Timestamp(1_700_000_000_000_000_000);
+        score.metadata.modification_timestamp = Timestamp(1_700_000_100_000_000_000);
+        score.metadata.additional = vec![
+            MetadataEntry {
+                key: String::from("opus"),
+                value: MetadataValue::Integer(27),
+            },
+            MetadataEntry {
+                key: String::from("dedication"),
+                value: MetadataValue::Text(String::from("f\u{fc}r Elise")),
+            },
+            MetadataEntry {
+                key: String::from("urtext"),
+                value: MetadataValue::Flag(true),
+            },
+        ];
+
+        let bytes = score.canonical_bytes();
+        assert_eq!(Score::decode_canonical(&bytes).unwrap(), score);
+        assert_eq!(Score::decode_canonical_versioned(&bytes, 2).unwrap(), score);
+        // The per-value seam carries the filled bodies too.
+        let slur = &score.cross_cutting.slurs[0];
+        assert_eq!(
+            Slur::decode_canonical(&slur.canonical_bytes()).unwrap(),
+            *slur
+        );
     }
 
     #[test]

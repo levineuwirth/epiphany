@@ -457,3 +457,36 @@ rejected up front); every production caller uses the default profile and
 `.expect`s; the stale test is rewritten as `unknown_algorithm_ids_error`.
 CONFORMANCE.md's long-standing "errors" claim is now true rather than
 aspirational.
+
+## Schema major 2, Phase B: the snapshot side (data-model fills + frozen v1)
+
+The nine type bodies fill to the ratified Ch5 shapes (Binary Format §Schema
+Major 2): Slur/Tie/Beam/Spanner (kind/curvature/sub-beams/geometry/style —
+one shared `SpanStyle`), RepeatStructure (kind/voltas), Staff (default_clef),
+StaffLineConfiguration (spacing/style/bracket), Instrument (six fields),
+ScoreMetadata (six fields incl. the strictly-authored timestamps). All new
+leaf types live in `graph.rs` with the ratified wire discriminants in
+`codec.rs` (`tag_only_codec!` for the tag-only enums).
+
+**The frozen-form architecture generalized:** major 2's fills reach types the
+v0 walk had treated as "unchanged" (`metadata`, `staves`, `cross_cutting`,
+and — transitively through `Region.content` — the staff instances), so the
+frozen wire forms are now a *shared sub-codec layer*: `enc_/dec_*_v1`
+functions (v0 == v1 for every type major 2 changed) used by BOTH
+`decode_v1_score`/`encode_v1_score` (new) and the v0 pair (updated to route
+through them). Each versioned decoder stays strictly canonical over its own
+wire form (re-encode-and-compare, the fuzzer-P1 discipline) and the fuzzer
+corpus gained genuine-v1 forms + the major-2 seam. The
+`v1_score_migrates_default_filling_the_major_2_fields` size anchor pins that
+v1 omits exactly the appended default bytes (so the frozen encoder cannot
+silently drift), and
+`current_major_round_trips_non_default_values_for_every_major_2_field`
+exercises every new field (and every payload-carrying SpannerKind variant)
+as real wire content.
+
+**Deliberate scope choices:** generator fixtures were NOT given non-default
+v2 content — that would churn the render goldens and reference-suite metrics
+for zero coverage the codec tests don't already provide; ops-level coverage
+arrives when Phase D's valuegen builders emit v2 values. `Score::empty` keeps
+its signature (Timestamp(0) is the ratified unset convention; a
+creation-time builder waits for a producer, e.g. import).

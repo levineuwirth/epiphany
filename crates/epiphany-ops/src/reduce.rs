@@ -7849,6 +7849,110 @@ mod tests {
     }
 
     #[test]
+    fn schema_majors_follow_the_minimal_stamping_rule() {
+        // Binary Format §Schema Major 2, "Minimal stamping": the stamp is the
+        // lowest major whose layouts decode the payload's bytes — a pure
+        // function of the value. Mandatory-append kinds are always 2; the
+        // Option-hidden embeddings are value-dependent; everything else keeps
+        // its prior major.
+        use crate::payload::{
+            CreateCrossCuttingOp, CreateRegionOp, CreateStaffInstanceOp, CrossCuttingValue,
+            SetStaffLayoutOp,
+        };
+        use epiphany_core::{RegionId, SlurId, StaffInstanceId};
+
+        let slur = crate::valuegen::slur(
+            SlurId::new(ReplicaId(9), 1),
+            EventId::new(ReplicaId(9), 1),
+            EventId::new(ReplicaId(9), 2),
+        );
+        assert_eq!(
+            OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Slur(slur),
+            })
+            .schema_major(),
+            2,
+            "mandatory v2 appends stamp 2"
+        );
+
+        let region = crate::valuegen::region(RegionId::new(ReplicaId(9), 3));
+        assert_eq!(
+            OperationKind::CreateRegion(CreateRegionOp {
+                region: region.clone()
+            })
+            .schema_major(),
+            1,
+            "an empty-instance CreateRegion keeps its v1 stamp"
+        );
+
+        let iid = StaffInstanceId::new(ReplicaId(9), 4);
+        let mut instance = crate::valuegen::staff_instance(iid, StaffId::new(ReplicaId(9), 5));
+        assert_eq!(
+            OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region: region.id,
+                instance: instance.clone(),
+            })
+            .schema_major(),
+            0,
+            "a None-override instance encodes byte-identically at v0"
+        );
+        instance.staff_lines_override = Some(epiphany_core::StaffLineConfiguration::default());
+        assert_eq!(
+            OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region: region.id,
+                instance,
+            })
+            .schema_major(),
+            2,
+            "a Some-override instance bears the v2 StaffLineConfiguration"
+        );
+
+        assert_eq!(
+            OperationKind::SetStaffLayout(SetStaffLayoutOp {
+                staff_instance: iid,
+                instrument_override: None,
+                staff_lines_override: None,
+                visible: true,
+            })
+            .schema_major(),
+            0
+        );
+        assert_eq!(
+            OperationKind::SetStaffLayout(SetStaffLayoutOp {
+                staff_instance: iid,
+                instrument_override: None,
+                staff_lines_override: Some(epiphany_core::StaffLineConfiguration::default()),
+                visible: true,
+            })
+            .schema_major(),
+            2
+        );
+    }
+
+    #[test]
+    fn the_canonical_base_is_byte_identical_across_data_model_majors() {
+        // Binary Format §Schema Major 1 / §Schema Major 2: the canonical-base
+        // MaterializedState embeds none of the data-model-major values, so its
+        // bytes MUST NOT move across those bumps. This golden-locks a seeded
+        // reduction's canonical bytes; if it fails after a data-model change,
+        // a filled type has leaked into the canonical base — which the majors
+        // promise not to do. (A deliberate change to the base's own vocabulary
+        // — an appended discriminant the seeded corpus emits — re-pins this
+        // consciously.)
+        let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xBA5E);
+        let envelopes = crate::fuzz::gen_envelope_set(&mut rng, 200);
+        let mut set = OperationSet::new();
+        set.accept_all(envelopes);
+        let bytes = set.reduce().canonical_bytes();
+        let digest = epiphany_determinism::blake3_256(&bytes);
+        let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            hex,
+            "65ad7ce56c6e8f37fbbbdab7dca8654507b3c952b0895673b453944623e42070"
+        );
+    }
+
+    #[test]
     fn transpose_skips_system_derived_targets_p12_k3() {
         // Review finding on P12-K3: Transpose must not rewrite a
         // SYSTEM_DERIVED pitch's intrinsic content in place — that would

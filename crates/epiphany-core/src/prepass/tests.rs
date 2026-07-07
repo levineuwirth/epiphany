@@ -177,12 +177,9 @@ fn metric_score(
         instrument,
         default_staff_lines: StaffLineConfiguration::default(),
         group: None,
+        default_clef: crate::graph::Clef::treble(),
     }];
-    score.instruments = vec![Instrument {
-        id: instrument,
-        name: String::from("Test"),
-        range: None,
-    }];
+    score.instruments = vec![Instrument::new(instrument, String::from("Test"))];
     score.cross_cutting.tuplets = tuplets;
     score.events = arena;
     score.canvas = Canvas {
@@ -785,12 +782,9 @@ fn nonmetric_region_defers_decomposition_but_still_spells() {
         instrument,
         default_staff_lines: StaffLineConfiguration::default(),
         group: None,
+        default_clef: crate::graph::Clef::treble(),
     }];
-    score.instruments = vec![Instrument {
-        id: instrument,
-        name: "T".into(),
-        range: None,
-    }];
+    score.instruments = vec![Instrument::new(instrument, "T")];
     score.events = arena;
     score.canvas = Canvas {
         regions: vec![region_obj],

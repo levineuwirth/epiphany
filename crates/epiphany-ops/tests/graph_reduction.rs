@@ -726,6 +726,8 @@ fn spanner_over(id: epiphany_core::SpannerId, a: EventId, b: EventId) -> epiphan
             offset: AnchorOffset::Zero,
         },
         staves: Vec::new(),
+        kind: Default::default(),
+        style: Default::default(),
     }
 }
 
@@ -3124,7 +3126,12 @@ fn set_staff_layout_is_an_advisory_lww_with_tombstone_noop() {
         prim(OperationKind::SetStaffLayout(SetStaffLayoutOp {
             staff_instance: instance,
             instrument_override: None,
-            staff_lines_override: Some(epiphany_core::StaffLineConfiguration { line_count: 1 }),
+            staff_lines_override: Some(epiphany_core::StaffLineConfiguration {
+                line_count: 1,
+                line_spacing: epiphany_core::SpaceUnit::normal(),
+                line_style: Default::default(),
+                bracket: None,
+            }),
             visible: false,
         })),
     );
@@ -3148,7 +3155,12 @@ fn set_staff_layout_is_an_advisory_lww_with_tombstone_noop() {
     assert_eq!(materialized.instrument_override, None);
     assert_eq!(
         materialized.staff_lines_override,
-        Some(epiphany_core::StaffLineConfiguration { line_count: 1 })
+        Some(epiphany_core::StaffLineConfiguration {
+            line_count: 1,
+            line_spacing: epiphany_core::SpaceUnit::normal(),
+            line_style: Default::default(),
+            bracket: None,
+        })
     );
     assert!(!materialized.visible);
     assert!(check_invariants(&result.score).is_empty());

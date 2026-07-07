@@ -50,9 +50,11 @@ pub const SUPPORTED_SCHEMA_MAJOR: u16 = 0;
 /// bound of its per-role accept-set `[0, max]` (Binary Format companion
 /// §"Schema Major 1", "The accept-set gate").
 ///
-/// `OperationEnvelopeBlock` admits major 1 (its v1 form embeds a v1
-/// `CreateRegion`; the reader treats the block bytes opaquely, so it parses a
-/// v1 block without decoding the payload). Every other role stays at
+/// `OperationEnvelopeBlock` admits major 2 (schema major 2 fills the
+/// cross-cutting/staff/metadata bodies its payloads embed; major 1 embedded a
+/// v1 `CreateRegion`; the reader treats the block bytes opaquely, so it
+/// parses a higher-major block without decoding the payload). Every other
+/// role stays at
 /// [`SUPPORTED_SCHEMA_MAJOR`] until its own versioned path lands — including the
 /// payload-polymorphic `Snapshot` (the acceleration form's migrate-on-read is
 /// core-side; the canonical base stays major 0) and the manifest (carried
@@ -61,7 +63,7 @@ pub const SUPPORTED_SCHEMA_MAJOR: u16 = 0;
 /// (a major-0-only reader meeting a v1 op block), not a hard reject.
 pub fn max_supported_major(kind: ChunkKind) -> u16 {
     match kind {
-        ChunkKind::OperationEnvelopeBlock => 1,
+        ChunkKind::OperationEnvelopeBlock => 2,
         _ => SUPPORTED_SCHEMA_MAJOR,
     }
 }
@@ -1264,11 +1266,14 @@ mod tests {
         // Admission of major 1 is raised **per chunk role**, never as a blanket
         // accept-set (Binary Format companion §"Schema Major 1"). D2 raised the
         // operation-envelope-block role to major 1 (a block bearing a v1
-        // CreateRegion); every other role stays exact-0 until its own versioned
-        // path lands, and the manifest stays major 0 forever.
+        // CreateRegion), and schema major 2 to major 2 (a block bearing a v2
+        // cross-cutting/staff/metadata value); every other role stays exact-0
+        // until its own versioned path lands, and the manifest stays major 0
+        // forever.
         assert_eq!(SchemaVersion::V1.major, 1);
-        // The op-block role admits [0, 1].
-        assert_eq!(max_supported_major(ChunkKind::OperationEnvelopeBlock), 1);
+        assert_eq!(SchemaVersion::V2.major, 2);
+        // The op-block role admits [0, 2].
+        assert_eq!(max_supported_major(ChunkKind::OperationEnvelopeBlock), 2);
         // Every other role stays at the generic baseline (major 0): the
         // payload-polymorphic Snapshot (its migrate-on-read is core-side), the
         // layout cache, and the operation index.
@@ -1290,7 +1295,7 @@ mod tests {
         let mut bundle = fresh_bundle();
         let block = StagedChunk::operation_block_versioned(
             crate::block::encode_block(&[vec![1u8, 2, 3]]),
-            SchemaVersion::new(2, 0),
+            SchemaVersion::new(3, 0),
         );
         bundle
             .commit(&[block], |ctx| {
@@ -1306,7 +1311,7 @@ mod tests {
         );
         assert!(bundle.anomalies().iter().any(|a| matches!(
             a,
-            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 2 }
+            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 3 }
         )));
         // A further commit against the now-read-only bundle is refused.
         let more = StagedChunk::operation_block_versioned(

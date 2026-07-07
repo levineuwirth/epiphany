@@ -401,3 +401,13 @@ do not include the field. This crate places `retention_policy` inside
 `ProfileConstraints`. The spec should show the field explicitly (and confirm
 whether a bundle declaring multiple profiles resolves retention from the first
 declared profile, as this crate does).
+
+## Schema major 2: op-block accept-set raised to [0, 2]
+
+`max_supported_major(OperationEnvelopeBlock)` → 2 (same commit as the core
+fills + ops stamps, so stamps never lag bytes); every other role stays at
+major 0 — including the payload-polymorphic Snapshot: nothing stages an
+acceleration full-`Score` snapshot yet, so its role gate waits for a real
+producer (the core-side seam `decode_canonical_versioned` already handles
+{0,1,2}). `SchemaVersion::V2` added; beyond-accept-set tests moved to
+major 3.

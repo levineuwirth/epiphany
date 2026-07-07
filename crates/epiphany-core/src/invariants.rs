@@ -808,6 +808,20 @@ impl<'a> GraphIndex<'a> {
         for rp in &cc.repeats {
             anchors.push(&rp.start);
             anchors.push(&rp.end);
+            // Schema major 2: the kind and volta anchors are anchors too.
+            match &rp.kind {
+                crate::graph::RepeatKind::DaCapo { end_target } => anchors.push(end_target),
+                crate::graph::RepeatKind::DalSegno { segno, end_target } => {
+                    anchors.push(segno);
+                    anchors.push(end_target);
+                }
+                crate::graph::RepeatKind::SimpleRepeat { .. } | crate::graph::RepeatKind::Volta => {
+                }
+            }
+            for v in &rp.voltas {
+                anchors.push(&v.start);
+                anchors.push(&v.end);
+            }
         }
         for cs in &cc.chord_symbols {
             anchors.push(&cs.anchor);
@@ -931,6 +945,15 @@ impl<'a> GraphIndex<'a> {
                     format!("beam {:?} event {:?} dangling", b.id, e),
                 );
             }
+            // Schema major 2: sub-beam member events are references too.
+            for sb in &b.sub_beams {
+                for e in &sb.events {
+                    flag(
+                        live_event(e),
+                        format!("beam {:?} sub-beam event {:?} dangling", b.id, e),
+                    );
+                }
+            }
         }
         for tp in &self.score.cross_cutting.tuplets {
             for e in &tp.members {
@@ -990,6 +1013,28 @@ impl<'a> GraphIndex<'a> {
                 self.anchor_target_exists(&rp.start) && self.anchor_target_exists(&rp.end),
                 format!("repeat {:?} anchor target dangling", rp.id),
             );
+            // Schema major 2: the kind's jump anchors and each volta's span.
+            let kind_ok = match &rp.kind {
+                crate::graph::RepeatKind::DaCapo { end_target } => {
+                    self.anchor_target_exists(end_target)
+                }
+                crate::graph::RepeatKind::DalSegno { segno, end_target } => {
+                    self.anchor_target_exists(segno) && self.anchor_target_exists(end_target)
+                }
+                crate::graph::RepeatKind::SimpleRepeat { .. } | crate::graph::RepeatKind::Volta => {
+                    true
+                }
+            };
+            flag(
+                kind_ok,
+                format!("repeat {:?} kind anchor target dangling", rp.id),
+            );
+            for v in &rp.voltas {
+                flag(
+                    self.anchor_target_exists(&v.start) && self.anchor_target_exists(&v.end),
+                    format!("repeat {:?} volta anchor target dangling", rp.id),
+                );
+            }
         }
         for cs in &cc.chord_symbols {
             flag(
@@ -2473,11 +2518,11 @@ mod review_fix_tests {
     use crate::event::{Event, PitchedEvent, StemConfiguration};
     use crate::generators::valid_score;
     use crate::graph::{
-        derive_promoted_voice_id, MetricTimeModel, ProportionalTimeModel, Region, RegionContent,
-        Spanner, StaffBasedContent, StaffExtent, StaffInstance, Tie, TieClass, TimeExtent, Voice,
-        VoiceOrigin,
+        derive_promoted_voice_id, Beam, MetricTimeModel, ProportionalTimeModel, Region,
+        RegionContent, RepeatKind, RepeatStructure, Spanner, StaffBasedContent, StaffExtent,
+        StaffInstance, SubBeam, Tie, TieClass, TimeExtent, Voice, VoiceOrigin, Volta,
     };
-    use crate::ids::{OperationId, ReplicaId, SpannerId, TieId};
+    use crate::ids::{BeamId, OperationId, RepeatStructureId, ReplicaId, SpannerId, TieId};
     use crate::pitch::{
         AcousticPitch, AcousticRealization, CmnNominal, IdentifiedPitch, Pitch, PitchSpaceId,
         PitchSpacePosition, ScalePosition, TuningReference,
@@ -2632,6 +2677,8 @@ mod review_fix_tests {
                 time: WallClockTime(1),
             },
             staves: vec![staff],
+            kind: Default::default(),
+            style: Default::default(),
         };
         s.cross_cutting.spanners.push(spanner_ok);
         assert!(!fires(&s, GraphInvariant::AnchorOffsetModel));
@@ -2659,8 +2706,75 @@ mod review_fix_tests {
                 time: WallClockTime(0),
             },
             staves: vec![staff],
+            kind: Default::default(),
+            style: Default::default(),
         });
         assert!(fires(&s, GraphInvariant::CrossCuttingRefsResolve));
+    }
+
+    #[test]
+    fn inv10_flags_dangling_sub_beam_event() {
+        // Schema major 2: sub-beam member events are references the invariant
+        // must resolve, exactly like the owning beam's events.
+        let mut s = valid_score(3);
+        let live: Vec<_> = s
+            .voices()
+            .flat_map(|(_, _, v)| v.events.clone())
+            .take(2)
+            .collect();
+        let ghost_event = crate::ids::EventId::new(s.identity.replica_id, 9_000_002);
+        s.cross_cutting.beams.push(Beam {
+            id: BeamId::new(s.identity.replica_id, 1),
+            events: live.clone(),
+            level: 1,
+            sub_beams: vec![SubBeam {
+                level: 2,
+                events: vec![ghost_event],
+            }],
+            geometry_override: None,
+        });
+        assert!(fires(&s, GraphInvariant::CrossCuttingRefsResolve));
+    }
+
+    #[test]
+    fn inv10_flags_dangling_repeat_kind_and_volta_anchors() {
+        // Schema major 2: a DalSegno's segno/end_target and each volta's span
+        // are anchors the invariant must resolve.
+        let mut s = valid_score(3);
+        let r = s.identity.replica_id;
+        let ghost = crate::ids::EventId::new(r, 9_000_003);
+        let dead_anchor = TimeAnchor::Event {
+            id: ghost,
+            offset: AnchorOffset::Zero,
+        };
+        let ok = TimeAnchor::WallClock {
+            time: WallClockTime(0),
+        };
+        s.cross_cutting.repeats.push(RepeatStructure {
+            id: RepeatStructureId::new(r, 1),
+            start: ok.clone(),
+            end: ok.clone(),
+            kind: RepeatKind::DalSegno {
+                segno: dead_anchor.clone(),
+                end_target: ok.clone(),
+            },
+            voltas: vec![],
+        });
+        assert!(fires(&s, GraphInvariant::CrossCuttingRefsResolve));
+
+        let mut s2 = valid_score(3);
+        s2.cross_cutting.repeats.push(RepeatStructure {
+            id: RepeatStructureId::new(r, 2),
+            start: ok.clone(),
+            end: ok.clone(),
+            kind: RepeatKind::Volta,
+            voltas: vec![Volta {
+                endings: vec![1],
+                start: dead_anchor,
+                end: ok,
+            }],
+        });
+        assert!(fires(&s2, GraphInvariant::CrossCuttingRefsResolve));
     }
 
     /// Builds a single-voice score with two adjacent pitched chords and returns
@@ -2719,6 +2833,7 @@ mod review_fix_tests {
             end_event: e1,
             pitch_pairing: None,
             class: TieClass::Standard,
+            style: Default::default(),
         });
         assert!(fires(&s, GraphInvariant::TiePairing));
 
@@ -2730,6 +2845,7 @@ mod review_fix_tests {
             end_event: e1,
             pitch_pairing: None,
             class: TieClass::Standard,
+            style: Default::default(),
         });
         assert!(!fires(&s2, GraphInvariant::TiePairing));
     }
@@ -2751,6 +2867,9 @@ mod review_fix_tests {
                 id: sid,
                 start_event: staff_event,
                 end_event: staff_event,
+                kind: Default::default(),
+                curvature_override: None,
+                style: Default::default(),
             });
         }
         assert!(fires(&s2, GraphInvariant::UniqueIdentifiers));
@@ -2857,6 +2976,8 @@ mod review_fix_tests {
             end: TimeAnchor::WallClock {
                 time: crate::time::WallClockTime(0),
             },
+            kind: crate::graph::RepeatKind::migration_default(),
+            voltas: Vec::new(),
         });
         s.cross_cutting.comments.push(Comment {
             id: crate::ids::CommentId::new(r, 1),
@@ -3114,16 +3235,8 @@ mod review_fix_tests_2 {
         let mut s = valid_score(71);
         let r = s.identity.replica_id;
         let iid = InstrumentId::new(r, 1);
-        s.instruments.push(Instrument {
-            id: iid,
-            name: "a".into(),
-            range: None,
-        });
-        s.instruments.push(Instrument {
-            id: iid,
-            name: "b".into(),
-            range: None,
-        });
+        s.instruments.push(Instrument::new(iid, "a"));
+        s.instruments.push(Instrument::new(iid, "b"));
         assert!(fires(&s, GraphInvariant::UniqueIdentifiers));
 
         // Score identity in the reserved namespace.
@@ -3267,6 +3380,7 @@ mod review_fix_tests_3 {
             end_event: e1,
             pitch_pairing: None,
             class: TieClass::Standard,
+            style: Default::default(),
         });
         assert!(
             !fires(&s, GraphInvariant::TiePairing),
@@ -3333,6 +3447,12 @@ mod review_fix_tests_3 {
             id: InstrumentId::new(ReplicaId::SYSTEM_DERIVED, 1),
             name: "x".into(),
             range: None,
+            abbreviation: None,
+            sound_config: Default::default(),
+            transposition: None,
+            default_clef: crate::graph::Clef::treble(),
+            default_staff_lines: Default::default(),
+            unpitched_members: Vec::new(),
         });
         assert!(fires(&s, GraphInvariant::UniqueIdentifiers));
     }
@@ -3370,6 +3490,7 @@ mod review_fix_tests_3 {
             instrument: s.staves[0].instrument,
             default_staff_lines: Default::default(),
             group: None,
+            default_clef: crate::graph::Clef::treble(),
         });
         inst.staff = staff2;
         inst.voices.push(voice);
@@ -3424,6 +3545,8 @@ mod review_fix_tests_3 {
                 time: WallClockTime(0),
             },
             staves: vec![staff2],
+            kind: Default::default(),
+            style: Default::default(),
         });
         assert!(fires(&s, GraphInvariant::AnchorOffsetModel));
         // A wall-clock offset matches the event's clock -> ok.
@@ -3657,11 +3780,8 @@ mod review_fix_tests_4 {
         // A fresh staff Y (declared) with its instrument.
         let staff_y = s.identity.mint();
         let instr = s.identity.mint();
-        s.instruments.push(crate::graph::Instrument {
-            id: instr,
-            name: "y".into(),
-            range: None,
-        });
+        s.instruments
+            .push(crate::graph::Instrument::new(instr, "y"));
         s.staves.push(crate::graph::Staff {
             id: staff_y,
             name: "Y".into(),
@@ -3669,6 +3789,7 @@ mod review_fix_tests_4 {
             instrument: instr,
             default_staff_lines: Default::default(),
             group: None,
+            default_clef: crate::graph::Clef::treble(),
         });
         let mk_region = |s: &mut Score, start: TimeAnchor, end: TimeAnchor| Region {
             id: s.identity.mint(),

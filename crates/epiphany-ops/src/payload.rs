@@ -80,9 +80,8 @@ impl OperationPayload {
     }
 
     /// The binary-format schema major this payload's canonical encoding requires
-    /// ([`OperationKind::schema_major`]). Only a primitive `CreateRegion` is
-    /// major 1; the meta-operations embed no schema-major-1 value, so they are
-    /// major 0.
+    /// ([`OperationKind::schema_major`]). The meta-operations embed no
+    /// data-model value, so they are major 0.
     pub fn schema_major(&self) -> u16 {
         match self {
             OperationPayload::Primitive(kind) => kind.schema_major(),
@@ -187,16 +186,46 @@ pub enum OperationKind {
 
 impl OperationKind {
     /// The binary-format schema major this kind's canonical payload encodes at
-    /// (Binary Format companion §"Schema Major 1"). `CreateRegion` embeds a
-    /// [`Region`], which grew `permits_spanning_slurs` at schema major 1, so its
-    /// payload is major 1; every other kind's payload is unchanged from major 0.
+    /// (Binary Format companion §"Schema Major 1" / §"Schema Major 2").
     ///
-    /// An op-envelope block's schema major is the maximum over the operations it
-    /// carries: a block bearing any `CreateRegion` is stamped major 1, and a
-    /// major-0-only reader opens such a bundle read-only.
+    /// An op-envelope block's schema major is the maximum over the operations
+    /// it carries. **Minimal stamping** (Binary Format §Schema Major 2): the
+    /// stamp is the *lowest* major whose layouts decode the payload's bytes —
+    /// a pure function of the value, so identical content stamps (and hashes)
+    /// identically. The kinds whose v2 fills are mandatory appended fields
+    /// are always major 2; the kinds whose only v2 embedding hides behind an
+    /// `Option` (encoding byte-identically to the prior major when `None`)
+    /// are value-dependent.
     pub fn schema_major(&self) -> u16 {
         match self {
-            OperationKind::CreateRegion(_) => 1,
+            // Mandatory v2 appends: CrossCuttingValue (Slur/Tie/Beam/Spanner
+            // bodies), Staff (default_clef + filled line config), and
+            // ScoreMetadata (six appended fields).
+            OperationKind::CreateCrossCutting(_)
+            | OperationKind::ModifyCrossCutting(_)
+            | OperationKind::CreateStaff(_)
+            | OperationKind::SetMetadata(_) => 2,
+            // Value-dependent: the embedded StaffLineConfiguration rides an
+            // Option; None encodes byte-identically to the prior major.
+            OperationKind::CreateRegion(op) => {
+                if op
+                    .region
+                    .content
+                    .staff_instances()
+                    .iter()
+                    .any(|si| si.staff_lines_override.is_some())
+                {
+                    2
+                } else {
+                    1
+                }
+            }
+            OperationKind::CreateStaffInstance(op)
+                if op.instance.staff_lines_override.is_some() =>
+            {
+                2
+            }
+            OperationKind::SetStaffLayout(op) if op.staff_lines_override.is_some() => 2,
             _ => 0,
         }
     }

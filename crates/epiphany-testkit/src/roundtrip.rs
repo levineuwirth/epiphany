@@ -627,14 +627,61 @@ mod tests {
     }
 
     #[test]
+    fn cross_cutting_op_block_is_stamped_major_2_and_reopens_read_write() {
+        // Schema major 2 (minimal stamping): a CreateCrossCutting payload's
+        // v2 fills are mandatory appended fields, so the kind is always
+        // major 2; the writer derives the block stamp from its operations.
+        use epiphany_core::{OperationId, ReplicaId, SlurId, WallClockTime};
+        use epiphany_ops::{
+            AuthorId, CausalContext, CreateCrossCuttingOp, CrossCuttingValue, HybridLogicalClock,
+            OperationKind, OperationPayload, OperationStamp,
+        };
+        let slur = epiphany_ops::valuegen::slur(
+            SlurId::new(ReplicaId(9), 5),
+            epiphany_core::EventId::new(ReplicaId(9), 100),
+            epiphany_core::EventId::new(ReplicaId(9), 101),
+        );
+        let id = OperationId::new(ReplicaId(9), 2);
+        let env = OperationEnvelope {
+            id,
+            author: AuthorId(0),
+            stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(2), 0), id),
+            causal_context: CausalContext::new(),
+            transaction: None,
+            payload: OperationPayload::Primitive(OperationKind::CreateCrossCutting(
+                CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Slur(slur),
+                },
+            )),
+        };
+        assert_eq!(
+            env.schema_major(),
+            2,
+            "CreateCrossCutting encodes at schema major 2"
+        );
+        let block = crate::bundle_harness::stage_operation_block(std::slice::from_ref(&env));
+        let reopened = reopen_with_op_block(0xD2_0003, block);
+        // Major 2 is within the op-block accept-set [0,2]: read-write.
+        assert_eq!(
+            reopened.manifest().operation_roots[0].schema_version,
+            SchemaVersion::V2
+        );
+        assert!(!reopened.is_read_only());
+        let blocks = reopened
+            .read_operation_block(&reopened.manifest().operation_roots[0])
+            .expect("major-2 op block is admitted by the accept-set");
+        assert_eq!(blocks, vec![env.to_canonical_bytes()]);
+    }
+
+    #[test]
     fn op_block_beyond_the_accept_set_opens_read_only() {
         use epiphany_bundle::IntegrityAnomaly;
-        // A newer writer's op block, stamped schema major 2 — beyond the reader's
-        // op-block accept-set [0,1]. The bundle opens read-only preservation (the
+        // A newer writer's op block, stamped schema major 3 — beyond the reader's
+        // op-block accept-set [0,2]. The bundle opens read-only preservation (the
         // canonical base and manifest still read) rather than hard-rejecting.
         let block = StagedChunk::operation_block_versioned(
             encode_block(&[vec![1u8, 2, 3, 4]]),
-            SchemaVersion::new(2, 0),
+            SchemaVersion::new(3, 0),
         );
         let reopened = reopen_with_op_block(0xD2_0002, block);
         assert!(
@@ -643,7 +690,7 @@ mod tests {
         );
         assert!(reopened.anomalies().iter().any(|a| matches!(
             a,
-            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 2 }
+            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 3 }
         )));
     }
 

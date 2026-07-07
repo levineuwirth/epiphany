@@ -1446,6 +1446,8 @@ mod tests {
                 offset: AnchorOffset::Zero,
             },
             staves: vec![first_staff, second_staff],
+            kind: Default::default(),
+            style: Default::default(),
         });
 
         let logical = to_logical(&score);

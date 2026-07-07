@@ -12,11 +12,11 @@
 use epiphany_core::{
     AcousticPitch, AcousticRealization, AnchorOffset, Canvas, ChordSymbol, CmnNominal,
     CrossCuttingRegistry, Event, EventArena, EventDuration, EventPosition, IdentifiedPitch,
-    IdentityContext, Instrument, Marker, Measure, MetricTimeModel, MusicalDuration,
-    MusicalPosition, Pitch, PitchSpaceId, PitchSpacePosition, RationalTime, RegionContent,
-    RegionEdge, RegionTimeModel, ScalePosition, Score, Spanner, Staff, StaffBasedContent,
-    StaffExtent, StaffInstance, StaffLineConfiguration, StemConfiguration, Tie, TieClass,
-    TimeAnchor, TimeExtent, TuningReference, Voice, WallClockTime,
+    IdentityContext, Marker, Measure, MetricTimeModel, MusicalDuration, MusicalPosition, Pitch,
+    PitchSpaceId, PitchSpacePosition, RationalTime, RegionContent, RegionEdge, RegionTimeModel,
+    ScalePosition, Score, Spanner, Staff, StaffBasedContent, StaffExtent, StaffInstance,
+    StaffLineConfiguration, StemConfiguration, Tie, TieClass, TimeAnchor, TimeExtent,
+    TuningReference, Voice, WallClockTime,
 };
 use epiphany_core::{
     ChordSymbolId, EventId, InstrumentId, MarkerId, MeasureId, PitchId, RegionId, ReplicaId,
@@ -115,6 +115,7 @@ pub fn ten_measure_single_staff(seed: u64) -> Score {
         end_event: events[1],
         pitch_pairing: None,
         class: TieClass::Standard,
+        style: Default::default(),
     });
     cross_cutting.spanners.push(Spanner {
         id: idc.mint::<SpannerId>(),
@@ -127,6 +128,8 @@ pub fn ten_measure_single_staff(seed: u64) -> Score {
             time: WallClockTime(10),
         },
         staves: vec![staff_id],
+        kind: Default::default(),
+        style: Default::default(),
     });
     cross_cutting.markers.push(Marker {
         id: idc.mint::<MarkerId>(),
@@ -171,11 +174,10 @@ pub fn ten_measure_single_staff(seed: u64) -> Score {
 
     let mut score = Score::empty(idc.clone());
     score.identity = idc;
-    score.instruments = vec![Instrument {
-        id: instrument,
-        name: String::from("Flute"),
-        range: None,
-    }];
+    score.instruments = vec![epiphany_core::Instrument::new(
+        instrument,
+        String::from("Flute"),
+    )];
     score.staves = vec![Staff {
         id: staff_id,
         name: String::from("Flute"),
@@ -183,6 +185,7 @@ pub fn ten_measure_single_staff(seed: u64) -> Score {
         instrument,
         default_staff_lines: StaffLineConfiguration::default(),
         group: None,
+        default_clef: epiphany_core::Clef::treble(),
     }];
     score.events = arena;
     score.cross_cutting = cross_cutting;

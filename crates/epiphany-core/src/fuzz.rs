@@ -46,14 +46,20 @@ struct Corpus {
     regions: Vec<Vec<u8>>,
     /// Valid **frozen v0** whole-`Score` encodings — genuine major-0 wire bytes
     /// (via [`crate::codec::encode_v0_score`]), to exercise the strict v0
-    /// migration path with real v0 inputs rather than only mutated v1 bytes.
+    /// migration path with real v0 inputs rather than only mutated current
+    /// bytes.
     v0_scores: Vec<Vec<u8>>,
+    /// Valid **frozen v1** whole-`Score` encodings (via
+    /// [`crate::codec::encode_v1_score`]) — the schema-major-2 migration's
+    /// input form.
+    v1_scores: Vec<Vec<u8>>,
 }
 
 fn build_corpus(rng: &mut SplitMix64) -> Corpus {
     let mut scores = Vec::new();
     let mut regions = Vec::new();
     let mut v0_scores = Vec::new();
+    let mut v1_scores = Vec::new();
     for i in 0..12u64 {
         let seed = rng.next_u64();
         let score = if i % 2 == 0 {
@@ -65,12 +71,14 @@ fn build_corpus(rng: &mut SplitMix64) -> Corpus {
             regions.push(region.canonical_bytes());
         }
         v0_scores.push(crate::codec::encode_v0_score(&score));
+        v1_scores.push(crate::codec::encode_v1_score(&score));
         scores.push(score.canonical_bytes());
     }
     Corpus {
         scores,
         regions,
         v0_scores,
+        v1_scores,
     }
 }
 
@@ -184,15 +192,22 @@ pub fn run_decode_fuzz(iters: u64, seed: u64) {
         // The current-layout decoder: must not panic; an Ok must round-trip.
         check_score(Score::decode_canonical(&bytes), &bytes);
 
-        // The schema-version dispatch seam. Major 1 is the current layout; major
-        // 0 runs the frozen `decode_v0_score` migration; an arbitrary major
-        // exercises the defensive out-of-accept-set path.
-        let _ = Score::decode_canonical_versioned(&bytes, 1);
-        // The v0 migration default-fills the schema-major-1 fields, so it does
-        // not round-trip to the *v1* form — but it is strictly canonical over the
-        // **v0 wire form**: an accepted input re-encodes to itself via the frozen
-        // v0 encoder. This proves non-canonical rejection on the v0 path, not
+        // The schema-version dispatch seam. Major 2 is the current layout;
+        // majors 1 and 0 run the frozen migrations; an arbitrary major
+        // exercises the defensive out-of-accept-set path. Each migration
+        // default-fills the appended fields, so it does not round-trip to the
+        // *current* form — but each is strictly canonical over its OWN wire
+        // form: an accepted input re-encodes to itself via the frozen encoder.
+        // This proves non-canonical rejection on every versioned path, not
         // just the absence of a panic.
+        let _ = Score::decode_canonical_versioned(&bytes, 2);
+        if let Ok(v1_score) = Score::decode_canonical_versioned(&bytes, 1) {
+            assert_eq!(
+                crate::codec::encode_v1_score(&v1_score),
+                bytes,
+                "the v1 migration accepted a non-canonical v1 byte string"
+            );
+        }
         if let Ok(v0_score) = Score::decode_canonical_versioned(&bytes, 0) {
             assert_eq!(
                 crate::codec::encode_v0_score(&v0_score),
@@ -230,31 +245,53 @@ pub fn run_decode_fuzz(iters: u64, seed: u64) {
             }
         }
 
-        // Every ~4th iteration, feed a *genuine* v0-form encoding (mutated) to
-        // the frozen major-0 migration, so its strict v0 canonicality is hit
-        // with real v0 bytes — an accepted input must re-encode to itself in the
-        // v0 wire form, and an unmutated v0 encoding must always be accepted.
+        // Every ~4th iteration, feed a *genuine* frozen-form encoding
+        // (mutated) to its migration path — both the v0 and v1 wire forms —
+        // so each strict canonicality guard is hit with real bytes of its own
+        // major. An UNMUTATED frozen encoding MUST decode Ok (enforced, not
+        // just commented); an accepted input must re-encode to itself.
         if rng.next_u64() % 4 == 0 {
-            let mut v0 =
-                corpus.v0_scores[(rng.next_u64() as usize) % corpus.v0_scores.len()].clone();
-            match rng.next_u64() % 4 {
-                0 => {} // unmutated: must decode Ok and round-trip the v0 form.
-                1 => {
-                    let k = 1 + (rng.next_u64() % 4) as usize;
-                    substitute(&mut rng, &mut v0, k);
+            type Reenc = fn(&Score) -> Vec<u8>;
+            let forms: [(&[Vec<u8>], u16, Reenc, &str); 2] = [
+                (
+                    &corpus.v0_scores,
+                    0,
+                    crate::codec::encode_v0_score as Reenc,
+                    "v0",
+                ),
+                (
+                    &corpus.v1_scores,
+                    1,
+                    crate::codec::encode_v1_score as Reenc,
+                    "v1",
+                ),
+            ];
+            for (pool, major, reenc, label) in forms {
+                let mut bytes = pool[(rng.next_u64() as usize) % pool.len()].clone();
+                let mutation = rng.next_u64() % 4;
+                match mutation {
+                    0 => {} // unmutated: must decode Ok (asserted below).
+                    1 => {
+                        let k = 1 + (rng.next_u64() % 4) as usize;
+                        substitute(&mut rng, &mut bytes, k);
+                    }
+                    2 => {
+                        let t = (rng.next_u64() as usize) % (bytes.len() + 1);
+                        bytes.truncate(t);
+                    }
+                    _ => corrupt_length_prefix(&mut rng, &mut bytes),
                 }
-                2 => {
-                    let t = (rng.next_u64() as usize) % (v0.len() + 1);
-                    v0.truncate(t);
+                match Score::decode_canonical_versioned(&bytes, major) {
+                    Ok(score) => assert_eq!(
+                        reenc(&score),
+                        bytes,
+                        "the {label} migration accepted a non-canonical {label} byte string"
+                    ),
+                    Err(_) => assert_ne!(
+                        mutation, 0,
+                        "an unmutated genuine {label} encoding must decode Ok"
+                    ),
                 }
-                _ => corrupt_length_prefix(&mut rng, &mut v0),
-            }
-            if let Ok(score) = Score::decode_canonical_versioned(&v0, 0) {
-                assert_eq!(
-                    crate::codec::encode_v0_score(&score),
-                    v0,
-                    "the v0 migration accepted a non-canonical v0 byte string"
-                );
             }
         }
     }

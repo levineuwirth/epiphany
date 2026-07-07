@@ -157,6 +157,9 @@ pub fn slur(id: SlurId, start: EventId, end: EventId) -> Slur {
         id,
         start_event: start,
         end_event: end,
+        kind: Default::default(),
+        curvature_override: None,
+        style: Default::default(),
     }
 }
 
@@ -168,6 +171,7 @@ pub fn tie(id: TieId, start: EventId, end: EventId) -> Tie {
         end_event: end,
         pitch_pairing: None,
         class: TieClass::LaissezVibrer,
+        style: Default::default(),
     }
 }
 
@@ -177,6 +181,8 @@ pub fn beam(id: BeamId, events: Vec<EventId>) -> Beam {
         id,
         events,
         level: 1,
+        sub_beams: Vec::new(),
+        geometry_override: None,
     }
 }
 
@@ -278,6 +284,12 @@ pub fn score_metadata(nth: u8) -> epiphany_core::ScoreMetadata {
         title: Some(format!("title-{nth}")),
         composer: Some("composer".to_string()),
         copyright: None,
+        subtitle: None,
+        lyricist: None,
+        arranger: None,
+        creation_timestamp: Default::default(),
+        modification_timestamp: Default::default(),
+        additional: Vec::new(),
     }
 }
 
@@ -300,6 +312,7 @@ pub fn staff(id: StaffId, instrument: epiphany_core::InstrumentId) -> epiphany_c
         instrument,
         default_staff_lines: epiphany_core::StaffLineConfiguration::default(),
         group: None,
+        default_clef: epiphany_core::Clef::treble(),
     }
 }
 

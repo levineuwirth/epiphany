@@ -114,11 +114,7 @@ pub fn valid_score(seed: u64) -> Score {
         let staff_id: StaffId = idc.mint();
         let instrument: InstrumentId = idc.mint();
         // Declare the instrument so the staff's reference resolves (invariant 10).
-        instruments.push(Instrument {
-            id: instrument,
-            name: String::from("instrument"),
-            range: None,
-        });
+        instruments.push(Instrument::new(instrument, String::from("instrument")));
         staves.push(Staff {
             id: staff_id,
             name: String::from("staff"),
@@ -126,6 +122,7 @@ pub fn valid_score(seed: u64) -> Score {
             instrument,
             default_staff_lines: StaffLineConfiguration::default(),
             group: None,
+            default_clef: crate::graph::Clef::treble(),
         });
         staff_extent.push(staff_id);
 
@@ -221,11 +218,7 @@ pub fn valid_score_rich(seed: u64) -> Score {
      -> StaffId {
         let id: StaffId = idc.mint();
         let instrument: InstrumentId = idc.mint();
-        instruments.push(Instrument {
-            id: instrument,
-            name: String::from("instrument"),
-            range: None,
-        });
+        instruments.push(Instrument::new(instrument, String::from("instrument")));
         staves.push(Staff {
             id,
             name: String::from("staff"),
@@ -233,6 +226,7 @@ pub fn valid_score_rich(seed: u64) -> Score {
             instrument,
             default_staff_lines: StaffLineConfiguration::default(),
             group: None,
+            default_clef: crate::graph::Clef::treble(),
         });
         id
     };
@@ -301,6 +295,7 @@ pub fn valid_score_rich(seed: u64) -> Score {
         end_event: triplet_members[1],
         pitch_pairing: None,
         class: TieClass::Standard,
+        style: Default::default(),
     });
     // The first triplet member is an eighth in a 3:2 triplet, so its sounding
     // duration is 1/8 × 2/3 = 1/12 — matching the event's duration (invariant 15).
@@ -325,6 +320,8 @@ pub fn valid_score_rich(seed: u64) -> Score {
             time: WallClockTime(10),
         },
         staves: vec![staff_a],
+        kind: Default::default(),
+        style: Default::default(),
     });
     cross_cutting.markers.push(Marker {
         id: idc.mint::<MarkerId>(),
@@ -587,6 +584,7 @@ pub fn violating_score(inv: GraphInvariant, seed: u64) -> Score {
                 instrument: s.identity.mint(),
                 default_staff_lines: StaffLineConfiguration::default(),
                 group: None,
+                default_clef: crate::graph::Clef::treble(),
             });
             s.canvas.regions[0].staff_extent.staves.push(staff2);
             s.canvas.regions[0]
@@ -610,6 +608,8 @@ pub fn violating_score(inv: GraphInvariant, seed: u64) -> Score {
                     time: WallClockTime(10),
                 },
                 staves: vec![staff],
+                kind: Default::default(),
+                style: Default::default(),
             });
         }
         CrossCuttingRefsResolve => {
@@ -619,6 +619,9 @@ pub fn violating_score(inv: GraphInvariant, seed: u64) -> Score {
                 id: SlurId::new(replica, 1),
                 start_event: ghost,
                 end_event: ghost,
+                kind: Default::default(),
+                curvature_override: None,
+                style: Default::default(),
             });
         }
         UniqueIdentifiers => {
@@ -700,6 +703,7 @@ pub fn violating_score(inv: GraphInvariant, seed: u64) -> Score {
                 end_event: e1,
                 pitch_pairing: Some(vec![(ghost, end_pid)]),
                 class: TieClass::Editorial,
+                style: Default::default(),
             });
         }
         VoiceOriginConsistent => {

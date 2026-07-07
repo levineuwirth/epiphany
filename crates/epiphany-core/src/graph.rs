@@ -43,12 +43,31 @@ pub enum StemDirection {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct StaffLineConfiguration {
     pub line_count: u8,
+    /// Schema major 2 (appended; migration default 1.0).
+    pub line_spacing: SpaceUnit,
+    /// Schema major 2 (appended; migration default `Solid`).
+    pub line_style: LineStyle,
+    /// Schema major 2 (appended; migration default `None`). A per-staff
+    /// bracket adornment, distinct from StaffGroup-level bracketing.
+    pub bracket: Option<StaffBracketKind>,
 }
 
 impl Default for StaffLineConfiguration {
     fn default() -> Self {
-        StaffLineConfiguration { line_count: 5 }
+        StaffLineConfiguration {
+            line_count: 5,
+            line_spacing: SpaceUnit::normal(),
+            line_style: LineStyle::Solid,
+            bracket: None,
+        }
     }
+}
+
+/// A per-staff bracket adornment (Chapter 5; schema major 2).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum StaffBracketKind {
+    Brace,
+    Bracket,
 }
 
 /// The SMuFL clef family a [`Clef`] draws from. The reference pitch each family
@@ -797,6 +816,9 @@ pub struct Staff {
     pub instrument: InstrumentId,
     pub default_staff_lines: StaffLineConfiguration,
     pub group: Option<StaffGroupId>,
+    /// Default clef for new instances of this staff (schema major 2,
+    /// appended last per the wire rule; migration default treble).
+    pub default_clef: Clef,
 }
 
 /// The spatial root of the score (Chapter 5 §"The Canvas").
@@ -864,12 +886,110 @@ impl Default for CanvasLayoutDefaults {
 // graphic gestures, lyrics, chord symbols) extends this with the same
 // reference-resolution discipline.
 
+/// A dimension in staff spaces (Chapter 5; schema major 2). Staff line
+/// spacing is relative to the global staff space: 1.0 is a normal-size
+/// staff, smaller values yield cue/ossia staves. The wire form is the
+/// wrapped [`CanonicalF64`]'s (the newtype adds no bytes).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct SpaceUnit(pub CanonicalF64);
+
+impl SpaceUnit {
+    /// The normal-size staff spacing, 1.0 — the v1→v2 migration default
+    /// for `StaffLineConfiguration.line_spacing`.
+    pub fn normal() -> Self {
+        SpaceUnit(CanonicalF64::new(1.0).expect("1.0 is finite"))
+    }
+}
+
+/// A line drawing style (Chapter 5; schema major 2). Shared by staff
+/// lines and [`SpanStyle`].
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+pub enum LineStyle {
+    #[default]
+    Solid,
+    Dashed,
+    Dotted,
+}
+
+/// The class of a slur (Chapter 5 §"Slurs"; schema major 2). The
+/// v1→v2 migration default is `Legato`.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+pub enum SlurKind {
+    /// An ordinary legato slur.
+    #[default]
+    Legato,
+    /// A phrase mark (typically longer, over sub-phrases).
+    Phrase,
+    /// An articulation slur (e.g., over a two-note sigh figure).
+    Articulation,
+    /// An editorial slur (rendered distinctly, e.g., dashed).
+    Editorial,
+}
+
+/// Which side of the notes a curve arcs toward (Chapter 5; schema
+/// major 2).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum CurveDirection {
+    Above,
+    Below,
+}
+
+/// An authored curvature override (Chapter 5 §"Slurs"; schema major 2).
+/// The engraver computes default curvature; each present field
+/// overrides that component. Consumed by the Standard engraving tier;
+/// stored and preserved at every tier.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CurvatureOverride {
+    pub direction: Option<CurveDirection>,
+    /// Arc height at the apex.
+    pub height: Option<SpaceUnit>,
+}
+
+/// The visual style of a spanning mark (Chapter 5; schema major 2):
+/// one shared record for `Slur.style`, `Tie.style`, and
+/// `Spanner.style`. Defaults: solid, engraver-chosen thickness.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct SpanStyle {
+    pub line: LineStyle,
+    /// Line thickness; `None` = the engraver's default.
+    pub thickness: Option<SpaceUnit>,
+}
+
 /// A slur / phrase mark over a span of events (Chapter 5 §"Slurs").
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Slur {
     pub id: SlurId,
     pub start_event: crate::ids::EventId,
     pub end_event: crate::ids::EventId,
+    /// Schema major 2 (appended; migration default `Legato`).
+    pub kind: SlurKind,
+    /// Schema major 2 (appended; migration default `None`).
+    pub curvature_override: Option<CurvatureOverride>,
+    /// Schema major 2 (appended; migration default `SpanStyle::default()`).
+    pub style: SpanStyle,
+}
+
+/// A beam segment at a deeper subdivision level (Chapter 5 §"Beams";
+/// schema major 2): a contiguous subset of the owning beam's events
+/// beamed together at `level` (strictly deeper than the owner's
+/// primary level).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SubBeam {
+    pub level: u8,
+    pub events: Vec<crate::ids::EventId>,
+}
+
+/// An authored beam-geometry override (Chapter 5 §"Beams"; schema
+/// major 2). Each present field overrides the engraver's computed
+/// geometry. Consumed by the Standard engraving tier; stored and
+/// preserved at every tier.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BeamGeometryOverride {
+    /// Beam slope: staff spaces of rise per staff space of run
+    /// (dimensionless, hence not a [`SpaceUnit`]).
+    pub slope: Option<CanonicalF64>,
+    /// Vertical displacement from the default placement (positive = up).
+    pub offset: Option<SpaceUnit>,
 }
 
 /// A beam over a sequence of events (Chapter 5 §"Beams").
@@ -878,6 +998,65 @@ pub struct Beam {
     pub id: BeamId,
     pub events: Vec<crate::ids::EventId>,
     pub level: u8,
+    /// Schema major 2 (appended; migration default empty).
+    pub sub_beams: Vec<SubBeam>,
+    /// Schema major 2 (appended; migration default `None`).
+    pub geometry_override: Option<BeamGeometryOverride>,
+}
+
+/// Hairpin orientation (Chapter 5 §"Spanners"; schema major 2).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum HairpinDirection {
+    Crescendo,
+    Diminuendo,
+}
+
+/// Octave-line displacement in signed octaves (Chapter 5 §"Spanners";
+/// schema major 2): +1 = 8va, -1 = 8vb, +2 = 15ma, -2 = 15mb. Zero is
+/// representable but degenerate; the authoring advisory layer flags
+/// it, reduction does not.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct OctaveOffset(pub i8);
+
+/// Pedal-line kind (Chapter 5 §"Spanners"; schema major 2).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PedalKind {
+    Sustain,
+    Sostenuto,
+    UnaCorda,
+}
+
+/// A text line's content (Chapter 5 §"Spanners"; schema major 2); the
+/// dash pattern comes from the spanner's style.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TextLineDefinition {
+    pub text: String,
+}
+
+/// A bracket spanner's shape (Chapter 5 §"Spanners"; schema major 2).
+/// Growth is by appended variant.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum BracketKind {
+    Square,
+}
+
+/// The kind of a spanner (Chapter 5 §"Spanners"; schema major 2).
+/// `Generic` is deliberately first: it is the v1→v2 migration default
+/// — a v1 spanner carried no kind, and `Generic` (a plain line or
+/// bracket) is the honest translation of that absence.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub enum SpannerKind {
+    /// An unclassified spanning mark: renders as a plain line/bracket.
+    #[default]
+    Generic,
+    Hairpin(HairpinDirection),
+    OctaveLine(OctaveOffset),
+    PedalLine(PedalKind),
+    TrillExtension,
+    Glissando,
+    Portamento,
+    TextLine(TextLineDefinition),
+    Bracket(BracketKind),
 }
 
 /// A generic spanning mark anchored by time (Chapter 5 §"Spanners").
@@ -888,6 +1067,11 @@ pub struct Spanner {
     pub end: TimeAnchor,
     /// Which staves this spanner attaches to.
     pub staves: Vec<StaffId>,
+    /// Schema major 2 (appended after `staves` per the wire rule;
+    /// migration default `Generic`).
+    pub kind: SpannerKind,
+    /// Schema major 2 (appended; migration default `SpanStyle::default()`).
+    pub style: SpanStyle,
 }
 
 /// The class of a tie, fixing its validation profile (Chapter 5 §"Ties").
@@ -916,6 +1100,8 @@ pub struct Tie {
     /// pitches by enharmonic matching in pitch-id-ascending order.
     pub pitch_pairing: Option<Vec<(PitchId, PitchId)>>,
     pub class: TieClass,
+    /// Schema major 2 (appended; migration default `SpanStyle::default()`).
+    pub style: SpanStyle,
 }
 
 /// The actual:notated ratio of a tuplet (Chapter 3 §"Tuplets"). Built only
@@ -988,6 +1174,46 @@ pub struct Marker {
     pub anchor: TimeAnchor,
 }
 
+/// The kind of a repeat structure (Chapter 5 §"Repeat Structures";
+/// schema major 2). The v1→v2 migration default is
+/// `SimpleRepeat { count: 2 }`: a v1 repeat *meant* a repeat, and
+/// playing the span twice is the conventional semantics of an
+/// unadorned repeat sign.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum RepeatKind {
+    SimpleRepeat {
+        count: u32,
+    },
+    DaCapo {
+        end_target: TimeAnchor,
+    },
+    DalSegno {
+        segno: TimeAnchor,
+        end_target: TimeAnchor,
+    },
+    Volta,
+}
+
+impl RepeatKind {
+    /// The v1→v2 migration default (Binary Format §Schema Major 2).
+    pub const fn migration_default() -> Self {
+        RepeatKind::SimpleRepeat { count: 2 }
+    }
+}
+
+/// One volta bracket (Chapter 5 §"Repeat Structures"; schema major 2):
+/// the passes it applies on and the time span it covers. The `endings`
+/// constraints (non-empty, 1-based, strictly ascending) are advisory —
+/// decoders and reduction accept violations, the authoring validation
+/// layer flags them.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Volta {
+    /// The pass numbers this ending plays on (1-based), ascending.
+    pub endings: Vec<u32>,
+    pub start: TimeAnchor,
+    pub end: TimeAnchor,
+}
+
 /// A repeat structure: simple repeat, da capo, dal segno, volta (Chapter 5
 /// §"Repeat Structures"). Spanned by two time anchors.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -995,6 +1221,11 @@ pub struct RepeatStructure {
     pub id: RepeatStructureId,
     pub start: TimeAnchor,
     pub end: TimeAnchor,
+    /// Schema major 2 (appended; migration default
+    /// [`RepeatKind::migration_default`]).
+    pub kind: RepeatKind,
+    /// Schema major 2 (appended; migration default empty).
+    pub voltas: Vec<Volta>,
 }
 
 /// An analytical annotation (Roman numeral, form label, …) (Chapter 5
@@ -1187,6 +1418,35 @@ pub struct DecompositionAttachment {
 // later companions; this baseline models the identity- and reference-bearing
 // skeleton and leaves the rest as documented placeholders.
 
+/// A calendar timestamp (Chapter 5 §"Score Metadata"; schema major 2):
+/// nanoseconds since the Unix epoch, UTC, no zone. Distinct from
+/// [`crate::WallClockTime`], which is *performance* time within a
+/// score. Zero is the "unset" convention. Strictly authored
+/// (`req:graph:metadata-timestamps`): nothing writes these implicitly.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+pub struct Timestamp(pub i64);
+
+/// The value of an additional metadata entry (Chapter 5 §"Score
+/// Metadata"; schema major 2). Closed small union; growth by appended
+/// variant.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum MetadataValue {
+    Text(String),
+    Integer(i64),
+    Flag(bool),
+}
+
+/// One additional metadata entry (Chapter 5 §"Score Metadata"; schema
+/// major 2). `ScoreMetadata.additional` is an ordered authored *list*,
+/// not a map: order is preserved verbatim and duplicate keys are
+/// permitted (foreign formats carry repeated keys); map-seeking
+/// consumers take the first entry per key.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct MetadataEntry {
+    pub key: String,
+    pub value: MetadataValue,
+}
+
 /// Bibliographic and authorship metadata (Chapter 5 §"Score Metadata"). The
 /// structure is deliberately small.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -1194,6 +1454,51 @@ pub struct ScoreMetadata {
     pub title: Option<String>,
     pub composer: Option<String>,
     pub copyright: Option<String>,
+    /// Schema major 2 (appended; migration default `None`).
+    pub subtitle: Option<String>,
+    /// Schema major 2 (appended; migration default `None`).
+    pub lyricist: Option<String>,
+    /// Schema major 2 (appended; migration default `None`).
+    pub arranger: Option<String>,
+    /// Schema major 2 (appended; migration default unset/zero).
+    pub creation_timestamp: Timestamp,
+    /// Schema major 2 (appended; migration default unset/zero).
+    pub modification_timestamp: Timestamp,
+    /// Schema major 2 (appended; migration default empty).
+    pub additional: Vec<MetadataEntry>,
+}
+
+/// Opaque sound configuration (Chapter 5 §"Instruments"; schema
+/// major 2). The audio engine specification owns the structure; the
+/// core stores the bytes verbatim and never interprets them.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct SoundConfiguration(pub Vec<u8>);
+
+/// A written-versus-sounding transposition (Chapter 5 §"Instruments";
+/// schema major 2). Structural only: the diatonic and chromatic step
+/// counts of the interval (e.g., B-flat clarinet = -1 diatonic,
+/// -2 chromatic). Semantically ADVISORY until the Chapter 4 tuning
+/// catalog pins interval algebra (the P12-K2 discipline): nothing in
+/// the core resolves it to frequencies or respells through it yet.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct TranspositionInterval {
+    pub diatonic_steps: i32,
+    pub chromatic_steps: i32,
+}
+
+/// One playable member of an unpitched instrument (Chapter 5
+/// §"Instruments"; schema major 2). `member` is an instrument-scoped
+/// small value (not a 128-bit object id); resolution from
+/// `UnpitchedEvent.instrument_member` is by first match in list order,
+/// and a no-match is tolerated (every pre-major-2 instrument has an
+/// empty member list while its events carry member values) — the
+/// event's own `staff_position` governs placement either way; the
+/// member's is the authoring default copied onto new events.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct UnpitchedMember {
+    pub member: crate::event::UnpitchedMemberId,
+    pub name: String,
+    pub staff_position: crate::event::StaffPosition,
 }
 
 /// An abstract instrument definition (Chapter 5 §"Instruments"). Baseline: the
@@ -1209,6 +1514,38 @@ pub struct Instrument {
     /// spanning-frame candidate outside the range trips the advisory check in
     /// authoring mode only (see [`PitchRange::contains`]).
     pub range: Option<PitchRange>,
+
+    /// Schema major 2 (appended after the major-1 order per the wire
+    /// rule; migration default `None`).
+    pub abbreviation: Option<String>,
+    /// Schema major 2 (appended; migration default empty).
+    pub sound_config: SoundConfiguration,
+    /// Schema major 2 (appended; migration default `None`).
+    pub transposition: Option<TranspositionInterval>,
+    /// Schema major 2 (appended; migration default treble).
+    pub default_clef: Clef,
+    /// Schema major 2 (appended; migration default the 5-line default).
+    pub default_staff_lines: StaffLineConfiguration,
+    /// Schema major 2 (appended; migration default empty).
+    pub unpitched_members: Vec<UnpitchedMember>,
+}
+
+impl Instrument {
+    /// A minimal instrument: identity and name, every other field at its
+    /// canonical default (the schema-major-2 migration defaults).
+    pub fn new(id: InstrumentId, name: impl Into<String>) -> Self {
+        Instrument {
+            id,
+            name: name.into(),
+            range: None,
+            abbreviation: None,
+            sound_config: SoundConfiguration::default(),
+            transposition: None,
+            default_clef: Clef::treble(),
+            default_staff_lines: StaffLineConfiguration::default(),
+            unpitched_members: Vec::new(),
+        }
+    }
 }
 
 /// The kind of a staff grouping (Chapter 5 §"Top-Level Score Structure").

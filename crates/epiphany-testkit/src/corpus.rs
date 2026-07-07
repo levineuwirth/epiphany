@@ -28,14 +28,14 @@ use epiphany_core::{
     check_invariants, derive_annotations, AleatoricAnchoringDiscipline, AleatoricTimeModel, Canvas,
     CmnNominal, CueEvent, CueRendering, DerivedAnnotations, Event, EventArena, EventDuration,
     EventPosition, GraceKind, GraphicEvent, IdentifiedPitch, IdentityContext, IndeterminacyHints,
-    IndeterminacyKind, IndeterminateEvent, Instrument, MetricTimeModel, MusicalDuration,
-    MusicalPosition, PitchSpelling, PowerOfTwo, PrePassProfile, ProportionalTimeModel, Region,
-    RegionContent, RegionTimeModel, Score, SpellingAttachment, SpellingDirective, SpellingNominal,
-    SpellingScope, SpellingSource, Staff, StaffBasedContent, StaffExtent, StaffInstance,
-    StaffLineConfiguration, StaffPosition, StemConfiguration, TaxonomyReport, TimeAnchor,
-    TimeExtent, TimeSignature, TimeSignatureDisplay, TrajectoryDisplay, TrajectoryEndpoint,
-    TrajectoryEvent, TrajectoryShape, Tuplet, TupletRatio, UnpitchedEvent, UnpitchedMemberId,
-    Voice, WallClockDuration, WallClockTime,
+    IndeterminacyKind, IndeterminateEvent, MetricTimeModel, MusicalDuration, MusicalPosition,
+    PitchSpelling, PowerOfTwo, PrePassProfile, ProportionalTimeModel, Region, RegionContent,
+    RegionTimeModel, Score, SpellingAttachment, SpellingDirective, SpellingNominal, SpellingScope,
+    SpellingSource, Staff, StaffBasedContent, StaffExtent, StaffInstance, StaffLineConfiguration,
+    StaffPosition, StemConfiguration, TaxonomyReport, TimeAnchor, TimeExtent, TimeSignature,
+    TimeSignatureDisplay, TrajectoryDisplay, TrajectoryEndpoint, TrajectoryEvent, TrajectoryShape,
+    Tuplet, TupletRatio, UnpitchedEvent, UnpitchedMemberId, Voice, WallClockDuration,
+    WallClockTime,
 };
 use epiphany_core::{
     AccidentalId, AcousticPitch, AcousticRealization, BeatGroup, EventId, InstrumentId, Pitch,
@@ -507,12 +507,12 @@ impl OneStaff {
             instrument,
             default_staff_lines: StaffLineConfiguration::default(),
             group: None,
+            default_clef: epiphany_core::Clef::treble(),
         }];
-        score.instruments = vec![Instrument {
-            id: instrument,
-            name: String::from("F-corpus"),
-            range: None,
-        }];
+        score.instruments = vec![epiphany_core::Instrument::new(
+            instrument,
+            String::from("F-corpus"),
+        )];
         score.events = arena;
         score.cross_cutting = cross_cutting;
         score.spelling_attachments = spelling_attachments;

@@ -7,9 +7,9 @@
 use epiphany_core::{
     check_invariants, derive_promoted_voice_id, generators, AcousticPitch, AcousticRealization,
     Canvas, CmnNominal, Event, EventArena, EventDuration, EventPosition, GraphInvariant,
-    IdentifiedPitch, IdentityContext, Instrument, InstrumentId, MusicalDuration, MusicalPosition,
-    OperationId, Pitch, PitchId, PitchSpaceId, PitchSpacePosition, PitchedEvent, RationalTime,
-    Region, RegionContent, RegionTimeModel, ReplicaId, ScalePosition, Score, StaffBasedContent,
+    IdentifiedPitch, IdentityContext, InstrumentId, MusicalDuration, MusicalPosition, OperationId,
+    Pitch, PitchId, PitchSpaceId, PitchSpacePosition, PitchedEvent, RationalTime, Region,
+    RegionContent, RegionTimeModel, ReplicaId, ScalePosition, Score, StaffBasedContent,
     StaffExtent, StaffInstance, StaffLineConfiguration, StemConfiguration, TimeAnchor, TimeExtent,
     TuningReference, Voice, WallClockTime,
 };
@@ -93,11 +93,7 @@ fn hand_built_score() -> Score {
 
     let mut score = Score::empty(idc.clone());
     score.identity = idc;
-    score.instruments = vec![Instrument {
-        id: instrument,
-        name: "Flute".into(),
-        range: None,
-    }];
+    score.instruments = vec![epiphany_core::Instrument::new(instrument, "Flute")];
     score.staves = vec![Staff {
         id: staff_id,
         name: "Flute 1".into(),
@@ -105,6 +101,7 @@ fn hand_built_score() -> Score {
         instrument,
         default_staff_lines: StaffLineConfiguration::default(),
         group: None,
+        default_clef: epiphany_core::Clef::treble(),
     }];
     score.events = arena;
     score.canvas = Canvas {

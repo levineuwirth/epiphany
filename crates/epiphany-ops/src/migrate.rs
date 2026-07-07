@@ -494,6 +494,8 @@ mod tests {
                 offset: epiphany_core::AnchorOffset::Zero,
             },
             staves: vec![StaffId::new(ReplicaId(3), 0)],
+            kind: Default::default(),
+            style: Default::default(),
         };
         let e = env(primitive(OperationKind::CreateCrossCutting(
             CreateCrossCuttingOp {
