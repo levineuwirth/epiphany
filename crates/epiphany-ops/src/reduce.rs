@@ -5215,11 +5215,37 @@ impl<'a> Reducer<'a> {
             }
             Some(ObjectState::Live) => {}
         }
+        let mut carried = Vec::new();
+        op.event.collect_identified_pitches(&mut carried);
+        // Introduction precondition (P13-K1, ratified: reject the
+        // introduction) before the identity one: a `ModifyEvent` may not
+        // *introduce* a never-minted SYSTEM-DERIVED pitch id — that id lives in
+        // the reserved system namespace and only the system mints it. A carried
+        // system-derived pitch absent from `objects` (never minted) is refused,
+        // consistently across a snapshot cut: this closes the asymmetry where
+        // an introduced system pitch slipped through in-session (`system_mints`
+        // had no entry, so the identity check below saw nothing) yet read
+        // `SystemDerivedContentImmutable` once a snapshot re-seeded it as a
+        // system mint. A user-replica pitch carries no such namespace claim and
+        // has no snapshot asymmetry, so it is untouched here; the event's own
+        // live system pitches are in `objects` (both reduction modes), so an
+        // in-place content rewrite passes.
+        if carried.iter().any(|ip| {
+            ip.id.replica() == ReplicaId::SYSTEM_DERIVED
+                && !matches!(
+                    self.objects.get(&TypedObjectId::Pitch(ip.id)),
+                    Some(ObjectState::Live)
+                )
+        }) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
         // Identity precondition (P12-K3) before the placement precondition:
         // a replacement value that rewrites a system-derived pitch's
         // intrinsic content in place is refused outright.
-        let mut carried = Vec::new();
-        op.event.collect_identified_pitches(&mut carried);
         if carried
             .iter()
             .any(|ip| self.system_derived_rewrite(ip.id, &ip.pitch))
@@ -9482,6 +9508,62 @@ mod tests {
                 },
             }),
             "a ModifyEvent rewriting a carried system pitch is refused"
+        );
+    }
+
+    #[test]
+    fn a_modify_event_introducing_a_never_minted_system_pitch_is_refused_p13_k1() {
+        // P13-K1 (ratified: reject the introduction). The INTRODUCTION sibling
+        // of the p12_k3 rewrite refusal: a ModifyEvent whose replacement
+        // carries a *never-minted* system-derived pitch id is refused
+        // (`TargetMissing`) — the system namespace is the system's to mint.
+        // Before the fix this slipped through in-session (`system_mints` had no
+        // entry, so the identity check saw nothing) yet read
+        // `SystemDerivedContentImmutable` after a snapshot re-seeded the pitch
+        // as a system mint — the snapshot-cut asymmetry the candidate named.
+        // The verdict no longer depends on the registry: the pitch is not live
+        // in `objects` in either frame, so both refuse identically.
+        use epiphany_core::derive_system_pitch_id;
+        let content = crate::valuegen::pitch_value_nth(3);
+        let system_id = derive_system_pitch_id(&content); // never minted
+
+        // A live, pitchless event modified to CARRY the never-minted system
+        // pitch (an introduction, not an in-place rewrite).
+        let insert = insert(1, 0, 10, 1, 100, 0);
+        let replacement = crate::valuegen::insert_event_value(
+            EventId::new(ReplicaId(1), 100),
+            VoiceId::new(ReplicaId(9), 1),
+            pos(0),
+            epiphany_core::MusicalDuration::whole(),
+            &[system_id],
+        );
+        let modify = prim_env(
+            1,
+            1,
+            20,
+            seen_r1(0),
+            OperationKind::ModifyEvent(ModifyEventOp { event: replacement }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![insert, modify.clone()]);
+        let state = set.reduce();
+
+        assert_eq!(
+            state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == modify.id)
+                .map(|(_, eff)| eff),
+            Some(&OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            }),
+            "a ModifyEvent introducing a never-minted system pitch is refused"
+        );
+        assert!(
+            !state.objects.contains_key(&TypedObjectId::Pitch(system_id)),
+            "the introduced system pitch never enters the ledger"
         );
     }
 

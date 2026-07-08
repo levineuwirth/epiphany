@@ -965,16 +965,25 @@ each fixed with a regression test:
    `precondition_failure_reason`/`reanchor_reason` never emitted discriminants
    12/13/6, so fuzz gates could not catch a renumbering regression. Fixed.
 
-**Pass-13 candidate (P13-K1, filed not fixed):** the K3 verdict for a system
-pitch *introduced by a ModifyEvent replacement value* (never minted — the
-collision pre-walk deliberately excludes ModifyEvent) differs across a
-snapshot cut: in-session the pitch is not Live (`TargetMissing`); after a
-snapshot re-seeds objects + registry from the base graph, the same modify
-reads `SystemDerivedContentImmutable`. The asymmetry **predates K3** (the
-same split previously read `TargetMissing` vs a silent `Applied` rewrite) and
-is a ModifyEvent-introduction question — whether a replacement value may
-introduce never-minted pitch ids at all — batched for Pass 13, not
-improvised here.
+**Pass-13 candidate (P13-K1) — resolved (Pass 13, 2026-07-08; user: "reject
+the introduction").** The K3 verdict for a system pitch *introduced by a
+ModifyEvent replacement value* (never minted — the collision pre-walk excludes
+ModifyEvent) differed across a snapshot cut: in-session the pitch was not Live
+(slipped through — `system_mints` had no entry, so the identity check saw
+nothing); after a snapshot re-seeded objects + registry from the base graph,
+the same modify read `SystemDerivedContentImmutable`.
+
+Resolved by rejecting the introduction: `modify_event` now refuses a
+replacement that carries a **never-minted system-derived pitch id** (replica
+`SYSTEM_DERIVED`, absent-or-not-Live in `objects`) with `TargetMissing`,
+*before* the P12-K3 identity check. The verdict no longer depends on the
+registry — the pitch is not live in `objects` in either frame — so both frames
+refuse identically, closing the asymmetry. Scoped to the system namespace
+(where the asymmetry lives: only system pitches are re-seeded as system mints):
+a user-replica pitch carries no namespace claim and has no snapshot asymmetry,
+so `ModifyEvent` may still introduce user pitch content (the concurrent-modify
+tests rely on it). Locked by
+`a_modify_event_introducing_a_never_minted_system_pitch_is_refused_p13_k1`.
 
 ## Schema major 2: minimal stamping (landed with core Phase B, deliberately)
 
