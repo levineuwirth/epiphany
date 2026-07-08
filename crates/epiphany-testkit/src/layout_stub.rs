@@ -891,7 +891,7 @@ pub fn gen_vertical_band(rng: &mut Rng) -> VerticalBand {
 /// An operation-kind tag (every variant Agent C's type provides, including the
 /// registered form).
 pub fn gen_operation_kind_tag(rng: &mut Rng) -> OperationKindTag {
-    match rng.below(24) {
+    match rng.below(30) {
         0 => OperationKindTag::InsertEvent,
         1 => OperationKindTag::DeleteEvent,
         2 => OperationKindTag::ModifyEvent,
@@ -915,6 +915,14 @@ pub fn gen_operation_kind_tag(rng: &mut Rng) -> OperationKindTag {
         20 => OperationKindTag::DeleteVoice,
         21 => OperationKindTag::SetMetadata,
         22 => OperationKindTag::SetMetricGrid,
+        // The appended vocabulary: the Phase-3 tranche (24..=27) — this
+        // generator had gone stale at 23 — and the repeat pair (28/29).
+        23 => OperationKindTag::InsertStaff,
+        24 => OperationKindTag::SetTimeSignature,
+        25 => OperationKindTag::SetTempoSegment,
+        26 => OperationKindTag::SetStaffLayout,
+        27 => OperationKindTag::CreateRepeatStructure,
+        28 => OperationKindTag::DeleteRepeatStructure,
         _ => OperationKindTag::Registered(epiphany_ops::OperationKindRegistryId(
             rng.next_u64() as u128
         )),

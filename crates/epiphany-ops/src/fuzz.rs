@@ -22,7 +22,7 @@
 
 use epiphany_core::{
     EventId, MusicalDuration, MusicalPosition, OperationId, PitchId, RationalTime, RegionId,
-    ReplicaId, SlurId, StaffId, StaffInstanceId, TypedObjectId, VoiceId,
+    RepeatStructureId, ReplicaId, SlurId, StaffId, StaffInstanceId, TypedObjectId, VoiceId,
 };
 use epiphany_determinism::fuzz::SplitMix64;
 
@@ -30,12 +30,13 @@ use crate::causal::CausalContext;
 use crate::envelope::OperationEnvelope;
 use crate::opset::OperationSet;
 use crate::payload::{
-    CreateCrossCuttingOp, CreateRegionOp, CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp,
-    CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
-    DeleteRegionOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
-    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationPayload,
-    RespellPitchOp, SetMetadataOp, SetMetricGridOp, SetStaffLayoutOp, SetTempoSegmentOp,
-    SetTimeSignatureOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransposeOp, TupletCompensation,
+    CreateCrossCuttingOp, CreateRegionOp, CreateRepeatStructureOp, CreateStaffInstanceOp,
+    CreateStaffOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp,
+    DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteRepeatStructureOp, DeleteStaffInstanceOp,
+    DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp,
+    ModifyIdentifiedPitchOp, OperationKind, OperationPayload, RespellPitchOp, SetMetadataOp,
+    SetMetricGridOp, SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp, SetUserPageBreakOp,
+    SetUserSystemBreakOp, TransposeOp, TupletCompensation,
 };
 use crate::stamp::{HybridLogicalClock, OperationStamp};
 use crate::support::AuthorId;
@@ -85,7 +86,7 @@ fn pitch(n: u64) -> PitchId {
 
 /// Generates a random payload over the shared id space.
 fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
-    let kind = match rng.below(25) {
+    let kind = match rng.below(27) {
         0 => {
             let voice = VoiceId::new(ReplicaId(7), rng.below(3));
             let position = MusicalPosition(RationalTime::from_int(rng.below(4) as i32));
@@ -247,6 +248,26 @@ fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
                 }),
             })
         }
+        // Repeat authoring (schema-major-2 revision) over the shared
+        // event-id space.
+        25 => OperationKind::CreateRepeatStructure(CreateRepeatStructureOp {
+            repeat: if rng.chance(2) {
+                valuegen::repeat_structure(
+                    RepeatStructureId::new(ReplicaId(7), rng.below(3)),
+                    event(rng.below(ID_SPACE)),
+                    event(rng.below(ID_SPACE)),
+                )
+            } else {
+                valuegen::volta_repeat(
+                    RepeatStructureId::new(ReplicaId(7), rng.below(3)),
+                    event(rng.below(ID_SPACE)),
+                    event(rng.below(ID_SPACE)),
+                )
+            },
+        }),
+        26 => OperationKind::DeleteRepeatStructure(DeleteRepeatStructureOp {
+            repeat: RepeatStructureId::new(ReplicaId(7), rng.below(3)),
+        }),
         _ => OperationKind::SetStaffLayout(SetStaffLayoutOp {
             staff_instance: StaffInstanceId::new(ReplicaId(7), rng.below(3)),
             instrument_override: None,

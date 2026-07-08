@@ -1007,3 +1007,74 @@ ops-decoder fuzzer, MusicXML round-trip tooling), it MUST bring the
 op-payload migrate-on-read primitive with it — per-type frozen v1 payload
 decoders keyed by the block's stamped major. Tracked as the standing Phase-C
 remainder in the Push-2 plan.
+
+## Schema major 2, Phase D — the repeat-authoring pair (code tranche)
+
+**Stamping.** The minimal-stamping per-payload table (see "Schema major 2:
+minimal stamping" above) gains the pair: `CreateRepeatStructure` ⇒ always
+**2** — born at v2; the carried `RepeatStructure`'s `kind`/`voltas` are
+unconditional fields, so even the migration-default value has no
+lower-major layout — and `DeleteRepeatStructure` ⇒ **0** (a bare
+identifier is a major-0 layout; the kind discriminant itself is a
+schema-minor vocabulary append, the Phase-3 mechanism — the stamp is
+always minimal stamping over the payload, never a property of the append).
+
+**Set-union without value comparison.** A repeat create of a live id reads
+`AlreadyApplied` — the cross-cutting discipline. `RecreateContentMismatch`
+stays scoped to CreateStaff + the carried TimeSignature (the two sites
+that retain the carried value for comparison); extending it here was
+considered and declined: repeats mirror `create_cross_cutting`, whose
+family the catalog places them beside.
+
+**The all-anchors-live precondition** covers every event-referencing
+anchor site — start/end, DaCapo/DalSegno jump targets, volta spans — via
+`RepeatStructure::anchor_sites()` (core), THE single site-set walk.
+Reduction (ledger + graph), the editor barrier seam, the invariant anchor
+walk, and core's cross-reference index all consume it, after review found
+five hand-rolled copies plus a SIXTH, stale one: `indexes.rs` had never
+learned the Phase-B kind/volta anchors (start/end only, contradicting its
+own every-referenced-object doc). Fixed with a regression test. Plain
+field walks get no exhaustive-match protection; the shared method is the
+guard.
+
+**Survivor selection.** "Nearest surviving anchor" is realized as the
+deterministic identifier-order minimum over the structure's surviving
+endpoints — for two-endpoint slurs/spanners that was the vacuous
+tie-break; for multi-site repeats it is load-bearing, so the rule-table
+row and the catalog now say so explicitly, with proximity-aware (four-key)
+selection deferred exactly as the spanner row defers per-kind proximity
+bounds.
+
+**Spanner ghost fix (pre-existing).** `materialize_graph_tombstones` never
+removed an undone `Spanner` mint from the graph (Slur/Tie/Beam were
+handled); the walk gains the Spanner and RepeatStructure arms,
+regression-locked in
+`undoing_a_repeat_or_spanner_create_removes_it_from_the_graph`.
+
+**Canonical-base pin, honestly.** The 200-envelope blake3 was re-pinned
+(the gen_payload modulus shift moved the whole seeded stream); review
+found the seeded corpus's repeat creates all no-op, so that pin cannot
+detect a repeat-value leak into the base. The dedicated
+`the_canonical_base_embeds_no_repeat_values` test covers the property
+surgically: two reductions differing only in the created repeat's v2
+content must produce byte-identical bases.
+
+**Pass-13 candidates filed (batch now open, see spec/PASS13_CANDIDATES.md):**
+P13-D1 — undo-driven event tombstones run the graph-side re-anchor/cascade
+(`materialize_graph_tombstones` → `materialize_graph_delete`) but never the
+ledger-side `reanchor_for_tombstone`: a structure whose anchors are all
+undo-tombstoned leaves the graph while staying `Live` in `objects`, with no
+`RepairRecord` — a pre-existing class (slurs/spanners identically) that the
+repeat row now also exhibits; contradicts Ch6's same-step RepairRecord MUST
+under an undo-driven tombstone. P13-D2 — the cue-cascade recursion re-anchors
+against the triggering event before that event's own tombstone lands in
+`objects`, so a structure anchored on {X, cue-of-X} can record
+`Reanchored{to: X}` and `CascadeDeleted` in one effect (plausible by code
+trace, unexecuted). Neither is repeat-specific; neither is fixed here.
+
+**Noted, not implemented:** no writer path derives a chunk schema *minor*
+from appended kind discriminants (a major-0 block carrying discriminant 29
+stamps the same fixed minor as always) — pre-existing for the Phase-3
+kinds, now also true of the delete; a reader hitting the unknown
+discriminant cannot attribute the failure to version skew from the stamp
+alone. A bundle-writer design item for the next bundle tranche.

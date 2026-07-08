@@ -152,11 +152,12 @@ impl ScoreIndexes {
             }
         }
         for rp in &cc.repeats {
+            // The shared site-set walk — this index had gone stale when
+            // schema major 2 added the kind's jump targets and volta spans
+            // (it silently indexed only start/end, contradicting the
+            // module's every-referenced-object claim).
             let who = TypedObjectId::RepeatStructure(rp.id);
-            for o in [anchor_object(&rp.start), anchor_object(&rp.end)]
-                .into_iter()
-                .flatten()
-            {
+            for o in rp.anchor_sites().into_iter().filter_map(anchor_object) {
                 add(o, who);
             }
         }
@@ -376,6 +377,59 @@ mod tests {
             .cross_cutting_referencing(TypedObjectId::Staff(staff_a))
             .iter()
             .any(|o| matches!(o, TypedObjectId::Spanner(_))));
+
+        // Cross-cutting index, repeat anchor sites: a DalSegno's jump
+        // targets and a volta's span are indexed, not just start/end — the
+        // walk had gone stale at schema major 2 (start/end only), silently
+        // missing every kind/volta anchor. Regression-locked via a repeat
+        // whose ONLY reference to a distinct event is a segno target.
+        {
+            let mut s2 = s.clone();
+            let (e_first, e_second) = {
+                let (_, _, v) = s2.voices().next().expect("a voice");
+                (v.events[0], v.events[1])
+            };
+            let region_b = s2.canvas.regions[0].id;
+            let span = |edge: crate::time::RegionEdge| crate::time::TimeAnchor::Region {
+                id: region_b,
+                edge,
+                offset: crate::time::AnchorOffset::Zero,
+            };
+            let rid = crate::ids::RepeatStructureId::new(crate::ids::ReplicaId(0xABCD), 1);
+            s2.cross_cutting
+                .repeats
+                .push(crate::graph::RepeatStructure {
+                    id: rid,
+                    start: span(crate::time::RegionEdge::Start),
+                    end: span(crate::time::RegionEdge::End),
+                    kind: crate::graph::RepeatKind::DalSegno {
+                        segno: crate::time::TimeAnchor::Event {
+                            id: e_first,
+                            offset: crate::time::AnchorOffset::Zero,
+                        },
+                        end_target: span(crate::time::RegionEdge::End),
+                    },
+                    voltas: vec![crate::graph::Volta {
+                        endings: vec![1],
+                        start: crate::time::TimeAnchor::Event {
+                            id: e_second,
+                            offset: crate::time::AnchorOffset::Zero,
+                        },
+                        end: span(crate::time::RegionEdge::End),
+                    }],
+                });
+            let idx2 = ScoreIndexes::build(&s2);
+            assert!(
+                idx2.cross_cutting_referencing(TypedObjectId::Event(e_first))
+                    .contains(&TypedObjectId::RepeatStructure(rid)),
+                "a DalSegno segno target is an indexed reference"
+            );
+            assert!(
+                idx2.cross_cutting_referencing(TypedObjectId::Event(e_second))
+                    .contains(&TypedObjectId::RepeatStructure(rid)),
+                "a volta span anchor is an indexed reference"
+            );
+        }
 
         // Measure index: the rich score declares measure number 1.
         assert!(!idx.measures_with_number(1).is_empty());

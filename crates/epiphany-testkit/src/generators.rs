@@ -32,21 +32,22 @@ use epiphany_ops::valuegen;
 use epiphany_ops::{
     AnomalousReplicaSegment, AuthorId, CausalContext, ChangeRegionTimeModelOp, ConflictId,
     ConflictKind, ConflictKindRegistryId, ConflictRecord, ConflictRegistry,
-    ConflictResolutionState, CreateCrossCuttingOp, CreateRegionOp, CreateStaffInstanceOp,
-    CreateStaffOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp,
-    DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteStaffInstanceOp, DeleteVoiceOp,
-    ExtensionPreconditionId, FieldPath, HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp,
-    IntegrityAnomaly, IntegrityAnomalyKind, IntegrityAnomalyRegistryId, MaterializedState,
-    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, NoOpReason, ObjectKind,
-    ObjectState, OperationEffect, OperationEnvelope, OperationKind, OperationKindRegistryId,
-    OperationPayload, OperationSet, OperationStamp, PendingReason, PositionRemapping,
-    PreconditionFailureReason, PreconditionFailureRegistryId, ReanchorReason,
-    ReanchorReasonRegistryId, ReanchorResult, RepairKind, RepairKindRegistryId, RepairRecord,
-    ReplicaAnomalyReason, ReplicaAnomalyRegistryId, ResolutionAction, ResolutionRegistryId,
-    ResolveConflictPayload, RespellPitchOp, SerializedCanonicalInputs, SetMetadataOp,
-    SetMetricGridOp, SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp, SetUserPageBreakOp,
-    SetUserSystemBreakOp, TransactionCategory, TransactionDescriptor, TransposeOp,
-    TupletCompensation, TupletCompensationKind, UndoPolicy, UndoTransactionPayload,
+    ConflictResolutionState, CreateCrossCuttingOp, CreateRegionOp, CreateRepeatStructureOp,
+    CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp,
+    DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteRepeatStructureOp,
+    DeleteStaffInstanceOp, DeleteVoiceOp, ExtensionPreconditionId, FieldPath, HybridLogicalClock,
+    InsertEventOp, InsertIdentifiedPitchOp, IntegrityAnomaly, IntegrityAnomalyKind,
+    IntegrityAnomalyRegistryId, MaterializedState, ModifyCrossCuttingOp, ModifyEventOp,
+    ModifyIdentifiedPitchOp, NoOpReason, ObjectKind, ObjectState, OperationEffect,
+    OperationEnvelope, OperationKind, OperationKindRegistryId, OperationPayload, OperationSet,
+    OperationStamp, PendingReason, PositionRemapping, PreconditionFailureReason,
+    PreconditionFailureRegistryId, ReanchorReason, ReanchorReasonRegistryId, ReanchorResult,
+    RepairKind, RepairKindRegistryId, RepairRecord, ReplicaAnomalyReason, ReplicaAnomalyRegistryId,
+    ResolutionAction, ResolutionRegistryId, ResolveConflictPayload, RespellPitchOp,
+    SerializedCanonicalInputs, SetMetadataOp, SetMetricGridOp, SetStaffLayoutOp, SetTempoSegmentOp,
+    SetTimeSignatureOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransactionCategory,
+    TransactionDescriptor, TransposeOp, TupletCompensation, TupletCompensationKind, UndoPolicy,
+    UndoTransactionPayload,
 };
 
 use crate::rng::Rng;
@@ -643,7 +644,7 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
         }
         _ => {}
     }
-    let kind = match rng.below(28) {
+    let kind = match rng.below(30) {
         0 => {
             let pitches = if rng.boolean() {
                 vec![obj_pitch(rng.below(pitches))]
@@ -824,6 +825,26 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
                 .boolean()
                 .then(epiphany_core::StaffLineConfiguration::default),
             visible: rng.boolean(),
+        }),
+        // Repeat authoring (schema-major-2 revision) over the shared
+        // event-id space, so anchors sometimes resolve and sometimes miss.
+        27 => OperationKind::CreateRepeatStructure(CreateRepeatStructureOp {
+            repeat: if rng.boolean() {
+                valuegen::repeat_structure(
+                    RepeatStructureId::new(OBJ_REPLICA, rng.below(2)),
+                    obj_event(rng.below(events)),
+                    obj_event(rng.below(events)),
+                )
+            } else {
+                valuegen::volta_repeat(
+                    RepeatStructureId::new(OBJ_REPLICA, rng.below(2)),
+                    obj_event(rng.below(events)),
+                    obj_event(rng.below(events)),
+                )
+            },
+        }),
+        28 => OperationKind::DeleteRepeatStructure(DeleteRepeatStructureOp {
+            repeat: RepeatStructureId::new(OBJ_REPLICA, rng.below(2)),
         }),
         _ => OperationKind::Registered(
             OperationKindRegistryId(rng.next_u64() as u128),
@@ -1263,7 +1284,7 @@ pub fn graph_edit_session(
         // exercises their *graph* materialization (reduce_onto +
         // check_invariants), not just the bookkeeping projection. Each targets a
         // live object minted by the phases above (or the base region).
-        let kind = match rng.below(12) {
+        let kind = match rng.below(14) {
             0 => OperationKind::DeleteEvent(DeleteEventOp {
                 event: obj_event(rng.below(total)),
                 tuplet_compensation: TupletCompensation::NotInTuplet,
@@ -1357,6 +1378,20 @@ pub fn graph_edit_session(
                     }),
                 })
             }
+            // Repeat authoring over the session's event space: anchors mostly
+            // resolve live, so mints land in the graph and later DeleteEvents
+            // exercise the "Repeat structure / Anchor" re-anchoring row under
+            // the invariant gate.
+            12 => OperationKind::CreateRepeatStructure(CreateRepeatStructureOp {
+                repeat: valuegen::repeat_structure(
+                    RepeatStructureId::new(OBJ_REPLICA, rng.below(4)),
+                    obj_event(rng.below(total)),
+                    obj_event(rng.below(total)),
+                ),
+            }),
+            13 => OperationKind::DeleteRepeatStructure(DeleteRepeatStructureOp {
+                repeat: RepeatStructureId::new(OBJ_REPLICA, rng.below(4)),
+            }),
             _ => OperationKind::SetStaffLayout(SetStaffLayoutOp {
                 staff_instance: targets[rng.below(targets.len() as u64) as usize].0,
                 instrument_override: None,

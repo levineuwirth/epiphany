@@ -900,12 +900,18 @@ minted-object undo does not re-introduce the tombstoned structure
 table when a referenced event is later tombstoned: re-anchor to the
 nearest surviving anchor, cascade-delete only when none survives --- as
 for spanners, spanning \emph{every} anchor site
-(\texttt{start}/\texttt{end}, jump targets, volta spans). The rule row is
-the core specification's (Chapter~6 re-anchoring rule table, ratified with
-this pair).
+(\texttt{start}/\texttt{end}, jump targets, volta spans). Among multiple
+surviving candidates --- a case slurs and spanners never present, since
+their sole other endpoint is the forced survivor --- ``nearest'' is
+currently realized as the deterministic identifier-order minimum (the
+same tie-break the two-endpoint collapse already used); proximity-aware
+(four-key) selection over a repeat's surviving sites is a deferred
+refinement, exactly as the spanner row defers per-kind proximity bounds.
+The rule row is the core specification's (Chapter~6 re-anchoring rule
+table, ratified with this pair).
 
 \textbf{Authoring advisory.} The volta well-formedness constraints of
-core Chapter~5 (endings non-empty, 1-based, ascending) are
+core Chapter~5 (endings non-empty, 1-based, \emph{strictly} ascending) are
 \emph{advisory}: surfaced at authoring time under interactive validation,
 never enforced under reduction.
 

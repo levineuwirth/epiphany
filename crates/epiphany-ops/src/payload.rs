@@ -34,9 +34,10 @@
 use epiphany_core::{
     Beam, CanonicalValue, Event, EventDuration, EventId, EventPosition, IdentifiedPitch,
     InstrumentId, MetricGrid, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId,
-    PitchSpelling, Region, RegionId, RegionTimeModel, Rest, ScoreMetadata, Slur, Spanner, Staff,
-    StaffId, StaffInstance, StaffInstanceId, StaffLineConfiguration, TempoSegment, Tie, TimeAnchor,
-    TimeSignature, TransactionId, TupletId, TypedObjectId, Voice, VoiceId,
+    PitchSpelling, Region, RegionId, RegionTimeModel, RepeatStructure, RepeatStructureId, Rest,
+    ScoreMetadata, Slur, Spanner, Staff, StaffId, StaffInstance, StaffInstanceId,
+    StaffLineConfiguration, TempoSegment, Tie, TimeAnchor, TimeSignature, TransactionId, TupletId,
+    TypedObjectId, Voice, VoiceId,
 };
 use epiphany_determinism::{sorted_canonical, CanonicalDecode, CanonicalEncode, DecodeError};
 
@@ -182,6 +183,13 @@ pub enum OperationKind {
     /// Overwrite a staff instance's inline layout advisories as a unit (LWW
     /// advisory).
     SetStaffLayout(SetStaffLayoutOp),
+    // --- Schema-major-2 revision: repeat authoring (operation_catalog
+    // §"Repeat Structures"). Discriminants extend additively past 27. ---
+    /// Mint a repeat structure into the cross-cutting registry (set-union
+    /// creation; every event-referencing anchor site must resolve live).
+    CreateRepeatStructure(CreateRepeatStructureOp),
+    /// Tombstone a repeat structure (delete-wins, idempotent on re-delete).
+    DeleteRepeatStructure(DeleteRepeatStructureOp),
 }
 
 impl OperationKind {
@@ -226,6 +234,13 @@ impl OperationKind {
                 2
             }
             OperationKind::SetStaffLayout(op) if op.staff_lines_override.is_some() => 2,
+            // Born at v2: the carried RepeatStructure's v2 fields are
+            // unconditional (`kind`/`voltas` are not `Option`s), so no
+            // lower-major layout for this payload exists. The DELETE sibling
+            // carries a bare identifier — a major-0 layout under a minor
+            // kind append (the Phase-3 precedent) — and stays in the
+            // catch-all 0 arm below.
+            OperationKind::CreateRepeatStructure(_) => 2,
             _ => 0,
         }
     }
@@ -261,6 +276,9 @@ impl OperationKind {
             OperationKind::SetTimeSignature(_) => 25,
             OperationKind::SetTempoSegment(_) => 26,
             OperationKind::SetStaffLayout(_) => 27,
+            // Schema-major-2 revision; appended past the Phase-3 24..=27.
+            OperationKind::CreateRepeatStructure(_) => 28,
+            OperationKind::DeleteRepeatStructure(_) => 29,
         }
     }
 
@@ -298,6 +316,9 @@ impl OperationKind {
             OperationKind::SetTimeSignature(_) => OperationKindTag::SetTimeSignature,
             OperationKind::SetTempoSegment(_) => OperationKindTag::SetTempoSegment,
             OperationKind::SetStaffLayout(_) => OperationKindTag::SetStaffLayout,
+            // Name-verbatim projection, as the cross-cutting tags do.
+            OperationKind::CreateRepeatStructure(_) => OperationKindTag::CreateRepeatStructure,
+            OperationKind::DeleteRepeatStructure(_) => OperationKindTag::DeleteRepeatStructure,
         }
     }
 }
@@ -337,6 +358,8 @@ impl CanonicalEncode for OperationKind {
             OperationKind::SetTimeSignature(op) => op.encode_canonical(out),
             OperationKind::SetTempoSegment(op) => op.encode_canonical(out),
             OperationKind::SetStaffLayout(op) => op.encode_canonical(out),
+            OperationKind::CreateRepeatStructure(op) => op.encode_canonical(out),
+            OperationKind::DeleteRepeatStructure(op) => op.encode_canonical(out),
         }
     }
 }
@@ -377,6 +400,10 @@ pub enum OperationKindTag {
     SetTimeSignature,
     SetTempoSegment,
     SetStaffLayout,
+    // Schema-major-2 revision (repeat authoring). Name-verbatim, as the
+    // cross-cutting tags are.
+    CreateRepeatStructure,
+    DeleteRepeatStructure,
 }
 
 impl OperationKindTag {
@@ -411,6 +438,9 @@ impl OperationKindTag {
             OperationKindTag::SetTimeSignature => 25,
             OperationKindTag::SetTempoSegment => 26,
             OperationKindTag::SetStaffLayout => 27,
+            // Schema-major-2 revision; appended past the Phase-3 24..=27.
+            OperationKindTag::CreateRepeatStructure => 28,
+            OperationKindTag::DeleteRepeatStructure => 29,
         }
     }
 }
@@ -480,6 +510,8 @@ impl CanonicalDecode for OperationKindTag {
             25 => OperationKindTag::SetTimeSignature,
             26 => OperationKindTag::SetTempoSegment,
             27 => OperationKindTag::SetStaffLayout,
+            28 => OperationKindTag::CreateRepeatStructure,
+            29 => OperationKindTag::DeleteRepeatStructure,
             _ => return Err(DecodeError::MalformedDomainTag),
         })
     }
@@ -1388,6 +1420,44 @@ impl CanonicalEncode for SetStaffLayoutOp {
     }
 }
 
+/// Mint a repeat structure (operation_catalog §"Repeat Structures"; Chapter 6
+/// re-anchoring rule table "Repeat structure / Anchor"). Carries the full
+/// [`RepeatStructure`] value — identity, `start`/`end` anchors, kind, and
+/// voltas. The v2 layout is unconditional (`kind`/`voltas` are not `Option`s),
+/// so the create is *born at v2*: see [`OperationKind::schema_major`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CreateRepeatStructureOp {
+    pub repeat: RepeatStructure,
+}
+
+impl CreateRepeatStructureOp {
+    /// The minted structure's identity (read from the carried value).
+    pub fn repeat_structure_id(&self) -> RepeatStructureId {
+        self.repeat.id
+    }
+}
+
+impl CanonicalEncode for CreateRepeatStructureOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_lp_bytes(out, &self.repeat.canonical_bytes());
+    }
+}
+
+/// Tombstone a repeat structure (operation_catalog §"Repeat Structures";
+/// delete-wins, idempotent on re-delete). The payload is the bare identifier
+/// — a major-0 layout under a minor kind append, so the op stamps major 0
+/// (see [`OperationKind::schema_major`]).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct DeleteRepeatStructureOp {
+    pub repeat: RepeatStructureId,
+}
+
+impl CanonicalEncode for DeleteRepeatStructureOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_canon(out, &self.repeat);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1398,7 +1468,7 @@ mod tests {
         // GOLDEN LOCK: the discriminant byte leads every canonically-encoded
         // primitive payload (operation_catalog §"Value-Typed Payloads"), so the
         // literal values are normative wire facts. Encodings are append-only:
-        // new kinds append past 27; the values below never change.
+        // new kinds append past 29; the values below never change.
         use crate::valuegen;
         use epiphany_core::{MusicalDuration, MusicalPosition, TimeSignatureId};
 
@@ -1424,7 +1494,8 @@ mod tests {
         let slur_value = || CrossCuttingValue::Slur(valuegen::slur(slur_id, event_a, event_b));
         let anchor = || valuegen::region_start_anchor(region, MusicalPosition::origin());
 
-        let table: [(OperationKind, u8); 28] = [
+        let repeat_id = RepeatStructureId::new(r, 12);
+        let table: [(OperationKind, u8); 30] = [
             (
                 OperationKind::InsertEvent(InsertEventOp {
                     staff_instance: instance,
@@ -1605,6 +1676,16 @@ mod tests {
                 }),
                 27,
             ),
+            (
+                OperationKind::CreateRepeatStructure(CreateRepeatStructureOp {
+                    repeat: valuegen::repeat_structure(repeat_id, event_a, event_b),
+                }),
+                28,
+            ),
+            (
+                OperationKind::DeleteRepeatStructure(DeleteRepeatStructureOp { repeat: repeat_id }),
+                29,
+            ),
         ];
         for (kind, expected) in &table {
             assert_eq!(
@@ -1763,6 +1844,8 @@ mod tests {
             OperationKindTag::SetTimeSignature,
             OperationKindTag::SetTempoSegment,
             OperationKindTag::SetStaffLayout,
+            OperationKindTag::CreateRepeatStructure,
+            OperationKindTag::DeleteRepeatStructure,
         ];
         let encoded: std::collections::BTreeSet<_> = tags
             .iter()
@@ -1775,14 +1858,14 @@ mod tests {
     fn operation_kind_tag_decode_mirrors_encode_exactly() {
         // Every non-registered variant round-trips through its 1-byte form, and
         // the registered variant through its 17-byte (tag + registry id) form.
-        let mut tags: Vec<OperationKindTag> = (0u8..28)
+        let mut tags: Vec<OperationKindTag> = (0u8..30)
             .filter(|d| *d != 16)
             .map(|d| OperationKindTag::decode_canonical(&[d]).expect("known discriminant"))
             .collect();
         tags.push(OperationKindTag::Registered(OperationKindRegistryId(
             0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10,
         )));
-        assert_eq!(tags.len(), 28, "the full v1 tag vocabulary");
+        assert_eq!(tags.len(), 30, "the full tag vocabulary");
         for tag in tags {
             let bytes = tag.to_canonical_bytes();
             let decoded = OperationKindTag::decode_canonical(&bytes).expect("round-trips");
@@ -1798,10 +1881,10 @@ mod tests {
     #[test]
     fn operation_kind_tag_decode_rejects_malformed_bytes() {
         use epiphany_determinism::DecodeError;
-        // Unknown discriminant (28 is one past the v1 vocabulary): rejected,
+        // Unknown discriminant (30 is one past the vocabulary): rejected,
         // never normalized.
         assert_eq!(
-            OperationKindTag::decode_canonical(&[28]),
+            OperationKindTag::decode_canonical(&[30]),
             Err(DecodeError::MalformedDomainTag)
         );
         // Empty input.
@@ -1822,6 +1905,9 @@ mod tests {
             (OperationKindTag::SetTimeSignature, 25),
             (OperationKindTag::SetTempoSegment, 26),
             (OperationKindTag::SetStaffLayout, 27),
+            // Schema-major-2 revision (repeat authoring).
+            (OperationKindTag::CreateRepeatStructure, 28),
+            (OperationKindTag::DeleteRepeatStructure, 29),
         ] {
             assert_eq!(tag.discriminant(), expected);
             assert_eq!(tag.to_canonical_bytes(), vec![expected]);

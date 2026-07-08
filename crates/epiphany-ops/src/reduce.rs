@@ -55,13 +55,13 @@ use crate::encode::{push_canon, push_len, push_lp_bytes, push_u8_bool};
 use crate::envelope::OperationEnvelope;
 use crate::opset::OperationSet;
 use crate::payload::{
-    resolved_anchor_position, CreateCrossCuttingOp, CreateRegionOp, CreateStaffInstanceOp,
-    CreateStaffOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp,
-    DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
-    InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
-    OperationKind, OperationPayload, RespellPitchOp, SetMetadataOp, SetMetricGridOp,
-    SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp, SetUserPageBreakOp, TransposeOp,
-    TupletCompensation,
+    resolved_anchor_position, CreateCrossCuttingOp, CreateRegionOp, CreateRepeatStructureOp,
+    CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp,
+    DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteRepeatStructureOp,
+    DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
+    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationPayload,
+    RespellPitchOp, SetMetadataOp, SetMetricGridOp, SetStaffLayoutOp, SetTempoSegmentOp,
+    SetTimeSignatureOp, SetUserPageBreakOp, TransposeOp, TupletCompensation,
 };
 use crate::stamp::StampTuple;
 use crate::support::{ObjectKind, SerializedCanonicalInputs};
@@ -1563,6 +1563,13 @@ impl<'a> Reducer<'a> {
         for repeat in &score.cross_cutting.repeats {
             self.objects
                 .insert(TypedObjectId::RepeatStructure(repeat.id), ObjectState::Live);
+            // Repeats participate in event re-anchoring across every anchor
+            // site (rule table "Repeat structure / Anchor").
+            let refs = anchor_event_refs(repeat.anchor_sites());
+            if !refs.is_empty() {
+                self.structures
+                    .insert(TypedObjectId::RepeatStructure(repeat.id), refs);
+            }
         }
         for lyric in &score.cross_cutting.lyrics {
             self.objects
@@ -2299,6 +2306,47 @@ impl<'a> Reducer<'a> {
             .collect();
         score.cross_cutting.spanners = kept_spanners;
 
+        // Repeat structures follow the same rule across EVERY anchor site
+        // (start/end, jump targets, volta spans): each dead event anchor
+        // re-anchors to the nearest surviving event anchor — the
+        // lexicographically smallest, matching `nearest_survivor`, so the
+        // graph and the ledger agree on both existence and target — and the
+        // structure cascade-deletes only when no event anchor survives.
+        let repeats = std::mem::take(&mut score.cross_cutting.repeats);
+        let kept_repeats: Vec<_> = repeats
+            .into_iter()
+            .filter_map(|mut repeat| {
+                let hit = repeat
+                    .anchor_sites()
+                    .into_iter()
+                    .any(|a| matches!(a, TimeAnchor::Event { id, .. } if *id == op.event));
+                if !hit {
+                    return Some(repeat);
+                }
+                let survivor = repeat
+                    .anchor_sites()
+                    .into_iter()
+                    .filter_map(|a| match a {
+                        TimeAnchor::Event { id, .. }
+                            if *id != op.event && score.events.contains(*id) =>
+                        {
+                            Some(*id)
+                        }
+                        _ => None,
+                    })
+                    .min()?;
+                for site in repeat.anchor_sites_mut() {
+                    if let TimeAnchor::Event { id, .. } = site {
+                        if *id == op.event {
+                            *id = survivor;
+                        }
+                    }
+                }
+                Some(repeat)
+            })
+            .collect();
+        score.cross_cutting.repeats = kept_repeats;
+
         score.cross_cutting.lyrics.retain_mut(|line| {
             line.events.retain(|event| *event != op.event);
             !line.events.is_empty()
@@ -2365,6 +2413,15 @@ impl<'a> Reducer<'a> {
                 }
                 TypedObjectId::Beam(id) => {
                     score.cross_cutting.beams.retain(|value| value.id != *id);
+                }
+                // Spanner was missing from this walk (an undone spanner mint
+                // left a ghost value in the graph) — fixed alongside the
+                // repeat arm; both mirror the slur/tie/beam removals.
+                TypedObjectId::Spanner(id) => {
+                    score.cross_cutting.spanners.retain(|value| value.id != *id);
+                }
+                TypedObjectId::RepeatStructure(id) => {
+                    score.cross_cutting.repeats.retain(|value| value.id != *id);
                 }
                 // Phase-3 mints: a tombstoned staff / time signature leaves the
                 // graph (the undo path preconditions no live reference remains).
@@ -2444,6 +2501,8 @@ impl<'a> Reducer<'a> {
                 OperationKind::SetTimeSignature(op) => self.set_time_signature(env, op),
                 OperationKind::SetTempoSegment(op) => self.set_tempo_segment(env, op),
                 OperationKind::SetStaffLayout(op) => self.set_staff_layout(env, op),
+                OperationKind::CreateRepeatStructure(op) => self.create_repeat_structure(env, op),
+                OperationKind::DeleteRepeatStructure(op) => self.delete_repeat_structure(env, op),
             },
             OperationPayload::ResolveConflict(op) => self.resolve_conflict(env, op),
             OperationPayload::UndoTransaction(op) => self.undo_transaction(env, op),
@@ -3125,6 +3184,96 @@ impl<'a> Reducer<'a> {
         self.structures.remove(&sid);
         self.cross_cutting_modify_chain.remove(&sid);
         self.graph_delete_cross_cutting(sid);
+        OperationEffect::Applied
+    }
+
+    fn create_repeat_structure(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &CreateRepeatStructureOp,
+    ) -> OperationEffect {
+        let sid = TypedObjectId::RepeatStructure(op.repeat.id);
+        match self.objects.get(&sid) {
+            // Set-union: a repeat create of a live id reads AlreadyApplied
+            // without value comparison (the cross-cutting discipline; the
+            // RecreateContentMismatch scope stays CreateStaff + carried
+            // TimeSignature).
+            Some(ObjectState::Live) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::AlreadyApplied,
+                }
+            }
+            Some(ObjectState::Tombstoned { .. }) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::TargetTombstoned,
+                }
+            }
+            None => {}
+        }
+        // Every event-referencing anchor site must resolve live — start/end,
+        // the kind's jump targets, each volta's span (operation_catalog
+        // §"Repeat Structures": the mint must leave the graph satisfying the
+        // reference-resolution invariants).
+        let endpoints = anchor_event_refs(op.repeat.anchor_sites());
+        for e in &endpoints {
+            if !matches!(self.objects.get(e), Some(ObjectState::Live)) {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                };
+            }
+        }
+        if let Some(score) = self.graph.as_mut() {
+            score.cross_cutting.repeats.push(op.repeat.clone());
+        }
+        self.objects.insert(sid, ObjectState::Live);
+        self.minted_by.insert(sid, env.id);
+        self.note_minted(env, sid);
+        // Register into the referent index so event tombstones repair the
+        // structure per the rule table (no write chain: there is no
+        // ModifyRepeatStructure at this revision).
+        if !endpoints.is_empty() {
+            self.structures.insert(sid, endpoints);
+        }
+        OperationEffect::Applied
+    }
+
+    fn delete_repeat_structure(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &DeleteRepeatStructureOp,
+    ) -> OperationEffect {
+        let sid = TypedObjectId::RepeatStructure(op.repeat);
+        let minted_by = match self.objects.get(&sid) {
+            None => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                }
+            }
+            // Concurrent same-target deletes are idempotent (delete-wins).
+            Some(ObjectState::Tombstoned { .. }) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::AlreadyApplied,
+                }
+            }
+            Some(ObjectState::Live) => self.minted_by.get(&sid).copied().unwrap_or(env.id),
+        };
+        self.objects.insert(
+            sid,
+            ObjectState::Tombstoned {
+                deleted_by: env.id,
+                minted_by,
+            },
+        );
+        // Drop the referent-index entry so a later event tombstone's
+        // re-anchoring pass never re-processes the deleted structure.
+        self.structures.remove(&sid);
+        if let Some(score) = self.graph.as_mut() {
+            score.cross_cutting.repeats.retain(|r| r.id != op.repeat);
+        }
         OperationEffect::Applied
     }
 
@@ -5648,7 +5797,11 @@ impl<'a> Reducer<'a> {
                         });
                     }
                 }
-                TypedObjectId::Slur(_) | TypedObjectId::Spanner(_) => {
+                // Repeat structures follow the spanner row across every
+                // anchor site (rule table "Repeat structure / Anchor").
+                TypedObjectId::Slur(_)
+                | TypedObjectId::Spanner(_)
+                | TypedObjectId::RepeatStructure(_) => {
                     let survivors = self.surviving_endpoints(sid, tombstoned);
                     if survivors < 1 {
                         self.cascade_structure(env, sid, repairs);
@@ -7728,6 +7881,457 @@ mod tests {
         ));
     }
 
+    // --- Phase D: repeat authoring (schema-major-2 revision). ----------------
+
+    fn create_repeat(
+        rid: epiphany_core::RepeatStructureId,
+        a: EventId,
+        b: EventId,
+    ) -> OperationKind {
+        OperationKind::CreateRepeatStructure(CreateRepeatStructureOp {
+            repeat: crate::valuegen::repeat_structure(rid, a, b),
+        })
+    }
+
+    #[test]
+    fn create_repeat_structure_mints_and_delete_wins_tombstones() {
+        let e1 = EventId::new(ReplicaId(1), 100);
+        let e2 = EventId::new(ReplicaId(1), 101);
+        let rid = epiphany_core::RepeatStructureId::new(ReplicaId(1), 1);
+        let sid = TypedObjectId::RepeatStructure(rid);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            insert(1, 0, 10, 1, 100, 0),
+            insert(1, 1, 11, 1, 101, 1),
+            prim_env(1, 2, 12, seen_r1(1), create_repeat(rid, e1, e2)),
+        ]);
+        assert!(
+            matches!(set.reduce().objects.get(&sid), Some(ObjectState::Live)),
+            "set-union mint with live anchors"
+        );
+
+        // Delete-wins: the tombstone survives a concurrent re-delete
+        // (idempotent) and a post-delete re-create (TargetTombstoned no-op).
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            insert(1, 0, 10, 1, 100, 0),
+            insert(1, 1, 11, 1, 101, 1),
+            prim_env(1, 2, 12, seen_r1(1), create_repeat(rid, e1, e2)),
+            prim_env(
+                1,
+                3,
+                13,
+                seen_r1(2),
+                OperationKind::DeleteRepeatStructure(DeleteRepeatStructureOp { repeat: rid }),
+            ),
+            prim_env(
+                2,
+                0,
+                14,
+                seen_r1(3),
+                OperationKind::DeleteRepeatStructure(DeleteRepeatStructureOp { repeat: rid }),
+            ),
+            prim_env(3, 0, 15, seen_r1(3), create_repeat(rid, e1, e2)),
+        ]);
+        assert!(
+            matches!(
+                set.reduce().objects.get(&sid),
+                Some(ObjectState::Tombstoned { .. })
+            ),
+            "the tombstone survives re-delete and re-create (delete-wins)"
+        );
+    }
+
+    #[test]
+    fn create_repeat_structure_preconditions_every_anchor_site_live() {
+        // The all-anchors-live precondition covers the kind's jump targets and
+        // each volta's span, not just start/end (operation_catalog §"Repeat
+        // Structures").
+        let e1 = EventId::new(ReplicaId(1), 100);
+        let e2 = EventId::new(ReplicaId(1), 101);
+        let ghost = EventId::new(ReplicaId(1), 6_666);
+        let rid = epiphany_core::RepeatStructureId::new(ReplicaId(1), 1);
+
+        let mut dal_segno = crate::valuegen::repeat_structure(rid, e1, e2);
+        dal_segno.kind = epiphany_core::RepeatKind::DalSegno {
+            segno: crate::valuegen::event_anchor(ghost),
+            end_target: crate::valuegen::event_anchor(e2),
+        };
+        let mut volta = crate::valuegen::volta_repeat(rid, e1, e2);
+        volta.voltas[1].end = crate::valuegen::event_anchor(ghost);
+
+        for repeat in [dal_segno, volta] {
+            let mut set = OperationSet::new();
+            set.accept_all(vec![
+                insert(1, 0, 10, 1, 100, 0),
+                insert(1, 1, 11, 1, 101, 1),
+                prim_env(
+                    1,
+                    2,
+                    12,
+                    seen_r1(1),
+                    OperationKind::CreateRepeatStructure(CreateRepeatStructureOp { repeat }),
+                ),
+            ]);
+            assert!(
+                !set.reduce()
+                    .objects
+                    .contains_key(&TypedObjectId::RepeatStructure(rid)),
+                "a dead jump-target/volta anchor is a TargetMissing no-op — nothing minted"
+            );
+        }
+    }
+
+    #[test]
+    fn deleting_an_event_reanchors_a_repeat_across_every_anchor_site() {
+        // The rule table's "Repeat structure / Anchor" row: re-anchor to the
+        // nearest surviving anchor, across start/end AND volta spans, recorded
+        // as a RepairRecord — and the graph agrees with the ledger.
+        use epiphany_core::generators::valid_score;
+        let mut base = valid_score(0x5EED);
+        let voice_events = base
+            .voices()
+            .map(|(_, _, v)| v.events.clone())
+            .next()
+            .expect("the fixture has a voice");
+        let (e0, e1) = (voice_events[0], voice_events[1]);
+        let rid = epiphany_core::RepeatStructureId::new(ReplicaId(9), 800);
+        base.cross_cutting
+            .repeats
+            .push(epiphany_core::RepeatStructure {
+                id: rid,
+                start: crate::valuegen::event_anchor(e0),
+                end: crate::valuegen::event_anchor(e1),
+                kind: epiphany_core::RepeatKind::Volta,
+                voltas: vec![epiphany_core::Volta {
+                    endings: vec![1],
+                    start: crate::valuegen::event_anchor(e0),
+                    end: crate::valuegen::event_anchor(e1),
+                }],
+            });
+
+        let del = prim_env(
+            2,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::DeleteEvent(DeleteEventOp {
+                event: e0,
+                tuplet_compensation: TupletCompensation::NotInTuplet,
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![del.clone()]);
+        let result = set.reduce_onto(&base);
+
+        let effect = result
+            .state
+            .effects
+            .iter()
+            .find(|(id, _)| *id == del.id)
+            .map(|(_, e)| e)
+            .expect("delete effect recorded");
+        let OperationEffect::AppliedWithRepair { repairs } = effect else {
+            panic!("expected AppliedWithRepair, got {effect:?}");
+        };
+        assert!(
+            repairs.iter().any(|r| {
+                r.target == TypedObjectId::RepeatStructure(rid)
+                    && r.kind
+                        == RepairKind::Reanchored {
+                            from: TypedObjectId::Event(e0),
+                            to: TypedObjectId::Event(e1),
+                            reason: ReanchorReason::SameVoiceNearer,
+                        }
+            }),
+            "the repeat re-anchor is a recorded repair: {repairs:?}"
+        );
+        let repeat = result
+            .score
+            .cross_cutting
+            .repeats
+            .iter()
+            .find(|r| r.id == rid)
+            .expect("the repeat survives with one live anchor");
+        let expect_e1 =
+            |anchor: &TimeAnchor| matches!(anchor, TimeAnchor::Event { id, .. } if *id == e1);
+        assert!(
+            expect_e1(&repeat.start)
+                && expect_e1(&repeat.end)
+                && expect_e1(&repeat.voltas[0].start)
+                && expect_e1(&repeat.voltas[0].end),
+            "EVERY dead anchor site — start and the volta span — moved to the survivor"
+        );
+        assert!(epiphany_core::check_invariants(&result.score).is_empty());
+    }
+
+    #[test]
+    fn deleting_an_event_rewires_a_dal_segno_jump_target() {
+        // The kind's jump targets are anchor SITES like any other: a dead
+        // segno re-anchors to the surviving event anchor (graph + ledger),
+        // and a repeat whose ONLY event anchor is its segno cascades when
+        // that event dies. (No other test exercised event-anchored jump
+        // targets through the delete path.)
+        use epiphany_core::generators::valid_score;
+        let mut base = valid_score(0x5EED);
+        let voice_events = base
+            .voices()
+            .map(|(_, _, v)| v.events.clone())
+            .next()
+            .expect("the fixture has a voice");
+        let (e0, e1) = (voice_events[0], voice_events[1]);
+        let region = base.canvas.regions[0].id;
+        let region_edge = |edge| TimeAnchor::Region {
+            id: region,
+            edge,
+            offset: AnchorOffset::Zero,
+        };
+
+        // Repeat A: start/end/segno all event-anchored; e0 dies -> every dead
+        // site (including the segno) moves to e1.
+        let rid_a = epiphany_core::RepeatStructureId::new(ReplicaId(9), 810);
+        base.cross_cutting
+            .repeats
+            .push(epiphany_core::RepeatStructure {
+                id: rid_a,
+                start: crate::valuegen::event_anchor(e0),
+                end: crate::valuegen::event_anchor(e1),
+                kind: epiphany_core::RepeatKind::DalSegno {
+                    segno: crate::valuegen::event_anchor(e0),
+                    end_target: crate::valuegen::event_anchor(e1),
+                },
+                voltas: Vec::new(),
+            });
+        // Repeat B: the ONLY event anchor is the segno; e0 dies -> cascade.
+        let rid_b = epiphany_core::RepeatStructureId::new(ReplicaId(9), 811);
+        base.cross_cutting
+            .repeats
+            .push(epiphany_core::RepeatStructure {
+                id: rid_b,
+                start: region_edge(epiphany_core::RegionEdge::Start),
+                end: region_edge(epiphany_core::RegionEdge::End),
+                kind: epiphany_core::RepeatKind::DalSegno {
+                    segno: crate::valuegen::event_anchor(e0),
+                    end_target: region_edge(epiphany_core::RegionEdge::End),
+                },
+                voltas: Vec::new(),
+            });
+
+        let del = prim_env(
+            2,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::DeleteEvent(DeleteEventOp {
+                event: e0,
+                tuplet_compensation: TupletCompensation::NotInTuplet,
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![del]);
+        let result = set.reduce_onto(&base);
+
+        let repeat_a = result
+            .score
+            .cross_cutting
+            .repeats
+            .iter()
+            .find(|r| r.id == rid_a)
+            .expect("repeat A survives on its e1 anchors");
+        let segno_moved = matches!(
+            &repeat_a.kind,
+            epiphany_core::RepeatKind::DalSegno { segno: TimeAnchor::Event { id, .. }, .. }
+                if *id == e1
+        );
+        assert!(
+            segno_moved,
+            "the dead segno jump target re-anchored to the survivor: {:?}",
+            repeat_a.kind
+        );
+        assert!(
+            matches!(repeat_a.start, TimeAnchor::Event { id, .. } if id == e1),
+            "start moved with it"
+        );
+
+        assert!(
+            !result
+                .score
+                .cross_cutting
+                .repeats
+                .iter()
+                .any(|r| r.id == rid_b),
+            "a repeat whose only event anchor was its segno cascades"
+        );
+        assert!(
+            matches!(
+                result
+                    .state
+                    .objects
+                    .get(&TypedObjectId::RepeatStructure(rid_b)),
+                Some(ObjectState::Tombstoned { .. })
+            ),
+            "the ledger agrees on the cascade"
+        );
+        assert!(epiphany_core::check_invariants(&result.score).is_empty());
+    }
+
+    #[test]
+    fn deleting_the_only_anchor_event_cascades_the_repeat() {
+        // No surviving event anchor: cascade-delete, in the ledger (tombstone
+        // + CascadeDeleted repair) and the graph together.
+        use epiphany_core::generators::valid_score;
+        let mut base = valid_score(0x5EED);
+        let voice_events = base
+            .voices()
+            .map(|(_, _, v)| v.events.clone())
+            .next()
+            .expect("the fixture has a voice");
+        let e0 = voice_events[0];
+        let rid = epiphany_core::RepeatStructureId::new(ReplicaId(9), 801);
+        base.cross_cutting
+            .repeats
+            .push(epiphany_core::RepeatStructure {
+                id: rid,
+                start: crate::valuegen::event_anchor(e0),
+                end: crate::valuegen::event_anchor(e0),
+                kind: epiphany_core::RepeatKind::SimpleRepeat { count: 2 },
+                voltas: Vec::new(),
+            });
+
+        let del = prim_env(
+            2,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::DeleteEvent(DeleteEventOp {
+                event: e0,
+                tuplet_compensation: TupletCompensation::NotInTuplet,
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![del.clone()]);
+        let result = set.reduce_onto(&base);
+
+        assert!(
+            matches!(
+                result
+                    .state
+                    .objects
+                    .get(&TypedObjectId::RepeatStructure(rid)),
+                Some(ObjectState::Tombstoned { .. })
+            ),
+            "no surviving anchor: the ledger cascade-tombstones the repeat"
+        );
+        let effect = result
+            .state
+            .effects
+            .iter()
+            .find(|(id, _)| *id == del.id)
+            .map(|(_, e)| e)
+            .expect("delete effect recorded");
+        let OperationEffect::AppliedWithRepair { repairs } = effect else {
+            panic!("expected AppliedWithRepair, got {effect:?}");
+        };
+        assert!(
+            repairs.iter().any(|r| {
+                r.target == TypedObjectId::RepeatStructure(rid)
+                    && r.kind == RepairKind::CascadeDeleted
+            }),
+            "the cascade is a recorded repair: {repairs:?}"
+        );
+        assert!(
+            !result
+                .score
+                .cross_cutting
+                .repeats
+                .iter()
+                .any(|r| r.id == rid),
+            "the graph agrees: the repeat is gone"
+        );
+        assert!(epiphany_core::check_invariants(&result.score).is_empty());
+    }
+
+    #[test]
+    fn undoing_a_repeat_or_spanner_create_removes_it_from_the_graph() {
+        // Undo tombstones the minted structure AND materializes the graph-side
+        // removal (materialize_graph_tombstones). The spanner leg regression-
+        // locks the pre-existing gap fixed alongside Phase D: an undone
+        // spanner mint used to leave a ghost value in the graph.
+        use epiphany_core::generators::valid_score;
+        let base = valid_score(0x5EED);
+        let voice_events = base
+            .voices()
+            .map(|(_, _, v)| v.events.clone())
+            .next()
+            .expect("the fixture has a voice");
+        let (e0, e1) = (voice_events[0], voice_events[1]);
+        let rid = epiphany_core::RepeatStructureId::new(ReplicaId(9), 802);
+        let spanner_id = epiphany_core::SpannerId::new(ReplicaId(9), 803);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(1, 1, 11, seen_r1(0), tx, create_repeat(rid, e0, e1)),
+            tx_member(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                tx,
+                OperationKind::CreateCrossCutting(crate::payload::CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Spanner(epiphany_core::Spanner {
+                        id: spanner_id,
+                        start: crate::valuegen::event_anchor(e0),
+                        end: crate::valuegen::event_anchor(e1),
+                        staves: Vec::new(),
+                        kind: Default::default(),
+                        style: Default::default(),
+                    }),
+                }),
+            ),
+            undo_env(1, 3, 13, seen_r1(2), tx, UndoPolicy::StrictInverse),
+        ]);
+        let result = set.reduce_onto(&base);
+
+        assert!(
+            matches!(
+                result
+                    .state
+                    .objects
+                    .get(&TypedObjectId::RepeatStructure(rid)),
+                Some(ObjectState::Tombstoned { .. })
+            ) && matches!(
+                result
+                    .state
+                    .objects
+                    .get(&TypedObjectId::Spanner(spanner_id)),
+                Some(ObjectState::Tombstoned { .. })
+            ),
+            "undo tombstones both mints"
+        );
+        assert!(
+            !result
+                .score
+                .cross_cutting
+                .repeats
+                .iter()
+                .any(|r| r.id == rid),
+            "the undone repeat mint leaves the graph"
+        );
+        assert!(
+            !result
+                .score
+                .cross_cutting
+                .spanners
+                .iter()
+                .any(|sp| sp.id == spanner_id),
+            "the undone spanner mint leaves the graph (the ghost-value fix)"
+        );
+        assert!(epiphany_core::check_invariants(&result.score).is_empty());
+    }
+
     // --- Push-1 spec-compliance fixes (Transpose skip, meta-conflict record,
     // marker re-anchor repair, system-derived counter collisions). -----------
 
@@ -7925,7 +8529,74 @@ mod tests {
                 visible: true,
             })
             .schema_major(),
-            2
+            2,
+            "a Some-override layout bears the v2 StaffLineConfiguration"
+        );
+
+        // The repeat pair (Phase D): the create is born at v2 — its carried
+        // RepeatStructure's kind/voltas are unconditional fields, so even the
+        // migration-default value has no lower-major layout. The delete's
+        // bare-id payload is a major-0 layout under a minor kind append.
+        let rid = epiphany_core::RepeatStructureId::new(ReplicaId(9), 6);
+        assert_eq!(
+            OperationKind::CreateRepeatStructure(CreateRepeatStructureOp {
+                repeat: crate::valuegen::repeat_structure(
+                    rid,
+                    EventId::new(ReplicaId(9), 1),
+                    EventId::new(ReplicaId(9), 2),
+                ),
+            })
+            .schema_major(),
+            2,
+            "CreateRepeatStructure is born at v2 — even for default kind/voltas"
+        );
+        assert_eq!(
+            OperationKind::DeleteRepeatStructure(DeleteRepeatStructureOp { repeat: rid })
+                .schema_major(),
+            0,
+            "DeleteRepeatStructure carries a bare id — a major-0 layout"
+        );
+    }
+
+    #[test]
+    fn the_canonical_base_embeds_no_repeat_values() {
+        // The surgical form of the cross-major byte-identity promise for the
+        // repeat vocabulary: two reductions identical except for the created
+        // repeat's v2 content (kind payload) must produce byte-identical
+        // canonical bases — the base records the mint as a TypedObjectId
+        // (discriminant 23) plus an Applied effect, never the filled value.
+        let e1 = EventId::new(ReplicaId(1), 100);
+        let e2 = EventId::new(ReplicaId(1), 101);
+        let rid = epiphany_core::RepeatStructureId::new(ReplicaId(1), 1);
+        let base_bytes = |count: u32| {
+            let mut repeat = crate::valuegen::repeat_structure(rid, e1, e2);
+            repeat.kind = epiphany_core::RepeatKind::SimpleRepeat { count };
+            let mut set = OperationSet::new();
+            set.accept_all(vec![
+                insert(1, 0, 10, 1, 100, 0),
+                insert(1, 1, 11, 1, 101, 1),
+                prim_env(
+                    1,
+                    2,
+                    12,
+                    seen_r1(1),
+                    OperationKind::CreateRepeatStructure(CreateRepeatStructureOp { repeat }),
+                ),
+            ]);
+            let state = set.reduce();
+            assert!(
+                matches!(
+                    state.objects.get(&TypedObjectId::RepeatStructure(rid)),
+                    Some(ObjectState::Live)
+                ),
+                "the create must APPLY for this test to mean anything"
+            );
+            state.canonical_bytes()
+        };
+        assert_eq!(
+            base_bytes(2),
+            base_bytes(9),
+            "differing repeat v2 content must not reach the canonical base"
         );
     }
 
@@ -7938,7 +8609,13 @@ mod tests {
         // a filled type has leaked into the canonical base — which the majors
         // promise not to do. (A deliberate change to the base's own vocabulary
         // — an appended discriminant the seeded corpus emits — re-pins this
-        // consciously.)
+        // consciously. Re-pinned at Phase D: `gen_payload` gained the repeat
+        // pair, discriminants 28/29, which shifted the seeded RNG stream and
+        // with it the whole corpus. NOTE the seeded corpus's repeat creates
+        // all no-op (their random anchors miss the live events), so THIS pin
+        // cannot detect a repeat-value leak into the base — the dedicated
+        // `the_canonical_base_embeds_no_repeat_values` test below covers
+        // that with an APPLIED create.)
         let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xBA5E);
         let envelopes = crate::fuzz::gen_envelope_set(&mut rng, 200);
         let mut set = OperationSet::new();
@@ -7948,7 +8625,7 @@ mod tests {
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "65ad7ce56c6e8f37fbbbdab7dca8654507b3c952b0895673b453944623e42070"
+            "6e47a3113cfc54116af2e4a1b66fae16b9d1b63436fd26d9e6fc332bf501f5ed"
         );
     }
 

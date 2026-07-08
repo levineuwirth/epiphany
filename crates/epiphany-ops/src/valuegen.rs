@@ -19,10 +19,11 @@ use epiphany_core::{
     AnchorOffset, Beam, BeamId, CmnNominal, Event, EventId, EventOrderingDAG, EventPosition,
     IdentifiedPitch, MetricTimeModel, MusicalDuration, MusicalPosition, Pitch, PitchId,
     PitchSpaceId, PitchSpacePosition, PitchSpelling, PitchedEvent, ProportionalTimeModel, Region,
-    RegionContent, RegionEdge, RegionId, RegionTimeModel, Rest, ScalePosition, Slur, SlurId,
-    SpellingAttachment, SpellingDirective, SpellingScope, SpellingSource, StaffBasedContent,
-    StaffExtent, StaffId, StaffInstance, StaffInstanceId, StemConfiguration, Tie, TieClass, TieId,
-    TimeAnchor, TimeExtent, Voice, VoiceId, VoiceOrigin, WallClockDuration, WallClockTime,
+    RegionContent, RegionEdge, RegionId, RegionTimeModel, RepeatKind, RepeatStructure,
+    RepeatStructureId, Rest, ScalePosition, Slur, SlurId, SpellingAttachment, SpellingDirective,
+    SpellingScope, SpellingSource, StaffBasedContent, StaffExtent, StaffId, StaffInstance,
+    StaffInstanceId, StemConfiguration, Tie, TieClass, TieId, TimeAnchor, TimeExtent, Voice,
+    VoiceId, VoiceOrigin, Volta, WallClockDuration, WallClockTime,
 };
 
 /// A deterministic, fully-specified C4 pitch in the cmn-12 space — the neutral
@@ -193,6 +194,50 @@ pub fn region_start_anchor(region: RegionId, offset: MusicalPosition) -> TimeAnc
         id: region,
         edge: RegionEdge::Start,
         offset: AnchorOffset::Musical(MusicalDuration(offset.0)),
+    }
+}
+
+/// A zero-offset event-anchored [`TimeAnchor`] — the anchor form a repeat
+/// structure's endpoints use in tests and fuzz corpora.
+pub fn event_anchor(event: EventId) -> TimeAnchor {
+    TimeAnchor::Event {
+        id: event,
+        offset: AnchorOffset::Zero,
+    }
+}
+
+/// A [`RepeatStructure`] over two event-anchored endpoints: the conventional
+/// simple x2 repeat, no voltas.
+pub fn repeat_structure(id: RepeatStructureId, start: EventId, end: EventId) -> RepeatStructure {
+    RepeatStructure {
+        id,
+        start: event_anchor(start),
+        end: event_anchor(end),
+        kind: RepeatKind::SimpleRepeat { count: 2 },
+        voltas: Vec::new(),
+    }
+}
+
+/// A volta-kind [`RepeatStructure`]: a first and a second ending, each
+/// spanning the two anchor events.
+pub fn volta_repeat(id: RepeatStructureId, start: EventId, end: EventId) -> RepeatStructure {
+    RepeatStructure {
+        id,
+        start: event_anchor(start),
+        end: event_anchor(end),
+        kind: RepeatKind::Volta,
+        voltas: vec![
+            Volta {
+                endings: vec![1],
+                start: event_anchor(start),
+                end: event_anchor(end),
+            },
+            Volta {
+                endings: vec![2],
+                start: event_anchor(start),
+                end: event_anchor(end),
+            },
+        ],
     }
 }
 

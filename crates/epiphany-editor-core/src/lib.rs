@@ -5777,6 +5777,71 @@ mod tests {
     }
 
     #[test]
+    fn repeat_authoring_kinds_derive_subjects_and_gate_on_barriers() {
+        // The repeat pair (schema-major-2 revision) participates in the
+        // barrier gate: a whole-score barrier naming each tag refuses the
+        // matching edit before minting, and with no barriers active the
+        // create/delete pair applies end to end (subjects derive from the
+        // repeat's anchor sites through `repeat_event_refs`).
+        let mut session = open_plain(11);
+        let events: Vec<epiphany_core::EventId> = session
+            .score()
+            .voices()
+            .flat_map(|(_, _, v)| v.events.clone())
+            .collect();
+        let (e0, e1) = (events[0], events[1]);
+        let rid = epiphany_core::RepeatStructureId::new(epiphany_core::ReplicaId(0xED), 1);
+        let create = OperationKind::CreateRepeatStructure(epiphany_ops::CreateRepeatStructureOp {
+            repeat: epiphany_ops::valuegen::repeat_structure(rid, e0, e1),
+        });
+        let delete = OperationKind::DeleteRepeatStructure(epiphany_ops::DeleteRepeatStructureOp {
+            repeat: rid,
+        });
+
+        for (tag, kind) in [
+            (OperationKindTag::CreateRepeatStructure, create.clone()),
+            (OperationKindTag::DeleteRepeatStructure, delete.clone()),
+        ] {
+            session.set_active_extensions(vec![extension_prohibiting(0xE8, tag)]);
+            assert_eq!(
+                session.apply(kind),
+                Err(EditorError::BarrierProhibited {
+                    extension: ExtensionRef(0xE8),
+                    operation: tag,
+                }),
+                "a whole-score barrier naming {tag:?} must refuse the edit"
+            );
+        }
+        assert!(session.applied_operations().is_empty());
+
+        session.set_active_extensions(vec![]);
+        session
+            .apply(create)
+            .expect("an unbarred repeat create applies");
+        assert!(
+            session
+                .score()
+                .cross_cutting
+                .repeats
+                .iter()
+                .any(|r| r.id == rid),
+            "the mint materializes"
+        );
+        session
+            .apply(delete)
+            .expect("an unbarred repeat delete applies");
+        assert!(
+            !session
+                .score()
+                .cross_cutting
+                .repeats
+                .iter()
+                .any(|r| r.id == rid),
+            "the tombstone removes it"
+        );
+    }
+
+    #[test]
     fn an_unsafe_edit_crosses_the_barrier_and_records_the_tombstone_obligation() {
         let mut session = open_plain(7);
         let (_, delete) = first_event_delete(&session);

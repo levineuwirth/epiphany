@@ -806,22 +806,9 @@ impl<'a> GraphIndex<'a> {
             anchors.push(&m.anchor);
         }
         for rp in &cc.repeats {
-            anchors.push(&rp.start);
-            anchors.push(&rp.end);
-            // Schema major 2: the kind and volta anchors are anchors too.
-            match &rp.kind {
-                crate::graph::RepeatKind::DaCapo { end_target } => anchors.push(end_target),
-                crate::graph::RepeatKind::DalSegno { segno, end_target } => {
-                    anchors.push(segno);
-                    anchors.push(end_target);
-                }
-                crate::graph::RepeatKind::SimpleRepeat { .. } | crate::graph::RepeatKind::Volta => {
-                }
-            }
-            for v in &rp.voltas {
-                anchors.push(&v.start);
-                anchors.push(&v.end);
-            }
+            // The shared site-set walk (start/end, kind jump targets, volta
+            // spans) — the same set reduction and the index consume.
+            anchors.extend(rp.anchor_sites());
         }
         for cs in &cc.chord_symbols {
             anchors.push(&cs.anchor);

@@ -1100,17 +1100,18 @@ mod tests {
                 tag: 7
             })
         );
-        // Operation-kind tag 28 is one past the v1 vocabulary (the Phase-3
-        // ops tranche appended 24..=27; encodings are append-only).
+        // Operation-kind tag 30 is one past the vocabulary (the Phase-3 ops
+        // tranche appended 24..=27, the repeat pair 28/29; encodings are
+        // append-only).
         let mut bytes = vec![0u8];
         bytes.extend(set_blob(&[]));
-        bytes.extend(set_blob(&[vec![28u8]]));
+        bytes.extend(set_blob(&[vec![30u8]]));
         bytes.push(0);
         assert_eq!(
             EditBarrier::decode_canonical_bytes(&bytes),
             Err(BarrierDecodeError::InvalidTag {
                 kind: "OperationKindTag",
-                tag: 28
+                tag: 30
             })
         );
     }

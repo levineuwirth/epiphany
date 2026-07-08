@@ -55,6 +55,54 @@ struct Corpus {
     v1_scores: Vec<Vec<u8>>,
 }
 
+/// The rich fixture plus repeat structures carrying non-default v2 content
+/// (a DalSegno kind, voltas), so the decode fuzzer exercises the
+/// RepeatKind/Volta wire arms through a whole-`Score` form. Corpus-local —
+/// the shared render fixtures deliberately stay repeat-free until the E1
+/// rendering tranche (golden-churn discipline).
+fn valid_score_rich_with_repeats(seed: u64) -> Score {
+    use crate::graph::{RepeatKind, RepeatStructure, Volta};
+    use crate::ids::RepeatStructureId;
+    use crate::time::{AnchorOffset, RegionEdge, TimeAnchor};
+    let mut score = valid_score_rich(seed);
+    let region = score.canvas.regions[0].id;
+    let span = |edge: RegionEdge| TimeAnchor::Region {
+        id: region,
+        edge,
+        offset: AnchorOffset::Zero,
+    };
+    let replica = crate::ids::ReplicaId(0xF0F0);
+    score.cross_cutting.repeats.push(RepeatStructure {
+        id: RepeatStructureId::new(replica, 1),
+        start: span(RegionEdge::Start),
+        end: span(RegionEdge::End),
+        kind: RepeatKind::DalSegno {
+            segno: span(RegionEdge::Start),
+            end_target: span(RegionEdge::End),
+        },
+        voltas: Vec::new(),
+    });
+    score.cross_cutting.repeats.push(RepeatStructure {
+        id: RepeatStructureId::new(replica, 2),
+        start: span(RegionEdge::Start),
+        end: span(RegionEdge::End),
+        kind: RepeatKind::Volta,
+        voltas: vec![
+            Volta {
+                endings: vec![1],
+                start: span(RegionEdge::Start),
+                end: span(RegionEdge::End),
+            },
+            Volta {
+                endings: vec![2, 3],
+                start: span(RegionEdge::Start),
+                end: span(RegionEdge::End),
+            },
+        ],
+    });
+    score
+}
+
 fn build_corpus(rng: &mut SplitMix64) -> Corpus {
     let mut scores = Vec::new();
     let mut regions = Vec::new();
@@ -62,10 +110,10 @@ fn build_corpus(rng: &mut SplitMix64) -> Corpus {
     let mut v1_scores = Vec::new();
     for i in 0..12u64 {
         let seed = rng.next_u64();
-        let score = if i % 2 == 0 {
-            valid_score(seed | 1)
-        } else {
-            valid_score_rich(seed)
+        let score = match i % 3 {
+            0 => valid_score(seed | 1),
+            1 => valid_score_rich(seed),
+            _ => valid_score_rich_with_repeats(seed),
         };
         if let Some(region) = score.canvas.regions.first() {
             regions.push(region.canonical_bytes());

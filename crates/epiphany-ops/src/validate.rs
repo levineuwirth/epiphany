@@ -83,7 +83,7 @@
 
 use epiphany_core::{
     AnchorOffset, EventDuration, EventId, EventPosition, InstrumentId, MusicalPosition, Region,
-    RegionEdge, RegionId, Score, SlurId, TimeAnchor,
+    RegionEdge, RegionId, RepeatStructureId, Score, SlurId, TimeAnchor,
 };
 
 use crate::payload::{CrossCuttingValue, OperationKind};
@@ -163,6 +163,14 @@ pub enum AdvisoryViolation {
         /// The instrument whose declared range the event's pitch exceeds.
         instrument: InstrumentId,
     },
+    /// A `CreateRepeatStructure` volta violates the Chapter-5 well-formedness
+    /// constraints (operation_catalog §"Repeat Structures", authoring
+    /// advisory): a volta's `endings` must be non-empty, 1-based, and strictly
+    /// ascending. Advisory only — reduction never enforces it.
+    VoltaEndingsIllFormed {
+        /// The offending repeat structure.
+        repeat: RepeatStructureId,
+    },
 }
 
 /// Checks `kind` against every implemented advisory precondition (the
@@ -207,6 +215,20 @@ pub fn advisory_violations(kind: &OperationKind, score: &Score) -> Vec<AdvisoryV
                         });
                     }
                 }
+            }
+        }
+        OperationKind::CreateRepeatStructure(op) => {
+            // Volta well-formedness (Chapter 5, advisory): endings non-empty,
+            // 1-based, strictly ascending. One report per structure.
+            let ill_formed = op.repeat.voltas.iter().any(|volta| {
+                volta.endings.is_empty()
+                    || volta.endings.first().is_some_and(|first| *first < 1)
+                    || volta.endings.windows(2).any(|pair| pair[0] >= pair[1])
+            });
+            if ill_formed {
+                violations.push(AdvisoryViolation::VoltaEndingsIllFormed {
+                    repeat: op.repeat.id,
+                });
             }
         }
         // Every other implemented kind's spec precondition bucket is entirely
@@ -622,5 +644,39 @@ mod tests {
     fn validation_mode_advisory_enforcement_is_authoring_only() {
         assert!(ValidationMode::Authoring.enforces_advisory());
         assert!(!ValidationMode::Replay.enforces_advisory());
+    }
+
+    #[test]
+    fn ill_formed_volta_endings_are_an_advisory_violation() {
+        // operation_catalog §"Repeat Structures", authoring advisory: endings
+        // non-empty, 1-based, strictly ascending — advisory only.
+        let score = valid_score(7);
+        let e1 = EventId::new(ReplicaId(1), 1);
+        let e2 = EventId::new(ReplicaId(1), 2);
+        let rid = epiphany_core::RepeatStructureId::new(ReplicaId(1), 1);
+
+        let well_formed = valuegen::volta_repeat(rid, e1, e2);
+        let kind = |repeat| {
+            OperationKind::CreateRepeatStructure(crate::payload::CreateRepeatStructureOp { repeat })
+        };
+        assert!(
+            advisory_violations(&kind(well_formed.clone()), &score).is_empty(),
+            "ascending 1-based endings pass"
+        );
+
+        for endings in [vec![], vec![0], vec![2, 2], vec![3, 1]] {
+            let mut repeat = well_formed.clone();
+            repeat.voltas[0].endings = endings.clone();
+            assert_eq!(
+                advisory_violations(&kind(repeat), &score),
+                vec![AdvisoryViolation::VoltaEndingsIllFormed { repeat: rid }],
+                "endings {endings:?} must report"
+            );
+        }
+
+        // A simple repeat carries no voltas: vacuous pass.
+        assert!(
+            advisory_violations(&kind(valuegen::repeat_structure(rid, e1, e2)), &score).is_empty()
+        );
     }
 }

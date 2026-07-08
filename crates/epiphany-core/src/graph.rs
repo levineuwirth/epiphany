@@ -1228,6 +1228,54 @@ pub struct RepeatStructure {
     pub voltas: Vec<Volta>,
 }
 
+impl RepeatStructure {
+    /// Every [`TimeAnchor`] site this structure carries: `start`/`end`, the
+    /// kind's jump targets (`DaCapo.end_target`,
+    /// `DalSegno.segno`/`end_target`), and each volta's span.
+    ///
+    /// THE single site-set walk: reduction's re-anchoring (rule table row
+    /// "Repeat structure / Anchor"), the editor's barrier seam, the
+    /// invariant anchor walk, and the cross-reference index all consume
+    /// this, so the site set cannot drift between them when a future
+    /// revision adds an anchor-bearing field (an exhaustive `RepeatKind`
+    /// match protects only against new *variants*).
+    pub fn anchor_sites(&self) -> Vec<&TimeAnchor> {
+        let mut sites = vec![&self.start, &self.end];
+        match &self.kind {
+            RepeatKind::SimpleRepeat { .. } | RepeatKind::Volta => {}
+            RepeatKind::DaCapo { end_target } => sites.push(end_target),
+            RepeatKind::DalSegno { segno, end_target } => {
+                sites.push(segno);
+                sites.push(end_target);
+            }
+        }
+        for volta in &self.voltas {
+            sites.push(&volta.start);
+            sites.push(&volta.end);
+        }
+        sites
+    }
+
+    /// The mutable sibling of [`RepeatStructure::anchor_sites`], for
+    /// re-anchoring rewrites.
+    pub fn anchor_sites_mut(&mut self) -> Vec<&mut TimeAnchor> {
+        let mut sites: Vec<&mut TimeAnchor> = vec![&mut self.start, &mut self.end];
+        match &mut self.kind {
+            RepeatKind::SimpleRepeat { .. } | RepeatKind::Volta => {}
+            RepeatKind::DaCapo { end_target } => sites.push(end_target),
+            RepeatKind::DalSegno { segno, end_target } => {
+                sites.push(segno);
+                sites.push(end_target);
+            }
+        }
+        for volta in &mut self.voltas {
+            sites.push(&mut volta.start);
+            sites.push(&mut volta.end);
+        }
+        sites
+    }
+}
+
 /// An analytical annotation (Roman numeral, form label, …) (Chapter 5
 /// §"Analytical Annotations").
 #[derive(Clone, PartialEq, Eq, Debug)]

@@ -490,3 +490,23 @@ for zero coverage the codec tests don't already provide; ops-level coverage
 arrives when Phase D's valuegen builders emit v2 values. `Score::empty` keeps
 its signature (Timestamp(0) is the ratified unset convention; a
 creation-time builder waits for a producer, e.g. import).
+
+## Schema major 2, Phase D — repeat coverage lands; the anchor-site walk gets one home
+
+The Phase-B promise above ("ops-level coverage arrives when Phase D's
+valuegen builders emit v2 values") is discharged: `epiphany-ops::valuegen`
+gained `event_anchor`/`repeat_structure`/`volta_repeat`, the op generators
+emit the pair, and the decode fuzzer's corpus gains
+`valid_score_rich_with_repeats` (DalSegno + voltas) — **corpus-local**, not
+in the shared `valid_score_rich`: the shared fixture feeds the render
+goldens, and repeat rendering is deliberately E1's churn, not D's (the
+zero-golden-churn discipline).
+
+`RepeatStructure::anchor_sites()`/`anchor_sites_mut()` (graph.rs) are now
+THE site-set walk (start/end, kind jump targets, volta spans). Review found
+the set hand-rolled in five places across three crates — and a sixth,
+`indexes.rs`, silently stale since Phase B (it indexed only start/end,
+missing every kind/volta anchor, contradicting its own doc). All flat walks
+now consume the method (the classified per-site invariant check keeps its
+exhaustive match for message attribution); the index gap is
+regression-locked in `indexes_build_and_answer_queries`.

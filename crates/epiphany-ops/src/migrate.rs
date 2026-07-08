@@ -172,6 +172,11 @@ fn project_kind(kind: &OperationKind) -> V0OperationKind {
         OperationKind::SetTimeSignature(op) => V0OperationKind::SetTimeSignature(op.clone()),
         OperationKind::SetTempoSegment(op) => V0OperationKind::SetTempoSegment(op.clone()),
         OperationKind::SetStaffLayout(op) => V0OperationKind::SetStaffLayout(op.clone()),
+        // Repeat authoring (schema-major-2 revision): projected verbatim.
+        OperationKind::CreateRepeatStructure(op) => {
+            V0OperationKind::CreateRepeatStructure(op.clone())
+        }
+        OperationKind::DeleteRepeatStructure(op) => V0OperationKind::DeleteRepeatStructure(*op),
     }
 }
 
@@ -319,6 +324,11 @@ fn migrate_kind(kind: &V0OperationKind, context: &Score) -> Result<OperationKind
         V0OperationKind::SetTimeSignature(op) => OperationKind::SetTimeSignature(op.clone()),
         V0OperationKind::SetTempoSegment(op) => OperationKind::SetTempoSegment(op.clone()),
         V0OperationKind::SetStaffLayout(op) => OperationKind::SetStaffLayout(op.clone()),
+        // Repeat authoring (schema-major-2 revision): identity round-trip.
+        V0OperationKind::CreateRepeatStructure(op) => {
+            OperationKind::CreateRepeatStructure(op.clone())
+        }
+        V0OperationKind::DeleteRepeatStructure(op) => OperationKind::DeleteRepeatStructure(*op),
     })
 }
 

@@ -127,6 +127,8 @@ fn payload_label(payload: &OperationPayload) -> &'static str {
             OperationKind::SetTimeSignature(_) => "SetTimeSignature",
             OperationKind::SetTempoSegment(_) => "SetTempoSegment",
             OperationKind::SetStaffLayout(_) => "SetStaffLayout",
+            OperationKind::CreateRepeatStructure(_) => "CreateRepeatStructure",
+            OperationKind::DeleteRepeatStructure(_) => "DeleteRepeatStructure",
             _ => "primitive",
         },
         OperationPayload::ResolveConflict(_) => "ResolveConflict",

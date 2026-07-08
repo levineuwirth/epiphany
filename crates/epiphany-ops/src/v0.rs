@@ -97,6 +97,9 @@ pub enum V0OperationKind {
     SetTimeSignature(crate::payload::SetTimeSignatureOp),
     SetTempoSegment(crate::payload::SetTempoSegmentOp),
     SetStaffLayout(crate::payload::SetStaffLayoutOp),
+    // Repeat authoring (schema-major-2 revision) — round-trip by identity.
+    CreateRepeatStructure(crate::payload::CreateRepeatStructureOp),
+    DeleteRepeatStructure(crate::payload::DeleteRepeatStructureOp),
 }
 
 /// v0 `InsertEvent`: the event was a bare [`EventId`] plus the reduction-relevant

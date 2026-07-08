@@ -3141,6 +3141,9 @@ canonical_value! {
     TimeSignature,
     TempoSegment,
     StaffLineConfiguration,
+    // Repeat authoring (schema-major-2 revision) — CreateRepeatStructure
+    // embeds the full value.
+    RepeatStructure,
 }
 
 #[cfg(test)]

@@ -215,6 +215,21 @@ fn structure_context(score: &Score, endpoints: &[TypedObjectId]) -> EditContext 
     ctx(location.map(|(r, _)| r), location.map(|(_, si)| si))
 }
 
+/// The event references among a repeat structure's anchor sites
+/// ([`epiphany_core::RepeatStructure::anchor_sites`] — start/end, jump
+/// targets, volta spans; the same site set reduction's re-anchoring rule
+/// covers).
+fn repeat_event_refs(repeat: &epiphany_core::RepeatStructure) -> Vec<TypedObjectId> {
+    repeat
+        .anchor_sites()
+        .into_iter()
+        .filter_map(|anchor| match anchor {
+            epiphany_core::TimeAnchor::Event { id, .. } => Some(TypedObjectId::Event(*id)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The endpoints of a cross-cutting structure already in the graph, by id.
 fn graph_structure_endpoints(score: &Score, structure: &TypedObjectId) -> Vec<TypedObjectId> {
     let events = |ids: Vec<EventId>| ids.into_iter().map(TypedObjectId::Event).collect();
@@ -256,6 +271,13 @@ fn graph_structure_endpoints(score: &Score, structure: &TypedObjectId) -> Vec<Ty
                     })
                     .collect()
             })
+            .unwrap_or_default(),
+        TypedObjectId::RepeatStructure(id) => score
+            .cross_cutting
+            .repeats
+            .iter()
+            .find(|r| r.id == *id)
+            .map(repeat_event_refs)
             .unwrap_or_default(),
         _ => Vec::new(),
     }
@@ -409,6 +431,17 @@ pub(crate) fn subjects_of(kind: &OperationKind, score: &Score) -> BarrierSubject
         ),
         OperationKind::SetMetadata(_) | OperationKind::DeclareTransaction(_) => {
             BarrierSubjects::ScoreWide
+        }
+        OperationKind::CreateRepeatStructure(op) => one(
+            TypedObjectId::RepeatStructure(op.repeat_structure_id()),
+            structure_context(score, &repeat_event_refs(&op.repeat)),
+        ),
+        OperationKind::DeleteRepeatStructure(op) => {
+            let sid = TypedObjectId::RepeatStructure(op.repeat);
+            one(
+                sid,
+                structure_context(score, &graph_structure_endpoints(score, &sid)),
+            )
         }
         OperationKind::Registered(..) => BarrierSubjects::Unknown,
     }
