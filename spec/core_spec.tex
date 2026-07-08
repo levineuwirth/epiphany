@@ -5066,6 +5066,7 @@ pub struct CrossCuttingRegistry {
 \end{lstlisting}
 
 \subsection{Slurs and Phrase Marks}
+\label{sec:graph:slurs}
 
 \begin{lstlisting}[language=Rust]
 pub struct Slur {
@@ -5357,6 +5358,7 @@ pub enum MarkerKind {
 \end{lstlisting}
 
 \subsection{Repeat Structures}
+\label{sec:graph:repeats}
 
 \begin{lstlisting}[language=Rust]
 pub struct RepeatStructure {
@@ -9213,8 +9215,8 @@ pub enum BreakKind {
 \label{sec:layoutir:resolved}
 
 \texttt{ResolvedLayoutIR} is the output of the constraint solver:
-every glyph has a definitive position. This is the IR consumed by
-the renderer.
+every glyph, stroke, and curve has a definitive position. This is the
+IR consumed by the renderer.
 
 \begin{lstlisting}[language=Rust]
 pub struct ResolvedLayoutIR {
@@ -9225,6 +9227,14 @@ pub struct ResolvedLayoutIR {
 
     /// Glyph-level objects with resolved positions.
     pub glyphs: Vec<ResolvedGlyph>,
+
+    /// Non-glyph line primitives (staff lines, stems, barlines,
+    /// volta brackets, ...), positioned alongside the glyphs.
+    pub strokes: Vec<Stroke>,
+
+    /// Cubic-Bezier curve primitives (slurs, ...), positioned
+    /// alongside the glyphs.
+    pub curves: Vec<Curve>,
 
     /// Engraving decisions, including any made by the constraint
     /// solver (e.g., soft system breaks placed by casting-off).
@@ -9256,7 +9266,87 @@ pub struct ResolvedGlyph {
     pub style: GlyphStyle,
     pub layer: i32,
 }
+
+/// A line primitive the solver positions but the vertical-band
+/// model does not contain (a staff line, stem, barline, or bracket).
+pub struct Stroke {
+    pub provenance: Provenance,
+    pub from: Point2D,
+    pub to: Point2D,
+    pub thickness: StaffSpace,
+    pub layer: i32,
+    pub style: GlyphStyle,
+}
+
+/// A cubic-Bezier curve primitive (a slur), its four control
+/// points in `p0`..`p3` drawing order.
+pub struct Curve {
+    pub provenance: Provenance,
+    pub p0: Point2D,
+    pub p1: Point2D,
+    pub p2: Point2D,
+    pub p3: Point2D,
+    pub thickness: StaffSpace,
+    pub layer: i32,
+    pub style: GlyphStyle,
+}
 \end{lstlisting}
+
+\begin{requirement}
+  \label{req:layoutir:resolved-primitives}
+  \textbf{Non-glyph resolved primitives (ratified schema-major-2,
+  Phase~F).} Beyond glyphs, \texttt{ResolvedLayoutIR} carries
+  non-glyph \emph{line-stroke} primitives (staff lines, stems,
+  barlines, brackets) and \emph{cubic-B\'ezier curve} primitives
+  (slurs). Each \MUST{} carry provenance --- the basis of hit-testing
+  (\ref{sec:layoutir:provenance}) --- and is positioned by the solver
+  like a glyph: a spanning stroke or curve is re-spaced by the same
+  horizontal coordinate map its endpoint columns move under. These
+  primitives are \emph{non-canonical}: like layout identifiers and
+  glyph positions, they are not part of document state and enter no
+  content hash (\ref{req:layoutir:object-id-derivation}). A conformant
+  renderer draws them alongside the glyphs; the renderer encoding
+  itself is out of scope (\ref{sec:layoutir:render}).
+\end{requirement}
+
+\begin{requirement}
+  \label{req:layoutir:repeat-render}
+  \textbf{Minimal-tier repeat and volta rendering (ratified
+  schema-major-2, Phase~F).} A \texttt{RepeatStructure}
+  (\ref{sec:graph:repeats}) whose kind draws barlines
+  (\texttt{SimpleRepeat}, \texttt{Volta}) \MUST{} render a repeat
+  barline at each of its resolved boundaries --- the precomposed
+  repeat sign, either replacing a coinciding measure barline or
+  standing at the boundary column when none coincides, and the
+  repeat-dot pair beside a region-closing final barline (which is
+  never replaced). Each \texttt{Volta} \MUST{} render a bracket
+  spanning its resolved extent, with its ending numbers. A boundary
+  that does not resolve to a spacing column draws \emph{no} ink: a
+  traced anchor preserves the structure's provenance rather than
+  placing a mark at a false position. The jump kinds
+  (\texttt{DaCapo}, \texttt{DalSegno}) draw no Minimal-tier marks ---
+  their segno / coda / instruction text awaits a text primitive ---
+  and a repeat spanning more than one region renders in no single
+  region at this tier. The precise glyph vocabulary and spacing are
+  engraving-algorithm concerns (\ref{sec:layoutir:forward}).
+\end{requirement}
+
+\begin{requirement}
+  \label{req:layoutir:slur-curve}
+  \textbf{Minimal-tier slur rendering (ratified schema-major-2,
+  Phase~F).} A \texttt{Slur} (\ref{sec:graph:slurs}) \MUST{} render
+  as a cubic-B\'ezier \texttt{Curve} arcing between its two endpoint
+  event columns, honoring an authored \texttt{CurvatureOverride}
+  (direction and apex height) when present and choosing them
+  otherwise. A slur whose endpoint does not resolve to a column on a
+  single staff of one region draws \emph{no} curve: a traced anchor
+  preserves its provenance rather than a floating arc. An authored
+  non-\texttt{Solid} \texttt{SpanStyle} line (dashed, dotted) \MAY{}
+  be deferred to a higher tier, but \MUST{} be surfaced (a layout
+  diagnostic), never silently rendered solid. The curvature-computing
+  algorithm and the dash rendering are engraving-specification
+  concerns (\ref{sec:layoutir:forward}).
+\end{requirement}
 
 \section{RenderIR (Interface Only)}
 \label{sec:layoutir:render}
@@ -9291,9 +9381,11 @@ pub struct RenderConfiguration {
 \begin{requirement}
   Implementations producing \texttt{RenderIR} \MUST{} preserve
   provenance from \texttt{ResolvedLayoutIR}: every renderer primitive
-  \MUST{} be traceable to its originating \texttt{ResolvedGlyph} (and
-  therefore to its score graph source). This is the basis of
-  hit-testing, selection, and back-reference navigation in the UI.
+  \MUST{} be traceable to its originating \texttt{ResolvedLayoutIR}
+  primitive --- a \texttt{ResolvedGlyph}, \texttt{Stroke}, or
+  \texttt{Curve} --- and therefore to its score graph source. This is
+  the basis of hit-testing, selection, and back-reference navigation
+  in the UI.
 
   The full RenderIR type and its production rules are specified in
   the renderer specification, outside the scope of this document.
@@ -9515,6 +9607,7 @@ pub struct GlyphCatalogIdentity {
 \end{requirement}
 
 \section{Forward References}
+\label{sec:layoutir:forward}
 
 \begin{itemize}
   \item The constraint solver consuming \texttt{ConstrainedLayoutIR}
@@ -15391,6 +15484,28 @@ layouts they own versus inherit:
   0.6.0~$\rightarrow$~0.7.0. Wire discriminants 28/29 and the
   per-payload stamping (create born at v2; delete a minor kind append
   at major~0): Binary Format companion 0.5.0~$\rightarrow$~0.6.0.
+  \\
+  \today & Schema major 2 (rendering, Phase F) &
+  The rendering consumers of the schema-major-2 data model are
+  ratified into Chapter~7. \texttt{ResolvedLayoutIR} gains the
+  non-glyph primitive vocabulary it has always carried in
+  implementation --- line \texttt{Stroke}s (staff lines, stems,
+  barlines, volta brackets) and cubic-B\'ezier \texttt{Curve}s
+  (slurs) --- as \ref{req:layoutir:resolved-primitives}
+  (provenance-traced, non-canonical). Two Minimal-tier rendering
+  floors join the constraint floor: \ref{req:layoutir:repeat-render}
+  (E1: repeat barlines at resolved boundaries, volta brackets with
+  ending numbers, honest non-drawing of unresolvable boundaries,
+  jump-kind marks and cross-region repeats deferred) and
+  \ref{req:layoutir:slur-curve} (E2: a slur renders as a cubic
+  B\'ezier honoring \texttt{CurvatureOverride}, honest non-drawing of
+  unresolvable or cross-staff spans, a non-\texttt{Solid} line style
+  surfaced not silently rendered solid). The curvature-computing
+  algorithm and the \texttt{RenderIR} encoding stay forward-referenced
+  out (\ref{sec:layoutir:forward}, \ref{sec:layoutir:render}). Layout
+  geometry is non-canonical, so no wire form and no companion version
+  moves --- an engrave-side ratify-as-implemented, mirroring the
+  schema-major-1 Phase~F precedent.
   \\
   \bottomrule
 \end{longtable}

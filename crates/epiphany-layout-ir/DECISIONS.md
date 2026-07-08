@@ -483,6 +483,13 @@ emission set (successive-notehead no-collision chains + per-glyph containment
 
 ## Repeat barlines and volta brackets (schema major 2, E1, 2026-07-07)
 
+> **Ratified (Phase F, 2026-07-08):** these decisions are now the normative
+> Minimal-tier floor `req:layoutir:repeat-render` in core spec Chapter 7
+> (§ResolvedLayoutIR); the non-glyph primitives the volta brackets use are
+> `req:layoutir:resolved-primitives`. Layout geometry is non-canonical, so no
+> wire/companion-version change (PASS12_RATIFICATION_LOG.md, schema-major-2
+> tranche).
+
 The first repeat-structure ink (Chapter 5 `RepeatStructure` / `RepeatKind` /
 `Volta`, ratified by the major-2 Phase A). Rendering is spec-unconstrained
 (Ch7's `BarLine` payload is undefined and voltas have no layout variant), so
@@ -558,6 +565,15 @@ these are E1 implementation decisions for the Phase-F ratification pass:
   string prefix.
 
 ## Slur curves + the cubic-bézier curve primitive (schema major 2, E2, 2026-07-08)
+
+> **Ratified (Phase F, 2026-07-08):** the slur rendering floor is
+> `req:layoutir:slur-curve` and the `Curve`/`Stroke` primitive vocabulary is
+> `req:layoutir:resolved-primitives` in core spec Chapter 7 (§ResolvedLayoutIR)
+> — the struct listing now carries `strokes`/`curves` and the `Stroke`/`Curve`
+> shapes, and the RenderIR provenance requirement was widened to name all three
+> primitive kinds. The curvature *algorithm* and dash rendering stay
+> forward-referenced out. Non-canonical, so no wire/companion-version change
+> (PASS12_RATIFICATION_LOG.md, schema-major-2 tranche).
 
 The third pipeline primitive kind. Primitives were two parallel flat Vecs
 (`glyphs`, `strokes`) at each of the three IR stages; a `Curve` (four control

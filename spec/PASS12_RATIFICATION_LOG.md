@@ -177,3 +177,34 @@ returned a successful empty derivation under the requested profile. Resolution:
 the **spec text stands**; the code moved — `derive_annotations` now returns
 `Result` and rejects unregistered ids up front (`PrePassError`). No spec
 change; core DECISIONS records the reasoning.
+
+## Schema-major-2 tranche (2026-07-08) — rendering (E1/E2), engrave ratify-only
+
+The schema-major-2 push's *rendering* consumers, ratified into core spec
+Chapter 7. The data model (Phases A–C) and the repeat-authoring op pair (Phase
+D) already landed with their own revision-history rows and companion-version
+bumps (Operation Catalog 0.7.0, Binary Format 0.6.0); this tranche records
+**Phase F**, which is layout-IR (Chapter 7) only. Delivered as the E1
+(`7a9bf42` + `6651ae5`), E2 (`81b7f42` + `28f210e`) commit series. Layout
+geometry is non-canonical (no content hash, no wire form — see
+`req:layoutir:object-id-derivation`), so this is a ratify-as-implemented with
+**no byte-layout change and no companion bump**, mirroring the schema-major-1
+Phase-F precedent.
+
+| Item | Disposition | Spec locus | Consumer |
+|---|---|---|---|
+| Non-glyph resolved primitives | **adopt (ratify pre-existing + E2 reality)** — Ch7 gains Requirement `req:layoutir:resolved-primitives`: `ResolvedLayoutIR` carries, beyond glyphs, non-glyph line `Stroke`s (staff lines, stems, barlines, volta brackets — present since staff lines, never previously ratified) and cubic-Bézier `Curve`s (slurs, E2). Each carries provenance (the hit-testing basis) and is re-spaced by the solver like a glyph; both are non-canonical. The struct listing and the `Stroke`/`Curve` shapes are added; the RenderIR provenance requirement widened from "originating `ResolvedGlyph`" to "…`ResolvedGlyph`, `Stroke`, or `Curve`" | core_spec Ch7 §ResolvedLayoutIR (`req:layoutir:resolved-primitives`) | `epiphany-layout-ir` (`constrained.rs::{Stroke,Curve}`, `resolved.rs`); `epiphany-render-svg` |
+| E1 repeat / volta rendering | **adopt** — Ch7 gains Requirement `req:layoutir:repeat-render`: a barline-drawing `RepeatStructure` renders a repeat barline at each resolved boundary (the precomposed sign, replacing a coinciding measure barline or standing alone; the dot pair beside a never-replaced final barline), each `Volta` a bracket with ending numbers; an unresolvable boundary draws no ink (traced anchor, honest placement); jump-kind (`DaCapo`/`DalSegno`) marks and cross-region repeats deferred. The glyph vocabulary/spacing stay engraving-algorithm concerns | core_spec Ch7 §ResolvedLayoutIR (`req:layoutir:repeat-render`); references Ch5 §Repeat Structures | `epiphany-layout-ir` (`logical.rs`, `constrained.rs`); `epiphany-engrave` (casting) |
+| E2 slur rendering | **adopt** — Ch7 gains Requirement `req:layoutir:slur-curve`: a `Slur` renders as a cubic Bézier between its endpoint columns, honoring `CurvatureOverride` (direction, height); an endpoint that does not resolve to a column on a single staff of one region draws no curve (traced anchor); a non-`Solid` `SpanStyle` line MAY be deferred but MUST be surfaced (a layout diagnostic), never silently rendered solid. The curvature algorithm and dash rendering stay forward-referenced out | core_spec Ch7 §ResolvedLayoutIR (`req:layoutir:slur-curve`); references Ch5 §Slurs and Phrase Marks | `epiphany-layout-ir` (`logical.rs`, `constrained.rs`, `hittest.rs`); `epiphany-editor-core` |
+
+**Version movements.** None on the wire: core spec Chapter 7 gains three
+`req:layoutir:*` requirements + the `Stroke`/`Curve` struct listings + a
+revision-history row (Phase F). Operation Catalog stays 0.7.0, Binary Format
+stays 0.6.0 — layout geometry is non-canonical.
+
+**Deferred (documented, not open candidates).** Dashed/dotted slur *rendering*
+(surfaced as a diagnostic today), kind-differentiated slur appearance
+(Phrase/Editorial), jump-kind repeat marks, cross-region and cross-system-break
+curve splitting (de Casteljau), and the `slur_shape` quality metric moving off
+`0.0`-by-construction — all Standard-tier / Push-3 work, named in the crate
+DECISIONS, none a Pass-13 ambiguity.
