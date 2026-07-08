@@ -5842,6 +5842,62 @@ mod tests {
     }
 
     #[test]
+    fn a_region_scoped_barrier_gates_a_region_anchored_repeat() {
+        // A repeat anchored ONLY to a region derives that region as its
+        // containment (repeat_context walks all anchor objects, not just
+        // events) — a region-scoped barrier over it must fire, and one over
+        // another region must not. (An event-only walk left region-anchored
+        // repeats with a default context, silently bypassing the scope.)
+        let scoped = |region| ActiveExtension {
+            extension: ExtensionRef(0xE9),
+            barriers: vec![EditBarrier {
+                scope: BarrierScope::Region(region),
+                affected_object_kinds: vec![],
+                prohibited_operation_kinds: vec![OperationKindTag::CreateRepeatStructure],
+                condition: BarrierCondition::Always,
+            }],
+        };
+        let create_in = |session: &EditorSession| {
+            let here = session.score().canvas.regions[0].id;
+            let anchor = |edge| epiphany_core::TimeAnchor::Region {
+                id: here,
+                edge,
+                offset: epiphany_core::AnchorOffset::Zero,
+            };
+            OperationKind::CreateRepeatStructure(epiphany_ops::CreateRepeatStructureOp {
+                repeat: epiphany_core::RepeatStructure {
+                    id: epiphany_core::RepeatStructureId::new(epiphany_core::ReplicaId(0xEE), 1),
+                    start: anchor(epiphany_core::RegionEdge::Start),
+                    end: anchor(epiphany_core::RegionEdge::End),
+                    kind: epiphany_core::RepeatKind::SimpleRepeat { count: 2 },
+                    voltas: Vec::new(),
+                },
+            })
+        };
+
+        let mut session = open_plain(7);
+        let elsewhere = RegionId::from_raw(u128::MAX);
+        session.set_active_extensions(vec![scoped(elsewhere)]);
+        let create = create_in(&session);
+        session
+            .apply(create)
+            .expect("a barrier over another region does not bind here");
+
+        let mut session = open_plain(7);
+        let here = session.score().canvas.regions[0].id;
+        session.set_active_extensions(vec![scoped(here)]);
+        let create = create_in(&session);
+        assert_eq!(
+            session.apply(create),
+            Err(EditorError::BarrierProhibited {
+                extension: ExtensionRef(0xE9),
+                operation: OperationKindTag::CreateRepeatStructure,
+            }),
+            "the protected region's own barrier fires for a region-anchored repeat"
+        );
+    }
+
+    #[test]
     fn an_unsafe_edit_crosses_the_barrier_and_records_the_tombstone_obligation() {
         let mut session = open_plain(7);
         let (_, delete) = first_event_delete(&session);

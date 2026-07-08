@@ -1107,6 +1107,25 @@ fn reason_for_rank(rank: u8) -> ReanchorReason {
     }
 }
 
+/// The OBJECT references among a set of [`TimeAnchor`]s — events, measures,
+/// and regions (a wall-clock anchor references nothing). The mint-time
+/// liveness set: every one of these must be `Live` for a mint to leave the
+/// graph satisfying the reference-resolution invariants
+/// (`anchor_target_exists` checks exactly these three kinds). Both reduction
+/// modes agree: the base seed registers regions and measures in `objects`,
+/// and base-free reductions simply have fewer live objects.
+fn anchor_object_refs<'a>(anchors: impl IntoIterator<Item = &'a TimeAnchor>) -> Vec<TypedObjectId> {
+    anchors
+        .into_iter()
+        .filter_map(|anchor| match anchor {
+            TimeAnchor::Event { id, .. } => Some(TypedObjectId::Event(*id)),
+            TimeAnchor::Measure { id, .. } => Some(TypedObjectId::Measure(*id)),
+            TimeAnchor::Region { id, .. } => Some(TypedObjectId::Region(*id)),
+            TimeAnchor::WallClock { .. } => None,
+        })
+        .collect()
+}
+
 /// The event references among a set of [`TimeAnchor`]s (the referent-index
 /// entries a tombstone must repair). Non-event anchors contribute nothing.
 fn anchor_event_refs<'a>(anchors: impl IntoIterator<Item = &'a TimeAnchor>) -> Vec<TypedObjectId> {
@@ -3210,13 +3229,14 @@ impl<'a> Reducer<'a> {
             }
             None => {}
         }
-        // Every event-referencing anchor site must resolve live — start/end,
-        // the kind's jump targets, each volta's span (operation_catalog
-        // §"Repeat Structures": the mint must leave the graph satisfying the
-        // reference-resolution invariants).
-        let endpoints = anchor_event_refs(op.repeat.anchor_sites());
-        for e in &endpoints {
-            if !matches!(self.objects.get(e), Some(ObjectState::Live)) {
+        // Every OBJECT-referencing anchor site must resolve live — start/end,
+        // the kind's jump targets, each volta's span; events, measures, AND
+        // regions (operation_catalog §"Repeat Structures": the mint must
+        // leave the graph satisfying the reference-resolution invariants,
+        // which check all three anchor kinds — an event-only check would
+        // mint a dangling repeat off a missing region/measure anchor).
+        for referenced in anchor_object_refs(op.repeat.anchor_sites()) {
+            if !matches!(self.objects.get(&referenced), Some(ObjectState::Live)) {
                 return OperationEffect::NoOp {
                     reason: NoOpReason::PreconditionFailedUnderReduction {
                         reason: PreconditionFailureReason::TargetMissing,
@@ -3230,9 +3250,12 @@ impl<'a> Reducer<'a> {
         self.objects.insert(sid, ObjectState::Live);
         self.minted_by.insert(sid, env.id);
         self.note_minted(env, sid);
-        // Register into the referent index so event tombstones repair the
-        // structure per the rule table (no write chain: there is no
-        // ModifyRepeatStructure at this revision).
+        // Register the EVENT refs into the referent index so event tombstones
+        // repair the structure per the rule table (no write chain: there is
+        // no ModifyRepeatStructure at this revision). Measure/region anchors
+        // stay unindexed, as for spanners — non-event referent tombstones
+        // are the filed P13-D3 class.
+        let endpoints = anchor_event_refs(op.repeat.anchor_sites());
         if !endpoints.is_empty() {
             self.structures.insert(sid, endpoints);
         }
@@ -8064,6 +8087,141 @@ mod tests {
             "EVERY dead anchor site — start and the volta span — moved to the survivor"
         );
         assert!(epiphany_core::check_invariants(&result.score).is_empty());
+    }
+
+    #[test]
+    fn create_repeat_structure_preconditions_non_event_anchor_targets() {
+        // The all-anchor-sites-live precondition covers OBJECT references of
+        // every kind — a missing REGION or MEASURE target refuses the mint
+        // exactly like a missing event (an event-only check minted a
+        // dangling repeat straight past CrossCuttingRefsResolve).
+        use epiphany_core::generators::valid_score_rich;
+        let rid = epiphany_core::RepeatStructureId::new(ReplicaId(1), 1);
+
+        // Base-free: live event anchors, but start names a missing region.
+        let e1 = EventId::new(ReplicaId(1), 100);
+        let e2 = EventId::new(ReplicaId(1), 101);
+        let mut repeat = crate::valuegen::repeat_structure(rid, e1, e2);
+        repeat.start = TimeAnchor::Region {
+            id: RegionId::new(ReplicaId(1), 6_666),
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Zero,
+        };
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            insert(1, 0, 10, 1, 100, 0),
+            insert(1, 1, 11, 1, 101, 1),
+            prim_env(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                OperationKind::CreateRepeatStructure(CreateRepeatStructureOp { repeat }),
+            ),
+        ]);
+        assert!(
+            !set.reduce()
+                .objects
+                .contains_key(&TypedObjectId::RepeatStructure(rid)),
+            "a missing region anchor target refuses the mint"
+        );
+
+        // Graph-aware: a live measure + live region anchor MINTS (and the
+        // graph stays invariant-clean); a ghost measure in a volta span
+        // refuses.
+        let base = valid_score_rich(0x0D0D);
+        let (region_id, measure_id) = base
+            .canvas
+            .regions
+            .iter()
+            .find_map(|r| {
+                r.staff_instances()
+                    .iter()
+                    .find_map(|si| si.measures.first().map(|m| (r.id, m.id)))
+            })
+            .expect("the rich fixture has a measure");
+        let measure_anchor = TimeAnchor::Measure {
+            id: measure_id,
+            position: epiphany_core::MeasurePosition::Start,
+            offset: AnchorOffset::Zero,
+        };
+        let region_anchor = TimeAnchor::Region {
+            id: region_id,
+            edge: RegionEdge::End,
+            offset: AnchorOffset::Zero,
+        };
+        let live = epiphany_core::RepeatStructure {
+            id: rid,
+            start: measure_anchor.clone(),
+            end: region_anchor.clone(),
+            kind: epiphany_core::RepeatKind::SimpleRepeat { count: 2 },
+            voltas: Vec::new(),
+        };
+        let mut set = OperationSet::new();
+        set.accept_all(vec![prim_env(
+            2,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::CreateRepeatStructure(CreateRepeatStructureOp { repeat: live }),
+        )]);
+        let result = set.reduce_onto(&base);
+        assert!(
+            matches!(
+                result
+                    .state
+                    .objects
+                    .get(&TypedObjectId::RepeatStructure(rid)),
+                Some(ObjectState::Live)
+            ),
+            "live measure/region anchors mint"
+        );
+        assert!(epiphany_core::check_invariants(&result.score).is_empty());
+
+        let mut ghost_volta = epiphany_core::RepeatStructure {
+            id: epiphany_core::RepeatStructureId::new(ReplicaId(1), 2),
+            start: measure_anchor,
+            end: region_anchor.clone(),
+            kind: epiphany_core::RepeatKind::Volta,
+            voltas: vec![epiphany_core::Volta {
+                endings: vec![1],
+                start: region_anchor,
+                end: TimeAnchor::Measure {
+                    id: epiphany_core::MeasureId::new(ReplicaId(1), 6_666),
+                    position: epiphany_core::MeasurePosition::Start,
+                    offset: AnchorOffset::Zero,
+                },
+            }],
+        };
+        let ghost_id = ghost_volta.id;
+        ghost_volta.voltas[0].endings = vec![1];
+        let mut set = OperationSet::new();
+        set.accept_all(vec![prim_env(
+            2,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::CreateRepeatStructure(CreateRepeatStructureOp {
+                repeat: ghost_volta,
+            }),
+        )]);
+        let result = set.reduce_onto(&base);
+        assert!(
+            !result
+                .state
+                .objects
+                .contains_key(&TypedObjectId::RepeatStructure(ghost_id)),
+            "a missing measure target inside a volta span refuses the mint"
+        );
+        assert!(
+            !result
+                .score
+                .cross_cutting
+                .repeats
+                .iter()
+                .any(|r| r.id == ghost_id),
+            "nothing dangling reaches the graph"
+        );
     }
 
     #[test]

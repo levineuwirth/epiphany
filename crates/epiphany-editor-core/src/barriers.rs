@@ -215,19 +215,47 @@ fn structure_context(score: &Score, endpoints: &[TypedObjectId]) -> EditContext 
     ctx(location.map(|(r, _)| r), location.map(|(_, si)| si))
 }
 
-/// The event references among a repeat structure's anchor sites
-/// ([`epiphany_core::RepeatStructure::anchor_sites`] — start/end, jump
-/// targets, volta spans; the same site set reduction's re-anchoring rule
-/// covers).
-fn repeat_event_refs(repeat: &epiphany_core::RepeatStructure) -> Vec<TypedObjectId> {
-    repeat
-        .anchor_sites()
-        .into_iter()
-        .filter_map(|anchor| match anchor {
-            epiphany_core::TimeAnchor::Event { id, .. } => Some(TypedObjectId::Event(*id)),
-            _ => None,
+/// The containment of a live measure: the staff instance whose measure list
+/// carries it, with its region.
+fn measure_location(
+    score: &Score,
+    measure: epiphany_core::MeasureId,
+) -> Option<(RegionId, StaffInstanceId)> {
+    score.canvas.regions.iter().find_map(|region| {
+        region.staff_instances().iter().find_map(|si| {
+            si.measures
+                .iter()
+                .any(|m| m.id == measure)
+                .then_some((region.id, si.id))
         })
-        .collect()
+    })
+}
+
+/// The containment context a repeat structure's anchor sites bind: the first
+/// object-referencing site (in [`epiphany_core::RepeatStructure::anchor_sites`]
+/// order — start, end, jump targets, volta spans) that resolves. An event or
+/// measure site binds its (region, staff instance); a bare region anchor
+/// binds the region alone. Region- and measure-anchored repeats must derive
+/// real containment here — an event-only walk would let a repeat anchored
+/// solely to a protected region bypass a region-scoped barrier.
+fn repeat_context(score: &Score, repeat: &epiphany_core::RepeatStructure) -> EditContext {
+    for site in repeat.anchor_sites() {
+        match site {
+            epiphany_core::TimeAnchor::Event { id, .. } => {
+                if let Some((region, instance)) = event_location(score, *id) {
+                    return ctx(Some(region), Some(instance));
+                }
+            }
+            epiphany_core::TimeAnchor::Measure { id, .. } => {
+                if let Some((region, instance)) = measure_location(score, *id) {
+                    return ctx(Some(region), Some(instance));
+                }
+            }
+            epiphany_core::TimeAnchor::Region { id, .. } => return ctx(Some(*id), None),
+            epiphany_core::TimeAnchor::WallClock { .. } => {}
+        }
+    }
+    ctx(None, None)
 }
 
 /// The endpoints of a cross-cutting structure already in the graph, by id.
@@ -271,13 +299,6 @@ fn graph_structure_endpoints(score: &Score, structure: &TypedObjectId) -> Vec<Ty
                     })
                     .collect()
             })
-            .unwrap_or_default(),
-        TypedObjectId::RepeatStructure(id) => score
-            .cross_cutting
-            .repeats
-            .iter()
-            .find(|r| r.id == *id)
-            .map(repeat_event_refs)
             .unwrap_or_default(),
         _ => Vec::new(),
     }
@@ -434,14 +455,17 @@ pub(crate) fn subjects_of(kind: &OperationKind, score: &Score) -> BarrierSubject
         }
         OperationKind::CreateRepeatStructure(op) => one(
             TypedObjectId::RepeatStructure(op.repeat_structure_id()),
-            structure_context(score, &repeat_event_refs(&op.repeat)),
+            repeat_context(score, &op.repeat),
         ),
         OperationKind::DeleteRepeatStructure(op) => {
-            let sid = TypedObjectId::RepeatStructure(op.repeat);
-            one(
-                sid,
-                structure_context(score, &graph_structure_endpoints(score, &sid)),
-            )
+            let context = score
+                .cross_cutting
+                .repeats
+                .iter()
+                .find(|r| r.id == op.repeat)
+                .map(|r| repeat_context(score, r))
+                .unwrap_or_else(|| ctx(None, None));
+            one(TypedObjectId::RepeatStructure(op.repeat), context)
         }
         OperationKind::Registered(..) => BarrierSubjects::Unknown,
     }

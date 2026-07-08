@@ -1078,3 +1078,30 @@ stamps the same fixed minor as always) — pre-existing for the Phase-3
 kinds, now also true of the delete; a reader hitting the unknown
 discriminant cannot attribute the failure to version skew from the stamp
 alone. A bundle-writer design item for the next bundle tranche.
+
+### Follow-up (user review): the anchor-site set, consumed WHOLLY
+
+Post-commit review found the Phase-D unification incomplete in exactly two
+places that still collapsed `anchor_sites()` to events: (1) the mint
+precondition validated only `TimeAnchor::Event` targets, so a create whose
+start named a missing REGION (or a volta span a missing MEASURE) minted a
+dangling repeat straight past `CrossCuttingRefsResolve` — fixed with
+`anchor_object_refs` (events + measures + regions; wall-clock references
+nothing), deterministic across both reduction modes since the base seed
+registers regions and measures in `objects`; and (2) the editor barrier
+containment derived only from event locations, so a repeat anchored solely
+to a protected region carried a default context and bypassed a
+region-scoped barrier — fixed with `repeat_context` (first
+object-referencing site in anchor order binds: event/measure →
+(region, instance); bare region anchor → the region). Both
+regression-locked. The referent INDEX stays event-only by design (the rule
+table repairs event tombstones; the spanner discipline).
+
+**P13-D3 filed:** `CreateCrossCutting` has the same mint-time shape for
+SPANNERS — `CrossCuttingValue::endpoints()` filters to events, so a spanner
+anchored to a missing region/measure mints dangling past the invariant
+(`anchor_target_exists` checks spanner anchors at all three kinds), and
+non-event referent tombstones (a `DeleteRegion` under a region-anchored
+spanner or repeat) re-anchor nothing. Pre-existing, ratified-as-implemented
+("every referenced endpoint is live" reads events-only in the code);
+changing it is a catalog-semantics decision, not a Phase-D fix.
