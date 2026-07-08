@@ -208,7 +208,14 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
             _ => BarlineKind::Final,
         }
     }
-    match rng.below(5) {
+    fn placement(rng: &mut Rng) -> RepeatPlacement {
+        match rng.below(3) {
+            0 => RepeatPlacement::At(time(rng)),
+            1 => RepeatPlacement::RegionEnd,
+            _ => RepeatPlacement::Unresolved,
+        }
+    }
+    match rng.below(6) {
         0 => LayoutContent::Structural,
         1 => LayoutContent::Staff(StaffContent {
             clefs: clefs(rng),
@@ -229,13 +236,25 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
                 .boolean()
                 .then(|| epiphany_core::StaffPosition(rng.range(0, 9) as i16)),
         }),
-        _ => LayoutContent::Measure(MeasureContent {
+        4 => LayoutContent::Measure(MeasureContent {
             start: time(rng),
             barline: barline(rng),
             time_signature: rng.boolean().then(|| TimeSignatureContent {
                 numerator: rng.range(1, 13) as u16,
                 denominator: *rng.choose(&[2, 4, 8, 16]),
             }),
+        }),
+        _ => LayoutContent::Repeat(RepeatContent {
+            barlines: rng.boolean(),
+            start: placement(rng),
+            end: placement(rng),
+            voltas: (0..rng.below(3))
+                .map(|index| VoltaContent {
+                    endings: vec![index as u32 + 1],
+                    start: placement(rng),
+                    end: placement(rng),
+                })
+                .collect(),
         }),
     }
 }

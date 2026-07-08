@@ -37,7 +37,8 @@ NAMES = ["noteheadBlack","noteheadHalf","noteheadWhole","noteheadDoubleWhole",
 "flag8thUp","flag8thDown","augmentationDot",
 "timeSig0","timeSig1","timeSig2","timeSig3","timeSig4","timeSig5","timeSig6",
 "timeSig7","timeSig8","timeSig9","timeSigCommon",
-"barlineSingle","barlineFinal","dynamicForte","dynamicPiano"]
+"barlineSingle","barlineFinal","dynamicForte","dynamicPiano",
+"repeatLeft","repeatRight","repeatRightLeft","repeatDots"]
 
 def verify(data, expected, what):
     actual = hashlib.sha256(data).hexdigest()

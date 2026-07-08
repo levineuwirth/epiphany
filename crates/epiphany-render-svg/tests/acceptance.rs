@@ -37,6 +37,10 @@ fn fixtures() -> Vec<(&'static str, Score)> {
             "valid_score_rich",
             epiphany_core::generators::valid_score_rich(0x5EED),
         ),
+        (
+            "ten_measure_with_repeats",
+            epiphany_testkit::fixtures::ten_measure_with_repeats(0x000A_11CE),
+        ),
     ]
 }
 

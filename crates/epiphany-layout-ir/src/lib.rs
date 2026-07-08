@@ -108,9 +108,10 @@ pub use engraving::{
     OverrideKind, OverrideOrigin, OverridePriority, OverrideTarget, PluginId, Timestamp,
 };
 pub use glyph::{
-    all_available, bravura_catalog_identity, metrics, metrics_hash_for, BravuraCatalog, FontId,
-    GlyphAnchor, GlyphBitmap, GlyphCatalog, GlyphCatalogIdentity, GlyphMetric, GlyphReference,
-    GlyphRenderData, PathCommand, SemVer, SmuflVersion, BRAVURA_METRICS, BRAVURA_VERSION,
+    all_available, bravura_catalog_identity, is_barline_glyph, metrics, metrics_hash_for,
+    BravuraCatalog, FontId, GlyphAnchor, GlyphBitmap, GlyphCatalog, GlyphCatalogIdentity,
+    GlyphMetric, GlyphReference, GlyphRenderData, PathCommand, SemVer, SmuflVersion,
+    BRAVURA_METRICS, BRAVURA_VERSION,
 };
 pub use hittest::{HitRegion, HitShape, HitTestMap, PrimitiveRef};
 pub use logical::{
@@ -118,10 +119,10 @@ pub use logical::{
     CompositeLayoutObject, CrossRegionObject, CueLayout, GraphicLayout, GroupLayout,
     KeySignatureLayout, LayoutContent, LayoutObject, LayoutRegion, LocalCoordinateSystem,
     LogicalLayoutIR, MarkerLayout, MeasureContent, MultimeasureRestLayout, NoteContent, NoteLayout,
-    NotePitch, PlacedClef, PlacedComponent, PlacedKeySignature, RestContent, RestLayout,
-    ScoreVersion, SlurLayout, SpannerLayout, StaffContent, StaffLayout, TextLayout, TieLayout,
-    TimeSignatureContent, TimeSignatureDisplayLayout, TrajectoryLayout, TupletDisplayLayout,
-    VerticalExtent,
+    NotePitch, PlacedClef, PlacedComponent, PlacedKeySignature, RepeatContent, RepeatPlacement,
+    RestContent, RestLayout, ScoreVersion, SlurLayout, SpannerLayout, StaffContent, StaffLayout,
+    TextLayout, TieLayout, TimeSignatureContent, TimeSignatureDisplayLayout, TrajectoryLayout,
+    TupletDisplayLayout, VerticalExtent, VoltaContent,
 };
 pub use provenance::{
     continuation_instance_key, manifestation_layout_id, stable_layout_id, synthesized_layout_id,

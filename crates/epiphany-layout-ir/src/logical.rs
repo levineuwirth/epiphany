@@ -33,12 +33,14 @@ use crate::spatial::Transform2D;
 use crate::time_axis::{time_axis_of, TimeAxisModel, TimePoint};
 
 /// The engraving content of a layout object beyond its provenance and staff —
-/// the note value, spelled pitches, clef, key, or measure data the constrained
-/// pass needs to choose glyphs and compute staff positions (Chapter 7 §"Engraving
-/// Decisions": the decisions are recorded in the IR). Structural objects (staves,
-/// voices, the per-pitch back-references, cross-cutting structures) carry
-/// [`LayoutContent::Structural`]. This payload is *authoritative* for engraving;
-/// the [`LayoutObject`] variant remains the structural classification.
+/// the note value, spelled pitches, clef, key, measure, or repeat data the
+/// constrained pass needs to choose glyphs and compute staff positions
+/// (Chapter 7 §"Engraving Decisions": the decisions are recorded in the IR).
+/// Structural objects (staves, voices, the per-pitch back-references, and the
+/// cross-cutting structures other than repeats) carry
+/// [`LayoutContent::Structural`]. This payload is *authoritative* for
+/// engraving; the [`LayoutObject`] variant remains the structural
+/// classification.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub enum LayoutContent {
     /// No engraving content beyond provenance/staff.
@@ -55,6 +57,10 @@ pub enum LayoutContent {
     /// A measure: whether it ends the staff (a final barline) and the time
     /// signature in force, when this measure introduces one.
     Measure(MeasureContent),
+    /// A repeat structure: whether its kind draws repeat barlines, where its
+    /// boundaries land, and its volta brackets — resolved to layout placements
+    /// at projection time (the constrained pass has no score access).
+    Repeat(RepeatContent),
 }
 
 /// The clef and key-signature sequences in force across a staff instance,
@@ -151,6 +157,48 @@ pub enum BarlineKind {
 pub struct TimeSignatureContent {
     pub numerator: u16,
     pub denominator: u16,
+}
+
+/// A repeat structure's engraving content (Chapter 5 §"Cross-Cutting
+/// Structures": `RepeatStructure`), with every boundary resolved to a
+/// [`RepeatPlacement`] so the constrained pass can place ink without going
+/// back to the score graph.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RepeatContent {
+    /// Whether the structure's kind draws repeat barlines at its boundaries
+    /// (`SimpleRepeat` and `Volta`). The jump kinds (`DaCapo`/`DalSegno`) draw
+    /// no Minimal-tier ink — their marks (segno, coda, instruction text) need
+    /// a text primitive and belong to a later tranche.
+    pub barlines: bool,
+    pub start: RepeatPlacement,
+    pub end: RepeatPlacement,
+    /// The structure's volta brackets, in authored order.
+    pub voltas: Vec<VoltaContent>,
+}
+
+/// One volta bracket: its pass numbers and its resolved span.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct VoltaContent {
+    /// The pass numbers this ending plays on (1-based; authored order kept).
+    pub endings: Vec<u32>,
+    pub start: RepeatPlacement,
+    pub end: RepeatPlacement,
+}
+
+/// Where a repeat boundary lands on its region's spacing axis.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum RepeatPlacement {
+    /// At the spacing column of this resolved time.
+    At(TimePoint),
+    /// At the region's closing column (the final-barline position) — a
+    /// zero-offset anchor to the region's end edge or to the end of its last
+    /// measure, whose *time* the Minimal slice cannot resolve but whose
+    /// *column* is exactly the region-closing one.
+    RegionEnd,
+    /// Not resolvable in the Minimal slice (dangling target, unknown metric
+    /// region end, clock-mismatched offset). The boundary draws no ink; the
+    /// structure keeps its traced anchor.
+    Unresolved,
 }
 
 /// A structural layout object before spacing (Chapter 7 §"Layout Objects"). It
@@ -596,6 +644,19 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
         if !seen.insert(provenance.stable_id) {
             continue;
         }
+        // A repeat structure carries its resolved engraving content (barline
+        // verdict + placements). Every other cross-cutting object is
+        // structural in this tier.
+        let content = match src {
+            TypedObjectId::RepeatStructure(id) => score
+                .cross_cutting
+                .repeats
+                .iter()
+                .find(|rp| rp.id == id)
+                .map(|rp| repeat_content(score, rp))
+                .unwrap_or_default(),
+            _ => LayoutContent::Structural,
+        };
         let mut anchored_regions = Vec::new();
         let mut anchored_staves = BTreeSet::new();
         for region in &regions {
@@ -628,7 +689,9 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                     .expect("anchored region was collected from this vector");
                 region
                     .objects
-                    .push(LayoutObject::from_projection(provenance, staff));
+                    .push(LayoutObject::from_projection_with_content(
+                        provenance, staff, content,
+                    ));
             }
             [] => {
                 // Wall-clock-only annotations have no graph anchor from which
@@ -636,9 +699,15 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                 if let Some(first) = regions.first_mut() {
                     first
                         .objects
-                        .push(LayoutObject::from_projection(provenance, staff));
+                        .push(LayoutObject::from_projection_with_content(
+                            provenance, staff, content,
+                        ));
                 }
             }
+            // A multi-region spanning object keeps no engraving content: the
+            // cross-region path places a single traced anchor at its first
+            // region (a Minimal-slice boundary — repeat ink across region
+            // boundaries belongs to a later tranche).
             _ => cross_region.push(CrossRegionObject {
                 provenance,
                 regions: anchored_regions,
@@ -934,6 +1003,95 @@ fn origin_time() -> TimePoint {
     TimePoint::Musical(MusicalPosition::origin())
 }
 
+/// A repeat structure's engraving content: its kind's barline verdict plus
+/// every boundary (structure and volta) resolved to a [`RepeatPlacement`].
+fn repeat_content(score: &Score, rp: &epiphany_core::RepeatStructure) -> LayoutContent {
+    use epiphany_core::RepeatKind;
+    LayoutContent::Repeat(RepeatContent {
+        barlines: matches!(rp.kind, RepeatKind::SimpleRepeat { .. } | RepeatKind::Volta),
+        start: repeat_placement(score, &rp.start),
+        end: repeat_placement(score, &rp.end),
+        voltas: rp
+            .voltas
+            .iter()
+            .map(|volta| VoltaContent {
+                endings: volta.endings.clone(),
+                start: repeat_placement(score, &volta.start),
+                end: repeat_placement(score, &volta.end),
+            })
+            .collect(),
+    })
+}
+
+/// Resolves a repeat boundary anchor to a [`RepeatPlacement`]. Unlike
+/// [`resolve_time_anchor`], failure is **honest** (`Unresolved` draws no ink)
+/// rather than falling back to the origin — a repeat sign at a false position
+/// would misstate the musical structure. Two region-closing shapes resolve to
+/// [`RepeatPlacement::RegionEnd`] by *column* even though their *time* is
+/// unknowable in a metric region: a zero-offset anchor to an existing region's
+/// end edge, and a zero-offset anchor to the end of a staff instance's last
+/// measure. Offsets are tested for zero-ness **by value** (`Zero`,
+/// `Musical(0)`, `WallClock(0)` all qualify — value-equal decoded anchors must
+/// not render differently).
+///
+/// A bare **wall-clock** boundary is `Unresolved`: it references no graph
+/// object, so nothing ties it to the region it would draw in — the sign would
+/// land wherever the wall-clock time happens to *sort* among that region's
+/// columns (after every musical column, in a metric region), a false position.
+/// Repeat ink for wall-clock-synchronized material is a later tranche.
+/// (Wall-clock `TimePoint`s resolved *through* an event/measure/region anchor
+/// are fine — the referenced object pins the region and its clock.)
+fn repeat_placement(score: &Score, anchor: &TimeAnchor) -> RepeatPlacement {
+    const DEPTH: u8 = 16;
+    match anchor {
+        TimeAnchor::Region {
+            id,
+            edge: RegionEdge::End,
+            offset,
+        } if offset_is_zero(offset)
+            && score.canvas.regions.iter().any(|region| region.id == *id) =>
+        {
+            RepeatPlacement::RegionEnd
+        }
+        TimeAnchor::Measure {
+            id,
+            position: MeasurePosition::End,
+            offset,
+        } if offset_is_zero(offset) && is_last_measure(score, *id) => RepeatPlacement::RegionEnd,
+        TimeAnchor::WallClock { .. } => RepeatPlacement::Unresolved,
+        _ => match resolve_time_anchor_inner(score, anchor, DEPTH) {
+            Some(time) => RepeatPlacement::At(time),
+            None => RepeatPlacement::Unresolved,
+        },
+    }
+}
+
+/// Whether an anchor offset is zero **by value**: the `Zero` variant or a
+/// zero-magnitude duration of either clock (both are representable and decode
+/// verbatim; the placement verdict must not depend on the representation).
+fn offset_is_zero(offset: &AnchorOffset) -> bool {
+    match offset {
+        AnchorOffset::Zero => true,
+        AnchorOffset::Musical(duration) => *duration == MusicalDuration::zero(),
+        AnchorOffset::WallClock(duration) => duration.0 == 0,
+    }
+}
+
+/// Whether `id` names the **last** measure of the staff instance that owns it
+/// (first-match walk, the same discipline as [`measure_anchor_time`]).
+fn is_last_measure(score: &Score, id: epiphany_core::MeasureId) -> bool {
+    for (_, instance) in score.staff_instances() {
+        if let Some(index) = instance
+            .measures
+            .iter()
+            .position(|measure| measure.id == id)
+        {
+            return index + 1 == instance.measures.len();
+        }
+    }
+    false
+}
+
 /// The full notated decomposition of an event (base values, dots, tuplets, ties)
 /// from the pre-pass; empty when the event has no decomposition (non-metric or
 /// ineligible) — the constrained pass surfaces that rather than inventing a value.
@@ -1086,9 +1244,13 @@ pub(crate) fn cross_cutting_objects(score: &Score) -> Vec<(TypedObjectId, Vec<Ty
         ));
     }
     for rp in &cc.repeats {
-        let deps = [&rp.start, &rp.end]
-            .iter()
-            .filter_map(|a| time_anchor_dep(a))
+        // THE single site-set walk (core `RepeatStructure::anchor_sites`):
+        // volta spans and jump targets are real invalidation dependencies and
+        // real region-membership evidence, exactly like start/end.
+        let deps = rp
+            .anchor_sites()
+            .into_iter()
+            .filter_map(time_anchor_dep)
             .collect();
         out.push((TypedObjectId::RepeatStructure(rp.id), deps));
     }
@@ -1472,5 +1634,199 @@ mod tests {
             .find(|object| object.provenance().source == TypedObjectId::Tie(tie))
             .expect("tie must be in its events' region");
         assert_eq!(object.staff(), Some(expected_staff));
+    }
+
+    // --- Repeat projection (schema-major-2 E1) ------------------------------
+
+    #[test]
+    fn repeat_placements_resolve_honestly() {
+        use epiphany_core::{EventId, Measure, MeasureId, MeasurePosition, RegionId};
+
+        let mut score = valid_score_rich(31);
+        let region_a = score.canvas.regions[0].id;
+        let replica = score.identity.replica_id;
+        // Append a second measure so the generator's measure is not the last.
+        let m1: MeasureId = score.identity.mint();
+        let instance = &mut score.canvas.regions[0]
+            .content
+            .staff_instances_mut()
+            .expect("region A is staff-based")[0];
+        let m0 = instance.measures[0].id;
+        instance.measures.push(Measure {
+            id: m1,
+            start: TimeAnchor::Region {
+                id: region_a,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(duration(1, 1)),
+            },
+            time_signature: None,
+            explicit_number: None,
+            number_visibility: Default::default(),
+        });
+
+        // A zero-offset end-edge anchor on an existing region closes on the
+        // region-final column, whose *time* a metric region cannot state.
+        assert_eq!(
+            repeat_placement(
+                &score,
+                &TimeAnchor::Region {
+                    id: region_a,
+                    edge: RegionEdge::End,
+                    offset: AnchorOffset::Zero,
+                }
+            ),
+            RepeatPlacement::RegionEnd
+        );
+        // Zero-ness is a *value* judgement: a Musical(0) offset is the same
+        // anchor and must earn the same verdict as the Zero variant.
+        assert_eq!(
+            repeat_placement(
+                &score,
+                &TimeAnchor::Region {
+                    id: region_a,
+                    edge: RegionEdge::End,
+                    offset: AnchorOffset::Musical(MusicalDuration::zero()),
+                }
+            ),
+            RepeatPlacement::RegionEnd
+        );
+        // A dangling region target never binds some other region's close.
+        assert_eq!(
+            repeat_placement(
+                &score,
+                &TimeAnchor::Region {
+                    id: RegionId::new(replica, 4_242_424),
+                    edge: RegionEdge::End,
+                    offset: AnchorOffset::Zero,
+                }
+            ),
+            RepeatPlacement::Unresolved
+        );
+        // The last measure's end closes on the region; an earlier measure's
+        // end resolves to the next measure's start time.
+        let measure_end = |id: MeasureId| TimeAnchor::Measure {
+            id,
+            position: MeasurePosition::End,
+            offset: AnchorOffset::Zero,
+        };
+        assert_eq!(
+            repeat_placement(&score, &measure_end(m1)),
+            RepeatPlacement::RegionEnd
+        );
+        assert_eq!(
+            repeat_placement(
+                &score,
+                &TimeAnchor::Measure {
+                    id: m1,
+                    position: MeasurePosition::End,
+                    offset: AnchorOffset::Musical(MusicalDuration::zero()),
+                }
+            ),
+            RepeatPlacement::RegionEnd
+        );
+        assert_eq!(
+            repeat_placement(&score, &measure_end(m0)),
+            RepeatPlacement::At(TimePoint::Musical(position(1, 1)))
+        );
+        // A dangling event target is honestly unresolved — never the origin
+        // fallback, which would draw a repeat sign at a false position.
+        assert_eq!(
+            repeat_placement(
+                &score,
+                &TimeAnchor::Event {
+                    id: EventId::new(replica, 9_999_999),
+                    offset: AnchorOffset::Zero,
+                }
+            ),
+            RepeatPlacement::Unresolved
+        );
+        // A bare wall-clock boundary references no graph object, so nothing
+        // pins it to a region — it draws no ink rather than landing wherever
+        // the time happens to sort among a metric region's columns.
+        assert_eq!(
+            repeat_placement(
+                &score,
+                &TimeAnchor::WallClock {
+                    time: WallClockTime(7),
+                }
+            ),
+            RepeatPlacement::Unresolved
+        );
+    }
+
+    #[test]
+    fn repeats_project_content_and_volta_anchors_decide_region_membership() {
+        use epiphany_core::{RepeatKind, RepeatStructure, RepeatStructureId, Volta};
+
+        let mut score = valid_score_rich(32);
+        let region_a = score.canvas.regions[0].id;
+        let region_b = score.canvas.regions[1].id;
+        let edge = |id, edge| TimeAnchor::Region {
+            id,
+            edge,
+            offset: AnchorOffset::Zero,
+        };
+        // r1: a volta repeat anchored wholly inside region A — it lands there
+        // carrying resolved content.
+        let r1: RepeatStructureId = score.identity.mint();
+        score.cross_cutting.repeats.push(RepeatStructure {
+            id: r1,
+            start: edge(region_a, RegionEdge::Start),
+            end: edge(region_a, RegionEdge::End),
+            kind: RepeatKind::Volta,
+            voltas: vec![Volta {
+                endings: vec![1, 2],
+                start: edge(region_a, RegionEdge::Start),
+                end: edge(region_a, RegionEdge::End),
+            }],
+        });
+        // r2: a DalSegno whose segno points into region B — the jump target is
+        // real membership evidence, so the repeat spans regions (and the
+        // cross-region path carries no engraving content).
+        let r2: RepeatStructureId = score.identity.mint();
+        score.cross_cutting.repeats.push(RepeatStructure {
+            id: r2,
+            start: edge(region_a, RegionEdge::Start),
+            end: edge(region_a, RegionEdge::End),
+            kind: RepeatKind::DalSegno {
+                segno: edge(region_b, RegionEdge::Start),
+                end_target: edge(region_a, RegionEdge::Start),
+            },
+            voltas: Vec::new(),
+        });
+
+        let ir = to_logical(&score);
+        let object = ir.regions[0]
+            .objects
+            .iter()
+            .find(|object| object.provenance().source == TypedObjectId::RepeatStructure(r1))
+            .expect("the in-region repeat lands in region A");
+        let LayoutContent::Repeat(content) = object.content() else {
+            panic!("the repeat carries resolved engraving content");
+        };
+        assert!(content.barlines, "a Volta-kind repeat draws barlines");
+        assert_eq!(
+            content.start,
+            RepeatPlacement::At(TimePoint::Musical(MusicalPosition::origin()))
+        );
+        assert_eq!(content.end, RepeatPlacement::RegionEnd);
+        assert_eq!(content.voltas.len(), 1);
+        assert_eq!(content.voltas[0].endings, vec![1, 2]);
+
+        let spanning = ir
+            .cross_region
+            .iter()
+            .find(|object| object.provenance.source == TypedObjectId::RepeatStructure(r2))
+            .expect("the segno target pulls the repeat across regions");
+        assert_eq!(spanning.regions, vec![region_a, region_b]);
+        assert!(
+            ir.regions.iter().all(|region| {
+                region
+                    .objects
+                    .iter()
+                    .all(|o| o.provenance().source != TypedObjectId::RepeatStructure(r2))
+            }),
+            "a cross-region repeat is not also placed in a region"
+        );
     }
 }

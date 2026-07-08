@@ -118,11 +118,13 @@ pub struct Engraver {
 /// The implementation version of this solver (Chapter 9: within a fixed version,
 /// identical input produces identical output). Distinct from the stub's `0`;
 /// bumped to `2` when the casting-off pass landed (the resolved geometry of a
-/// wrapping score differs from version `1`'s single endless system), and to `3`
+/// wrapping score differs from version `1`'s single endless system), to `3`
 /// when casting-off gained its widow-rebalance phase (a wrapping score's system
 /// breaks — and so its baked geometry — differ again from version `2`'s pure
-/// greedy first-fit).
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(3);
+/// greedy first-fit), and to `4` when repeat barlines and volta brackets landed
+/// (a repeat-bearing score's baked geometry differs from version `3`'s
+/// invisible traced anchors; repeat-free scores are unchanged).
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(4);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -1662,14 +1664,17 @@ mod tests {
     fn criterion_six_round_trips_through_the_engravers_respacing() {
         use epiphany_core::generators::valid_score;
         use epiphany_layout_ir::{round_trip_with, SolveStatus};
-        use epiphany_testkit::fixtures::ten_measure_single_staff;
+        use epiphany_testkit::fixtures::{ten_measure_single_staff, ten_measure_with_repeats};
 
         for seed in 0..32u64 {
             // Mirror the criterion-6 hand-off gate's own fixtures — the 10-measure
-            // single staff (measures + barlines) and the rich score (cross-cutting
-            // tuplet/tie/spanner/marker) — and keep `valid_score` for added breadth.
+            // single staff (measures + barlines), its repeat-bearing sibling
+            // (morphed/standalone repeat signs, dot pair, volta brackets — all
+            // re-spaced and cast off), and the rich score (cross-cutting
+            // tuplet/tie/spanner/marker) — and keep `valid_score` for breadth.
             let scores = [
                 ten_measure_single_staff(seed),
+                ten_measure_with_repeats(seed),
                 valid_score(seed),
                 valid_score_rich(seed),
             ];

@@ -480,3 +480,79 @@ sanctioned (`req:solver:subconformant-report`). **I6** the implemented
 emission set (successive-notehead no-collision chains + per-glyph containment
 + user-break constraints) is the normative Minimal-tier floor
 (`req:layoutir:constraint-floor`).
+
+## Repeat barlines and volta brackets (schema major 2, E1, 2026-07-07)
+
+The first repeat-structure ink (Chapter 5 `RepeatStructure` / `RepeatKind` /
+`Volta`, ratified by the major-2 Phase A). Rendering is spec-unconstrained
+(Ch7's `BarLine` payload is undefined and voltas have no layout variant), so
+these are E1 implementation decisions for the Phase-F ratification pass:
+
+- **Kind → ink mapping.** `SimpleRepeat` and `Volta` draw repeat barlines at
+  their boundaries; `DaCapo`/`DalSegno` draw **no Minimal-tier ink** (segno /
+  coda / instruction marks need a text primitive — a later tranche) but keep
+  their traced anchors. Volta brackets draw for the `voltas` list of **any**
+  kind.
+- **Morph, standalone, or dots.** A boundary whose column carries a measure's
+  own barline **morphs** that barline into the precomposed SMuFL sign
+  (`repeatLeft` / `repeatRight` / `repeatRightLeft` when an end meets a
+  start) — a *name* change only: the measure's exact provenance is preserved
+  verbatim because the round-trip provenance floor compares it exactly;
+  repeat-edit invalidation is carried by the `ScoreVersion` (v0 relayouts
+  wholesale), and an incremental tranche would add the dependency at the
+  logical stage where dependencies are established. A boundary with no
+  coinciding measure barline stands alone as a repeat-synthesized sign at its
+  own barline-role column (`REPEAT_BARLINE_SYNTHESIS`; one per (column,
+  staff); coinciding structures merge into one sign whose synthesis owner is
+  the smallest `(structure id, boundary site)` — a **semantic** instance key,
+  `(site << 32) | staff index`, stable under unrelated edits where a
+  positional column rank would re-derive). The **region-closing column**: an
+  end repeat there adds the `repeatDots` pair beside a staff's final barline
+  (the final barline never morphs, keeping the casting-off solver's
+  final-barline classification truthful), or draws the full end sign on a
+  staff whose run continues (no final barline there); a *start* repeat at the
+  region close draws nothing on any staff — a sign after the close would
+  misstate the structure.
+- **Source-geometry clearance.** An end-facing sign's ink reaches ~1.1–1.3
+  staff spaces left of its column (its heavy line right-aligns to the plain
+  barline's span), so the mark's column reserves that reach through the
+  accidental-overhang mechanism and the source layout stays collision-free.
+  A morphed measure's time-signature digits shift right by the sign's right
+  extension (`repeatLeft`/`repeatRightLeft` are wider than the barline they
+  replace); both adjustments are zero for the plain barlines, so repeat-free
+  geometry is untouched.
+- **Honest placement.** Repeat boundaries resolve via `RepeatPlacement` at
+  projection time (`to_constrained` has no `Score`): `At(time)`,
+  `RegionEnd` (zero-offset anchors to an existing region's end edge or to the
+  end of an instance's last measure — the *column* is knowable where the
+  *time* is not; zero-ness is judged **by value**, so a `Musical(0)` offset
+  earns the same verdict as the `Zero` variant), or `Unresolved`, which draws
+  **no ink** — unlike `resolve_time_anchor`'s origin fallback, a repeat sign
+  at a false position would misstate the musical structure. A bare
+  **wall-clock boundary is `Unresolved`**: it references no graph object, so
+  nothing pins it to the region it would draw in — the sign would land
+  wherever its time happens to *sort* among that region's columns (repeat ink
+  for wall-clock-synchronized material is a later tranche; wall-clock
+  `TimePoint`s reached *through* an object anchor place normally).
+  Cross-region repeats keep the traced anchor only (content is dropped on the
+  cross-region path — a documented Minimal boundary until repeat ink learns
+  to split). Repeat dependencies now come from
+  `RepeatStructure::anchor_sites()` (THE single site-set walk), so volta
+  spans and jump targets are real invalidation and region-membership
+  evidence.
+- **Volta brackets.** Three strokes above the *top* staff (line at
+  `VOLTA_Y = 6.5` staff spaces, two descending hooks) plus the ending numbers
+  as `timeSig0..9` digit glyphs (the Minimal tier has no text primitive),
+  all synthesized under `VOLTA_SYNTHESIS`, endings drawn verbatim in authored
+  order. A reversed / zero-width / unresolvable span draws no bracket
+  (advisory volta well-formedness is the authoring layer's jurisdiction).
+  Bracket strokes are ordinary re-spaceable strokes, so the engraver's
+  system-splitting (`StrokeFate::Split`) applies unchanged.
+- **Glyphs.** The precomposed Bravura signs over hand-compositing
+  heavy/thin/dot primitives; metrics extracted from the same SHA-pinned
+  `bravura-1.392` as the rest of the table. The heavy line is aligned to the
+  plain barline's span by a box approximation (`repeat_sign_x`: start signs
+  left-aligned, end signs right-aligned, the combined sign centred).
+  `is_barline_glyph` is exported so the casting-off solver classifies
+  measure-boundary columns from this crate's name vocabulary instead of a
+  string prefix.

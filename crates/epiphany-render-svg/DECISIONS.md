@@ -103,3 +103,14 @@ See `spec/PASS12_BATCH.md` (rows P12-I1, P12-I2, P12-I3). Most relevant here:
   `MUSCLOID` tag and `layout-ir` provenance routes through it. The renderer traces
   provenance by the (now `MUSCLOID`-tagged) `stable_id`; only the `data-prov` hex in
   the goldens changed (the ids are non-canonical).
+
+## Repeat glyphs bundled + `repeat` glyph class (E1, 2026-07-07)
+
+The E1 repeat tranche added `repeatLeft`, `repeatRight`, `repeatRightLeft`,
+and `repeatDots` to the extractor's `NAMES` set; outlines, companion
+layout-ir metrics, and the embedded font subset were regenerated from the
+same SHA-pinned `bravura-1.392` (fontTools 4.63.0 preserved, so the subset
+diff is content-only). `GlyphClass` gained a `Repeat` class (token
+`repeat`) so snapshots and `data-class` attributes separate repeat signs
+from plain barlines. Volta ending numerals arrive as `timeSig` digit glyphs
+(there is still no free-text primitive — unchanged).

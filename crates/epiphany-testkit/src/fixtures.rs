@@ -12,15 +12,15 @@
 use epiphany_core::{
     AcousticPitch, AcousticRealization, AnchorOffset, Canvas, ChordSymbol, CmnNominal,
     CrossCuttingRegistry, Event, EventArena, EventDuration, EventPosition, IdentifiedPitch,
-    IdentityContext, Marker, Measure, MetricTimeModel, MusicalDuration, MusicalPosition, Pitch,
-    PitchSpaceId, PitchSpacePosition, RationalTime, RegionContent, RegionEdge, RegionTimeModel,
-    ScalePosition, Score, Spanner, Staff, StaffBasedContent, StaffExtent, StaffInstance,
-    StaffLineConfiguration, StemConfiguration, Tie, TieClass, TimeAnchor, TimeExtent,
-    TuningReference, Voice, WallClockTime,
+    IdentityContext, Marker, Measure, MeasurePosition, MetricTimeModel, MusicalDuration,
+    MusicalPosition, Pitch, PitchSpaceId, PitchSpacePosition, RationalTime, RegionContent,
+    RegionEdge, RegionTimeModel, RepeatKind, RepeatStructure, ScalePosition, Score, Spanner, Staff,
+    StaffBasedContent, StaffExtent, StaffInstance, StaffLineConfiguration, StemConfiguration, Tie,
+    TieClass, TimeAnchor, TimeExtent, TuningReference, Voice, Volta, WallClockTime,
 };
 use epiphany_core::{
-    ChordSymbolId, EventId, InstrumentId, MarkerId, MeasureId, PitchId, RegionId, ReplicaId,
-    SlurId, SpannerId, StaffId, StaffInstanceId, TieId, VoiceId,
+    ChordSymbolId, EventId, InstrumentId, MarkerId, MeasureId, PitchId, RegionId,
+    RepeatStructureId, ReplicaId, SlurId, SpannerId, StaffId, StaffInstanceId, TieId, VoiceId,
 };
 
 use epiphany_determinism::fuzz::SplitMix64;
@@ -196,6 +196,67 @@ pub fn ten_measure_single_staff(seed: u64) -> Score {
     score
 }
 
+/// [`ten_measure_single_staff`] plus three repeat structures — the
+/// repeat-rendering acceptance fixture (schema-major-2 E1). Measure-anchored so
+/// every boundary coincides with a barline column, it exercises each visual
+/// form at once: a simple repeat over measures 2–4 whose end meets the volta
+/// repeat's start (the combined `repeatRightLeft` sign), a `Volta`-kind repeat
+/// over measures 5–7 with a first ending over measure 7 and a "2 3" ending
+/// over measure 8 (brackets + ending numerals), and a simple repeat of the
+/// last measure closing on the region end (the dot pair beside the final
+/// barline). Invariant-clean.
+pub fn ten_measure_with_repeats(seed: u64) -> Score {
+    let mut score = ten_measure_single_staff(seed);
+    let measures: Vec<MeasureId> = score.canvas.regions[0].staff_instances()[0]
+        .measures
+        .iter()
+        .map(|measure| measure.id)
+        .collect();
+    let at_start = |index: usize| TimeAnchor::Measure {
+        id: measures[index],
+        position: MeasurePosition::Start,
+        offset: AnchorOffset::Zero,
+    };
+
+    score.cross_cutting.repeats.push(RepeatStructure {
+        id: score.identity.mint::<RepeatStructureId>(),
+        start: at_start(1),
+        end: at_start(4),
+        kind: RepeatKind::SimpleRepeat { count: 2 },
+        voltas: Vec::new(),
+    });
+    score.cross_cutting.repeats.push(RepeatStructure {
+        id: score.identity.mint::<RepeatStructureId>(),
+        start: at_start(4),
+        end: at_start(7),
+        kind: RepeatKind::Volta,
+        voltas: vec![
+            Volta {
+                endings: vec![1],
+                start: at_start(6),
+                end: at_start(7),
+            },
+            Volta {
+                endings: vec![2, 3],
+                start: at_start(7),
+                end: at_start(8),
+            },
+        ],
+    });
+    score.cross_cutting.repeats.push(RepeatStructure {
+        id: score.identity.mint::<RepeatStructureId>(),
+        start: at_start(9),
+        end: TimeAnchor::Measure {
+            id: measures[9],
+            position: MeasurePosition::End,
+            offset: AnchorOffset::Zero,
+        },
+        kind: RepeatKind::SimpleRepeat { count: 2 },
+        voltas: Vec::new(),
+    });
+    score
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +274,23 @@ mod tests {
         assert_eq!(s.cross_cutting.spanners.len(), 1);
         assert_eq!(s.cross_cutting.markers.len(), 1);
         assert_eq!(s.cross_cutting.chord_symbols.len(), 1);
+    }
+
+    #[test]
+    fn repeat_fixture_is_invariant_clean_and_carries_three_repeats() {
+        let s = ten_measure_with_repeats(1);
+        let v = check_invariants(&s);
+        assert!(v.is_empty(), "repeat fixture has violations: {v:?}");
+        assert_eq!(s.cross_cutting.repeats.len(), 3);
+        // One volta structure with two brackets; the rest simple repeats.
+        assert_eq!(
+            s.cross_cutting
+                .repeats
+                .iter()
+                .map(|rp| rp.voltas.len())
+                .sum::<usize>(),
+            2
+        );
     }
 
     /// A measure that references a time signature lists it (and its start

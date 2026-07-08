@@ -14,7 +14,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
     Clef, EventId, KeySignature, MeasureId, MeasurePosition, MusicalDuration, NoteValue, PitchId,
-    PitchSpelling, SpellingNominal, StaffId, TimeAnchor, TypedObjectId, WallClockTime,
+    PitchSpelling, RepeatStructureId, SpellingNominal, StaffId, TimeAnchor, TypedObjectId,
+    WallClockTime,
 };
 use epiphany_determinism::{DomainTag, Preimage};
 
@@ -26,7 +27,7 @@ use crate::engraving::{EngravingDecision, OverrideKind, OverridePriority, Overri
 use crate::glyph::{metrics, BravuraCatalog, GlyphCatalog, GlyphCatalogIdentity, GlyphReference};
 use crate::logical::{
     apply_offset, BarlineKind, LayoutContent, LogicalLayoutIR, PlacedClef, PlacedKeySignature,
-    ScoreVersion, StaffContent,
+    RepeatContent, RepeatPlacement, ScoreVersion, StaffContent,
 };
 use crate::provenance::{
     manifestation_layout_id, LayoutObjectId, Provenance, SynthesisInstanceKey, SynthesisKind,
@@ -524,6 +525,15 @@ const KEY_SIG_START: f32 = 2.7; // x where a key signature begins (just after th
 const KEY_ACC_X: f32 = 0.9; // x advance per key-signature accidental
 const TIME_SIG_X: f32 = 0.5; // a time signature sits this far right of its barline
 const TIME_DIGIT_X: f32 = 0.8; // x advance per time-signature digit
+                               // Repeat/volta engraving defaults (Minimal tier; SMuFL engraving-default
+                               // neighborhood, not solver-negotiated).
+const REPEAT_DOTS_SEPARATION: f32 = 0.16; // gap between the dot pair and the barline it decorates
+const VOLTA_Y: f32 = 6.5; // the bracket line, above the top staff's bottom line
+const VOLTA_HOOK: f32 = 1.4; // the descending hook at each bracket end
+const VOLTA_LINE_THICKNESS: f32 = 0.16; // SMuFL repeatEndingLineThickness default
+const VOLTA_TEXT_X: f32 = 0.4; // the first ending digit sits this far right of the bracket start
+const VOLTA_TEXT_DROP: f32 = 1.3; // ending-digit baseline, below the bracket line
+const VOLTA_ENDING_GAP: f32 = 0.5; // extra gap between successive ending numbers
 
 /// The horizontal half-reach of an emitted `PositionWithin` region, in staff
 /// spaces. The constrained stage performs no casting-off, so a region imposes
@@ -576,6 +586,26 @@ const KEY_SIG_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4B45_5953_4
 /// id, so they are synthesized from the measure.
 const TIME_SIG_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x54_494D_4553_4947); // "TIMESIG"
 
+/// The registry id for **repeat-barline synthesis**: a repeat sign drawn where
+/// no measure barline stands (a mid-measure boundary, a region edge without a
+/// final barline) or the dot pair beside a final barline. The repeat
+/// structure's own exact provenance stays on its traced anchor, so every ink
+/// primitive it owns is synthesized from it. The instance key is
+/// `(boundary site << 32) | staff index` — a **semantic** identity (site 0 =
+/// the owner's start boundary, 1 = its end; a structure has one of each, and
+/// each lands on one column), so the id survives unrelated edits where a
+/// positional column rank would re-derive.
+const REPEAT_BARLINE_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5245_5045_4154_424C); // "REPEATBL"
+
+/// The registry id for **volta-bracket synthesis**: each bracket's three
+/// strokes and its ending-number digit glyphs, synthesized from the owning
+/// repeat structure. The instance key is `(volta index << 64) | element`,
+/// elements `0..=2` the strokes (line, start hook, end hook) and `3 +` the
+/// digits in drawing order — the element field is 64 bits wide so an
+/// adversarially long endings list cannot bleed into the volta-index bits
+/// (the same non-overlap discipline as [`ledger_line_key`]).
+const VOLTA_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x564F_4C54_4142_524B); // "VOLTABRK"
+
 /// Flattens [`LogicalLayoutIR`] into [`ConstrainedLayoutIR`], engraving each
 /// layout object into the notation primitive that represents it: a **glyph** for
 /// the SMuFL objects (a pitch's notehead at its clef-relative staff position, a
@@ -600,6 +630,14 @@ const TIME_SIG_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x54_494D_45
 /// model does not contain. Structural objects with no Minimal-tier glyph
 /// (regions, voices, ties, slurs, beams, …) are carried as zero-extent traced
 /// anchors so provenance survives, pending their engraving in a higher tier.
+///
+/// **Repeat structures** draw real ink: a boundary of a barline-drawing kind
+/// morphs the coinciding measure barline into the composite SMuFL repeat sign
+/// (or stands alone at its own column when no measure barline coincides; an
+/// end repeat closing on the final barline adds the dot pair beside it), and
+/// each volta draws a bracket above the top staff with its ending numbers as
+/// digit glyphs. The structure's exact provenance stays on its traced anchor;
+/// all of its ink is synthesized from it.
 pub fn to_constrained(logical: &LogicalLayoutIR) -> ConstrainedLayoutIR {
     try_to_constrained(logical).expect("LogicalLayoutIR is malformed")
 }
@@ -698,6 +736,12 @@ pub fn try_to_constrained(
         // between clef and first note must fit it, so the first note column shifts
         // right by it (zero when no staff declares a key — layout unchanged).
         let mut key_sig_accs = 0usize;
+        // This region's repeat structures (engraving content projected by the
+        // logical stage), and every (column, staff) a measure's own barline
+        // occupies — repeat signs replace a coinciding measure barline (pass 2
+        // morphs its glyph) and stand alone elsewhere.
+        let mut repeats: Vec<(RepeatStructureId, &RepeatContent)> = Vec::new();
+        let mut measure_cols: BTreeSet<(ColumnKey, StaffId)> = BTreeSet::new();
 
         for object in &region.objects {
             let staff = object.staff();
@@ -792,13 +836,32 @@ pub fn try_to_constrained(
                     event_rests.insert(eid, segs);
                 }
                 (TypedObjectId::Measure(_), LayoutContent::Measure(measure)) => {
-                    keys.insert(measure_column(measure));
+                    let key = measure_column(measure);
+                    keys.insert(key.clone());
+                    if let Some(s) = staff {
+                        measure_cols.insert((key, s));
+                    }
                 }
                 (TypedObjectId::Measure(_), _) => {
                     // Pass 2 renders malformed/missing measure content as a final
                     // barline, so collect that fallback column here instead of
                     // letting the fallible conversion panic.
                     keys.insert(ColumnKey::End);
+                    if let Some(s) = staff {
+                        measure_cols.insert((ColumnKey::End, s));
+                    }
+                }
+                (TypedObjectId::RepeatStructure(id), LayoutContent::Repeat(content)) => {
+                    // A barline-drawing repeat's boundaries are real spacing
+                    // columns (a mid-measure boundary mints one of its own).
+                    if content.barlines {
+                        for placement in [&content.start, &content.end] {
+                            if let Some(key) = placement_column_key(placement) {
+                                keys.insert(key);
+                            }
+                        }
+                    }
+                    repeats.push((id, content));
                 }
                 (TypedObjectId::StaffInstance(_), LayoutContent::Staff(content)) => {
                     // The staff instance's clef glyph occupies the lead column. The
@@ -818,6 +881,58 @@ pub fn try_to_constrained(
                     keys.insert(ColumnKey::Lead);
                 }
                 _ => {}
+            }
+        }
+
+        // The repeat-barline marks: which columns carry a repeat boundary,
+        // facing which way, owned by which structures. Marks from distinct
+        // repeats merge (an end meeting a start draws the combined sign).
+        let mut marks: BTreeMap<ColumnKey, RepeatMark> = BTreeMap::new();
+        for (id, content) in &repeats {
+            if !content.barlines {
+                continue;
+            }
+            for (placement, is_start) in [(&content.start, true), (&content.end, false)] {
+                let Some(key) = placement_column_key(placement) else {
+                    continue;
+                };
+                let mark = marks.entry(key).or_default();
+                let site = if is_start {
+                    mark.start = true;
+                    0u8
+                } else {
+                    mark.end = true;
+                    1u8
+                };
+                if !mark.sources.contains(id) {
+                    mark.sources.push(*id);
+                }
+                let candidate = (*id, site);
+                mark.owner = Some(match mark.owner {
+                    None => candidate,
+                    Some(current) => current.min(candidate),
+                });
+            }
+        }
+        // An end-facing sign's ink reaches well left of its column (the plain
+        // barline sits at the column; `repeat_sign_x` right-aligns the sign's
+        // heavy line to it), so the column must clear the previous one by that
+        // reach — the same separation mechanism accidentals use. Without it
+        // the sign overlaps the preceding note column in the source geometry.
+        for (key, mark) in &marks {
+            if !mark.end || !matches!(key, ColumnKey::Timed(..)) {
+                continue;
+            }
+            let name = repeat_sign_name(mark.start, mark.end);
+            let left_reach = -(repeat_sign_x(name, 0.0)
+                + metrics(name)
+                    .expect("repeat sign metrics are bundled")
+                    .bounding_box()
+                    .left
+                    .0);
+            if left_reach > 0.0 {
+                let entry = column_overhang.entry(key.clone()).or_insert(0.0);
+                *entry = entry.max(left_reach);
             }
         }
 
@@ -1142,17 +1257,30 @@ pub fn try_to_constrained(
                         Some(LayoutContent::Measure(measure)) => measure_column(measure),
                         _ => ColumnKey::End,
                     };
+                    // A repeat boundary on this measure's own barline column
+                    // morphs the barline into the composite repeat sign — the
+                    // sign *replaces* the plain barline, keeping the measure's
+                    // exact provenance verbatim (the round-trip provenance
+                    // floor compares it exactly; repeat-edit invalidation is
+                    // carried by the score version, which any edit changes).
+                    // The final barline never morphs — an end repeat there
+                    // draws its dot pair beside it instead (emitted with the
+                    // standalone signs below), so the casting-off solver's
+                    // final-barline classification stays truthful.
                     let name = if key == ColumnKey::End {
                         "barlineFinal"
                     } else {
-                        "barlineSingle"
+                        match marks.get(&key) {
+                            Some(mark) => repeat_sign_name(mark.start, mark.end),
+                            None => "barlineSingle",
+                        }
                     };
                     let info = column(&key);
                     // The barline glyph's origin is its lower end — Bravura barlines
                     // run 0..4 staff spaces *up* from the origin — so anchoring it at
                     // the staff bottom (`yo`) makes it connect the bottom and top
                     // staff lines rather than float above the midline.
-                    let baseline = Point::new(info.x, yo);
+                    let baseline = Point::new(repeat_sign_x(name, info.x), yo);
                     emit.glyph(provenance, name, baseline, band_of(staff), staff, info.slot);
                     // The time signature this measure introduces: numerator over
                     // denominator, just right of the barline, each digit a
@@ -1161,7 +1289,9 @@ pub fn try_to_constrained(
                     // representative subset).
                     if let Some(LayoutContent::Measure(measure)) = content {
                         if let Some(time_signature) = measure.time_signature {
-                            let center_x = info.x + TIME_SIG_X;
+                            // A morphed repeat sign's ink extends right of the
+                            // plain barline span; the time signature clears it.
+                            let center_x = info.x + TIME_SIG_X + repeat_sign_right_extension(name);
                             // The digit glyphs are centred on their baseline, so the
                             // numerator's baseline sits on the upper half of the
                             // staff (≈ y 3) and the denominator's on the lower (≈ y 1).
@@ -1170,7 +1300,7 @@ pub fn try_to_constrained(
                                 (1u8, time_signature.denominator, yo + 1.0),
                             ];
                             for (role, value, baseline_y) in lines {
-                                let digits = digits_of(value);
+                                let digits = digits_of(u32::from(value));
                                 let count = digits.len() as f32;
                                 for (i, digit) in digits.iter().enumerate() {
                                     let x =
@@ -1194,10 +1324,149 @@ pub fn try_to_constrained(
                         }
                     }
                 }
-                // Region, Voice, GraphicObject, and every cross-cutting structure
-                // (ties, slurs, beams, tuplets, spanners, markers, …) have no
-                // Minimal-tier glyph; a zero-extent traced anchor keeps them.
+                TypedObjectId::RepeatStructure(_) => {
+                    // The structure's exact provenance rides its traced anchor
+                    // (uniform with every other cross-cutting structure); all
+                    // of its ink — the standalone signs below and the volta
+                    // brackets here — is synthesized from it.
+                    emit.stroke(anchor(provenance, Point::new(default_x, yo)));
+                    let Some(LayoutContent::Repeat(repeat)) = content else {
+                        continue;
+                    };
+                    // Volta brackets sit above the region's top staff: a
+                    // horizontal line with a descending hook at each end and
+                    // the ending numbers (time-signature digit glyphs — the
+                    // Minimal tier has no text primitive) under its left end.
+                    let top_staff = staff_order.first().copied();
+                    let yo_top = top_staff.map(&y_origin).unwrap_or(0.0);
+                    for (index, volta) in repeat.voltas.iter().enumerate() {
+                        let Some(start) = placement_column(&volta.start, &columns) else {
+                            continue;
+                        };
+                        let Some(end) = placement_column(&volta.end, &columns) else {
+                            continue;
+                        };
+                        if end.x <= start.x {
+                            // A reversed or zero-width span draws no bracket
+                            // (advisory volta well-formedness is the authoring
+                            // layer's jurisdiction, not the engraver's).
+                            continue;
+                        }
+                        let y = yo_top + VOLTA_Y;
+                        let volta_provenance = |element: u128| {
+                            Provenance::synthesized(
+                                provenance.source,
+                                SynthesisKind::Registered(VOLTA_SYNTHESIS),
+                                SynthesisInstanceKey(((index as u128) << 64) | element),
+                                provenance.dependencies.clone(),
+                            )
+                        };
+                        emit.stroke(line_stroke(
+                            volta_provenance(0),
+                            Point::new(start.x, y),
+                            Point::new(end.x, y),
+                            VOLTA_LINE_THICKNESS,
+                        ));
+                        for (element, x) in [(1u128, start.x), (2u128, end.x)] {
+                            emit.stroke(line_stroke(
+                                volta_provenance(element),
+                                Point::new(x, y),
+                                Point::new(x, y - VOLTA_HOOK),
+                                VOLTA_LINE_THICKNESS,
+                            ));
+                        }
+                        let mut cursor = start.x + VOLTA_TEXT_X;
+                        let mut element = 3u128;
+                        for ending in &volta.endings {
+                            for digit in digits_of(*ending) {
+                                emit.glyph(
+                                    &volta_provenance(element),
+                                    time_digit(digit),
+                                    Point::new(cursor, y - VOLTA_TEXT_DROP),
+                                    band_of(top_staff),
+                                    top_staff,
+                                    start.slot,
+                                );
+                                cursor += TIME_DIGIT_X;
+                                element += 1;
+                            }
+                            cursor += VOLTA_ENDING_GAP;
+                        }
+                    }
+                }
+                // Region, Voice, GraphicObject, and every other cross-cutting
+                // structure (ties, slurs, beams, tuplets, spanners, markers, …)
+                // have no Minimal-tier glyph; a zero-extent traced anchor keeps
+                // them.
                 _ => emit.stroke(anchor(provenance, Point::new(default_x, yo))),
+            }
+        }
+
+        // The repeat signs the measures could not carry: a composite sign at a
+        // column with no measure barline on that staff (a mid-measure boundary,
+        // a region edge without a final barline), and the dot pair beside a
+        // final barline an end repeat closes on. One sign per (column, staff),
+        // synthesized from the mark's owner under its semantic
+        // `(boundary site, staff)` instance key, depending on every structure
+        // that shares the mark.
+        for (key, info) in columns.iter() {
+            let Some(mark) = marks.get(key) else {
+                continue;
+            };
+            // At the region-closing column only an END repeat has ink — the
+            // dot pair beside a final barline, or the full sign where no
+            // final barline stands on that staff. A START boundary there
+            // draws nothing on any staff: a sign after the region close
+            // would misstate the structure.
+            if *key == ColumnKey::End && !mark.end {
+                continue;
+            }
+            let (owner, site) = mark
+                .owner
+                .expect("a repeat mark records at least one owning boundary");
+            let deps: Vec<TypedObjectId> = mark
+                .sources
+                .iter()
+                .map(|id| TypedObjectId::RepeatStructure(*id))
+                .collect();
+            for (staff_index, staff) in staff_order.iter().enumerate() {
+                let covered = measure_cols.contains(&(key.clone(), *staff));
+                let (name, x) = if *key == ColumnKey::End {
+                    if covered {
+                        let dots_width = metrics("repeatDots")
+                            .expect("repeatDots metrics are bundled")
+                            .bounding_box()
+                            .right
+                            .0;
+                        ("repeatDots", info.x - REPEAT_DOTS_SEPARATION - dots_width)
+                    } else {
+                        // No final barline on this staff (its run continues in
+                        // a later region): the full end sign, never a
+                        // start-facing one.
+                        ("repeatRight", repeat_sign_x("repeatRight", info.x))
+                    }
+                } else {
+                    if covered {
+                        // The measure's own barline morphed into the sign.
+                        continue;
+                    }
+                    let name = repeat_sign_name(mark.start, mark.end);
+                    (name, repeat_sign_x(name, info.x))
+                };
+                let provenance = Provenance::synthesized(
+                    TypedObjectId::RepeatStructure(owner),
+                    SynthesisKind::Registered(REPEAT_BARLINE_SYNTHESIS),
+                    SynthesisInstanceKey(((site as u128) << 32) | staff_index as u128),
+                    deps.clone(),
+                );
+                emit.glyph(
+                    &provenance,
+                    name,
+                    Point::new(x, y_origin(*staff)),
+                    band_of(Some(*staff)),
+                    Some(*staff),
+                    info.slot,
+                );
             }
         }
 
@@ -1696,6 +1965,93 @@ fn measure_column(measure: &crate::logical::MeasureContent) -> ColumnKey {
     }
 }
 
+/// A repeat boundary landing on one spacing column: which way its sign faces
+/// (a coinciding end+start faces both) and the structures that own it, in
+/// region emission order.
+#[derive(Default)]
+struct RepeatMark {
+    start: bool,
+    end: bool,
+    sources: Vec<RepeatStructureId>,
+    /// The synthesis owner: the smallest `(structure id, boundary site)` that
+    /// landed on this column, `site` 0 for the structure's start boundary and
+    /// 1 for its end. A structure has one boundary of each site, so the pair
+    /// is a **semantic** instance identity — stable under unrelated edits,
+    /// where a positional (column-rank) key would re-derive whenever any
+    /// earlier column appeared or disappeared.
+    owner: Option<(RepeatStructureId, u8)>,
+}
+
+/// The spacing column a repeat boundary's *sign* occupies, if placeable: the
+/// barline-role column at its resolved time (minting one is pass 1's job), or
+/// the region-closing column.
+fn placement_column_key(placement: &RepeatPlacement) -> Option<ColumnKey> {
+    match placement {
+        RepeatPlacement::At(time) => Some(ColumnKey::Timed(time.clone(), ColumnRole::Barline)),
+        RepeatPlacement::RegionEnd => Some(ColumnKey::End),
+        RepeatPlacement::Unresolved => None,
+    }
+}
+
+/// The realized column a volta boundary aligns with: the barline column at its
+/// resolved time when one exists, else the note column there, else the
+/// region-closing column for a region-end placement. `None` — the bracket
+/// draws no ink — when nothing at that time was laid out.
+fn placement_column<'a>(
+    placement: &RepeatPlacement,
+    columns: &'a BTreeMap<ColumnKey, ColumnInfo>,
+) -> Option<&'a ColumnInfo> {
+    match placement {
+        RepeatPlacement::At(time) => [ColumnRole::Barline, ColumnRole::Note]
+            .iter()
+            .find_map(|role| columns.get(&ColumnKey::Timed(time.clone(), *role))),
+        RepeatPlacement::RegionEnd => columns.get(&ColumnKey::End),
+        RepeatPlacement::Unresolved => None,
+    }
+}
+
+/// The composite SMuFL sign for a repeat boundary: a start opens the passage to
+/// its right (`repeatLeft`), an end closes the passage to its left
+/// (`repeatRight`), and a coinciding end+start draws the combined sign. The
+/// no-facing case is unreachable (a [`RepeatMark`] records at least one), but
+/// falls back to the plain barline rather than panicking on malformed input.
+fn repeat_sign_name(start: bool, end: bool) -> &'static str {
+    match (start, end) {
+        (true, false) => "repeatLeft",
+        (false, true) => "repeatRight",
+        (true, true) => "repeatRightLeft",
+        (false, false) => "barlineSingle",
+    }
+}
+
+/// The baseline x aligning a repeat sign's **heavy line** with the boundary the
+/// plain barline marks (a Minimal approximation from the glyph boxes): a start
+/// sign's heavy line is its left edge, so it draws from the column; an end
+/// sign's is its right edge, so it right-aligns to the plain barline's span;
+/// the combined sign centers its shared heavy line on it.
+fn repeat_sign_x(name: &str, column_x: f32) -> f32 {
+    let right = |name: &str| metrics(name).map_or(0.0, |m| m.bounding_box().right.0);
+    match name {
+        "repeatRight" => column_x + right("barlineSingle") - right("repeatRight"),
+        "repeatRightLeft" => column_x + (right("barlineSingle") - right("repeatRightLeft")) / 2.0,
+        _ => column_x,
+    }
+}
+
+/// How far a repeat sign's ink extends **right** of the plain-barline span it
+/// replaced, in staff spaces — zero for the plain barlines themselves, so
+/// repeat-free geometry is untouched. The morphed measure's time-signature
+/// digits shift right by this so they clear the sign.
+fn repeat_sign_right_extension(name: &str) -> f32 {
+    match name {
+        "repeatLeft" | "repeatRight" | "repeatRightLeft" => {
+            let right = |name: &str| metrics(name).map_or(0.0, |m| m.bounding_box().right.0);
+            (repeat_sign_x(name, 0.0) + right(name) - right("barlineSingle")).max(0.0)
+        }
+        _ => 0.0,
+    }
+}
+
 /// The key signature in force at a staff's start, by resolved time (the same
 /// rule as the active clef), or `None` when the staff declares no key. Absence
 /// means no signature drawn — distinct from a declared C-major (which also draws
@@ -1723,8 +2079,9 @@ fn key_accidentals_for(content: &StaffContent) -> Vec<KeyAccidental> {
     }
 }
 
-/// The decimal digits of a time-signature number, most significant first.
-fn digits_of(value: u16) -> Vec<u8> {
+/// The decimal digits of a displayed number (time-signature numerals, volta
+/// ending numbers), most significant first.
+fn digits_of(value: u32) -> Vec<u8> {
     if value == 0 {
         return vec![0];
     }
@@ -3311,5 +3668,405 @@ mod tests {
             try_to_constrained(&logical),
             Err(LayoutTransformError::RegionSourceIsNotRegion(_))
         ));
+    }
+
+    // --- Repeat barlines and volta brackets (schema-major-2 E1) ------------
+
+    use epiphany_core::{
+        AnchorOffset, BeatGroup, MusicalDuration, PowerOfTwo, RationalTime, RegionEdge, RepeatKind,
+        RepeatStructure, RepeatStructureId, Score, TimeSignature, TimeSignatureDisplay,
+        TimeSignatureId, Volta,
+    };
+
+    /// `valid_score_rich` with four extra measures appended to region A's first
+    /// staff instance (region-anchored at whole-note offsets 1..=4), so repeat
+    /// boundaries have real barline columns to land on. Returns the score and
+    /// the five measure ids in order; the last measure's barline is the
+    /// region-final one (region A's staff manifests nowhere else).
+    fn repeat_ready_score(seed: u64) -> (Score, Vec<MeasureId>) {
+        let mut score = valid_score_rich(seed);
+        let region_id = score.canvas.regions[0].id;
+        let extra: Vec<MeasureId> = (0..4).map(|_| score.identity.mint()).collect();
+        let instance = &mut score.canvas.regions[0]
+            .content
+            .staff_instances_mut()
+            .expect("region A is staff-based")[0];
+        let mut ids = vec![instance.measures[0].id];
+        for (index, id) in extra.iter().enumerate() {
+            instance.measures.push(epiphany_core::Measure {
+                id: *id,
+                start: TimeAnchor::Region {
+                    id: region_id,
+                    edge: RegionEdge::Start,
+                    offset: AnchorOffset::Musical(MusicalDuration(
+                        RationalTime::new(index as i64 + 1, 1).expect("nonzero"),
+                    )),
+                },
+                time_signature: None,
+                explicit_number: None,
+                number_visibility: Default::default(),
+            });
+        }
+        ids.extend(extra);
+        (score, ids)
+    }
+
+    fn measure_start(id: MeasureId) -> TimeAnchor {
+        TimeAnchor::Measure {
+            id,
+            position: MeasurePosition::Start,
+            offset: AnchorOffset::Zero,
+        }
+    }
+
+    fn named<'a>(constrained: &'a ConstrainedLayoutIR, name: &str) -> Vec<&'a GlyphObject> {
+        constrained
+            .glyphs
+            .iter()
+            .filter(|glyph| glyph.glyph.as_str() == name)
+            .collect()
+    }
+
+    #[test]
+    fn repeat_boundaries_morph_their_measure_barlines_and_voltas_draw_brackets() {
+        let (mut score, m) = repeat_ready_score(21);
+        // The measure gaining the start sign also introduces a 4/4, so the
+        // test covers the time signature clearing the wider sign's ink.
+        let ts_id: TimeSignatureId = score.identity.mint();
+        let beat = || BeatGroup {
+            duration: MusicalDuration(RationalTime::new(1, 4).expect("nonzero")),
+            subdivision: None,
+            accent: 1,
+        };
+        score.time_signatures.push(
+            TimeSignature::new(
+                ts_id,
+                TimeSignatureDisplay::Standard {
+                    numerator: 4,
+                    denominator: PowerOfTwo::new(4).expect("4 is a power of two"),
+                },
+                MusicalDuration(RationalTime::new(1, 1).expect("nonzero")),
+                vec![beat(), beat(), beat(), beat()],
+            )
+            .expect("4/4 beat groups sum to a whole note"),
+        );
+        score.canvas.regions[0]
+            .content
+            .staff_instances_mut()
+            .expect("region A is staff-based")[0]
+            .measures
+            .iter_mut()
+            .find(|measure| measure.id == m[1])
+            .expect("m1 exists")
+            .time_signature = Some(ts_id);
+        let a: RepeatStructureId = score.identity.mint();
+        let b: RepeatStructureId = score.identity.mint();
+        score.cross_cutting.repeats.push(RepeatStructure {
+            id: a,
+            start: measure_start(m[1]),
+            end: measure_start(m[2]),
+            kind: RepeatKind::SimpleRepeat { count: 2 },
+            voltas: Vec::new(),
+        });
+        score.cross_cutting.repeats.push(RepeatStructure {
+            id: b,
+            start: measure_start(m[2]),
+            end: measure_start(m[3]),
+            kind: RepeatKind::Volta,
+            voltas: vec![Volta {
+                endings: vec![2, 3],
+                start: measure_start(m[2]),
+                end: measure_start(m[3]),
+            }],
+        });
+        let constrained = to_constrained(&to_logical(&score));
+
+        // The three boundary columns morph their measure barlines: a start
+        // sign, the combined sign where A's end meets B's start, and an end
+        // sign — each keeping the measure's own exact provenance (a morph is a
+        // name change, not a new primitive; the round-trip provenance floor
+        // depends on that).
+        for name in ["repeatLeft", "repeatRightLeft", "repeatRight"] {
+            let signs = named(&constrained, name);
+            assert_eq!(signs.len(), 1, "exactly one {name} sign");
+            let sign = signs[0];
+            assert!(
+                matches!(sign.provenance.source, TypedObjectId::Measure(_)),
+                "{name} is the measure's own (morphed) barline"
+            );
+            assert!(sign.provenance.synthesis.is_none());
+        }
+        // Exactly three plain barlines morphed away: five measures draw
+        // m0..=m3 at their start columns and m4 at the region end.
+        assert_eq!(named(&constrained, "barlineSingle").len(), 1);
+        assert_eq!(named(&constrained, "barlineFinal").len(), 1);
+
+        // The volta bracket: three strokes (line + two hooks) above the staff,
+        // synthesized from the repeat, spanning m2's column to m3's.
+        let bracket: Vec<&Stroke> = constrained
+            .strokes
+            .iter()
+            .filter(|stroke| {
+                matches!(
+                    stroke.provenance.synthesis,
+                    Some(SynthesisKind::Registered(k)) if k == VOLTA_SYNTHESIS
+                ) && matches!(stroke.provenance.source, TypedObjectId::RepeatStructure(id) if id == b)
+            })
+            .collect();
+        assert_eq!(bracket.len(), 3, "bracket line plus two hooks");
+        let line = bracket
+            .iter()
+            .find(|stroke| stroke.from.y == stroke.to.y)
+            .expect("the bracket has a horizontal line");
+        assert!(
+            line.from.y.0 > STAFF_HEIGHT,
+            "the bracket sits above the staff"
+        );
+        assert!(
+            line.to.x.0 > line.from.x.0,
+            "the bracket spans left to right"
+        );
+        for hook in bracket.iter().filter(|stroke| stroke.from.y != stroke.to.y) {
+            assert_eq!(hook.from.x, hook.to.x, "hooks are vertical");
+            assert!(hook.to.y.0 < hook.from.y.0, "hooks descend from the line");
+        }
+        // The ending numbers "2 3" draw as digit glyphs synthesized from the
+        // repeat, under the bracket line.
+        for digit in ["timeSig2", "timeSig3"] {
+            let glyphs = named(&constrained, digit);
+            let volta_digit = glyphs
+                .iter()
+                .find(|glyph| {
+                    matches!(glyph.provenance.source, TypedObjectId::RepeatStructure(id) if id == b)
+                })
+                .unwrap_or_else(|| panic!("volta ending digit {digit} is drawn"));
+            assert!(volta_digit.baseline.y.0 > STAFF_HEIGHT);
+            assert!(volta_digit.baseline.y.0 < line.from.y.0);
+        }
+
+        // The 4/4 the morphed measure introduces clears the sign's ink: every
+        // measure-owned digit starts right of the repeatLeft's right edge.
+        let start_sign = named(&constrained, "repeatLeft")[0];
+        let sign_right = start_sign.baseline.x.0 + start_sign.bounding_box.right.0;
+        let measure_digits: Vec<&GlyphObject> = constrained
+            .glyphs
+            .iter()
+            .filter(|glyph| {
+                glyph.glyph.as_str().starts_with("timeSig")
+                    && matches!(glyph.provenance.source, TypedObjectId::Measure(_))
+            })
+            .collect();
+        assert!(!measure_digits.is_empty(), "the 4/4 draws digit glyphs");
+        for digit in measure_digits {
+            assert!(
+                digit.baseline.x.0 + digit.bounding_box.left.0 >= sign_right,
+                "time-signature digits clear the repeat sign's ink"
+            );
+        }
+
+        // The full pipeline round-trips: every source recovered exactly once,
+        // every synthesized primitive with a distinct stable id.
+        crate::roundtrip::round_trip(&score);
+    }
+
+    #[test]
+    fn off_grid_and_region_end_boundaries_stand_alone() {
+        let (mut score, m) = repeat_ready_score(22);
+        // Region A's triplet events sit at 0, 1/12, 2/12 — the second event is
+        // mid-measure, off every barline column.
+        let mid_measure_event = score.canvas.regions[0].staff_instances()[0].voices[0].events[1];
+        let c: RepeatStructureId = score.identity.mint();
+        score.cross_cutting.repeats.push(RepeatStructure {
+            id: c,
+            start: TimeAnchor::Event {
+                id: mid_measure_event,
+                offset: AnchorOffset::Zero,
+            },
+            end: TimeAnchor::Measure {
+                id: m[4],
+                position: MeasurePosition::End,
+                offset: AnchorOffset::Zero,
+            },
+            kind: RepeatKind::SimpleRepeat { count: 2 },
+            voltas: Vec::new(),
+        });
+        let constrained = to_constrained(&to_logical(&score));
+
+        // The mid-measure start mints its own column and stands alone,
+        // synthesized from the repeat (no measure barline morphs).
+        let left = named(&constrained, "repeatLeft");
+        assert_eq!(left.len(), 1);
+        assert!(matches!(left[0].provenance.source, TypedObjectId::RepeatStructure(id) if id == c));
+        assert!(matches!(
+            left[0].provenance.synthesis,
+            Some(SynthesisKind::Registered(k)) if k == REPEAT_BARLINE_SYNTHESIS
+        ));
+
+        // The region-end close keeps the final barline and adds the dot pair
+        // beside it (never a morph, never a second barline).
+        let finals = named(&constrained, "barlineFinal");
+        assert_eq!(finals.len(), 1, "the final barline stands");
+        let dots = named(&constrained, "repeatDots");
+        assert_eq!(dots.len(), 1, "one dot pair beside it");
+        assert!(named(&constrained, "repeatRight").is_empty());
+        assert!(
+            dots[0].baseline.x.0 < finals[0].baseline.x.0,
+            "the dots face the repeated passage, left of the final barline"
+        );
+        assert_eq!(
+            dots[0].horizontal_slot, finals[0].horizontal_slot,
+            "the dots share the region-closing column"
+        );
+
+        crate::roundtrip::round_trip(&score);
+    }
+
+    #[test]
+    fn two_repeats_merge_one_standalone_sign_that_clears_the_notes() {
+        let (mut score, m) = repeat_ready_score(24);
+        // Region A's triplet events sit at 0, 1/12, 2/12; the second event is
+        // an off-grid boundary two structures share: one ends there, the
+        // other starts there.
+        let mid_measure_event = score.canvas.regions[0].staff_instances()[0].voices[0].events[1];
+        let event_anchor = TimeAnchor::Event {
+            id: mid_measure_event,
+            offset: AnchorOffset::Zero,
+        };
+        let g1: RepeatStructureId = score.identity.mint();
+        let g2: RepeatStructureId = score.identity.mint();
+        score.cross_cutting.repeats.push(RepeatStructure {
+            id: g1,
+            start: measure_start(m[1]),
+            end: event_anchor.clone(),
+            kind: RepeatKind::SimpleRepeat { count: 2 },
+            voltas: Vec::new(),
+        });
+        score.cross_cutting.repeats.push(RepeatStructure {
+            id: g2,
+            start: event_anchor,
+            end: measure_start(m[2]),
+            kind: RepeatKind::SimpleRepeat { count: 2 },
+            voltas: Vec::new(),
+        });
+        let constrained = to_constrained(&to_logical(&score));
+
+        // One merged combined sign, owned by the smallest structure id,
+        // depending on both structures.
+        let combined = named(&constrained, "repeatRightLeft");
+        assert_eq!(combined.len(), 1, "the shared boundary draws one sign");
+        let sign = combined[0];
+        assert!(matches!(
+            sign.provenance.synthesis,
+            Some(SynthesisKind::Registered(k)) if k == REPEAT_BARLINE_SYNTHESIS
+        ));
+        assert!(
+            matches!(sign.provenance.source, TypedObjectId::RepeatStructure(id) if id == g1.min(g2))
+        );
+        for id in [g1, g2] {
+            assert!(sign
+                .provenance
+                .dependencies
+                .contains(&TypedObjectId::RepeatStructure(id)));
+        }
+        // The end-facing sign's leftward ink reserved its reach (the
+        // accidental-overhang mechanism), so it crosses no notehead's ink.
+        let sign_left = sign.baseline.x.0 + sign.bounding_box.left.0;
+        let sign_right = sign.baseline.x.0 + sign.bounding_box.right.0;
+        for head in constrained
+            .glyphs
+            .iter()
+            .filter(|glyph| glyph.glyph.as_str().starts_with("notehead"))
+        {
+            let head_left = head.baseline.x.0 + head.bounding_box.left.0;
+            let head_right = head.baseline.x.0 + head.bounding_box.right.0;
+            assert!(
+                sign_right <= head_left || head_right <= sign_left,
+                "the repeat sign's ink must not cross a notehead's"
+            );
+        }
+
+        crate::roundtrip::round_trip(&score);
+    }
+
+    #[test]
+    fn jump_kinds_and_unresolved_boundaries_draw_no_ink() {
+        let (mut score, m) = repeat_ready_score(23);
+        let replica = score.identity.replica_id;
+        // A DalSegno repeat: barlines are a jump-mark tranche, not E1 — only
+        // the traced anchor is emitted. Its volta bracket still draws: the
+        // voltas list is kind-independent.
+        let d: RepeatStructureId = score.identity.mint();
+        score.cross_cutting.repeats.push(RepeatStructure {
+            id: d,
+            start: measure_start(m[1]),
+            end: measure_start(m[3]),
+            kind: RepeatKind::DalSegno {
+                segno: measure_start(m[2]),
+                end_target: measure_start(m[1]),
+            },
+            voltas: vec![Volta {
+                endings: vec![1],
+                start: measure_start(m[2]),
+                end: measure_start(m[3]),
+            }],
+        });
+        // A simple repeat whose start dangles (a decoded score may hold one);
+        // the resolved end still morphs, the dangling side draws nothing.
+        let e: RepeatStructureId = score.identity.mint();
+        score.cross_cutting.repeats.push(RepeatStructure {
+            id: e,
+            start: TimeAnchor::Measure {
+                id: MeasureId::new(replica, 9_999_999),
+                position: MeasurePosition::Start,
+                offset: AnchorOffset::Zero,
+            },
+            end: measure_start(m[2]),
+            kind: RepeatKind::SimpleRepeat { count: 2 },
+            voltas: Vec::new(),
+        });
+        // A bare wall-clock repeat: nothing pins it to a region, so it draws
+        // no ink anywhere (its placements are Unresolved by rule).
+        let f: RepeatStructureId = score.identity.mint();
+        score.cross_cutting.repeats.push(RepeatStructure {
+            id: f,
+            start: TimeAnchor::WallClock {
+                time: WallClockTime(5),
+            },
+            end: TimeAnchor::WallClock {
+                time: WallClockTime(10),
+            },
+            kind: RepeatKind::SimpleRepeat { count: 2 },
+            voltas: Vec::new(),
+        });
+        let constrained = to_constrained(&to_logical(&score));
+
+        assert!(named(&constrained, "repeatLeft").is_empty());
+        assert!(named(&constrained, "repeatRightLeft").is_empty());
+        assert!(named(&constrained, "repeatDots").is_empty());
+        let right = named(&constrained, "repeatRight");
+        assert_eq!(right.len(), 1, "the resolved end still closes");
+        // The jump kind's volta bracket draws even though its barlines do not.
+        let bracket_strokes = constrained
+            .strokes
+            .iter()
+            .filter(|stroke| {
+                matches!(
+                    stroke.provenance.synthesis,
+                    Some(SynthesisKind::Registered(k)) if k == VOLTA_SYNTHESIS
+                )
+            })
+            .count();
+        assert_eq!(bracket_strokes, 3, "the DalSegno's volta bracket draws");
+        // All three structures keep their traced anchors.
+        for id in [d, e, f] {
+            assert!(
+                constrained.strokes.iter().any(|stroke| {
+                    stroke.from == stroke.to
+                        && matches!(stroke.provenance.source,
+                            TypedObjectId::RepeatStructure(s) if s == id)
+                }),
+                "repeat {id:?} keeps its zero-extent traced anchor"
+            );
+        }
     }
 }

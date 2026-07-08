@@ -79,11 +79,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{StaffId, TypedObjectId};
 use epiphany_layout_ir::{
-    continuation_instance_key, is_rigid_width_stroke, synthesized_layout_id, BreakClass, BreakKind,
-    ConstrainedLayoutIR, DecisionSource, EngravingDecision, EngravingDecisionKind,
-    EngravingOverrideId, GlyphObjectId, LayoutConstraint, LayoutObjectId, Margins, Point,
-    Provenance, Rect, ResolvedGlyph, ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem,
-    Size2D, SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey, SynthesisKind,
+    continuation_instance_key, is_barline_glyph, is_rigid_width_stroke, synthesized_layout_id,
+    BreakClass, BreakKind, ConstrainedLayoutIR, DecisionSource, EngravingDecision,
+    EngravingDecisionKind, EngravingOverrideId, GlyphObjectId, LayoutConstraint, LayoutObjectId,
+    Margins, Point, Provenance, Rect, ResolvedGlyph, ResolvedMeasure, ResolvedPage, ResolvedStaff,
+    ResolvedSystem, Size2D, SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey, SynthesisKind,
     SynthesisRegistryId, VerticalBand, VerticalBandId,
 };
 
@@ -365,14 +365,22 @@ pub(crate) fn cast_off(
         entry.lo = entry.lo.min(lo);
         entry.hi = entry.hi.max(hi);
         entry.members.push(i);
-        if name.starts_with("barline") {
+        // Barline classification by the engraver's own name vocabulary (which
+        // includes the composite repeat signs a repeat boundary morphs a
+        // measure barline into) — but only for a **directly-manifested measure
+        // barline**: the casting contract breaks systems at measure
+        // boundaries, so a repeat-synthesized standalone sign (a mid-measure
+        // boundary, a region edge without a final barline) must not become a
+        // phantom break candidate that could tear off a degenerate lone-sign
+        // trailing system or split a measure.
+        if is_barline_glyph(name)
+            && glyph.provenance.synthesis.is_none()
+            && matches!(glyph.provenance.source, TypedObjectId::Measure(_))
+        {
             entry.barline = true;
             if name == "barlineFinal" {
                 entry.final_barline = true;
-            } else if entry.measure_barline.is_none()
-                && glyph.provenance.synthesis.is_none()
-                && matches!(glyph.provenance.source, TypedObjectId::Measure(_))
-            {
+            } else if entry.measure_barline.is_none() {
                 entry.measure_barline = Some(i);
             }
         }
@@ -1446,6 +1454,54 @@ mod tests {
             (balanced - cv).abs() < 1e-12,
             "the objective should equal the width CV here: {balanced} vs {cv}"
         );
+    }
+
+    #[test]
+    fn repeat_signs_keep_measure_records_honest_and_raise_their_system() {
+        use crate::Engraver;
+        use epiphany_layout_ir::{to_constrained, to_logical, ConstraintSolver, SolverConfig};
+        // The repeat fixture draws morphed repeat barlines, a standalone sign,
+        // the final-barline dot pair, and volta brackets. None of that may
+        // mint a phantom measure record (a standalone sign and the dot pair
+        // are repeat-synthesized, not measure barlines) or lose one (a morphed
+        // barline still marks its measure): both fixtures cast off to the same
+        // nine records — one per measure-*start* barline column; the final
+        // measure's barline closes the region and yields none, by convention.
+        let solve = |score| {
+            Engraver::default().solve(
+                &to_constrained(&to_logical(&score)),
+                &SolverConfig::default(),
+            )
+        };
+        let plain = solve(epiphany_testkit::fixtures::ten_measure_single_staff(
+            0x000A_11CE,
+        ));
+        let repeats = solve(epiphany_testkit::fixtures::ten_measure_with_repeats(
+            0x000A_11CE,
+        ));
+        let measure_count = |report: &crate::SolveReport| -> usize {
+            report
+                .layout
+                .pages
+                .iter()
+                .flat_map(|page| &page.systems)
+                .map(|system| system.measures.len())
+                .sum()
+        };
+        assert_eq!(measure_count(&plain), 9);
+        assert_eq!(measure_count(&repeats), 9);
+        // The volta brackets sit above the staff, so the system carrying them
+        // is taller than any repeat-free system.
+        let max_height = |report: &crate::SolveReport| -> f32 {
+            report
+                .layout
+                .pages
+                .iter()
+                .flat_map(|page| &page.systems)
+                .map(|system| system.bounding_box.size.height.0)
+                .fold(0.0, f32::max)
+        };
+        assert!(max_height(&repeats) > max_height(&plain));
     }
 
     #[test]

@@ -403,3 +403,28 @@ schema-major-1 track's Phase F (2026-07-06; core spec
 schema-major-1 tranche). Satisfaction is a predicate on the output layout, not
 the solver's spring state; casting-off evaluates the declared hard break
 constraints as part of its tier claim.
+
+## ENGRAVER_VERSION 3 → 4: repeat barlines + volta brackets (E1, 2026-07-07)
+
+The layout pipeline now draws repeat signs and volta brackets (layout-ir E1
+decision), so a repeat-bearing score's baked geometry differs from version 3's
+invisible traced anchors — a version bump per the constant's own rule.
+Repeat-free scores are byte-identical (the existing `ten_measure` /
+`valid_score_rich` render goldens passed unchanged; only the new
+`ten_measure_with_repeats` goldens were added). Casting-off changes:
+
+- Barline-column classification routes through layout-ir's
+  `is_barline_glyph` instead of the `"barline"` name prefix, **and now
+  requires a directly-manifested `Measure` source** (no synthesis): a morphed
+  repeat sign remains a break candidate and its measure keeps its record,
+  while a repeat-synthesized standalone sign (a mid-measure boundary, a
+  region edge without a final barline) and the `repeatDots` pair classify
+  nothing — the casting contract breaks systems at measure boundaries, and a
+  phantom candidate could tear off a degenerate lone-sign trailing system or
+  split a measure. Locked by
+  `repeat_signs_keep_measure_records_honest_and_raise_their_system`, and the
+  criterion-6 round-trip now runs the repeat fixture through the real
+  Engraver.
+- Volta bracket strokes raise their system's extent, so vertical stacking
+  and page overflow account for them with no engraver change (system height
+  is computed from every member box and stroke).

@@ -247,6 +247,14 @@ pub const BRAVURA_METRICS: &[GlyphMetric] = &[
     // spaces) *up* from it, spanning the staff when anchored at the bottom line.
     GlyphMetric::new("barlineSingle", 147, [0, 0, 148, 4096]),
     GlyphMetric::new("barlineFinal", 938, [0, 0, 934, 4096]),
+    // Repeat signs: composite barline glyphs (heavy/thin lines plus dots),
+    // staff-spanning like the barlines above; `repeatDots` is the bare dot
+    // pair drawn beside a barline (its box sits in the middle two staff
+    // spaces when anchored at the bottom line).
+    GlyphMetric::new("repeatLeft", 1507, [0, 0, 1500, 4096]),
+    GlyphMetric::new("repeatRight", 1503, [4, 0, 1504, 4096]),
+    GlyphMetric::new("repeatRightLeft", 2490, [4, 0, 2491, 4096]),
+    GlyphMetric::new("repeatDots", 410, [0, 1302, 410, 2745]),
     GlyphMetric::new("dynamicForte", 1491, [-578, -623, 1491, 1819]),
     GlyphMetric::new("dynamicPiano", 1495, [-365, -582, 1500, 1123]),
 ];
@@ -259,6 +267,16 @@ pub fn metrics(name: &str) -> Option<&'static GlyphMetric> {
 /// Whether every name in `names` has bundled metrics.
 pub fn all_available<'a>(names: impl IntoIterator<Item = &'a str>) -> bool {
     names.into_iter().all(|n| metrics(n).is_some())
+}
+
+/// Whether a glyph name draws a **measure-boundary barline**: the plain and
+/// final barlines plus the composite repeat signs (which replace a plain
+/// barline at a repeat boundary). The casting-off solver classifies
+/// measure-boundary columns with this instead of hard-coding the engraver's
+/// name choices. `repeatDots` is decoration drawn *beside* a barline, not a
+/// barline itself, so it is excluded.
+pub fn is_barline_glyph(name: &str) -> bool {
+    name.starts_with("barline") || matches!(name, "repeatLeft" | "repeatRight" | "repeatRightLeft")
 }
 
 /// A glyph's rendering data (Chapter 7 §"Glyph Catalog Interface":
@@ -467,6 +485,25 @@ mod tests {
         });
         assert!(catalog.metrics("runtimeGlyph").is_some());
         assert_eq!(catalog.identity(&["runtimeGlyph"]).metrics_hash, [7; 32]);
+    }
+
+    #[test]
+    fn barline_classification_covers_the_repeat_signs_but_not_the_dots() {
+        for name in [
+            "barlineSingle",
+            "barlineFinal",
+            "repeatLeft",
+            "repeatRight",
+            "repeatRightLeft",
+        ] {
+            assert!(
+                is_barline_glyph(name),
+                "{name} is a measure-boundary barline"
+            );
+        }
+        for name in ["repeatDots", "noteheadBlack", "timeSig2", "gClef"] {
+            assert!(!is_barline_glyph(name), "{name} is not a barline");
+        }
     }
 
     #[test]

@@ -107,6 +107,7 @@ pub enum GlyphClass {
     Flag,
     TimeSignature,
     Barline,
+    Repeat,
     Dynamic,
     AugmentationDot,
     Other,
@@ -129,6 +130,8 @@ impl GlyphClass {
             GlyphClass::TimeSignature
         } else if name.starts_with("barline") {
             GlyphClass::Barline
+        } else if name.starts_with("repeat") {
+            GlyphClass::Repeat
         } else if name.starts_with("dynamic") {
             GlyphClass::Dynamic
         } else if name == "augmentationDot" {
@@ -148,6 +151,7 @@ impl GlyphClass {
             GlyphClass::Flag => "flag",
             GlyphClass::TimeSignature => "timeSig",
             GlyphClass::Barline => "barline",
+            GlyphClass::Repeat => "repeat",
             GlyphClass::Dynamic => "dynamic",
             GlyphClass::AugmentationDot => "augmentationDot",
             GlyphClass::Other => "other",
