@@ -267,6 +267,17 @@ enum StrokeFate {
     Split(Vec<(usize, Point, Point)>),
 }
 
+/// A curve's casting fate: ride one system rigidly, or split at system
+/// boundaries into per-system sub-cubics (de Casteljau).
+enum CurveFate {
+    /// Translate the whole curve with this system (`None`: not covered by any
+    /// region).
+    Rigid(Option<usize>),
+    /// Per-system sub-cubics, ascending system order: `(system, control points)`
+    /// in spaced coordinates.
+    Split(Vec<(usize, [Point; 4])>),
+}
+
 /// The content extent of a system in spaced (pre-casting) coordinates.
 #[derive(Copy, Clone)]
 struct Extent {
@@ -547,20 +558,12 @@ pub(crate) fn cast_off(
             )
         })
         .collect();
-    // Curves ride one system whole (Minimal boundary: no de Casteljau split) —
-    // the system whose clip interval contains the start control point, found
-    // via the same nearest-region logic strokes use.
-    let curve_systems: Vec<Option<usize>> = spaced_curves
+    // A curve rides one system whole when it fits within one, or splits into
+    // per-system sub-cubics (de Casteljau) when it spans a break — the same
+    // nearest-region / clip-overlap logic strokes use.
+    let curve_fates: Vec<CurveFate> = spaced_curves
         .iter()
-        .map(|curve| {
-            curve_system(
-                curve,
-                &system_of_slot,
-                &region_spans,
-                &region_systems,
-                &clips,
-            )
-        })
+        .map(|curve| curve_fate(curve, &region_spans, &region_systems, &clips))
         .collect();
 
     // ---- System extents ----------------------------------------------------
@@ -603,17 +606,28 @@ pub(crate) fn cast_off(
     }
     // A curve's control-point hull (± half-thickness) grows its system's
     // extent, so a slur above the staff raises the system height (page overflow
-    // accounts for it) exactly as the volta bracket strokes do.
-    for (system, curve) in curve_systems.iter().zip(spaced_curves) {
-        let Some(s) = system else { continue };
+    // accounts for it) exactly as the volta bracket strokes do. A split curve
+    // grows each system by its own sub-cubic's hull.
+    for (fate, curve) in curve_fates.iter().zip(spaced_curves) {
         let half = (curve.thickness.0 * 0.5).max(0.0);
-        for point in curve.control_points() {
-            extents[*s].add(
-                point.x.0 - half,
-                point.y.0 - half,
-                point.x.0 + half,
-                point.y.0 + half,
-            );
+        let mut grow = |s: usize, cp: &[Point; 4]| {
+            for point in cp {
+                extents[s].add(
+                    point.x.0 - half,
+                    point.y.0 - half,
+                    point.x.0 + half,
+                    point.y.0 + half,
+                );
+            }
+        };
+        match fate {
+            CurveFate::Rigid(Some(s)) => grow(*s, &curve.control_points()),
+            CurveFate::Rigid(None) => {}
+            CurveFate::Split(segments) => {
+                for (s, cp) in segments {
+                    grow(*s, cp);
+                }
+            }
         }
     }
     let extents: Vec<Extent> = extents.into_iter().map(Extent::normalized).collect();
@@ -766,31 +780,65 @@ pub(crate) fn cast_off(
     }
     strokes.extend(continuations);
 
-    // Curves: each translated whole by its start system's placement (or left
-    // in the spaced frame if no region claimed it — same fallback as a
-    // Rigid(None) stroke). A curve whose span crosses an internal system break
-    // is a documented Minimal boundary: it is drawn whole in its start system,
-    // so its end control point lands at (spaced end x + start-system delta) —
-    // visually detached from its end note, which cast to a later system. The
-    // curve is kept regardless (dropping it would break the round-trip source
-    // surjection: the slur's source must be recovered from a resolved
-    // primitive); an honest split needs de Casteljau subdivision, deferred to
-    // a later tier.
-    let curves: Vec<Curve> = spaced_curves
-        .iter()
-        .zip(&curve_systems)
-        .map(|(curve, system)| {
-            let (dx, dy) = system.map(|s| placements[s]).unwrap_or((0.0, 0.0));
-            let shift = |point: Point| Point::new(point.x.0 + dx, point.y.0 + dy);
-            Curve {
-                p0: shift(curve.p0),
-                p1: shift(curve.p1),
-                p2: shift(curve.p2),
-                p3: shift(curve.p3),
-                ..curve.clone()
+    // Curves: a curve that fits in one system is translated whole by that
+    // system's placement (or left in the spaced frame if no region claimed it).
+    // A curve that spans a system break is split into per-system sub-cubics: the
+    // first segment carries the slur's exact provenance (the object survives,
+    // re-shaped — the round-trip source surjection recovers it), later segments
+    // are synthesized continuations under `SYSTEM_CONTINUATION_SYNTHESIS`, as a
+    // split stroke's are.
+    let mut curves: Vec<Curve> = Vec::with_capacity(spaced_curves.len());
+    let mut curve_continuations: Vec<Curve> = Vec::new();
+    for (curve, fate) in spaced_curves.iter().zip(&curve_fates) {
+        let shift =
+            |cp: [Point; 4], dx: f32, dy: f32| cp.map(|p| Point::new(p.x.0 + dx, p.y.0 + dy));
+        match fate {
+            CurveFate::Rigid(system) => {
+                let (dx, dy) = system.map(|s| placements[s]).unwrap_or((0.0, 0.0));
+                let [p0, p1, p2, p3] = shift(curve.control_points(), dx, dy);
+                curves.push(Curve {
+                    p0,
+                    p1,
+                    p2,
+                    p3,
+                    ..curve.clone()
+                });
             }
-        })
-        .collect();
+            CurveFate::Split(segments) => {
+                for (k, (s, cp)) in segments.iter().enumerate() {
+                    let (dx, dy) = placements[*s];
+                    let [p0, p1, p2, p3] = shift(*cp, dx, dy);
+                    let provenance = if k == 0 {
+                        curve.provenance.clone()
+                    } else {
+                        Provenance::synthesized(
+                            curve.provenance.source,
+                            SynthesisKind::Registered(SYSTEM_CONTINUATION_SYNTHESIS),
+                            continuation_instance_key(curve.provenance.stable_id, k as u32),
+                            curve.provenance.dependencies.clone(),
+                        )
+                    };
+                    let segment = Curve {
+                        provenance,
+                        p0,
+                        p1,
+                        p2,
+                        p3,
+                        thickness: curve.thickness,
+                        layer: curve.layer,
+                        style: curve.style,
+                        line: curve.line,
+                    };
+                    if k == 0 {
+                        curves.push(segment);
+                    } else {
+                        curve_continuations.push(segment);
+                    }
+                }
+            }
+        }
+    }
+    curves.extend(curve_continuations);
 
     // ---- The resolved page tree ---------------------------------------------
     let resolved_systems: Vec<ResolvedSystem> = systems
@@ -1273,15 +1321,14 @@ fn stroke_fate(
 /// left in the spaced frame, on no page). A curve is never split — an honest
 /// cubic split across a system break needs de Casteljau subdivision, deferred
 /// to a later tier; here a break-spanning slur draws whole in its start system.
-fn curve_system(
+fn curve_fate(
     curve: &Curve,
-    system_of_slot: &BTreeMap<SpringSlotId, usize>,
     region_spans: &[Option<(f32, f32)>],
     region_systems: &[Vec<usize>],
     clips: &[(f32, f32)],
-) -> Option<usize> {
-    let _ = system_of_slot;
-    let xs = curve.control_points().map(|p| p.x.0);
+) -> CurveFate {
+    let cp = curve.control_points();
+    let xs = cp.map(|p| p.x.0);
     let lo = xs.iter().copied().fold(f32::INFINITY, f32::min);
     let hi = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     // The owning region: the one whose slot span is nearest (ties to the first).
@@ -1293,14 +1340,112 @@ fn curve_system(
             best = Some((r, distance));
         }
     }
-    let (region, _) = best?;
-    // The start control point pins which system the whole curve rides.
-    let start_x = curve.p0.x.0;
-    region_systems[region].iter().copied().min_by(|&a, &b| {
-        let da = interval_distance(start_x, start_x, clips[a]);
-        let db = interval_distance(start_x, start_x, clips[b]);
-        da.total_cmp(&db).then(a.cmp(&b))
-    })
+    let Some((region, _)) = best else {
+        return CurveFate::Rigid(None);
+    };
+    // The systems of that region the curve's x-span overlaps.
+    let overlapped: Vec<usize> = region_systems[region]
+        .iter()
+        .copied()
+        .filter(|&s| lo <= clips[s].1 && hi >= clips[s].0)
+        .collect();
+    // The start control point pins which single system the curve rides when it
+    // does not span a break.
+    let start_system = || {
+        region_systems[region].iter().copied().min_by(|&a, &b| {
+            let da = interval_distance(cp[0].x.0, cp[0].x.0, clips[a]);
+            let db = interval_distance(cp[0].x.0, cp[0].x.0, clips[b]);
+            da.total_cmp(&db).then(a.cmp(&b))
+        })
+    };
+    match overlapped.len() {
+        0 => CurveFate::Rigid(start_system()),
+        1 => CurveFate::Rigid(Some(overlapped[0])),
+        _ => {
+            // A curve spanning a system break is split into per-system
+            // sub-curves by de Casteljau subdivision at the parameters where it
+            // crosses each system's content clip edges. This needs an
+            // x-monotonic curve to invert `x -> t`; a slur is (its control
+            // points are x-ascending by construction). A non-monotonic curve
+            // (not produced by the engraver) cannot be honestly split, so it
+            // rides its start system whole.
+            if !is_x_monotonic(cp) {
+                return CurveFate::Rigid(start_system());
+            }
+            let segments = overlapped
+                .into_iter()
+                .map(|s| {
+                    let (clo, chi) = clips[s];
+                    let x0 = clo.max(cp[0].x.0);
+                    let x1 = chi.min(cp[3].x.0);
+                    let t0 = param_at_x(cp, x0);
+                    let t1 = param_at_x(cp, x1);
+                    (s, sub_cubic(cp, t0, t1))
+                })
+                .collect();
+            CurveFate::Split(segments)
+        }
+    }
+}
+
+/// Whether a cubic's control points ascend in x (so `x -> t` is invertible by
+/// bisection), with a non-trivial x-span.
+fn is_x_monotonic(cp: [Point; 4]) -> bool {
+    cp[0].x.0 <= cp[1].x.0
+        && cp[1].x.0 <= cp[2].x.0
+        && cp[2].x.0 <= cp[3].x.0
+        && cp[3].x.0 > cp[0].x.0
+}
+
+/// The parameter `t` at which an x-monotonic cubic's x-coordinate equals `x`
+/// (bisection; `x` is clamped to the curve's x-range by the caller).
+fn param_at_x(cp: [Point; 4], x: f32) -> f32 {
+    let cubic_x = |t: f32| {
+        let u = 1.0 - t;
+        u * u * u * cp[0].x.0
+            + 3.0 * u * u * t * cp[1].x.0
+            + 3.0 * u * t * t * cp[2].x.0
+            + t * t * t * cp[3].x.0
+    };
+    let (mut lo, mut hi) = (0.0_f32, 1.0_f32);
+    for _ in 0..40 {
+        let mid = 0.5 * (lo + hi);
+        if cubic_x(mid) < x {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+/// Linear interpolation between two points.
+fn lerp_point(a: Point, b: Point, t: f32) -> Point {
+    Point::new(a.x.0 + (b.x.0 - a.x.0) * t, a.y.0 + (b.y.0 - a.y.0) * t)
+}
+
+/// de Casteljau split of a cubic at `t`: `(left [0, t], right [t, 1])`.
+fn split_cubic(cp: [Point; 4], t: f32) -> ([Point; 4], [Point; 4]) {
+    let a = lerp_point(cp[0], cp[1], t);
+    let b = lerp_point(cp[1], cp[2], t);
+    let c = lerp_point(cp[2], cp[3], t);
+    let d = lerp_point(a, b, t);
+    let e = lerp_point(b, c, t);
+    let f = lerp_point(d, e, t);
+    ([cp[0], a, d, f], [f, e, c, cp[3]])
+}
+
+/// The sub-cubic of `cp` over the parameter range `[t0, t1]` (two de Casteljau
+/// splits: take `[0, t1]`, then within it the `[t0/t1, 1]` tail).
+fn sub_cubic(cp: [Point; 4], t0: f32, t1: f32) -> [Point; 4] {
+    let (left, _) = split_cubic(cp, t1);
+    let tt = if t1 > f32::EPSILON {
+        (t0 / t1).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (_, right) = split_cubic(left, tt);
+    right
 }
 
 /// Distance from the span `[lo, hi]` to a clip interval (0 when they overlap).
@@ -1622,6 +1767,125 @@ mod tests {
         assert!(
             last > 0.5 * first,
             "the rebalanced final system is not a stub: {last} vs {first}"
+        );
+    }
+
+    #[test]
+    fn sub_cubic_reproduces_the_original_curve_on_its_sub_range() {
+        // de Casteljau correctness: the sub-cubic over [t0, t1], evaluated at
+        // its own parameter u in [0, 1], equals the original evaluated at
+        // t0 + u·(t1 - t0). A slur-shaped x-ascending cubic.
+        let cp = [
+            Point::new(0.0, 0.0),
+            Point::new(2.0, 3.0),
+            Point::new(6.0, 3.0),
+            Point::new(8.0, 0.0),
+        ];
+        let eval = |p: [Point; 4], t: f32| -> Point {
+            let u = 1.0 - t;
+            Point::new(
+                u * u * u * p[0].x.0
+                    + 3.0 * u * u * t * p[1].x.0
+                    + 3.0 * u * t * t * p[2].x.0
+                    + t * t * t * p[3].x.0,
+                u * u * u * p[0].y.0
+                    + 3.0 * u * u * t * p[1].y.0
+                    + 3.0 * u * t * t * p[2].y.0
+                    + t * t * t * p[3].y.0,
+            )
+        };
+        let (t0, t1) = (0.3_f32, 0.75_f32);
+        let sub = sub_cubic(cp, t0, t1);
+        for i in 0..=10 {
+            let u = i as f32 / 10.0;
+            let on_sub = eval(sub, u);
+            let on_orig = eval(cp, t0 + u * (t1 - t0));
+            assert!(
+                (on_sub.x.0 - on_orig.x.0).abs() < 1e-4 && (on_sub.y.0 - on_orig.y.0).abs() < 1e-4,
+                "sub-cubic diverges from the original at u={u}: {on_sub:?} vs {on_orig:?}"
+            );
+        }
+        // And `param_at_x` inverts the x-monotonic curve: the point at the found
+        // parameter has the requested x.
+        assert!(is_x_monotonic(cp));
+        let t = param_at_x(cp, 5.0);
+        assert!((eval(cp, t).x.0 - 5.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_slur_spanning_a_system_break_splits_into_per_system_sub_curves() {
+        use crate::Engraver;
+        use epiphany_core::{Slur, SlurId, SlurKind, SpanStyle, TypedObjectId};
+        use epiphany_layout_ir::{
+            to_constrained, to_logical, ConstraintSolver, SolverConfig, SynthesisKind,
+        };
+        // A slur over the whole ten-measure score — its endpoints cast into
+        // different systems (the fixture wraps into two), so the curve spans the
+        // break.
+        let mut score = epiphany_testkit::fixtures::ten_measure_single_staff(0x000A_11CE);
+        let events: Vec<_> = score.canvas.regions[0].staff_instances()[0].voices[0]
+            .events
+            .clone();
+        let slur_id: SlurId = score.identity.mint();
+        score.cross_cutting.slurs.push(Slur {
+            id: slur_id,
+            start_event: events[0],
+            end_event: events[events.len() - 1],
+            kind: SlurKind::Legato,
+            curvature_override: None,
+            style: SpanStyle::default(),
+        });
+        let report = Engraver::default().solve(
+            &to_constrained(&to_logical(&score)),
+            &SolverConfig::default(),
+        );
+        assert_eq!(report.layout.pages[0].systems.len(), 2, "two systems");
+
+        let slur_curves: Vec<_> = report
+            .layout
+            .curves
+            .iter()
+            .filter(|c| c.provenance.source == TypedObjectId::Slur(slur_id))
+            .collect();
+        // The slur split into ≥2 sub-cubics (one per spanned system).
+        assert!(
+            slur_curves.len() >= 2,
+            "a break-spanning slur splits, got {} segment(s)",
+            slur_curves.len()
+        );
+        // Exactly one segment carries the slur's exact provenance (the surjection
+        // recovers the source once); the rest are synthesized continuations.
+        let originals = slur_curves
+            .iter()
+            .filter(|c| c.provenance.synthesis.is_none())
+            .count();
+        assert_eq!(
+            originals, 1,
+            "one segment keeps the slur's exact provenance"
+        );
+        assert!(slur_curves
+            .iter()
+            .filter(|c| c.provenance.synthesis.is_some())
+            .all(|c| matches!(c.provenance.synthesis, Some(SynthesisKind::Registered(_)))));
+        // The segments sit in different systems, which casting stacks
+        // vertically (each system is translated down and restarts x at the left
+        // margin), so a real split separates them in Y — one curve overhanging
+        // into the next system would keep a single y-band.
+        let y_centroids: Vec<f32> = slur_curves
+            .iter()
+            .map(|c| (c.p0.y.0 + c.p1.y.0 + c.p2.y.0 + c.p3.y.0) / 4.0)
+            .collect();
+        let (lo, hi) = (
+            y_centroids.iter().copied().fold(f32::INFINITY, f32::min),
+            y_centroids
+                .iter()
+                .copied()
+                .fold(f32::NEG_INFINITY, f32::max),
+        );
+        assert!(
+            hi - lo > 1.0,
+            "the segments span distinct system y-bands (a real split), spread {}",
+            hi - lo
         );
     }
 }

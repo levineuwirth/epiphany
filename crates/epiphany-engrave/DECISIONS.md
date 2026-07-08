@@ -460,15 +460,29 @@ a `curve_count=0` line (a new tracked primitive kind), and the new
 - `HorizontalRemap::curves` re-maps each curve's four control-point x's through
   the same coordinate map as a spanning stroke's endpoints (a slur is never
   rigid-width); y preserved.
-- Casting: a `curve_system` assigns each curve WHOLE to the system containing
-  its start control point and translates it by that system's placement — no
-  split. An honest cubic split across a system break needs de Casteljau
-  subdivision (the linear stroke split is wrong for a bézier), deferred; a
-  break-spanning slur draws whole in its start system (a documented Minimal
-  boundary). A curve's control-point hull grows its system's extent, so a slur
-  above the staff raises the system height for page overflow, like a volta
-  bracket.
+- Casting: a `curve_fate` (originally `curve_system`) rides a curve WHOLE in one
+  system when it fits, and — since Push 3 (see below) — **splits** a curve
+  spanning a system break into per-system sub-cubics by de Casteljau. A curve's
+  control-point hull grows its system's extent, so a slur above the staff raises
+  the system height for page overflow, like a volta bracket.
 - `slur_shape_penalty` stops being *vacuous* 0.0 and becomes *0.0 by
   construction*: the Minimal tier draws the ideal arc (or the authored
   override), so a drawn slur has zero shape deviation. A real penalty awaits a
   collision-aware Standard-tier solver that compromises a slur's shape.
+
+## ENGRAVER_VERSION 6 → 7: curve splitting across systems (Push 3, 2026-07-08)
+
+A slur spanning a system break now **splits** into per-system sub-curves
+(`curve_fate` → `CurveFate::Split`) by **de Casteljau** subdivision at the
+parameters where the curve crosses each system's content clip edges, replacing
+E2's draw-whole-in-start-system (the floating-end Minimal boundary). The first
+segment carries the slur's exact provenance (the round-trip source surjection
+recovers it once); later segments are synthesized continuations under
+`SYSTEM_CONTINUATION_SYNTHESIS` with a `(stable_id, ordinal)` key — exactly a
+split stroke's discipline. The split needs an x-monotonic curve to invert
+`x → t` (a slur is, its control points x-ascending by construction; `param_at_x`
+bisects); a non-monotonic curve (not produced by the engraver) falls back to
+riding its start system whole. `ENGRAVER_VERSION` 6 → 7 — but only a
+break-spanning slur's baked geometry changes; a slur that fits in one system is
+`CurveFate::Rigid`, byte-identical to version 6, so the existing goldens are
+unchanged (the fixture's slurs are short).

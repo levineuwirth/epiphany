@@ -135,8 +135,11 @@ pub struct Engraver {
 /// differ; slur-free scores draw the same ink as before), and to `6` when slur
 /// curves gained a line pattern (a dashed or dotted slur renders its authored
 /// `SpanStyle.line` faithfully; a curve's canonical bytes now include its line
-/// style; solid slurs and slur-free scores are unchanged).
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(6);
+/// style; solid slurs and slur-free scores are unchanged), and to `7` when a
+/// slur spanning a system break began splitting into per-system sub-curves (de
+/// Casteljau) instead of drawing whole in its start system; a slur that fits in
+/// one system is unchanged.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(7);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
