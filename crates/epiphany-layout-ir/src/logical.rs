@@ -18,9 +18,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use epiphany_core::prepass::{derive_annotations, DerivedAnnotations, PrePassProfile};
 use epiphany_core::{
     AleatoricAnchoringDiscipline, AnchorOffset, AnnotationAnchor, CanonicalValue, Clef,
-    CoordinateDiscipline, Event, EventId, EventPosition, KeySignature, MeasurePosition,
+    CoordinateDiscipline, Event, EventId, EventPosition, KeySignature, LineStyle, MeasurePosition,
     MusicalDuration, MusicalPosition, NotatedComponent, PitchId, PitchSpelling, Region, RegionEdge,
-    RegionId, RegionTimeModel, Score, SpaceUnit, StaffId, StaffPosition, TimeAnchor,
+    RegionId, RegionTimeModel, Score, SlurKind, SpaceUnit, StaffId, StaffPosition, TimeAnchor,
     TimeSignatureDisplay, TupletId, TupletRatio, TypedObjectId, WallClockTime,
 };
 use epiphany_determinism::{DomainTag, Preimage};
@@ -220,6 +220,15 @@ pub struct SlurContent {
     /// Authored line thickness (`style.thickness`); `None` = the engraver's
     /// default.
     pub thickness: Option<SpaceUnit>,
+    /// The slur's kind (Chapter 5 `SlurKind`). Carried through the projection —
+    /// the Minimal tier draws one canonical arc for every kind, but the kind is
+    /// preserved for a kind-aware higher tier (a phrase mark's longer curve, an
+    /// editorial slur's distinct line).
+    pub kind: SlurKind,
+    /// The authored line style (`style.line`). The Minimal tier draws every
+    /// slur solid; a non-`Solid` style is surfaced as a diagnostic rather than
+    /// silently rendered solid (its dash pattern is a higher-tier refinement).
+    pub line: LineStyle,
 }
 
 /// A slur endpoint on the region's spacing axis.
@@ -1087,6 +1096,8 @@ fn slur_content(score: &Score, slur: &epiphany_core::Slur) -> LayoutContent {
         direction,
         height: slur.curvature_override.as_ref().and_then(|o| o.height),
         thickness: slur.style.thickness,
+        kind: slur.kind,
+        line: slur.style.line,
     })
 }
 

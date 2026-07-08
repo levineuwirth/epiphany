@@ -13,8 +13,8 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
-    Clef, EventId, KeySignature, MeasureId, MeasurePosition, MusicalDuration, NoteValue, PitchId,
-    PitchSpelling, RepeatStructureId, SpellingNominal, StaffId, TimeAnchor, TypedObjectId,
+    Clef, EventId, KeySignature, LineStyle, MeasureId, MeasurePosition, MusicalDuration, NoteValue,
+    PitchId, PitchSpelling, RepeatStructureId, SpellingNominal, StaffId, TimeAnchor, TypedObjectId,
     WallClockTime,
 };
 use epiphany_determinism::{DomainTag, Preimage};
@@ -176,6 +176,11 @@ pub enum LayoutDiagnosticKind {
     /// sixteenth-or-shorter rest); the object is carried as a traced anchor
     /// rather than drawn at a guessed shape.
     UnbundledGlyph(GlyphReference),
+    /// A slur carries an authored non-`Solid` line style (dashed/dotted) that
+    /// the Minimal tier does not render — the curve is drawn solid, and the
+    /// unrendered style is surfaced here rather than silently dropped (its dash
+    /// pattern is a higher-tier refinement).
+    SlurLineStyleNotRendered,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
@@ -1471,7 +1476,20 @@ pub fn try_to_constrained(
                         _ => None,
                     };
                     match curve {
-                        Some(curve) => emit.curve(curve),
+                        Some(curve) => {
+                            // A drawn slur whose authored line style is not solid
+                            // renders solid at this tier; surface the gap so the
+                            // dash/dotted intent is not silently lost.
+                            if let Some(LayoutContent::Slur(slur)) = content {
+                                if slur.line != LineStyle::Solid {
+                                    emit.diag(
+                                        provenance.source,
+                                        LayoutDiagnosticKind::SlurLineStyleNotRendered,
+                                    );
+                                }
+                            }
+                            emit.curve(curve);
+                        }
                         None => emit.stroke(anchor(provenance, Point::new(default_x, yo))),
                     }
                 }
@@ -4415,6 +4433,32 @@ mod tests {
             .iter()
             .any(|s| s.from == s.to && s.provenance.source == TypedObjectId::Slur(id)));
         crate::roundtrip::round_trip(&score);
+    }
+
+    #[test]
+    fn an_authored_dashed_slur_draws_solid_but_surfaces_a_diagnostic() {
+        use epiphany_core::{LineStyle, SpanStyle};
+        let (mut score, _) = repeat_ready_score(45);
+        let events = region_a_events(&score);
+        let id: SlurId = score.identity.mint();
+        let mut dashed = slur(id, events[0], events[2], None);
+        dashed.style = SpanStyle {
+            line: LineStyle::Dashed,
+            thickness: None,
+        };
+        score.cross_cutting.slurs.push(dashed);
+        let constrained = to_constrained(&to_logical(&score));
+
+        // The curve still draws (solid) — ink and provenance preserved.
+        assert!(slur_curve_of(&constrained, id).is_some());
+        // …and the unrendered dash style is surfaced, not silently dropped.
+        assert!(
+            constrained.diagnostics.iter().any(|d| {
+                d.source == TypedObjectId::Slur(id)
+                    && d.kind == LayoutDiagnosticKind::SlurLineStyleNotRendered
+            }),
+            "a dashed slur surfaces a SlurLineStyleNotRendered diagnostic"
+        );
     }
 
     #[test]

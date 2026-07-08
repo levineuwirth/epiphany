@@ -57,8 +57,10 @@ pub enum HitShape {
     },
     /// A curve (slur, …): its four cubic-bézier control points and a half-width.
     /// Its geometry tests flatten the cubic into [`CURVE_FLATTEN_SEGMENTS`]
-    /// straight capsule segments (a polyline), so a click near the drawn arc
-    /// selects it — one region per curve, unlike per-segment hit fragments.
+    /// straight capsule segments (a polyline), inflated by a conservative
+    /// flattening-error bound so a click on the true drawn arc — which can bow
+    /// outside the sampled chords for a thin, high-curvature slur — never
+    /// misses. One region per curve, unlike per-segment hit fragments.
     Curve {
         p0: Point,
         p1: Point,
@@ -94,6 +96,26 @@ fn flatten_cubic(p0: Point, p1: Point, p2: Point, p3: Point) -> Vec<Point> {
         .collect()
 }
 
+/// A **conservative** upper bound on the maximum distance between the true cubic
+/// and its [`flatten_cubic`] polyline. The chord error over a parameter
+/// interval of length `h` is at most `h²/8 · max‖B''‖`; a cubic's second
+/// derivative is linear, so `max‖B''‖ = 6 · max(‖p0−2p1+p2‖, ‖p1−2p2+p3‖)`
+/// (attained at an endpoint), and `h = 1/N`. The [`HitShape::Curve`] tests
+/// inflate the capsule half-width by this bound so a click on the *drawn* arc —
+/// which can bow outside the flattened chords for a thin, high-curvature slur —
+/// never misses (the true curve lies within this distance of the polyline).
+fn flatten_error_bound(p0: Point, p1: Point, p2: Point, p3: Point) -> f32 {
+    let second_diff = |a: Point, b: Point, c: Point| {
+        let dx = a.x.0 - 2.0 * b.x.0 + c.x.0;
+        let dy = a.y.0 - 2.0 * b.y.0 + c.y.0;
+        (dx * dx + dy * dy).sqrt()
+    };
+    let d = second_diff(p0, p1, p2).max(second_diff(p1, p2, p3));
+    let n = CURVE_FLATTEN_SEGMENTS as f32;
+    // h²/8 · 6·d = (3/(4N²))·d.
+    (3.0 * d) / (4.0 * n * n)
+}
+
 impl HitShape {
     /// Whether a world `point` lies within this shape — the click-selection test.
     /// A box is closed (edges included); a segment is within `half_width` of the
@@ -112,9 +134,14 @@ impl HitShape {
                 p2,
                 p3,
                 half_width,
-            } => flatten_cubic(*p0, *p1, *p2, *p3)
-                .windows(2)
-                .any(|seg| distance_point_segment(point, seg[0], seg[1]) <= *half_width),
+            } => {
+                // Inflate by the flattening-error bound so ink that bows outside
+                // the sampled chords is still hit (see `flatten_error_bound`).
+                let reach = *half_width + flatten_error_bound(*p0, *p1, *p2, *p3);
+                flatten_cubic(*p0, *p1, *p2, *p3)
+                    .windows(2)
+                    .any(|seg| distance_point_segment(point, seg[0], seg[1]) <= reach)
+            }
         }
     }
 
@@ -141,9 +168,12 @@ impl HitShape {
                 p2,
                 p3,
                 half_width,
-            } => flatten_cubic(*p0, *p1, *p2, *p3)
-                .windows(2)
-                .any(|seg| segment_intersects_rect(seg[0], seg[1], *half_width, &rect)),
+            } => {
+                let reach = *half_width + flatten_error_bound(*p0, *p1, *p2, *p3);
+                flatten_cubic(*p0, *p1, *p2, *p3)
+                    .windows(2)
+                    .any(|seg| segment_intersects_rect(seg[0], seg[1], reach, &rect))
+            }
         }
     }
 
@@ -553,6 +583,46 @@ mod tests {
         assert_eq!(s.aabb(), BoundingBox::new(-0.1, -0.1, 4.1, 2.1));
         // …and a rubber-band rect over the apex selects it.
         assert!(s.intersects_rect(BoundingBox::new(1.5, 1.3, 2.5, 1.7)));
+    }
+
+    #[test]
+    fn a_thin_high_curvature_curve_is_hit_on_its_true_arc_between_samples() {
+        // A near-degenerate-thin curve (half_width 0.001) with strong curvature:
+        // a point ON the true cubic strictly between two flatten samples bows
+        // outside the chord capsule at that half-width, but the error-bound
+        // inflation still hits it.
+        let (p0, p1, p2, p3) = (
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 6.0),
+            Point::new(6.0, 6.0),
+            Point::new(6.0, 0.0),
+        );
+        let s = HitShape::Curve {
+            p0,
+            p1,
+            p2,
+            p3,
+            half_width: 0.001,
+        };
+        // A true-cubic point at a parameter offset from the 1/16 grid (t = 1/32
+        // falls between samples 0 and 1).
+        let on_arc = cubic_point(p0, p1, p2, p3, 1.0 / 32.0);
+        assert!(
+            s.contains(on_arc),
+            "a point on the drawn arc between flatten samples must be hit"
+        );
+        // The error bound is positive for a genuinely curved shape and zero for
+        // collinear control points (a straight "curve").
+        assert!(flatten_error_bound(p0, p1, p2, p3) > 0.0);
+        assert_eq!(
+            flatten_error_bound(
+                Point::new(0.0, 0.0),
+                Point::new(1.0, 0.0),
+                Point::new(2.0, 0.0),
+                Point::new(3.0, 0.0),
+            ),
+            0.0
+        );
     }
 
     #[test]

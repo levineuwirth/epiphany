@@ -12,7 +12,7 @@
 use epiphany_core::{
     AcousticPitch, AcousticRealization, AnchorOffset, Canvas, ChordSymbol, CmnNominal,
     CrossCuttingRegistry, CurvatureOverride, CurveDirection, Event, EventArena, EventDuration,
-    EventPosition, IdentifiedPitch, IdentityContext, Marker, Measure, MeasurePosition,
+    EventPosition, IdentifiedPitch, IdentityContext, LineStyle, Marker, Measure, MeasurePosition,
     MetricTimeModel, MusicalDuration, MusicalPosition, Pitch, PitchSpaceId, PitchSpacePosition,
     RationalTime, RegionContent, RegionEdge, RegionTimeModel, RepeatKind, RepeatStructure,
     ScalePosition, Score, Slur, SlurKind, SpaceUnit, SpanStyle, Spanner, Staff, StaffBasedContent,
@@ -296,7 +296,14 @@ pub fn ten_measure_with_slurs(seed: u64) -> Score {
         end_event: events[12],
         kind: SlurKind::Editorial,
         curvature_override: None,
-        style: SpanStyle::default(),
+        // An authored dashed line — the Minimal tier draws it solid and
+        // surfaces a `SlurLineStyleNotRendered` layout diagnostic (its dash
+        // pattern is a higher-tier refinement), so the fixture exercises that
+        // honest-deferral path.
+        style: SpanStyle {
+            line: LineStyle::Dashed,
+            thickness: None,
+        },
     });
     score
 }

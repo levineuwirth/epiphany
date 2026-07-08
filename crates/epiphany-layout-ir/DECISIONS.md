@@ -581,9 +581,17 @@ out of scope), so these are E2 decisions for the Phase-F ratification pass:
 - **curvature_override honored structurally.** `direction` (Above/Below;
   default Auto = above) flips the arc; `height` (a `SpaceUnit`) sets the apex,
   else a span-proportional default clamped to `[SLUR_MIN_HEIGHT,
-  SLUR_MAX_HEIGHT]`. `style.line` (dashed/dotted) is a Push-3 refinement — the
-  Minimal tier draws every slur solid (the curve carries an `ink` style like a
-  stroke); nothing authored is lost, only its dash rendering deferred.
+  SLUR_MAX_HEIGHT]`.
+- **Kind and line style: carried, and the deferral is surfaced (review fix).**
+  `SlurContent` carries `kind` (`SlurKind`) and `line` (`LineStyle`) through the
+  projection — nothing is dropped — but the Minimal tier draws one canonical
+  solid arc for *every* kind (a phrase mark's longer curve, an editorial
+  slur's distinct line are kind-aware higher-tier work). `style.line` (dashed/
+  dotted) is likewise a Push-3 refinement; rather than silently rendering an
+  authored dashed slur solid, a non-`Solid` line style emits a
+  `LayoutDiagnosticKind::SlurLineStyleNotRendered` — the curve still draws
+  (solid, ink and provenance preserved), but the ignored intent is surfaced,
+  not papered over (the crate's non-overreach discipline).
 - **Honest non-drawing.** No curve is drawn — the traced anchor keeps
   provenance, the same discipline as an unresolvable repeat boundary — when:
   an endpoint is unresolved (dangling event, or a column in another region);
