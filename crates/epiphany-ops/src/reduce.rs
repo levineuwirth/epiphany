@@ -2897,8 +2897,15 @@ impl<'a> Reducer<'a> {
                     .and_then(|score| score.events.get(op.event))
                     .map(Event::voice)
             });
-        let graph_repairs = self.materialize_graph_delete(env, op);
-
+        // Tombstone the event in `objects` BEFORE the graph delete (P13-D2).
+        // `materialize_graph_delete` re-anchors the deleted event's referents,
+        // and a cue among them cascades — running `reanchor_for_tombstone` over
+        // the cue's own referents. A structure anchored on {this event,
+        // cue-of-this-event} must see this event as already dead there, or it
+        // would re-anchor onto it (recording `Reanchored{to: X}`) only to
+        // cascade when X's tombstone lands a line later — a contradictory
+        // same-effect trail. Tombstoning first matches `cascade_cue` and the
+        // undo path, which already tombstone before their graph delete.
         let minter = self.minted_by.get(&ev_obj).copied().unwrap_or(env.id);
         self.objects.insert(
             ev_obj,
@@ -2907,6 +2914,7 @@ impl<'a> Reducer<'a> {
                 minted_by: minter,
             },
         );
+        let graph_repairs = self.materialize_graph_delete(env, op);
         for events in self.voice_occupancy.values_mut() {
             events.retain(|(_, _, event)| *event != op.event);
         }
@@ -9703,6 +9711,104 @@ mod tests {
             permuted.reduce().canonical_bytes(),
             "the orphan-cascade converges regardless of delivery order"
         );
+    }
+
+    #[test]
+    fn deleting_a_cue_source_does_not_leave_a_contradictory_repair_for_a_bridging_slur_p13_d2() {
+        // P13-D2: a slur Z anchored on {X, cue-of-X}. Deleting X cascades the
+        // cue (a cue depends on its source event). The cue-cascade's ledger
+        // re-anchor must NOT re-anchor Z onto X — X is itself being deleted —
+        // which would record `Reanchored{to: X}` for Z and then `CascadeDeleted`
+        // in the same effect (a contradictory trail). With X tombstoned before
+        // the graph delete, Z sees no live survivor and cascades once.
+        use epiphany_core::generators::valid_score;
+        use epiphany_core::{
+            check_invariants, CueEvent, CueRendering, Event, EventDuration, EventPosition,
+            MusicalDuration, MusicalPosition, RationalTime, SlurId,
+        };
+        let mut base = valid_score(0x5EED);
+        let (voice_id, x, count) = {
+            let v = &base.canvas.regions[0].staff_instances()[0].voices[0];
+            (v.id, v.events[0], v.events.len() as i64)
+        };
+        let cue = EventId::new(ReplicaId(9), 9_001);
+        let slur_id = SlurId::new(ReplicaId(9), 9_002);
+        let sid = TypedObjectId::Slur(slur_id);
+        // A cue sourced on X, placed just past the voice's last event, and a
+        // slur bridging X and its cue.
+        base.events
+            .insert(Event::Cue(CueEvent {
+                id: cue,
+                voice: voice_id,
+                position: EventPosition::Musical(MusicalPosition(
+                    RationalTime::new(count, 4).unwrap(),
+                )),
+                duration: EventDuration::Musical(MusicalDuration(RationalTime::new(1, 4).unwrap())),
+                source: vec![x],
+                rendering: CueRendering,
+            }))
+            .expect("fresh cue id");
+        base.canvas.regions[0]
+            .content
+            .staff_instances_mut()
+            .expect("staff-based content")[0]
+            .voices[0]
+            .events
+            .push(cue);
+        base.cross_cutting
+            .slurs
+            .push(crate::valuegen::slur(slur_id, x, cue));
+        assert!(
+            check_invariants(&base).is_empty(),
+            "the cue + bridging-slur base is well-formed"
+        );
+
+        let del = prim_env(
+            2,
+            0,
+            20,
+            CausalContext::new(),
+            OperationKind::DeleteEvent(DeleteEventOp {
+                event: x,
+                tuplet_compensation: TupletCompensation::NotInTuplet,
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![del.clone()]);
+        let result = set.reduce_onto(&base);
+
+        // The bridging slur cascaded (both its anchors — X and cue-of-X — died).
+        assert!(
+            matches!(
+                result.state.objects.get(&sid),
+                Some(ObjectState::Tombstoned { .. })
+            ),
+            "the bridging slur cascades"
+        );
+        // …recorded exactly ONCE as a cascade, never a contradictory
+        // `Reanchored{to: X}` onto the event being deleted.
+        let repairs = match result
+            .state
+            .effects
+            .iter()
+            .find(|(id, _)| *id == del.id)
+            .map(|(_, e)| e)
+        {
+            Some(OperationEffect::AppliedWithRepair { repairs }) => repairs.clone(),
+            other => panic!("expected AppliedWithRepair, got {other:?}"),
+        };
+        let slur_repairs: Vec<_> = repairs.iter().filter(|r| r.target == sid).collect();
+        assert_eq!(
+            slur_repairs.len(),
+            1,
+            "the bridging slur is repaired exactly once: {slur_repairs:?}"
+        );
+        assert!(
+            matches!(slur_repairs[0].kind, RepairKind::CascadeDeleted),
+            "the one record is a cascade, not a contradictory reanchor: {:?}",
+            slur_repairs[0].kind
+        );
+        assert!(check_invariants(&result.score).is_empty());
     }
 
     #[test]

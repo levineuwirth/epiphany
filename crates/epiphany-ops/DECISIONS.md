@@ -1098,6 +1098,21 @@ simply never exercised — no existing test broke). Locked by
 `undo_orphaning_a_pre_existing_slur_cascades_it_in_the_ledger_p13_d1`
 (cascade + recorded repair + order-independent convergence).
 
+**P13-D2 resolved (Pass 13, 2026-07-08).** `delete_event` tombstoned the event
+in `objects` *after* `materialize_graph_delete` — but that graph pass cascades
+a cue among the event's referents, running `reanchor_for_tombstone` over the
+cue's own referents while the source event is still `Live`. A slur bridging
+{X, cue-of-X} therefore re-anchored onto X (recording `Reanchored{to: X}`) and
+then cascade-deleted when X's tombstone landed a line later — a contradictory
+same-effect trail (candidate: "plausible by code trace, unexecuted"; now
+executed — reverting the fix reproduces exactly that two-record trail). Fixed
+by tombstoning the event in `objects` **before** the graph delete, matching the
+conventions `cascade_cue` and `tombstone_undo_targets` already follow (both
+tombstone before their graph delete — which is why the undo path never had this
+bug). The bridging slur now sees X already dead during the cue cascade and
+cascades once. Locked by
+`deleting_a_cue_source_does_not_leave_a_contradictory_repair_for_a_bridging_slur_p13_d2`.
+
 **Noted, not implemented:** no writer path derives a chunk schema *minor*
 from appended kind discriminants (a major-0 block carrying discriminant 29
 stamps the same fixed minor as always) — pre-existing for the Phase-3
