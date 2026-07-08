@@ -164,4 +164,5 @@ pub use vertical_band::{inter_staff_gap_id, VerticalBand, VerticalBandId, Vertic
 pub use epiphany_ops::OperationKindTag;
 // `StemDirection` (Agent B) is the payload of `EngravingDecisionKind::StemDirection`;
 // re-exported so callers constructing that decision need not also import from core.
+pub use epiphany_core::LineStyle;
 pub use epiphany_core::StemDirection;

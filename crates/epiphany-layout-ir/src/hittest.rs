@@ -638,6 +638,7 @@ mod tests {
             thickness: crate::StaffSpace(0.2),
             layer: 0,
             style: crate::GlyphStyle { rgba: 0 },
+            line: epiphany_core::LineStyle::Solid,
         };
         let map = RenderIR {
             primitives: vec![],

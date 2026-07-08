@@ -172,6 +172,11 @@ impl CanonicalEncode for ResolvedLayoutIR {
             encode_staff_space(out, curve.thickness);
             out.extend_from_slice(&curve.style.rgba.to_le_bytes());
             out.extend_from_slice(&curve.layer.to_le_bytes());
+            out.push(match curve.line {
+                epiphany_core::LineStyle::Solid => 0,
+                epiphany_core::LineStyle::Dashed => 1,
+                epiphany_core::LineStyle::Dotted => 2,
+            });
         }
         push_len(out, self.engraving_decisions.len());
         for decision in &self.engraving_decisions {

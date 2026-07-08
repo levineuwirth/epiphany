@@ -132,8 +132,11 @@ pub struct Engraver {
 /// unchanged), and to `5` when slur curves landed (a slur-bearing score gains
 /// a drawn cubic-bézier curve where version `4` had only a traced anchor; the
 /// resolved output now carries a third primitive kind, so its canonical bytes
-/// differ; slur-free scores draw the same ink as before).
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(5);
+/// differ; slur-free scores draw the same ink as before), and to `6` when slur
+/// curves gained a line pattern (a dashed or dotted slur renders its authored
+/// `SpanStyle.line` faithfully; a curve's canonical bytes now include its line
+/// style; solid slurs and slur-free scores are unchanged).
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(6);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -500,6 +503,7 @@ impl HorizontalRemap {
                     thickness: c.thickness,
                     layer: c.layer,
                     style: c.style,
+                    line: c.line,
                 }
             })
             .collect()

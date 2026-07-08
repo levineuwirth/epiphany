@@ -39,7 +39,9 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use epiphany_layout_ir::{BoundingBox, Provenance, ResolvedGlyph, ResolvedLayoutIR, Transform2D};
+use epiphany_layout_ir::{
+    BoundingBox, LineStyle, Provenance, ResolvedGlyph, ResolvedLayoutIR, Transform2D,
+};
 
 use crate::font_subset_generated::{
     BRAVURA_SUBSET_FAMILY, BRAVURA_SUBSET_MIME, BRAVURA_SUBSET_OTF_BASE64,
@@ -370,7 +372,7 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
                 let _ = writeln!(
                     s,
                     "      <path d=\"M {} {} C {} {} {} {} {} {}\" \
-                     fill=\"none\" stroke=\"{}\" stroke-width=\"{}\"{}{}/>",
+                     fill=\"none\" stroke=\"{}\" stroke-width=\"{}\"{}{}{}/>",
                     num(curve.p0.x.0),
                     num(curve.p0.y.0),
                     num(curve.p1.x.0),
@@ -381,6 +383,7 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
                     num(curve.p3.y.0),
                     stroke_fill,
                     num(curve.thickness.0),
+                    dash_attrs(curve.line),
                     opacity,
                     prov,
                 );
@@ -600,6 +603,18 @@ fn stroke_provenance_attrs(p: &Provenance) -> String {
     )
 }
 
+/// The `stroke-dasharray` (and, for dotted, `stroke-linecap`) attribute for a
+/// curve's line pattern, in staff-space units (the viewBox is staff-space). A
+/// solid line adds nothing. Dashed is a dash/gap pair; dotted is round-capped
+/// zero-length dashes, drawing round dots of the stroke's own width.
+fn dash_attrs(line: LineStyle) -> &'static str {
+    match line {
+        LineStyle::Solid => "",
+        LineStyle::Dashed => " stroke-dasharray=\"0.5 0.35\"",
+        LineStyle::Dotted => " stroke-dasharray=\"0 0.28\" stroke-linecap=\"round\"",
+    }
+}
+
 /// `data-*` provenance attributes for a curve (a cubic-bézier primitive).
 fn curve_provenance_attrs(p: &Provenance) -> String {
     format!(
@@ -810,6 +825,44 @@ mod tests {
             glyph_count + base_strokes + 1,
             "every glyph and stroke is traced"
         );
+    }
+
+    #[test]
+    fn a_curve_renders_as_a_path_and_a_dashed_curve_carries_a_dasharray() {
+        use epiphany_layout_ir::Curve;
+        let mut layout = stub_layout(11);
+        let prov = layout.glyphs[0].provenance.clone();
+        let make = |line| Curve {
+            provenance: prov.clone(),
+            p0: Point::new(0.0, 0.0),
+            p1: Point::new(1.0, 2.0),
+            p2: Point::new(3.0, 2.0),
+            p3: Point::new(4.0, 0.0),
+            thickness: StaffSpace(0.12),
+            layer: 1,
+            style: GlyphStyle { rgba: 0x0000_00ff },
+            line,
+        };
+        // A solid curve: a stroked, unfilled <path> with no dasharray.
+        layout.curves = vec![make(LineStyle::Solid)];
+        let solid = render(&layout, &RenderOptions::default());
+        assert!(solid.is_well_formed());
+        assert_eq!(solid.stats.curve_count, 1);
+        assert!(solid.svg.contains("<path d=\"M 0 0 C"));
+        assert!(solid.svg.contains("data-kind=\"curve\""));
+        assert!(
+            !solid.svg.contains("stroke-dasharray"),
+            "a solid curve has no dasharray"
+        );
+        // A dashed curve carries stroke-dasharray; a dotted one round-caps.
+        layout.curves = vec![make(LineStyle::Dashed)];
+        assert!(render(&layout, &RenderOptions::default())
+            .svg
+            .contains("stroke-dasharray=\"0.5 0.35\""));
+        layout.curves = vec![make(LineStyle::Dotted)];
+        let dotted = render(&layout, &RenderOptions::default()).svg;
+        assert!(dotted.contains("stroke-dasharray=\"0 0.28\""));
+        assert!(dotted.contains("stroke-linecap=\"round\""));
     }
 
     #[test]

@@ -359,6 +359,11 @@ pub fn gen_curve(rng: &mut Rng) -> Curve {
         style: GlyphStyle {
             rgba: rng.next_u64() as u32,
         },
+        line: *rng.choose(&[
+            epiphany_core::LineStyle::Solid,
+            epiphany_core::LineStyle::Dashed,
+            epiphany_core::LineStyle::Dotted,
+        ]),
     }
 }
 
