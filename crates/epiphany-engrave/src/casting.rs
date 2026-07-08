@@ -80,7 +80,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use epiphany_core::{StaffId, TypedObjectId};
 use epiphany_layout_ir::{
     continuation_instance_key, is_barline_glyph, is_rigid_width_stroke, synthesized_layout_id,
-    BreakClass, BreakKind, ConstrainedLayoutIR, DecisionSource, EngravingDecision,
+    BreakClass, BreakKind, ConstrainedLayoutIR, Curve, DecisionSource, EngravingDecision,
     EngravingDecisionKind, EngravingOverrideId, GlyphObjectId, LayoutConstraint, LayoutObjectId,
     Margins, Point, Provenance, Rect, ResolvedGlyph, ResolvedMeasure, ResolvedPage, ResolvedStaff,
     ResolvedSystem, Size2D, SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey, SynthesisKind,
@@ -179,6 +179,10 @@ pub(crate) struct CastLayout {
     /// system; a system-spanning stroke replaced by its first segment), then
     /// the synthesized continuation segments.
     pub strokes: Vec<Stroke>,
+    /// Final curves, in input order, each translated with its system. A curve
+    /// spanning a system break is drawn whole in its start system (Minimal
+    /// boundary: an honest cubic split needs de Casteljau, deferred).
+    pub curves: Vec<Curve>,
     /// The populated page tree (empty when the input declares no regions).
     pub pages: Vec<ResolvedPage>,
     /// Break decisions this pass made (chosen breaks in reading order, then
@@ -342,6 +346,7 @@ pub(crate) fn cast_off(
     input: &ConstrainedLayoutIR,
     spaced_glyphs: &[ResolvedGlyph],
     spaced_strokes: &[Stroke],
+    spaced_curves: &[Curve],
     geometry: &PageGeometry,
 ) -> CastLayout {
     // ---- Slot table (spaced coordinates) --------------------------------
@@ -542,6 +547,21 @@ pub(crate) fn cast_off(
             )
         })
         .collect();
+    // Curves ride one system whole (Minimal boundary: no de Casteljau split) —
+    // the system whose clip interval contains the start control point, found
+    // via the same nearest-region logic strokes use.
+    let curve_systems: Vec<Option<usize>> = spaced_curves
+        .iter()
+        .map(|curve| {
+            curve_system(
+                curve,
+                &system_of_slot,
+                &region_spans,
+                &region_systems,
+                &clips,
+            )
+        })
+        .collect();
 
     // ---- System extents ----------------------------------------------------
     let mut extents: Vec<Extent> = vec![Extent::empty(); systems.len()];
@@ -579,6 +599,21 @@ pub(crate) fn cast_off(
                     );
                 }
             }
+        }
+    }
+    // A curve's control-point hull (± half-thickness) grows its system's
+    // extent, so a slur above the staff raises the system height (page overflow
+    // accounts for it) exactly as the volta bracket strokes do.
+    for (system, curve) in curve_systems.iter().zip(spaced_curves) {
+        let Some(s) = system else { continue };
+        let half = (curve.thickness.0 * 0.5).max(0.0);
+        for point in curve.control_points() {
+            extents[*s].add(
+                point.x.0 - half,
+                point.y.0 - half,
+                point.x.0 + half,
+                point.y.0 + half,
+            );
         }
     }
     let extents: Vec<Extent> = extents.into_iter().map(Extent::normalized).collect();
@@ -731,6 +766,32 @@ pub(crate) fn cast_off(
     }
     strokes.extend(continuations);
 
+    // Curves: each translated whole by its start system's placement (or left
+    // in the spaced frame if no region claimed it — same fallback as a
+    // Rigid(None) stroke). A curve whose span crosses an internal system break
+    // is a documented Minimal boundary: it is drawn whole in its start system,
+    // so its end control point lands at (spaced end x + start-system delta) —
+    // visually detached from its end note, which cast to a later system. The
+    // curve is kept regardless (dropping it would break the round-trip source
+    // surjection: the slur's source must be recovered from a resolved
+    // primitive); an honest split needs de Casteljau subdivision, deferred to
+    // a later tier.
+    let curves: Vec<Curve> = spaced_curves
+        .iter()
+        .zip(&curve_systems)
+        .map(|(curve, system)| {
+            let (dx, dy) = system.map(|s| placements[s]).unwrap_or((0.0, 0.0));
+            let shift = |point: Point| Point::new(point.x.0 + dx, point.y.0 + dy);
+            Curve {
+                p0: shift(curve.p0),
+                p1: shift(curve.p1),
+                p2: shift(curve.p2),
+                p3: shift(curve.p3),
+                ..curve.clone()
+            }
+        })
+        .collect();
+
     // ---- The resolved page tree ---------------------------------------------
     let resolved_systems: Vec<ResolvedSystem> = systems
         .iter()
@@ -787,6 +848,7 @@ pub(crate) fn cast_off(
     CastLayout {
         glyphs,
         strokes,
+        curves,
         pages,
         decisions,
         system_start_slots,
@@ -1203,6 +1265,42 @@ fn stroke_fate(
             StrokeFate::Split(segments)
         }
     }
+}
+
+/// The system a curve rides whole: the nearest region's system whose clip
+/// interval contains the curve's **start** control point (its drawing origin),
+/// else that region's nearest system, else `None` (no region claimed it —
+/// left in the spaced frame, on no page). A curve is never split — an honest
+/// cubic split across a system break needs de Casteljau subdivision, deferred
+/// to a later tier; here a break-spanning slur draws whole in its start system.
+fn curve_system(
+    curve: &Curve,
+    system_of_slot: &BTreeMap<SpringSlotId, usize>,
+    region_spans: &[Option<(f32, f32)>],
+    region_systems: &[Vec<usize>],
+    clips: &[(f32, f32)],
+) -> Option<usize> {
+    let _ = system_of_slot;
+    let xs = curve.control_points().map(|p| p.x.0);
+    let lo = xs.iter().copied().fold(f32::INFINITY, f32::min);
+    let hi = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    // The owning region: the one whose slot span is nearest (ties to the first).
+    let mut best: Option<(usize, f32)> = None;
+    for (r, span) in region_spans.iter().enumerate() {
+        let Some((rlo, rhi)) = span else { continue };
+        let distance = interval_distance(lo, hi, (*rlo, *rhi));
+        if best.map_or(true, |(_, d)| distance < d) {
+            best = Some((r, distance));
+        }
+    }
+    let (region, _) = best?;
+    // The start control point pins which system the whole curve rides.
+    let start_x = curve.p0.x.0;
+    region_systems[region].iter().copied().min_by(|&a, &b| {
+        let da = interval_distance(start_x, start_x, clips[a]);
+        let db = interval_distance(start_x, start_x, clips[b]);
+        da.total_cmp(&db).then(a.cmp(&b))
+    })
 }
 
 /// Distance from the span `[lo, hi]` to a clip interval (0 when they overlap).

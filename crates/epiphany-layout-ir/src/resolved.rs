@@ -24,7 +24,7 @@
 use epiphany_core::{MeasureId, StaffId, TypedObjectId};
 use epiphany_determinism::{CanonicalEncode, CanonicalF64, QuantizedCoord};
 
-use crate::constrained::{GlyphObjectId, GlyphStyle, Stroke};
+use crate::constrained::{Curve, GlyphObjectId, GlyphStyle, Stroke};
 use crate::engraving::{DecisionSource, EngravingDecision, EngravingDecisionKind};
 use crate::glyph::{GlyphCatalogIdentity, GlyphReference};
 use crate::logical::ScoreVersion;
@@ -90,6 +90,9 @@ pub struct ResolvedLayoutIR {
     /// Resolved non-glyph line primitives (staff lines, stems, barlines, …),
     /// positioned by the solver alongside the glyphs.
     pub strokes: Vec<Stroke>,
+    /// Resolved cubic-bézier curve primitives (slurs, …), positioned by the
+    /// solver alongside the glyphs and strokes.
+    pub curves: Vec<Curve>,
     pub engraving_decisions: Vec<EngravingDecision>,
     /// The catalog identity under which this layout was produced — required for
     /// any byte-equal conformance claim (Chapter 7 §7.3.2).
@@ -157,6 +160,18 @@ impl CanonicalEncode for ResolvedLayoutIR {
             encode_staff_space(out, stroke.thickness);
             out.extend_from_slice(&stroke.style.rgba.to_le_bytes());
             out.extend_from_slice(&stroke.layer.to_le_bytes());
+        }
+        push_len(out, self.curves.len());
+        for curve in &self.curves {
+            encode_provenance(out, &curve.provenance);
+            for point in curve.control_points() {
+                let (qx, qy) = quantize(point);
+                qx.encode_canonical(out);
+                qy.encode_canonical(out);
+            }
+            encode_staff_space(out, curve.thickness);
+            out.extend_from_slice(&curve.style.rgba.to_le_bytes());
+            out.extend_from_slice(&curve.layer.to_le_bytes());
         }
         push_len(out, self.engraving_decisions.len());
         for decision in &self.engraving_decisions {
@@ -377,6 +392,7 @@ mod tests {
             pages: vec![],
             glyphs,
             strokes: vec![],
+            curves: vec![],
             engraving_decisions: decisions,
             catalog: GlyphCatalogIdentity::default(),
         }
@@ -404,16 +420,16 @@ mod tests {
         // Schema major 1 unifies the resolved-layout length/count prefixes to
         // u32 (Binary Format companion §"Schema Major 1"). This locks the byte
         // shape so a revert to the old u64 prefixes fails: an empty layout
-        // encodes its four counts — pages, glyphs, strokes, engraving_decisions
-        // — as u32 zeros (16 bytes) right after the 32-byte ScoreVersion source,
-        // then the catalog. Under u64 that region would be 32 bytes, shifting the
-        // catalog and lengthening the output by 16.
+        // encodes its five counts — pages, glyphs, strokes, curves,
+        // engraving_decisions — as u32 zeros (20 bytes) right after the 32-byte
+        // ScoreVersion source, then the catalog. Under u64 that region would be
+        // 40 bytes, shifting the catalog and lengthening the output by 20.
         let bytes = ir(vec![], vec![]).canonical_bytes();
         let source_len = ScoreVersion::default().0.len();
         assert_eq!(source_len, 32, "ScoreVersion source is 32 bytes");
         // The first count prefix (pages) is a 4-byte u32 zero — not 8 bytes.
         assert_eq!(&bytes[source_len..source_len + 4], &0u32.to_le_bytes());
-        // The four count prefixes occupy exactly 4 × 4 bytes; then the catalog,
+        // The five count prefixes occupy exactly 5 × 4 bytes; then the catalog,
         // whose length we recompute independently (no magic number).
         let catalog_len = {
             let mut c = Vec::new();
@@ -422,8 +438,8 @@ mod tests {
         };
         assert_eq!(
             bytes.len(),
-            source_len + 4 * 4 + catalog_len,
-            "four u32 count prefixes (16 bytes), not u64 (32 bytes)"
+            source_len + 5 * 4 + catalog_len,
+            "five u32 count prefixes (20 bytes), not u64 (40 bytes)"
         );
     }
 

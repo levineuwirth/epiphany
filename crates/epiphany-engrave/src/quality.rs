@@ -26,12 +26,14 @@
 //!   reference). The clef/key/time lead and barlines bear no notehead or rest,
 //!   so they contribute no column and a note-to-note advance spans them
 //!   (catalog §`spacing_distortion` — measuring rhythmic spacing, not furniture).
-//! * **`slur_shape_penalty` / `beam_slope_penalty`** — **vacuous 0.0**: the
-//!   pipeline draws no slur or beam geometry (slurs/beams exist logically,
-//!   not as curves/segments), so the contributing-unit sets are empty. The
-//!   catalog pins vacuous-0.0 deliberately and owns the honesty edge (its
-//!   "notated-but-unrendered" open question): rendering completeness is
-//!   governed by constraint families and visual acceptance, not these axes.
+//! * **`slur_shape_penalty`** — **0.0 by construction** (E2): slurs now draw as
+//!   cubic-bézier curves, but the Minimal tier emits the *reference* arc from
+//!   the span and the authored/default curvature, so a drawn slur has zero
+//!   deviation from its ideal (an authored `curvature_override` is honored, not
+//!   penalized). A real penalty awaits a Standard-tier solver that compromises
+//!   a slur's shape to dodge collisions. **`beam_slope_penalty`** stays
+//!   **vacuous 0.0**: no beam geometry is drawn yet (beams exist logically, not
+//!   as segments), so its contributing-unit set is empty.
 //! * **`vertical_density_penalty`** — realized gaps against the band model's
 //!   preferred heights: the constrained input's `InterStaffGap` bands
 //!   (adjacent staff bands' resolved ink extents; the constrained stage's
@@ -457,12 +459,15 @@ pub(crate) fn measure(
             anchors::COLLISION_R_WORST,
         ),
         spacing_distortion: normalize(spacing_raw(&census), anchors::SPACING_R_WORST),
-        // No drawn slur geometry exists in this pipeline (slurs are logical
-        // objects, not curves): the contributing-unit set is empty, so the
-        // axis is exactly 0.0 per the catalog's vacuous-geometry rule. The
-        // catalog's "notated-but-unrendered" open question owns the honesty
-        // edge; the definition is pinned so the first slur-drawing release is
-        // measured from day one.
+        // Slurs now DRAW (E2: a cubic-bézier `Curve` per slur), but their shape
+        // is measured as ideal by construction: the Minimal tier emits the
+        // reference arc itself — a symmetric cubic from the span and the
+        // authored (or default) curvature — so a drawn slur has zero deviation
+        // from its ideal, and an authored `curvature_override` is honored, not
+        // penalized. A real non-zero penalty awaits a collision-aware
+        // (Standard-tier, Push 3) solver that *compromises* a slur's shape to
+        // dodge collisions; until then this axis stays 0.0 by construction, not
+        // by vacuity.
         slur_shape_penalty: normalize(0.0, anchors::SLUR_SHAPE_R_WORST),
         // Same vacuous rule: no drawn beam segments exist in this pipeline.
         beam_slope_penalty: normalize(0.0, anchors::BEAM_SLOPE_R_WORST),
@@ -579,7 +584,9 @@ mod tests {
         let vector = &report.metric_vector;
         assert_eq!(vector.collision_penalty.0, 0.0);
         assert!(vector.spacing_distortion.0 > 0.0 && vector.spacing_distortion.0 < 0.3);
-        assert_eq!(vector.slur_shape_penalty.0, 0.0, "vacuous: no drawn slurs");
+        // The ten-measure fixture has no slur; even one would measure 0.0
+        // (Minimal draws the ideal arc — deviation is 0 by construction).
+        assert_eq!(vector.slur_shape_penalty.0, 0.0, "ideal-by-construction");
         assert_eq!(vector.beam_slope_penalty.0, 0.0, "vacuous: no drawn beams");
         assert_eq!(vector.page_fill_efficiency.0, 0.0, "vacuous: single page");
         assert!(

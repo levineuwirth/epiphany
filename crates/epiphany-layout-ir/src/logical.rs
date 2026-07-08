@@ -20,8 +20,8 @@ use epiphany_core::{
     AleatoricAnchoringDiscipline, AnchorOffset, AnnotationAnchor, CanonicalValue, Clef,
     CoordinateDiscipline, Event, EventId, EventPosition, KeySignature, MeasurePosition,
     MusicalDuration, MusicalPosition, NotatedComponent, PitchId, PitchSpelling, Region, RegionEdge,
-    RegionId, RegionTimeModel, Score, StaffId, StaffPosition, TimeAnchor, TimeSignatureDisplay,
-    TupletId, TupletRatio, TypedObjectId, WallClockTime,
+    RegionId, RegionTimeModel, Score, SpaceUnit, StaffId, StaffPosition, TimeAnchor,
+    TimeSignatureDisplay, TupletId, TupletRatio, TypedObjectId, WallClockTime,
 };
 use epiphany_determinism::{DomainTag, Preimage};
 
@@ -61,6 +61,9 @@ pub enum LayoutContent {
     /// boundaries land, and its volta brackets — resolved to layout placements
     /// at projection time (the constrained pass has no score access).
     Repeat(RepeatContent),
+    /// A slur: its two endpoint onsets (resolved to columns in the constrained
+    /// pass), its arc direction, and any authored curvature/style overrides.
+    Slur(SlurContent),
 }
 
 /// The clef and key-signature sequences in force across a staff instance,
@@ -199,6 +202,43 @@ pub enum RepeatPlacement {
     /// region end, clock-mismatched offset). The boundary draws no ink; the
     /// structure keeps its traced anchor.
     Unresolved,
+}
+
+/// A slur's engraving content (Chapter 5 §"Slurs": `Slur`), with each endpoint
+/// event resolved to its onset [`TimePoint`] and the authored overrides
+/// distilled so the constrained pass can draw the arc without score access.
+/// Dimensions are carried as [`SpaceUnit`] (staff spaces) so the payload stays
+/// `Eq` with the rest of [`LayoutContent`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SlurContent {
+    pub start: SlurEndpoint,
+    pub end: SlurEndpoint,
+    pub direction: SlurDirection,
+    /// Authored arc apex height (`curvature_override.height`); `None` = the
+    /// engraver's span-proportional default.
+    pub height: Option<SpaceUnit>,
+    /// Authored line thickness (`style.thickness`); `None` = the engraver's
+    /// default.
+    pub thickness: Option<SpaceUnit>,
+}
+
+/// A slur endpoint on the region's spacing axis.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SlurEndpoint {
+    /// At the note column of this resolved event onset.
+    At(TimePoint),
+    /// Not resolvable in this region (missing event, or an endpoint whose
+    /// column is laid out in another region). The slur draws no curve.
+    Unresolved,
+}
+
+/// A slur's arc direction. `Auto` lets the engraver choose (Minimal: above the
+/// staff); `Above`/`Below` are authored via `curvature_override.direction`.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum SlurDirection {
+    Auto,
+    Above,
+    Below,
 }
 
 /// A structural layout object before spacing (Chapter 7 §"Layout Objects"). It
@@ -644,9 +684,9 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
         if !seen.insert(provenance.stable_id) {
             continue;
         }
-        // A repeat structure carries its resolved engraving content (barline
-        // verdict + placements). Every other cross-cutting object is
-        // structural in this tier.
+        // A repeat structure or slur carries its resolved engraving content
+        // (barline placements / endpoint onsets). Every other cross-cutting
+        // object is structural in this tier.
         let content = match src {
             TypedObjectId::RepeatStructure(id) => score
                 .cross_cutting
@@ -654,6 +694,13 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                 .iter()
                 .find(|rp| rp.id == id)
                 .map(|rp| repeat_content(score, rp))
+                .unwrap_or_default(),
+            TypedObjectId::Slur(id) => score
+                .cross_cutting
+                .slurs
+                .iter()
+                .find(|slur| slur.id == id)
+                .map(|slur| slur_content(score, slur))
                 .unwrap_or_default(),
             _ => LayoutContent::Structural,
         };
@@ -1021,6 +1068,35 @@ fn repeat_content(score: &Score, rp: &epiphany_core::RepeatStructure) -> LayoutC
             })
             .collect(),
     })
+}
+
+/// A slur's engraving content: each endpoint event resolved to its onset (or
+/// [`SlurEndpoint::Unresolved`] when the event is missing), plus the authored
+/// curvature/style overrides. Direction defaults to [`SlurDirection::Auto`]
+/// when the override leaves it unset.
+fn slur_content(score: &Score, slur: &epiphany_core::Slur) -> LayoutContent {
+    use epiphany_core::CurveDirection;
+    let direction = match slur.curvature_override.as_ref().and_then(|o| o.direction) {
+        Some(CurveDirection::Above) => SlurDirection::Above,
+        Some(CurveDirection::Below) => SlurDirection::Below,
+        None => SlurDirection::Auto,
+    };
+    LayoutContent::Slur(SlurContent {
+        start: slur_endpoint(score, slur.start_event),
+        end: slur_endpoint(score, slur.end_event),
+        direction,
+        height: slur.curvature_override.as_ref().and_then(|o| o.height),
+        thickness: slur.style.thickness,
+    })
+}
+
+/// A slur endpoint: the event's onset as a [`TimePoint`], or
+/// [`SlurEndpoint::Unresolved`] when the event is absent from the score.
+fn slur_endpoint(score: &Score, event: EventId) -> SlurEndpoint {
+    match score.events.get(event) {
+        Some(graph_event) => SlurEndpoint::At(event_time(graph_event.position())),
+        None => SlurEndpoint::Unresolved,
+    }
 }
 
 /// Resolves a repeat boundary anchor to a [`RepeatPlacement`]. Unlike

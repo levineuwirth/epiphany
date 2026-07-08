@@ -474,10 +474,15 @@ impl StubSolver {
         } else {
             Vec::new()
         };
-        // Strokes pass through verbatim (the stub resolves no geometry), gated on
-        // the same structural validity as the glyphs.
+        // Strokes and curves pass through verbatim (the stub resolves no
+        // geometry), gated on the same structural validity as the glyphs.
         let strokes = if structural_valid {
             input.strokes.clone()
+        } else {
+            Vec::new()
+        };
+        let curves = if structural_valid {
+            input.curves.clone()
         } else {
             Vec::new()
         };
@@ -515,6 +520,7 @@ impl StubSolver {
                 pages,
                 glyphs,
                 strokes,
+                curves,
                 engraving_decisions: input.engraving_decisions.clone(),
                 catalog: input.catalog.clone(),
             },
@@ -609,6 +615,7 @@ mod tests {
             }],
             glyphs,
             strokes: vec![],
+            curves: vec![],
             vertical_bands: vec![band],
             constraints: vec![],
             break_origins: vec![],
@@ -696,6 +703,7 @@ mod tests {
             }],
             glyphs: vec![unknown],
             strokes: vec![],
+            curves: vec![],
             vertical_bands: vec![band],
             constraints: vec![],
             break_origins: vec![],

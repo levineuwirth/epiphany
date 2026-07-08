@@ -95,7 +95,7 @@ pub use cache::{
 pub use constrained::{
     active_clef, is_rigid_width_stroke, to_constrained, try_to_constrained, Axis, BreakClass,
     BreakKind, BreakOrigin, ConstrainedLayoutIR, ConstrainedLayoutRegion,
-    ConstrainedValidationError, ConstraintParameters, ConstraintRegistryId, GlyphObject,
+    ConstrainedValidationError, ConstraintParameters, ConstraintRegistryId, Curve, GlyphObject,
     GlyphObjectId, GlyphStyle, LayoutConstraint, LayoutTransformError, SpringSlot, Stroke,
 };
 pub use engrave_theory::{
@@ -120,9 +120,10 @@ pub use logical::{
     KeySignatureLayout, LayoutContent, LayoutObject, LayoutRegion, LocalCoordinateSystem,
     LogicalLayoutIR, MarkerLayout, MeasureContent, MultimeasureRestLayout, NoteContent, NoteLayout,
     NotePitch, PlacedClef, PlacedComponent, PlacedKeySignature, RepeatContent, RepeatPlacement,
-    RestContent, RestLayout, ScoreVersion, SlurLayout, SpannerLayout, StaffContent, StaffLayout,
-    TextLayout, TieLayout, TimeSignatureContent, TimeSignatureDisplayLayout, TrajectoryLayout,
-    TupletDisplayLayout, VerticalExtent, VoltaContent,
+    RestContent, RestLayout, ScoreVersion, SlurContent, SlurDirection, SlurEndpoint, SlurLayout,
+    SpannerLayout, StaffContent, StaffLayout, TextLayout, TieLayout, TimeSignatureContent,
+    TimeSignatureDisplayLayout, TrajectoryLayout, TupletDisplayLayout, VerticalExtent,
+    VoltaContent,
 };
 pub use provenance::{
     continuation_instance_key, manifestation_layout_id, stable_layout_id, synthesized_layout_id,

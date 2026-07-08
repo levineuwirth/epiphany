@@ -11,17 +11,19 @@
 
 use epiphany_core::{
     AcousticPitch, AcousticRealization, AnchorOffset, Canvas, ChordSymbol, CmnNominal,
-    CrossCuttingRegistry, Event, EventArena, EventDuration, EventPosition, IdentifiedPitch,
-    IdentityContext, Marker, Measure, MeasurePosition, MetricTimeModel, MusicalDuration,
-    MusicalPosition, Pitch, PitchSpaceId, PitchSpacePosition, RationalTime, RegionContent,
-    RegionEdge, RegionTimeModel, RepeatKind, RepeatStructure, ScalePosition, Score, Spanner, Staff,
-    StaffBasedContent, StaffExtent, StaffInstance, StaffLineConfiguration, StemConfiguration, Tie,
-    TieClass, TimeAnchor, TimeExtent, TuningReference, Voice, Volta, WallClockTime,
+    CrossCuttingRegistry, CurvatureOverride, CurveDirection, Event, EventArena, EventDuration,
+    EventPosition, IdentifiedPitch, IdentityContext, Marker, Measure, MeasurePosition,
+    MetricTimeModel, MusicalDuration, MusicalPosition, Pitch, PitchSpaceId, PitchSpacePosition,
+    RationalTime, RegionContent, RegionEdge, RegionTimeModel, RepeatKind, RepeatStructure,
+    ScalePosition, Score, Slur, SlurKind, SpaceUnit, SpanStyle, Spanner, Staff, StaffBasedContent,
+    StaffExtent, StaffInstance, StaffLineConfiguration, StemConfiguration, Tie, TieClass,
+    TimeAnchor, TimeExtent, TuningReference, Voice, Volta, WallClockTime,
 };
 use epiphany_core::{
     ChordSymbolId, EventId, InstrumentId, MarkerId, MeasureId, PitchId, RegionId,
     RepeatStructureId, ReplicaId, SlurId, SpannerId, StaffId, StaffInstanceId, TieId, VoiceId,
 };
+use epiphany_determinism::CanonicalF64;
 
 use epiphany_determinism::fuzz::SplitMix64;
 
@@ -257,6 +259,48 @@ pub fn ten_measure_with_repeats(seed: u64) -> Score {
     score
 }
 
+/// [`ten_measure_single_staff`] plus three slurs — the slur-rendering
+/// acceptance fixture (schema-major-2 E2). All endpoints are events on the one
+/// staff, so each resolves to a note column: a default (Legato, auto direction
+/// = above) slur over the first four notes, an authored below slur with an
+/// explicit apex height over the middle four, and an editorial slur over a
+/// later pair. Invariant-clean.
+pub fn ten_measure_with_slurs(seed: u64) -> Score {
+    let mut score = ten_measure_single_staff(seed);
+    let events: Vec<EventId> = score.canvas.regions[0].staff_instances()[0].voices[0]
+        .events
+        .clone();
+
+    score.cross_cutting.slurs.push(Slur {
+        id: score.identity.mint::<SlurId>(),
+        start_event: events[0],
+        end_event: events[3],
+        kind: SlurKind::Legato,
+        curvature_override: None,
+        style: SpanStyle::default(),
+    });
+    score.cross_cutting.slurs.push(Slur {
+        id: score.identity.mint::<SlurId>(),
+        start_event: events[5],
+        end_event: events[8],
+        kind: SlurKind::Phrase,
+        curvature_override: Some(CurvatureOverride {
+            direction: Some(CurveDirection::Below),
+            height: Some(SpaceUnit(CanonicalF64::new(2.0).expect("2.0 is finite"))),
+        }),
+        style: SpanStyle::default(),
+    });
+    score.cross_cutting.slurs.push(Slur {
+        id: score.identity.mint::<SlurId>(),
+        start_event: events[10],
+        end_event: events[12],
+        kind: SlurKind::Editorial,
+        curvature_override: None,
+        style: SpanStyle::default(),
+    });
+    score
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,6 +334,24 @@ mod tests {
                 .map(|rp| rp.voltas.len())
                 .sum::<usize>(),
             2
+        );
+    }
+
+    #[test]
+    fn slur_fixture_is_invariant_clean_and_carries_three_slurs() {
+        let s = ten_measure_with_slurs(1);
+        let v = check_invariants(&s);
+        assert!(v.is_empty(), "slur fixture has violations: {v:?}");
+        assert_eq!(s.cross_cutting.slurs.len(), 3);
+        // One slur authors a below-direction curvature override; the rest use
+        // the engraver's default (above).
+        assert_eq!(
+            s.cross_cutting
+                .slurs
+                .iter()
+                .filter(|slur| slur.curvature_override.is_some())
+                .count(),
+            1
         );
     }
 

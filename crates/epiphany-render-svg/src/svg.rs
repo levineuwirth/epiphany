@@ -183,6 +183,8 @@ pub struct RenderStats {
     pub fallback_rect_count: usize,
     /// `<line>` elements emitted (one per resolved stroke: staff line, stem, …).
     pub stroke_count: usize,
+    /// `<path>` curve elements emitted (one per resolved curve: slur, …).
+    pub curve_count: usize,
     /// Elements carrying a `data-prov` trace back to a score-graph source.
     pub provenance_count: usize,
     /// Distinct layers, each rendered as one `<g>` group.
@@ -239,6 +241,7 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
                     text_count: 0,
                     fallback_rect_count: 0,
                     stroke_count: 0,
+                    curve_count: 0,
                     provenance_count: 0,
                     layer_count: 0,
                     class_counts,
@@ -262,9 +265,14 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
     for (i, stroke) in resolved.strokes.iter().enumerate() {
         stroke_layers.entry(stroke.layer).or_default().push(i);
     }
+    let mut curve_layers: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
+    for (i, curve) in resolved.curves.iter().enumerate() {
+        curve_layers.entry(curve.layer).or_default().push(i);
+    }
     let layer_ids: std::collections::BTreeSet<i32> = glyph_layers
         .keys()
         .chain(stroke_layers.keys())
+        .chain(curve_layers.keys())
         .copied()
         .collect();
 
@@ -272,6 +280,7 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
     let mut text_count = 0;
     let mut fallback_rect_count = 0;
     let mut stroke_count = 0;
+    let mut curve_count = 0;
     let mut provenance_count = 0;
 
     let mut s = String::new();
@@ -339,6 +348,39 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
                     num(stroke.to.y.0),
                     stroke_fill,
                     num(stroke.thickness.0),
+                    opacity,
+                    prov,
+                );
+            }
+        }
+
+        // Curves (slurs, …) — drawn after strokes, before glyphs, as a stroked
+        // (unfilled) cubic-bézier `<path>`.
+        if let Some(indices) = curve_layers.get(layer) {
+            for &i in indices {
+                let curve = &resolved.curves[i];
+                let (stroke_fill, opacity) = stroke_colour(curve.style.rgba);
+                let prov = if options.emit_provenance {
+                    provenance_count += 1;
+                    curve_provenance_attrs(&curve.provenance)
+                } else {
+                    String::new()
+                };
+                curve_count += 1;
+                let _ = writeln!(
+                    s,
+                    "      <path d=\"M {} {} C {} {} {} {} {} {}\" \
+                     fill=\"none\" stroke=\"{}\" stroke-width=\"{}\"{}{}/>",
+                    num(curve.p0.x.0),
+                    num(curve.p0.y.0),
+                    num(curve.p1.x.0),
+                    num(curve.p1.y.0),
+                    num(curve.p2.x.0),
+                    num(curve.p2.y.0),
+                    num(curve.p3.x.0),
+                    num(curve.p3.y.0),
+                    stroke_fill,
+                    num(curve.thickness.0),
                     opacity,
                     prov,
                 );
@@ -440,6 +482,7 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
             text_count,
             fallback_rect_count,
             stroke_count,
+            curve_count,
             provenance_count,
             layer_count: layer_ids.len(),
             class_counts,
@@ -497,6 +540,24 @@ fn content_bounds(resolved: &ResolvedLayoutIR, margin: f32) -> Option<(f32, f32,
             }
         }
     }
+    // A cubic bézier's ink stays within its control points' convex hull, so
+    // bounding by the four control points (± half-thickness) is correct and
+    // conservative — the drawn arc never bows past it.
+    for curve in &resolved.curves {
+        let half = (curve.thickness.0 * 0.5).max(0.0);
+        for point in curve.control_points() {
+            let (cx, cy) = (point.x.0, point.y.0);
+            for (px, py) in [(cx - half, cy - half), (cx + half, cy + half)] {
+                if px.is_finite() && py.is_finite() {
+                    any = true;
+                    min_x = min_x.min(px);
+                    min_y = min_y.min(py);
+                    max_x = max_x.max(px);
+                    max_y = max_y.max(py);
+                }
+            }
+        }
+    }
     if !any {
         return None;
     }
@@ -534,6 +595,15 @@ fn provenance_attrs(p: &Provenance, glyph: &str, class: GlyphClass) -> String {
 fn stroke_provenance_attrs(p: &Provenance) -> String {
     format!(
         " data-prov=\"{:032x}\" data-source-kind=\"{}\" data-kind=\"stroke\"",
+        p.stable_id.0,
+        p.source.discriminant(),
+    )
+}
+
+/// `data-*` provenance attributes for a curve (a cubic-bézier primitive).
+fn curve_provenance_attrs(p: &Provenance) -> String {
+    format!(
+        " data-prov=\"{:032x}\" data-source-kind=\"{}\" data-kind=\"curve\"",
         p.stable_id.0,
         p.source.discriminant(),
     )
@@ -643,7 +713,7 @@ fn glyph_note(mode: GlyphMode) -> &'static str {
 /// archival. Shared by the main render and [`empty_svg`] so neither can drift.
 fn provenance_note(emit_provenance: bool) -> &'static str {
     if emit_provenance {
-        "every glyph and stroke carries a data-prov trace to its score-graph source"
+        "every glyph, stroke, and curve carries a data-prov trace to its score-graph source"
     } else {
         "provenance traces suppressed (display-only output, not archival)"
     }
@@ -925,6 +995,7 @@ mod tests {
             pages: vec![],
             glyphs: vec![],
             strokes: vec![],
+            curves: vec![],
             engraving_decisions: vec![],
             catalog: Default::default(),
         };

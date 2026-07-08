@@ -3,6 +3,7 @@ glyph_count=56
 path_count=56
 fallback_rect_count=0
 stroke_count=100
+curve_count=0
 provenance_count=156
 layer_count=1
 hard_constraint_count=95

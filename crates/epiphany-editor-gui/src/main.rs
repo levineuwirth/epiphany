@@ -108,6 +108,18 @@ fn shape_rect(shape: &HitShape, vm: &ViewMap) -> egui::Rect {
             vm.world_to_screen(from.x.0, from.y.0),
             vm.world_to_screen(to.x.0, to.y.0),
         ),
+        // A curve's highlight rectangle is its control-point hull (the box that
+        // bounds the drawn arc), mapped to screen space.
+        HitShape::Curve { p0, p1, p2, p3, .. } => {
+            let xs = [p0.x.0, p1.x.0, p2.x.0, p3.x.0];
+            let ys = [p0.y.0, p1.y.0, p2.y.0, p3.y.0];
+            let min = |a: &[f32]| a.iter().copied().fold(f32::INFINITY, f32::min);
+            let max = |a: &[f32]| a.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            egui::Rect::from_two_pos(
+                vm.world_to_screen(min(&xs), max(&ys)),
+                vm.world_to_screen(max(&xs), min(&ys)),
+            )
+        }
     }
 }
 

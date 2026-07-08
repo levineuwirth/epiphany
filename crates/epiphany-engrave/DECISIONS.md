@@ -445,3 +445,30 @@ Repeat-free scores are byte-identical (the existing `ten_measure` /
   `time_signature_digits_ride_their_barline_slot_past_a_repeat_sign`
   (unbounded page so x-disjointness compares one line; verified to fail
   against the interpolated remap).
+
+## ENGRAVER_VERSION 4 → 5: slur curves (E2, 2026-07-08)
+
+The pipeline draws slurs as cubic-bézier `Curve` primitives (layout-ir E2), so
+the resolved output carries a third primitive kind and a slur-bearing score's
+baked geometry differs from version 4's traced anchors — a version bump per
+the constant's own rule. Slur-free scores draw the same ink; only the empty
+`curves` count prefix enters their canonical bytes (self-consistent). The
+existing render SVG goldens are byte-identical; the six snapshot goldens gained
+a `curve_count=0` line (a new tracked primitive kind), and the new
+`ten_measure_with_slurs` fixture got its own goldens. Engrave changes:
+
+- `HorizontalRemap::curves` re-maps each curve's four control-point x's through
+  the same coordinate map as a spanning stroke's endpoints (a slur is never
+  rigid-width); y preserved.
+- Casting: a `curve_system` assigns each curve WHOLE to the system containing
+  its start control point and translates it by that system's placement — no
+  split. An honest cubic split across a system break needs de Casteljau
+  subdivision (the linear stroke split is wrong for a bézier), deferred; a
+  break-spanning slur draws whole in its start system (a documented Minimal
+  boundary). A curve's control-point hull grows its system's extent, so a slur
+  above the staff raises the system height for page overflow, like a volta
+  bracket.
+- `slur_shape_penalty` stops being *vacuous* 0.0 and becomes *0.0 by
+  construction*: the Minimal tier draws the ideal arc (or the authored
+  override), so a drawn slur has zero shape deviation. A real penalty awaits a
+  collision-aware Standard-tier solver that compromises a slur's shape.

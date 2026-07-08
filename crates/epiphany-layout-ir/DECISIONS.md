@@ -556,3 +556,58 @@ these are E1 implementation decisions for the Phase-F ratification pass:
   `is_barline_glyph` is exported so the casting-off solver classifies
   measure-boundary columns from this crate's name vocabulary instead of a
   string prefix.
+
+## Slur curves + the cubic-bézier curve primitive (schema major 2, E2, 2026-07-08)
+
+The third pipeline primitive kind. Primitives were two parallel flat Vecs
+(`glyphs`, `strokes`) at each of the three IR stages; a `Curve` (four control
+points + thickness/layer/style/provenance, mirroring `Stroke`) adds a third
+`curves` Vec at constrained/resolved/render, threaded through canonical encode
+(a fifth `u32` count prefix — the width-lock test moved 4→5), the round-trip
+provenance chains and count identity, and `to_render`. Rendering is
+spec-unconstrained (Ch7's primitive vocabulary delegates drawing to RenderIR,
+out of scope), so these are E2 decisions for the Phase-F ratification pass:
+
+- **Slur geometry (Minimal tier).** A slur engraves to ONE cubic bézier
+  arcing between its two endpoint event columns — the slur's exact provenance
+  rides the curve (no synthesis; one primitive per slur), so a drawn slur adds
+  no traced anchor. Endpoints resolve at `to_logical` to
+  `SlurEndpoint::At(onset)` / `Unresolved` (a `LayoutContent::Slur` payload,
+  exactly the E1 repeat pattern); the constrained stage looks up each onset's
+  Note column. A symmetric arc: endpoints tucked `SLUR_INSET` in from the
+  columns and `SLUR_ENDPOINT_GAP` outside the staff on the arc side; control
+  points lifted so the apex (`t=0.5`) sits `height` from the endpoint line
+  (`lift = 4/3·height`, since `B(0.5)` weights the controls by ¾).
+- **curvature_override honored structurally.** `direction` (Above/Below;
+  default Auto = above) flips the arc; `height` (a `SpaceUnit`) sets the apex,
+  else a span-proportional default clamped to `[SLUR_MIN_HEIGHT,
+  SLUR_MAX_HEIGHT]`. `style.line` (dashed/dotted) is a Push-3 refinement — the
+  Minimal tier draws every slur solid (the curve carries an `ink` style like a
+  stroke); nothing authored is lost, only its dash rendering deferred.
+- **Honest non-drawing.** No curve is drawn — the traced anchor keeps
+  provenance, the same discipline as an unresolvable repeat boundary — when:
+  an endpoint is unresolved (dangling event, or a column in another region);
+  the span is not left-to-right after the endpoint inset; or (review fix) the
+  slur resolved to **no single staff** — endpoints on different staves of one
+  region, where the arc would float at `yo = 0` detached from a note on the
+  other staff (cross-staff slurs, like cross-region ones, defer to a later
+  tranche). A cross-region (system-spanning) slur stays the deferred
+  `CrossRegionObject` anchor-only path.
+- **Authored dimensions sanitized to defaults (review fix).**
+  `curvature_override.height` and `style.thickness` are the first
+  *user-authored* values to reach primitive geometry, and neither the codec
+  nor the invariants bound them positive. A non-positive height (which would
+  flip or collapse the arc) or a non-positive thickness (a zero draws an
+  invisible, unhittable curve; a **negative** one fails
+  `InvalidCurveGeometry` and would blank the whole layout) falls back to the
+  engraver's default rather than reaching the `Curve`. Out-of-range authored
+  dimensions are an authoring-validation concern; the engraver draws something
+  sensible instead of a broken or missing score.
+- **Hit-testing.** A `HitShape::Curve { p0..p3, half_width }` — Copy-preserving
+  (four points + a scalar) — flattens the cubic into `CURVE_FLATTEN_SEGMENTS`
+  capsule segments *inside* its `contains`/`intersects_rect` tests, so a curve
+  is ONE hit region (the round-trip and hit-map counts stay `+ curves.len()`),
+  and its AABB is the control-point hull ± half-width (a cubic never bows past
+  its hull). A slur click flows through `click()`/`select()` generically —
+  `selection.source = Slur` — with no editor-core arm; an edit op cleanly
+  refuses the non-pitch selection.

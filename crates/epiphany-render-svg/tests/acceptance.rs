@@ -41,6 +41,10 @@ fn fixtures() -> Vec<(&'static str, Score)> {
             "ten_measure_with_repeats",
             epiphany_testkit::fixtures::ten_measure_with_repeats(0x000A_11CE),
         ),
+        (
+            "ten_measure_with_slurs",
+            epiphany_testkit::fixtures::ten_measure_with_slurs(0x000A_11CE),
+        ),
     ]
 }
 
@@ -70,6 +74,7 @@ fn snapshot_text(
         out.stats.fallback_rect_count
     ));
     s.push_str(&format!("stroke_count={}\n", out.stats.stroke_count));
+    s.push_str(&format!("curve_count={}\n", out.stats.curve_count));
     s.push_str(&format!(
         "provenance_count={}\n",
         out.stats.provenance_count
@@ -146,8 +151,8 @@ fn fixtures_render_to_golden_locked_svg_and_snapshot() {
         );
         assert_eq!(
             out.stats.provenance_count,
-            out.stats.glyph_count + out.stats.stroke_count,
-            "{fixture}: every drawn glyph and stroke must carry a provenance trace"
+            out.stats.glyph_count + out.stats.stroke_count + out.stats.curve_count,
+            "{fixture}: every drawn glyph, stroke, and curve must carry a provenance trace"
         );
         let class_sum: usize = out.stats.class_counts.values().sum();
         assert_eq!(
@@ -310,8 +315,8 @@ fn engraver_output_is_golden_locked_well_formed_with_every_glyph_drawn() {
         );
         assert_eq!(
             out.stats.provenance_count,
-            out.stats.glyph_count + out.stats.stroke_count,
-            "{fixture}: every drawn glyph and stroke must carry a provenance trace"
+            out.stats.glyph_count + out.stats.stroke_count + out.stats.curve_count,
+            "{fixture}: every drawn glyph, stroke, and curve must carry a provenance trace"
         );
         assert!(
             out.diagnostics.is_empty(),

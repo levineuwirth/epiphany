@@ -25,11 +25,13 @@ use crate::render::{RenderIR, RenderPrimitive};
 use crate::spatial::{BoundingBox, Point, Transform2D};
 
 /// Which [`RenderIR`] primitive a [`HitRegion`] belongs to: an index into
-/// [`RenderIR::primitives`] (a glyph) or [`RenderIR::strokes`] (a stroke).
+/// [`RenderIR::primitives`] (a glyph), [`RenderIR::strokes`] (a stroke), or
+/// [`RenderIR::curves`] (a curve).
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum PrimitiveRef {
     Glyph(usize),
     Stroke(usize),
+    Curve(usize),
 }
 
 impl PrimitiveRef {
@@ -53,6 +55,43 @@ pub enum HitShape {
         to: Point,
         half_width: f32,
     },
+    /// A curve (slur, …): its four cubic-bézier control points and a half-width.
+    /// Its geometry tests flatten the cubic into [`CURVE_FLATTEN_SEGMENTS`]
+    /// straight capsule segments (a polyline), so a click near the drawn arc
+    /// selects it — one region per curve, unlike per-segment hit fragments.
+    Curve {
+        p0: Point,
+        p1: Point,
+        p2: Point,
+        p3: Point,
+        half_width: f32,
+    },
+}
+
+/// How many straight segments a cubic bézier is flattened into for hit-testing.
+/// Chosen so a normal-span slur's chord error stays well under the half-width;
+/// a fixed count keeps the map deterministic and cheap.
+pub const CURVE_FLATTEN_SEGMENTS: usize = 16;
+
+/// The cubic-bézier point at parameter `t` (de Casteljau, expanded).
+fn cubic_point(p0: Point, p1: Point, p2: Point, p3: Point, t: f32) -> Point {
+    let u = 1.0 - t;
+    let (a, b, c, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+    Point::new(
+        a * p0.x.0 + b * p1.x.0 + c * p2.x.0 + d * p3.x.0,
+        a * p0.y.0 + b * p1.y.0 + c * p2.y.0 + d * p3.y.0,
+    )
+}
+
+/// The flattened polyline of a cubic bézier: `CURVE_FLATTEN_SEGMENTS + 1`
+/// points from `p0` to `p3`, endpoints exact.
+fn flatten_cubic(p0: Point, p1: Point, p2: Point, p3: Point) -> Vec<Point> {
+    (0..=CURVE_FLATTEN_SEGMENTS)
+        .map(|i| {
+            let t = i as f32 / CURVE_FLATTEN_SEGMENTS as f32;
+            cubic_point(p0, p1, p2, p3, t)
+        })
+        .collect()
 }
 
 impl HitShape {
@@ -67,6 +106,15 @@ impl HitShape {
                 to,
                 half_width,
             } => distance_point_segment(point, *from, *to) <= *half_width,
+            HitShape::Curve {
+                p0,
+                p1,
+                p2,
+                p3,
+                half_width,
+            } => flatten_cubic(*p0, *p1, *p2, *p3)
+                .windows(2)
+                .any(|seg| distance_point_segment(point, seg[0], seg[1]) <= *half_width),
         }
     }
 
@@ -87,6 +135,15 @@ impl HitShape {
                 to,
                 half_width,
             } => segment_intersects_rect(*from, *to, *half_width, &rect),
+            HitShape::Curve {
+                p0,
+                p1,
+                p2,
+                p3,
+                half_width,
+            } => flatten_cubic(*p0, *p1, *p2, *p3)
+                .windows(2)
+                .any(|seg| segment_intersects_rect(seg[0], seg[1], *half_width, &rect)),
         }
     }
 
@@ -105,6 +162,26 @@ impl HitShape {
                 from.x.0.max(to.x.0) + half_width,
                 from.y.0.max(to.y.0) + half_width,
             ),
+            HitShape::Curve {
+                p0,
+                p1,
+                p2,
+                p3,
+                half_width,
+            } => {
+                // A cubic lies within its control points' convex hull, so their
+                // AABB (± half-width) is a correct conservative broad-phase box.
+                let xs = [p0.x.0, p1.x.0, p2.x.0, p3.x.0];
+                let ys = [p0.y.0, p1.y.0, p2.y.0, p3.y.0];
+                let min = |a: &[f32]| a.iter().copied().fold(f32::INFINITY, f32::min);
+                let max = |a: &[f32]| a.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                BoundingBox::new(
+                    min(&xs) - half_width,
+                    min(&ys) - half_width,
+                    max(&xs) + half_width,
+                    max(&ys) + half_width,
+                )
+            }
         }
     }
 }
@@ -139,18 +216,22 @@ impl HitRegion {
     /// before glyphs at one layer, then primitive index). A larger key is painted
     /// later, i.e. on top.
     fn paint_order(&self) -> (i32, u8, usize) {
+        // The renderer paints strokes, then curves, then glyphs at one layer
+        // (a slur draws over the staff lines but under the noteheads it joins).
         let (kind_rank, index) = match self.primitive {
             PrimitiveRef::Stroke(i) => (0, i),
-            PrimitiveRef::Glyph(i) => (1, i),
+            PrimitiveRef::Curve(i) => (1, i),
+            PrimitiveRef::Glyph(i) => (2, i),
         };
         (self.layer, kind_rank, index)
     }
 }
 
-/// The hit-test map over a [`RenderIR`]: one [`HitRegion`] per primitive (glyph
-/// and stroke). The public [`Self::regions`] vector is stored in construction
-/// order (glyph regions first, then stroke regions), not z-order; callers that
-/// need ordered selection results should use [`Self::hit`] or [`Self::within`].
+/// The hit-test map over a [`RenderIR`]: one [`HitRegion`] per primitive (glyph,
+/// stroke, and curve). The public [`Self::regions`] vector is stored in
+/// construction order (glyph regions, then stroke regions, then curve
+/// regions), not z-order; callers that need ordered selection results should
+/// use [`Self::hit`] or [`Self::within`].
 #[derive(Clone, PartialEq, Debug)]
 pub struct HitTestMap {
     pub regions: Vec<HitRegion>,
@@ -190,15 +271,17 @@ impl HitTestMap {
 }
 
 impl RenderIR {
-    /// Builds the [`HitTestMap`]: one [`HitRegion`] per glyph primitive and per
-    /// stroke. Regions are stored in construction order (glyphs, then strokes);
-    /// each region's [`HitRegion::layer`] and primitive reference carry the true
-    /// paint order consumed by [`HitTestMap::hit`] and [`HitTestMap::within`].
+    /// Builds the [`HitTestMap`]: one [`HitRegion`] per glyph primitive, per
+    /// stroke, and per curve. Regions are stored in construction order (glyphs,
+    /// then strokes, then curves); each region's [`HitRegion::layer`] and
+    /// primitive reference carry the true paint order consumed by
+    /// [`HitTestMap::hit`] and [`HitTestMap::within`].
     /// Each region's `source`/`layout_object`/`synthesis` come straight from the
     /// primitive's preserved [`crate::Provenance`]; its shape is computed in world
     /// coordinates.
     pub fn hit_test_map(&self) -> HitTestMap {
-        let mut regions = Vec::with_capacity(self.primitives.len() + self.strokes.len());
+        let mut regions =
+            Vec::with_capacity(self.primitives.len() + self.strokes.len() + self.curves.len());
         for (i, p) in self.primitives.iter().enumerate() {
             regions.push(HitRegion {
                 primitive: PrimitiveRef::Glyph(i),
@@ -221,6 +304,22 @@ impl RenderIR {
                     half_width: s.thickness.0 / 2.0,
                 },
                 layer: s.layer,
+            });
+        }
+        for (i, c) in self.curves.iter().enumerate() {
+            regions.push(HitRegion {
+                primitive: PrimitiveRef::Curve(i),
+                source: c.provenance.source,
+                layout_object: c.provenance.stable_id,
+                synthesis: c.provenance.synthesis,
+                shape: HitShape::Curve {
+                    p0: c.p0,
+                    p1: c.p1,
+                    p2: c.p2,
+                    p3: c.p3,
+                    half_width: c.thickness.0 / 2.0,
+                },
+                layer: c.layer,
             });
         }
         HitTestMap { regions }
@@ -358,7 +457,7 @@ fn segments_cross(p1: Point, p2: Point, p3: Point, p4: Point) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constrained::to_constrained;
+    use crate::constrained::{to_constrained, Curve};
     use crate::logical::to_logical;
     use crate::provenance::Provenance;
     use crate::render::to_render;
@@ -432,6 +531,63 @@ mod tests {
     }
 
     #[test]
+    fn a_curve_region_is_hit_near_its_flattened_arc_not_its_chord() {
+        // A symmetric arc bulging up: endpoints (0,0)->(4,0), controls lifted
+        // to y = 2 so the apex sits at 0.75·2 = 1.5. Half-width 0.1.
+        let s = HitShape::Curve {
+            p0: Point::new(0.0, 0.0),
+            p1: Point::new(1.0, 2.0),
+            p2: Point::new(3.0, 2.0),
+            p3: Point::new(4.0, 0.0),
+            half_width: 0.1,
+        };
+        // A point on the drawn arc near its apex is hit…
+        assert!(s.contains(Point::new(2.0, 1.5)));
+        // …but the chord midpoint (y=0, far below the arc) is NOT — a curve is
+        // its flattened polyline, not the straight line between its endpoints.
+        assert!(!s.contains(Point::new(2.0, 0.0)));
+        // The endpoints are exact.
+        assert!(s.contains(Point::new(0.0, 0.0)));
+        assert!(s.contains(Point::new(4.0, 0.0)));
+        // The broad-phase AABB is the control hull ± half-width.
+        assert_eq!(s.aabb(), BoundingBox::new(-0.1, -0.1, 4.1, 2.1));
+        // …and a rubber-band rect over the apex selects it.
+        assert!(s.intersects_rect(BoundingBox::new(1.5, 1.3, 2.5, 1.7)));
+    }
+
+    #[test]
+    fn a_curve_becomes_one_hit_region_tracing_its_source() {
+        use epiphany_core::{SlurId, TypedObjectId};
+        let slur = SlurId::new(epiphany_core::ReplicaId(3), 9);
+        let curve = Curve {
+            provenance: Provenance::projected(TypedObjectId::Slur(slur), vec![]),
+            p0: Point::new(0.0, 0.0),
+            p1: Point::new(1.0, 2.0),
+            p2: Point::new(3.0, 2.0),
+            p3: Point::new(4.0, 0.0),
+            thickness: crate::StaffSpace(0.2),
+            layer: 0,
+            style: crate::GlyphStyle { rgba: 0 },
+        };
+        let map = RenderIR {
+            primitives: vec![],
+            strokes: vec![],
+            curves: vec![curve],
+        }
+        .hit_test_map();
+        assert_eq!(map.regions.len(), 1, "one region per curve");
+        let region = &map.regions[0];
+        assert!(matches!(region.primitive, PrimitiveRef::Curve(0)));
+        assert_eq!(region.source, TypedObjectId::Slur(slur));
+        // A click on the arc resolves to the slur.
+        let hit = map.hit(Point::new(2.0, 1.5));
+        assert_eq!(
+            hit.first().map(|r| r.source),
+            Some(TypedObjectId::Slur(slur))
+        );
+    }
+
+    #[test]
     fn a_glyph_world_box_is_its_local_box_placed_by_position_and_transform() {
         // No transform: the local box just shifts by the position.
         let p = glyph(
@@ -442,6 +598,7 @@ mod tests {
         let HitShape::Box(b) = RenderIR {
             primitives: vec![p.clone()],
             strokes: vec![],
+            curves: vec![],
         }
         .hit_test_map()
         .regions[0]
@@ -460,6 +617,7 @@ mod tests {
         let HitShape::Box(b) = RenderIR {
             primitives: vec![t],
             strokes: vec![],
+            curves: vec![],
         }
         .hit_test_map()
         .regions[0]
@@ -477,7 +635,7 @@ mod tests {
         // One region per glyph and per stroke, none dropped or invented.
         assert_eq!(
             map.regions.len(),
-            render.primitives.len() + render.strokes.len()
+            render.primitives.len() + render.strokes.len() + render.curves.len()
         );
         assert!(!map.regions.is_empty());
 
@@ -499,6 +657,14 @@ mod tests {
                         s.provenance.source,
                         s.provenance.stable_id,
                         s.provenance.synthesis,
+                    )
+                }
+                PrimitiveRef::Curve(i) => {
+                    let c = &render.curves[i];
+                    (
+                        c.provenance.source,
+                        c.provenance.stable_id,
+                        c.provenance.synthesis,
                     )
                 }
             };
@@ -558,6 +724,7 @@ mod tests {
                 glyph(Point::ORIGIN, BoundingBox::new(-1.0, -1.0, 1.0, 1.0), 5),
             ],
             strokes: vec![stroke(Point::new(-2.0, 0.0), Point::new(2.0, 0.0), 0)],
+            curves: vec![],
         };
         let map = render.hit_test_map();
         let hits = map.hit(Point::ORIGIN);
@@ -585,6 +752,7 @@ mod tests {
                 ),
             ],
             strokes: vec![stroke(Point::new(0.0, 0.0), Point::new(3.0, 0.0), 0)],
+            curves: vec![],
         };
         let map = render.hit_test_map();
         // A rubber-band around the first glyph and the stroke, but not the far glyph.
@@ -608,6 +776,7 @@ mod tests {
         let render = RenderIR {
             primitives: vec![],
             strokes: vec![stroke(Point::new(0.0, 0.0), Point::new(10.0, 10.0), 0)],
+            curves: vec![],
         };
         let map = render.hit_test_map();
         // AABB-overlapping but body-missing rect near (0, 10): rejected.

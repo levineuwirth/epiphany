@@ -2646,7 +2646,7 @@ mod tests {
                     (b.left.0 + b.right.0) / 2.0,
                     (b.bottom.0 + b.top.0) / 2.0,
                 )),
-                HitShape::Segment { .. } => None,
+                HitShape::Segment { .. } | HitShape::Curve { .. } => None,
             })
             .expect("the rich fixture renders a notehead");
         session.click(click).expect("the click selects a glyph")
@@ -2662,6 +2662,57 @@ mod tests {
             .map(|r| r.layout_object)
             .expect("the notehead is in the hit map");
         session.select(lo).expect("selects the pitch")
+    }
+
+    /// Clicking a slur curve selects the slur (schema-major-2 E2). A slur draws
+    /// a cubic-bézier `Curve` primitive whose hit region flows through
+    /// `click()` generically — no slur-specific arm — so the selection resolves
+    /// to `TypedObjectId::Slur`. A click on the *arc* (its `t = 0.5` apex, not
+    /// its chord) hits it, proving the flattened-capsule hit shape.
+    #[test]
+    fn clicking_a_slur_curve_selects_the_slur() {
+        use epiphany_core::{Slur, SlurId, SlurKind, SpanStyle};
+
+        let mut score = valid_score_rich(0x5EED);
+        // Two events of region A's first voice, on its one staff.
+        let events: Vec<_> = score.canvas.regions[0].staff_instances()[0].voices[0]
+            .events
+            .clone();
+        let slur_id: SlurId = score.identity.mint();
+        score.cross_cutting.slurs.push(Slur {
+            id: slur_id,
+            start_event: events[0],
+            end_event: events[2],
+            kind: SlurKind::Legato,
+            curvature_override: None,
+            style: SpanStyle::default(),
+        });
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+
+        // The slur's curve region, and the arc's apex (cubic at t = 0.5).
+        let apex = session
+            .hit_test()
+            .regions
+            .iter()
+            .find_map(|r| match r.shape {
+                HitShape::Curve { p0, p1, p2, p3, .. }
+                    if r.source == TypedObjectId::Slur(slur_id) =>
+                {
+                    let mid = |a: f32, b: f32, c: f32, d: f32| (a + 3.0 * b + 3.0 * c + d) / 8.0;
+                    Some(Point::new(
+                        mid(p0.x.0, p1.x.0, p2.x.0, p3.x.0),
+                        mid(p0.y.0, p1.y.0, p2.y.0, p3.y.0),
+                    ))
+                }
+                _ => None,
+            })
+            .expect("the slur draws a curve region");
+
+        let selection = session.click(apex).expect("the click selects the slur");
+        assert_eq!(selection.source, TypedObjectId::Slur(slur_id));
+        // A slur is not an editable target: an edit op cleanly refuses it
+        // rather than mishandling the non-pitch selection.
+        assert!(session.transpose_selection(1).is_err());
     }
 
     /// A pitch in the last event of the first voice that has events — its slot has

@@ -11,7 +11,7 @@
 use crate::provenance::Provenance;
 use crate::resolved::ResolvedLayoutIR;
 use crate::spatial::{Point, ScaleContext};
-use crate::{BoundingBox, GlyphReference, GlyphStyle, Stroke, Transform2D};
+use crate::{BoundingBox, Curve, GlyphReference, GlyphStyle, Stroke, Transform2D};
 
 /// A single renderer primitive (Chapter 7 §"RenderIR"). Interface only — it
 /// carries just enough to prove the provenance-preservation contract: every
@@ -37,6 +37,8 @@ pub struct RenderIR {
     /// Non-glyph line primitives (staff lines, stems, barlines, …), traced like
     /// the glyph primitives so the round-trip recovers their sources too.
     pub strokes: Vec<Stroke>,
+    /// Cubic-bézier curve primitives (slurs, …), traced like the strokes.
+    pub curves: Vec<Curve>,
 }
 
 /// The render target (Chapter 7 §"RenderIR": `RenderConfiguration.target`).
@@ -143,5 +145,6 @@ pub fn to_render(resolved: &ResolvedLayoutIR) -> RenderIR {
             })
             .collect(),
         strokes: resolved.strokes.clone(),
+        curves: resolved.curves.clone(),
     }
 }

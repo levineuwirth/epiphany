@@ -79,7 +79,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_layout_ir::{
     all_available, profile_thresholds, Axis, BravuraCatalog, ConstrainedLayoutIR, ConstraintId,
-    ConstraintSolver, ConstraintStrength, GlyphCatalog, GlyphObject, GlyphObjectId,
+    ConstraintSolver, ConstraintStrength, Curve, GlyphCatalog, GlyphObject, GlyphObjectId,
     InvalidationSet, LayoutConstraint, Point, QualityMetricVector, Rect, ResolvedGlyph,
     ResolvedLayoutIR, SolveReport, SolveStatus, SolverBudgetUsed, SolverConfig, SolverState,
     SolverTier, SolverVersion, SolverWarning, SolverWarningKind, SpringSlotId, Stroke,
@@ -121,14 +121,17 @@ pub struct Engraver {
 /// wrapping score differs from version `1`'s single endless system), to `3`
 /// when casting-off gained its widow-rebalance phase (a wrapping score's system
 /// breaks — and so its baked geometry — differ again from version `2`'s pure
-/// greedy first-fit), and to `4` when repeat barlines and volta brackets landed
+/// greedy first-fit), to `4` when repeat barlines and volta brackets landed
 /// and the horizontal remap became **slot-relative** (a repeat-bearing score's
 /// baked geometry differs from version `3`'s invisible traced anchors, and a
 /// same-slot companion glyph — a time-signature digit, key-signature
 /// accidental, or spelling accidental — now rides its slot's rigid delta
 /// instead of drifting by interpolation; scores without such companions are
-/// unchanged).
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(4);
+/// unchanged), and to `5` when slur curves landed (a slur-bearing score gains
+/// a drawn cubic-bézier curve where version `4` had only a traced anchor; the
+/// resolved output now carries a third primitive kind, so its canonical bytes
+/// differ; slur-free scores draw the same ink as before).
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(5);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -175,12 +178,19 @@ impl Engraver {
         // stem behind. Both gate on structural validity: a malformed input must
         // not leak geometry into the diagnostic layout (which reaches
         // canonical_bytes / the renderer).
-        let (spaced_glyphs, spaced_strokes): (Vec<ResolvedGlyph>, Vec<Stroke>) = if structural_valid
-        {
+        let (spaced_glyphs, spaced_strokes, spaced_curves): (
+            Vec<ResolvedGlyph>,
+            Vec<Stroke>,
+            Vec<Curve>,
+        ) = if structural_valid {
             let remap = HorizontalRemap::build(input);
-            (remap.glyphs(input), remap.strokes(input))
+            (
+                remap.glyphs(input),
+                remap.strokes(input),
+                remap.curves(input),
+            )
         } else {
-            (Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new())
         };
         // Casting-off: break the spaced line into systems, stack them, assign
         // pages, and bake every position into the single world frame. Pure
@@ -191,6 +201,7 @@ impl Engraver {
                 input,
                 &spaced_glyphs,
                 &spaced_strokes,
+                &spaced_curves,
                 &self.geometry,
             ))
         } else {
@@ -287,13 +298,20 @@ impl Engraver {
         // glyph/stroke positions baked, the engraver's break decisions appended
         // to the pipeline's (Chapter 7 §"ResolvedLayoutIR": decisions "including
         // any the solver itself made").
-        let (glyphs, strokes, pages, engraving_decisions) = match cast {
+        let (glyphs, strokes, curves, pages, engraving_decisions) = match cast {
             Some(cast) => {
                 let mut decisions = input.engraving_decisions.clone();
                 decisions.extend(cast.decisions);
-                (cast.glyphs, cast.strokes, cast.pages, decisions)
+                (
+                    cast.glyphs,
+                    cast.strokes,
+                    cast.curves,
+                    cast.pages,
+                    decisions,
+                )
             }
             None => (
+                Vec::new(),
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
@@ -309,6 +327,7 @@ impl Engraver {
                 pages,
                 glyphs,
                 strokes,
+                curves,
                 engraving_decisions,
                 catalog: input.catalog.clone(),
             },
@@ -455,6 +474,30 @@ impl HorizontalRemap {
                     thickness: s.thickness,
                     layer: s.layer,
                     style: s.style,
+                }
+            })
+            .collect()
+    }
+
+    /// Re-maps each curve's four control-point x's through the same coordinate
+    /// map as a spanning stroke's endpoints (a slur is never rigid-width), so
+    /// the arc stretches with the spacing between its endpoint columns. Each
+    /// control point's y is preserved verbatim.
+    fn curves(&self, input: &ConstrainedLayoutIR) -> Vec<Curve> {
+        input
+            .curves
+            .iter()
+            .map(|c| {
+                let map_x = |point: Point| Point::new(self.map(point.x.0), point.y.0);
+                Curve {
+                    provenance: c.provenance.clone(),
+                    p0: map_x(c.p0),
+                    p1: map_x(c.p1),
+                    p2: map_x(c.p2),
+                    p3: map_x(c.p3),
+                    thickness: c.thickness,
+                    layer: c.layer,
+                    style: c.style,
                 }
             })
             .collect()

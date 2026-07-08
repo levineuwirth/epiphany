@@ -114,3 +114,15 @@ diff is content-only). `GlyphClass` gained a `Repeat` class (token
 `repeat`) so snapshots and `data-class` attributes separate repeat signs
 from plain barlines. Volta ending numerals arrive as `timeSig` digit glyphs
 (there is still no free-text primitive — unchanged).
+
+## Curve primitive → stroked `<path>`, `GlyphClass` unaffected (E2, 2026-07-08)
+
+A resolved `Curve` (slur) emits a stroked, unfilled cubic-bézier `<path d="M..
+C.."` with `data-kind="curve"` and a `curve_provenance_attrs` trace — drawn
+after strokes and before glyphs (a slur sits over the staff lines, under the
+noteheads it joins), in its own layer-grouped loop parallel to the stroke
+loop. `content_bounds` grows by each curve's control-point hull ± half-thickness
+(a cubic's ink never bows past its hull). `RenderStats` gained `curve_count`;
+the acceptance snapshot prints it and the `provenance_count == glyph + stroke`
+invariant became `+ curve`. `GlyphClass` is untouched — curves are not glyphs,
+so they carry no `data-class`.

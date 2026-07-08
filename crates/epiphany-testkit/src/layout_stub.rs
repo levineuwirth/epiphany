@@ -346,6 +346,22 @@ pub fn gen_stroke(rng: &mut Rng) -> Stroke {
     }
 }
 
+/// A cubic-bézier curve primitive with generated provenance and geometry.
+pub fn gen_curve(rng: &mut Rng) -> Curve {
+    Curve {
+        provenance: gen_provenance(rng),
+        p0: gen_point(rng),
+        p1: gen_point(rng),
+        p2: gen_point(rng),
+        p3: gen_point(rng),
+        thickness: gen_staff_space(rng),
+        layer: rng.range(0, 8) as i32 - 4,
+        style: GlyphStyle {
+            rgba: rng.next_u64() as u32,
+        },
+    }
+}
+
 /// A constrained layout IR whose catalog hash covers exactly its glyph metrics
 /// (so the real stub solver accepts it as well-formed), with an **internally
 /// consistent** vertical band: every glyph names the band, and the band's
@@ -389,6 +405,7 @@ pub fn gen_constrained_layout_ir(rng: &mut Rng) -> ConstrainedLayoutIR {
         strokes: (0..rng.range_usize(0, 3))
             .map(|_| gen_stroke(rng))
             .collect(),
+        curves: (0..rng.range_usize(0, 3)).map(|_| gen_curve(rng)).collect(),
         vertical_bands: vec![band],
         constraints: vec![],
         break_origins: vec![],
@@ -489,13 +506,15 @@ pub fn gen_round_trip_report(rng: &mut Rng) -> RoundTripReport {
         .iter()
         .map(|primitive| primitive.provenance.source)
         .chain(render.strokes.iter().map(|stroke| stroke.provenance.source))
+        .chain(render.curves.iter().map(|curve| curve.provenance.source))
         .collect();
-    let total = render.primitives.len() + render.strokes.len();
+    let total = render.primitives.len() + render.strokes.len() + render.curves.len();
     RoundTripReport {
         status: SolveStatus::Solved,
         logical_objects: total,
         glyphs: render.primitives.len(),
         render_strokes: render.strokes.len(),
+        render_curves: render.curves.len(),
         render_primitives: total,
         recovered_sources,
     }

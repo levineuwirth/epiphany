@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="649.4532" height="205.8981" viewBox="0 0 64.9453 20.5898">
-  <!-- epiphany-render-svg: glyphs are genuine Bravura SMuFL outlines inlined as paths; geometry is the resolved layout verbatim, no engraving performed here; every glyph and stroke carries a data-prov trace to its score-graph source -->
+  <!-- epiphany-render-svg: glyphs are genuine Bravura SMuFL outlines inlined as paths; geometry is the resolved layout verbatim, no engraving performed here; every glyph, stroke, and curve carries a data-prov trace to its score-graph source -->
   <g transform="translate(-5.5 -5.5006) scale(1 -1)">
     <g data-layer="0">
       <line x1="8.5599" y1="-12.8926" x2="8.5599" y2="-12.8926" stroke="#000000" stroke-width="0" data-prov="01550dc9d118134419219044f188e28a" data-source-kind="6" data-kind="stroke"/>

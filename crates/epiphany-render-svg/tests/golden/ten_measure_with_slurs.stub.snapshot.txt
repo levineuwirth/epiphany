@@ -1,14 +1,14 @@
-fixture=ten_measure_single_staff solver=stub
+fixture=ten_measure_with_slurs solver=stub
 glyph_count=51
 path_count=51
 fallback_rect_count=0
 stroke_count=91
-curve_count=0
-provenance_count=142
+curve_count=3
+provenance_count=145
 layer_count=1
 hard_constraint_count=90
 xml_well_formed=true
-view_box=[-3.065 -3.632 88.87701 11.024]
+view_box=[-3.065 -5.4266667 88.87701 13.253333]
 class_counts:
   barline=10
   clef=1

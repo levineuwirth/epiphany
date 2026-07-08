@@ -27,7 +27,8 @@ use crate::engraving::{EngravingDecision, OverrideKind, OverridePriority, Overri
 use crate::glyph::{metrics, BravuraCatalog, GlyphCatalog, GlyphCatalogIdentity, GlyphReference};
 use crate::logical::{
     apply_offset, BarlineKind, LayoutContent, LogicalLayoutIR, PlacedClef, PlacedKeySignature,
-    RepeatContent, RepeatPlacement, ScoreVersion, StaffContent,
+    RepeatContent, RepeatPlacement, ScoreVersion, SlurContent, SlurDirection, SlurEndpoint,
+    StaffContent,
 };
 use crate::provenance::{
     manifestation_layout_id, LayoutObjectId, Provenance, SynthesisInstanceKey, SynthesisKind,
@@ -94,6 +95,38 @@ impl Stroke {
     }
 }
 
+/// A cubic-bézier curve primitive — the third pipeline primitive kind, drawn as
+/// a stroked (unfilled) path (Chapter 7 §"Non-overreach"). Slurs engrave to
+/// one of these; ties and other span curves will follow. Like [`Stroke`] it is
+/// a *free* primitive (no vertical band, no spring slot): the solver re-spaces
+/// its control points by the horizontal coordinate map, exactly as it does a
+/// spanning stroke's endpoints. The four control points are world-space
+/// staff-space coordinates, `p0`→`p3` the drawing order.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Curve {
+    pub provenance: Provenance,
+    pub p0: Point,
+    pub p1: Point,
+    pub p2: Point,
+    pub p3: Point,
+    pub thickness: StaffSpace,
+    pub layer: i32,
+    pub style: GlyphStyle,
+}
+
+impl Curve {
+    /// This curve's stable id (derived from its provenance, as a glyph's is).
+    pub fn id(&self) -> GlyphObjectId {
+        GlyphObjectId(self.provenance.stable_id.0)
+    }
+
+    /// The four control points in drawing order — the shared iteration order
+    /// for remapping, bounding, and flattening.
+    pub fn control_points(&self) -> [Point; 4] {
+        [self.p0, self.p1, self.p2, self.p3]
+    }
+}
+
 /// The constrained IR: composite objects flattened to glyphs and strokes, with
 /// the vertical bands and engraving decisions that the solver consumes alongside
 /// them (Chapter 7 §"Constraints").
@@ -105,6 +138,8 @@ pub struct ConstrainedLayoutIR {
     pub glyphs: Vec<GlyphObject>,
     /// Non-glyph line primitives (staff lines, stems, barlines, …).
     pub strokes: Vec<Stroke>,
+    /// Cubic-bézier curve primitives (slurs, …).
+    pub curves: Vec<Curve>,
     pub vertical_bands: Vec<VerticalBand>,
     pub constraints: Vec<LayoutConstraint>,
     /// The user-override attributions behind the projected break constraints in
@@ -309,6 +344,8 @@ pub enum ConstrainedValidationError {
     InvalidConstraintRegion(GlyphObjectId),
     /// A stroke has a non-finite endpoint or a non-finite/negative thickness.
     InvalidStrokeGeometry(GlyphObjectId),
+    /// A curve has a non-finite control point or a non-finite/negative thickness.
+    InvalidCurveGeometry(GlyphObjectId),
 }
 
 /// A malformed logical-stage value that cannot be transformed without losing
@@ -499,6 +536,19 @@ impl ConstrainedLayoutIR {
                 ));
             }
         }
+
+        for curve in &self.curves {
+            // Every control point and the thickness must quantize; thickness
+            // non-negative — the same discipline as a stroke's geometry.
+            let geometry_quantizes = curve
+                .control_points()
+                .iter()
+                .all(|point| point.quantize().is_some())
+                && curve.thickness.quantize().is_some();
+            if !geometry_quantizes || curve.thickness.0 < 0.0 {
+                return Err(ConstrainedValidationError::InvalidCurveGeometry(curve.id()));
+            }
+        }
         Ok(())
     }
 }
@@ -534,6 +584,14 @@ const VOLTA_LINE_THICKNESS: f32 = 0.16; // SMuFL repeatEndingLineThickness defau
 const VOLTA_TEXT_X: f32 = 0.4; // the first ending digit sits this far right of the bracket start
 const VOLTA_TEXT_DROP: f32 = 1.3; // ending-digit baseline, below the bracket line
 const VOLTA_ENDING_GAP: f32 = 0.5; // extra gap between successive ending numbers
+                                   // Slur engraving defaults (Minimal tier; a symmetric cubic arc — Push 3 refines
+                                   // with collision-aware shaping).
+const SLUR_ENDPOINT_GAP: f32 = 0.7; // endpoints sit this far outside the staff on the arc side
+const SLUR_INSET: f32 = 0.6; // endpoints tuck this far in from their event columns
+const SLUR_HEIGHT_FACTOR: f32 = 0.16; // auto arc apex height as a fraction of span width
+const SLUR_MIN_HEIGHT: f32 = 0.8; // …clamped to at least this many staff spaces
+const SLUR_MAX_HEIGHT: f32 = 3.0; // …and at most this many
+const SLUR_THICKNESS: f32 = 0.12; // default line thickness when the style declares none
 
 /// The horizontal half-reach of an emitted `PositionWithin` region, in staff
 /// spaces. The constrained stage performs no casting-off, so a region imposes
@@ -650,6 +708,7 @@ pub fn try_to_constrained(
 ) -> Result<ConstrainedLayoutIR, LayoutTransformError> {
     let mut glyphs = Vec::new();
     let mut strokes = Vec::new();
+    let mut curves = Vec::new();
     let mut diagnostics = Vec::new();
     let mut vertical_bands = Vec::new();
     let mut horizontal_slots = Vec::new();
@@ -1015,6 +1074,7 @@ pub fn try_to_constrained(
         let mut emit = Emit {
             glyphs: &mut glyphs,
             strokes: &mut strokes,
+            curves: &mut curves,
             diagnostics: &mut diagnostics,
             column_members: BTreeMap::new(),
             region_glyphs: Vec::new(),
@@ -1394,10 +1454,30 @@ pub fn try_to_constrained(
                         }
                     }
                 }
+                TypedObjectId::Slur(_) => {
+                    // A slur engraves to a cubic-bézier curve arcing between its
+                    // two endpoint columns. No curve is honest — the traced
+                    // anchor keeps provenance instead — when: the slur resolved
+                    // to no single staff (endpoints on different staves; the
+                    // arc would float at `yo = 0` detached from a note on
+                    // another staff — a Minimal boundary, cross-staff slurs
+                    // defer to a later tranche), either endpoint is unresolved
+                    // (dangling event, or an endpoint in another region), or the
+                    // span is not left-to-right in this region.
+                    let curve = match content {
+                        Some(LayoutContent::Slur(slur)) if staff.is_some() => {
+                            slur_curve(provenance, slur, yo, &columns)
+                        }
+                        _ => None,
+                    };
+                    match curve {
+                        Some(curve) => emit.curve(curve),
+                        None => emit.stroke(anchor(provenance, Point::new(default_x, yo))),
+                    }
+                }
                 // Region, Voice, GraphicObject, and every other cross-cutting
-                // structure (ties, slurs, beams, tuplets, spanners, markers, …)
-                // have no Minimal-tier glyph; a zero-extent traced anchor keeps
-                // them.
+                // structure (ties, beams, tuplets, spanners, markers, …) have no
+                // Minimal-tier glyph; a zero-extent traced anchor keeps them.
                 _ => emit.stroke(anchor(provenance, Point::new(default_x, yo))),
             }
         }
@@ -1710,6 +1790,7 @@ pub fn try_to_constrained(
         horizontal_slots,
         glyphs,
         strokes,
+        curves,
         vertical_bands,
         constraints,
         break_origins,
@@ -1800,10 +1881,11 @@ struct ColumnInfo {
 }
 
 /// The accumulators a region's engraving emits into. Glyphs (only) carry band and
-/// spring-slot membership; strokes are free line primitives.
+/// spring-slot membership; strokes and curves are free line primitives.
 struct Emit<'a> {
     glyphs: &'a mut Vec<GlyphObject>,
     strokes: &'a mut Vec<Stroke>,
+    curves: &'a mut Vec<Curve>,
     diagnostics: &'a mut Vec<LayoutDiagnostic>,
     column_members: BTreeMap<SpringSlotId, Vec<GlyphObjectId>>,
     region_glyphs: Vec<GlyphObjectId>,
@@ -1857,6 +1939,10 @@ impl Emit<'_> {
 
     fn stroke(&mut self, stroke: Stroke) {
         self.strokes.push(stroke);
+    }
+
+    fn curve(&mut self, curve: Curve) {
+        self.curves.push(curve);
     }
 
     fn diag(&mut self, source: TypedObjectId, kind: LayoutDiagnosticKind) {
@@ -2049,6 +2135,90 @@ fn repeat_sign_right_extension(name: &str) -> f32 {
             (repeat_sign_x(name, 0.0) + right(name) - right("barlineSingle")).max(0.0)
         }
         _ => 0.0,
+    }
+}
+
+/// The cubic-bézier curve for a slur, or `None` when it cannot be honestly
+/// drawn in this region: either endpoint unresolved (dangling event, or an
+/// endpoint whose column was laid out in another region), or a span that is not
+/// left-to-right after the endpoint inset. `yo` is the slur's staff origin (its
+/// bottom line). A symmetric arc — the Minimal-tier default; collision-aware
+/// shaping is a Standard-tier (Push 3) refinement.
+fn slur_curve(
+    provenance: &Provenance,
+    slur: &SlurContent,
+    yo: f32,
+    columns: &BTreeMap<ColumnKey, ColumnInfo>,
+) -> Option<Curve> {
+    let start_x = slur_endpoint_x(&slur.start, columns)?;
+    let end_x = slur_endpoint_x(&slur.end, columns)?;
+    // Tuck the endpoints in from the note columns; a span too narrow to inset
+    // (adjacent or coincident columns) is not drawn.
+    let p0x = start_x + SLUR_INSET;
+    let p3x = end_x - SLUR_INSET;
+    if p3x <= p0x {
+        return None;
+    }
+    // Direction: honor an authored override, else default above the staff.
+    let above = match slur.direction {
+        SlurDirection::Below => false,
+        SlurDirection::Above | SlurDirection::Auto => true,
+    };
+    // Endpoint y: just outside the staff on the arc side.
+    let base_y = if above {
+        yo + STAFF_HEIGHT + SLUR_ENDPOINT_GAP
+    } else {
+        yo - SLUR_ENDPOINT_GAP
+    };
+    // Apex height: an authored *positive* height, else span-proportional and
+    // clamped. A non-positive authored height is out of range — it would flip
+    // or collapse the arc — so it falls back to the default rather than
+    // producing a downward "above" slur (authoring-validation may flag it
+    // separately; the engraver draws something sensible).
+    let span = p3x - p0x;
+    let default_height = (span * SLUR_HEIGHT_FACTOR).clamp(SLUR_MIN_HEIGHT, SLUR_MAX_HEIGHT);
+    let height = slur
+        .height
+        .map(|h| h.0.get() as f32)
+        .filter(|h| *h > 0.0)
+        .unwrap_or(default_height);
+    // Lift the two control points so the cubic's apex (t = 0.5) sits `height`
+    // from the endpoint line: B(0.5) lifts the control y by 0.75, so the lift
+    // is 4/3 · height (negated below the staff).
+    let lift = if above { height } else { -height } * 4.0 / 3.0;
+    // Thickness: an authored *positive* value, else the default. A
+    // non-positive one is skipped — a zero would draw an invisible,
+    // unhittable slur, and a negative one would fail geometry validation and
+    // blank the whole layout; neither may reach the primitive.
+    let thickness = slur
+        .thickness
+        .map(|t| t.0.get() as f32)
+        .filter(|t| *t > 0.0)
+        .unwrap_or(SLUR_THICKNESS);
+    Some(Curve {
+        provenance: provenance.clone(),
+        p0: Point::new(p0x, base_y),
+        p1: Point::new(p0x + span / 3.0, base_y + lift),
+        p2: Point::new(p3x - span / 3.0, base_y + lift),
+        p3: Point::new(p3x, base_y),
+        thickness: StaffSpace(thickness),
+        layer: 0,
+        style: ink(),
+    })
+}
+
+/// A slur endpoint's resolved x: the note column at its resolved onset, or
+/// `None` when the endpoint is unresolved or its column was not laid out in
+/// this region.
+fn slur_endpoint_x(
+    endpoint: &SlurEndpoint,
+    columns: &BTreeMap<ColumnKey, ColumnInfo>,
+) -> Option<f32> {
+    match endpoint {
+        SlurEndpoint::At(time) => columns
+            .get(&ColumnKey::Timed(time.clone(), ColumnRole::Note))
+            .map(|info| info.x),
+        SlurEndpoint::Unresolved => None,
     }
 }
 
@@ -4068,5 +4238,224 @@ mod tests {
                 "repeat {id:?} keeps its zero-extent traced anchor"
             );
         }
+    }
+
+    // --- Slur curves (schema-major-2 E2) -----------------------------------
+
+    use epiphany_core::{
+        CurvatureOverride, CurveDirection, EventId, Slur, SlurId, SpaceUnit, SpanStyle,
+    };
+
+    /// The events of region A's first voice (all on its one staff), for slur
+    /// endpoints that resolve to note columns.
+    fn region_a_events(score: &Score) -> Vec<EventId> {
+        score.canvas.regions[0].staff_instances()[0].voices[0]
+            .events
+            .clone()
+    }
+
+    fn slur(id: SlurId, start: EventId, end: EventId, over: Option<CurvatureOverride>) -> Slur {
+        Slur {
+            id,
+            start_event: start,
+            end_event: end,
+            kind: epiphany_core::SlurKind::Legato,
+            curvature_override: over,
+            style: SpanStyle::default(),
+        }
+    }
+
+    fn slur_curve_of(constrained: &ConstrainedLayoutIR, id: SlurId) -> Option<&Curve> {
+        constrained
+            .curves
+            .iter()
+            .find(|curve| curve.provenance.source == TypedObjectId::Slur(id))
+    }
+
+    #[test]
+    fn a_default_slur_arcs_above_its_two_event_columns() {
+        let (mut score, _) = repeat_ready_score(41);
+        let events = region_a_events(&score);
+        let id: SlurId = score.identity.mint();
+        score
+            .cross_cutting
+            .slurs
+            .push(slur(id, events[0], events[2], None));
+        let constrained = to_constrained(&to_logical(&score));
+
+        let curve = slur_curve_of(&constrained, id).expect("the slur draws a curve");
+        // Its exact provenance rides the curve — one primitive per slur, no
+        // synthesis (a slur owns a single curve).
+        assert!(curve.provenance.synthesis.is_none());
+        // Left-to-right, endpoints between the event columns (tucked in).
+        assert!(curve.p3.x.0 > curve.p0.x.0);
+        assert_eq!(curve.p0.y, curve.p3.y, "endpoints share a baseline");
+        // Default = above: the apex (control points) sits ABOVE the endpoints
+        // in world y-up, and above the top staff line.
+        assert!(
+            curve.p1.y.0 > curve.p0.y.0 && curve.p2.y.0 > curve.p0.y.0,
+            "a default slur arcs upward (controls above the endpoint line)"
+        );
+        assert!(
+            curve.p0.y.0 >= STAFF_HEIGHT,
+            "the endpoints sit above the staff"
+        );
+        // No traced anchor for a drawn slur (the curve carries the provenance).
+        assert!(!constrained
+            .strokes
+            .iter()
+            .any(|s| s.provenance.source == TypedObjectId::Slur(id)));
+
+        crate::roundtrip::round_trip(&score);
+    }
+
+    #[test]
+    fn an_authored_below_override_flips_the_arc_and_sets_its_height() {
+        let (mut score, _) = repeat_ready_score(42);
+        let events = region_a_events(&score);
+        let above: SlurId = score.identity.mint();
+        let below: SlurId = score.identity.mint();
+        score
+            .cross_cutting
+            .slurs
+            .push(slur(above, events[0], events[2], None));
+        score.cross_cutting.slurs.push(slur(
+            below,
+            events[0],
+            events[2],
+            Some(CurvatureOverride {
+                direction: Some(CurveDirection::Below),
+                height: Some(SpaceUnit(
+                    epiphany_determinism::CanonicalF64::new(2.0).expect("finite"),
+                )),
+            }),
+        ));
+        let constrained = to_constrained(&to_logical(&score));
+
+        let up = slur_curve_of(&constrained, above).expect("above slur draws");
+        let down = slur_curve_of(&constrained, below).expect("below slur draws");
+        // The below slur arcs the other way: controls below the endpoints, and
+        // the endpoints sit below the staff (negative world y for the bottom
+        // staff at origin 0).
+        assert!(down.p1.y.0 < down.p0.y.0 && down.p2.y.0 < down.p0.y.0);
+        assert!(down.p0.y.0 < 0.0, "a below slur sits under the staff");
+        // Its authored apex height is 2.0: the control lift is 4/3 · height, so
+        // the apex (0.75 · lift below the baseline) is 2.0 below it.
+        let apex_drop = down.p0.y.0 - (down.p1.y.0 + 0.75 * (down.p1.y.0 - down.p0.y.0));
+        let _ = apex_drop;
+        let lift = down.p1.y.0 - down.p0.y.0;
+        assert!(
+            (0.75 * -lift - 2.0).abs() < 1e-4,
+            "authored apex height honored (2.0 staff spaces)"
+        );
+        // The above and below slurs mirror across the endpoint lines' sides.
+        assert!(up.p1.y.0 > up.p0.y.0);
+    }
+
+    #[test]
+    fn a_slur_with_an_unresolved_or_reversed_endpoint_keeps_its_anchor() {
+        let (mut score, _) = repeat_ready_score(43);
+        let events = region_a_events(&score);
+        let replica = score.identity.replica_id;
+        // A dangling end event: nothing to arc to.
+        let dangling: SlurId = score.identity.mint();
+        score.cross_cutting.slurs.push(slur(
+            dangling,
+            events[0],
+            EventId::new(replica, 9_999_999),
+            None,
+        ));
+        // A zero-span slur (both endpoints the same event): no left-to-right arc.
+        let degenerate: SlurId = score.identity.mint();
+        score
+            .cross_cutting
+            .slurs
+            .push(slur(degenerate, events[0], events[0], None));
+        let constrained = to_constrained(&to_logical(&score));
+
+        for id in [dangling, degenerate] {
+            assert!(
+                slur_curve_of(&constrained, id).is_none(),
+                "an unresolved/degenerate slur draws no curve"
+            );
+            assert!(
+                constrained
+                    .strokes
+                    .iter()
+                    .any(|s| { s.from == s.to && s.provenance.source == TypedObjectId::Slur(id) }),
+                "…it keeps its zero-extent traced anchor"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cross_staff_slur_keeps_its_anchor_rather_than_floating() {
+        use epiphany_core::generators::valid_score;
+        // A `valid_score` seed with two staff instances in its single region.
+        let mut score = (0..64u64)
+            .map(valid_score)
+            .find(|s| s.canvas.regions[0].staff_instances().len() == 2)
+            .expect("some seed yields a two-staff region");
+        let instances = score.canvas.regions[0].staff_instances();
+        // One endpoint on each staff — the slur resolves to no single staff.
+        let top = instances[0].voices[0].events[0];
+        let bottom = instances[1].voices[0].events[0];
+        let id: SlurId = score.identity.mint();
+        score.cross_cutting.slurs.push(slur(id, top, bottom, None));
+        let constrained = to_constrained(&to_logical(&score));
+
+        // No curve floating at yo = 0 detached from a note on the other staff;
+        // the traced anchor keeps provenance (a Minimal boundary).
+        assert!(
+            slur_curve_of(&constrained, id).is_none(),
+            "a cross-staff slur draws no curve"
+        );
+        assert!(constrained
+            .strokes
+            .iter()
+            .any(|s| s.from == s.to && s.provenance.source == TypedObjectId::Slur(id)));
+        crate::roundtrip::round_trip(&score);
+    }
+
+    #[test]
+    fn out_of_range_authored_slur_dimensions_fall_back_to_defaults() {
+        let (mut score, _) = repeat_ready_score(44);
+        let events = region_a_events(&score);
+        let neg: epiphany_determinism::CanonicalF64 =
+            epiphany_determinism::CanonicalF64::new(-1.0).expect("finite");
+        let zero: epiphany_determinism::CanonicalF64 =
+            epiphany_determinism::CanonicalF64::new(0.0).expect("finite");
+        // A slur authoring a negative height and a zero thickness — pathological
+        // out-of-range values that must NOT flip the arc, draw an invisible
+        // curve, or (for a negative thickness) fail geometry validation and
+        // blank the layout.
+        let id: SlurId = score.identity.mint();
+        let mut bad = slur(
+            id,
+            events[0],
+            events[2],
+            Some(CurvatureOverride {
+                direction: None, // Auto = above
+                height: Some(SpaceUnit(neg)),
+            }),
+        );
+        bad.style.thickness = Some(SpaceUnit(zero));
+        score.cross_cutting.slurs.push(bad);
+        let constrained = to_constrained(&to_logical(&score));
+
+        let curve = slur_curve_of(&constrained, id).expect("the slur still draws");
+        // The negative height fell back to the positive default: an Auto slur
+        // still arcs UP.
+        assert!(
+            curve.p1.y.0 > curve.p0.y.0,
+            "a non-positive authored height falls back, arc stays upward"
+        );
+        // The zero thickness fell back to the visible, hittable default.
+        assert!(
+            curve.thickness.0 > 0.0,
+            "thickness falls back to a positive default"
+        );
+        // Geometry validates — the layout is not blanked.
+        assert!(constrained.validate().is_ok());
     }
 }
