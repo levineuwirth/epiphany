@@ -673,32 +673,42 @@ mod tests {
         assert_eq!(vector.slur_shape_penalty.0, 0.0, "vacuous: no drawn slurs");
         assert_eq!(vector.beam_slope_penalty.0, 0.0, "vacuous: no drawn beams");
         assert_eq!(vector.page_fill_efficiency.0, 0.0, "vacuous: single page");
+        // Per-system justification fills every NON-final system to the content
+        // width, so the system-break axis (which measures a non-final system's
+        // shortfall) collapses to near zero — the point of justification.
         assert!(
-            (0.55..0.85).contains(&vector.system_break_penalty.0),
-            "the non-final system is evened below full: {}",
+            vector.system_break_penalty.0 < 0.1,
+            "the non-final system fills the width after justification: {}",
             vector.system_break_penalty.0
         );
+        // The width-uniformity axes RISE as a consequence: the justified
+        // non-final system now spans the full width while the last stays
+        // ragged-right, so the two systems' ink widths (and their glyph
+        // densities) differ more than the rebalanced natural widths did. This
+        // is honest for a two-system score (one full line, one short last
+        // line); a metric refinement that scores casting-off on natural widths
+        // or excludes the intentionally-ragged final system is a follow-up (see
+        // DECISIONS).
         assert!(
-            (0.3..0.6).contains(&vector.casting_off_quality.0),
-            "the rebalanced split is even, not a clamped-worst stub: {}",
+            (0.7..0.9).contains(&vector.casting_off_quality.0),
+            "the full non-final system contrasts with the ragged last: {}",
             vector.casting_off_quality.0
         );
         assert!(
-            vector.symbol_density_uniformity.0 < 0.1,
-            "density is even though widths are not: {}",
+            (0.3..0.5).contains(&vector.symbol_density_uniformity.0),
+            "density differs between the stretched and the ragged system: {}",
             vector.symbol_density_uniformity.0
         );
-        // Both the casting-off and the system-break axes exceed 0.8 x their
-        // Standard threshold, so the SHOULD-level floor diagnostic fires for
-        // each — the two sides of the rebalance trade-off, honestly reported —
-        // and, per the catalog, the status is untouched by them.
+        // The casting-off axis exceeds 0.8 × its Standard threshold, so its
+        // SHOULD-level floor diagnostic fires (per the catalog, never changing
+        // status); the system-break axis, now near zero, no longer floors.
         let floored = |metric: QualityMetricKind| {
             report.warnings.iter().any(|w| {
                 matches!(w.kind, SolverWarningKind::QualityFloorApproached { metric: m } if m == metric)
             })
         };
         assert!(floored(QualityMetricKind::CastingOff));
-        assert!(floored(QualityMetricKind::SystemBreak));
+        assert!(!floored(QualityMetricKind::SystemBreak));
         assert_eq!(report.status, SolveStatus::Solved);
     }
 
@@ -788,24 +798,34 @@ mod tests {
 
     #[test]
     fn floor_warnings_reference_the_profiles_threshold_column() {
-        // The ten-measure fixture's casting-off distortion (~0.45: the
-        // six/four widow-rebalanced split) sits between the Standard column's
-        // floor (0.8 x 0.35 = 0.28) and the Minimal column's (0.8 x 0.90 =
-        // 0.72) — so the default Standard profile warns about CastingOff and
-        // the Draft profile (which selects the Minimal column per the catalog's
-        // profile registry) does not. (This is the profile-column contrast the
-        // b-flat scale's spacing used to show, before spacing_distortion was
-        // scoped to rhythmic columns and short scores stopped warning; the
-        // casting-off axis carries the demonstration now.)
-        let input = ten_measure();
+        // The floor warning references the PROFILE'S threshold column, not a
+        // fixed threshold: the Standard column's casting-off threshold is
+        // tighter than the Minimal column's, so a value BETWEEN their floors
+        // warns under Standard/Publication (the Standard column) but not under
+        // Draft (the Minimal column). Tested directly on `floor_warnings` with a
+        // synthetic value between the two floors — robust to how any particular
+        // fixture's casting-off happens to land (justification, for one, now
+        // drives the ten-measure fixture's casting-off above both floors).
+        use epiphany_layout_ir::quality::{
+            profile_thresholds, MINIMAL_THRESHOLDS, QUALITY_FLOOR_FRACTION, STANDARD_THRESHOLDS,
+        };
+        use epiphany_layout_ir::NormalizedMetric;
+
+        let standard_floor = QUALITY_FLOOR_FRACTION * STANDARD_THRESHOLDS.casting_off_quality;
+        let minimal_floor = QUALITY_FLOOR_FRACTION * MINIMAL_THRESHOLDS.casting_off_quality;
+        assert!(
+            standard_floor < minimal_floor,
+            "the Standard casting-off column is tighter than the Minimal one"
+        );
+        let between = 0.5 * (standard_floor + minimal_floor);
+        // Only casting_off matters here; the other axes' values are irrelevant
+        // (the closure inspects the CastingOff warning alone).
+        let vector = QualityMetricVector {
+            casting_off_quality: NormalizedMetric(between),
+            ..QualityMetricVector::unmeasured()
+        };
         let castoff_warned = |profile: SolverProfile| {
-            let config = SolverConfig {
-                profile,
-                ..SolverConfig::default()
-            };
-            Engraver::default()
-                .solve(&input, &config)
-                .warnings
+            super::floor_warnings(&vector, profile_thresholds(profile))
                 .iter()
                 .any(|w| {
                     matches!(
@@ -819,14 +839,6 @@ mod tests {
         assert!(castoff_warned(SolverProfile::Standard));
         assert!(castoff_warned(SolverProfile::Publication));
         assert!(!castoff_warned(SolverProfile::Draft));
-        // The metric itself is profile-independent — only the diagnostic
-        // column changes.
-        let value = Engraver::default()
-            .solve(&input, &SolverConfig::default())
-            .metric_vector
-            .casting_off_quality
-            .0;
-        assert!((0.28..=0.72).contains(&value), "casting_off = {value}");
     }
 
     #[test]

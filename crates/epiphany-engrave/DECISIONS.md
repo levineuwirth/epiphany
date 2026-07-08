@@ -24,8 +24,10 @@ hard-constraint evaluation (which earned the `Minimal` tier).
 **Phase 3's layout track adds CASTING-OFF** (see "Casting-off (2026-07)" below):
 greedy system breaking at measure boundaries, vertical system stacking, page
 assignment, a populated `ResolvedPage`/`ResolvedSystem` tree, and full break-
-constraint evaluation. Still deferred: the vertical soft-spring solve within a
-system, per-system justification/stretch, and optimal break search.
+constraint evaluation. **Push 3's Standard-tier track then adds per-system
+JUSTIFICATION** (see "Per-system justification (Push 3)" below): every non-final
+system stretches to fill the content width. Still deferred: the vertical
+soft-spring solve within a system, and optimal (lookahead) break search.
 
 ### Honest tier
 
@@ -197,10 +199,10 @@ inputs the solver cannot measure.
    `ENGRAVER_VERSION` 2 → 3 (a wrapping score's baked geometry differs from pure
    greedy); the `ten_measure` render goldens were regenerated. Still a Minimal
    heuristic, not an optimality claim.
-10. **Deferred refinements** (named, not implied): per-system justification
-   (stretching the soft springs so every full system ends at the right
-   margin); the vertical spring solve (band heights are carried, not yet
-   renegotiated; systems stack by real content extents); orphan control and
+10. **Deferred refinements** (named, not implied): ~~per-system justification~~
+   (**landed in Push 3** — see below); the vertical spring solve (band heights
+   are carried, not yet renegotiated; systems stack by real content extents);
+   orphan control and
    optimal/lookahead casting-off quality beyond decision 9's tail-only widow
    rebalance — a `Standard`-tier concern (full-region rebalancing, and
    justification-aware casting-off once systems can stretch); casting-off caching /
@@ -519,3 +521,54 @@ duration-aware Standard-tier height would improve. A curve-free layout measures
 measurement-only change that leaves the resolved geometry, canonical bytes, and
 render goldens untouched (the same rule quality decision 8 followed); the RS
 reference suite is unaffected (no RS entry carries a slur).
+
+## Per-system justification (Push 3, 2026-07-08)
+
+The Standard-tier track's first block: every **non-final** system of a
+multi-system region stretches its horizontal slack so its ink fills the content
+width, instead of sitting at its natural left-aligned width. `ENGRAVER_VERSION`
+7 → 8 (any wrapping score's baked geometry differs; a single-system score is
+unchanged — its only system is ragged-right by convention).
+
+**The affine, clamped map.** Casting bakes each system by a `Placement`: a
+vertical shift `dy` plus a horizontal map `world_x = a·x + b`. A rigid
+(unjustified) system has `a = 1, b = dx` — the old pure translation. A justified
+system spreads the slack linearly: `a = 1 + extra/span`, `b = base_dx −
+extra·x0/span`, where `span = x_last − x0` is the slot-source range, `extra =
+content_width − natural_ink_width`, and `base_dx` puts the leftmost ink at the
+left margin. The map is **clamped** to `[x0, x1]`: within the slot range it is
+affine; beyond it (a glyph's bearing overhang, a staff line drawn to the ink
+edge) it is rigid slope-1 — so the mapped ink extremes agree *exactly* with the
+per-slot deltas at the first/last slots, and the justified ink spans exactly
+`[left_margin, left_margin + content_width]` (no over/undershoot).
+
+**Slot-relative, like E1.** Glyphs translate by the map evaluated at their
+SLOT's source (`Placement::slot_dx`), constant per slot, so intra-slot offsets
+(a time signature after its barline, an accidental left of its notehead) survive
+verbatim — never scaled by `a`. A spanning stroke (staff line, volta bracket)
+maps each endpoint through the affine (it stretches). A rigid-width stroke (a
+stem or ledger, via `owning_glyph`) translates by its owning slot's delta, so it
+stays attached without stretching. A slur's control points map straight through
+the affine — its endpoints follow their anchor notes and the arc stretches with
+the span.
+
+**Which systems justify.** Not the last system of a region (ragged-right, as
+engraving convention wants); not a system with no finite width target, a
+degenerate (single-slot) span, or already at/over width (`extra ≤ 0` — never
+compressed into overlap). Greedy first-fit fills non-final systems near-full, so
+the stretch factor `a` stays near 1 in practice.
+
+**Quality-metric consequences (honest, noted).** Justification drives
+`system_break_penalty` to near zero (a non-final system now fills the width — the
+point). As a side effect the width-uniformity axes RISE: the full non-final
+system contrasts with the ragged last line, so `casting_off_quality` and
+`symbol_density_uniformity` measure that contrast (for the ten-measure fixture,
+casting-off ~0.45 → ~0.80). This is honest for justified layout (full lines + a
+short last line), but the axes arguably penalize the *intentional* raggedness of
+the final system. **Follow-up (not this tranche):** score casting-off on natural
+(pre-justification) widths, or exclude / fill-fraction-weight the final system —
+a metric-semantics change needing catalog alignment. **Also noted:**
+`slur_shape` measures the *spaced* (pre-justification) whole curves, so
+justification's horizontal stretch of a slur is not reflected — a second-order
+gap in the same family as the spaced-vs-constrained one, a follow-up if slur
+fidelity warrants measuring the post-justification whole curve.

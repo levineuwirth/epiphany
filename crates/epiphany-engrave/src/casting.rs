@@ -81,10 +81,10 @@ use epiphany_core::{StaffId, TypedObjectId};
 use epiphany_layout_ir::{
     continuation_instance_key, is_barline_glyph, is_rigid_width_stroke, synthesized_layout_id,
     BreakClass, BreakKind, ConstrainedLayoutIR, Curve, DecisionSource, EngravingDecision,
-    EngravingDecisionKind, EngravingOverrideId, GlyphObjectId, LayoutConstraint, LayoutObjectId,
-    Margins, Point, Provenance, Rect, ResolvedGlyph, ResolvedMeasure, ResolvedPage, ResolvedStaff,
-    ResolvedSystem, Size2D, SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey, SynthesisKind,
-    SynthesisRegistryId, VerticalBand, VerticalBandId,
+    EngravingDecisionKind, EngravingOverrideId, GlyphObject, GlyphObjectId, LayoutConstraint,
+    LayoutObjectId, Margins, Point, Provenance, Rect, ResolvedGlyph, ResolvedMeasure, ResolvedPage,
+    ResolvedStaff, ResolvedSystem, Size2D, SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey,
+    SynthesisKind, SynthesisRegistryId, VerticalBand, VerticalBandId,
 };
 
 use crate::owning_glyph;
@@ -279,6 +279,57 @@ enum CurveFate {
     Split(Vec<(usize, [Point; 4])>),
 }
 
+/// A system's world-frame placement: a vertical shift `dy` plus a horizontal
+/// affine map `world_x = a·x + b`.
+///
+/// A rigid (unjustified) system has `a = 1`, `b = dx` — a pure translation. A
+/// **justified** system has `a > 1`: the horizontal slack (content width minus
+/// natural ink width) is spread linearly across the line so its ink fills the
+/// content width. The map is applied SLOT-RELATIVELY to glyphs — each slot's
+/// members translate by the map evaluated at the slot's source, so intra-slot
+/// offsets (a time signature after its barline, an accidental left of its
+/// notehead) survive verbatim — directly to spanning-stroke and curve
+/// endpoints, and via the owning slot for a rigid-width stroke (a stem or ledger
+/// that must stay attached to its notehead, not stretch).
+#[derive(Copy, Clone)]
+struct Placement {
+    a: f32,
+    b: f32,
+    dy: f32,
+    /// The system's slot-source range `[x0, x1]`. The affine stretch acts only
+    /// WITHIN it; beyond it (a glyph's bearing overhang, a staff line drawn to
+    /// the ink edge) the map is rigid slope-1, so the mapped ink extremes agree
+    /// exactly with the per-slot deltas at the first/last slots.
+    x0: f32,
+    x1: f32,
+}
+
+impl Placement {
+    /// A pure translation (an unjustified system, or the identity fallback for
+    /// content no system claims). `a = 1`, so the clamp range is irrelevant.
+    fn rigid(dx: f32, dy: f32) -> Self {
+        Placement {
+            a: 1.0,
+            b: dx,
+            dy,
+            x0: 0.0,
+            x1: 0.0,
+        }
+    }
+    /// The world x of a spaced x: affine within the slot-source range, rigid
+    /// (slope 1) beyond it.
+    fn x(&self, x: f32) -> f32 {
+        let c = x.clamp(self.x0, self.x1);
+        self.a * c + self.b + (x - c)
+    }
+    /// The rigid delta every glyph in a slot whose source is `slot_x`
+    /// translates by — constant per slot, so intra-slot offsets are preserved.
+    /// Slot sources lie in `[x0, x1]`, so no clamp is needed.
+    fn slot_dx(&self, slot_x: f32) -> f32 {
+        (self.a - 1.0) * slot_x + self.b
+    }
+}
+
 /// The content extent of a system in spaced (pre-casting) coordinates.
 #[derive(Copy, Clone)]
 struct Extent {
@@ -444,6 +495,12 @@ pub(crate) fn cast_off(
     for infos in &mut region_slots {
         infos.sort_by(|a, b| a.x.total_cmp(&b.x).then_with(|| a.id.cmp(&b.id)));
     }
+    // Each slot's spaced reference x, for the slot-relative justification delta.
+    let slot_source_x: BTreeMap<SpringSlotId, f32> = region_slots
+        .iter()
+        .flatten()
+        .map(|info| (info.id, info.x))
+        .collect();
 
     // ---- Break requirements ----------------------------------------------
     let mut reqs: BTreeMap<SpringSlotId, Vec<BreakReq>> = BTreeMap::new();
@@ -641,7 +698,7 @@ pub(crate) fn cast_off(
         .0;
     let content_height = geometry.content_height();
     let bounded = content_height > 0.0;
-    let mut placements: Vec<(f32, f32)> = Vec::with_capacity(systems.len());
+    let mut placements: Vec<Placement> = Vec::with_capacity(systems.len());
     let mut page_systems: Vec<Vec<usize>> = Vec::new();
     let mut cursor = 0.0_f32;
     let mut page_floor = 0.0_f32;
@@ -658,9 +715,17 @@ pub(crate) fn cast_off(
             page_floor = cursor - content_height.max(0.0);
             page_systems.push(Vec::new());
         }
-        let dx = geometry.margins.left.0 - ext.min_x;
+        let base_dx = geometry.margins.left.0 - ext.min_x;
         let dy = cursor - ext.max_y;
-        placements.push((dx, dy));
+        placements.push(justify_system(
+            plan,
+            ext,
+            base_dx,
+            dy,
+            &region_slots,
+            &region_systems,
+            width_limit,
+        ));
         page_systems
             .last_mut()
             .expect("a page was opened above")
@@ -719,10 +784,18 @@ pub(crate) fn cast_off(
         .iter()
         .zip(&input.glyphs)
         .map(|(spaced, glyph)| {
-            let (dx, dy) = system_of_slot
-                .get(&glyph.horizontal_slot)
-                .map(|&s| placements[s])
-                .unwrap_or((0.0, 0.0));
+            let (dx, dy) = match system_of_slot.get(&glyph.horizontal_slot) {
+                Some(&s) => {
+                    // Slot-relative: every member of a slot translates by the
+                    // map at the slot's source, so intra-slot offsets survive.
+                    let sx = slot_source_x
+                        .get(&glyph.horizontal_slot)
+                        .copied()
+                        .unwrap_or(spaced.position.x.0);
+                    (placements[s].slot_dx(sx), placements[s].dy)
+                }
+                None => (0.0, 0.0),
+            };
             ResolvedGlyph {
                 position: Point::new(spaced.position.x.0 + dx, spaced.position.y.0 + dy),
                 ..spaced.clone()
@@ -734,11 +807,19 @@ pub(crate) fn cast_off(
     let mut staff_marks: BTreeMap<(usize, StaffId), StaffAgg> = BTreeMap::new();
     let mut strokes: Vec<Stroke> = Vec::with_capacity(spaced_strokes.len());
     let mut continuations: Vec<Stroke> = Vec::new();
-    for (spaced, fate) in spaced_strokes.iter().zip(&fates) {
+    for ((source, spaced), fate) in input.strokes.iter().zip(spaced_strokes).zip(&fates) {
         match fate {
             StrokeFate::Rigid(sys) => {
-                let (dx, dy) = sys.map(|s| placements[s]).unwrap_or((0.0, 0.0));
-                let stroke = translated(spaced, dx, dy);
+                let stroke = match sys {
+                    Some(s) => place_stroke(
+                        source,
+                        spaced,
+                        placements[*s],
+                        &slot_source_x,
+                        &input.glyphs,
+                    ),
+                    None => spaced.clone(),
+                };
                 if let (Some(s), TypedObjectId::Staff(staff)) = (sys, spaced.provenance.source) {
                     mark_staff(&mut staff_marks, *s, staff, &stroke);
                 }
@@ -746,7 +827,9 @@ pub(crate) fn cast_off(
             }
             StrokeFate::Split(segments) => {
                 for (k, (s, from, to)) in segments.iter().enumerate() {
-                    let (dx, dy) = placements[*s];
+                    // A split stroke spans systems — a staff line or volta
+                    // bracket — so each segment stretches with its system.
+                    let p = placements[*s];
                     let provenance = if k == 0 {
                         // The first segment carries the original stroke's exact
                         // provenance: the object survives, re-shaped.
@@ -761,8 +844,8 @@ pub(crate) fn cast_off(
                     };
                     let stroke = Stroke {
                         provenance,
-                        from: Point::new(from.x.0 + dx, from.y.0 + dy),
-                        to: Point::new(to.x.0 + dx, to.y.0 + dy),
+                        from: Point::new(p.x(from.x.0), from.y.0 + p.dy),
+                        to: Point::new(p.x(to.x.0), to.y.0 + p.dy),
                         thickness: spaced.thickness,
                         layer: spaced.layer,
                         style: spaced.style,
@@ -791,12 +874,17 @@ pub(crate) fn cast_off(
     let mut curves: Vec<Curve> = Vec::with_capacity(spaced_curves.len());
     let mut curve_continuations: Vec<Curve> = Vec::new();
     for (curve, fate) in spaced_curves.iter().zip(&curve_fates) {
+        // A slur has no intra-slot structure, so its control points map straight
+        // through the affine: the endpoints follow their anchor notes (which sit
+        // at slot sources) and the arc stretches horizontally with the span.
         let shift =
-            |cp: [Point; 4], dx: f32, dy: f32| cp.map(|p| Point::new(p.x.0 + dx, p.y.0 + dy));
+            |cp: [Point; 4], p: Placement| cp.map(|pt| Point::new(p.x(pt.x.0), pt.y.0 + p.dy));
         match fate {
             CurveFate::Rigid(system) => {
-                let (dx, dy) = system.map(|s| placements[s]).unwrap_or((0.0, 0.0));
-                let [p0, p1, p2, p3] = shift(curve.control_points(), dx, dy);
+                let p = system
+                    .map(|s| placements[s])
+                    .unwrap_or(Placement::rigid(0.0, 0.0));
+                let [p0, p1, p2, p3] = shift(curve.control_points(), p);
                 curves.push(Curve {
                     p0,
                     p1,
@@ -807,8 +895,7 @@ pub(crate) fn cast_off(
             }
             CurveFate::Split(segments) => {
                 for (k, (s, cp)) in segments.iter().enumerate() {
-                    let (dx, dy) = placements[*s];
-                    let [p0, p1, p2, p3] = shift(*cp, dx, dy);
+                    let [p0, p1, p2, p3] = shift(*cp, placements[*s]);
                     let provenance = if k == 0 {
                         curve.provenance.clone()
                     } else {
@@ -1475,6 +1562,78 @@ fn translated(stroke: &Stroke, dx: f32, dy: f32) -> Stroke {
     }
 }
 
+/// A system's placement: rigid (translated to the left margin) unless the
+/// system JUSTIFIES — a non-final system of its region, narrower than the
+/// content width, with a positive slot span — in which case the horizontal
+/// slack is spread linearly so the system's ink fills the content width (its
+/// leftmost ink at the left margin, its rightmost at the right margin). A
+/// region's last system stays ragged-right, as engraving convention wants; a
+/// system already at or over width is not compressed into overlap.
+fn justify_system(
+    plan: &SystemPlan,
+    ext: &Extent,
+    base_dx: f32,
+    dy: f32,
+    region_slots: &[Vec<SlotInfo>],
+    region_systems: &[Vec<usize>],
+    width_limit: f32,
+) -> Placement {
+    let is_last = plan.local + 1 >= region_systems[plan.region].len();
+    if is_last || !width_limit.is_finite() {
+        return Placement::rigid(base_dx, dy);
+    }
+    let slots = &region_slots[plan.region];
+    let (Some(&first), Some(&last)) = (plan.slots.first(), plan.slots.last()) else {
+        return Placement::rigid(base_dx, dy);
+    };
+    let x0 = slots[first].x;
+    let x1 = slots[last].x;
+    let span = x1 - x0;
+    let extra = width_limit - (ext.max_x - ext.min_x);
+    if span <= f32::EPSILON || extra <= f32::EPSILON {
+        return Placement::rigid(base_dx, dy);
+    }
+    // Within [x0, x1]: world_x(x) = x + base_dx + extra·(x − x0)/span, i.e.
+    // a·x + b. Beyond it, `Placement::x` falls back to rigid slope 1.
+    Placement {
+        a: 1.0 + extra / span,
+        b: base_dx - extra * x0 / span,
+        dy,
+        x0,
+        x1,
+    }
+}
+
+/// Places a whole stroke under a system's justification. A rigid-width stroke
+/// (a stem or ledger) tracks its notehead: both endpoints translate by the
+/// owning slot's delta, so it stays attached without stretching. A spanning
+/// stroke (a staff line, a volta bracket) stretches with the system: each
+/// endpoint maps through the affine.
+fn place_stroke(
+    source: &Stroke,
+    spaced: &Stroke,
+    p: Placement,
+    slot_source_x: &BTreeMap<SpringSlotId, f32>,
+    glyphs: &[GlyphObject],
+) -> Stroke {
+    if is_rigid_width_stroke(source) {
+        if let Some(dx) = owning_glyph(source, glyphs)
+            .and_then(|g| slot_source_x.get(&g.horizontal_slot))
+            .map(|&sx| p.slot_dx(sx))
+        {
+            return translated(spaced, dx, p.dy);
+        }
+    }
+    Stroke {
+        provenance: spaced.provenance.clone(),
+        from: Point::new(p.x(spaced.from.x.0), spaced.from.y.0 + p.dy),
+        to: Point::new(p.x(spaced.to.x.0), spaced.to.y.0 + p.dy),
+        thickness: spaced.thickness,
+        layer: spaced.layer,
+        style: spaced.style,
+    }
+}
+
 /// Accumulated staff-line geometry within one system, for the resolved staff
 /// record: the extent of the staff's line segments and the provenance of its
 /// bottom line (the segment that anchors the staff in this system).
@@ -1534,11 +1693,11 @@ fn build_system(
     input: &ConstrainedLayoutIR,
     region_slots: &[Vec<SlotInfo>],
     extents: &[Extent],
-    placements: &[(f32, f32)],
+    placements: &[Placement],
     staff_marks: &BTreeMap<(usize, StaffId), StaffAgg>,
 ) -> ResolvedSystem {
     let region = &input.regions[plan.region];
-    let (dx, dy) = placements[system];
+    let p = placements[system];
     let ext = &extents[system];
     let provenance = if plan.local == 0 {
         region.provenance.clone()
@@ -1554,9 +1713,12 @@ fn build_system(
         )
     };
     let bounding_box = Rect {
-        origin: Point::new(ext.min_x + dx, ext.min_y + dy),
+        // Justification stretches the horizontal extent: the box spans the
+        // system's world-frame ink, which for a justified system is the content
+        // width.
+        origin: Point::new(p.x(ext.min_x), ext.min_y + p.dy),
         size: Size2D {
-            width: StaffSpace(ext.max_x - ext.min_x),
+            width: StaffSpace(p.x(ext.max_x) - p.x(ext.min_x)),
             height: StaffSpace(ext.max_y - ext.min_y),
         },
     };
@@ -1607,9 +1769,9 @@ fn build_system(
                 provenance: glyph.provenance.clone(),
                 measure,
                 bounding_box: Rect {
-                    origin: Point::new(start + dx, ext.min_y + dy),
+                    origin: Point::new(p.x(start), ext.min_y + p.dy),
                     size: Size2D {
-                        width: StaffSpace(end - start),
+                        width: StaffSpace(p.x(end) - p.x(start)),
                         height: StaffSpace(ext.max_y - ext.min_y),
                     },
                 },
@@ -1757,20 +1919,24 @@ mod tests {
         use epiphany_layout_ir::{to_constrained, to_logical, ConstraintSolver, SolverConfig};
         // The ten-measure fixture wraps into two systems under the default A4
         // geometry. Greedy first-fit alone leaves a two-measure stub final
-        // system (its width barely a quarter of the first's); the widow
-        // rebalance evens the split so the final system is a substantial
-        // fraction of its predecessor — while the system *count* is unchanged.
+        // system; the widow rebalance evens the split so the final system
+        // carries a substantial share of the measures — while the system
+        // *count* is unchanged. (Justification now stretches every non-final
+        // system to the full content width, so the rebalance's effect shows in
+        // the MEASURE distribution, not the baked widths — the non-final system
+        // fills the width regardless.)
         let input = to_constrained(&to_logical(
             &epiphany_testkit::fixtures::ten_measure_single_staff(0x000A_11CE),
         ));
         let report = Engraver::default().solve(&input, &SolverConfig::default());
         let page = &report.layout.pages[0];
         assert_eq!(page.systems.len(), 2, "the fixture wraps into two systems");
-        let first = page.systems[0].bounding_box.size.width.0;
-        let last = page.systems[1].bounding_box.size.width.0;
+        let first = page.systems[0].measures.len();
+        let last = page.systems[1].measures.len();
         assert!(
-            last > 0.5 * first,
-            "the rebalanced final system is not a stub: {last} vs {first}"
+            last * 2 >= first,
+            "the rebalanced final system carries a substantial share of the \
+             measures, not a stub: {last} vs {first}"
         );
     }
 

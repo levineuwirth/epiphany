@@ -8,7 +8,7 @@ provenance_count=150
 layer_count=1
 hard_constraint_count=90
 xml_well_formed=true
-view_box=[5.4999986 -28.318335 64.94533 22.818335]
+view_box=[5.4999986 -28.318335 94.000015 22.818335]
 class_counts:
   barline=10
   clef=1
