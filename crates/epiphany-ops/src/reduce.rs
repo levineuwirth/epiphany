@@ -4655,6 +4655,31 @@ impl<'a> Reducer<'a> {
         targets: &[TypedObjectId],
     ) -> Vec<RepairRecord> {
         let mut repairs = Vec::new();
+        // Each tombstoned event's voice, captured BEFORE the graph tombstone
+        // removes it from `voice_occupancy` — the containment-proximity key for
+        // the re-anchoring reasons below (mirrors `delete_event`).
+        let event_voices: Vec<(TypedObjectId, Option<VoiceId>)> = targets
+            .iter()
+            .filter(|t| matches!(t, TypedObjectId::Event(_)))
+            .map(|t| {
+                let TypedObjectId::Event(id) = t else {
+                    unreachable!()
+                };
+                let voice = self
+                    .voice_occupancy
+                    .iter()
+                    .find_map(|(voice, events)| {
+                        events.iter().find(|(_, _, e)| e == id).map(|_| *voice)
+                    })
+                    .or_else(|| {
+                        self.graph
+                            .as_ref()
+                            .and_then(|score| score.events.get(*id))
+                            .map(Event::voice)
+                    });
+                (*t, voice)
+            })
+            .collect();
         for t in targets {
             let minter = self.minted_by.get(t).copied().unwrap_or(env.id);
             self.objects.insert(
@@ -4670,6 +4695,22 @@ impl<'a> Reducer<'a> {
             });
         }
         repairs.extend(self.materialize_graph_tombstones(env, targets));
+        // P13-D1: mirror the graph re-anchoring in the LEDGER. The graph side
+        // (`materialize_graph_delete`, run above) silently re-anchors or
+        // cascade-deletes a structure whose anchor event was undo-tombstoned,
+        // on the standing assumption that `reanchor_for_tombstone` records the
+        // repair and updates `objects`. The direct-delete path pairs the two;
+        // the undo path historically ran only the graph half, leaving an
+        // orphaned structure Live in `objects` with no RepairRecord — a Ch6
+        // same-step-recording MUST unmet for undo-driven tombstones. Running
+        // the ledger half here brings the two into agreement (the same
+        // `min`-survivor rule, so graph and ledger converge on existence and
+        // target). Every target is already tombstoned in `objects` above, so
+        // `surviving_endpoints` sees the full undo, and the liveness guard in
+        // `reanchor_for_tombstone` skips the target-structures themselves.
+        for (ev, voice) in event_voices {
+            self.reanchor_for_tombstone(env, ev, &mut repairs, voice);
+        }
         repairs
     }
 
@@ -5821,6 +5862,16 @@ impl<'a> Reducer<'a> {
             .map(|(sid, _)| *sid)
             .collect();
         for sid in referencing {
+            // Skip a structure that is no longer Live — it may already have
+            // been tombstoned by this same effect (an undo tombstones a whole
+            // transaction's mints together, and its stale index entry lingers)
+            // or cascaded by an earlier referent in this call. Re-processing it
+            // would push a duplicate repair. The direct-delete path never hits
+            // this (a tombstoned structure is dropped from `structures`), so the
+            // guard is a no-op there and load-bearing only for the undo path.
+            if !matches!(self.objects.get(&sid), Some(ObjectState::Live)) {
+                continue;
+            }
             match sid {
                 TypedObjectId::Tie(_) => {
                     // A tie's existence requires both endpoints: cascade-delete.
@@ -9564,6 +9615,93 @@ mod tests {
         assert!(
             !state.objects.contains_key(&TypedObjectId::Pitch(system_id)),
             "the introduced system pitch never enters the ledger"
+        );
+    }
+
+    #[test]
+    fn undo_orphaning_a_pre_existing_slur_cascades_it_in_the_ledger_p13_d1() {
+        // P13-D1: a PRE-EXISTING structure whose every anchor event is
+        // undo-tombstoned must cascade in the LEDGER (`objects` → Tombstoned)
+        // with a same-step RepairRecord — not merely leave the graph while
+        // staying Live with no record (Ch6 §Re-Anchoring MUST). The slur is
+        // created OUTSIDE the undone transaction, so the undo ORPHANS it rather
+        // than tombstoning it directly. Before the fix the undo path ran only
+        // the graph half of the re-anchor, leaving `objects[slur]` Live and no
+        // repair recorded.
+        use epiphany_core::SlurId;
+        let tx = TransactionId::new(ReplicaId(1), 900);
+        let e1 = EventId::new(ReplicaId(1), 100);
+        let e2 = EventId::new(ReplicaId(1), 101);
+        let slur_id = SlurId::new(ReplicaId(9), 500);
+        let sid = TypedObjectId::Slur(slur_id);
+
+        let insert_kind = |event: EventId, at: i64| {
+            OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: StaffInstanceId::new(ReplicaId(9), 0),
+                event: crate::valuegen::insert_event_value(
+                    event,
+                    VoiceId::new(ReplicaId(9), 1),
+                    pos(at),
+                    epiphany_core::MusicalDuration::whole(),
+                    &[],
+                ),
+            })
+        };
+        let slur_op = OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: CrossCuttingValue::Slur(crate::valuegen::slur(slur_id, e1, e2)),
+        });
+        let undo = undo_env(1, 4, 40, seen_r1(3), tx, UndoPolicy::StrictInverse);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(1, 1, 11, seen_r1(0), tx, insert_kind(e1, 0)),
+            tx_member(1, 2, 12, seen_r1(1), tx, insert_kind(e2, 10)),
+            prim_env(1, 3, 13, seen_r1(2), slur_op),
+            undo.clone(),
+        ]);
+        let state = set.reduce();
+
+        // The orphaned slur cascades in the ledger (not left Live)…
+        assert!(
+            matches!(
+                state.objects.get(&sid),
+                Some(ObjectState::Tombstoned { .. })
+            ),
+            "the orphaned slur cascades in the ledger, not left Live with no repair"
+        );
+        // …and the undo records the same-step CascadeDeleted repair (Ch6 MUST).
+        let undo_records_cascade = matches!(
+            state.effects.iter().find(|(id, _)| *id == undo.id).map(|(_, e)| e),
+            Some(OperationEffect::AppliedWithRepair { repairs })
+                if repairs.iter().any(|r| r.target == sid
+                    && matches!(r.kind, RepairKind::CascadeDeleted))
+        );
+        assert!(
+            undo_records_cascade,
+            "the undo records the orphaned slur's cascade repair (Ch6 same-step MUST)"
+        );
+        // Determinism: a permuted delivery reduces to identical bytes.
+        let mut permuted = OperationSet::new();
+        permuted.accept_all(vec![
+            undo.clone(),
+            prim_env(
+                1,
+                3,
+                13,
+                seen_r1(2),
+                OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Slur(crate::valuegen::slur(slur_id, e1, e2)),
+                }),
+            ),
+            tx_member(1, 2, 12, seen_r1(1), tx, insert_kind(e2, 10)),
+            tx_member(1, 1, 11, seen_r1(0), tx, insert_kind(e1, 0)),
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+        ]);
+        assert_eq!(
+            state.canonical_bytes(),
+            permuted.reduce().canonical_bytes(),
+            "the orphan-cascade converges regardless of delivery order"
         );
     }
 

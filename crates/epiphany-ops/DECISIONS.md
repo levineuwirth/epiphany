@@ -1081,6 +1081,23 @@ against the triggering event before that event's own tombstone lands in
 `Reanchored{to: X}` and `CascadeDeleted` in one effect (plausible by code
 trace, unexecuted). Neither is repeat-specific; neither is fixed here.
 
+**P13-D1 resolved (Pass 13, 2026-07-08).** `tombstone_undo_targets` now runs
+the ledger half after the graph half: it captures each event target's voice
+(before `materialize_graph_tombstones` clears `voice_occupancy`), then calls
+`reanchor_for_tombstone` per event target. A structure orphaned by an
+undo-tombstoned anchor now cascades or re-anchors in `objects` with a
+same-step `RepairRecord`, so the ledger and the already-updated graph agree —
+both use the same `min`-survivor rule, so they converge on existence and
+target. `reanchor_for_tombstone` gained a **liveness guard** (skip a
+non-`Live` structure) so the undo's own tombstoned mints — whose stale
+`structures` index entries linger — are not re-processed into duplicate
+repairs; the direct-delete path drops a tombstoned structure from `structures`,
+so the guard is a no-op there. Because `canonical_bytes` embeds both `objects`
+and the effect log, this corrects the reduced state (an inconsistency that was
+simply never exercised — no existing test broke). Locked by
+`undo_orphaning_a_pre_existing_slur_cascades_it_in_the_ledger_p13_d1`
+(cascade + recorded repair + order-independent convergence).
+
 **Noted, not implemented:** no writer path derives a chunk schema *minor*
 from appended kind discriminants (a major-0 block carrying discriminant 29
 stamps the same fixed minor as always) — pre-existing for the Phase-3
