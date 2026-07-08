@@ -9289,6 +9289,10 @@ pub struct Curve {
     pub thickness: StaffSpace,
     pub layer: i32,
     pub style: GlyphStyle,
+
+    /// The line pattern the renderer strokes the path with
+    /// (a slur's authored `SpanStyle.line`): solid, dashed, or dotted.
+    pub line: LineStyle,
 }
 \end{lstlisting}
 
@@ -9333,19 +9337,24 @@ pub struct Curve {
 
 \begin{requirement}
   \label{req:layoutir:slur-curve}
-  \textbf{Minimal-tier slur rendering (ratified schema-major-2,
-  Phase~F).} A \texttt{Slur} (\ref{sec:graph:slurs}) \MUST{} render
+  \textbf{Slur rendering (ratified schema-major-2, Phase~F; extended
+  Push~3).} A \texttt{Slur} (\ref{sec:graph:slurs}) \MUST{} render
   as a cubic-B\'ezier \texttt{Curve} arcing between its two endpoint
   event columns, honoring an authored \texttt{CurvatureOverride}
   (direction and apex height) when present and choosing them
   otherwise. A slur whose endpoint does not resolve to a column on a
   single staff of one region draws \emph{no} curve: a traced anchor
   preserves its provenance rather than a floating arc. An authored
-  non-\texttt{Solid} \texttt{SpanStyle} line (dashed, dotted) \MAY{}
-  be deferred to a higher tier, but \MUST{} be surfaced (a layout
-  diagnostic), never silently rendered solid. The curvature-computing
-  algorithm and the dash rendering are engraving-specification
-  concerns (\ref{sec:layoutir:forward}).
+  non-\texttt{Solid} \texttt{SpanStyle} line (dashed, dotted) is
+  rendered faithfully as that pattern (its \texttt{LineStyle} rides
+  the \texttt{Curve}); an implementation that instead defers the
+  pattern \MUST{} surface the deferral (a layout diagnostic), never
+  silently rendering solid. A slur whose span crosses a system break
+  \MUST{} split into per-system sub-curves --- the first carrying the
+  slur's provenance, the rest engraver-synthesized continuations
+  (\ref{req:layoutir:continuation-synthesis}) --- rather than drawing
+  whole in one system. The curvature-computing algorithm remains an
+  engraving-specification concern (\ref{sec:layoutir:forward}).
 \end{requirement}
 
 \section{RenderIR (Interface Only)}
@@ -15506,6 +15515,19 @@ layouts they own versus inherit:
   geometry is non-canonical, so no wire form and no companion version
   moves --- an engrave-side ratify-as-implemented, mirroring the
   schema-major-1 Phase~F precedent.
+  \\
+  \today & Layout IR (slur rendering completion, Push 3) &
+  The three slur refinements \ref{req:layoutir:slur-curve} deferred are
+  now landed and its requirement extended: an authored non-\texttt{Solid}
+  \texttt{SpanStyle} line renders faithfully (dashed / dotted --- the
+  \texttt{LineStyle} rides the \texttt{Curve}, whose listing gains the
+  field), a slur spanning a system break splits into per-system
+  sub-curves (de~Casteljau; first segment keeps the slur's provenance,
+  the rest synthesized continuations), and \texttt{slur\_shape\_penalty}
+  moves off its pinned $0.0$ to a real measurement (Quality Metric
+  Catalog \sectionsc{slur\_shape\_penalty} rationale refreshed; formula
+  unchanged, no version move). Layout geometry stays non-canonical --- no
+  wire form, no companion version moves.
   \\
   \bottomrule
 \end{longtable}

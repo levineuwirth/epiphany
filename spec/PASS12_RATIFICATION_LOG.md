@@ -208,3 +208,30 @@ stays 0.6.0 — layout geometry is non-canonical.
 curve splitting (de Casteljau), and the `slur_shape` quality metric moving off
 `0.0`-by-construction — all Standard-tier / Push-3 work, named in the crate
 DECISIONS, none a Pass-13 ambiguity.
+
+## Push-3 tranche (2026-07-08) — slur rendering completion
+
+The three slur refinements the schema-major-2 Phase-F ratification deferred,
+landed and ratified. Layout-IR (Chapter 7) only, non-canonical — a
+ratify-as-implemented with **no wire form and no companion version move**
+(mirrors the schema-major-2 rendering tranche). Delivered as commits `c5173d2`
+(dashed rendering), `5869691` (curve splitting), `7d61271` (slur_shape
+measured).
+
+| Item | Disposition | Spec locus | Consumer |
+|---|---|---|---|
+| Dashed/dotted slur rendering | **adopt** — `req:layoutir:slur-curve` extended: an authored non-`Solid` `SpanStyle` line renders faithfully (the `LineStyle` rides the `Curve`, whose Ch7 listing gains the field); an implementation that defers the pattern must surface it, never silently render solid. The E2 `SlurLineStyleNotRendered` diagnostic is retired (the style is rendered, not deferred) | core_spec Ch7 §ResolvedLayoutIR (`req:layoutir:slur-curve`, `Curve` listing) | `epiphany-layout-ir` (`Curve.line`); `epiphany-render-svg` (`stroke-dasharray`) |
+| Curve splitting across systems | **adopt** — `req:layoutir:slur-curve` extended: a slur spanning a system break splits into per-system sub-curves by de Casteljau (first segment keeps the slur's provenance, the rest synthesized continuations under `req:layoutir:continuation-synthesis`), replacing E2's draw-whole-in-start-system floating end | core_spec Ch7 §ResolvedLayoutIR (`req:layoutir:slur-curve`) | `epiphany-engrave` (casting `curve_fate`, `sub_cubic`) |
+| slur_shape measured | **adopt (implement pinned formula)** — `slur_shape_penalty` moves off its `0.0` placeholder to the catalog's pinned `req:qmc:slur` formula (arc ratio ρ = apex/chord against the `[0.08, 0.25]` band). The Quality Metric Catalog's §`slur_shape` rationale and the notated-but-unrendered open question are refreshed to record slurs now render and are measured; the formula is unchanged, so no catalog version move | quality_metric_catalog §`slur_shape_penalty` (`req:qmc:slur`, rationale) | `epiphany-engrave` (`quality.rs::slur_shape_raw`) |
+
+**Version movements.** None: core spec Ch7 `req:layoutir:slur-curve` extended +
+the `Curve` listing gains `line`; a revision-history row (Push 3); the Quality
+Metric Catalog rationale refreshed (no formula change). Operation Catalog stays
+0.7.0, Binary Format 0.6.0, Quality Metric Catalog 0.2.0 — all non-canonical /
+formula-stable.
+
+**Deferred (documented, not open candidates).** Kind-differentiated slur
+appearance (Phrase/Editorial's own line, distinct from the SpanStyle dash),
+duration-aware slur height (would pull the clamped short/long slurs back into
+the shallow-arc band), collision-aware slur reshaping (the Standard-tier
+`slur_shape` driver) — all Standard-tier work.

@@ -571,9 +571,15 @@ these are E1 implementation decisions for the Phase-F ratification pass:
 > `req:layoutir:resolved-primitives` in core spec Chapter 7 (§ResolvedLayoutIR)
 > — the struct listing now carries `strokes`/`curves` and the `Stroke`/`Curve`
 > shapes, and the RenderIR provenance requirement was widened to name all three
-> primitive kinds. The curvature *algorithm* and dash rendering stay
-> forward-referenced out. Non-canonical, so no wire/companion-version change
+> primitive kinds. Non-canonical, so no wire/companion-version change
 > (PASS12_RATIFICATION_LOG.md, schema-major-2 tranche).
+>
+> **Extended (Push 3, 2026-07-08):** the three E2 deferrals landed and
+> `req:layoutir:slur-curve` was extended — dashed/dotted lines render faithfully
+> (the `Curve` listing gains `line`), break-spanning slurs split into per-system
+> sub-curves (de Casteljau), and `slur_shape_penalty` is measured (only the
+> curvature *algorithm* stays forward-referenced out now). See the Push-3
+> tranche in PASS12_RATIFICATION_LOG.md and the engrave DECISIONS.
 
 The third pipeline primitive kind. Primitives were two parallel flat Vecs
 (`glyphs`, `strokes`) at each of the three IR stages; a `Curve` (four control

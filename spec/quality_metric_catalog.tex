@@ -601,18 +601,19 @@ all} and claims no conformance tier (the core's \texttt{Stub} tier).
 
 \begin{openquestion}
 \textbf{The notated-but-unrendered honesty edge.} A score whose
-\emph{source} notates slurs, engraved by a solver that draws no slur
-geometry, scores $\texttt{slur\_shape\_penalty} = 0.0$ under this rule ---
-the axis sees no drawn slurs and finds nothing to penalize, even though
-the output is arguably \emph{worse} than a badly-drawn slur. v0.1
-deliberately pins vacuous-$0.0$: the metric axes evaluate the geometry the
-solver produced, and \emph{rendering completeness} --- whether notated
+\emph{source} notates geometry a solver does not draw scores
+vacuous-$0.0$ on that axis under this rule --- the axis sees nothing
+drawn and finds nothing to penalize, even though the output is arguably
+\emph{worse} than a badly-drawn one. The metric axes evaluate the geometry
+the solver produced, and \emph{rendering completeness} --- whether notated
 content is realized at all --- is governed by constraint families and
 visual acceptance testing, not by the quality metrics. Should a future
 revision instead score notated-but-unrendered geometry classes at the
 worst value, so that the metric vector cannot flatter an incomplete
 renderer? Resolving this requires a normative definition of ``notated
 content that demands drawn geometry,'' which does not exist yet.
+\emph{Slurs no longer instance this edge} (they render and are measured,
+schema-major-2); it persists for still-logical-only classes such as beams.
 \end{openquestion}
 
 \section{Normalization Form}
@@ -814,10 +815,14 @@ The anchor makes a semicircular slur ($\rho = 0.5$, $\mathit{raw}_u =
 0.25$) exactly worst-tolerable, and a completely flat slur ($\rho = 0$,
 $\mathit{raw}_u = 0.08$) roughly a third of the way to failing.
 
-The v0.1 reference pipeline draws no slur geometry (slurs exist logically,
-not as curves), so this axis evaluates to $0.0$ today under the
-vacuous-geometry rule --- the definition is pinned now so that the first
-implementation to draw slurs is measured from its first release.
+The implementation now \emph{draws} slurs as cubic-B\'ezier curves and
+measures this axis directly (schema-major-2 rendering; the first
+slur-drawing release, as the pinned definition anticipated). A layout with
+no drawn slur curve still evaluates to $0.0$ under the vacuous-geometry
+rule. A tier that draws the ideal shallow arc for every slur measures $0$
+on this axis; a fixed-height engraver scores non-zero on slurs whose span
+pushes the arc ratio outside the $[0.08, 0.25]$ band (a very short or very
+long slur), which a duration-aware height corrects.
 \end{rationale}
 
 \section{\texttt{beam\_slope\_penalty}}
