@@ -465,10 +465,8 @@ a `curve_count=0` line (a new tracked primitive kind), and the new
   spanning a system break into per-system sub-cubics by de Casteljau. A curve's
   control-point hull grows its system's extent, so a slur above the staff raises
   the system height for page overflow, like a volta bracket.
-- `slur_shape_penalty` stops being *vacuous* 0.0 and becomes *0.0 by
-  construction*: the Minimal tier draws the ideal arc (or the authored
-  override), so a drawn slur has zero shape deviation. A real penalty awaits a
-  collision-aware Standard-tier solver that compromises a slur's shape.
+- `slur_shape_penalty` stopped being *vacuous* 0.0 and became *0.0 by
+  construction* at E2; Push 3 (below) makes it a **real measurement**.
 
 ## ENGRAVER_VERSION 6 → 7: curve splitting across systems (Push 3, 2026-07-08)
 
@@ -486,3 +484,26 @@ riding its start system whole. `ENGRAVER_VERSION` 6 → 7 — but only a
 break-spanning slur's baked geometry changes; a slur that fits in one system is
 `CurveFate::Rigid`, byte-identical to version 6, so the existing goldens are
 unchanged (the fixture's slurs are short).
+
+## slur_shape_penalty measured, not pinned (Push 3, 2026-07-08)
+
+The `slur_shape` quality axis moved off its `0.0` placeholder to a real
+measurement per the Quality Metric Catalog (`req:qmc:slur`): for each drawn
+slur `Curve` with chord `c > 0` (the segment between its endpoints) and apex
+height `h` (max perpendicular distance from the curve to that chord, sampled at
+`SLUR_APEX_SAMPLES = 32` points), the arc ratio `ρ = h/c` is penalized by its
+distance outside the shallow-arc band `[0.08, 0.25]`
+(`max(0, 0.08 − ρ, ρ − 0.25)`), meaned over curves and normalized by
+`R_worst = 0.25`. The measurement is translation-invariant (chord and apex
+shift together under casting), so measuring the post-cast curves is correct.
+
+Honest outcome: the Minimal tier's mid-span slurs sit at `ρ = height/span =
+0.16` (the `SLUR_HEIGHT_FACTOR`; in band → 0), but the fixed
+`SLUR_MIN_HEIGHT`/`SLUR_MAX_HEIGHT` clamps push a **short** slur above the band
+(a tall arc on a tiny chord, too bulgy) and a **very long** one below it (too
+flat) — so the axis is genuinely non-zero for clamped spans, which a
+duration-aware Standard-tier height would improve. A curve-free layout measures
+0 by the vacuous-geometry rule. **No `ENGRAVER_VERSION` bump** — a
+measurement-only change that leaves the resolved geometry, canonical bytes, and
+render goldens untouched (the same rule quality decision 8 followed); the RS
+reference suite is unaffected (no RS entry carries a slur).

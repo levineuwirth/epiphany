@@ -26,12 +26,13 @@
 //!   reference). The clef/key/time lead and barlines bear no notehead or rest,
 //!   so they contribute no column and a note-to-note advance spans them
 //!   (catalog §`spacing_distortion` — measuring rhythmic spacing, not furniture).
-//! * **`slur_shape_penalty`** — **0.0 by construction** (E2): slurs now draw as
-//!   cubic-bézier curves, but the Minimal tier emits the *reference* arc from
-//!   the span and the authored/default curvature, so a drawn slur has zero
-//!   deviation from its ideal (an authored `curvature_override` is honored, not
-//!   penalized). A real penalty awaits a Standard-tier solver that compromises
-//!   a slur's shape to dodge collisions. **`beam_slope_penalty`** stays
+//! * **`slur_shape_penalty`** — **measured** (Push 3): each drawn slur curve's
+//!   arc ratio `ρ = apex height / chord length` is penalized by its distance
+//!   outside the shallow-arc band `[0.08, 0.25]` (catalog §`slur_shape`). The
+//!   Minimal tier's mid-span slurs sit at `ρ ≈ 0.16` (in band, 0), but its
+//!   fixed height clamps push short slurs above the band (too bulgy) and very
+//!   long ones below it (too flat) — a real non-zero value. A curve-free layout
+//!   measures 0 by the vacuous-geometry rule. **`beam_slope_penalty`** stays
 //!   **vacuous 0.0**: no beam geometry is drawn yet (beams exist logically, not
 //!   as segments), so its contributing-unit set is empty.
 //! * **`vertical_density_penalty`** — realized gaps against the band model's
@@ -90,6 +91,75 @@ fn mean_or_zero(values: &[f64]) -> f64 {
     } else {
         values.iter().sum::<f64>() / values.len() as f64
     }
+}
+
+/// How many points a slur curve is sampled at to find its apex height. Even, so
+/// a sample lands on the symmetric arc's `t = 0.5` apex exactly.
+const SLUR_APEX_SAMPLES: usize = 32;
+
+/// The raw `slur_shape_penalty` measurement (Quality Metric Catalog
+/// §`slur_shape_penalty`): for each drawn slur curve with chord length `c > 0`
+/// — the chord being the segment between the curve's endpoints and the apex
+/// height `h` the maximum perpendicular distance from the curve to that chord —
+/// the arc ratio `ρ = h / c` is penalized by its distance outside the shallow-
+/// arc band `[0.08, 0.25]` (`max(0, 0.08 − ρ, ρ − 0.25)`); the axis raw value
+/// is the arithmetic mean over units. A curve-free layout has no units, so the
+/// mean is `0` (the vacuous-geometry rule) — not by construction but by
+/// measurement.
+fn slur_shape_raw(cast: &CastLayout) -> f64 {
+    let per_curve: Vec<f64> = cast
+        .curves
+        .iter()
+        .filter_map(|curve| {
+            let cp = curve.control_points();
+            let (a, b) = (point(cp[0]), point(cp[3]));
+            let chord = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+            if chord <= 0.0 {
+                return None; // c > 0 required
+            }
+            let apex = (0..=SLUR_APEX_SAMPLES)
+                .map(|i| {
+                    let t = i as f32 / SLUR_APEX_SAMPLES as f32;
+                    perp_distance(a, b, cubic_point(cp, t))
+                })
+                .fold(0.0_f64, f64::max);
+            let rho = apex / chord;
+            Some((0.08 - rho).max(rho - 0.25).max(0.0))
+        })
+        .collect();
+    mean_or_zero(&per_curve)
+}
+
+/// A layout point as exact `f64`.
+fn point(p: epiphany_layout_ir::Point) -> (f64, f64) {
+    (f64::from(p.x.0), f64::from(p.y.0))
+}
+
+/// The cubic-Bézier point at parameter `t`, as `f64`.
+fn cubic_point(cp: [epiphany_layout_ir::Point; 4], t: f32) -> (f64, f64) {
+    let (u, t) = (f64::from(1.0 - t), f64::from(t));
+    let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+    (
+        w[0] * f64::from(cp[0].x.0)
+            + w[1] * f64::from(cp[1].x.0)
+            + w[2] * f64::from(cp[2].x.0)
+            + w[3] * f64::from(cp[3].x.0),
+        w[0] * f64::from(cp[0].y.0)
+            + w[1] * f64::from(cp[1].y.0)
+            + w[2] * f64::from(cp[2].y.0)
+            + w[3] * f64::from(cp[3].y.0),
+    )
+}
+
+/// Perpendicular distance from point `p` to the line through `a` and `b`
+/// (0 when `a == b`).
+fn perp_distance(a: (f64, f64), b: (f64, f64), p: (f64, f64)) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len = (dx * dx + dy * dy).sqrt();
+    if len <= 0.0 {
+        return 0.0;
+    }
+    ((p.0 - a.0) * dy - (p.1 - a.1) * dx).abs() / len
 }
 
 /// One glyph's resolved ink box `[left, bottom, right, top]` (f64, exact from
@@ -459,16 +529,15 @@ pub(crate) fn measure(
             anchors::COLLISION_R_WORST,
         ),
         spacing_distortion: normalize(spacing_raw(&census), anchors::SPACING_R_WORST),
-        // Slurs now DRAW (E2: a cubic-bézier `Curve` per slur), but their shape
-        // is measured as ideal by construction: the Minimal tier emits the
-        // reference arc itself — a symmetric cubic from the span and the
-        // authored (or default) curvature — so a drawn slur has zero deviation
-        // from its ideal, and an authored `curvature_override` is honored, not
-        // penalized. A real non-zero penalty awaits a collision-aware
-        // (Standard-tier, Push 3) solver that *compromises* a slur's shape to
-        // dodge collisions; until then this axis stays 0.0 by construction, not
-        // by vacuity.
-        slur_shape_penalty: normalize(0.0, anchors::SLUR_SHAPE_R_WORST),
+        // Slurs draw (E2), so their shape is now MEASURED (Push 3), not pinned:
+        // each drawn curve's arc ratio ρ = apex height / chord length is
+        // penalized by its distance outside the shallow-arc band [0.08, 0.25].
+        // The Minimal tier's mid-span slurs sit at ρ ≈ 0.16 (in band, 0
+        // penalty), but its fixed height clamps push short slurs above the band
+        // (too bulgy) and very long ones below it (too flat) — a real, honest
+        // non-zero measurement. A curve-free layout measures 0 by the
+        // vacuous-geometry rule.
+        slur_shape_penalty: normalize(slur_shape_raw(cast), anchors::SLUR_SHAPE_R_WORST),
         // Same vacuous rule: no drawn beam segments exist in this pipeline.
         beam_slope_penalty: normalize(0.0, anchors::BEAM_SLOPE_R_WORST),
         vertical_density_penalty: normalize(
@@ -584,9 +653,9 @@ mod tests {
         let vector = &report.metric_vector;
         assert_eq!(vector.collision_penalty.0, 0.0);
         assert!(vector.spacing_distortion.0 > 0.0 && vector.spacing_distortion.0 < 0.3);
-        // The ten-measure fixture has no slur; even one would measure 0.0
-        // (Minimal draws the ideal arc — deviation is 0 by construction).
-        assert_eq!(vector.slur_shape_penalty.0, 0.0, "ideal-by-construction");
+        // The ten-measure fixture has no drawn slur curve, so the axis measures
+        // 0.0 by the vacuous-geometry rule (an empty contributing-unit set).
+        assert_eq!(vector.slur_shape_penalty.0, 0.0, "vacuous: no drawn slurs");
         assert_eq!(vector.beam_slope_penalty.0, 0.0, "vacuous: no drawn beams");
         assert_eq!(vector.page_fill_efficiency.0, 0.0, "vacuous: single page");
         assert!(
@@ -616,6 +685,46 @@ mod tests {
         assert!(floored(QualityMetricKind::CastingOff));
         assert!(floored(QualityMetricKind::SystemBreak));
         assert_eq!(report.status, SolveStatus::Solved);
+    }
+
+    #[test]
+    fn slur_shape_is_measured_penalizing_out_of_band_arcs() {
+        use epiphany_core::{Slur, SlurId, SlurKind, SpanStyle};
+        use epiphany_layout_ir::to_constrained;
+
+        let with_slur = |start: usize, end: usize| {
+            let mut s = epiphany_testkit::fixtures::ten_measure_single_staff(0x000A_11CE);
+            let ev: Vec<_> = s.canvas.regions[0].staff_instances()[0].voices[0]
+                .events
+                .clone();
+            s.cross_cutting.slurs.push(Slur {
+                id: s.identity.mint::<SlurId>(),
+                start_event: ev[start],
+                end_event: ev[end],
+                kind: SlurKind::Legato,
+                curvature_override: None,
+                style: SpanStyle::default(),
+            });
+            Engraver::default()
+                .solve(&to_constrained(&to_logical(&s)), &SolverConfig::default())
+                .metric_vector
+                .slur_shape_penalty
+                .0
+        };
+        // A slur over adjacent events: the min-height clamp forces a tall arc
+        // over a tiny chord (ρ well above the 0.25 band), a real bulge penalty.
+        assert!(
+            with_slur(0, 1) > 0.0,
+            "a bulgy short slur is penalized: {}",
+            with_slur(0, 1)
+        );
+        // A slur over a wide span: the auto height gives ρ ≈ 0.16, inside the
+        // ideal band [0.08, 0.25], so no penalty.
+        assert_eq!(
+            with_slur(0, 6),
+            0.0,
+            "an in-band (mid-span) slur is not penalized"
+        );
     }
 
     #[test]

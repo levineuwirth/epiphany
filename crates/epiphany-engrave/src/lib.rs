@@ -51,10 +51,9 @@
 //! the private `quality` module computes all nine normative axes per the
 //! ratified *Quality Metric Catalog* companion (collision census, spacing
 //! regularity, break/page/casting-off distribution, vertical gap deviation;
-//! `slur_shape` is `0.0` **by construction** now that slurs draw — the Minimal
-//! tier emits the ideal arc, so a drawn slur has zero shape deviation — while
-//! `beam_slope` stays vacuous-`0.0` because no drawn beam geometry exists yet),
-//! normalized through the catalog's pinned anchors
+//! `slur_shape` is now **measured** — each drawn slur's arc ratio against the
+//! shallow-arc band — while `beam_slope` stays vacuous-`0.0` because no drawn
+//! beam geometry exists yet), normalized through the catalog's pinned anchors
 //! ([`epiphany_layout_ir::quality`]), with
 //! [`SolverWarningKind::QualityFloorApproached`] diagnostics against the
 //! threshold column the config's profile selects. The all-worst
