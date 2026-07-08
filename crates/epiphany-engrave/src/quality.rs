@@ -26,13 +26,15 @@
 //!   reference). The clef/key/time lead and barlines bear no notehead or rest,
 //!   so they contribute no column and a note-to-note advance spans them
 //!   (catalog §`spacing_distortion` — measuring rhythmic spacing, not furniture).
-//! * **`slur_shape_penalty`** — **measured** (Push 3): each drawn slur curve's
-//!   arc ratio `ρ = apex height / chord length` is penalized by its distance
-//!   outside the shallow-arc band `[0.08, 0.25]` (catalog §`slur_shape`). The
-//!   Minimal tier's mid-span slurs sit at `ρ ≈ 0.16` (in band, 0), but its
-//!   fixed height clamps push short slurs above the band (too bulgy) and very
-//!   long ones below it (too flat) — a real non-zero value. A curve-free layout
-//!   measures 0 by the vacuous-geometry rule. **`beam_slope_penalty`** stays
+//! * **`slur_shape_penalty`** — **measured** (Push 3): each drawn slur's arc
+//!   ratio `ρ = apex height / chord length` is penalized by its distance
+//!   outside the shallow-arc band `[0.08, 0.25]` (catalog §`slur_shape`),
+//!   measured over the *spaced* whole curves (the drawn shape, one unit per
+//!   slur — not the cast's per-system fragments). The Minimal tier's mid-span
+//!   slurs sit at `ρ ≈ 0.16` (in band, 0), but its fixed height clamps push
+//!   short slurs above the band (too bulgy) and very long ones below it (too
+//!   flat) — a real non-zero value. A curve-free layout measures 0 by the
+//!   vacuous-geometry rule. **`beam_slope_penalty`** stays
 //!   **vacuous 0.0**: no beam geometry is drawn yet (beams exist logically, not
 //!   as segments), so its contributing-unit set is empty.
 //! * **`vertical_density_penalty`** — realized gaps against the band model's
@@ -62,8 +64,9 @@ use epiphany_layout_ir::quality::{
     anchors, normalize, MetricThresholds, QUALITY_FLOOR_FRACTION, QUALITY_METRIC_KINDS,
 };
 use epiphany_layout_ir::{
-    inter_staff_gap_id, ConstrainedLayoutIR, GlyphObject, GlyphObjectId, QualityMetricVector,
-    SolverWarning, SolverWarningKind, SpringSlotId, VerticalBand, VerticalBandId, VerticalBandKind,
+    inter_staff_gap_id, ConstrainedLayoutIR, Curve, GlyphObject, GlyphObjectId,
+    QualityMetricVector, SolverWarning, SolverWarningKind, SpringSlotId, VerticalBand,
+    VerticalBandId, VerticalBandKind,
 };
 
 use crate::casting::{CastLayout, PageGeometry};
@@ -107,18 +110,18 @@ const SLUR_APEX_SAMPLES: usize = 32;
 /// mean is `0` (the vacuous-geometry rule) — not by construction but by
 /// measurement.
 ///
-/// Measured over the **whole** slur curves of the constrained input (one unit
-/// per drawn slur — the engraver's arc-proportion decision), *not* the cast
+/// Measured over the **whole spaced** slur curves — post-horizontal-remap (the
+/// drawn shape) and pre-cast-split (one unit per slur) — *not* the cast
 /// output's per-system fragments: casting splits a break-spanning slur into
 /// sub-cubics whose diagonal chords each read flatter than the whole arc, which
 /// would spuriously penalize (and double-count) a slur that is ideally shaped
 /// as a whole. The catalog's property "a tier that draws the ideal shallow arc
-/// for every slur measures 0" holds only when the whole arc is the unit. The
-/// horizontal re-spacing that casting applies is a spacing concern
-/// (`spacing_distortion`), not a shape one.
-fn slur_shape_raw(input: &ConstrainedLayoutIR) -> f64 {
-    let per_curve: Vec<f64> = input
-        .curves
+/// for every slur measures 0" holds only when the whole arc is the unit.
+/// Measuring the *spaced* (not constrained) curves means horizontal re-spacing
+/// that flattens or steepens a drawn slur is honestly captured here rather than
+/// hidden — the units are "drawn slurs" (catalog §`slur_shape`).
+fn slur_shape_raw(spaced_curves: &[Curve]) -> f64 {
+    let per_curve: Vec<f64> = spaced_curves
         .iter()
         .filter_map(|curve| {
             let cp = curve.control_points();
@@ -528,6 +531,7 @@ fn symbol_density_raw(input: &ConstrainedLayoutIR, census: &SystemCensus) -> f64
 pub(crate) fn measure(
     input: &ConstrainedLayoutIR,
     cast: &CastLayout,
+    spaced_curves: &[Curve],
     geometry: &PageGeometry,
 ) -> QualityMetricVector {
     let census = census(input, cast);
@@ -540,14 +544,15 @@ pub(crate) fn measure(
         ),
         spacing_distortion: normalize(spacing_raw(&census), anchors::SPACING_R_WORST),
         // Slurs draw (E2), so their shape is now MEASURED (Push 3), not pinned:
-        // each drawn curve's arc ratio ρ = apex height / chord length is
+        // each drawn slur's arc ratio ρ = apex height / chord length is
         // penalized by its distance outside the shallow-arc band [0.08, 0.25].
-        // The Minimal tier's mid-span slurs sit at ρ ≈ 0.16 (in band, 0
-        // penalty), but its fixed height clamps push short slurs above the band
-        // (too bulgy) and very long ones below it (too flat) — a real, honest
-        // non-zero measurement. A curve-free layout measures 0 by the
-        // vacuous-geometry rule.
-        slur_shape_penalty: normalize(slur_shape_raw(input), anchors::SLUR_SHAPE_R_WORST),
+        // Measured on the SPACED whole curves — post-horizontal-remap (the
+        // shape the reader sees), pre-cast-split (the whole slur, one unit) —
+        // so re-spacing that visibly flattens or steepens a slur is caught, yet
+        // a well-shaped slur that merely crosses a system break is not
+        // penalized by its fragments' diagonal chords. A curve-free layout
+        // measures 0 by the vacuous-geometry rule.
+        slur_shape_penalty: normalize(slur_shape_raw(spaced_curves), anchors::SLUR_SHAPE_R_WORST),
         // Same vacuous rule: no drawn beam segments exist in this pipeline.
         beam_slope_penalty: normalize(0.0, anchors::BEAM_SLOPE_R_WORST),
         vertical_density_penalty: normalize(

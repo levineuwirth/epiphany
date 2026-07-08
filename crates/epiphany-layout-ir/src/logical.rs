@@ -225,9 +225,9 @@ pub struct SlurContent {
     /// preserved for a kind-aware higher tier (a phrase mark's longer curve, an
     /// editorial slur's distinct line).
     pub kind: SlurKind,
-    /// The authored line style (`style.line`). The Minimal tier draws every
-    /// slur solid; a non-`Solid` style is surfaced as a diagnostic rather than
-    /// silently rendered solid (its dash pattern is a higher-tier refinement).
+    /// The authored line style (`style.line`). Rendered faithfully: the style
+    /// rides the emitted `Curve`, so a non-`Solid` slur draws dashed or dotted
+    /// (`stroke-dasharray`) rather than silently solid.
     pub line: LineStyle,
 }
 

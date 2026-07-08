@@ -496,14 +496,18 @@ distance outside the shallow-arc band `[0.08, 0.25]`
 (`max(0, 0.08 − ρ, ρ − 0.25)`), meaned over units and normalized by
 `R_worst = 0.25`.
 
-**The unit is the WHOLE slur, measured on the constrained `input.curves` (one
-per drawn slur), not the cast output's per-system fragments** (review fix). A
-break-spanning slur casts into per-system sub-cubics whose *diagonal* chords
-each read flatter than the whole arc, so measuring fragments would spuriously
-penalize (and double-count) a slur that is ideally shaped as a whole —
-violating the catalog's "a tier that draws the ideal shallow arc measures 0"
-property. The whole arc is the shape-decision unit; casting's horizontal
-re-spacing is a spacing concern (`spacing_distortion`), not a shape one.
+**The unit is the WHOLE SPACED slur curve** — post-horizontal-remap (the drawn
+shape) and pre-cast-split (one unit per slur) — **not the cast output's
+per-system fragments** (review fixes). A break-spanning slur casts into
+per-system sub-cubics whose *diagonal* chords each read flatter than the whole
+arc, so measuring fragments would spuriously penalize (and double-count) a slur
+that is ideally shaped as a whole — violating the catalog's "a tier that draws
+the ideal shallow arc measures 0" property. The whole arc is the unit. An
+earlier take measured the *constrained* `input.curves` (pre-remap); a second
+audit noted the catalog's units are "drawn slurs," so measurement moved to the
+**spaced** curves (`spaced_curves`, threaded into `measure`) — horizontal
+re-spacing that flattens or steepens a drawn slur is now honestly captured
+rather than hidden behind the intended (pre-remap) shape.
 
 Honest outcome: the Minimal tier's mid-span slurs sit at `ρ = height/span =
 0.16` (the `SLUR_HEIGHT_FACTOR`; in band → 0), but the fixed

@@ -3345,8 +3345,16 @@ impl<'a> Reducer<'a> {
                 };
             }
         }
+        // Every anchored object of the NEW value must be live — events for the
+        // event-anchored kinds, and a spanner's region/measure anchor targets
+        // too (P13-D3, modify sibling): otherwise a live event-anchored spanner
+        // could be modified onto a missing region/measure — whose empty
+        // `endpoints()` slipped the check — and written into the graph past the
+        // core invariant that validates spanner anchors at all three kinds.
+        // Mirrors `create_cross_cutting`; `endpoints()` still feeds the
+        // event-only referent index below.
         let endpoints = op.structure.endpoints();
-        for e in &endpoints {
+        for e in &op.structure.anchor_object_refs() {
             if !matches!(self.objects.get(e), Some(ObjectState::Live)) {
                 return OperationEffect::NoOp {
                     reason: NoOpReason::PreconditionFailedUnderReduction {
@@ -5227,15 +5235,13 @@ impl<'a> Reducer<'a> {
     /// base seeded) is unverifiable and passes, like the other
     /// graph-aware-only preconditions.
     ///
-    /// Known residue (filed as a Pass-13 candidate; see DECISIONS.md): a
-    /// system pitch *introduced into the graph by a ModifyEvent replacement*
-    /// (never minted — the pre-walk deliberately excludes ModifyEvent) gets
-    /// this verdict only after a snapshot re-seeds the registry from the
-    /// base graph; in-session it reads `TargetMissing` instead. That
-    /// checkpoint-cut asymmetry for ModifyEvent-introduced content predates
-    /// this precondition (pre-K3 the same split read `TargetMissing` vs a
-    /// silent `Applied` rewrite) and is a ModifyEvent-introduction question,
-    /// not a K3 one.
+    /// This is the *rewrite* precondition (a live system pitch's content
+    /// changed in place). The sibling *introduction* case — a system pitch
+    /// never minted, introduced by a `ModifyEvent` replacement — is refused
+    /// upfront in [`Self::modify_event`] (P13-K1, resolved: reject the
+    /// introduction), which closes the checkpoint-cut asymmetry that once let
+    /// an introduced system pitch slip through in-session yet read
+    /// `SystemDerivedContentImmutable` after a snapshot re-seeded it here.
     fn system_derived_rewrite(&self, id: PitchId, value: &Pitch) -> bool {
         if id.replica() != ReplicaId::SYSTEM_DERIVED {
             return false;
@@ -8404,6 +8410,68 @@ mod tests {
                 Some(ObjectState::Live)
             ),
             "live region/measure anchors mint the spanner"
+        );
+        assert!(epiphany_core::check_invariants(&result.score).is_empty());
+
+        // MODIFY sibling: a live event-anchored spanner MODIFIED onto a missing
+        // region is refused too — `endpoints()` is empty for the new region
+        // anchors, so the pre-fix modify check slipped a dangling value into the
+        // graph past the core invariant.
+        let events = base
+            .voices()
+            .map(|(_, _, v)| v.events.clone())
+            .next()
+            .expect("the fixture has a voice");
+        let (e0, e1) = (events[0], events[1]);
+        let mod_id = SpannerId::new(ReplicaId(9), 812);
+        let mod_obj = TypedObjectId::Spanner(mod_id);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            prim_env(
+                9,
+                0,
+                10,
+                CausalContext::new(),
+                spanner(
+                    mod_id,
+                    crate::valuegen::event_anchor(e0),
+                    crate::valuegen::event_anchor(e1),
+                ),
+            ),
+            prim_env(
+                9,
+                1,
+                11,
+                CausalContext::new().with_seen(ReplicaId(9), 0),
+                OperationKind::ModifyCrossCutting(crate::payload::ModifyCrossCuttingOp {
+                    structure: CrossCuttingValue::Spanner(epiphany_core::Spanner {
+                        id: mod_id,
+                        start: TimeAnchor::Region {
+                            id: RegionId::new(ReplicaId(9), 7_778),
+                            edge: RegionEdge::Start,
+                            offset: AnchorOffset::Zero,
+                        },
+                        end: region_anchor(region_id),
+                        staves: Vec::new(),
+                        kind: Default::default(),
+                        style: Default::default(),
+                    }),
+                }),
+            ),
+        ]);
+        let result = set.reduce_onto(&base);
+        // The spanner stays live at its original event anchors (modify refused)…
+        assert!(
+            matches!(result.state.objects.get(&mod_obj), Some(ObjectState::Live)),
+            "the spanner survives the refused modify"
+        );
+        // …and the dangling region anchor never reached the graph.
+        assert!(
+            !result.score.cross_cutting.spanners.iter().any(|s| {
+                s.id == mod_id
+                    && matches!(s.start, TimeAnchor::Region { id, .. } if id == RegionId::new(ReplicaId(9), 7_778))
+            }),
+            "the dangling modify never reached the graph"
         );
         assert!(epiphany_core::check_invariants(&result.score).is_empty());
     }

@@ -180,8 +180,9 @@ pub(crate) struct CastLayout {
     /// the synthesized continuation segments.
     pub strokes: Vec<Stroke>,
     /// Final curves, in input order, each translated with its system. A curve
-    /// spanning a system break is drawn whole in its start system (Minimal
-    /// boundary: an honest cubic split needs de Casteljau, deferred).
+    /// spanning a system break is split into per-system sub-curves by de
+    /// Casteljau subdivision (the first keeps the source's provenance, the rest
+    /// are synthesized continuations, like system-spanning strokes).
     pub curves: Vec<Curve>,
     /// The populated page tree (empty when the input declares no regions).
     pub pages: Vec<ResolvedPage>,
@@ -1315,12 +1316,15 @@ fn stroke_fate(
     }
 }
 
-/// The system a curve rides whole: the nearest region's system whose clip
-/// interval contains the curve's **start** control point (its drawing origin),
-/// else that region's nearest system, else `None` (no region claimed it —
-/// left in the spaced frame, on no page). A curve is never split — an honest
-/// cubic split across a system break needs de Casteljau subdivision, deferred
-/// to a later tier; here a break-spanning slur draws whole in its start system.
+/// A curve's casting fate. A curve overlapping ONE system rides it whole
+/// (`Rigid(Some(s))`) — the nearest region's system whose clip interval
+/// contains the curve's **start** control point, else that region's nearest
+/// system; a curve no region claims is `Rigid(None)` (left in the spaced frame,
+/// on no page). A curve spanning MULTIPLE systems is `Split` into per-system
+/// sub-curves by de Casteljau subdivision at the parameters where its
+/// x-monotonic path crosses each system's content-clip edges (a non-monotonic
+/// curve — not produced by the engraver — cannot be honestly split and rides
+/// its start system whole).
 fn curve_fate(
     curve: &Curve,
     region_spans: &[Option<(f32, f32)>],

@@ -291,7 +291,7 @@ impl Engraver {
         // fixed above.
         let metric_vector = match (&cast, catalog_valid) {
             (Some(cast), true) => {
-                let vector = quality::measure(input, cast, &self.geometry);
+                let vector = quality::measure(input, cast, &spaced_curves, &self.geometry);
                 warnings.extend(quality::floor_warnings(
                     &vector,
                     profile_thresholds(config.profile),
