@@ -1604,11 +1604,11 @@ fn justify_system(
     }
 }
 
-/// Places a whole stroke under a system's justification. A rigid-width stroke
-/// (a stem or ledger) tracks its notehead: both endpoints translate by the
-/// owning slot's delta, so it stays attached without stretching. A spanning
-/// stroke (a staff line, a volta bracket) stretches with the system: each
-/// endpoint maps through the affine.
+/// Places a whole stroke under a system's justification. A per-event component
+/// stroke (a stem or ledger) tracks its notehead: both endpoints translate by
+/// the owning slot's delta, so it stays attached without stretching its offset.
+/// A spanning stroke (a staff line, a volta bracket) stretches with the system:
+/// each endpoint maps through the affine.
 fn place_stroke(
     source: &Stroke,
     spaced: &Stroke,
@@ -1616,13 +1616,11 @@ fn place_stroke(
     slot_source_x: &BTreeMap<SpringSlotId, f32>,
     glyphs: &[GlyphObject],
 ) -> Stroke {
-    if is_rigid_width_stroke(source) {
-        if let Some(dx) = owning_glyph(source, glyphs)
-            .and_then(|g| slot_source_x.get(&g.horizontal_slot))
-            .map(|&sx| p.slot_dx(sx))
-        {
-            return translated(spaced, dx, p.dy);
-        }
+    if let Some(dx) = crate::component_glyph(source, glyphs)
+        .and_then(|g| slot_source_x.get(&g.horizontal_slot))
+        .map(|&sx| p.slot_dx(sx))
+    {
+        return translated(spaced, dx, p.dy);
     }
     Stroke {
         provenance: spaced.provenance.clone(),

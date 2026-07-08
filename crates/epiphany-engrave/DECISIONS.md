@@ -546,11 +546,36 @@ per-slot deltas at the first/last slots, and the justified ink spans exactly
 SLOT's source (`Placement::slot_dx`), constant per slot, so intra-slot offsets
 (a time signature after its barline, an accidental left of its notehead) survive
 verbatim — never scaled by `a`. A spanning stroke (staff line, volta bracket)
-maps each endpoint through the affine (it stretches). A rigid-width stroke (a
-stem or ledger, via `owning_glyph`) translates by its owning slot's delta, so it
-stays attached without stretching. A slur's control points map straight through
-the affine — its endpoints follow their anchor notes and the arc stretches with
-the span.
+maps each endpoint through the affine (it stretches). A per-event **component
+stroke** (a stem or ledger) translates by its owning slot's delta, so it stays
+attached without stretching its offset.
+
+**Component-stroke classification (`component_glyph`), a review fix.** The first
+justification cut used `is_rigid_width_stroke` (LEDGER-only) to pick slot-anchored
+strokes, on the false premise that it also covered stems. It does not: a stem is
+an `Event`-sourced stroke drawn at `notehead_x + 1.15` — no same-source glyph
+(noteheads are `Pitch`-sourced) and no baseline in its x-span — so it fell to the
+affine branch and its offset was scaled by `a`, detaching it ~0.75 ss (up to
+~1.5) from its head in every justified system (and, latently, a smaller drift in
+the spacing pass, which had the same classification). `component_glyph` now
+classifies a stroke: a `Staff` (staff line) or `RepeatStructure` (volta bracket,
+whose ending-number glyphs share its source) source SPANS → affine; else the
+`owning_glyph` (a ledger over its notehead, same `Pitch` source, overlapping in
+x); else the glyph with the greatest baseline ≤ the stroke's x — a stem's own
+in-column notehead/dot, all in the one slot (`stem_offset 1.15 < column step
+1.6`, so this is exactly the stem's slot). Applied in BOTH the spacing remap and
+casting, so stems stay on their heads through the whole pipeline. Locked by
+`stem_offsets_from_the_notehead_survive_justification`.
+
+**A slur's control points map straight through the affine** — its endpoints
+follow their anchor notes and the arc stretches with the span. **Known minor gap
+(deferred):** the endpoints carry an authored `SLUR_INSET` (0.6 ss) tuck from
+their notes; the affine scales that offset by `a`, so a slur in a stretched
+system tucks ~`0.6·(a−1)` further from its heads (≈0.3 ss at `a≈1.5`) — still
+reading as "near" the note, same root cause as the stem drift but on a soft
+connector. A proper fix would slot-anchor `p0`/`p3` to their event slots while
+stretching the interior; deferred until slur fidelity warrants it (the curve
+carries no per-endpoint slot today).
 
 **Which systems justify.** Not the last system of a region (ragged-right, as
 engraving convention wants); not a system with no finite width target, a

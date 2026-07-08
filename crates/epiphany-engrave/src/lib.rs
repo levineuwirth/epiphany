@@ -78,6 +78,7 @@ mod spacing;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use epiphany_core::TypedObjectId;
 use epiphany_layout_ir::{
     all_available, profile_thresholds, Axis, BravuraCatalog, ConstrainedLayoutIR, ConstraintId,
     ConstraintSolver, ConstraintStrength, Curve, GlyphCatalog, GlyphObject, GlyphObjectId,
@@ -104,6 +105,50 @@ pub(crate) fn owning_glyph<'a>(
             && g.baseline.x.0 >= lo
             && g.baseline.x.0 <= hi
     })
+}
+
+/// The glyph a per-event COMPONENT stroke belongs to — the notehead that shares
+/// its `Event` source — found by source ALONE, so it also catches a **stem**,
+/// which sits offset from its column (at `notehead_x + stem_offset`) and whose
+/// x therefore contains no glyph baseline (`owning_glyph`'s x-span test misses
+/// it). Such a stroke tracks its notehead's slot rigidly, so re-spacing and
+/// justification move it *with* its head instead of stretching its offset. A
+/// stroke whose source is not an `Event` — a staff line (`Staff`), a volta
+/// bracket (a `RepeatStructure`, a source its ending-number glyphs also carry) —
+/// has no same-slot owner here and stretches with its system instead. (Every
+/// event-sourced stroke today is a single-slot component: stem, ledger, or a
+/// zero-extent anchor. A future event-spanning stroke — a beam — would need a
+/// span-aware guard added here.)
+pub(crate) fn component_glyph<'a>(
+    stroke: &Stroke,
+    glyphs: &'a [GlyphObject],
+) -> Option<&'a GlyphObject> {
+    // Spanning strokes stretch with their system, so they own no single slot: a
+    // staff line (`Staff` source), a volta bracket (`RepeatStructure` source —
+    // which its ending-number glyphs also carry, so a plain source match would
+    // wrongly anchor the whole bracket to one number's slot).
+    if matches!(
+        stroke.provenance.source,
+        TypedObjectId::Staff(_) | TypedObjectId::RepeatStructure(_)
+    ) {
+        return None;
+    }
+    // A ledger shares its notehead's `Pitch` source and overlaps it in x, so
+    // `owning_glyph` finds it directly.
+    if let Some(g) = owning_glyph(stroke, glyphs) {
+        return Some(g);
+    }
+    // A stem is `Event`-sourced with NO same-source glyph (noteheads are
+    // `Pitch`-sourced) and sits offset from its column (`stem_x = notehead_x +
+    // 1.15`, inside the 1.6 column step), so its x contains no glyph baseline.
+    // It belongs to the slot just to its LEFT — the glyph with the greatest
+    // baseline ≤ its x, which is a notehead or dot in the stem's OWN column (all
+    // of that column's glyphs share the one slot, so the pick's slot is exact).
+    let x = stroke.from.x.0.max(stroke.to.x.0);
+    glyphs
+        .iter()
+        .filter(|g| g.baseline.x.0 <= x + f32::EPSILON)
+        .max_by(|a, b| a.baseline.x.0.total_cmp(&b.baseline.x.0))
 }
 
 /// The Epiphany engraving solver (Chapter 9). A `Minimal`-tier solver: it spaces
@@ -140,9 +185,13 @@ pub struct Engraver {
 /// one system is unchanged, and to `8` when **per-system justification** landed
 /// (every non-final system of a multi-system region stretches its horizontal
 /// slack so its ink fills the content width, instead of sitting at its natural
-/// left-aligned width; the baked geometry of any wrapping score differs, while a
-/// single-system score — whose only system is ragged-right by convention — is
-/// unchanged).
+/// left-aligned width) **together with correct component-stroke slot-anchoring**
+/// (a stem — an `Event`-sourced stroke offset from its column, which the old
+/// ledger-only rigid-width test missed — now rides its notehead's slot in both
+/// the spacing pass and casting, instead of being stretched by the interpolation
+/// / justification map and drifting off its head; any wrapping score's baked
+/// geometry differs, and any score with drawn stems shifts them onto their
+/// heads).
 pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(8);
 
 impl Engraver {
@@ -460,21 +509,19 @@ impl HorizontalRemap {
             .strokes
             .iter()
             .map(|s| {
-                let (from_x, to_x) = if epiphany_layout_ir::is_rigid_width_stroke(s) {
-                    // Translate rigidly by the *owning glyph's* slot delta — found by
-                    // source, not the stroke's midpoint, which for a wide head could
-                    // pick a neighbouring column and reintroduce drift. The slot delta
-                    // is the exact column translation (the same one the glyph itself
-                    // moves by), keeping the stroke's offset from its glyph and its
-                    // length.
-                    let delta = owning_glyph(s, &input.glyphs)
-                        .map(|g| {
-                            self.slot_delta
-                                .get(&g.horizontal_slot)
-                                .copied()
-                                .unwrap_or_else(|| self.map(g.baseline.x.0) - g.baseline.x.0)
-                        })
-                        .unwrap_or(0.0);
+                let (from_x, to_x) = if let Some(g) = component_glyph(s, &input.glyphs) {
+                    // A per-event component stroke (a stem, a ledger) translates
+                    // rigidly by its *owning glyph's* slot delta — found by
+                    // source, not the stroke's own x (a stem sits offset from its
+                    // column, so its midpoint could pick a neighbouring slot). The
+                    // slot delta is the exact column translation the glyph itself
+                    // moves by, so the stroke keeps its offset from its head and
+                    // its length.
+                    let delta = self
+                        .slot_delta
+                        .get(&g.horizontal_slot)
+                        .copied()
+                        .unwrap_or_else(|| self.map(g.baseline.x.0) - g.baseline.x.0);
                     (s.from.x.0 + delta, s.to.x.0 + delta)
                 } else {
                     (self.map(s.from.x.0), self.map(s.to.x.0))
@@ -1327,6 +1374,60 @@ mod tests {
             }
         }
         assert!(checked > 0, "no ledger/notehead pairs exercised");
+    }
+
+    #[test]
+    fn stem_offsets_from_the_notehead_survive_justification() {
+        // A stem is `Event`-sourced with no same-source glyph, so it tracks its
+        // column via `component_glyph`'s nearest-left notehead. Its offset from
+        // that column must survive the FULL solve — spacing AND per-system
+        // justification — so a stem in a stretched non-final system stays
+        // attached to its head rather than being dragged into the gap (the
+        // review's severe finding). Checked across seeds that wrap (justify).
+        let mut checked = 0;
+        for seed in 0..16 {
+            let input = to_constrained(&to_logical(&valid_score_rich(seed)));
+            let report = Engraver::default().solve(&input, &SolverConfig::default());
+            for s_in in &input.strokes {
+                // Vertical, non-zero-length strokes are drawn stems.
+                if (s_in.from.x.0 - s_in.to.x.0).abs() > 1e-4
+                    || (s_in.from.y.0 - s_in.to.y.0).abs() < 1e-3
+                {
+                    continue;
+                }
+                let Some(owner_in) = component_glyph(s_in, &input.glyphs) else {
+                    continue;
+                };
+                // A stem's owner is found by nearest-left, NOT source match
+                // (that path is the ledger case); skip anything same-source.
+                if owner_in.provenance.source == s_in.provenance.source {
+                    continue;
+                }
+                let (Some(s_out), Some(g_out)) = (
+                    report
+                        .layout
+                        .strokes
+                        .iter()
+                        .find(|s| s.provenance.stable_id == s_in.provenance.stable_id),
+                    report
+                        .layout
+                        .glyphs
+                        .iter()
+                        .find(|g| g.provenance.stable_id == owner_in.provenance.stable_id),
+                ) else {
+                    continue;
+                };
+                let offset_in = s_in.from.x.0 - owner_in.baseline.x.0;
+                let offset_out = s_out.from.x.0 - g_out.position.x.0;
+                assert!(
+                    (offset_out - offset_in).abs() < 1e-3,
+                    "seed {seed}: stem offset drifted {offset_in} -> {offset_out} \
+                     (justification scaled it off its notehead)"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "no stem/notehead pairs exercised");
     }
 
     #[test]
