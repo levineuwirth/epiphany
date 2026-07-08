@@ -122,8 +122,12 @@ pub struct Engraver {
 /// when casting-off gained its widow-rebalance phase (a wrapping score's system
 /// breaks — and so its baked geometry — differ again from version `2`'s pure
 /// greedy first-fit), and to `4` when repeat barlines and volta brackets landed
-/// (a repeat-bearing score's baked geometry differs from version `3`'s
-/// invisible traced anchors; repeat-free scores are unchanged).
+/// and the horizontal remap became **slot-relative** (a repeat-bearing score's
+/// baked geometry differs from version `3`'s invisible traced anchors, and a
+/// same-slot companion glyph — a time-signature digit, key-signature
+/// accidental, or spelling accidental — now rides its slot's rigid delta
+/// instead of drifting by interpolation; scores without such companions are
+/// unchanged).
 pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(4);
 
 impl Engraver {
@@ -339,6 +343,14 @@ impl Engraver {
 struct HorizontalRemap {
     /// `(source_x, target_x)` control points, sorted by source, sources distinct.
     points: Vec<(f32, f32)>,
+    /// Each glyph-bearing slot's rigid translation (`target − source`). A
+    /// glyph moves by **its own slot's** delta — never by interpolation, which
+    /// would drag a same-slot companion (a time-signature digit after its
+    /// barline, a key-signature accidental after the clef) by a neighbouring
+    /// interval whenever its absolute x crosses the next slot's source. The
+    /// spacing pass already reserved the companion's extent in the slot's
+    /// advance; the rigid delta is what honors that reservation.
+    slot_delta: BTreeMap<SpringSlotId, f32>,
 }
 
 impl HorizontalRemap {
@@ -346,8 +358,14 @@ impl HorizontalRemap {
         // The control points are computed collision-aware (per-slot bearings) by
         // the spacing pass; sources are globally monotonic because regions tile
         // left-to-right.
+        let spaced = spacing::space_slots(input);
         HorizontalRemap {
-            points: spacing::control_points(input),
+            points: spaced.points,
+            slot_delta: spaced
+                .by_slot
+                .into_iter()
+                .map(|(id, (source, target))| (id, target - source))
+                .collect(),
         }
     }
 
@@ -373,20 +391,29 @@ impl HorizontalRemap {
         }
     }
 
-    /// Re-places each glyph at its mapped x, baseline `y` preserved; provenance,
-    /// glyph identity, bounds, style, and layer carried through.
+    /// Re-places each glyph by **its slot's rigid delta** (intra-slot offsets
+    /// preserved verbatim — see [`HorizontalRemap::slot_delta`]), baseline `y`
+    /// preserved; provenance, glyph identity, bounds, style, and layer carried
+    /// through. A glyph whose slot the spacing pass never placed
+    /// (out-of-pipeline input) falls back to the interpolated map.
     fn glyphs(&self, input: &ConstrainedLayoutIR) -> Vec<ResolvedGlyph> {
         input
             .glyphs
             .iter()
-            .map(|g| ResolvedGlyph {
-                provenance: g.provenance.clone(),
-                glyph: g.glyph.clone(),
-                position: Point::new(self.map(g.baseline.x.0), g.baseline.y.0),
-                transform: None,
-                bounding_box: g.bounding_box,
-                style: g.style,
-                layer: g.layer,
+            .map(|g| {
+                let x = match self.slot_delta.get(&g.horizontal_slot) {
+                    Some(delta) => g.baseline.x.0 + delta,
+                    None => self.map(g.baseline.x.0),
+                };
+                ResolvedGlyph {
+                    provenance: g.provenance.clone(),
+                    glyph: g.glyph.clone(),
+                    position: Point::new(x, g.baseline.y.0),
+                    transform: None,
+                    bounding_box: g.bounding_box,
+                    style: g.style,
+                    layer: g.layer,
+                }
             })
             .collect()
     }
@@ -403,14 +430,19 @@ impl HorizontalRemap {
             .iter()
             .map(|s| {
                 let (from_x, to_x) = if epiphany_layout_ir::is_rigid_width_stroke(s) {
-                    // Translate rigidly by the *owning glyph's* column delta — found by
+                    // Translate rigidly by the *owning glyph's* slot delta — found by
                     // source, not the stroke's midpoint, which for a wide head could
-                    // pick a neighbouring column and reintroduce drift. The glyph
-                    // baseline is a control point, so `map(baseline) − baseline` is its
-                    // exact column delta; applying it keeps the stroke's offset from the
-                    // glyph and its length.
+                    // pick a neighbouring column and reintroduce drift. The slot delta
+                    // is the exact column translation (the same one the glyph itself
+                    // moves by), keeping the stroke's offset from its glyph and its
+                    // length.
                     let delta = owning_glyph(s, &input.glyphs)
-                        .map(|g| self.map(g.baseline.x.0) - g.baseline.x.0)
+                        .map(|g| {
+                            self.slot_delta
+                                .get(&g.horizontal_slot)
+                                .copied()
+                                .unwrap_or_else(|| self.map(g.baseline.x.0) - g.baseline.x.0)
+                        })
                         .unwrap_or(0.0);
                     (s.from.x.0 + delta, s.to.x.0 + delta)
                 } else {
@@ -1710,6 +1742,120 @@ mod tests {
                 .collect::<Vec<_>>(),
             "the Engraver must re-space, not echo the stub's verbatim columns"
         );
+    }
+
+    /// A repeat-morphed barline whose measure introduces a time signature: the
+    /// digits sit in the barline's **slot** but right of the *following note
+    /// column's source* (`TIME_SIG_X` plus the sign's right extension exceeds
+    /// the constrained column step), so a per-glyph interpolated remap would
+    /// drag them by the wrong interval and collapse them into the following
+    /// note. The slot-relative remap keeps them with their barline: resolved,
+    /// every digit clears both the repeat sign and every notehead, and every
+    /// same-slot pair keeps its exact constrained offset.
+    #[test]
+    fn time_signature_digits_ride_their_barline_slot_past_a_repeat_sign() {
+        use epiphany_core::{
+            BeatGroup, MusicalDuration, PowerOfTwo, RationalTime, TimeSignature,
+            TimeSignatureDisplay, TimeSignatureId, TypedObjectId,
+        };
+        use epiphany_layout_ir::{Margins, Size2D};
+
+        let mut score = epiphany_testkit::fixtures::ten_measure_with_repeats(0x000A_11CE);
+        let ts_id: TimeSignatureId = score.identity.mint();
+        let beat = || BeatGroup {
+            duration: MusicalDuration(RationalTime::new(1, 4).expect("nonzero")),
+            subdivision: None,
+            accent: 1,
+        };
+        score.time_signatures.push(
+            TimeSignature::new(
+                ts_id,
+                TimeSignatureDisplay::Standard {
+                    numerator: 4,
+                    denominator: PowerOfTwo::new(4).expect("4 is a power of two"),
+                },
+                MusicalDuration(RationalTime::new(1, 1).expect("nonzero")),
+                vec![beat(), beat(), beat(), beat()],
+            )
+            .expect("4/4 beat groups sum to a whole note"),
+        );
+        // Measure 2 is the fixture's repeatLeft morph (the first repeat's start).
+        score.canvas.regions[0]
+            .content
+            .staff_instances_mut()
+            .expect("the fixture is staff-based")[0]
+            .measures[1]
+            .time_signature = Some(ts_id);
+
+        let constrained = to_constrained(&to_logical(&score));
+        // An unbounded page keeps everything on one endless system, so
+        // x-disjointness below compares glyphs of the same line (casting
+        // restarts x per system, making cross-system x-overlap legitimate).
+        let layout = Engraver::with_geometry(PageGeometry {
+            size: Size2D::default(),
+            margins: Margins::default(),
+        })
+        .solve(&constrained, &SolverConfig::default())
+        .layout;
+        let interval = |position: f32, bounding_box: &epiphany_layout_ir::BoundingBox| {
+            (
+                position + bounding_box.left.0,
+                position + bounding_box.right.0,
+            )
+        };
+
+        let digits: Vec<_> = layout
+            .glyphs
+            .iter()
+            .filter(|g| {
+                g.glyph.as_str().starts_with("timeSig")
+                    && matches!(g.provenance.source, TypedObjectId::Measure(_))
+            })
+            .collect();
+        assert!(!digits.is_empty(), "the 4/4 draws digit glyphs");
+        let sign = layout
+            .glyphs
+            .iter()
+            .find(|g| {
+                g.glyph.as_str() == "repeatLeft"
+                    && matches!(g.provenance.source, TypedObjectId::Measure(_))
+            })
+            .expect("the morphed start sign is engraved");
+        let (_, sign_right) = interval(sign.position.x.0, &sign.bounding_box);
+        for digit in &digits {
+            let (digit_left, digit_right) = interval(digit.position.x.0, &digit.bounding_box);
+            assert!(
+                digit_left >= sign_right,
+                "a digit must clear the repeat sign's ink"
+            );
+            for head in layout
+                .glyphs
+                .iter()
+                .filter(|g| g.glyph.as_str().starts_with("notehead"))
+            {
+                let (head_left, head_right) = interval(head.position.x.0, &head.bounding_box);
+                assert!(
+                    digit_right <= head_left || head_right <= digit_left,
+                    "a digit must not cross a notehead's ink"
+                );
+            }
+        }
+
+        // The invariant behind the fix: same-slot companions keep their exact
+        // constrained offsets through the re-spacing.
+        let resolved: Vec<_> = constrained.glyphs.iter().zip(&layout.glyphs).collect();
+        for (a, ra) in &resolved {
+            for (b, rb) in &resolved {
+                if a.horizontal_slot == b.horizontal_slot {
+                    let before = b.baseline.x.0 - a.baseline.x.0;
+                    let after = rb.position.x.0 - ra.position.x.0;
+                    assert!(
+                        (before - after).abs() < 1e-4,
+                        "intra-slot offsets must survive the re-spacing"
+                    );
+                }
+            }
+        }
     }
 
     /// The editing-loop vertical slice (testkit's `run_edit_loop_with`) driven

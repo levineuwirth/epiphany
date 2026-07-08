@@ -428,3 +428,20 @@ Repeat-free scores are byte-identical (the existing `ten_measure` /
 - Volta bracket strokes raise their system's extent, so vertical stacking
   and page overflow account for them with no engraver change (system height
   is computed from every member box and stroke).
+- **Same-slot spacing preservation (review follow-up, folded into version
+  4 before release).** The spacing pass reserves a slot's full content extent
+  (its companions included) in the slot's advance, but the remap moved every
+  glyph independently by piecewise interpolation — so a same-slot companion
+  whose absolute x crossed the next slot's *source* (E1 made this reachable:
+  a time signature after a morphed `repeatLeft` sits `TIME_SIG_X` + the
+  sign's right extension ≈ 1.8 staff spaces right of its barline, past the
+  1.6-space constrained column step) was dragged by the wrong interval and
+  collapsed into the following note. Glyphs now translate by **their own
+  slot's rigid delta** (`spacing::space_slots` returns the per-slot
+  `(source, target)` pairs beside the interpolation control points), which
+  is what honors the reservation; intra-slot offsets survive verbatim.
+  Spanning strokes keep endpoint interpolation; rigid (ledger) strokes now
+  translate by the owning glyph's slot delta exactly. Regression:
+  `time_signature_digits_ride_their_barline_slot_past_a_repeat_sign`
+  (unbounded page so x-disjointness compares one line; verified to fail
+  against the interpolated remap).

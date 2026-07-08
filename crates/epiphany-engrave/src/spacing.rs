@@ -30,14 +30,27 @@ use crate::owning_glyph;
 /// the next slot's left content.
 const SLOT_GAP: f32 = 0.3;
 
-/// Horizontal coordinate-map control points `(source_x, target_x)`, one per
-/// glyph-bearing slot, sorted left to right. The source is the slot's column
-/// reference (its first member glyph's baseline); the target accumulates
-/// collision-aware advances so neighbouring slots' content — including
-/// left-overhanging accidentals — never overlaps, and a wide lead (clef + key
-/// signature) reserves real space. Deterministic: a pure function of the glyphs
-/// and their bounding boxes.
-pub(crate) fn control_points(input: &ConstrainedLayoutIR) -> Vec<(f32, f32)> {
+/// The spacing pass's output: the interpolation control points for spanning
+/// strokes, and each glyph-bearing slot's exact `(source, target)` pair — the
+/// rigid delta every member glyph translates by, so intra-slot offsets (a
+/// time signature after its barline, key-signature accidentals after the
+/// clef, an accidental left of its notehead) survive the re-spacing verbatim.
+pub(crate) struct SpacedSlots {
+    /// `(source_x, target_x)` control points, sorted by source, sources
+    /// distinct — the piecewise-linear map for content that genuinely *spans*
+    /// columns (staff lines, brackets).
+    pub points: Vec<(f32, f32)>,
+    /// Each glyph-bearing slot's own `(source_x, target_x)`.
+    pub by_slot: BTreeMap<SpringSlotId, (f32, f32)>,
+}
+
+/// Spaces the glyph-bearing slots left to right. Each slot's source is its
+/// column reference (its first member glyph's baseline); the target
+/// accumulates collision-aware advances so neighbouring slots' content —
+/// including left-overhanging accidentals — never overlaps, and a wide lead
+/// (clef + key signature) reserves real space. Deterministic: a pure function
+/// of the glyphs and their bounding boxes.
+pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
     /// One slot's horizontal extent, from its member glyphs.
     struct Extent {
         /// Column reference x (the first member's baseline).
@@ -94,28 +107,34 @@ pub(crate) fn control_points(input: &ConstrainedLayoutIR) -> Vec<(f32, f32)> {
         }
     }
 
-    let mut slots: Vec<Extent> = by_slot.into_values().collect();
+    let mut slots: Vec<(SpringSlotId, Extent)> = by_slot.into_iter().collect();
     slots.sort_by(|a, b| {
-        a.source
-            .partial_cmp(&b.source)
+        a.1.source
+            .partial_cmp(&b.1.source)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
     let mut points = Vec::with_capacity(slots.len());
+    let mut placed: BTreeMap<SpringSlotId, (f32, f32)> = BTreeMap::new();
     let mut target = 0.0_f32;
     for i in 0..slots.len() {
-        points.push((slots[i].source, target));
-        let right_bearing = slots[i].max_right - slots[i].source;
+        let (id, extent) = &slots[i];
+        points.push((extent.source, target));
+        placed.insert(*id, (extent.source, target));
+        let right_bearing = extent.max_right - extent.source;
         // The next slot's left overhang must be cleared by *this* slot's advance.
         let next_left = slots
             .get(i + 1)
-            .map(|next| next.source - next.min_left)
+            .map(|(_, next)| next.source - next.min_left)
             .unwrap_or(0.0);
-        let advance = slots[i].preferred.max(right_bearing + SLOT_GAP + next_left);
+        let advance = extent.preferred.max(right_bearing + SLOT_GAP + next_left);
         target += advance;
     }
     points.dedup_by(|a, b| a.0 == b.0);
-    points
+    SpacedSlots {
+        points,
+        by_slot: placed,
+    }
 }
 
 #[cfg(test)]
@@ -127,11 +146,23 @@ mod tests {
     #[test]
     fn control_points_are_monotonic_in_source_and_target() {
         let c = to_constrained(&to_logical(&valid_score_rich(7)));
-        let points = control_points(&c);
-        assert!(!points.is_empty());
-        for w in points.windows(2) {
+        let spaced = space_slots(&c);
+        assert!(!spaced.points.is_empty());
+        for w in spaced.points.windows(2) {
             assert!(w[1].0 > w[0].0, "sources strictly increase");
             assert!(w[1].1 > w[0].1, "targets strictly increase");
+        }
+        // The two views describe one spacing: every placed slot's pair is one
+        // of the control points (this fixture's slot sources are all distinct,
+        // so the equal-source dedup removes nothing).
+        for (source, target) in spaced.by_slot.values() {
+            assert!(
+                spaced
+                    .points
+                    .iter()
+                    .any(|(s, t)| s == source && t == target),
+                "slot pair ({source}, {target}) must be a control point"
+            );
         }
     }
 
@@ -140,9 +171,9 @@ mod tests {
         // A wide lead (clef) advances by more than a uniform note slot, so the
         // engraved targets are not a copy of the source columns.
         let c = to_constrained(&to_logical(&valid_score_rich(7)));
-        let points = control_points(&c);
+        let spaced = space_slots(&c);
         assert!(
-            points.iter().any(|(s, t)| (s - t).abs() > 1e-3),
+            spaced.points.iter().any(|(s, t)| (s - t).abs() > 1e-3),
             "targets must differ from sources (re-spacing happened)"
         );
     }
@@ -150,6 +181,8 @@ mod tests {
     #[test]
     fn spacing_is_deterministic() {
         let c = to_constrained(&to_logical(&valid_score_rich(3)));
-        assert_eq!(control_points(&c), control_points(&c));
+        let (a, b) = (space_slots(&c), space_slots(&c));
+        assert_eq!(a.points, b.points);
+        assert_eq!(a.by_slot, b.by_slot);
     }
 }
