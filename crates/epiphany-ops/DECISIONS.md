@@ -1102,6 +1102,18 @@ SPANNERS — `CrossCuttingValue::endpoints()` filters to events, so a spanner
 anchored to a missing region/measure mints dangling past the invariant
 (`anchor_target_exists` checks spanner anchors at all three kinds), and
 non-event referent tombstones (a `DeleteRegion` under a region-anchored
-spanner or repeat) re-anchor nothing. Pre-existing, ratified-as-implemented
-("every referenced endpoint is live" reads events-only in the code);
-changing it is a catalog-semantics decision, not a Phase-D fix.
+spanner or repeat) re-anchor nothing.
+
+**P13-D3 resolved (Pass 13, 2026-07-08; user: "fix the mint only").** The MINT
+is fixed: `CrossCuttingValue::anchor_object_refs()` returns the full anchor
+object set (events + a spanner's measure/region anchors; wall-clock references
+nothing), and `create_cross_cutting`'s liveness precondition now checks it —
+so a spanner anchored to a missing region/measure is refused
+(`TargetMissing`) rather than minted dangling, exactly as the repeat mint's
+`anchor_object_refs` fix does. Deterministic across both reduction modes (the
+base seed registers regions and measures in `objects`). `endpoints()` stays
+event-only — it feeds the re-anchoring referent index, and **non-event
+referent re-anchoring stays deferred, ratified events-only** (the spanner
+discipline; extending the referent index to region/measure tombstones is the
+larger change the user parked). Regression:
+`create_cross_cutting_spanner_preconditions_region_measure_anchors`.

@@ -3124,8 +3124,13 @@ impl<'a> Reducer<'a> {
             }
             None => {}
         }
-        // Endpoints must exist (live).
-        for e in &endpoints {
+        // Every anchored object must exist (live) — events for the
+        // event-anchored kinds, and a spanner's region/measure anchor targets
+        // too, so a spanner anchored to a missing region/measure is rejected
+        // rather than minted dangling (P13-D3). Deterministic across both
+        // reduction modes: the base seed registers regions and measures in
+        // `objects` (as the repeat mint precondition relies on).
+        for e in &op.structure.anchor_object_refs() {
             if !matches!(self.objects.get(e), Some(ObjectState::Live)) {
                 return OperationEffect::NoOp {
                     reason: NoOpReason::PreconditionFailedUnderReduction {
@@ -8222,6 +8227,100 @@ mod tests {
                 .any(|r| r.id == ghost_id),
             "nothing dangling reaches the graph"
         );
+    }
+
+    #[test]
+    fn create_cross_cutting_spanner_preconditions_region_measure_anchors() {
+        // P13-D3 (fix the mint): a spanner anchored to a missing region or
+        // measure is refused (the mint checks `anchor_object_refs`, not just the
+        // event endpoints `endpoints()` returns), and a spanner anchored to a
+        // live region/measure mints. Non-event referent re-anchoring stays
+        // events-only (ratified — the spanner discipline).
+        use epiphany_core::generators::valid_score_rich;
+        use epiphany_core::{MeasurePosition, SpannerId};
+
+        let base = valid_score_rich(0x0D0E);
+        let (region_id, measure_id) = base
+            .canvas
+            .regions
+            .iter()
+            .find_map(|r| {
+                r.staff_instances()
+                    .iter()
+                    .find_map(|si| si.measures.first().map(|m| (r.id, m.id)))
+            })
+            .expect("the rich fixture has a measure");
+        let spanner = |id, start, end| {
+            OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Spanner(epiphany_core::Spanner {
+                    id,
+                    start,
+                    end,
+                    staves: Vec::new(),
+                    kind: Default::default(),
+                    style: Default::default(),
+                }),
+            })
+        };
+        let region_anchor = |id| TimeAnchor::Region {
+            id,
+            edge: RegionEdge::End,
+            offset: AnchorOffset::Zero,
+        };
+
+        // Start names a missing region: refused, not minted dangling.
+        let dangling = SpannerId::new(ReplicaId(9), 810);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![prim_env(
+            9,
+            0,
+            10,
+            CausalContext::new(),
+            spanner(
+                dangling,
+                TimeAnchor::Region {
+                    id: RegionId::new(ReplicaId(9), 7_777),
+                    edge: RegionEdge::Start,
+                    offset: AnchorOffset::Zero,
+                },
+                region_anchor(region_id),
+            ),
+        )]);
+        assert!(
+            !set.reduce_onto(&base)
+                .state
+                .objects
+                .contains_key(&TypedObjectId::Spanner(dangling)),
+            "a spanner anchored to a missing region is refused, not minted dangling"
+        );
+
+        // Live measure + live region anchors: mints, invariant-clean.
+        let live = SpannerId::new(ReplicaId(9), 811);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![prim_env(
+            9,
+            0,
+            10,
+            CausalContext::new(),
+            spanner(
+                live,
+                TimeAnchor::Measure {
+                    id: measure_id,
+                    position: MeasurePosition::Start,
+                    offset: AnchorOffset::Zero,
+                },
+                region_anchor(region_id),
+            ),
+        )]);
+        let result = set.reduce_onto(&base);
+        assert!(
+            matches!(
+                result.state.objects.get(&TypedObjectId::Spanner(live)),
+                Some(ObjectState::Live)
+            ),
+            "live region/measure anchors mint the spanner"
+        );
+        assert!(epiphany_core::check_invariants(&result.score).is_empty());
     }
 
     #[test]

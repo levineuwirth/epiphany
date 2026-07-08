@@ -732,6 +732,32 @@ impl CrossCuttingValue {
                 .collect(),
         }
     }
+
+    /// Every object this structure's anchors reference — its endpoint events,
+    /// and (for a spanner) the measures and regions its [`TimeAnchor`]s name.
+    /// The mint precondition checks all of these are live, so a spanner
+    /// anchored to a missing region or measure is rejected rather than minted
+    /// dangling (P13-D3). Distinct from [`Self::endpoints`], which stays
+    /// event-only: it feeds the re-anchoring referent index, which repairs
+    /// event tombstones only (the spanner discipline — non-event referent
+    /// re-anchoring stays deferred, ratified events-only).
+    pub fn anchor_object_refs(&self) -> Vec<TypedObjectId> {
+        match self {
+            // Event-anchored kinds reference exactly their endpoint events.
+            CrossCuttingValue::Tie(_) | CrossCuttingValue::Slur(_) | CrossCuttingValue::Beam(_) => {
+                self.endpoints()
+            }
+            CrossCuttingValue::Spanner(s) => [&s.start, &s.end]
+                .into_iter()
+                .filter_map(|anchor| match anchor {
+                    TimeAnchor::Event { id, .. } => Some(TypedObjectId::Event(*id)),
+                    TimeAnchor::Measure { id, .. } => Some(TypedObjectId::Measure(*id)),
+                    TimeAnchor::Region { id, .. } => Some(TypedObjectId::Region(*id)),
+                    TimeAnchor::WallClock { .. } => None,
+                })
+                .collect(),
+        }
+    }
 }
 
 impl CanonicalEncode for CrossCuttingValue {
