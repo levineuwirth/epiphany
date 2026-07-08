@@ -790,10 +790,14 @@ practice.
 
 \begin{requirement}
 \label{req:qmc:slur}
-\textbf{Contributing units:} drawn slur curves in $L$ with chord length
-$c > 0$, where the \emph{chord} is the segment between the curve's
-endpoints and the \emph{apex height} $h \ge 0$ is the maximum
-perpendicular distance from the curve to its chord.
+\textbf{Contributing units:} drawn slurs in $L$ with chord length
+$c > 0$, where the \emph{chord} is the segment between the \emph{whole}
+slur's endpoints and the \emph{apex height} $h \ge 0$ is the maximum
+perpendicular distance from the curve to its chord. The unit is the whole
+slur, not a per-system fragment: a slur that a casting-off pass splits
+across a system break is measured once, as the arc it was shaped to be, so
+a well-shaped slur that happens to break is not spuriously penalized (its
+fragments' diagonal chords each read flatter than the whole).
 
 \textbf{Raw measurement:} per unit, with arc ratio $\rho = h / c$,
 \[

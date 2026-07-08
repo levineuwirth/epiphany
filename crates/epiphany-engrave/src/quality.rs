@@ -106,8 +106,18 @@ const SLUR_APEX_SAMPLES: usize = 32;
 /// is the arithmetic mean over units. A curve-free layout has no units, so the
 /// mean is `0` (the vacuous-geometry rule) — not by construction but by
 /// measurement.
-fn slur_shape_raw(cast: &CastLayout) -> f64 {
-    let per_curve: Vec<f64> = cast
+///
+/// Measured over the **whole** slur curves of the constrained input (one unit
+/// per drawn slur — the engraver's arc-proportion decision), *not* the cast
+/// output's per-system fragments: casting splits a break-spanning slur into
+/// sub-cubics whose diagonal chords each read flatter than the whole arc, which
+/// would spuriously penalize (and double-count) a slur that is ideally shaped
+/// as a whole. The catalog's property "a tier that draws the ideal shallow arc
+/// for every slur measures 0" holds only when the whole arc is the unit. The
+/// horizontal re-spacing that casting applies is a spacing concern
+/// (`spacing_distortion`), not a shape one.
+fn slur_shape_raw(input: &ConstrainedLayoutIR) -> f64 {
+    let per_curve: Vec<f64> = input
         .curves
         .iter()
         .filter_map(|curve| {
@@ -537,7 +547,7 @@ pub(crate) fn measure(
         // (too bulgy) and very long ones below it (too flat) — a real, honest
         // non-zero measurement. A curve-free layout measures 0 by the
         // vacuous-geometry rule.
-        slur_shape_penalty: normalize(slur_shape_raw(cast), anchors::SLUR_SHAPE_R_WORST),
+        slur_shape_penalty: normalize(slur_shape_raw(input), anchors::SLUR_SHAPE_R_WORST),
         // Same vacuous rule: no drawn beam segments exist in this pipeline.
         beam_slope_penalty: normalize(0.0, anchors::BEAM_SLOPE_R_WORST),
         vertical_density_penalty: normalize(
@@ -724,6 +734,50 @@ mod tests {
             with_slur(0, 6),
             0.0,
             "an in-band (mid-span) slur is not penalized"
+        );
+    }
+
+    #[test]
+    fn a_break_spanning_in_band_slur_measures_zero_despite_splitting() {
+        // A well-shaped (ρ ≈ 0.16, in-band) slur whose span crosses a system
+        // break splits into per-system sub-curves. The shape axis measures the
+        // WHOLE slur (the constrained curve), not the fragments — whose diagonal
+        // chords would each read too flat — so the well-shaped slur still scores
+        // 0, as the catalog's "ideal arc ⇒ 0" property requires.
+        use epiphany_core::{Slur, SlurId, SlurKind, SpanStyle, TypedObjectId};
+        use epiphany_layout_ir::to_constrained;
+
+        let mut score = epiphany_testkit::fixtures::ten_measure_single_staff(0x000A_11CE);
+        let ev: Vec<_> = score.canvas.regions[0].staff_instances()[0].voices[0]
+            .events
+            .clone();
+        let id: SlurId = score.identity.mint();
+        // Events 22→26 straddle the fixture's two-system break (a ~one-measure
+        // span, wide enough that the height clamp does not bind → ρ ≈ 0.16).
+        score.cross_cutting.slurs.push(Slur {
+            id,
+            start_event: ev[22],
+            end_event: ev[26],
+            kind: SlurKind::Legato,
+            curvature_override: None,
+            style: SpanStyle::default(),
+        });
+        let report = Engraver::default().solve(
+            &to_constrained(&to_logical(&score)),
+            &SolverConfig::default(),
+        );
+        // The slur really did split (the fragment path would have fired)…
+        let segments = report
+            .layout
+            .curves
+            .iter()
+            .filter(|c| c.provenance.source == TypedObjectId::Slur(id))
+            .count();
+        assert!(segments >= 2, "the slur splits, got {segments} segment(s)");
+        // …yet the shape axis is 0: the whole arc is in-band.
+        assert_eq!(
+            report.metric_vector.slur_shape_penalty.0, 0.0,
+            "a split but well-shaped slur is not spuriously penalized"
         );
     }
 
