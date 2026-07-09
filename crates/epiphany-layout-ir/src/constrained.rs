@@ -596,6 +596,8 @@ impl ConstrainedLayoutIR {
 // geometry verbatim, so it is what the renderer draws.
 const STAFF_LINE_THICKNESS: f32 = 0.13;
 const STEM_THICKNESS: f32 = 0.12;
+// One octave from the outer notehead — but a stem on a note beyond the staff is
+// drawn out to the middle line instead, so it never dangles in the ledger field.
 const STEM_LENGTH: f32 = 3.5;
 const STAFF_HEIGHT: f32 = 4.0; // 4 spaces between the outer lines of a 5-line staff
 const SYSTEM_STAFF_PITCH: f32 = 12.0; // vertical distance between stacked staves
@@ -606,7 +608,10 @@ const COLUMN_PREFERRED_WIDTH: f32 = 1.5; // a column's spring preferred width
 const STAFF_LEFT_MARGIN: f32 = 1.0; // staff line extends this far left of the clef
 const STAFF_RIGHT_MARGIN: f32 = 2.0; // …and this far right of the last column
 const REGION_GAP: f32 = 4.0; // horizontal gap between regions (no page layout in v0)
-const NOTEHEAD_STEM_X: f32 = 1.15; // a stem-up attaches at the notehead's right edge
+                             // Fallback stem attachment when a notehead's metrics are absent; a bundled head
+                             // uses its own bounding box (right edge for an up-stem, left for a down-stem —
+                             // SMuFL's `stemUpSE` / `stemDownNW`, which for `noteheadBlack` are x = 1.18 / 0).
+const NOTEHEAD_STEM_X: f32 = 1.15;
 const ACCIDENTAL_X: f32 = 1.1; // the innermost accidental sits this far left of its notehead
 const ACC_STACK_X: f32 = 0.9; // each further-out stacked accidental steps left by this
 const KEY_SIG_START: f32 = 2.7; // x where a key signature begins (just after the clef)
@@ -892,22 +897,46 @@ pub fn try_to_constrained(
                             });
                         }
                         let drawn = has_stem(value) && !ys.is_empty();
-                        let lo = ys
+                        let fallback = step_to_y(yo, reference_step(&clef));
+                        let bottom = ys.iter().copied().fold(f32::INFINITY, f32::min);
+                        let bottom = if ys.is_empty() { fallback } else { bottom };
+                        let top = ys
                             .iter()
                             .copied()
-                            .fold(f32::INFINITY, f32::min)
-                            .min(step_to_y(yo, reference_step(&clef)));
-                        let hi = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max).max(lo);
+                            .fold(f32::NEG_INFINITY, f32::max)
+                            .max(bottom);
+                        // Direction: the head furthest from the middle line decides,
+                        // and a tie goes DOWN (the engraving convention for a note
+                        // *on* the middle line, and for a chord straddling it
+                        // evenly). So a single head below the middle line stems up.
+                        let middle = yo + STAFF_HEIGHT * 0.5;
+                        let up = (top - middle) < (middle - bottom);
+                        // Attachment: an up-stem rides the right edge of the lowest
+                        // head, a down-stem the left edge of the highest.
+                        let head_box = metrics(name).map(|m| m.bounding_box());
+                        let x_off = if up {
+                            head_box.map_or(NOTEHEAD_STEM_X, |b| b.right.0)
+                        } else {
+                            head_box.map_or(0.0, |b| b.left.0)
+                        };
+                        // Length: an octave from the outer head, but a stem on a
+                        // note beyond the staff is drawn out to the middle line, so
+                        // it never dangles in the ledger field (`max`/`min` only
+                        // ever lengthen).
+                        let tip = if up {
+                            (top + STEM_LENGTH).max(middle)
+                        } else {
+                            (bottom - STEM_LENGTH).min(middle)
+                        };
                         stems.push(StemSeg {
                             key,
-                            lo: if ys.is_empty() {
-                                step_to_y(yo, reference_step(&clef))
-                            } else {
-                                ys.iter().copied().fold(f32::INFINITY, f32::min)
-                            },
-                            hi,
+                            lo: bottom,
+                            hi: top,
                             drawn,
                             comp,
+                            up,
+                            x_off,
+                            tip,
                         });
                     }
                     event_stems.insert(eid, stems);
@@ -1223,12 +1252,13 @@ pub fn try_to_constrained(
                         }
                         for seg in segs {
                             let info = column(&seg.key);
-                            let stem_x = info.x + NOTEHEAD_STEM_X;
+                            let stem_x = info.x + seg.x_off;
                             let (from, to) = if seg.drawn {
-                                (
-                                    Point::new(stem_x, seg.lo),
-                                    Point::new(stem_x, seg.hi + STEM_LENGTH),
-                                )
+                                // The stem runs from the head it attaches to — the
+                                // lowest for an up-stem, the highest for a down one —
+                                // out to its tip.
+                                let base = if seg.up { seg.lo } else { seg.hi };
+                                (Point::new(stem_x, base), Point::new(stem_x, seg.tip))
                             } else {
                                 // A stemless value (whole note): a zero-length stem.
                                 (Point::new(info.x, seg.lo), Point::new(info.x, seg.lo))
@@ -1903,10 +1933,17 @@ struct Head {
 /// the column key plus the staff-space `y` extent).
 struct StemSeg {
     key: ColumnKey,
+    /// The lowest and highest notehead centre of the component's chord.
     lo: f32,
     hi: f32,
     drawn: bool,
     comp: usize,
+    /// Stem direction: up (right of the heads) or down (left of them).
+    up: bool,
+    /// Where the stem attaches, as an x offset from the column's notehead x.
+    x_off: f32,
+    /// The free end of the stem, in staff spaces.
+    tip: f32,
 }
 
 /// One component's rest glyph (absent when the value has no bundled rest glyph).
@@ -4497,6 +4534,88 @@ mod tests {
         );
         // The above and below slurs mirror across the endpoint lines' sides.
         assert!(up.p1.y.0 > up.p0.y.0);
+    }
+
+    /// A stem points AWAY from the middle line — up for a head below it, down
+    /// for a head above it or on it — and attaches on the side it points: an
+    /// up-stem at the head's right edge, a down-stem at its left. A stem on a
+    /// note beyond an octave from the middle line is drawn out TO that line,
+    /// rather than dangling a fixed octave into the ledger field.
+    ///
+    /// Every stem in the engine used to point up, on the right, at a constant
+    /// octave — an upward stem on a C6 three ledgers above the staff. It is also
+    /// why an `Auto` slur, which is placed *opposite* the stems, could not be
+    /// given a correct side until this landed.
+    #[test]
+    fn a_stem_points_away_from_the_middle_line_and_reaches_it() {
+        use epiphany_core::{CmnNominal, Event, PitchSpacePosition};
+        // The corpus generator writes only low notes, so spread the octaves to
+        // straddle the middle line and reach well past a stem's length.
+        let mut score = valid_score_rich(11);
+        let ids: Vec<_> = score.events.iter().map(|e| e.id()).collect();
+        for (index, id) in ids.iter().enumerate() {
+            if let Some(Event::Pitched(note)) = score.events.get_mut(*id) {
+                for pitch in &mut note.pitches {
+                    if let PitchSpacePosition::Cmn {
+                        nominal, octave, ..
+                    } = &mut pitch.pitch.scale_position.position
+                    {
+                        *nominal = CmnNominal::C;
+                        *octave = [3i8, 4, 5, 6][index % 4];
+                    }
+                }
+            }
+        }
+        let c = to_constrained(&to_logical(&score));
+
+        // Each staff's middle line, from that staff's own staff-line strokes.
+        let mut lines: BTreeMap<VerticalBandId, f32> = BTreeMap::new();
+        for stroke in &c.strokes {
+            if matches!(stroke.provenance.source, TypedObjectId::Staff(_)) {
+                let entry = lines.entry(stroke.vertical_band).or_insert(f32::INFINITY);
+                *entry = entry.min(stroke.from.y.0);
+            }
+        }
+
+        let stems: Vec<&Stroke> = c
+            .strokes
+            .iter()
+            .filter(|s| (s.thickness.0 - STEM_THICKNESS).abs() < 1e-6)
+            .filter(|s| (s.to.y.0 - s.from.y.0).abs() > 1e-6)
+            .collect();
+        assert!(!stems.is_empty(), "the fixture draws stems");
+
+        let (mut saw_up, mut saw_down, mut saw_extended) = (false, false, false);
+        for stem in stems {
+            let middle = lines[&stem.vertical_band] + STAFF_HEIGHT * 0.5;
+            let (base, tip) = (stem.from.y.0, stem.to.y.0);
+            let up = tip > base;
+            assert_eq!(
+                up,
+                base < middle,
+                "a head below the middle line stems up, else down: base {base} middle {middle}"
+            );
+            if up {
+                assert!(tip >= middle - 1e-4, "an up-stem reaches the middle line");
+                saw_up = true;
+            } else {
+                assert!(tip <= middle + 1e-4, "a down-stem reaches the middle line");
+                saw_down = true;
+            }
+            // Beyond an octave from the middle line, the stem stops AT that line.
+            if (base - middle).abs() > STEM_LENGTH {
+                assert!(
+                    (tip - middle).abs() < 1e-4,
+                    "a far-out note's stem stops at the middle line: {tip} vs {middle}"
+                );
+                saw_extended = true;
+            }
+        }
+        assert!(saw_up && saw_down, "the fixture exercises both directions");
+        assert!(
+            saw_extended,
+            "and at least one stem drawn out to the middle line"
+        );
     }
 
     #[test]

@@ -717,3 +717,59 @@ ignored).
 **Both of the above are parked, not open.** The Pass-13 batch is closed and the
 house rule opens a pass at ≥3 candidates; these are two. They join a future batch
 rather than reopening one.
+
+## Stem direction and length (2026-07-09)
+
+Until now every stem in the engine pointed **up**, on the notehead's right, at a
+constant octave — so a C6 sitting three ledger lines above the staff grew an
+upward stem shooting past everything, and a slur placed *opposite the stems*
+(the `Auto` rule) could never be given a correct side.
+
+- **Direction: away from the middle line.** The head furthest from it decides,
+  and a tie goes **down** — the convention for a note *on* the middle line and
+  for a chord straddling it evenly. A single head below the line stems up.
+- **Attachment: the side it points.** An up-stem rides the lowest head's right
+  edge, a down-stem the highest head's left. Taken from the head's own bounding
+  box, not the rounded `NOTEHEAD_STEM_X` constant: for `noteheadBlack` those are
+  x = 1.1807 and 0, and 1.1807 is Bravura's real `stemUpSE` (1.18). The old 1.15
+  was a rounding, which is the whole of `ten_measure`'s golden churn (every stem
+  moved right by 0.031 and not one moved otherwise).
+- **Length: an octave, but at least to the middle line.** A note beyond an octave
+  from that line has its stem drawn out *to* it (`max`/`min` only ever lengthen),
+  so no stem dangles in the ledger field.
+
+No version moves: this is the **projection** changing, not a solver. `to_constrained`
+produces different geometry from the same graph, so `ENGRAVER_VERSION`'s promise
+(same input ⇒ same output) is untouched. Every golden churns, stub and engrave
+alike, because stems are constrained-stage geometry.
+
+Locked by `a_stem_points_away_from_the_middle_line_and_reaches_it`, which
+re-pitches a generated score across four octaves (the corpus generator writes only
+low notes, so it never exercised a down-stem). Mutation-verified: restoring
+always-up + fixed-octave fails it.
+
+**Deferred:** the y half of the attachment. SMuFL puts `stemUpSE` at y = +0.168
+and `stemDownNW` at −0.168, so a stem should meet the head slightly off its
+centre; we attach at the centre. Cosmetic at this tier.
+
+## Parked: the notehead stem anchors are unusable as written (2026-07-09)
+
+`BRAVURA_METRICS`' `NOTEHEAD_ANCHORS` declares `stemUpNW` at x = 0 and
+`stemDownSE` at x = 1180 (i.e. 1.152 staff spaces). Two problems, found while
+implementing stem direction:
+
+- **The names are the wrong corners.** An up-stem attaches on the *right* of a
+  notehead, so the anchor there is SMuFL's `stemUpSE`, not `stemUpNW`; the left
+  one is `stemDownNW`. Bravura's `noteheadBlack` has exactly those two and does
+  not define the pair named here.
+- **The x looks unit-confused.** Bravura's `stemUpSE` is at 1.18 staff spaces;
+  in this table's `1/1024` units that is 1208, not 1180. `1180` reads like 1.18
+  written in thousandths. (`NOTEHEAD_STEM_X = 1.15` matches the same slip.)
+
+Nothing consumes the anchors — they enter only `metrics_hash`, so correcting them
+moves the `GlyphCatalogIdentity` every conformance claim declares. Hence parked
+rather than fixed in passing. The stem work sidesteps them by reading the head's
+bounding box, whose right edge (1.1807) *is* the correct attachment.
+
+**Three parked candidates now stand** (this, `Staff::default_clef`, and the
+`ConstrainedLayoutIR` listing gap). The house rule opens a batch pass at ≥3.
