@@ -5139,11 +5139,22 @@ impl<'a> Reducer<'a> {
                 }
             }
         }
-        // Couple the two halves a transpose writes together. Dropping a `Pitch`
-        // restoration whose spelling set was superseded (and vice versa) is what
-        // makes them one undo unit. It cannot mis-fire on an unrelated operation:
-        // a chain reports `Superseded` only when the transaction actually wrote
-        // it, and `ModifyIdentifiedPitch` never writes the spelling set.
+        // A pitch's value and its engraved spelling set undo as ONE unit
+        // (`req:opcat:spelling-set-chain`): if either was superseded, neither is
+        // restored. Restoring a pitch while leaving a spelling authored against
+        // the value it used to have is the stale-notehead defect this prevents.
+        //
+        // The unit is keyed on the PITCH and on which chains the TRANSACTION
+        // wrote — not on which operation wrote them. So it also couples a
+        // transaction that writes the two halves through *different* members:
+        // the editor's "move note" is `ModifyIdentifiedPitch` + `RespellPitch`,
+        // and a later respell makes a best-effort undo skip both. That is
+        // intentional, and regression-locked
+        // (`best_effort_undo_skips_a_move_and_respell_pair_a_later_respell_superseded`).
+        //
+        // It cannot fire on a transaction that wrote only one half: a chain
+        // reports `Superseded` only when the transaction actually wrote it, so
+        // an unwritten chain yields `NotWritten` and contributes nothing.
         if !superseded_pitches.is_empty() {
             restorations.retain(|r| match r {
                 ValueRestoration::Pitch { pitch, .. }
@@ -9935,6 +9946,116 @@ mod tests {
             1,
             "one authored spelling: {atts:?}"
         );
+    }
+
+    /// The editor's "move note": a value change plus the matching respelling, in
+    /// one transaction (`epiphany-editor-core`, `apply_transaction`). Neither
+    /// member writes both undo keys, but the *transaction* writes both — the
+    /// modify writes the pitch value, the respell writes the engraved spelling
+    /// set.
+    fn move_and_respell(
+        base: &Score,
+        pid: PitchId,
+        tx: TransactionId,
+        later_respell: bool,
+        policy: UndoPolicy,
+    ) -> (OperationEffect, Score) {
+        let mut envs = vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::ModifyIdentifiedPitch(ModifyIdentifiedPitchOp {
+                    pitch: pid,
+                    value: cmn_pitch(CmnNominal::D, 0, 4),
+                }),
+            ),
+            tx_member(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                tx,
+                OperationKind::RespellPitch(RespellPitchOp {
+                    pitch: pid,
+                    spelling: PitchSpelling::cmn(CmnNominal::D, 4),
+                }),
+            ),
+        ];
+        let mut counter = 3;
+        if later_respell {
+            envs.push(respell_env(1, 3, 13, seen_r1(2), pid, CmnNominal::E));
+            counter = 4;
+        }
+        let undo = undo_env(1, counter, 20, seen_r1(counter - 1), tx, policy);
+        let undo_id = undo.id;
+        envs.push(undo);
+
+        let mut set = OperationSet::new();
+        set.accept_all(envs);
+        let out = set.reduce_onto(base);
+        (undo_effect(&out.state, undo_id), out.score)
+    }
+
+    #[test]
+    fn a_move_and_respell_undoes_fully_when_nothing_supersedes_it() {
+        // The coupling must not over-fire: with no later writer, both halves of
+        // the transaction restore.
+        let (base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
+        let tx = TransactionId::new(ReplicaId(1), 900);
+        let (effect, score) = move_and_respell(&base, pid, tx, false, UndoPolicy::BestEffort);
+
+        assert_eq!(effect, OperationEffect::Applied);
+        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, 0, 4));
+        assert!(
+            attachments_of(&score, pid).is_empty(),
+            "the respell's attachment is gone with it"
+        );
+    }
+
+    #[test]
+    fn best_effort_undo_skips_a_move_and_respell_pair_a_later_respell_superseded() {
+        // The pitch/spelling-set coupling is keyed on the PITCH and on which
+        // chains the TRANSACTION wrote — not on which operation wrote them, and
+        // not on `TransposeInterval` specifically. Here the modify wrote the
+        // pitch value and the respell wrote the spelling set; a later respell
+        // supersedes the set.
+        //
+        // Skipping both is the point. Restoring the pitch to C4 while the
+        // engraved spelling reads E — authored against the moved pitch — is
+        // exactly the stale-notehead defect the coupling exists to prevent.
+        // This broader reach is intentional (`req:opcat:spelling-set-chain`).
+        let (base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
+        let tx = TransactionId::new(ReplicaId(1), 900);
+        let (effect, score) = move_and_respell(&base, pid, tx, true, UndoPolicy::BestEffort);
+
+        assert_eq!(effect, OperationEffect::Applied);
+        assert_eq!(
+            cmn_of(&pitch_of(&score, pid)),
+            (CmnNominal::D, 0, 4),
+            "best-effort left the moved pitch, because its spelling set was superseded"
+        );
+        assert_eq!(
+            attachments_of(&score, pid),
+            vec![(SpellingSource::UserChosen, CmnNominal::E, 0)],
+            "the later authoring stands"
+        );
+    }
+
+    #[test]
+    fn strict_undo_of_a_superseded_move_and_respell_conflicts() {
+        let (base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
+        let tx = TransactionId::new(ReplicaId(1), 900);
+        let (effect, score) = move_and_respell(&base, pid, tx, true, UndoPolicy::StrictInverse);
+
+        assert!(
+            matches!(effect, OperationEffect::Conflicted { .. }),
+            "a later canonical writer supersedes a strict undo"
+        );
+        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::D, 0, 4));
     }
 
     #[test]

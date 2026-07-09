@@ -1436,3 +1436,33 @@ Spec: `req:opcat:spelling-set-chain`. Mutation-verified: removing the respell's
 record fails all three new tests; removing the coupling fails the best-effort
 one with the pitch back at C4 and the spelling still at C-sharp. Also covered:
 both permutations of a concurrent respell/transpose reduce to identical bytes.
+
+### P13-S3 follow-up: the coupling is broader than the transpose, on purpose
+
+A review of the S3 fix caught the reducer's comment overclaiming. It said the
+coupling "cannot mis-fire on an unrelated operation" because
+`ModifyIdentifiedPitch` never writes the spelling set. True of the *operation*,
+irrelevant to the *unit*: the coupling is keyed on the **pitch**, and on which
+keys the **transaction** wrote. A transaction whose members write the two halves
+separately is coupled exactly the same way.
+
+The editor's "move note" is precisely that — `ModifyIdentifiedPitch` (the value)
+plus `RespellPitch` (the spelling set), in one transaction
+(`editor-core::apply_transaction`). Measured:
+
+| later respell? | policy | undo effect | pitch | spelling |
+|---|---|---|---|---|
+| no | BestEffort | `Applied` | restored to C4 | attachment gone |
+| yes | BestEffort | `Applied` | **stays D4** | the later E stands |
+| yes | StrictInverse | `Conflicted` | stays D4 | the later E stands |
+
+The middle row is the coupling firing on a non-transpose pair, and it is
+**correct**: restoring the pitch to C4 while the engraved spelling reads E —
+authored against the moved pitch — is exactly the stale-notehead defect the
+coupling exists to prevent. So the breadth is intentional and now stated in
+`req:opcat:spelling-set-chain` rather than left to be inferred.
+
+Three regressions: full undo when nothing supersedes (guards against
+*over*-coupling), best-effort skipping the pair when a later respell supersedes,
+and strict undo conflicting. Mutation-verified: removing the coupling fails only
+the middle one, restoring the pitch to C4 with the spelling still reading E.

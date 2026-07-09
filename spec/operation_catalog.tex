@@ -806,8 +806,18 @@ records nothing and is therefore not undoable.
 
   A pitch's value and its engraved spelling set \MUST{} undo as one unit: if
   either is superseded, neither is restored. A \texttt{BestEffort} undo
-  \MUSTNOT{} restore the pre-transpose pitch while leaving a spelling authored
-  against the transposed one.
+  \MUSTNOT{} restore a pitch's earlier value while leaving a spelling authored
+  against the value it has since taken.
+
+  This unit is keyed on the \emph{pitch}, and on which keys the
+  \emph{transaction} wrote --- not on which operation wrote them, and not on
+  \texttt{TransposeInterval} in particular. A transaction whose members write
+  the two halves separately is coupled the same way: an editor's ``move note''
+  is a \texttt{ModifyIdentifiedPitch} (the value) together with a
+  \texttt{RespellPitch} (the spelling set), and a later respell makes a
+  \texttt{BestEffort} undo skip both. That breadth is intended. A transaction
+  that wrote only one of the two keys is unaffected, since an unwritten key
+  yields no supersession.
 \end{requirement}
 
 \begin{rationale}
