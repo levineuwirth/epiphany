@@ -8940,8 +8940,14 @@ mod tests {
     // The two `transpose_*` tests below were FALSE LOCKS until Push 4a: they
     // reduced base-free, where `graph` is `None` and `graph_transpose_pitch`
     // never runs, and they asserted only `OperationEffect`. Gutting the
-    // transpose entirely left both green. They now reduce ONTO a base and
-    // assert the pitch value, which is the thing the operation exists to change.
+    // transpose entirely left both green.
+    //
+    // They still reduce base-free, and should: what they assert — skip
+    // tombstoned, skip system-derived, refuse missing — *is* effect-log
+    // behaviour. Only the first one's NAME was a lie (it claimed to check the
+    // live target "shifts"). It was renamed. The shift itself is locked by the
+    // `the_frozen_transpose_*` tests, which reduce ONTO a base and assert the
+    // pitch value.
 
     /// Every `(event, pitch)` in canonical id order — `events.iter()` walks a
     /// slotmap, whose order is an implementation detail.

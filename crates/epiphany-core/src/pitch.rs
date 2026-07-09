@@ -217,13 +217,18 @@ pub struct TranspositionInterval {
 }
 
 impl TranspositionInterval {
-    /// The interval that undoes this one. Exact, because [`Pitch::transposed`]
-    /// never saturates — it refuses instead.
-    pub fn inverse(self) -> Self {
-        TranspositionInterval {
-            diatonic_steps: -self.diatonic_steps,
-            chromatic_steps: -self.chromatic_steps,
-        }
+    /// The interval that undoes this one, or `None` when it is not
+    /// representable: `i32::MIN` has no `i32` negation. Exact where it exists,
+    /// because [`Pitch::transposed`] never saturates — it refuses instead.
+    ///
+    /// The non-representable case is explicit rather than a panic or a wrap:
+    /// an interval whose inverse cannot be written down is a fact about the
+    /// type, and a caller composing undo out of inverses must see it.
+    pub fn inverse(self) -> Option<Self> {
+        Some(TranspositionInterval {
+            diatonic_steps: self.diatonic_steps.checked_neg()?,
+            chromatic_steps: self.chromatic_steps.checked_neg()?,
+        })
     }
 }
 
@@ -280,17 +285,25 @@ impl Pitch {
             return Err(TransposeRefusal::NonCmnPosition);
         };
 
-        // Widen before arithmetic: the i8 bound is a *result* constraint, not
-        // an intermediate one, so an octave that overflows on the way to a
-        // value that fits would be a spurious refusal.
-        let n = nominal as i32;
+        // Widen to `i64` before any arithmetic. The `i8` bound is a *result*
+        // constraint, not an intermediate one, so an octave that overflows on
+        // the way to a value that fits would be a spurious refusal — but
+        // `i32` is not wide enough to hold the intermediates for an `i32`
+        // interval, and the previous version of this function panicked on
+        // `diatonic_steps = i32::MAX` at `12 * new_octave`. Refusing is the
+        // contract; panicking on a value the public type admits is not.
+        //
+        // `i64` is amply wide: `step` is bounded by `6 + 2^31`, so
+        // `new_octave` by `2^31/7 + 127`, and the largest intermediate
+        // `12 * new_octave` by roughly `3.7e9`.
+        let n = i64::from(nominal as u8);
         let semitone =
-            i32::from(nominal.chromatic()) + i32::from(alteration) + 12 * i32::from(octave);
-        let step = n + interval.diatonic_steps;
-        let new_nominal = CmnNominal::from_index(step.rem_euclid(7));
-        let new_octave = i32::from(octave) + step.div_euclid(7);
-        let new_alteration = (semitone + interval.chromatic_steps)
-            - (i32::from(new_nominal.chromatic()) + 12 * new_octave);
+            i64::from(nominal.chromatic()) + i64::from(alteration) + 12 * i64::from(octave);
+        let step = n + i64::from(interval.diatonic_steps);
+        let new_nominal = CmnNominal::from_index(step.rem_euclid(7) as i32);
+        let new_octave = i64::from(octave) + step.div_euclid(7);
+        let new_alteration = (semitone + i64::from(interval.chromatic_steps))
+            - (i64::from(new_nominal.chromatic()) + 12 * new_octave);
 
         let octave = i8::try_from(new_octave).map_err(|_| TransposeRefusal::OutOfRange)?;
         let alteration = i8::try_from(new_alteration).map_err(|_| TransposeRefusal::OutOfRange)?;
@@ -1046,7 +1059,9 @@ mod tests {
         let start = cmn(CmnNominal::E, -1, 3);
         for interval in [iv(4, 7), iv(-2, -3), iv(7, 12), iv(0, 1), iv(5, 7)] {
             let there = start.transposed(interval).unwrap();
-            let back = there.transposed(interval.inverse()).unwrap();
+            let back = there
+                .transposed(interval.inverse().expect("these inverses exist"))
+                .unwrap();
             assert_eq!(
                 position(&back),
                 position(&start),
@@ -1076,6 +1091,45 @@ mod tests {
 
         // Nothing is mutated on refusal — `transposed` is by-value.
         assert_eq!(position(&high), (CmnNominal::C, 0, 127));
+    }
+
+    #[test]
+    fn an_extreme_interval_refuses_instead_of_panicking() {
+        // The public type admits any `i32`. Every one of these overflowed an
+        // `i32` intermediate and panicked (or, with overflow-checks off, wrapped
+        // through unspecified arithmetic) before the widening to `i64`.
+        let p = cmn(CmnNominal::C, 0, 4);
+        for (d, c) in [
+            (i32::MAX, 0),
+            (i32::MIN, 0),
+            (0, i32::MAX),
+            (0, i32::MIN),
+            (i32::MAX, i32::MAX),
+            (i32::MIN, i32::MIN),
+            (i32::MAX, i32::MIN),
+        ] {
+            assert_eq!(
+                p.transposed(iv(d, c)),
+                Err(TransposeRefusal::OutOfRange),
+                "({d}, {c}) must refuse, not panic"
+            );
+        }
+        // The boundary either side of a representable octave shift.
+        assert!(cmn(CmnNominal::C, 0, 126).transposed(iv(7, 12)).is_ok());
+        assert_eq!(
+            cmn(CmnNominal::C, 0, 127).transposed(iv(7, 12)),
+            Err(TransposeRefusal::OutOfRange)
+        );
+    }
+
+    #[test]
+    fn the_inverse_of_the_unrepresentable_interval_is_none() {
+        // `-i32::MIN` is not an `i32`. Negating it panicked.
+        assert_eq!(iv(i32::MIN, 0).inverse(), None);
+        assert_eq!(iv(0, i32::MIN).inverse(), None);
+        assert_eq!(iv(i32::MIN, i32::MIN).inverse(), None);
+        assert_eq!(iv(i32::MIN + 1, 0).inverse(), Some(iv(i32::MAX, 0)));
+        assert_eq!(iv(4, 7).inverse(), Some(iv(-4, -7)));
     }
 
     #[test]

@@ -543,8 +543,19 @@ interval at the written/sounding boundary — nothing respells a written part
 into a sounding one — so `Instrument.transposition` stays advisory, for that
 reason and not the stated one.
 
-**Refusal, not saturation.** `alteration` and `octave` are `i8`. A
-transposition whose result does not fit refuses; so does one against a
+**Refusal, not saturation, and never a panic.** All arithmetic widens to `i64`
+first. `i32` is not wide enough to hold the intermediates of an `i32` interval:
+the first version of `transposed` panicked on `diatonic_steps = i32::MAX` at
+`12 * new_octave`, and `inverse()` panicked on `i32::MIN`. Refusing is the
+contract; panicking on a value the public type admits is not. (Under
+`overflow-checks = false` — any downstream release build — those expressions
+wrapped instead. A 10.5M-case sweep of wrapping-vs-exact found *no* input where
+wrapping produced a wrong `Ok` rather than a refusal, so the defect was a panic,
+not silent corruption. `inverse()` now returns `Option`, because an interval
+whose inverse is not representable is a fact about the type.)
+
+`alteration` and `octave` are `i8`. A transposition whose result does not fit
+refuses; so does one against a
 non-`Cmn` position (no nominal to move) or an `AcousticRealization::AbsoluteHz`
 pitch (which overrides the tuning system, so moving the scale position moves
 the notehead without moving the sound). Saturation is the worst possible
