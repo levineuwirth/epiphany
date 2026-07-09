@@ -680,3 +680,21 @@ strokes and curves.
   page-margin annotation, names a non-`Staff` band and is owned by no staff. A
   cross-staff slur is not drawn at this tier (`staff.is_some()` guards the curve;
   it engraves to an anchor stroke), so a drawn curve always names a staff band.
+
+## Parked: the ConstrainedLayoutIR listing is still abridged (2026-07-09)
+
+Chapter 7's `ConstrainedLayoutIR` listing gained `strokes` / `curves` when
+`req:layoutir:primitive-band-ownership` landed (that requirement depends on
+them). Two fields the code carries are still absent from the listing:
+
+- `break_origins: Vec<BreakOrigin>` — semantics ratified by
+  `req:layoutir:break-origin-attribution`; the struct listing omits the field and
+  `BreakOrigin`'s own shape appears nowhere in core_spec.
+- `catalog: GlyphCatalogIdentity` — the *type* is specified (Ch7 §Glyph Catalog
+  Identity, and a conformance claim MUST declare it), but the listing omits it.
+
+Neither blocks an implementation the way a missing `strokes`/`curves` did: both
+are governed by requirement text elsewhere, so a conformant implementer is not
+left guessing. **Parked, not open.** The Pass-13 batch is closed and the house
+rule opens a pass at ≥3 candidates; this is one. It joins a future batch rather
+than reopening one on its own.

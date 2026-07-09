@@ -266,10 +266,12 @@ listing still elides two fields the code carries: `break_origins: Vec<BreakOrigi
 and `catalog: GlyphCatalogIdentity`. Both *types* are specified — the former's
 semantics by `req:layoutir:break-origin-attribution`, the latter by Ch7 §Glyph
 Catalog Identity — so only the struct listing is incomplete, and neither gap
-blocks an implementation the way a missing `strokes`/`curves` would have. Tracked
-as a Pass-13 candidate, deliberately not fixed here: the listing correction in
-this tranche is scoped to exactly what `req:layoutir:primitive-band-ownership`
-depends on.
+blocks an implementation the way a missing `strokes`/`curves` would have. Filed in
+`epiphany-layout-ir/DECISIONS.md` and **parked**: the Pass-13 batch is closed and
+the house rule opens a pass at ≥3 candidates, so this waits for company rather
+than reopening one. Deliberately not fixed here — the listing correction in this
+tranche is scoped to exactly what `req:layoutir:primitive-band-ownership` depends
+on.
 
 **Deferred (documented, not open candidates).** A height model for the
 inter-staff gap band — the missing piece behind both staff-less content placed
