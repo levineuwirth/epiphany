@@ -64,8 +64,8 @@ use epiphany_layout_ir::quality::{
     anchors, normalize, MetricThresholds, QUALITY_FLOOR_FRACTION, QUALITY_METRIC_KINDS,
 };
 use epiphany_layout_ir::{
-    inter_staff_gap_id, ConstrainedLayoutIR, Curve, GlyphObjectId, QualityMetricVector,
-    SolverWarning, SolverWarningKind, SpringSlotId, VerticalBand, VerticalBandId, VerticalBandKind,
+    inter_staff_gap_id, ConstrainedLayoutIR, Curve, QualityMetricVector, SolverWarning,
+    SolverWarningKind, SpringSlotId, VerticalBand, VerticalBandId, VerticalBandKind,
 };
 
 use crate::casting::{CastLayout, PageGeometry};
@@ -385,26 +385,40 @@ fn vertical_raw(input: &ConstrainedLayoutIR, cast: &CastLayout, census: &SystemC
     }
 
     for (region_index, region) in input.regions.iter().enumerate() {
-        // The region's laid-out staff bands, top staff first, ordered within
-        // the region's first system (systems translate rigidly, so within-
-        // system y order is the region's staff order).
-        let first_system = census.region.iter().position(|&r| r == region_index);
-        let Some(first_system) = first_system else {
+        // The region's systems, in page order. A staff band is `to_constrained`'s
+        // per-*manifestation* band — one per (staff, region) — so its content can
+        // only land in its own region's systems, and "has content in one of this
+        // region's systems" identifies the region's staff bands exactly.
+        //
+        // Membership is NOT read from `VerticalBand::members`. That list holds
+        // glyphs, and a staff band is allowed to have none: a staff whose clef is
+        // unbundled engraves to an anchor *stroke*, and its staff lines are
+        // strokes regardless. Filtering by glyph members would silently drop such
+        // a staff from the axis — the same glyph-members assumption this metric
+        // exists to shed.
+        let region_systems: Vec<usize> = census
+            .region
+            .iter()
+            .enumerate()
+            .filter(|&(_, &r)| r == region_index)
+            .map(|(system, _)| system)
+            .collect();
+        let Some(&first_system) = region_systems.first() else {
             continue;
         };
-        let region_glyphs: BTreeSet<GlyphObjectId> = region.glyphs.iter().copied().collect();
+        // Top staff first, ordered within the region's first system: a system
+        // translates rigidly as a whole, so the staff ORDER is the same in each
+        // (only the gaps between them are renegotiated per system).
         let mut staves: Vec<(f64, VerticalBandId)> = input
             .vertical_bands
             .iter()
             .filter(|band| matches!(band.kind, VerticalBandKind::Staff(_)))
-            .filter(|band| band.members.iter().any(|id| region_glyphs.contains(id)))
             .filter_map(|band| {
                 content
                     .get(&(first_system, band.id))
                     .map(|&(_, top)| (top, band.id))
             })
             .collect();
-        // Top staff first.
         staves.sort_by(|a, b| b.0.total_cmp(&a.0));
 
         // The region's declared inter-staff gap bands, by their derived ids
@@ -420,19 +434,21 @@ fn vertical_raw(input: &ConstrainedLayoutIR, cast: &CastLayout, census: &SystemC
                 continue;
             }
             let (upper, lower) = (staves[gap - 1].1, staves[gap].1);
-            // Realized iff the adjacent content shares a system; measure the
-            // separation there (rigid system translation makes every common
-            // system agree).
-            let common = (0..census.region.len()).find(|&system| {
-                content.contains_key(&(system, upper)) && content.contains_key(&(system, lower))
-            });
-            let Some(system) = common else {
-                continue;
-            };
-            let upper_bottom = content[&(system, upper)].0;
-            let lower_top = content[&(system, lower)].1;
-            let realized = (upper_bottom - lower_top).max(0.0);
-            per_unit.push((realized - preferred).abs() / preferred);
+            // EVERY system realizing the pair contributes a unit, not just the
+            // first. The inter-staff solve sizes each system's gaps from that
+            // system's own content, so one band's realized height genuinely
+            // differs across the systems of a region — a later system may carry
+            // different pressure, or a bake bug touching one primitive class.
+            // Measuring only the first would average away both.
+            for &system in &region_systems {
+                let (Some(&(upper_bottom, _)), Some(&(_, lower_top))) =
+                    (content.get(&(system, upper)), content.get(&(system, lower)))
+                else {
+                    continue;
+                };
+                let realized = (upper_bottom - lower_top).max(0.0);
+                per_unit.push((realized - preferred).abs() / preferred);
+            }
         }
     }
 

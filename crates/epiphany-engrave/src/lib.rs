@@ -2333,6 +2333,41 @@ mod tests {
         );
     }
 
+    /// A staff band that owns no GLYPHS is still a staff of its region. The
+    /// percussion placeholder's clef has no bundled glyph (it engraves to a
+    /// traced anchor stroke) and it carries no notes, so its band's `members`
+    /// list — which holds glyphs only — is empty, while the band does own its
+    /// five staff-line strokes. Identifying a region's staff bands by their
+    /// glyph members would drop it from the axis entirely, reintroducing the
+    /// very glyph-members assumption the content-extent measurement sheds.
+    #[test]
+    fn a_staff_band_owning_no_glyphs_still_contributes_its_gap() {
+        use epiphany_layout_ir::{to_constrained, to_logical};
+        let input = to_constrained(&to_logical(
+            &epiphany_testkit::fixtures::percussion_placeholder_staff(1),
+        ));
+        let report = Engraver::default().solve(&input, &SolverConfig::default());
+        assert_eq!(report.status, SolveStatus::Solved);
+        for page in &report.layout.pages {
+            for sys in &page.systems {
+                assert_eq!(
+                    sys.staves.len(),
+                    2,
+                    "the glyph-less placeholder is still laid out as a staff"
+                );
+            }
+        }
+        // Its gap to the melody staff is slack (the solve expands, never
+        // compresses), so the band contributes a large deviation. Dropping the
+        // band would leave the region with one staff, no inter-staff unit, and
+        // an axis of exactly 0.
+        let density = report.metric_vector.vertical_density_penalty.0;
+        assert!(
+            density > 0.5,
+            "the glyph-less band's gap reaches the axis: {density}"
+        );
+    }
+
     #[test]
     fn inter_staff_solve_separates_colliding_staves() {
         use epiphany_layout_ir::{to_constrained, to_logical};
@@ -2482,6 +2517,54 @@ mod tests {
             "the slur rides its OWN (bottom) staff: {gaps:?}"
         );
         assert!(gaps[2] < 2.0, "and sits close against it: {}", gaps[2]);
+    }
+
+    /// A gap band realized in several systems contributes a unit PER SYSTEM.
+    /// The inter-staff solve sizes each system's gaps from that system's own
+    /// content, so one band's realized height genuinely differs across a
+    /// region's systems — here 15.93 staff spaces in the system carrying the
+    /// colliding first measure, 7.87 in the slack one after it. Measuring only
+    /// the first system realizing the band (as this metric once did, on the
+    /// since-falsified premise that rigid system translation makes every
+    /// realization agree) would report the pressured system's near-perfect gap
+    /// and discard the slack one entirely.
+    #[test]
+    fn inter_staff_gaps_are_measured_in_every_system_that_realizes_them() {
+        use epiphany_layout_ir::{to_constrained, to_logical};
+        let report = Engraver::default().solve(
+            &to_constrained(&to_logical(
+                &epiphany_testkit::fixtures::two_staff_wrapping_pressure(1),
+            )),
+            &SolverConfig::default(),
+        );
+        let systems: Vec<_> = report
+            .layout
+            .pages
+            .iter()
+            .flat_map(|page| &page.systems)
+            .collect();
+        assert_eq!(systems.len(), 2, "the region wraps into two systems");
+        let gap = |sys: &epiphany_layout_ir::ResolvedSystem| {
+            assert_eq!(sys.staves.len(), 2, "both staves ride every system");
+            let (top, bottom) = (&sys.staves[0].bounding_box, &sys.staves[1].bounding_box);
+            top.origin.y.0 - (bottom.origin.y.0 + bottom.size.height.0)
+        };
+        let (first, second) = (gap(systems[0]), gap(systems[1]));
+        assert!(
+            first > second + 4.0,
+            "the pressured system opens much further than the slack one: {first} vs {second}"
+        );
+
+        // The slack system's gap sits well past the band's preferred height (the
+        // solve expands but never compresses), so it contributes a large
+        // deviation. The pressured system was solved to preferred and contributes
+        // ~0. A first-system-only measurement would therefore report ~0 overall;
+        // counting both realizations reports the sprawl honestly.
+        let density = report.metric_vector.vertical_density_penalty.0;
+        assert!(
+            density > 0.5,
+            "the slack system's sprawl reaches the axis: {density}"
+        );
     }
 
     #[test]

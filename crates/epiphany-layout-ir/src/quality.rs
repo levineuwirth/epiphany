@@ -1,7 +1,7 @@
 //! The Quality Metric Catalog's normative constants (companion specification
-//! *Epiphany — Quality Metric Catalog*, v0.2.0): the per-axis normalization
+//! *Epiphany — Quality Metric Catalog*, v0.3.0): the per-axis normalization
 //! anchors, the per-tier metric threshold table, the profile→threshold-column
-//! mapping, and the `QualityFloorApproached` warning fraction. (The v0.2.0
+//! mapping, and the `QualityFloorApproached` warning fraction. (The v0.3.0
 //! `spacing_distortion` refinement scoped that axis's *measurement domain* to
 //! rhythmic columns; it touched no anchor or threshold, so this transcription
 //! of the numeric constants is unchanged.)

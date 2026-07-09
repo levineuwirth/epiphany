@@ -306,13 +306,13 @@ that was an implementation defect, not a definition defect.
 | "Content extent" was ambiguous | **clarify (editorial)** — `req:qmc:vertical` now spells out that content extent means every primitive the band owns, each attributed by its declared `vertical_band`, and not the band's glyph `members`. Before primitive band ownership this reading was arguably unimplementable, which is why the defect survived. The stale rationale (claiming the vertical spring solve is deferred) is refreshed, and the inter-system half of the axis is recorded as a genuine trade-off against `page_fill_efficiency`, not a defect | quality_metric_catalog §`vertical_density_penalty` rationale | — |
 | Solve read the gap from a constructor | **fix** — the inter-staff solve now targets the `preferred_height` of the `InterStaffGap` band `to_constrained` emitted for that staff pair, not `VerticalBand::inter_staff_gap`'s default. The band is now a height model: a region declaring a wider gap gets one, and the solve and the metric agree by construction rather than by both calling the same constructor | — (behavioural, within `req:layoutir:vertical-bands`) | `epiphany-engrave` (`casting.rs`) |
 
-**Version movements.** None. Quality Metric Catalog stays **0.2.0** (formula,
-units, anchor, normalization unchanged — a clarification and a rationale refresh
-are not a definition change; contrast P12-I12, which redefined
-`spacing_distortion`'s unit and did move the version). Core spec unchanged.
-Operation Catalog 0.7.0, Binary Format 0.6.0 unchanged. **No layout change and no
-render-golden churn** — this is measurement-only, as the ENGRAVER_VERSION staying
-at 11 records.
+**Version movements.** Quality Metric Catalog **0.2.0 → 0.3.0** — see the review
+follow-up below. (The conformance fix above needed none on its own: formula,
+anchor, and normalization were unchanged, and a clarification is not a definition
+change. The follow-up's per-realization unit count *is* one, so the version moves
+with it.) Core spec unchanged. Operation Catalog 0.7.0, Binary Format 0.6.0
+unchanged. **No layout change and no render-golden churn** — measurement-only, as
+`ENGRAVER_VERSION` staying at 11 records.
 
 **Deferred (documented, not open candidates).** Staff-less content placed
 *between* two staves would hold still while the lower staff descends away from
@@ -320,3 +320,39 @@ it. No primitive can name an `InterStaffGap` band today (`band_of` yields a staf
 band or the region's margin band), so this is unreachable rather than latent;
 building the machinery now would be speculative. Named in
 `epiphany-engrave/DECISIONS.md`.
+
+### Review follow-up (2026-07-09) — two more glyph-members assumptions
+
+An adversarial review of the fix above found the correction incomplete. Both
+findings were right, and the second falsified a comment I had written in the same
+commit.
+
+| Item | Disposition | Spec locus | Consumer |
+|---|---|---|---|
+| Region staff bands identified by glyph `members` | **fix (conformance)** — `vertical_raw` measured content over all primitives but still decided *which* staff bands belong to a region by glyph membership, reintroducing the assumption the change exists to shed. A staff band is allowed to own no glyphs: `to_constrained` emits one per staff of the region regardless, and a percussion-clef staff (no bundled glyph → traced anchor stroke) with no notes owns only its staff-line strokes. Region membership now comes from content presence in one of the region's systems — a staff band is per-(staff, region), so this identifies it exactly. Locked by the new `percussion_placeholder_staff` fixture and `a_staff_band_owning_no_glyphs_still_contributes_its_gap` | — (conformance to `req:qmc:vertical`) | `epiphany-engrave` (`quality.rs::vertical_raw`) |
+| Only the first realizing system measured | **fix + catalog definition move (0.3.0)** — the code measured one system per gap band, justified by a comment claiming rigid system translation makes every realization agree. The inter-staff solve had *just* falsified that: it sizes each system's gaps from that system's own content. `req:qmc:vertical` now counts **one unit per realization**, matching how realized inter-system gaps were already counted. Locked by the new `two_staff_wrapping_pressure` fixture (staff-line gap 15.93 in the pressured system, 7.87 in the slack one) and `inter_staff_gaps_are_measured_in_every_system_that_realizes_them` | quality_metric_catalog §`vertical_density_penalty` (`req:qmc:vertical`), **0.2.0 → 0.3.0** | `epiphany-engrave` |
+
+Both fixes are mutation-verified: reverting to glyph-member region identification
+scores `4.8e-7` on the percussion fixture, and reverting to first-system-only
+scores `1.3e-7` on the wrapping fixture — each ~0 where the corrected axis reports
+real deviation.
+
+**What the per-realization count exposes.** `two_staff_wrapping_pressure` now
+scores `vertical_density_penalty` **0.739**: its pressured system solves to the
+declared gap exactly (≈0 deviation), while its slack system sits at ≈5 staff
+spaces of content gap against a preferred 2.0. The axis is symmetric — a gap
+wider than preferred is sprawl exactly as a narrower one is crowding — and the
+inter-staff solve **only expands, never compresses**. That deferral
+(`epiphany-engrave/DECISIONS.md`, "compressing an OVER-wide fixed gap toward
+preferred… rarely wanted") is hereby promoted from *rarely wanted* to
+*measurably wrong*: any un-pressured multi-staff system reports honest sprawl
+until the solve can pull staves together. Named, not fixed — compression is a
+layout change (golden churn, `ENGRAVER_VERSION` move), not a measurement one.
+
+**Adjacent finding, not fixed here.** `Staff::default_clef` is never consulted by
+the projection: `to_constrained` takes the active clef from the staff instance's
+`clef_sequence` and falls back to `Clef::default()` (treble). A bass-clef staff
+that declares its clef only via `Staff::default_clef` engraves as treble. Found
+while building the percussion fixture (which therefore had to declare its clef as
+a `ClefChange`). Filed in `epiphany-layout-ir/DECISIONS.md`; parked with the
+`ConstrainedLayoutIR` listing gap pending a ≥3-candidate Pass-13 batch.

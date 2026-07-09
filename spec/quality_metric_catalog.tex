@@ -226,7 +226,7 @@
   {\Large\scshape\color{epiphanyslate}Quality Metric Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.2.0 --- Phase 3 (the normative metric set: formal definitions, normalization, weights, tier thresholds, profile registry; \texttt{spacing\_distortion} scoped to rhythmic columns)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.3.0 --- Phase 3 (the normative metric set: formal definitions, normalization, weights, tier thresholds, profile registry; \texttt{spacing\_distortion} scoped to rhythmic columns; \texttt{vertical\_density\_penalty} counted per realization)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the metrics and thresholds it defines}
   \vfill
 \end{titlepage}
@@ -246,7 +246,7 @@ deliver ``per-metric normalization functions mapping raw measurements to
 metric thresholds, and the formal definition of each quality metric in the
 normative metric set.''
 
-This companion (v0.2.0) delivers all four chartered items, plus two small
+This companion (v0.3.0) delivers all four chartered items, plus two small
 registries the core specification names but defers here:
 
 \begin{itemize}
@@ -868,10 +868,15 @@ inter-system gaps realized far from the spacing the band model asked for.
 
 \begin{requirement}
 \label{req:qmc:vertical}
-\textbf{Contributing units:} vertical bands of $C$ of kind
-\texttt{InterStaffGap} or \texttt{InterSystemGap} with preferred height
-$p > 0$ that are realized in $L$ (the adjacent content they separate was
-laid out).
+\textbf{Contributing units:} each \emph{realization} in $L$ of a vertical
+band of $C$ of kind \texttt{InterStaffGap} or \texttt{InterSystemGap} with
+preferred height $p > 0$ (a band is realized wherever the adjacent content
+it separates was laid out). A band realized in several systems contributes
+\textbf{one unit per system}, not one per band: a vertical solve sizes each
+system's gaps from that system's own content, so one band's realized height
+genuinely differs from system to system. This matches how the realized
+inter-system gaps are already counted --- one unit per adjacent system pair
+on a page.
 
 \textbf{Raw measurement:} per unit, with $r \ge 0$ the realized vertical
 separation between the adjacent content extents the band separates
@@ -918,6 +923,18 @@ The inter-system half of the axis is a genuine trade-off, not a defect: the
 vertical justification pass deliberately stretches inter-system gaps past
 preferred to fill a non-final page, trading this axis against
 \texttt{page\_fill\_efficiency}. Both axes are reported; neither is wrong.
+
+\textbf{Per-realization units} (0.3.0) followed from the same landing. While
+the reference pipeline preserved constrained $y$ verbatim, a band had exactly
+one realized height and the distinction was moot. Once the inter-staff solve
+began sizing each system's gaps from that system's own content, a band's
+realized height became per-system, and counting one unit per band would let a
+well-solved system average away a badly spaced one. The axis is deliberately
+symmetric: a gap wider than preferred is sprawl exactly as a narrower one is
+crowding. A solver that only ever \emph{expands} a fixed stacking --- never
+compressing an over-wide gap back toward preferred --- will therefore report
+honest sprawl on its slack systems. That is the axis working, not
+mis-measuring.
 \end{rationale}
 
 \section{\texttt{system\_break\_penalty}}
@@ -1366,6 +1383,22 @@ than inventing a parallel one.
   irregularity. Normalization anchor, orientation, range, thresholds, and
   the eight other axes are unchanged; the optical-spacing open question
   (duration-proportional spacing) stays open. Batch item P12-I12. \\
+  \midrule
+  \today & \hyperref[sec:metrics:vertical]{\texttt{vertical\_density\_penalty}}
+  & 0.3.0 --- Count \textbf{one contributing unit per realization} of an
+  \texttt{InterStaffGap} band rather than one per band, matching how realized
+  inter-system gaps were already counted. The inter-staff vertical solve sizes
+  each system's gaps from that system's own content, so a band's realized
+  height is per-system; one unit per band let a well-solved system average away
+  a badly spaced one. Also \emph{clarifies} (no semantic change) that the
+  ``content extents'' the raw measurement compares are every primitive the
+  adjacent band owns --- glyphs, strokes, and curves, each attributed by its
+  declared \texttt{vertical\_band} --- and not the band's glyph
+  \texttt{members}, a reading that was arguably unimplementable before
+  primitive band ownership was ratified. Raw formula, normalization anchor,
+  orientation, range, thresholds, and the eight other axes are unchanged. The
+  reference implementation's non-conforming glyph-only measurement is fixed
+  alongside. \\
 \bottomrule
 \end{longtable}
 

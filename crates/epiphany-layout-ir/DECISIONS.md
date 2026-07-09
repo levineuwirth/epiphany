@@ -695,6 +695,24 @@ them). Two fields the code carries are still absent from the listing:
 
 Neither blocks an implementation the way a missing `strokes`/`curves` did: both
 are governed by requirement text elsewhere, so a conformant implementer is not
-left guessing. **Parked, not open.** The Pass-13 batch is closed and the house
-rule opens a pass at ≥3 candidates; this is one. It joins a future batch rather
-than reopening one on its own.
+left guessing.
+
+## Parked: `Staff::default_clef` is never consulted (2026-07-09)
+
+`to_constrained` takes a staff instance's active clef from its `clef_sequence`
+(via `staff_content`'s `PlacedClef` list) and, when that sequence is empty, falls
+back to `Clef::default()` — treble. It never reads `Staff::default_clef`. So a
+bass-clef staff that declares its clef *only* on the `Staff` engraves as treble;
+the field is decorative in the projection. No consumer in this crate reads it
+(verified: `default_clef` appears only in core's codec/generators and the
+fixtures).
+
+Found while building `percussion_placeholder_staff`, which therefore has to
+declare its percussion clef as a `ClefChange` rather than on the staff. Whether
+the staff's default should seed the sequence, or the field should be removed, is
+a small design question — not a silent-corruption bug (nothing is lost, only
+ignored).
+
+**Both of the above are parked, not open.** The Pass-13 batch is closed and the
+house rule opens a pass at ≥3 candidates; these are two. They join a future batch
+rather than reopening one.

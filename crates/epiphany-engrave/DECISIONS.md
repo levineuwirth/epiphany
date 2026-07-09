@@ -899,3 +899,44 @@ re-filed as a bug.
 while the lower staff descends. No primitive can name an `InterStaffGap` band
 today (`band_of` yields a staff band or the region's margin band), so this is
 unreachable rather than latent — building the machinery now would be speculative.
+
+### Review follow-up: two more glyph-members assumptions (2026-07-09)
+
+An adversarial review found the content-extent correction incomplete in two
+places. Both were right; the second falsified a comment written in the same
+commit that introduced it.
+
+1. **Region staff bands were still identified by glyph `members`.** `vertical_raw`
+   measured content over all primitives but decided *which* staff bands belong to
+   a region by glyph membership — the very assumption the change exists to shed.
+   A staff band is allowed to own no glyphs: `to_constrained` emits one per staff
+   of the region regardless, and a percussion-clef staff (no bundled glyph, so it
+   engraves to a traced anchor stroke) with no notes owns only its staff-line
+   strokes. Region membership now comes from **content presence** in one of the
+   region's systems, which identifies the band exactly, because a staff band is
+   per-`(staff, region)` manifestation and its content can land nowhere else.
+   Locked by `percussion_placeholder_staff` + `a_staff_band_owning_no_glyphs_
+   still_contributes_its_gap`. Mutation-verified: the members filter scores
+   `4.8e-7` where the fix reports real deviation.
+
+2. **Only the first realizing system was measured.** The code took one system per
+   gap band, justified by a comment claiming rigid system translation makes every
+   realization agree. The inter-staff solve had *just* falsified that: it sizes
+   each system's gaps from that system's own content. `req:qmc:vertical` now
+   counts **one unit per realization** (QMC 0.2.0 → 0.3.0), matching how realized
+   inter-system gaps were already counted. Locked by `two_staff_wrapping_pressure`
+   (staff-line gap 15.93 in the pressured system, 7.87 in the slack one) +
+   `inter_staff_gaps_are_measured_in_every_system_that_realizes_them`.
+   Mutation-verified: first-system-only scores `1.3e-7`.
+
+**What this exposes, and it is not comfortable.** `two_staff_wrapping_pressure`
+scores `vertical_density_penalty` **0.739**. Its pressured system solves to the
+declared gap exactly; its slack system sits at ~5 staff spaces of content gap
+against a preferred 2.0. The axis is symmetric — a gap wider than preferred is
+sprawl exactly as a narrower one is crowding — and this solve **only expands,
+never compresses**. The deferral recorded above ("compressing an OVER-wide fixed
+gap toward preferred… the fixed pitch is generous by default, so this is rarely
+wanted") is therefore promoted from *rarely wanted* to **measurably wrong**: any
+un-pressured multi-staff system now reports honest sprawl until the solve can pull
+staves together. Named here rather than fixed in the same breath — compression is
+a layout change (golden churn, `ENGRAVER_VERSION` move), not a measurement one.

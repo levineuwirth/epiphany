@@ -333,6 +333,242 @@ pub fn three_staff_close_content(seed: u64) -> Score {
     score
 }
 
+/// A TWELVE-measure, TWO-staff metric score that wraps into more than one
+/// system and carries its inter-staff pressure in the FIRST measure only: the
+/// top staff dips to C2 and the bottom staff climbs to C6 there, while every
+/// later measure is plain C4s on both staves.
+///
+/// So the two systems of the one region want genuinely different staff gaps —
+/// the first must open to clear the colliding ledgers, the second is already
+/// slack. The inter-staff solve sizes each system's gaps from that system's own
+/// content, so a quality metric that measured only the first system realizing a
+/// gap band would average the second one away. Invariant-clean.
+pub fn two_staff_wrapping_pressure(seed: u64) -> Score {
+    let mut rng = SplitMix64::new(seed ^ 0x0004_57AF_F123);
+    let replica =
+        ReplicaId::from_entropy(rng.next_u64().to_le_bytes()).unwrap_or(ReplicaId(0x4ADF));
+    let mut idc = IdentityContext::new(replica);
+
+    let top_staff: StaffId = idc.mint();
+    let bottom_staff: StaffId = idc.mint();
+    let instrument: InstrumentId = idc.mint();
+    let region_id: RegionId = idc.mint();
+
+    const MEASURES: i64 = 12;
+    const BEATS: i64 = 4;
+
+    // Measure 0 collides (top dives, bottom climbs); the rest sit inside the
+    // staff, where the fixed staff pitch already leaves the gap slack.
+    let octave = |staff_index: usize, index: i64| -> i8 {
+        if index >= BEATS {
+            return 4;
+        }
+        if staff_index == 0 {
+            [4i8, 3, 2, 3][index as usize]
+        } else {
+            [4i8, 5, 6, 5][index as usize]
+        }
+    };
+
+    let mut arena = EventArena::new();
+    let mut instances: Vec<StaffInstance> = Vec::new();
+    for (staff_index, staff_id) in [top_staff, bottom_staff].into_iter().enumerate() {
+        let instance_id: StaffInstanceId = idc.mint();
+        let voice_id: VoiceId = idc.mint();
+        let mut voice = Voice::user(voice_id);
+        for index in 0..(MEASURES * BEATS) {
+            let (eid, pid): (EventId, PitchId) = (idc.mint(), idc.mint());
+            arena
+                .insert(c_at(eid, voice_id, pid, index, octave(staff_index, index)))
+                .unwrap();
+            voice.events.push(eid);
+        }
+        let mut instance = StaffInstance::new(instance_id, staff_id);
+        instance.voices.push(voice);
+        for m in 0..MEASURES {
+            instance.measures.push(Measure {
+                id: idc.mint(),
+                start: TimeAnchor::Region {
+                    id: region_id,
+                    edge: RegionEdge::Start,
+                    offset: AnchorOffset::Musical(MusicalDuration(
+                        RationalTime::new(m, 1).unwrap(),
+                    )),
+                },
+                time_signature: None,
+                explicit_number: Some((m + 1) as u32),
+                number_visibility: Default::default(),
+            });
+        }
+        instances.push(instance);
+    }
+
+    let region = epiphany_core::Region {
+        id: region_id,
+        time_model: RegionTimeModel::Metric(MetricTimeModel::default()),
+        content: RegionContent::StaffBased(StaffBasedContent {
+            staff_instances: instances,
+            ..Default::default()
+        }),
+        time_extent: TimeExtent {
+            start: TimeAnchor::WallClock {
+                time: WallClockTime(0),
+            },
+            end: TimeAnchor::WallClock {
+                time: WallClockTime(120_000_000),
+            },
+        },
+        staff_extent: StaffExtent {
+            staves: vec![top_staff, bottom_staff],
+        },
+        local_tempo_map: None,
+        permits_spanning_slurs: false,
+    };
+
+    let staff = |id: StaffId, name: &str| Staff {
+        id,
+        name: String::from(name),
+        abbreviation: None,
+        instrument,
+        default_staff_lines: StaffLineConfiguration::default(),
+        group: None,
+        default_clef: epiphany_core::Clef::treble(),
+    };
+    let mut score = Score::empty(idc.clone());
+    score.identity = idc;
+    score.instruments = vec![epiphany_core::Instrument::new(
+        instrument,
+        String::from("Keyboard"),
+    )];
+    score.staves = vec![staff(top_staff, "Right"), staff(bottom_staff, "Left")];
+    score.events = arena;
+    score.canvas = Canvas {
+        regions: vec![region],
+        ..Default::default()
+    };
+    score
+}
+
+/// A two-staff score whose LOWER staff engraves **no glyphs at all**: it is a
+/// percussion-clef placeholder — a staff instance with a `ClefChange` to
+/// `ClefShape::Percussion`, which has no bundled SMuFL glyph (it engraves to a
+/// traced anchor stroke), and no voices or measures. Its vertical band therefore
+/// owns five staff-line strokes plus that anchor, and **zero** members.
+///
+/// The upper staff carries twelve plain measures of C4, so it wraps and its gap
+/// to the placeholder is slack everywhere. Together: a valid score on which any
+/// consumer that identifies a region's staff bands by their glyph `members`
+/// silently loses the lower staff. Invariant-clean.
+pub fn percussion_placeholder_staff(seed: u64) -> Score {
+    let mut rng = SplitMix64::new(seed ^ 0x0005_57AF_F123);
+    let replica =
+        ReplicaId::from_entropy(rng.next_u64().to_le_bytes()).unwrap_or(ReplicaId(0x5ADF));
+    let mut idc = IdentityContext::new(replica);
+
+    let top_staff: StaffId = idc.mint();
+    let drum_staff: StaffId = idc.mint();
+    let instrument: InstrumentId = idc.mint();
+    let region_id: RegionId = idc.mint();
+
+    const MEASURES: i64 = 12;
+    const BEATS: i64 = 4;
+
+    let mut arena = EventArena::new();
+    let top_instance: StaffInstanceId = idc.mint();
+    let top_voice: VoiceId = idc.mint();
+    let mut voice = Voice::user(top_voice);
+    for index in 0..(MEASURES * BEATS) {
+        let (eid, pid): (EventId, PitchId) = (idc.mint(), idc.mint());
+        arena.insert(quarter(eid, top_voice, pid, index)).unwrap();
+        voice.events.push(eid);
+    }
+    let mut top = StaffInstance::new(top_instance, top_staff);
+    top.voices.push(voice);
+    for m in 0..MEASURES {
+        top.measures.push(Measure {
+            id: idc.mint(),
+            start: TimeAnchor::Region {
+                id: region_id,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(MusicalDuration(RationalTime::new(m, 1).unwrap())),
+            },
+            time_signature: None,
+            explicit_number: Some((m + 1) as u32),
+            number_visibility: Default::default(),
+        });
+    }
+
+    // The placeholder: a percussion clef, no voices, no measures.
+    let drum_instance: StaffInstanceId = idc.mint();
+    let mut drums = StaffInstance::new(drum_instance, drum_staff);
+    drums.clef_sequence.push(epiphany_core::ClefChange {
+        anchor: TimeAnchor::WallClock {
+            time: WallClockTime(0),
+        },
+        clef: epiphany_core::Clef {
+            shape: epiphany_core::ClefShape::Percussion,
+            line: 3,
+            octave_shift: 0,
+        },
+    });
+
+    let region = epiphany_core::Region {
+        id: region_id,
+        time_model: RegionTimeModel::Metric(MetricTimeModel::default()),
+        content: RegionContent::StaffBased(StaffBasedContent {
+            staff_instances: vec![top, drums],
+            ..Default::default()
+        }),
+        time_extent: TimeExtent {
+            start: TimeAnchor::WallClock {
+                time: WallClockTime(0),
+            },
+            end: TimeAnchor::WallClock {
+                time: WallClockTime(120_000_000),
+            },
+        },
+        staff_extent: StaffExtent {
+            staves: vec![top_staff, drum_staff],
+        },
+        local_tempo_map: None,
+        permits_spanning_slurs: false,
+    };
+
+    let staff = |id: StaffId, name: &str, clef: epiphany_core::Clef| Staff {
+        id,
+        name: String::from(name),
+        abbreviation: None,
+        instrument,
+        default_staff_lines: StaffLineConfiguration::default(),
+        group: None,
+        default_clef: clef,
+    };
+    let mut score = Score::empty(idc.clone());
+    score.identity = idc;
+    score.instruments = vec![epiphany_core::Instrument::new(
+        instrument,
+        String::from("Ensemble"),
+    )];
+    score.staves = vec![
+        staff(top_staff, "Melody", epiphany_core::Clef::treble()),
+        staff(
+            drum_staff,
+            "Drums",
+            epiphany_core::Clef {
+                shape: epiphany_core::ClefShape::Percussion,
+                line: 3,
+                octave_shift: 0,
+            },
+        ),
+    ];
+    score.events = arena;
+    score.canvas = Canvas {
+        regions: vec![region],
+        ..Default::default()
+    };
+    score
+}
+
 /// A 10-measure, single-staff, single-voice metric score with 40 quarter notes
 /// (four per measure), plus a tie, a spanner, a marker, and a chord symbol. The
 /// QUICKSTART layout hand-off case. Invariant-clean (the returned graph passes
@@ -611,6 +847,55 @@ mod tests {
         );
         assert_eq!(s.events.len(), 8, "four notes per staff");
         assert_eq!(s.cross_cutting.slurs.len(), 1, "a slur over the high notes");
+    }
+
+    #[test]
+    fn percussion_placeholder_staff_is_invariant_clean_and_glyphless_below() {
+        use epiphany_layout_ir::{to_constrained, to_logical, VerticalBandKind};
+        let s = percussion_placeholder_staff(1);
+        let v = check_invariants(&s);
+        assert!(v.is_empty(), "percussion fixture has violations: {v:?}");
+        let c = to_constrained(&to_logical(&s));
+        let glyphless: Vec<_> = c
+            .vertical_bands
+            .iter()
+            .filter(|b| matches!(b.kind, VerticalBandKind::Staff(_)))
+            .filter(|b| !c.glyphs.iter().any(|g| g.vertical_band == b.id))
+            .collect();
+        assert_eq!(
+            glyphless.len(),
+            1,
+            "exactly one staff band owns no glyph (the percussion placeholder)"
+        );
+        assert!(
+            glyphless[0].members.is_empty(),
+            "and therefore no band members either"
+        );
+        assert!(
+            c.strokes
+                .iter()
+                .filter(|st| st.vertical_band == glyphless[0].id)
+                .count()
+                >= 5,
+            "but it does own its staff lines"
+        );
+    }
+
+    #[test]
+    fn two_staff_wrapping_pressure_is_invariant_clean_and_front_loaded() {
+        let s = two_staff_wrapping_pressure(1);
+        let v = check_invariants(&s);
+        assert!(
+            v.is_empty(),
+            "wrapping two-staff fixture has violations: {v:?}"
+        );
+        assert_eq!(s.staves.len(), 2, "two staves");
+        assert_eq!(s.events.len(), 96, "12 measures x 4 beats x 2 staves");
+        assert_eq!(
+            s.canvas.regions[0].staff_instances().len(),
+            2,
+            "two staff instances in ONE region -- so both staves share every system"
+        );
     }
 
     #[test]
