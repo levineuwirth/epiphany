@@ -39,7 +39,8 @@ use epiphany_core::{
     RegionTimeModel, ReplicaId, Score, ScoreMetadata, SpellingAttachment, SpellingDirective,
     SpellingScope, SpellingSource, Staff, StaffId, StaffInstance, StaffInstanceId,
     StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, TimeAnchor, TimeSignature,
-    TimeSignatureId, TransactionId, TransposeRefusal, TypedObjectId, Voice, VoiceId, VoiceOrigin,
+    TimeSignatureId, TransactionId, TransposeRefusal, TranspositionInterval, TypedObjectId, Voice,
+    VoiceId, VoiceOrigin,
 };
 use epiphany_determinism::CanonicalEncode;
 
@@ -747,6 +748,15 @@ type StaffLayoutValue = (Option<InstrumentId>, Option<StaffLineConfiguration>, b
 /// (spelling, breaks) keep the [`Predecessor`] distinction: a base predecessor
 /// returns the ledger map to key-absence while the graph restores the base
 /// value.
+/// One target's fully-resolved transposition, computed before anything is
+/// written so the operation can refuse atomically.
+struct ResolvedTranspose {
+    pitch: PitchId,
+    value: Pitch,
+    /// `(index into score.spelling_attachments, moved spelling)`.
+    authored: Vec<(usize, PitchSpelling)>,
+}
+
 enum ValueRestoration {
     Event {
         event: EventId,
@@ -5604,17 +5614,17 @@ impl<'a> Reducer<'a> {
             };
         }
 
-        // Atomicity: resolve every target's new value BEFORE writing any of
-        // them. `targets` is a set, so `mutable` is in canonical order, and the
-        // reported failure is the canonically-first offender —
-        // `req:opcat:transpose-interval-atomic`.
-        let mut resolved: Vec<(PitchId, Pitch)> = Vec::with_capacity(mutable.len());
+        // Atomicity: resolve every target's new value AND every spelling
+        // rewrite BEFORE writing any of them. `targets` is a set, so `mutable`
+        // is in canonical order, and the reported failure is the
+        // canonically-first offender — `req:opcat:transpose-interval-atomic`.
+        let mut resolved: Vec<ResolvedTranspose> = Vec::with_capacity(mutable.len());
         for pitch in &mutable {
             let Some(current) = self.graph_pitch_value(*pitch) else {
                 continue; // base-free: no value to check, and none to write
             };
-            match current.transposed(op.interval) {
-                Ok(next) => resolved.push((*pitch, next)),
+            let next = match current.transposed(op.interval) {
+                Ok(next) => next,
                 Err(refusal) => {
                     let reason = match refusal {
                         TransposeRefusal::NonCmnPosition => {
@@ -5631,14 +5641,88 @@ impl<'a> Reducer<'a> {
                         reason: NoOpReason::PreconditionFailedUnderReduction { reason },
                     };
                 }
+            };
+            match self.resolve_transposed_spellings(*pitch, &next, op.interval) {
+                Some(authored) => resolved.push(ResolvedTranspose {
+                    pitch: *pitch,
+                    value: next,
+                    authored,
+                }),
+                // An authored spelling that cannot be written at the transposed
+                // staff position refuses the whole operation, like any other
+                // untransposable target. Silently leaving it stale is what this
+                // operation exists to stop.
+                None => {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::TranspositionOutOfRange,
+                        },
+                    }
+                }
             }
         }
 
-        for (pitch, value) in resolved {
-            self.graph_modify_pitch(pitch, &value);
-            self.graph_propagate_spelling(pitch, &value);
+        // Two passes. The authored rewrites address `spelling_attachments` by
+        // index, and the propagated upsert may PUSH — which would shift every
+        // later target's indices. So every rewrite lands before any append.
+        for r in &resolved {
+            self.graph_modify_pitch(r.pitch, &r.value);
+            self.graph_rewrite_authored_spellings(&r.authored);
+        }
+        for r in &resolved {
+            self.graph_propagate_spelling(r.pitch, &r.value);
         }
         OperationEffect::Applied
+    }
+
+    /// The engraved-layer authored spellings on `pitch`, each moved to where the
+    /// transposed pitch writes it. `None` if any of them cannot be written
+    /// there.
+    ///
+    /// `Propagated` attachments are skipped: they are this operation's own
+    /// output, regenerated from the transposed value. Everything else —
+    /// `UserChosen`, `Imported` — is an assertion that *this pitch is written
+    /// like so*, and once the pitch moves that assertion has to move with it or
+    /// it is simply false. (Import fidelity is a property of the file on disk,
+    /// which a transposition does not touch.)
+    fn resolve_transposed_spellings(
+        &self,
+        pitch: PitchId,
+        transposed: &Pitch,
+        interval: TranspositionInterval,
+    ) -> Option<Vec<(usize, PitchSpelling)>> {
+        let Some(score) = self.graph.as_ref() else {
+            return Some(Vec::new());
+        };
+        let semitone = transposed.twelve_tet_semitone()?;
+        let mut out = Vec::new();
+        for (index, att) in score.spelling_attachments.iter().enumerate() {
+            if att.layer.is_some() || matches!(att.source, SpellingSource::Propagated { .. }) {
+                continue;
+            }
+            if !matches!(&att.scope, SpellingScope::Pitch(p) if *p == pitch) {
+                continue;
+            }
+            let SpellingDirective::Explicit(spelling) = &att.directive else {
+                continue;
+            };
+            out.push((index, spelling.transposed(interval, semitone)?));
+        }
+        Some(out)
+    }
+
+    /// Applies the rewrites `resolve_transposed_spellings` computed, preserving
+    /// each attachment's `source`, `priority`, and `layer`. A transposed
+    /// `UserChosen` spelling is still the user's choice.
+    fn graph_rewrite_authored_spellings(&mut self, rewrites: &[(usize, PitchSpelling)]) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        for (index, spelling) in rewrites {
+            if let Some(att) = score.spelling_attachments.get_mut(*index) {
+                att.directive = SpellingDirective::Explicit(spelling.clone());
+            }
+        }
     }
 
     /// The current value of a live embedded pitch, or `None` under base-free
@@ -5661,14 +5745,20 @@ impl<'a> Reducer<'a> {
     /// "editing operations that move or transpose a pitch MUST produce
     /// attachments with source `Propagated`").
     ///
-    /// Without this the spelling pre-pass re-infers a spelling for the moved
-    /// pitch, and any authored `UserChosen` attachment stays pinned to the
-    /// notehead it was written against — a deliberately-spelled C# transposed
-    /// up a fifth, re-inferred as Ab against the author's wish. The interval's
-    /// diatonic component already chose the nominal; `simplest_spelling` on a
-    /// `Cmn` position returns that authored letter verbatim (it infers only for
-    /// non-`Cmn` positions, which this operation refuses), so the attachment
-    /// carries exactly the interval's determination.
+    /// This is the record for a pitch with **no authored spelling**: without it
+    /// the pre-pass re-infers, and may pick the enharmonic the interval did not
+    /// choose. `simplest_spelling` on a `Cmn` position returns that position's
+    /// letter verbatim (it infers only for non-`Cmn` positions, which this
+    /// operation refuses), so the attachment carries exactly the interval's
+    /// determination.
+    ///
+    /// It does **not** by itself fix a *stale authored* spelling: the default
+    /// precedence ranks `UserChosen` and `Imported` above `Propagated`
+    /// (Chapter 2 §"Configurable Precedence"), so an authored attachment wins
+    /// and would engrave the pre-transpose notehead — a C#4 drawn as a C
+    /// natural, accidental and all. Authored spellings are therefore *moved*,
+    /// by `resolve_transposed_spellings`; this attachment is the fallback for
+    /// pitches that have none.
     fn graph_propagate_spelling(&mut self, pitch: PitchId, value: &Pitch) {
         let Some(spelling) = simplest_spelling(value) else {
             return;
@@ -9201,6 +9291,134 @@ mod tests {
         // Two flats, not a G-natural: the spelling follows the interval, not
         // the simplest enharmonic re-inference.
         assert_eq!(spelling.accidentals.len(), 1);
+    }
+
+    /// The effective engraved spelling for `pitch`, through the same resolver
+    /// the pre-pass uses — which is the only thing that says what gets drawn.
+    fn engraved_spelling(
+        score: &Score,
+        pitch: PitchId,
+    ) -> (epiphany_core::SpellingProvenance, PitchSpelling) {
+        let value = pitch_of(score, pitch);
+        let inferred = simplest_spelling(&value).expect("cmn");
+        let resolved = epiphany_core::resolve_spelling(
+            score,
+            pitch,
+            inferred,
+            &epiphany_core::SpellingPrecedence::default(),
+        );
+        (resolved.provenance, resolved.spelling)
+    }
+
+    fn author_spelling(score: &mut Score, pitch: PitchId, spelling: PitchSpelling) {
+        score.spelling_attachments.push(SpellingAttachment {
+            scope: SpellingScope::Pitch(pitch),
+            directive: SpellingDirective::Explicit(spelling),
+            source: SpellingSource::UserChosen,
+            priority: 0,
+            layer: None,
+        });
+    }
+
+    #[test]
+    fn transpose_interval_moves_an_authored_spelling_instead_of_leaving_it_stale() {
+        // The gap the original test could not see, because it started with no
+        // attachment: default precedence ranks UserChosen ABOVE Propagated, so
+        // recording a Propagated attachment does not, by itself, stop the
+        // engraved layer from drawing the pre-transpose notehead. Before this
+        // fix, a C4 sharpened to C#4 still RESOLVED to C natural — the
+        // accidental vanished.
+        let (mut base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
+        author_spelling(&mut base, pid, PitchSpelling::cmn(CmnNominal::C, 4));
+
+        let (effect, score) = run_transpose(&base, &[pid], interval(0, 1));
+        assert_eq!(effect, OperationEffect::Applied);
+        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, 1, 4));
+
+        let (provenance, spelling) = engraved_spelling(&score, pid);
+        // Still the author's choice — a transposed UserChosen spelling is still
+        // user-chosen — but it now names the pitch that is actually there.
+        assert_eq!(
+            provenance,
+            epiphany_core::SpellingProvenance::Authored(
+                epiphany_core::SpellingSourceKind::UserChosen
+            )
+        );
+        assert_eq!(
+            spelling.nominal,
+            epiphany_core::SpellingNominal::Cmn(CmnNominal::C)
+        );
+        assert_eq!(spelling.octave, 4);
+        assert_eq!(spelling.accidentals.len(), 1, "the sharp must be drawn");
+    }
+
+    #[test]
+    fn a_transposed_authored_spelling_keeps_the_authors_enharmonic_choice() {
+        // The discriminating case: the authored spelling's NOMINAL must disagree
+        // with the pitch's own Cmn nominal, or re-inferring from the pitch would
+        // give the same answer and the test would prove nothing. (It did. The
+        // mutation that replaced `spelling.transposed(..)` with
+        // `simplest_spelling(transposed)` passed the first version of this test,
+        // which spelled a C#4 pitch as "C#".)
+        //
+        // So: a pitch sounding C4, which the author deliberately wrote as B#3.
+        // Up a perfect fifth it sounds G4 — and must be written F##4, keeping
+        // the letter the author's B implies. Re-inference would say "G".
+        let (mut base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
+        author_spelling(
+            &mut base,
+            pid,
+            PitchSpelling {
+                nominal: epiphany_core::SpellingNominal::Cmn(CmnNominal::B),
+                accidentals: vec![epiphany_core::AccidentalId::new("sharp")],
+                octave: 3,
+                render_hints: Default::default(),
+            },
+        );
+
+        let (effect, score) = run_transpose(&base, &[pid], interval(4, 7));
+        assert_eq!(effect, OperationEffect::Applied);
+        // The pitch itself is plain G4.
+        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::G, 0, 4));
+
+        // The engraved spelling is F-double-sharp 4, not G.
+        let (provenance, spelling) = engraved_spelling(&score, pid);
+        assert_eq!(
+            provenance,
+            epiphany_core::SpellingProvenance::Authored(
+                epiphany_core::SpellingSourceKind::UserChosen
+            )
+        );
+        assert_eq!(
+            spelling.nominal,
+            epiphany_core::SpellingNominal::Cmn(CmnNominal::F),
+            "the author's letter moved; re-inference would have said G"
+        );
+        assert_eq!(spelling.octave, 4);
+        assert_eq!(
+            spelling.accidentals,
+            vec![epiphany_core::AccidentalId::new("double-sharp")]
+        );
+    }
+
+    #[test]
+    fn an_untransposable_authored_spelling_refuses_the_whole_operation() {
+        // The pitch itself transposes fine; its authored spelling cannot be
+        // written at the new staff position. Leaving it stale is exactly the
+        // bug, so the operation refuses and nothing moves.
+        let (mut base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
+        author_spelling(&mut base, pid, PitchSpelling::cmn(CmnNominal::C, 127));
+
+        let (effect, score) = run_transpose(&base, &[pid], interval(7, 12));
+        assert_eq!(
+            effect,
+            OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TranspositionOutOfRange,
+                },
+            }
+        );
+        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, 0, 4));
     }
 
     #[test]

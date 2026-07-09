@@ -595,7 +595,7 @@ fn lof_candidates(pitch_class: i32) -> Vec<i32> {
 /// The accidental glyph stack for a chromatic alteration. An empty stack means
 /// *no glyph is drawn* (a natural with no key signature to cancel), distinct
 /// from a natural sign (Chapter 2 §"Absent Accidentals").
-fn accidental_ids(alteration: i32) -> Vec<AccidentalId> {
+pub(crate) fn accidental_ids(alteration: i32) -> Vec<AccidentalId> {
     // The inferred candidate band ([`LOF_MIN`, `LOF_MAX`]) only ever yields single
     // accidentals, but the *authored* path preserves any `alteration` an author
     // wrote (`alteration` is an `i8`), so a triple-sharp can reach here. Emit a

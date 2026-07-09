@@ -737,21 +737,49 @@ is transposed by \texttt{interval}.
 
 \begin{requirement}
   \label{req:opcat:transpose-interval-spelling}
-  A \texttt{TransposeInterval} that changes a pitch's spelling \MUST{} record
-  that spelling as a \texttt{SpellingAttachment} with source
+  A \texttt{TransposeInterval} \MUST{} record the spelling its interval
+  determined as a \texttt{SpellingAttachment} with source
   \texttt{SpellingSource::Propagated}, per the core specification's Chapter~2,
   \sectionsc{Spelling Sources}. The attachment's \texttt{from} is the
   transposed pitch's own identifier, which the operation preserves.
+
+  That attachment alone is \emph{not sufficient}, because the default
+  precedence ranks \texttt{UserChosen} and \texttt{Imported} above
+  \texttt{Propagated} (Chapter~2, \sectionsc{Configurable Precedence}). A
+  \texttt{TransposeInterval} \MUST{} therefore also \textbf{move} every
+  engraved-layer, pitch-scoped, explicit spelling attachment on each target
+  that is not itself \texttt{Propagated}, preserving each attachment's
+  \texttt{source}, \texttt{priority}, and \texttt{layer}. A spelling is moved
+  by transposing its \emph{nominal} diatonically and taking whatever accidental
+  the transposed pitch then requires at that staff position. If any such
+  attachment cannot be written at the transposed position, the operation
+  \MUST{} refuse, atomically, with \texttt{TranspositionOutOfRange}.
 \end{requirement}
 
 \begin{rationale}
-  Without the propagated attachment the spelling pre-pass re-infers a spelling
-  for the moved pitch, and an authored \texttt{UserChosen} spelling from before
-  the transposition stays pinned to a notehead that has moved --- a C-sharp the
-  author spelled deliberately, transposed up a fifth, re-inferred as A-flat
-  against their wish. The interval's diatonic component already determines the
-  correct nominal; the attachment is how that determination survives into the
-  engraved layer.
+  Two different failures hide here, and the propagated attachment addresses only
+  the first.
+
+  For a pitch with \emph{no} authored spelling, the pre-pass would re-infer, and
+  may pick the enharmonic the interval did not choose. The propagated attachment
+  pins the interval's determination.
+
+  For a pitch \emph{with} an authored spelling, the propagated attachment is
+  outranked and changes nothing: a C4 the author spelled ``C'', sharpened to
+  C-sharp~4, would still resolve to \texttt{Authored(UserChosen)} and engrave a
+  C natural --- the accidental simply disappears, and the notehead names a pitch
+  that is not there. So the authored spelling is moved instead of being left or
+  discarded. It is moved by its \textbf{nominal}, because the nominal is what
+  carries the author's enharmonic decision: an author who wrote B-sharp~3 rather
+  than C4 chose the letter B, and a perfect fifth up must give F-double-sharp~4,
+  not G. Discarding the attachment would silently lose that decision; re-inferring
+  it from the transposed pitch would give G.
+
+  A transposed \texttt{UserChosen} spelling is still the user's choice, so its
+  source is preserved. \texttt{Imported} likewise: an imported attachment asserts
+  ``this pitch is written thus'', and once the pitch moves that assertion must
+  move with it or become false. Import fidelity is a property of the source file,
+  which a transposition does not touch.
 \end{rationale}
 
 \textbf{Conflict cases.} None --- composition is deterministic in canonical order.

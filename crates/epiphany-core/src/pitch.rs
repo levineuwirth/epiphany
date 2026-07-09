@@ -760,6 +760,50 @@ pub struct PitchSpelling {
 }
 
 impl PitchSpelling {
+    /// Moves this spelling by `interval`, keeping its enharmonic choice.
+    ///
+    /// The authored **nominal** is what carries that choice — an author who
+    /// wrote B♯3 rather than C4 chose the letter B — so the diatonic component
+    /// moves the nominal and octave, and the accidental stack is then whatever
+    /// the transposed pitch requires on that new staff line.
+    /// `sounding_semitone` is the transposed pitch's
+    /// [`Pitch::twelve_tet_semitone`].
+    ///
+    /// So B♯3 (sounding C4) transposed by a perfect fifth `(4, 7)` becomes
+    /// F×3 (sounding G4): the letter moved four diatonic steps, and the
+    /// double-sharp is what F needs to sound a G. The chromatic component never
+    /// touches the spelling directly; it reaches it only through the pitch.
+    ///
+    /// `None` when the spelling is not CMN (no nominal to move), or when the
+    /// resulting octave or alteration is not representable.
+    pub fn transposed(
+        &self,
+        interval: TranspositionInterval,
+        sounding_semitone: i32,
+    ) -> Option<PitchSpelling> {
+        let SpellingNominal::Cmn(nominal) = self.nominal else {
+            return None;
+        };
+        // `i64` throughout, for the same reason `Pitch::transposed` does.
+        let step = i64::from(nominal as u8) + i64::from(interval.diatonic_steps);
+        let new_nominal = CmnNominal::from_index(step.rem_euclid(7) as i32);
+        let new_octave = i64::from(self.octave) + step.div_euclid(7);
+        let alteration =
+            i64::from(sounding_semitone) - (i64::from(new_nominal.chromatic()) + 12 * new_octave);
+
+        let octave = i8::try_from(new_octave).ok()?;
+        let alteration = i32::try_from(alteration).ok()?;
+        // Guard the accidental stack: `accidental_ids` allocates |alteration|/2
+        // glyphs, so an unbounded alteration is an unbounded allocation.
+        i8::try_from(alteration).ok()?;
+        Some(PitchSpelling {
+            nominal: SpellingNominal::Cmn(new_nominal),
+            accidentals: crate::prepass::accidental_ids(alteration),
+            octave,
+            render_hints: self.render_hints,
+        })
+    }
+
     /// A bare CMN spelling with no accidental glyph at the given octave.
     pub fn cmn(nominal: CmnNominal, octave: i8) -> Self {
         PitchSpelling {
@@ -1130,6 +1174,68 @@ mod tests {
         assert_eq!(iv(i32::MIN, i32::MIN).inverse(), None);
         assert_eq!(iv(i32::MIN + 1, 0).inverse(), Some(iv(i32::MAX, 0)));
         assert_eq!(iv(4, 7).inverse(), Some(iv(-4, -7)));
+    }
+
+    #[test]
+    fn a_spelling_moves_by_its_nominal_and_keeps_the_authors_enharmonic_choice() {
+        let semitone = |p: &Pitch| p.twelve_tet_semitone().unwrap();
+
+        // The author wrote C-sharp, not D-flat. Up a perfect fifth that must be
+        // G-sharp, not A-flat: the pre-pass, left to itself, may prefer either.
+        let cs4 = cmn(CmnNominal::C, 1, 4);
+        let spelled = PitchSpelling {
+            nominal: SpellingNominal::Cmn(CmnNominal::C),
+            accidentals: crate::prepass::accidental_ids(1),
+            octave: 4,
+            render_hints: SpellingRenderHints::default(),
+        };
+        let up = cs4.transposed(iv(4, 7)).unwrap();
+        let moved = spelled.transposed(iv(4, 7), semitone(&up)).unwrap();
+        assert_eq!(moved.nominal, SpellingNominal::Cmn(CmnNominal::G));
+        assert_eq!(moved.octave, 4);
+        assert_eq!(moved.accidentals, crate::prepass::accidental_ids(1));
+
+        // B-sharp 3 sounds as C4. Up a fifth it must stay a *letter F*, spelled
+        // F-double-sharp 4, sounding G4 — the nominal carries the choice.
+        let bs3 = PitchSpelling {
+            nominal: SpellingNominal::Cmn(CmnNominal::B),
+            accidentals: crate::prepass::accidental_ids(1),
+            octave: 3,
+            render_hints: SpellingRenderHints::default(),
+        };
+        let c4 = cmn(CmnNominal::C, 0, 4);
+        let g4 = c4.transposed(iv(4, 7)).unwrap();
+        let moved = bs3.transposed(iv(4, 7), semitone(&g4)).unwrap();
+        assert_eq!(moved.nominal, SpellingNominal::Cmn(CmnNominal::F));
+        assert_eq!(moved.octave, 4);
+        assert_eq!(moved.accidentals, crate::prepass::accidental_ids(2));
+
+        // A plain sharpen: the staff line never moves.
+        let c = PitchSpelling::cmn(CmnNominal::C, 4);
+        let sharp = c4.transposed(iv(0, 1)).unwrap();
+        let moved = c.transposed(iv(0, 1), semitone(&sharp)).unwrap();
+        assert_eq!(moved.nominal, SpellingNominal::Cmn(CmnNominal::C));
+        assert_eq!(moved.octave, 4);
+        assert_eq!(moved.accidentals, crate::prepass::accidental_ids(1));
+    }
+
+    #[test]
+    fn a_spelling_refuses_to_move_when_it_cannot_be_written() {
+        let c = PitchSpelling::cmn(CmnNominal::C, 4);
+        // Octave out of range, and an extreme interval that must not panic.
+        assert_eq!(c.transposed(iv(7 * 200, 12 * 200), 0), None);
+        assert_eq!(c.transposed(iv(i32::MAX, 0), 0), None);
+        assert_eq!(c.transposed(iv(i32::MIN, 0), 0), None);
+        // An alteration that will not fit an `i8`.
+        assert_eq!(c.transposed(iv(0, 0), 4000), None);
+        // A non-CMN nominal has no letter to move.
+        let integer = PitchSpelling {
+            nominal: SpellingNominal::Integer(7),
+            accidentals: Vec::new(),
+            octave: 4,
+            render_hints: SpellingRenderHints::default(),
+        };
+        assert_eq!(integer.transposed(iv(4, 7), 55), None);
     }
 
     #[test]
