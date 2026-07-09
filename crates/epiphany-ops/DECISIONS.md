@@ -1320,3 +1320,76 @@ the other graph-aware-only preconditions"). It also *writes* nothing base-free,
 so the two modes agree on `objects`, and on the effect log for every operation
 whose targets are all transposable — the only case base-free reduction can
 distinguish.
+
+## Push 4a follow-up — the three gaps a green gate did not catch (2026-07-09)
+
+An audit reopened P12-K2 after Push 4a landed. All three findings reproduced.
+The focused suites passed throughout, which is the point: they were coverage
+gaps, not regressions.
+
+**1. Extreme intervals panicked instead of refusing.** `Pitch::transposed` did
+its arithmetic in `i32` while `TranspositionInterval`'s components *are* `i32`,
+so `diatonic_steps = i32::MAX` overflowed `12 * new_octave`. The comment above
+it said "widen before arithmetic" — it widened `i8` to `i32`, which is exactly
+not wide enough. `inverse()` negated `i32::MIN`. Now `i64` throughout, and
+`inverse()` returns `Option`.
+
+I checked whether this was worse than a panic, since `epiphany-core` is a
+library and a downstream release profile has `overflow-checks` off. A 10.5M-case
+sweep of wrapping-vs-exact arithmetic found **zero** inputs where wrapping
+produced a wrong `Ok` rather than a refusal. So: a panic, not silent corruption.
+The audit's characterisation was right and my instinct was wrong.
+
+**2. The Propagated attachment met the requirement and missed its purpose.**
+Default precedence ranks `UserChosen` and `Imported` *above* `Propagated`
+(`SpellingPrecedence::default`), so the attachment a transpose writes is
+outranked exactly when it matters. Reproduced: a C4 the author spelled "C",
+sharpened to C♯4, resolves to `Authored(UserChosen)` with `accidentals: []`. The
+notehead draws a C natural for a pitch sounding C♯ — the accidental disappears.
+The Push-4a test could not see it because it deliberately started with no
+attachment.
+
+Ratified fix: authored spellings are **moved**, not left and not discarded, by
+transposing their **nominal** — the nominal is what carries the enharmonic
+decision. B♯3 (sounding C4) up a fifth is F𝄪4 (sounding G4), not G. Source,
+priority and layer are preserved: a transposed `UserChosen` spelling is still
+the user's choice. An authored spelling that cannot be written at the transposed
+position refuses the whole operation, resolved before any write.
+
+**3. Value-restoring undo did not restore either transpose.** Neither kind
+recorded into `pitch_modify_chain`; `UndoTransaction(StrictInverse)` reduced to
+`NoOp(TargetMissing)` and left the pitch shifted. `EditorSession::undo` works
+because it re-materializes from a truncated log, an entirely separate mechanism.
+
+The *behaviour* gap was pre-existing — the frozen `Transpose` behaves the same,
+and the pre-Push-4a catalog said so honestly ("an inverse-interval undo is a
+Phase-3 refinement, P11-C8"). What was new was **my false claim** that the write
+chain handled it, written into the catalog for both kinds.
+
+Ratified fix, and the interesting part: **`TransposeInterval` becomes undoable;
+the frozen `Transpose` stays un-undoable, permanently.** Making `Transpose`
+record into the chain would not change its own reduction rule, but it *would*
+change what a stored `{Transpose, UndoTransaction}` history replays to — from
+"the pitch stays shifted" to "the pitch returns". That is a change in what an
+existing document means, which is the one thing the freeze forbids. So the
+freeze bites, and gives another reason never to author the old kind.
+`the_frozen_transpose_is_not_undoable_and_that_is_frozen_too` guards it, verified
+by the inverse mutation (making it undoable fails the test).
+
+**The new chain.** `transposed_spelling_chain: BTreeMap<PitchId,
+WriteChain<Vec<SpellingAttachment>>>` holds the engraved-layer, pitch-scoped,
+explicit attachment *set* per pitch, so undo restores the moved authored
+attachments and removes the propagated one together. Deliberately **not**
+`respell_chain`: `RespellPitch` owns that, its last write is the LWW working
+state its conflict detection reads, and folding transposes in would make a
+concurrent respell conflict with a transpose *and* move the canonical bytes of
+every existing history.
+
+**Two false locks, found by mutation, not by the gate.**
+- The enharmonic test spelled a C♯4 pitch as "C♯", so the authored nominal
+  coincided with the pitch's own and re-inference gave the same answer.
+  Replacing `spelling.transposed(..)` with `simplest_spelling(..)` **passed**.
+  Rewritten around B♯3-sounding-C4, it fails as it must.
+- My own mutation harness restored the file between two tests, so the second
+  ran unmutated and "passed". A mutation that no-ops looks exactly like a test
+  that passes — the trap recorded after Push 4a, hit again in a new form.

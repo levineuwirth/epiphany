@@ -5323,6 +5323,37 @@ mod tests {
     }
 
     #[test]
+    fn undo_of_a_transpose_restores_the_spelling_as_well_as_the_pitch() {
+        // EditorSession::undo re-materializes from a truncated log rather than
+        // riding the CRDT UndoTransaction path, so it exercises the reducer's
+        // spelling rewrite from the other side: the transpose must simply not
+        // happen, attachments and all.
+        use epiphany_core::{SpellingScope, SpellingSource};
+        let mut session = open_rich(0x5EED);
+        let selection = click_a_notehead(&mut session);
+        let TypedObjectId::Pitch(pid) = selection.source else {
+            panic!("a notehead selects a pitch");
+        };
+        let before = session.current_pitch(pid).unwrap();
+
+        session.alter_selection(1).expect("sharpen");
+        assert!(session.score().spelling_attachments.iter().any(|a| {
+            matches!(a.source, SpellingSource::Propagated { .. })
+                && matches!(&a.scope, SpellingScope::Pitch(p) if *p == pid)
+        }));
+
+        session.undo().expect("undo");
+        assert_eq!(session.current_pitch(pid).unwrap(), before);
+        assert!(
+            !session.score().spelling_attachments.iter().any(|a| {
+                matches!(a.source, SpellingSource::Propagated { .. })
+                    && matches!(&a.scope, SpellingScope::Pitch(p) if *p == pid)
+            }),
+            "the propagated attachment did not survive the undo"
+        );
+    }
+
+    #[test]
     fn undo_and_redo_a_transpose() {
         let mut session = open_rich(0x5EED);
         let selection = click_a_notehead(&mut session);

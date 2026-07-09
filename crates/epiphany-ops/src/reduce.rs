@@ -770,6 +770,13 @@ enum ValueRestoration {
         pitch: PitchId,
         predecessor: Option<Predecessor<PitchSpelling>>,
     },
+    /// The engraved-layer explicit spelling attachments a `TransposeInterval`
+    /// rewrote, restored as a set. `None` predecessor means the pitch carried
+    /// none before, so they are removed.
+    TransposedSpellings {
+        pitch: PitchId,
+        predecessor: Option<Predecessor<Vec<SpellingAttachment>>>,
+    },
     CrossCutting {
         id: TypedObjectId,
         value: Option<CrossCuttingValue>,
@@ -867,6 +874,18 @@ struct Reducer<'a> {
     // what value-restoring undo walks. Advisory families (metadata, breaks,
     // staff layout) keep chains for undo but record no conflicts.
     respell_chain: BTreeMap<PitchId, WriteChain<PitchSpelling>>,
+    /// The engraved-layer, pitch-scoped, explicit spelling attachments a
+    /// `TransposeInterval` rewrites (`req:opcat:transpose-interval-spelling`):
+    /// the moved authored ones and the propagated one, as a single per-pitch
+    /// value so undo restores them together.
+    ///
+    /// Deliberately NOT `respell_chain`. `RespellPitch` owns that chain, and
+    /// its last write is the LWW working state its concurrent-differing
+    /// conflict detection reads; folding transposes into it would make a
+    /// concurrent respell conflict with a transpose and would move the
+    /// canonical bytes of every existing history. A transpose that also moves a
+    /// `UserChosen` spelling is restored from here.
+    transposed_spelling_chain: BTreeMap<PitchId, WriteChain<Vec<SpellingAttachment>>>,
     event_modify_chain: BTreeMap<EventId, WriteChain<Event>>,
     pitch_modify_chain: BTreeMap<PitchId, WriteChain<Pitch>>,
     cross_cutting_modify_chain: BTreeMap<TypedObjectId, WriteChain<CrossCuttingValue>>,
@@ -945,6 +964,18 @@ struct WorkingSnapshot {
     event_pitches: BTreeMap<EventId, Vec<PitchId>>,
     voice_occupancy: BTreeMap<VoiceId, Vec<(MusicalPosition, MusicalDuration, EventId)>>,
     respell_chain: BTreeMap<PitchId, WriteChain<PitchSpelling>>,
+    /// The engraved-layer, pitch-scoped, explicit spelling attachments a
+    /// `TransposeInterval` rewrites (`req:opcat:transpose-interval-spelling`):
+    /// the moved authored ones and the propagated one, as a single per-pitch
+    /// value so undo restores them together.
+    ///
+    /// Deliberately NOT `respell_chain`. `RespellPitch` owns that chain, and
+    /// its last write is the LWW working state its concurrent-differing
+    /// conflict detection reads; folding transposes into it would make a
+    /// concurrent respell conflict with a transpose and would move the
+    /// canonical bytes of every existing history. A transpose that also moves a
+    /// `UserChosen` spelling is restored from here.
+    transposed_spelling_chain: BTreeMap<PitchId, WriteChain<Vec<SpellingAttachment>>>,
     event_modify_chain: BTreeMap<EventId, WriteChain<Event>>,
     pitch_modify_chain: BTreeMap<PitchId, WriteChain<Pitch>>,
     cross_cutting_modify_chain: BTreeMap<TypedObjectId, WriteChain<CrossCuttingValue>>,
@@ -1223,6 +1254,7 @@ impl<'a> Reducer<'a> {
             event_pitches: BTreeMap::new(),
             voice_occupancy: BTreeMap::new(),
             respell_chain: BTreeMap::new(),
+            transposed_spelling_chain: BTreeMap::new(),
             event_modify_chain: BTreeMap::new(),
             pitch_modify_chain: BTreeMap::new(),
             cross_cutting_modify_chain: BTreeMap::new(),
@@ -1626,6 +1658,62 @@ impl<'a> Reducer<'a> {
                 }
             }
         }
+        // Seed the transpose-owned attachment sets, so undoing the FIRST
+        // transpose of a base-seeded pitch restores the base's attachments
+        // rather than the ledger's key-absence.
+        let mut by_pitch: BTreeMap<PitchId, Vec<SpellingAttachment>> = BTreeMap::new();
+        for attachment in &score.spelling_attachments {
+            if let Some(pitch) = Self::transpose_owned_attachment(attachment) {
+                by_pitch.entry(pitch).or_default().push(attachment.clone());
+            }
+        }
+        for (pitch, set) in by_pitch {
+            self.transposed_spelling_chain
+                .entry(pitch)
+                .or_insert_with(WriteChain::new)
+                .seed(set);
+        }
+    }
+
+    /// The pitch whose spelling set `attachment` belongs to, if a
+    /// `TransposeInterval` would rewrite it: engraved layer, pitch-scoped,
+    /// explicit. Both the authored attachments it moves and the propagated one
+    /// it writes.
+    fn transpose_owned_attachment(attachment: &SpellingAttachment) -> Option<PitchId> {
+        if attachment.layer.is_some() {
+            return None;
+        }
+        let SpellingScope::Pitch(pitch) = &attachment.scope else {
+            return None;
+        };
+        matches!(attachment.directive, SpellingDirective::Explicit(_)).then_some(*pitch)
+    }
+
+    /// The current engraved-layer explicit attachment set for `pitch`, in the
+    /// graph's canonical order.
+    fn graph_spelling_set(&self, pitch: PitchId) -> Vec<SpellingAttachment> {
+        let Some(score) = self.graph.as_ref() else {
+            return Vec::new();
+        };
+        score
+            .spelling_attachments
+            .iter()
+            .filter(|a| Self::transpose_owned_attachment(a) == Some(pitch))
+            .cloned()
+            .collect()
+    }
+
+    /// Replaces `pitch`'s engraved-layer explicit attachment set with `set`,
+    /// leaving every other attachment (other pitches, other layers) untouched
+    /// and preserving the list's canonical order.
+    fn graph_replace_spelling_set(&mut self, pitch: PitchId, set: &[SpellingAttachment]) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        score
+            .spelling_attachments
+            .retain(|a| Self::transpose_owned_attachment(a) != Some(pitch));
+        score.spelling_attachments.extend(set.iter().cloned());
     }
 
     fn run(mut self) -> (MaterializedState, Option<Score>) {
@@ -4855,6 +4943,22 @@ impl<'a> Reducer<'a> {
                 }
             }
         }
+        for (pitch, chain) in &self.transposed_spelling_chain {
+            if !slot_live(TypedObjectId::Pitch(*pitch)) {
+                continue;
+            }
+            match chain.undo_verdict(tx) {
+                ChainUndoVerdict::NotWritten => {}
+                ChainUndoVerdict::Superseded { by } => superseded.push(by),
+                ChainUndoVerdict::Restore(predecessor) => {
+                    restorations.push(ValueRestoration::TransposedSpellings {
+                        pitch: *pitch,
+                        predecessor,
+                    })
+                }
+            }
+        }
+
         for (id, chain) in &self.cross_cutting_modify_chain {
             if !slot_live(*id) {
                 continue;
@@ -5044,6 +5148,17 @@ impl<'a> Reducer<'a> {
                         self.graph_remove_respell(pitch);
                     }
                 },
+                ValueRestoration::TransposedSpellings { pitch, predecessor } => {
+                    let set: Vec<SpellingAttachment> = match predecessor {
+                        Some(Predecessor::Write(set)) | Some(Predecessor::Base(set)) => set,
+                        None => Vec::new(),
+                    };
+                    self.transposed_spelling_chain
+                        .entry(pitch)
+                        .or_insert_with(WriteChain::new)
+                        .record(env.id, env.transaction, set.clone());
+                    self.graph_replace_spelling_set(pitch, &set);
+                }
                 ValueRestoration::CrossCutting { id, value } => {
                     if let Some(value) = value {
                         self.structures.insert(id, value.endpoints());
@@ -5572,7 +5687,7 @@ impl<'a> Reducer<'a> {
     /// can distinguish.
     fn transpose_interval(
         &mut self,
-        _env: &OperationEnvelope,
+        env: &OperationEnvelope,
         op: &TransposeIntervalOp,
     ) -> OperationEffect {
         if op
@@ -5671,6 +5786,23 @@ impl<'a> Reducer<'a> {
         }
         for r in &resolved {
             self.graph_propagate_spelling(r.pitch, &r.value);
+        }
+
+        // Value-restoring undo (`operation_catalog` §TransposeInterval). Record
+        // AFTER the graph writes, so the recorded spelling set is the
+        // post-transpose one and the chain's predecessor is the pre-transpose
+        // state. Restoring the pitch alone would leave a notehead spelled for a
+        // pitch that is no longer there.
+        for r in &resolved {
+            self.pitch_modify_chain
+                .entry(r.pitch)
+                .or_insert_with(WriteChain::new)
+                .record(env.id, env.transaction, r.value.clone());
+            let set = self.graph_spelling_set(r.pitch);
+            self.transposed_spelling_chain
+                .entry(r.pitch)
+                .or_insert_with(WriteChain::new)
+                .record(env.id, env.transaction, set);
         }
         OperationEffect::Applied
     }
@@ -7005,6 +7137,7 @@ impl<'a> Reducer<'a> {
             event_pitches: self.event_pitches.clone(),
             voice_occupancy: self.voice_occupancy.clone(),
             respell_chain: self.respell_chain.clone(),
+            transposed_spelling_chain: self.transposed_spelling_chain.clone(),
             event_modify_chain: self.event_modify_chain.clone(),
             pitch_modify_chain: self.pitch_modify_chain.clone(),
             cross_cutting_modify_chain: self.cross_cutting_modify_chain.clone(),
@@ -7040,6 +7173,7 @@ impl<'a> Reducer<'a> {
         self.event_pitches = s.event_pitches;
         self.voice_occupancy = s.voice_occupancy;
         self.respell_chain = s.respell_chain;
+        self.transposed_spelling_chain = s.transposed_spelling_chain;
         self.event_modify_chain = s.event_modify_chain;
         self.pitch_modify_chain = s.pitch_modify_chain;
         self.cross_cutting_modify_chain = s.cross_cutting_modify_chain;
@@ -9419,6 +9553,113 @@ mod tests {
             }
         );
         assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, 0, 4));
+    }
+
+    /// A declared transaction containing one `TransposeInterval`, plus a
+    /// `StrictInverse` undo of it. Returns the reduced score.
+    fn transpose_then_undo(base: &Score, pid: PitchId, iv: TranspositionInterval) -> Score {
+        let tx = TransactionId::new(ReplicaId(1), 900);
+        let tr = tx_member(
+            1,
+            1,
+            11,
+            seen_r1(0),
+            tx,
+            OperationKind::TransposeInterval(TransposeIntervalOp {
+                targets: [pid].into_iter().collect(),
+                interval: iv,
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tr,
+            undo_env(1, 2, 12, seen_r1(1), tx, UndoPolicy::StrictInverse),
+        ]);
+        set.reduce_onto(base).score
+    }
+
+    #[test]
+    fn undoing_a_transpose_interval_restores_the_pitch_and_its_spelling() {
+        // operation_catalog §TransposeInterval, "Undo semantics". Before this,
+        // TransposeInterval never recorded into the pitch's value chain, so
+        // UndoTransaction(StrictInverse) reduced to NoOp(TargetMissing) and left
+        // the pitch shifted.
+        let (mut base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
+        author_spelling(&mut base, pid, PitchSpelling::cmn(CmnNominal::C, 4));
+        let before_attachments = base.spelling_attachments.clone();
+
+        let score = transpose_then_undo(&base, pid, interval(4, 7));
+
+        // The pitch is back.
+        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, 0, 4));
+        // And so is its spelling: the moved UserChosen attachment is restored,
+        // and the Propagated one the transpose added is gone. Restoring the
+        // pitch alone would leave a notehead spelled for a pitch that is not
+        // there.
+        assert_eq!(score.spelling_attachments, before_attachments);
+        let (provenance, spelling) = engraved_spelling(&score, pid);
+        assert_eq!(
+            provenance,
+            epiphany_core::SpellingProvenance::Authored(
+                epiphany_core::SpellingSourceKind::UserChosen
+            )
+        );
+        assert_eq!(spelling.accidentals.len(), 0, "the sharp is gone again");
+    }
+
+    #[test]
+    fn undoing_a_transpose_of_an_unspelled_pitch_removes_the_propagated_attachment() {
+        // No authored spelling: the transpose adds a Propagated attachment where
+        // there was none. Undo must remove it, not leave it naming a pitch that
+        // no longer exists.
+        let (base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
+        assert!(base.spelling_attachments.is_empty());
+
+        let score = transpose_then_undo(&base, pid, interval(0, 1));
+        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, 0, 4));
+        assert!(
+            score.spelling_attachments.is_empty(),
+            "undo removed the propagated attachment"
+        );
+    }
+
+    #[test]
+    fn the_frozen_transpose_is_not_undoable_and_that_is_frozen_too() {
+        // req:opcat:transpose-frozen. Transpose records no write into the value
+        // chain, so value-restoring undo leaves the shifted pitch shifted.
+        //
+        // This is a DEFECT, pinned. Making it record would not change its own
+        // reduction rule, but it WOULD change what a stored
+        // {Transpose, UndoTransaction} history replays to — from "the pitch stays
+        // shifted" to "the pitch returns" — and that is a change in what an
+        // existing document means. If this test ever "fails better", history has
+        // been rewritten.
+        let (base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
+        let tx = TransactionId::new(ReplicaId(1), 900);
+        let tr = tx_member(
+            1,
+            1,
+            11,
+            seen_r1(0),
+            tx,
+            OperationKind::Transpose(TransposeOp {
+                targets: vec![pid],
+                chromatic_steps: 1,
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tr,
+            undo_env(1, 2, 12, seen_r1(1), tx, UndoPolicy::StrictInverse),
+        ]);
+        let out = set.reduce_onto(&base);
+        assert_eq!(
+            cmn_of(&pitch_of(&out.score, pid)),
+            (CmnNominal::C, 1, 4),
+            "the frozen transpose is not undone by value restoration"
+        );
     }
 
     #[test]
