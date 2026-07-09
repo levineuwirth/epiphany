@@ -772,15 +772,13 @@ a real band.
 
 **Known gaps (reviewed, not bugs today).**
 
-- `vertical_density_penalty` **saturates at 1.0** on the two-staff fixture. The
-  solve targets *content* extents; the metric scores the realized gap against the
-  band model's *preferred* height (2 staff spaces). The separation the colliding
-  ledgers and slur require dwarfs that, so the axis pins and its floor diagnostic
-  fires. This is the same metric-vs-solver tension as `casting_off_quality` under
-  justification and inter-system density under vertical justification: a catalog
-  refinement scoring only the EXCESS beyond the content-required minimum is the
-  deferred follow-up. Asserted, not silently tolerated, in
-  `inter_staff_solve_separates_colliding_staves`.
+- ~~`vertical_density_penalty` **saturates at 1.0** on the two-staff fixture.~~
+  **RESOLVED** (see "The gap band is a height model" below). It was not the
+  metric-vs-solver tension I first filed it as, and needed no catalog refinement:
+  the engraver was simply **non-conforming**. The catalog always defined the
+  realized gap over the *content extents* the band separates; the implementation
+  measured the band's glyph `members`, because until primitive band ownership was
+  ratified a band listed no strokes or curves to own.
 - **Staff-less content takes no staff shift** — margin-band glyphs, and a volta
   bracket whose repeat spans several staves. It stays put while the staves below
   it descend, which is right for content that sits above the top staff (the top
@@ -791,10 +789,10 @@ a real band.
   above. What remains undecided is genuinely staff-less content placed *between*
   two staves: it holds still while the lower staff descends away from it. That
   wants a height model for the inter-staff gap band, not an attribution rule.
-- The preferred gap is read from `VerticalBand::inter_staff_gap(VerticalBandId(0))`
-  rather than from the region's *declared* inter-staff band. Harmless while both
-  come from the same constructor; it would silently diverge from the metric the
-  day per-region gaps become customizable.
+- ~~The preferred gap is read from `VerticalBand::inter_staff_gap(VerticalBandId(0))`
+  rather than from the region's *declared* inter-staff band.~~ **RESOLVED**: the
+  solve now reads the `InterStaffGap` band `to_constrained` emitted for that
+  staff pair, the same band the metric scores against.
 The 3+-staff cascade was the last of these to be closed; see below.
 
 **The solve.** Per system, per staff, the real content y-extent is collected
@@ -842,3 +840,62 @@ the staff-line-gap assertions fail — while `two_staff_close_content` still
 passes, which is exactly why the three-staff fixture was needed. The fixture also
 pins curve attribution against a THREE-band choice (the slur must still find the
 bottom staff, not merely the nearer of two) and carries its own render golden.
+
+## The gap band is a height model (Push 3 residue, 2026-07-09)
+
+Two items deferred by the inter-staff solve — a saturated
+`vertical_density_penalty` and a preferred gap read from a constructor rather
+than the region's declared band — turned out to be one thing, and neither was
+the "metric-vs-solver tension" I filed them as.
+
+**The solve reads the declared band.** Per system, per adjacent staff pair, the
+gap it targets is the `preferred_height` of the `InterStaffGap` band
+`to_constrained` emitted for that pair (`inter_staff_gap_id(region, g)`, gap `g`
+separating the region's staves `g-1` and `g`), not `VerticalBand::inter_staff_gap`'s
+default. That is what makes the band a *height model* rather than a constant: a
+region declaring a wider gap gets one, and the metric — which scores against the
+same declared band — agrees with the solve by construction rather than because
+both call the same constructor. Every staff of a region carries content in every
+system of that region (its staff lines are per-staff strokes, split into each
+system), so the staves present in a system are the region's full staff order and
+the window index is the gap index.
+
+**The metric was non-conforming, and the catalog was right.** `req:qmc:vertical`
+has always defined the realized gap as the separation "between the adjacent
+**content extents** the band separates". `vertical_raw` measured the separation
+between the two bands' glyph `members` — because until
+`req:layoutir:primitive-band-ownership` landed, a band listed no strokes or curves
+to own. A staff's outermost ink is usually not a glyph: on
+`two_staff_close_content` the solve cleared the declared 2.0 gap exactly (content
+gap 2.0), while the glyph-ink gap was **5.06**, giving `|5.06 - 2|/2 = 1.53`,
+clamped to a saturated **1.0** — and a Standard-tier floor warning on a layout
+that was correct. The metric was charging the solver for the ledger and slur ink
+it had made room for.
+
+`vertical_raw` now measures each staff band's full content — glyphs, strokes, and
+curves, each attributed by its declared `vertical_band` — and the axis reads
+`2.7e-7` on that fixture. Two consequences worth stating:
+
+- **No catalog version move.** The formula, contributing units, anchor, and
+  normalization are unchanged; only a wrong measurement was. This is the P12-I11
+  precedent (engrave-side resolution), not P12-I12 (a definition defect). The
+  catalog gains a *clarification* of what "content extent" means, plus a
+  rationale refresh — the v0.1 rationale still claimed the vertical spring solve
+  was deferred.
+- **The geometry is read back from the BAKED output**, not from the solve's own
+  `staff_ext`. Reading back the solver's intent would make the axis circular and
+  blind to exactly the bug class that bit twice: a shift the bake fails to apply
+  to some primitive class now surfaces as a real deviation. `CastLayout` gained
+  `stroke_system` / `curve_system` for this (a stroke carries no spring slot, so
+  `system_of_slot` cannot answer for it).
+
+**Still a real trade-off, not a defect:** the axis's *inter-system* half. Vertical
+justification deliberately stretches inter-system gaps past preferred to fill a
+non-final page, trading this axis against `page_fill_efficiency`. Both are
+reported; neither is wrong. Recorded in the catalog rationale so it is not
+re-filed as a bug.
+
+**Still open:** staff-less content placed *between* two staves would hold still
+while the lower staff descends. No primitive can name an `InterStaffGap` band
+today (`band_of` yields a staff band or the region's margin band), so this is
+unreachable rather than latent — building the machinery now would be speculative.

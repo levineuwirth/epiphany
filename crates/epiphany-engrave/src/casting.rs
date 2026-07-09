@@ -73,12 +73,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{StaffId, TypedObjectId};
 use epiphany_layout_ir::{
-    continuation_instance_key, is_barline_glyph, is_rigid_width_stroke, synthesized_layout_id,
-    BreakClass, BreakKind, ConstrainedLayoutIR, Curve, DecisionSource, EngravingDecision,
-    EngravingDecisionKind, EngravingOverrideId, GlyphObject, GlyphObjectId, LayoutConstraint,
-    LayoutObjectId, Margins, Point, Provenance, Rect, ResolvedGlyph, ResolvedMeasure, ResolvedPage,
-    ResolvedStaff, ResolvedSystem, Size2D, SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey,
-    SynthesisKind, SynthesisRegistryId, VerticalBand, VerticalBandId, VerticalBandKind,
+    continuation_instance_key, inter_staff_gap_id, is_barline_glyph, is_rigid_width_stroke,
+    synthesized_layout_id, BreakClass, BreakKind, ConstrainedLayoutIR, Curve, DecisionSource,
+    EngravingDecision, EngravingDecisionKind, EngravingOverrideId, GlyphObject, GlyphObjectId,
+    LayoutConstraint, LayoutObjectId, Margins, Point, Provenance, Rect, ResolvedGlyph,
+    ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem, Size2D, SpringSlotId, StaffSpace,
+    Stroke, SynthesisInstanceKey, SynthesisKind, SynthesisRegistryId, VerticalBand, VerticalBandId,
+    VerticalBandKind,
 };
 
 use crate::owning_glyph;
@@ -192,6 +193,13 @@ pub(crate) struct CastLayout {
     /// ranges over (a slot absent here was claimed by no region and its glyphs
     /// belong to no per-system aggregate).
     pub system_of_slot: BTreeMap<SpringSlotId, usize>,
+    /// The system each baked stroke landed in, parallel to `strokes` (including
+    /// the appended continuation segments). A stroke carries no spring slot, so
+    /// `system_of_slot` cannot answer for it; the casting pass records what it
+    /// already knew. `None`: claimed by no region.
+    pub stroke_system: Vec<Option<usize>>,
+    /// The system each baked curve landed in, parallel to `curves`.
+    pub curve_system: Vec<Option<usize>>,
     /// The region each system slices, indexed by global system index (the
     /// per-region grouping the casting-off quality metrics aggregate by).
     pub region_of_system: Vec<usize>,
@@ -763,14 +771,39 @@ pub(crate) fn cast_off(
 
     // Solve each system's inter-staff gaps: order the staves top-to-bottom by
     // their reference y (staff line, else content mid), keep that order fixed,
-    // and shift each staff down until its gap to the one above meets the band
-    // model's preferred inter-staff gap. `staff_shift[(system, staff)]` is the
+    // and shift each staff down until its gap to the one above meets the gap
+    // band's own preferred height. `staff_shift[(system, staff)]` is the
     // downward shift (subtracted from y); the top staff's is 0.
-    let preferred_gap = VerticalBand::inter_staff_gap(VerticalBandId(0))
+    //
+    // The gap the solve targets is the one the REGION DECLARED, read from the
+    // `InterStaffGap` band `to_constrained` emitted for that pair, not from the
+    // band constructor's default. That is what makes the band a height model
+    // rather than a constant: a region that declares a wider gap gets one, and
+    // `vertical_density_penalty` — which scores the realized gap against this
+    // same declared band — agrees with the solve by construction rather than by
+    // both happening to call the same constructor.
+    //
+    // Gap `g` separates the region's staves `g-1` and `g` (see `to_constrained`).
+    // Every staff of a region carries content in every system of that region —
+    // its staff lines are per-staff strokes, split into each system — so the
+    // staves present here are the region's full staff order and the window index
+    // is the gap index. A band that somehow does not exist falls back to the
+    // constructor's default rather than silently skipping the pair.
+    let default_gap = VerticalBand::inter_staff_gap(VerticalBandId(0))
         .preferred_height
         .0;
     let mut staff_shift: BTreeMap<(usize, StaffId), f32> = BTreeMap::new();
-    for s in 0..systems.len() {
+    for (s, plan) in systems.iter().enumerate() {
+        let region_layout_id = input.regions[plan.region].provenance.stable_id;
+        let preferred_gap = |gap_index: usize| -> f32 {
+            let id = inter_staff_gap_id(region_layout_id, gap_index);
+            input
+                .vertical_bands
+                .iter()
+                .find(|band| band.id == id)
+                .map(|band| band.preferred_height.0)
+                .unwrap_or(default_gap)
+        };
         let mut staves: Vec<(StaffId, (f32, f32))> = staff_ext
             .iter()
             .filter(|((sys, _), _)| *sys == s)
@@ -787,13 +820,13 @@ pub(crate) fn cast_off(
             key(b.0, b.1).total_cmp(&key(a.0, a.1)).then(a.0.cmp(&b.0))
         });
         let mut shift = 0.0_f32;
-        for w in staves.windows(2) {
+        for (g, w) in staves.windows(2).enumerate() {
             let (upper, (upper_lo, _)) = w[0];
             let (lower, (_, lower_hi)) = w[1];
             staff_shift.insert((s, upper), shift);
             // Realized gap after the upper's shift: (upper_lo - shift) − lower_hi.
             let gap = (upper_lo - shift) - lower_hi;
-            shift += (preferred_gap - gap).max(0.0);
+            shift += (preferred_gap(g + 1) - gap).max(0.0);
             staff_shift.insert((s, lower), shift);
         }
         if staves.len() == 1 {
@@ -967,6 +1000,11 @@ pub(crate) fn cast_off(
     let mut staff_marks: BTreeMap<(usize, StaffId), StaffAgg> = BTreeMap::new();
     let mut strokes: Vec<Stroke> = Vec::with_capacity(spaced_strokes.len());
     let mut continuations: Vec<Stroke> = Vec::new();
+    // The system each baked stroke landed in, parallel to `strokes` (a quality
+    // metric measures a system's realized per-staff content extents, and a
+    // stroke carries no spring slot to look one up with).
+    let mut stroke_system: Vec<Option<usize>> = Vec::with_capacity(spaced_strokes.len());
+    let mut continuation_system: Vec<Option<usize>> = Vec::new();
     for (si, ((source, spaced), fate)) in input
         .strokes
         .iter()
@@ -990,6 +1028,7 @@ pub(crate) fn cast_off(
                     mark_staff(&mut staff_marks, *s, staff, &stroke);
                 }
                 strokes.push(stroke);
+                stroke_system.push(*sys);
             }
             StrokeFate::Split(segments) => {
                 for (k, (s, from, to)) in segments.iter().enumerate() {
@@ -1022,14 +1061,17 @@ pub(crate) fn cast_off(
                     }
                     if k == 0 {
                         strokes.push(stroke);
+                        stroke_system.push(Some(*s));
                     } else {
                         continuations.push(stroke);
+                        continuation_system.push(Some(*s));
                     }
                 }
             }
         }
     }
     strokes.extend(continuations);
+    stroke_system.extend(continuation_system);
 
     // Curves: a curve that fits in one system is translated whole by that
     // system's placement (or left in the spaced frame if no region claimed it).
@@ -1040,6 +1082,8 @@ pub(crate) fn cast_off(
     // split stroke's are.
     let mut curves: Vec<Curve> = Vec::with_capacity(spaced_curves.len());
     let mut curve_continuations: Vec<Curve> = Vec::new();
+    let mut curve_system: Vec<Option<usize>> = Vec::with_capacity(spaced_curves.len());
+    let mut curve_continuation_system: Vec<Option<usize>> = Vec::new();
     for (ci, (curve, fate)) in spaced_curves.iter().zip(&curve_fates).enumerate() {
         let curve_staff = curve_staff_of[ci];
         // A slur has no intra-slot structure, so its control points map straight
@@ -1060,6 +1104,7 @@ pub(crate) fn cast_off(
                     p3,
                     ..curve.clone()
                 });
+                curve_system.push(*system);
             }
             CurveFate::Split(segments) => {
                 for (k, (s, cp)) in segments.iter().enumerate() {
@@ -1089,14 +1134,17 @@ pub(crate) fn cast_off(
                     };
                     if k == 0 {
                         curves.push(segment);
+                        curve_system.push(Some(*s));
                     } else {
                         curve_continuations.push(segment);
+                        curve_continuation_system.push(Some(*s));
                     }
                 }
             }
         }
     }
     curves.extend(curve_continuations);
+    curve_system.extend(curve_continuation_system);
 
     // ---- The resolved page tree ---------------------------------------------
     let resolved_systems: Vec<ResolvedSystem> = systems
@@ -1160,6 +1208,8 @@ pub(crate) fn cast_off(
         system_start_slots,
         page_start_slots,
         system_of_slot,
+        stroke_system,
+        curve_system,
         region_of_system: systems.iter().map(|plan| plan.region).collect(),
     }
 }

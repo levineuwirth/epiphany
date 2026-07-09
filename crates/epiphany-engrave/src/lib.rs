@@ -2362,15 +2362,27 @@ mod tests {
             report.metric_vector.collision_penalty.0, 0.0,
             "the separated staves collide nowhere"
         );
-        // The solve targets CONTENT extents, while `vertical_density_penalty`
-        // measures the realized gap against the band model's *preferred* height
-        // (2 staff spaces). The separation this fixture requires is far larger,
-        // so the deviation-from-preferred axis saturates at 1.0 and its floor
-        // diagnostic fires. Scoring only the EXCESS beyond the content-required
-        // minimum is the deferred catalog refinement (see DECISIONS.md).
-        assert_eq!(
-            report.metric_vector.vertical_density_penalty.0, 1.0,
-            "the required separation saturates the deviation-from-preferred axis"
+        // A correctly separated system scores ~0 on the deviation-from-preferred
+        // axis: the solve expands each gap until the staves' CONTENT clears the
+        // declared `InterStaffGap` band's preferred height, and the metric reads
+        // that same declared band against the same content. It used to saturate
+        // at 1.0 here -- the metric measured the gap between the staves' *glyph*
+        // ink while the solve targeted their full content, so the ledger and slur
+        // ink the solve had correctly accounted for was rescored as crowding, and
+        // a Standard-tier floor warning fired on a correct layout.
+        let density = report.metric_vector.vertical_density_penalty.0;
+        assert!(
+            density < 1e-4,
+            "a correctly separated system deviates from its declared gap by ~0: {density}"
+        );
+        assert!(
+            !report.warnings.iter().any(|w| matches!(
+                w.kind,
+                epiphany_layout_ir::SolverWarningKind::QualityFloorApproached {
+                    metric: epiphany_layout_ir::QualityMetricKind::VerticalDensity
+                }
+            )),
+            "and earns no vertical-density floor warning"
         );
         // A no-pressure single-staff score has no inter-staff pair, so it is
         // untouched — its goldens stay byte-stable (see the render-svg suite).

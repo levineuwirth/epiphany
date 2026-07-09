@@ -280,3 +280,43 @@ inter-staff gap band — the missing piece behind both staff-less content placed
 extents while the metric scores the realized gap against the band's *preferred*
 height. Both are named in `epiphany-engrave/DECISIONS.md`; neither is a Pass-13
 ambiguity.
+
+## Push-3 tranche (2026-07-09) — the inter-staff gap band as a height model
+
+Residue of the Standard-tier inter-staff solve, closed. **No spec requirement
+changes and no version moves**: the Quality Metric Catalog was right and the
+engraver was non-conforming. Delivered alongside `efaebb9`/`ced4b72` (primitive
+band ownership), which is what made the fix expressible.
+
+`req:qmc:vertical` has always defined the realized inter-staff gap as the
+separation "between the adjacent **content extents** the band separates".
+`engrave::quality::vertical_raw` measured the separation between the two bands'
+glyph `members` — because until `req:layoutir:primitive-band-ownership` landed, a
+band listed no strokes or curves to own. A staff's outermost ink is usually not a
+glyph. On `two_staff_close_content` the solve cleared the declared 2.0 gap exactly
+while the glyph-ink gap was 5.06, so the axis reported `|5.06 − 2|/2 = 1.53` →
+saturated **1.0**, and a Standard-tier `QualityFloorApproached` warning fired on a
+correct layout. Per §Conformance ("a solver that reports a `QualityMetricVector`
+computed by any function other than the ones defined here is non-conforming"),
+that was an implementation defect, not a definition defect.
+
+| Item | Disposition | Spec locus | Consumer |
+|---|---|---|---|
+| `vertical_density_penalty` measured over glyph members | **fix (conformance), no catalog change** — `vertical_raw` now measures each staff band's full content (glyphs, strokes, curves), attributed by declared `vertical_band`, read back from the BAKED output rather than the solve's own extents (so a shift the bake drops surfaces as a real deviation instead of hiding behind solver intent). Axis on the pressure fixture: 1.0 → 2.7e-7; the floor warning is gone. Formula, contributing units, anchor, normalization all unchanged | quality_metric_catalog §`vertical_density_penalty` (`req:qmc:vertical`) — **clarification only** | `epiphany-engrave` (`quality.rs::vertical_raw`, `casting.rs::CastLayout::{stroke_system,curve_system}`) |
+| "Content extent" was ambiguous | **clarify (editorial)** — `req:qmc:vertical` now spells out that content extent means every primitive the band owns, each attributed by its declared `vertical_band`, and not the band's glyph `members`. Before primitive band ownership this reading was arguably unimplementable, which is why the defect survived. The stale rationale (claiming the vertical spring solve is deferred) is refreshed, and the inter-system half of the axis is recorded as a genuine trade-off against `page_fill_efficiency`, not a defect | quality_metric_catalog §`vertical_density_penalty` rationale | — |
+| Solve read the gap from a constructor | **fix** — the inter-staff solve now targets the `preferred_height` of the `InterStaffGap` band `to_constrained` emitted for that staff pair, not `VerticalBand::inter_staff_gap`'s default. The band is now a height model: a region declaring a wider gap gets one, and the solve and the metric agree by construction rather than by both calling the same constructor | — (behavioural, within `req:layoutir:vertical-bands`) | `epiphany-engrave` (`casting.rs`) |
+
+**Version movements.** None. Quality Metric Catalog stays **0.2.0** (formula,
+units, anchor, normalization unchanged — a clarification and a rationale refresh
+are not a definition change; contrast P12-I12, which redefined
+`spacing_distortion`'s unit and did move the version). Core spec unchanged.
+Operation Catalog 0.7.0, Binary Format 0.6.0 unchanged. **No layout change and no
+render-golden churn** — this is measurement-only, as the ENGRAVER_VERSION staying
+at 11 records.
+
+**Deferred (documented, not open candidates).** Staff-less content placed
+*between* two staves would hold still while the lower staff descends away from
+it. No primitive can name an `InterStaffGap` band today (`band_of` yields a staff
+band or the region's margin band), so this is unreachable rather than latent;
+building the machinery now would be speculative. Named in
+`epiphany-engrave/DECISIONS.md`.

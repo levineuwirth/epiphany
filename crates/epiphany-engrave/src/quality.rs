@@ -64,9 +64,8 @@ use epiphany_layout_ir::quality::{
     anchors, normalize, MetricThresholds, QUALITY_FLOOR_FRACTION, QUALITY_METRIC_KINDS,
 };
 use epiphany_layout_ir::{
-    inter_staff_gap_id, ConstrainedLayoutIR, Curve, GlyphObject, GlyphObjectId,
-    QualityMetricVector, SolverWarning, SolverWarningKind, SpringSlotId, VerticalBand,
-    VerticalBandId, VerticalBandKind,
+    inter_staff_gap_id, ConstrainedLayoutIR, Curve, GlyphObjectId, QualityMetricVector,
+    SolverWarning, SolverWarningKind, SpringSlotId, VerticalBand, VerticalBandId, VerticalBandKind,
 };
 
 use crate::casting::{CastLayout, PageGeometry};
@@ -330,17 +329,61 @@ fn vertical_raw(input: &ConstrainedLayoutIR, cast: &CastLayout, census: &SystemC
     let mut per_unit: Vec<f64> = Vec::new();
 
     // --- InterStaffGap bands declared by the constrained input -------------
-    let index_of: BTreeMap<GlyphObjectId, usize> = input
-        .glyphs
-        .iter()
-        .enumerate()
-        .map(|(index, glyph)| (GlyphObject::id(glyph), index))
-        .collect();
+    // The realized gap between two staves is measured over their FULL content —
+    // every glyph, stroke, and curve the band owns — not over the band's glyph
+    // `members` alone. A staff's ink is mostly not glyphs: ledger lines, stems,
+    // and slurs routinely reach further from the staff than any notehead, and
+    // the inter-staff solve separates staves until their *content* clears the
+    // declared gap. Measuring glyphs only scored a correctly separated system
+    // against a gap it never targeted, reporting the ledger and slur ink the
+    // solve had already accounted for as crowding.
+    //
+    // Ownership comes from each primitive's declared `vertical_band`
+    // (`req:layoutir:primitive-band-ownership`); the geometry is read back from
+    // the BAKED output, so a shift the bake failed to apply to some primitive
+    // class surfaces here as a real deviation rather than hiding behind the
+    // solver's own intent.
     let system_of_glyph = |index: usize| -> Option<usize> {
         cast.system_of_slot
             .get(&input.glyphs[index].horizontal_slot)
             .copied()
     };
+    let mut content: BTreeMap<(usize, VerticalBandId), (f64, f64)> = BTreeMap::new();
+    {
+        let mut add = |system: usize, band: VerticalBandId, lo: f64, hi: f64| {
+            let entry = content
+                .entry((system, band))
+                .or_insert((f64::INFINITY, f64::NEG_INFINITY));
+            entry.0 = entry.0.min(lo);
+            entry.1 = entry.1.max(hi);
+        };
+        for (index, glyph) in input.glyphs.iter().enumerate() {
+            if let Some(system) = system_of_glyph(index) {
+                let ink = ink_box(cast, input, index);
+                add(system, glyph.vertical_band, ink[1], ink[3]);
+            }
+        }
+        for (index, stroke) in cast.strokes.iter().enumerate() {
+            let Some(system) = cast.stroke_system[index] else {
+                continue;
+            };
+            let half = f64::from(stroke.thickness.0.max(0.0)) * 0.5;
+            let lo = f64::from(stroke.from.y.0.min(stroke.to.y.0)) - half;
+            let hi = f64::from(stroke.from.y.0.max(stroke.to.y.0)) + half;
+            add(system, stroke.vertical_band, lo, hi);
+        }
+        for (index, curve) in cast.curves.iter().enumerate() {
+            let Some(system) = cast.curve_system[index] else {
+                continue;
+            };
+            let half = f64::from(curve.thickness.0.max(0.0)) * 0.5;
+            for point in curve.control_points() {
+                let y = f64::from(point.y.0);
+                add(system, curve.vertical_band, y - half, y + half);
+            }
+        }
+    }
+
     for (region_index, region) in input.regions.iter().enumerate() {
         // The region's laid-out staff bands, top staff first, ordered within
         // the region's first system (systems translate rigidly, so within-
@@ -350,28 +393,17 @@ fn vertical_raw(input: &ConstrainedLayoutIR, cast: &CastLayout, census: &SystemC
             continue;
         };
         let region_glyphs: BTreeSet<GlyphObjectId> = region.glyphs.iter().copied().collect();
-        let mut staves: Vec<(f64, Vec<usize>)> = Vec::new();
-        for band in &input.vertical_bands {
-            if !matches!(band.kind, VerticalBandKind::Staff(_)) {
-                continue;
-            }
-            if !band.members.iter().any(|id| region_glyphs.contains(id)) {
-                continue;
-            }
-            let members: Vec<usize> = band
-                .members
-                .iter()
-                .filter_map(|id| index_of.get(id).copied())
-                .collect();
-            let top_in_first = members
-                .iter()
-                .filter(|&&index| system_of_glyph(index) == Some(first_system))
-                .map(|&index| ink_box(cast, input, index)[3])
-                .fold(f64::NEG_INFINITY, f64::max);
-            if top_in_first.is_finite() {
-                staves.push((top_in_first, members));
-            }
-        }
+        let mut staves: Vec<(f64, VerticalBandId)> = input
+            .vertical_bands
+            .iter()
+            .filter(|band| matches!(band.kind, VerticalBandKind::Staff(_)))
+            .filter(|band| band.members.iter().any(|id| region_glyphs.contains(id)))
+            .filter_map(|band| {
+                content
+                    .get(&(first_system, band.id))
+                    .map(|&(_, top)| (top, band.id))
+            })
+            .collect();
         // Top staff first.
         staves.sort_by(|a, b| b.0.total_cmp(&a.0));
 
@@ -387,33 +419,18 @@ fn vertical_raw(input: &ConstrainedLayoutIR, cast: &CastLayout, census: &SystemC
             if preferred <= 0.0 || staves.len() <= gap {
                 continue;
             }
-            let upper = &staves[gap - 1].1;
-            let lower = &staves[gap].1;
+            let (upper, lower) = (staves[gap - 1].1, staves[gap].1);
             // Realized iff the adjacent content shares a system; measure the
             // separation there (rigid system translation makes every common
             // system agree).
-            let common: BTreeSet<usize> = upper
-                .iter()
-                .filter_map(|&index| system_of_glyph(index))
-                .filter(|system| {
-                    lower
-                        .iter()
-                        .any(|&index| system_of_glyph(index) == Some(*system))
-                })
-                .collect();
-            let Some(&system) = common.iter().next() else {
+            let common = (0..census.region.len()).find(|&system| {
+                content.contains_key(&(system, upper)) && content.contains_key(&(system, lower))
+            });
+            let Some(system) = common else {
                 continue;
             };
-            let upper_bottom = upper
-                .iter()
-                .filter(|&&index| system_of_glyph(index) == Some(system))
-                .map(|&index| ink_box(cast, input, index)[1])
-                .fold(f64::INFINITY, f64::min);
-            let lower_top = lower
-                .iter()
-                .filter(|&&index| system_of_glyph(index) == Some(system))
-                .map(|&index| ink_box(cast, input, index)[3])
-                .fold(f64::NEG_INFINITY, f64::max);
+            let upper_bottom = content[&(system, upper)].0;
+            let lower_top = content[&(system, lower)].1;
             let realized = (upper_bottom - lower_top).max(0.0);
             per_unit.push((realized - preferred).abs() / preferred);
         }

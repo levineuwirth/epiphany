@@ -881,6 +881,15 @@ separation between the adjacent content extents the band separates
 \]
 the axis raw value is the arithmetic mean over contributing units.
 
+\textbf{Content extent} means \emph{every} primitive the adjacent band
+owns --- glyphs, strokes, and curves alike, each attributed by its declared
+\texttt{vertical\_band} (core spec
+\sectionsc{ConstrainedLayoutIR}, primitive band ownership) --- and not the
+band's glyph \texttt{members} alone. A staff's outermost ink is usually not
+a glyph: ledger lines, stems, and slurs reach past every notehead. A solver
+separates staves until their content clears the gap, so scoring it against
+its noteheads alone would charge it for the very ink it made room for.
+
 \textbf{Normalization:} $R_{\mathrm{worst}} = 1.0$;
 $n = \min(1, \mathit{raw})$.
 \end{requirement}
@@ -889,11 +898,26 @@ $n = \min(1, \mathit{raw})$.
 A gap off by its own preferred size --- staves twice as far apart as asked,
 or fully collapsed --- is unambiguous vertical failure; proportional
 deviation makes one anchor serve both tight inter-staff gaps and wide
-inter-system gaps. The v0.1 reference pipeline preserves constrained $y$
-verbatim (the vertical spring solve is deferred), so realized gaps equal
-preferred gaps wherever bands are realized and the axis reports its
-honest near-zero; the definition is what makes a future vertical solve
-measurable.
+inter-system gaps.
+
+The v0.1 reference pipeline preserved constrained $y$ verbatim, so realized
+gaps equalled preferred gaps wherever bands were realized and the axis
+reported its honest near-zero. The vertical spring solve has since landed
+(inter-staff gap renegotiation and inter-system vertical justification), and
+the axis now measures what it was defined to measure. The
+\textbf{content extent} clarification above is the lesson from that landing:
+the reference implementation read ``content extents'' as the band's glyph
+\texttt{members}, because until primitive band ownership was ratified a band
+listed no strokes or curves to own. A correctly separated two-staff system
+then scored a saturated $1.0$ and tripped the \textsc{Standard} floor
+warning --- the metric charging the solver for the ledger and slur ink it had
+correctly cleared. The formula, units, anchor, and normalization are
+unchanged; only a non-conforming measurement was.
+
+The inter-system half of the axis is a genuine trade-off, not a defect: the
+vertical justification pass deliberately stretches inter-system gaps past
+preferred to fill a non-final page, trading this axis against
+\texttt{page\_fill\_efficiency}. Both axes are reported; neither is wrong.
 \end{rationale}
 
 \section{\texttt{system\_break\_penalty}}
