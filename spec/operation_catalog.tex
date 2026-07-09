@@ -226,7 +226,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.7.0 --- Schema-major-2 repeat authoring (the CreateRepeatStructure / DeleteRepeatStructure pair)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.8.0 --- Transpose algebra (TransposeInterval; the frozen Transpose)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -304,6 +304,26 @@ Appended vocabulary (minor, append-only):
 \texttt{SystemDerivedContentImmutable} (12, P12-K3) and
 \texttt{RecreateContentMismatch} (13, P12-K9) in
 \texttt{PreconditionFailureReason}.
+
+\medskip
+
+\noindent\textbf{Version 0.8.0 (Push~4a, transpose algebra).} Adds one
+operation kind, \texttt{TransposeInterval}
+(Section~\ref{sec:k0:transpose-interval}), carrying the existing
+\texttt{TranspositionInterval} of core Chapter~2. It transposes scale
+position, refuses
+atomically rather than saturating, takes a genuine \emph{set} of targets, and
+propagates the resulting spelling. \texttt{Transpose}
+(Section~\ref{sec:k0:transpose}) is \textbf{frozen}: its saturation, its
+nominal-blindness, and its duplicate-sensitivity are pinned as normative
+replay semantics and no longer authored. This supersedes the 0.6.0 pin of the
+Transpose prototype (P12-K2), which anticipated a payload schema-major landing
+with the tuning catalog; neither proved necessary. Appended vocabulary (minor,
+append-only): \texttt{AcousticRealizationPinned} (14) and
+\texttt{TranspositionOutOfRange} (15) in \texttt{PreconditionFailureReason};
+\texttt{PitchSpaceMismatch} (6) is un-reserved and now produced, its previous
+dependency on the tuning catalog having been an error --- detecting a
+non-\texttt{Cmn} position reads a discriminant, not a pitch-space registry.
 
 % ===========================================================================
 \chapter{The Catalog Framework}
@@ -589,34 +609,65 @@ tombstoned pitch is the deferred resurrection case, P11-C8).
 a no-op; tombstoning a pitch runs the cross-cutting re-anchoring table over any
 structure that referenced it (see DeleteEvent).
 
-\section{Transpose}
+\section{Transpose (frozen; replay only)}
 \label{sec:k0:transpose}
 
+\begin{requirement}
+  \label{req:opcat:transpose-frozen}
+  \texttt{Transpose} is \textbf{frozen}. Its reduction rule is fixed at the
+  semantics described in this section, including the saturation and the
+  duplicate-sensitivity, for as long as any stored operation carries it. A
+  conforming implementation \MUST{} reduce it exactly as specified here and
+  \MUSTNOT{} emit it from new authoring; new transpositions are authored as
+  \texttt{TransposeInterval} (Section~\ref{sec:k0:transpose-interval}).
+\end{requirement}
+
 \textbf{Payload schema.} \texttt{TransposeOp \{ targets: Vec<PitchId>,
-chromatic\_steps: i32 \}}. Pitch identifiers are preserved; only acoustic content
-changes.
+chromatic\_steps: i32 \}}. Pitch identifiers are preserved. The operation
+rewrites \emph{scale position} (the \texttt{Cmn} alteration), not acoustic
+content.
 
-\textbf{Canonical encoding.} The canonically-ordered \texttt{targets} set, then
-\texttt{chromatic\_steps} as a little-endian \texttt{i32}.
+\textbf{Canonical encoding.} \texttt{targets} in ascending canonical-byte order,
+then \texttt{chromatic\_steps} as a little-endian \texttt{i32}. The sequence is
+\emph{sorted but not deduplicated}: it is a multiset on the wire.
 
-\textbf{Reduction rule.} An order-dependent content overwrite. Each live target
-pitch is shifted by \texttt{chromatic\_steps}; reduction is order-dependent in the
-general case (interval composition need not commute), so the resolved value is
-the composition in canonical reduction order. In this prototype
-\texttt{chromatic\_steps} is a minimal CMN alteration shift that commutes except
-at the alteration's \texttt{i8} saturation bound; rich interval algebra is
-deferred (Chapter~4 tuning catalog; P12-K2). \emph{Pinned (Pass~12):} the
-prototype semantics --- CMN alteration shift with documented \texttt{i8}
-saturation --- are the declared v1 behavior; replacing the payload with a
-faithful interval representation is a \emph{payload schema-major} under the
-Binary Format companion's evolution rule, landing with the tuning catalog.
+\textbf{Reduction rule.} An order-dependent content overwrite. For each live,
+non-system target \emph{occurrence} in \texttt{targets}, the target's \texttt{Cmn}
+\texttt{alteration} is shifted by \texttt{chromatic\_steps} and clamped to the
+\texttt{i8} bound. Consequences, all normative for replay:
+
+\begin{itemize}
+  \item A target appearing $k$ times is shifted $k$ times.
+  \item The nominal and octave never change: transposing C4 by $+12$ yields C4
+    with \texttt{alteration} $= 12$, not C5.
+  \item A shift past the \texttt{i8} bound saturates silently, and the operation
+    still reports \texttt{Applied}. Transposition under this rule is therefore
+    not invertible.
+  \item A target whose position is not \texttt{Cmn} is left unchanged, and the
+    operation still reports \texttt{Applied}.
+\end{itemize}
+
+\begin{rationale}
+  Every bullet above is a defect (P12-K2), and none of them may be repaired in
+  place. An operation is history: a replica replaying a stored
+  \texttt{Transpose} must reconstruct the state its author saw, and a
+  ``corrected'' reduction rule would silently rewrite every score that ever
+  used one. The defects are therefore \emph{pinned}, not fixed, and the repair
+  ships as a new operation kind whose discriminant no historical operation
+  carries. Ratified Push~4a; supersedes the Pass~12 pin, which anticipated a
+  payload schema-major and a dependency on the tuning catalog. Neither proved
+  necessary: transposition acts on scale position, and appending an operation
+  kind is a schema \emph{minor} (Binary Format companion, requirement
+  \texttt{req:binfmt:kind-discriminants}).
+\end{rationale}
 
 \textbf{Conflict cases.} None --- composition is deterministic in canonical order
 (a deterministic repair, not a conflict).
 
 \textbf{Undo semantics.} Transpose mints nothing, so the prototype's minted-object
-undo (Section~\ref{sec:k0:undo}) does not negate it; an inverse-interval undo is a
-Phase-3 refinement (P11-C8).
+undo (Section~\ref{sec:k0:undo}) does not negate it; value-restoring undo recovers
+the pre-transpose pitch from the write chain rather than by applying an inverse
+interval --- which, under saturation, would not exist.
 
 \textbf{Re-anchoring.} Tombstoned targets are skipped (the transpose applies only
 to live pitches). \texttt{SYSTEM\_DERIVED}-namespace targets are likewise
@@ -624,6 +675,82 @@ to live pitches). \texttt{SYSTEM\_DERIVED}-namespace targets are likewise
 and an in-place alteration shift would desynchronize the content from the id's
 derivation inputs. A transpose whose live targets are \emph{all} system-derived
 reduces as a precondition no-op (\texttt{SystemDerivedContentImmutable}).
+
+\section{TransposeInterval}
+\label{sec:k0:transpose-interval}
+
+\textbf{Payload schema.} \texttt{TransposeIntervalOp \{ targets:
+CanonicalSet<PitchId>, interval: TranspositionInterval \}}, reusing the
+diatonic/chromatic pair the core specification defines in Chapter~2,
+\sectionsc{Transposition and the Interval Type} --- the same value an
+\texttt{Instrument} carries as its written-versus-sounding interval. Pitch
+identifiers are preserved; the operation rewrites scale position and leaves
+acoustic realization untouched.
+
+\begin{requirement}
+  \label{req:opcat:transpose-interval-targets}
+  \texttt{targets} is a \textbf{set}. It \MUST{} be encoded as a sequence in
+  ascending canonical-byte order with \emph{strictly increasing} elements; a
+  decoder \MUST{} reject a sequence containing a duplicate rather than
+  normalize it. A transposition is a function of \emph{which} pitches it names,
+  never of how many times it names them.
+\end{requirement}
+
+\textbf{Canonical encoding.} The strictly-increasing \texttt{targets} sequence,
+then \texttt{interval.diatonic\_steps} and \texttt{interval.chromatic\_steps},
+each a little-endian \texttt{i32}.
+
+\textbf{Reduction rule.} An order-dependent content overwrite. Tombstoned and
+\texttt{SYSTEM\_DERIVED} targets are skipped, exactly as for \texttt{Transpose};
+if no mutable target remains the operation reduces as the corresponding
+precondition no-op. Otherwise, every remaining target \MUST{} be transposable
+under core specification requirement \texttt{req:pitch:transposition}, and each
+is transposed by \texttt{interval}.
+
+\begin{requirement}
+  \label{req:opcat:transpose-interval-atomic}
+  If any mutable target is \emph{not} transposable, the operation \MUST{}
+  reduce to a no-op that changes no pitch, reporting the precondition failure
+  of the first such target in canonical order. It \MUSTNOT{} transpose the
+  remaining targets. The three cases and their
+  \texttt{PreconditionFailureReason} discriminants:
+  \begin{itemize}
+    \item a non-\texttt{Cmn} \texttt{scale\_position.position} $\Rightarrow$
+      \texttt{PitchSpaceMismatch} (6);
+    \item an \texttt{AcousticRealization::AbsoluteHz} realization
+      $\Rightarrow$ \texttt{AcousticRealizationPinned} (14);
+    \item an \texttt{alteration}$'$ or \texttt{octave}$'$ that does not fit
+      its field $\Rightarrow$ \texttt{TranspositionOutOfRange} (15).
+  \end{itemize}
+\end{requirement}
+
+\begin{requirement}
+  \label{req:opcat:transpose-interval-spelling}
+  A \texttt{TransposeInterval} that changes a pitch's spelling \MUST{} record
+  that spelling as a \texttt{SpellingAttachment} with source
+  \texttt{SpellingSource::Propagated}, per the core specification's Chapter~2,
+  \sectionsc{Spelling Sources}. The attachment's \texttt{from} is the
+  transposed pitch's own identifier, which the operation preserves.
+\end{requirement}
+
+\begin{rationale}
+  Without the propagated attachment the spelling pre-pass re-infers a spelling
+  for the moved pitch, and an authored \texttt{UserChosen} spelling from before
+  the transposition stays pinned to a notehead that has moved --- a C-sharp the
+  author spelled deliberately, transposed up a fifth, re-inferred as A-flat
+  against their wish. The interval's diatonic component already determines the
+  correct nominal; the attachment is how that determination survives into the
+  engraved layer.
+\end{rationale}
+
+\textbf{Conflict cases.} None --- composition is deterministic in canonical order.
+
+\textbf{Undo semantics.} As \texttt{Transpose}: nothing is minted, and
+value-restoring undo recovers the pre-transpose pitch from the write chain. Here
+an inverse interval does exist ($(-d, -c)$), because the reduction never
+saturates; undo does not rely on it.
+
+\textbf{Re-anchoring.} As \texttt{Transpose}.
 
 \section{CreateCrossCutting}
 \label{sec:k0:create-cross-cutting}
@@ -1236,10 +1363,12 @@ undo) design, which subsumes this question.
 
 \emph{Still deferred} (P11-C8, narrowed): re-introducing content tombstoned by
 \emph{delete} primitives (a deterministic resurrection needs a system-derived
-identifier derivation the ratified closed tag set does not yet include);
-\texttt{Transpose} inversion (interval algebra, P12-K2); and
+identifier derivation the ratified closed tag set does not yet include); and
 \texttt{Cascade}'s dependent-closure computation --- \texttt{Cascade} remains
-\texttt{StrictInverse} over the same set.
+\texttt{StrictInverse} over the same set. \texttt{Transpose} inversion is no
+longer listed: \texttt{TransposeInterval} has an exact inverse $(-d, -c)$
+because it never saturates (Push~4a, closing P12-K2), though value-restoring
+undo does not need one. The frozen \texttt{Transpose} still has none.
 
 % ===========================================================================
 \chapter{v0 \texorpdfstring{$\rightarrow$}{->} v1 Payload Migration}

@@ -235,7 +235,7 @@
   {\Large\scshape\color{epiphanyslate}Binary Format}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.6.0 --- Repeat authoring (OperationKind/Tag 28/29; the born-at-v2 create, the major-0 delete)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.7.0 --- Transpose algebra (OperationKind/Tag 30; the major-0 minor append, and the strictly-increasing sequence)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the byte layouts it defines}
   \vfill
 \end{titlepage}
@@ -1310,7 +1310,12 @@ is the Operation Catalog's (the cited section governs semantics).
 \texttt{CanonicalValue} bytes of a \texttt{T}
 (Section~\ref{sec:values:canonical-value}); bare identifiers are raw 16
 big-endian bytes; ``$\mathrm{seq}^{\uparrow}$'' is a \texttt{push\_seq}
-sequence sorted ascending by canonical bytes.
+sequence sorted ascending by canonical bytes, and
+``$\mathrm{seq}^{\Uparrow}$'' is the same sequence constrained to be
+\emph{strictly} increasing --- a set, not a multiset. A decoder \MUST{}
+reject a $\mathrm{seq}^{\Uparrow}$ containing a duplicate rather than
+normalize it away, since the duplicate is the only evidence that the writer
+and the reader disagree about the field's type.
 
 \begingroup\footnotesize
 \begin{longtable}{p{0.32in} >{\raggedright\arraybackslash}p{1.5in} >{\raggedright\arraybackslash}p{2.35in} >{\raggedright\arraybackslash}p{1.35in}}
@@ -1353,7 +1358,8 @@ sequence sorted ascending by canonical bytes.
     \sectionsc{ModifyEvent} \\
   \tablenums{9} & \texttt{Transpose} &
     $\mathrm{seq}^{\uparrow}$(\texttt{PitchId}) \cat{}
-    \texttt{chromatic\_steps} (\texttt{i32} LE, 4) &
+    \texttt{chromatic\_steps} (\texttt{i32} LE, 4). Frozen: the sequence is a
+    multiset, \emph{not} $\mathrm{seq}^{\Uparrow}$ &
     \sectionsc{Transpose} \\
   \tablenums{10} & \texttt{InsertIdentifiedPitch} &
     \texttt{event} (16) \cat{} $\mathrm{lp}$(\texttt{IdentifiedPitch}) &
@@ -1426,6 +1432,11 @@ sequence sorted ascending by canonical bytes.
   \tablenums{29} & \texttt{DeleteRepeatStructure} &
     \texttt{repeat} (16) &
     \sectionsc{Repeat Structures} \\
+  \tablenums{30} & \texttt{TransposeInterval} &
+    $\mathrm{seq}^{\Uparrow}$(\texttt{PitchId}) \cat{}
+    \texttt{diatonic\_steps} (\texttt{i32} LE, 4) \cat{}
+    \texttt{chromatic\_steps} (\texttt{i32} LE, 4) &
+    \sectionsc{TransposeInterval} \\
   \bottomrule
 \end{longtable}
 \endgroup
@@ -1494,6 +1505,7 @@ discriminants and wrong lengths are decode errors. Append-only past
   \tablenums{24} & \texttt{InsertStaff} & \tablenums{25} & \texttt{SetTimeSignature} \\
   \tablenums{26} & \texttt{SetTempoSegment} & \tablenums{27} & \texttt{SetStaffLayout} \\
   \tablenums{28} & \texttt{CreateRepeatStructure} & \tablenums{29} & \texttt{DeleteRepeatStructure} \\
+  \tablenums{30} & \texttt{TransposeInterval} & & \\
   \bottomrule
 \end{longtable}
 \endgroup
@@ -2607,7 +2619,11 @@ The major is assigned per payload type, exactly as in major~1:
     is \texttt{Some}, else \textbf{0};
     \texttt{CreateRepeatStructure} $\Rightarrow$ always \textbf{2}
     (born at v2); \texttt{DeleteRepeatStructure} $\Rightarrow$
-    \textbf{0} (a bare identifier under a minor kind append); every
+    \textbf{0} (a bare identifier under a minor kind append);
+    \texttt{TransposeInterval} $\Rightarrow$ \textbf{0} (a sequence of
+    identifiers and two \texttt{i32}s --- every constituent is a major-0
+    layout, so the kind append is a schema \emph{minor}, and a
+    \texttt{TransposeInterval} rides in a major-0 block); every
     other payload keeps its prior major. A block stamps the maximum
     over its payloads.
     (Operation names are the Operation Catalog's; core Chapter~6's
@@ -3177,6 +3193,20 @@ layouts of Section~\ref{sec:values:representative}.
   with the pair. Semantics: Operation Catalog \sectionsc{Repeat
   Structures}, 0.7.0; re-anchoring row (nearest-surviving-anchor across
   every anchor site, cascade when none): core Chapter~6 rule table. \\
+    \today & Operation vocabularies & 0.7.0 --- Transpose algebra (Push~4a):
+  appends \texttt{OperationKind} \tablenums{30}
+  (\texttt{TransposeInterval}: $\mathrm{seq}^{\Uparrow}$(\texttt{PitchId})
+  \cat{} two \texttt{i32}s) and the matching \texttt{OperationKindTag}
+  \tablenums{30}. Every constituent is a major-0 layout, so the payload
+  stamps major~\tablenums{0} and the discriminant is a schema-\emph{minor}
+  vocabulary append --- no major~3. Introduces the
+  $\mathrm{seq}^{\Uparrow}$ notation (strictly increasing; a decoder
+  \MUST{} reject a duplicate rather than normalize it) and marks
+  \tablenums{9} (\texttt{Transpose}) frozen, its
+  $\mathrm{seq}^{\uparrow}$ being a multiset. No existing assignment
+  changed. Semantics: Operation Catalog \sectionsc{TransposeInterval},
+  0.8.0; algebra: core Chapter~2, \sectionsc{Transposition and the
+  Interval Type}. \\
 \bottomrule
 \end{longtable}
 

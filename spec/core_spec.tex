@@ -1018,6 +1018,7 @@ specification.
 \end{rationale}
 
 \subsection{The \texttt{CmnNominal} Type}
+\label{sec:pitch:nominal}
 
 \begin{lstlisting}[language=Rust]
 #[repr(u8)]
@@ -1026,6 +1027,96 @@ pub enum CmnNominal { C = 0, D = 1, E = 2, F = 3, G = 4, A = 5, B = 6 }
 
 The discriminants are normative: they define the diatonic step ordering
 used by transposition algorithms.
+
+\subsection{Transposition and the \texttt{Interval} Type}
+\label{sec:pitch:interval}
+
+Transposition acts on \emph{scale position}, not on acoustic realization.
+It moves a pitch's analytical identity through the pitch space and leaves
+the tuning context that sounds it untouched. A transposition therefore
+requires no tuning catalog (Chapter~\ref{ch:tuning}) --- tuning decides what
+frequency a scale position sounds at, not how to add an interval to one. It
+requires an interval:
+
+\begin{lstlisting}[language=Rust]
+/// A signed interval: the transposition primitive. Defined here and
+/// referenced by Instrument.transposition (Chapter 5), which is the
+/// written-versus-sounding interval of a transposing instrument
+/// (a B-flat clarinet is -1 diatonic, -2 chromatic).
+pub struct TranspositionInterval {
+    /// Signed diatonic steps: how far the nominal moves along C..B.
+    /// A perfect fifth up is +4 (C -> G); an octave up is +7.
+    pub diatonic_steps: i32,
+
+    /// Signed chromatic steps, in semitones. A perfect fifth up
+    /// is +7; an octave up is +12.
+    pub chromatic_steps: i32,
+}
+\end{lstlisting}
+
+Both components are load-bearing. The diatonic component fixes the
+\emph{spelling} --- which nominal, hence which staff line the notehead
+occupies --- and the chromatic component fixes the \emph{sound}. Neither
+determines the other: an augmented second $(+1, +3)$ and a minor third
+$(+2, +3)$ sound alike and are written differently, while a diminished
+sixth $(+5, +7)$ and a perfect fifth $(+4, +7)$ are written a step apart
+and sound the same. A scalar semitone count cannot express the difference,
+and an implementation carrying only one is not transposing but altering.
+
+\begin{requirement}
+  \label{req:pitch:transposition}
+  Let $n$ be the \texttt{nominal}'s normative discriminant
+  (Section~\ref{sec:pitch:nominal}), and let a
+  \texttt{PitchSpacePosition::Cmn} position's \emph{absolute semitone} be
+  \[
+    s \;=\; \texttt{nominal.chromatic()} \;+\; \texttt{alteration}
+        \;+\; 12 \cdot \texttt{octave}.
+  \]
+  Transposing that position by \texttt{TranspositionInterval \{ d, c \}}
+  \MUST{} produce
+  \begin{align*}
+    \texttt{nominal}' &= \textsc{CmnNominal}\big((n + d) \bmod 7\big), \\
+    \texttt{octave}'  &= \texttt{octave} + \lfloor (n + d) / 7 \rfloor, \\
+    \texttt{alteration}' &= (s + c) - \big(\texttt{nominal}'\texttt{.chromatic()}
+        + 12 \cdot \texttt{octave}'\big),
+  \end{align*}
+  where $\bmod$ and $\lfloor \cdot \rfloor$ are Euclidean (the remainder is
+  non-negative). The diatonic component alone selects the nominal and the
+  octave; the alteration absorbs exactly the residue.
+
+  A transposition \MUST{} be refused --- atomically, changing nothing --- when
+  any target satisfies any of:
+  \begin{itemize}
+    \item its \texttt{scale\_position.position} is not \texttt{Cmn}, so the
+      \texttt{Interval} above has no defined action on it;
+    \item its \texttt{acoustic.realization} is
+      \texttt{AcousticRealization::AbsoluteHz}, which overrides the tuning
+      system, so moving the scale position would move the notehead without
+      moving the sound;
+    \item the computed $\texttt{alteration}'$ or $\texttt{octave}'$ does not
+      fit its field.
+  \end{itemize}
+  An implementation \MUSTNOT{} saturate, clamp, or partially apply a
+  transposition in any of these cases.
+\end{requirement}
+
+\begin{rationale}
+  The refusal cases are the three ways a transposition can silently lie. A
+  non-CMN position has no nominal to move, so a semitone shift would have to
+  invent one. An \texttt{AbsoluteHz} pitch declares its own frequency: it can
+  be respelled or it can be resounded, but a transposition that claims to do
+  both does one and pretends to the other. And saturation is the worst of the
+  three, because it is invisible --- a transposition that clamps has produced
+  a pitch nobody asked for, reported success, and destroyed the information
+  needed to notice.
+
+  Refusing atomically, rather than skipping the offending target, follows from
+  the same reasoning: a chord transposed except for one note is not a
+  transposed chord, it is a different chord. Contrast the treatment of
+  \emph{tombstoned} targets, which are skipped rather than refused --- a
+  deleted pitch is not an untransposable pitch, it is a pitch the operation
+  has nothing to say about.
+\end{rationale}
 
 \section{Acoustic Realization}
 \label{sec:pitch:acoustic}
@@ -4731,17 +4822,18 @@ pub struct Instrument {
 /// verbatim and never interprets them. Empty is the default.
 pub struct SoundConfiguration(pub Vec<u8>);
 
-/// A written-versus-sounding transposition (defined schema major 2).
-/// Structural only: the diatonic and chromatic step counts of the
-/// interval (e.g., B-flat clarinet = -1 diatonic, -2 chromatic).
-/// Semantically ADVISORY until the Chapter 4 tuning catalog pins
-/// interval algebra (the same P12-K2 pinning discipline as the
-/// Transpose operation); nothing in the core resolves it to
-/// frequencies or respells through it yet.
-pub struct TranspositionInterval {
-    pub diatonic_steps: i32,
-    pub chromatic_steps: i32,
-}
+// TranspositionInterval (defined schema major 2) is specified in
+// Chapter 2, "Transposition and the Interval Type": the diatonic and
+// chromatic step counts of an interval, and its action on a scale
+// position. Instrument.transposition is the written-versus-sounding
+// interval of a transposing instrument (a B-flat clarinet is
+// -1 diatonic, -2 chromatic).
+//
+// Its ACTION is pinned (Chapter 2). What remains unimplemented is its
+// AUTOMATIC APPLICATION at the instrument boundary: nothing in the core
+// yet respells a written part into a sounding one, or resolves either to
+// a frequency. Instrument.transposition is therefore still advisory --
+// but for that reason, not for want of interval algebra.
 
 /// One playable member of an unpitched instrument (defined schema
 /// major 2): the identifier UnpitchedEvent.instrument_member

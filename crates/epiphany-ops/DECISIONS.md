@@ -1158,3 +1158,123 @@ referent re-anchoring stays deferred, ratified events-only** (the spanner
 discipline; extending the referent index to region/measure tombstones is the
 larger change the user parked). Regression:
 `create_cross_cutting_spanner_preconditions_region_measure_anchors`.
+
+## Push 4a — the transpose algebra (design gate, 2026-07-09)
+
+`TransposeOp { targets: Vec<PitchId>, chromatic_steps: i32 }` was pinned in
+Pass 12 (P12-K2) as a prototype whose repair would be "a payload schema-major
+landing with the Chapter 4 tuning catalog". An audit reopened it. Both halves
+of that pin were wrong, and the operation had more defects than the pin
+admitted.
+
+**What is actually broken.** Measured, not inferred — a probe through
+`EditorSession` on a C4:
+
+| `chromatic_steps` | result |
+|---|---|
+| +1 | C#4 |
+| +12 | C4 with `alteration: 12` — six double-sharps, not C5 |
+| +128 | `alteration: 127`, silently clamped, reports `Applied` |
+| `targets: [p, p]`, +1 | `alteration: 2` |
+
+Also: a non-`Cmn` position is left untouched while the operation reports
+`Applied`. And `transpose(1000)` then `transpose(-1000)` lands on
+`alteration: -128`, so the operation is not invertible.
+
+Nothing downstream is at fault. `prepass::accidental_ids` faithfully renders
+`alteration: 12` as six double-sharps; the engraver draws what it is handed.
+The whole defect is in what `Transpose` *means*.
+
+**The false coupling (the reason this looked big).** `Pitch` has two
+orthogonal fields: `scale_position` and `acoustic`. Transposition adds an
+interval to a *scale position*. Tuning decides what frequency a scale position
+sounds at. Adding a fifth to C4 needs no tuning catalog. P12-K2's deferral
+welded together two things that do not touch, and the weld propagated: it is
+also why `PreconditionFailureReason::PitchSpaceMismatch` was documented as
+"Reserved: requires the Chapter 4 tuning catalog" (detecting a non-`Cmn`
+position reads a discriminant), and why `TranspositionInterval` was marked
+"ADVISORY until the Chapter 4 tuning catalog pins interval algebra". Push 4
+therefore splits: **4a is the transpose algebra, and needs no tuning catalog;
+4b is the Chapter 4 catalog**, which has its own unrelated blockers (`cmn-24`
+is in the spec's pitch-space table but cannot exist while `Cmn.alteration` is
+`i8` semitones and a quarter-tone is half of one).
+
+**Four ratified calls (user, 2026-07-09).**
+
+1. **Split 4a / 4b.** Above.
+
+2. **A new operation kind; freeze the old.** An operation is history. A replica
+   replaying a stored `Transpose` must reconstruct the state its author saw, so
+   a "corrected" reduction rule would silently rewrite every score that used
+   one. `Transpose` (wire disc 9) keeps its exact semantics — saturation,
+   nominal-blindness, duplicate-sensitivity — now written down as *normative
+   replay semantics* rather than as apologies. `TransposeInterval` takes wire
+   disc 30 and is what authoring emits.
+
+   This turned out to be **cheap**: appending an `OperationKind` discriminant
+   at ≥ 30 is a schema **minor** (`req:binfmt:kind-discriminants`, the Phase-3
+   precedent), and every constituent of the new payload — a sequence of ids and
+   two `i32`s — is a major-0 layout, so it stamps major 0 under minimal
+   stamping. No schema major 3, no migration, no stored operation changes
+   meaning. (I told the user it would cost a major before checking. It does
+   not.)
+
+3. **Diatonic + chromatic interval.** Reuses `TranspositionInterval`, which
+   **already existed** in `graph.rs` at schema major 2 for `Instrument`'s
+   written-versus-sounding interval, is already codec'd, and is byte-for-byte
+   the pair required. Minting a new `Interval` struct would have been a second
+   normative listing of one type — the drift hazard P13-I1 just closed. The
+   spec now declares it once, in Chapter 2 where transposition lives, and
+   Chapter 5 references it.
+
+4. **Atomic refusal.** A target that cannot be faithfully transposed — non-`Cmn`
+   position, `AbsoluteHz` realization, or an `alteration'`/`octave'` that does
+   not fit — refuses the *whole* operation, changing nothing. Never saturate,
+   never partially apply. A chord transposed except for one note is not a
+   transposed chord.
+
+   **Refusal is distinguished from skipping.** Tombstoned and `SYSTEM_DERIVED`
+   targets are still *skipped*, exactly as for `Transpose`. A deleted pitch is
+   not an untransposable pitch; it is a pitch the operation has nothing to say
+   about. An `AbsoluteHz` pitch, by contrast, declares its own frequency: it
+   can be respelled or resounded, but a transposition claiming both does one
+   and lies about the other.
+
+**`targets` becomes a set at the type level.** `CanonicalSet<PitchId>` (a
+`BTreeSet`), not a `Vec` plus a `dedup()` someone can forget. `PitchId: Ord`
+**is** its canonical byte order (locked by `ids.rs`), so the set iterates in
+canonical order for free. This is not a convergence bug in the old op — every
+replica replaying `[p, p]` double-transposes identically — it is a
+canonicalization bug: the catalog said *set*, `sorted_canonical` sorts without
+deduplicating, and the reduction is multiset-sensitive.
+
+**Timing matters here.** No operation-payload decoder exists yet (only
+`OperationKindTag` implements `CanonicalDecode`), so making `targets` a set is
+free *today*. Once the decoder lands — Push 5, the decode-fuzz P2 tranche — any
+dedup normalization would silently change the meaning of stored operations.
+**Push 4a blocks Push 5**, and that is why.
+
+**Spelling propagation.** Core Chapter 2 already requires that operations which
+transpose a pitch produce `SpellingSource::Propagated` attachments. `Transpose`
+produces none, and `RespellPitch` can only materialize `UserChosen` — so an
+authored spelling survives a transposition still pinned to the notehead it was
+authored against. `TransposeInterval` MUST emit the propagated attachment; the
+interval's diatonic component already determines the nominal, and the
+attachment is how that determination reaches the engraved layer.
+
+**Spec:** `req:pitch:transposition` (core Ch2, the algebra and the three
+refusals), `req:opcat:transpose-frozen`, `req:opcat:transpose-interval-targets`,
+`req:opcat:transpose-interval-atomic`,
+`req:opcat:transpose-interval-spelling`. Operation Catalog 0.7.0 → 0.8.0,
+Binary Format 0.6.0 → 0.7.0 (disc 30; the new `seq^⇑` strictly-increasing
+notation). New `PreconditionFailureReason`: `AcousticRealizationPinned` (14),
+`TranspositionOutOfRange` (15); `PitchSpaceMismatch` (6) un-reserved.
+
+**The two existing transpose tests are false locks.** Verified by mutation:
+gutting `graph_transpose_pitch` entirely leaves
+`transpose_skips_tombstoned_targets_and_shifts_the_live_ones` and
+`transpose_skips_system_derived_targets_p12_k3` both green. They call base-free
+`reduce()`, where `graph` is `None` and the function never runs, and they
+assert only `OperationEffect`. Only `editor-core`'s `undo_and_redo_a_transpose`
+— three crates away — catches it. Both are rewritten against `reduce_onto()`
+with asserted pitch values as part of the implementation.

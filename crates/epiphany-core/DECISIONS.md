@@ -510,3 +510,44 @@ missing every kind/volta anchor, contradicting its own doc). All flat walks
 now consume the method (the classified per-site invariant check keeps its
 exhaustive match for message attribution); the index gap is
 regression-locked in `indexes_build_and_answer_queries`.
+
+## The interval algebra, and the type that already existed (Push 4a, 2026-07-09)
+
+`req:pitch:transposition` (core Ch2, §"Transposition and the Interval Type")
+pins the action of a `TranspositionInterval { d, c }` on a
+`PitchSpacePosition::Cmn`. With `n` the nominal's normative discriminant and
+`s = nominal.chromatic() + alteration + 12*octave`:
+
+    nominal'    = CmnNominal((n + d).rem_euclid(7))
+    octave'     = octave + (n + d).div_euclid(7)
+    alteration' = (s + c) - (nominal'.chromatic() + 12*octave')
+
+The diatonic component alone picks the nominal and octave; the alteration
+absorbs the residue. C4 + (7, 12) = C5, not "C with twelve sharps". C4 + (0, 1)
+= C#4, so the editor's sharpen keeps its exact current behaviour.
+
+**The type was already here.** `TranspositionInterval` has lived in `graph.rs`
+since schema major 2, carrying `Instrument.transposition` (a B-flat clarinet is
+`-1` diatonic, `-2` chromatic), already codec'd, already exported. It is
+byte-for-byte the pair transposition needs, so Push 4a reuses it rather than
+minting an `Interval` beside it. The spec now lists it once, in Chapter 2; the
+Chapter 5 `Instrument` block references that listing instead of repeating it.
+Two normative listings of one struct is the drift the P13-I1 fix just closed.
+
+Its doc claimed it was "ADVISORY until the Chapter 4 tuning catalog pins
+interval algebra". That was the P12-K2 false coupling, repeated. Transposition
+acts on `scale_position`; tuning acts on `acoustic`; the two never touch. The
+algebra is pinned here with no tuning catalog anywhere in sight. What remains
+genuinely unimplemented is the *automatic application* of an instrument's
+interval at the written/sounding boundary — nothing respells a written part
+into a sounding one — so `Instrument.transposition` stays advisory, for that
+reason and not the stated one.
+
+**Refusal, not saturation.** `alteration` and `octave` are `i8`. A
+transposition whose result does not fit refuses; so does one against a
+non-`Cmn` position (no nominal to move) or an `AcousticRealization::AbsoluteHz`
+pitch (which overrides the tuning system, so moving the scale position moves
+the notehead without moving the sound). Saturation is the worst possible
+failure here because it is invisible: it produces a pitch nobody asked for,
+reports success, and destroys the evidence. See `epiphany-ops/DECISIONS.md`
+§"Push 4a" for the operation-level consequences and the frozen `Transpose`.
