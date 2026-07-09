@@ -1,10 +1,14 @@
 //! The Quality Metric Catalog's normative constants (companion specification
 //! *Epiphany — Quality Metric Catalog*, v0.3.0): the per-axis normalization
 //! anchors, the per-tier metric threshold table, the profile→threshold-column
-//! mapping, and the `QualityFloorApproached` warning fraction. (The v0.3.0
-//! `spacing_distortion` refinement scoped that axis's *measurement domain* to
-//! rhythmic columns; it touched no anchor or threshold, so this transcription
-//! of the numeric constants is unchanged.)
+//! mapping, and the `QualityFloorApproached` warning fraction.
+//!
+//! **Neither minor revision so far has moved a number here.** v0.2.0 narrowed
+//! `spacing_distortion`'s *measurement domain* to rhythmic columns; v0.3.0
+//! narrowed `vertical_density_penalty`'s *contributing units*, counting one per
+//! realization of a gap band rather than one per band. Both changed what a
+//! solver measures over, not what it normalizes against, so this transcription
+//! of the numeric constants is unchanged across both.
 //!
 //! This module is a **transcription**, not an invention: every number here is
 //! pinned by the catalog and cited to its chapter. Solvers that compute real

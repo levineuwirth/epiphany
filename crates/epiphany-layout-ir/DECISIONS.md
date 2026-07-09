@@ -425,7 +425,8 @@ object is covered); the provenance-preservation contract itself is unchanged.
 ## Quality Metric Catalog constants (`src/quality.rs`, 2026-07)
 
 **Decision: the catalog's normative constants live in this crate, as a pure
-transcription.** The Quality Metric Catalog companion (v0.2.0) pins the nine
+transcription.** The Quality Metric Catalog companion (currently v0.3.0; every
+number below is unchanged since v0.1.0) pins the nine
 axes' normalization anchors (`R_worst`), the clamped-linear normalization form
 `n = min(1, raw / R_worst)`, the Minimal/Standard threshold table, the
 `QualityFloorApproached` warning fraction (0.8), and the tier/profile →

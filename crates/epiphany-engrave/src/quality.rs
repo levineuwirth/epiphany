@@ -1,10 +1,13 @@
 //! **Real quality-metric computation** — the nine normative axes of the
-//! *Quality Metric Catalog* companion (v0.2.0, Chapter 3), measured over what
+//! *Quality Metric Catalog* companion (v0.3.0, Chapter 3), measured over what
 //! the pipeline already produced: the resolved world-frame geometry
 //! ([`CastLayout`]), the constrained input (slot identity, vertical bands), and
-//! the declared page geometry. Normalization anchors, threshold tables, and the
-//! warning fraction are the catalog's, transcribed in
-//! [`epiphany_layout_ir::quality`].
+//! the declared page geometry. This module implements the v0.3.0 unit set:
+//! `spacing_distortion` over rhythmic columns (v0.2.0) and
+//! `vertical_density_penalty` over each *realization* of a gap band (v0.3.0).
+//! Both revisions narrowed what is measured over, not what it is normalized
+//! against: the anchors, threshold tables, and warning fraction are the
+//! catalog's, transcribed unchanged in [`epiphany_layout_ir::quality`].
 //!
 //! Every measurement here is a pure function of the solve's inputs and its
 //! resolved output — no clocks, no entropy, fixed iteration order — so repeated

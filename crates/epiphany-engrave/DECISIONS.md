@@ -268,9 +268,12 @@ resolved:
 
 ## Quality metrics (2026-07) — decisions
 
-The Quality Metric Catalog companion (v0.2.0) ratified the nine normative
-axes' formal definitions, anchors, thresholds, and the
-`QualityFloorApproached` trigger; `Engraver::resolve` now computes the real
+The Quality Metric Catalog companion (ratified at v0.1.0; currently v0.3.0 —
+the axis set, anchors, and thresholds are unchanged across both minor
+revisions, which narrowed *what is measured over*, not what it is normalized
+against) ratified the nine normative axes' formal definitions, anchors,
+thresholds, and the `QualityFloorApproached` trigger; `Engraver::resolve`
+now computes the real
 vector (the private `quality` module), replacing the all-worst placeholder.
 The catalog's normative constants (anchors, the Minimal/Standard threshold
 table, the 0.8 warning fraction, the tier/profile→column mappings) are

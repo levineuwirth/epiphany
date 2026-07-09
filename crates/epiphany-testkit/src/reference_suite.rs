@@ -122,7 +122,8 @@ pub fn entries() -> Vec<SuiteEntry> {
             construction: "fixtures::ten_measure_single_staff(0x000A_11CE)",
             build: rs1,
             // Passes every Minimal threshold under the reference engraver
-            // (engrave v3, QMC v0.2.0 anchors). Greedy first-fit alone left a
+            // (the QMC anchors it is scored against are unchanged through
+            // v0.3.0). Greedy first-fit alone left a
             // two-measure stub last system (width CV 0.61 -> clamped 1.0 > the
             // 0.90 threshold, the original P12-I11 miss); casting-off's
             // widow-rebalance phase now evens the split to a six/four
