@@ -1393,3 +1393,46 @@ every existing history.
 - My own mutation harness restored the file between two tests, so the second
   ran unmutated and "passed". A mutation that no-ops looks exactly like a test
   that passes — the trap recorded after Push 4a, hit again in a new form.
+
+## P13-S3 — a shared undo key with one writer (2026-07-09)
+
+The `engraved_spelling_chain` added to make `TransposeInterval` undoable was
+written only by the transpose. But `RespellPitch` mutates the same graph
+attachments, and a chain with one writer is wrong in **both** directions:
+
+- **Prior respell erased.** `respell → [tx: transpose] → StrictInverse undo`
+  returned `Applied`, restored the pitch to C4, and removed *every* attachment.
+  The respell was an operation, not part of the base, so it existed only as a
+  chain write — and the transpose's chain had never seen it, so its predecessor
+  was absence.
+- **Later respell wiped.** `[tx: transpose] → respell → StrictInverse undo`
+  returned `Applied` and erased the newer authoring, because the respell was
+  invisible to the chain and so did not register as a superseding writer. The
+  catalog's general rule is that a later canonical writer supersedes a strict
+  undo.
+- **Best-effort split the unit.** With the spelling set superseded but the pitch
+  value not, `BestEffort` restored the pre-transpose pitch and left a spelling
+  authored against the transposed one attached to it.
+
+**Fix.** Both operations record on the shared key (`record_engraved_spellings`),
+and the pitch value and its spelling set undo as one unit: if either half is
+superseded, neither is restored. `StrictInverse` already refuses on any
+supersession, so the coupling only bites for `BestEffort`.
+
+**The physical separation stands, and my earlier note was only half right.** I
+kept `engraved_spelling_chain` distinct from `respell_chain` because the latter
+is `RespellPitch`'s LWW working state, read by its concurrent-differing conflict
+detection — folding transposes in would make a concurrent respell *conflict* with
+a transpose and would move the canonical bytes of every existing history. That
+reasoning holds. What it did **not** license was letting one operation own the
+key. Two physical chains, two responsibilities (`respell_chain`: the ledger
+spelling and the LWW verdict; `engraved_spelling_chain`: the graph attachments),
+but *every* writer of the attachments records on the attachment chain.
+
+Recording is gated on `self.graph.is_some()`, so base-free reduction is
+byte-unchanged and the seeded fuzz corpus's canonical-base digest does not move.
+
+Spec: `req:opcat:spelling-set-chain`. Mutation-verified: removing the respell's
+record fails all three new tests; removing the coupling fails the best-effort
+one with the pitch back at C4 and the spelling still at C-sharp. Also covered:
+both permutations of a concurrent respell/transpose reduce to identical bytes.

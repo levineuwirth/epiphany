@@ -770,7 +770,8 @@ impl PitchSpelling {
     /// [`Pitch::twelve_tet_semitone`].
     ///
     /// So B♯3 (sounding C4) transposed by a perfect fifth `(4, 7)` becomes
-    /// F×3 (sounding G4): the letter moved four diatonic steps, and the
+    /// F×4 (sounding G4): the letter moved four diatonic steps — B→F carries
+    /// the octave — and the
     /// double-sharp is what F needs to sound a G. The chromatic component never
     /// touches the spelling directly; it reaches it only through the pitch.
     ///

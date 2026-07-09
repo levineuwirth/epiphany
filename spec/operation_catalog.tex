@@ -786,12 +786,40 @@ is transposed by \texttt{interval}.
 
 \textbf{Undo semantics.} Nothing is minted. \texttt{TransposeInterval}
 \MUST{} record each transposed pitch's new value into that pitch's value chain,
-and each spelling attachment it rewrote into the corresponding spelling chain, so
-that value-restoring undo recovers the pre-transpose pitch \emph{and} its
-pre-transpose spelling. Restoring the pitch alone would leave a notehead spelled
-for a pitch that no longer exists. This is where \texttt{TransposeInterval}
-departs from the frozen \texttt{Transpose}, which records nothing and is
-therefore not undoable.
+and that pitch's resulting \emph{engraved spelling set} into the spelling-set
+chain, so that value-restoring undo recovers the pre-transpose pitch \emph{and}
+its pre-transpose spelling. Restoring the pitch alone would leave a notehead
+spelled for a pitch that no longer exists. This is where
+\texttt{TransposeInterval} departs from the frozen \texttt{Transpose}, which
+records nothing and is therefore not undoable.
+
+\begin{requirement}
+  \label{req:opcat:spelling-set-chain}
+  The pitch's engraved spelling set is a single undo key with \emph{more than
+  one writer}. Every operation that changes it --- \texttt{RespellPitch} and
+  \texttt{TransposeInterval} alike --- \MUST{} record a write on that key.
+  Consequently a \texttt{RespellPitch} causally prior to a transposed
+  transaction is that transaction's chain-predecessor and is restored by its
+  undo; and a \texttt{RespellPitch} canonically \emph{later} supersedes the
+  transaction's write, so a \texttt{StrictInverse} undo conflicts rather than
+  erasing it, per the general superseded-writer rule.
+
+  A pitch's value and its engraved spelling set \MUST{} undo as one unit: if
+  either is superseded, neither is restored. A \texttt{BestEffort} undo
+  \MUSTNOT{} restore the pre-transpose pitch while leaving a spelling authored
+  against the transposed one.
+\end{requirement}
+
+\begin{rationale}
+  Ratified as P13-S3. An implementation may keep the spelling-set chain
+  physically separate from whatever chain drives \texttt{RespellPitch}'s
+  last-writer-wins conflict detection --- the reference implementation does,
+  because folding transposes into that chain would make a concurrent respell
+  \emph{conflict} with a transpose and would move the canonical bytes of every
+  existing history. What it may not do is let one writer own the key. A chain
+  with a single writer cannot see the other's prior value (so undo erases it) and
+  cannot see the other's later value (so undo overwrites it).
+\end{rationale}
 
 An inverse interval usually exists ($(-d, -c)$), because the reduction never
 saturates --- but not always: $\texttt{i32::MIN}$ has no negation. Undo does not

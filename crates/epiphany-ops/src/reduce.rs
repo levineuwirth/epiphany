@@ -773,7 +773,7 @@ enum ValueRestoration {
     /// The engraved-layer explicit spelling attachments a `TransposeInterval`
     /// rewrote, restored as a set. `None` predecessor means the pitch carried
     /// none before, so they are removed.
-    TransposedSpellings {
+    EngravedSpellings {
         pitch: PitchId,
         predecessor: Option<Predecessor<Vec<SpellingAttachment>>>,
     },
@@ -874,18 +874,25 @@ struct Reducer<'a> {
     // what value-restoring undo walks. Advisory families (metadata, breaks,
     // staff layout) keep chains for undo but record no conflicts.
     respell_chain: BTreeMap<PitchId, WriteChain<PitchSpelling>>,
-    /// The engraved-layer, pitch-scoped, explicit spelling attachments a
-    /// `TransposeInterval` rewrites (`req:opcat:transpose-interval-spelling`):
-    /// the moved authored ones and the propagated one, as a single per-pitch
-    /// value so undo restores them together.
+    /// A pitch's engraved-layer, pitch-scoped, explicit spelling attachment
+    /// **set**, as one value. Written by *every* operation that changes it:
+    /// `RespellPitch` and `TransposeInterval` alike (P13-S3).
     ///
-    /// Deliberately NOT `respell_chain`. `RespellPitch` owns that chain, and
-    /// its last write is the LWW working state its concurrent-differing
-    /// conflict detection reads; folding transposes into it would make a
-    /// concurrent respell conflict with a transpose and would move the
-    /// canonical bytes of every existing history. A transpose that also moves a
-    /// `UserChosen` spelling is restored from here.
-    transposed_spelling_chain: BTreeMap<PitchId, WriteChain<Vec<SpellingAttachment>>>,
+    /// Both must record here or undo is wrong in both directions. If only the
+    /// transpose recorded, a prior respell would not be its chain-predecessor
+    /// and undoing the transpose would erase the respell; and a *later* respell
+    /// would be invisible, so a strict undo would report `Applied` and wipe it
+    /// instead of refusing as superseded.
+    ///
+    /// This is a *second* physical chain, not a replacement for `respell_chain`:
+    /// that one is `RespellPitch`'s LWW working state, read by its
+    /// concurrent-differing conflict detection, and folding transposes into it
+    /// would make a concurrent respell conflict with a transpose and move the
+    /// canonical bytes of every existing history. This chain owns the *graph
+    /// attachments*; `respell_chain` owns the *ledger spelling* and the LWW
+    /// verdict. Only ever written when a graph is present, so base-free
+    /// reduction is byte-unchanged.
+    engraved_spelling_chain: BTreeMap<PitchId, WriteChain<Vec<SpellingAttachment>>>,
     event_modify_chain: BTreeMap<EventId, WriteChain<Event>>,
     pitch_modify_chain: BTreeMap<PitchId, WriteChain<Pitch>>,
     cross_cutting_modify_chain: BTreeMap<TypedObjectId, WriteChain<CrossCuttingValue>>,
@@ -964,18 +971,25 @@ struct WorkingSnapshot {
     event_pitches: BTreeMap<EventId, Vec<PitchId>>,
     voice_occupancy: BTreeMap<VoiceId, Vec<(MusicalPosition, MusicalDuration, EventId)>>,
     respell_chain: BTreeMap<PitchId, WriteChain<PitchSpelling>>,
-    /// The engraved-layer, pitch-scoped, explicit spelling attachments a
-    /// `TransposeInterval` rewrites (`req:opcat:transpose-interval-spelling`):
-    /// the moved authored ones and the propagated one, as a single per-pitch
-    /// value so undo restores them together.
+    /// A pitch's engraved-layer, pitch-scoped, explicit spelling attachment
+    /// **set**, as one value. Written by *every* operation that changes it:
+    /// `RespellPitch` and `TransposeInterval` alike (P13-S3).
     ///
-    /// Deliberately NOT `respell_chain`. `RespellPitch` owns that chain, and
-    /// its last write is the LWW working state its concurrent-differing
-    /// conflict detection reads; folding transposes into it would make a
-    /// concurrent respell conflict with a transpose and would move the
-    /// canonical bytes of every existing history. A transpose that also moves a
-    /// `UserChosen` spelling is restored from here.
-    transposed_spelling_chain: BTreeMap<PitchId, WriteChain<Vec<SpellingAttachment>>>,
+    /// Both must record here or undo is wrong in both directions. If only the
+    /// transpose recorded, a prior respell would not be its chain-predecessor
+    /// and undoing the transpose would erase the respell; and a *later* respell
+    /// would be invisible, so a strict undo would report `Applied` and wipe it
+    /// instead of refusing as superseded.
+    ///
+    /// This is a *second* physical chain, not a replacement for `respell_chain`:
+    /// that one is `RespellPitch`'s LWW working state, read by its
+    /// concurrent-differing conflict detection, and folding transposes into it
+    /// would make a concurrent respell conflict with a transpose and move the
+    /// canonical bytes of every existing history. This chain owns the *graph
+    /// attachments*; `respell_chain` owns the *ledger spelling* and the LWW
+    /// verdict. Only ever written when a graph is present, so base-free
+    /// reduction is byte-unchanged.
+    engraved_spelling_chain: BTreeMap<PitchId, WriteChain<Vec<SpellingAttachment>>>,
     event_modify_chain: BTreeMap<EventId, WriteChain<Event>>,
     pitch_modify_chain: BTreeMap<PitchId, WriteChain<Pitch>>,
     cross_cutting_modify_chain: BTreeMap<TypedObjectId, WriteChain<CrossCuttingValue>>,
@@ -1254,7 +1268,7 @@ impl<'a> Reducer<'a> {
             event_pitches: BTreeMap::new(),
             voice_occupancy: BTreeMap::new(),
             respell_chain: BTreeMap::new(),
-            transposed_spelling_chain: BTreeMap::new(),
+            engraved_spelling_chain: BTreeMap::new(),
             event_modify_chain: BTreeMap::new(),
             pitch_modify_chain: BTreeMap::new(),
             cross_cutting_modify_chain: BTreeMap::new(),
@@ -1668,7 +1682,7 @@ impl<'a> Reducer<'a> {
             }
         }
         for (pitch, set) in by_pitch {
-            self.transposed_spelling_chain
+            self.engraved_spelling_chain
                 .entry(pitch)
                 .or_insert_with(WriteChain::new)
                 .seed(set);
@@ -3185,6 +3199,27 @@ impl<'a> Reducer<'a> {
             .or_insert_with(WriteChain::new)
             .record(env.id, env.transaction, op.spelling.clone());
         self.graph_respell_pitch(op.pitch, &op.spelling);
+        // A respell changes the graph attachment set, so it is a writer on
+        // `engraved_spelling_chain` too (P13-S3). Without this, a transpose
+        // undone after a respell would erase it, and a respell landing after a
+        // transposed transaction would be silently wiped by that undo instead
+        // of superseding it.
+        self.record_engraved_spellings(env, op.pitch);
+    }
+
+    /// Records `pitch`'s current graph attachment set as a write on
+    /// [`Self::engraved_spelling_chain`]. A no-op under base-free reduction,
+    /// which has no graph attachments to own — so base-free canonical bytes do
+    /// not move.
+    fn record_engraved_spellings(&mut self, env: &OperationEnvelope, pitch: PitchId) {
+        if self.graph.is_none() {
+            return;
+        }
+        let set = self.graph_spelling_set(pitch);
+        self.engraved_spelling_chain
+            .entry(pitch)
+            .or_insert_with(WriteChain::new)
+            .record(env.id, env.transaction, set);
     }
 
     fn graph_respell_pitch(&mut self, pitch: PitchId, spelling: &PitchSpelling) {
@@ -4894,6 +4929,14 @@ impl<'a> Reducer<'a> {
     ) -> (Vec<ValueRestoration>, Vec<OperationId>) {
         let mut restorations = Vec::new();
         let mut superseded: Vec<OperationId> = Vec::new();
+        // A `TransposeInterval` writes a pitch's value and its engraved spelling
+        // set as one act, so they undo as one unit (P13-S3). If either half was
+        // superseded, neither is restored: `BestEffort` must not put the pitch
+        // back while leaving a spelling written for the pitch it used to be.
+        // (`StrictInverse` refuses outright on any supersession, so this only
+        // bites for `BestEffort`.)
+        let mut superseded_pitches: std::collections::BTreeSet<PitchId> =
+            std::collections::BTreeSet::new();
         let slot_live = |obj: TypedObjectId| {
             matches!(self.objects.get(&obj), Some(ObjectState::Live)) && !targets.contains(&obj)
         };
@@ -4919,7 +4962,10 @@ impl<'a> Reducer<'a> {
             }
             match chain.undo_verdict(tx) {
                 ChainUndoVerdict::NotWritten => {}
-                ChainUndoVerdict::Superseded { by } => superseded.push(by),
+                ChainUndoVerdict::Superseded { by } => {
+                    superseded.push(by);
+                    superseded_pitches.insert(*pitch);
+                }
                 ChainUndoVerdict::Restore(predecessor) => {
                     restorations.push(ValueRestoration::Pitch {
                         pitch: *pitch,
@@ -4943,15 +4989,18 @@ impl<'a> Reducer<'a> {
                 }
             }
         }
-        for (pitch, chain) in &self.transposed_spelling_chain {
+        for (pitch, chain) in &self.engraved_spelling_chain {
             if !slot_live(TypedObjectId::Pitch(*pitch)) {
                 continue;
             }
             match chain.undo_verdict(tx) {
                 ChainUndoVerdict::NotWritten => {}
-                ChainUndoVerdict::Superseded { by } => superseded.push(by),
+                ChainUndoVerdict::Superseded { by } => {
+                    superseded.push(by);
+                    superseded_pitches.insert(*pitch);
+                }
                 ChainUndoVerdict::Restore(predecessor) => {
-                    restorations.push(ValueRestoration::TransposedSpellings {
+                    restorations.push(ValueRestoration::EngravedSpellings {
                         pitch: *pitch,
                         predecessor,
                     })
@@ -5090,6 +5139,20 @@ impl<'a> Reducer<'a> {
                 }
             }
         }
+        // Couple the two halves a transpose writes together. Dropping a `Pitch`
+        // restoration whose spelling set was superseded (and vice versa) is what
+        // makes them one undo unit. It cannot mis-fire on an unrelated operation:
+        // a chain reports `Superseded` only when the transaction actually wrote
+        // it, and `ModifyIdentifiedPitch` never writes the spelling set.
+        if !superseded_pitches.is_empty() {
+            restorations.retain(|r| match r {
+                ValueRestoration::Pitch { pitch, .. }
+                | ValueRestoration::EngravedSpellings { pitch, .. } => {
+                    !superseded_pitches.contains(pitch)
+                }
+                _ => true,
+            });
+        }
         superseded.sort();
         superseded.dedup();
         (restorations, superseded)
@@ -5148,12 +5211,12 @@ impl<'a> Reducer<'a> {
                         self.graph_remove_respell(pitch);
                     }
                 },
-                ValueRestoration::TransposedSpellings { pitch, predecessor } => {
+                ValueRestoration::EngravedSpellings { pitch, predecessor } => {
                     let set: Vec<SpellingAttachment> = match predecessor {
                         Some(Predecessor::Write(set)) | Some(Predecessor::Base(set)) => set,
                         None => Vec::new(),
                     };
-                    self.transposed_spelling_chain
+                    self.engraved_spelling_chain
                         .entry(pitch)
                         .or_insert_with(WriteChain::new)
                         .record(env.id, env.transaction, set.clone());
@@ -5798,11 +5861,7 @@ impl<'a> Reducer<'a> {
                 .entry(r.pitch)
                 .or_insert_with(WriteChain::new)
                 .record(env.id, env.transaction, r.value.clone());
-            let set = self.graph_spelling_set(r.pitch);
-            self.transposed_spelling_chain
-                .entry(r.pitch)
-                .or_insert_with(WriteChain::new)
-                .record(env.id, env.transaction, set);
+            self.record_engraved_spellings(env, r.pitch);
         }
         OperationEffect::Applied
     }
@@ -7137,7 +7196,7 @@ impl<'a> Reducer<'a> {
             event_pitches: self.event_pitches.clone(),
             voice_occupancy: self.voice_occupancy.clone(),
             respell_chain: self.respell_chain.clone(),
-            transposed_spelling_chain: self.transposed_spelling_chain.clone(),
+            engraved_spelling_chain: self.engraved_spelling_chain.clone(),
             event_modify_chain: self.event_modify_chain.clone(),
             pitch_modify_chain: self.pitch_modify_chain.clone(),
             cross_cutting_modify_chain: self.cross_cutting_modify_chain.clone(),
@@ -7173,7 +7232,7 @@ impl<'a> Reducer<'a> {
         self.event_pitches = s.event_pitches;
         self.voice_occupancy = s.voice_occupancy;
         self.respell_chain = s.respell_chain;
-        self.transposed_spelling_chain = s.transposed_spelling_chain;
+        self.engraved_spelling_chain = s.engraved_spelling_chain;
         self.event_modify_chain = s.event_modify_chain;
         self.pitch_modify_chain = s.pitch_modify_chain;
         self.cross_cutting_modify_chain = s.cross_cutting_modify_chain;
@@ -9659,6 +9718,222 @@ mod tests {
             cmn_of(&pitch_of(&out.score, pid)),
             (CmnNominal::C, 1, 4),
             "the frozen transpose is not undone by value restoration"
+        );
+    }
+
+    // --- P13-S3: RespellPitch and TransposeInterval share the engraved
+    // spelling set, so undo must see both. ---------------------------------
+
+    fn respell_env(
+        replica: u64,
+        counter: u64,
+        physical: i64,
+        ctx: CausalContext,
+        pitch: PitchId,
+        nominal: CmnNominal,
+    ) -> OperationEnvelope {
+        prim_env(
+            replica,
+            counter,
+            physical,
+            ctx,
+            OperationKind::RespellPitch(RespellPitchOp {
+                pitch,
+                spelling: PitchSpelling::cmn(nominal, 4),
+            }),
+        )
+    }
+
+    fn transpose_member(
+        replica: u64,
+        counter: u64,
+        physical: i64,
+        ctx: CausalContext,
+        tx: TransactionId,
+        pitch: PitchId,
+        iv: TranspositionInterval,
+    ) -> OperationEnvelope {
+        tx_member(
+            replica,
+            counter,
+            physical,
+            ctx,
+            tx,
+            OperationKind::TransposeInterval(TransposeIntervalOp {
+                targets: [pitch].into_iter().collect(),
+                interval: iv,
+            }),
+        )
+    }
+
+    /// `(source, nominal, accidental count)` of every engraved-layer explicit
+    /// attachment on `pitch`.
+    fn attachments_of(score: &Score, pitch: PitchId) -> Vec<(SpellingSource, CmnNominal, usize)> {
+        score
+            .spelling_attachments
+            .iter()
+            .filter(|a| a.layer.is_none())
+            .filter(|a| matches!(&a.scope, SpellingScope::Pitch(p) if *p == pitch))
+            .filter_map(|a| match (&a.directive, &a.source) {
+                (SpellingDirective::Explicit(sp), src) => match sp.nominal {
+                    epiphany_core::SpellingNominal::Cmn(n) => {
+                        Some((src.clone(), n, sp.accidentals.len()))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn undo_effect(state: &MaterializedState, id: OperationId) -> OperationEffect {
+        state
+            .effects
+            .iter()
+            .find(|(e, _)| *e == id)
+            .map(|(_, eff)| eff.clone())
+            .expect("effect recorded")
+    }
+
+    #[test]
+    fn undoing_a_transpose_restores_a_prior_respell() {
+        // P13-S3, direction one. The respell is an OPERATION, not part of the
+        // base, so it exists only as a write on the shared chain. Before the
+        // fix, the transpose's chain had no predecessor for it and the undo
+        // wiped every attachment on the pitch.
+        let (base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
+        let tx = TransactionId::new(ReplicaId(1), 900);
+        let undo = undo_env(1, 3, 13, seen_r1(2), tx, UndoPolicy::StrictInverse);
+        let undo_id = undo.id;
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            respell_env(1, 0, 10, CausalContext::new(), pid, CmnNominal::C),
+            declare_transaction(1, 1, 11, seen_r1(0), tx),
+            transpose_member(1, 2, 12, seen_r1(1), tx, pid, interval(0, 1)),
+            undo,
+        ]);
+        let out = set.reduce_onto(&base);
+
+        assert_eq!(undo_effect(&out.state, undo_id), OperationEffect::Applied);
+        assert_eq!(cmn_of(&pitch_of(&out.score, pid)), (CmnNominal::C, 0, 4));
+        assert_eq!(
+            attachments_of(&out.score, pid),
+            vec![(SpellingSource::UserChosen, CmnNominal::C, 0)],
+            "the prior respell survives the undo, and the propagated one is gone"
+        );
+    }
+
+    #[test]
+    fn a_respell_after_a_transposed_transaction_supersedes_its_strict_undo() {
+        // P13-S3, direction two. The respell lands canonically AFTER the
+        // transaction, so it is a later writer on the pitch's spelling set:
+        // strict undo must refuse rather than erase it. Before the fix the
+        // respell was invisible to the transpose's chain, so the undo reported
+        // Applied and wiped the newer authoring.
+        let (base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
+        let tx = TransactionId::new(ReplicaId(1), 900);
+        let undo = undo_env(1, 3, 13, seen_r1(2), tx, UndoPolicy::StrictInverse);
+        let undo_id = undo.id;
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            transpose_member(1, 1, 11, seen_r1(0), tx, pid, interval(0, 1)),
+            respell_env(1, 2, 12, seen_r1(1), pid, CmnNominal::D),
+            undo,
+        ]);
+        let out = set.reduce_onto(&base);
+
+        assert!(
+            matches!(
+                undo_effect(&out.state, undo_id),
+                OperationEffect::Conflicted { .. }
+            ),
+            "a later canonical writer supersedes a strict undo"
+        );
+        // Nothing was rolled back: the pitch stays transposed and the newer
+        // authored spelling stands.
+        assert_eq!(cmn_of(&pitch_of(&out.score, pid)), (CmnNominal::C, 1, 4));
+        let atts = attachments_of(&out.score, pid);
+        assert!(
+            atts.contains(&(SpellingSource::UserChosen, CmnNominal::D, 0)),
+            "the later respell was not erased: {atts:?}"
+        );
+    }
+
+    #[test]
+    fn best_effort_undo_will_not_restore_a_pitch_whose_spelling_was_superseded() {
+        // The pitch value and its engraved spelling set are one undo unit.
+        // Restoring the pitch alone would leave a spelling authored against the
+        // transposed pitch attached to the pitch it used to be.
+        let (base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
+        let tx = TransactionId::new(ReplicaId(1), 900);
+        let undo = undo_env(1, 3, 13, seen_r1(2), tx, UndoPolicy::BestEffort);
+        let undo_id = undo.id;
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            transpose_member(1, 1, 11, seen_r1(0), tx, pid, interval(0, 1)),
+            respell_env(1, 2, 12, seen_r1(1), pid, CmnNominal::D),
+            undo,
+        ]);
+        let out = set.reduce_onto(&base);
+
+        assert_eq!(undo_effect(&out.state, undo_id), OperationEffect::Applied);
+        assert_eq!(
+            cmn_of(&pitch_of(&out.score, pid)),
+            (CmnNominal::C, 1, 4),
+            "best-effort skipped the pitch because its spelling set was superseded"
+        );
+        assert!(attachments_of(&out.score, pid).contains(&(
+            SpellingSource::UserChosen,
+            CmnNominal::D,
+            0
+        )));
+    }
+
+    #[test]
+    fn a_concurrent_respell_and_transpose_converge_in_canonical_order() {
+        // Neither sees the other. Both write the pitch's engraved spelling set,
+        // so the canonically-last writer owns it — and both permutations of the
+        // input reduce to the same score, which is the only property that
+        // matters.
+        let (base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let build = || {
+            vec![
+                declare_transaction(1, 0, 10, CausalContext::new(), tx),
+                // Concurrent: replica 2's respell has not seen replica 1's
+                // transpose, and vice versa.
+                transpose_member(1, 1, 11, seen_r1(0), tx, pid, interval(0, 1)),
+                respell_env(2, 0, 12, CausalContext::new(), pid, CmnNominal::D),
+            ]
+        };
+        let mut forward = OperationSet::new();
+        forward.accept_all(build());
+        let a = forward.reduce_onto(&base);
+
+        let mut reversed = OperationSet::new();
+        let mut envs = build();
+        envs.reverse();
+        reversed.accept_all(envs);
+        let b = reversed.reduce_onto(&base);
+
+        assert_eq!(a.score, b.score, "reduction is permutation-invariant");
+        assert_eq!(a.state.canonical_bytes(), b.state.canonical_bytes());
+        // The pitch moved; exactly one authored spelling stands, plus the
+        // propagated record.
+        assert_eq!(cmn_of(&pitch_of(&a.score, pid)), (CmnNominal::C, 1, 4));
+        let atts = attachments_of(&a.score, pid);
+        assert_eq!(
+            atts.iter()
+                .filter(|(s, _, _)| matches!(s, SpellingSource::UserChosen))
+                .count(),
+            1,
+            "one authored spelling: {atts:?}"
         );
     }
 
