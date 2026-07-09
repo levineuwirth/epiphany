@@ -10668,8 +10668,10 @@ pub struct ChunkId(pub ContentHash);
 
   \texttt{CompressionAlgorithm} encodes as a fixed \emph{two} bytes: a
   declaration-order discriminant byte followed by a single parameter
-  byte that is always present. \texttt{None} $= 0$ (the parameter byte
-  is present but zero, and ignored on read); \texttt{Zstd\{level\}}
+  byte that is always present. \texttt{None} $= 0$, and its parameter
+  byte \MUST{} be zero --- a reader \MUST{} reject a non-zero one rather
+  than ignore it (Section~\ref{sec:format:binary}, and the Binary Format
+  companion's \sectionsc{Chunk References}). \texttt{Zstd\{level\}}
   $= 1$ with the \texttt{level} in the parameter byte;
   \texttt{Reserved(u8)} $= 2$ with the reserved value in the parameter
   byte. The parameter byte is written even for \texttt{None}, so the

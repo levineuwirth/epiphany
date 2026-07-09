@@ -36,13 +36,16 @@
 //! across every corruption scenario the QUICKSTART enumerates.
 
 use crate::bundle::{Bundle, CommitContext, StagedChunk, BODY_START};
+use crate::chunk::{ChunkKind, ChunkRef, CompressionAlgorithm};
 use crate::error::IntegrityAnomaly;
 use crate::header::FixedHeader;
 use crate::ids::{DocumentId, FileUuid, ReductionAlgorithmVersion, SchemaVersion, WallClockTime};
 use crate::manifest::Manifest;
+use crate::opindex::OperationIndex;
 use crate::store::{CrashPoint, FaultStore, MemStore, Tear};
 use crate::superblock::{CommitState, ProfileId, Slot, Superblock, SUPERBLOCK_LEN};
 use crate::{block, manifest_chunk_hash};
+use epiphany_determinism::{ChunkId, ContentHash};
 
 /// A tiny deterministic generator (SplitMix64), matching `epiphany-determinism`'s
 /// fuzz harness: reproducible across platforms, no `rand` dependency, so a
@@ -173,6 +176,275 @@ fn build_base(rng: &mut SplitMix64, commits: u64) -> (Vec<u8>, u64) {
     }
     let gen = bundle.generation();
     (bundle.into_store().into_bytes(), gen)
+}
+
+// ---------------------------------------------------------------------------
+// Wire-decode fuzzing (P3 of the decode-hardening track).
+//
+// The crash-recovery fuzzer above corrupts the image the way a *crash* does:
+// torn writes at syscall boundaries. This one corrupts it the way an *attacker*
+// or a bit-rotted disk does — arbitrary bytes, anywhere — and drives every
+// decode surface the bundle exposes:
+//
+//   Bundle::open  ·  Manifest::decode  ·  OperationIndex::decode
+//   block::decode_block  ·  block::envelope_offsets
+//
+// Two properties. A mutated image must never panic a decoder (a bundle is
+// attacker-controlled input the moment it is emailed), and an *accepted* byte
+// string must re-encode to itself where the type has a canonical encoding.
+//
+// P2 (`epiphany-ops`) established that a re-encode guard is complete only for
+// fields the encoder NORMALIZES. `Manifest::encode_body` sorts and deduplicates
+// every vector, so its guard genuinely is complete; `OperationIndex::decode`
+// has no guard and instead checks its two `Vec`s for strict ascent per-site,
+// which is the other correct answer. Both are asserted here.
+// ---------------------------------------------------------------------------
+
+/// What a decode-fuzz run actually reached. A harness that never gets a decoder
+/// to say `Ok` proves only the absence of a panic.
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct WireFuzzCoverage {
+    pub opens_ok: u64,
+    pub opens_rejected: u64,
+    pub manifests_ok: u64,
+    pub manifests_rejected: u64,
+    pub blocks_ok: u64,
+    pub blocks_rejected: u64,
+    pub indices_ok: u64,
+    pub indices_rejected: u64,
+}
+
+fn wire_random_bytes(rng: &mut SplitMix64, n: usize) -> Vec<u8> {
+    (0..n).map(|_| rng.next_u64() as u8).collect()
+}
+
+fn wire_substitute(rng: &mut SplitMix64, bytes: &mut [u8], k: usize) {
+    if bytes.is_empty() {
+        return;
+    }
+    for _ in 0..k {
+        let i = (rng.next_u64() as usize) % bytes.len();
+        bytes[i] = rng.next_u64() as u8;
+    }
+}
+
+/// Overwrites a random 4- or 8-byte window with an extreme integer: the
+/// count/length/offset attack. A bundle's manifest carries file offsets and
+/// lengths, so this is the mutation that matters most here.
+fn wire_corrupt_int(rng: &mut SplitMix64, bytes: &mut [u8]) {
+    if bytes.len() < 8 {
+        return;
+    }
+    let i = (rng.next_u64() as usize) % (bytes.len() - 7);
+    match rng.next_u64() % 4 {
+        0 => bytes[i..i + 4].copy_from_slice(&u32::MAX.to_le_bytes()),
+        1 => bytes[i..i + 8].copy_from_slice(&u64::MAX.to_le_bytes()),
+        2 => {
+            bytes[i..i + 8].copy_from_slice(&(rng.next_u64() | 0x8000_0000_0000_0000).to_le_bytes())
+        }
+        _ => bytes[i..i + 4].copy_from_slice(&(rng.next_u64() as u32).to_le_bytes()),
+    }
+}
+
+fn mutate_image(rng: &mut SplitMix64, base: &[u8]) -> Vec<u8> {
+    let mut b = base.to_vec();
+    match rng.next_u64() % 6 {
+        0 => return b, // unmutated: a live check that the corpus opens
+        1 => {
+            let k = 1 + (rng.next_u64() % 6) as usize;
+            wire_substitute(rng, &mut b, k);
+        }
+        2 => {
+            let t = (rng.next_u64() as usize) % (b.len() + 1);
+            b.truncate(t);
+        }
+        3 => {
+            let n = 1 + (rng.next_u64() % 32) as usize;
+            let tail = wire_random_bytes(rng, n);
+            b.extend_from_slice(&tail);
+        }
+        4 => wire_corrupt_int(rng, &mut b),
+        _ => {
+            // Corrupt the superblock region specifically: the two 256-byte slots
+            // whose CRCs gate `open`.
+            let n = b.len().min(512);
+            if n > 0 {
+                let i = (rng.next_u64() as usize) % n;
+                b[i] = rng.next_u64() as u8;
+            }
+        }
+    }
+    b
+}
+
+/// Runs `iters` adversarial wire-decode iterations from `seed` over the bundle's
+/// decode surfaces. A panic, or an accepted byte string that does not re-encode
+/// to itself, fails the run; `seed` reproduces it exactly.
+pub fn run_wire_decode_fuzz(iters: u64, seed: u64) -> WireFuzzCoverage {
+    let mut rng = SplitMix64::new(seed);
+    let mut cov = WireFuzzCoverage::default();
+
+    // A small pool of valid, populated images and valid manifest payloads.
+    let mut images: Vec<Vec<u8>> = Vec::new();
+    let mut manifests: Vec<Vec<u8>> = Vec::new();
+    for commits in 0..4u64 {
+        let (image, _) = build_base(&mut rng, commits);
+        let bundle = Bundle::open(MemStore::from_bytes(image.clone())).expect("valid image opens");
+        manifests.push(bundle.manifest().encode());
+        images.push(image);
+    }
+    let valid_blocks: Vec<Vec<u8>> = {
+        let payloads: Vec<Vec<u8>> = (0..3).map(|i| vec![i as u8 + 1; 8 + i * 5]).collect();
+        block::pack_operation_blocks(&payloads)
+    };
+
+    // Valid operation-index payloads. Random bytes never decode, so an index
+    // corpus of noise leaves the decoder's accept path — and therefore every
+    // assertion below it — unreached (measured: `indices_ok` was 0).
+    let valid_indices: Vec<Vec<u8>> = {
+        let block_ref = |hash_byte: u8, offset: u64, len: u64| ChunkRef {
+            id: ChunkId(ContentHash([hash_byte; 32])),
+            kind: ChunkKind::OperationEnvelopeBlock,
+            schema_version: SchemaVersion::V0,
+            offset,
+            compressed_length: len,
+            uncompressed_length: len,
+            compression: CompressionAlgorithm::None,
+            hash: ContentHash([hash_byte; 32]),
+        };
+        [
+            OperationIndex::build(&[]).expect("empty index"),
+            OperationIndex::build(&[(block_ref(0x11, 576, 64), vec![([2; 16], 8)])])
+                .expect("one block"),
+            OperationIndex::build(&[
+                (block_ref(0x22, 1000, 64), vec![([3; 16], 8), ([1; 16], 40)]),
+                (block_ref(0x11, 576, 32), vec![([2; 16], 8)]),
+            ])
+            .expect("two blocks"),
+        ]
+        .iter()
+        .map(|i| i.encode())
+        .collect()
+    };
+
+    for _ in 0..iters {
+        // 1. Whole-image open. Must never panic; an Ok manifest must re-encode.
+        let pick = (rng.next_u64() as usize) % images.len();
+        let image = mutate_image(&mut rng, &images[pick]);
+        match Bundle::open(MemStore::from_bytes(image)) {
+            Ok(bundle) => {
+                cov.opens_ok += 1;
+                let encoded = bundle.manifest().encode();
+                assert_eq!(
+                    Manifest::decode(&encoded).as_ref(),
+                    Ok(bundle.manifest()),
+                    "an opened bundle's manifest does not round-trip"
+                );
+                // Reading every chunk the manifest names must be total.
+                for r in bundle.manifest().canonical_chunk_refs() {
+                    let _ = bundle.read_chunk(&r);
+                }
+            }
+            Err(_) => cov.opens_rejected += 1,
+        }
+
+        // 2. Manifest payload decode: strict-canonical, guard-backed.
+        let mut m = manifests[(rng.next_u64() as usize) % manifests.len()].clone();
+        match rng.next_u64() % 4 {
+            0 => {}
+            1 => wire_substitute(&mut rng, &mut m, 1),
+            2 => wire_corrupt_int(&mut rng, &mut m),
+            _ => {
+                let t = (rng.next_u64() as usize) % (m.len() + 1);
+                m.truncate(t);
+            }
+        }
+        match Manifest::decode(&m) {
+            Ok(manifest) => {
+                cov.manifests_ok += 1;
+                assert_eq!(
+                    manifest.encode(),
+                    m,
+                    "the manifest decoder accepted a non-canonical byte string"
+                );
+            }
+            Err(_) => cov.manifests_rejected += 1,
+        }
+
+        // 3. Block payload framing.
+        let mut b = valid_blocks[(rng.next_u64() as usize) % valid_blocks.len()].clone();
+        match rng.next_u64() % 4 {
+            0 => {}
+            1 => wire_substitute(&mut rng, &mut b, 1),
+            2 => wire_corrupt_int(&mut rng, &mut b),
+            _ => {
+                let t = (rng.next_u64() as usize) % (b.len() + 1);
+                b.truncate(t);
+            }
+        }
+        match block::decode_block(&b) {
+            Ok(envelopes) => {
+                cov.blocks_ok += 1;
+                // `envelope_offsets` shares the code path: the two must agree,
+                // and each recorded offset must actually address its envelope.
+                let offsets = block::envelope_offsets(&b).expect("same validation");
+                assert_eq!(offsets.len(), envelopes.len());
+                for ((offset, slice), env) in offsets.iter().zip(envelopes.iter()) {
+                    assert_eq!(
+                        *slice,
+                        &env[..],
+                        "envelope_offsets disagrees with decode_block"
+                    );
+                    let at = *offset as usize;
+                    assert_eq!(
+                        &b[at..at + env.len()],
+                        &env[..],
+                        "offset does not address the envelope"
+                    );
+                }
+            }
+            Err(_) => cov.blocks_rejected += 1,
+        }
+
+        // 4. Operation index: no re-encode guard; per-site strict-ascent checks.
+        let mut idx = valid_indices[(rng.next_u64() as usize) % valid_indices.len()].clone();
+        match rng.next_u64() % 5 {
+            0 => {}
+            1 => wire_substitute(&mut rng, &mut idx, 1),
+            2 => wire_corrupt_int(&mut rng, &mut idx),
+            3 => {
+                let t = (rng.next_u64() as usize) % (idx.len() + 1);
+                idx.truncate(t);
+            }
+            _ => {
+                let n = (rng.next_u64() % 96) as usize;
+                idx = wire_random_bytes(&mut rng, n);
+            }
+        }
+        match OperationIndex::decode(&idx) {
+            Ok(index) => {
+                cov.indices_ok += 1;
+                // No re-encode guard here; the decoder's per-site checks are the
+                // contract, so assert them directly — and assert injectivity,
+                // which the `Vec`-order preservation makes non-trivial.
+                assert_eq!(
+                    index.encode(),
+                    idx,
+                    "the operation-index decoder accepted a non-canonical byte string"
+                );
+                assert!(
+                    index.blocks().windows(2).all(|w| w[0] < w[1]),
+                    "the index decoder accepted unsorted blocks"
+                );
+                assert!(
+                    index.entries().windows(2).all(|w| w[0].id < w[1].id),
+                    "the index decoder accepted unsorted entries"
+                );
+            }
+            Err(_) => cov.indices_rejected += 1,
+        }
+    }
+    cov
 }
 
 /// The crash-recovery fuzzer: `iters` randomized scenarios from `seed`. Each
@@ -537,5 +809,35 @@ mod tests {
     #[test]
     fn manifest_selection_harness_passes() {
         run_manifest_selection_harness();
+    }
+
+    /// Two deterministic smoke seeds over every bundle decode surface.
+    ///
+    /// The coverage assertions are load-bearing. A wire fuzzer that never gets a
+    /// decoder to say `Ok` proves only the absence of a panic — and this one
+    /// initially reached the operation index's accept path *zero* times, because
+    /// random bytes never decode as an index. It found the lenient
+    /// `CompressionAlgorithm::None` parameter byte only once its index corpus
+    /// was real.
+    #[test]
+    fn wire_decode_fuzz_smoke_seed_a() {
+        let cov = run_wire_decode_fuzz(20_000, 0x0DEC_0DE0_F022_1234);
+        assert!(cov.opens_ok > 1_000, "{cov:?}");
+        assert!(cov.opens_rejected > 1_000, "{cov:?}");
+        assert!(cov.manifests_ok > 1_000, "{cov:?}");
+        assert!(cov.manifests_rejected > 1_000, "{cov:?}");
+        assert!(cov.blocks_ok > 1_000, "{cov:?}");
+        assert!(cov.blocks_rejected > 1_000, "{cov:?}");
+        assert!(cov.indices_ok > 1_000, "{cov:?}");
+        assert!(cov.indices_rejected > 1_000, "{cov:?}");
+    }
+
+    #[test]
+    fn wire_decode_fuzz_smoke_seed_b() {
+        let cov = run_wire_decode_fuzz(20_000, 0xF0FA_11BA_C0DE_5EED);
+        assert!(cov.opens_ok > 1_000, "{cov:?}");
+        assert!(cov.manifests_ok > 1_000, "{cov:?}");
+        assert!(cov.blocks_ok > 1_000, "{cov:?}");
+        assert!(cov.indices_ok > 1_000, "{cov:?}");
     }
 }

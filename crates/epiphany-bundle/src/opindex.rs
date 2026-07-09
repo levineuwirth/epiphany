@@ -295,6 +295,36 @@ mod tests {
         .expect("valid build inputs")
     }
 
+    /// The index has **no** whole-value re-encode guard — it validates per-site
+    /// instead — so a lenient sub-codec is not caught for it, only for the
+    /// manifest. `CompressionAlgorithm::None` used to ignore its parameter byte,
+    /// which made this decoder accept two distinct byte strings for one value
+    /// while its own doc promised to "reject, never normalize". Found by the P3
+    /// wire fuzzer; fixed in the sub-codec, and pinned here at the surface that
+    /// exposed it.
+    #[test]
+    fn a_lenient_compression_byte_is_rejected_rather_than_normalized() {
+        let index = OperationIndex::build(&[(block_ref(0x11, 576, 64), vec![([2; 16], 8)])])
+            .expect("valid build inputs");
+        let bytes = index.encode();
+        assert_eq!(OperationIndex::decode(&bytes).unwrap(), index);
+
+        // blocks count (4) + ChunkRef: id 32, kind 1, schema 4, offset 8,
+        // compressed_length 8, uncompressed_length 8, compression tag 1.
+        const PARAM_AT: usize = 4 + 32 + 1 + 4 + 8 + 8 + 8 + 1;
+        assert_eq!(bytes[PARAM_AT - 1], 0, "the compression tag is None");
+        assert_eq!(bytes[PARAM_AT], 0, "its parameter byte is canonically zero");
+
+        let mut lenient = bytes.clone();
+        lenient[PARAM_AT] = 0xFF;
+        assert_ne!(lenient, bytes);
+        assert!(
+            OperationIndex::decode(&lenient).is_err(),
+            "a non-zero None parameter must be rejected; accepting it made \
+             decode non-injective (two byte strings, one value)"
+        );
+    }
+
     #[test]
     fn payload_encoding_is_golden() {
         // PROVISIONAL golden lock (DECISIONS.md "Operation index"): the byte

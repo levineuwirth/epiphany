@@ -428,3 +428,54 @@ implies it, the canonical-base-stays-major-0 rule is now enforced per ROLE
 (`mis_stamped_canonical_base`, consulted at open and commit → read-only +
 `UnsupportedCanonicalChunkMajor`, regression-locked). The `SnapshotId` in
 the harness remains a hash-truncation stand-in (companion open question).
+
+## Push 5 / P3 — the bundle wire, and a lenient sub-codec (2026-07-09)
+
+A wire-decode fuzzer (`fuzz::run_wire_decode_fuzz`) over `Bundle::open`,
+`Manifest::decode`, `OperationIndex::decode`, `decode_block`, and
+`envelope_offsets`. The existing crash-recovery fuzzer corrupts the image the way
+a *crash* does — torn writes at syscall boundaries. This one corrupts it the way
+an attacker or a bit-rotted disk does: arbitrary bytes, anywhere.
+
+**One real defect: `CompressionAlgorithm::None` ignored its parameter byte.**
+`decode` read it and discarded it; `encode` writes `0`. So `[0, 0xFF]` and
+`[0, 0]` both decoded to `None`, and the first re-encoded to the second — a
+lenient, **non-injective** codec, inherited by every structure embedding a
+`ChunkRef`.
+
+Its visibility depended entirely on whether the embedder had a whole-value
+re-encode guard:
+
+- `Manifest::decode` **has** one, and it is *total* — verified by exhaustive
+  single-byte perturbation, every one rejected. It caught this. (`encode_body`
+  sorts and deduplicates every vector, and `manifest_id` is derived from the
+  body, which is why the guard is complete here where `MaterializedState`'s is
+  not — see `epiphany-ops/DECISIONS.md` §"Push 5 / P2".)
+- `OperationIndex::decode` has **no** guard; it validates per-site instead. It
+  accepted both byte strings while its own doc promised to *"reject (never
+  normalizing) any non-canonical form"*. That promise was false.
+
+Fixed at the source rather than papered over at the index: a non-zero `None`
+parameter is now rejected. Exhaustive sweep (every byte × every value, plus an
+8-byte extreme-integer window) finds no remaining non-injective site.
+
+**This contradicted ratified spec text**, which said the byte was *"present but
+zero, and ignored on read"*. Escalated rather than fixed unilaterally; the user
+ratified strict decode and the spec amendment. Core spec's clause is superseded;
+Binary Format gains `req:binfmt:compression-none-parameter` and moves 0.7.0 →
+0.8.0. No wire layout changed and no conforming writer emits a non-zero byte, so
+this rejects only corrupt or adversarial input and no existing file changes
+meaning.
+
+**Coverage is the harness's job, again.** The fuzzer's first run reached the
+operation index's accept path **zero times** — random bytes never decode as an
+index — so every assertion under it was vacuous. It found the bug only after the
+index corpus was built from real `OperationIndex::build` output. The smoke tests
+now assert on a `WireFuzzCoverage` so that can never silently regress. 1.5M
+inputs across five seeds, ~1s each, clean after the fix.
+
+Three regressions, each mutation-verified by restoring the leniency:
+`compression_none_rejects_a_non_zero_parameter_byte` (the codec),
+`a_lenient_compression_byte_is_rejected_rather_than_normalized` (the index, the
+surface that exposed it), and `every_single_byte_perturbation_of_a_manifest_is_rejected`
+(the guard's totality, and the asymmetry that hid the bug).

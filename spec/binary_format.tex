@@ -235,7 +235,7 @@
   {\Large\scshape\color{epiphanyslate}Binary Format}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.7.0 --- Transpose algebra (OperationKind/Tag 30; the major-0 minor append, and the strictly-increasing sequence)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.8.0 --- Strict CompressionAlgorithm decode (the non-zero None parameter is rejected, not ignored)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the byte layouts it defines}
   \vfill
 \end{titlepage}
@@ -1858,6 +1858,30 @@ Zstd$\{$level$\}$ $= (\tablenums{1}, \mathit{level})$; Reserved$(v)$ $=
 (\tablenums{2}, v)$. \texttt{None} is \emph{not} a bare tag --- its zero
 parameter byte is always present.
 
+\begin{requirement}
+  \label{req:binfmt:compression-none-parameter}
+  A decoder \MUST{} reject a \texttt{CompressionAlgorithm} whose discriminant
+  is \tablenums{0} (\texttt{None}) and whose parameter byte is non-zero. It
+  \MUSTNOT{} ignore the byte, and \MUSTNOT{} normalize it to zero.
+\end{requirement}
+
+\begin{rationale}
+  Ignoring it made the codec \emph{lenient}, and therefore non-injective:
+  $(\tablenums{0}, \tablenums{255})$ and $(\tablenums{0}, \tablenums{0})$
+  decoded to one value, which re-encodes to the latter. Every structure
+  embedding a \texttt{ChunkRef} inherited that. A whole-value
+  re-encode-and-compare guard hides it --- the manifest has one --- but the
+  operation index does not, and so accepted two distinct payloads for one index
+  while its own contract promised to reject non-canonical bytes rather than
+  normalize them. Content-addressing rests on distinct bytes meaning distinct
+  values.
+
+  No conforming writer emits a non-zero parameter for \texttt{None}, so this
+  rejects only corrupt or adversarial input; no existing file changes meaning.
+  Found by the wire-decode fuzzer (Push~5, P3); supersedes the core
+  specification's earlier ``present but zero, and ignored on read''.
+\end{rationale}
+
 \textbf{Read rules.} Writers in this format version emit \texttt{None} only;
 \emph{reading} zstd at any level is a conformance \MUST{}. A zstd payload is
 decompressed into a buffer sized \emph{exactly} by the declared
@@ -3207,6 +3231,14 @@ layouts of Section~\ref{sec:values:representative}.
   changed. Semantics: Operation Catalog \sectionsc{TransposeInterval},
   0.8.0; algebra: core Chapter~2, \sectionsc{Transposition and the
   Interval Type}. \\
+    \today & Chunk references & 0.8.0 --- Strict \texttt{CompressionAlgorithm}
+  decode (Push~5, P3): \texttt{req:binfmt:compression-none-parameter} \MUST{}
+  reject a non-zero parameter byte on the \texttt{None} discriminant. Ignoring
+  it made the codec non-injective --- two byte strings, one value --- which
+  every structure embedding a \texttt{ChunkRef} inherited; the operation index,
+  having no whole-value re-encode guard, accepted both. Found by the wire-decode
+  fuzzer. Supersedes the core specification's ``ignored on read''; no wire
+  layout changed and no conforming writer is affected. \\
 \bottomrule
 \end{longtable}
 

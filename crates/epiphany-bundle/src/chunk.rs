@@ -136,12 +136,27 @@ impl CompressionAlgorithm {
         };
     }
 
+    /// Decodes strictly: `None` carries no parameter, so its parameter byte
+    /// **must** be zero.
+    ///
+    /// Accepting a non-zero one made this codec lenient, and therefore
+    /// non-injective: `[0, 0xFF]` and `[0, 0]` both decoded to `None`, which
+    /// re-encodes to `[0, 0]`. Any structure embedding a [`ChunkRef`] without a
+    /// whole-value re-encode guard inherited that — `OperationIndex::decode`
+    /// did, while promising in its own doc to reject non-canonical bytes rather
+    /// than normalize them. A conforming writer never emits a non-zero
+    /// parameter here, so this rejects only corrupt or adversarial input.
     #[inline]
     pub(crate) fn decode(r: &mut Reader) -> Result<Self, DecodeError> {
         let tag = r.get_u8()?;
         let param = r.get_u8()?;
         Ok(match tag {
-            0 => CompressionAlgorithm::None,
+            0 if param == 0 => CompressionAlgorithm::None,
+            0 => {
+                return Err(DecodeError::Malformed(
+                    "CompressionAlgorithm::None carries a non-zero parameter byte",
+                ))
+            }
             1 => CompressionAlgorithm::Zstd { level: param },
             2 => CompressionAlgorithm::Reserved(param),
             other => {
@@ -295,6 +310,45 @@ impl Ord for ChunkRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `CompressionAlgorithm::None` carries no parameter, so its parameter byte
+    /// is normative zero. Accepting a non-zero one made the codec lenient: two
+    /// distinct byte strings decoded to one value, and re-encoding produced a
+    /// third. Found by the P3 wire fuzzer via `OperationIndex`, which embeds a
+    /// `ChunkRef` and has no whole-value re-encode guard to hide it.
+    #[test]
+    fn compression_none_rejects_a_non_zero_parameter_byte() {
+        let mut w = Writer::new();
+        CompressionAlgorithm::None.encode(&mut w);
+        let canonical = w.into_bytes();
+        assert_eq!(canonical, vec![0, 0]);
+        assert_eq!(
+            CompressionAlgorithm::decode(&mut Reader::new(&canonical)).unwrap(),
+            CompressionAlgorithm::None
+        );
+
+        for param in [1u8, 0x7F, 0xFF] {
+            let lenient = vec![0, param];
+            assert!(
+                CompressionAlgorithm::decode(&mut Reader::new(&lenient)).is_err(),
+                "None with parameter {param:#04x} must be rejected, never normalized to zero"
+            );
+        }
+
+        // The parameter is meaningful for the other two, so it round-trips.
+        for algo in [
+            CompressionAlgorithm::Zstd { level: 0xFF },
+            CompressionAlgorithm::Reserved(0xFF),
+        ] {
+            let mut w = Writer::new();
+            algo.encode(&mut w);
+            let bytes = w.into_bytes();
+            assert_eq!(
+                CompressionAlgorithm::decode(&mut Reader::new(&bytes)).unwrap(),
+                algo
+            );
+        }
+    }
 
     #[test]
     fn chunk_kind_discriminants_round_trip() {

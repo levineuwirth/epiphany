@@ -709,6 +709,57 @@ mod tests {
     use crate::chunk::{chunk_id, ChunkKind};
     use crate::ids::SnapshotId;
 
+    /// The manifest's whole-value re-encode guard is **total**: every single-byte
+    /// perturbation is rejected. `manifest_id` is derived from the body, so a
+    /// body edit fails the id check and an id edit fails the derivation; and
+    /// `encode_body` sorts and deduplicates every vector, so an out-of-order
+    /// encoding cannot round-trip either.
+    ///
+    /// This is what makes the guard complete *here* and not in
+    /// `MaterializedState` (epiphany-ops), whose encoder writes its `Vec` fields
+    /// verbatim, nor in `OperationIndex`, which has no guard at all. The lenient
+    /// `CompressionAlgorithm::None` parameter byte was invisible through the
+    /// manifest for exactly this reason, and visible through the index.
+    #[test]
+    fn every_single_byte_perturbation_of_a_manifest_is_rejected() {
+        use crate::chunk::{ChunkRef, CompressionAlgorithm};
+        use crate::ids::SchemaVersion;
+
+        let mut m = Manifest::empty(DocumentId([5; 16]));
+        m.operation_roots.push(ChunkRef {
+            id: ChunkId(ContentHash([0x11; 32])),
+            kind: ChunkKind::OperationEnvelopeBlock,
+            schema_version: SchemaVersion::V0,
+            offset: 576,
+            compressed_length: 64,
+            uncompressed_length: 64,
+            compression: CompressionAlgorithm::None,
+            hash: ContentHash([0x11; 32]),
+        });
+        let bytes = m.encode();
+        // `encode` re-derives `manifest_id` from the body, so the decoded
+        // manifest carries the derived id while `m` still holds the empty one.
+        // Compare the canonical bytes, which is what the guard compares.
+        assert_eq!(Manifest::decode(&bytes).unwrap().encode(), bytes);
+
+        for i in 0..bytes.len() {
+            for delta in [1u8, 0x7F, 0xFF] {
+                let mut b = bytes.clone();
+                b[i] ^= delta;
+                if b == bytes {
+                    continue;
+                }
+                match Manifest::decode(&b) {
+                    Err(_) => {}
+                    Ok(decoded) => panic!(
+                        "byte {i} ^ {delta:#04x} was accepted; re-encode matches input: {}",
+                        decoded.encode() == b
+                    ),
+                }
+            }
+        }
+    }
+
     #[test]
     fn operation_block_summaries_round_trip_and_are_selectable() {
         let mut m = Manifest::empty(DocumentId([5; 16]));
