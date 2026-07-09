@@ -707,49 +707,68 @@ constrained stage stacks at a fixed pitch — separate. `ENGRAVER_VERSION` 10 �
 11 (a multi-staff score whose staves press together shifts them apart; a
 single-staff score, with no inter-staff pair, is byte-identical).
 
-**Attribution (`vertical_band` + owning-glyph).** Every resolved primitive is
-attributed to its owning staff: a glyph via its `vertical_band`
-(`VerticalBandKind::Staff` → `StaffId`); a ledger via its notehead
-(`owning_glyph`, a shared `Pitch` source); a **stem** — which has no same-source
-glyph — via the glyph nearest its BASE point *in two dimensions*; a staff line
-via its `Staff` provenance source; a **curve** via its arc direction against the
-staff-line bands (below). Spacing is horizontal-only, so a primitive's y is
-unchanged from the source frame the attribution reads, and the resolved and
-source indices line up. (The geometric `round(-y / pitch)` alternative was
-rejected: an extreme ledgered note on the top or bottom staff rounds to a
-non-existent neighbour.)
+**Attribution is DECLARED, not inferred.** Every primitive — glyph, stroke,
+curve — carries a `vertical_band`, and the solve reads its owning staff straight
+out of it (`VerticalBandKind::Staff` → `StaffId`). Content owned by no staff
+names a non-`Staff` band and is attributed to `None`, taking no staff shift.
+There is no geometry in the attribution path at all: no distances, no epsilons,
+no fallbacks. The projection that emitted the primitive already knew the answer —
+a stem's band is its note's, a slur's is its notes' — so it says so.
+(The geometric `round(-y / pitch)` alternative was rejected early: an extreme
+ledgered note on the top or bottom staff rounds to a non-existent neighbour.)
 
-**Why staff attribution must be y-aware (review fix).** The first cut reused
-`component_glyph`, whose fallback picks the nearest glyph **by x alone**. That is
-right for a *slot* — both staves of a system share their x columns, hence their
-spring slots, so the horizontal delta is the same either way — but it is wrong
-for a *staff*: it handed a lower-staff stem to the UPPER staff's notehead, so the
-stem kept the wrong vertical shift and tore off its own head by several staff
-spaces (and polluted the upper staff's content extent, inflating the computed
-gap). The staff attribution now uses a 2-D nearest for that fallback.
-`component_glyph` is unchanged and still serves the horizontal path. Locked by
-`multi_staff_stems_stay_on_their_own_staff` (a stem's base sits at its notehead
-on both the single- and multi-staff fixtures). A related correction: staff-
-attributed primitives contribute their y ONLY through the shifted path
-(`Extent::add_x` for x, `add_y` for the shifted staff extent), so a lower staff's
-unshifted content can no longer inflate a system's `max_y`.
+**Why: inferring the owner from proximity failed twice, in ways a gate missed.**
+Both bugs shipped into a committed golden and were caught only by review.
 
-**Why a curve cannot use ANY nearest-glyph rule (second review fix).** A slur is
-the same bug class one layer deeper, and no distance metric can fix it. A slur's
-start endpoint is deliberately *lifted off* its notes — `staff_top + gap` above,
-`staff_bottom - gap` below — into the inter-staff zone, where the nearest glyph
-is frequently a note on the ADJACENT staff (in `two_staff_close_content`, a top-
-staff ledger note). The bottom staff's slur was therefore attributed to the top
-staff, kept shift 0, and tore off its own notes — baked into the golden,
-byte-identical to the pre-solve slur path. The rule is now the one that reads the
-geometry as drawn: **the arc's direction picks the side.** `p1.y >= p0.y` means
-the curve arcs upward, so it hangs BELOW a staff → take the staff whose staff-
-line band bottom is greatest among those at or above `p0.y`; otherwise it arcs
-downward, sitting ABOVE a staff → take the staff whose band top is smallest among
-those at or below `p0.y`. Falls back to the nearest band mid-line when neither
-side matches (a curve inside a staff). Locked by `a_slur_travels_with_its_own_staff`
-(the slur's endpoint band-gap to the bottom staff is smaller than to the top, and
-under a staff space of margin).
+1. *Stems.* The first cut reused `component_glyph`, whose fallback picks the
+   nearest glyph **by x alone**. That is right for a *slot* — both staves of a
+   system share their x columns, hence their spring slots, so the horizontal
+   delta is the same either way — but wrong for a *staff*: it handed a lower-staff
+   stem to the UPPER staff's notehead, so the stem kept the wrong vertical shift
+   and tore off its own head by several staff spaces (and polluted the upper
+   staff's content extent, inflating the computed gap). Patched with a 2-D
+   nearest.
+2. *Slurs.* The same class one layer deeper, and unfixable by any distance
+   metric. A slur's start endpoint is deliberately *lifted off* its notes —
+   `staff_top + gap` above, `staff_bottom - gap` below — into the inter-staff
+   zone, where the nearest glyph is frequently a note on the ADJACENT staff (in
+   `two_staff_close_content`, a top-staff ledger note). The bottom staff's slur
+   was attributed to the top staff, kept shift 0, and tore off its own notes.
+   Patched with an arc-direction rule read against the staff-line bands.
+
+Both patches were *correct* and both were the wrong shape: they reconstructed, by
+geometric inference, a fact the projection had in hand and discarded. `Stroke`
+and `Curve` now declare `vertical_band` exactly as `GlyphObject` always has, and
+the two rules above are deleted. The engraver's attribution is three map lookups.
+Locked by `multi_staff_stems_stay_on_their_own_staff` and
+`a_slur_travels_with_its_own_staff` (both kept — they now assert an outcome the
+data model *guarantees*, which is where a regression would surface if the
+declaration were ever dropped), and by layout-ir's
+`every_stroke_and_curve_names_a_band_that_exists`. Adopting it churned **no
+golden**: the declared owner agrees with the inferred one on every fixture.
+
+A related correction from the same review: staff-attributed primitives contribute
+their y ONLY through the shifted path (`Extent::add_x` for x, `add_y` for the
+shifted staff extent), so a lower staff's unshifted content can no longer inflate
+a system's `max_y`.
+
+**What the band model had to grow to carry this.** Two bands were previously
+emitted only when a *glyph* needed them, which left strokes naming bands that did
+not exist (validation now rejects that outright, as `UnknownBand`):
+
+- A **staff band** is emitted for every staff of the region, in the region's own
+  staff order — the order `y_origin` stacks by — rather than only for staves that
+  emitted a glyph. A staff whose clef is unbundled engraves to an anchor *stroke*
+  and no glyph, and would otherwise have had no band.
+- The **margin band** is emitted unconditionally. A region's own traced anchor is
+  a stroke, and it names the margin band whether or not any region-level glyph
+  puts a member in it.
+
+Both may carry zero members, as an inter-staff gap band already did: band
+*membership* drives the spring solve over glyphs; band *existence* is what
+attribution needs. Strokes and curves are deliberately NOT added to
+`VerticalBand::members` — their band reference is one-way, validated only to name
+a real band.
 
 **Known gaps (reviewed, not bugs today).**
 
@@ -762,12 +781,16 @@ under a staff space of margin).
   refinement scoring only the EXCESS beyond the content-required minimum is the
   deferred follow-up. Asserted, not silently tolerated, in
   `inter_staff_solve_separates_colliding_staves`.
-- **Staff-less content does not move.** Margin-band glyphs, and spanning strokes
-  whose source is `RepeatStructure` (volta brackets), attribute to no staff, take
-  shift 0, and stay put while the staves below them descend. Symmetrically, a
-  volta stroke that happens to sit near a notehead is attributed to *that* staff
-  by the 2-D nearest fallback — possibly the wrong one. No fixture exercises
-  either; both want the band model to carry the attribution outright.
+- **Staff-less content takes no staff shift** — margin-band glyphs, and a volta
+  bracket whose repeat spans several staves. It stays put while the staves below
+  it descend, which is right for content that sits above the top staff (the top
+  staff's shift is always 0). A volta anchored to a *single* staff declares that
+  staff's band and moves with it. This used to be an accident of geometry — a
+  volta near a notehead was dragged onto that notehead's staff by the nearest-
+  glyph fallback — and is now a declared property; see "Attribution is DECLARED"
+  above. What remains undecided is genuinely staff-less content placed *between*
+  two staves: it holds still while the lower staff descends away from it. That
+  wants a height model for the inter-staff gap band, not an attribution rule.
 - The preferred gap is read from `VerticalBand::inter_staff_gap(VerticalBandId(0))`
   rather than from the region's *declared* inter-staff band. Harmless while both
   come from the same constructor; it would silently diverge from the metric the

@@ -546,6 +546,7 @@ impl HorizontalRemap {
                     thickness: s.thickness,
                     layer: s.layer,
                     style: s.style,
+                    vertical_band: s.vertical_band,
                 }
             })
             .collect()
@@ -571,6 +572,7 @@ impl HorizontalRemap {
                     layer: c.layer,
                     style: c.style,
                     line: c.line,
+                    vertical_band: c.vertical_band,
                 }
             })
             .collect()
@@ -1518,8 +1520,10 @@ mod tests {
         // must not leak into canonical_bytes or the renderer.
         let mut input = fixture();
         let provenance = input.glyphs[0].provenance.clone();
+        let band = input.glyphs[0].vertical_band;
         input.strokes.push(epiphany_layout_ir::Stroke {
             provenance,
+            vertical_band: band,
             from: epiphany_layout_ir::Point::new(0.0, 0.0),
             to: epiphany_layout_ir::Point::new(1.0, 0.0),
             thickness: epiphany_layout_ir::StaffSpace(f32::MAX),

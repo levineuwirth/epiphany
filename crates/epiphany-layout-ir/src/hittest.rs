@@ -524,6 +524,7 @@ mod tests {
     fn stroke(from: Point, to: Point, layer: i32) -> Stroke {
         Stroke {
             provenance: Provenance::projected(TypedObjectId::Staff(StaffId::from_raw(1)), vec![]),
+            vertical_band: crate::VerticalBandId(0),
             from,
             to,
             thickness: StaffSpace(0.2),
@@ -631,6 +632,7 @@ mod tests {
         let slur = SlurId::new(epiphany_core::ReplicaId(3), 9);
         let curve = Curve {
             provenance: Provenance::projected(TypedObjectId::Slur(slur), vec![]),
+            vertical_band: crate::VerticalBandId(0),
             p0: Point::new(0.0, 0.0),
             p1: Point::new(1.0, 2.0),
             p2: Point::new(3.0, 2.0),

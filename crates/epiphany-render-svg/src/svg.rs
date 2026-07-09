@@ -799,6 +799,7 @@ mod tests {
         // one more and checks it renders and traces on top of them.
         let base_strokes = layout.strokes.len();
         layout.strokes.push(Stroke {
+            vertical_band: epiphany_layout_ir::VerticalBandId(0),
             provenance: layout.glyphs[0].provenance.clone(),
             from: Point::new(0.0, 0.0),
             to: Point::new(4.0, 0.0),
@@ -833,6 +834,7 @@ mod tests {
         let mut layout = stub_layout(11);
         let prov = layout.glyphs[0].provenance.clone();
         let make = |line| Curve {
+            vertical_band: epiphany_layout_ir::VerticalBandId(0),
             provenance: prov.clone(),
             p0: Point::new(0.0, 0.0),
             p1: Point::new(1.0, 2.0),
@@ -906,6 +908,7 @@ mod tests {
         let provenance = layout.glyphs[0].provenance.clone();
         layout.glyphs.clear();
         layout.strokes.push(Stroke {
+            vertical_band: epiphany_layout_ir::VerticalBandId(0),
             provenance,
             from: Point::new(0.0, 0.0),
             to: Point::new(4.0, 0.0),

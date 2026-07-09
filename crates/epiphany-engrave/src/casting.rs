@@ -638,10 +638,20 @@ pub(crate) fn cast_off(
     // Attribute every primitive to its owning staff so the gaps BETWEEN a
     // system's staves can be renegotiated: the constrained stage stacks staves
     // at a fixed pitch, so tightly ledgered or slurred adjacent staves collide.
-    // Glyphs name their staff via their vertical band; a stem/ledger tracks its
-    // notehead; a staff line names its staff; a slur takes the staff of the
-    // note nearest its start. Spacing is horizontal-only, so a primitive's y is
-    // unchanged from the source frame the attribution is computed in.
+    //
+    // Attribution is a BAND LOOKUP, not a geometric guess. Every primitive —
+    // glyph, stroke, curve — declares the vertical band it belongs to, and the
+    // projection that emitted it knew the answer: a stem's band is its note's, a
+    // slur's is its notes'. Content owned by no staff (a page-margin annotation,
+    // a repeat structure spanning several staves) names a non-`Staff` band and
+    // is attributed to `None` — it takes no staff shift.
+    //
+    // Inferring the owner from proximity instead is a trap this code fell into
+    // twice. A stem sits under its notehead but shares x columns with the staff
+    // above; a slur's endpoints are lifted clear of its own staff by design, so
+    // the nearest notehead is routinely on the ADJACENT staff. Neither is
+    // recoverable from geometry, and both silently tore primitives off their
+    // notes. See DECISIONS.md, "Why attribution is declared, not inferred".
     let band_to_staff: BTreeMap<VerticalBandId, StaffId> = input
         .vertical_bands
         .iter()
@@ -650,86 +660,21 @@ pub(crate) fn cast_off(
             _ => None,
         })
         .collect();
-    let glyph_band_staff = |g: &GlyphObject| band_to_staff.get(&g.vertical_band).copied();
-    let glyph_staff_of: Vec<Option<StaffId>> = input.glyphs.iter().map(glyph_band_staff).collect();
-    // The glyph nearest a point in TWO dimensions. Attribution to a *staff* must
-    // be y-aware: `component_glyph`'s horizontal fallback picks the nearest glyph
-    // by x alone, which is right for a slot (both staves of a system share their
-    // x columns, hence their slots) but would hand a stem to the ADJACENT staff.
-    let nearest_glyph = |x: f32, y: f32| -> Option<&GlyphObject> {
-        input.glyphs.iter().min_by(|a, b| {
-            let d = |g: &GlyphObject| (g.baseline.x.0 - x).powi(2) + (g.baseline.y.0 - y).powi(2);
-            d(a).total_cmp(&d(b))
-        })
-    };
+    let staff_of = |band: VerticalBandId| band_to_staff.get(&band).copied();
+    let glyph_staff_of: Vec<Option<StaffId>> = input
+        .glyphs
+        .iter()
+        .map(|g| staff_of(g.vertical_band))
+        .collect();
     let stroke_staff_of: Vec<Option<StaffId>> = input
         .strokes
         .iter()
-        .map(|s| match s.provenance.source {
-            // A staff line names its staff outright.
-            TypedObjectId::Staff(st) => Some(st),
-            // A ledger shares its notehead's `Pitch` source (`owning_glyph`);
-            // a stem has no same-source glyph, so it takes the staff of the
-            // glyph nearest its BASE (`from`, which sits at the notehead).
-            _ => owning_glyph(s, &input.glyphs)
-                .or_else(|| nearest_glyph(s.from.x.0, s.from.y.0))
-                .and_then(glyph_band_staff),
-        })
+        .map(|s| staff_of(s.vertical_band))
         .collect();
-    // Each staff's staff-line band, in the source frame (a staff's lines sit at
-    // the same y in every system, since the constrained stage stacks them once).
-    let mut staff_lines: BTreeMap<StaffId, (f32, f32)> = BTreeMap::new();
-    for s in &input.strokes {
-        if let TypedObjectId::Staff(st) = s.provenance.source {
-            let (lo, hi) = (s.from.y.0.min(s.to.y.0), s.from.y.0.max(s.to.y.0));
-            staff_lines
-                .entry(st)
-                .and_modify(|e| {
-                    e.0 = e.0.min(lo);
-                    e.1 = e.1.max(hi);
-                })
-                .or_insert((lo, hi));
-        }
-    }
-    // A slur's staff. Its endpoints are LIFTED clear of their own staff — an
-    // above-slur sits `STAFF_HEIGHT + gap` over the top line, a below-slur a gap
-    // under the bottom one — so they land in the inter-staff zone and the
-    // notehead nearest `p0` can belong to the ADJACENT staff (the same trap the
-    // stroke attribution fell into, and a WORSE one: the lift is by design, so
-    // no distance metric can recover the staff). Use the arc's direction, which
-    // the control point gives (`p1.y > p0.y` ⇔ above), against the staff-line
-    // bands: an ABOVE slur belongs to the nearest staff whose top line is at or
-    // below its endpoints; a BELOW slur to the nearest staff whose bottom line is
-    // at or above them. That is exact for any lift, with no constants shared.
-    let eps = 1e-3_f32;
     let curve_staff_of: Vec<Option<StaffId>> = input
         .curves
         .iter()
-        .map(|c| {
-            let p0y = c.p0.y.0;
-            let above = c.p1.y.0 >= p0y;
-            let picked = if above {
-                staff_lines
-                    .iter()
-                    .filter(|(_, (_, hi))| *hi <= p0y + eps)
-                    .max_by(|a, b| a.1 .1.total_cmp(&b.1 .1))
-            } else {
-                staff_lines
-                    .iter()
-                    .filter(|(_, (lo, _))| *lo >= p0y - eps)
-                    .min_by(|a, b| a.1 .0.total_cmp(&b.1 .0))
-            };
-            // A slur clear of every staff on its arc side (no staff below an
-            // above-slur) falls back to the staff whose band is nearest.
-            picked
-                .or_else(|| {
-                    staff_lines.iter().min_by(|a, b| {
-                        let d = |e: &(f32, f32)| (((e.0 + e.1) * 0.5) - p0y).abs();
-                        d(a.1).total_cmp(&d(b.1))
-                    })
-                })
-                .map(|(st, _)| *st)
-        })
+        .map(|c| staff_of(c.vertical_band))
         .collect();
 
     // Pass A: system extents (unshifted), and per (system, staff) content
@@ -1070,6 +1015,7 @@ pub(crate) fn cast_off(
                         thickness: spaced.thickness,
                         layer: spaced.layer,
                         style: spaced.style,
+                        vertical_band: spaced.vertical_band,
                     };
                     if let TypedObjectId::Staff(staff) = spaced.provenance.source {
                         mark_staff(&mut staff_marks, *s, staff, &stroke);
@@ -1138,6 +1084,7 @@ pub(crate) fn cast_off(
                         thickness: curve.thickness,
                         layer: curve.layer,
                         style: curve.style,
+                        vertical_band: curve.vertical_band,
                         line: curve.line,
                     };
                     if k == 0 {
@@ -1712,6 +1659,7 @@ fn translated(stroke: &Stroke, dx: f32, dy: f32) -> Stroke {
         thickness: stroke.thickness,
         layer: stroke.layer,
         style: stroke.style,
+        vertical_band: stroke.vertical_band,
     }
 }
 
@@ -1782,6 +1730,7 @@ fn place_stroke(
         thickness: spaced.thickness,
         layer: spaced.layer,
         style: spaced.style,
+        vertical_band: spaced.vertical_band,
     }
 }
 

@@ -3241,6 +3241,7 @@ mod tests {
             .zip(&line_provenance)
             .map(|(&y, provenance)| Stroke {
                 provenance: provenance.clone(),
+                vertical_band: epiphany_layout_ir::VerticalBandId(0),
                 from: Point::new(0.0, y),
                 to: Point::new(88.0, y),
                 thickness: StaffSpace(0.1),

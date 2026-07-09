@@ -86,6 +86,17 @@ pub struct Stroke {
     pub thickness: StaffSpace,
     pub layer: i32,
     pub style: GlyphStyle,
+    /// The vertical band this stroke belongs to, declared by the projection that
+    /// emitted it — the same band its owning object's glyphs declare. A vertical
+    /// solver reads *this*, never the stroke's geometry: a stem, a ledger line,
+    /// and a staff line all name their staff outright, so no consumer has to
+    /// guess an owner from proximity. Unlike a glyph, a stroke is not listed in
+    /// [`VerticalBand::members`] (band membership drives the spring solve over
+    /// glyphs); this is a one-way reference, validated only to name a real band.
+    ///
+    /// Content owned by no staff — a page-margin annotation, a repeat structure
+    /// spanning several staves — names the region's margin band.
+    pub vertical_band: VerticalBandId,
 }
 
 impl Stroke {
@@ -97,11 +108,12 @@ impl Stroke {
 
 /// A cubic-bézier curve primitive — the third pipeline primitive kind, drawn as
 /// a stroked (unfilled) path (Chapter 7 §"Non-overreach"). Slurs engrave to
-/// one of these; ties and other span curves will follow. Like [`Stroke`] it is
-/// a *free* primitive (no vertical band, no spring slot): the solver re-spaces
-/// its control points by the horizontal coordinate map, exactly as it does a
-/// spanning stroke's endpoints. The four control points are world-space
-/// staff-space coordinates, `p0`→`p3` the drawing order.
+/// one of these; ties and other span curves will follow. Like [`Stroke`] it
+/// holds no spring slot — the solver re-spaces its control points by the
+/// horizontal coordinate map, exactly as it does a spanning stroke's endpoints —
+/// but it does declare its [`vertical_band`](Curve::vertical_band). The four
+/// control points are world-space staff-space coordinates, `p0`→`p3` the drawing
+/// order.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Curve {
     pub provenance: Provenance,
@@ -115,6 +127,17 @@ pub struct Curve {
     /// The line pattern the renderer strokes the path with (a slur's authored
     /// `SpanStyle.line`). Solid, dashed, or dotted.
     pub line: LineStyle,
+    /// The vertical band this curve belongs to — see [`Stroke::vertical_band`].
+    ///
+    /// This matters more for a curve than for any other primitive. A slur's
+    /// endpoints are *lifted clear* of its own staff by construction (an above-
+    /// slur sits a staff height plus a gap over the top line), so they land in
+    /// the inter-staff zone where the nearest notehead can belong to the
+    /// ADJACENT staff. No geometric rule recovers the owner. The projection
+    /// knows it — a slur's staff is the staff of its notes — so it declares it.
+    /// A slur whose notes span two staves is owned by neither and names the
+    /// margin band.
+    pub vertical_band: VerticalBandId,
 }
 
 impl Curve {
@@ -538,6 +561,15 @@ impl ConstrainedLayoutIR {
                     stroke.id(),
                 ));
             }
+            // A stroke's band is a one-way reference (it is not in `members`),
+            // so the only thing to enforce is that it names a band that exists —
+            // a dangling one would silently drop the stroke out of the vertical
+            // solve's attribution.
+            if !band_ids.contains(&stroke.vertical_band) {
+                return Err(ConstrainedValidationError::UnknownBand(
+                    stroke.vertical_band,
+                ));
+            }
         }
 
         for curve in &self.curves {
@@ -550,6 +582,9 @@ impl ConstrainedLayoutIR {
                 && curve.thickness.quantize().is_some();
             if !geometry_quantizes || curve.thickness.0 < 0.0 {
                 return Err(ConstrainedValidationError::InvalidCurveGeometry(curve.id()));
+            }
+            if !band_ids.contains(&curve.vertical_band) {
+                return Err(ConstrainedValidationError::UnknownBand(curve.vertical_band));
             }
         }
         Ok(())
@@ -686,9 +721,11 @@ const VOLTA_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x564F_4C54_414
 /// monotonic — which is what lets a real solver re-space glyphs *and* the strokes
 /// that track them by a single coordinate map.
 ///
-/// Glyphs (only) are routed to the band of their own staff (Chapter 7 §"Vertical
-/// Bands"); strokes are free line primitives the solver positions but the band
-/// model does not contain. Structural objects with no Minimal-tier glyph
+/// Every primitive — glyph, stroke, curve — is routed to the band of its own
+/// staff (Chapter 7 §"Vertical Bands"), so a vertical solver reads a primitive's
+/// owner rather than inferring it from geometry. Only glyphs become band
+/// *members* (membership realizes the spring solve); a stroke's or curve's band
+/// is a one-way declaration. Structural objects with no Minimal-tier glyph
 /// (regions, voices, ties, slurs, beams, …) are carried as zero-extent traced
 /// anchors so provenance survives, pending their engraving in a higher tier.
 ///
@@ -1114,6 +1151,7 @@ pub fn try_to_constrained(
                             Point::new(staff_left, y),
                             Point::new(staff_right, y),
                             STAFF_LINE_THICKNESS,
+                            band_of(staff),
                         ));
                     }
                 }
@@ -1164,7 +1202,11 @@ pub fn try_to_constrained(
                         }
                         None => {
                             emit.diag(provenance.source, unbundled(clef_label(clef.shape)));
-                            emit.stroke(anchor(provenance, Point::new(default_x, yo)));
+                            emit.stroke(anchor(
+                                provenance,
+                                Point::new(default_x, yo),
+                                band_of(staff),
+                            ));
                         }
                     }
                 }
@@ -1173,7 +1215,11 @@ pub fn try_to_constrained(
                         let segs = event_stems.get(&eid).map(Vec::as_slice).unwrap_or(&[]);
                         if segs.is_empty() {
                             // A pitch-less, component-less note still needs its anchor.
-                            emit.stroke(anchor(provenance, Point::new(default_x, yo)));
+                            emit.stroke(anchor(
+                                provenance,
+                                Point::new(default_x, yo),
+                                band_of(staff),
+                            ));
                         }
                         for seg in segs {
                             let info = column(&seg.key);
@@ -1195,13 +1241,18 @@ pub fn try_to_constrained(
                                 thickness: StaffSpace(STEM_THICKNESS),
                                 layer: 0,
                                 style: ink(),
+                                vertical_band: band_of(staff),
                             });
                         }
                     }
                     Some(LayoutContent::Rest(_)) => {
                         let segs = event_rests.get(&eid).map(Vec::as_slice).unwrap_or(&[]);
                         if segs.is_empty() {
-                            emit.stroke(anchor(provenance, Point::new(default_x, yo)));
+                            emit.stroke(anchor(
+                                provenance,
+                                Point::new(default_x, yo),
+                                band_of(staff),
+                            ));
                         }
                         for seg in segs {
                             let info = column(&seg.key);
@@ -1227,14 +1278,22 @@ pub fn try_to_constrained(
                                 // keeps its place; later components do not vanish.
                                 None => {
                                     emit.diag(prov_ref.source, unbundled(rest_label()));
-                                    emit.stroke(anchor(prov_ref, Point::new(info.x, seg.y)));
+                                    emit.stroke(anchor(
+                                        prov_ref,
+                                        Point::new(info.x, seg.y),
+                                        band_of(staff),
+                                    ));
                                 }
                             }
                         }
                     }
                     // A non-pitched, non-rest event (unpitched / trajectory / cue):
                     // not engraved in this tier; a traced anchor keeps it.
-                    _ => emit.stroke(anchor(provenance, Point::new(default_x, yo))),
+                    _ => emit.stroke(anchor(
+                        provenance,
+                        Point::new(default_x, yo),
+                        band_of(staff),
+                    )),
                 },
                 TypedObjectId::Pitch(pid) => match pitch_heads.get(&pid) {
                     Some(heads) => {
@@ -1278,6 +1337,7 @@ pub fn try_to_constrained(
                                     Point::new(info.x + head_left - LEDGER_LINE_EXTENSION, y),
                                     Point::new(info.x + head_right + LEDGER_LINE_EXTENSION, y),
                                     STAFF_LINE_THICKNESS,
+                                    band_of(staff),
                                 ));
                             }
                             // The spelling's accidental stack: synthesized glyphs
@@ -1312,6 +1372,7 @@ pub fn try_to_constrained(
                         emit.stroke(anchor(
                             provenance,
                             Point::new(default_x, step_to_y(yo, reference_step(&clef))),
+                            band_of(staff),
                         ));
                     }
                 },
@@ -1392,7 +1453,11 @@ pub fn try_to_constrained(
                     // (uniform with every other cross-cutting structure); all
                     // of its ink — the standalone signs below and the volta
                     // brackets here — is synthesized from it.
-                    emit.stroke(anchor(provenance, Point::new(default_x, yo)));
+                    emit.stroke(anchor(
+                        provenance,
+                        Point::new(default_x, yo),
+                        band_of(staff),
+                    ));
                     let Some(LayoutContent::Repeat(repeat)) = content else {
                         continue;
                     };
@@ -1429,6 +1494,7 @@ pub fn try_to_constrained(
                             Point::new(start.x, y),
                             Point::new(end.x, y),
                             VOLTA_LINE_THICKNESS,
+                            band_of(staff),
                         ));
                         for (element, x) in [(1u128, start.x), (2u128, end.x)] {
                             emit.stroke(line_stroke(
@@ -1436,6 +1502,7 @@ pub fn try_to_constrained(
                                 Point::new(x, y),
                                 Point::new(x, y - VOLTA_HOOK),
                                 VOLTA_LINE_THICKNESS,
+                                band_of(staff),
                             ));
                         }
                         let mut cursor = start.x + VOLTA_TEXT_X;
@@ -1469,19 +1536,27 @@ pub fn try_to_constrained(
                     // span is not left-to-right in this region.
                     let curve = match content {
                         Some(LayoutContent::Slur(slur)) if staff.is_some() => {
-                            slur_curve(provenance, slur, yo, &columns)
+                            slur_curve(provenance, slur, yo, &columns, band_of(staff))
                         }
                         _ => None,
                     };
                     match curve {
                         Some(curve) => emit.curve(curve),
-                        None => emit.stroke(anchor(provenance, Point::new(default_x, yo))),
+                        None => emit.stroke(anchor(
+                            provenance,
+                            Point::new(default_x, yo),
+                            band_of(staff),
+                        )),
                     }
                 }
                 // Region, Voice, GraphicObject, and every other cross-cutting
                 // structure (ties, beams, tuplets, spanners, markers, …) have no
                 // Minimal-tier glyph; a zero-extent traced anchor keeps them.
-                _ => emit.stroke(anchor(provenance, Point::new(default_x, yo))),
+                _ => emit.stroke(anchor(
+                    provenance,
+                    Point::new(default_x, yo),
+                    band_of(staff),
+                )),
             }
         }
 
@@ -1747,23 +1822,29 @@ pub fn try_to_constrained(
             });
         }
 
-        // A staff band per manifested staff that carries glyphs, in first-glyph
-        // order; an (empty) inter-staff gap band between adjacent staves; and a
-        // margin band for any region-level glyphs.
-        for staff in &staves_in_order {
+        // A staff band per staff of the region, in the region's own staff order —
+        // the order `y_origin` stacks by, and exactly the set `band_of` can name.
+        // (Driving this off the staves that emitted *glyphs* would leave a
+        // stroke-only staff — one whose clef glyph is unbundled, so it engraves
+        // to an anchor stroke — naming a band that does not exist.) An (empty)
+        // inter-staff gap band sits between adjacent staves.
+        //
+        // The margin band is emitted unconditionally: a region's own traced
+        // anchor is a *stroke*, and it names the margin band whether or not any
+        // region-level glyph does. Both bands may carry no members; so may a gap
+        // band. Membership drives the spring solve over glyphs, not existence.
+        for staff in &staff_order {
             let layout_id = manifestation_layout_id(&TypedObjectId::Staff(*staff), region_id);
             let members = staff_members.remove(staff).unwrap_or_default();
             vertical_bands.push(VerticalBand::staff_manifestation(
                 layout_id, *staff, members,
             ));
         }
-        for gap in 1..staves_in_order.len() {
+        for gap in 1..staff_order.len() {
             let gap_id = inter_staff_gap_id(region_layout_id, gap);
             vertical_bands.push(VerticalBand::inter_staff_gap(gap_id));
         }
-        if !margin_members.is_empty() {
-            vertical_bands.push(VerticalBand::margin(region_layout_id, margin_members));
-        }
+        vertical_bands.push(VerticalBand::margin(region_layout_id, margin_members));
         constrained_regions.push(ConstrainedLayoutRegion {
             provenance: region.provenance.clone(),
             glyphs: region_glyphs,
@@ -1883,8 +1964,8 @@ struct ColumnInfo {
     note_column: bool,
 }
 
-/// The accumulators a region's engraving emits into. Glyphs (only) carry band and
-/// spring-slot membership; strokes and curves are free line primitives.
+/// The accumulators a region's engraving emits into. Every primitive declares its
+/// vertical band; glyphs alone carry band *membership* and a spring slot.
 struct Emit<'a> {
     glyphs: &'a mut Vec<GlyphObject>,
     strokes: &'a mut Vec<Stroke>,
@@ -1981,7 +2062,13 @@ fn ink() -> GlyphStyle {
 }
 
 /// A solid black line stroke between two points.
-fn line_stroke(provenance: Provenance, from: Point, to: Point, thickness: f32) -> Stroke {
+fn line_stroke(
+    provenance: Provenance,
+    from: Point,
+    to: Point,
+    thickness: f32,
+    band: VerticalBandId,
+) -> Stroke {
     Stroke {
         provenance,
         from,
@@ -1989,12 +2076,13 @@ fn line_stroke(provenance: Provenance, from: Point, to: Point, thickness: f32) -
         thickness: StaffSpace(thickness),
         layer: 0,
         style: ink(),
+        vertical_band: band,
     }
 }
 
 /// A zero-extent, zero-width stroke at `at`: an invisible traced anchor that
 /// keeps a structural object (with no Minimal-tier glyph) provenance-tracked.
-fn anchor(provenance: &Provenance, at: Point) -> Stroke {
+fn anchor(provenance: &Provenance, at: Point, band: VerticalBandId) -> Stroke {
     Stroke {
         provenance: provenance.clone(),
         from: at,
@@ -2002,6 +2090,7 @@ fn anchor(provenance: &Provenance, at: Point) -> Stroke {
         thickness: StaffSpace(0.0),
         layer: 0,
         style: ink(),
+        vertical_band: band,
     }
 }
 
@@ -2152,6 +2241,7 @@ fn slur_curve(
     slur: &SlurContent,
     yo: f32,
     columns: &BTreeMap<ColumnKey, ColumnInfo>,
+    band: VerticalBandId,
 ) -> Option<Curve> {
     let start_x = slur_endpoint_x(&slur.start, columns)?;
     let end_x = slur_endpoint_x(&slur.end, columns)?;
@@ -2210,6 +2300,9 @@ fn slur_curve(
         // The authored line pattern is rendered faithfully (dashed/dotted),
         // not deferred — the renderer strokes the path with it.
         line: slur.line,
+        // The slur's OWN staff band — its notes' band, not whichever staff its
+        // lifted endpoints happen to land nearest.
+        vertical_band: band,
     })
 }
 
@@ -2769,12 +2862,60 @@ mod tests {
         );
     }
 
+    /// Every stroke and curve names a band that exists. A vertical solver reads
+    /// that band to find a primitive's owning staff, so a dangling reference
+    /// would silently drop the primitive out of the solve — it would keep its
+    /// source y while its staff moved, tearing off its notes.
+    ///
+    /// Two bands exist precisely so nothing dangles. A staff band is emitted for
+    /// every staff of the region, not only those that emitted a glyph (a staff
+    /// whose clef is unbundled engraves to an anchor *stroke* and no glyph). The
+    /// margin band is emitted unconditionally, because a region's own traced
+    /// anchor is a stroke that names it whether or not a margin glyph does.
+    #[test]
+    fn every_stroke_and_curve_names_a_band_that_exists() {
+        use epiphany_core::generators::valid_score;
+        for (label, score) in [
+            ("valid_score_rich", valid_score_rich(11)),
+            ("valid_score", valid_score(4)),
+        ] {
+            let c = to_constrained(&to_logical(&score));
+            let bands: BTreeSet<VerticalBandId> = c.vertical_bands.iter().map(|b| b.id).collect();
+            assert!(!bands.is_empty(), "{label}: the projection emits bands");
+            for stroke in &c.strokes {
+                assert!(
+                    bands.contains(&stroke.vertical_band),
+                    "{label}: stroke {:?} names a band that does not exist",
+                    stroke.id()
+                );
+            }
+            for curve in &c.curves {
+                assert!(
+                    bands.contains(&curve.vertical_band),
+                    "{label}: curve {:?} names a band that does not exist",
+                    curve.id()
+                );
+            }
+            // The region's own anchor stroke is staff-less, so a margin band must
+            // exist even when no region-level *glyph* put a member in it.
+            assert!(
+                c.vertical_bands
+                    .iter()
+                    .any(|b| b.kind == crate::VerticalBandKind::MarginBand),
+                "{label}: a margin band exists for the region-level anchor"
+            );
+            assert!(c.validate().is_ok(), "{label}: the projection validates");
+        }
+    }
+
     #[test]
     fn out_of_range_finite_stroke_thickness_is_rejected() {
         let mut c = to_constrained(&to_logical(&valid_score_rich(11)));
         let provenance = c.glyphs[0].provenance.clone();
+        let band = c.glyphs[0].vertical_band;
         c.strokes.push(Stroke {
             provenance,
+            vertical_band: band,
             from: Point::new(0.0, 0.0),
             to: Point::new(1.0, 0.0),
             // Finite but far outside the canonical 1/1024 grid range: it passes a

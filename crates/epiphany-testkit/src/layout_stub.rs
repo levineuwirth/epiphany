@@ -333,7 +333,7 @@ pub fn gen_logical_layout_ir(rng: &mut Rng) -> LogicalLayoutIR {
 
 /// A non-glyph line primitive (a staff line / stem / barline), so the
 /// generator/fuzz surface exercises strokes alongside glyphs.
-pub fn gen_stroke(rng: &mut Rng) -> Stroke {
+pub fn gen_stroke(rng: &mut Rng, band: VerticalBandId) -> Stroke {
     Stroke {
         provenance: gen_provenance(rng),
         from: gen_point(rng),
@@ -343,11 +343,13 @@ pub fn gen_stroke(rng: &mut Rng) -> Stroke {
         style: GlyphStyle {
             rgba: rng.next_u64() as u32,
         },
+        // A stroke names a band that exists; validation rejects a dangling one.
+        vertical_band: band,
     }
 }
 
 /// A cubic-bézier curve primitive with generated provenance and geometry.
-pub fn gen_curve(rng: &mut Rng) -> Curve {
+pub fn gen_curve(rng: &mut Rng, band: VerticalBandId) -> Curve {
     Curve {
         provenance: gen_provenance(rng),
         p0: gen_point(rng),
@@ -364,6 +366,8 @@ pub fn gen_curve(rng: &mut Rng) -> Curve {
             epiphany_core::LineStyle::Dashed,
             epiphany_core::LineStyle::Dotted,
         ]),
+        // A curve names a band that exists; validation rejects a dangling one.
+        vertical_band: band,
     }
 }
 
@@ -408,9 +412,11 @@ pub fn gen_constrained_layout_ir(rng: &mut Rng) -> ConstrainedLayoutIR {
         horizontal_slots,
         glyphs,
         strokes: (0..rng.range_usize(0, 3))
-            .map(|_| gen_stroke(rng))
+            .map(|_| gen_stroke(rng, band.id))
             .collect(),
-        curves: (0..rng.range_usize(0, 3)).map(|_| gen_curve(rng)).collect(),
+        curves: (0..rng.range_usize(0, 3))
+            .map(|_| gen_curve(rng, band.id))
+            .collect(),
         vertical_bands: vec![band],
         constraints: vec![],
         break_origins: vec![],

@@ -641,3 +641,42 @@ out of scope), so these are E2 decisions for the Phase-F ratification pass:
   its hull). A slur click flows through `click()`/`select()` generically —
   `selection.source = Slur` — with no editor-core arm; an edit op cleanly
   refuses the non-pitch selection.
+
+## Strokes and curves declare their vertical band (2026-07-09)
+
+`Stroke` and `Curve` gained `vertical_band: VerticalBandId`, the field
+`GlyphObject` has always carried. Previously the doc comment on `Curve` called it
+"a *free* primitive (no vertical band, no spring slot)", and the projection
+computed each primitive's band, used it for the glyphs, and threw it away for the
+strokes and curves.
+
+- **Why.** A vertical solver has to know which staff owns a primitive. With the
+  band discarded, `epiphany-engrave` reconstructed it geometrically — nearest
+  glyph to a stem's base, arc direction against the staff-line bands for a slur —
+  and got it *wrong twice*, tearing stems and then slurs off their own notes, in
+  bugs that reached a committed golden. A slur is the proof the inference can
+  never be made safe: its endpoints are deliberately lifted clear of its own
+  staff, into the zone where the nearest notehead belongs to the neighbour. The
+  projection knows the owner (a slur's staff is its notes' staff). It now says so.
+- **One-way reference.** A stroke/curve is NOT added to `VerticalBand::members`.
+  Membership realizes the spring solve over *glyphs*; the band reference on a
+  line primitive is a declaration of ownership. Validation therefore enforces
+  only that the named band exists (`UnknownBand`) — a dangling reference would
+  silently drop the primitive out of a vertical solve.
+- **Two bands became unconditional.** A staff band is now emitted for every staff
+  of the region, in the region's own staff order (the order `y_origin` stacks
+  by), not only for staves that emitted a glyph — a staff whose clef is unbundled
+  engraves to an anchor *stroke* and no glyph. The margin band is now emitted
+  even with no members, because a region's own traced anchor is a stroke that
+  names it. Empty bands were already normal (an inter-staff gap band has no
+  members). Locked by `every_stroke_and_curve_names_a_band_that_exists`.
+- **Non-canonical.** `ResolvedLayoutIR::canonical_bytes` encodes primitives
+  field-by-field and does not encode `vertical_band` (as it does not encode a
+  glyph's). So this is layout metadata, outside the canonical encoding: no
+  companion-version bump, and no golden churn — adopting it left every rendered
+  byte identical, which is what proved the declared owner agrees with the
+  inferred one on the whole corpus.
+- **Staff-less content.** A repeat structure spanning several staves, or a
+  page-margin annotation, names a non-`Staff` band and is owned by no staff. A
+  cross-staff slur is not drawn at this tier (`staff.is_some()` guards the curve;
+  it engraves to an anchor stroke), so a drawn curve always names a staff band.

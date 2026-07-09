@@ -737,6 +737,7 @@ mod tests {
             .canonical_bytes();
         input.strokes.push(crate::Stroke {
             provenance: input.glyphs[0].provenance.clone(),
+            vertical_band: input.glyphs[0].vertical_band,
             from: crate::Point::new(0.0, 0.0),
             to: crate::Point::new(1.5, 0.0),
             thickness: crate::StaffSpace(0.13),
