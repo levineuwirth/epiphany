@@ -329,6 +329,29 @@ fn spacing_raw(census: &SystemCensus) -> f64 {
 /// relative deviation `|r − p| / p` over the realized inter-staff and
 /// inter-system gaps (see the module docs for the unit reconstruction).
 fn vertical_raw(input: &ConstrainedLayoutIR, cast: &CastLayout, census: &SystemCensus) -> f64 {
+    let units = vertical_units(input, cast, census);
+    mean_or_zero(&[units.inter_staff, units.inter_system].concat())
+}
+
+/// The axis's contributing units, split by kind (catalog §`vertical_density_penalty`:
+/// "each *realization* … contributes one unit per system").
+///
+/// Split out so tests can assert the unit **set**, not merely its mean. Once the
+/// inter-staff solve realizes each gap band's declared clearance exactly, every
+/// inter-staff unit is `0` on a healthy solve — the axis is a self-check that
+/// fires only on a solver or bake defect. Its mean therefore cannot distinguish
+/// "measured every realization" from "measured one", which is precisely the
+/// defect this split lets a regression catch.
+struct VerticalUnits {
+    inter_staff: Vec<f64>,
+    inter_system: Vec<f64>,
+}
+
+fn vertical_units(
+    input: &ConstrainedLayoutIR,
+    cast: &CastLayout,
+    census: &SystemCensus,
+) -> VerticalUnits {
     let mut per_unit: Vec<f64> = Vec::new();
 
     // --- InterStaffGap bands declared by the constrained input -------------
@@ -455,6 +478,8 @@ fn vertical_raw(input: &ConstrainedLayoutIR, cast: &CastLayout, census: &SystemC
         }
     }
 
+    let inter_staff = std::mem::take(&mut per_unit);
+
     // --- Realized inter-system gaps (consecutive systems on a page) --------
     let preferred = f64::from(
         VerticalBand::inter_system_gap(VerticalBandId(0))
@@ -473,7 +498,10 @@ fn vertical_raw(input: &ConstrainedLayoutIR, cast: &CastLayout, census: &SystemC
         }
     }
 
-    mean_or_zero(&per_unit)
+    VerticalUnits {
+        inter_staff,
+        inter_system: per_unit,
+    }
 }
 
 /// `system_break_penalty` (catalog §`system_break_penalty`): mean
@@ -644,6 +672,7 @@ pub(crate) fn floor_warnings(
 
 #[cfg(test)]
 mod tests {
+    use super::{census, vertical_units, VerticalUnits};
     use crate::Engraver;
     use epiphany_layout_ir::{
         to_constrained, to_logical, ConstrainedLayoutIR, ConstraintSolver, QualityMetricKind,
@@ -981,5 +1010,62 @@ mod tests {
             "stretched inter-system gaps are measured: {}",
             report.metric_vector.vertical_density_penalty.0
         );
+    }
+
+    /// Runs the real pipeline far enough to hand `vertical_units` a `CastLayout`
+    /// — the same spacing + casting-off `Engraver::resolve` performs.
+    fn units(score: &epiphany_core::Score) -> VerticalUnits {
+        let input = to_constrained(&to_logical(score));
+        let engraver = Engraver::default();
+        let remap = crate::HorizontalRemap::build(&input);
+        let (glyphs, strokes, curves) = (
+            remap.glyphs(&input),
+            remap.strokes(&input),
+            remap.curves(&input),
+        );
+        let geometry = engraver.geometry();
+        let cast = crate::casting::cast_off(&input, &glyphs, &strokes, &curves, &geometry);
+        let census = census(&input, &cast);
+        vertical_units(&input, &cast, &census)
+    }
+
+    /// A staff band owning no glyphs is still a staff of its region, so its gap
+    /// contributes. The percussion placeholder's clef has no bundled glyph and it
+    /// carries no notes, leaving its band's `members` (a glyph list) empty while
+    /// the band owns its staff-line strokes. Identifying a region's staff bands by
+    /// `members` drops it, and the axis loses the unit entirely.
+    #[test]
+    fn a_glyphless_staff_band_still_contributes_an_inter_staff_unit() {
+        let u = units(&epiphany_testkit::fixtures::percussion_placeholder_staff(1));
+        assert_eq!(
+            u.inter_staff.len(),
+            2,
+            "one unit per system realizing the pair, not zero"
+        );
+        for value in &u.inter_staff {
+            assert!(
+                *value < 1e-4,
+                "and the solve realizes the declared gap: {value}"
+            );
+        }
+    }
+
+    /// A gap band realized in several systems contributes one unit PER SYSTEM.
+    /// The inter-staff solve sizes each system's gaps from that system's own
+    /// content, so the realizations are independent measurements; the wrapping
+    /// fixture's two systems sit at very different staff distances.
+    #[test]
+    fn each_system_realizing_a_gap_band_contributes_its_own_unit() {
+        let u = units(&epiphany_testkit::fixtures::two_staff_wrapping_pressure(1));
+        assert_eq!(u.inter_staff.len(), 2, "two systems, two realizations");
+        for value in &u.inter_staff {
+            assert!(*value < 1e-4, "each solved to its declared gap: {value}");
+        }
+        // Three staves in one system: two gap bands, one realization each.
+        let u = units(&epiphany_testkit::fixtures::three_staff_close_content(1));
+        assert_eq!(u.inter_staff.len(), 2, "two gap bands, one system");
+        for value in &u.inter_staff {
+            assert!(*value < 1e-4, "the cascade realizes both gaps: {value}");
+        }
     }
 }

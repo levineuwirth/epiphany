@@ -771,17 +771,25 @@ pub(crate) fn cast_off(
 
     // Solve each system's inter-staff gaps: order the staves top-to-bottom by
     // their reference y (staff line, else content mid), keep that order fixed,
-    // and shift each staff down until its gap to the one above meets the gap
-    // band's own preferred height. `staff_shift[(system, staff)]` is the
-    // downward shift (subtracted from y); the top staff's is 0.
+    // and shift each staff so its INK CLEARANCE to the one above realizes the
+    // gap band's declared height. `staff_shift[(system, staff)]` is the downward
+    // shift (subtracted from y); the top staff's is 0.
     //
-    // The gap the solve targets is the one the REGION DECLARED, read from the
-    // `InterStaffGap` band `to_constrained` emitted for that pair, not from the
-    // band constructor's default. That is what makes the band a height model
-    // rather than a constant: a region that declares a wider gap gets one, and
-    // `vertical_density_penalty` — which scores the realized gap against this
-    // same declared band — agrees with the solve by construction rather than by
-    // both happening to call the same constructor.
+    // The renegotiation is TWO-SIDED. A pair whose content collides is pushed
+    // apart; a pair the constrained stage left slack is pulled together. The
+    // fixed `SYSTEM_STAFF_PITCH` that stage stacks by is therefore an initial
+    // arrangement, not a floor: the band model is the height model, and the solve
+    // realizes it. (Expanding only was the earlier behaviour, and it was
+    // measurably wrong — `vertical_density_penalty` scored honest sprawl on every
+    // relaxed multi-staff system, because a gap wider than preferred is sprawl
+    // exactly as a narrower one is crowding.)
+    //
+    // The target is the gap band's `preferred_height`, held at or above its
+    // `min_height` — the hardest squeeze permitted. Validation already brackets
+    // preferred by min and max, so the clamp is belt-and-braces rather than a
+    // second policy. The band is the one the REGION DECLARED, not the
+    // constructor's default, so the solve and `vertical_density_penalty` — which
+    // scores the realized clearance against that same band — read one number.
     //
     // Gap `g` separates the region's staves `g-1` and `g` (see `to_constrained`).
     // Every staff of a region carries content in every system of that region —
@@ -789,20 +797,18 @@ pub(crate) fn cast_off(
     // staves present here are the region's full staff order and the window index
     // is the gap index. A band that somehow does not exist falls back to the
     // constructor's default rather than silently skipping the pair.
-    let default_gap = VerticalBand::inter_staff_gap(VerticalBandId(0))
-        .preferred_height
-        .0;
+    let fallback = VerticalBand::inter_staff_gap(VerticalBandId(0));
     let mut staff_shift: BTreeMap<(usize, StaffId), f32> = BTreeMap::new();
     for (s, plan) in systems.iter().enumerate() {
         let region_layout_id = input.regions[plan.region].provenance.stable_id;
-        let preferred_gap = |gap_index: usize| -> f32 {
+        let target_gap = |gap_index: usize| -> f32 {
             let id = inter_staff_gap_id(region_layout_id, gap_index);
-            input
+            let band = input
                 .vertical_bands
                 .iter()
                 .find(|band| band.id == id)
-                .map(|band| band.preferred_height.0)
-                .unwrap_or(default_gap)
+                .unwrap_or(&fallback);
+            band.preferred_height.0.max(band.min_height.0)
         };
         let mut staves: Vec<(StaffId, (f32, f32))> = staff_ext
             .iter()
@@ -824,9 +830,21 @@ pub(crate) fn cast_off(
             let (upper, (upper_lo, _)) = w[0];
             let (lower, (_, lower_hi)) = w[1];
             staff_shift.insert((s, upper), shift);
-            // Realized gap after the upper's shift: (upper_lo - shift) − lower_hi.
-            let gap = (upper_lo - shift) - lower_hi;
-            shift += (preferred_gap(g + 1) - gap).max(0.0);
+            // Both staves move, so solve the recurrence rather than guessing it.
+            // With `shift` the upper staff's cumulative shift, the realized
+            // clearance is `(upper_lo - shift_upper) - (lower_hi - shift_lower)`,
+            // and setting that equal to the target gives
+            //
+            //     shift_lower = shift_upper + target - (upper_lo - lower_hi)
+            //
+            // — the UNSHIFTED gap. Subtracting `shift_upper` from the gap here
+            // and adding it back through `shift +=` would count it twice, which
+            // over-separated every pair below the first by exactly the shift
+            // above it (invisible on two staves, where that shift is 0). The
+            // correction is signed: positive opens a crowded pair, negative
+            // closes a slack one, and it accumulates down the stack.
+            let gap = upper_lo - lower_hi;
+            shift += target_gap(g + 1) - gap;
             staff_shift.insert((s, lower), shift);
         }
         if staves.len() == 1 {

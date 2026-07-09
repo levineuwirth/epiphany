@@ -204,8 +204,16 @@ pub struct Engraver {
 /// gaps between a system's staves are renegotiated so tightly ledgered or
 /// slurred adjacent staves separate to the band model's preferred gap; a
 /// multi-staff score whose staves press together shifts them apart, while a
-/// single-staff score — with no inter-staff pair — is unchanged).
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(11);
+/// single-staff score — with no inter-staff pair — is unchanged), and to `12`
+/// when that solve became **two-sided** (it now closes a slack pair as well as
+/// opening a crowded one, realizing the `InterStaffGap` band's declared ink
+/// clearance exactly; the constrained stage's fixed `SYSTEM_STAFF_PITCH` is an
+/// initial arrangement, not a floor. Every multi-staff score's staff distances
+/// move — plain content settles near a pitch of 10.6 staff spaces — while a
+/// single-staff score is again unchanged. The same version repairs a cascade
+/// defect: a pair below the first was over-separated by exactly the shift above
+/// it, so 3+-staff scores tighten further).
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(12);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -2333,39 +2341,67 @@ mod tests {
         );
     }
 
-    /// A staff band that owns no GLYPHS is still a staff of its region. The
-    /// percussion placeholder's clef has no bundled glyph (it engraves to a
-    /// traced anchor stroke) and it carries no notes, so its band's `members`
-    /// list — which holds glyphs only — is empty, while the band does own its
-    /// five staff-line strokes. Identifying a region's staff bands by their
-    /// glyph members would drop it from the axis entirely, reintroducing the
-    /// very glyph-members assumption the content-extent measurement sheds.
+    /// A staff band that owns no GLYPHS is still a staff of its region: the
+    /// percussion placeholder's clef has no bundled glyph (a traced anchor
+    /// stroke) and it carries no notes, so its band's glyph `members` list is
+    /// empty while the band owns its five staff-line strokes. The solve must
+    /// still separate it. (That the *metric* also counts its gap is locked by
+    /// `quality::tests::a_glyphless_staff_band_still_contributes_an_inter_staff_unit`.)
     #[test]
-    fn a_staff_band_owning_no_glyphs_still_contributes_its_gap() {
+    fn a_staff_band_owning_no_glyphs_is_still_laid_out_as_a_staff() {
         use epiphany_layout_ir::{to_constrained, to_logical};
-        let input = to_constrained(&to_logical(
-            &epiphany_testkit::fixtures::percussion_placeholder_staff(1),
-        ));
-        let report = Engraver::default().solve(&input, &SolverConfig::default());
+        let report = Engraver::default().solve(
+            &to_constrained(&to_logical(
+                &epiphany_testkit::fixtures::percussion_placeholder_staff(1),
+            )),
+            &SolverConfig::default(),
+        );
         assert_eq!(report.status, SolveStatus::Solved);
         for page in &report.layout.pages {
             for sys in &page.systems {
-                assert_eq!(
-                    sys.staves.len(),
-                    2,
-                    "the glyph-less placeholder is still laid out as a staff"
-                );
+                assert_eq!(sys.staves.len(), 2, "the placeholder is a staff");
             }
         }
-        // Its gap to the melody staff is slack (the solve expands, never
-        // compresses), so the band contributes a large deviation. Dropping the
-        // band would leave the region with one staff, no inter-staff unit, and
-        // an axis of exactly 0.
-        let density = report.metric_vector.vertical_density_penalty.0;
-        assert!(
-            density > 0.5,
-            "the glyph-less band's gap reaches the axis: {density}"
+        assert_eq!(report.metric_vector.collision_penalty.0, 0.0);
+    }
+
+    /// The solve sizes each system's gaps from that system's own content, so one
+    /// region's systems end up at genuinely different staff distances: the system
+    /// carrying the colliding first measure opens wide, the slack one after it is
+    /// pulled CLOSER than the constrained stage's fixed pitch. Two-sided
+    /// renegotiation is what makes the second half of that sentence true.
+    #[test]
+    fn each_system_solves_its_own_staff_distance() {
+        use epiphany_layout_ir::{to_constrained, to_logical};
+        let report = Engraver::default().solve(
+            &to_constrained(&to_logical(
+                &epiphany_testkit::fixtures::two_staff_wrapping_pressure(1),
+            )),
+            &SolverConfig::default(),
         );
+        let systems: Vec<_> = report
+            .layout
+            .pages
+            .iter()
+            .flat_map(|page| &page.systems)
+            .collect();
+        assert_eq!(systems.len(), 2, "the region wraps into two systems");
+        let pitch = |sys: &epiphany_layout_ir::ResolvedSystem| {
+            assert_eq!(sys.staves.len(), 2, "both staves ride every system");
+            sys.staves[0].bounding_box.origin.y.0 - sys.staves[1].bounding_box.origin.y.0
+        };
+        let (first, second) = (pitch(systems[0]), pitch(systems[1]));
+        assert!(
+            first > second + 8.0,
+            "the pressured system opens far wider: {first} vs {second}"
+        );
+        // The constrained stage stacks at SYSTEM_STAFF_PITCH = 12; the slack
+        // system is COMPRESSED below it, which an expand-only solve cannot do.
+        assert!(
+            second < 12.0,
+            "the slack system is pulled tighter than the fixed pitch: {second}"
+        );
+        assert_eq!(report.metric_vector.collision_penalty.0, 0.0);
     }
 
     #[test]
@@ -2436,17 +2472,25 @@ mod tests {
 
     /// Three staves in one system, with deliberately ASYMMETRIC pressure: the
     /// upper pair collides hard (C1 against C7), the lower pair only gently. A
-    /// staff's shift must accumulate the corrections of every pair above it,
-    /// because each pair's gap is measured against the upper staff's *already
-    /// shifted* position. So the bottom staff's shift is large — it must clear
-    /// the middle staff where the middle staff now sits, not where it started.
+    /// staff's shift accumulates the corrections of every pair above it — the
+    /// bottom staff must clear the middle staff where the middle staff now sits,
+    /// not where it started — so `shift_lower = shift_upper + target - gap_raw`,
+    /// with `gap_raw` the pair's UNSHIFTED clearance.
     ///
-    /// That is exactly what a solve sizing each pair independently gets wrong:
-    /// it would measure the lower pair against the middle staff's ORIGINAL
-    /// position, hand the bottom staff only its own small correction, and leave
-    /// it above the middle staff's new position — closing their staff-line gap
-    /// to well under the fixed pitch. Verified by mutation: with the cascade
-    /// removed this test fails on both `s2 > s1` and the staff-line gap.
+    /// A solve sizing each pair independently gets this wrong the obvious way:
+    /// it hands the bottom staff only its own small correction and leaves it
+    /// above the middle staff's new position. Verified by mutation: with the
+    /// cascade removed this test fails on `s2 > s1`.
+    ///
+    /// It is wrong the *subtle* way too, by subtracting `shift_upper` from the
+    /// measured gap and then adding it back through the accumulator — which
+    /// over-separates every pair below the first by exactly the shift above it.
+    /// That defect shipped in `ENGRAVER_VERSION` 11 and this test could not see
+    /// it (`s2 > s1` holds either way; two-staff fixtures have `shift_upper = 0`).
+    /// It is caught by `quality::tests::each_system_realizing_a_gap_band_
+    /// contributes_its_own_unit`, which asserts every pair realizes its declared
+    /// clearance — the over-separated lower pair reported 21.06 against a
+    /// declared 4.0.
     #[test]
     fn inter_staff_shifts_cascade_down_three_staves() {
         use epiphany_layout_ir::{to_constrained, to_logical};
@@ -2517,54 +2561,6 @@ mod tests {
             "the slur rides its OWN (bottom) staff: {gaps:?}"
         );
         assert!(gaps[2] < 2.0, "and sits close against it: {}", gaps[2]);
-    }
-
-    /// A gap band realized in several systems contributes a unit PER SYSTEM.
-    /// The inter-staff solve sizes each system's gaps from that system's own
-    /// content, so one band's realized height genuinely differs across a
-    /// region's systems — here 15.93 staff spaces in the system carrying the
-    /// colliding first measure, 7.87 in the slack one after it. Measuring only
-    /// the first system realizing the band (as this metric once did, on the
-    /// since-falsified premise that rigid system translation makes every
-    /// realization agree) would report the pressured system's near-perfect gap
-    /// and discard the slack one entirely.
-    #[test]
-    fn inter_staff_gaps_are_measured_in_every_system_that_realizes_them() {
-        use epiphany_layout_ir::{to_constrained, to_logical};
-        let report = Engraver::default().solve(
-            &to_constrained(&to_logical(
-                &epiphany_testkit::fixtures::two_staff_wrapping_pressure(1),
-            )),
-            &SolverConfig::default(),
-        );
-        let systems: Vec<_> = report
-            .layout
-            .pages
-            .iter()
-            .flat_map(|page| &page.systems)
-            .collect();
-        assert_eq!(systems.len(), 2, "the region wraps into two systems");
-        let gap = |sys: &epiphany_layout_ir::ResolvedSystem| {
-            assert_eq!(sys.staves.len(), 2, "both staves ride every system");
-            let (top, bottom) = (&sys.staves[0].bounding_box, &sys.staves[1].bounding_box);
-            top.origin.y.0 - (bottom.origin.y.0 + bottom.size.height.0)
-        };
-        let (first, second) = (gap(systems[0]), gap(systems[1]));
-        assert!(
-            first > second + 4.0,
-            "the pressured system opens much further than the slack one: {first} vs {second}"
-        );
-
-        // The slack system's gap sits well past the band's preferred height (the
-        // solve expands but never compresses), so it contributes a large
-        // deviation. The pressured system was solved to preferred and contributes
-        // ~0. A first-system-only measurement would therefore report ~0 overall;
-        // counting both realizations reports the sprawl honestly.
-        let density = report.metric_vector.vertical_density_penalty.0;
-        assert!(
-            density > 0.5,
-            "the slack system's sprawl reaches the axis: {density}"
-        );
     }
 
     #[test]

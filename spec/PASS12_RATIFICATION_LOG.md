@@ -356,3 +356,45 @@ that declares its clef only via `Staff::default_clef` engraves as treble. Found
 while building the percussion fixture (which therefore had to declare its clef as
 a `ClefChange`). Filed in `epiphany-layout-ir/DECISIONS.md`; parked with the
 `ConstrainedLayoutIR` listing gap pending a ≥3-candidate Pass-13 batch.
+
+## Push-3 tranche (2026-07-09) — two-sided inter-staff renegotiation
+
+Acting on the sprawl the per-realization axis exposed. `ENGRAVER_VERSION` 11 →
+12. **No normative change and no version move:** the Quality Metric Catalog's
+formula, contributing units, anchors and thresholds are untouched; only its
+non-normative rationale is refreshed (the reference solver no longer merely
+expands, and the axis's inter-staff half is now documented as a solver
+self-check). Core spec unchanged. Operation Catalog 0.7.0, Binary Format 0.6.0,
+Quality Metric Catalog 0.3.0 all unchanged.
+
+| Item | Disposition | Spec locus | Consumer |
+|---|---|---|---|
+| Expand-only inter-staff solve | **fix (layout)** — the solve now closes a slack pair as well as opening a crowded one, realizing the `InterStaffGap` band's declared height exactly. `SYSTEM_STAFF_PITCH` is demoted from a floor to an initial arrangement. This is what `vertical_density_penalty` was reporting: an un-pressured multi-staff system sat at 0.739, honest sprawl against the declared gap | — (behavioural; `req:layoutir:vertical-bands`) | `epiphany-engrave` (`casting.rs`) |
+| The gap band's height had no agreed meaning | **pin (code default, not spec)** — it is an **ink clearance**: the separation between the two staves' outermost content, which is exactly the unit `req:qmc:vertical` measures. `preferred` 2.0 → **5.0**, `min` 1.0 → **2.0**. The old 2.0 was a placeholder reconciled with nothing — neither the 8.0 staff-box gap the fixed pitch of 12 produces nor the ~6.4 ink clearance it leaves for plain content; realizing it would have crushed a relaxed system to a pitch of ~7.6. At 5.0 plain ledgered content settles near a pitch of 10.6 | `VerticalBand::inter_staff_gap` doc | `epiphany-layout-ir` |
+| **Cascade defect, latent since v11** | **fix (correctness)** — the recurrence subtracted the upper staff's shift from the measured gap and added it back through the accumulator, so every pair below the first was over-separated by exactly the shift above it. Both staves move: `shift_lower = shift_upper + target − (upper_lo − lower_hi)`, the *unshifted* gap. Invisible on two-staff fixtures (`shift_upper = 0`) and invisible to the cascade regression, which asserted only `s2 > s1` — true under both recurrences. `three_staff_close_content`'s lower pair realized **21.06** against a declared 4.0 | — | `epiphany-engrave` (`casting.rs`) |
+
+**How the defect was caught, and why that vindicates a design choice.** The
+metric measures the realized clearance back from the **baked output**, not from
+the solve's own extents. Reading back solver intent would have reported 0 and let
+the over-separation ship a second time. That choice was made one commit earlier
+for exactly this reason and paid immediately. The catalog rationale now
+recommends it to any conforming implementation.
+
+**Consequence for testing.** Once the solve realizes each declared clearance
+exactly, every inter-staff unit is 0 on a healthy solve — the axis is a solver
+self-check, and its *mean* can no longer distinguish "measured every realization"
+from "measured one". The regressions therefore assert the **unit set**, not the
+mean. Four mutations verified: the double-counting recurrence, expand-only, the
+glyph-`members` band filter, and first-system-only measurement each fail a named
+test.
+
+**Churn.** The two multi-staff engrave goldens only. `two_staff_close_content`
+grew by exactly 3.0 (the target change, no cascade); `three_staff_close_content`
+*shrank* by 9.06 — the same +3 per pair, less the 17.06 of over-separation the
+cascade defect was adding. Single-staff and every stub golden are byte-stable.
+
+**Process note.** The value 5.0 was the user's call. `4.0` ("one staff height")
+was chosen first and then withdrawn once its true consequence — a staff pitch of
+9.57, not the 11.04 an arithmetic slip had projected — was **measured rather than
+inferred**. The slip: deriving plain-content ink clearance from an aggregate
+metric by assuming it had two contributing units when it had three.

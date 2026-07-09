@@ -112,12 +112,32 @@ impl VerticalBand {
     /// An inter-staff gap band: the empty (member-less) spacing region between
     /// two staves of a system (Chapter 7 §"Vertical Bands": `InterStaffGap`). Its
     /// height is a spring the solver resolves; it carries no glyphs.
+    ///
+    /// **Its height is an INK CLEARANCE**, not a distance between staff lines:
+    /// the vertical separation between the two staves' outermost *content* —
+    /// ledger lines, stems, slurs, everything. That is the unit the Quality
+    /// Metric Catalog's `vertical_density_penalty` measures against
+    /// (`req:qmc:vertical`, "the adjacent content extents the band separates"),
+    /// so the solve and the metric read one number.
+    ///
+    /// `preferred` is a staff height plus a space: two staves whose ink is that
+    /// far apart read as separate systems of lines without wasting the page.
+    /// Plain ledgered content then lands at a staff *pitch* of about 10.6 staff
+    /// spaces — near conventional two-staff spacing — while ledgered or slurred
+    /// content pushes the staves further apart on its own. `min` is the hardest
+    /// squeeze a compressing solve may apply.
+    ///
+    /// (The earlier `preferred = 2.0` was a placeholder reconciled with nothing:
+    /// it is neither the 8.0 staff-box gap the constrained stage's fixed
+    /// `SYSTEM_STAFF_PITCH` produces, nor the ~6.4 ink clearance that stacking
+    /// leaves for plain content. Realizing it would have crushed a relaxed
+    /// system to a pitch of ~7.6.)
     pub fn inter_staff_gap(id: VerticalBandId) -> Self {
         VerticalBand {
             id,
             kind: VerticalBandKind::InterStaffGap,
-            min_height: StaffSpace(1.0),
-            preferred_height: StaffSpace(2.0),
+            min_height: StaffSpace(2.0),
+            preferred_height: StaffSpace(5.0),
             max_height: None,
             stretch_factor: 1.0,
             compress_factor: 1.0,

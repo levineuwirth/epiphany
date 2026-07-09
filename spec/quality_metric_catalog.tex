@@ -934,7 +934,17 @@ symmetric: a gap wider than preferred is sprawl exactly as a narrower one is
 crowding. A solver that only ever \emph{expands} a fixed stacking --- never
 compressing an over-wide gap back toward preferred --- will therefore report
 honest sprawl on its slack systems. That is the axis working, not
-mis-measuring.
+mis-measuring, and it is how the reference implementation's expand-only solve
+was found: it now renegotiates in both directions.
+
+Where a solver realizes each band's declared height exactly, the inter-staff
+half of this axis reads its honest zero and serves as a \emph{self-check} on the
+solve rather than a judgement on the score. A conforming implementation should
+therefore measure the realized separation back from the geometry it produced,
+not from the target it aimed at: the two agree only if the solve and the bake
+both did what they claimed. The reference implementation reads it back from the
+baked output, and that is how a defect in its multi-staff cascade --- one that
+over-separated every pair below the first --- was caught.
 \end{rationale}
 
 \section{\texttt{system\_break\_penalty}}

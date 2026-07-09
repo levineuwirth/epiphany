@@ -817,10 +817,12 @@ is untouched. Locked by `inter_staff_solve_separates_colliding_staves` (the
 two-staff pressure fixture's staff-line gap opens past the fixed pitch while a
 single-staff score keeps one staff per system) and the `two_staff_close_content`
 render golden (the visible before/after: slice 1 tight, slice 2 separated).
-**Deferred:** compressing an OVER-wide fixed gap toward preferred (the solve
+~~**Deferred:** compressing an OVER-wide fixed gap toward preferred (the solve
 only expands, never pulls staves together — the fixed pitch is generous by
-default, so this is rarely wanted); per-staff spring *stretch* to fill spare
-system height (the inter-system justification carries the fill for now).
+default, so this is rarely wanted).~~ **DONE** — see "Two-sided renegotiation"
+below; "rarely wanted" was wrong, and the metric said so.
+**Still deferred:** per-staff spring *stretch* to fill spare system height (the
+inter-system justification carries the fill for now).
 
 **The cascade, and why it grows faster than the raw corrections.** A pair's gap
 is measured against the upper staff's **already shifted** bottom, so staff *i*'s
@@ -943,3 +945,73 @@ wanted") is therefore promoted from *rarely wanted* to **measurably wrong**: any
 un-pressured multi-staff system now reports honest sprawl until the solve can pull
 staves together. Named here rather than fixed in the same breath — compression is
 a layout change (golden churn, `ENGRAVER_VERSION` move), not a measurement one.
+
+## Two-sided renegotiation, and the cascade defect it uncovered (2026-07-09)
+
+`ENGRAVER_VERSION` 11 → 12. The inter-staff solve now **closes a slack pair as
+well as opening a crowded one**, realizing the `InterStaffGap` band's declared
+height exactly. The constrained stage's fixed `SYSTEM_STAFF_PITCH` is demoted
+from a floor to an initial arrangement the solve fully renegotiates.
+
+**Why:** the expand-only solve made `vertical_density_penalty` report honest
+sprawl on every relaxed multi-staff system (0.739 on `two_staff_wrapping_pressure`).
+The axis is symmetric — a gap wider than preferred is sprawl exactly as a
+narrower one is crowding — so either the layout or the number was wrong. It was
+both, in different ways.
+
+**What the band's height MEANS.** It is an **ink clearance**: the separation
+between the two staves' outermost content (ledgers, stems, slurs), which is the
+unit `req:qmc:vertical` measures. The old `preferred = 2.0` was a placeholder
+reconciled with nothing — neither the 8.0 staff-box gap the fixed pitch of 12
+produces, nor the ~6.4 ink clearance that stacking leaves for plain content.
+Realizing 2.0 would have crushed a relaxed system to a staff pitch of ~7.6.
+`preferred` is now **5.0** (a staff height plus a space) and `min` **2.0** — plain
+ledgered content settles near a pitch of 10.6, close to convention, while
+ledgered or slurred content pushes the staves apart on its own. The user chose
+this value; `4.0` ("one staff height") was rejected once its true consequence —
+pitch 9.57, not the 11.04 an arithmetic slip of mine had projected — was measured
+rather than inferred.
+
+**The cascade was wrong, and had been since v11.** Making the solve two-sided
+made `three_staff_close_content` report `vertical_density_penalty` **1.0**: its
+lower pair realized 21.06 against a declared 4.0. The recurrence subtracted the
+upper staff's shift from the measured gap and then added it back through the
+accumulator:
+
+```text
+gap   = (upper_lo - shift_upper) - lower_hi     // WRONG
+shift += target - gap                            // ⇒ realized = target + shift_upper
+```
+
+Both staves move, so the correct relation is
+`shift_lower = shift_upper + target - (upper_lo - lower_hi)` — the **unshifted**
+gap. Every pair below the first was over-separated by exactly the shift above it.
+It was invisible on two-staff fixtures (`shift_upper = 0`) and invisible to
+`inter_staff_shifts_cascade_down_three_staves`, which asserted only `s2 > s1` —
+true under both the correct and the double-counting recurrence.
+
+**What caught it was the metric.** Measuring the realized clearance back from the
+BAKED output, rather than reading the solver's own `staff_ext`, is what made an
+independent check possible; had the axis read back solver intent it would have
+reported 0 and the defect would have shipped again. That design choice was made
+one commit earlier for exactly this reason, and it paid immediately.
+
+**Locking it.** Once the solve realizes each declared clearance exactly, every
+inter-staff unit is `0` on a healthy solve — the axis becomes a *solver
+self-check*, and its mean can no longer distinguish "measured every realization"
+from "measured one". So `vertical_raw` is split into `vertical_units`, and the
+regressions assert the **unit set**: `a_glyphless_staff_band_still_contributes_an_
+inter_staff_unit` (2 units, one per system) and `each_system_realizing_a_gap_band_
+contributes_its_own_unit` (2 units for the wrapping fixture, 2 for the three-staff
+cascade), each unit ≈ 0. Four mutations verified: the double-counting recurrence,
+expand-only, the glyph-`members` band filter, and first-system-only measurement
+each fail a named test.
+
+**Churn:** the two multi-staff engrave goldens only. `two_staff_close_content`
+grew by exactly 3.0 (the target change, no cascade); `three_staff_close_content`
+*shrank* by 9.06 — the same +3 per pair, less the 17.06 of over-separation the
+cascade defect was adding. Single-staff and every stub golden are byte-stable.
+
+**Still open:** genuinely staff-less content placed *between* two staves. No
+primitive can name an `InterStaffGap` band today, so it remains unreachable
+rather than latent.
