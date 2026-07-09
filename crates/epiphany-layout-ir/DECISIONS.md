@@ -778,7 +778,7 @@ always-up + fixed-octave fails it.
 and `stemDownNW` at −0.168, so a stem should meet the head slightly off its
 centre; we attach at the centre. Cosmetic at this tier.
 
-## Parked: the notehead stem anchors are unusable as written (2026-07-09)
+## RESOLVED (P13-I3): the notehead stem anchors are deleted (2026-07-09)
 
 `BRAVURA_METRICS`' `NOTEHEAD_ANCHORS` declares `stemUpNW` at x = 0 and
 `stemDownSE` at x = 1180 (i.e. 1.152 staff spaces). Two problems, found while
@@ -797,8 +797,28 @@ moves the `GlyphCatalogIdentity` every conformance claim declares. Hence parked
 rather than fixed in passing. The stem work sidesteps them by reading the head's
 bounding box, whose right edge (1.1807) *is* the correct attachment.
 
-**Three parked candidates now stand** (this, `Staff::default_clef`, and the
-`ConstrainedLayoutIR` listing gap). The house rule opens a batch pass at ≥3.
+**Resolved as P13-I3: deleted, and the extractor taught to emit them.** They were
+hand-derived where every neighbouring number in the table is machine-extracted
+from the SHA-pinned font — the same mistake as inferring band ownership downstream
+instead of reading it from the source that had it. Shipping data we cannot stand
+behind, into a hash every conformance claim declares, is worse than shipping none.
+`extract_bravura_outlines.py --anchors` now emits anchors from the pinned
+`bravura_metadata.json`; the table regains them at the next regeneration,
+generated rather than remembered. That metadata's SHA-256 is deliberately left
+unpinned and `verify()` refuses against an unpinned source, printing the digest to
+paste — the script cannot regenerate anchors until an operator with the font pins
+it in a reviewable commit.
+
+`GlyphCatalogIdentity` moves once, now, while no conformance claim declares the
+old one. Verified empirically before deciding: changing the anchors breaks nothing
+in-tree (30/30 targets, zero golden churn, no pinned literal hash).
+
+**And the test that guarded them proved nothing.** `anchors_participate_in_the_hash`
+compared `noteheadBlack` (anchored) with `noteheadWhole` (not) and asserted they
+hash differently — but their `advance` and `bbox` differ too, so it passed with
+the anchors ignored entirely. It now varies the anchors while holding every other
+field fixed (presence, a coordinate, a name), against synthetic metrics through a
+factored-out `metrics_hash_of`.
 
 ## Slur placement: side, endpoints, and clearance (2026-07-09)
 

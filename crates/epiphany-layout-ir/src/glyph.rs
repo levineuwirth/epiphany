@@ -181,18 +181,6 @@ impl GlyphMetric {
     }
 }
 
-const STEM_UP_NW: GlyphAnchor = GlyphAnchor {
-    name: Cow::Borrowed("stemUpNW"),
-    x: 0,
-    y: 0,
-};
-const STEM_DOWN_SE: GlyphAnchor = GlyphAnchor {
-    name: Cow::Borrowed("stemDownSE"),
-    x: 1180,
-    y: 0,
-};
-const NOTEHEAD_ANCHORS: &[GlyphAnchor] = &[STEM_UP_NW, STEM_DOWN_SE];
-
 /// A representative in-tree slice of Bravura's SMuFL metrics
 /// (`(name, advance, [left, bottom, right, top])`, `1/1024`-staff-space units),
 /// extracted from the SHA-pinned `bravura-1.392` font by `epiphany-render-svg`'s
@@ -203,17 +191,19 @@ const NOTEHEAD_ANCHORS: &[GlyphAnchor] = &[STEM_UP_NW, STEM_DOWN_SE];
 /// a containing box keeps a no-collision result honest on paper (a `render-svg` test
 /// proves the containment). Every glyph the v0 pipeline names is in this table; the
 /// stub solver checks that, so a missing entry surfaces as
-/// [`crate::SolveStatus::InternalError`]. The named anchors are SMuFL
-/// engraving-default approximations (font metadata, not glyf bounds — so not part of
-/// the outline extraction).
+/// [`crate::SolveStatus::InternalError`].
+///
+/// **No glyph carries anchors.** They live in the font's SMuFL metadata
+/// (`bravura_metadata.json`), not its glyf bounds, so the outline extraction never
+/// covered them and the two the table once held were written by hand — and were
+/// wrong under any reading (P13-I3). `extract_bravura_outlines.py --anchors` now
+/// emits them from the pinned metadata; the table regains them at the next
+/// regeneration, generated rather than remembered. Nothing consumes anchors today:
+/// a stem takes its attachment from the notehead's bounding box, whose edges are
+/// the anchor x's the font declares.
 pub const BRAVURA_METRICS: &[GlyphMetric] = &[
-    GlyphMetric::anchored(
-        "noteheadBlack",
-        1208,
-        [0, -512, 1209, 512],
-        NOTEHEAD_ANCHORS,
-    ),
-    GlyphMetric::anchored("noteheadHalf", 1208, [0, -512, 1209, 512], NOTEHEAD_ANCHORS),
+    GlyphMetric::new("noteheadBlack", 1208, [0, -512, 1209, 512]),
+    GlyphMetric::new("noteheadHalf", 1208, [0, -512, 1209, 512]),
     GlyphMetric::new("noteheadWhole", 1729, [0, -512, 1729, 512]),
     GlyphMetric::new("noteheadDoubleWhole", 2454, [0, -635, 2454, 635]),
     GlyphMetric::new("gClef", 2748, [0, -2696, 2749, 4498]),
@@ -361,10 +351,26 @@ impl GlyphCatalog for BravuraCatalog {
 /// metrics — every glyph delivered to a solve MUST name available metrics.
 pub fn metrics_hash_for<'a>(names: impl IntoIterator<Item = &'a str>) -> [u8; 32] {
     let names: BTreeSet<&str> = names.into_iter().collect();
+    let entries: Vec<(&str, &GlyphMetric)> = names
+        .into_iter()
+        .map(|name| {
+            (
+                name,
+                metrics(name).expect("every consulted glyph must name bundled metrics"),
+            )
+        })
+        .collect();
+    metrics_hash_of(&entries)
+}
+
+/// Hashes `(name, metrics)` pairs already in canonical name order — the body of
+/// [`metrics_hash_for`], factored out so a test can hash metrics that are not in
+/// the bundled table (the only way to prove a *field* participates in the hash is
+/// to vary it while holding every other field fixed).
+fn metrics_hash_of(entries: &[(&str, &GlyphMetric)]) -> [u8; 32] {
     let mut p = Preimage::new(DomainTag::FONT_METRICS);
-    p.push_u64_le(names.len() as u64);
-    for name in names {
-        let m = metrics(name).expect("every consulted glyph must name bundled metrics");
+    p.push_u64_le(entries.len() as u64);
+    for (name, m) in entries {
         p.push_u64_le(name.len() as u64);
         p.push_bytes(name.as_bytes());
         p.push_u64_le(m.advance as u64);
@@ -424,16 +430,66 @@ mod tests {
         assert_eq!(a, b);
     }
 
+    /// A glyph's anchors are part of its catalog identity: two catalogs whose
+    /// glyphs differ only in an anchor are different inputs, and a byte-equal
+    /// conformance claim across them is not expected.
+    ///
+    /// This must be shown by varying the anchors while holding every other field
+    /// fixed. The previous version of this test compared `noteheadBlack` (which
+    /// carried anchors) with `noteheadWhole` (which did not) and asserted they
+    /// hash differently — but their `advance` and `bbox` differ too, so it would
+    /// have passed with the anchors ignored entirely. It proved nothing.
     #[test]
     fn anchors_participate_in_the_hash() {
-        // noteheadBlack carries stem anchors; noteheadWhole does not. Even with
-        // equal bbox/advance they must hash differently.
-        assert_ne!(
-            metrics_hash_for(["noteheadBlack"]),
-            metrics_hash_for(["noteheadWhole"])
-        );
-        assert!(!metrics("noteheadBlack").unwrap().anchors.is_empty());
-        assert!(metrics("noteheadWhole").unwrap().anchors.is_empty());
+        let bare = GlyphMetric::new("g", 1024, [0, 0, 1024, 1024]);
+        let anchored = GlyphMetric {
+            anchors: Cow::Owned(vec![GlyphAnchor {
+                name: Cow::Owned("stemUpSE".to_owned()),
+                x: 1208,
+                y: 172,
+            }]),
+            ..bare.clone()
+        };
+        let moved = GlyphMetric {
+            anchors: Cow::Owned(vec![GlyphAnchor {
+                name: Cow::Owned("stemUpSE".to_owned()),
+                x: 1209,
+                y: 172,
+            }]),
+            ..bare.clone()
+        };
+        let renamed = GlyphMetric {
+            anchors: Cow::Owned(vec![GlyphAnchor {
+                name: Cow::Owned("stemDownNW".to_owned()),
+                x: 1208,
+                y: 172,
+            }]),
+            ..bare.clone()
+        };
+        let hash = |m: &GlyphMetric| metrics_hash_of(&[("g", m)]);
+        assert_ne!(hash(&bare), hash(&anchored), "presence changes the hash");
+        assert_ne!(hash(&anchored), hash(&moved), "a coordinate does too");
+        assert_ne!(hash(&anchored), hash(&renamed), "and so does a name");
+    }
+
+    /// The bundled table carries no anchors. They were hand-written where every
+    /// other number in it is machine-extracted from the SHA-pinned font, and they
+    /// were wrong under any reading: they named `stemUpNW`/`stemDownSE` — corners
+    /// a normal notehead's stems do not attach to, and a pair Bravura's
+    /// `noteheadBlack` does not define — with an x of 1180, which reads as 1.18
+    /// staff spaces written in thousandths rather than the table's 1/1024 units
+    /// (1.18 sp = 1208). Nothing consumed them. `extract_bravura_outlines.py`
+    /// now emits anchors from `bravura_metadata.json`; the table regains them at
+    /// the next regeneration, generated rather than remembered (P13-I3).
+    #[test]
+    fn the_bundled_table_carries_no_hand_written_anchors() {
+        for metric in BRAVURA_METRICS {
+            assert!(
+                metric.anchors.is_empty(),
+                "{} carries hand-written anchors",
+                metric.name
+            );
+        }
     }
 
     #[test]
