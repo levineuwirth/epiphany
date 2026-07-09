@@ -9138,9 +9138,48 @@ pub enum VerticalBandKind {
 }
 \end{lstlisting}
 
+\begin{requirement}
+  \label{req:layoutir:primitive-band-ownership}
+  \textbf{Primitive band ownership is declared, not inferred.} Every
+  primitive the projection presents to the solver in
+  \texttt{ConstrainedLayoutIR} --- \texttt{GlyphObject},
+  \texttt{Stroke}, and \texttt{Curve} alike --- \MUST{} declare the
+  \texttt{VerticalBandId} of the band that owns it, and that band
+  \MUST{} exist in \texttt{vertical\_bands}. A vertical solver \MUST{}
+  take a primitive's owning staff from that declaration and
+  \MUSTNOT{} infer it from the primitive's geometry. Content owned by
+  no staff (a page-margin annotation, a structure spanning several
+  staves) names a band whose kind is not \texttt{Staff}.
+
+  This is a correctness requirement, not a convenience. A primitive's
+  drawn position does not determine its owner: a stem shares its
+  horizontal column with the staff above, and a slur's endpoints are
+  \emph{lifted clear} of its own staff by construction, landing in the
+  inter-staff zone where the nearest notehead routinely belongs to the
+  neighbouring staff. A solver that guesses from proximity will
+  attribute such a primitive to the wrong staff and, on renegotiating
+  the gaps between a system's staves, tear it off the notes it belongs
+  to.
+
+  A band \MUST{} therefore exist for every staff of a region, whether
+  or not any glyph landed in it, and for the region's margin ---
+  otherwise a primitive that names one has nowhere to point. A band
+  MAY carry no members.
+
+  Only glyphs are \emph{members} of a band
+  (\texttt{VerticalBand::members}), which is what realizes the spring
+  solve; a stroke's or curve's band reference is one-way. What becomes
+  of the declaration downstream is
+  \ref{req:layoutir:resolved-band-ownership}.
+\end{requirement}
+
 \subsection{Constraints}
 
-The IR carries explicit constraint inputs for the solver:
+The IR carries explicit constraint inputs for the solver. Beyond
+glyphs it presents the non-glyph primitives --- \texttt{Stroke} and
+\texttt{Curve}, whose shapes are listed with
+\ref{req:layoutir:resolved-primitives} --- since the solver positions
+those too:
 
 \begin{lstlisting}[language=Rust]
 pub struct ConstrainedLayoutIR {
@@ -9156,6 +9195,14 @@ pub struct ConstrainedLayoutIR {
 
     /// Glyph-level layout objects.
     pub glyphs: Vec<GlyphObject>,
+
+    /// Non-glyph line primitives (staff lines, stems, barlines,
+    /// ledger lines, brackets) presented to the solver alongside
+    /// the glyphs.
+    pub strokes: Vec<Stroke>,
+
+    /// Cubic-Bezier curve primitives (slurs), likewise.
+    pub curves: Vec<Curve>,
 
     /// Additional constraints not captured by spring parameters.
     pub constraints: Vec<LayoutConstraint>,
@@ -9326,32 +9373,26 @@ pub struct Curve {
 \end{requirement}
 
 \begin{requirement}
-  \label{req:layoutir:primitive-band-ownership}
-  \textbf{Primitive band ownership is declared, not inferred.} Every
-  primitive --- glyph, stroke, and curve alike --- \MUST{} declare the
-  \texttt{VerticalBandId} of the band that owns it, and the projection
-  \MUST{} name a band that exists in \texttt{vertical\_bands}. A
-  vertical solver \MUST{} take a primitive's owning staff from that
-  declaration and \MUSTNOT{} infer it from the primitive's geometry.
-  Content owned by no staff (a page-margin annotation, a structure
-  spanning several staves) names a band whose kind is not
-  \texttt{Staff}.
+  \label{req:layoutir:resolved-band-ownership}
+  \textbf{Band ownership through the resolved stage.} A resolved
+  \texttt{Stroke} and \texttt{Curve} \MUST{} retain the
+  \texttt{vertical\_band} they were given in
+  \texttt{ConstrainedLayoutIR}
+  (\ref{req:layoutir:primitive-band-ownership}), so a solver that
+  re-spaces or relocates them --- casting off into systems, or
+  renegotiating the gaps between a system's staves --- can attribute
+  each one to its owning staff. A \texttt{ResolvedGlyph} carries no
+  band: a glyph's ownership is consumed during the solve and its
+  outcome is already baked into the glyph's resolved position, so the
+  field would be dead weight in a rendering fingerprint.
 
-  This is a correctness requirement, not a convenience. A primitive's
-  drawn position does not determine its owner: a stem shares its
-  horizontal column with the staff above, and a slur's endpoints are
-  \emph{lifted clear} of its own staff by construction, landing in the
-  inter-staff zone where the nearest notehead routinely belongs to the
-  neighbouring staff. A solver that guesses from proximity will
-  attribute such a primitive to the wrong staff and, on renegotiating
-  the staff gaps, tear it off the notes it belongs to.
-
-  Only glyphs are \emph{members} of a band
-  (\texttt{VerticalBand::members}), which is what realizes the
-  horizontal spring solve; a stroke's or curve's band reference is
-  one-way. Like the primitives themselves, the reference is
-  non-canonical layout-attribution metadata: it enters no content hash
-  and no canonical encoding.
+  Band ownership is \emph{non-canonical layout-attribution metadata}.
+  It enters no content hash and no canonical encoding
+  (\ref{req:layoutir:object-id-derivation}): it draws nothing, so two
+  layouts differing only in it are the same rendered layout. A
+  conformant canonical encoding of \texttt{ResolvedLayoutIR} therefore
+  omits \texttt{vertical\_band} even from the strokes and curves that
+  carry it.
 \end{requirement}
 
 \begin{requirement}
@@ -15569,6 +15610,28 @@ layouts they own versus inherit:
   Catalog \sectionsc{slur\_shape\_penalty} rationale refreshed; formula
   unchanged, no version move). Layout geometry stays non-canonical --- no
   wire form, no companion version moves.
+  \\
+  \midrule
+  \today & Layout IR (primitive band ownership, Push 3) &
+  Chapter 7 gains \ref{req:layoutir:primitive-band-ownership}: every
+  primitive the projection presents to the solver ---
+  \texttt{GlyphObject}, \texttt{Stroke}, \texttt{Curve} --- declares the
+  \texttt{VerticalBandId} that owns it, naming a band that exists, and a
+  vertical solver takes ownership from that declaration rather than
+  inferring it from geometry. Ratifies-as-implemented the contract a
+  vertical solver needs and an inference cannot supply: a slur's
+  endpoints are lifted clear of its own staff, so its owner is not
+  recoverable from where it is drawn. The \texttt{ConstrainedLayoutIR}
+  listing gains \texttt{strokes} / \texttt{curves} (present since staff
+  lines, never listed) and the \texttt{Stroke} / \texttt{Curve} listings
+  gain \texttt{vertical\_band}; a band now exists for every staff of a
+  region and for its margin, members or not.
+  \ref{req:layoutir:resolved-band-ownership} carries the declaration
+  through the resolved stage on strokes and curves (a
+  \texttt{ResolvedGlyph} keeps none --- its ownership is already baked
+  into its position). Band ownership is non-canonical attribution
+  metadata: it enters no content hash and no canonical encoding, so no
+  wire form and no companion version moves.
   \\
   \bottomrule
 \end{longtable}

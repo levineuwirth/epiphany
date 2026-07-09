@@ -235,3 +235,46 @@ appearance (Phrase/Editorial's own line, distinct from the SpanStyle dash),
 duration-aware slur height (would pull the clamped short/long slurs back into
 the shallow-arc band), collision-aware slur reshaping (the Standard-tier
 `slur_shape` driver) — all Standard-tier work.
+
+## Push-3 tranche (2026-07-09) — primitive band ownership
+
+The Standard-tier inter-staff vertical solve needed to know which staff owns each
+primitive. `GlyphObject` had always declared its `vertical_band`; `Stroke` and
+`Curve` had not, so `epiphany-engrave` reconstructed ownership from geometry —
+and got it wrong twice, tearing stems (`4132a7a`) and then slurs (`b1bfe04`) off
+their own notes, both reaching a committed golden. A slur is the proof the
+inference cannot be made safe: its endpoints are lifted clear of its own staff by
+construction, into the zone where the nearest notehead belongs to the neighbouring
+staff. Ratified as implemented in `efaebb9` (code) and `fc411ea` (Ch7 listings).
+Layout-IR (Chapter 7) only, non-canonical — **no wire form, no companion version
+move**, and no golden churn (the declared owner agrees with the inferred one on
+the whole corpus, which is what licensed the swap).
+
+| Item | Disposition | Spec locus | Consumer |
+|---|---|---|---|
+| Primitive band ownership | **adopt (new requirement)** — Ch7 gains `req:layoutir:primitive-band-ownership`: every primitive presented to the solver in `ConstrainedLayoutIR` (`GlyphObject`, `Stroke`, `Curve`) MUST declare the `VerticalBandId` that owns it and that band MUST exist; a vertical solver MUST take ownership from the declaration and MUST NOT infer it from geometry. Staff-less content names a non-`Staff` band. A band MUST therefore exist for every staff of a region and for its margin, members or not; only glyphs are band *members* (a stroke's/curve's reference is one-way) | core_spec Ch7 §ConstrainedLayoutIR §Vertical Bands (`req:layoutir:primitive-band-ownership`) | `epiphany-layout-ir` (`constrained.rs::{Stroke,Curve}.vertical_band`, band emission); `epiphany-engrave` (`casting.rs` attribution) |
+| Ownership through the resolved stage | **adopt (new requirement)** — Ch7 gains `req:layoutir:resolved-band-ownership`: a resolved `Stroke`/`Curve` MUST retain its `vertical_band` (casting-off and the inter-staff solve both relocate them and must attribute them); a `ResolvedGlyph` carries none, its ownership already baked into its resolved position. Band ownership is non-canonical attribution metadata — it enters no content hash and no canonical encoding, so `ResolvedLayoutIR::canonical_bytes` omits it even from the primitives that carry it | core_spec Ch7 §ResolvedLayoutIR (`req:layoutir:resolved-band-ownership`) | `epiphany-layout-ir` (`resolved.rs::canonical_bytes`) |
+| Struct listings | **adopt (ratify reality)** — the `ConstrainedLayoutIR` listing gains `strokes: Vec<Stroke>` / `curves: Vec<Curve>` (present in code since staff lines, never listed — without them Chapter 7 cannot describe supplying non-glyph ownership to the solver); the `Stroke`/`Curve` listings gain `vertical_band`; `Stroke`'s stale "the vertical-band model does not contain" gloss is dropped | core_spec Ch7 §ConstrainedLayoutIR, §ResolvedLayoutIR | `epiphany-layout-ir` |
+
+**Version movements.** None on the wire: core spec Chapter 7 gains two
+`req:layoutir:*` requirements, three struct-listing corrections, and a
+revision-history row. Operation Catalog stays 0.7.0, Binary Format stays 0.6.0 —
+layout geometry is non-canonical.
+
+**Known listing gap (pre-existing, not introduced here).** The `ConstrainedLayoutIR`
+listing still elides two fields the code carries: `break_origins: Vec<BreakOrigin>`
+and `catalog: GlyphCatalogIdentity`. Both *types* are specified — the former's
+semantics by `req:layoutir:break-origin-attribution`, the latter by Ch7 §Glyph
+Catalog Identity — so only the struct listing is incomplete, and neither gap
+blocks an implementation the way a missing `strokes`/`curves` would have. Tracked
+as a Pass-13 candidate, deliberately not fixed here: the listing correction in
+this tranche is scoped to exactly what `req:layoutir:primitive-band-ownership`
+depends on.
+
+**Deferred (documented, not open candidates).** A height model for the
+inter-staff gap band — the missing piece behind both staff-less content placed
+*between* two staves (it holds still while the lower staff descends away) and
+`vertical_density_penalty` saturating at 1.0 when the solve targets content
+extents while the metric scores the realized gap against the band's *preferred*
+height. Both are named in `epiphany-engrave/DECISIONS.md`; neither is a Pass-13
+ambiguity.
