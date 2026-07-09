@@ -30,6 +30,7 @@ use epiphany_determinism::fuzz::SplitMix64;
 use crate::causal::CausalContext;
 use crate::envelope::OperationEnvelope;
 use crate::opset::OperationSet;
+use crate::payload::OperationKindTag;
 use crate::payload::{
     CreateCrossCuttingOp, CreateRegionOp, CreateRepeatStructureOp, CreateStaffInstanceOp,
     CreateStaffOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp,
@@ -43,6 +44,7 @@ use crate::stamp::{HybridLogicalClock, OperationStamp};
 use crate::support::AuthorId;
 use crate::valuegen;
 use crate::{EnvelopeHash, IntegrityAnomalyKind, OperationEffect};
+use epiphany_determinism::{CanonicalDecode, CanonicalEncode};
 
 /// Number of replicas the generator draws authors from.
 const REPLICAS: u64 = 3;
@@ -626,6 +628,238 @@ pub fn run_equivocation_resolution_fuzz(iters: u64, seed: u64) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Decode fuzzing (P2 of the decode-hardening track; P1 covered `epiphany-core`).
+//
+// The operation layer exposes exactly two byte-decode surfaces:
+// `MaterializedState::decode_canonical` and `OperationKindTag::decode_canonical`.
+// Operation *payloads* have no decoder — `OperationKind` is encode-only — so
+// there is nothing here that could accept a duplicate `TransposeInterval`
+// target. When such a decoder lands it inherits the wire table's `seq^⇑` rule:
+// reject a duplicate, never normalize it away.
+//
+// The properties, exactly as in P1: an adversarial byte string must never panic
+// a decoder, and an *accepted* string must re-encode to itself. Canonical decode
+// is injective, which is what content-addressing rests on.
+// ---------------------------------------------------------------------------
+
+/// How much of the decode surface a fuzz run actually reached. A harness that
+/// never gets a decoder to say `Ok` proves nothing about injectivity, so the
+/// run asserts on these rather than merely on the absence of a panic.
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct DecodeFuzzCoverage {
+    pub states_accepted: u64,
+    pub states_rejected: u64,
+    pub tags_accepted: u64,
+    pub tags_rejected: u64,
+}
+
+struct DecodeCorpus {
+    states: Vec<Vec<u8>>,
+    tags: Vec<Vec<u8>>,
+}
+
+/// Builds the pool of valid canonical byte strings to mutate.
+///
+/// Corpus depth is load-bearing. A small envelope set reduces to a state with no
+/// conflicts, anomalies, pending operations, or spellings — and those branches
+/// carry every canonical-order check the decoder makes. A corpus without them
+/// leaves the decoder's interesting half unreached, and a green run proves
+/// nothing.
+///
+/// So the corpus is *drawn until covered* rather than drawn once and hoped over:
+/// a fixed set of sizes is seed-dependent (measured: 6 of 12 seeds failed to
+/// produce all four structures). Each round adds one state per size; the loop
+/// stops as soon as every structure has appeared. The final assertion is then a
+/// property of the harness, not of the seed.
+fn build_decode_corpus(rng: &mut SplitMix64) -> DecodeCorpus {
+    const MAX_ROUNDS: usize = 12;
+    let mut states = Vec::new();
+    let (mut conflicts, mut anomalies, mut pending, mut spellings) = (false, false, false, false);
+
+    for round in 0..MAX_ROUNDS {
+        for n in [0usize, 1, 8, 200, 400] {
+            // Skip the trivial sizes after the first round: they only ever add
+            // shallow states, and one of each is enough to cover the empty and
+            // near-empty encodings.
+            if round > 0 && n < 200 {
+                continue;
+            }
+            let envelopes = gen_envelope_set(rng, n);
+            let mut set = OperationSet::new();
+            set.accept_all(envelopes);
+            let state = set.reduce();
+            conflicts |= !state.conflicts.records().is_empty();
+            anomalies |= !state.anomalies.is_empty();
+            pending |= !state.pending.is_empty();
+            spellings |= !state.spellings.is_empty();
+            states.push(state.canonical_bytes());
+        }
+        if conflicts && anomalies && pending && spellings {
+            break;
+        }
+    }
+    assert!(
+        conflicts && anomalies && pending && spellings,
+        "decode corpus never reached every structure in {MAX_ROUNDS} rounds \
+         (conflicts={conflicts}, anomalies={anomalies}, pending={pending}, \
+         spellings={spellings}); the decoder's canonical-order checks live in \
+         exactly those branches"
+    );
+
+    let tags = [
+        OperationKindTag::InsertEvent,
+        OperationKindTag::Transpose,
+        OperationKindTag::TransposeInterval,
+        OperationKindTag::DeleteRepeatStructure,
+        OperationKindTag::Registered(crate::OperationKindRegistryId(0x0123_4567_89AB_CDEF)),
+    ]
+    .iter()
+    .map(|t| t.to_canonical_bytes())
+    .collect();
+    DecodeCorpus { states, tags }
+}
+
+fn pick<'a>(rng: &mut SplitMix64, pool: &'a [Vec<u8>]) -> &'a [u8] {
+    &pool[(rng.next_u64() as usize) % pool.len()]
+}
+
+fn random_bytes(rng: &mut SplitMix64, n: usize) -> Vec<u8> {
+    (0..n).map(|_| rng.next_u64() as u8).collect()
+}
+
+fn substitute(rng: &mut SplitMix64, bytes: &mut [u8], k: usize) {
+    if bytes.is_empty() {
+        return;
+    }
+    for _ in 0..k {
+        let i = (rng.next_u64() as usize) % bytes.len();
+        bytes[i] = rng.next_u64() as u8;
+    }
+}
+
+/// Overwrites a random 4-byte window with a fresh, often-extreme `u32`: the
+/// count/length-prefix attack a `Vec` decoder trusts for its element count.
+fn corrupt_length_prefix(rng: &mut SplitMix64, bytes: &mut [u8]) {
+    if bytes.len() < 4 {
+        return;
+    }
+    let i = (rng.next_u64() as usize) % (bytes.len() - 3);
+    let v: u32 = match rng.next_u64() % 3 {
+        0 => u32::MAX,
+        1 => (rng.next_u64() as u32) | 0x8000_0000,
+        _ => rng.next_u64() as u32,
+    };
+    bytes[i..i + 4].copy_from_slice(&v.to_le_bytes());
+}
+
+/// One adversarial `MaterializedState` input. Strategy 1 is *unmutated* valid
+/// bytes — a live check that the harness's own corpus round-trips.
+fn gen_state_input(rng: &mut SplitMix64, corpus: &DecodeCorpus) -> Vec<u8> {
+    match rng.next_u64() % 7 {
+        0 => {
+            let n = (rng.next_u64() % 512) as usize;
+            random_bytes(rng, n)
+        }
+        1 => pick(rng, &corpus.states).to_vec(),
+        2 => {
+            let mut b = pick(rng, &corpus.states).to_vec();
+            let k = 1 + (rng.next_u64() % 4) as usize;
+            substitute(rng, &mut b, k);
+            b
+        }
+        3 => {
+            let mut b = pick(rng, &corpus.states).to_vec();
+            let t = (rng.next_u64() as usize) % (b.len() + 1);
+            b.truncate(t);
+            b
+        }
+        4 => {
+            let mut b = pick(rng, &corpus.states).to_vec();
+            let n = 1 + (rng.next_u64() % 16) as usize;
+            let tail = random_bytes(rng, n);
+            b.extend_from_slice(&tail);
+            b
+        }
+        5 => {
+            let mut b = pick(rng, &corpus.states).to_vec();
+            corrupt_length_prefix(rng, &mut b);
+            b
+        }
+        // A valid `OperationKindTag` standing where a state is expected: a
+        // structurally plausible, wrong-type payload.
+        _ => pick(rng, &corpus.tags).to_vec(),
+    }
+}
+
+/// One adversarial `OperationKindTag` input.
+fn gen_tag_input(rng: &mut SplitMix64, corpus: &DecodeCorpus) -> Vec<u8> {
+    match rng.next_u64() % 5 {
+        0 => pick(rng, &corpus.tags).to_vec(),
+        1 => {
+            let mut b = pick(rng, &corpus.tags).to_vec();
+            substitute(rng, &mut b, 1);
+            b
+        }
+        2 => {
+            let mut b = pick(rng, &corpus.tags).to_vec();
+            let n = 1 + (rng.next_u64() % 4) as usize;
+            let tail = random_bytes(rng, n);
+            b.extend_from_slice(&tail);
+            b
+        }
+        3 => {
+            let mut b = pick(rng, &corpus.tags).to_vec();
+            let t = (rng.next_u64() as usize) % (b.len() + 1);
+            b.truncate(t);
+            b
+        }
+        _ => {
+            let n = (rng.next_u64() % 24) as usize;
+            random_bytes(rng, n)
+        }
+    }
+}
+
+/// Runs `iters` adversarial byte-decode iterations from `seed` against the
+/// operation layer's two decoders, returning what it reached. A panic, or an
+/// accepted byte string that does not re-encode to itself, fails the run;
+/// `seed` reproduces it exactly.
+pub fn run_decode_fuzz(iters: u64, seed: u64) -> DecodeFuzzCoverage {
+    let mut rng = SplitMix64::new(seed);
+    let corpus = build_decode_corpus(&mut rng);
+    let mut cov = DecodeFuzzCoverage::default();
+
+    for _ in 0..iters {
+        let bytes = gen_state_input(&mut rng, &corpus);
+        match crate::MaterializedState::decode_canonical(&bytes) {
+            Ok(state) => {
+                cov.states_accepted += 1;
+                assert_eq!(
+                    state.canonical_bytes(),
+                    bytes,
+                    "the materialized-state decoder accepted a non-canonical byte string"
+                );
+            }
+            Err(_) => cov.states_rejected += 1,
+        }
+
+        let tag_bytes = gen_tag_input(&mut rng, &corpus);
+        match OperationKindTag::decode_canonical(&tag_bytes) {
+            Ok(tag) => {
+                cov.tags_accepted += 1;
+                assert_eq!(
+                    tag.to_canonical_bytes(),
+                    tag_bytes,
+                    "the OperationKindTag decoder accepted a non-canonical byte string"
+                );
+            }
+            Err(_) => cov.tags_rejected += 1,
+        }
+    }
+    cov
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -681,5 +915,186 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 1_000, "too few clean generated histories checked");
+    }
+
+    /// Two deterministic smoke seeds over the decode surface. A deeper sweep
+    /// runs the same entry point with a larger budget; a failure reproduces
+    /// exactly from its seed.
+    ///
+    /// The coverage assertions are the point. A decode fuzzer that never gets a
+    /// decoder to say `Ok` proves nothing about injectivity — it only proves the
+    /// absence of a panic — so the run fails if it did not reach the accept path
+    /// on both surfaces.
+    #[test]
+    fn decode_fuzz_smoke_seed_a() {
+        let cov = run_decode_fuzz(20_000, 0x0DEC_0DE0_F022_1234);
+        assert!(cov.states_accepted > 1_000, "{cov:?}");
+        assert!(cov.states_rejected > 1_000, "{cov:?}");
+        assert!(cov.tags_accepted > 1_000, "{cov:?}");
+        assert!(cov.tags_rejected > 1_000, "{cov:?}");
+    }
+
+    #[test]
+    fn decode_fuzz_smoke_seed_b() {
+        let cov = run_decode_fuzz(20_000, 0xF0FA_11BA_C0DE_5EED);
+        assert!(cov.states_accepted > 1_000, "{cov:?}");
+        assert!(cov.tags_accepted > 1_000, "{cov:?}");
+    }
+
+    /// `objects` is a `BTreeMap` with **no per-site order check**: the decoder
+    /// re-sorts it silently. Only the whole-state re-encode-and-compare guard
+    /// can reject an out-of-order encoding of it, so this is the deterministic
+    /// lock on that guard — the fuzzer's 2M-input sweep of the same property
+    /// finds it too, but a seeded sweep is not a proof.
+    ///
+    /// Without the guard the decoder would be non-injective: two distinct byte
+    /// strings would decode to one value, which is what content-addressing
+    /// forbids.
+    #[test]
+    fn an_out_of_order_objects_map_is_rejected_by_the_whole_state_guard() {
+        use crate::ObjectState;
+        use epiphany_core::EventId;
+
+        let lo = TypedObjectId::Event(EventId::new(ReplicaId(1), 1));
+        let hi = TypedObjectId::Event(EventId::new(ReplicaId(1), 2));
+        assert!(lo < hi);
+
+        let empty = crate::MaterializedState::default().canonical_bytes();
+        let mut state = crate::MaterializedState::default();
+        state.objects.insert(lo, ObjectState::Live);
+        state.objects.insert(hi, ObjectState::Live);
+        let bytes = state.canonical_bytes();
+        assert!(crate::MaterializedState::decode_canonical(&bytes).is_ok());
+
+        // The two encodings agree until the objects count, and differ in length
+        // by exactly the two entries.
+        let count_at = empty
+            .iter()
+            .zip(bytes.iter())
+            .position(|(a, b)| a != b)
+            .expect("the objects count differs");
+        let entry = (bytes.len() - empty.len()) / 2;
+        let first = count_at + 4;
+        let second = first + entry;
+
+        // Swap the two entries: structurally valid, canonically wrong.
+        let mut swapped = bytes.clone();
+        swapped[first..second].copy_from_slice(&bytes[second..second + entry]);
+        swapped[second..second + entry].copy_from_slice(&bytes[first..second]);
+        assert_ne!(swapped, bytes, "the swap changed the bytes");
+
+        assert_eq!(
+            crate::MaterializedState::decode_canonical(&swapped),
+            Err(crate::MaterializedDecodeError::NonCanonical),
+            "an out-of-order objects map must be rejected, never silently re-sorted"
+        );
+    }
+
+    /// **The guard is not complete for order-preserving fields.**
+    ///
+    /// `MaterializedState`'s decode has two layers. The whole-state
+    /// re-encode-and-compare guard catches every field the decoder *normalizes*
+    /// — the `BTreeMap`s re-sort and de-duplicate, so a non-canonical encoding
+    /// of them cannot survive a round trip. It is blind to `Vec` fields, whose
+    /// order the decoder preserves: a reordered `anomalies` or `pending` list
+    /// re-encodes to exactly the bytes it came from.
+    ///
+    /// Those fields therefore need per-site canonical-order checks, and those
+    /// checks are invisible to an injectivity fuzzer — verified by removing them
+    /// and watching a 40K-input sweep stay green. The deterministic tests here
+    /// are the only thing that locks them.
+    ///
+    /// (`effects` is a `Vec` with no order check by design: its canonical order
+    /// is *reduction* order, which a decoder cannot recompute. Two orderings are
+    /// two different states, so injectivity is not at stake.)
+    #[test]
+    fn an_out_of_order_anomaly_list_is_rejected() {
+        use crate::{IntegrityAnomaly, IntegrityAnomalyKind};
+
+        let a = IntegrityAnomaly::new(IntegrityAnomalyKind::OperationSlotEquivocated {
+            operation_id: OperationId::new(ReplicaId(1), 1),
+        });
+        let b = IntegrityAnomaly::new(IntegrityAnomalyKind::OperationSlotEquivocated {
+            operation_id: OperationId::new(ReplicaId(1), 2),
+        });
+        let (lo, hi) = if a.id < b.id { (a, b) } else { (b, a) };
+
+        let empty = crate::MaterializedState::default().canonical_bytes();
+        let state = crate::MaterializedState {
+            anomalies: vec![lo.clone(), hi.clone()],
+            ..Default::default()
+        };
+        let bytes = state.canonical_bytes();
+        assert!(crate::MaterializedState::decode_canonical(&bytes).is_ok());
+
+        // The anomalies are equal-length, length-prefixed entries, so swapping
+        // them is a pure permutation of the byte string.
+        let count_at = empty
+            .iter()
+            .zip(bytes.iter())
+            .position(|(x, y)| x != y)
+            .expect("the anomaly count differs");
+        let entry = (bytes.len() - empty.len()) / 2;
+        let first = count_at + 4;
+        let second = first + entry;
+
+        let mut swapped = bytes.clone();
+        swapped[first..second].copy_from_slice(&bytes[second..second + entry]);
+        swapped[second..second + entry].copy_from_slice(&bytes[first..second]);
+        assert_ne!(swapped, bytes);
+
+        // The decoder preserves `Vec` order, so `swapped` re-encodes to itself:
+        // the whole-state guard cannot see this. Only the per-site check can.
+        assert_eq!(
+            crate::MaterializedState::decode_canonical(&swapped),
+            Err(crate::MaterializedDecodeError::NonCanonical),
+            "an out-of-order anomaly register must be rejected"
+        );
+    }
+
+    /// The corpus must reach the decoder's interesting half regardless of seed.
+    /// A fixed list of envelope-set sizes does not: measured, 6 of 12 seeds
+    /// failed to produce all four structures, so `build_decode_corpus` draws
+    /// until covered. This pins that.
+    #[test]
+    fn the_decode_corpus_is_covered_for_every_seed() {
+        for seed in 1u64..=12 {
+            let _ = build_decode_corpus(&mut SplitMix64::new(seed));
+        }
+    }
+
+    /// The `pending` list carries its own per-site canonical-order check, so a
+    /// reordered one is rejected even without the whole-state guard. This locks
+    /// that check specifically (verified: it still passes when the guard is
+    /// removed).
+    #[test]
+    fn a_reordered_pending_list_is_rejected() {
+        use crate::PendingReason;
+        let mut state = crate::MaterializedState::default();
+        let lo = OperationId::new(ReplicaId(1), 1);
+        let hi = OperationId::new(ReplicaId(1), 2);
+        state.pending = vec![(lo, PendingReason::MissingCausalPredecessor { missing: lo })];
+        let canonical = state.canonical_bytes();
+        assert!(crate::MaterializedState::decode_canonical(&canonical).is_ok());
+
+        // Two entries in canonical order decode; the same two reversed do not.
+        state.pending = vec![
+            (lo, PendingReason::MissingCausalPredecessor { missing: lo }),
+            (hi, PendingReason::MissingCausalPredecessor { missing: lo }),
+        ];
+        let ok_bytes = state.canonical_bytes();
+        assert!(crate::MaterializedState::decode_canonical(&ok_bytes).is_ok());
+
+        state.pending = vec![
+            (hi, PendingReason::MissingCausalPredecessor { missing: lo }),
+            (lo, PendingReason::MissingCausalPredecessor { missing: lo }),
+        ];
+        let bad_bytes = state.canonical_bytes();
+        assert_ne!(ok_bytes, bad_bytes, "the two orders differ on the wire");
+        assert_eq!(
+            crate::MaterializedState::decode_canonical(&bad_bytes),
+            Err(crate::MaterializedDecodeError::NonCanonical),
+            "a non-canonical pending order must be rejected, never re-sorted"
+        );
     }
 }

@@ -1466,3 +1466,54 @@ Three regressions: full undo when nothing supersedes (guards against
 *over*-coupling), best-effort skipping the pair when a later respell supersedes,
 and strict undo conflicting. Mutation-verified: removing the coupling fails only
 the middle one, restoring the pitch to C4 with the spelling still reading E.
+
+## Push 5 / P2 — the ops decode surface (2026-07-09)
+
+The operation layer exposes exactly two byte-decode surfaces:
+`MaterializedState::decode_canonical` and `OperationKindTag::decode_canonical`.
+Operation *payloads* have no decoder — `OperationKind` is encode-only — so
+nothing here can yet accept a duplicate `TransposeInterval` target. When such a
+decoder lands it inherits the wire table's `seq^⇑` rule: reject a duplicate,
+never normalize it away.
+
+**No defect found in the decoder.** It already carries the P1 hardening:
+a whole-state re-encode-and-compare guard, and `Vec::with_capacity(n.min(1024))`
+at every count site, so the unbounded-allocation and soft-DoS classes P1 fixed in
+core do not apply. 2M adversarial inputs across four seeds, ~2s each.
+
+**But the P1 design note — "the guard is complete-by-construction, it cannot miss
+a lenient codec" — is only half true, and this is the finding worth keeping.**
+Decode has two layers, and they catch disjoint things:
+
+- The **whole-state guard** catches every field the decoder *normalizes*. The
+  `BTreeMap`s (`objects`, `spellings`, `breaks`, `page_breaks`) re-sort and
+  de-duplicate, so a non-canonical encoding of them cannot survive a round trip.
+- It is **blind to order-preserving `Vec` fields**. A reordered `anomalies` or
+  `pending` list re-encodes to exactly the bytes it came from, so the guard sees
+  identity and accepts. Only the per-site `windows(2).all(<)` checks reject them.
+  Same for a conflict record's `caused_by` / `affected_objects`, which
+  `ConflictRecord::encode_canonical` writes verbatim.
+
+Measured, not reasoned: removing both per-site `Vec` order checks leaves a 40K
+input injectivity sweep **green**. An injectivity fuzzer structurally cannot see
+this class — it asserts `bytes → value → bytes` identity, which is exactly what a
+missing order check preserves. The per-site checks are load-bearing and were
+locked by *nothing*.
+
+(`effects` is a `Vec` with no order check, correctly: its canonical order is
+*reduction* order, which a decoder cannot recompute. Two orderings are two
+different states, so injectivity is not at stake.)
+
+**Delivered.** `fuzz::run_decode_fuzz` (no-panic + injectivity over both
+surfaces), returning a `DecodeFuzzCoverage` the smoke tests assert on — a decode
+fuzzer that never reaches a decoder's accept path proves only the absence of a
+panic. Plus deterministic tests for each layer:
+`an_out_of_order_objects_map_is_rejected_by_the_whole_state_guard` (guard),
+`an_out_of_order_anomaly_list_is_rejected` and
+`a_reordered_pending_list_is_rejected` (per-site, invisible to the fuzzer).
+Each was mutation-verified against the exact check it locks.
+
+**Corpus depth is a property, not luck.** A fixed list of envelope-set sizes
+reduces to states with no conflicts, anomalies, pending, or spellings — the very
+branches that hold every canonical-order check. Measured: 6 of 12 seeds failed to
+produce all four. `build_decode_corpus` now draws until covered and asserts it.
