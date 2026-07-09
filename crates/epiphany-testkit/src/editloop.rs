@@ -14,14 +14,16 @@
 //! pitch's value but not its `PitchId`, so its layout object keeps the same stable
 //! id and the editor re-finds the selection after the relayout.
 
-use epiphany_core::{OperationId, PitchId, ReplicaId, Score, TypedObjectId, WallClockTime};
+use epiphany_core::{
+    OperationId, PitchId, ReplicaId, Score, TranspositionInterval, TypedObjectId, WallClockTime,
+};
 use epiphany_layout_ir::{
     to_constrained, to_logical, to_render, ConstraintSolver, HitShape, LayoutObjectId, Point,
     PrimitiveRef, RenderIR, SolverConfig, StubSolver,
 };
 use epiphany_ops::{
     AuthorId, CausalContext, HybridLogicalClock, OperationEnvelope, OperationKind,
-    OperationPayload, OperationSet, OperationStamp, TransposeOp,
+    OperationPayload, OperationSet, OperationStamp, TransposeIntervalOp,
 };
 
 /// What one editing-loop iteration did, for inspection by tests.
@@ -57,9 +59,15 @@ fn render_with<S: ConstraintSolver>(score: &Score, solver: &S) -> Option<RenderI
         .then(|| to_render(&report.layout))
 }
 
-/// Builds a "sharpen" edit — a `+1`-chromatic [`TransposeOp`] on `pitch` — and
-/// reduces it onto `base`, returning the edited score (the same `PitchId`s, the
-/// target's CMN alteration shifted by one).
+/// Builds a "sharpen" edit — a `+1`-chromatic [`TransposeIntervalOp`] on
+/// `pitch` — and reduces it onto `base`, returning the edited score (the same
+/// `PitchId`s, the target's CMN alteration shifted by one, its staff line
+/// unchanged).
+///
+/// This models an *editing action*, so it authors the faithful operation. The
+/// frozen `Transpose` MUST NOT be emitted by new authoring
+/// (`req:opcat:transpose-frozen`); it survives only in the random-kind corpora
+/// of `generators.rs`, which exist to prove it still replays.
 fn sharpen(base: &Score, pitch: PitchId) -> Score {
     let id = OperationId::new(ReplicaId(1), 1);
     let envelope = OperationEnvelope {
@@ -68,10 +76,15 @@ fn sharpen(base: &Score, pitch: PitchId) -> Score {
         stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(1), 0), id),
         causal_context: CausalContext::new(),
         transaction: None,
-        payload: OperationPayload::Primitive(OperationKind::Transpose(TransposeOp {
-            targets: vec![pitch],
-            chromatic_steps: 1,
-        })),
+        payload: OperationPayload::Primitive(OperationKind::TransposeInterval(
+            TransposeIntervalOp {
+                targets: [pitch].into_iter().collect(),
+                interval: TranspositionInterval {
+                    diatonic_steps: 0,
+                    chromatic_steps: 1,
+                },
+            },
+        )),
     };
     let mut set = OperationSet::new();
     set.accept(envelope);
@@ -157,6 +170,40 @@ pub fn run_edit_loop_with<S: ConstraintSolver>(base: &Score, solver: &S) -> Opti
 mod tests {
     use super::*;
     use epiphany_core::generators::valid_score_rich;
+
+    #[test]
+    fn the_sharpen_records_the_spelling_it_propagated() {
+        // The frozen `Transpose` recorded none, so an authored spelling stayed
+        // pinned to the pre-edit notehead. `TransposeInterval` must attach the
+        // spelling its interval determined (`req:opcat:transpose-interval-spelling`).
+        use epiphany_core::{SpellingScope, SpellingSource};
+        let base = valid_score_rich(0x5EED);
+        let pitch = base
+            .events
+            .iter()
+            .find_map(|e| {
+                let mut ips = Vec::new();
+                e.collect_identified_pitches(&mut ips);
+                ips.first().map(|ip| ip.id)
+            })
+            .expect("the rich fixture has a pitch");
+        assert!(
+            !base
+                .spelling_attachments
+                .iter()
+                .any(|a| matches!(&a.source, SpellingSource::Propagated { .. })),
+            "the fixture starts with no propagated attachment"
+        );
+
+        let edited = sharpen(&base, pitch);
+        assert!(
+            edited.spelling_attachments.iter().any(|a| {
+                matches!(a.source, SpellingSource::Propagated { from } if from == pitch)
+                    && matches!(&a.scope, SpellingScope::Pitch(p) if *p == pitch)
+            }),
+            "the sharpen propagated its spelling"
+        );
+    }
 
     #[test]
     fn one_editing_loop_iteration_holds_every_seam() {
