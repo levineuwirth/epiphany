@@ -712,11 +712,12 @@ attributed to its owning staff: a glyph via its `vertical_band`
 (`VerticalBandKind::Staff` → `StaffId`); a ledger via its notehead
 (`owning_glyph`, a shared `Pitch` source); a **stem** — which has no same-source
 glyph — via the glyph nearest its BASE point *in two dimensions*; a staff line
-via its `Staff` provenance source; a slur via the notehead nearest its start
-endpoint. Spacing is horizontal-only, so a primitive's y is unchanged from the
-source frame the attribution reads, and the resolved and source indices line up.
-(The geometric `round(-y / pitch)` alternative was rejected: an extreme ledgered
-note on the top or bottom staff rounds to a non-existent neighbour.)
+via its `Staff` provenance source; a **curve** via its arc direction against the
+staff-line bands (below). Spacing is horizontal-only, so a primitive's y is
+unchanged from the source frame the attribution reads, and the resolved and
+source indices line up. (The geometric `round(-y / pitch)` alternative was
+rejected: an extreme ledgered note on the top or bottom staff rounds to a
+non-existent neighbour.)
 
 **Why staff attribution must be y-aware (review fix).** The first cut reused
 `component_glyph`, whose fallback picks the nearest glyph **by x alone**. That is
@@ -732,6 +733,49 @@ on both the single- and multi-staff fixtures). A related correction: staff-
 attributed primitives contribute their y ONLY through the shifted path
 (`Extent::add_x` for x, `add_y` for the shifted staff extent), so a lower staff's
 unshifted content can no longer inflate a system's `max_y`.
+
+**Why a curve cannot use ANY nearest-glyph rule (second review fix).** A slur is
+the same bug class one layer deeper, and no distance metric can fix it. A slur's
+start endpoint is deliberately *lifted off* its notes — `staff_top + gap` above,
+`staff_bottom - gap` below — into the inter-staff zone, where the nearest glyph
+is frequently a note on the ADJACENT staff (in `two_staff_close_content`, a top-
+staff ledger note). The bottom staff's slur was therefore attributed to the top
+staff, kept shift 0, and tore off its own notes — baked into the golden,
+byte-identical to the pre-solve slur path. The rule is now the one that reads the
+geometry as drawn: **the arc's direction picks the side.** `p1.y >= p0.y` means
+the curve arcs upward, so it hangs BELOW a staff → take the staff whose staff-
+line band bottom is greatest among those at or above `p0.y`; otherwise it arcs
+downward, sitting ABOVE a staff → take the staff whose band top is smallest among
+those at or below `p0.y`. Falls back to the nearest band mid-line when neither
+side matches (a curve inside a staff). Locked by `a_slur_travels_with_its_own_staff`
+(the slur's endpoint band-gap to the bottom staff is smaller than to the top, and
+under a staff space of margin).
+
+**Known gaps (reviewed, not bugs today).**
+
+- `vertical_density_penalty` **saturates at 1.0** on the two-staff fixture. The
+  solve targets *content* extents; the metric scores the realized gap against the
+  band model's *preferred* height (2 staff spaces). The separation the colliding
+  ledgers and slur require dwarfs that, so the axis pins and its floor diagnostic
+  fires. This is the same metric-vs-solver tension as `casting_off_quality` under
+  justification and inter-system density under vertical justification: a catalog
+  refinement scoring only the EXCESS beyond the content-required minimum is the
+  deferred follow-up. Asserted, not silently tolerated, in
+  `inter_staff_solve_separates_colliding_staves`.
+- **Staff-less content does not move.** Margin-band glyphs, and spanning strokes
+  whose source is `RepeatStructure` (volta brackets), attribute to no staff, take
+  shift 0, and stay put while the staves below them descend. Symmetrically, a
+  volta stroke that happens to sit near a notehead is attributed to *that* staff
+  by the 2-D nearest fallback — possibly the wrong one. No fixture exercises
+  either; both want the band model to carry the attribution outright.
+- The preferred gap is read from `VerticalBand::inter_staff_gap(VerticalBandId(0))`
+  rather than from the region's *declared* inter-staff band. Harmless while both
+  come from the same constructor; it would silently diverge from the metric the
+  day per-region gaps become customizable.
+- The cumulative shift **cascades** correctly for 3+ staves (staff *i* carries the
+  sum of every gap correction above it), but is unexercised: `valid_score_rich`'s
+  three staves are three separate single-staff regions, so each lands in its own
+  system.
 
 **The solve.** Per system, per staff, the real content y-extent is collected
 (glyphs, strokes, curves — ledgers and slurs included, not just noteheads). The

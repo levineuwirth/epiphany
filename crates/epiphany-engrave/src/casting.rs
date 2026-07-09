@@ -676,22 +676,59 @@ pub(crate) fn cast_off(
                 .and_then(glyph_band_staff),
         })
         .collect();
+    // Each staff's staff-line band, in the source frame (a staff's lines sit at
+    // the same y in every system, since the constrained stage stacks them once).
+    let mut staff_lines: BTreeMap<StaffId, (f32, f32)> = BTreeMap::new();
+    for s in &input.strokes {
+        if let TypedObjectId::Staff(st) = s.provenance.source {
+            let (lo, hi) = (s.from.y.0.min(s.to.y.0), s.from.y.0.max(s.to.y.0));
+            staff_lines
+                .entry(st)
+                .and_modify(|e| {
+                    e.0 = e.0.min(lo);
+                    e.1 = e.1.max(hi);
+                })
+                .or_insert((lo, hi));
+        }
+    }
+    // A slur's staff. Its endpoints are LIFTED clear of their own staff — an
+    // above-slur sits `STAFF_HEIGHT + gap` over the top line, a below-slur a gap
+    // under the bottom one — so they land in the inter-staff zone and the
+    // notehead nearest `p0` can belong to the ADJACENT staff (the same trap the
+    // stroke attribution fell into, and a WORSE one: the lift is by design, so
+    // no distance metric can recover the staff). Use the arc's direction, which
+    // the control point gives (`p1.y > p0.y` ⇔ above), against the staff-line
+    // bands: an ABOVE slur belongs to the nearest staff whose top line is at or
+    // below its endpoints; a BELOW slur to the nearest staff whose bottom line is
+    // at or above them. That is exact for any lift, with no constants shared.
+    let eps = 1e-3_f32;
     let curve_staff_of: Vec<Option<StaffId>> = input
         .curves
         .iter()
         .map(|c| {
-            let (px, py) = (c.p0.x.0, c.p0.y.0);
-            input
-                .glyphs
-                .iter()
-                .filter(|g| g.glyph.as_str().starts_with("notehead"))
-                .min_by(|a, b| {
-                    let d = |g: &GlyphObject| {
-                        (g.baseline.x.0 - px).powi(2) + (g.baseline.y.0 - py).powi(2)
-                    };
-                    d(a).total_cmp(&d(b))
+            let p0y = c.p0.y.0;
+            let above = c.p1.y.0 >= p0y;
+            let picked = if above {
+                staff_lines
+                    .iter()
+                    .filter(|(_, (_, hi))| *hi <= p0y + eps)
+                    .max_by(|a, b| a.1 .1.total_cmp(&b.1 .1))
+            } else {
+                staff_lines
+                    .iter()
+                    .filter(|(_, (lo, _))| *lo >= p0y - eps)
+                    .min_by(|a, b| a.1 .0.total_cmp(&b.1 .0))
+            };
+            // A slur clear of every staff on its arc side (no staff below an
+            // above-slur) falls back to the staff whose band is nearest.
+            picked
+                .or_else(|| {
+                    staff_lines.iter().min_by(|a, b| {
+                        let d = |e: &(f32, f32)| (((e.0 + e.1) * 0.5) - p0y).abs();
+                        d(a.1).total_cmp(&d(b.1))
+                    })
                 })
-                .and_then(glyph_band_staff)
+                .map(|(st, _)| *st)
         })
         .collect();
 

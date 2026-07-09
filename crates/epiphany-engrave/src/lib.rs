@@ -2234,6 +2234,52 @@ mod tests {
     }
 
     #[test]
+    fn a_slur_travels_with_its_own_staff() {
+        use epiphany_layout_ir::{to_constrained, to_logical};
+        // Review-found bug — the TWIN of the stem tear-off, and a worse one: a
+        // slur's endpoints are LIFTED clear of their own staff by construction
+        // (an above-slur sits a staff-height plus a gap over the top line), so
+        // they land in the inter-staff zone where the notehead nearest `p0`
+        // belongs to the ADJACENT staff. The slur was attributed to the top
+        // staff, kept its shift of 0, and tore off its own notes — its baked
+        // path was byte-identical to the pre-solve golden. No distance metric
+        // can recover the staff (the lift is by design), so attribution now
+        // keys on the arc's direction against the staff-line bands.
+        let report = Engraver::default().solve(
+            &to_constrained(&to_logical(
+                &epiphany_testkit::fixtures::two_staff_close_content(1),
+            )),
+            &SolverConfig::default(),
+        );
+        let sys = &report.layout.pages[0].systems[0];
+        assert_eq!(report.layout.curves.len(), 1, "the fixture draws one slur");
+        let p0y = report.layout.curves[0].p0.y.0;
+        let band_gap = |b: &epiphany_layout_ir::Rect| {
+            let (lo, hi) = (b.origin.y.0, b.origin.y.0 + b.size.height.0);
+            if p0y < lo {
+                lo - p0y
+            } else if p0y > hi {
+                p0y - hi
+            } else {
+                0.0
+            }
+        };
+        // Staff records are top-first; the slur belongs to the BOTTOM staff.
+        let (d_top, d_bottom) = (
+            band_gap(&sys.staves[0].bounding_box),
+            band_gap(&sys.staves[1].bounding_box),
+        );
+        assert!(
+            d_bottom < d_top,
+            "the slur rides its OWN (bottom) staff: d_bottom={d_bottom} d_top={d_top}"
+        );
+        assert!(
+            d_bottom < 2.0,
+            "and sits just outside that staff's lines: {d_bottom}"
+        );
+    }
+
+    #[test]
     fn multi_staff_stems_stay_on_their_own_staff() {
         use epiphany_layout_ir::{to_constrained, to_logical};
         // Review-found bug: the inter-staff attribution reused `component_glyph`,
@@ -2307,6 +2353,20 @@ mod tests {
         assert!(
             gap > 12.0,
             "the colliding staves separate: staff-line gap {gap}"
+        );
+        assert_eq!(
+            report.metric_vector.collision_penalty.0, 0.0,
+            "the separated staves collide nowhere"
+        );
+        // The solve targets CONTENT extents, while `vertical_density_penalty`
+        // measures the realized gap against the band model's *preferred* height
+        // (2 staff spaces). The separation this fixture requires is far larger,
+        // so the deviation-from-preferred axis saturates at 1.0 and its floor
+        // diagnostic fires. Scoring only the EXCESS beyond the content-required
+        // minimum is the deferred catalog refinement (see DECISIONS.md).
+        assert_eq!(
+            report.metric_vector.vertical_density_penalty.0, 1.0,
+            "the required separation saturates the deviation-from-preferred axis"
         );
         // A no-pressure single-staff score has no inter-staff pair, so it is
         // untouched — its goldens stay byte-stable (see the render-svg suite).
