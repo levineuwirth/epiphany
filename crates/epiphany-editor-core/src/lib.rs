@@ -59,8 +59,8 @@ use epiphany_core::{
     PitchSpaceId, PitchSpacePosition, PitchSpelling, PitchedEvent, RationalTime, RegionId,
     RegionTimeModel, ReplicaId, ScalePosition, Score, SpellingDirective, SpellingNominal,
     SpellingScope, SpellingSourceKind, StaffId, StaffInstance, StaffInstanceId, StemConfiguration,
-    TimeSignature, TimeSignatureDisplay, TransactionId, TuningReference, TupletId, TypedObjectId,
-    VoiceId, WallClockTime,
+    TimeSignature, TimeSignatureDisplay, TransactionId, TranspositionInterval, TuningReference,
+    TupletId, TypedObjectId, VoiceId, WallClockTime,
 };
 use epiphany_layout_ir::{
     active_clef_or, manifestation_layout_id, staff_step_pitch, to_constrained, to_logical,
@@ -73,7 +73,7 @@ use epiphany_ops::{
     DeleteIdentifiedPitchOp, HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp,
     ModifyEventOp, ModifyIdentifiedPitchOp, OperationEnvelope, OperationKind, OperationKindTag,
     OperationPayload, OperationSet, OperationStamp, RespellPitchOp, TransactionCategory,
-    TransactionDescriptor, TransposeOp, TupletCompensation,
+    TransactionDescriptor, TransposeIntervalOp, TupletCompensation,
 };
 
 /// The current selection: the score-graph object to act on, plus the stable layout
@@ -1306,20 +1306,41 @@ impl EditorSession {
         TransactionId::new(self.replica, next)
     }
 
-    /// Transposes the selected pitch by `chromatic_steps` (a `+1` is a sharpen).
-    /// Errors if nothing — or a non-pitch — is selected.
+    /// Transposes the selected pitch by `interval`. Errors if nothing — or a
+    /// non-pitch — is selected. The operation *refuses* (a clean `NoOp` effect,
+    /// `graph_changed == false`) if the pitch cannot be faithfully transposed:
+    /// a non-CMN position, a pitch pinned to an absolute frequency, or a result
+    /// that overflows its `alteration` or `octave`.
+    ///
+    /// Authors `TransposeInterval`. The frozen `Transpose` is never emitted by
+    /// new authoring (`req:opcat:transpose-frozen`).
     pub fn transpose_selection(
         &mut self,
-        chromatic_steps: i32,
+        interval: TranspositionInterval,
     ) -> Result<EditOutcome, EditorError> {
         let selection = self.selection.ok_or(EditorError::NoSelection)?;
         let TypedObjectId::Pitch(pitch) = selection.source else {
             return Err(EditorError::WrongSelection { expected: "pitch" });
         };
-        self.apply(OperationKind::Transpose(TransposeOp {
-            targets: vec![pitch],
-            chromatic_steps,
+        self.apply(OperationKind::TransposeInterval(TransposeIntervalOp {
+            targets: [pitch].into_iter().collect(),
+            interval,
         }))
+    }
+
+    /// Sharpens (`+1`) or flattens (`-1`) the selected pitch: a chromatic
+    /// alteration with no diatonic motion, so the notehead keeps its staff line
+    /// and only the accidental changes. This is what a "+1 semitone" key does.
+    ///
+    /// It is *not* general transposition. `alter_selection(12)` asks for a C
+    /// with twelve sharps; `transpose_selection` with `(7, 12)` asks for the C
+    /// an octave up. A scalar cannot tell those apart — precisely the defect
+    /// that froze the old operation (P12-K2).
+    pub fn alter_selection(&mut self, semitones: i32) -> Result<EditOutcome, EditorError> {
+        self.transpose_selection(TranspositionInterval {
+            diatonic_steps: 0,
+            chromatic_steps: semitones,
+        })
     }
 
     /// Deletes the selected object. A selected **pitch** (a notehead) is tombstoned
@@ -2624,10 +2645,13 @@ fn staff_start_clefs(logical: &LogicalLayoutIR) -> StartClefs {
 mod tests {
     use super::*;
     use epiphany_core::generators::{valid_score, valid_score_rich};
+    // The frozen `Transpose` is never authored by the editor, but a peer may
+    // still send one, so the barrier tests below construct it directly.
     use epiphany_layout_ir::{
         ConstrainedLayoutIR, HitShape, InvalidationSet, SolveReport, SolveStatus, SolverState,
         SolverTier, SolverVersion, StubSolver,
     };
+    use epiphany_ops::TransposeOp;
 
     fn open_rich(seed: u64) -> EditorSession {
         EditorSession::open(valid_score_rich(seed), Box::new(StubSolver)).expect("rich renders")
@@ -2719,7 +2743,7 @@ mod tests {
         assert_eq!(selection.source, TypedObjectId::Slur(slur_id));
         // A slur is not an editable target: an edit op cleanly refuses it
         // rather than mishandling the non-pitch selection.
-        assert!(session.transpose_selection(1).is_err());
+        assert!(session.alter_selection(1).is_err());
     }
 
     /// A pitch in the last event of the first voice that has events — its slot has
@@ -3063,7 +3087,7 @@ mod tests {
         for (onset, pid) in events.iter().skip(1) {
             let mut session = open_rich(0x5EED);
             select_pitch(&mut session, *pid);
-            if session.transpose_selection(1).is_err() {
+            if session.alter_selection(1).is_err() {
                 continue;
             }
             let glyph_x = |synthesized: bool| {
@@ -4241,7 +4265,7 @@ mod tests {
         // Click a notehead, then sharpen the selected pitch — minting the operation
         // is the session's job, not the caller's.
         let selection = click_a_notehead(&mut session);
-        let outcome = session.transpose_selection(1).expect("the sharpen applies");
+        let outcome = session.alter_selection(1).expect("the sharpen applies");
 
         assert!(outcome.graph_changed, "the edit reduced onto the graph");
         assert!(
@@ -4260,10 +4284,7 @@ mod tests {
     fn transpose_requires_a_pitch_selection() {
         let mut session = open_rich(0x5EED);
         // Nothing selected.
-        assert_eq!(
-            session.transpose_selection(1),
-            Err(EditorError::NoSelection)
-        );
+        assert_eq!(session.alter_selection(1), Err(EditorError::NoSelection));
         // Select a non-pitch object (a region, present in any score) and try again.
         let non_pitch = session
             .hit_test()
@@ -4274,7 +4295,7 @@ mod tests {
         if let Some(id) = non_pitch {
             session.select(id);
             assert_eq!(
-                session.transpose_selection(1),
+                session.alter_selection(1),
                 Err(EditorError::WrongSelection { expected: "pitch" })
             );
         }
@@ -4285,9 +4306,9 @@ mod tests {
         // Distinct minted op ids, so the second edit is not deduplicated.
         let mut session = open_rich(0x5EED);
         click_a_notehead(&mut session);
-        assert!(session.transpose_selection(1).unwrap().graph_changed);
+        assert!(session.alter_selection(1).unwrap().graph_changed);
         let mid = session.score().clone();
-        assert!(session.transpose_selection(1).unwrap().graph_changed);
+        assert!(session.alter_selection(1).unwrap().graph_changed);
         assert_ne!(
             &mid,
             session.score(),
@@ -5217,8 +5238,8 @@ mod tests {
         assert!(session.last_applied().is_none());
 
         click_a_notehead(&mut session);
-        session.transpose_selection(1).unwrap();
-        session.transpose_selection(-1).unwrap();
+        session.alter_selection(1).unwrap();
+        session.alter_selection(-1).unwrap();
 
         // Two edits, two log entries, distinct ids, in application order, and
         // last_applied is the tail.
@@ -5226,11 +5247,79 @@ mod tests {
         assert_eq!(log.len(), 2);
         assert_ne!(log[0].id, log[1].id);
         assert_eq!(session.last_applied(), Some(&log[1]));
-        // The log carries real envelopes a peer/undo layer can consume.
+        // The log carries real envelopes a peer/undo layer can consume — and
+        // new authoring emits the faithful kind, never the frozen
+        // `Transpose` (`req:opcat:transpose-frozen`).
         assert!(matches!(
             log[1].payload,
-            OperationPayload::Primitive(OperationKind::Transpose(_))
+            OperationPayload::Primitive(OperationKind::TransposeInterval(_))
         ));
+    }
+
+    #[test]
+    fn transposing_an_octave_moves_the_octave_not_the_alteration() {
+        // What the scalar API could never express. Before Push 4a,
+        // `transpose_selection(12)` gave C4 with `alteration: 12` — a C with
+        // six double-sharps on the same staff line.
+        let mut session = open_rich(0x5EED);
+        let selection = click_a_notehead(&mut session);
+        let TypedObjectId::Pitch(pid) = selection.source else {
+            panic!("a notehead selects a pitch");
+        };
+        let before = session.current_pitch(pid).unwrap();
+        let PitchSpacePosition::Cmn {
+            nominal, octave, ..
+        } = before.scale_position.position
+        else {
+            panic!("the fixture is CMN");
+        };
+
+        session
+            .transpose_selection(TranspositionInterval {
+                diatonic_steps: 7,
+                chromatic_steps: 12,
+            })
+            .expect("an octave up");
+
+        let after = session.current_pitch(pid).unwrap();
+        assert_eq!(
+            after.scale_position.position,
+            PitchSpacePosition::Cmn {
+                nominal,
+                alteration: 0,
+                octave: octave + 1,
+            }
+        );
+    }
+
+    #[test]
+    fn a_sharpen_keeps_the_staff_line_and_only_adds_the_accidental() {
+        // `alter_selection` is the "+1 semitone" key: no diatonic motion.
+        let mut session = open_rich(0x5EED);
+        let selection = click_a_notehead(&mut session);
+        let TypedObjectId::Pitch(pid) = selection.source else {
+            panic!("a notehead selects a pitch");
+        };
+        let before = session.current_pitch(pid).unwrap();
+        let PitchSpacePosition::Cmn {
+            nominal,
+            alteration,
+            octave,
+        } = before.scale_position.position
+        else {
+            panic!("the fixture is CMN");
+        };
+
+        session.alter_selection(1).expect("sharpen");
+
+        assert_eq!(
+            session.current_pitch(pid).unwrap().scale_position.position,
+            PitchSpacePosition::Cmn {
+                nominal,
+                alteration: alteration + 1,
+                octave,
+            }
+        );
     }
 
     #[test]
@@ -5241,7 +5330,7 @@ mod tests {
             panic!("a notehead selects a pitch");
         };
         let before = session.current_pitch(pid).unwrap();
-        session.transpose_selection(1).expect("sharpen");
+        session.alter_selection(1).expect("sharpen");
         let after = session.current_pitch(pid).unwrap();
         assert_ne!(before, after);
         assert!(session.can_undo() && !session.can_redo());
@@ -5411,14 +5500,14 @@ mod tests {
         assert!(session.redo().is_none(), "nothing to redo");
 
         click_a_notehead(&mut session);
-        session.transpose_selection(1).expect("e1");
-        session.transpose_selection(1).expect("e2");
+        session.alter_selection(1).expect("e1");
+        session.alter_selection(1).expect("e2");
         assert_eq!(session.applied_operations().len(), 2);
 
         session.undo().expect("undo e2");
         assert!(session.can_redo());
         // A new edit past an undo clears the redo stack.
-        session.transpose_selection(-1).expect("e3");
+        session.alter_selection(-1).expect("e3");
         assert!(!session.can_redo(), "the new edit forked away the redo");
         assert_eq!(
             session.applied_operations().len(),
@@ -5431,10 +5520,10 @@ mod tests {
     fn a_fork_mints_a_fresh_operation_id_not_the_undone_one() {
         let mut session = open_rich(0x5EED);
         click_a_notehead(&mut session);
-        session.transpose_selection(1).expect("A");
+        session.alter_selection(1).expect("A");
         let a_id = session.last_applied().unwrap().id;
         session.undo().expect("undo A");
-        session.transpose_selection(-1).expect("B (forks A)");
+        session.alter_selection(-1).expect("B (forks A)");
         let b_id = session.last_applied().unwrap().id;
 
         assert_ne!(a_id, b_id, "B gets a fresh op id, not A's reused counter");
@@ -5493,15 +5582,15 @@ mod tests {
     fn edits_after_a_fork_re_reduce_cleanly() {
         let mut session = open_rich(0x5EED);
         click_a_notehead(&mut session);
-        session.transpose_selection(1).expect("A");
-        session.transpose_selection(1).expect("B");
+        session.alter_selection(1).expect("A");
+        session.alter_selection(1).expect("B");
         session.undo().expect("undo B");
         // Each edit re-reduces the whole active prefix; if a forked op were stranded
         // pending (a missing-predecessor hole left by a non-contiguous context), the
         // reduction would be unclean and the edit would be refused. So these succeeding
         // is the proof the fork's causal contexts are correct.
-        session.transpose_selection(-1).expect("C");
-        session.transpose_selection(-1).expect("D");
+        session.alter_selection(-1).expect("C");
+        session.alter_selection(-1).expect("D");
 
         let active = session.applied_operations();
         assert_eq!(active.len(), 3, "A, C, D active; B forked away");
@@ -5523,7 +5612,7 @@ mod tests {
     fn with_identity_is_refused_after_an_undone_edit() {
         let mut session = open_rich(0x5EED);
         click_a_notehead(&mut session);
-        session.transpose_selection(1).expect("edit");
+        session.alter_selection(1).expect("edit");
         session.undo().expect("undo");
         assert!(
             session.applied_operations().is_empty(),
@@ -5542,8 +5631,8 @@ mod tests {
         // conflicts — both here and on a peer replaying the log.
         let mut session = open_rich(0x5EED);
         click_a_notehead(&mut session);
-        session.transpose_selection(1).unwrap();
-        session.transpose_selection(1).unwrap();
+        session.alter_selection(1).unwrap();
+        session.alter_selection(1).unwrap();
 
         let log = session.applied_operations();
         assert_eq!(log.len(), 2);
@@ -5575,7 +5664,7 @@ mod tests {
         // `(new_replica, 0)` hole. The session refuses it.
         let mut session = open_rich(0x5EED);
         click_a_notehead(&mut session);
-        session.transpose_selection(1).unwrap();
+        session.alter_selection(1).unwrap();
         let _ = session.with_identity(ReplicaId(2), AuthorId(0));
     }
 
@@ -5585,7 +5674,7 @@ mod tests {
         let mut session = open_rich(0x5EED).with_identity(ReplicaId::SYSTEM_DERIVED, AuthorId(0));
         click_a_notehead(&mut session);
         assert_eq!(
-            session.transpose_selection(1),
+            session.alter_selection(1),
             Err(EditorError::RejectedOperation)
         );
         assert!(
@@ -5608,7 +5697,7 @@ mod tests {
         // not even the operation counter — mutates, so a later valid edit still
         // works.
         assert_eq!(
-            session.transpose_selection(1),
+            session.alter_selection(1),
             Err(EditorError::RejectedOperation)
         );
         assert_eq!(

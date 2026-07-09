@@ -22,7 +22,8 @@
 
 use epiphany_core::{
     EventId, MusicalDuration, MusicalPosition, OperationId, PitchId, RationalTime, RegionId,
-    RepeatStructureId, ReplicaId, SlurId, StaffId, StaffInstanceId, TypedObjectId, VoiceId,
+    RepeatStructureId, ReplicaId, SlurId, StaffId, StaffInstanceId, TranspositionInterval,
+    TypedObjectId, VoiceId,
 };
 use epiphany_determinism::fuzz::SplitMix64;
 
@@ -36,7 +37,7 @@ use crate::payload::{
     DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp,
     ModifyIdentifiedPitchOp, OperationKind, OperationPayload, RespellPitchOp, SetMetadataOp,
     SetMetricGridOp, SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp, SetUserPageBreakOp,
-    SetUserSystemBreakOp, TransposeOp, TupletCompensation,
+    SetUserSystemBreakOp, TransposeIntervalOp, TransposeOp, TupletCompensation,
 };
 use crate::stamp::{HybridLogicalClock, OperationStamp};
 use crate::support::AuthorId;
@@ -86,7 +87,7 @@ fn pitch(n: u64) -> PitchId {
 
 /// Generates a random payload over the shared id space.
 fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
-    let kind = match rng.below(27) {
+    let kind = match rng.below(28) {
         0 => {
             let voice = VoiceId::new(ReplicaId(7), rng.below(3));
             let position = MusicalPosition(RationalTime::from_int(rng.below(4) as i32));
@@ -267,6 +268,18 @@ fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
         }),
         26 => OperationKind::DeleteRepeatStructure(DeleteRepeatStructureOp {
             repeat: RepeatStructureId::new(ReplicaId(7), rng.below(3)),
+        }),
+        // Push 4a. The frozen `Transpose` (arm 6) keeps its own coverage: it
+        // must reduce correctly forever, and only a generator will ever author
+        // one again.
+        27 => OperationKind::TransposeInterval(TransposeIntervalOp {
+            targets: (0..1 + rng.below(2))
+                .map(|_| pitch(rng.below(ID_SPACE)))
+                .collect(),
+            interval: TranspositionInterval {
+                diatonic_steps: rng.below(5) as i32 - 2,
+                chromatic_steps: rng.below(9) as i32 - 4,
+            },
         }),
         _ => OperationKind::SetStaffLayout(SetStaffLayoutOp {
             staff_instance: StaffInstanceId::new(ReplicaId(7), rng.below(3)),

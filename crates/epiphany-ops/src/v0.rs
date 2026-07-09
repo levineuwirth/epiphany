@@ -100,6 +100,9 @@ pub enum V0OperationKind {
     // Repeat authoring (schema-major-2 revision) — round-trip by identity.
     CreateRepeatStructure(crate::payload::CreateRepeatStructureOp),
     DeleteRepeatStructure(crate::payload::DeleteRepeatStructureOp),
+    /// Born at wire-disc 30 under major-0 layouts (Push 4a); no lossy v0
+    /// form, so it projects verbatim like the repeat-authoring pair.
+    TransposeInterval(crate::payload::TransposeIntervalOp),
 }
 
 /// v0 `InsertEvent`: the event was a bare [`EventId`] plus the reduction-relevant

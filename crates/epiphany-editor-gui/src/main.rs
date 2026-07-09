@@ -128,6 +128,7 @@ fn payload_label(payload: &OperationPayload) -> &'static str {
     match payload {
         OperationPayload::Primitive(kind) => match kind {
             OperationKind::Transpose(_) => "Transpose",
+            OperationKind::TransposeInterval(_) => "TransposeInterval",
             OperationKind::ModifyIdentifiedPitch(_) => "ModifyIdentifiedPitch",
             OperationKind::DeleteIdentifiedPitch(_) => "DeleteIdentifiedPitch",
             OperationKind::DeleteEvent(_) => "DeleteEvent",
@@ -281,10 +282,10 @@ impl EditorApp {
                 self.run("delete", |s| s.delete_selection());
             }
             if ui.button("Transpose ♯").clicked() {
-                self.run("transpose +1", |s| s.transpose_selection(1));
+                self.run("transpose +1", |s| s.alter_selection(1));
             }
             if ui.button("Transpose ♭").clicked() {
-                self.run("transpose -1", |s| s.transpose_selection(-1));
+                self.run("transpose -1", |s| s.alter_selection(-1));
             }
             if ui.button("Move ↑").clicked() {
                 self.run("move up", |s| s.move_selection_staff_step(1));
@@ -399,10 +400,10 @@ impl EditorApp {
             self.run("move down", |s| s.move_selection_staff_step(-1));
         }
         if k.sharp {
-            self.run("transpose +1", |s| s.transpose_selection(1));
+            self.run("transpose +1", |s| s.alter_selection(1));
         }
         if k.flat {
-            self.run("transpose -1", |s| s.transpose_selection(-1));
+            self.run("transpose -1", |s| s.alter_selection(-1));
         }
         if k.add {
             self.run("add chord note", |s| s.add_note_to_selection());

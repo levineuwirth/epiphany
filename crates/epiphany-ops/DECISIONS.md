@@ -1276,5 +1276,47 @@ gutting `graph_transpose_pitch` entirely leaves
 `transpose_skips_system_derived_targets_p12_k3` both green. They call base-free
 `reduce()`, where `graph` is `None` and the function never runs, and they
 assert only `OperationEffect`. Only `editor-core`'s `undo_and_redo_a_transpose`
-— three crates away — catches it. Both are rewritten against `reduce_onto()`
-with asserted pitch values as part of the implementation.
+— three crates away — catches it.
+
+The fix was *not* to rewrite them, which the design gate wrongly promised. What
+they assert — skip-tombstoned, skip-system-derived, refuse-missing — are
+**effect-log** properties, and base-free reduction is the right place to assert
+them. The defect was the first one's *name*: it claimed to check that the live
+target "shifts" and checked no such thing. So:
+
+- renamed to `transpose_effect_log_skips_tombstoned_targets_and_refuses_a_missing_one`,
+  with its scope written into the test;
+- `the_frozen_transpose_skips_a_tombstoned_target_and_shifts_the_live_sibling`
+  now makes the original claim, against `reduce_onto` and an asserted pitch;
+- `the_frozen_transpose_keeps_its_saturating_alteration_semantics` locks the
+  three pinned defects (octave-blind, saturating, multiset) as replay semantics.
+  Mutation-verified by "helpfully" repairing `graph_transpose_pitch` to use the
+  real algebra: the test fails, which is the point — it is a guard against
+  rewriting history, not against a bug.
+
+**Consequences elsewhere.**
+
+- `EditorSession::transpose_selection` now takes a `TranspositionInterval`. A
+  scalar cannot distinguish "up an octave" `(7, 12)` from "C with twelve
+  sharps" `(0, 12)`, which *is* P12-K2. The "+1 semitone" key became
+  `alter_selection(±1)` — a chromatic alteration with no diatonic motion, which
+  is what that key always meant and what the old operation always did.
+  `TransposeOp` is consequently unused in `editor-core`'s lib: the compiler now
+  enforces "never authored".
+- `fuzz::gen_payload` gained arm 27 and `below(27)` became `below(28)`, which
+  reshuffles the seeded stream, so `the_canonical_base_is_byte_identical_...`
+  was re-pinned. Consciously, per that test's own instruction, and for the same
+  reason as the Phase-D re-pin. Nothing leaked: `canonical_bytes` embeds
+  effects, conflicts, and anomalies, never payload values.
+- The frozen `Transpose` keeps its fuzz coverage (arm 6) and its corpus
+  authoring in `testkit`. It must reduce correctly forever, and a generator is
+  now the only thing that will ever produce one.
+
+**Base-free reduction.** The refusal reads pitch *values*, which exist only
+under `reduce_onto`. It is therefore a graph-aware-only precondition that
+passes base-free — the convention `modify_identified_pitch`'s system-derived
+rewrite check already established and documents ("unverifiable and passes, like
+the other graph-aware-only preconditions"). It also *writes* nothing base-free,
+so the two modes agree on `objects`, and on the effect log for every operation
+whose targets are all transposable — the only case base-free reduction can
+distinguish.

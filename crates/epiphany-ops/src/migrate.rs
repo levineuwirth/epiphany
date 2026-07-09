@@ -177,6 +177,8 @@ fn project_kind(kind: &OperationKind) -> V0OperationKind {
             V0OperationKind::CreateRepeatStructure(op.clone())
         }
         OperationKind::DeleteRepeatStructure(op) => V0OperationKind::DeleteRepeatStructure(*op),
+        // Push 4a: born past v0; projected verbatim.
+        OperationKind::TransposeInterval(op) => V0OperationKind::TransposeInterval(op.clone()),
     }
 }
 
@@ -328,6 +330,7 @@ fn migrate_kind(kind: &V0OperationKind, context: &Score) -> Result<OperationKind
         V0OperationKind::CreateRepeatStructure(op) => {
             OperationKind::CreateRepeatStructure(op.clone())
         }
+        V0OperationKind::TransposeInterval(op) => OperationKind::TransposeInterval(op.clone()),
         V0OperationKind::DeleteRepeatStructure(op) => OperationKind::DeleteRepeatStructure(*op),
     })
 }

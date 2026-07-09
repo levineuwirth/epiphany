@@ -1561,7 +1561,7 @@ pub struct Instrument {
     /// B-flat clarinet is `-1` diatonic, `-2` chromatic). Schema major 2
     /// (appended; migration default `None`).
     ///
-    /// Its *action* on a pitch is pinned by [`Pitch::transposed`]
+    /// Its *action* on a pitch is pinned by [`crate::Pitch::transposed`]
     /// (`req:pitch:transposition`). What is still unimplemented is its
     /// *automatic application* at the written/sounding boundary: nothing here
     /// respells a written part into a sounding one, or resolves either to a

@@ -345,6 +345,14 @@ pub(crate) fn subjects_of(kind: &OperationKind, score: &Score) -> BarrierSubject
                 .map(|pitch| (TypedObjectId::Pitch(*pitch), pitch_context(score, *pitch)))
                 .collect(),
         ),
+        // Same subjects as the frozen `Transpose`: the pitches it names. The
+        // set iterates in canonical order, so the subject list is canonical.
+        OperationKind::TransposeInterval(op) => BarrierSubjects::Objects(
+            op.targets
+                .iter()
+                .map(|pitch| (TypedObjectId::Pitch(*pitch), pitch_context(score, *pitch)))
+                .collect(),
+        ),
         OperationKind::InsertIdentifiedPitch(op) => {
             // The op mutates the host event's pitch list *and* mints the pitch:
             // both are named targets.

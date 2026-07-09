@@ -36,10 +36,12 @@ use epiphany_core::{
     InstrumentId, MetricGrid, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId,
     PitchSpelling, Region, RegionId, RegionTimeModel, RepeatStructure, RepeatStructureId, Rest,
     ScoreMetadata, Slur, Spanner, Staff, StaffId, StaffInstance, StaffInstanceId,
-    StaffLineConfiguration, TempoSegment, Tie, TimeAnchor, TimeSignature, TransactionId, TupletId,
-    TypedObjectId, Voice, VoiceId,
+    StaffLineConfiguration, TempoSegment, Tie, TimeAnchor, TimeSignature, TransactionId,
+    TranspositionInterval, TupletId, TypedObjectId, Voice, VoiceId,
 };
-use epiphany_determinism::{sorted_canonical, CanonicalDecode, CanonicalEncode, DecodeError};
+use epiphany_determinism::{
+    sorted_canonical, CanonicalDecode, CanonicalEncode, CanonicalSet, DecodeError,
+};
 
 use crate::conflict::{ConflictId, ResolutionAction};
 use crate::encode::{push_canon, push_lp_bytes, push_seq, push_str, push_tag, push_u8_bool};
@@ -190,6 +192,9 @@ pub enum OperationKind {
     CreateRepeatStructure(CreateRepeatStructureOp),
     /// Tombstone a repeat structure (delete-wins, idempotent on re-delete).
     DeleteRepeatStructure(DeleteRepeatStructureOp),
+    /// Push 4a: the faithful transpose. Appended past 29 — a schema-minor
+    /// vocabulary append (`req:binfmt:kind-discriminants`).
+    TransposeInterval(TransposeIntervalOp),
 }
 
 impl OperationKind {
@@ -279,6 +284,9 @@ impl OperationKind {
             // Schema-major-2 revision; appended past the Phase-3 24..=27.
             OperationKind::CreateRepeatStructure(_) => 28,
             OperationKind::DeleteRepeatStructure(_) => 29,
+            // Push 4a; appended past 29. Every constituent is a major-0
+            // layout, so `schema_major` leaves it in the catch-all 0 arm.
+            OperationKind::TransposeInterval(_) => 30,
         }
     }
 
@@ -319,6 +327,7 @@ impl OperationKind {
             // Name-verbatim projection, as the cross-cutting tags do.
             OperationKind::CreateRepeatStructure(_) => OperationKindTag::CreateRepeatStructure,
             OperationKind::DeleteRepeatStructure(_) => OperationKindTag::DeleteRepeatStructure,
+            OperationKind::TransposeInterval(_) => OperationKindTag::TransposeInterval,
         }
     }
 }
@@ -340,6 +349,7 @@ impl CanonicalEncode for OperationKind {
             }
             OperationKind::ModifyEvent(op) => op.encode_canonical(out),
             OperationKind::Transpose(op) => op.encode_canonical(out),
+            OperationKind::TransposeInterval(op) => op.encode_canonical(out),
             OperationKind::InsertIdentifiedPitch(op) => op.encode_canonical(out),
             OperationKind::DeleteIdentifiedPitch(op) => op.encode_canonical(out),
             OperationKind::ModifyIdentifiedPitch(op) => op.encode_canonical(out),
@@ -404,6 +414,8 @@ pub enum OperationKindTag {
     // cross-cutting tags are.
     CreateRepeatStructure,
     DeleteRepeatStructure,
+    /// Push 4a.
+    TransposeInterval,
 }
 
 impl OperationKindTag {
@@ -441,6 +453,8 @@ impl OperationKindTag {
             // Schema-major-2 revision; appended past the Phase-3 24..=27.
             OperationKindTag::CreateRepeatStructure => 28,
             OperationKindTag::DeleteRepeatStructure => 29,
+            // Push 4a; appended past 29.
+            OperationKindTag::TransposeInterval => 30,
         }
     }
 }
@@ -998,12 +1012,24 @@ impl CanonicalEncode for ModifyEventOp {
     }
 }
 
-/// Transpose live pitches by a chromatic interval (Chapter 6 §6.10 Transpose).
-/// Pitch identifiers are preserved; reduction is order-dependent in the general
-/// case (interval composition need not commute). `chromatic_steps` is a minimal
-/// interval (a CMN alteration shift) that, in this prototype, commutes except at
-/// the alteration's `i8` saturation bound; rich interval algebra is deferred
-/// (Chapter 4 tuning catalog; P12-K2).
+/// **Frozen; replay only** (operation_catalog §Transpose,
+/// `req:opcat:transpose-frozen`). New authoring emits [`TransposeIntervalOp`].
+///
+/// Shifts each live target's CMN `alteration` by `chromatic_steps`. Its
+/// semantics are pinned exactly as they shipped, because an operation is
+/// history: a replica replaying a stored `Transpose` must reconstruct the state
+/// its author saw, and a "corrected" reduction rule would silently rewrite
+/// every score that used one. The pinned defects, all normative for replay:
+///
+/// * `targets` is a **multiset** — a target named twice is shifted twice.
+/// * The nominal and octave never move: `C4` by `+12` becomes `C4` with
+///   `alteration: 12` (six double-sharps), not `C5`.
+/// * A shift past the `i8` bound **saturates silently** and still reports
+///   `Applied`, so the operation is not invertible.
+/// * A non-`Cmn` position is left unchanged and still reports `Applied`.
+///
+/// [`TransposeIntervalOp`] repairs every one of these under a new discriminant
+/// that no historical operation carries (Push 4a, closing P12-K2).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TransposeOp {
     pub targets: Vec<PitchId>,
@@ -1012,8 +1038,39 @@ pub struct TransposeOp {
 
 impl CanonicalEncode for TransposeOp {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
+        // `sorted_canonical`, NOT a set: the multiset is frozen wire form.
         push_seq(out, &sorted_canonical(self.targets.clone()));
         out.extend_from_slice(&self.chromatic_steps.to_le_bytes());
+    }
+}
+
+/// Transpose live pitches by a [`TranspositionInterval`] (operation_catalog
+/// §TransposeInterval; Push 4a). The faithful replacement for the frozen
+/// [`TransposeOp`].
+///
+/// `targets` is a genuine **set** at the type level — [`CanonicalSet`] is a
+/// `BTreeSet`, and `PitchId`'s `Ord` *is* its canonical byte order, so it
+/// iterates in canonical order and cannot hold a duplicate. A transposition is
+/// a function of *which* pitches it names, never of how many times.
+///
+/// Reduction refuses atomically rather than saturating: see
+/// [`Pitch::transposed`](epiphany_core::Pitch::transposed) for the algebra and
+/// the three refusal cases.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TransposeIntervalOp {
+    pub targets: CanonicalSet<PitchId>,
+    pub interval: TranspositionInterval,
+}
+
+impl CanonicalEncode for TransposeIntervalOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        // A BTreeSet already iterates in canonical order (PitchId: Ord is its
+        // canonical byte order) and cannot repeat — the `seq^⇑` of the wire
+        // table, by construction rather than by a call someone can forget.
+        let targets: Vec<PitchId> = self.targets.iter().copied().collect();
+        push_seq(out, &targets);
+        out.extend_from_slice(&self.interval.diatonic_steps.to_le_bytes());
+        out.extend_from_slice(&self.interval.chromatic_steps.to_le_bytes());
     }
 }
 

@@ -32,14 +32,14 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use epiphany_core::{
-    canonical_pitch_bytes, derive_promoted_voice_id, AnchorOffset, AnnotationAnchor,
-    CanonicalValue, Event, EventDuration, EventId, EventPosition, GestureAnchoring, InstrumentId,
-    MeterChange, MetricGrid, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId,
-    PitchSpelling, RationalTime, RegionEdge, RegionId, RegionTimeModel, ReplicaId, Score,
-    ScoreMetadata, SpellingAttachment, SpellingDirective, SpellingScope, SpellingSource, Staff,
-    StaffId, StaffInstance, StaffInstanceId, StaffLineConfiguration, TempoMap, TempoSegment,
-    TempoShape, TimeAnchor, TimeSignature, TimeSignatureId, TransactionId, TypedObjectId, Voice,
-    VoiceId, VoiceOrigin,
+    canonical_pitch_bytes, derive_promoted_voice_id, simplest_spelling, AnchorOffset,
+    AnnotationAnchor, CanonicalValue, Event, EventDuration, EventId, EventPosition,
+    GestureAnchoring, InstrumentId, MeterChange, MetricGrid, MusicalDuration, MusicalPosition,
+    OperationId, Pitch, PitchId, PitchSpelling, RationalTime, RegionEdge, RegionId,
+    RegionTimeModel, ReplicaId, Score, ScoreMetadata, SpellingAttachment, SpellingDirective,
+    SpellingScope, SpellingSource, Staff, StaffId, StaffInstance, StaffInstanceId,
+    StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, TimeAnchor, TimeSignature,
+    TimeSignatureId, TransactionId, TransposeRefusal, TypedObjectId, Voice, VoiceId, VoiceOrigin,
 };
 use epiphany_determinism::CanonicalEncode;
 
@@ -61,7 +61,7 @@ use crate::payload::{
     DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
     ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationPayload,
     RespellPitchOp, SetMetadataOp, SetMetricGridOp, SetStaffLayoutOp, SetTempoSegmentOp,
-    SetTimeSignatureOp, SetUserPageBreakOp, TransposeOp, TupletCompensation,
+    SetTimeSignatureOp, SetUserPageBreakOp, TransposeIntervalOp, TransposeOp, TupletCompensation,
 };
 use crate::stamp::StampTuple;
 use crate::support::{ObjectKind, SerializedCanonicalInputs};
@@ -2502,6 +2502,7 @@ impl<'a> Reducer<'a> {
                 OperationKind::Registered(_, _) => OperationEffect::Applied,
                 OperationKind::ModifyEvent(op) => self.modify_event(env, op),
                 OperationKind::Transpose(op) => self.transpose(env, op),
+                OperationKind::TransposeInterval(op) => self.transpose_interval(env, op),
                 OperationKind::InsertIdentifiedPitch(op) => self.insert_identified_pitch(env, op),
                 OperationKind::DeleteIdentifiedPitch(op) => self.delete_identified_pitch(env, op),
                 OperationKind::ModifyIdentifiedPitch(op) => self.modify_identified_pitch(env, op),
@@ -5538,6 +5539,164 @@ impl<'a> Reducer<'a> {
             self.graph_transpose_pitch(pitch, op.chromatic_steps);
         }
         OperationEffect::Applied
+    }
+
+    /// The faithful transpose (operation_catalog §TransposeInterval; Push 4a,
+    /// closing P12-K2).
+    ///
+    /// Shares [`Self::transpose`]'s target discipline: a target that never
+    /// entered canonical state refuses the whole operation; tombstoned and
+    /// `SYSTEM_DERIVED` targets are *skipped*. A deleted pitch is not an
+    /// untransposable pitch — it is one the operation has nothing to say about.
+    ///
+    /// Then it adds atomic refusal. Every remaining live target must be
+    /// transposable under `req:pitch:transposition`, or **nothing moves**: a
+    /// chord transposed except for one note is a different chord.
+    ///
+    /// Like the other graph-aware-only preconditions (see
+    /// [`Self::modify_identified_pitch`]'s system-derived rewrite check), the
+    /// refusal is unverifiable under base-free `reduce()` — no pitch values
+    /// exist there — and passes. It also writes nothing there, so the two modes
+    /// agree on `objects`, and on the effect log for every operation whose
+    /// targets are all transposable, which is the only case base-free reduction
+    /// can distinguish.
+    fn transpose_interval(
+        &mut self,
+        _env: &OperationEnvelope,
+        op: &TransposeIntervalOp,
+    ) -> OperationEffect {
+        if op
+            .targets
+            .iter()
+            .any(|pitch| !self.objects.contains_key(&TypedObjectId::Pitch(*pitch)))
+        {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
+        let live: Vec<PitchId> = op
+            .targets
+            .iter()
+            .copied()
+            .filter(|pitch| {
+                matches!(
+                    self.objects.get(&TypedObjectId::Pitch(*pitch)),
+                    Some(ObjectState::Live)
+                )
+            })
+            .collect();
+        if live.is_empty() {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::TargetTombstoned,
+            };
+        }
+        let mutable: Vec<PitchId> = live
+            .into_iter()
+            .filter(|pitch| pitch.replica() != ReplicaId::SYSTEM_DERIVED)
+            .collect();
+        if mutable.is_empty() {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::SystemDerivedContentImmutable,
+                },
+            };
+        }
+
+        // Atomicity: resolve every target's new value BEFORE writing any of
+        // them. `targets` is a set, so `mutable` is in canonical order, and the
+        // reported failure is the canonically-first offender —
+        // `req:opcat:transpose-interval-atomic`.
+        let mut resolved: Vec<(PitchId, Pitch)> = Vec::with_capacity(mutable.len());
+        for pitch in &mutable {
+            let Some(current) = self.graph_pitch_value(*pitch) else {
+                continue; // base-free: no value to check, and none to write
+            };
+            match current.transposed(op.interval) {
+                Ok(next) => resolved.push((*pitch, next)),
+                Err(refusal) => {
+                    let reason = match refusal {
+                        TransposeRefusal::NonCmnPosition => {
+                            PreconditionFailureReason::PitchSpaceMismatch
+                        }
+                        TransposeRefusal::AcousticPinned => {
+                            PreconditionFailureReason::AcousticRealizationPinned
+                        }
+                        TransposeRefusal::OutOfRange => {
+                            PreconditionFailureReason::TranspositionOutOfRange
+                        }
+                    };
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction { reason },
+                    };
+                }
+            }
+        }
+
+        for (pitch, value) in resolved {
+            self.graph_modify_pitch(pitch, &value);
+            self.graph_propagate_spelling(pitch, &value);
+        }
+        OperationEffect::Applied
+    }
+
+    /// The current value of a live embedded pitch, or `None` under base-free
+    /// reduction (no graph) or if the pitch is not embedded in any event.
+    fn graph_pitch_value(&self, pitch: PitchId) -> Option<Pitch> {
+        let score = self.graph.as_ref()?;
+        let event = Self::graph_event_of_pitch(score, pitch)?;
+        match score.events.get(event) {
+            Some(Event::Pitched(pe)) => pe
+                .pitches
+                .iter()
+                .find(|ip| ip.id == pitch)
+                .map(|ip| ip.pitch.clone()),
+            _ => None,
+        }
+    }
+
+    /// Records the spelling a transposition determined
+    /// (`req:opcat:transpose-interval-spelling`; core Ch2 §Spelling Sources:
+    /// "editing operations that move or transpose a pitch MUST produce
+    /// attachments with source `Propagated`").
+    ///
+    /// Without this the spelling pre-pass re-infers a spelling for the moved
+    /// pitch, and any authored `UserChosen` attachment stays pinned to the
+    /// notehead it was written against — a deliberately-spelled C# transposed
+    /// up a fifth, re-inferred as Ab against the author's wish. The interval's
+    /// diatonic component already chose the nominal; `simplest_spelling` on a
+    /// `Cmn` position returns that authored letter verbatim (it infers only for
+    /// non-`Cmn` positions, which this operation refuses), so the attachment
+    /// carries exactly the interval's determination.
+    fn graph_propagate_spelling(&mut self, pitch: PitchId, value: &Pitch) {
+        let Some(spelling) = simplest_spelling(value) else {
+            return;
+        };
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        // Upsert the propagated attachment (one per pitch), keeping the
+        // attachment list's canonical order stable for the resolver's
+        // tie-break — the same discipline `graph_respell_pitch` follows.
+        if let Some(existing) = score.spelling_attachments.iter_mut().find(|a| {
+            a.layer.is_none()
+                && matches!(a.source, SpellingSource::Propagated { .. })
+                && matches!(&a.scope, SpellingScope::Pitch(p) if *p == pitch)
+                && matches!(a.directive, SpellingDirective::Explicit(_))
+        }) {
+            existing.directive = SpellingDirective::Explicit(spelling);
+        } else {
+            score.spelling_attachments.push(SpellingAttachment {
+                scope: SpellingScope::Pitch(pitch),
+                directive: SpellingDirective::Explicit(spelling),
+                // Identifiers are preserved by transposition, so the pitch the
+                // spelling propagated *from* is the pitch it is attached to.
+                source: SpellingSource::Propagated { from: pitch },
+                priority: 0,
+                layer: None,
+            });
+        }
     }
 
     fn insert_identified_pitch(
@@ -8774,10 +8933,416 @@ mod tests {
         env
     }
 
+    use epiphany_core::{CmnNominal, TranspositionInterval};
+
+    // --- Push 4a: transpose test harness. ------------------------------------
+    //
+    // The two `transpose_*` tests below were FALSE LOCKS until Push 4a: they
+    // reduced base-free, where `graph` is `None` and `graph_transpose_pitch`
+    // never runs, and they asserted only `OperationEffect`. Gutting the
+    // transpose entirely left both green. They now reduce ONTO a base and
+    // assert the pitch value, which is the thing the operation exists to change.
+
+    /// Every `(event, pitch)` in canonical id order — `events.iter()` walks a
+    /// slotmap, whose order is an implementation detail.
+    fn pitch_ids(score: &Score) -> Vec<PitchId> {
+        let mut pairs: Vec<(EventId, PitchId)> = Vec::new();
+        for event in score.events.iter() {
+            let mut ips = Vec::new();
+            event.collect_identified_pitches(&mut ips);
+            pairs.extend(ips.iter().map(|ip| (event.id(), ip.id)));
+        }
+        pairs.sort();
+        pairs.into_iter().map(|(_, p)| p).collect()
+    }
+
+    fn event_of(score: &Score, pitch: PitchId) -> EventId {
+        score
+            .events
+            .iter()
+            .find_map(|event| {
+                let mut ips = Vec::new();
+                event.collect_identified_pitches(&mut ips);
+                ips.iter().any(|ip| ip.id == pitch).then(|| event.id())
+            })
+            .expect("pitch is embedded in this score")
+    }
+
+    fn set_pitch(score: &mut Score, pitch: PitchId, content: Pitch) {
+        let eid = event_of(score, pitch);
+        if let Some(Event::Pitched(pe)) = score.events.get_mut(eid) {
+            if let Some(ip) = pe.pitches.iter_mut().find(|ip| ip.id == pitch) {
+                ip.pitch = content;
+                return;
+            }
+        }
+        panic!("pitch {pitch:?} is not in a pitched event");
+    }
+
+    fn pitch_of(score: &Score, pitch: PitchId) -> Pitch {
+        let eid = event_of(score, pitch);
+        match score.events.get(eid) {
+            Some(Event::Pitched(pe)) => pe
+                .pitches
+                .iter()
+                .find(|ip| ip.id == pitch)
+                .map(|ip| ip.pitch.clone())
+                .expect("pitch present"),
+            _ => panic!("not a pitched event"),
+        }
+    }
+
+    /// A base score whose canonically-first pitch has the given content.
+    fn base_with_pitch(content: Pitch) -> (Score, PitchId) {
+        let mut base = epiphany_core::generators::valid_score(0x5EED);
+        let pid = *pitch_ids(&base).first().expect("the fixture has a pitch");
+        set_pitch(&mut base, pid, content);
+        (base, pid)
+    }
+
+    fn cmn_pitch(nominal: CmnNominal, alteration: i8, octave: i8) -> Pitch {
+        Pitch {
+            scale_position: epiphany_core::ScalePosition {
+                space: epiphany_core::PitchSpaceId::new("cmn-12"),
+                position: epiphany_core::PitchSpacePosition::Cmn {
+                    nominal,
+                    alteration,
+                    octave,
+                },
+            },
+            acoustic: epiphany_core::AcousticPitch {
+                tuning: epiphany_core::TuningReference::Inherit,
+                realization: epiphany_core::AcousticRealization::Implicit,
+            },
+        }
+    }
+
+    fn cmn_of(p: &Pitch) -> (CmnNominal, i8, i8) {
+        match p.scale_position.position {
+            epiphany_core::PitchSpacePosition::Cmn {
+                nominal,
+                alteration,
+                octave,
+            } => (nominal, alteration, octave),
+            ref other => panic!("expected Cmn, got {other:?}"),
+        }
+    }
+
+    fn interval(diatonic_steps: i32, chromatic_steps: i32) -> TranspositionInterval {
+        TranspositionInterval {
+            diatonic_steps,
+            chromatic_steps,
+        }
+    }
+
+    /// Reduces one `TransposeInterval` onto `base` and returns (effect, score).
+    fn run_transpose(
+        base: &Score,
+        targets: &[PitchId],
+        iv: TranspositionInterval,
+    ) -> (OperationEffect, Score) {
+        let env = prim_env(
+            3,
+            0,
+            30,
+            CausalContext::new(),
+            OperationKind::TransposeInterval(TransposeIntervalOp {
+                targets: targets.iter().copied().collect(),
+                interval: iv,
+            }),
+        );
+        let id = env.id;
+        let mut set = OperationSet::new();
+        set.accept_all(vec![env]);
+        let out = set.reduce_onto(base);
+        let effect = out
+            .state
+            .effects
+            .iter()
+            .find(|(e, _)| *e == id)
+            .map(|(_, eff)| eff.clone())
+            .expect("effect recorded");
+        (effect, out.score)
+    }
+
     #[test]
-    fn transpose_skips_tombstoned_targets_and_shifts_the_live_ones() {
+    fn transpose_interval_moves_the_octave_not_the_alteration() {
+        // The P12-K2 defect at the operation layer: the frozen `Transpose` by
+        // +12 produced `alteration: 12` on the same C4.
+        let (base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
+        let (effect, score) = run_transpose(&base, &[pid], interval(7, 12));
+        assert_eq!(effect, OperationEffect::Applied);
+        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, 0, 5));
+    }
+
+    #[test]
+    fn transpose_interval_targets_are_a_set_so_a_duplicate_cannot_double_shift() {
+        // The frozen `Transpose` shifts a duplicated target twice. The set type
+        // makes that unrepresentable: both spellings of the payload build the
+        // same op, so they also hash the same.
+        let (base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
+        let once = TransposeIntervalOp {
+            targets: [pid].into_iter().collect(),
+            interval: interval(0, 1),
+        };
+        let twice = TransposeIntervalOp {
+            targets: [pid, pid].into_iter().collect(),
+            interval: interval(0, 1),
+        };
+        assert_eq!(once, twice, "a duplicate target is not representable");
+
+        let (effect, score) = run_transpose(&base, &[pid, pid], interval(0, 1));
+        assert_eq!(effect, OperationEffect::Applied);
+        // Shifted ONCE: C#4, not D4 (which is what two +1 shifts would give).
+        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, 1, 4));
+    }
+
+    #[test]
+    fn transpose_interval_refuses_atomically_and_moves_no_sibling() {
+        // A two-pitch chord where one note is pinned to a frequency. Refusing
+        // the whole operation is the point: a chord transposed except for one
+        // note is a different chord.
+        let mut base = epiphany_core::generators::valid_score(0x5EED);
+        let pitches = pitch_ids(&base);
+        assert!(pitches.len() >= 2, "need two pitches");
+        let (movable, pinned) = (pitches[0], pitches[1]);
+
+        set_pitch(&mut base, movable, cmn_pitch(CmnNominal::C, 0, 4));
+        let mut hz = cmn_pitch(CmnNominal::E, 0, 4);
+        hz.acoustic.realization =
+            epiphany_core::AcousticRealization::absolute_hz(329.6).expect("finite");
+        set_pitch(&mut base, pinned, hz);
+
+        let (effect, score) = run_transpose(&base, &[movable, pinned], interval(4, 7));
+        assert_eq!(
+            effect,
+            OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::AcousticRealizationPinned,
+                },
+            }
+        );
+        // The transposable sibling did NOT move.
+        assert_eq!(cmn_of(&pitch_of(&score, movable)), (CmnNominal::C, 0, 4));
+    }
+
+    #[test]
+    fn transpose_interval_refuses_a_non_cmn_target_and_an_overflow() {
+        let mut integer = cmn_pitch(CmnNominal::C, 0, 4);
+        integer.scale_position.position = epiphany_core::PitchSpacePosition::Integer {
+            space_size: 31,
+            index: 7,
+        };
+        let expected = integer.scale_position.position.clone();
+        let (base, pid) = base_with_pitch(integer);
+        let (effect, score) = run_transpose(&base, &[pid], interval(4, 7));
+        assert_eq!(
+            effect,
+            OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::PitchSpaceMismatch,
+                },
+            }
+        );
+        assert_eq!(pitch_of(&score, pid).scale_position.position, expected);
+
+        // The frozen `Transpose` clamps here and reports Applied.
+        let (base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 127));
+        let (effect, score) = run_transpose(&base, &[pid], interval(7, 12));
+        assert_eq!(
+            effect,
+            OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TranspositionOutOfRange,
+                },
+            }
+        );
+        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, 0, 127));
+    }
+
+    #[test]
+    fn transpose_interval_propagates_the_spelling_it_determined() {
+        // req:opcat:transpose-interval-spelling. Core Ch2: "editing operations
+        // that move or transpose a pitch MUST produce attachments with source
+        // Propagated." The frozen Transpose produces none.
+        let (base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
+        assert!(
+            !base.spelling_attachments.iter().any(|a| matches!(
+                &a.scope, SpellingScope::Pitch(p) if *p == pid)),
+            "the fixture starts with no attachment on this pitch"
+        );
+
+        // A diminished sixth up from C4 is A-double-flat 4: same sound as G4,
+        // spelled a step away. Only the interval's diatonic component knows.
+        let (effect, score) = run_transpose(&base, &[pid], interval(5, 7));
+        assert_eq!(effect, OperationEffect::Applied);
+        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::A, -2, 4));
+
+        let attachment = score
+            .spelling_attachments
+            .iter()
+            .find(|a| matches!(&a.scope, SpellingScope::Pitch(p) if *p == pid))
+            .expect("a transposition records its spelling");
+        assert_eq!(attachment.source, SpellingSource::Propagated { from: pid });
+        let SpellingDirective::Explicit(spelling) = &attachment.directive else {
+            panic!("an explicit spelling");
+        };
+        assert_eq!(
+            spelling.nominal,
+            epiphany_core::SpellingNominal::Cmn(CmnNominal::A)
+        );
+        assert_eq!(spelling.octave, 4);
+        // Two flats, not a G-natural: the spelling follows the interval, not
+        // the simplest enharmonic re-inference.
+        assert_eq!(spelling.accidentals.len(), 1);
+    }
+
+    #[test]
+    fn transpose_interval_skips_a_tombstoned_target_but_refuses_a_missing_one() {
+        // The skip/refuse distinction: a deleted pitch is not an untransposable
+        // pitch, it is one the operation has nothing to say about.
+        let (base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
+        let ghost = PitchId::new(ReplicaId(9), 999);
+        let (effect, score) = run_transpose(&base, &[pid, ghost], interval(0, 1));
+        assert_eq!(
+            effect,
+            OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            }
+        );
+        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, 0, 4));
+    }
+
+    #[test]
+    fn the_frozen_transpose_keeps_its_saturating_alteration_semantics() {
+        // req:opcat:transpose-frozen. These are DEFECTS, pinned as normative
+        // replay semantics: a stored Transpose must reconstruct the state its
+        // author saw. If this test ever "fails better", history has been
+        // rewritten.
+        let (base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
+        let run = |targets: Vec<PitchId>, steps: i32| -> Pitch {
+            let env = prim_env(
+                3,
+                0,
+                30,
+                CausalContext::new(),
+                OperationKind::Transpose(TransposeOp {
+                    targets,
+                    chromatic_steps: steps,
+                }),
+            );
+            let mut set = OperationSet::new();
+            set.accept_all(vec![env]);
+            pitch_of(&set.reduce_onto(&base).score, pid)
+        };
+
+        // An octave up moves the alteration, not the octave.
+        assert_eq!(cmn_of(&run(vec![pid], 12)), (CmnNominal::C, 12, 4));
+        // Saturation, silent.
+        assert_eq!(cmn_of(&run(vec![pid], 1000)), (CmnNominal::C, 127, 4));
+        // A duplicated target shifts twice: `targets` is a multiset.
+        assert_eq!(cmn_of(&run(vec![pid, pid], 1)), (CmnNominal::C, 2, 4));
+    }
+
+    /// Tombstones `pitch` as replica 1's operation 0, so [`after_that_delete`]
+    /// names a *contiguous* prefix of replica 1 — a causal vector implies every
+    /// counter up to the one it names, so a lone high counter leaves the
+    /// dependent op pending, not applied.
+    fn delete_pitch_env(pitch: PitchId) -> OperationEnvelope {
+        prim_env(
+            1,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::DeleteIdentifiedPitch(DeleteIdentifiedPitchOp { pitch }),
+        )
+    }
+
+    fn after_that_delete() -> CausalContext {
+        CausalContext::new().with_seen(ReplicaId(1), 0)
+    }
+
+    #[test]
+    fn the_frozen_transpose_skips_a_tombstoned_target_and_shifts_the_live_sibling() {
+        // The claim the old base-free test made in its name but never checked.
+        let mut base = epiphany_core::generators::valid_score(0x5EED);
+        let ids = pitch_ids(&base);
+        let (dead, live) = (ids[0], ids[1]);
+        set_pitch(&mut base, live, cmn_pitch(CmnNominal::C, 0, 4));
+
+        let del = delete_pitch_env(dead);
+        let tr = prim_env(
+            3,
+            0,
+            30,
+            after_that_delete(),
+            OperationKind::Transpose(TransposeOp {
+                targets: vec![dead, live],
+                chromatic_steps: 1,
+            }),
+        );
+        let tr_id = tr.id;
+        let mut set = OperationSet::new();
+        set.accept_all(vec![del, tr]);
+        let out = set.reduce_onto(&base);
+        assert_eq!(
+            out.state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == tr_id)
+                .map(|(_, eff)| eff),
+            Some(&OperationEffect::Applied)
+        );
+        // The live sibling actually moved.
+        assert_eq!(cmn_of(&pitch_of(&out.score, live)), (CmnNominal::C, 1, 4));
+    }
+
+    #[test]
+    fn transpose_interval_skips_a_tombstoned_target_and_shifts_the_live_sibling() {
+        let mut base = epiphany_core::generators::valid_score(0x5EED);
+        let ids = pitch_ids(&base);
+        let (dead, live) = (ids[0], ids[1]);
+        set_pitch(&mut base, live, cmn_pitch(CmnNominal::C, 0, 4));
+
+        let del = delete_pitch_env(dead);
+        let tr = prim_env(
+            3,
+            0,
+            30,
+            after_that_delete(),
+            OperationKind::TransposeInterval(TransposeIntervalOp {
+                targets: [dead, live].into_iter().collect(),
+                interval: interval(4, 7),
+            }),
+        );
+        let tr_id = tr.id;
+        let mut set = OperationSet::new();
+        set.accept_all(vec![del, tr]);
+        let out = set.reduce_onto(&base);
+        assert_eq!(
+            out.state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == tr_id)
+                .map(|(_, eff)| eff),
+            Some(&OperationEffect::Applied),
+            "a tombstoned target is SKIPPED, not a refusal"
+        );
+        assert_eq!(cmn_of(&pitch_of(&out.score, live)), (CmnNominal::G, 0, 4));
+    }
+
+    #[test]
+    fn transpose_effect_log_skips_tombstoned_targets_and_refuses_a_missing_one() {
         // Operation Catalog §Transpose (re-anchoring): "Tombstoned targets are
         // skipped (the transpose applies only to live pitches)."
+        //
+        // SCOPE: this reduces base-free, so it observes the EFFECT LOG only —
+        // `graph` is `None` and no pitch value exists to check. It was named
+        // "...and_shifts_the_live_ones" and asserted no shift whatsoever; a
+        // gutted `graph_transpose_pitch` left it green. The shift itself is
+        // locked by `the_frozen_transpose_*` tests below, against `reduce_onto`.
         let p1 = PitchId::new(ReplicaId(9), 501);
         let p2 = PitchId::new(ReplicaId(9), 502);
         let neutral = crate::valuegen::pitch_value();
@@ -9026,6 +9591,13 @@ mod tests {
         // cannot detect a repeat-value leak into the base — the dedicated
         // `the_canonical_base_embeds_no_repeat_values` test below covers
         // that with an APPLIED create.)
+        //
+        // Re-pinned again at Push 4a: `gen_payload` gained `TransposeInterval`,
+        // discriminant 30, and `rng.below(27)` became `below(28)` — which
+        // reshuffles the whole seeded stream, so every operation id and effect
+        // moves. Nothing leaked: `canonical_bytes` embeds effects, conflicts,
+        // and anomalies, never payload values, and the new payload's
+        // constituents are major-0 layouts regardless.
         let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xBA5E);
         let envelopes = crate::fuzz::gen_envelope_set(&mut rng, 200);
         let mut set = OperationSet::new();
@@ -9035,7 +9607,7 @@ mod tests {
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "6e47a3113cfc54116af2e4a1b66fae16b9d1b63436fd26d9e6fc332bf501f5ed"
+            "594f29e20250a9ff36f0033a59e380e4514aa32a6e78d062579b950667439e20"
         );
     }
 

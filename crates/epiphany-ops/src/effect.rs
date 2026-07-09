@@ -143,8 +143,13 @@ pub enum PreconditionFailureReason {
     PositionOutsideRegion,
     /// A pitch-space or tuning-context precondition failed.
     ///
-    /// Reserved: producing this requires the Chapter 4 tuning catalog
-    /// (pitch-space registry), which is deferred Track-C work.
+    /// Produced by `TransposeInterval` against a target whose
+    /// `scale_position.position` is not `Cmn`, so the interval's diatonic
+    /// component has no nominal to move (operation_catalog
+    /// §TransposeInterval). This was once documented as reserved pending the
+    /// Chapter 4 tuning catalog; that was an error — detecting a non-`Cmn`
+    /// position reads a discriminant, not a pitch-space registry. A genuine
+    /// tuning-context precondition would also land here.
     PitchSpaceMismatch,
     /// The operation targeted a voice that does not exist or is tombstoned.
     VoiceMissing,
@@ -171,6 +176,15 @@ pub enum PreconditionFailureReason {
     /// content disagrees (Pass 12, P12-K9 — replaces the `TargetMissing`
     /// misnomer at the value-retaining re-create sites).
     RecreateContentMismatch,
+    /// A `TransposeInterval` target's `AcousticRealization::AbsoluteHz`
+    /// overrides the tuning system (Push 4a; operation_catalog
+    /// §TransposeInterval). Moving its scale position would move the notehead
+    /// without moving the sound, so the operation refuses instead.
+    AcousticRealizationPinned,
+    /// A `TransposeInterval` would drive a target's `alteration` or `octave`
+    /// past its `i8` bound (Push 4a). The frozen `Transpose` saturates here
+    /// and reports success; this refuses.
+    TranspositionOutOfRange,
 }
 
 impl PreconditionFailureReason {
@@ -193,6 +207,9 @@ impl PreconditionFailureReason {
             // Additive (Pass-12 G-pass, P12-K3/P12-K9); appended past 11.
             PreconditionFailureReason::SystemDerivedContentImmutable => 12,
             PreconditionFailureReason::RecreateContentMismatch => 13,
+            // Additive (Push 4a, TransposeInterval); appended past 13.
+            PreconditionFailureReason::AcousticRealizationPinned => 14,
+            PreconditionFailureReason::TranspositionOutOfRange => 15,
         }
     }
 }
