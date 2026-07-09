@@ -3,30 +3,33 @@
 //! "resolve\[s\] page and system breaks"; Chapter 7 §"ResolvedLayoutIR" defines
 //! the page/system tree this pass populates).
 //!
-//! ## The algorithm (greedy first-fit, then a widow rebalance)
+//! ## The algorithm (optimal break search)
 //!
 //! [`SolverTier::Minimal`](epiphany_layout_ir::SolverTier) requires the break
 //! constraint family to be supported and every hard constraint satisfied (or an
-//! honest `Unsatisfiable`); it makes **no optimality claim**, so casting-off is
-//! a deterministic two-phase heuristic, not an optimal (Knuth–Plass-style) break
-//! search. Phase 1 is greedy first-fit; phase 2 (`rebalance_widows`) evens the
-//! system widths so the final system is not left a narrow stub. Phase 1:
+//! honest `Unsatisfiable`); it makes **no optimality claim**. Casting-off uses a
+//! deterministic **badness-minimizing break search** (`optimal_breaks`, a
+//! Knuth–Plass-style dynamic program) — an honest improvement on the earlier
+//! greedy-first-fit-plus-widow-rebalance, not a formal optimality guarantee.
 //!
-//! 1. **System breaking.** Per region, walk the spaced spring-slot columns in x
-//!    order. Break into systems at **measure boundaries** — the barline columns
-//!    (`to_constrained` draws each measure's barline at its start column; the
-//!    region-final barline closes the region and is never a break candidate) —
-//!    whenever the measure beginning at a barline would overflow the page
-//!    content width. A **hard** `SystemBreakAt`/`PageBreakAt` is *always*
-//!    honoured at its slot (the slot begins a new system/page); a **soft** one
-//!    is honoured unless doing so would close a system with no musical content
-//!    (no notehead/rest column) — the documented exceptional path, recorded as
-//!    an [`EngravingDecision`] with [`DecisionSource::IrOverride`] per the
-//!    spec's override-resolution rule (an unhonoured override is recorded, not
-//!    silently dropped). A region with no measures has no automatic break
-//!    candidates: it stays one (possibly overfull) system unless breaks force
-//!    otherwise. A single measure wider than the page yields an overfull
-//!    system — Minimal does not break mid-measure on its own.
+//! 1. **System breaking.** Per region, partition the measures into systems to
+//!    minimize the total squared normalized underfill over ALL systems — which
+//!    evens them (no lopsided split) and fills them (no needless breaks), the
+//!    additive analog of the Quality Metric Catalog's break/imbalance
+//!    distribution cost; including the final system in the sum is what removes
+//!    the old separate widow rebalance. Breaks fall only at **measure
+//!    boundaries** — the barline columns (`to_constrained` draws each measure's
+//!    barline at its start column; the region-final barline closes the region
+//!    and is never a break candidate). A **hard** `SystemBreakAt`/`PageBreakAt`
+//!    is *always* honoured at its slot (and bounds the search's segments); a
+//!    **soft** one is honoured unless doing so would close a system with no
+//!    musical content (no notehead/rest column) — the documented exceptional
+//!    path, recorded as an [`EngravingDecision`] with
+//!    [`DecisionSource::IrOverride`] per the spec's override-resolution rule (an
+//!    unhonoured override is recorded, not silently dropped). A region with no
+//!    measures has no break candidates: it stays one (possibly overfull) system
+//!    unless breaks force otherwise. A single measure wider than the page yields
+//!    an overfull system — Minimal does not break mid-measure on its own.
 //! 2. **Vertical stacking.** Each system's height is its real content extent
 //!    (glyph boxes plus stroke extents — the vertical spring solve that would
 //!    renegotiate band heights is deferred, so the constrained `y` geometry is
@@ -43,15 +46,6 @@
 //!    rigidly: x back to the left margin, y to its stacked position), so the
 //!    flat glyph/stroke lists remain the renderer's and hit-tester's single
 //!    coordinate space — no per-page transform exists anywhere downstream.
-//!
-//! Phase 2 (`rebalance_widows`, run between system breaking and stacking)
-//! moves whole trailing measures from a region's penultimate system into its
-//! final one to even their widths — the anti-widow refinement, choosing the
-//! shift that minimizes the larger of the two distribution penalties the
-//! Quality Metric Catalog defines for the break family (width imbalance vs
-//! non-final underfill). It leaves the system *count* unchanged and never
-//! disturbs a constraint-pinned boundary, so the break structure phase 1
-//! established still holds.
 //!
 //! ## Region-spanning strokes
 //!
@@ -547,11 +541,9 @@ pub(crate) fn cast_off(
         );
     }
 
-    // ---- Widow rebalance (casting-off phase 2) ----------------------------
-    // Greedy first-fit fills every non-final system maximally, which can leave
-    // a region's final system a narrow stub; even the system widths without
-    // moving any constraint-pinned boundary or changing the system count.
-    rebalance_widows(&mut systems, &region_slots, &reqs, width_limit);
+    // (The old greedy pass needed a second widow-rebalance phase here; the
+    // optimal break search evens the final system directly — see
+    // `optimal_breaks`.)
 
     // ---- Stroke fates ------------------------------------------------------
     // Which system each slot landed in, and each region's slot span / per-system
@@ -1030,7 +1022,110 @@ fn page_top_content(p: usize, geometry: &PageGeometry) -> f32 {
     -(p as f32) * (geometry.size.height.0 + INTER_PAGE_GAP) - geometry.margins.top.0
 }
 
-/// Greedy first-fit walk over one region's slots (see the module docs).
+/// Optimal automatic system breaks for one region: a badness-minimizing
+/// (Knuth–Plass-style) partition of the region's measures into systems,
+/// replacing greedy first-fit. Returns the slot ids at which an AUTOMATIC break
+/// opens a system — the break REQUIREMENTS (hard / soft / page, which bound the
+/// DP's segments) are honoured by [`walk_region`] itself, and never appear here.
+///
+/// **Objective.** Minimize the sum over ALL systems of the squared normalized
+/// underfill `((width_limit − w) / width_limit)²`. Squaring evens the systems
+/// (a lopsided split costs more than a balanced one), and including the *final*
+/// system in the sum is what subsumes the old tail-only widow rebalance — the
+/// optimizer will not leave a narrow final stub if a more even partition is
+/// cheaper. It is the additive, DP-tractable analog of the catalog's
+/// break/imbalance distribution cost (`distribution_cost`, now retired): both
+/// reward filled, even systems. A system may not exceed the content width unless
+/// it is a **single unsplittable measure** (an overfull lone measure, which the
+/// greedy pass also emitted). `Minimal` still makes no optimality *claim*; this
+/// is a deterministic global heuristic, an honest improvement on first-fit.
+///
+/// **Determinism.** A pure function of the slot extents and requirements; the
+/// DP minimizes the lexicographic `(cost, system_count)` (fewer systems breaks
+/// ties, so ties favour fewer pages), and among equal `(cost, count)` the
+/// earliest-considered predecessor (the largest final system) wins.
+fn optimal_breaks(
+    slots: &[SlotInfo],
+    reqs: &BTreeMap<SpringSlotId, Vec<BreakReq>>,
+    width_limit: f32,
+) -> BTreeSet<SpringSlotId> {
+    let mut automatic = BTreeSet::new();
+    if !width_limit.is_finite() || width_limit <= 0.0 || slots.is_empty() {
+        return automatic; // unbounded width: nothing wraps
+    }
+    let breakable = |slot: &SlotInfo| slot.barline && !slot.final_barline;
+    // Measure-boundary positions in slot-index space: region start, each
+    // breakable barline, region end. `forced[k]` marks a boundary carrying a
+    // break requirement (the DP may not span it). The region end is a boundary.
+    let mut pts: Vec<usize> = vec![0];
+    let mut forced: Vec<bool> = vec![false];
+    for (i, slot) in slots.iter().enumerate() {
+        if i > 0 && breakable(slot) {
+            pts.push(i);
+            forced.push(reqs.contains_key(&slot.id));
+        }
+    }
+    pts.push(slots.len());
+    forced.push(true);
+    let n = pts.len(); // n - 1 measures between the n boundaries
+
+    // A system spanning boundaries [a, b): its ink extent over slots
+    // `[pts[a] .. pts[b])`.
+    let width = |a: usize, b: usize| -> f32 {
+        let range = &slots[pts[a]..pts[b]];
+        let lo = range.iter().map(|s| s.lo).fold(f32::INFINITY, f32::min);
+        let hi = range.iter().map(|s| s.hi).fold(f32::NEG_INFINITY, f32::max);
+        (hi - lo).max(0.0)
+    };
+
+    // dp[b] = the min `(cost, system_count)` to partition measures [0, b).
+    let mut dp: Vec<(f64, usize)> = vec![(f64::INFINITY, usize::MAX); n];
+    let mut from: Vec<usize> = vec![0; n];
+    dp[0] = (0.0, 0);
+    for b in 1..n {
+        for a in 0..b {
+            // A system may not skip a forced break at an interior boundary.
+            if (a + 1..b).any(|k| forced[k]) {
+                continue;
+            }
+            let (prev_cost, prev_count) = dp[a];
+            if !prev_cost.is_finite() {
+                continue;
+            }
+            let w = width(a, b);
+            let bad = if w <= width_limit {
+                let u = f64::from((width_limit - w) / width_limit);
+                u * u
+            } else if b - a == 1 {
+                0.0 // a lone measure wider than the page: unavoidable, not charged
+            } else {
+                continue; // overfull and splittable: not a valid system
+            };
+            let cand = (prev_cost + bad, prev_count + 1);
+            if cand < dp[b] {
+                dp[b] = cand;
+                from[b] = a;
+            }
+        }
+    }
+
+    // Reconstruct the partition; its non-forced boundaries are the automatic
+    // breaks `walk_region` adds to its requirement-driven ones.
+    if dp[n - 1].0.is_finite() {
+        let mut b = n - 1;
+        while b > 0 {
+            let a = from[b];
+            if a > 0 && !forced[a] {
+                automatic.insert(slots[pts[a]].id);
+            }
+            b = a;
+        }
+    }
+    automatic
+}
+
+/// Walks one region's slots, opening a system at each break requirement and at
+/// each optimal automatic break (`optimal_breaks`).
 #[allow(clippy::too_many_arguments)]
 fn walk_region(
     region: usize,
@@ -1042,25 +1137,13 @@ fn walk_region(
     systems: &mut Vec<SystemPlan>,
     skipped: &mut Vec<EngravingDecision>,
 ) {
-    // Measure look-ahead: `chunk_hi[i]` is the rightmost content edge of the
-    // chunk beginning at slot `i` — through the slot before the next breakable
-    // barline (the region-final barline closes the last chunk, so it never
-    // starts one).
-    let breakable = |slot: &SlotInfo| slot.barline && !slot.final_barline;
-    let mut chunk_hi = vec![f32::NEG_INFINITY; slots.len()];
-    for i in (0..slots.len()).rev() {
-        let next = if i + 1 < slots.len() && !breakable(&slots[i + 1]) {
-            chunk_hi[i + 1]
-        } else {
-            f32::NEG_INFINITY
-        };
-        chunk_hi[i] = slots[i].hi.max(next);
-    }
+    // The optimal automatic breaks (a global badness-minimizing partition,
+    // bounded by the break requirements); the walk opens a system at each.
+    let automatic = optimal_breaks(slots, reqs, width_limit);
 
     let mut local = 0usize;
     let mut current: Vec<usize> = Vec::new();
     let mut has_note = false;
-    let mut current_lo = f32::INFINITY;
     let mut open_boundary: Option<Boundary> = None;
     let mut open_page_forced = false;
     let mut open_page_source = DecisionSource::Automatic;
@@ -1081,7 +1164,6 @@ fn walk_region(
             }
             current.push(i);
             has_note = slot.note;
-            current_lo = slot.lo;
             continue;
         }
         let mut break_here = false;
@@ -1111,9 +1193,10 @@ fn walk_region(
                 source = origin_source(origins, slot.id, req.page);
             }
         }
-        // Greedy first-fit: at a measure boundary, break when the measure
-        // beginning here would overflow the content width.
-        if !break_here && breakable(slot) && has_note && chunk_hi[i] - current_lo > width_limit {
+        // Optimal casting-off: open a system at a chosen automatic break, as
+        // long as the closing system carries musical content (a lead-only
+        // system is never torn off — matching the requirement path's rule).
+        if !break_here && has_note && automatic.contains(&slot.id) {
             break_here = true;
         }
         if break_here {
@@ -1138,11 +1221,9 @@ fn walk_region(
             };
             current.push(i);
             has_note = slot.note;
-            current_lo = slot.lo;
         } else {
             current.push(i);
             has_note |= slot.note;
-            current_lo = current_lo.min(slot.lo);
         }
     }
     // The region's last system — or, for a region with no slots at all, its
@@ -1155,197 +1236,6 @@ fn walk_region(
         page_forced: open_page_forced,
         page_source: open_page_source,
     });
-}
-
-/// **Widow rebalance** — the casting-off pass's second phase (module docs). The
-/// greedy first-fit walk fills each non-final system as full as the content
-/// width allows, which is optimal for *page fill* but can leave the region's
-/// **final** system a narrow stub (a "widow") — exactly what the Quality Metric
-/// Catalog's `casting_off_quality` axis penalizes. This pass evens the region's
-/// system widths by moving whole trailing measures from the penultimate system
-/// into the final one.
-///
-/// The shift is chosen to **minimize the larger of the two distribution
-/// penalties the catalog defines for the break family**: the system-width
-/// *imbalance* (`casting_off_quality`, the coefficient of variation of the
-/// region's system widths) and the non-final *break* penalty
-/// (`system_break_penalty`, the mean of `|W − w|/W` over non-final systems).
-/// Each is computed by the same formula the metric census uses (see
-/// [`distribution_cost`]). The two axes pull against each other —
-/// filling non-final systems (few, wide systems) worsens imbalance; equalizing
-/// widths (empty non-final systems) worsens underfill — and both share the
-/// catalog's `0.5` worst-tolerable anchor, so their raw quantities are compared
-/// directly and the minimizer of their maximum is the width that best satisfies
-/// both. It is not a claim of optimality (Minimal makes none); it is a
-/// deterministic anti-widow heuristic.
-///
-/// Only a region's **last** boundary moves, and only when greedy placed it — an
-/// `Automatic` boundary with no break requirement or page force pinned to its
-/// slot. A user/IR-anchored or page-forced boundary is never disturbed, and the
-/// **system count is unchanged**, so page assignment and every break-count
-/// invariant the walk established still hold. The penultimate system keeps at
-/// least its own first measure (never emptied), and the final system never
-/// grows wider than its predecessor (no mirror-image imbalance).
-fn rebalance_widows(
-    systems: &mut [SystemPlan],
-    region_slots: &[Vec<SlotInfo>],
-    reqs: &BTreeMap<SpringSlotId, Vec<BreakReq>>,
-    width_limit: f32,
-) {
-    if !(width_limit.is_finite() && width_limit > 0.0) {
-        return; // unbounded width: nothing wraps, nothing to even out
-    }
-    let w_limit = f64::from(width_limit);
-    // A region's systems are a contiguous run in `systems` (walk_region appends
-    // them per region, in region order); rebalance each run independently.
-    let mut start = 0;
-    while start < systems.len() {
-        let region = systems[start].region;
-        let mut end = start;
-        while end < systems.len() && systems[end].region == region {
-            end += 1;
-        }
-        rebalance_region(
-            &mut systems[start..end],
-            &region_slots[region],
-            reqs,
-            w_limit,
-        );
-        start = end;
-    }
-}
-
-/// Rebalances one region's contiguous run of systems (see [`rebalance_widows`]).
-fn rebalance_region(
-    run: &mut [SystemPlan],
-    slots: &[SlotInfo],
-    reqs: &BTreeMap<SpringSlotId, Vec<BreakReq>>,
-    w_limit: f64,
-) {
-    let n = run.len();
-    if n < 2 {
-        return; // a single system has no widow to fix
-    }
-    let (prev, last) = (n - 2, n - 1);
-    // The final boundary must be a greedy one to move it: an `Automatic` system
-    // break with no break requirement or page force pinned to its slot.
-    let Some(boundary) = run[last].boundary else {
-        return;
-    };
-    if boundary.source != DecisionSource::Automatic
-        || run[last].page_forced
-        || reqs.contains_key(&boundary.slot)
-    {
-        return;
-    }
-    let width = |idx: &[usize]| -> f64 {
-        let lo = idx
-            .iter()
-            .map(|&k| slots[k].lo)
-            .fold(f32::INFINITY, f32::min);
-        let hi = idx
-            .iter()
-            .map(|&k| slots[k].hi)
-            .fold(f32::NEG_INFINITY, f32::max);
-        if hi > lo {
-            f64::from(hi - lo)
-        } else {
-            0.0
-        }
-    };
-    // Widths of the systems before the penultimate stay fixed (only the last
-    // boundary moves); the objective's coefficient of variation ranges over all.
-    let fixed: Vec<f64> = run[..prev].iter().map(|p| width(&p.slots)).collect();
-    // Measure-start positions within the penultimate system — local indices into
-    // its slot list. The first is the system's own opening (immovable); a split
-    // at a later one moves that measure and the rest into the final system.
-    let starts: Vec<usize> = run[prev]
-        .slots
-        .iter()
-        .enumerate()
-        .filter(|(_, &k)| slots[k].measure_barline.is_some())
-        .map(|(local, _)| local)
-        .collect();
-    if starts.len() < 2 {
-        return; // the penultimate system has one measure — nothing to lend
-    }
-    // Baseline: the greedy split (move nothing). Iterate candidate splits from
-    // the fewest measures moved (latest start) so ties keep the fuller
-    // predecessor; accept only a strict improvement.
-    let mut best_cost = distribution_cost(
-        &fixed,
-        width(&run[prev].slots),
-        width(&run[last].slots),
-        w_limit,
-    );
-    let mut best_split: Option<usize> = None;
-    for &split in starts.iter().skip(1).rev() {
-        let kept = &run[prev].slots[..split];
-        let moved = &run[prev].slots[split..];
-        let last_slots: Vec<usize> = moved.iter().chain(&run[last].slots).copied().collect();
-        let (w_prev, w_last) = (width(kept), width(&last_slots));
-        if w_last > w_prev {
-            continue; // never grow the final system past its predecessor
-        }
-        let cost = distribution_cost(&fixed, w_prev, w_last, w_limit);
-        if cost < best_cost - 1e-9 {
-            best_cost = cost;
-            best_split = Some(split);
-        }
-    }
-    if let Some(split) = best_split {
-        let moved: Vec<usize> = run[prev].slots[split..].to_vec();
-        let new_boundary_slot = slots[run[prev].slots[split]].id;
-        run[prev].slots.truncate(split);
-        let mut new_last = moved;
-        new_last.extend_from_slice(&run[last].slots);
-        run[last].slots = new_last;
-        run[last].boundary = Some(Boundary {
-            slot: new_boundary_slot,
-            source: DecisionSource::Automatic,
-        });
-    }
-}
-
-/// The rebalance objective (see [`rebalance_widows`]): the larger of the two raw
-/// distribution penalties over a region's system widths — the **break** penalty
-/// and the width **imbalance**. Both normalize against the catalog's shared
-/// `0.5` anchor, so comparing and taking the max of the raw quantities orders
-/// candidates exactly as the max of the two normalized metrics does. Each raw is
-/// computed by the *same* formula as the axis it stands in for, so the rebalance
-/// optimizes against the values the `quality` module will report:
-///
-/// * **break** — `quality::system_break_raw`'s mean of `|W − w| / W` over the
-///   **non-final** systems (absolute, so an overfull non-final system is
-///   penalized too);
-/// * **imbalance** — `quality::casting_off_raw`'s coefficient of variation over
-///   **all** the region's system widths.
-fn distribution_cost(fixed: &[f64], w_prev: f64, w_last: f64, w_limit: f64) -> f64 {
-    let mut widths: Vec<f64> = fixed.to_vec();
-    widths.push(w_prev);
-    widths.push(w_last);
-    let count = widths.len();
-    // Break penalty: mean absolute deviation from the content width over the
-    // non-final systems (the final system is exempt) — `system_break_raw`.
-    let non_final = &widths[..count - 1];
-    let breaks = if non_final.is_empty() {
-        0.0
-    } else {
-        non_final
-            .iter()
-            .map(|&w| (w_limit - w).abs() / w_limit)
-            .sum::<f64>()
-            / non_final.len() as f64
-    };
-    // Imbalance: the coefficient of variation of all system widths — `casting_off_raw`.
-    let mean = widths.iter().sum::<f64>() / count as f64;
-    let imbalance = if mean > 0.0 {
-        let variance = widths.iter().map(|w| (w - mean) * (w - mean)).sum::<f64>() / count as f64;
-        variance.sqrt() / mean
-    } else {
-        0.0
-    };
-    breaks.max(imbalance)
 }
 
 /// Decides how a stroke rides the cast systems (see [`StrokeFate`]).
@@ -1847,49 +1737,81 @@ mod tests {
         );
     }
 
+    /// A uniform test measure: one break-candidate barline slot per measure,
+    /// spanning `[i·10, i·10 + 9]` (each measure ~9 wide, step 10).
+    fn measure_slot(i: usize) -> SlotInfo {
+        SlotInfo {
+            id: SpringSlotId(i as u128 + 1),
+            x: i as f32 * 10.0,
+            lo: i as f32 * 10.0,
+            hi: i as f32 * 10.0 + 9.0,
+            members: Vec::new(),
+            barline: true,
+            final_barline: false,
+            note: true,
+            measure_barline: None,
+        }
+    }
+
     #[test]
-    fn distribution_cost_prefers_the_even_split_over_greedy_and_full_balance() {
-        // The RS-1 two-system candidates, glyph-ink widths (staff spaces) from
-        // the ten-measure fixture at the default 90-wide content area. The
-        // widow rebalance minimizes the larger of imbalance (CV) and worst
-        // non-final underfill; the greedy 8/2 stub and the fully balanced 5/5
-        // both score worse than the six/four split it settles on.
-        let w = 90.0;
-        let greedy = distribution_cost(&[], 78.57, 18.76, w); // 8/2 stub
-        let six_four = distribution_cost(&[], 59.52, 37.80, w); // rebalanced
-        let five_five = distribution_cost(&[], 50.00, 47.33, w); // full balance
+    fn optimal_breaks_balances_systems_and_avoids_a_final_widow() {
+        // Six uniform measures; the content width fits four (4 measures span 39,
+        // 5 span 49). Greedy first-fit packs [4, 2] — a short final system;
+        // the optimal search balances to [3, 3] (lower total squared underfill),
+        // subsuming the old widow rebalance. One automatic break, before the
+        // fourth measure.
+        let slots: Vec<SlotInfo> = (0..6).map(measure_slot).collect();
+        let breaks = optimal_breaks(&slots, &BTreeMap::new(), 42.0);
+        assert_eq!(
+            breaks.len(),
+            1,
+            "one automatic break → two systems: {breaks:?}"
+        );
         assert!(
-            six_four < greedy && six_four < five_five,
-            "6/4 ({six_four:.4}) must beat greedy ({greedy:.4}) and 5/5 ({five_five:.4})"
+            breaks.contains(&slots[3].id),
+            "the break is before the 4th measure (a 3/3 split): {breaks:?}"
         );
     }
 
     #[test]
-    fn distribution_cost_uses_the_mean_break_penalty_not_the_worst() {
-        // For three or more systems the break term must be the MEAN of |W-w|/W
-        // over the non-final systems — the same quantity `quality::system_break_raw`
-        // reports — not the worst single system. With one full leading system
-        // fixed at W, the balanced 45/45 tail must beat the 60/30 tail: its width
-        // CV is lower, and the mean break penalty (diluted by the full leading
-        // system) does not dominate. A worst-underfill proxy would wrongly prefer
-        // 60/30 (its lone short system is less empty), inverting the choice.
-        let w = 90.0;
-        let fixed = [90.0]; // one full non-final system
-        let balanced = distribution_cost(&fixed, 45.0, 45.0, w);
-        let uneven = distribution_cost(&fixed, 60.0, 30.0, w);
-        assert!(
-            balanced < uneven,
-            "the mean break penalty prefers the balanced tail: {balanced:.4} vs {uneven:.4}"
+    fn optimal_breaks_never_spans_a_forced_break() {
+        // A break requirement at the 2nd measure partitions the DP: the first
+        // segment is a lone measure [0,1); the optimizer works only within
+        // [1,6). So measure 0 stands alone even though it would pack with more,
+        // and no automatic break coincides with the forced one.
+        let slots: Vec<SlotInfo> = (0..6).map(measure_slot).collect();
+        let mut reqs: BTreeMap<SpringSlotId, Vec<BreakReq>> = BTreeMap::new();
+        reqs.insert(
+            slots[1].id,
+            vec![BreakReq {
+                page: false,
+                hard: true,
+            }],
         );
-        // Pin the mean-not-max semantics exactly: over the non-final systems
-        // [90, 45] the break penalty is mean(0, 0.5) = 0.25, below the width CV,
-        // so the objective here is the CV of [90, 45, 45].
-        let widths = [90.0_f64, 45.0, 45.0];
-        let mean = widths.iter().sum::<f64>() / 3.0;
-        let cv = (widths.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / 3.0).sqrt() / mean;
+        let breaks = optimal_breaks(&slots, &reqs, 42.0);
         assert!(
-            (balanced - cv).abs() < 1e-12,
-            "the objective should equal the width CV here: {balanced} vs {cv}"
+            !breaks.contains(&slots[1].id),
+            "the forced break is walk_region's, never reported here: {breaks:?}"
+        );
+        // The remaining measures [1..6) (5 of them, width 49 > 42) split
+        // optimally within their segment — every reported break is inside it.
+        for id in &breaks {
+            assert!(
+                slots[2..].iter().any(|s| s.id == *id),
+                "an automatic break stays inside the post-requirement segment: {id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn optimal_breaks_is_deterministic_and_empty_when_unbounded() {
+        let slots: Vec<SlotInfo> = (0..6).map(measure_slot).collect();
+        let a = optimal_breaks(&slots, &BTreeMap::new(), 42.0);
+        let b = optimal_breaks(&slots, &BTreeMap::new(), 42.0);
+        assert_eq!(a, b, "a pure function of the inputs");
+        assert!(
+            optimal_breaks(&slots, &BTreeMap::new(), f32::INFINITY).is_empty(),
+            "an unbounded width wraps nothing"
         );
     }
 

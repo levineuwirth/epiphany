@@ -22,14 +22,15 @@ first axis of the planned two-pass spring layout — later joined by real
 hard-constraint evaluation (which earned the `Minimal` tier).
 
 **Phase 3's layout track adds CASTING-OFF** (see "Casting-off (2026-07)" below):
-greedy system breaking at measure boundaries, vertical system stacking, page
+system breaking at measure boundaries, vertical system stacking, page
 assignment, a populated `ResolvedPage`/`ResolvedSystem` tree, and full break-
 constraint evaluation. **Push 3's Standard-tier track then adds per-system
 JUSTIFICATION** (see "Per-system justification (Push 3)" below): every non-final
 system stretches to fill the content width; and **vertical justification** (same
-section): the systems of a non-final page spread to fill the page height. Still
-deferred: the inter-staff soft-spring solve *within* a system (band-height
-renegotiation), and optimal (lookahead) break search.
+section): the systems of a non-final page spread to fill the page height; and
+**optimal break search** (see "Optimal break search (Push 3)" below) replaces
+greedy first-fit + widow rebalance. Still deferred: the inter-staff soft-spring
+solve *within* a system (band-height renegotiation).
 
 ### Honest tier
 
@@ -39,8 +40,8 @@ report `SolverTier::Stub`, never `Minimal` (Chapter 9 §"Conformance Tiers").
 `Engraver::tier()` reported `Stub` until real hard-constraint satisfaction
 landed and now reports `Minimal` — which it fully earns after casting-off: the
 break constraint family is genuinely supported (spec §"Conformance Tiers",
-Minimal row), and `Minimal` makes no optimality claim, so greedy first-fit
-casting-off is legitimate. Since the Quality Metric Catalog companion's
+Minimal row), and `Minimal` makes no optimality claim, so the break search
+(originally greedy first-fit, now a badness-minimizing search) is legitimate. Since the Quality Metric Catalog companion's
 ratification, the solve also reports a **real quality-metric vector** —
 accurate metric vectors are part of the Minimal claim — computed per the
 catalog's formulas (see "Quality metrics (2026-07)" below). The all-worst
@@ -82,19 +83,15 @@ inputs the solver cannot measure.
 
 ## Casting-off (2026-07) — decisions
 
-1. **Greedy first-fit system breaking, at measure boundaries.** The casting-off
-   walk visits each region's spaced spring-slot columns in x order and breaks
-   before a **barline column** (this projection draws each measure's barline at
-   its *start* column, so breaking before the barline keeps every measure
-   intact; the region-final barline closes the region and is never a
-   candidate) whenever the measure beginning there would overflow the page
-   content width. Rationale: `SolverTier::Minimal` requires the break family
-   supported and hard constraints satisfied, with **no optimality claim**
-   (Chapter 9 §"Conformance Tiers"), so an optimal (Knuth–Plass-style) search
-   is deliberately rejected at this tier — greedy first-fit is deterministic,
-   linear, and easy to validate. Consequences accepted and documented:
-   a region with no measures never wraps automatically; a single measure wider
-   than the page yields an overfull system (no mid-measure emergency break).
+1. **System breaking at measure boundaries.** Breaks fall only before a
+   **barline column** (this projection draws each measure's barline at its
+   *start* column, so breaking before the barline keeps every measure intact;
+   the region-final barline closes the region and is never a candidate).
+   *Originally greedy first-fit; replaced in Push 3 by an optimal break search
+   — see "Optimal break search (Push 3)" below.* Consequences accepted and
+   documented: a region with no measures never wraps automatically; a single
+   measure wider than the page yields an overfull system (no mid-measure
+   emergency break).
 2. **Break-constraint semantics: "breaks at slot S" ⇔ S starts a system.** A
    `SystemBreakAt`/`PageBreakAt` is satisfied iff the final layout starts a
    system/page at that slot (a region's first slot is trivially at a
@@ -642,3 +639,43 @@ stage's staff stacking is preserved verbatim; `vertical_density_penalty`
 measures it but nothing renegotiates it). That needs vertical pressure — a
 collision or a target — to be meaningful, and multi-staff systems to exercise;
 a later tranche.
+
+## Optimal break search (Push 3, 2026-07-08)
+
+Casting-off's greedy first-fit + tail-only widow rebalance is replaced by a
+deterministic **badness-minimizing break search** (`optimal_breaks`, a
+Knuth–Plass-style dynamic program). `ENGRAVER_VERSION` 9 → 10 (a wrapping
+score's measures partition into different, more balanced systems, so its breaks
+and all flowing geometry differ; a non-wrapping score is unchanged).
+
+**Objective.** Minimize the sum over ALL systems of the squared normalized
+underfill `((width_limit − w)/width_limit)²`. Squaring evens the systems (a
+lopsided split costs more than a balanced one); including the FINAL system in
+the sum is what subsumes the old `rebalance_widows` (the optimizer will not
+leave a narrow final stub if a more balanced partition is cheaper). It is the
+additive, DP-tractable analog of the retired `distribution_cost` (max of the
+catalog's break penalty and width-CV imbalance): both reward filled, even
+systems, but the additive form admits a polynomial DP over the measure
+boundaries. On the ten-measure fixture the search settles on **5/4 measures**
+where greedy + rebalance left a fuller-then-shorter split, which fills the final
+system more and pulls `casting_off_quality` down (~0.80 → ~0.61) — the payoff,
+visible now that horizontal justification has driven `system_break` to ~0 so
+the last system's fullness is what `casting_off` mostly sees.
+
+**Requirements and overfull.** The break REQUIREMENTS (hard / soft / page)
+bound the DP's segments — a system may not span a forced break — and
+`walk_region` still honours them (and records a skipped content-less soft break
+as an `IrOverride`, unchanged); `optimal_breaks` reports only the AUTOMATIC
+breaks. A system may not exceed the content width unless it is a **single
+unsplittable measure** (an overfull lone measure, which greedy also emitted; not
+charged, since nothing can be done). `Minimal` still makes **no optimality
+claim** — this is a deterministic global heuristic, an honest improvement on
+first-fit, not a formal guarantee.
+
+**Determinism.** A pure function of the slot extents and requirements; the DP
+minimizes lexicographic `(cost, system_count)` (fewer systems — hence fewer
+pages — breaks ties), and among equal `(cost, count)` the earliest-considered
+predecessor wins. Tests: `optimal_breaks_balances_systems_and_avoids_a_final_
+widow`, `optimal_breaks_never_spans_a_forced_break`,
+`optimal_breaks_is_deterministic_and_empty_when_unbounded`; the widow test now
+checks the balanced measure distribution the DP produces.

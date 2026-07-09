@@ -195,8 +195,13 @@ pub struct Engraver {
 /// non-final page spread so the last one's bottom reaches the content bottom,
 /// filling the page height; a multi-page score's baked geometry differs, while
 /// a single-page score — whose only page is ragged-bottom by convention — is
+/// unchanged), and to `10` when casting-off replaced greedy first-fit + widow
+/// rebalance with an **optimal (badness-minimizing) break search** (a wrapping
+/// score's measures partition into more balanced systems — e.g. a 5/4 split
+/// where greedy left a fuller-then-stub one — so its system breaks, and every
+/// geometry that flows from them, differ; a score that does not wrap is
 /// unchanged).
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(9);
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(10);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

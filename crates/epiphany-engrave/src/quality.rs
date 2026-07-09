@@ -681,21 +681,22 @@ mod tests {
             "the non-final system fills the width after justification: {}",
             vector.system_break_penalty.0
         );
-        // The width-uniformity axes RISE as a consequence: the justified
-        // non-final system now spans the full width while the last stays
-        // ragged-right, so the two systems' ink widths (and their glyph
-        // densities) differ more than the rebalanced natural widths did. This
-        // is honest for a two-system score (one full line, one short last
-        // line); a metric refinement that scores casting-off on natural widths
-        // or excludes the intentionally-ragged final system is a follow-up (see
-        // DECISIONS).
+        // The width-uniformity axes are non-zero: the justified non-final system
+        // spans the full width while the last stays ragged-right, so the two
+        // systems' ink widths (and their glyph densities) differ. Optimal
+        // casting-off balances the split (5/4 measures, not greedy's 6-plus/stub),
+        // which fills the final system more and pulls casting_off DOWN from the
+        // greedy value (~0.80 → ~0.61) — the break search's payoff. Still honest
+        // for a two-system score (one full line, one shorter last line); a metric
+        // refinement that scores casting-off on natural widths or excludes the
+        // intentionally-ragged final system is a follow-up (see DECISIONS).
         assert!(
-            (0.7..0.9).contains(&vector.casting_off_quality.0),
-            "the full non-final system contrasts with the ragged last: {}",
+            (0.5..0.7).contains(&vector.casting_off_quality.0),
+            "the balanced split leaves a moderate full-vs-ragged contrast: {}",
             vector.casting_off_quality.0
         );
         assert!(
-            (0.3..0.5).contains(&vector.symbol_density_uniformity.0),
+            (0.45..0.65).contains(&vector.symbol_density_uniformity.0),
             "density differs between the stretched and the ragged system: {}",
             vector.symbol_density_uniformity.0
         );
@@ -767,12 +768,13 @@ mod tests {
             .events
             .clone();
         let id: SlurId = score.identity.mint();
-        // Events 22→26 straddle the fixture's two-system break (a ~one-measure
-        // span, wide enough that the height clamp does not bind → ρ ≈ 0.16).
+        // Events 14→24 straddle the fixture's centred two-system break (optimal
+        // casting-off balances to ~5/4 measures), wide enough that the height
+        // clamp does not bind → ρ ≈ 0.16.
         score.cross_cutting.slurs.push(Slur {
             id,
-            start_event: ev[22],
-            end_event: ev[26],
+            start_event: ev[14],
+            end_event: ev[24],
             kind: SlurKind::Legato,
             curvature_override: None,
             style: SpanStyle::default(),
