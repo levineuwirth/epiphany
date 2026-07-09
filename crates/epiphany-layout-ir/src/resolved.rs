@@ -101,8 +101,18 @@ pub struct ResolvedLayoutIR {
 
 impl ResolvedLayoutIR {
     /// The canonical serialized output (Appendix D §"Quantized Layout
-    /// Coordinates"): the full resolved layout, with glyph positions quantized
-    /// to the `1/1024` grid. Equivalent to [`CanonicalEncode::to_canonical_bytes`].
+    /// Coordinates"): the layout's *rendering fingerprint*, with glyph positions
+    /// quantized to the `1/1024` grid. Equivalent to
+    /// [`CanonicalEncode::to_canonical_bytes`].
+    ///
+    /// It encodes what a conformant renderer draws and what a conformance claim
+    /// compares — every primitive's provenance, geometry, style, and layer — and
+    /// **excludes non-canonical layout-attribution metadata**. Concretely:
+    /// [`ResolvedGlyph`] drops its band on the way out of the constrained stage,
+    /// while [`Stroke`] and [`Curve`] (whose types are shared with that stage)
+    /// carry `vertical_band` through but do not encode it. Band ownership tells a
+    /// vertical solver which staff owns a primitive; it draws nothing, so two
+    /// layouts differing only in it are the same rendered layout and hash alike.
     ///
     /// Two solves whose internal f32 computations agree to better than `1/2048`
     /// staff space at every coordinate produce identical bytes; two layouts that

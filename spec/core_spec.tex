@@ -9267,8 +9267,8 @@ pub struct ResolvedGlyph {
     pub layer: i32,
 }
 
-/// A line primitive the solver positions but the vertical-band
-/// model does not contain (a staff line, stem, barline, or bracket).
+/// A line primitive the solver positions (a staff line, stem,
+/// barline, or bracket).
 pub struct Stroke {
     pub provenance: Provenance,
     pub from: Point2D,
@@ -9276,6 +9276,13 @@ pub struct Stroke {
     pub thickness: StaffSpace,
     pub layer: i32,
     pub style: GlyphStyle,
+
+    /// The vertical band this stroke belongs to: its owning staff,
+    /// declared by the projection that emitted it. A vertical solver
+    /// reads ownership from here rather than inferring it from
+    /// geometry. Unlike a glyph, a stroke is not listed in
+    /// `VerticalBand::members`; this is a one-way reference.
+    pub vertical_band: VerticalBandId,
 }
 
 /// A cubic-Bezier curve primitive (a slur), its four control
@@ -9293,6 +9300,11 @@ pub struct Curve {
     /// The line pattern the renderer strokes the path with
     /// (a slur's authored `SpanStyle.line`): solid, dashed, or dotted.
     pub line: LineStyle,
+
+    /// The vertical band this curve belongs to (see `Stroke`). A
+    /// slur's endpoints are lifted clear of its own staff, so its
+    /// owner is not recoverable from its geometry.
+    pub vertical_band: VerticalBandId,
 }
 \end{lstlisting}
 
@@ -9311,6 +9323,35 @@ pub struct Curve {
   content hash (\ref{req:layoutir:object-id-derivation}). A conformant
   renderer draws them alongside the glyphs; the renderer encoding
   itself is out of scope (\ref{sec:layoutir:render}).
+\end{requirement}
+
+\begin{requirement}
+  \label{req:layoutir:primitive-band-ownership}
+  \textbf{Primitive band ownership is declared, not inferred.} Every
+  primitive --- glyph, stroke, and curve alike --- \MUST{} declare the
+  \texttt{VerticalBandId} of the band that owns it, and the projection
+  \MUST{} name a band that exists in \texttt{vertical\_bands}. A
+  vertical solver \MUST{} take a primitive's owning staff from that
+  declaration and \MUSTNOT{} infer it from the primitive's geometry.
+  Content owned by no staff (a page-margin annotation, a structure
+  spanning several staves) names a band whose kind is not
+  \texttt{Staff}.
+
+  This is a correctness requirement, not a convenience. A primitive's
+  drawn position does not determine its owner: a stem shares its
+  horizontal column with the staff above, and a slur's endpoints are
+  \emph{lifted clear} of its own staff by construction, landing in the
+  inter-staff zone where the nearest notehead routinely belongs to the
+  neighbouring staff. A solver that guesses from proximity will
+  attribute such a primitive to the wrong staff and, on renegotiating
+  the staff gaps, tear it off the notes it belongs to.
+
+  Only glyphs are \emph{members} of a band
+  (\texttt{VerticalBand::members}), which is what realizes the
+  horizontal spring solve; a stroke's or curve's band reference is
+  one-way. Like the primitives themselves, the reference is
+  non-canonical layout-attribution metadata: it enters no content hash
+  and no canonical encoding.
 \end{requirement}
 
 \begin{requirement}
