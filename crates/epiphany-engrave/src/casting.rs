@@ -78,10 +78,10 @@ use epiphany_layout_ir::{
     EngravingDecisionKind, EngravingOverrideId, GlyphObject, GlyphObjectId, LayoutConstraint,
     LayoutObjectId, Margins, Point, Provenance, Rect, ResolvedGlyph, ResolvedMeasure, ResolvedPage,
     ResolvedStaff, ResolvedSystem, Size2D, SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey,
-    SynthesisKind, SynthesisRegistryId, VerticalBand, VerticalBandId,
+    SynthesisKind, SynthesisRegistryId, VerticalBand, VerticalBandId, VerticalBandKind,
 };
 
-use crate::owning_glyph;
+use crate::{component_glyph, owning_glyph};
 
 /// The registry id for the engraver's **system-continuation synthesis**: the
 /// segment of a region-spanning stroke (a staff line) that casting-off places
@@ -322,6 +322,14 @@ impl Placement {
     fn slot_dx(&self, slot_x: f32) -> f32 {
         (self.a - 1.0) * slot_x + self.b
     }
+    /// The same placement sunk downward by `shift` — the inter-staff solve
+    /// pushes a staff's content down within its system (y-down is decreasing y).
+    fn sunk(&self, shift: f32) -> Self {
+        Placement {
+            dy: self.dy - shift,
+            ..*self
+        }
+    }
 }
 
 /// The content extent of a system in spaced (pre-casting) coordinates.
@@ -352,6 +360,15 @@ impl Extent {
             self.min_y = self.min_y.min(y0.min(y1));
             self.max_y = self.max_y.max(y0.max(y1));
             self.any = true;
+        }
+    }
+
+    /// Extend only the vertical extent (the inter-staff solve grows a system's
+    /// height by shifting staves apart, without touching its x-span).
+    fn add_y(&mut self, y0: f32, y1: f32) {
+        if y0.is_finite() && y1.is_finite() {
+            self.min_y = self.min_y.min(y0.min(y1));
+            self.max_y = self.max_y.max(y0.max(y1));
         }
     }
 
@@ -616,69 +633,173 @@ pub(crate) fn cast_off(
         .map(|curve| curve_fate(curve, &region_spans, &region_systems, &clips))
         .collect();
 
-    // ---- System extents ----------------------------------------------------
+    // ---- Inter-staff vertical solve + system extents -----------------------
+    // Attribute every primitive to its owning staff so the gaps BETWEEN a
+    // system's staves can be renegotiated: the constrained stage stacks staves
+    // at a fixed pitch, so tightly ledgered or slurred adjacent staves collide.
+    // Glyphs name their staff via their vertical band; a stem/ledger tracks its
+    // notehead; a staff line names its staff; a slur takes the staff of the
+    // note nearest its start. Spacing is horizontal-only, so a primitive's y is
+    // unchanged from the source frame the attribution is computed in.
+    let band_to_staff: BTreeMap<VerticalBandId, StaffId> = input
+        .vertical_bands
+        .iter()
+        .filter_map(|b| match b.kind {
+            VerticalBandKind::Staff(s) => Some((b.id, s)),
+            _ => None,
+        })
+        .collect();
+    let glyph_band_staff = |g: &GlyphObject| band_to_staff.get(&g.vertical_band).copied();
+    let glyph_staff_of: Vec<Option<StaffId>> = input.glyphs.iter().map(glyph_band_staff).collect();
+    let stroke_staff_of: Vec<Option<StaffId>> = input
+        .strokes
+        .iter()
+        .map(|s| match s.provenance.source {
+            TypedObjectId::Staff(st) => Some(st),
+            _ => component_glyph(s, &input.glyphs).and_then(glyph_band_staff),
+        })
+        .collect();
+    let curve_staff_of: Vec<Option<StaffId>> = input
+        .curves
+        .iter()
+        .map(|c| {
+            let (px, py) = (c.p0.x.0, c.p0.y.0);
+            input
+                .glyphs
+                .iter()
+                .filter(|g| g.glyph.as_str().starts_with("notehead"))
+                .min_by(|a, b| {
+                    let d = |g: &GlyphObject| {
+                        (g.baseline.x.0 - px).powi(2) + (g.baseline.y.0 - py).powi(2)
+                    };
+                    d(a).total_cmp(&d(b))
+                })
+                .and_then(glyph_band_staff)
+        })
+        .collect();
+
+    // Pass A: system extents (unshifted), and per (system, staff) content
+    // y-extents plus the staff-line reference y (for ordering).
     let mut extents: Vec<Extent> = vec![Extent::empty(); systems.len()];
+    let mut staff_ext: BTreeMap<(usize, StaffId), (f32, f32)> = BTreeMap::new();
+    let mut staff_ref: BTreeMap<(usize, StaffId), f32> = BTreeMap::new();
+    let into_staff = |m: &mut BTreeMap<(usize, StaffId), (f32, f32)>,
+                      s: usize,
+                      staff: Option<StaffId>,
+                      lo_y: f32,
+                      hi_y: f32| {
+        if let Some(st) = staff {
+            m.entry((s, st))
+                .and_modify(|e| {
+                    e.0 = e.0.min(lo_y);
+                    e.1 = e.1.max(hi_y);
+                })
+                .or_insert((lo_y, hi_y));
+        }
+    };
     for (s, plan) in systems.iter().enumerate() {
         for &i in &plan.slots {
             for &g in &region_slots[plan.region][i].members {
                 let glyph = &spaced_glyphs[g];
                 let (x, y) = (glyph.position.x.0, glyph.position.y.0);
-                extents[s].add(
-                    x + glyph.bounding_box.left.0,
+                let (lo_y, hi_y) = (
                     y + glyph.bounding_box.bottom.0,
-                    x + glyph.bounding_box.right.0,
                     y + glyph.bounding_box.top.0,
                 );
-            }
-        }
-    }
-    for (fate, spaced) in fates.iter().zip(spaced_strokes) {
-        let half = (spaced.thickness.0 * 0.5).max(0.0);
-        match fate {
-            StrokeFate::Rigid(Some(s)) => extents[*s].add(
-                spaced.from.x.0 - half,
-                spaced.from.y.0.min(spaced.to.y.0) - half,
-                spaced.to.x.0 + half,
-                spaced.from.y.0.max(spaced.to.y.0) + half,
-            ),
-            StrokeFate::Rigid(None) => {}
-            StrokeFate::Split(segments) => {
-                for (s, from, to) in segments {
-                    extents[*s].add(
-                        from.x.0 - half,
-                        from.y.0.min(to.y.0) - half,
-                        to.x.0 + half,
-                        from.y.0.max(to.y.0) + half,
-                    );
-                }
-            }
-        }
-    }
-    // A curve's control-point hull (± half-thickness) grows its system's
-    // extent, so a slur above the staff raises the system height (page overflow
-    // accounts for it) exactly as the volta bracket strokes do. A split curve
-    // grows each system by its own sub-cubic's hull.
-    for (fate, curve) in curve_fates.iter().zip(spaced_curves) {
-        let half = (curve.thickness.0 * 0.5).max(0.0);
-        let mut grow = |s: usize, cp: &[Point; 4]| {
-            for point in cp {
                 extents[s].add(
-                    point.x.0 - half,
-                    point.y.0 - half,
-                    point.x.0 + half,
-                    point.y.0 + half,
+                    x + glyph.bounding_box.left.0,
+                    lo_y,
+                    x + glyph.bounding_box.right.0,
+                    hi_y,
                 );
+                into_staff(&mut staff_ext, s, glyph_staff_of[g], lo_y, hi_y);
             }
+        }
+    }
+    for (si, (fate, spaced)) in fates.iter().zip(spaced_strokes).enumerate() {
+        let half = (spaced.thickness.0 * 0.5).max(0.0);
+        let staff = stroke_staff_of[si];
+        let is_staff_line = matches!(spaced.provenance.source, TypedObjectId::Staff(_));
+        let segs: Vec<(usize, Point, Point)> = match fate {
+            StrokeFate::Rigid(Some(s)) => vec![(*s, spaced.from, spaced.to)],
+            StrokeFate::Rigid(None) => vec![],
+            StrokeFate::Split(segments) => segments.clone(),
         };
-        match fate {
-            CurveFate::Rigid(Some(s)) => grow(*s, &curve.control_points()),
-            CurveFate::Rigid(None) => {}
-            CurveFate::Split(segments) => {
-                for (s, cp) in segments {
-                    grow(*s, cp);
+        for (s, from, to) in segs {
+            let (lo_y, hi_y) = (from.y.0.min(to.y.0) - half, from.y.0.max(to.y.0) + half);
+            extents[s].add(from.x.0 - half, lo_y, to.x.0 + half, hi_y);
+            into_staff(&mut staff_ext, s, staff, lo_y, hi_y);
+            if is_staff_line {
+                if let Some(st) = staff {
+                    staff_ref
+                        .entry((s, st))
+                        .and_modify(|r| *r = r.max(hi_y))
+                        .or_insert(hi_y);
                 }
             }
         }
+    }
+    for (ci, (fate, curve)) in curve_fates.iter().zip(spaced_curves).enumerate() {
+        let half = (curve.thickness.0 * 0.5).max(0.0);
+        let staff = curve_staff_of[ci];
+        let segs: Vec<(usize, [Point; 4])> = match fate {
+            CurveFate::Rigid(Some(s)) => vec![(*s, curve.control_points())],
+            CurveFate::Rigid(None) => vec![],
+            CurveFate::Split(segments) => segments.clone(),
+        };
+        for (s, cp) in segs {
+            for p in cp {
+                extents[s].add(p.x.0 - half, p.y.0 - half, p.x.0 + half, p.y.0 + half);
+                into_staff(&mut staff_ext, s, staff, p.y.0 - half, p.y.0 + half);
+            }
+        }
+    }
+
+    // Solve each system's inter-staff gaps: order the staves top-to-bottom by
+    // their reference y (staff line, else content mid), keep that order fixed,
+    // and shift each staff down until its gap to the one above meets the band
+    // model's preferred inter-staff gap. `staff_shift[(system, staff)]` is the
+    // downward shift (subtracted from y); the top staff's is 0.
+    let preferred_gap = VerticalBand::inter_staff_gap(VerticalBandId(0))
+        .preferred_height
+        .0;
+    let mut staff_shift: BTreeMap<(usize, StaffId), f32> = BTreeMap::new();
+    for s in 0..systems.len() {
+        let mut staves: Vec<(StaffId, (f32, f32))> = staff_ext
+            .iter()
+            .filter(|((sys, _), _)| *sys == s)
+            .map(|((_, st), ext)| (*st, *ext))
+            .collect();
+        // Top first: larger reference y is higher on the page.
+        staves.sort_by(|a, b| {
+            let key = |st: StaffId, ext: (f32, f32)| {
+                staff_ref
+                    .get(&(s, st))
+                    .copied()
+                    .unwrap_or((ext.0 + ext.1) * 0.5)
+            };
+            key(b.0, b.1).total_cmp(&key(a.0, a.1)).then(a.0.cmp(&b.0))
+        });
+        let mut shift = 0.0_f32;
+        for w in staves.windows(2) {
+            let (upper, (upper_lo, _)) = w[0];
+            let (lower, (_, lower_hi)) = w[1];
+            staff_shift.insert((s, upper), shift);
+            // Realized gap after the upper's shift: (upper_lo - shift) − lower_hi.
+            let gap = (upper_lo - shift) - lower_hi;
+            shift += (preferred_gap - gap).max(0.0);
+            staff_shift.insert((s, lower), shift);
+        }
+        if staves.len() == 1 {
+            staff_shift.insert((s, staves[0].0), 0.0);
+        }
+    }
+
+    // Fold each staff's SHIFTED content y-extent into its system extent, so the
+    // stacking/justification below sees the taller, separated system.
+    for ((s, st), (lo, hi)) in &staff_ext {
+        let sh = staff_shift.get(&(*s, *st)).copied().unwrap_or(0.0);
+        extents[*s].add_y(lo - sh, hi - sh);
     }
     let extents: Vec<Extent> = extents.into_iter().map(Extent::normalized).collect();
 
@@ -802,10 +923,18 @@ pub(crate) fn cast_off(
     decisions.extend(skipped);
 
     // ---- Bake the world frame ----------------------------------------------
+    // A primitive's additional downward shift from the inter-staff solve.
+    let staff_dy = |s: usize, staff: Option<StaffId>| -> f32 {
+        staff
+            .and_then(|st| staff_shift.get(&(s, st)))
+            .copied()
+            .unwrap_or(0.0)
+    };
     let glyphs: Vec<ResolvedGlyph> = spaced_glyphs
         .iter()
         .zip(&input.glyphs)
-        .map(|(spaced, glyph)| {
+        .enumerate()
+        .map(|(gi, (spaced, glyph))| {
             let (dx, dy) = match system_of_slot.get(&glyph.horizontal_slot) {
                 Some(&s) => {
                     // Slot-relative: every member of a slot translates by the
@@ -814,7 +943,10 @@ pub(crate) fn cast_off(
                         .get(&glyph.horizontal_slot)
                         .copied()
                         .unwrap_or(spaced.position.x.0);
-                    (placements[s].slot_dx(sx), placements[s].dy)
+                    (
+                        placements[s].slot_dx(sx),
+                        placements[s].dy - staff_dy(s, glyph_staff_of[gi]),
+                    )
                 }
                 None => (0.0, 0.0),
             };
@@ -829,14 +961,20 @@ pub(crate) fn cast_off(
     let mut staff_marks: BTreeMap<(usize, StaffId), StaffAgg> = BTreeMap::new();
     let mut strokes: Vec<Stroke> = Vec::with_capacity(spaced_strokes.len());
     let mut continuations: Vec<Stroke> = Vec::new();
-    for ((source, spaced), fate) in input.strokes.iter().zip(spaced_strokes).zip(&fates) {
+    for (si, ((source, spaced), fate)) in input
+        .strokes
+        .iter()
+        .zip(spaced_strokes)
+        .zip(&fates)
+        .enumerate()
+    {
         match fate {
             StrokeFate::Rigid(sys) => {
                 let stroke = match sys {
                     Some(s) => place_stroke(
                         source,
                         spaced,
-                        placements[*s],
+                        placements[*s].sunk(staff_dy(*s, stroke_staff_of[si])),
                         &slot_source_x,
                         &input.glyphs,
                     ),
@@ -851,7 +989,7 @@ pub(crate) fn cast_off(
                 for (k, (s, from, to)) in segments.iter().enumerate() {
                     // A split stroke spans systems — a staff line or volta
                     // bracket — so each segment stretches with its system.
-                    let p = placements[*s];
+                    let p = placements[*s].sunk(staff_dy(*s, stroke_staff_of[si]));
                     let provenance = if k == 0 {
                         // The first segment carries the original stroke's exact
                         // provenance: the object survives, re-shaped.
@@ -895,7 +1033,8 @@ pub(crate) fn cast_off(
     // split stroke's are.
     let mut curves: Vec<Curve> = Vec::with_capacity(spaced_curves.len());
     let mut curve_continuations: Vec<Curve> = Vec::new();
-    for (curve, fate) in spaced_curves.iter().zip(&curve_fates) {
+    for (ci, (curve, fate)) in spaced_curves.iter().zip(&curve_fates).enumerate() {
+        let curve_staff = curve_staff_of[ci];
         // A slur has no intra-slot structure, so its control points map straight
         // through the affine: the endpoints follow their anchor notes (which sit
         // at slot sources) and the arc stretches horizontally with the span.
@@ -904,7 +1043,7 @@ pub(crate) fn cast_off(
         match fate {
             CurveFate::Rigid(system) => {
                 let p = system
-                    .map(|s| placements[s])
+                    .map(|s| placements[s].sunk(staff_dy(s, curve_staff)))
                     .unwrap_or(Placement::rigid(0.0, 0.0));
                 let [p0, p1, p2, p3] = shift(curve.control_points(), p);
                 curves.push(Curve {
@@ -917,7 +1056,8 @@ pub(crate) fn cast_off(
             }
             CurveFate::Split(segments) => {
                 for (k, (s, cp)) in segments.iter().enumerate() {
-                    let [p0, p1, p2, p3] = shift(*cp, placements[*s]);
+                    let [p0, p1, p2, p3] =
+                        shift(*cp, placements[*s].sunk(staff_dy(*s, curve_staff)));
                     let provenance = if k == 0 {
                         curve.provenance.clone()
                     } else {

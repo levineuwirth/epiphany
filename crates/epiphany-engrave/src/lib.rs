@@ -200,8 +200,12 @@ pub struct Engraver {
 /// score's measures partition into more balanced systems — e.g. a 5/4 split
 /// where greedy left a fuller-then-stub one — so its system breaks, and every
 /// geometry that flows from them, differ; a score that does not wrap is
-/// unchanged).
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(10);
+/// unchanged), and to `11` when the **inter-staff vertical solve** landed (the
+/// gaps between a system's staves are renegotiated so tightly ledgered or
+/// slurred adjacent staves separate to the band model's preferred gap; a
+/// multi-staff score whose staves press together shifts them apart, while a
+/// single-staff score — with no inter-staff pair — is unchanged).
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(11);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -2227,6 +2231,46 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn inter_staff_solve_separates_colliding_staves() {
+        use epiphany_layout_ir::{to_constrained, to_logical};
+        // The two-staff fixture's staves collide under the fixed staff pitch:
+        // low ledger notes on the top staff, high ledger notes plus a slur on
+        // the bottom. The inter-staff solve pushes them apart until the content
+        // clears the band model's preferred gap.
+        let report = Engraver::default().solve(
+            &to_constrained(&to_logical(
+                &epiphany_testkit::fixtures::two_staff_close_content(1),
+            )),
+            &SolverConfig::default(),
+        );
+        let sys = &report.layout.pages[0].systems[0];
+        assert_eq!(sys.staves.len(), 2, "two staves in the system");
+        // Staff records are top-first; the gap between the two staves' staff-line
+        // boxes now exceeds the fixed inter-staff pitch (12 staff spaces), where
+        // under fixed stacking it is ~8 — the solve opened room for the colliding
+        // ledgers and slur (their content clears with margin to spare).
+        let (top, bottom) = (&sys.staves[0].bounding_box, &sys.staves[1].bounding_box);
+        let gap = top.origin.y.0 - (bottom.origin.y.0 + bottom.size.height.0);
+        assert!(
+            gap > 12.0,
+            "the colliding staves separate: staff-line gap {gap}"
+        );
+        // A no-pressure single-staff score has no inter-staff pair, so it is
+        // untouched — its goldens stay byte-stable (see the render-svg suite).
+        let single =
+            Engraver::default().solve(&ten_measure_constrained(), &SolverConfig::default());
+        assert!(
+            single
+                .layout
+                .pages
+                .iter()
+                .flat_map(|p| &p.systems)
+                .all(|s| s.staves.len() <= 1),
+            "single-staff systems have no inter-staff pair to renegotiate"
+        );
     }
 
     #[test]

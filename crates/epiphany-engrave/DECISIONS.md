@@ -29,8 +29,12 @@ JUSTIFICATION** (see "Per-system justification (Push 3)" below): every non-final
 system stretches to fill the content width; and **vertical justification** (same
 section): the systems of a non-final page spread to fill the page height; and
 **optimal break search** (see "Optimal break search (Push 3)" below) replaces
-greedy first-fit + widow rebalance. Still deferred: the inter-staff soft-spring
-solve *within* a system (band-height renegotiation).
+greedy first-fit + widow rebalance; and the **inter-staff vertical solve** (see
+"Inter-staff vertical solve (Push 3)" below) renegotiates the gaps between a
+system's staves. This completes the Standard-tier layout story end to end;
+per-system justification (horizontal), vertical justification (inter-system),
+optimal breaks, and the inter-staff solve (intra-system vertical) now all
+compose.
 
 ### Honest tier
 
@@ -694,3 +698,45 @@ predecessor wins. Tests: `optimal_breaks_balances_systems_and_avoids_a_final_
 widow`, `optimal_breaks_never_spans_a_forced_break`,
 `optimal_breaks_is_deterministic_and_empty_when_unbounded`; the widow test now
 checks the balanced measure distribution the DP produces.
+
+## Inter-staff vertical solve (Push 3, 2026-07-08)
+
+The last vertical-spring piece: the gaps BETWEEN a system's staves are
+renegotiated, so tightly ledgered or slurred adjacent staves — which the
+constrained stage stacks at a fixed pitch — separate. `ENGRAVER_VERSION` 10 →
+11 (a multi-staff score whose staves press together shifts them apart; a
+single-staff score, with no inter-staff pair, is byte-identical).
+
+**Attribution (`vertical_band` + owning-glyph).** Every resolved primitive is
+attributed to its owning staff: a glyph via its `vertical_band`
+(`VerticalBandKind::Staff` → `StaffId`); a stem or ledger via its notehead
+(`component_glyph` → that glyph's band); a staff line via its `Staff`
+provenance source; a slur via the notehead nearest its start endpoint. Spacing
+is horizontal-only, so a primitive's y is unchanged from the source frame the
+attribution reads, and the resolved and source indices line up. (The geometric
+`round(-y / pitch)` alternative was rejected: an extreme ledgered note on the
+top or bottom staff rounds to a non-existent neighbour.)
+
+**The solve.** Per system, per staff, the real content y-extent is collected
+(glyphs, strokes, curves — ledgers and slurs included, not just noteheads). The
+staves are ordered top-to-bottom by their staff-line reference y and that order
+is kept fixed; each staff is then shifted DOWN by the cumulative amount needed
+to bring its gap to the one above up to the band model's preferred inter-staff
+gap (`VerticalBand::inter_staff_gap`). `staff_shift[(system, staff)]` — the top
+staff's is 0 — is a per-staff `dy` the bake applies (via `Placement::sunk`) on
+top of the per-system `dy`, so glyphs, strokes, curves, the staff/measure/system
+records, content bounds, hit-test regions, and the quality metrics all read the
+same shifted geometry (they all consume the baked output). The shifts grow each
+system's extent, which the vertical stacking and justification then consume — so
+the inter-staff (intra-system) and inter-system passes compose.
+
+**Scope.** Enforces the preferred gap (which subsumes non-overlap). Only `dy`
+per staff changes; staff order is fixed; a single-staff system has no pair and
+is untouched. Locked by `inter_staff_solve_separates_colliding_staves` (the
+two-staff pressure fixture's staff-line gap opens past the fixed pitch while a
+single-staff score keeps one staff per system) and the `two_staff_close_content`
+render golden (the visible before/after: slice 1 tight, slice 2 separated).
+**Deferred:** compressing an OVER-wide fixed gap toward preferred (the solve
+only expands, never pulls staves together — the fixed pitch is generous by
+default, so this is rarely wanted); per-staff spring *stretch* to fill spare
+system height (the inter-system justification carries the fill for now).
