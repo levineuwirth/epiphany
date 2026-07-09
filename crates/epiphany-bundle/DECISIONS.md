@@ -446,18 +446,28 @@ lenient, **non-injective** codec, inherited by every structure embedding a
 Its visibility depended entirely on whether the embedder had a whole-value
 re-encode guard:
 
-- `Manifest::decode` **has** one, and it is *total* — verified by exhaustive
-  single-byte perturbation, every one rejected. It caught this. (`encode_body`
-  sorts and deduplicates every vector, and `manifest_id` is derived from the
-  body, which is why the guard is complete here where `MaterializedState`'s is
-  not — see `epiphany-ops/DECISIONS.md` §"Push 5 / P2".)
+- `Manifest::decode` **has** one, and it is total *by argument*: `manifest_id`
+  is derived from the body, so a body edit fails the id check and an id edit
+  fails the derivation; and `encode_body` sorts and deduplicates every vector,
+  so an out-of-order or duplicated encoding cannot round-trip. That is what
+  makes the guard complete here where `MaterializedState`'s is not (see
+  `epiphany-ops/DECISIONS.md` §"Push 5 / P2"). It caught this defect.
+
+  The accompanying test is exhaustive over every single-byte *replacement* of
+  one constructed manifest (each byte × the 255 other values) — evidence for the
+  argument, not a proof of totality, and blind to multi-byte perturbations. An
+  earlier revision of this record claimed "verified by exhaustive single-byte
+  perturbation" while the test actually tried three XOR deltas per byte. Caught
+  in review; the test now does what the sentence says, and the sentence no
+  longer carries the weight of the proof.
 - `OperationIndex::decode` has **no** guard; it validates per-site instead. It
   accepted both byte strings while its own doc promised to *"reject (never
   normalizing) any non-canonical form"*. That promise was false.
 
 Fixed at the source rather than papered over at the index: a non-zero `None`
-parameter is now rejected. Exhaustive sweep (every byte × every value, plus an
-8-byte extreme-integer window) finds no remaining non-injective site.
+parameter is now rejected, for every one of the 255 non-zero values. A sweep of
+one `OperationIndex` payload (every byte × every value, plus an 8-byte
+extreme-integer window) finds no remaining non-injective site in it.
 
 **This contradicted ratified spec text**, which said the byte was *"present but
 zero, and ignored on read"*. Escalated rather than fixed unilaterally; the user
@@ -474,8 +484,12 @@ index corpus was built from real `OperationIndex::build` output. The smoke tests
 now assert on a `WireFuzzCoverage` so that can never silently regress. 1.5M
 inputs across five seeds, ~1s each, clean after the fix.
 
-Three regressions, each mutation-verified by restoring the leniency:
-`compression_none_rejects_a_non_zero_parameter_byte` (the codec),
-`a_lenient_compression_byte_is_rejected_rather_than_normalized` (the index, the
-surface that exposed it), and `every_single_byte_perturbation_of_a_manifest_is_rejected`
-(the guard's totality, and the asymmetry that hid the bug).
+Three regressions. Restoring the leniency fails exactly two of them:
+`compression_none_rejects_a_non_zero_parameter_byte` (the codec) and
+`a_lenient_compression_byte_is_rejected_rather_than_normalized` (the index —
+the surface that exposed it). The third,
+`every_single_byte_replacement_of_a_manifest_is_rejected`, stays **green** under
+that mutation, because the guard rejects the bytes whatever the sub-codec does.
+That is not a weak test; it is the asymmetry, and it locks the guard rather than
+the codec. A regression suite where every test fails on every mutation would be
+telling us less, not more.

@@ -327,26 +327,30 @@ mod tests {
             CompressionAlgorithm::None
         );
 
-        for param in [1u8, 0x7F, 0xFF] {
-            let lenient = vec![0, param];
+        // Exhaustive: every non-zero parameter byte, not three representatives.
+        for param in 1u16..=255 {
+            let lenient = vec![0, param as u8];
             assert!(
                 CompressionAlgorithm::decode(&mut Reader::new(&lenient)).is_err(),
                 "None with parameter {param:#04x} must be rejected, never normalized to zero"
             );
         }
 
-        // The parameter is meaningful for the other two, so it round-trips.
-        for algo in [
-            CompressionAlgorithm::Zstd { level: 0xFF },
-            CompressionAlgorithm::Reserved(0xFF),
-        ] {
-            let mut w = Writer::new();
-            algo.encode(&mut w);
-            let bytes = w.into_bytes();
-            assert_eq!(
-                CompressionAlgorithm::decode(&mut Reader::new(&bytes)).unwrap(),
-                algo
-            );
+        // And the parameter round-trips for every value of the two variants that
+        // give it meaning, so the strictness is confined to `None`.
+        for param in 0u16..=255 {
+            for algo in [
+                CompressionAlgorithm::Zstd { level: param as u8 },
+                CompressionAlgorithm::Reserved(param as u8),
+            ] {
+                let mut w = Writer::new();
+                algo.encode(&mut w);
+                let bytes = w.into_bytes();
+                assert_eq!(
+                    CompressionAlgorithm::decode(&mut Reader::new(&bytes)).unwrap(),
+                    algo
+                );
+            }
         }
     }
 

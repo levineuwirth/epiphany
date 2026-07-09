@@ -709,19 +709,24 @@ mod tests {
     use crate::chunk::{chunk_id, ChunkKind};
     use crate::ids::SnapshotId;
 
-    /// The manifest's whole-value re-encode guard is **total**: every single-byte
-    /// perturbation is rejected. `manifest_id` is derived from the body, so a
-    /// body edit fails the id check and an id edit fails the derivation; and
-    /// `encode_body` sorts and deduplicates every vector, so an out-of-order
-    /// encoding cannot round-trip either.
+    /// Exhaustive over **every single-byte replacement of this constructed
+    /// manifest**: each of its bytes, each of the 255 other values. All rejected.
     ///
-    /// This is what makes the guard complete *here* and not in
+    /// That is a finite check, not a proof of totality. Totality rests on the
+    /// *argument*: `manifest_id` is derived from the body, so a body edit fails
+    /// the id check and an id edit fails the derivation; and `encode_body` sorts
+    /// and deduplicates every vector, so an out-of-order or duplicated encoding
+    /// cannot round-trip. The test is evidence for that argument over one
+    /// manifest, not a substitute for it — and multi-byte perturbations are out
+    /// of its reach entirely.
+    ///
+    /// The argument is what makes the guard complete *here* and not in
     /// `MaterializedState` (epiphany-ops), whose encoder writes its `Vec` fields
     /// verbatim, nor in `OperationIndex`, which has no guard at all. The lenient
     /// `CompressionAlgorithm::None` parameter byte was invisible through the
     /// manifest for exactly this reason, and visible through the index.
     #[test]
-    fn every_single_byte_perturbation_of_a_manifest_is_rejected() {
+    fn every_single_byte_replacement_of_a_manifest_is_rejected() {
         use crate::chunk::{ChunkRef, CompressionAlgorithm};
         use crate::ids::SchemaVersion;
 
@@ -743,16 +748,19 @@ mod tests {
         assert_eq!(Manifest::decode(&bytes).unwrap().encode(), bytes);
 
         for i in 0..bytes.len() {
-            for delta in [1u8, 0x7F, 0xFF] {
-                let mut b = bytes.clone();
-                b[i] ^= delta;
-                if b == bytes {
+            let original = bytes[i];
+            for value in 0u16..=255 {
+                let value = value as u8;
+                if value == original {
                     continue;
                 }
+                let mut b = bytes.clone();
+                b[i] = value;
                 match Manifest::decode(&b) {
                     Err(_) => {}
                     Ok(decoded) => panic!(
-                        "byte {i} ^ {delta:#04x} was accepted; re-encode matches input: {}",
+                        "byte {i} = {value:#04x} (was {original:#04x}) was accepted; \
+                         re-encode matches input: {}",
                         decoded.encode() == b
                     ),
                 }
