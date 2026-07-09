@@ -211,6 +211,128 @@ pub fn two_staff_close_content(seed: u64) -> Score {
     score
 }
 
+/// A one-measure, THREE-staff metric score with **asymmetric** inter-staff
+/// pressure, built to exercise the vertical solve's cumulative shift cascade.
+///
+/// The upper pair collides hard (staff 1 plunges to C1 while staff 2 towers to
+/// C7); the lower pair collides gently (staff 2's C3 against staff 3's C6 and
+/// the slur arcing over it). So the first correction is several times the
+/// second — which is the point. A solve that computed each pair's correction
+/// *independently* would shift staff 3 by only the small amount while staff 2
+/// took the large one, pulling staff 3 back **through** staff 2 and closing
+/// their staff-line gap to well under the fixed pitch. Only a solve whose shift
+/// accumulates down the stack keeps every pair separated. Invariant-clean.
+pub fn three_staff_close_content(seed: u64) -> Score {
+    let mut rng = SplitMix64::new(seed ^ 0x0003_57AF_F123);
+    let replica =
+        ReplicaId::from_entropy(rng.next_u64().to_le_bytes()).unwrap_or(ReplicaId(0x3ADF));
+    let mut idc = IdentityContext::new(replica);
+
+    let staves: Vec<StaffId> = (0..3).map(|_| idc.mint()).collect();
+    let instrument: InstrumentId = idc.mint();
+    let region_id: RegionId = idc.mint();
+
+    let measure = |id: MeasureId| Measure {
+        id,
+        start: TimeAnchor::Region {
+            id: region_id,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Zero,
+        },
+        time_signature: None,
+        explicit_number: Some(1),
+        number_visibility: Default::default(),
+    };
+
+    // Staff 1 dips to low ledgers; staff 2 spans C7 down to C3 (so it presses
+    // upward on staff 1 and downward on staff 3); staff 3 climbs to C6.
+    let octaves: [[i8; 4]; 3] = [[4, 3, 2, 1], [7, 3, 7, 3], [6, 5, 6, 5]];
+    let mut arena = EventArena::new();
+    let mut instances: Vec<StaffInstance> = Vec::new();
+    let mut low_events: Vec<EventId> = Vec::new();
+    for (staff_index, staff_id) in staves.iter().enumerate() {
+        let instance_id: StaffInstanceId = idc.mint();
+        let voice_id: VoiceId = idc.mint();
+        let mut voice = Voice::user(voice_id);
+        for (i, oct) in octaves[staff_index].into_iter().enumerate() {
+            let (eid, pid): (EventId, PitchId) = (idc.mint(), idc.mint());
+            arena
+                .insert(c_at(eid, voice_id, pid, i as i64, oct))
+                .unwrap();
+            voice.events.push(eid);
+            if staff_index == 2 {
+                low_events.push(eid);
+            }
+        }
+        let mut instance = StaffInstance::new(instance_id, *staff_id);
+        instance.voices.push(voice);
+        instance.measures.push(measure(idc.mint()));
+        instances.push(instance);
+    }
+
+    // A slur over the bottom staff's high notes, arcing further up — the extra
+    // upward extent that turns the lower pair's near-miss into real pressure.
+    let mut cross_cutting = CrossCuttingRegistry::default();
+    cross_cutting.slurs.push(Slur {
+        id: idc.mint::<SlurId>(),
+        start_event: low_events[0],
+        end_event: low_events[2],
+        kind: SlurKind::Legato,
+        curvature_override: None,
+        style: SpanStyle::default(),
+    });
+
+    let region = epiphany_core::Region {
+        id: region_id,
+        time_model: RegionTimeModel::Metric(MetricTimeModel::default()),
+        content: RegionContent::StaffBased(StaffBasedContent {
+            staff_instances: instances,
+            ..Default::default()
+        }),
+        time_extent: TimeExtent {
+            start: TimeAnchor::WallClock {
+                time: WallClockTime(0),
+            },
+            end: TimeAnchor::WallClock {
+                time: WallClockTime(10_000_000),
+            },
+        },
+        staff_extent: StaffExtent {
+            staves: staves.clone(),
+        },
+        local_tempo_map: None,
+        permits_spanning_slurs: false,
+    };
+
+    let staff = |id: StaffId, name: &str| Staff {
+        id,
+        name: String::from(name),
+        abbreviation: None,
+        instrument,
+        default_staff_lines: StaffLineConfiguration::default(),
+        group: None,
+        default_clef: epiphany_core::Clef::treble(),
+    };
+    let mut score = Score::empty(idc.clone());
+    score.identity = idc;
+    score.instruments = vec![epiphany_core::Instrument::new(
+        instrument,
+        String::from("Organ"),
+    )];
+    score.staves = vec![
+        staff(staves[0], "Upper"),
+        staff(staves[1], "Middle"),
+        staff(staves[2], "Lower"),
+    ];
+    score.events = arena;
+    score.cross_cutting = cross_cutting;
+    score.canvas = Canvas {
+        regions: vec![region],
+        ..Default::default()
+    };
+    score
+}
+
 /// A 10-measure, single-staff, single-voice metric score with 40 quarter notes
 /// (four per measure), plus a tie, a spanner, a marker, and a chord symbol. The
 /// QUICKSTART layout hand-off case. Invariant-clean (the returned graph passes
@@ -489,6 +611,21 @@ mod tests {
         );
         assert_eq!(s.events.len(), 8, "four notes per staff");
         assert_eq!(s.cross_cutting.slurs.len(), 1, "a slur over the high notes");
+    }
+
+    #[test]
+    fn three_staff_close_content_is_invariant_clean_and_asymmetric() {
+        let s = three_staff_close_content(1);
+        let v = check_invariants(&s);
+        assert!(v.is_empty(), "three-staff fixture has violations: {v:?}");
+        assert_eq!(s.staves.len(), 3, "three staves");
+        assert_eq!(
+            s.canvas.regions[0].staff_instances().len(),
+            3,
+            "three staff instances in ONE region — so all three land in one system"
+        );
+        assert_eq!(s.events.len(), 12, "four notes per staff");
+        assert_eq!(s.cross_cutting.slurs.len(), 1, "a slur over the low staff");
     }
 
     #[test]

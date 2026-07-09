@@ -2383,6 +2383,91 @@ mod tests {
         );
     }
 
+    /// Three staves in one system, with deliberately ASYMMETRIC pressure: the
+    /// upper pair collides hard (C1 against C7), the lower pair only gently. A
+    /// staff's shift must accumulate the corrections of every pair above it,
+    /// because each pair's gap is measured against the upper staff's *already
+    /// shifted* position. So the bottom staff's shift is large — it must clear
+    /// the middle staff where the middle staff now sits, not where it started.
+    ///
+    /// That is exactly what a solve sizing each pair independently gets wrong:
+    /// it would measure the lower pair against the middle staff's ORIGINAL
+    /// position, hand the bottom staff only its own small correction, and leave
+    /// it above the middle staff's new position — closing their staff-line gap
+    /// to well under the fixed pitch. Verified by mutation: with the cascade
+    /// removed this test fails on both `s2 > s1` and the staff-line gap.
+    #[test]
+    fn inter_staff_shifts_cascade_down_three_staves() {
+        use epiphany_layout_ir::{to_constrained, to_logical};
+        let report = Engraver::default().solve(
+            &to_constrained(&to_logical(
+                &epiphany_testkit::fixtures::three_staff_close_content(1),
+            )),
+            &SolverConfig::default(),
+        );
+        let sys = &report.layout.pages[0].systems[0];
+        assert_eq!(sys.staves.len(), 3, "three staves in ONE system");
+
+        // Staff records are top-first. Recover each staff's solved shift: under
+        // fixed stacking staff `i` sits `i * SYSTEM_STAFF_PITCH` below the top,
+        // so whatever separation exceeds that is the shift the solve added.
+        let top_y = sys.staves[0].bounding_box.origin.y.0;
+        let shift = |i: usize| (top_y - sys.staves[i].bounding_box.origin.y.0) - 12.0 * i as f32;
+        let (s0, s1, s2) = (shift(0), shift(1), shift(2));
+        assert!(s0.abs() < 1e-3, "the top staff anchors the system: {s0}");
+        assert!(s1 > 0.0, "the hard-colliding upper pair separates: {s1}");
+        // The cascade. The bottom staff strictly outruns the middle staff: its
+        // correction is measured against the middle staff's SHIFTED bottom, so
+        // it inherits that descent and adds its own clearance on top. Sizing the
+        // lower pair independently yields only its own small raw correction —
+        // less than `s1` for this fixture, which the strict inequality rejects.
+        assert!(
+            s2 > s1,
+            "the bottom staff inherits the shift above it: s1={s1} s2={s2}"
+        );
+
+        // Every adjacent pair ends up clear of the fixed pitch, and nothing
+        // collides — the invariant a broken cascade destroys for the lower pair.
+        for i in 0..2 {
+            let (upper, lower) = (&sys.staves[i].bounding_box, &sys.staves[i + 1].bounding_box);
+            let gap = upper.origin.y.0 - (lower.origin.y.0 + lower.size.height.0);
+            assert!(
+                gap > 12.0,
+                "staves {i}/{} separate: staff-line gap {gap}",
+                i + 1
+            );
+        }
+        assert_eq!(
+            report.metric_vector.collision_penalty.0, 0.0,
+            "the cascaded staves collide nowhere"
+        );
+
+        // The slur belongs to the BOTTOM staff, the one carrying the largest
+        // cascaded shift — so curve attribution has to survive a THREE-band
+        // choice, not just pick the nearer of two. Misattributing it to the
+        // middle staff would leave it ~`s2 - s1` above its own notes.
+        assert_eq!(report.layout.curves.len(), 1, "the fixture draws one slur");
+        let p0y = report.layout.curves[0].p0.y.0;
+        let band_gap = |b: &epiphany_layout_ir::Rect| {
+            let (lo, hi) = (b.origin.y.0, b.origin.y.0 + b.size.height.0);
+            if p0y < lo {
+                lo - p0y
+            } else if p0y > hi {
+                p0y - hi
+            } else {
+                0.0
+            }
+        };
+        let gaps: Vec<f32> = (0..3)
+            .map(|i| band_gap(&sys.staves[i].bounding_box))
+            .collect();
+        assert!(
+            gaps[2] < gaps[1] && gaps[2] < gaps[0],
+            "the slur rides its OWN (bottom) staff: {gaps:?}"
+        );
+        assert!(gaps[2] < 2.0, "and sits close against it: {}", gaps[2]);
+    }
+
     #[test]
     fn vertical_justification_fills_non_final_pages() {
         use epiphany_layout_ir::{Margins, Size2D, StaffSpace};

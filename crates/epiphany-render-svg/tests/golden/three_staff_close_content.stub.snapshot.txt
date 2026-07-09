@@ -1,0 +1,15 @@
+fixture=three_staff_close_content solver=stub
+glyph_count=18
+path_count=18
+fallback_rect_count=0
+stroke_count=77
+curve_count=1
+provenance_count=96
+layer_count=1
+hard_constraint_count=27
+xml_well_formed=true
+view_box=[-3.065 -27.632 16.876999 35.024002]
+class_counts:
+  barline=3
+  clef=3
+  notehead=12

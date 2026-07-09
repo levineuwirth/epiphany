@@ -49,6 +49,10 @@ fn fixtures() -> Vec<(&'static str, Score)> {
             "two_staff_close_content",
             epiphany_testkit::fixtures::two_staff_close_content(0x000A_11CE),
         ),
+        (
+            "three_staff_close_content",
+            epiphany_testkit::fixtures::three_staff_close_content(0x000A_11CE),
+        ),
     ]
 }
 

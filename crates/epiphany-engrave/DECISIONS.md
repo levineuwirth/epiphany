@@ -772,10 +772,7 @@ under a staff space of margin).
   rather than from the region's *declared* inter-staff band. Harmless while both
   come from the same constructor; it would silently diverge from the metric the
   day per-region gaps become customizable.
-- The cumulative shift **cascades** correctly for 3+ staves (staff *i* carries the
-  sum of every gap correction above it), but is unexercised: `valid_score_rich`'s
-  three staves are three separate single-staff regions, so each lands in its own
-  system.
+The 3+-staff cascade was the last of these to be closed; see below.
 
 **The solve.** Per system, per staff, the real content y-extent is collected
 (glyphs, strokes, curves — ledgers and slurs included, not just noteheads). The
@@ -800,3 +797,25 @@ render golden (the visible before/after: slice 1 tight, slice 2 separated).
 only expands, never pulls staves together — the fixed pitch is generous by
 default, so this is rarely wanted); per-staff spring *stretch* to fill spare
 system height (the inter-system justification carries the fill for now).
+
+**The cascade, and why it grows faster than the raw corrections.** A pair's gap
+is measured against the upper staff's **already shifted** bottom, so staff *i*'s
+shift is the sum of every correction above it plus its own. A consequence worth
+stating because it is counter-intuitive: an *increment* `shift(i+1) - shift(i)`
+generally EXCEEDS the lower pair's own raw correction, because the upper staff's
+descent has itself eaten into that pair's gap and must be undone. (The first
+version of the cascade test asserted the opposite — that a gently-pressed lower
+pair's increment would be the small one — and failed against a correct solve.)
+Locked by `inter_staff_shifts_cascade_down_three_staves` over the new
+`three_staff_close_content` fixture: three staves in ONE region (so all three
+land in one system), with **asymmetric** pressure — the upper pair collides hard
+(C1 against C7), the lower pair only gently. Sizing each pair independently — the
+plausible wrong implementation — measures the lower pair against the middle
+staff's ORIGINAL position and hands the bottom staff only its small raw
+correction, dragging it back up through the middle staff. **Verified by
+mutation:** with the cascade removed the bottom staff's shift collapses from
+34.68 to 4.56 (against the middle staff's 15.06) and both the shift ordering and
+the staff-line-gap assertions fail — while `two_staff_close_content` still
+passes, which is exactly why the three-staff fixture was needed. The fixture also
+pins curve attribution against a THREE-band choice (the slur must still find the
+bottom staff, not merely the nearer of two) and carries its own render golden.
