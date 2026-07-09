@@ -551,3 +551,30 @@ the notehead without moving the sound). Saturation is the worst possible
 failure here because it is invisible: it produces a pitch nobody asked for,
 reports success, and destroys the evidence. See `epiphany-ops/DECISIONS.md`
 §"Push 4a" for the operation-level consequences and the frozen `Transpose`.
+
+## Parked: Push 4b (the Chapter 4 tuning catalog) — what must be decided first
+
+Push 4a proved that transposition needs no tuning catalog. What the catalog is
+still needed for — resolving a scale position to a frequency, and applying an
+instrument's `transposition` at the written/sounding boundary — remains open,
+and Chapter 4 is not implementable as written. Verified blockers:
+
+- **`cmn-24` cannot exist** (P13-S2). The built-in pitch-space table declares it
+  as "CMN extended with 24-EDO quarter-tone accidentals", but
+  `PitchSpacePosition::Cmn.alteration` is an `i8` of *whole semitones*. Either
+  `cmn-24` is not `Cmn`-representable, or `alteration` changes unit — a
+  data-model major.
+- **The core stores only the default space, tuning, and reference.** The
+  overrides, accidental extensions, and SMuFL target Chapter 4 requires are
+  absent, and none of the catalog/resolver types exist
+  (`ScoreTuningContext` in `graph.rs` is the whole surface today).
+- **Chapter 4's nine requirement blocks are unlabeled**, so none is
+  independently citable in a conformance claim. This is not special to
+  Chapter 4 — 169 of 207 core_spec requirements are unlabeled (P13-S1) — but it
+  means Push 4b cannot declare conformance requirement-by-requirement without
+  first labelling what it implements.
+
+Two further claims from the Push-4a audit are **unverified** and should be
+checked, not inherited: that the JI dimension convention conflicts with its own
+prime-2 requirement, and that the named historical tunings lack exact
+deterministic ratio data. Neither was needed for 4a, and neither was confirmed.
