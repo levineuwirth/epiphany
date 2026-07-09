@@ -733,6 +733,36 @@ pub(crate) fn cast_off(
         cursor -= height + gap;
     }
 
+    // ---- Vertical justification -------------------------------------------
+    // Spread the systems of every NON-FINAL page so the last system's bottom
+    // reaches the content bottom, filling the page height — the vertical analog
+    // of per-system horizontal justification, distributing the slack evenly
+    // across the inter-system gaps. The last page stays ragged-bottom
+    // (top-aligned), as engraving convention wants; a page with a single system
+    // has no gap to grow, and an already-full (or overfull) page is left alone.
+    if bounded {
+        let last_page = page_systems.len().saturating_sub(1);
+        for (p, page) in page_systems.iter().enumerate() {
+            if p == last_page || page.len() < 2 {
+                continue;
+            }
+            let content_bottom = page_top_content(p, geometry) - content_height;
+            let last = *page.last().expect("a page carries at least one system");
+            let natural_bottom = placements[last].dy + extents[last].min_y;
+            let slack = natural_bottom - content_bottom;
+            if slack <= 0.0 {
+                continue;
+            }
+            // System i (0-based on the page) sinks by i/(n-1) of the slack, so
+            // the first stays at the content top and the last lands on the
+            // content bottom (y-down is decreasing y in this world frame).
+            let step = slack / (page.len() - 1) as f32;
+            for (i, &s) in page.iter().enumerate() {
+                placements[s].dy -= i as f32 * step;
+            }
+        }
+    }
+
     // ---- Break structure and decisions -------------------------------------
     let mut system_start_slots = BTreeSet::new();
     for plan in &systems {

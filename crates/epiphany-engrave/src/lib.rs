@@ -191,8 +191,12 @@ pub struct Engraver {
 /// the spacing pass and casting, instead of being stretched by the interpolation
 /// / justification map and drifting off its head; any wrapping score's baked
 /// geometry differs, and any score with drawn stems shifts them onto their
-/// heads).
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(8);
+/// heads), and to `9` when **vertical justification** landed (the systems of a
+/// non-final page spread so the last one's bottom reaches the content bottom,
+/// filling the page height; a multi-page score's baked geometry differs, while
+/// a single-page score — whose only page is ragged-bottom by convention — is
+/// unchanged).
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(9);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -2218,6 +2222,77 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn vertical_justification_fills_non_final_pages() {
+        use epiphany_layout_ir::{Margins, Size2D, StaffSpace};
+        // Narrow and short, so the ten-measure fixture wraps into several
+        // systems with two-plus fitting a page — a non-final page to justify.
+        let geometry = PageGeometry {
+            size: Size2D {
+                width: StaffSpace(40.0),
+                height: StaffSpace(30.0),
+            },
+            margins: Margins {
+                top: StaffSpace(5.0),
+                right: StaffSpace(5.0),
+                bottom: StaffSpace(5.0),
+                left: StaffSpace(5.0),
+            },
+        };
+        let engraver = Engraver::with_geometry(geometry);
+        let report = engraver.solve(&ten_measure_constrained(), &SolverConfig::default());
+        assert_eq!(report.status, SolveStatus::Solved, "{:?}", report.warnings);
+        let pages = &report.layout.pages;
+        assert!(
+            pages.len() >= 2,
+            "the fixture spans pages; got {}",
+            pages.len()
+        );
+
+        let content_bottom_of = |index: usize| {
+            let page_top = -(index as f32) * (geometry.size.height.0 + crate::INTER_PAGE_GAP)
+                - geometry.margins.top.0;
+            page_top - geometry.content_height()
+        };
+        // Every non-final page with ≥2 systems fills: its last system's bottom
+        // lands on the content bottom.
+        let mut justified = 0;
+        for (index, page) in pages.iter().enumerate() {
+            if index + 1 == pages.len() || page.systems.len() < 2 {
+                continue;
+            }
+            let last_bottom = page.systems.last().unwrap().bounding_box.origin.y.0;
+            assert!(
+                (last_bottom - content_bottom_of(index)).abs() < 1e-2,
+                "page {} last-system bottom {last_bottom} should reach content \
+                 bottom {}",
+                page.number,
+                content_bottom_of(index)
+            );
+            justified += 1;
+        }
+        assert!(
+            justified > 0,
+            "no non-final page carried ≥2 systems to justify"
+        );
+        // The LAST page stays ragged-bottom — its last system's bottom sits
+        // above the content bottom, not force-filled.
+        let last_index = pages.len() - 1;
+        let last_bottom = pages[last_index]
+            .systems
+            .last()
+            .unwrap()
+            .bounding_box
+            .origin
+            .y
+            .0;
+        assert!(
+            last_bottom > content_bottom_of(last_index) + 1.0,
+            "the last page is ragged-bottom: {last_bottom} vs {}",
+            content_bottom_of(last_index)
+        );
     }
 
     #[test]

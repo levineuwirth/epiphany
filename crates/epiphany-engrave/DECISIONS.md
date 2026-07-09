@@ -26,8 +26,10 @@ greedy system breaking at measure boundaries, vertical system stacking, page
 assignment, a populated `ResolvedPage`/`ResolvedSystem` tree, and full break-
 constraint evaluation. **Push 3's Standard-tier track then adds per-system
 JUSTIFICATION** (see "Per-system justification (Push 3)" below): every non-final
-system stretches to fill the content width. Still deferred: the vertical
-soft-spring solve within a system, and optimal (lookahead) break search.
+system stretches to fill the content width; and **vertical justification** (same
+section): the systems of a non-final page spread to fill the page height. Still
+deferred: the inter-staff soft-spring solve *within* a system (band-height
+renegotiation), and optimal (lookahead) break search.
 
 ### Honest tier
 
@@ -597,3 +599,32 @@ a metric-semantics change needing catalog alignment. **Also noted:**
 justification's horizontal stretch of a slur is not reflected — a second-order
 gap in the same family as the spaced-vs-constrained one, a follow-up if slur
 fidelity warrants measuring the post-justification whole curve.
+
+## Vertical justification (Push 3, 2026-07-08)
+
+The vertical analog of per-system justification, and the first piece of the
+deferred vertical spring solve: the systems of every **non-final page** spread
+so the last system's bottom reaches the content bottom, filling the page height.
+A second pass after the top-down stacking loop, once page membership is known:
+for each non-final page with ≥2 systems it computes the vertical slack (the last
+system's natural bottom above the content bottom) and distributes it evenly
+across the inter-system gaps — system `i` (0-based on the page) sinks by
+`i/(n−1)` of the slack, so the first stays at the content top and the last lands
+on the content bottom. Only `Placement::dy` changes, so it composes cleanly with
+horizontal justification (independent axes). `ENGRAVER_VERSION` 8 → 9.
+
+**Which pages.** The last page stays ragged-bottom (top-aligned), as engraving
+convention wants — a single-page score is therefore unchanged (its only page is
+the last), so every existing single-page golden is byte-identical. A page with
+one system has no inter-system gap to grow; an already-full or overfull page has
+no positive slack. Drives `page_fill_efficiency` to ~0 on justified pages (a
+non-final page now fills the height). Locked by
+`vertical_justification_fills_non_final_pages` (a small custom `PageGeometry`
+forces the multi-page path; the non-final page fills, the last stays ragged).
+
+**Still deferred (the rest of the vertical spring solve).** Inter-staff
+band-height renegotiation *within* a multi-staff system (today the constrained
+stage's staff stacking is preserved verbatim; `vertical_density_penalty`
+measures it but nothing renegotiates it). That needs vertical pressure — a
+collision or a target — to be meaningful, and multi-staff systems to exercise;
+a later tranche.
