@@ -9139,6 +9139,27 @@ pub enum VerticalBandKind {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:layoutir:coverage-diagnostics}
+  \textbf{Engraving-coverage gaps are surfaced, not guessed.} A projection
+  that cannot engrave an object faithfully --- a pitch with no resolved
+  spelling, a glyph the bound catalog
+  (\ref{sec:layoutir:catalog}) does not carry --- \MUST{} record a
+  \texttt{LayoutDiagnostic} naming the score-graph object and the kind of
+  gap, and \MUST{} still place the object: a fallback notehead on the clef
+  reference line, or a zero-extent traced anchor that keeps its provenance.
+  It \MUSTNOT{} silently substitute a plausible shape, and it \MUSTNOT{}
+  drop the object.
+
+  Both halves matter. Dropping the object breaks the round-trip surjection
+  (\ref{sec:layoutir:provenance}) --- a hit-test can no longer find it, and
+  an editor can no longer select what the author wrote. Guessing a shape
+  produces a score that looks engraved and is wrong, with nothing in the IR
+  to say so. A diagnostic is not an error: the layout is still
+  \emph{renderable}, and a conformance claim is unaffected. It is the record
+  that the engraving is incomplete at a named place.
+\end{requirement}
+
+\begin{requirement}
   \label{req:layoutir:primitive-band-ownership}
   \textbf{Primitive band ownership is declared, not inferred.} Every
   primitive the projection presents to the solver in
@@ -9207,8 +9228,43 @@ pub struct ConstrainedLayoutIR {
     /// Additional constraints not captured by spring parameters.
     pub constraints: Vec<LayoutConstraint>,
 
+    /// Which user break override each projected break constraint came
+    /// from, so a solver can cite it in the decision it records.
+    pub break_origins: Vec<BreakOrigin>,
+
     /// Engraving decisions, carried forward from the logical stage.
     pub engraving_decisions: Vec<EngravingDecision>,
+
+    /// Engraving-coverage gaps, surfaced rather than hidden.
+    pub diagnostics: Vec<LayoutDiagnostic>,
+
+    /// The glyph catalog this IR's metrics were drawn from.
+    pub catalog: GlyphCatalogIdentity,
+}
+
+/// A projected break constraint's user-override attribution.
+pub struct BreakOrigin {
+    pub slot: SpringSlotId,
+    pub class: BreakClass,
+    pub override_id: EngravingOverrideId,
+}
+
+/// An object the projection could not engrave faithfully.
+pub struct LayoutDiagnostic {
+    pub source: TypedObjectId,
+    pub kind: LayoutDiagnosticKind,
+}
+
+pub enum LayoutDiagnosticKind {
+    /// A pitch reached the constrained pass with no resolved (or
+    /// non-CMN) spelling; its notehead is placed on the clef
+    /// reference line, but its true staff position is unknown.
+    MissingSpelling,
+
+    /// A glyph the bound catalog does not carry; the object is
+    /// carried as a traced anchor rather than drawn at a guessed
+    /// shape.
+    UnbundledGlyph(GlyphReference),
 }
 
 pub enum LayoutConstraint {

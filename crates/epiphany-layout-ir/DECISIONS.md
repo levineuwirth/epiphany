@@ -682,7 +682,7 @@ strokes and curves.
   cross-staff slur is not drawn at this tier (`staff.is_some()` guards the curve;
   it engraves to an anchor stroke), so a drawn curve always names a staff band.
 
-## Parked: the ConstrainedLayoutIR listing is still abridged (2026-07-09)
+## RESOLVED (P13-I1): the ConstrainedLayoutIR listing was abridged (2026-07-09)
 
 Chapter 7's `ConstrainedLayoutIR` listing gained `strokes` / `curves` when
 `req:layoutir:primitive-band-ownership` landed (that requirement depends on
@@ -697,6 +697,18 @@ them). Two fields the code carries are still absent from the listing:
 Neither blocks an implementation the way a missing `strokes`/`curves` did: both
 are governed by requirement text elsewhere, so a conformant implementer is not
 left guessing.
+
+**Resolved as P13-I1.** Filing it turned up a *third* elided field, and the
+substantive one: `diagnostics: Vec<LayoutDiagnostic>` appeared **nowhere** in
+core_spec, though it is how the projection's honesty rule manifests. The listing
+now carries all three, `BreakOrigin` and `LayoutDiagnostic` gain their shapes, and
+Chapter 7 gains `req:layoutir:coverage-diagnostics`: an object the projection
+cannot engrave faithfully MUST be recorded *and* still placed — a fallback
+notehead or a zero-extent traced anchor — never silently substituted, never
+dropped. Dropping it breaks the round-trip surjection (a hit-test can no longer
+find what the author wrote); guessing produces a score that looks engraved and is
+wrong, with nothing in the IR to say so. Ratified as implemented; locked by
+`an_unengravable_object_is_recorded_and_still_placed`.
 
 ## Parked: `Staff::default_clef` is never consulted (2026-07-09)
 

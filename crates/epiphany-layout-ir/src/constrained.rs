@@ -4808,6 +4808,61 @@ mod tests {
         );
     }
 
+    /// `req:layoutir:coverage-diagnostics`: an object the projection cannot
+    /// engrave faithfully is **recorded and still placed** — never guessed at,
+    /// never dropped. A percussion clef has no bundled glyph, so the staff
+    /// instance engraves to a zero-extent traced anchor that keeps its
+    /// provenance (a hit-test can still find it) while an `UnbundledGlyph`
+    /// diagnostic names the gap.
+    #[test]
+    fn an_unengravable_object_is_recorded_and_still_placed() {
+        let (mut score, _) = repeat_ready_score(47);
+        let instance_id = score.canvas.regions[0].staff_instances()[0].id;
+        score.canvas.regions[0]
+            .content
+            .staff_instances_mut()
+            .expect("staff-based")[0]
+            .clef_sequence
+            .push(epiphany_core::ClefChange {
+                anchor: TimeAnchor::WallClock {
+                    time: epiphany_core::WallClockTime(0),
+                },
+                clef: epiphany_core::Clef {
+                    shape: epiphany_core::ClefShape::Percussion,
+                    line: 3,
+                    octave_shift: 0,
+                },
+            });
+        let c = to_constrained(&to_logical(&score));
+        let source = TypedObjectId::StaffInstance(instance_id);
+
+        // Recorded: the gap names the object and the glyph it wanted.
+        let diagnostic = c
+            .diagnostics
+            .iter()
+            .find(|d| d.source == source)
+            .expect("the unbundled clef is surfaced, not hidden");
+        assert!(
+            matches!(diagnostic.kind, LayoutDiagnosticKind::UnbundledGlyph(_)),
+            "and says why: {:?}",
+            diagnostic.kind
+        );
+
+        // Not guessed: no glyph stands in for the clef.
+        assert!(
+            !c.glyphs.iter().any(|g| g.provenance.source == source),
+            "no plausible substitute is drawn"
+        );
+        // Not dropped: a traced anchor keeps its provenance addressable.
+        let anchor = c
+            .strokes
+            .iter()
+            .find(|st| st.provenance.source == source)
+            .expect("the object is still placed, as a traced anchor");
+        assert_eq!(anchor.from, anchor.to, "a zero-extent anchor draws no ink");
+        assert_eq!(anchor.thickness.0, 0.0);
+    }
+
     /// A stem points AWAY from the middle line — up for a head below it, down
     /// for a head above it or on it — and attaches on the side it points: an
     /// up-stem at the head's right edge, a down-stem at its left. A stem on a
