@@ -45,6 +45,10 @@ fn fixtures() -> Vec<(&'static str, Score)> {
             "ten_measure_with_slurs",
             epiphany_testkit::fixtures::ten_measure_with_slurs(0x000A_11CE),
         ),
+        (
+            "two_staff_close_content",
+            epiphany_testkit::fixtures::two_staff_close_content(0x000A_11CE),
+        ),
     ]
 }
 

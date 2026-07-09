@@ -1,0 +1,15 @@
+fixture=two_staff_close_content solver=engrave
+glyph_count=12
+path_count=12
+fallback_rect_count=0
+stroke_count=41
+curve_count=1
+provenance_count=54
+layer_count=1
+hard_constraint_count=18
+xml_well_formed=true
+view_box=[5.5 -28.524578 17.379084 23.024]
+class_counts:
+  barline=2
+  clef=2
+  notehead=8

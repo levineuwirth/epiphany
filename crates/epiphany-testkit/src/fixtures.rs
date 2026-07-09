@@ -60,6 +60,157 @@ fn quarter(eid: EventId, voice: VoiceId, pid: PitchId, index: i64) -> Event {
     })
 }
 
+/// A C pitched quarter-note at `octave`, at musical position `index/4`.
+fn c_at(eid: EventId, voice: VoiceId, pid: PitchId, index: i64, octave: i8) -> Event {
+    Event::Pitched(epiphany_core::PitchedEvent {
+        id: eid,
+        voice,
+        position: EventPosition::Musical(MusicalPosition(RationalTime::new(index, 4).unwrap())),
+        duration: EventDuration::Musical(MusicalDuration(RationalTime::new(1, 4).unwrap())),
+        pitches: vec![IdentifiedPitch {
+            id: pid,
+            pitch: Pitch {
+                scale_position: ScalePosition {
+                    space: PitchSpaceId::new("cmn-12"),
+                    position: PitchSpacePosition::Cmn {
+                        nominal: CmnNominal::C,
+                        alteration: 0,
+                        octave,
+                    },
+                },
+                acoustic: AcousticPitch {
+                    tuning: TuningReference::Inherit,
+                    realization: AcousticRealization::Implicit,
+                },
+            },
+        }],
+        articulations: vec![],
+        dynamic: None,
+        ornaments: vec![],
+        stem: StemConfiguration,
+        grace: None,
+    })
+}
+
+/// A one-measure, TWO-staff (treble/treble) metric score whose staves carry
+/// vertically extreme content: the top staff dips to low ledger notes (down to
+/// C2) while the bottom staff climbs to high ledger notes (up to C6) under a
+/// slur that arcs further above them. At the engraver's default *fixed* staff
+/// pitch the two staves' content nearly collides — the inter-staff pressure case
+/// the vertical spring solve must separate. Invariant-clean.
+pub fn two_staff_close_content(seed: u64) -> Score {
+    let mut rng = SplitMix64::new(seed ^ 0x0002_57AF_F123);
+    let replica =
+        ReplicaId::from_entropy(rng.next_u64().to_le_bytes()).unwrap_or(ReplicaId(0x2ADF));
+    let mut idc = IdentityContext::new(replica);
+
+    let top_staff: StaffId = idc.mint();
+    let bottom_staff: StaffId = idc.mint();
+    let instrument: InstrumentId = idc.mint();
+    let region_id: RegionId = idc.mint();
+    let top_instance: StaffInstanceId = idc.mint();
+    let bottom_instance: StaffInstanceId = idc.mint();
+    let top_voice: VoiceId = idc.mint();
+    let bottom_voice: VoiceId = idc.mint();
+
+    let mut arena = EventArena::new();
+    // Top staff descends into low ledgers; bottom staff climbs into high ones.
+    let mut top_v = Voice::user(top_voice);
+    let mut bot_v = Voice::user(bottom_voice);
+    let mut bot_events: Vec<EventId> = Vec::new();
+    for (i, oct) in [4i8, 3, 2, 3].into_iter().enumerate() {
+        let (eid, pid): (EventId, PitchId) = (idc.mint(), idc.mint());
+        arena
+            .insert(c_at(eid, top_voice, pid, i as i64, oct))
+            .unwrap();
+        top_v.events.push(eid);
+    }
+    for (i, oct) in [4i8, 5, 6, 5].into_iter().enumerate() {
+        let (eid, pid): (EventId, PitchId) = (idc.mint(), idc.mint());
+        arena
+            .insert(c_at(eid, bottom_voice, pid, i as i64, oct))
+            .unwrap();
+        bot_v.events.push(eid);
+        bot_events.push(eid);
+    }
+
+    let measure = |id: MeasureId| Measure {
+        id,
+        start: TimeAnchor::Region {
+            id: region_id,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Zero,
+        },
+        time_signature: None,
+        explicit_number: Some(1),
+        number_visibility: Default::default(),
+    };
+    let mut top_inst = StaffInstance::new(top_instance, top_staff);
+    top_inst.voices.push(top_v);
+    top_inst.measures.push(measure(idc.mint()));
+    let mut bot_inst = StaffInstance::new(bottom_instance, bottom_staff);
+    bot_inst.voices.push(bot_v);
+    bot_inst.measures.push(measure(idc.mint()));
+
+    // A slur over the bottom staff's high notes, arcing further up — extra
+    // upward extent that sharpens the collision with the top staff.
+    let mut cross_cutting = CrossCuttingRegistry::default();
+    cross_cutting.slurs.push(Slur {
+        id: idc.mint::<SlurId>(),
+        start_event: bot_events[1],
+        end_event: bot_events[3],
+        kind: SlurKind::Legato,
+        curvature_override: None,
+        style: SpanStyle::default(),
+    });
+
+    let region = epiphany_core::Region {
+        id: region_id,
+        time_model: RegionTimeModel::Metric(MetricTimeModel::default()),
+        content: RegionContent::StaffBased(StaffBasedContent {
+            staff_instances: vec![top_inst, bot_inst],
+            ..Default::default()
+        }),
+        time_extent: TimeExtent {
+            start: TimeAnchor::WallClock {
+                time: WallClockTime(0),
+            },
+            end: TimeAnchor::WallClock {
+                time: WallClockTime(10_000_000),
+            },
+        },
+        staff_extent: StaffExtent {
+            staves: vec![top_staff, bottom_staff],
+        },
+        local_tempo_map: None,
+        permits_spanning_slurs: false,
+    };
+
+    let staff = |id: StaffId, name: &str| Staff {
+        id,
+        name: String::from(name),
+        abbreviation: None,
+        instrument,
+        default_staff_lines: StaffLineConfiguration::default(),
+        group: None,
+        default_clef: epiphany_core::Clef::treble(),
+    };
+    let mut score = Score::empty(idc.clone());
+    score.identity = idc;
+    score.instruments = vec![epiphany_core::Instrument::new(
+        instrument,
+        String::from("Keyboard"),
+    )];
+    score.staves = vec![staff(top_staff, "Right"), staff(bottom_staff, "Left")];
+    score.events = arena;
+    score.cross_cutting = cross_cutting;
+    score.canvas = Canvas {
+        regions: vec![region],
+        ..Default::default()
+    };
+    score
+}
+
 /// A 10-measure, single-staff, single-voice metric score with 40 quarter notes
 /// (four per measure), plus a tie, a spanner, a marker, and a chord symbol. The
 /// QUICKSTART layout hand-off case. Invariant-clean (the returned graph passes
@@ -323,6 +474,21 @@ mod tests {
         assert_eq!(s.cross_cutting.spanners.len(), 1);
         assert_eq!(s.cross_cutting.markers.len(), 1);
         assert_eq!(s.cross_cutting.chord_symbols.len(), 1);
+    }
+
+    #[test]
+    fn two_staff_close_content_is_invariant_clean_and_two_staves() {
+        let s = two_staff_close_content(1);
+        let v = check_invariants(&s);
+        assert!(v.is_empty(), "two-staff fixture has violations: {v:?}");
+        assert_eq!(s.staves.len(), 2, "two staves");
+        assert_eq!(
+            s.canvas.regions[0].staff_instances().len(),
+            2,
+            "two staff instances in the region"
+        );
+        assert_eq!(s.events.len(), 8, "four notes per staff");
+        assert_eq!(s.cross_cutting.slurs.len(), 1, "a slur over the high notes");
     }
 
     #[test]
