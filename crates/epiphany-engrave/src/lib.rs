@@ -856,6 +856,7 @@ mod tests {
                     manifested(
                         TypedObjectId::StaffInstance(StaffInstanceId::from_raw(1)),
                         LayoutContent::Staff(StaffContent {
+                            default_clef: epiphany_core::Clef::default(),
                             clefs: vec![],
                             keys: vec![],
                         }),
@@ -1277,6 +1278,7 @@ mod tests {
         let mut objects = vec![manifested(
             TypedObjectId::StaffInstance(StaffInstanceId::from_raw(1)),
             LayoutContent::Staff(StaffContent {
+                default_clef: epiphany_core::Clef::default(),
                 clefs: vec![],
                 keys: vec![],
             }),
@@ -1780,6 +1782,7 @@ mod tests {
                     manifested(
                         TypedObjectId::StaffInstance(StaffInstanceId::from_raw(1)),
                         LayoutContent::Staff(StaffContent {
+                            default_clef: epiphany_core::Clef::default(),
                             clefs: vec![],
                             keys: vec![PlacedKeySignature {
                                 time: TimePoint::Musical(MusicalPosition::origin()),

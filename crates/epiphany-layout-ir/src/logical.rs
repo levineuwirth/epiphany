@@ -75,6 +75,12 @@ pub enum LayoutContent {
 pub struct StaffContent {
     pub clefs: Vec<PlacedClef>,
     pub keys: Vec<PlacedKeySignature>,
+    /// The staff's own `default_clef` — the clef in force before the first
+    /// `ClefChange`, and throughout a staff that declares none. Carried here
+    /// because the clef belongs to the `Staff` while the sequence belongs to the
+    /// `StaffInstance`, and every consumer resolving "the clef at time t" needs
+    /// both (`active_clef_or`).
+    pub default_clef: Clef,
 }
 
 /// A clef change with its score anchor resolved into the layout time axis.
@@ -827,7 +833,14 @@ fn derive_score_version(score: &Score) -> ScoreVersion {
 /// are carried as-is — the constrained pass defaults the *active* clef/key to
 /// treble / C major.
 fn staff_content(score: &Score, si: &epiphany_core::StaffInstance) -> LayoutContent {
+    let default_clef = score
+        .staves
+        .iter()
+        .find(|staff| staff.id == si.staff)
+        .map(|staff| staff.default_clef)
+        .unwrap_or_default();
     LayoutContent::Staff(StaffContent {
+        default_clef,
         clefs: si
             .clef_sequence
             .iter()

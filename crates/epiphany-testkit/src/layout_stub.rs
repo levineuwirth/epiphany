@@ -218,6 +218,7 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
     match rng.below(6) {
         0 => LayoutContent::Structural,
         1 => LayoutContent::Staff(StaffContent {
+            default_clef: epiphany_core::Clef::default(),
             clefs: clefs(rng),
             keys: keys(rng),
         }),

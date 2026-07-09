@@ -93,8 +93,8 @@ pub use cache::{
     ResolvedSystemCache, SystemId,
 };
 pub use constrained::{
-    active_clef, is_rigid_width_stroke, to_constrained, try_to_constrained, Axis, BreakClass,
-    BreakKind, BreakOrigin, ConstrainedLayoutIR, ConstrainedLayoutRegion,
+    active_clef, active_clef_or, is_rigid_width_stroke, to_constrained, try_to_constrained, Axis,
+    BreakClass, BreakKind, BreakOrigin, ConstrainedLayoutIR, ConstrainedLayoutRegion,
     ConstrainedValidationError, ConstraintParameters, ConstraintRegistryId, Curve, GlyphObject,
     GlyphObjectId, GlyphStyle, LayoutConstraint, LayoutTransformError, SpringSlot, Stroke,
 };

@@ -63,9 +63,10 @@ use epiphany_core::{
     VoiceId, WallClockTime,
 };
 use epiphany_layout_ir::{
-    active_clef, manifestation_layout_id, staff_step_pitch, to_constrained, to_logical, to_render,
-    ConstraintSolver, ExtensionRef, HitTestMap, LayoutContent, LayoutObjectId, LogicalLayoutIR,
-    Point, Rect, RenderIR, ResolvedLayoutIR, ResolvedSystem, SolverConfig, TimePoint,
+    active_clef_or, manifestation_layout_id, staff_step_pitch, to_constrained, to_logical,
+    to_render, ConstraintSolver, ExtensionRef, HitTestMap, LayoutContent, LayoutObjectId,
+    LogicalLayoutIR, Point, Rect, RenderIR, ResolvedLayoutIR, ResolvedSystem, SolverConfig,
+    TimePoint,
 };
 use epiphany_ops::{
     advisory_violations, AcceptOutcome, AuthorId, CausalContext, DeleteEventOp,
@@ -2606,7 +2607,13 @@ fn staff_start_clefs(logical: &LogicalLayoutIR) -> StartClefs {
         for object in &region.objects {
             if let (Some(staff), LayoutContent::Staff(content)) = (object.staff(), object.content())
             {
-                clefs.insert((region_id, staff), active_clef(&content.clefs, &start));
+                // The staff's own default backs an empty (or later-starting)
+                // clef sequence, exactly as the projection resolves it — else a
+                // click on a bass staff would resolve its pitch as treble.
+                clefs.insert(
+                    (region_id, staff),
+                    active_clef_or(&content.clefs, &start, content.default_clef),
+                );
             }
         }
     }

@@ -802,14 +802,16 @@ pub fn try_to_constrained(
         // The clef *sequence* in force on each staff (a staff instance carries it).
         // The active clef at a given position is the latest change at or before it,
         // so a mid-staff clef change moves later pitches without affecting earlier
-        // ones. An empty sequence defaults to treble.
+        // ones. An empty sequence falls back to the staff's own `default_clef`.
         let mut clef_seq_of: BTreeMap<StaffId, Vec<PlacedClef>> = BTreeMap::new();
+        let mut clef_default_of: BTreeMap<StaffId, Clef> = BTreeMap::new();
         for object in &region.objects {
             if let (Some(staff), LayoutContent::Staff(content)) = (object.staff(), object.content())
             {
                 clef_seq_of
                     .entry(staff)
                     .or_insert_with(|| content.clefs.clone());
+                clef_default_of.entry(staff).or_insert(content.default_clef);
             }
         }
         let clef_seq = |staff: Option<StaffId>| -> &[PlacedClef] {
@@ -817,6 +819,13 @@ pub fn try_to_constrained(
                 .and_then(|s| clef_seq_of.get(&s))
                 .map(Vec::as_slice)
                 .unwrap_or(&[])
+        };
+        // A staff's own default clef, in force before its first `ClefChange`.
+        let clef_default = |staff: Option<StaffId>| -> Clef {
+            staff
+                .and_then(|s| clef_default_of.get(&s))
+                .copied()
+                .unwrap_or_default()
         };
 
         // Pass 1 — compute every glyph's notation, keyed for emission in pass 2,
@@ -862,7 +871,7 @@ pub fn try_to_constrained(
                         let time = shift_time(&note.position, &offset);
                         let key = ColumnKey::Timed(time.clone(), ColumnRole::Note);
                         keys.insert(key.clone());
-                        let clef = active_clef(clef_seq(staff), &time);
+                        let clef = active_clef_or(clef_seq(staff), &time, clef_default(staff));
                         let name = notehead_glyph(value);
                         let mut ys = Vec::new();
                         for pitch in &note.pitches {
@@ -1022,7 +1031,7 @@ pub fn try_to_constrained(
                     // The staff instance's clef glyph occupies the lead column. The
                     // *displayed* clef is the one in force at the staff start, by
                     // time — consistent with how notes resolve their active clef.
-                    let clef = active_clef(&content.clefs, &origin());
+                    let clef = active_clef_or(&content.clefs, &origin(), content.default_clef);
                     if clef_glyph(clef.shape).is_some() {
                         keys.insert(ColumnKey::Lead);
                         // The key signature shares the lead column; reserve its width.
@@ -1223,7 +1232,9 @@ pub fn try_to_constrained(
                     // The displayed clef is the one in force at the staff start, by
                     // time — the same query the notes use, so they always agree.
                     let clef = match content {
-                        Some(LayoutContent::Staff(c)) => active_clef(&c.clefs, &origin()),
+                        Some(LayoutContent::Staff(c)) => {
+                            active_clef_or(&c.clefs, &origin(), c.default_clef)
+                        }
                         _ => Clef::default(),
                     };
                     match clef_glyph(clef.shape) {
@@ -1433,7 +1444,7 @@ pub fn try_to_constrained(
                         // An unmatched pitch (no event content reached it): a black
                         // notehead on the clef reference line, with the gap surfaced.
                         emit.diag(provenance.source, LayoutDiagnosticKind::MissingSpelling);
-                        let clef = active_clef(clef_seq(staff), &origin());
+                        let clef = active_clef_or(clef_seq(staff), &origin(), clef_default(staff));
                         emit.stroke(anchor(
                             provenance,
                             Point::new(default_x, step_to_y(yo, reference_step(&clef))),
@@ -2507,7 +2518,10 @@ fn active_key(keys: &[PlacedKeySignature]) -> Option<KeySignature> {
 /// the key is C major, or the clef has no diatonic positions (percussion).
 fn key_accidentals_for(content: &StaffContent) -> Vec<KeyAccidental> {
     match active_key(&content.keys) {
-        Some(key) => key_signature(key, &active_clef(&content.clefs, &origin())),
+        Some(key) => key_signature(
+            key,
+            &active_clef_or(&content.clefs, &origin(), content.default_clef),
+        ),
         None => Vec::new(),
     }
 }
@@ -2581,6 +2595,15 @@ fn shift_time(base: &TimePoint, offset: &MusicalDuration) -> TimePoint {
 /// agrees with the notes. The sequence is not assumed sorted: `[bass@1, treble@0]`
 /// resolves a note after time 1 to bass and one before to treble.
 pub fn active_clef(clefs: &[PlacedClef], at: &TimePoint) -> Clef {
+    active_clef_or(clefs, at, Clef::default())
+}
+
+/// The clef in force at `at`, falling back to `default` — the staff's own
+/// `Staff::default_clef` — when the sequence names none. A staff that declares
+/// its clef only on the `Staff` (no `ClefChange` at all) engraves in that clef;
+/// `active_clef` is this with the treble default, kept for callers that have no
+/// staff to hand.
+pub fn active_clef_or(clefs: &[PlacedClef], at: &TimePoint, default: Clef) -> Clef {
     clefs
         .iter()
         .filter(|placed| {
@@ -2592,7 +2615,7 @@ pub fn active_clef(clefs: &[PlacedClef], at: &TimePoint) -> Clef {
         .max_by(|a, b| time_total(&a.time, &b.time))
         .or_else(|| clefs.iter().min_by(|a, b| time_total(&a.time, &b.time)))
         .map(|p| p.clef)
-        .unwrap_or_default()
+        .unwrap_or(default)
 }
 
 /// The musical origin (the active-clef query for an unanchored pitch).
@@ -3406,6 +3429,7 @@ mod tests {
         let instance = StaffInstanceId::from_raw(1);
         // D major (two sharps), default treble clef.
         let content = LayoutContent::Staff(StaffContent {
+            default_clef: Clef::default(),
             clefs: vec![],
             keys: vec![PlacedKeySignature {
                 time: TimePoint::Musical(MusicalPosition::origin()),
@@ -3718,6 +3742,7 @@ mod tests {
         let staff = StaffId::from_raw(10);
         let at = |n, d| TimePoint::Musical(MusicalPosition(RationalTime::new(n, d).unwrap()));
         let content = LayoutContent::Staff(StaffContent {
+            default_clef: Clef::default(),
             // Authored out of order: bass at time 1, treble at time 0.
             clefs: vec![
                 PlacedClef {
@@ -4050,6 +4075,7 @@ mod tests {
                     TypedObjectId::StaffInstance(StaffInstanceId::from_raw(si)),
                     staff,
                     LayoutContent::Staff(StaffContent {
+                        default_clef: Clef::default(),
                         clefs: vec![],
                         keys: vec![],
                     }),
@@ -4805,6 +4831,53 @@ mod tests {
             at(0.5) <= -8.5 - SLUR_ENDPOINT_GAP + 1e-3,
             "the apex passes under the C2: {}",
             at(0.5)
+        );
+    }
+
+    /// A staff that declares its clef ONLY on the `Staff` — no `ClefChange` at
+    /// all — engraves in that clef. `Staff::default_clef` used to be decorative:
+    /// the projection took the active clef from the staff instance's sequence and
+    /// fell back to `Clef::default()`, so a bass staff drew a treble clef and put
+    /// every note two steps wrong (P13-I2).
+    #[test]
+    fn a_staff_declaring_only_a_default_clef_engraves_in_it() {
+        let (mut score, _) = repeat_ready_score(48);
+        let staff_id = score.canvas.regions[0].staff_instances()[0].staff;
+        for staff in &mut score.staves {
+            if staff.id == staff_id {
+                staff.default_clef = Clef::bass();
+            }
+        }
+        assert!(
+            score.canvas.regions[0].staff_instances()[0]
+                .clef_sequence
+                .is_empty(),
+            "the staff declares no ClefChange — only its default"
+        );
+        let instance_id = score.canvas.regions[0].staff_instances()[0].id;
+        let c = to_constrained(&to_logical(&score));
+
+        // THIS staff's clef glyph is the bass clef, not the treble default. The
+        // score's other staves keep their own defaults, so scope by provenance.
+        let drawn: Vec<&str> = c
+            .glyphs
+            .iter()
+            .filter(|g| g.provenance.source == TypedObjectId::StaffInstance(instance_id))
+            .map(|g| g.glyph.as_str())
+            .collect();
+        assert_eq!(
+            drawn,
+            vec!["fClef"],
+            "a staff whose only clef is its default draws it"
+        );
+        // And its notes are placed against that clef: `active_clef_or` is what the
+        // staff-position computation reads, so the two can never disagree.
+        let at = TimePoint::Musical(epiphany_core::MusicalPosition::origin());
+        assert_eq!(active_clef_or(&[], &at, Clef::bass()), Clef::bass());
+        assert_eq!(
+            active_clef(&[], &at),
+            Clef::default(),
+            "the old API is intact"
         );
     }
 

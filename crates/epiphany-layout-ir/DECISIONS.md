@@ -710,7 +710,7 @@ find what the author wrote); guessing produces a score that looks engraved and i
 wrong, with nothing in the IR to say so. Ratified as implemented; locked by
 `an_unengravable_object_is_recorded_and_still_placed`.
 
-## Parked: `Staff::default_clef` is never consulted (2026-07-09)
+## RESOLVED (P13-I2): `Staff::default_clef` is now the fallback (2026-07-09)
 
 `to_constrained` takes a staff instance's active clef from its `clef_sequence`
 (via `staff_content`'s `PlacedClef` list) and, when that sequence is empty, falls
@@ -720,11 +720,25 @@ the field is decorative in the projection. No consumer in this crate reads it
 (verified: `default_clef` appears only in core's codec/generators and the
 fixtures).
 
-Found while building `percussion_placeholder_staff`, which therefore has to
-declare its percussion clef as a `ClefChange` rather than on the staff. Whether
-the staff's default should seed the sequence, or the field should be removed, is
-a small design question — not a silent-corruption bug (nothing is lost, only
-ignored).
+Found while building `percussion_placeholder_staff`, which therefore had to
+declare its percussion clef as a `ClefChange` rather than on the staff.
+
+**Resolved as P13-I2: it is the fallback.** `StaffContent` now carries
+`default_clef` (the clef belongs to the `Staff`, the sequence to the
+`StaffInstance`, and resolving "the clef at time t" needs both), and
+`active_clef_or(clefs, at, default)` resolves against it. `active_clef` remains as
+that with the treble default, for callers with no staff to hand.
+
+The subtle part is that `epiphany-editor-core` reads the same function for
+hit-test pitch resolution: had only the projection been fixed, a click on a bass
+staff would have resolved its pitch as treble, and the engraved clef and the
+editor would have disagreed. Both now go through `active_clef_or`.
+
+Removal was rejected: the field is named for its purpose, is encoded on the wire,
+and dropping it would be schema-major. Zero golden churn — every fixture and
+generator declares treble, which is also `Clef::default()`. Locked by
+`a_staff_declaring_only_a_default_clef_engraves_in_it`, mutation-verified against
+the old `Clef::default()` fallback.
 
 **Both of the above are parked, not open.** The Pass-13 batch is closed and the
 house rule opens a pass at ≥3 candidates; these are two. They join a future batch
