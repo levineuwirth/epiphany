@@ -773,3 +773,58 @@ bounding box, whose right edge (1.1807) *is* the correct attachment.
 
 **Three parked candidates now stand** (this, `Staff::default_clef`, and the
 `ConstrainedLayoutIR` listing gap). The house rule opens a batch pass at ≥3.
+
+## Slur placement: side, endpoints, and clearance (2026-07-09)
+
+The rendered slurs were wrong in three independent ways, each visible in the
+two-staff and three-staff goldens.
+
+1. **Side.** `SlurDirection::Auto` always arced *above*. The single-voice rule is
+   *opposite the stems*: all stems up puts the slur under the noteheads, all down
+   puts it over them. A span with stems both ways has no notehead side and goes
+   above. Drawing every `Auto` slur above meant every stem-up passage had a slur
+   drawn through its stems. This is why stem direction had to land first — with
+   every stem pointing up, "opposite the stems" has no meaning.
+2. **Endpoints.** They sat at `staff_top + gap` — a constant offset from the
+   *staff*, not from the notes. A slur between two C6s therefore hung below its
+   own noteheads, crossing their ledger lines. Endpoints now sit a gap outside
+   the endpoint column's ink, horizontally at the notehead's centre. Where the
+   stem points the same way as the slur (a mixed-stem span), the column's ink
+   includes the stem, so the endpoint clears the stem *tip* — which is what an
+   engraver draws.
+3. **Clearance.** The apex was span-proportional and blind, so a note between the
+   endpoints simply poked through the arc. `ColumnInk` — per staff, per note
+   column: top, bottom, stem direction, notehead centre — is now the obstacle
+   field. Because the control points sit on the chord at thirds, `x` is exactly
+   linear in `t` and the arc's departure from the chord is `3·lift·t·(1−t)`; a
+   column at parameter `t` needing `d` more clearance forces an apex of at least
+   `d / (4·t·(1−t))`. The apex is the largest such demand, or the default,
+   whichever is greater.
+
+**An authored height is a floor, not a ceiling.** Clearance may raise it; nothing
+lowers it. Honouring an author must not draw a slur through a note. An authored
+*direction* still wins outright.
+
+**Obstacles are measured at the notehead centre**, the same x the endpoints use.
+Using the raw column x skews `t` and silently over-lifts: the two-staff slur
+cleared its C6 by 4.05 spaces where 3.5 was required. The clearance test asserts
+an upper bound as well as a lower one, so that skew cannot return.
+
+Locked by `a_default_slur_takes_the_side_opposite_the_stems` (both sides, and the
+endpoints pinned to the note rather than the staff),
+`a_slur_arcs_clear_of_a_note_between_its_endpoints`,
+`clearance_raises_an_authored_height_it_would_otherwise_violate`, and
+`an_authored_direction_and_height_override_the_defaults`. Four mutations verified:
+always-above, staff-relative endpoints, no clearance pass, and obstacles at the
+column x rather than the centre. **The staff-relative-endpoint mutation initially
+passed** — the tests asserted only "above the staff" / "below the staff", which a
+staff-relative endpoint satisfies by construction. The exact-endpoint assertion
+was added because of that.
+
+`SLUR_INSET` is gone: endpoints now sit at the notehead centres, which is what the
+0.6-space "tuck" was approximating for the start point — and getting wrong for the
+end, where it tucked a full notehead width to the *left* of the final note.
+
+**Deferred (Standard tier):** breaking a slur that clearance would make absurdly
+tall, per-kind appearance (`SlurKind::Phrase` etc.), and shaping against ledger
+lines and accidentals rather than notehead boxes.

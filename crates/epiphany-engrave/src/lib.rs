@@ -2560,7 +2560,15 @@ mod tests {
             gaps[2] < gaps[1] && gaps[2] < gaps[0],
             "the slur rides its OWN (bottom) staff: {gaps:?}"
         );
-        assert!(gaps[2] < 2.0, "and sits close against it: {}", gaps[2]);
+        // Its endpoints now hug the C6 noteheads, three ledger lines above that
+        // staff's top line, so the gap to the staff-line box is a few spaces —
+        // not the fixed 0.7 of a staff-relative endpoint. What matters is that it
+        // is an order nearer its own staff than the one above.
+        // The middle staff is more than a staff height (4 spaces) further away.
+        assert!(
+            gaps[1] > gaps[2] + 4.0,
+            "and by a wide margin over the middle staff: {gaps:?}"
+        );
     }
 
     #[test]

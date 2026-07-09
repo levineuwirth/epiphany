@@ -629,8 +629,8 @@ const VOLTA_TEXT_DROP: f32 = 1.3; // ending-digit baseline, below the bracket li
 const VOLTA_ENDING_GAP: f32 = 0.5; // extra gap between successive ending numbers
                                    // Slur engraving defaults (Minimal tier; a symmetric cubic arc — Push 3 refines
                                    // with collision-aware shaping).
-const SLUR_ENDPOINT_GAP: f32 = 0.7; // endpoints sit this far outside the staff on the arc side
-const SLUR_INSET: f32 = 0.6; // endpoints tuck this far in from their event columns
+                                   // A slur's endpoints and its arc clear the notes by this much, on the arc's side.
+const SLUR_ENDPOINT_GAP: f32 = 0.7;
 const SLUR_HEIGHT_FACTOR: f32 = 0.16; // auto arc apex height as a fraction of span width
 const SLUR_MIN_HEIGHT: f32 = 0.8; // …clamped to at least this many staff spaces
 const SLUR_MAX_HEIGHT: f32 = 3.0; // …and at most this many
@@ -825,6 +825,11 @@ pub fn try_to_constrained(
         // component, each at `position + component.offset`.
         let mut pitch_heads: BTreeMap<PitchId, Vec<Head>> = BTreeMap::new();
         let mut event_stems: BTreeMap<EventId, Vec<StemSeg>> = BTreeMap::new();
+        // Per staff, the drawn extent of each note column — the obstacle field a
+        // slur must arc clear of, and the stem direction it takes its side from.
+        // Columns are shared between the staves of a system (they share an x), so
+        // this is keyed by staff as well as column.
+        let mut column_ink: BTreeMap<(StaffId, ColumnKey), ColumnInk> = BTreeMap::new();
         let mut event_rests: BTreeMap<EventId, Vec<RestSeg>> = BTreeMap::new();
         // Every column that needs an x. A column earns a spring slot only if a
         // glyph actually lands in it (decided after emission, by occupancy), so a
@@ -928,6 +933,28 @@ pub fn try_to_constrained(
                         } else {
                             (bottom - STEM_LENGTH).min(middle)
                         };
+                        if let Some(staff) = staff {
+                            let head_top = head_box.map_or(0.5, |b| b.top.0);
+                            let head_bottom = head_box.map_or(-0.5, |b| b.bottom.0);
+                            let centre = head_box
+                                .map_or(NOTEHEAD_STEM_X * 0.5, |b| (b.left.0 + b.right.0) * 0.5);
+                            let mut ink = ColumnInk {
+                                top: top + head_top,
+                                bottom: bottom + head_bottom,
+                                stem_up: drawn.then_some(up),
+                                centre,
+                            };
+                            if drawn {
+                                if up {
+                                    ink.top = ink.top.max(tip);
+                                } else {
+                                    ink.bottom = ink.bottom.min(tip);
+                                }
+                            }
+                            let entry = column_ink.entry((staff, key.clone())).or_insert(ink);
+                            entry.top = entry.top.max(ink.top);
+                            entry.bottom = entry.bottom.min(ink.bottom);
+                        }
                         stems.push(StemSeg {
                             key,
                             lo: bottom,
@@ -1151,6 +1178,14 @@ pub fn try_to_constrained(
             margin_members: Vec::new(),
             staves_in_order: Vec::new(),
         };
+
+        // Regroup the note-column ink by staff: a slur's obstacle field is its own
+        // staff's columns, never the sibling staff that shares their x.
+        let mut staff_notes: BTreeMap<StaffId, BTreeMap<ColumnKey, ColumnInk>> = BTreeMap::new();
+        for ((staff, key), column) in column_ink {
+            staff_notes.entry(staff).or_default().insert(key, column);
+        }
+        let no_notes: BTreeMap<ColumnKey, ColumnInk> = BTreeMap::new();
 
         // Pass 2 — emit. Each logical object's exact provenance lands on exactly
         // one primitive; the extras a multi-component object owns are synthesized.
@@ -1565,9 +1600,16 @@ pub fn try_to_constrained(
                     // (dangling event, or an endpoint in another region), or the
                     // span is not left-to-right in this region.
                     let curve = match content {
-                        Some(LayoutContent::Slur(slur)) if staff.is_some() => {
-                            slur_curve(provenance, slur, yo, &columns, band_of(staff))
-                        }
+                        Some(LayoutContent::Slur(slur)) if staff.is_some() => slur_curve(
+                            provenance,
+                            slur,
+                            yo,
+                            &columns,
+                            band_of(staff),
+                            staff
+                                .and_then(|st| staff_notes.get(&st))
+                                .unwrap_or(&no_notes),
+                        ),
                         _ => None,
                     };
                     match curve {
@@ -1946,6 +1988,20 @@ struct StemSeg {
     tip: f32,
 }
 
+/// The drawn extent of one staff's note column: what a slur arcing over or under
+/// it must clear, and which way its stem points.
+#[derive(Clone, Copy)]
+struct ColumnInk {
+    /// Highest and lowest ink, noteheads and stem alike, in staff spaces.
+    top: f32,
+    bottom: f32,
+    /// `Some(true)` when the column's stem is drawn and points up; `None` when
+    /// the column draws no stem (a whole note).
+    stem_up: Option<bool>,
+    /// The notehead's horizontal centre, as an offset from the column's x.
+    centre: f32,
+}
+
 /// One component's rest glyph (absent when the value has no bundled rest glyph).
 struct RestSeg {
     name: Option<&'static str>,
@@ -2270,51 +2326,127 @@ fn repeat_sign_right_extension(name: &str) -> f32 {
 /// The cubic-bézier curve for a slur, or `None` when it cannot be honestly
 /// drawn in this region: either endpoint unresolved (dangling event, or an
 /// endpoint whose column was laid out in another region), or a span that is not
-/// left-to-right after the endpoint inset. `yo` is the slur's staff origin (its
-/// bottom line). A symmetric arc — the Minimal-tier default; collision-aware
-/// shaping is a Standard-tier (Push 3) refinement.
+/// left-to-right. `yo` is the slur's staff origin (its bottom line); `notes` is
+/// that staff's note columns, the obstacle field the arc must clear.
+///
+/// **Side.** An authored direction wins. `Auto` places the slur *opposite* the
+/// stems, the single-voice engraving rule — all stems up puts it below the
+/// noteheads, all down puts it above. A span with stems both ways has no
+/// notehead side, and goes above.
+///
+/// **Endpoints.** They sit a gap outside the endpoint column's ink on the chosen
+/// side, horizontally at the notehead's centre. On the notehead side that is
+/// just clear of the head; where the stem points the same way as the slur (a
+/// mixed-stem span), the column's ink includes the stem, so the endpoint clears
+/// the stem tip instead — which is what an engraver draws.
+///
+/// **Apex.** Span-proportional by default, then *raised until the arc clears
+/// every column between the endpoints*. Because the control points sit on the
+/// chord at thirds, `x` is linear in `t` and the arc's departure from the chord
+/// is exactly `3·lift·t·(1−t)`; a column at parameter `t` needing `d` more
+/// clearance therefore forces an apex of at least `d / (4·t·(1−t))`. An authored
+/// height is a floor, never a ceiling: clearance may raise it, so honouring the
+/// author cannot draw a slur through a note.
 fn slur_curve(
     provenance: &Provenance,
     slur: &SlurContent,
     yo: f32,
     columns: &BTreeMap<ColumnKey, ColumnInfo>,
     band: VerticalBandId,
+    notes: &BTreeMap<ColumnKey, ColumnInk>,
 ) -> Option<Curve> {
-    let start_x = slur_endpoint_x(&slur.start, columns)?;
-    let end_x = slur_endpoint_x(&slur.end, columns)?;
-    // Tuck the endpoints in from the note columns; a span too narrow to inset
-    // (adjacent or coincident columns) is not drawn.
-    let p0x = start_x + SLUR_INSET;
-    let p3x = end_x - SLUR_INSET;
+    let start_key = slur_endpoint_key(&slur.start)?;
+    let end_key = slur_endpoint_key(&slur.end)?;
+    let start_x = columns.get(&start_key)?.x;
+    let end_x = columns.get(&end_key)?.x;
+
+    // The staff's columns in the span, by x, so a shared-x sibling staff's notes
+    // never enter this slur's obstacle field.
+    // Each column is placed at its NOTEHEAD CENTRE, the same x the endpoints use,
+    // so a column's curve parameter `t` is the one the arc actually passes it at.
+    let spanned: Vec<(f32, ColumnInk)> = notes
+        .iter()
+        .filter_map(|(key, column)| columns.get(key).map(|info| (info.x, *column)))
+        .filter(|(x, _)| *x >= start_x && *x <= end_x)
+        .map(|(x, column)| (x + column.centre, column))
+        .collect();
+
+    let default_centre = NOTEHEAD_STEM_X * 0.5;
+    let head = |key: &ColumnKey| notes.get(key).copied();
+    let (p0x, p3x) = (
+        start_x + head(&start_key).map_or(default_centre, |i| i.centre),
+        end_x + head(&end_key).map_or(default_centre, |i| i.centre),
+    );
     if p3x <= p0x {
         return None;
     }
-    // Direction: honor an authored override, else default above the staff.
+
+    // Side: an authored direction wins; `Auto` goes opposite the stems.
     let above = match slur.direction {
         SlurDirection::Below => false,
-        SlurDirection::Above | SlurDirection::Auto => true,
+        SlurDirection::Above => true,
+        SlurDirection::Auto => {
+            let ups = spanned
+                .iter()
+                .filter(|(_, i)| i.stem_up == Some(true))
+                .count();
+            let downs = spanned
+                .iter()
+                .filter(|(_, i)| i.stem_up == Some(false))
+                .count();
+            // All stems up ⇒ the noteheads are below ⇒ the slur is too. Anything
+            // else (all down, mixed, or stemless) goes above.
+            !(ups > 0 && downs == 0)
+        }
     };
-    // Endpoint y: just outside the staff on the arc side.
-    let base_y = if above {
-        yo + STAFF_HEIGHT + SLUR_ENDPOINT_GAP
-    } else {
-        yo - SLUR_ENDPOINT_GAP
+
+    // Endpoint y: a gap outside the endpoint column's ink, on the arc's side.
+    // Absent ink (a column that drew no notehead) falls back to the staff edge.
+    let endpoint_y = |key: &ColumnKey| -> f32 {
+        match (head(key), above) {
+            (Some(i), true) => i.top + SLUR_ENDPOINT_GAP,
+            (Some(i), false) => i.bottom - SLUR_ENDPOINT_GAP,
+            (None, true) => yo + STAFF_HEIGHT + SLUR_ENDPOINT_GAP,
+            (None, false) => yo - SLUR_ENDPOINT_GAP,
+        }
     };
-    // Apex height: an authored *positive* height, else span-proportional and
-    // clamped. A non-positive authored height is out of range — it would flip
-    // or collapse the arc — so it falls back to the default rather than
-    // producing a downward "above" slur (authoring-validation may flag it
-    // separately; the engraver draws something sensible).
+    let (p0y, p3y) = (endpoint_y(&start_key), endpoint_y(&end_key));
+
     let span = p3x - p0x;
+    let chord = |t: f32| p0y + t * (p3y - p0y);
+
+    // Apex: an authored *positive* height, else span-proportional and clamped. A
+    // non-positive authored height is out of range — it would flip or collapse
+    // the arc — so it falls back to the default rather than producing a downward
+    // "above" slur (authoring-validation may flag it separately).
     let default_height = (span * SLUR_HEIGHT_FACTOR).clamp(SLUR_MIN_HEIGHT, SLUR_MAX_HEIGHT);
-    let height = slur
+    let mut height = slur
         .height
         .map(|h| h.0.get() as f32)
         .filter(|h| *h > 0.0)
         .unwrap_or(default_height);
+
+    // Raise the apex until every column between the endpoints clears. `x` is
+    // linear in `t` (the control points sit on the chord at thirds), and the
+    // arc's departure from the chord at `t` is `4·height·t·(1−t)`.
+    for (x, column) in &spanned {
+        let t = (x - p0x) / span;
+        if !(1e-3..=1.0 - 1e-3).contains(&t) {
+            continue;
+        }
+        let needed = if above {
+            column.top + SLUR_ENDPOINT_GAP - chord(t)
+        } else {
+            chord(t) - (column.bottom - SLUR_ENDPOINT_GAP)
+        };
+        if needed > 0.0 {
+            height = height.max(needed / (4.0 * t * (1.0 - t)));
+        }
+    }
+
     // Lift the two control points so the cubic's apex (t = 0.5) sits `height`
-    // from the endpoint line: B(0.5) lifts the control y by 0.75, so the lift
-    // is 4/3 · height (negated below the staff).
+    // from the chord: B(0.5) lifts the control y by 0.75, so the lift is
+    // 4/3 · height (negated below the staff).
     let lift = if above { height } else { -height } * 4.0 / 3.0;
     // Thickness: an authored *positive* value, else the default. A
     // non-positive one is skipped — a zero would draw an invisible,
@@ -2327,10 +2459,10 @@ fn slur_curve(
         .unwrap_or(SLUR_THICKNESS);
     Some(Curve {
         provenance: provenance.clone(),
-        p0: Point::new(p0x, base_y),
-        p1: Point::new(p0x + span / 3.0, base_y + lift),
-        p2: Point::new(p3x - span / 3.0, base_y + lift),
-        p3: Point::new(p3x, base_y),
+        p0: Point::new(p0x, p0y),
+        p1: Point::new(p0x + span / 3.0, chord(1.0 / 3.0) + lift),
+        p2: Point::new(p3x - span / 3.0, chord(2.0 / 3.0) + lift),
+        p3: Point::new(p3x, p3y),
         thickness: StaffSpace(thickness),
         layer: 0,
         style: ink(),
@@ -2346,14 +2478,9 @@ fn slur_curve(
 /// A slur endpoint's resolved x: the note column at its resolved onset, or
 /// `None` when the endpoint is unresolved or its column was not laid out in
 /// this region.
-fn slur_endpoint_x(
-    endpoint: &SlurEndpoint,
-    columns: &BTreeMap<ColumnKey, ColumnInfo>,
-) -> Option<f32> {
+fn slur_endpoint_key(endpoint: &SlurEndpoint) -> Option<ColumnKey> {
     match endpoint {
-        SlurEndpoint::At(time) => columns
-            .get(&ColumnKey::Timed(time.clone(), ColumnRole::Note))
-            .map(|info| info.x),
+        SlurEndpoint::At(time) => Some(ColumnKey::Timed(time.clone(), ColumnRole::Note)),
         SlurEndpoint::Unresolved => None,
     }
 }
@@ -4438,6 +4565,27 @@ mod tests {
             .clone()
     }
 
+    /// Re-pitches every event in reading order, cycling `octaves` (all C naturals).
+    /// The corpus generator writes only low notes, so a test that needs a
+    /// down-stem — or a note tall enough to obstruct a slur — must say so.
+    fn repitch(score: &mut Score, octaves: &[i8]) {
+        use epiphany_core::{CmnNominal, Event, PitchSpacePosition};
+        let ids: Vec<_> = score.events.iter().map(|e| e.id()).collect();
+        for (index, id) in ids.iter().enumerate() {
+            if let Some(Event::Pitched(note)) = score.events.get_mut(*id) {
+                for pitch in &mut note.pitches {
+                    if let PitchSpacePosition::Cmn {
+                        nominal, octave, ..
+                    } = &mut pitch.pitch.scale_position.position
+                    {
+                        *nominal = CmnNominal::C;
+                        *octave = octaves[index % octaves.len()];
+                    }
+                }
+            }
+        }
+    }
+
     fn slur(id: SlurId, start: EventId, end: EventId, over: Option<CurvatureOverride>) -> Slur {
         Slur {
             id,
@@ -4456,9 +4604,70 @@ mod tests {
             .find(|curve| curve.provenance.source == TypedObjectId::Slur(id))
     }
 
+    /// An `Auto` slur is placed OPPOSITE the stems — the single-voice engraving
+    /// rule. All stems up (low notes) puts it under the noteheads; all stems down
+    /// (high notes) puts it over them. It used to arc above unconditionally,
+    /// which drew it straight through the stems of every stem-up passage.
     #[test]
-    fn a_default_slur_arcs_above_its_two_event_columns() {
-        let (mut score, _) = repeat_ready_score(41);
+    fn a_default_slur_takes_the_side_opposite_the_stems() {
+        for (octave, expect_above) in [(4i8, false), (6, true)] {
+            let (mut score, _) = repeat_ready_score(41);
+            repitch(&mut score, &[octave]);
+            let events = region_a_events(&score);
+            let id: SlurId = score.identity.mint();
+            score
+                .cross_cutting
+                .slurs
+                .push(slur(id, events[0], events[2], None));
+            let constrained = to_constrained(&to_logical(&score));
+
+            let curve = slur_curve_of(&constrained, id).expect("the slur draws a curve");
+            // Its exact provenance rides the curve — one primitive per slur, no
+            // synthesis (a slur owns a single curve).
+            assert!(curve.provenance.synthesis.is_none());
+            assert!(curve.p3.x.0 > curve.p0.x.0, "left to right");
+            assert_eq!(curve.p0.y, curve.p3.y, "equal pitches share a baseline");
+
+            let arcs_up = curve.p1.y.0 > curve.p0.y.0 && curve.p2.y.0 > curve.p0.y.0;
+            assert_eq!(
+                arcs_up,
+                expect_above,
+                "C{octave}: stems point {}, so the slur goes {}",
+                if expect_above { "down" } else { "up" },
+                if expect_above { "above" } else { "below" }
+            );
+            // The endpoints hug the ENDPOINT NOTE, not the staff. A C6's head
+            // centre sits at y = 6 and its ink tops out half a space above; a C4's
+            // centre at −1, its ink half a space below. Endpoints a fixed gap from
+            // the staff edge instead (y = 4.7 / −0.7) would leave an above-slur
+            // hanging *under* its own ledger notes — the original defect.
+            let head_centre = if expect_above { 6.0 } else { -1.0 };
+            let want = if expect_above {
+                head_centre + 0.5 + SLUR_ENDPOINT_GAP
+            } else {
+                head_centre - 0.5 - SLUR_ENDPOINT_GAP
+            };
+            assert!(
+                (curve.p0.y.0 - want).abs() < 1e-3,
+                "C{octave}: the endpoint hugs its note at {want}, not the staff: {}",
+                curve.p0.y.0
+            );
+            // No traced anchor for a drawn slur (the curve carries the provenance).
+            assert!(!constrained
+                .strokes
+                .iter()
+                .any(|s| s.provenance.source == TypedObjectId::Slur(id)));
+            crate::roundtrip::round_trip(&score);
+        }
+    }
+
+    /// The arc is raised until it clears every column between its endpoints. Two
+    /// C4s (stems up) around a C6 (stem down) is a mixed-stem span, so the slur
+    /// goes above — and the C6 stands three ledger lines inside it.
+    #[test]
+    fn a_slur_arcs_clear_of_a_note_between_its_endpoints() {
+        let (mut score, _) = repeat_ready_score(45);
+        repitch(&mut score, &[4, 6, 4]);
         let events = region_a_events(&score);
         let id: SlurId = score.identity.mint();
         score
@@ -4466,74 +4675,137 @@ mod tests {
             .slurs
             .push(slur(id, events[0], events[2], None));
         let constrained = to_constrained(&to_logical(&score));
-
         let curve = slur_curve_of(&constrained, id).expect("the slur draws a curve");
-        // Its exact provenance rides the curve — one primitive per slur, no
-        // synthesis (a slur owns a single curve).
-        assert!(curve.provenance.synthesis.is_none());
-        // Left-to-right, endpoints between the event columns (tucked in).
-        assert!(curve.p3.x.0 > curve.p0.x.0);
-        assert_eq!(curve.p0.y, curve.p3.y, "endpoints share a baseline");
-        // Default = above: the apex (control points) sits ABOVE the endpoints
-        // in world y-up, and above the top staff line.
-        assert!(
-            curve.p1.y.0 > curve.p0.y.0 && curve.p2.y.0 > curve.p0.y.0,
-            "a default slur arcs upward (controls above the endpoint line)"
-        );
-        assert!(
-            curve.p0.y.0 >= STAFF_HEIGHT,
-            "the endpoints sit above the staff"
-        );
-        // No traced anchor for a drawn slur (the curve carries the provenance).
-        assert!(!constrained
-            .strokes
-            .iter()
-            .any(|s| s.provenance.source == TypedObjectId::Slur(id)));
 
-        crate::roundtrip::round_trip(&score);
+        assert!(
+            curve.p1.y.0 > curve.p0.y.0,
+            "a mixed-stem span has no notehead side, so it arcs above"
+        );
+        // The C6 notehead's top: three ledgers above a staff whose top line is 4.
+        let c6_top = curve
+            .control_points()
+            .iter()
+            .map(|p| p.y.0)
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(c6_top > 6.0, "the arc reaches over the C6: {c6_top}");
+        // Sample the cubic at its apex (t = 0.5) and check it clears the note.
+        let at = |t: f32| {
+            let (u, cp) = (1.0 - t, curve.control_points());
+            u * u * u * cp[0].y.0
+                + 3.0 * u * u * t * cp[1].y.0
+                + 3.0 * u * t * t * cp[2].y.0
+                + t * t * t * cp[3].y.0
+        };
+        // The C6's head centre sits at y = 6 (step 12); its ink tops out at ~6.5.
+        // The arc clears it by exactly the endpoint gap and no more: the lift is
+        // the least that suffices. Evaluating the obstacle at its column x rather
+        // than its notehead CENTRE skews `t` and silently over-lifts, which this
+        // upper bound catches.
+        let required = 6.5 + SLUR_ENDPOINT_GAP;
+        assert!(
+            at(0.5) >= required - 1e-3,
+            "the apex clears the intervening notehead: {} < {required}",
+            at(0.5)
+        );
+        assert!(
+            at(0.5) <= required + 0.05,
+            "and does not overshoot it: {} > {required}",
+            at(0.5)
+        );
     }
 
+    /// An authored direction overrides the stem rule, and an authored height is
+    /// honoured — as a FLOOR. Clearance may raise it (a slur must never be drawn
+    /// through a note to obey an author), but nothing lowers it.
     #[test]
-    fn an_authored_below_override_flips_the_arc_and_sets_its_height() {
+    fn an_authored_direction_and_height_override_the_defaults() {
         let (mut score, _) = repeat_ready_score(42);
+        repitch(&mut score, &[4]); // all C4: stems up, so Auto would go below
         let events = region_a_events(&score);
-        let above: SlurId = score.identity.mint();
-        let below: SlurId = score.identity.mint();
-        score
-            .cross_cutting
-            .slurs
-            .push(slur(above, events[0], events[2], None));
+        let forced_above: SlurId = score.identity.mint();
+        let forced_below: SlurId = score.identity.mint();
+        let height = SpaceUnit(epiphany_determinism::CanonicalF64::new(2.0).expect("finite"));
         score.cross_cutting.slurs.push(slur(
-            below,
+            forced_above,
+            events[0],
+            events[2],
+            Some(CurvatureOverride {
+                direction: Some(CurveDirection::Above),
+                height: None,
+            }),
+        ));
+        score.cross_cutting.slurs.push(slur(
+            forced_below,
             events[0],
             events[2],
             Some(CurvatureOverride {
                 direction: Some(CurveDirection::Below),
-                height: Some(SpaceUnit(
-                    epiphany_determinism::CanonicalF64::new(2.0).expect("finite"),
-                )),
+                height: Some(height),
             }),
         ));
         let constrained = to_constrained(&to_logical(&score));
 
-        let up = slur_curve_of(&constrained, above).expect("above slur draws");
-        let down = slur_curve_of(&constrained, below).expect("below slur draws");
-        // The below slur arcs the other way: controls below the endpoints, and
-        // the endpoints sit below the staff (negative world y for the bottom
-        // staff at origin 0).
+        let up = slur_curve_of(&constrained, forced_above).expect("above slur draws");
+        let down = slur_curve_of(&constrained, forced_below).expect("below slur draws");
+        // The authored `Above` wins over the stem rule, which wanted below.
+        assert!(
+            up.p1.y.0 > up.p0.y.0 && up.p2.y.0 > up.p0.y.0,
+            "an authored Above arcs upward even over stem-up notes"
+        );
         assert!(down.p1.y.0 < down.p0.y.0 && down.p2.y.0 < down.p0.y.0);
         assert!(down.p0.y.0 < 0.0, "a below slur sits under the staff");
-        // Its authored apex height is 2.0: the control lift is 4/3 · height, so
-        // the apex (0.75 · lift below the baseline) is 2.0 below it.
-        let apex_drop = down.p0.y.0 - (down.p1.y.0 + 0.75 * (down.p1.y.0 - down.p0.y.0));
-        let _ = apex_drop;
+        // The authored apex height is 2.0: the control lift is 4/3 · height, so
+        // the apex sits 0.75 · lift from the chord. Equal pitches make the chord
+        // flat and the intervening column no obstacle, so nothing raises it.
         let lift = down.p1.y.0 - down.p0.y.0;
         assert!(
             (0.75 * -lift - 2.0).abs() < 1e-4,
-            "authored apex height honored (2.0 staff spaces)"
+            "authored apex height honoured (2.0 staff spaces): lift {lift}"
         );
-        // The above and below slurs mirror across the endpoint lines' sides.
-        assert!(up.p1.y.0 > up.p0.y.0);
+    }
+
+    /// An authored height that clearance must overrule: a below-slur whose span
+    /// dips over a C2. The author asked for a shallow 0.5, but honouring it would
+    /// draw the arc straight through the low note, so the apex is raised.
+    #[test]
+    fn clearance_raises_an_authored_height_it_would_otherwise_violate() {
+        let (mut score, _) = repeat_ready_score(46);
+        repitch(&mut score, &[4, 2, 4]); // stems all up ⇒ Auto below; C2 dips low
+        let events = region_a_events(&score);
+        let id: SlurId = score.identity.mint();
+        let shallow = SpaceUnit(epiphany_determinism::CanonicalF64::new(0.5).expect("finite"));
+        score.cross_cutting.slurs.push(slur(
+            id,
+            events[0],
+            events[2],
+            Some(CurvatureOverride {
+                direction: None,
+                height: Some(shallow),
+            }),
+        ));
+        let constrained = to_constrained(&to_logical(&score));
+        let curve = slur_curve_of(&constrained, id).expect("the slur draws");
+
+        let lift = curve.p1.y.0 - curve.p0.y.0;
+        let apex = 0.75 * -lift;
+        assert!(
+            apex > 0.5 + 1e-3,
+            "the shallow authored height was raised to clear the C2: {apex}"
+        );
+        // And it really does clear: sample the cubic at the obstructing column.
+        let at = |t: f32| {
+            let (u, cp) = (1.0 - t, curve.control_points());
+            u * u * u * cp[0].y.0
+                + 3.0 * u * u * t * cp[1].y.0
+                + 3.0 * u * t * t * cp[2].y.0
+                + t * t * t * cp[3].y.0
+        };
+        // C2's head centre is at y = -8 (step -16); its ink bottoms out at ~-8.5.
+        assert!(
+            at(0.5) <= -8.5 - SLUR_ENDPOINT_GAP + 1e-3,
+            "the apex passes under the C2: {}",
+            at(0.5)
+        );
     }
 
     /// A stem points AWAY from the middle line — up for a head below it, down
@@ -4726,6 +4998,8 @@ mod tests {
     #[test]
     fn out_of_range_authored_slur_dimensions_fall_back_to_defaults() {
         let (mut score, _) = repeat_ready_score(44);
+        // High notes: stems down, so an Auto slur takes the side above them.
+        repitch(&mut score, &[6]);
         let events = region_a_events(&score);
         let neg: epiphany_determinism::CanonicalF64 =
             epiphany_determinism::CanonicalF64::new(-1.0).expect("finite");
@@ -4741,7 +5015,7 @@ mod tests {
             events[0],
             events[2],
             Some(CurvatureOverride {
-                direction: None, // Auto = above
+                direction: None, // Auto: opposite the (down) stems ⇒ above
                 height: Some(SpaceUnit(neg)),
             }),
         );
@@ -4750,8 +5024,8 @@ mod tests {
         let constrained = to_constrained(&to_logical(&score));
 
         let curve = slur_curve_of(&constrained, id).expect("the slur still draws");
-        // The negative height fell back to the positive default: an Auto slur
-        // still arcs UP.
+        // The negative height fell back to the positive default: the arc keeps
+        // its side and its curvature.
         assert!(
             curve.p1.y.0 > curve.p0.y.0,
             "a non-positive authored height falls back, arc stays upward"
