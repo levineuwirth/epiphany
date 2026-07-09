@@ -900,4 +900,48 @@ mod tests {
         let report = Engraver::default().solve(&ten_measure(), &SolverConfig::default());
         assert_eq!(report.metric_vector.vertical_density_penalty.0, 0.0);
     }
+
+    #[test]
+    fn vertical_justification_trades_page_fill_for_inter_system_density() {
+        use crate::PageGeometry;
+        use epiphany_layout_ir::{Margins, Size2D, StaffSpace};
+        // On a MULTI-page layout, vertical justification spreads a non-final
+        // page's systems to fill the height (`page_fill` → ~0), which stretches
+        // its inter-system gaps beyond the band model's preferred height — a
+        // cost the vertical-density axis measures. The two axes trade: filling
+        // the page is paid for in inter-system density. A catalog refinement
+        // that scores only EXCESS stretch (or measures gap uniformity) is a
+        // deferred follow-up, alongside the casting_off / justified-raggedness
+        // note. Pinned so the interaction is not silent (review finding).
+        let geometry = PageGeometry {
+            size: Size2D {
+                width: StaffSpace(40.0),
+                height: StaffSpace(30.0),
+            },
+            margins: Margins {
+                top: StaffSpace(5.0),
+                right: StaffSpace(5.0),
+                bottom: StaffSpace(5.0),
+                left: StaffSpace(5.0),
+            },
+        };
+        let report =
+            Engraver::with_geometry(geometry).solve(&ten_measure(), &SolverConfig::default());
+        assert!(
+            report.layout.pages.len() >= 2,
+            "the small page forces multiple pages"
+        );
+        // Justification fills the non-final pages…
+        assert!(
+            report.metric_vector.page_fill_efficiency.0 < 0.1,
+            "non-final pages fill: {}",
+            report.metric_vector.page_fill_efficiency.0
+        );
+        // …at the measured cost of stretched inter-system gaps.
+        assert!(
+            report.metric_vector.vertical_density_penalty.0 > 0.0,
+            "stretched inter-system gaps are measured: {}",
+            report.metric_vector.vertical_density_penalty.0
+        );
+    }
 }

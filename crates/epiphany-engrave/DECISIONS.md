@@ -617,10 +617,24 @@ horizontal justification (independent axes). `ENGRAVER_VERSION` 8 → 9.
 convention wants — a single-page score is therefore unchanged (its only page is
 the last), so every existing single-page golden is byte-identical. A page with
 one system has no inter-system gap to grow; an already-full or overfull page has
-no positive slack. Drives `page_fill_efficiency` to ~0 on justified pages (a
-non-final page now fills the height). Locked by
-`vertical_justification_fills_non_final_pages` (a small custom `PageGeometry`
-forces the multi-page path; the non-final page fills, the last stays ragged).
+no positive slack. Locked by `vertical_justification_fills_non_final_pages` (a
+small custom `PageGeometry` forces the multi-page path; the non-final page fills,
+the last stays ragged).
+
+**Quality-metric trade-off (honest, tested).** Vertical justification drives
+`page_fill_efficiency` to ~0 on justified pages (they fill the height — the
+point), but the same stretch grows their inter-system gaps beyond the band
+model's preferred height, which `vertical_density_penalty` measures directly
+(its inter-system-gap term, quality.rs `vertical_raw`). So the two axes TRADE:
+filling the page is paid for in inter-system density, and a *sparse* justified
+page (few systems, large per-gap stretch) is charged more — which is a defensible
+signal (a 2-systems-on-a-tall-page layout genuinely reads thin) but over-charges
+a *moderate*, uniform stretch that is good justification. Same family as the
+horizontal `casting_off` / justified-raggedness note; the catalog refinement
+(score only EXCESS stretch, or measure gap UNIFORMITY rather than deviation from
+preferred) is the deferred follow-up, needing catalog alignment. Pinned by
+`vertical_justification_trades_page_fill_for_inter_system_density` so the
+interaction is not silent (review finding).
 
 **Still deferred (the rest of the vertical spring solve).** Inter-staff
 band-height renegotiation *within* a multi-staff system (today the constrained
