@@ -672,6 +672,21 @@ charged, since nothing can be done). `Minimal` still makes **no optimality
 claim** — this is a deterministic global heuristic, an honest improvement on
 first-fit, not a formal guarantee.
 
+**Overflow safety net (review fix).** `walk_region` skips a planned break —
+a soft requirement, or the DP's own automatic break — when the closing system
+carries no musical content (the lead-only exception, `has_note`). The DP treats
+that boundary as a real system start and optimizes each side independently, so
+it cannot foresee the skip: a note-less leading measure would then be absorbed
+into the following optimizer-filled system, which could **silently** overflow
+into a multi-measure overfull system (a review finding — the greedy overflow
+check that used to catch this was removed with the greedy pass). The net
+restores exactly that check as a fallback: `walk_region` also breaks before a
+measure that would overflow the content width (`chunk_hi[i] − current_lo >
+width_limit`, guarded by `has_note`). In the common content-full case the DP's
+break fires first, so the net never triggers and the geometry is the
+optimizer's (zero golden churn). Locked by
+`a_content_less_measure_before_a_soft_break_never_overflows`.
+
 **Determinism.** A pure function of the slot extents and requirements; the DP
 minimizes lexicographic `(cost, system_count)` (fewer systems — hence fewer
 pages — breaks ties), and among equal `(cost, count)` the earliest-considered

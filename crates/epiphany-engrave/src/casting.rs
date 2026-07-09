@@ -1141,9 +1141,33 @@ fn walk_region(
     // bounded by the break requirements); the walk opens a system at each.
     let automatic = optimal_breaks(slots, reqs, width_limit);
 
+    // Overflow safety net. A lead-only (note-less) run can defer a *planned*
+    // break past its barline — the DP treats a requirement, or its own chosen
+    // automatic break, as a real system start, but the walk skips it when the
+    // closing system carries no musical content (the soft-break exception, and
+    // the `has_note` guard on the automatic break below). The DP optimizes each
+    // requirement-bounded segment independently and cannot foresee that skip, so
+    // without a net the following DP-filled system would absorb the furniture
+    // measures and overflow. `chunk_hi[i]` — the rightmost content edge of the
+    // measure beginning at slot `i` — lets the walk still break before a measure
+    // that would overflow the content width, exactly as first-fit did. In the
+    // common (content-full) case the DP's break fires first, so the net never
+    // triggers and the geometry is the optimizer's.
+    let breakable = |slot: &SlotInfo| slot.barline && !slot.final_barline;
+    let mut chunk_hi = vec![f32::NEG_INFINITY; slots.len()];
+    for i in (0..slots.len()).rev() {
+        let next = if i + 1 < slots.len() && !breakable(&slots[i + 1]) {
+            chunk_hi[i + 1]
+        } else {
+            f32::NEG_INFINITY
+        };
+        chunk_hi[i] = slots[i].hi.max(next);
+    }
+
     let mut local = 0usize;
     let mut current: Vec<usize> = Vec::new();
     let mut has_note = false;
+    let mut current_lo = f32::INFINITY;
     let mut open_boundary: Option<Boundary> = None;
     let mut open_page_forced = false;
     let mut open_page_source = DecisionSource::Automatic;
@@ -1164,6 +1188,7 @@ fn walk_region(
             }
             current.push(i);
             has_note = slot.note;
+            current_lo = slot.lo;
             continue;
         }
         let mut break_here = false;
@@ -1193,10 +1218,15 @@ fn walk_region(
                 source = origin_source(origins, slot.id, req.page);
             }
         }
-        // Optimal casting-off: open a system at a chosen automatic break, as
-        // long as the closing system carries musical content (a lead-only
-        // system is never torn off — matching the requirement path's rule).
-        if !break_here && has_note && automatic.contains(&slot.id) {
+        // Optimal casting-off: open a system at a chosen automatic break — or,
+        // as the overflow net, before a measure that would overflow the content
+        // width — as long as the closing system carries musical content (a
+        // lead-only system is never torn off, matching the requirement rule).
+        if !break_here
+            && has_note
+            && (automatic.contains(&slot.id)
+                || (breakable(slot) && chunk_hi[i] - current_lo > width_limit))
+        {
             break_here = true;
         }
         if break_here {
@@ -1221,9 +1251,11 @@ fn walk_region(
             };
             current.push(i);
             has_note = slot.note;
+            current_lo = slot.lo;
         } else {
             current.push(i);
             has_note |= slot.note;
+            current_lo = current_lo.min(slot.lo);
         }
     }
     // The region's last system — or, for a region with no slots at all, its
@@ -1813,6 +1845,82 @@ mod tests {
             optimal_breaks(&slots, &BTreeMap::new(), f32::INFINITY).is_empty(),
             "an unbounded width wraps nothing"
         );
+    }
+
+    #[test]
+    fn a_content_less_measure_before_a_soft_break_never_overflows() {
+        // Review Finding 1: a note-less leading measure (M0, clef/key/time only)
+        // whose barline carries a SOFT break. `walk_region` skips the break (the
+        // closing system has no content) and the DP, which treated that barline
+        // as a forced segment boundary, cannot foresee the skip. Without the
+        // overflow net the optimizer-filled measures after it would absorb M0
+        // into a MULTI-measure overfull system; the net breaks before the measure
+        // that would overflow instead. Verify no non-final system is both
+        // multi-measure and wider than the content width.
+        use epiphany_core::{RegionId, ReplicaId};
+        let mk = |i: usize, lo: f32, hi: f32, note: bool| SlotInfo {
+            id: SpringSlotId(i as u128 + 1),
+            x: lo,
+            lo,
+            hi,
+            members: Vec::new(),
+            barline: true,
+            final_barline: false,
+            note,
+            measure_barline: None,
+        };
+        // A wide note-less M0; then three narrow measures and two wide ones, so
+        // the optimizer groups [M1,M2,M3,M4] (its first system, ~39 ≤ 42) and
+        // [M5] — which, with M0 prepended by the skipped break, would span
+        // M0..M4 ≈ 60 ≫ 42 without the net.
+        let slots = vec![
+            mk(0, 0.0, 20.0, false),
+            mk(1, 21.0, 26.0, true),
+            mk(2, 27.0, 32.0, true),
+            mk(3, 33.0, 38.0, true),
+            mk(4, 39.0, 60.0, true),
+            mk(5, 61.0, 82.0, true),
+        ];
+        let mut reqs: BTreeMap<SpringSlotId, Vec<BreakReq>> = BTreeMap::new();
+        reqs.insert(
+            slots[1].id,
+            vec![BreakReq {
+                page: false,
+                hard: false,
+            }],
+        ); // SOFT
+        let width_limit = 42.0;
+        let mut systems = Vec::new();
+        let mut skipped = Vec::new();
+        walk_region(
+            0,
+            &slots,
+            &reqs,
+            &BTreeMap::new(),
+            TypedObjectId::Region(RegionId::new(ReplicaId(1), 1)),
+            width_limit,
+            &mut systems,
+            &mut skipped,
+        );
+        for (s, plan) in systems.iter().enumerate() {
+            let lo = plan
+                .slots
+                .iter()
+                .map(|&k| slots[k].lo)
+                .fold(f32::INFINITY, f32::min);
+            let hi = plan
+                .slots
+                .iter()
+                .map(|&k| slots[k].hi)
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert!(
+                hi - lo <= width_limit + 1e-3 || plan.slots.len() <= 1,
+                "system {s} spans {} measures at width {} > {width_limit}",
+                plan.slots.len(),
+                hi - lo
+            );
+        }
+        assert!(!skipped.is_empty(), "the skipped soft break is recorded");
     }
 
     #[test]
