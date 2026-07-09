@@ -26,7 +26,8 @@ use crate::ids::{
     TupletId, ViewId, VoiceId,
 };
 use crate::pitch::{
-    ForeignFormatId, PitchRange, PitchSpaceId, ReferencePitch, SpellingAttachment, TuningSystemId,
+    ForeignFormatId, PitchRange, PitchSpaceId, ReferencePitch, SpellingAttachment,
+    TranspositionInterval, TuningSystemId,
 };
 use crate::time::{MeasurePosition, MusicalDuration, TimeAnchor, WallClockDuration};
 
@@ -1522,18 +1523,6 @@ pub struct ScoreMetadata {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct SoundConfiguration(pub Vec<u8>);
 
-/// A written-versus-sounding transposition (Chapter 5 §"Instruments";
-/// schema major 2). Structural only: the diatonic and chromatic step
-/// counts of the interval (e.g., B-flat clarinet = -1 diatonic,
-/// -2 chromatic). Semantically ADVISORY until the Chapter 4 tuning
-/// catalog pins interval algebra (the P12-K2 discipline): nothing in
-/// the core resolves it to frequencies or respells through it yet.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct TranspositionInterval {
-    pub diatonic_steps: i32,
-    pub chromatic_steps: i32,
-}
-
 /// One playable member of an unpitched instrument (Chapter 5
 /// §"Instruments"; schema major 2). `member` is an instrument-scoped
 /// small value (not a 128-bit object id); resolution from
@@ -1568,7 +1557,16 @@ pub struct Instrument {
     pub abbreviation: Option<String>,
     /// Schema major 2 (appended; migration default empty).
     pub sound_config: SoundConfiguration,
-    /// Schema major 2 (appended; migration default `None`).
+    /// The written-versus-sounding interval of a transposing instrument (a
+    /// B-flat clarinet is `-1` diatonic, `-2` chromatic). Schema major 2
+    /// (appended; migration default `None`).
+    ///
+    /// Its *action* on a pitch is pinned by [`Pitch::transposed`]
+    /// (`req:pitch:transposition`). What is still unimplemented is its
+    /// *automatic application* at the written/sounding boundary: nothing here
+    /// respells a written part into a sounding one, or resolves either to a
+    /// frequency. So the field remains advisory — for that reason, and not,
+    /// as this doc once claimed, for want of interval algebra.
     pub transposition: Option<TranspositionInterval>,
     /// Schema major 2 (appended; migration default treble).
     pub default_clef: Clef,

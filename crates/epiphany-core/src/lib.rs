@@ -81,8 +81,8 @@ pub use pitch::{
     PitchSpelling, PositionRegistryId, ReferencePitch, ScalePosition, SpellingAlgorithmId,
     SpellingAttachment, SpellingContext, SpellingDirective, SpellingNominal, SpellingPrecedence,
     SpellingRenderHints, SpellingRule, SpellingRuleSetId, SpellingScope, SpellingSource,
-    SpellingSourceKind, StaffGroupKindRegistryId, TieClassRegistryId, TuningReference,
-    TuningSystemId, VoiceSelector,
+    SpellingSourceKind, StaffGroupKindRegistryId, TieClassRegistryId, TransposeRefusal,
+    TranspositionInterval, TuningReference, TuningSystemId, VoiceSelector,
 };
 
 pub use prepass::{
@@ -114,8 +114,8 @@ pub use graph::{
     SoundConfiguration, SpaceUnit, SpanStyle, Spanner, SpannerKind, Staff, StaffBasedContent,
     StaffBracketKind, StaffExtent, StaffGroup, StaffGroupKind, StaffInstance,
     StaffLineConfiguration, StemDirection, SubBeam, TempoMapReference, TextLineDefinition, Tie,
-    TieClass, TimeExtent, TimeSignature, TimeSignatureDisplay, Timestamp, TranspositionInterval,
-    Tuplet, TupletRatio, UnpitchedMember, ViewDefinition, Voice, VoiceOrigin, Volta,
+    TieClass, TimeExtent, TimeSignature, TimeSignatureDisplay, Timestamp, Tuplet, TupletRatio,
+    UnpitchedMember, ViewDefinition, Voice, VoiceOrigin, Volta,
 };
 
 pub use tempo::{

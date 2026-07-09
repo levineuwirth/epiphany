@@ -60,8 +60,8 @@ use crate::graph::{
     SpannerKind, Staff, StaffBasedContent, StaffBracketKind, StaffExtent, StaffGroup,
     StaffGroupKind, StaffInstance, StaffLineConfiguration, StemDirection, SubBeam,
     TempoMapReference, TextLineDefinition, Tie, TieClass, TimeExtent, TimeSignature,
-    TimeSignatureDisplay, Timestamp, TranspositionInterval, Tuplet, TupletRatio, UnpitchedMember,
-    ViewDefinition, Voice, VoiceOrigin, Volta,
+    TimeSignatureDisplay, Timestamp, Tuplet, TupletRatio, UnpitchedMember, ViewDefinition, Voice,
+    VoiceOrigin, Volta,
 };
 use crate::ids::{
     AnalysisLayerId, AnalyticalAnnotationId, BarlineAlignmentGroupId, BeamId, ChordSymbolId,
@@ -76,7 +76,7 @@ use crate::pitch::{
     PositionRegistryId, ReferencePitch, ScalePosition, SpellingAttachment, SpellingDirective,
     SpellingNominal, SpellingPrecedence, SpellingRenderHints, SpellingRule, SpellingRuleSetId,
     SpellingScope, SpellingSource, SpellingSourceKind, StaffGroupKindRegistryId,
-    TieClassRegistryId, TuningReference, TuningSystemId, VoiceSelector,
+    TieClassRegistryId, TranspositionInterval, TuningReference, TuningSystemId, VoiceSelector,
 };
 use crate::tempo::{Tempo, TempoMap, TempoSegment, TempoShape};
 use crate::time::{

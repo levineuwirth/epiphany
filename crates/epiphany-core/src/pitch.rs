@@ -180,6 +180,129 @@ impl CmnNominal {
             CmnNominal::B => 11,
         }
     }
+
+    /// The nominal for a diatonic index in `0..7`, the inverse of the type's
+    /// normative discriminant (Chapter 2 §"The CmnNominal Type"). Panics
+    /// outside the range; callers reduce with `rem_euclid(7)` first.
+    fn from_index(index: i32) -> Self {
+        match index {
+            0 => CmnNominal::C,
+            1 => CmnNominal::D,
+            2 => CmnNominal::E,
+            3 => CmnNominal::F,
+            4 => CmnNominal::G,
+            5 => CmnNominal::A,
+            6 => CmnNominal::B,
+            other => unreachable!("diatonic index out of 0..7: {other}"),
+        }
+    }
+}
+
+/// A signed interval: the transposition primitive (Chapter 2
+/// §"Transposition and the Interval Type"; schema major 2). Both components
+/// are load-bearing — the diatonic one fixes the spelling (which nominal,
+/// hence which staff line), the chromatic one fixes the sound. Neither
+/// determines the other: an augmented second `(1, 3)` and a minor third
+/// `(2, 3)` sound alike and are written differently.
+///
+/// [`Instrument::transposition`](crate::Instrument) carries one as its
+/// written-versus-sounding interval (a B-flat clarinet is `-1` diatonic, `-2`
+/// chromatic). Its *action* is pinned by [`Pitch::transposed`]; what stays
+/// advisory is its automatic application at the written/sounding boundary,
+/// which nothing in the core performs yet.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct TranspositionInterval {
+    pub diatonic_steps: i32,
+    pub chromatic_steps: i32,
+}
+
+impl TranspositionInterval {
+    /// The interval that undoes this one. Exact, because [`Pitch::transposed`]
+    /// never saturates — it refuses instead.
+    pub fn inverse(self) -> Self {
+        TranspositionInterval {
+            diatonic_steps: -self.diatonic_steps,
+            chromatic_steps: -self.chromatic_steps,
+        }
+    }
+}
+
+/// Why a pitch could not be faithfully transposed (Chapter 2
+/// `req:pitch:transposition`). Each variant is a way a transposition would
+/// otherwise have to lie.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum TransposeRefusal {
+    /// The position is not [`PitchSpacePosition::Cmn`], so it has no nominal
+    /// for the interval's diatonic component to move.
+    NonCmnPosition,
+    /// The pitch's [`AcousticRealization::AbsoluteHz`] overrides the tuning
+    /// system, so moving the scale position would move the notehead without
+    /// moving the sound.
+    AcousticPinned,
+    /// The resulting `alteration` or `octave` does not fit its `i8` field.
+    OutOfRange,
+}
+
+impl Pitch {
+    /// Transposes this pitch by `interval`, per Chapter 2
+    /// `req:pitch:transposition`.
+    ///
+    /// With `n` the nominal's normative discriminant and the absolute semitone
+    /// `s = nominal.chromatic() + alteration + 12*octave`, transposing by
+    /// `{ d, c }` yields
+    ///
+    /// ```text
+    /// nominal'    = CmnNominal((n + d).rem_euclid(7))
+    /// octave'     = octave + (n + d).div_euclid(7)
+    /// alteration' = (s + c) - (nominal'.chromatic() + 12*octave')
+    /// ```
+    ///
+    /// The diatonic component alone selects the nominal and octave; the
+    /// alteration absorbs exactly the residue. So `C4 + (7, 12)` is `C5`, not
+    /// "C with twelve sharps", and `C4 + (0, 1)` is `C#4`.
+    ///
+    /// Refuses rather than saturating, clamping, or approximating: a
+    /// transposition that silently produces a pitch nobody asked for reports
+    /// success and destroys the evidence needed to notice.
+    pub fn transposed(&self, interval: TranspositionInterval) -> Result<Pitch, TransposeRefusal> {
+        if matches!(
+            self.acoustic.realization,
+            AcousticRealization::AbsoluteHz(_)
+        ) {
+            return Err(TransposeRefusal::AcousticPinned);
+        }
+        let PitchSpacePosition::Cmn {
+            nominal,
+            alteration,
+            octave,
+        } = self.scale_position.position
+        else {
+            return Err(TransposeRefusal::NonCmnPosition);
+        };
+
+        // Widen before arithmetic: the i8 bound is a *result* constraint, not
+        // an intermediate one, so an octave that overflows on the way to a
+        // value that fits would be a spurious refusal.
+        let n = nominal as i32;
+        let semitone =
+            i32::from(nominal.chromatic()) + i32::from(alteration) + 12 * i32::from(octave);
+        let step = n + interval.diatonic_steps;
+        let new_nominal = CmnNominal::from_index(step.rem_euclid(7));
+        let new_octave = i32::from(octave) + step.div_euclid(7);
+        let new_alteration = (semitone + interval.chromatic_steps)
+            - (i32::from(new_nominal.chromatic()) + 12 * new_octave);
+
+        let octave = i8::try_from(new_octave).map_err(|_| TransposeRefusal::OutOfRange)?;
+        let alteration = i8::try_from(new_alteration).map_err(|_| TransposeRefusal::OutOfRange)?;
+
+        let mut out = self.clone();
+        out.scale_position.position = PitchSpacePosition::Cmn {
+            nominal: new_nominal,
+            alteration,
+            octave,
+        };
+        Ok(out)
+    }
 }
 
 /// A position within a pitch space (Chapter 2 §"Scale Position"). Tagged union
@@ -855,6 +978,145 @@ mod tests {
         assert_eq!(CmnNominal::C.chromatic(), 0);
         assert_eq!(CmnNominal::E.chromatic(), 4);
         assert_eq!(CmnNominal::B.chromatic(), 11);
+    }
+
+    fn iv(diatonic_steps: i32, chromatic_steps: i32) -> TranspositionInterval {
+        TranspositionInterval {
+            diatonic_steps,
+            chromatic_steps,
+        }
+    }
+
+    fn position(p: &Pitch) -> (CmnNominal, i8, i8) {
+        match p.scale_position.position {
+            PitchSpacePosition::Cmn {
+                nominal,
+                alteration,
+                octave,
+            } => (nominal, alteration, octave),
+            ref other => panic!("expected a Cmn position, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transposing_an_octave_moves_the_octave_not_the_alteration() {
+        // The P12-K2 defect, locked: the old alteration-shift produced
+        // `C4 alteration 12` — a C with six double-sharps — for this input.
+        let up = cmn(CmnNominal::C, 0, 4).transposed(iv(7, 12)).unwrap();
+        assert_eq!(position(&up), (CmnNominal::C, 0, 5));
+
+        let down = cmn(CmnNominal::C, 0, 4).transposed(iv(-7, -12)).unwrap();
+        assert_eq!(position(&down), (CmnNominal::C, 0, 3));
+    }
+
+    #[test]
+    fn the_diatonic_component_picks_the_nominal_and_the_alteration_absorbs_the_rest() {
+        // A perfect fifth up: C4 -> G4, no accidental.
+        let fifth = cmn(CmnNominal::C, 0, 4).transposed(iv(4, 7)).unwrap();
+        assert_eq!(position(&fifth), (CmnNominal::G, 0, 4));
+
+        // A *diminished* sixth up sounds the same and is spelled a step away.
+        let dim6 = cmn(CmnNominal::C, 0, 4).transposed(iv(5, 7)).unwrap();
+        assert_eq!(position(&dim6), (CmnNominal::A, -2, 4));
+
+        // Sharpening: the editor's `transpose_selection(1)` equivalent. This
+        // is the one case the frozen operation already got right.
+        let sharp = cmn(CmnNominal::C, 0, 4).transposed(iv(0, 1)).unwrap();
+        assert_eq!(position(&sharp), (CmnNominal::C, 1, 4));
+    }
+
+    #[test]
+    fn transposition_crosses_the_octave_boundary_in_both_directions() {
+        // B4 up a semitone spelled as a diatonic step: C5, not B#4.
+        let up = cmn(CmnNominal::B, 0, 4).transposed(iv(1, 1)).unwrap();
+        assert_eq!(position(&up), (CmnNominal::C, 0, 5));
+
+        // C4 down a diatonic step: B3. Euclidean, so the negative index wraps
+        // to 6 and the octave carries -1.
+        let down = cmn(CmnNominal::C, 0, 4).transposed(iv(-1, -1)).unwrap();
+        assert_eq!(position(&down), (CmnNominal::B, 0, 3));
+
+        // B#4 exists and sounds as C5, an octave *below* the C it spells past.
+        let bsharp = cmn(CmnNominal::B, 1, 4).transposed(iv(0, 0)).unwrap();
+        assert_eq!(position(&bsharp), (CmnNominal::B, 1, 4));
+    }
+
+    #[test]
+    fn every_transposition_is_undone_by_its_inverse() {
+        let start = cmn(CmnNominal::E, -1, 3);
+        for interval in [iv(4, 7), iv(-2, -3), iv(7, 12), iv(0, 1), iv(5, 7)] {
+            let there = start.transposed(interval).unwrap();
+            let back = there.transposed(interval.inverse()).unwrap();
+            assert_eq!(
+                position(&back),
+                position(&start),
+                "{interval:?} did not round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn a_transposition_refuses_rather_than_saturating() {
+        // The old operation clamped `alteration` at the i8 bound and reported
+        // success. An octave past the i8 bound must refuse instead.
+        let high = cmn(CmnNominal::C, 0, 127);
+        assert_eq!(
+            high.transposed(iv(7, 12)),
+            Err(TransposeRefusal::OutOfRange)
+        );
+        let low = cmn(CmnNominal::C, 0, -128);
+        assert_eq!(
+            low.transposed(iv(-7, -12)),
+            Err(TransposeRefusal::OutOfRange)
+        );
+
+        // An alteration that overflows while the octave is fine.
+        let alt = cmn(CmnNominal::C, 120, 4);
+        assert_eq!(alt.transposed(iv(0, 20)), Err(TransposeRefusal::OutOfRange));
+
+        // Nothing is mutated on refusal — `transposed` is by-value.
+        assert_eq!(position(&high), (CmnNominal::C, 0, 127));
+    }
+
+    #[test]
+    fn a_transposition_refuses_a_non_cmn_position() {
+        let mut p = cmn(CmnNominal::C, 0, 4);
+        p.scale_position.position = PitchSpacePosition::Integer {
+            space_size: 31,
+            index: 7,
+        };
+        assert_eq!(
+            p.transposed(iv(4, 7)),
+            Err(TransposeRefusal::NonCmnPosition)
+        );
+
+        p.scale_position.position = PitchSpacePosition::JiVector {
+            components: vec![1, 0, -1],
+        };
+        assert_eq!(
+            p.transposed(iv(0, 0)),
+            Err(TransposeRefusal::NonCmnPosition)
+        );
+    }
+
+    #[test]
+    fn a_transposition_refuses_a_pitch_pinned_to_a_frequency() {
+        // AbsoluteHz overrides the tuning system: moving the scale position
+        // would move the notehead and leave the sound where it was.
+        let mut p = cmn(CmnNominal::C, 0, 4);
+        p.acoustic.realization = AcousticRealization::absolute_hz(261.6).unwrap();
+        assert_eq!(
+            p.transposed(iv(4, 7)),
+            Err(TransposeRefusal::AcousticPinned)
+        );
+
+        // A cents offset is relative to whatever the tuning produces for the
+        // *new* position, so it transposes and survives.
+        let mut q = cmn(CmnNominal::C, 0, 4);
+        q.acoustic.realization = AcousticRealization::cents_offset(-13.7).unwrap();
+        let moved = q.transposed(iv(4, 7)).unwrap();
+        assert_eq!(position(&moved), (CmnNominal::G, 0, 4));
+        assert_eq!(moved.acoustic.realization, q.acoustic.realization);
     }
 
     #[test]
