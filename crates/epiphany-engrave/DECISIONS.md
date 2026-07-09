@@ -709,13 +709,29 @@ single-staff score, with no inter-staff pair, is byte-identical).
 
 **Attribution (`vertical_band` + owning-glyph).** Every resolved primitive is
 attributed to its owning staff: a glyph via its `vertical_band`
-(`VerticalBandKind::Staff` → `StaffId`); a stem or ledger via its notehead
-(`component_glyph` → that glyph's band); a staff line via its `Staff`
-provenance source; a slur via the notehead nearest its start endpoint. Spacing
-is horizontal-only, so a primitive's y is unchanged from the source frame the
-attribution reads, and the resolved and source indices line up. (The geometric
-`round(-y / pitch)` alternative was rejected: an extreme ledgered note on the
-top or bottom staff rounds to a non-existent neighbour.)
+(`VerticalBandKind::Staff` → `StaffId`); a ledger via its notehead
+(`owning_glyph`, a shared `Pitch` source); a **stem** — which has no same-source
+glyph — via the glyph nearest its BASE point *in two dimensions*; a staff line
+via its `Staff` provenance source; a slur via the notehead nearest its start
+endpoint. Spacing is horizontal-only, so a primitive's y is unchanged from the
+source frame the attribution reads, and the resolved and source indices line up.
+(The geometric `round(-y / pitch)` alternative was rejected: an extreme ledgered
+note on the top or bottom staff rounds to a non-existent neighbour.)
+
+**Why staff attribution must be y-aware (review fix).** The first cut reused
+`component_glyph`, whose fallback picks the nearest glyph **by x alone**. That is
+right for a *slot* — both staves of a system share their x columns, hence their
+spring slots, so the horizontal delta is the same either way — but it is wrong
+for a *staff*: it handed a lower-staff stem to the UPPER staff's notehead, so the
+stem kept the wrong vertical shift and tore off its own head by several staff
+spaces (and polluted the upper staff's content extent, inflating the computed
+gap). The staff attribution now uses a 2-D nearest for that fallback.
+`component_glyph` is unchanged and still serves the horizontal path. Locked by
+`multi_staff_stems_stay_on_their_own_staff` (a stem's base sits at its notehead
+on both the single- and multi-staff fixtures). A related correction: staff-
+attributed primitives contribute their y ONLY through the shifted path
+(`Extent::add_x` for x, `add_y` for the shifted staff extent), so a lower staff's
+unshifted content can no longer inflate a system's `max_y`.
 
 **The solve.** Per system, per staff, the real content y-extent is collected
 (glyphs, strokes, curves — ledgers and slurs included, not just noteheads). The

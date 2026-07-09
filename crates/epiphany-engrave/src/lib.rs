@@ -2234,6 +2234,56 @@ mod tests {
     }
 
     #[test]
+    fn multi_staff_stems_stay_on_their_own_staff() {
+        use epiphany_layout_ir::{to_constrained, to_logical};
+        // Review-found bug: the inter-staff attribution reused `component_glyph`,
+        // whose fallback picks the nearest glyph by X ALONE — correct for a slot
+        // (both staves of a system share their x columns, hence their slots) but
+        // it handed a stem to the ADJACENT staff, so the stem kept that staff's
+        // vertical shift and tore off its own notehead. Attribution is now
+        // y-aware. Every stem's base must still sit at its notehead, offset only
+        // by the stem's x inset — on the single- AND multi-staff fixtures.
+        let worst = |score: epiphany_core::Score| -> f32 {
+            let r = Engraver::default().solve(
+                &to_constrained(&to_logical(&score)),
+                &SolverConfig::default(),
+            );
+            let heads: Vec<(f32, f32)> = r
+                .layout
+                .glyphs
+                .iter()
+                .filter(|g| g.glyph.as_str().starts_with("notehead"))
+                .map(|g| (g.position.x.0, g.position.y.0))
+                .collect();
+            r.layout
+                .strokes
+                .iter()
+                .filter(|st| {
+                    (st.from.x.0 - st.to.x.0).abs() < 1e-4 && (st.from.y.0 - st.to.y.0).abs() > 1e-3
+                })
+                .map(|st| {
+                    heads
+                        .iter()
+                        .map(|(hx, hy)| {
+                            ((hx - st.from.x.0).powi(2) + (hy - st.from.y.0).powi(2)).sqrt()
+                        })
+                        .fold(f32::INFINITY, f32::min)
+                })
+                .fold(0.0_f32, f32::max)
+        };
+        let single = worst(epiphany_testkit::fixtures::ten_measure_single_staff(1));
+        let multi = worst(epiphany_testkit::fixtures::two_staff_close_content(1));
+        assert!(
+            single < 1.5,
+            "single-staff stems stay on their heads: {single}"
+        );
+        assert!(
+            multi < 1.5,
+            "multi-staff stems stay on their OWN staff's heads: {multi}"
+        );
+    }
+
+    #[test]
     fn inter_staff_solve_separates_colliding_staves() {
         use epiphany_layout_ir::{to_constrained, to_logical};
         // The two-staff fixture's staves collide under the fixed staff pitch:

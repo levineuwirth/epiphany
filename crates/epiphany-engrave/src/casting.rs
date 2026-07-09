@@ -81,7 +81,7 @@ use epiphany_layout_ir::{
     SynthesisKind, SynthesisRegistryId, VerticalBand, VerticalBandId, VerticalBandKind,
 };
 
-use crate::{component_glyph, owning_glyph};
+use crate::owning_glyph;
 
 /// The registry id for the engraver's **system-continuation synthesis**: the
 /// segment of a region-spanning stroke (a staff line) that casting-off places
@@ -353,22 +353,23 @@ impl Extent {
         }
     }
 
-    fn add(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
-        if [x0, y0, x1, y1].iter().all(|v| v.is_finite()) {
-            self.min_x = self.min_x.min(x0.min(x1));
-            self.max_x = self.max_x.max(x0.max(x1));
-            self.min_y = self.min_y.min(y0.min(y1));
-            self.max_y = self.max_y.max(y0.max(y1));
-            self.any = true;
-        }
-    }
-
     /// Extend only the vertical extent (the inter-staff solve grows a system's
     /// height by shifting staves apart, without touching its x-span).
     fn add_y(&mut self, y0: f32, y1: f32) {
         if y0.is_finite() && y1.is_finite() {
             self.min_y = self.min_y.min(y0.min(y1));
             self.max_y = self.max_y.max(y0.max(y1));
+            self.any = true;
+        }
+    }
+
+    /// Extend only the horizontal extent. Staff-attributed content contributes
+    /// its y through the inter-staff solve (SHIFTED), never here.
+    fn add_x(&mut self, x0: f32, x1: f32) {
+        if x0.is_finite() && x1.is_finite() {
+            self.min_x = self.min_x.min(x0.min(x1));
+            self.max_x = self.max_x.max(x0.max(x1));
+            self.any = true;
         }
     }
 
@@ -651,12 +652,28 @@ pub(crate) fn cast_off(
         .collect();
     let glyph_band_staff = |g: &GlyphObject| band_to_staff.get(&g.vertical_band).copied();
     let glyph_staff_of: Vec<Option<StaffId>> = input.glyphs.iter().map(glyph_band_staff).collect();
+    // The glyph nearest a point in TWO dimensions. Attribution to a *staff* must
+    // be y-aware: `component_glyph`'s horizontal fallback picks the nearest glyph
+    // by x alone, which is right for a slot (both staves of a system share their
+    // x columns, hence their slots) but would hand a stem to the ADJACENT staff.
+    let nearest_glyph = |x: f32, y: f32| -> Option<&GlyphObject> {
+        input.glyphs.iter().min_by(|a, b| {
+            let d = |g: &GlyphObject| (g.baseline.x.0 - x).powi(2) + (g.baseline.y.0 - y).powi(2);
+            d(a).total_cmp(&d(b))
+        })
+    };
     let stroke_staff_of: Vec<Option<StaffId>> = input
         .strokes
         .iter()
         .map(|s| match s.provenance.source {
+            // A staff line names its staff outright.
             TypedObjectId::Staff(st) => Some(st),
-            _ => component_glyph(s, &input.glyphs).and_then(glyph_band_staff),
+            // A ledger shares its notehead's `Pitch` source (`owning_glyph`);
+            // a stem has no same-source glyph, so it takes the staff of the
+            // glyph nearest its BASE (`from`, which sits at the notehead).
+            _ => owning_glyph(s, &input.glyphs)
+                .or_else(|| nearest_glyph(s.from.x.0, s.from.y.0))
+                .and_then(glyph_band_staff),
         })
         .collect();
     let curve_staff_of: Vec<Option<StaffId>> = input
@@ -706,13 +723,14 @@ pub(crate) fn cast_off(
                     y + glyph.bounding_box.bottom.0,
                     y + glyph.bounding_box.top.0,
                 );
-                extents[s].add(
+                extents[s].add_x(
                     x + glyph.bounding_box.left.0,
-                    lo_y,
                     x + glyph.bounding_box.right.0,
-                    hi_y,
                 );
-                into_staff(&mut staff_ext, s, glyph_staff_of[g], lo_y, hi_y);
+                match glyph_staff_of[g] {
+                    Some(_) => into_staff(&mut staff_ext, s, glyph_staff_of[g], lo_y, hi_y),
+                    None => extents[s].add_y(lo_y, hi_y),
+                }
             }
         }
     }
@@ -727,8 +745,11 @@ pub(crate) fn cast_off(
         };
         for (s, from, to) in segs {
             let (lo_y, hi_y) = (from.y.0.min(to.y.0) - half, from.y.0.max(to.y.0) + half);
-            extents[s].add(from.x.0 - half, lo_y, to.x.0 + half, hi_y);
-            into_staff(&mut staff_ext, s, staff, lo_y, hi_y);
+            extents[s].add_x(from.x.0 - half, to.x.0 + half);
+            match staff {
+                Some(_) => into_staff(&mut staff_ext, s, staff, lo_y, hi_y),
+                None => extents[s].add_y(lo_y, hi_y),
+            }
             if is_staff_line {
                 if let Some(st) = staff {
                     staff_ref
@@ -749,8 +770,11 @@ pub(crate) fn cast_off(
         };
         for (s, cp) in segs {
             for p in cp {
-                extents[s].add(p.x.0 - half, p.y.0 - half, p.x.0 + half, p.y.0 + half);
-                into_staff(&mut staff_ext, s, staff, p.y.0 - half, p.y.0 + half);
+                extents[s].add_x(p.x.0 - half, p.x.0 + half);
+                match staff {
+                    Some(_) => into_staff(&mut staff_ext, s, staff, p.y.0 - half, p.y.0 + half),
+                    None => extents[s].add_y(p.y.0 - half, p.y.0 + half),
+                }
             }
         }
     }
