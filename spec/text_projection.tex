@@ -229,7 +229,7 @@
   {\Large\scshape\color{epiphanyslate}Text Projection}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.4.0 --- Derived ordering, and an escape grammar that matches its requirement}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.5.0 --- The projection is schema-directed, and the grammar says only what shape can say}\\[4pt]
   {\small\color{epiphanyslate}Normative for the text form it defines}
   \vfill
 \end{titlepage}
@@ -628,6 +628,50 @@ states one rule for turning any of them into text, and the shapes stay where the
 are ratified.
 
 \begin{requirement}
+  \label{req:textproj:schema-directed}
+  The projection is \textbf{schema-directed}. At every position a reader knows
+  the type it expects, from the ratified schema and from the position itself,
+  exactly as the binary decoder does. The grammar of
+  Chapter~\ref{ch:grammar} describes the \emph{shape} of the text; it is not a
+  standalone unambiguous language, and a reader \MUSTNOT{} attempt to recover a
+  value's type from its shape.
+
+  Three consequences follow, and a reader resolves each by the type it expects:
+
+  \begin{itemize}
+    \item \texttt{()} is the empty sequence, and it is the absent option.
+    \item A bare symbol is a fieldless variant, and it is a struct with no
+      fields.
+    \item A parenthesised list whose first element is a symbol is a struct, and
+      it is a sequence whose first element is a symbol.
+  \end{itemize}
+\end{requirement}
+
+\begin{rationale}
+  This states what the ratified rules already require rather than adding a new
+  constraint. A struct is \texttt{(<type-name> <field>\ldots)} and a sequence is
+  a parenthesised list of its elements; a sequence whose first element is a
+  fieldless variant is therefore shape-identical to a struct. The collision is
+  \emph{irreducible} without new syntax, and it is reachable from the first
+  pitched note a score contains: a \texttt{PitchedEvent} carries
+  \texttt{articulations} and \texttt{ornaments}, sequences of a zero-field
+  \texttt{ArticulationMark} and \texttt{OrnamentMark}, alongside an optional
+  \texttt{DynamicMark} --- so one \texttt{insert-event} line holds an empty
+  sequence and an absent option, both spelled \texttt{()}, and a two-element
+  sequence spelled like a two-field struct.
+
+  Making the text standalone-unambiguous would buy nothing, because
+  Requirement~\ref{req:textproj:strict-parse} already obliges a parser to reject
+  ``a duplicate in a set-typed field'' --- which it cannot do without knowing that
+  the field is set-typed. The parser consults the schema either way. Spending
+  syntax to remove a shape ambiguity, while leaving the schema dependency it was
+  meant to remove, would make every line longer and no tool simpler.
+
+  The binary form is schema-directed for the same reason and pays the same price:
+  its bytes do not say what they are either.
+\end{rationale}
+
+\begin{requirement}
   \label{req:textproj:value-projection}
   A canonical value is projected thus:
 
@@ -636,7 +680,9 @@ are ratified.
       the type name is the core specification's name in lower-case
       hyphenated form and the fields appear \emph{positionally}, in the order
       that specification's ratified listing declares them. Field names are not
-      written.
+      written. A struct with \emph{no} fields is the bare symbol
+      \texttt{<type-name>}, as a fieldless variant is; it encodes to no bytes in
+      the binary form and carries no value here.
     \item A \textbf{newtype} --- a struct of exactly one unnamed field ---
       is projected as that field alone, with no wrapper. This mirrors the binary
       form, in which a newtype delegates to its field and adds no bytes.
@@ -648,10 +694,17 @@ are ratified.
     \item A \textbf{sequence}, \textbf{set}, or \textbf{map} is a parenthesised
       list of its elements, \emph{in the order the binary form writes them},
       except where Requirement~\ref{req:textproj:derived-ordering} applies; a
-      map entry is \texttt{(<key> <value>)}. The projection invents no ordering
-      of its own, and a set that the binary form writes strictly increasing is
-      written strictly increasing here
+      map entry is \texttt{(<key> <value>)}. An empty one is \texttt{()}, which
+      Requirement~\ref{req:textproj:schema-directed} distinguishes from an absent
+      option by the expected type. The projection invents no ordering of its own,
+      and a set that the binary form writes strictly increasing is written
+      strictly increasing here
       (Requirement~\ref{req:textproj:strict-parse}).
+
+      A \textbf{byte string} is not a sequence. Where the binary form writes a
+      length-prefixed run of bytes rather than a counted sequence of elements ---
+      an opaque extension payload, a \texttt{SoundConfiguration} --- the
+      projection writes a byte string, not a list of integers.
     \item \textbf{Leaves.} An identifier or hash is a byte string. An integer is
       an integer. A boolean is \texttt{true} or \texttt{false}. Canonical text is
       a quoted string. A rational is \texttt{(ratio <numerator> <denominator>)},
@@ -804,6 +857,10 @@ are ratified.
 
   Accepting non-canonical text and normalizing it \emph{is} accepting it, and
   does not satisfy this requirement.
+
+  Rejecting a duplicate in a set-typed field requires knowing that the field is
+  set-typed. A parser therefore reads the schema
+  (Requirement~\ref{req:textproj:schema-directed}); shape alone never suffices.
 \end{requirement}
 
 \begin{rationale}
@@ -834,6 +891,12 @@ are ratified.
 \label{ch:grammar}
 
 \begin{lstlisting}
+; Notation. X* is zero or more X, X? is zero or one. Within a line, adjacent
+; elements of a repetition are separated by exactly one U+0020, and an empty
+; repetition contributes nothing -- so "(" value* ")" spells () when empty. The
+; line productions below carry their own trailing LF, and are simply
+; concatenated. LF is U+000A. Terminals are quoted; U+XXXX names a codepoint.
+
 projection     ::= header document lineage? profile* extension*
                  canonical-base? blob* envelope*
 
@@ -931,7 +994,10 @@ reassign-entry ::= "(" bytes " " ratio ")"          ; event id, musical position
 
 ; --- Values and leaves.
 
-value          ::= "(" symbol " " value* ")"        ; req:textproj:value-projection
+; A struct, a sequence, a set, a map and an option all have this one shape. The
+; reader tells them apart by the type it expects, never by the shape:
+; req:textproj:schema-directed. Meaning is req:textproj:value-projection.
+value          ::= "(" value* ")"
                | symbol | bytes | integer | bool | string | ratio | option
 option         ::= "()" | "(some " value ")"
 ratio          ::= "(ratio " integer " " integer ")"
@@ -1120,6 +1186,32 @@ absorb it, exactly as the binary decoder does.
   name; the checks it replaced were anchored to a column, and a reflow would have
   silently switched them off. The 0.3.0 claim of a ``machine-checked'' grammar was
   true of one run and of nothing durable. Still no implementation. \\
+    \today & Chapters 3, 5 & 0.5.0 --- Found by starting the implementation: the
+  grammar could not derive an ordinary pitched note.
+
+  \emph{The projection is schema-directed}
+  (\texttt{req:textproj:schema-directed}), and now says so. \texttt{value} had no
+  alternative for a sequence at all, though clause~5 required one; and once
+  added, a sequence whose first element is a fieldless variant is
+  shape-identical to a struct, while \texttt{()} is both the empty sequence and
+  the absent option. Both collisions are reachable from the first pitched note in
+  any score --- \texttt{PitchedEvent} carries \texttt{articulations} and
+  \texttt{ornaments} over zero-field marks, beside an optional
+  \texttt{DynamicMark}. The collision is irreducible without new syntax, and new
+  syntax would buy nothing:
+  \texttt{req:textproj:strict-parse} already obliges a parser to reject a
+  duplicate in a set-typed field, which it cannot do without the schema. So
+  \texttt{value} now collapses to \texttt{"(" value* ")"} or a leaf --- all shape
+  can honestly say --- and the requirement assigns meaning by expected type.
+
+  \emph{Three consequences, stated.} A struct with no fields is the bare symbol,
+  as a fieldless variant is. A byte string is not a sequence: where the binary
+  form writes a length-prefixed run of bytes, so does the projection, never a
+  list of integers. And the grammar's repetitions now carry a notation rule ---
+  adjacent elements are separated by exactly one space --- without which
+  \texttt{"(transpose (" bytes* ") "} spelled two targets as one run of hex.
+
+  Still no implementation; this is what the first day of writing it found. \\
 \bottomrule
 \end{longtable}
 

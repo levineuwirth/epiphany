@@ -19,6 +19,12 @@
 //! 4. The escape rule excludes the four codepoints
 //!    `req:textproj:string-escapes` requires a writer to escape — the
 //!    contradiction that 0.4.0 fixed.
+//! 5. `value` admits a bare parenthesised list. Without it the grammar cannot
+//!    derive a sequence, so it cannot derive an ordinary pitched note — the
+//!    omission 0.5.0 fixed. And it must *not* re-introduce a symbol-headed
+//!    struct alternative: shape does not distinguish a struct from a sequence,
+//!    and `req:textproj:schema-directed` says so rather than pretending
+//!    otherwise.
 
 use std::collections::{BTreeSet, VecDeque};
 
@@ -410,6 +416,42 @@ fn the_escape_grammar_agrees_with_the_escape_requirement() {
     assert_eq!(
         tails, expected,
         "the escapes are exactly \\\", \\\\, \\n and \\t -- no more, no fewer"
+    );
+}
+
+/// `value` must admit a bare parenthesised list, or the grammar cannot derive any
+/// sequence — a `PitchedEvent`'s `articulations` among them, which makes an
+/// ordinary `insert-event` line underivable. It must equally *not* carry a
+/// symbol-headed struct alternative: a sequence whose first element is a fieldless
+/// variant has exactly that shape, so a grammar claiming to tell them apart would
+/// be lying. `req:textproj:schema-directed` carries the distinction instead.
+#[test]
+fn value_admits_a_bare_list_and_claims_no_shape_it_cannot_distinguish() {
+    let block = uncommented(production_block("value"));
+    let alts: Vec<String> = block
+        .split('|')
+        .map(|a| a.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+
+    assert!(
+        alts.iter().any(|a| a == "\"(\" value* \")\""),
+        "`value` must admit a bare parenthesised list, else no sequence is \
+         derivable; alternatives were {alts:?}"
+    );
+    assert!(
+        !alts.iter().any(|a| a.contains("symbol \" \" value*")),
+        "`value` must not claim to distinguish a struct from a sequence by shape; \
+         alternatives were {alts:?}"
+    );
+
+    // The requirement that carries the distinction must exist and be cited where
+    // it is relied on: the value rule, the strict-parse rule, and the grammar.
+    assert!(SPEC.contains("\\label{req:textproj:schema-directed}"));
+    let citations = SPEC.matches("req:textproj:schema-directed").count();
+    assert!(
+        citations >= 4,
+        "expected the label plus citations from the value rule, strict parsing \
+         and the grammar; found {citations}"
     );
 }
 

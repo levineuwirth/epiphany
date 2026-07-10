@@ -317,3 +317,38 @@ specifies a text syntax must not misprint that syntax.
   from its `\setmonofont`, which makes this the house convention rather than a
   new one; the three companions that still enable it have no listing content the
   feature would touch.
+
+### 0.5.0: what starting the implementation found
+
+The grammar could not derive an ordinary pitched note. `value` had **no
+alternative for a sequence**, though `req:textproj:value-projection` clause 5
+required one. Adding it exposed why it had been missing: a sequence whose first
+element is a fieldless variant is *shape-identical* to a struct, and `()` is both
+the empty sequence and the absent option. Both collisions are reachable from the
+first pitched note in any score — `PitchedEvent` carries `articulations` and
+`ornaments` (sequences over the zero-field `ArticulationMark` / `OrnamentMark`)
+beside an optional `DynamicMark`.
+
+**The collision is irreducible without new syntax, and new syntax buys nothing.**
+`req:textproj:strict-parse` already obliges a parser to reject "a duplicate in a
+set-typed field" — which it cannot do without knowing the field is set-typed. A
+parser consults the schema either way. Spending `(seq …)` or `[…]` to remove a
+*shape* ambiguity, while leaving the schema dependency that syntax was meant to
+remove, lengthens every line and simplifies no tool. **User ratified
+schema-directed** (`req:textproj:schema-directed`), so `value` collapses to
+`"(" value* ")"` or a leaf — all that shape can honestly say — and the
+requirement assigns meaning by expected type.
+
+Three consequences, now stated: a struct with no fields is the bare symbol, as a
+fieldless variant is; a **byte string is not a sequence** (where the binary form
+writes a length-prefixed run of bytes — an opaque extension payload, a
+`SoundConfiguration` — the projection writes a byte string, never a list of
+integers); and the grammar's repetitions carry a notation rule, adjacent elements
+separated by exactly one space, without which `"(transpose (" bytes* ") "` spelled
+two targets as one undelimited run of hex.
+
+The checker gained `value_admits_a_bare_list_and_claims_no_shape_it_cannot_distinguish`,
+mutation-verified two ways: restoring the 0.4.0 `value` production, and stripping
+the `schema-directed` citations. A grammar that claims to distinguish a struct
+from a sequence would be lying, so the test asserts the symbol-headed alternative
+is **absent**.
