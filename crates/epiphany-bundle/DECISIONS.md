@@ -493,3 +493,59 @@ that mutation, because the guard rejects the bytes whatever the sub-codec does.
 That is not a weak test; it is the asymmetry, and it locks the guard rather than
 the codec. A regression suite where every test fails on every mutation would be
 telling us less, not more.
+
+## Push 5 — Text Projection design gate (2026-07-09)
+
+`spec/text_projection.tex` v0.1.0: the companion the core specification's
+Chapter 8 §"Text Projection" delegates to and never had, and which the Binary
+Format companion excludes as "the Text Projection companion's". No
+implementation; this is the gate.
+
+**The projection was blocked on P5 and is now unblocked.** Its normative
+requirement is bidirectionality *with the binary form*, which needs bytes →
+`OperationEnvelope`. That decoder did not exist until `3baf8d0`.
+
+**Four ratified calls (user, 2026-07-09).**
+
+1. **Reduced state is preserved by *determining* it**, never by a second literal
+   copy (`req:textproj:reduced-state-derived`). It is a deterministic function of
+   the operation set and the canonical base; a text carrying both would hold two
+   sources of truth for one fact, and nothing could stop them disagreeing. Core
+   spec's "all canonical reduced state" now carries that reading inline.
+
+2. **A canonical base snapshot is inlined** as one opaque byte string
+   (`req:textproj:base-snapshot-inline`). This is the call with teeth: a base
+   exists so prior operations *need not be retained*, and where they are pruned
+   the base is derivable from nothing else — a reference-only projection of a
+   compacted document would be **lossy**, and the text would not determine its
+   document. Core spec permits "encoded compactly or referenced externally";
+   inline is the choice that keeps archival honest.
+
+3. **Lowercase hex, everywhere** (`req:textproj:hex`). One rule; no alphabet or
+   padding to canonicalize; greppable. Base64 would buy a quarter of the bytes of
+   the one body nobody reads, and cost a second encoding plus a rule for which
+   applies where.
+
+4. **One envelope per line** (`req:textproj:envelope-per-line`). The stated use
+   case is that merge conflicts surface at the envelope level; one line per
+   envelope makes a three-way merge conflict *exactly* an envelope conflict,
+   never a conflict inside one that yields an operation neither side wrote. It
+   also removes all indentation, so canonicality has nothing to hide in.
+   Readability is a pretty-printer's job, and a pretty-printer must not write its
+   output back and call it a projection.
+
+**Strict parsing** (`req:textproj:strict-parse`) is stated in the same terms
+P2–P5 taught: normalizing non-canonical text *is* accepting it. The rationale
+names both hazards this repo hit in binary — a re-encode guard is blind to
+order-preserving sequences, and a guard on an outer value can mask a lenient
+inner codec — and prescribes the same total defence: re-project and compare, *and*
+check per-site the orders re-projection would restore.
+
+**Conformance requires both directions** (`req:textproj:conformance`): a
+projector alone cannot be checked.
+
+**Known gap, stated in the document.** The grammar's atom productions and line
+shapes are normative; `kind`, `action`, `policy`, `constraints`, `barrier` are
+derived from the Operation Catalog and the wire table rather than spelled out.
+That is the difference between a design gate and a finished companion, and it is
+written into the companion rather than left for a reader to discover.

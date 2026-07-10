@@ -11300,7 +11300,13 @@ pub enum BarrierCondition {
 The format admits a deterministic projection to a canonical
 s-expression text form. The text projection is normative.
 
+The form itself is supplied by the \emph{Text Projection} companion
+(version~0.1.0), which this section delegates to: the syntax, the canonical
+layout, the parse rules, and the round-trip conformance requirement are its.
+This section states \emph{what} is projected; the companion states \emph{how}.
+
 \begin{requirement}
+  \label{req:format:textproj}
   The text projection \MUST{} preserve, deterministically and
   bidirectionally with the binary form:
 
@@ -11315,7 +11321,12 @@ s-expression text form. The text projection is normative.
       frontier, and reduction algorithm version (the snapshot
       payload itself \MAY{} be encoded compactly or referenced
       externally).
-    \item All canonical reduced state.
+    \item All canonical reduced state --- preserved by \emph{determining} it,
+      never by carrying a second literal copy. Reduced state is a deterministic
+      function of the operation set and the canonical base, so a projection
+      carrying both would hold two sources of truth for one fact. See the Text
+      Projection companion, requirement
+      \texttt{req:textproj:reduced-state-derived}.
   \end{itemize}
 
   The text projection \MUSTNOT{} be required to preserve:
@@ -11354,6 +11365,13 @@ The text projection serves three primary use cases:
     is stable across binary format major versions where the
     semantic content is preserved.
 \end{description}
+
+For archival to hold, the text must be self-contained. Where a document has been
+compacted onto a canonical base and its prior operations pruned, that base is
+derivable from nothing else in the document, so the companion carries the
+snapshot payload \emph{inline} rather than by reference
+(\texttt{req:textproj:base-snapshot-inline}). A reference-only projection of a
+compacted document would not determine the document it claims to project.
 
 \section{Schema Versioning}
 \label{sec:format:schema}

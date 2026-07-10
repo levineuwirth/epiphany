@@ -1,0 +1,643 @@
+% !TEX program = xelatex
+%
+% Epiphany --- Text Projection (companion specification)
+% Companion to the Core Specification. Compile with XeLaTeX.
+%
+% This document is versioned independently of the Core Specification
+% (independent semver; see the Versioning note in the front matter). Its preamble
+% is intentionally a self-contained copy of the core specification's preamble so
+% the two documents build independently; factoring a shared preamble file is a
+% later cleanup, not a v0.1 deliverable.
+
+\documentclass[11pt,letterpaper]{report}
+
+% ---------------------------------------------------------------------------
+% Packages
+% ---------------------------------------------------------------------------
+\usepackage{fontspec}
+\usepackage{geometry}
+\geometry{
+  letterpaper,
+  top=1.05in,
+  bottom=1.05in,
+  left=1.15in,
+  right=1.15in,
+  headheight=15pt
+}
+
+\usepackage[english]{babel}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{listings}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable, skins}
+
+% ---------------------------------------------------------------------------
+% Color palette (shared with the core specification)
+% ---------------------------------------------------------------------------
+\definecolor{epiphanyteal}{HTML}{1A4044}
+\definecolor{epiphanygold}{HTML}{8E6E2E}
+\definecolor{epiphanyink}{HTML}{1F1B16}
+\definecolor{epiphanyslate}{HTML}{6B6660}
+\definecolor{epiphanycream}{HTML}{F8F4ED}
+\definecolor{epiphanymist}{HTML}{ECE8E0}
+\definecolor{epiphanycode}{HTML}{2A2520}
+\definecolor{epiphanycrimson}{HTML}{7A2424}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=epiphanyteal,
+  citecolor=epiphanyteal,
+  urlcolor=epiphanygold,
+  pdftitle={Epiphany --- Operation Catalog},
+  pdfauthor={The Epiphany Project},
+  pdfsubject={Operation Catalog companion for the Epiphany music notation platform},
+  pdfkeywords={music notation, operations, CRDT, reduction, serialization},
+  bookmarksnumbered=true,
+  bookmarksopen=true
+}
+
+% ---------------------------------------------------------------------------
+% Typography (shared with the core specification)
+% ---------------------------------------------------------------------------
+\setmainfont{TeX Gyre Pagella}[Numbers={OldStyle, Proportional}, Ligatures={TeX, Common}]
+\setsansfont{TeX Gyre Heros}[Scale=0.94, Ligatures={TeX, Common}]
+\setmonofont{TeX Gyre Cursor}[Scale=0.88, Ligatures={TeX}]
+\newfontfamily\titlefont{TeX Gyre Pagella}[Numbers={OldStyle}, Ligatures={TeX, Common}]
+\newcommand{\tablenums}[1]{{\addfontfeatures{Numbers={Lining,Tabular}}#1}}
+\newcommand{\sectionsc}[1]{{\addfontfeatures{Letters=SmallCaps}#1}}
+
+% ---------------------------------------------------------------------------
+% Section styling (shared with the core specification)
+% ---------------------------------------------------------------------------
+\titleformat{\chapter}[display]
+  {\normalfont\filright}
+  {\raggedright\color{epiphanygold}\fontsize{14pt}{16pt}\selectfont
+    \scshape Chapter\ \thechapter}
+  {16pt}
+  {\raggedright\color{epiphanyteal}\fontsize{32pt}{36pt}\selectfont\bfseries}
+  [\vspace{4pt}{\color{epiphanygold}\rule{2in}{0.6pt}}]
+\titlespacing*{\chapter}{0pt}{-20pt}{30pt}
+\titleformat{\section}
+  {\normalfont\Large\bfseries\color{epiphanyteal}}
+  {\color{epiphanygold}\thesection}{1em}{}
+\titleformat{\subsection}
+  {\normalfont\large\bfseries\color{epiphanyteal}}
+  {\color{epiphanygold}\thesubsection}{1em}{}
+\titleformat{\subsubsection}
+  {\normalfont\normalsize\bfseries\color{epiphanyink}}
+  {\thesubsubsection}{1em}{}
+
+% ---------------------------------------------------------------------------
+% Headers and footers (shared with the core specification)
+% ---------------------------------------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\fancyhead[L]{\small\scshape\color{epiphanyslate}Epiphany --- Operation Catalog}
+\fancyhead[R]{\small\itshape\color{epiphanyslate}\leftmark}
+\fancyfoot[C]{\small\color{epiphanyslate}\thepage}
+\renewcommand{\headrule}{
+  \color{epiphanygold!50}\hrule width\headwidth height 0.4pt
+  \vspace{1pt}
+  \color{epiphanygold!30}\hrule width\headwidth height 0.2pt
+}
+
+% ---------------------------------------------------------------------------
+% Code listing style (shared with the core specification)
+% ---------------------------------------------------------------------------
+\lstdefinelanguage{Rust}{
+  keywords={fn,let,mut,pub,struct,enum,impl,trait,for,in,if,else,match,return,
+           use,mod,crate,self,Self,as,where,move,async,await,const,static,
+           ref,type,unsafe,extern,dyn,box,break,continue,loop,while},
+  keywordstyle=\color{epiphanyteal}\bfseries,
+  ndkeywords={i8,i16,i32,i64,i128,u8,u16,u32,u64,u128,f32,f64,bool,char,str,
+              String,Vec,Option,Result,Box,Rc,Arc,HashMap,BTreeMap,
+              NonZeroU16,NonZeroU32,NonZeroU64,Duration,Timestamp},
+  ndkeywordstyle=\color{epiphanygold}\bfseries,
+  sensitive=true,
+  comment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  commentstyle=\color{epiphanyslate}\itshape,
+  stringstyle=\color{epiphanycrimson},
+  morestring=[b]",
+  morestring=[b]'
+}
+\lstset{
+  basicstyle=\ttfamily\small\color{epiphanycode},
+  backgroundcolor=\color{epiphanycream},
+  frame=leftline,
+  rulecolor=\color{epiphanygold!60},
+  framesep=8pt,
+  framerule=1.5pt,
+  xleftmargin=10pt,
+  xrightmargin=4pt,
+  breaklines=true,
+  showstringspaces=false,
+  numberstyle=\tiny\color{epiphanyslate},
+  numbersep=10pt,
+  captionpos=b,
+  aboveskip=10pt,
+  belowskip=10pt,
+  language=Rust
+}
+
+% ---------------------------------------------------------------------------
+% Custom environments (shared with the core specification)
+% ---------------------------------------------------------------------------
+\newtcolorbox{openquestion}[1][]{
+  enhanced, breakable,
+  colback=epiphanymist, colframe=epiphanycrimson,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Open Question},
+  coltitle=white, colbacktitle=epiphanycrimson,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+\newtcolorbox{rationale}[1][]{
+  enhanced, breakable,
+  colback=epiphanymist, colframe=epiphanyteal,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Rationale},
+  coltitle=white, colbacktitle=epiphanyteal,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+\newtcolorbox{requirement}[1][]{
+  enhanced, breakable,
+  colback=white, colframe=epiphanygold,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Requirement},
+  coltitle=white, colbacktitle=epiphanygold,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+\newtcolorbox{nongoal}[1][]{
+  enhanced, breakable,
+  colback=epiphanymist, colframe=epiphanyslate,
+  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Non-Goal},
+  coltitle=white, colbacktitle=epiphanyslate,
+  arc=1pt, boxrule=0pt, leftrule=2pt,
+  left=10pt, right=10pt, top=8pt, bottom=8pt,
+  attach boxed title to top left={xshift=0pt, yshift=0pt},
+  boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
+  #1
+}
+
+\newcommand{\MUST}{\textbf{MUST}}
+\newcommand{\MUSTNOT}{\textbf{MUST}\nobreak\ \textbf{NOT}}
+\newcommand{\SHOULD}{\textbf{SHOULD}}
+\newcommand{\SHOULDNOT}{\textbf{SHOULD}\nobreak\ \textbf{NOT}}
+\newcommand{\MAY}{\textbf{MAY}}
+
+\setlist[itemize]{topsep=2pt, itemsep=3pt, parsep=0pt}
+\setlist[enumerate]{topsep=2pt, itemsep=3pt, parsep=0pt}
+\setlist[description]{topsep=2pt, itemsep=5pt, parsep=0pt}
+\AtBeginDocument{\color{epiphanyink}}
+
+% ---------------------------------------------------------------------------
+% Document
+% ---------------------------------------------------------------------------
+\begin{document}
+
+\begin{titlepage}
+  \thispagestyle{empty}
+  \centering
+  \vspace*{2.2in}
+  {\color{epiphanygold}\rule{3in}{0.8pt}}\\[18pt]
+  {\titlefont\fontsize{34pt}{38pt}\selectfont\color{epiphanyteal}\bfseries Epiphany}\\[10pt]
+  {\Large\scshape\color{epiphanyslate}Text Projection}\\[6pt]
+  {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
+  {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
+  {\normalsize\color{epiphanyink}Version 0.1.0 --- The canonical s-expression form}\\[4pt]
+  {\small\color{epiphanyslate}Normative for the text form it defines}
+  \vfill
+\end{titlepage}
+
+\tableofcontents
+
+% ===========================================================================
+\chapter{About This Companion}
+\label{ch:about}
+
+The \emph{Text Projection} is a companion to the Epiphany Core Specification. It
+fulfils the delegation the core specification makes in Chapter~8,
+\sectionsc{Text Projection} (\texttt{sec:format:textproj}), which declares that
+``the format admits a deterministic projection to a canonical s-expression text
+form'' and that ``the text projection is normative'' --- while leaving the form
+itself unwritten. The Binary Format companion likewise excludes it: ``the
+canonical s-expression form --- that is the \emph{Text Projection} companion's''.
+
+This document supplies that form.
+
+\section{What This Document Covers}
+
+\begin{itemize}
+  \item The canonical text syntax: atoms, byte strings, text, and the layout that
+    makes the projection deterministic.
+  \item What is projected, and what is deliberately not.
+  \item The projection and parse requirements, including the bidirectional
+    round-trip the core specification demands.
+\end{itemize}
+
+It does \emph{not} cover the binary encoding of anything --- that is the Binary
+Format companion's --- nor the semantics of any operation, which is the Operation
+Catalog's. The projection is a \emph{re-presentation} of the canonical document,
+never a second definition of it. Wherever the two could disagree, the binary form
+is normative and the projection is wrong.
+
+\section{The Subject of the Projection}
+
+The projection's subject is the \textbf{canonical document}, not the file. Per the
+core specification's Chapter~8 \sectionsc{Text Projection}, the projection
+\MUSTNOT{} be required to preserve chunk offsets, compression choices, cache
+chunks (operation indexes, layout caches, integrity indexes), garbage bytes from
+prior commits, or superblock generation numbers, slot assignments, and CRCs.
+
+Consequently two bundles that differ only in physical layout project to the same
+text, and a text re-serializes to \emph{a} bundle rather than to \emph{the}
+bundle it came from. That is the intent, not a limitation: the physical file is
+an encoding of the document, and the projection is of the document.
+
+A bundle \MAY{} cache its own projection in a \texttt{TextProjection} chunk named
+by \texttt{Manifest.text\_projection\_root}. That chunk is a \textbf{non-canonical
+accelerator} (core specification Chapter~8, \sectionsc{Schema Versioning}): a
+reader need not understand it, and a writer preserves it verbatim or discards it.
+A cached projection that disagrees with the operations it claims to project is
+\emph{stale}, not authoritative.
+
+% ===========================================================================
+\chapter{The Canonical Text Form}
+\label{ch:form}
+
+\section{Encoding and Character Set}
+
+\begin{requirement}
+  \label{req:textproj:charset}
+  A text projection \MUST{} be UTF-8, with no byte-order mark. Every text field
+  it carries \MUST{} be in Unicode NFC, matching the canonical-text rule of the
+  core specification's Appendix~D, \sectionsc{Text and Unicode}. A parser
+  \MUST{} reject non-NFC text rather than normalize it.
+\end{requirement}
+
+\section{Atoms}
+
+An \emph{atom} is a symbol, an integer, a byte string, or a text string.
+
+\textbf{Symbols} are lowercase ASCII words, possibly hyphenated:
+\texttt{envelope}, \texttt{insert-event}, \texttt{strict-inverse}. They name
+constructors and enumeration cases. A symbol is never quoted.
+
+\textbf{Integers} are written in base ten, with a leading \texttt{-} for negative
+values, no leading zeros, and no leading \texttt{+}. Zero is \texttt{0}, never
+\texttt{-0}.
+
+\textbf{Byte strings} carry every identifier, hash, and opaque payload.
+
+\begin{requirement}
+  \label{req:textproj:hex}
+  A byte string \MUST{} be written as \texttt{\#x} followed by an even number of
+  \textbf{lowercase} hexadecimal digits, one pair per byte, in the order the
+  bytes appear in the canonical binary form. The empty byte string is
+  \texttt{\#x}. A parser \MUST{} reject uppercase digits, an odd digit count, and
+  any separator within the digits.
+\end{requirement}
+
+\begin{rationale}
+  One rule for every byte string. Hexadecimal has no alphabet variant and no
+  padding to canonicalize, it is greppable, and a corrupted character is locally
+  obvious. Identifiers are 16 or 32 bytes, so its expansion costs nothing where
+  it is read; only an inlined snapshot pays. The core specification permits
+  ``base64 \emph{or another canonical text form}''; a second encoding would buy
+  a quarter of the bytes of the one body nobody reads, at the price of pinning an
+  alphabet, a padding rule, and a line-wrapping rule, and of choosing which
+  encoding applies where. Ratified at 0.1.0.
+\end{rationale}
+
+\textbf{Text strings} are double-quoted. Inside a string, \texttt{\textbackslash{}"}
+denotes a quotation mark, \texttt{\textbackslash{}\textbackslash{}} a backslash,
+\texttt{\textbackslash{}n} a line feed, and \texttt{\textbackslash{}t} a tab; no
+other escape exists.
+
+\begin{requirement}
+  \label{req:textproj:string-escapes}
+  A text string \MUST{} escape exactly the characters that require it: the
+  quotation mark, the backslash, U+000A, and U+0009. Every other character
+  \MUST{} appear literally. A parser \MUST{} reject an escape sequence outside
+  this set, and \MUST{} reject a literal character that the writer was required
+  to escape.
+\end{requirement}
+
+\begin{rationale}
+  ``Escape exactly'' rather than ``escape at least'': the text is canonical, so
+  two spellings of one string cannot both be valid. This is the same injectivity
+  the binary form rests on (Binary Format,
+  \texttt{req:binfmt:decode-vectors}), stated for text.
+\end{rationale}
+
+\section{Layout}
+
+\begin{requirement}
+  \label{req:textproj:envelope-per-line}
+  A projection is a sequence of lines separated by a single U+000A, with a final
+  U+000A and no other trailing whitespace. Each line is one complete
+  s-expression. Tokens within a line are separated by exactly one space; there is
+  no other whitespace, and no indentation.
+
+  Each operation envelope \MUST{} occupy exactly one line.
+\end{requirement}
+
+\begin{rationale}
+  The core specification's stated use case is that ``merge conflicts surface at
+  the operation-envelope level, which is the meaningful level for collaborative
+  editing''. One envelope per line makes a line-based three-way merge conflict
+  \emph{exactly} an envelope conflict --- never a conflict inside an envelope,
+  which could otherwise produce a syntactically valid operation that neither side
+  wrote. It also disposes of indentation: there is no whitespace to canonicalize,
+  so the ``identical semantics project to identical text'' requirement below has
+  nothing to hide in.
+
+  The lines are long. Readability is a \emph{tooling} concern, and a
+  pretty-printer is free to reformat for display; what it must not do is write
+  the reformatted text back and call it a projection. Ratified at 0.1.0.
+\end{rationale}
+
+% ===========================================================================
+\chapter{What Is Projected}
+\label{ch:content}
+
+\section{Document Structure}
+
+A projection is, in order:
+
+\begin{enumerate}
+  \item a \texttt{(text-projection <version>)} header line, naming the version of
+    \emph{this companion} the text conforms to;
+  \item a \texttt{(document \#x<document-id>)} line, and a
+    \texttt{(lineage \#x<lineage-id>)} line if the manifest declares one;
+  \item zero or more \texttt{(profile ...)} lines, in canonical order;
+  \item zero or more \texttt{(extension ...)} lines, in canonical order;
+  \item at most one \texttt{(canonical-base ...)} line;
+  \item zero or more \texttt{(envelope ...)} lines, in canonical operation order
+    (core specification Appendix~D).
+\end{enumerate}
+
+Every sequence is written in the normative order its binary counterpart uses. The
+projection introduces no ordering of its own.
+
+\section{Reduced State}
+
+\begin{requirement}
+  \label{req:textproj:reduced-state-derived}
+  The projection \MUST{} preserve canonical reduced state \emph{by preserving the
+  operations that determine it}. It \MUSTNOT{} carry a second, literal copy of
+  the reduced state.
+\end{requirement}
+
+\begin{rationale}
+  Reduced state is a deterministic function of the operation set and the
+  canonical base (core specification Chapter~6, \sectionsc{Design Principles}).
+  A text that carried both would have two sources of truth for one fact, and
+  nothing could stop them disagreeing --- a projection with an internally
+  contradictory document is worse than no projection. This reading is what the
+  core specification's own round-trip clause already implies: text that ``parses
+  to identical canonical document semantics'' must re-serialize to bundles with
+  identical semantics, and reduced state is a function of semantics.
+
+  Read the core specification's ``all canonical reduced state'' as
+  \emph{determines}, not \emph{contains}. Ratified at 0.1.0.
+\end{rationale}
+
+\section{The Canonical Base Snapshot}
+
+\begin{requirement}
+  \label{req:textproj:base-snapshot-inline}
+  If the manifest declares a canonical base, the projection \MUST{} carry a
+  \texttt{(canonical-base ...)} line bearing the snapshot's identity, its causal
+  frontier, its reduction-algorithm version, its profile, \emph{and its payload
+  inline} as a single byte-string atom.
+\end{requirement}
+
+\begin{rationale}
+  A canonical base exists precisely so that the operations before its frontier
+  need not be retained. Where they have been pruned, the snapshot is \emph{not}
+  derivable from anything else in the document, and a projection that carried
+  only a reference would be \textbf{lossy} --- the text would no longer determine
+  the document, which is the one thing it is for. The core specification permits
+  the payload to be ``encoded compactly or referenced externally''; inline and
+  compact is the choice that keeps the text self-contained.
+
+  The snapshot diffs as one opaque atom. That is acceptable: merges happen among
+  operations, and a base snapshot changes only when the document is compacted, at
+  which point the whole line changes anyway. A later revision \MAY{} project the
+  snapshot structurally; doing so does not break the round trip, because the
+  document it denotes is unchanged. Ratified at 0.1.0.
+\end{rationale}
+
+\section{Extensions}
+
+An \texttt{(extension ...)} line carries the extension's identity, its
+required-or-optional flag, its edit barriers, and its preserved chunk roots. An
+extension payload is a byte string
+(Requirement~\ref{req:textproj:hex}); the projection never interprets it.
+
+% ===========================================================================
+\chapter{Requirements}
+\label{ch:requirements}
+
+\section{Canonicality}
+
+\begin{requirement}
+  \label{req:textproj:canonical-text}
+  Two bundles whose canonical document semantics are identical \MUST{} project to
+  \textbf{byte-identical} text. A projector \MUSTNOT{} have any freedom the
+  document does not determine: no optional whitespace, no alternative spelling of
+  an atom, no ordering choice.
+\end{requirement}
+
+\section{Round Trip}
+
+\begin{requirement}
+  \label{req:textproj:roundtrip}
+  Parsing a projection and re-serializing it to binary \MUST{} yield a bundle
+  whose canonical document semantics are identical to the original's. The
+  bundle's physical layout, chunking, and compression \MAY{} differ.
+
+  Equivalently, and more usefully to an implementer: for every bundle $B$,
+  \[
+    \textrm{semantics}(\textrm{parse}(\textrm{project}(B))) =
+    \textrm{semantics}(B),
+  \]
+  and for every valid projection $T$,
+  \[
+    \textrm{project}(\textrm{serialize}(\textrm{parse}(T))) = T .
+  \]
+  The second equation is the text's own injectivity: it is \emph{stronger} than
+  the first, and it is the one a conformance test can check with byte equality.
+\end{requirement}
+
+\section{Strict Parsing}
+
+\begin{requirement}
+  \label{req:textproj:strict-parse}
+  A parser \MUST{} reject any text that is not the canonical projection of the
+  document it denotes. It \MUSTNOT{} normalize: not whitespace, not letter case
+  in a byte string, not an escape sequence, not an out-of-order sequence, not a
+  duplicate in a set-typed field.
+
+  Accepting non-canonical text and normalizing it \emph{is} accepting it, and
+  does not satisfy this requirement.
+\end{requirement}
+
+\begin{rationale}
+  This is the same discipline the binary decoders carry, and it exists for the
+  same reason: a lenient parser makes two texts denote one document, and the
+  projection's contract is that a text \emph{determines} its document. The Binary
+  Format companion learned this concretely --- a whole-value re-encode guard
+  catches the fields a decoder normalizes and is blind to order-preserving
+  sequences, and a guard on an outer value can \emph{mask} a lenient inner codec
+  rather than fix it (Binary Format,
+  \sectionsc{The Decode Vector Corpus}). A text parser inherits both hazards, and
+  the cheapest total defence is the same one: re-project the parsed document and
+  compare, \emph{and} check per-site the orders that re-projection would restore.
+\end{rationale}
+
+\section{Conformance}
+
+\begin{requirement}
+  \label{req:textproj:conformance}
+  An implementation claiming Text Projection conformance \MUST{} implement both
+  directions. A projector alone does not conform: the round trip
+  (Requirement~\ref{req:textproj:roundtrip}) is the requirement, and half of it
+  is not checkable.
+\end{requirement}
+
+% ===========================================================================
+\chapter{Grammar}
+\label{ch:grammar}
+
+\begin{lstlisting}
+projection   ::= header document lineage? profile* extension*
+                 canonical-base? envelope*
+
+header       ::= "(text-projection " version ")" LF
+version      ::= integer "." integer "." integer
+
+document     ::= "(document " bytes ")" LF
+lineage      ::= "(lineage " bytes ")" LF
+
+profile      ::= "(profile " symbol " " version " " constraints ")" LF
+extension    ::= "(extension " bytes " " ("required"|"optional")
+                 " (barriers " barrier* ") (chunks " bytes* "))" LF
+
+canonical-base
+             ::= "(canonical-base " bytes " (frontier " bytes ")"
+                 " (reduction " integer ") (profile " symbol ")"
+                 " (payload " bytes "))" LF
+
+envelope     ::= "(envelope " bytes " (author " bytes ")"
+                 " (stamp " integer " " integer " " bytes ")"
+                 " (causal " vector " " dots ")"
+                 " " transaction " " payload ")" LF
+
+transaction  ::= "()" | "(transaction " bytes ")"
+payload      ::= "(primitive " kind ")"
+               | "(resolve-conflict " bytes " " action ")"
+               | "(undo " bytes " " policy ")"
+               | "(resolve-equivocation " bytes " " bytes ")"
+
+vector       ::= "(" ("(" bytes " " integer ")")* ")"   ; replica, counter
+dots         ::= "(" bytes* ")"                        ; operation ids
+
+bytes        ::= "#x" hexdigit*        ; even count, lowercase
+integer      ::= "-"? digit+           ; no leading zeros, no "-0"
+symbol       ::= [a-z] [a-z0-9-]*
+string       ::= '"' schar* '"'
+\end{lstlisting}
+
+\textbf{What this grammar is, and is not.} The atom productions
+(\texttt{bytes}, \texttt{integer}, \texttt{symbol}, \texttt{string}) and the
+line shapes above are \textbf{normative}. The productions left unexpanded ---
+\texttt{kind}, \texttt{action}, \texttt{policy}, \texttt{constraints},
+\texttt{barrier} --- are \emph{derived} rather than invented here: there is
+exactly one per corresponding binary discriminant, named by the Operation
+Catalog's section name in lowercase hyphenated form (\texttt{insert-event},
+\texttt{transpose-interval}, \dots), with its fields in the payload schema's
+declaration order. A future revision \SHOULD{} spell them out; until it does,
+the Operation Catalog and the Binary Format companion's wire table jointly
+determine them, and an implementation disagreeing with those disagrees with this
+document.
+
+That is a real gap, stated rather than papered over. It is the difference
+between a design gate and a finished companion.
+
+% ===========================================================================
+\chapter{A Worked Example}
+\label{ch:example}
+
+\emph{Non-normative.} The byte strings below are illustrative. The conformance
+vectors that pin real bytes are a deliverable of the implementation, not of this
+gate; elisions are marked \texttt{\dots}.
+
+A document of one operation --- a transposition of two pitches up a perfect
+fifth --- projects to four lines:
+
+\begin{lstlisting}
+(text-projection 0.1.0)
+(document #x05050505050505050505050505050505)
+(canonical-base #x1f8b... (frontier #x00) (reduction 1) (profile full) (payload #x0000...))
+(envelope #x00000000000000070000000000000001 (author #x00000000000000000000000011223344) (stamp 42 7 #x00000000000000070000000000000001) (causal ((#x0000000000000001 3)) (#x00000000000000020000000000000009)) (transaction #x00000000000000070000000000000005) (primitive (transpose-interval (targets #x0000000000000007000000000000000100000000000000070000000000000002) (interval 4 7))))
+\end{lstlisting}
+
+The envelope's targets are a \emph{set}: strictly increasing, no duplicates
+(Operation Catalog, \texttt{req:opcat:transpose-interval-targets}; Binary Format
+$\mathrm{seq}^{\Uparrow}$). A parser \MUST{} reject a duplicate rather than
+absorb it, exactly as the binary decoder does.
+
+% ===========================================================================
+\chapter{Revision History}
+\label{ch:history}
+
+\begin{longtable}{p{2cm} p{2.5cm} p{9cm}}
+  \toprule
+  \textbf{Date} & \textbf{Section} & \textbf{Change} \\
+  \midrule
+  \endhead
+  \today & All & 0.1.0 --- Initial companion. Supplies the canonical
+  s-expression form the core specification's Chapter~8
+  \sectionsc{Text Projection} declares normative and leaves unwritten, and which
+  the Binary Format companion excludes as ``the \emph{Text Projection}
+  companion's''. Ratified: reduced state is preserved by \emph{determining} it,
+  never by a second literal copy (\texttt{req:textproj:reduced-state-derived});
+  a canonical base snapshot is inlined as one opaque byte string, because a
+  pruned document's base is derivable from nothing and a reference-only
+  projection would be lossy (\texttt{req:textproj:base-snapshot-inline});
+  lowercase hex is the single byte-string encoding
+  (\texttt{req:textproj:hex}); one envelope per line, so a line-based merge
+  conflict is exactly an envelope conflict
+  (\texttt{req:textproj:envelope-per-line}). Parsing is strict-canonical
+  (\texttt{req:textproj:strict-parse}) --- normalizing non-canonical text is
+  accepting it --- and conformance requires \emph{both} directions
+  (\texttt{req:textproj:conformance}). No implementation yet; this document is
+  the design gate. \\
+\bottomrule
+\end{longtable}
+
+\end{document}
