@@ -707,16 +707,17 @@ fn build_decode_corpus(rng: &mut SplitMix64) -> DecodeCorpus {
          exactly those branches"
     );
 
-    let tags = [
-        OperationKindTag::InsertEvent,
-        OperationKindTag::Transpose,
-        OperationKindTag::TransposeInterval,
-        OperationKindTag::DeleteRepeatStructure,
-        OperationKindTag::Registered(crate::OperationKindRegistryId(0x0123_4567_89AB_CDEF)),
-    ]
-    .iter()
-    .map(|t| t.to_canonical_bytes())
-    .collect();
+    // EVERY tag, from the production vocabulary — not a hand-picked five. A tag
+    // named nowhere is a tag whose decoder is never exercised, which is how
+    // `TransposeInterval` encoded to a byte its own decoder rejected.
+    let tags = OperationKindTag::PAYLOAD_FREE
+        .iter()
+        .copied()
+        .chain(std::iter::once(OperationKindTag::Registered(
+            crate::OperationKindRegistryId(0x0123_4567_89AB_CDEF),
+        )))
+        .map(|t| t.to_canonical_bytes())
+        .collect();
     DecodeCorpus { states, tags }
 }
 

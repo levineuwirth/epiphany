@@ -2,10 +2,11 @@
 //! decode-hardening track).
 //!
 //! `spec/vectors/decode_vectors.txt` is a committed, human-diffable list of byte
-//! strings and their normative accept/reject verdict. It is what a *second*
-//! implementation is checked against — the reference implementation's fuzzers
-//! prove its own decoders self-consistent, which says nothing about whether a
-//! foreign decoder agrees with the format.
+//! strings and their accept/reject verdict, ratified by the Binary Format
+//! companion's `req:binfmt:decode-vectors` (§"The Decode Vector Corpus"). It is
+//! what a *second* implementation is checked against — the reference
+//! implementation's fuzzers prove its own decoders self-consistent, which says
+//! nothing about whether a foreign decoder agrees with the format.
 //!
 //! Two properties are enforced here:
 //!
@@ -36,11 +37,16 @@ const HEADER: &str = "\
 #
 #     <surface>  <verdict>  <class>  <name>  <hex>
 #
-# `verdict` is `accept` or `reject`, and is the ONLY normative column besides
-# the bytes. A conforming decoder must accept every `accept` vector and reject
-# every `reject` vector. An accepted value must additionally re-encode to
-# exactly the vector's bytes: canonical decode is injective, which is what
-# content-addressing rests on.
+# NORMATIVE: Binary Format companion, `req:binfmt:decode-vectors`
+# (section: The Decode Vector Corpus). A conforming decoder MUST accept every `accept`
+# vector for a surface it implements and MUST reject every `reject` vector, and
+# a value decoded from an `accept` vector MUST re-encode to exactly its bytes.
+#
+# Accepting a `reject` vector and then normalizing it IS accepting it, and does
+# not satisfy the requirement. Canonical decode is injective: distinct byte
+# strings denote distinct values, which is what content-addressing rests on.
+#
+# `verdict` and the bytes are the only normative columns.
 #
 # `class` names why a `reject` vector is rejected. It is informative only —
 # implementations need not agree on error taxonomy. `-` where not applicable.

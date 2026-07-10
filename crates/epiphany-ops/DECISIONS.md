@@ -1569,3 +1569,45 @@ fails if one goes missing.
 
 Gated in the conformance suite as `[7d]`, and drift-locked: the committed file
 must equal `vectors::render()`, so a wire-format change lands in the diff.
+
+### P4 follow-up: one production-owned tag vocabulary, and the corpus ratified
+
+Two review findings, both real.
+
+**1. The tag-omission failure could recur.** After the P4 fix there were *still*
+four hand-maintained lists of tags — a test-local `all_tags()`, a barrier test
+spelling `0u8..=30`, a fuzz corpus naming five, a vector corpus naming four —
+plus a malformed-bytes test asserting `31` rejects. A future tag 31 added to
+`discriminant()` and omitted from `decode_canonical()` would have left every one
+of them green, and the malformed test would have *locked* it, exactly as the `30`
+version did.
+
+`operation_kind_tag_vocabulary!` is now the single source: it generates
+`discriminant`, `from_discriminant`, and `OperationKindTag::PAYLOAD_FREE` from
+one list. The generated `discriminant` match is **exhaustive over the enum**, so
+a variant added to `OperationKindTag` and not to the macro **fails to compile**
+(verified). Everything downstream reads `PAYLOAD_FREE`: the decoder, the fuzz
+corpus (all 31 tags, not five), the conformance vectors (an accept vector per
+tag, so 65 vectors not 37), and the edit-barrier round-trip. Every "one past the
+vocabulary" constant is *computed*, never spelled — a spelled constant is the
+trap that springs on whoever appends the next tag.
+
+Verified end to end by adding a hypothetical tag 31:
+- to the enum only → **compile error**;
+- to the enum and the macro → compiles, decodes, and every derived check passes
+  *because* they read `PAYLOAD_FREE` — while the committed corpus's drift lock
+  and its stale "one past the vocabulary" reject vector both fail, forcing the
+  new vectors into the diff.
+
+There is no path where a new tag leaves everything green.
+
+**2. The corpus called itself normative; the spec said it was deferred.** Binary
+Format's §"About This Companion" listed the cross-implementation decoder test
+among things the document does *not* cover, and its Golden Anchor Registry called
+it "the deferred conformance harness". Both now ratify it:
+`req:binfmt:decode-vectors` and §"The Decode Vector Corpus" state that a
+conforming decoder MUST accept every `accept` vector, MUST reject every `reject`
+vector, and MUST re-encode an accepted value to its own bytes — and that
+**accepting a `reject` vector and then normalizing it is accepting it**. Binary
+Format 0.8.0 → 0.9.0. The wire-format fuzzer stays an implementation deliverable.
+The corpus header now cites the requirement rather than asserting one.

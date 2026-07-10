@@ -29,13 +29,19 @@ use crate::{
 /// `verdict` is `"accept"` or `"reject"`. An `accept` vector additionally
 /// asserts **injectivity**: the decoded value must re-encode to exactly these
 /// bytes.
-pub type DecodeVector = (
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static str,
-    Vec<u8>,
-);
+pub type DecodeVector = (&'static str, &'static str, &'static str, String, Vec<u8>);
+
+/// One row. `name` is a `String` because the tag vectors derive theirs from the
+/// production vocabulary rather than spelling them.
+fn row(
+    surface: &'static str,
+    verdict: &'static str,
+    class: &'static str,
+    name: impl Into<String>,
+    bytes: Vec<u8>,
+) -> DecodeVector {
+    (surface, verdict, class, name.into(), bytes)
+}
 
 /// Swaps the two equal-length records of `entry` bytes that begin at `first`.
 fn swap_records(bytes: &[u8], first: usize, entry: usize) -> Vec<u8> {
@@ -75,7 +81,7 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     // --- MaterializedState -------------------------------------------------
     const MS: &str = "ops.materialized_state";
     let empty = MaterializedState::default().canonical_bytes();
-    v.push((MS, "accept", "-", "empty_state", empty.clone()));
+    v.push(row(MS, "accept", "-", "empty_state", empty.clone()));
 
     // Two objects, canonically ordered. Swapping them is caught only by the
     // whole-state re-encode guard: `objects` is a BTreeMap, so the decoder
@@ -91,8 +97,8 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     }
     .canonical_bytes();
     let (at, entry) = count_and_entry(&empty, &two_objects);
-    v.push((MS, "accept", "-", "two_objects", two_objects.clone()));
-    v.push((
+    v.push(row(MS, "accept", "-", "two_objects", two_objects.clone()));
+    v.push(row(
         MS,
         "reject",
         "non-canonical-map-order",
@@ -117,8 +123,14 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     }
     .canonical_bytes();
     let (at, entry) = count_and_entry(&empty, &two_anomalies);
-    v.push((MS, "accept", "-", "two_anomalies", two_anomalies.clone()));
-    v.push((
+    v.push(row(
+        MS,
+        "accept",
+        "-",
+        "two_anomalies",
+        two_anomalies.clone(),
+    ));
+    v.push(row(
         MS,
         "reject",
         "non-canonical-vec-order",
@@ -140,8 +152,8 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     }
     .canonical_bytes();
     let (at, entry) = count_and_entry(&empty, &two_pending);
-    v.push((MS, "accept", "-", "two_pending", two_pending.clone()));
-    v.push((
+    v.push(row(MS, "accept", "-", "two_pending", two_pending.clone()));
+    v.push(row(
         MS,
         "reject",
         "non-canonical-vec-order",
@@ -151,7 +163,7 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
 
     let mut trailing = empty.clone();
     trailing.push(0);
-    v.push((
+    v.push(row(
         MS,
         "reject",
         "trailing-bytes",
@@ -161,7 +173,7 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
 
     let mut truncated = empty.clone();
     truncated.pop();
-    v.push((
+    v.push(row(
         MS,
         "reject",
         "truncated",
@@ -173,7 +185,7 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     // pre-allocate on it, and must not loop toward EOF for a measurable time.
     let mut huge_count = empty.clone();
     huge_count[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
-    v.push((
+    v.push(row(
         MS,
         "reject",
         "count-exceeds-remaining",
@@ -182,22 +194,49 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     ));
 
     // --- OperationKindTag --------------------------------------------------
+    //
+    // EVERY tag gets an accept vector, generated from the production vocabulary.
+    // A hand-picked subset is how `TransposeInterval` shipped encoding to a byte
+    // its own decoder rejected: the corpus never named it. A new tag now lands in
+    // the committed file as a new line, and the drift lock forces it into the diff.
     const TAG: &str = "ops.operation_kind_tag";
-    for (name, tag) in [
-        ("insert_event", OperationKindTag::InsertEvent),
-        ("transpose_frozen", OperationKindTag::Transpose),
-        ("transpose_interval", OperationKindTag::TransposeInterval),
-        (
-            "registered",
-            OperationKindTag::Registered(OperationKindRegistryId(0x0123_4567_89AB_CDEF)),
-        ),
-    ] {
-        v.push((TAG, "accept", "-", name, tag.to_canonical_bytes()));
+    for tag in OperationKindTag::PAYLOAD_FREE {
+        let name = format!("tag_{:02}", tag.discriminant());
+        v.push(row(TAG, "accept", "-", name, tag.to_canonical_bytes()));
     }
+    v.push(row(
+        TAG,
+        "accept",
+        "-",
+        "registered",
+        OperationKindTag::Registered(OperationKindRegistryId(0x0123_4567_89AB_CDEF))
+            .to_canonical_bytes(),
+    ));
 
-    v.push((TAG, "reject", "unknown-discriminant", "tag_200", vec![200]));
-    v.push((TAG, "reject", "truncated", "tag_empty", Vec::new()));
-    v.push((
+    // One past the vocabulary, computed rather than spelled.
+    let unknown = OperationKindTag::PAYLOAD_FREE
+        .iter()
+        .map(OperationKindTag::discriminant)
+        .max()
+        .expect("a non-empty vocabulary")
+        + 1;
+    v.push(row(
+        TAG,
+        "reject",
+        "unknown-discriminant",
+        format!("tag_{unknown}_one_past_the_vocabulary"),
+        vec![unknown],
+    ));
+
+    v.push(row(
+        TAG,
+        "reject",
+        "unknown-discriminant",
+        "tag_200",
+        vec![200],
+    ));
+    v.push(row(TAG, "reject", "truncated", "tag_empty", Vec::new()));
+    v.push(row(
         TAG,
         "reject",
         "trailing-bytes",
@@ -208,7 +247,7 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     let mut short_registered =
         OperationKindTag::Registered(OperationKindRegistryId(1)).to_canonical_bytes();
     short_registered.pop();
-    v.push((
+    v.push(row(
         TAG,
         "reject",
         "truncated",

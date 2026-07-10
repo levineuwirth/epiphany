@@ -9,11 +9,16 @@
 #
 #     <surface>  <verdict>  <class>  <name>  <hex>
 #
-# `verdict` is `accept` or `reject`, and is the ONLY normative column besides
-# the bytes. A conforming decoder must accept every `accept` vector and reject
-# every `reject` vector. An accepted value must additionally re-encode to
-# exactly the vector's bytes: canonical decode is injective, which is what
-# content-addressing rests on.
+# NORMATIVE: Binary Format companion, `req:binfmt:decode-vectors`
+# (section: The Decode Vector Corpus). A conforming decoder MUST accept every `accept`
+# vector for a surface it implements and MUST reject every `reject` vector, and
+# a value decoded from an `accept` vector MUST re-encode to exactly its bytes.
+#
+# Accepting a `reject` vector and then normalizing it IS accepting it, and does
+# not satisfy the requirement. Canonical decode is injective: distinct byte
+# strings denote distinct values, which is what content-addressing rests on.
+#
+# `verdict` and the bytes are the only normative columns.
 #
 # `class` names why a `reject` vector is rejected. It is informative only —
 # implementations need not agree on error taxonomy. `-` where not applicable.
@@ -33,10 +38,38 @@ ops.materialized_state reject truncated empty_state_truncated 000000000000000000
 ops.materialized_state reject count-exceeds-remaining effects_count_u32_max ffffffff00000000000000000000000000000000000000000000000000000000
 
 # ops.operation_kind_tag
-ops.operation_kind_tag accept - insert_event 00
-ops.operation_kind_tag accept - transpose_frozen 04
-ops.operation_kind_tag accept - transpose_interval 1e
+ops.operation_kind_tag accept - tag_00 00
+ops.operation_kind_tag accept - tag_01 01
+ops.operation_kind_tag accept - tag_02 02
+ops.operation_kind_tag accept - tag_03 03
+ops.operation_kind_tag accept - tag_04 04
+ops.operation_kind_tag accept - tag_05 05
+ops.operation_kind_tag accept - tag_06 06
+ops.operation_kind_tag accept - tag_07 07
+ops.operation_kind_tag accept - tag_08 08
+ops.operation_kind_tag accept - tag_09 09
+ops.operation_kind_tag accept - tag_10 0a
+ops.operation_kind_tag accept - tag_11 0b
+ops.operation_kind_tag accept - tag_12 0c
+ops.operation_kind_tag accept - tag_13 0d
+ops.operation_kind_tag accept - tag_14 0e
+ops.operation_kind_tag accept - tag_15 0f
+ops.operation_kind_tag accept - tag_17 11
+ops.operation_kind_tag accept - tag_18 12
+ops.operation_kind_tag accept - tag_19 13
+ops.operation_kind_tag accept - tag_20 14
+ops.operation_kind_tag accept - tag_21 15
+ops.operation_kind_tag accept - tag_22 16
+ops.operation_kind_tag accept - tag_23 17
+ops.operation_kind_tag accept - tag_24 18
+ops.operation_kind_tag accept - tag_25 19
+ops.operation_kind_tag accept - tag_26 1a
+ops.operation_kind_tag accept - tag_27 1b
+ops.operation_kind_tag accept - tag_28 1c
+ops.operation_kind_tag accept - tag_29 1d
+ops.operation_kind_tag accept - tag_30 1e
 ops.operation_kind_tag accept - registered 1000000000000000000123456789abcdef
+ops.operation_kind_tag reject unknown-discriminant tag_31_one_past_the_vocabulary 1f
 ops.operation_kind_tag reject unknown-discriminant tag_200 c8
 ops.operation_kind_tag reject truncated tag_empty -
 ops.operation_kind_tag reject trailing-bytes insert_event_trailing 0000

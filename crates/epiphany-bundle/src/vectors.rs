@@ -14,13 +14,17 @@ use crate::{block, DecodeError};
 use epiphany_determinism::{ChunkId, ContentHash};
 
 /// `(surface, verdict, class, name, bytes)` — see `epiphany_ops::vectors`.
-pub type DecodeVector = (
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static str,
-    Vec<u8>,
-);
+pub type DecodeVector = (&'static str, &'static str, &'static str, String, Vec<u8>);
+
+fn row(
+    surface: &'static str,
+    verdict: &'static str,
+    class: &'static str,
+    name: impl Into<String>,
+    bytes: Vec<u8>,
+) -> DecodeVector {
+    (surface, verdict, class, name.into(), bytes)
+}
 
 /// A `ChunkRef` encodes as 95 bytes: id 32, kind 1, schema 4, offset 8,
 /// compressed_length 8, uncompressed_length 8, compression 2, hash 32.
@@ -57,18 +61,24 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     const MAN: &str = "bundle.manifest";
     let doc = DocumentId([5; 16]);
     let empty = Manifest::empty(doc);
-    v.push((MAN, "accept", "-", "empty_manifest", empty.encode()));
+    v.push(row(MAN, "accept", "-", "empty_manifest", empty.encode()));
 
     let mut one = Manifest::empty(doc);
     one.operation_roots.push(block_ref(0x11, 576));
     let one_bytes = one.encode();
-    v.push((MAN, "accept", "-", "one_operation_root", one_bytes.clone()));
+    v.push(row(
+        MAN,
+        "accept",
+        "-",
+        "one_operation_root",
+        one_bytes.clone(),
+    ));
 
     // Body edit: `manifest_id` is derived from the body, so it no longer matches.
     let mut id_mismatch = one_bytes.clone();
     let last = id_mismatch.len() - 1;
     id_mismatch[last] ^= 0xFF;
-    v.push((
+    v.push(row(
         MAN,
         "reject",
         "manifest-id-mismatch",
@@ -84,7 +94,13 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     two.operation_roots.push(block_ref(0x11, 576));
     two.operation_roots.push(block_ref(0x22, 1024));
     let two_bytes = two.encode();
-    v.push((MAN, "accept", "-", "two_operation_roots", two_bytes.clone()));
+    v.push(row(
+        MAN,
+        "accept",
+        "-",
+        "two_operation_roots",
+        two_bytes.clone(),
+    ));
 
     // Locate the first root: id(16) + document_id(16) + lineage option tag(1)
     // + generation(8) + roots count(4).
@@ -93,7 +109,7 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     let body = &reordered[16..];
     let redone = ManifestId::derive(doc, 0, body);
     reordered[0..16].copy_from_slice(&redone.0.to_be_bytes());
-    v.push((
+    v.push(row(
         MAN,
         "reject",
         "non-canonical-vec-order",
@@ -103,7 +119,7 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
 
     let mut trailing = one_bytes.clone();
     trailing.push(0);
-    v.push((
+    v.push(row(
         MAN,
         "reject",
         "trailing-bytes",
@@ -114,12 +130,18 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     // --- OperationIndex ----------------------------------------------------
     const IDX: &str = "bundle.operation_index";
     let empty_index = OperationIndex::build(&[]).expect("empty").encode();
-    v.push((IDX, "accept", "-", "empty_index", empty_index.clone()));
+    v.push(row(IDX, "accept", "-", "empty_index", empty_index.clone()));
 
     let one_index = OperationIndex::build(&[(block_ref(0x11, 576), vec![([2; 16], 8)])])
         .expect("one block")
         .encode();
-    v.push((IDX, "accept", "-", "one_block_one_entry", one_index.clone()));
+    v.push(row(
+        IDX,
+        "accept",
+        "-",
+        "one_block_one_entry",
+        one_index.clone(),
+    ));
 
     let two_index = OperationIndex::build(&[
         (block_ref(0x11, 576), vec![([1; 16], 8), ([3; 16], 40)]),
@@ -127,7 +149,7 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     ])
     .expect("two blocks")
     .encode();
-    v.push((IDX, "accept", "-", "two_blocks", two_index.clone()));
+    v.push(row(IDX, "accept", "-", "two_blocks", two_index.clone()));
 
     // The lenient-compression class. `CompressionAlgorithm::None` used to ignore
     // this byte, so `[0, 0xFF]` and `[0, 0]` decoded alike: two byte strings, one
@@ -135,7 +157,7 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     // (Push 5 / P3; `req:binfmt:compression-none-parameter`.)
     let mut lenient = one_index.clone();
     lenient[4 + CHUNK_REF_COMPRESSION_PARAM] = 0xFF;
-    v.push((
+    v.push(row(
         IDX,
         "reject",
         "lenient-sub-codec",
@@ -144,7 +166,7 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     ));
 
     // Strict ascent, checked per-site (there is no guard here to catch it).
-    v.push((
+    v.push(row(
         IDX,
         "reject",
         "non-canonical-vec-order",
@@ -155,7 +177,7 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     // Entries are 24 bytes: id(16) + block(4) + offset(4). They begin after the
     // blocks and their count.
     let entries_at = 4 + 2 * CHUNK_REF_LEN + 4;
-    v.push((
+    v.push(row(
         IDX,
         "reject",
         "non-canonical-vec-order",
@@ -167,7 +189,7 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     let mut bad_ordinal = one_index.clone();
     let ordinal_at = 4 + CHUNK_REF_LEN + 4 + 16;
     bad_ordinal[ordinal_at..ordinal_at + 4].copy_from_slice(&7u32.to_le_bytes());
-    v.push((
+    v.push(row(
         IDX,
         "reject",
         "block-ordinal-out-of-range",
@@ -178,7 +200,7 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     // A block reference whose kind is not an operation-envelope block.
     let mut wrong_kind = one_index.clone();
     wrong_kind[4 + 32] = ChunkKind::Snapshot.discriminant();
-    v.push((
+    v.push(row(
         IDX,
         "reject",
         "wrong-chunk-kind",
@@ -188,7 +210,7 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
 
     let mut idx_trailing = empty_index.clone();
     idx_trailing.push(0);
-    v.push((
+    v.push(row(
         IDX,
         "reject",
         "trailing-bytes",
@@ -201,11 +223,11 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     let payloads: Vec<Vec<u8>> = vec![vec![0xAA; 8], vec![0xBB; 13]];
     let packed = block::pack_operation_blocks(&payloads);
     let good = packed.first().expect("one block").clone();
-    v.push((BLK, "accept", "-", "two_envelopes", good.clone()));
+    v.push(row(BLK, "accept", "-", "two_envelopes", good.clone()));
 
     let mut blk_trailing = good.clone();
     blk_trailing.push(0);
-    v.push((
+    v.push(row(
         BLK,
         "reject",
         "trailing-bytes",
@@ -215,7 +237,7 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
 
     let mut blk_truncated = good.clone();
     blk_truncated.pop();
-    v.push((
+    v.push(row(
         BLK,
         "reject",
         "truncated",
@@ -227,7 +249,7 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     // reject on the count, not pre-allocate for it.
     let mut huge = good.clone();
     huge[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
-    v.push((
+    v.push(row(
         BLK,
         "reject",
         "count-exceeds-remaining",

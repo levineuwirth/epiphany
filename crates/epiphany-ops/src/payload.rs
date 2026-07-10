@@ -418,45 +418,88 @@ pub enum OperationKindTag {
     TransposeInterval,
 }
 
-impl OperationKindTag {
-    fn discriminant(&self) -> u8 {
-        match self {
-            OperationKindTag::InsertEvent => 0,
-            OperationKindTag::DeleteEvent => 1,
-            OperationKindTag::ModifyEvent => 2,
-            OperationKindTag::RespellPitch => 3,
-            OperationKindTag::Transpose => 4,
-            OperationKindTag::CreateCrossCutting => 5,
-            OperationKindTag::DeleteCrossCutting => 6,
-            OperationKindTag::ModifyCrossCutting => 7,
-            OperationKindTag::ChangeRegionTimeModel => 8,
-            OperationKindTag::InsertRegion => 9,
-            OperationKindTag::DeleteRegion => 10,
-            OperationKindTag::InsertStaffInstance => 11,
-            OperationKindTag::DeleteStaffInstance => 12,
-            OperationKindTag::SetUserSystemBreak => 13,
-            OperationKindTag::SetUserPageBreak => 14,
-            OperationKindTag::DeclareTransaction => 15,
-            OperationKindTag::Registered(_) => 16,
-            OperationKindTag::InsertIdentifiedPitch => 17,
-            OperationKindTag::DeleteIdentifiedPitch => 18,
-            OperationKindTag::ModifyIdentifiedPitch => 19,
-            OperationKindTag::CreateVoice => 20,
-            OperationKindTag::DeleteVoice => 21,
-            OperationKindTag::SetMetadata => 22,
-            OperationKindTag::SetMetricGrid => 23,
-            // Phase-3 first tranche; appended past the golden-locked 0..=23.
-            OperationKindTag::InsertStaff => 24,
-            OperationKindTag::SetTimeSignature => 25,
-            OperationKindTag::SetTempoSegment => 26,
-            OperationKindTag::SetStaffLayout => 27,
-            // Schema-major-2 revision; appended past the Phase-3 24..=27.
-            OperationKindTag::CreateRepeatStructure => 28,
-            OperationKindTag::DeleteRepeatStructure => 29,
-            // Push 4a; appended past 29.
-            OperationKindTag::TransposeInterval => 30,
+/// The discriminant of [`OperationKindTag::Registered`], the one tag that
+/// carries a payload. It sits inside the payload-free range, so it is named
+/// rather than derived.
+pub const REGISTERED_TAG_DISCRIMINANT: u8 = 16;
+
+/// The single source of truth for the payload-free tag vocabulary.
+///
+/// Generates the discriminant mapping, its inverse, and
+/// [`OperationKindTag::PAYLOAD_FREE`] from one list. The generated
+/// `discriminant` match is **exhaustive over the enum**, so a variant added to
+/// `OperationKindTag` without being added here fails to compile — and because
+/// the decoder, the fuzz corpus, the conformance vectors, and the edit-barrier
+/// round-trip all read `PAYLOAD_FREE`, adding it here reaches every one of them.
+///
+/// This exists because it did not. Push 4a added `TransposeInterval` to a
+/// hand-written `discriminant` match and to nothing else: the decoder rejected
+/// its own encoding, an edit barrier naming it could not be reopened, and four
+/// separate hand-maintained lists — two of them asserting the tag was *unknown*
+/// — stayed green (Push 5 / P4).
+macro_rules! operation_kind_tag_vocabulary {
+    ($($variant:ident = $disc:literal),+ $(,)?) => {
+        impl OperationKindTag {
+            /// Every payload-free tag, in discriminant order. [`Registered`]
+            /// is excluded: it carries an id and has no bare encoding.
+            ///
+            /// [`Registered`]: OperationKindTag::Registered
+            pub const PAYLOAD_FREE: &'static [OperationKindTag] =
+                &[$(OperationKindTag::$variant),+];
+
+            /// The tag's one-byte wire discriminant
+            /// (`req:binfmt:kind-tag`; append-only).
+            pub fn discriminant(&self) -> u8 {
+                match self {
+                    $(OperationKindTag::$variant => $disc,)+
+                    OperationKindTag::Registered(_) => REGISTERED_TAG_DISCRIMINANT,
+                }
+            }
+
+            /// The payload-free tag for `discriminant`, or `None` if it names
+            /// no tag. `Registered` is never returned: it is decoded separately,
+            /// with its id.
+            fn from_discriminant(discriminant: u8) -> Option<OperationKindTag> {
+                Some(match discriminant {
+                    $($disc => OperationKindTag::$variant,)+
+                    _ => return None,
+                })
+            }
         }
-    }
+    };
+}
+
+operation_kind_tag_vocabulary! {
+    InsertEvent = 0,
+    DeleteEvent = 1,
+    ModifyEvent = 2,
+    RespellPitch = 3,
+    Transpose = 4,
+    CreateCrossCutting = 5,
+    DeleteCrossCutting = 6,
+    ModifyCrossCutting = 7,
+    ChangeRegionTimeModel = 8,
+    InsertRegion = 9,
+    DeleteRegion = 10,
+    InsertStaffInstance = 11,
+    DeleteStaffInstance = 12,
+    SetUserSystemBreak = 13,
+    SetUserPageBreak = 14,
+    DeclareTransaction = 15,
+    InsertIdentifiedPitch = 17,
+    DeleteIdentifiedPitch = 18,
+    ModifyIdentifiedPitch = 19,
+    CreateVoice = 20,
+    DeleteVoice = 21,
+    SetMetadata = 22,
+    SetMetricGrid = 23,
+    InsertStaff = 24,
+    SetTimeSignature = 25,
+    SetTempoSegment = 26,
+    SetStaffLayout = 27,
+    CreateRepeatStructure = 28,
+    DeleteRepeatStructure = 29,
+    TransposeInterval = 30,
 }
 
 impl CanonicalEncode for OperationKindTag {
@@ -481,7 +524,7 @@ impl CanonicalDecode for OperationKindTag {
             expected: 1,
             actual: 0,
         })?;
-        if tag == 16 {
+        if tag == REGISTERED_TAG_DISCRIMINANT {
             let arr: [u8; 16] = rest.try_into().map_err(|_| DecodeError::UnexpectedLength {
                 expected: 17,
                 actual: bytes.len(),
@@ -496,43 +539,9 @@ impl CanonicalDecode for OperationKindTag {
                 actual: bytes.len(),
             });
         }
-        Ok(match tag {
-            0 => OperationKindTag::InsertEvent,
-            1 => OperationKindTag::DeleteEvent,
-            2 => OperationKindTag::ModifyEvent,
-            3 => OperationKindTag::RespellPitch,
-            4 => OperationKindTag::Transpose,
-            5 => OperationKindTag::CreateCrossCutting,
-            6 => OperationKindTag::DeleteCrossCutting,
-            7 => OperationKindTag::ModifyCrossCutting,
-            8 => OperationKindTag::ChangeRegionTimeModel,
-            9 => OperationKindTag::InsertRegion,
-            10 => OperationKindTag::DeleteRegion,
-            11 => OperationKindTag::InsertStaffInstance,
-            12 => OperationKindTag::DeleteStaffInstance,
-            13 => OperationKindTag::SetUserSystemBreak,
-            14 => OperationKindTag::SetUserPageBreak,
-            15 => OperationKindTag::DeclareTransaction,
-            17 => OperationKindTag::InsertIdentifiedPitch,
-            18 => OperationKindTag::DeleteIdentifiedPitch,
-            19 => OperationKindTag::ModifyIdentifiedPitch,
-            20 => OperationKindTag::CreateVoice,
-            21 => OperationKindTag::DeleteVoice,
-            22 => OperationKindTag::SetMetadata,
-            23 => OperationKindTag::SetMetricGrid,
-            24 => OperationKindTag::InsertStaff,
-            25 => OperationKindTag::SetTimeSignature,
-            26 => OperationKindTag::SetTempoSegment,
-            27 => OperationKindTag::SetStaffLayout,
-            28 => OperationKindTag::CreateRepeatStructure,
-            29 => OperationKindTag::DeleteRepeatStructure,
-            // Push 4a. Omitting this made `to_canonical_bytes` and
-            // `decode_canonical` asymmetric: the tag encoded to `[30]` and
-            // would not read back, so an edit barrier that named
-            // `TransposeInterval` could be persisted and never reopened.
-            30 => OperationKindTag::TransposeInterval,
-            _ => return Err(DecodeError::MalformedDomainTag),
-        })
+        // The mapping is generated from the same list as `discriminant`
+        // (`operation_kind_tag_vocabulary!`), so encode and decode cannot drift.
+        OperationKindTag::from_discriminant(tag).ok_or(DecodeError::MalformedDomainTag)
     }
 }
 
@@ -1902,53 +1911,31 @@ mod tests {
         assert_eq!(prim.tag(), OperationKindTag::RespellPitch);
     }
 
-    /// **Every** `OperationKindTag` variant, listed by name.
+    /// **Every** `OperationKindTag`, derived from the production vocabulary.
     ///
-    /// Enumerating *variants* is the point. The round-trip test used to
-    /// enumerate *discriminants* — `(0u8..30).map(decode_canonical)` — which
-    /// starts from bytes the decoder already knows and therefore cannot notice a
-    /// variant the decoder is missing. Push 4a added `TransposeInterval` to
-    /// `discriminant()` and not to `decode_canonical`, and that test stayed
-    /// green while the tag encoded to `[30]` and would not read back.
-    ///
-    /// Adding a variant without adding it here fails `the_tag_vocabulary_is_complete`.
+    /// Not a hand-written list. `OperationKindTag::PAYLOAD_FREE` is generated by
+    /// `operation_kind_tag_vocabulary!`, whose `discriminant` match is
+    /// exhaustive over the enum — so a variant that exists cannot be missing
+    /// here, and the fuzz corpus, the conformance vectors, and the edit-barrier
+    /// round-trip all read the same constant.
     fn all_tags() -> Vec<OperationKindTag> {
-        let mut tags = vec![
-            OperationKindTag::InsertEvent,
-            OperationKindTag::DeleteEvent,
-            OperationKindTag::ModifyEvent,
-            OperationKindTag::RespellPitch,
-            OperationKindTag::Transpose,
-            OperationKindTag::CreateCrossCutting,
-            OperationKindTag::DeleteCrossCutting,
-            OperationKindTag::ModifyCrossCutting,
-            OperationKindTag::ChangeRegionTimeModel,
-            OperationKindTag::InsertRegion,
-            OperationKindTag::DeleteRegion,
-            OperationKindTag::InsertStaffInstance,
-            OperationKindTag::DeleteStaffInstance,
-            OperationKindTag::SetUserSystemBreak,
-            OperationKindTag::SetUserPageBreak,
-            OperationKindTag::DeclareTransaction,
-            OperationKindTag::InsertIdentifiedPitch,
-            OperationKindTag::DeleteIdentifiedPitch,
-            OperationKindTag::ModifyIdentifiedPitch,
-            OperationKindTag::CreateVoice,
-            OperationKindTag::DeleteVoice,
-            OperationKindTag::SetMetadata,
-            OperationKindTag::SetMetricGrid,
-            OperationKindTag::InsertStaff,
-            OperationKindTag::SetTimeSignature,
-            OperationKindTag::SetTempoSegment,
-            OperationKindTag::SetStaffLayout,
-            OperationKindTag::CreateRepeatStructure,
-            OperationKindTag::DeleteRepeatStructure,
-            OperationKindTag::TransposeInterval,
-        ];
+        let mut tags = OperationKindTag::PAYLOAD_FREE.to_vec();
         tags.push(OperationKindTag::Registered(OperationKindRegistryId(
             0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10,
         )));
         tags
+    }
+
+    /// One past the payload-free vocabulary — computed, never spelled. Spelling
+    /// it is how `30` came to be asserted *unknown* while it was
+    /// `TransposeInterval`.
+    fn first_unknown_discriminant() -> u8 {
+        OperationKindTag::PAYLOAD_FREE
+            .iter()
+            .map(OperationKindTag::discriminant)
+            .max()
+            .expect("a non-empty vocabulary")
+            + 1
     }
 
     /// A compile-time-ish completeness check: `all_tags` must match the
@@ -1956,17 +1943,26 @@ mod tests {
     #[test]
     fn the_tag_vocabulary_is_complete() {
         let tags = all_tags();
-        assert_eq!(tags.len(), 31, "30 payload-less tags plus `Registered`");
+        let unknown = first_unknown_discriminant();
 
-        // Every payload-less discriminant 0..=30 except 16 decodes to a variant
-        // that is in the list.
-        for d in (0u8..=30).filter(|d| *d != 16) {
+        // The payload-free discriminants are exactly `0..unknown`, minus the one
+        // `Registered` occupies. No gaps: the vocabulary is dense and
+        // append-only.
+        for d in (0..unknown).filter(|d| *d != REGISTERED_TAG_DISCRIMINANT) {
             let decoded = OperationKindTag::decode_canonical(&[d])
                 .unwrap_or_else(|e| panic!("discriminant {d} must decode: {e:?}"));
-            assert!(tags.contains(&decoded), "{decoded:?} missing from all_tags");
+            assert!(
+                tags.contains(&decoded),
+                "{decoded:?} missing from PAYLOAD_FREE"
+            );
         }
-        // And 31 is one past the vocabulary.
-        assert!(OperationKindTag::decode_canonical(&[31]).is_err());
+        assert_eq!(
+            tags.len(),
+            usize::from(unknown),
+            "{unknown} payload-free discriminants (one of them `Registered`'s), \
+             plus the `Registered` value itself"
+        );
+        assert!(OperationKindTag::decode_canonical(&[unknown]).is_err());
     }
 
     #[test]
@@ -2002,12 +1998,13 @@ mod tests {
     #[test]
     fn operation_kind_tag_decode_rejects_malformed_bytes() {
         use epiphany_determinism::DecodeError;
-        // Unknown discriminant (31 is one past the vocabulary): rejected,
-        // never normalized. This assertion named 30 until Push 5 / P4, by which
-        // time 30 was `TransposeInterval` — so the test was actively locking a
-        // bug in place rather than guarding against one.
+        // One past the vocabulary: rejected, never normalized. COMPUTED, not
+        // spelled. This assertion literally said `30` until Push 5 / P4, by
+        // which time 30 was `TransposeInterval` — so the test was locking a bug
+        // in place rather than guarding against one. A spelled constant here is
+        // a trap that springs on whoever appends the next tag.
         assert_eq!(
-            OperationKindTag::decode_canonical(&[31]),
+            OperationKindTag::decode_canonical(&[first_unknown_discriminant()]),
             Err(DecodeError::MalformedDomainTag)
         );
         // Empty input.

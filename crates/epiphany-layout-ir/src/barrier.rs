@@ -1127,14 +1127,16 @@ mod tests {
     #[test]
     fn a_barrier_prohibiting_every_operation_tag_round_trips() {
         use epiphany_ops::OperationKindRegistryId;
-        let mut tags: Vec<OperationKindTag> = (0u8..=30)
-            .filter(|d| *d != 16)
-            .map(|d| {
-                epiphany_determinism::CanonicalDecode::decode_canonical(&[d][..])
-                    .unwrap_or_else(|e| panic!("tag {d} must decode: {e:?}"))
-            })
-            .collect();
+        // From the production vocabulary, not a spelled range. `(0u8..=30)` would
+        // silently stop covering the newest tag the day one is appended — which
+        // is precisely how this surface broke.
+        let mut tags: Vec<OperationKindTag> = OperationKindTag::PAYLOAD_FREE.to_vec();
         tags.push(OperationKindTag::Registered(OperationKindRegistryId(7)));
+        assert!(
+            tags.len() > 30,
+            "the barrier round-trip must cover every tag, got {}",
+            tags.len()
+        );
 
         let barrier = EditBarrier {
             scope: BarrierScope::WholeScore,

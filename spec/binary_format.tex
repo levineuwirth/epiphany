@@ -235,7 +235,7 @@
   {\Large\scshape\color{epiphanyslate}Binary Format}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.8.0 --- Strict CompressionAlgorithm decode (the non-zero None parameter is rejected, not ignored)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.9.0 --- The decode vector corpus is ratified (the cross-implementation decoder test is no longer deferred)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the byte layouts it defines}
   \vfill
 \end{titlepage}
@@ -275,12 +275,15 @@ This document does \emph{not} cover:
     companion's;
   \item the Chapter-4 tuning-catalog values (pitch-space and tuning-system
     registries), which are undelivered Track-C work and have no wire form yet;
-  \item the required conformance harnesses (the cross-implementation decoder
-    test and the wire-format fuzzer). Those are \emph{implementation}
-    deliverables tracked in the Phase-2 process documents, not part of this
-    document's normative text; Chapter~\ref{ch:goldens} records the golden
-    anchors that any such harness must reproduce.
+  \item the wire-format fuzzer, an \emph{implementation} deliverable tracked
+    in the Phase-2 process documents rather than part of this document's
+    normative text; Chapter~\ref{ch:goldens} records the golden anchors any
+    such harness must reproduce.
 \end{itemize}
+
+It \emph{does} cover the cross-implementation decoder test, which is no longer
+deferred: Section~\ref{sec:goldens:decode-vectors} ratifies the literal-byte
+vector corpus and the accept/reject verdict a conforming decoder owes it.
 
 \section{Relationship to the Core Specification and the Operation Catalog}
 \label{sec:about:relationship}
@@ -3121,9 +3124,48 @@ Each anchor names its crate file, then the test on a second line.
 Struct \emph{bodies} in Chapter~\ref{ch:values} are round-trip-locked rather
 than literal-byte-locked: their byte identity follows from the frozen
 positional rule plus the literal-byte locks on every discriminant and leaf
-they embed. A future cross-implementation decoder test (the deferred
-conformance harness) should add literal-byte vectors for the representative
-layouts of Section~\ref{sec:values:representative}.
+they embed.
+
+\section{The Decode Vector Corpus}
+\label{sec:goldens:decode-vectors}
+
+The cross-implementation decoder test is \textbf{delivered}, as a corpus of
+literal byte strings each paired with the verdict a decoder owes it. The
+reference implementation carries it at \texttt{spec/vectors/decode\_vectors.txt}
+and regenerates it from a committed generator, so a change to any wire form
+moves the file.
+
+Each line is \texttt{surface\ \ verdict\ \ class\ \ name\ \ hex}. The
+\texttt{verdict} is \texttt{accept} or \texttt{reject}. The \texttt{class}
+names \emph{why} a rejected vector is rejected and is \textbf{informative
+only}: implementations need not agree on an error taxonomy.
+
+\begin{requirement}
+  \label{req:binfmt:decode-vectors}
+  A conforming decoder \MUST{} accept every \texttt{accept} vector for a
+  surface it implements, and \MUST{} reject every \texttt{reject} vector for
+  that surface. A value decoded from an \texttt{accept} vector \MUST{}
+  re-encode to exactly that vector's bytes.
+
+  Accepting a \texttt{reject} vector and then normalizing it is
+  \emph{accepting} it, and does not satisfy this requirement. Canonical decode
+  is injective: distinct byte strings denote distinct values, which is what
+  content-addressing rests on.
+\end{requirement}
+
+\begin{rationale}
+  The corpus is not a restatement of this document; it is what a second
+  implementation can be run against. Every rejection class in it is one the
+  reference implementation shipped a bug in, or one whose check no injectivity
+  fuzzer can see: a whole-value re-encode guard catches the fields a decoder
+  \emph{normalizes} and is blind to order-preserving sequence fields, which need
+  per-site order checks; and a guard on an outer value can \emph{mask} a lenient
+  inner codec rather than fix it (Push~5).
+
+  A future revision should extend the corpus to the representative struct
+  layouts of Section~\ref{sec:values:representative}, which remain round-trip
+  locked rather than literal-byte locked.
+\end{rationale}
 
 % ===========================================================================
 \chapter{Revision History}
@@ -3239,6 +3281,16 @@ layouts of Section~\ref{sec:values:representative}.
   having no whole-value re-encode guard, accepted both. Found by the wire-decode
   fuzzer. Supersedes the core specification's ``ignored on read''; no wire
   layout changed and no conforming writer is affected. \\
+    \today & Golden anchors & 0.9.0 --- Ratifies the decode vector corpus
+  (Push~5, P4): \texttt{req:binfmt:decode-vectors} and
+  Section~\ref{sec:goldens:decode-vectors}. The cross-implementation decoder
+  test moves out of the \sectionsc{About This Companion} exclusion list and out
+  of the \sectionsc{Golden Anchor Registry}'s ``deferred conformance harness''
+  note: literal byte vectors with accept/reject verdicts now exist
+  (\texttt{spec/vectors/decode\_vectors.txt}), and a conforming decoder owes them
+  the verdict. Accepting a \texttt{reject} vector and normalizing it is
+  \emph{accepting} it. The wire-format fuzzer remains an implementation
+  deliverable. No wire layout changed. \\
 \bottomrule
 \end{longtable}
 
