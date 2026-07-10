@@ -83,6 +83,7 @@ mod conflict;
 mod decode;
 mod effect;
 mod encode;
+mod envdecode;
 mod envelope;
 mod migrate;
 mod opset;
@@ -111,6 +112,7 @@ pub use effect::{
     NoOpReason, OperationEffect, PreconditionFailureReason, ReanchorReason, ReanchorResult,
     RepairKind, RepairRecord, TupletCompensationKind,
 };
+pub use envdecode::{decode_envelope, EnvelopeDecodeError};
 pub use envelope::{
     peek_operation_id, well_formed, EnvelopeHash, OperationEnvelope, WellFormednessError,
 };

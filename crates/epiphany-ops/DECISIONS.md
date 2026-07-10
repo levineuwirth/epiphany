@@ -1611,3 +1611,56 @@ vector, and MUST re-encode an accepted value to its own bytes — and that
 **accepting a `reject` vector and then normalizing it is accepting it**. Binary
 Format 0.8.0 → 0.9.0. The wire-format fuzzer stays an implementation deliverable.
 The corpus header now cites the requirement rather than asserting one.
+
+## Push 5 / P5 — the missing inverse: bytes back to an operation envelope
+
+Text Projection is blocked on this, but the blocker was bigger than the task.
+
+**The format was write-only for operations.** A bundle's envelope blocks decoded
+to opaque byte strings; `OperationKind` had an encoder and no decoder; nothing in
+the workspace called `decode_block` outside `epiphany-bundle` itself; and nothing
+anywhere reconstructed an `OperationEnvelope`. Chapter 6 holds that a score's
+canonical state *is* the set of operations committed to it — so a bundle could be
+written and its score could never be reopened. The envelope's byte layout was
+fully pinned (`binary_format.tex` §"Operation Envelope Encoding"); nobody wrote
+the inverse.
+
+`epiphany_ops::decode_envelope` is that inverse, and the first thing built on it
+is `testkit/tests/bundle_reopen.rs`: create a bundle from 400 generated
+envelopes, commit, take the bytes, reopen from nothing but bytes, decode every
+envelope, rebuild the `OperationSet`, reduce — and get the same canonical state.
+That test could not have been written before.
+
+**Strictness, in two layers, per the P2 lesson.**
+- A whole-envelope re-encode-and-compare guard. Sound *here* because every
+  sequence in this encoding is normalized by its encoder (`sorted_canonical`,
+  `BTreeSet`, `BTreeMap`), so non-canonical bytes cannot survive a round trip.
+- Per-site checks where the rule deserves its own error, and where a future
+  encoder change must not silently relax it: `TransposeInterval.targets` is a
+  **set** (`seq^⇑`, strictly increasing — a duplicate rejected, never absorbed by
+  the `BTreeSet` it collects into), and the frozen `Transpose.targets` is a
+  **multiset** (non-decreasing, duplicates preserved). This is the rule Push 4a
+  wrote into the wire table and left for whoever built this decoder; it is now
+  enforced.
+- A bounded `count()`: a declared count past the bytes remaining is rejected
+  before it can drive an allocation.
+
+**Coverage, measured rather than assumed — again.** The obvious oracle
+(`gen_envelope_set`, 4,000 envelopes) reaches only **28 of 31 kinds and 1 of 4
+payload variants**. `ChangeRegionTimeModel`, `DeclareTransaction`, `Registered`,
+and all three meta payloads were untouched — which happen to hold the trickiest
+decoders (`PositionRemapping`, NFC strings, `ResolutionAction`, `EnvelopeHash`).
+`every_operation_kind_and_payload_round_trips` drives an exhaustive `match` on
+`OperationKindTag`, so the compiler forces a sample for every future kind.
+
+**Mutations verified.** Removing the `seq^⇑` check still rejects (the guard is a
+genuine backstop for that field) but with the wrong error — so the per-site check
+earns its place on the error, not the verdict. Removing the whole-envelope guard
+leaves every round-trip test green, because round-trips only ever feed canonical
+bytes; `an_unsorted_sequence_is_rejected_by_the_whole_envelope_guard` is the test
+that locks it, and it fails under that mutation.
+
+**A trap worth remembering.** `PitchId::new(ReplicaId(7), 1)` and
+`OperationId::new(ReplicaId(7), 1)` have *identical canonical bytes* — typed ids
+share their byte form. A byte-patching test that searches for an id finds the
+envelope's own leading id first. Patch by framing, or from the end.
