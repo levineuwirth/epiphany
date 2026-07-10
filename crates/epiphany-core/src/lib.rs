@@ -58,6 +58,7 @@ mod time;
 pub mod fuzz;
 pub mod generators;
 pub mod prepass;
+pub mod textvalue;
 
 pub use ids::{
     derive_system_id, AnalysisLayerId, AnalyticalAnnotationId, BarlineAlignmentGroupId, BeamId,
