@@ -226,7 +226,7 @@
   {\Large\scshape\color{epiphanyslate}Text Projection}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.2.0 --- Canonical-manifest coverage (blobs, extensions, custom profiles, the derived-reference rule)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.3.0 --- Every production expanded; the value-projection rule}\\[4pt]
   {\small\color{epiphanyslate}Normative for the text form it defines}
   \vfill
 \end{titlepage}
@@ -517,6 +517,9 @@ version, and its constraints.
   kinds and the edit barriers are opaque to the bundle and are projected as byte
   strings, verbatim.
 
+  Fields appear in the ratified declaration order (core specification Chapter~8,
+  \sectionsc{Extension Declarations}).
+
   Each preserved chunk root is projected as its \texttt{kind}, its
   \texttt{schema\_version}, and its uncompressed payload
   (Requirement~\ref{req:textproj:derive-or-carry}), never as a
@@ -525,11 +528,94 @@ version, and its constraints.
 \end{requirement}
 
 \begin{rationale}
+  \texttt{affected\_object\_kinds} and \texttt{edit\_barriers} have ratified
+  structured shapes (\texttt{ObjectKind}, \texttt{EditBarrier}) \emph{and}
+  canonical byte encodings, and the bundle stores them opaquely: it preserves
+  them across reads and writes without interpreting them. At 0.3.0 the projection
+  does the same, carrying their canonical bytes, on the principle that the
+  projection interprets nothing the bundle does not.
+
+  This is a deferral, not a conclusion. A later revision \MAY{} project them
+  structurally under
+  Requirement~\ref{req:textproj:value-projection}; because their canonical bytes
+  are unchanged by that, doing so does not change the document, only its text ---
+  and that is a version-gated change to this companion, not to the format.
+\end{rationale}
+
+\begin{rationale}
   Version 0.1.0 carried only identity, the required flag, barriers, and a list of
   chunks, dropping the semantic version and the affected object kinds outright and
   leaving the chunks' representation undefined. An extension's declaration governs
   how the canonical document is \emph{interpreted}; a projection that loses part
   of it does not determine the document.
+\end{rationale}
+
+\section{Projecting Canonical Values}
+\label{sec:content:values}
+
+An operation payload embeds canonical values from the core specification's
+Chapter~5 --- an \texttt{Event}, a \texttt{Pitch}, a \texttt{Region}, a
+\texttt{TimeSignature}. This document does \emph{not} restate their shapes. It
+states one rule for turning any of them into text, and the shapes stay where they
+are ratified.
+
+\begin{requirement}
+  \label{req:textproj:value-projection}
+  A canonical value is projected thus:
+
+  \begin{enumerate}
+    \item A \textbf{struct} becomes \texttt{(<type-name> <field>\ldots)}, where
+      the type name is the core specification's name in lower-case
+      hyphenated form and the fields appear \emph{positionally}, in the order
+      that specification's ratified listing declares them. Field names are not
+      written.
+    \item A \textbf{newtype} --- a struct of exactly one unnamed field ---
+      is projected as that field alone, with no wrapper. This mirrors the binary
+      form, in which a newtype delegates to its field and adds no bytes.
+    \item A \textbf{tagged union} becomes
+      \texttt{(<variant-name> <field>\ldots)}. A variant with no fields is the
+      bare symbol \texttt{<variant-name>}.
+    \item An \textbf{option} is \texttt{()} when absent and
+      \texttt{(some <value>)} when present.
+    \item A \textbf{sequence}, \textbf{set}, or \textbf{map} is a parenthesised
+      list of its elements, \emph{in the order the binary form writes them}; a
+      map entry is \texttt{(<key> <value>)}. The projection introduces no
+      ordering of its own, and a set that the binary form writes strictly
+      increasing is written strictly increasing here
+      (Requirement~\ref{req:textproj:strict-parse}).
+    \item \textbf{Leaves.} An identifier or hash is a byte string. An integer is
+      an integer. A boolean is \texttt{true} or \texttt{false}. Canonical text is
+      a quoted string. A rational is \texttt{(ratio <numerator> <denominator>)},
+      in lowest terms with a positive denominator and the sign on the numerator;
+      zero is \texttt{(ratio 0 1)}. A \texttt{CanonicalF64} is a byte string of
+      its eight canonical little-endian IEEE~754 bytes.
+  \end{enumerate}
+\end{requirement}
+
+\begin{rationale}
+  \textbf{One rule, not forty productions.} Spelling out a production per value
+  type would restate the entire Chapter~5 data model in a second normative
+  document, and two normative listings of one struct is precisely the drift this
+  project has already been bitten by. A rule cannot drift from the listing it
+  reads.
+
+  \textbf{Positional fields.} The declaration order is already normative --- the
+  binary form depends on it --- so field names would be redundant, would double
+  the length of every line, and would create a second thing to keep in step with
+  a rename. The constructor name carries the context a reader needs.
+
+  \textbf{Newtypes are transparent} for the same reason they are transparent in
+  the binary form: a \texttt{MusicalPosition} \emph{is} a rational, and wrapping
+  it would put a distinction in the text that the document does not make.
+
+  \textbf{Floats are bytes, never decimal.} A decimal rendering of an
+  \texttt{f64} is not canonically unique --- shortest-round-trip and
+  seventeen-significant-digit forms both round-trip, and $-0.0$ has two
+  spellings --- so a decimal float would break
+  Requirement~\ref{req:textproj:canonical-text} at the first tempo mark. The core
+  specification already forbids computed floats in canonical state and stores the
+  eight bytes; the projection carries those eight bytes. This costs readability
+  in exactly one place, and buys canonicality everywhere.
 \end{rationale}
 
 \section{Reduced State}
@@ -683,7 +769,7 @@ projection   ::= header document lineage? profile* extension*
                  canonical-base? blob* envelope*
 
 header       ::= "(text-projection " version ")" LF
-version      ::= integer "." integer "." integer
+version      ::= "(" integer " " integer " " integer ")"
 
 document     ::= "(document " bytes ")" LF
 lineage      ::= "(lineage " bytes ")" LF
@@ -691,41 +777,108 @@ lineage      ::= "(lineage " bytes ")" LF
 profile      ::= "(profile " profile-id " " version " " constraints ")" LF
 profile-id   ::= "full" | "read-only" | "lite" | "(custom " bytes ")"
 constraints  ::= "(constraints " integer " " retention ")"
-retention    ::= "(retention " integer " " (integer|"()") " " bool ")"
+retention    ::= "(retention " integer " " option " " bool ")"
 
 extension    ::= "(extension " bytes " " version " " bool
-                 " (kinds " bytes ") (barriers " bytes ")"
-                 " (chunks " chunk* "))" LF
-chunk        ::= "(chunk " symbol " " schema " " bytes ")"  ; kind, schema, payload
-schema       ::= "(schema " integer " " integer ")"          ; major, minor
+                 " (" chunk* ") " bytes " " bytes ")" LF
+                 ; id, version, required, chunks, affected-kinds, barriers
+                 ; (the ratified declaration order)
+chunk        ::= "(chunk " chunk-kind " " schema " " bytes ")"
+chunk-kind   ::= "operation-envelope-block" | "operation-index" | "snapshot"
+               | "blob" | "extension-data" | "text-projection"
+               | "layout-cache" | "integrity-index" | "manifest"
+schema       ::= "(schema " integer " " integer ")"
 
 canonical-base
-             ::= "(canonical-base " bytes " (frontier " bytes ")"
-                 " (reduction " integer ") (profile " profile-id ")"
-                 " " schema " (payload " bytes "))" LF
+             ::= "(canonical-base " bytes " " bytes " " integer
+                 " " profile-id " " schema " " bytes ")" LF
+                 ; snapshot-id, frontier, reduction version, profile,
+                 ; root schema, root payload
 
-blob         ::= "(blob " string " " (integer|"()") " " bytes ")" LF
-                 ; media type, declared-max-uncompressed-length, payload
+blob         ::= "(blob " string " " option " " bytes ")" LF
+                 ; media type, declared max uncompressed length, payload
 
-envelope     ::= "(envelope " bytes " (author " bytes ")"
-                 " (stamp " integer " " integer " " bytes ")"
-                 " (causal " vector " " dots ")"
-                 " " transaction " " payload ")" LF
+envelope     ::= "(envelope " bytes " " bytes " " stamp " " causal
+                 " " option " " payload ")" LF
+                 ; id, author, stamp, causal context, transaction, payload
+stamp        ::= "(stamp " integer " " integer " " bytes ")"
+causal       ::= "(causal (" replica-seen* ") (" bytes* "))"
+replica-seen ::= "(" bytes " " integer ")"
 
-transaction  ::= "()" | "(transaction " bytes ")"
 payload      ::= "(primitive " kind ")"
                | "(resolve-conflict " bytes " " action ")"
                | "(undo " bytes " " policy ")"
                | "(resolve-equivocation " bytes " " bytes ")"
 
-vector       ::= "(" ("(" bytes " " integer ")")* ")"   ; replica, counter
-dots         ::= "(" bytes* ")"                        ; operation ids
+action       ::= "accept-loser" | "keep-winner" | "dismiss"
+               | "(override " bytes ")" | "(reanchor " bytes ")"
+               | "(registered " bytes ")"
+policy       ::= "strict-inverse" | "best-effort" | "cascade"
+
+; --- Operation kinds. Fields are the Operation Catalog's payload schema,
+; --- positionally, in declaration order. Embedded Chapter-5 values follow
+; --- req:textproj:value-projection and are written <value> below.
+
+kind         ::= "(insert-event " bytes " " value ")"
+               | "(delete-event " bytes " " tuplet-comp ")"
+               | "(respell-pitch " bytes " " value ")"
+               | "(create-cross-cutting " cross-cutting ")"
+               | "(change-region-time-model " bytes " " value
+                     " (" bytes* ") " remapping ")"
+               | "(set-user-system-break " bytes " " value " " bool ")"
+               | "(declare-transaction " bytes " " string " " option ")"
+               | "(registered " bytes " " bytes ")"
+               | "(modify-event " value ")"
+               | "(transpose (" bytes* ") " integer ")"
+               | "(insert-identified-pitch " bytes " " value ")"
+               | "(delete-identified-pitch " bytes ")"
+               | "(modify-identified-pitch " bytes " " value ")"
+               | "(delete-cross-cutting " bytes ")"
+               | "(modify-cross-cutting " cross-cutting ")"
+               | "(create-region " value ")"
+               | "(delete-region " bytes ")"
+               | "(create-staff-instance " bytes " " value ")"
+               | "(delete-staff-instance " bytes ")"
+               | "(create-voice " bytes " " value ")"
+               | "(delete-voice " bytes ")"
+               | "(set-metadata " value ")"
+               | "(set-metric-grid " bytes " " option ")"
+               | "(set-user-page-break " bytes " " value " " bool ")"
+               | "(create-staff " value ")"
+               | "(set-time-signature " bytes " " value " " option ")"
+               | "(set-tempo-segment " option " " value " " option ")"
+               | "(set-staff-layout " bytes " " option " " option " " bool ")"
+               | "(create-repeat-structure " value ")"
+               | "(delete-repeat-structure " bytes ")"
+               | "(transpose-interval (" bytes* ") (interval " integer
+                     " " integer "))"
+
+tuplet-comp  ::= "not-in-tuplet" | "(replace-with-rest " value ")"
+               | "(rewrite-tuplets (" bytes* "))"
+               | "(cascade-delete-tuplets (" bytes* "))"
+cross-cutting
+             ::= "(tie " value ")" | "(slur " value ")"
+               | "(beam " value ")" | "(spanner " value ")"
+remapping    ::= "preserve-time" | "(reassign (" reassign-entry* "))"
+reassign-entry
+             ::= "(" bytes " " ratio ")"          ; event id, musical position
+
+; --- Values and leaves.
+
+value        ::= "(" symbol " " value* ")"        ; req:textproj:value-projection
+               | symbol | bytes | integer | bool | string | ratio | option
+option       ::= "()" | "(some " value ")"
+ratio        ::= "(ratio " integer " " integer ")"
 
 bytes        ::= "#x" hexdigit*        ; even count, lowercase
 integer      ::= "-"? digit+           ; no leading zeros, no "-0"
 bool         ::= "true" | "false"
 symbol       ::= [a-z] [a-z0-9-]*
 string       ::= '"' schar* '"'
+digit        ::= [0-9]
+hexdigit     ::= [0-9a-f]
+schar        ::= unescaped | '\"' | '\\' | '\n' | '\t'
+unescaped    ::= [^"\ LF TAB]      ; any other character
 \end{lstlisting}
 
 Observe what does \emph{not} appear: no offset, no compressed length, no
@@ -734,21 +887,25 @@ either physical or derivable, and
 Requirement~\ref{req:textproj:derive-or-carry} forbids both. The lone opaque
 identity the grammar carries is the \texttt{SnapshotId}.
 
-\textbf{What this grammar is, and is not.} The atom productions
-(\texttt{bytes}, \texttt{integer}, \texttt{symbol}, \texttt{string}) and the
-line shapes above are \textbf{normative}. The productions left unexpanded ---
-\texttt{kind}, \texttt{action}, \texttt{policy}, \texttt{constraints},
-\texttt{barrier} --- are \emph{derived} rather than invented here: there is
-exactly one per corresponding binary discriminant, named by the Operation
-Catalog's section name in lowercase hyphenated form (\texttt{insert-event},
-\texttt{transpose-interval}, \dots), with its fields in the payload schema's
-declaration order. A future revision \SHOULD{} spell them out; until it does,
-the Operation Catalog and the Binary Format companion's wire table jointly
-determine them, and an implementation disagreeing with those disagrees with this
-document.
+\textbf{Every production is expanded.} Version 0.1.0 left \texttt{kind},
+\texttt{action}, \texttt{policy}, \texttt{constraints}, and \texttt{barrier}
+derived-but-unwritten, and said so; that gap is closed. Barriers and affected
+object kinds are byte strings, because the bundle holds them opaquely and the
+projection interprets nothing the bundle does not.
 
-That is a real gap, stated rather than papered over. It is the difference
-between a design gate and a finished companion.
+The one thing still \emph{read} rather than restated is a Chapter-5 value's field
+list, and that is deliberate: Requirement~\ref{req:textproj:value-projection} is a
+rule applied to the core specification's ratified listings, not a copy of them.
+A rule cannot drift from what it reads. An implementation that projects a value's
+fields in an order other than the declaration order disagrees with the core
+specification, not with this document.
+
+Note the operation-kind names are the \emph{Operation Catalog's} section names
+(\texttt{create-region}, \texttt{create-staff}), not the \texttt{OperationKindTag}
+names (\texttt{InsertRegion}, \texttt{InsertStaff}). The tag space renamed three
+pairs for reasons of its own (Binary Format,
+\sectionsc{\texttt{OperationKindTag}}); the projection follows the semantics, not
+the tag.
 
 % ===========================================================================
 \chapter{A Worked Example}
@@ -762,12 +919,12 @@ A document of one operation --- a transposition of two pitches up a perfect
 fifth, over a compacted base and one embedded image --- projects to six lines:
 
 \begin{lstlisting}
-(text-projection 0.2.0)
+(text-projection (0 3 0))
 (document #x05050505050505050505050505050505)
 (profile full (0 1 0) (constraints 67108864 (retention 1 () true)))
-(canonical-base #x1f8b... (frontier #x00) (reduction 1) (profile full) (schema 0 1) (payload #x0000...))
+(canonical-base #x1f8b... #x00 1 full (schema 0 1) #x0000...)
 (blob "image/png" () #x89504e47...)
-(envelope #x00000000000000070000000000000001 (author #x00000000000000000000000011223344) (stamp 42 7 #x00000000000000070000000000000001) (causal ((#x0000000000000001 3)) (#x00000000000000020000000000000009)) (transaction #x00000000000000070000000000000005) (primitive (transpose-interval (targets #x0000000000000007000000000000000100000000000000070000000000000002) (interval 4 7))))
+(envelope #x00000000000000070000000000000001 #x00000000000000000000000011223344 (stamp 42 7 #x00000000000000070000000000000001) (causal ((#x0000000000000001 3)) (#x00000000000000020000000000000009)) (some #x00000000000000070000000000000005) (primitive (transpose-interval (#x00000000000000070000000000000001 #x00000000000000070000000000000002) (interval 4 7))))
 \end{lstlisting}
 
 The envelope's targets are a \emph{set}: strictly increasing, no duplicates
@@ -829,6 +986,32 @@ absorb it, exactly as the binary decoder does.
   projection preserves omitted canonical blobs; it is corrected there too. The
   0.1.0 ratifications --- reduced state derived, base inlined, hex, one envelope
   per line, strict parsing --- stand unchanged. \\
+    \today & Chapters 3, 5 & 0.3.0 --- Every production expanded. 0.1.0 left
+  \texttt{kind}, \texttt{action}, \texttt{policy}, \texttt{constraints} and
+  \texttt{barrier} derived-but-unwritten and admitted it; all are now written.
+  Barriers and affected object kinds are byte strings, because the bundle holds
+  them opaquely and the projection interprets nothing the bundle does not.
+
+  Operation payloads embed Chapter-5 canonical values, and those are projected by
+  \emph{one rule} rather than by forty productions
+  (\texttt{req:textproj:value-projection}): a struct is
+  \texttt{(<type-name> <field>\ldots)} with fields positional in the ratified
+  declaration order; a newtype is transparent, as it is in the binary form; a
+  tagged union is \texttt{(<variant> <field>\ldots)}; an option is \texttt{()}
+  or \texttt{(some v)}; a sequence keeps the binary form's order. Restating the
+  Chapter-5 model here would have put two normative listings on one struct, which
+  is the drift P13-I1 was opened to close --- and a rule cannot drift from what it
+  reads.
+
+  Two leaf decisions follow from canonicality rather than taste. A rational is
+  \texttt{(ratio n d)} in lowest terms with the sign on the numerator. A
+  \texttt{CanonicalF64} is the byte string of its eight canonical IEEE~754 bytes,
+  never a decimal: decimal float text is not canonically unique, so a decimal
+  tempo would break \texttt{req:textproj:canonical-text} at the first tempo mark.
+
+  Operation-kind names are the Operation Catalog's section names, not the
+  \texttt{OperationKindTag} names, which renamed three pairs for reasons of the
+  tag space. Still no implementation. \\
 \bottomrule
 \end{longtable}
 

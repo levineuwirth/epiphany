@@ -596,3 +596,51 @@ inline ratification had already made untenable.
 The 0.1.0 ratifications — reduced state derived, base inlined, hex, one envelope
 per line, strict parsing — stand unchanged. Implementation stays deferred: the
 companion is a gate, and a gate that is lossy is not one.
+
+### Text Projection 0.3.0 — every production expanded; one rule for values
+
+0.1.0 left `kind`, `action`, `policy`, `constraints` and `barrier`
+derived-but-unwritten and said so. All are now written; the grammar has **no
+undefined nonterminal** (machine-checked) and 31 operation-kind productions in
+exact discriminant order, cross-checked against `envdecode.rs`.
+
+**The one real decision: how embedded Chapter-5 values appear.** An operation
+payload carries an `Event`, a `Pitch`, a `Region`, a `TimeSignature`. Three ways
+to write them, and only one is safe:
+
+- *Forty hand-written productions* would restate the entire Chapter-5 data model
+  in a second normative document — two normative listings of one struct, the
+  exact drift P13-I1 was opened to close.
+- *Opaque canonical-value byte strings* would be lossless and zero-drift, but a
+  pitch would be unreadable without binary tooling, failing the core spec's own
+  "format inspection and debugging" use case.
+- **One mechanical rule** (`req:textproj:value-projection`, ratified): a struct is
+  `(<type-name> <field>…)` with fields positional in the ratified declaration
+  order; a **newtype is transparent**, exactly as in the binary form; a tagged
+  union is `(<variant> <field>…)`; an option is `()` or `(some v)`; a sequence
+  keeps the binary form's order. **A rule cannot drift from what it reads.**
+
+**Two leaf decisions follow from canonicality, not taste.** A rational is
+`(ratio n d)` in lowest terms with the sign on the numerator. A `CanonicalF64` is
+the byte string of its **eight canonical IEEE-754 bytes, never a decimal** —
+decimal float text is not canonically unique (shortest-round-trip and
+17-significant-digit forms both round-trip; `-0.0` has two spellings), so a
+decimal tempo would break `req:textproj:canonical-text` at the first tempo mark.
+
+**Names follow semantics, not tags.** Operation kinds use the Operation Catalog's
+section names (`create-region`, `create-staff`), not `OperationKindTag`'s
+(`InsertRegion`, `InsertStaff`), which renamed three pairs for reasons internal to
+the tag space.
+
+**One deferral, stated as such.** `affected_object_kinds` and `edit_barriers` have
+ratified structured shapes (`ObjectKind`, `EditBarrier`) *and* canonical byte
+encodings, and the bundle stores them opaquely. At 0.3.0 the projection does the
+same, on the principle that it interprets nothing the bundle does not. A later
+revision may project them structurally; because their canonical bytes are
+unchanged, that changes the text and not the document.
+
+Also corrected: the `extension` line now writes its fields in the ratified
+declaration order (`core_spec` §"Extension Declarations"), which had chunks before
+kinds and barriers.
+
+Still no implementation. The companion is now complete enough to implement against.
