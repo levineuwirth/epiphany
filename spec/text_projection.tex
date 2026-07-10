@@ -59,7 +59,7 @@
   linkcolor=epiphanyteal,
   citecolor=epiphanyteal,
   urlcolor=epiphanygold,
-  pdftitle={Epiphany --- Operation Catalog},
+  pdftitle={Epiphany --- Text Projection},
   pdfauthor={The Epiphany Project},
   pdfsubject={Operation Catalog companion for the Epiphany music notation platform},
   pdfkeywords={music notation, operations, CRDT, reduction, serialization},
@@ -105,7 +105,7 @@
 \fancyhf{}
 \renewcommand{\headrulewidth}{0pt}
 \renewcommand{\footrulewidth}{0pt}
-\fancyhead[L]{\small\scshape\color{epiphanyslate}Epiphany --- Operation Catalog}
+\fancyhead[L]{\small\scshape\color{epiphanyslate}Epiphany --- Text Projection}
 \fancyhead[R]{\small\itshape\color{epiphanyslate}\leftmark}
 \fancyfoot[C]{\small\color{epiphanyslate}\thepage}
 \renewcommand{\headrule}{
@@ -226,7 +226,7 @@
   {\Large\scshape\color{epiphanyslate}Text Projection}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.1.0 --- The canonical s-expression form}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.2.0 --- Canonical-manifest coverage (blobs, extensions, custom profiles, the derived-reference rule)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the text form it defines}
   \vfill
 \end{titlepage}
@@ -383,7 +383,63 @@ other escape exists.
 \chapter{What Is Projected}
 \label{ch:content}
 
+\section{Derive, or Carry --- Never Both}
+\label{sec:content:derive-or-carry}
+
+The manifest's references are \emph{physical}. A \texttt{ChunkRef} carries an
+offset, a compressed length, and a compression algorithm; a \texttt{BlobRef}
+carries the same. Those are exactly the things the projection \MUSTNOT{}
+preserve. But a reference also carries an \emph{identity} --- a chunk id, a
+content hash, a blob id --- and every one of those is a function of the content.
+
+One rule resolves both, and it is the rule
+Requirement~\ref{req:textproj:reduced-state-derived} already applies to reduced
+state.
+
+\begin{requirement}
+  \label{req:textproj:derive-or-carry}
+  A projection \MUST{} carry exactly what the document does not determine, and
+  \MUSTNOT{} carry anything it does.
+
+  \begin{itemize}
+    \item \textbf{Physical attributes} --- a chunk's or blob's \texttt{offset},
+      \texttt{compressed\_length}, and \texttt{compression}, and a chunk's
+      \texttt{uncompressed\_length} --- \MUSTNOT{} appear. A serializer chooses
+      them freely.
+    \item \textbf{Derivable identities} --- \texttt{ChunkId},
+      \texttt{ContentHash}, \texttt{BlobId} --- \MUSTNOT{} appear. They are
+      re-derived from the content by the derivations the Binary Format companion
+      pins (\sectionsc{Content Hashing}, \sectionsc{Domain-Separated Preimages}).
+    \item \textbf{Non-derivable identities} \MUST{} appear. In schema major~0
+      there is exactly one: \texttt{SnapshotId}, which the Binary Format
+      companion declares opaque, with readers forbidden from deriving it
+      (\texttt{req:binfmt:snapshot-id-opaque}).
+    \item \textbf{Content and semantic attributes} \MUST{} appear: a chunk's
+      \texttt{kind} and \texttt{schema\_version} and its uncompressed payload; a
+      blob's media type, declared maximum uncompressed length if any, and its
+      payload.
+  \end{itemize}
+
+  A parser \MUST{} reject a projection carrying a value this requirement forbids.
+\end{requirement}
+
+\begin{rationale}
+  Carrying a derivable identity would reproduce, at the level of a chunk, the
+  defect Requirement~\ref{req:textproj:reduced-state-derived} rules out at the
+  level of the document: two sources of truth for one fact, with nothing to stop
+  them disagreeing. Carrying a physical attribute would make two encodings of one
+  document project to two texts, breaking
+  Requirement~\ref{req:textproj:canonical-text}.
+
+  \texttt{SnapshotId} is the sole exception, and it is an exception for a stated
+  reason rather than an oversight: v0 has no snapshot producer, so the identity
+  has nothing to derive \emph{from}, and the Binary Format companion accordingly
+  pins it as sixteen opaque bytes that a reader \MUSTNOT{} attempt to verify. A
+  projection must carry what it cannot recompute.
+\end{rationale}
+
 \section{Document Structure}
+\label{sec:content:structure}
 
 A projection is, in order:
 
@@ -395,12 +451,86 @@ A projection is, in order:
   \item zero or more \texttt{(profile ...)} lines, in canonical order;
   \item zero or more \texttt{(extension ...)} lines, in canonical order;
   \item at most one \texttt{(canonical-base ...)} line;
+  \item zero or more \texttt{(blob ...)} lines, in canonical order;
   \item zero or more \texttt{(envelope ...)} lines, in canonical operation order
     (core specification Appendix~D).
 \end{enumerate}
 
 Every sequence is written in the normative order its binary counterpart uses. The
 projection introduces no ordering of its own.
+
+\section{Canonical Blobs}
+\label{sec:content:blobs}
+
+\begin{requirement}
+  \label{req:textproj:canonical-blobs}
+  A blob referenced by a canonical operation or by canonical reduced state is
+  itself canonical (core specification Chapter~8,
+  \sectionsc{Canonical and Non-Canonical Roots}). Every such blob \MUST{} be
+  projected as a \texttt{(blob ...)} line carrying its media type, its declared
+  maximum uncompressed length if it declares one, and its uncompressed payload.
+
+  Its \texttt{BlobId}, content hash, offset, lengths, and compression are
+  re-derived (Requirement~\ref{req:textproj:derive-or-carry}).
+
+  A blob referenced only by acceleration structures is non-canonical and
+  \MUSTNOT{} be projected.
+\end{requirement}
+
+\begin{rationale}
+  An embedded image, font, or audio recording that a canonical operation
+  references is part of the document. Omitting it would make the projection lossy
+  for exactly the documents most in need of archival --- and lossy \emph{silently},
+  since the operations that reference the blob would still be there, pointing at a
+  blob id the text no longer contains. This requirement was absent from version
+  0.1.0 of this companion, and from the core specification's own list of what the
+  projection preserves; both are corrected.
+\end{rationale}
+
+\section{Profile Declarations}
+\label{sec:content:profiles}
+
+A \texttt{(profile ...)} line carries the profile's identity, its semantic
+version, and its constraints.
+
+\begin{requirement}
+  \label{req:textproj:profile-id}
+  A profile identity is a symbol for each closed-vocabulary profile
+  (\texttt{full}, \texttt{read-only}, \texttt{lite}), and
+  \texttt{(custom \#x<registry-id>)} for \texttt{ProfileId::Custom}, whose
+  registry id is sixteen bytes.
+\end{requirement}
+
+\begin{rationale}
+  Version 0.1.0 required a symbol for every profile, which made a custom profile
+  unrepresentable and its claim to preserve ``all profile declarations'' false.
+\end{rationale}
+
+\section{Extension Declarations}
+\label{sec:content:extensions}
+
+\begin{requirement}
+  \label{req:textproj:extension-declaration}
+  An \texttt{(extension ...)} line \MUST{} carry every field of the declaration:
+  its identity, its semantic version, whether it is required, its affected object
+  kinds, its edit barriers, and its preserved chunk roots. The affected object
+  kinds and the edit barriers are opaque to the bundle and are projected as byte
+  strings, verbatim.
+
+  Each preserved chunk root is projected as its \texttt{kind}, its
+  \texttt{schema\_version}, and its uncompressed payload
+  (Requirement~\ref{req:textproj:derive-or-carry}), never as a
+  \texttt{ChunkRef}: a \texttt{ChunkRef} is a physical reference, and the
+  projection has no file to point into.
+\end{requirement}
+
+\begin{rationale}
+  Version 0.1.0 carried only identity, the required flag, barriers, and a list of
+  chunks, dropping the semantic version and the affected object kinds outright and
+  leaving the chunks' representation undefined. An extension's declaration governs
+  how the canonical document is \emph{interpreted}; a projection that loses part
+  of it does not determine the document.
+\end{rationale}
 
 \section{Reduced State}
 
@@ -430,9 +560,27 @@ projection introduces no ordering of its own.
 \begin{requirement}
   \label{req:textproj:base-snapshot-inline}
   If the manifest declares a canonical base, the projection \MUST{} carry a
-  \texttt{(canonical-base ...)} line bearing the snapshot's identity, its causal
-  frontier, its reduction-algorithm version, its profile, \emph{and its payload
-  inline} as a single byte-string atom.
+  \texttt{(canonical-base ...)} line bearing:
+
+  \begin{itemize}
+    \item the \texttt{SnapshotId}, verbatim --- the one identity that is carried
+      rather than derived (Requirement~\ref{req:textproj:derive-or-carry});
+    \item the causal frontier it materializes, as opaque bytes;
+    \item its reduction-algorithm version;
+    \item the profile under which it was produced;
+    \item its root chunk's \texttt{schema\_version}; and
+    \item \emph{the root chunk's uncompressed payload, inline}, as a single byte
+      string. That payload is the canonical byte form of the reduced state the
+      snapshot materializes.
+  \end{itemize}
+
+  The root chunk's kind is \texttt{Snapshot} by role and is not written. The
+  \texttt{SnapshotRef}'s \texttt{root} and \texttt{hash} are \textbf{re-derived}:
+  the chunk's content hash is
+  $\textrm{hash}(\texttt{Snapshot}, \textit{schema}, \textit{payload})$ under the
+  Binary Format companion's chunk-hash preimage, and it is both the root's
+  \texttt{ChunkId} and the \texttt{SnapshotRef}'s \texttt{hash}. A parser
+  \MUST{} perform that derivation rather than read it from the text.
 \end{requirement}
 
 \begin{rationale}
@@ -449,14 +597,11 @@ projection introduces no ordering of its own.
   which point the whole line changes anyway. A later revision \MAY{} project the
   snapshot structurally; doing so does not break the round trip, because the
   document it denotes is unchanged. Ratified at 0.1.0.
+
+  Schema major~0 has no snapshot producer --- pruning and canonical-base creation
+  are deferred (Binary Format, \sectionsc{SnapshotId}) --- so this requirement
+  binds whoever writes the first one, and cannot be exercised before then.
 \end{rationale}
-
-\section{Extensions}
-
-An \texttt{(extension ...)} line carries the extension's identity, its
-required-or-optional flag, its edit barriers, and its preserved chunk roots. An
-extension payload is a byte string
-(Requirement~\ref{req:textproj:hex}); the projection never interprets it.
 
 % ===========================================================================
 \chapter{Requirements}
@@ -535,7 +680,7 @@ extension payload is a byte string
 
 \begin{lstlisting}
 projection   ::= header document lineage? profile* extension*
-                 canonical-base? envelope*
+                 canonical-base? blob* envelope*
 
 header       ::= "(text-projection " version ")" LF
 version      ::= integer "." integer "." integer
@@ -543,14 +688,24 @@ version      ::= integer "." integer "." integer
 document     ::= "(document " bytes ")" LF
 lineage      ::= "(lineage " bytes ")" LF
 
-profile      ::= "(profile " symbol " " version " " constraints ")" LF
-extension    ::= "(extension " bytes " " ("required"|"optional")
-                 " (barriers " barrier* ") (chunks " bytes* "))" LF
+profile      ::= "(profile " profile-id " " version " " constraints ")" LF
+profile-id   ::= "full" | "read-only" | "lite" | "(custom " bytes ")"
+constraints  ::= "(constraints " integer " " retention ")"
+retention    ::= "(retention " integer " " (integer|"()") " " bool ")"
+
+extension    ::= "(extension " bytes " " version " " bool
+                 " (kinds " bytes ") (barriers " bytes ")"
+                 " (chunks " chunk* "))" LF
+chunk        ::= "(chunk " symbol " " schema " " bytes ")"  ; kind, schema, payload
+schema       ::= "(schema " integer " " integer ")"          ; major, minor
 
 canonical-base
              ::= "(canonical-base " bytes " (frontier " bytes ")"
-                 " (reduction " integer ") (profile " symbol ")"
-                 " (payload " bytes "))" LF
+                 " (reduction " integer ") (profile " profile-id ")"
+                 " " schema " (payload " bytes "))" LF
+
+blob         ::= "(blob " string " " (integer|"()") " " bytes ")" LF
+                 ; media type, declared-max-uncompressed-length, payload
 
 envelope     ::= "(envelope " bytes " (author " bytes ")"
                  " (stamp " integer " " integer " " bytes ")"
@@ -568,9 +723,16 @@ dots         ::= "(" bytes* ")"                        ; operation ids
 
 bytes        ::= "#x" hexdigit*        ; even count, lowercase
 integer      ::= "-"? digit+           ; no leading zeros, no "-0"
+bool         ::= "true" | "false"
 symbol       ::= [a-z] [a-z0-9-]*
 string       ::= '"' schar* '"'
 \end{lstlisting}
+
+Observe what does \emph{not} appear: no offset, no compressed length, no
+compression algorithm, no chunk id, no content hash, no blob id. Every one is
+either physical or derivable, and
+Requirement~\ref{req:textproj:derive-or-carry} forbids both. The lone opaque
+identity the grammar carries is the \texttt{SnapshotId}.
 
 \textbf{What this grammar is, and is not.} The atom productions
 (\texttt{bytes}, \texttt{integer}, \texttt{symbol}, \texttt{string}) and the
@@ -597,12 +759,14 @@ vectors that pin real bytes are a deliverable of the implementation, not of this
 gate; elisions are marked \texttt{\dots}.
 
 A document of one operation --- a transposition of two pitches up a perfect
-fifth --- projects to four lines:
+fifth, over a compacted base and one embedded image --- projects to six lines:
 
 \begin{lstlisting}
-(text-projection 0.1.0)
+(text-projection 0.2.0)
 (document #x05050505050505050505050505050505)
-(canonical-base #x1f8b... (frontier #x00) (reduction 1) (profile full) (payload #x0000...))
+(profile full (0 1 0) (constraints 67108864 (retention 1 () true)))
+(canonical-base #x1f8b... (frontier #x00) (reduction 1) (profile full) (schema 0 1) (payload #x0000...))
+(blob "image/png" () #x89504e47...)
 (envelope #x00000000000000070000000000000001 (author #x00000000000000000000000011223344) (stamp 42 7 #x00000000000000070000000000000001) (causal ((#x0000000000000001 3)) (#x00000000000000020000000000000009)) (transaction #x00000000000000070000000000000005) (primitive (transpose-interval (targets #x0000000000000007000000000000000100000000000000070000000000000002) (interval 4 7))))
 \end{lstlisting}
 
@@ -637,6 +801,34 @@ absorb it, exactly as the binary decoder does.
   accepting it --- and conformance requires \emph{both} directions
   (\texttt{req:textproj:conformance}). No implementation yet; this document is
   the design gate. \\
+    \today & Chapters 3, 5 & 0.2.0 --- Canonical-manifest coverage. 0.1.0 was
+  \emph{lossy for documents that are valid today}, and its claim to preserve the
+  manifest's canonical roots was false in three ways: a canonical blob (an
+  embedded image, font, or recording referenced by a canonical operation) had no
+  representation at all; an \texttt{ExtensionDeclaration} lost its semantic
+  version and its affected object kinds, and left its preserved chunk roots
+  undefined; and \texttt{ProfileId::Custom} was unrepresentable, a symbol being
+  required where a sixteen-byte registry id is carried.
+
+  The three share one cause, now stated as
+  \texttt{req:textproj:derive-or-carry}: a \texttt{ChunkRef} and a
+  \texttt{BlobRef} are \emph{physical} references --- offset, compressed length,
+  compression --- which the projection may not preserve, and they also carry
+  \emph{derivable} identities, which it may not duplicate. Carry the content and
+  the semantic attributes; re-derive the rest. The sole non-derivable identity in
+  schema major~0 is \texttt{SnapshotId}, which the Binary Format companion pins
+  as opaque and forbids readers to derive.
+
+  Consequently: \texttt{req:textproj:canonical-blobs} (a canonical blob is
+  projected; a non-canonical one is not), \texttt{req:textproj:profile-id}
+  (\texttt{(custom \#x...)}), \texttt{req:textproj:extension-declaration}
+  (every field, chunks as kind + schema + payload), and
+  \texttt{req:textproj:base-snapshot-inline} extended to say what the inlined
+  payload \emph{is} and how the root chunk id and the snapshot hash are
+  re-derived rather than read. The core specification's own list of what the
+  projection preserves omitted canonical blobs; it is corrected there too. The
+  0.1.0 ratifications --- reduced state derived, base inlined, hex, one envelope
+  per line, strict parsing --- stand unchanged. \\
 \bottomrule
 \end{longtable}
 

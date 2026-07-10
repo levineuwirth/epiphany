@@ -11314,13 +11314,22 @@ This section states \emph{what} is projected; the companion states \emph{how}.
     \item All operation envelopes (with their identities, stamps,
       causal contexts, transaction groupings, and payloads).
     \item All profile declarations.
-    \item All extension declarations, including their preserved
-      chunk roots, with extension payloads encoded as base64 or
-      another canonical text form.
-    \item The active canonical base snapshot's reference,
-      frontier, and reduction algorithm version (the snapshot
-      payload itself \MAY{} be encoded compactly or referenced
-      externally).
+    \item All extension declarations \emph{in full} --- identity, semantic
+      version, required flag, affected object kinds, edit barriers, and
+      preserved chunk roots --- with opaque payloads in a canonical text
+      encoding.
+    \item Every \textbf{canonical blob}: a blob referenced by a canonical
+      operation or by canonical reduced state is a canonical root of this
+      document (Section~\ref{sec:format:manifest}), so the projection carries
+      its media type and its uncompressed payload. Blobs referenced only by
+      acceleration structures are non-canonical and are not projected.
+    \item The active canonical base snapshot's identity, frontier, and
+      reduction-algorithm version, \emph{with its payload inline}. The core
+      specification once permitted the payload to be ``referenced externally'';
+      that is withdrawn, because a compacted document's base is derivable from
+      nothing else and an external reference would make the projection lossy
+      (Text Projection companion,
+      \texttt{req:textproj:base-snapshot-inline}).
     \item All canonical reduced state --- preserved by \emph{determining} it,
       never by carrying a second literal copy. Reduced state is a deterministic
       function of the operation set and the canonical base, so a projection

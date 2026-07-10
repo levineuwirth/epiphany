@@ -549,3 +549,50 @@ shapes are normative; `kind`, `action`, `policy`, `constraints`, `barrier` are
 derived from the Operation Catalog and the wire table rather than spelled out.
 That is the difference between a design gate and a finished companion, and it is
 written into the companion rather than left for a reader to discover.
+
+### Text Projection 0.2.0 — the gate reopened: canonical-manifest coverage
+
+A review found the 0.1.0 companion **lossy for documents that are valid today**.
+Its claim to preserve the manifest's canonical roots was false in three ways, and
+all three had one cause I had not named.
+
+- **A canonical blob had no representation.** `blob_roots` referenced by canonical
+  operations or reduced state are canonical roots (`core_spec` §"Canonical and
+  Non-Canonical Roots"), and the document structure had no blob line. An embedded
+  image, font, or recording would vanish from a projection *silently* — the
+  operations referencing it would still be there, pointing at a blob id the text
+  no longer contained.
+- **An `ExtensionDeclaration` lost its semantic version and its
+  `affected_object_kinds`**, and left its `preserved_chunk_roots` undefined.
+- **`ProfileId::Custom(ProfileRegistryId)` was unrepresentable**: the grammar
+  required a symbol where sixteen registry bytes are carried.
+
+**The cause: `ChunkRef` and `BlobRef` are physical references.** Offset,
+compressed length, compression — exactly what the projection may not preserve.
+And they carry derivable identities — `ChunkId`, `ContentHash`, `BlobId` — which
+it may not duplicate. Having no rule for that, I dropped the references entirely
+and took their contents with them.
+
+`req:textproj:derive-or-carry` states the rule, and it is the same rule
+`req:textproj:reduced-state-derived` already applied one level up: **carry exactly
+what the document does not determine, and nothing it does.** Physical attributes
+never appear. Derivable identities never appear. Content and semantic attributes
+always appear. The sole non-derivable identity in schema major 0 is `SnapshotId`,
+which the Binary Format companion pins as opaque and forbids readers to derive —
+an exception for a stated reason, not an oversight.
+
+Consequently: `req:textproj:canonical-blobs`, `req:textproj:profile-id`,
+`req:textproj:extension-declaration`, and `req:textproj:base-snapshot-inline`
+extended to say what the inlined payload *is* (the canonical byte form of the
+reduced state) and that the root `ChunkRef` and the `SnapshotRef.hash` are
+**re-derived** from `hash(Snapshot, schema, payload)`, never read from the text.
+
+**The gap started upstream.** `core_spec`'s own list of what the projection
+preserves omitted canonical blobs while classifying `blob_roots` as canonical
+roots — an inconsistency inside one document. Corrected there too, along with
+withdrawing the permission to reference a base snapshot "externally", which the
+inline ratification had already made untenable.
+
+The 0.1.0 ratifications — reduced state derived, base inlined, hex, one envelope
+per line, strict parsing — stand unchanged. Implementation stays deferred: the
+companion is a gate, and a gate that is lossy is not one.
