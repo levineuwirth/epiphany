@@ -526,6 +526,11 @@ impl CanonicalDecode for OperationKindTag {
             27 => OperationKindTag::SetStaffLayout,
             28 => OperationKindTag::CreateRepeatStructure,
             29 => OperationKindTag::DeleteRepeatStructure,
+            // Push 4a. Omitting this made `to_canonical_bytes` and
+            // `decode_canonical` asymmetric: the tag encoded to `[30]` and
+            // would not read back, so an edit barrier that named
+            // `TransposeInterval` could be persisted and never reopened.
+            30 => OperationKindTag::TransposeInterval,
             _ => return Err(DecodeError::MalformedDomainTag),
         })
     }
@@ -1897,9 +1902,18 @@ mod tests {
         assert_eq!(prim.tag(), OperationKindTag::RespellPitch);
     }
 
-    #[test]
-    fn every_normative_operation_tag_has_a_distinct_canonical_discriminant() {
-        let tags = [
+    /// **Every** `OperationKindTag` variant, listed by name.
+    ///
+    /// Enumerating *variants* is the point. The round-trip test used to
+    /// enumerate *discriminants* — `(0u8..30).map(decode_canonical)` — which
+    /// starts from bytes the decoder already knows and therefore cannot notice a
+    /// variant the decoder is missing. Push 4a added `TransposeInterval` to
+    /// `discriminant()` and not to `decode_canonical`, and that test stayed
+    /// green while the tag encoded to `[30]` and would not read back.
+    ///
+    /// Adding a variant without adding it here fails `the_tag_vocabulary_is_complete`.
+    fn all_tags() -> Vec<OperationKindTag> {
+        let mut tags = vec![
             OperationKindTag::InsertEvent,
             OperationKindTag::DeleteEvent,
             OperationKindTag::ModifyEvent,
@@ -1929,7 +1943,35 @@ mod tests {
             OperationKindTag::SetStaffLayout,
             OperationKindTag::CreateRepeatStructure,
             OperationKindTag::DeleteRepeatStructure,
+            OperationKindTag::TransposeInterval,
         ];
+        tags.push(OperationKindTag::Registered(OperationKindRegistryId(
+            0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10,
+        )));
+        tags
+    }
+
+    /// A compile-time-ish completeness check: `all_tags` must match the
+    /// vocabulary the decoder accepts, in both directions.
+    #[test]
+    fn the_tag_vocabulary_is_complete() {
+        let tags = all_tags();
+        assert_eq!(tags.len(), 31, "30 payload-less tags plus `Registered`");
+
+        // Every payload-less discriminant 0..=30 except 16 decodes to a variant
+        // that is in the list.
+        for d in (0u8..=30).filter(|d| *d != 16) {
+            let decoded = OperationKindTag::decode_canonical(&[d])
+                .unwrap_or_else(|e| panic!("discriminant {d} must decode: {e:?}"));
+            assert!(tags.contains(&decoded), "{decoded:?} missing from all_tags");
+        }
+        // And 31 is one past the vocabulary.
+        assert!(OperationKindTag::decode_canonical(&[31]).is_err());
+    }
+
+    #[test]
+    fn every_normative_operation_tag_has_a_distinct_canonical_discriminant() {
+        let tags = all_tags();
         let encoded: std::collections::BTreeSet<_> = tags
             .iter()
             .map(CanonicalEncode::to_canonical_bytes)
@@ -1939,17 +1981,13 @@ mod tests {
 
     #[test]
     fn operation_kind_tag_decode_mirrors_encode_exactly() {
-        // Every non-registered variant round-trips through its 1-byte form, and
-        // the registered variant through its 17-byte (tag + registry id) form.
-        let mut tags: Vec<OperationKindTag> = (0u8..30)
-            .filter(|d| *d != 16)
-            .map(|d| OperationKindTag::decode_canonical(&[d]).expect("known discriminant"))
-            .collect();
-        tags.push(OperationKindTag::Registered(OperationKindRegistryId(
-            0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10,
-        )));
-        assert_eq!(tags.len(), 30, "the full tag vocabulary");
-        for tag in tags {
+        // Every variant round-trips: the payload-less ones through their 1-byte
+        // form, `Registered` through its 17-byte (tag + registry id) form.
+        //
+        // Driven from `all_tags()`, i.e. from the VARIANTS. Driving it from the
+        // discriminants the decoder already knows is what let a variant the
+        // decoder was missing pass unnoticed.
+        for tag in all_tags() {
             let bytes = tag.to_canonical_bytes();
             let decoded = OperationKindTag::decode_canonical(&bytes).expect("round-trips");
             assert_eq!(decoded, tag);
@@ -1964,10 +2002,12 @@ mod tests {
     #[test]
     fn operation_kind_tag_decode_rejects_malformed_bytes() {
         use epiphany_determinism::DecodeError;
-        // Unknown discriminant (30 is one past the vocabulary): rejected,
-        // never normalized.
+        // Unknown discriminant (31 is one past the vocabulary): rejected,
+        // never normalized. This assertion named 30 until Push 5 / P4, by which
+        // time 30 was `TransposeInterval` — so the test was actively locking a
+        // bug in place rather than guarding against one.
         assert_eq!(
-            OperationKindTag::decode_canonical(&[30]),
+            OperationKindTag::decode_canonical(&[31]),
             Err(DecodeError::MalformedDomainTag)
         );
         // Empty input.

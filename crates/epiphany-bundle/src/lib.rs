@@ -60,6 +60,7 @@ mod store;
 mod superblock;
 
 pub mod fuzz;
+pub mod vectors;
 
 pub use block::{
     decode_block, encode_block, envelope_offsets, pack_operation_blocks, BLOCK_SOFT_LIMIT,

@@ -1517,3 +1517,55 @@ Each was mutation-verified against the exact check it locks.
 reduces to states with no conflicts, anomalies, pending, or spellings — the very
 branches that hold every canonical-order check. Measured: 6 of 12 seeds failed to
 produce all four. `build_decode_corpus` now draws until covered and asserts it.
+
+## Push 5 / P4 — the cross-implementation decode corpus, and what it caught
+
+`spec/vectors/decode_vectors.txt`: 37 committed byte strings across five
+surfaces (`ops.materialized_state`, `ops.operation_kind_tag`, `bundle.manifest`,
+`bundle.operation_index`, `bundle.block`), each with its normative accept/reject
+verdict. The reference implementation's fuzzers prove its own decoders
+self-consistent, which says nothing about whether a *foreign* decoder agrees
+with the format. This is what one is checked against.
+
+**It found a real defect on its first run.** `OperationKindTag::TransposeInterval`
+encoded to `[30]` and **its own decoder rejected it**: Push 4a added the variant
+to `discriminant()` and never to `decode_canonical`. `OperationKindTag` is what
+edit barriers persist, so a barrier prohibiting `TransposeInterval` could be
+written and never read back — silent data loss on reopen.
+
+**Four things should have caught it and did not.**
+
+1. `operation_kind_tag_decode_mirrors_encode_exactly` enumerated *discriminants*
+   (`(0u8..30).map(decode_canonical)`), so it started from bytes the decoder
+   already knew and structurally could not notice a variant the decoder was
+   missing. It now enumerates **variants**, from a single `all_tags()` list, with
+   a completeness check in both directions.
+2. `every_normative_operation_tag_has_a_distinct_canonical_discriminant`'s
+   hand-written variant list also omitted it. Same list now.
+3. `operation_kind_tag_decode_rejects_malformed_bytes` asserted **tag 30 is
+   rejected**, and `epiphany-layout-ir`'s `decode_rejects_unknown_discriminants`
+   asserted the same at the barrier surface. Both were *locking the bug in
+   place*, and made it look deliberate. Both now name 31.
+4. The P2 decode fuzzer fed valid corpus bytes to the tag decoder and tallied the
+   failure as a **rejection**, like any garbage input. It never asserted that an
+   *unmutated* corpus entry decodes. Both fuzzers now do, as a pre-pass.
+
+**The harness had the same disease as the code.** `check` originally collapsed
+"rejected" with "accepted but does not re-encode", so a decoder that silently
+normalizes non-canonical bytes *passed* the `reject` vectors it was written to
+catch — verified: removing the whole-state guard and restoring the lenient
+compression codec both left the corpus green. `check` now returns
+`Ok(injective)` for accept and `Err` for reject, and the two are never conflated:
+**silently normalizing non-canonical bytes IS accepting them.** With that fixed,
+all four defect mutations fail the corpus, each naming its class.
+
+The corpus pins one vector per class this repository has shipped a bug in:
+`non-canonical-map-order` (a re-encode guard catches it; no per-site check
+exists), `non-canonical-vec-order` (only a per-site check catches it; a guard is
+blind), `lenient-sub-codec` (a guard *masked* it in the manifest; the index had
+none), plus `trailing-bytes`, `truncated`, `unknown-discriminant`,
+`count-exceeds-remaining`. `the_corpus_pins_every_class_we_have_shipped_a_bug_in`
+fails if one goes missing.
+
+Gated in the conformance suite as `[7d]`, and drift-locked: the committed file
+must equal `vectors::render()`, so a wire-format change lands in the diff.

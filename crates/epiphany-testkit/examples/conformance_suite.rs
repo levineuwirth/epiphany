@@ -153,5 +153,25 @@ fn main() {
         }
     }
 
+    eprintln!("[7d ] cross-implementation decode conformance vectors");
+    {
+        use epiphany_testkit::vectors;
+        assert_eq!(
+            vectors::COMMITTED,
+            vectors::render(),
+            "{} is stale; regenerate with `cargo run -q -p epiphany-testkit \
+             --example generate_vectors`",
+            vectors::PATH
+        );
+        match vectors::verify(vectors::COMMITTED) {
+            Ok(n) => eprintln!("       {n} vectors, every verdict agreed"),
+            Err(failures) => panic!(
+                "{} decode-vector disagreement(s):\n{}",
+                failures.len(),
+                failures.join("\n")
+            ),
+        }
+    }
+
     eprintln!("[8/8] ok: full conformance suite passed (scale {scale})");
 }

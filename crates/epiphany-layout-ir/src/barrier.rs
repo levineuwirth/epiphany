@@ -1100,20 +1100,59 @@ mod tests {
                 tag: 7
             })
         );
-        // Operation-kind tag 30 is one past the vocabulary (the Phase-3 ops
-        // tranche appended 24..=27, the repeat pair 28/29; encodings are
-        // append-only).
+        // Operation-kind tag 31 is one past the vocabulary (the Phase-3 ops
+        // tranche appended 24..=27, the repeat pair 28/29, `TransposeInterval`
+        // 30; encodings are append-only).
+        //
+        // This assertion named 30 until Push 5 / P4 — by which time 30 was
+        // `TransposeInterval`, so the test was pinning a bug: a barrier that
+        // prohibited the new operation encoded fine and would not read back.
         let mut bytes = vec![0u8];
         bytes.extend(set_blob(&[]));
-        bytes.extend(set_blob(&[vec![30u8]]));
+        bytes.extend(set_blob(&[vec![31u8]]));
         bytes.push(0);
         assert_eq!(
             EditBarrier::decode_canonical_bytes(&bytes),
             Err(BarrierDecodeError::InvalidTag {
                 kind: "OperationKindTag",
-                tag: 30
+                tag: 31
             })
         );
+    }
+
+    /// A barrier naming *every* operation tag must survive a round trip. Edit
+    /// barriers are where `OperationKindTag` is persisted, so a tag that encodes
+    /// and will not decode is silent data loss on reopen — which is exactly what
+    /// `TransposeInterval` did between Push 4a and Push 5 / P4.
+    #[test]
+    fn a_barrier_prohibiting_every_operation_tag_round_trips() {
+        use epiphany_ops::OperationKindRegistryId;
+        let mut tags: Vec<OperationKindTag> = (0u8..=30)
+            .filter(|d| *d != 16)
+            .map(|d| {
+                epiphany_determinism::CanonicalDecode::decode_canonical(&[d][..])
+                    .unwrap_or_else(|e| panic!("tag {d} must decode: {e:?}"))
+            })
+            .collect();
+        tags.push(OperationKindTag::Registered(OperationKindRegistryId(7)));
+
+        let barrier = EditBarrier {
+            scope: BarrierScope::WholeScore,
+            affected_object_kinds: Vec::new(),
+            prohibited_operation_kinds: tags,
+            condition: BarrierCondition::Always,
+        };
+        let bytes = barrier.to_canonical_bytes();
+        let decoded = EditBarrier::decode_canonical_bytes(&bytes).expect("round-trips");
+        // `prohibited_operation_kinds` is encoded as a canonical *set*, so the
+        // decoded order is the canonical one, not the order it was built in.
+        // Compare as sets, and pin injectivity on the bytes.
+        let mut want = barrier.prohibited_operation_kinds.clone();
+        let mut got = decoded.prohibited_operation_kinds.clone();
+        want.sort_by_key(epiphany_determinism::CanonicalEncode::to_canonical_bytes);
+        got.sort_by_key(epiphany_determinism::CanonicalEncode::to_canonical_bytes);
+        assert_eq!(got, want, "every tag survives the round trip");
+        assert_eq!(decoded.to_canonical_bytes(), bytes);
     }
 
     #[test]

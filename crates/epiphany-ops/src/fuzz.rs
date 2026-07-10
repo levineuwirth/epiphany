@@ -830,6 +830,22 @@ pub fn run_decode_fuzz(iters: u64, seed: u64) -> DecodeFuzzCoverage {
     let corpus = build_decode_corpus(&mut rng);
     let mut cov = DecodeFuzzCoverage::default();
 
+    // The corpus must decode. Obvious, and it was not checked: an *unmutated*
+    // valid byte string that a decoder rejects was silently tallied as a
+    // rejection, like any garbage input. `OperationKindTag::TransposeInterval`
+    // encoded to `[30]` and would not read back for two commits, right here in
+    // the corpus, and this fuzzer reported green (Push 5 / P4).
+    for bytes in &corpus.states {
+        let state = crate::MaterializedState::decode_canonical(bytes)
+            .expect("a valid materialized state must decode");
+        assert_eq!(state.canonical_bytes(), *bytes);
+    }
+    for bytes in &corpus.tags {
+        let tag = OperationKindTag::decode_canonical(bytes)
+            .expect("a valid operation-kind tag must decode");
+        assert_eq!(tag.to_canonical_bytes(), *bytes);
+    }
+
     for _ in 0..iters {
         let bytes = gen_state_input(&mut rng, &corpus);
         match crate::MaterializedState::decode_canonical(&bytes) {

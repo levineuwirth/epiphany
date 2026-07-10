@@ -327,6 +327,22 @@ pub fn run_wire_decode_fuzz(iters: u64, seed: u64) -> WireFuzzCoverage {
         .collect()
     };
 
+    // The corpus must decode. An *unmutated* valid byte string that a decoder
+    // rejects would otherwise be tallied as a rejection, like any garbage input
+    // — which is exactly how a broken `OperationKindTag` decoder hid inside the
+    // ops fuzzer for two commits (Push 5 / P4).
+    for bytes in &manifests {
+        let m = Manifest::decode(bytes).expect("a valid manifest must decode");
+        assert_eq!(m.encode(), *bytes);
+    }
+    for bytes in &valid_indices {
+        let i = OperationIndex::decode(bytes).expect("a valid operation index must decode");
+        assert_eq!(i.encode(), *bytes);
+    }
+    for bytes in &valid_blocks {
+        block::decode_block(bytes).expect("a valid block payload must decode");
+    }
+
     for _ in 0..iters {
         // 1. Whole-image open. Must never panic; an Ok manifest must re-encode.
         let pick = (rng.next_u64() as usize) % images.len();

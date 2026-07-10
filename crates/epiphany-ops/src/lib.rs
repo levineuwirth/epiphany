@@ -96,6 +96,7 @@ mod validate;
 pub mod valuegen;
 
 pub mod fuzz;
+pub mod vectors;
 
 pub use anomaly::{
     AnomalousReplicaSegment, IntegrityAnomaly, IntegrityAnomalyKind, ReplicaAnomalyReason,

@@ -91,6 +91,7 @@
 //! materialization through a bundle snapshot.
 
 pub mod rng;
+pub mod vectors;
 
 // Phase 2, Agent F (worklist F1): the Chapter 10 performance-budget gate the
 // `benches/` targets assert through (Pass / Xfail rows with thresholds written
