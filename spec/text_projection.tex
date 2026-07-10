@@ -61,7 +61,7 @@
   urlcolor=epiphanygold,
   pdftitle={Epiphany --- Text Projection},
   pdfauthor={The Epiphany Project},
-  pdfsubject={Operation Catalog companion for the Epiphany music notation platform},
+  pdfsubject={Text Projection companion for the Epiphany music notation platform},
   pdfkeywords={music notation, operations, CRDT, reduction, serialization},
   bookmarksnumbered=true,
   bookmarksopen=true
@@ -72,7 +72,10 @@
 % ---------------------------------------------------------------------------
 \setmainfont{TeX Gyre Pagella}[Numbers={OldStyle, Proportional}, Ligatures={TeX, Common}]
 \setsansfont{TeX Gyre Heros}[Scale=0.94, Ligatures={TeX, Common}]
-\setmonofont{TeX Gyre Cursor}[Scale=0.88, Ligatures={TeX}]
+% No TeX ligatures in the mono font: `tlig` maps " to a right curly quote and --
+% to an en dash. This document's grammar quotes terminals with U+0022 and spells
+% escapes as backslash sequences, so a substituted glyph would misstate the syntax.
+\setmonofont{TeX Gyre Cursor}[Scale=0.88]
 \newfontfamily\titlefont{TeX Gyre Pagella}[Numbers={OldStyle}, Ligatures={TeX, Common}]
 \newcommand{\tablenums}[1]{{\addfontfeatures{Numbers={Lining,Tabular}}#1}}
 \newcommand{\sectionsc}[1]{{\addfontfeatures{Letters=SmallCaps}#1}}
@@ -226,7 +229,7 @@
   {\Large\scshape\color{epiphanyslate}Text Projection}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.3.0 --- Every production expanded; the value-projection rule}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.4.0 --- Derived ordering, and an escape grammar that matches its requirement}\\[4pt]
   {\small\color{epiphanyslate}Normative for the text form it defines}
   \vfill
 \end{titlepage}
@@ -471,7 +474,10 @@ projection introduces no ordering of its own.
   maximum uncompressed length if it declares one, and its uncompressed payload.
 
   Its \texttt{BlobId}, content hash, offset, lengths, and compression are
-  re-derived (Requirement~\ref{req:textproj:derive-or-carry}).
+  re-derived (Requirement~\ref{req:textproj:derive-or-carry}). The blob lines are
+  ordered and de-duplicated by their projected form
+  (Requirement~\ref{req:textproj:derived-ordering}), not by the binary order,
+  which reads the offset.
 
   A blob referenced only by acceleration structures is non-canonical and
   \MUSTNOT{} be projected.
@@ -524,7 +530,10 @@ version, and its constraints.
   \texttt{schema\_version}, and its uncompressed payload
   (Requirement~\ref{req:textproj:derive-or-carry}), never as a
   \texttt{ChunkRef}: a \texttt{ChunkRef} is a physical reference, and the
-  projection has no file to point into.
+  projection has no file to point into. The chunk list is ordered and
+  de-duplicated by projected form
+  (Requirement~\ref{req:textproj:derived-ordering}), because
+  \texttt{ChunkRef}'s binary order breaks ties on the offset.
 \end{requirement}
 
 \begin{rationale}
@@ -548,6 +557,65 @@ version, and its constraints.
   leaving the chunks' representation undefined. An extension's declaration governs
   how the canonical document is \emph{interpreted}; a projection that loses part
   of it does not determine the document.
+\end{rationale}
+
+\section{Ordering What the Binary Form Ordered Physically}
+\label{sec:content:derived-ordering}
+
+``Keep the binary form's order'' is available only where the binary order is a
+function of data the projection preserves. Two sequences fail that test.
+
+\begin{requirement}
+  \label{req:textproj:derived-ordering}
+  Where a sequence's binary order depends on attributes
+  Requirement~\ref{req:textproj:derive-or-carry} erases, the projection \MUST{}
+  order its elements by their \textbf{projected form}, ascending, comparing the
+  UTF-8 bytes of the rendered element; and \MUST{} emit at most one element per
+  distinct projected form.
+
+  In schema major~0 this applies to exactly two sequences:
+
+  \begin{itemize}
+    \item the \texttt{(blob ...)} lines, whose binary counterpart
+      \texttt{blob\_roots} is sorted by the full \texttt{BlobRef} encoding ---
+      which contains the offset, the compressed length, and the compression
+      algorithm; and
+    \item an extension's preserved chunk roots, sorted in binary by
+      \texttt{ChunkRef}'s order, whose key is the kind, then the content hash,
+      then the \textbf{offset}, with the compressed length, the uncompressed
+      length, and the compression as further tie-breakers.
+  \end{itemize}
+
+  Every other projected sequence keeps the binary order, because every other
+  binary order reads only preserved data. In particular the profile and extension
+  declarations are sorted in binary by the semantic keys
+  $(\texttt{profile\_id}, \texttt{version})$ and
+  $(\texttt{extension\_id}, \texttt{version})$, and the envelopes by canonical
+  operation order.
+\end{requirement}
+
+\begin{rationale}
+  Two bundles that differ only in physical layout are the \emph{same document},
+  and Requirement~\ref{req:textproj:canonical-text} obliges them to project to
+  byte-identical text. Inheriting the binary order for these two sequences would
+  let a chunk's file offset decide the order of the text --- so relocating a chunk,
+  which changes no semantics, would change the projection. That is precisely the
+  failure the requirement forbids.
+
+  The de-duplication is the same point from the other side. A chunk is
+  content-addressed: two entries with identical kind, schema version, and payload
+  \emph{are} one chunk, and appear twice only because the writer stored the bytes
+  twice. A blob with identical media type, declared maximum, and payload is one
+  blob. Their projected forms are identical, so the binary form's distinction
+  between them is a physical fact --- and a duplicated line would smuggle that
+  physical fact into a text that claims to have erased it. Emitting one line is
+  not a loss; it is the erasure working.
+
+  Ordering by the projected form is total and deterministic, and it reads nothing
+  but what is projected. For chunks it coincides with ordering by the derived
+  \texttt{ChunkId}, since that id is a function of exactly the kind, schema, and
+  payload the line carries --- which is a pleasing check that the rule is reading
+  the right thing.
 \end{rationale}
 
 \section{Projecting Canonical Values}
@@ -578,10 +646,11 @@ are ratified.
     \item An \textbf{option} is \texttt{()} when absent and
       \texttt{(some <value>)} when present.
     \item A \textbf{sequence}, \textbf{set}, or \textbf{map} is a parenthesised
-      list of its elements, \emph{in the order the binary form writes them}; a
-      map entry is \texttt{(<key> <value>)}. The projection introduces no
-      ordering of its own, and a set that the binary form writes strictly
-      increasing is written strictly increasing here
+      list of its elements, \emph{in the order the binary form writes them},
+      except where Requirement~\ref{req:textproj:derived-ordering} applies; a
+      map entry is \texttt{(<key> <value>)}. The projection invents no ordering
+      of its own, and a set that the binary form writes strictly increasing is
+      written strictly increasing here
       (Requirement~\ref{req:textproj:strict-parse}).
     \item \textbf{Leaves.} An identifier or hash is a byte string. An integer is
       an integer. A boolean is \texttt{true} or \texttt{false}. Canonical text is
@@ -765,61 +834,60 @@ are ratified.
 \label{ch:grammar}
 
 \begin{lstlisting}
-projection   ::= header document lineage? profile* extension*
+projection     ::= header document lineage? profile* extension*
                  canonical-base? blob* envelope*
 
-header       ::= "(text-projection " version ")" LF
-version      ::= "(" integer " " integer " " integer ")"
+header         ::= "(text-projection " version ")" LF
+version        ::= "(" integer " " integer " " integer ")"
 
-document     ::= "(document " bytes ")" LF
-lineage      ::= "(lineage " bytes ")" LF
+document       ::= "(document " bytes ")" LF
+lineage        ::= "(lineage " bytes ")" LF
 
-profile      ::= "(profile " profile-id " " version " " constraints ")" LF
-profile-id   ::= "full" | "read-only" | "lite" | "(custom " bytes ")"
-constraints  ::= "(constraints " integer " " retention ")"
-retention    ::= "(retention " integer " " option " " bool ")"
+profile        ::= "(profile " profile-id " " version " " constraints ")" LF
+profile-id     ::= "full" | "read-only" | "lite" | "(custom " bytes ")"
+constraints    ::= "(constraints " integer " " retention ")"
+retention      ::= "(retention " integer " " option " " bool ")"
 
-extension    ::= "(extension " bytes " " version " " bool
+extension      ::= "(extension " bytes " " version " " bool
                  " (" chunk* ") " bytes " " bytes ")" LF
                  ; id, version, required, chunks, affected-kinds, barriers
                  ; (the ratified declaration order)
-chunk        ::= "(chunk " chunk-kind " " schema " " bytes ")"
-chunk-kind   ::= "operation-envelope-block" | "operation-index" | "snapshot"
+chunk          ::= "(chunk " chunk-kind " " schema " " bytes ")"
+chunk-kind     ::= "operation-envelope-block" | "operation-index" | "snapshot"
                | "blob" | "extension-data" | "text-projection"
                | "layout-cache" | "integrity-index" | "manifest"
-schema       ::= "(schema " integer " " integer ")"
+schema         ::= "(schema " integer " " integer ")"
 
-canonical-base
-             ::= "(canonical-base " bytes " " bytes " " integer
+canonical-base ::= "(canonical-base " bytes " " bytes " " integer
                  " " profile-id " " schema " " bytes ")" LF
                  ; snapshot-id, frontier, reduction version, profile,
                  ; root schema, root payload
 
-blob         ::= "(blob " string " " option " " bytes ")" LF
+blob           ::= "(blob " string " " option " " bytes ")" LF
                  ; media type, declared max uncompressed length, payload
 
-envelope     ::= "(envelope " bytes " " bytes " " stamp " " causal
+envelope       ::= "(envelope " bytes " " bytes " " stamp " " causal
                  " " option " " payload ")" LF
                  ; id, author, stamp, causal context, transaction, payload
-stamp        ::= "(stamp " integer " " integer " " bytes ")"
-causal       ::= "(causal (" replica-seen* ") (" bytes* "))"
-replica-seen ::= "(" bytes " " integer ")"
+stamp          ::= "(stamp " integer " " integer " " bytes ")"
+causal         ::= "(causal (" replica-seen* ") (" bytes* "))"
+replica-seen   ::= "(" bytes " " integer ")"
 
-payload      ::= "(primitive " kind ")"
+payload        ::= "(primitive " kind ")"
                | "(resolve-conflict " bytes " " action ")"
                | "(undo " bytes " " policy ")"
                | "(resolve-equivocation " bytes " " bytes ")"
 
-action       ::= "accept-loser" | "keep-winner" | "dismiss"
+action         ::= "accept-loser" | "keep-winner" | "dismiss"
                | "(override " bytes ")" | "(reanchor " bytes ")"
                | "(registered " bytes ")"
-policy       ::= "strict-inverse" | "best-effort" | "cascade"
+policy         ::= "strict-inverse" | "best-effort" | "cascade"
 
 ; --- Operation kinds. Fields are the Operation Catalog's payload schema,
 ; --- positionally, in declaration order. Embedded Chapter-5 values follow
 ; --- req:textproj:value-projection and are written <value> below.
 
-kind         ::= "(insert-event " bytes " " value ")"
+kind           ::= "(insert-event " bytes " " value ")"
                | "(delete-event " bytes " " tuplet-comp ")"
                | "(respell-pitch " bytes " " value ")"
                | "(create-cross-cutting " cross-cutting ")"
@@ -853,32 +921,35 @@ kind         ::= "(insert-event " bytes " " value ")"
                | "(transpose-interval (" bytes* ") (interval " integer
                      " " integer "))"
 
-tuplet-comp  ::= "not-in-tuplet" | "(replace-with-rest " value ")"
+tuplet-comp    ::= "not-in-tuplet" | "(replace-with-rest " value ")"
                | "(rewrite-tuplets (" bytes* "))"
                | "(cascade-delete-tuplets (" bytes* "))"
-cross-cutting
-             ::= "(tie " value ")" | "(slur " value ")"
+cross-cutting  ::= "(tie " value ")" | "(slur " value ")"
                | "(beam " value ")" | "(spanner " value ")"
-remapping    ::= "preserve-time" | "(reassign (" reassign-entry* "))"
-reassign-entry
-             ::= "(" bytes " " ratio ")"          ; event id, musical position
+remapping      ::= "preserve-time" | "(reassign (" reassign-entry* "))"
+reassign-entry ::= "(" bytes " " ratio ")"          ; event id, musical position
 
 ; --- Values and leaves.
 
-value        ::= "(" symbol " " value* ")"        ; req:textproj:value-projection
+value          ::= "(" symbol " " value* ")"        ; req:textproj:value-projection
                | symbol | bytes | integer | bool | string | ratio | option
-option       ::= "()" | "(some " value ")"
-ratio        ::= "(ratio " integer " " integer ")"
+option         ::= "()" | "(some " value ")"
+ratio          ::= "(ratio " integer " " integer ")"
 
-bytes        ::= "#x" hexdigit*        ; even count, lowercase
-integer      ::= "-"? digit+           ; no leading zeros, no "-0"
-bool         ::= "true" | "false"
-symbol       ::= [a-z] [a-z0-9-]*
-string       ::= '"' schar* '"'
-digit        ::= [0-9]
-hexdigit     ::= [0-9a-f]
-schar        ::= unescaped | '\"' | '\\' | '\n' | '\t'
-unescaped    ::= [^"\ LF TAB]      ; any other character
+bytes          ::= "#x" hexdigit*        ; even count, lowercase
+integer        ::= "-"? digit+           ; no leading zeros, no "-0"
+bool           ::= "true" | "false"
+symbol         ::= [a-z] [a-z0-9-]*
+string         ::= '"' schar* '"'
+digit          ::= [0-9]
+hexdigit       ::= [0-9a-f]
+schar          ::= unescaped | escape
+unescaped      ::= <any Unicode scalar value other than
+                  U+0022, U+005C, U+000A, U+0009>
+escape         ::= U+005C U+0022    ; the two characters \"
+               | U+005C U+005C    ; the two characters \\
+               | U+005C "n"       ; the two characters \n
+               | U+005C "t"       ; the two characters \t
 \end{lstlisting}
 
 Observe what does \emph{not} appear: no offset, no compressed length, no
@@ -1012,6 +1083,43 @@ absorb it, exactly as the binary decoder does.
   Operation-kind names are the Operation Catalog's section names, not the
   \texttt{OperationKindTag} names, which renamed three pairs for reasons of the
   tag space. Still no implementation. \\
+    \today & Chapters 3, 5 & 0.4.0 --- Two normative corrections found in review.
+
+  \emph{The grammar contradicted its own escape requirement.}
+  \texttt{req:textproj:string-escapes} obliges a writer to escape the backslash
+  and a parser to reject a bare one, while \texttt{unescaped} admitted it. The
+  escape productions are now spelled out as two-character sequences and
+  \texttt{unescaped} excludes U+0022, U+005C, U+000A, and U+0009 by codepoint.
+  Both characters of an escape are written as codepoints where they are the
+  delimiter or the introducer: a quoted terminal for the backslash reads as
+  \emph{two} backslashes and would make every escape three characters long. For
+  the same reason the mono font no longer applies TeX ligatures, which rendered
+  U+0022 as a right curly quote and \texttt{-{}-} as an en dash --- a document
+  that specifies a text syntax must not misprint it.
+
+  \emph{``Keep the binary order'' does not work for every sequence.} It is
+  available only where the binary order reads preserved data, and two sequences
+  fail that test: \texttt{blob\_roots} is sorted by the full \texttt{BlobRef}
+  encoding, which contains the offset, the compressed length, and the compression;
+  and an extension's preserved chunk roots are sorted by \texttt{ChunkRef}'s
+  order, whose key is kind, then content hash, then \emph{offset}. Under the
+  blanket rule, relocating a chunk --- which changes no semantics --- would have
+  changed the text, and two entries indistinguishable after erasure would have
+  produced duplicate lines. \texttt{req:textproj:derived-ordering} orders and
+  de-duplicates those two sequences by their \emph{projected form}. Every other
+  sequence keeps the binary order: the profile and extension declarations sort on
+  semantic \texttt{(id, version)} keys, and the envelopes on canonical operation
+  order.
+
+  Also: a committed grammar-completeness test now checks that no nonterminal is
+  undefined or unreachable, that the escape rule excludes the four codepoints and
+  admits exactly the four two-character sequences, that the mono font substitutes
+  no glyphs, and that the operation-kind and chunk-kind productions are exactly
+  the tag vocabularies --- derived from \texttt{OperationKindTag} and
+  \texttt{ChunkKind}, not transcribed. Every locator in it finds its production by
+  name; the checks it replaced were anchored to a column, and a reflow would have
+  silently switched them off. The 0.3.0 claim of a ``machine-checked'' grammar was
+  true of one run and of nothing durable. Still no implementation. \\
 \bottomrule
 \end{longtable}
 

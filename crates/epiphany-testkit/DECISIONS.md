@@ -261,3 +261,59 @@ the catalog's own threshold-tuning open question anticipated this).
 (Minimal/Standard) are Chapter 9 conformance tiers. The companion carries the
 same caution; the harness resolves corpus entries by `name` string only and
 never reads the corpus tier.
+
+## The Text Projection grammar checker (`tests/text_projection_grammar.rs`)
+
+Text Projection 0.3.0 claimed a "machine-checked" grammar. It was checked by a
+throwaway script, so the claim was **true of one run and of nothing durable**.
+This test file is the durable form; 0.4.0 retracts the earlier claim in its own
+revision history. It is the same evidence gap the P2–P4 decode work kept
+finding: a green gate proves nothing about coverage until the harness states its
+own reach.
+
+Six tests, and every one was **mutation-verified** — the mutation was applied to
+the `.tex`, the anchor asserted present before substitution (a `str.replace`
+that matches nothing looks exactly like a passing test), and the named test
+observed to fail:
+
+| Mutation | Killed by |
+|---|---|
+| delete the `transpose-interval` production | `the_kind_productions_are_the_operation_vocabulary` |
+| reference an undefined nonterminal | `every_nonterminal_is_defined_and_reachable` |
+| let `unescaped` admit U+005C (the 0.3.0 bug) | `the_escape_grammar_agrees_with_the_escape_requirement` |
+| drop the `derived-ordering` citations | `the_derived_ordering_requirement_is_cited_where_it_applies` |
+| spell the escape introducer `"\\"` | `the_escape_grammar_agrees_with_the_escape_requirement` |
+| drop the `\t` escape alternative | `the_escape_grammar_agrees_with_the_escape_requirement` |
+| restore `Ligatures={TeX}` on the mono font | `the_mono_font_does_not_substitute_glyphs_in_the_grammar` |
+
+**The vocabularies are derived, never transcribed.** The 31 operation-kind
+productions come from `OperationKindTag::PAYLOAD_FREE` plus `Registered`, mapped
+to Catalog section names through an **exhaustive `match`** — so a kind added to
+the enum and not to the grammar fails to compile, then fails the test. The chunk
+productions come from `ChunkKind::from_discriminant`. This is the
+`operation_kind_tag_vocabulary!` lesson applied to prose: a hand-maintained list
+parallel to an enum is a latent false lock.
+
+**Every locator finds its production by name, not by column.** Writing the
+checker exposed four bugs *in the checker*, three of them of this kind: a
+column-anchored needle (`"projection   ::="`) that a reflow broke — a checker
+that cannot find the grammar silently checks nothing; a `defined()` that missed
+three productions whose left-hand side sat on the line above their `::=`, which
+would have **hidden** undefined nonterminals; and a per-line `<...>` stripper
+that leaked `0022` and `005` out of multi-line prose spans, where they read as
+nonterminals. Nonterminal tokens must now begin `[a-z]`, per `symbol` itself.
+
+**Two rendering rules are load-bearing, not cosmetic.** A document that
+specifies a text syntax must not misprint that syntax.
+
+- The escape introducer and the string delimiter are written as **codepoints**
+  (`U+005C`, `U+0022`). A quoted terminal `"\\"` reads as *two* backslashes,
+  making every escape three characters where the requirement says two. This is
+  the audited 0.3.0 defect in a second disguise; it was written, caught by
+  review, and is now asserted against.
+- The mono font must not enable **TeX ligatures**. `tlig` rewrites `"` as a
+  right curly quote and `--` as an en dash, so `string ::= '"' schar* '"'`
+  rendered as `’”’ schar* ’”’`. `core_spec.tex` already omitted `Ligatures={TeX}`
+  from its `\setmonofont`, which makes this the house convention rather than a
+  new one; the three companions that still enable it have no listing content the
+  feature would touch.
