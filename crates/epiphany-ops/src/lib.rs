@@ -92,6 +92,11 @@ mod reduce;
 mod slot;
 mod stamp;
 mod support;
+#[cfg(test)]
+mod textproj_conformance;
+mod textproj_envelope;
+mod textproj_kind;
+mod textproj_leaf;
 mod v0;
 mod validate;
 pub mod valuegen;
@@ -140,6 +145,7 @@ pub use support::{
     RepairKindRegistryId, ReplicaAnomalyRegistryId, ResolutionRegistryId,
     SerializedCanonicalInputs,
 };
+pub use textproj_envelope::{parse_envelope, project_envelope};
 
 pub use undo::{UndoPolicy, UndoTransactionPayload};
 pub use v0::V0OperationEnvelope;

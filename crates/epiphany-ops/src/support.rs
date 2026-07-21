@@ -49,6 +49,32 @@ macro_rules! registry_id {
             }
         }
         impl CanonicalByteOrder for $name {}
+
+        /// Projects this opaque registry identifier as its canonical 16 bytes.
+        impl epiphany_core::textvalue::TextValue for $name {
+            fn project(&self) -> epiphany_core::textvalue::Sexp {
+                epiphany_core::textvalue::Sexp::Bytes(self.canonical_bytes().to_vec())
+            }
+
+            fn parse(
+                s: &epiphany_core::textvalue::Sexp,
+            ) -> Result<Self, epiphany_core::textvalue::TextError> {
+                let epiphany_core::textvalue::Sexp::Bytes(bytes) = s else {
+                    return Err(epiphany_core::textvalue::TextError::Expected {
+                        expected: stringify!($name),
+                        found: crate::textproj_leaf::class_of(s),
+                    });
+                };
+                let bytes: [u8; 16] = bytes.as_slice().try_into().map_err(|_| {
+                    epiphany_core::textvalue::TextError::NotCanonical(concat!(
+                        "a ",
+                        stringify!($name),
+                        " is exactly 16 bytes"
+                    ))
+                })?;
+                Ok(Self(u128::from_be_bytes(bytes)))
+            }
+        }
     };
 }
 

@@ -653,7 +653,7 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OperationEnvelope> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::valuegen;
     use epiphany_core::{BeamId, MusicalDuration, RationalTime, SlurId, StaffId, TimeSignatureId};
@@ -679,7 +679,7 @@ mod tests {
     /// `OperationKindTag`**, so a new kind cannot be added without giving the
     /// round-trip a sample of it — which is the compile-time half of the same
     /// guarantee `operation_kind_tag_vocabulary!` gives the decoder.
-    fn sample_kind(tag: OperationKindTag) -> OperationKind {
+    pub(crate) fn sample_kind(tag: OperationKindTag) -> OperationKind {
         match tag {
             OperationKindTag::InsertEvent => OperationKind::InsertEvent(InsertEventOp {
                 staff_instance: si(),
