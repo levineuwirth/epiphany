@@ -26,6 +26,11 @@
 //!    struct alternative: shape does not distinguish a struct from a sequence,
 //!    and `req:textproj:schema-directed` says so rather than pretending
 //!    otherwise.
+//! 6. The Chapter 6 operation vocabulary is explicitly grammar-directed, and
+//!    the requirement carrying that boundary is cited at both reliance points.
+//! 7. `transpose-interval` takes target bytes followed by a `value`; `interval`
+//!    is not allowed to become a grammar production parallel to the canonical
+//!    `TranspositionInterval` value spelling.
 
 use std::collections::{BTreeSet, VecDeque};
 
@@ -294,6 +299,69 @@ fn the_kind_productions_are_the_operation_vocabulary() {
          present but not a kind: {:?}",
         expected.difference(&actual).collect::<Vec<_>>(),
         actual.difference(&expected).collect::<Vec<_>>()
+    );
+}
+
+/// The operation grammar is the authority for Chapter 6 vocabulary; the
+/// mechanical Chapter-5 value rule begins only where a production says `value`.
+/// The two places that rely on that boundary must cite the requirement rather
+/// than leaving implementors to infer it from the grammar's shape.
+#[test]
+fn the_operation_vocabulary_requirement_is_cited_where_it_applies() {
+    const LABEL: &str = "req:textproj:operation-vocabulary";
+    assert!(
+        SPEC.contains(&format!("\\label{{{LABEL}}}")),
+        "the grammar/value boundary must be a labeled normative requirement"
+    );
+
+    let operation_preamble = grammar()
+        .split_once("; --- Operation kinds")
+        .expect("the grammar introduces its operation kinds")
+        .1
+        .split_once("\nkind")
+        .expect("the operation preamble precedes the `kind` production")
+        .0;
+    assert!(
+        operation_preamble.contains(LABEL),
+        "the operation-kind grammar must cite `{LABEL}` at the point it relies \
+         on the grammar/value boundary"
+    );
+
+    let after_grammar = SPEC
+        .split_once(grammar())
+        .expect("the specification contains the located grammar")
+        .1;
+    let grammar_explanation = after_grammar
+        .split_once("\\chapter{A Worked Example}")
+        .expect("the grammar chapter precedes the worked example")
+        .0;
+    assert!(
+        grammar_explanation.contains(LABEL),
+        "the prose explaining why Chapter-5 field lists are not restated must \
+         cite `{LABEL}`"
+    );
+}
+
+/// `TranspositionInterval` is a Chapter-5 value with the canonical
+/// `(transposition-interval ...)` spelling. Giving `transpose-interval` a second,
+/// inline `(interval ...)` spelling creates two names for one type; defining an
+/// `interval` nonterminal merely moves that same special case behind another
+/// production head.
+#[test]
+fn transpose_interval_delegates_to_value_without_an_interval_production() {
+    let kind = uncommented(production_block("kind"))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        kind.contains("\"(transpose-interval (\" bytes* \") \" value \")\""),
+        "`transpose-interval` must take target bytes followed by exactly one \
+         Chapter-5 `value`; the `kind` production reads: {kind}"
+    );
+    assert!(
+        !defined(grammar()).contains("interval"),
+        "`interval` must not be a production head: TranspositionInterval uses \
+         the ordinary `value` projection"
     );
 }
 

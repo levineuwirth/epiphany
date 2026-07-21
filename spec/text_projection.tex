@@ -229,7 +229,7 @@
   {\Large\scshape\color{epiphanyslate}Text Projection}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.5.0 --- The projection is schema-directed, and the grammar says only what shape can say}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.6.0 --- The operation vocabulary is grammar-directed; values enter exactly where named}\\[4pt]
   {\small\color{epiphanyslate}Normative for the text form it defines}
   \vfill
 \end{titlepage}
@@ -628,6 +628,24 @@ states one rule for turning any of them into text, and the shapes stay where the
 are ratified.
 
 \begin{requirement}
+  \label{req:textproj:operation-vocabulary}
+  The core specification's Chapter~6 operation vocabulary --- the envelope, its
+  stamp and causal context, the payload, the operation kinds, and their
+  sub-vocabularies --- \MUST{} be projected by the productions of
+  Chapter~\ref{ch:grammar}, not by
+  Requirement~\ref{req:textproj:value-projection}. The value-projection
+  rule governs exactly the \texttt{value} positions those productions contain,
+  and no other positions.
+
+  An operation kind's payload record \MUST{} be inlined into its production. The
+  record exists so each variant can name a type; it is not a modelling
+  distinction, and the binary form agrees: \texttt{OperationKind}'s encoding
+  writes the kind tag and then delegates to the record, adding no bytes for the
+  wrapper. It adds no text here either, for the same reason clause~2 of
+  Requirement~\ref{req:textproj:value-projection} makes a newtype transparent.
+\end{requirement}
+
+\begin{requirement}
   \label{req:textproj:schema-directed}
   The projection is \textbf{schema-directed}. At every position a reader knows
   the type it expects, from the ratified schema and from the position itself,
@@ -946,9 +964,11 @@ action         ::= "accept-loser" | "keep-winner" | "dismiss"
                | "(registered " bytes ")"
 policy         ::= "strict-inverse" | "best-effort" | "cascade"
 
-; --- Operation kinds. Fields are the Operation Catalog's payload schema,
-; --- positionally, in declaration order. Embedded Chapter-5 values follow
-; --- req:textproj:value-projection and are written <value> below.
+; --- Operation kinds inline their payload records as required by
+; --- req:textproj:operation-vocabulary. Fields are the Operation Catalog's
+; --- payload schema, positionally, in declaration order. Embedded Chapter-5
+; --- values occur only at <value> positions and follow
+; --- req:textproj:value-projection.
 
 kind           ::= "(insert-event " bytes " " value ")"
                | "(delete-event " bytes " " tuplet-comp ")"
@@ -981,8 +1001,7 @@ kind           ::= "(insert-event " bytes " " value ")"
                | "(set-staff-layout " bytes " " option " " option " " bool ")"
                | "(create-repeat-structure " value ")"
                | "(delete-repeat-structure " bytes ")"
-               | "(transpose-interval (" bytes* ") (interval " integer
-                     " " integer "))"
+               | "(transpose-interval (" bytes* ") " value ")"
 
 tuplet-comp    ::= "not-in-tuplet" | "(replace-with-rest " value ")"
                | "(rewrite-tuplets (" bytes* "))"
@@ -1030,9 +1049,11 @@ derived-but-unwritten, and said so; that gap is closed. Barriers and affected
 object kinds are byte strings, because the bundle holds them opaquely and the
 projection interprets nothing the bundle does not.
 
-The one thing still \emph{read} rather than restated is a Chapter-5 value's field
-list, and that is deliberate: Requirement~\ref{req:textproj:value-projection} is a
-rule applied to the core specification's ratified listings, not a copy of them.
+At exactly the \texttt{value} positions delimited by
+Requirement~\ref{req:textproj:operation-vocabulary}, the one thing still
+\emph{read} rather than restated is a Chapter-5 value's field list. That is
+deliberate: Requirement~\ref{req:textproj:value-projection} is a rule applied to
+the core specification's ratified listings, not a copy of them.
 A rule cannot drift from what it reads. An implementation that projects a value's
 fields in an order other than the declaration order disagrees with the core
 specification, not with this document.
@@ -1061,7 +1082,7 @@ fifth, over a compacted base and one embedded image --- projects to six lines:
 (profile full (0 1 0) (constraints 67108864 (retention 1 () true)))
 (canonical-base #x1f8b... #x00 1 full (schema 0 1) #x0000...)
 (blob "image/png" () #x89504e47...)
-(envelope #x00000000000000070000000000000001 #x00000000000000000000000011223344 (stamp 42 7 #x00000000000000070000000000000001) (causal ((#x0000000000000001 3)) (#x00000000000000020000000000000009)) (some #x00000000000000070000000000000005) (primitive (transpose-interval (#x00000000000000070000000000000001 #x00000000000000070000000000000002) (interval 4 7))))
+(envelope #x00000000000000070000000000000001 #x00000000000000000000000011223344 (stamp 42 7 #x00000000000000070000000000000001) (causal ((#x0000000000000001 3)) (#x00000000000000020000000000000009)) (some #x00000000000000070000000000000005) (primitive (transpose-interval (#x00000000000000070000000000000001 #x00000000000000070000000000000002) (transposition-interval 4 7))))
 \end{lstlisting}
 
 The envelope's targets are a \emph{set}: strictly increasing, no duplicates
@@ -1212,6 +1233,21 @@ absorb it, exactly as the binary decoder does.
   \texttt{"(transpose (" bytes* ") "} spelled two targets as one run of hex.
 
   Still no implementation; this is what the first day of writing it found. \\
+    \today & Chapters 3, 5, 6 & 0.6.0 --- The operation vocabulary is
+  grammar-directed, and the boundary is now normative
+  (\texttt{req:textproj:operation-vocabulary}). The envelope, stamp, causal
+  context, payload, operation kinds, and their sub-vocabularies follow the
+  grammar's productions; \texttt{req:textproj:value-projection} applies exactly
+  at the \texttt{value} positions those productions name. Operation-kind payload
+  records are inlined because they name variant types but add neither a binary
+  wrapper nor a modelling distinction.
+
+  \texttt{transpose-interval} now takes its target byte strings followed by one
+  \texttt{value}. Its \texttt{TranspositionInterval} therefore has the same
+  \texttt{(transposition-interval ...)} spelling it has at every other value
+  position, and the grammar has no special \texttt{interval} production. The
+  committed grammar gate locks the requirement, its reliance-point citations,
+  and that absence. \\
 \bottomrule
 \end{longtable}
 
