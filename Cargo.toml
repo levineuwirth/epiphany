@@ -5,6 +5,7 @@ members = [
     "crates/epiphany-core",
     "crates/epiphany-bundle",
     "crates/epiphany-ops",
+    "crates/epiphany-textproj",
     "crates/epiphany-layout-ir",
     "crates/epiphany-engrave",
     "crates/epiphany-render-svg",
@@ -44,6 +45,9 @@ epiphany-bundle = { path = "crates/epiphany-bundle" }
 # testkit drives its convergence, reduction-determinism, and equivocation gates,
 # so its path is declared here alongside the other intra-workspace crates.
 epiphany-ops = { path = "crates/epiphany-ops" }
+# The Text Projection companion is the document-level bridge between canonical
+# bundles and their normative s-expression form.
+epiphany-textproj = { path = "crates/epiphany-textproj" }
 # Agent E's epiphany-layout-ir is the layout IR + constraint-solver interface
 # (Chapters 7 & 9). Agent F's testkit drives its layout round-trip gate
 # (v0 acceptance criterion 6), so its path is declared here alongside the other
