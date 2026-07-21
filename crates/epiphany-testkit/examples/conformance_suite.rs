@@ -13,7 +13,7 @@
 
 use epiphany_testkit::{
     bundle_harness, convergence, corpus, editloop, equivocation, fixtures, generators, layout_stub,
-    negative, prepass_harness, roundtrip, Rng,
+    negative, prepass_harness, roundtrip, textproj, Rng,
 };
 
 fn main() {
@@ -167,6 +167,32 @@ fn main() {
             Ok(n) => eprintln!("       {n} vectors, every verdict agreed"),
             Err(failures) => panic!(
                 "{} decode-vector disagreement(s):\n{}",
+                failures.len(),
+                failures.join("\n")
+            ),
+        }
+    }
+
+    // 7e. Whole-document Text Projection vectors. The strong equation is over
+    //     text bytes, never bundle identity; the generated-operation pass also
+    //     checks the weaker semantic equation by reducing both sides.
+    eprintln!("[7e ] Text Projection whole-document conformance vectors");
+    for seed in 0..n(16) {
+        textproj::assert_semantics_preserved(seed);
+    }
+    {
+        use epiphany_textproj::vectors;
+        assert_eq!(
+            vectors::COMMITTED,
+            vectors::render(),
+            "{} is stale; regenerate with `cargo run -q -p epiphany-testkit \
+             --example generate_vectors`",
+            vectors::PATH
+        );
+        match vectors::verify(vectors::COMMITTED) {
+            Ok(n) => eprintln!("       {n} vectors, every verdict agreed"),
+            Err(failures) => panic!(
+                "{} Text Projection vector disagreement(s):\n{}",
                 failures.len(),
                 failures.join("\n")
             ),

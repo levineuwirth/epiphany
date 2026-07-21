@@ -91,6 +91,7 @@
 //! materialization through a bundle snapshot.
 
 pub mod rng;
+pub mod textproj;
 pub mod vectors;
 
 // Phase 2, Agent F (worklist F1): the Chapter 10 performance-budget gate the

@@ -12,6 +12,7 @@ epiphany-determinism.workspace = true
 epiphany-core.workspace = true
 epiphany-bundle.workspace = true
 epiphany-ops.workspace = true
+epiphany-textproj.workspace = true
 # Agent E's layout IR has landed; the layout round-trip harness (criterion 6)
 # now drives the real crate instead of an in-tree stub.
 epiphany-layout-ir.workspace = true

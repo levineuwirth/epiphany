@@ -7,6 +7,7 @@
 pub mod parse;
 pub mod project;
 pub mod serialize;
+pub mod vectors;
 
 use epiphany_bundle::{
     ChunkKind, DocumentId, ExtensionId, FrontierBytes, LineageId, ProfileDeclaration, ProfileId,
