@@ -244,6 +244,34 @@ macro_rules! graph_id {
         }
         // Canonical order *is* byte order for typed identifiers (Appendix D).
         impl CanonicalByteOrder for $name {}
+
+        impl crate::textvalue::TextValue for $name {
+            fn project(&self) -> crate::textvalue::Sexp {
+                crate::textvalue::Sexp::Bytes(
+                    <Self as CanonicalEncode>::to_canonical_bytes(self),
+                )
+            }
+
+            fn parse(
+                s: &crate::textvalue::Sexp,
+            ) -> Result<Self, crate::textvalue::TextError> {
+                let crate::textvalue::Sexp::Bytes(bytes) = s else {
+                    return Err(crate::textvalue::TextError::Expected {
+                        expected: stringify!($name),
+                        found: crate::textvalue_impls::class_of(s),
+                    });
+                };
+                let value = <Self as CanonicalDecode>::decode_canonical(bytes)
+                    .map_err(|_| crate::textvalue::TextError::NotCanonical(stringify!($name)))?;
+                if value.to_canonical_bytes() != *bytes {
+                    return Err(crate::textvalue::TextError::NotCanonical(concat!(
+                        stringify!($name),
+                        " is not canonically encoded"
+                    )));
+                }
+                Ok(value)
+            }
+        }
     };
 }
 
