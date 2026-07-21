@@ -181,10 +181,15 @@
   boxed title style={arc=0pt, sharp corners, boxrule=0pt, left=6pt, right=8pt, top=2pt, bottom=2pt},
   #1
 }
+% Numbered within chapter (this document has chapters); see core_spec.tex's
+% requirement box for why a plain counter + `code=` step is used instead of
+% tcolorbox's own "auto counter, number within=..." keys.
+\newcounter{requirement}[chapter]
+\renewcommand{\therequirement}{\thechapter.\arabic{requirement}}
 \newtcolorbox{requirement}[1][]{
   enhanced, breakable,
   colback=white, colframe=epiphanygold,
-  fonttitle=\bfseries\color{white}, title={\scshape\hspace{2pt}Requirement},
+  fonttitle=\bfseries\color{white}, code={\refstepcounter{requirement}}, title={\scshape\hspace{2pt}Requirement~\therequirement},
   coltitle=white, colbacktitle=epiphanygold,
   arc=1pt, boxrule=0pt, leftrule=2pt,
   left=10pt, right=10pt, top=8pt, bottom=8pt,

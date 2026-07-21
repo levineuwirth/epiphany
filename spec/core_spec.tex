@@ -224,11 +224,26 @@
 }
 
 % Normative requirement
+%
+% Numbered within chapter (this document has chapters) so that every
+% requirement carries a unique, human-citable number. tcolorbox's own
+% "auto counter, number within=..." keys are not used: their counter-step
+% for \label purposes runs inside an internal \sbox ("phantom") whose local
+% \@currentlabel assignment is discarded when that box closes, so a plain
+% \label written in the box body (as every requirement's is, and per this
+% pass's rules must remain) binds to the counter of whatever sectioning
+% unit last really stepped -- reproducing the very bug this counter is
+% meant to fix. Stepping a plain counter via a `code=` key runs directly in
+% the environment's own group, so \@currentlabel sticks for the body's
+% \label to see.
+\newcounter{requirement}[chapter]
+\renewcommand{\therequirement}{\thechapter.\arabic{requirement}}
 \newtcolorbox{requirement}[1][]{
   enhanced, breakable,
   colback=white, colframe=epiphanygold,
   fonttitle=\bfseries\color{white},
-  title={\scshape\hspace{2pt}Requirement},
+  code={\refstepcounter{requirement}},
+  title={\scshape\hspace{2pt}Requirement~\therequirement},
   coltitle=white,
   colbacktitle=epiphanygold,
   arc=1pt, boxrule=0pt,
@@ -964,6 +979,7 @@ pub enum PitchSpacePosition {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:pitch:ji-vector-basis}
   For \texttt{PitchSpacePosition::JiVector}:
   \begin{itemize}
     \item \texttt{components.len()} \MUST{} equal the number of primes
@@ -984,6 +1000,7 @@ pub enum PitchSpacePosition {
 \end{requirement}
 
 \begin{requirement}
+  \label{req:pitch:default-pitch-space}
   Every score \MUST{} define at least one pitch space. The default
   pitch space for CMN scores is \texttt{cmn-12}, which is
   diatonic-over-chromatic in structure (seven diatonic nominals
@@ -1003,6 +1020,7 @@ Notation: middle C is C4. This convention is normative throughout the
 specification.
 
 \begin{requirement}
+  \label{req:pitch:scientific-pitch-octaves}
   The \texttt{octave} field of \texttt{PitchSpacePosition::Cmn} \MUST{}
   follow Scientific Pitch Notation. Middle C is C4. The lowest A on a
   standard piano is A0. C-1 is one octave below the lowest C on a
@@ -1300,6 +1318,7 @@ pub enum SpellingNominal {
 \label{sec:pitch:accidental-stack}
 
 \begin{requirement}
+  \label{req:pitch:accidental-stack}
   The \texttt{accidentals} vector \MUST{} be interpreted as follows:
 
   \begin{itemize}
@@ -1354,6 +1373,7 @@ pub enum SpellingSource {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:pitch:spelling-provenance}
   Editing operations that respell a pitch \MUST{} produce attachments
   with source \texttt{UserChosen}. Editing operations that move or
   transpose a pitch \MUST{} produce attachments with source
@@ -1381,6 +1401,7 @@ precedence is:
 \end{enumerate}
 
 \begin{requirement}
+  \label{req:pitch:spelling-precedence}
   Every score \MUST{} carry a \texttt{SpellingPrecedence} configuration.
   The configuration \MUST{} assign a total ordering over the variants of
   \texttt{SpellingSource}. The configuration \MAY{} differ from the
@@ -1521,6 +1542,7 @@ matters in two cases:
 \end{itemize}
 
 \begin{requirement}
+  \label{req:pitch:absent-versus-natural}
   The renderer \MUST{} distinguish between an empty
   \texttt{accidentals} vector (no glyph) and a vector containing only
   a natural (explicit natural glyph) when materializing a spelling.
@@ -1542,6 +1564,7 @@ Chapter~\ref{ch:graph} (Section~\ref{sec:graph:layers}); a layer
 identifier here refers to that authoritative definition.
 
 \begin{requirement}
+  \label{req:pitch:spelling-layer-fallback}
   Resolution of a pitch's spelling for a given view \MUST{} consider
   only attachments whose \texttt{layer} matches the view's active layer.
   The engraved view's active layer is \texttt{None}. Analytical views
@@ -1559,6 +1582,7 @@ pub struct PitchId(pub u128);
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:pitch:pitch-id-stability}
   Pitch identifiers \MUST{} be stable across edits: a pitch's identifier
   is assigned at creation and never reassigned. Pitch identifiers
   \MUST{} be unique within a score. Pitch identifiers \MUST{} be
@@ -1624,6 +1648,7 @@ Three additional equivalence relations are defined:
 \end{description}
 
 \begin{requirement}
+  \label{req:pitch:pitch-equivalence-functions}
   Implementations \MUST{} provide functions for each of the three
   computed equivalences. Implementations \MUSTNOT{} conflate structural
   equality with sounding or enharmonic equivalence.
@@ -1693,6 +1718,7 @@ specification states the contract; implementations are free to choose
 representations meeting it.
 
 \begin{requirement}
+  \label{req:time:exact-rational-time}
   The rational time type \MUST{} behave as an exact rational with at
   least 32-bit numerator and 32-bit denominator range in normalized
   form. Operations \MUST{} produce exact results; on representation
@@ -1732,6 +1758,7 @@ pub struct SmallRational {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:time:rational-normalization}
   All instances of the small rational \MUST{} be normalized: the
   greatest common divisor of the absolute value of the numerator and
   the denominator \MUST{} equal one, and the denominator \MUST{} be
@@ -1747,6 +1774,7 @@ representation, it is returned as \texttt{Small}; otherwise it is
 returned as \texttt{Large}.
 
 \begin{requirement}
+  \label{req:time:rational-promotion}
   Arithmetic that exceeds the small representation's range \MUST{}
   silently promote to the large representation. The user of the type
   \MUST{} observe no behavioral difference between small-only and
@@ -1779,6 +1807,7 @@ construct) has duration $\frac{1}{2} \cdot \frac{1}{2} \cdot \frac{1}{5}
 = \frac{1}{20}$.
 
 \begin{requirement}
+  \label{req:time:whole-note-unit}
   The whole note \MUST{} be the unit of musical time. The duration of
   a whole note is the rational $\frac{1}{1}$. All other durations are
   expressed as rationals relative to the whole note.
@@ -1829,6 +1858,7 @@ impl Sub<MusicalPosition> for MusicalPosition {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:time:position-duration-types}
   Implementations \MUST{} provide distinct types for position and
   duration. The type system \MUST{} prevent adding two positions. The
   difference of two positions \MUST{} yield a duration; the sum of a
@@ -1866,6 +1896,7 @@ pub struct WallClockDuration(i64);  // nanoseconds
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:time:nanosecond-wallclock}
   Wall-clock time \MUST{} be a fixed-point integer count of
   nanoseconds. Floating-point wall-clock time is forbidden in stored
   data. Implementations \MAY{} convert to floating-point for transient
@@ -1945,6 +1976,7 @@ pub enum RegionEdge { Start, End }
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:time:anchor-references}
   Stored \emph{references to external time points} (cross-cutting
   endpoints, marker locations, attachment anchors, anything
   pointing at an object outside the referencing object's own
@@ -1970,6 +2002,7 @@ pub enum RegionEdge { Start, End }
 \end{requirement}
 
 \begin{requirement}
+  \label{req:time:anchor-offset-kind}
   The variant of an \texttt{AnchorOffset} \MUST{} agree with the
   time model of the anchor target's enclosing region:
 
@@ -2012,6 +2045,7 @@ The chosen anchor type determines what edits the anchor survives:
 \end{itemize}
 
 \begin{requirement}
+  \label{req:time:orphaned-anchor-handling}
   When an anchored object is deleted, anchors targeting it \MUST{} be
   either re-anchored to a surviving object or marked as orphaned. The
   semantic operations chapter (Chapter~\ref{ch:semops}) specifies
@@ -2076,6 +2110,7 @@ pub struct BeatGroup {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:time:beat-group-sum}
   The sum of the durations of a time signature's beat groups \MUST{}
   equal the measure duration. Implementations \MUST{} reject time
   signatures whose beat groups do not sum to the measure duration.
@@ -2166,6 +2201,7 @@ pub struct Tempo {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:time:tempo-segment-order}
   The tempo map's segments \MUST{} be non-overlapping when resolved
   to absolute musical positions, and \MUST{} appear in
   monotonically-increasing start order. Two adjacent segments where
@@ -2231,6 +2267,7 @@ segments, conversion is numerical.
 \end{rationale}
 
 \begin{requirement}
+  \label{req:time:tempo-map-conversion}
   The tempo map \MUST{} expose two conversion functions:
   \texttt{musical\_to\_wallclock} and \texttt{wallclock\_to\_musical}.
   Both \MUST{} be deterministic: given identical tempo maps and inputs,
@@ -2361,6 +2398,7 @@ algorithm is, in outline:
 \end{enumerate}
 
 \begin{requirement}
+  \label{req:time:decomposition-determinism}
   The decomposition pre-pass \MUST{} be deterministic: given
   identical materialized graph, configuration, and algorithm
   version, it \MUST{} produce identical decompositions. Its output
@@ -2486,6 +2524,7 @@ analytical.
 \subsection{Tuplet Consistency}
 
 \begin{requirement}
+  \label{req:time:tuplet-duration-consistency}
   A tuplet's notated ratio \MUST{} be consistent with the sounding
   durations of its members: the sum of member durations \MUST{} equal
   the duration that the tuplet's notated value indicates when scaled
@@ -2562,6 +2601,7 @@ which generally produces unbeamed events with explicit duration
 notations or graphic-duration symbols.
 
 \begin{requirement}
+  \label{req:time:proportional-region-time}
   Events in a proportional region \MUST{} use \texttt{WallClockTime}
   for positions and \texttt{WallClockDuration} for durations. The
   tempo map \MUSTNOT{} be applied to convert proportional-region
@@ -2630,6 +2670,7 @@ encoding admits both as cases.
 \label{sec:graph:aleatoric-discipline}
 
 \begin{requirement}
+  \label{req:time:aleatoric-anchoring-discipline}
   Every aleatoric region \MUST{} declare an
   \texttt{AleatoricAnchoringDiscipline}. Events within the region
   \MUST{} carry coordinate kinds consistent with the discipline:
@@ -2833,6 +2874,7 @@ pub enum PositionStructure {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:tuning:diatonic-chromatic-mapping}
   The \texttt{DiatonicOverChromatic} variant \MUST{} have a
   \texttt{nominal\_to\_chromatic} mapping of length equal to
   \texttt{nominals\_per\_octave}, with each entry strictly less than
@@ -3020,6 +3062,7 @@ pub enum PitchSpaceModification {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:tuning:accidental-modification-compatibility}
   An accidental's modification \MUST{} be expressible in the interval
   algebra of every pitch space that references its registry. A
   \texttt{CmnChromatic} modification is valid only in spaces with
@@ -3113,6 +3156,7 @@ pub enum GlyphReference {
 \subsection{SMuFL Versioning}
 
 \begin{requirement}
+  \label{req:tuning:smufl-version-fallback}
   Every score \MUST{} declare the SMuFL version it targets. Resolving a
   SMuFL glyph reference whose codepoint is not present in the active
   font's SMuFL version \MUST{} produce a deterministic fallback (the
@@ -3206,6 +3250,7 @@ pub enum TuningResolution {
 \subsection{The Resolution Contract}
 
 \begin{requirement}
+  \label{req:tuning:tuning-resolution-determinism}
   Every tuning resolution \MUST{} expose a deterministic function from
   pitch-space position (plus, where applicable, harmonic context) to
   frequency in Hertz, given a reference pitch. Determinism \MUST{}
@@ -3242,6 +3287,7 @@ tooling) and passed to the tuning resolution function. Static tuning
 systems ignore it; adaptive tuning systems consume it.
 
 \begin{requirement}
+  \label{req:tuning:adaptive-tuning-purity}
   Adaptive tuning resolution \MUST{} be a pure function of position
   and harmonic context. Implementations \MAY{} cache resolution
   results, but \MUST{} invalidate caches when the harmonic context
@@ -3269,6 +3315,7 @@ pub struct ReferencePitch {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:tuning:reference-pitch}
   Every score \MUST{} declare a reference pitch. The reference pitch
   \MUST{} be expressible as a valid position within the score's default
   pitch space. The frequency \MUST{} be positive and finite.
@@ -3332,6 +3379,7 @@ scopes from most specific to most general until each component
 (pitch space, tuning system, reference) is determined.
 
 \begin{requirement}
+  \label{req:tuning:tuning-resolution-order}
   Resolution \MUST{} proceed in the following order, halting at the
   first scope that supplies a non-inherited value for each component:
 
@@ -3363,6 +3411,7 @@ scopes from most specific to most general until each component
 \subsection{Compatibility Constraints}
 
 \begin{requirement}
+  \label{req:tuning:tuning-system-compatibility}
   When a tuning override is applied, the resolved tuning system's
   declared \texttt{pitch\_space} \MUST{} either equal the resolved
   pitch space or be declared compatible with it via a registered
@@ -3449,6 +3498,7 @@ identifiers with the specified semantics.
 \end{longtable}
 
 \begin{requirement}
+  \label{req:tuning:builtin-tuning-catalog}
   All built-in catalog identifiers \MUST{} resolve in a conforming
   implementation. The semantics specified above are normative.
   Implementations \MAY{} provide additional built-ins; they \MUSTNOT{}
@@ -3792,6 +3842,7 @@ impl TypedObjectId {
 \subsection{Identifier Generation}
 
 \begin{requirement}
+  \label{req:graph:replica-counter-identifiers}
   Identifiers \MUST{} be 128-bit values composed of a 64-bit replica
   identifier and a 64-bit monotonic counter local to that replica.
   The replica identifier \MUST{} be unique among all replicas of the
@@ -3843,6 +3894,7 @@ prevent collisions with user-authored identifiers, the spec
 reserves a dedicated replica namespace.
 
 \begin{requirement}
+  \label{req:graph:system-derived-namespace}
   The replica identifier \texttt{ReplicaId::SYSTEM\_DERIVED}
   (\texttt{0xffff\_ffff\_ffff\_ffff}) is reserved for
   deterministically-derived system identifiers. User-authored
@@ -4003,6 +4055,7 @@ pub enum ObjectKind {
 \end{requirement}
 
 \begin{requirement}
+  \label{req:graph:system-id-collision}
   Implementations \MUST{} perform a collision check during
   reduction whenever a new system-derived identifier is minted.
   If a newly derived 64-bit counter, within the same typed
@@ -4089,6 +4142,7 @@ replicas mint the same identifier for the same synthetic pitch.
 \subsection{Identifier Stability}
 
 \begin{requirement}
+  \label{req:graph:identifier-non-reuse}
   An identifier, once assigned, \MUST{} never be reassigned, even
   after deletion of the corresponding object. Stale identifiers
   encountered in stored references \MUST{} be detected and reported
@@ -4117,6 +4171,7 @@ pub struct EventArena {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:graph:constant-time-event-lookup}
   Event lookup by \texttt{EventId} \MUST{} be $O(1)$ amortized.
   Implementations \MAY{} use any storage layout meeting this contract;
   vector-of-events with stable indices, slot-allocator schemes, and
@@ -4187,6 +4242,7 @@ pub enum ConcreteDuration {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:graph:region-coordinate-kinds}
   Event position and duration variants \MUST{} agree with the time
   model of the enclosing region:
 
@@ -4205,6 +4261,7 @@ pub enum ConcreteDuration {
 \end{requirement}
 
 \begin{requirement}
+  \label{req:graph:duration-bound-kinds}
   If both bounds of a \texttt{DurationBounds} are present, they
   \MUST{} use the same \texttt{ConcreteDuration} variant, unless the
   enclosing aleatoric region's anchoring discipline explicitly
@@ -4229,6 +4286,7 @@ pub struct IdentifiedPitch {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:graph:identified-pitch-ownership}
   Every pitch embedded in an event \MUST{} be wrapped in an
   \texttt{IdentifiedPitch}. The contained \texttt{PitchId} \MUST{} be
   unique within the score's pitch-identity index. Pitch identifiers
@@ -4278,6 +4336,7 @@ pub enum GraceKind {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:graph:pitched-event-nonempty}
   A \texttt{PitchedEvent} \MUST{} have at least one pitch. Empty
   pitch lists are forbidden; use \texttt{Rest} for the no-pitch case.
 \end{requirement}
@@ -4593,6 +4652,7 @@ pub struct StaffExtent {
 \subsection{Region Overlap and Concurrency}
 
 \begin{requirement}
+  \label{req:graph:region-overlap-constraint}
   Regions \MAY{} overlap in time if their staff extents are disjoint.
   Regions \MUSTNOT{} overlap in both time and staff extent. The
   graph's construction \MUST{} reject configurations violating this
@@ -4766,6 +4826,7 @@ pub struct Measure {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:graph:staff-owned-measures}
   Measures \MUST{} belong to a single \texttt{StaffInstance}, not to
   the enclosing region. This admits polymeter: different staves in
   the same region \MAY{} carry different meter sequences and
@@ -4947,6 +5008,7 @@ objects alongside its list of \texttt{Instrument} objects; each
 region's staff instances reference these by \texttt{StaffId}.
 
 \begin{requirement}
+  \label{req:graph:staff-instance-ownership}
   Every \texttt{StaffInstance.staff} \MUST{} resolve to a
   \texttt{Staff} declared at the score level. A single
   \texttt{StaffId} \MAY{} be referenced by multiple
@@ -5012,6 +5074,7 @@ pub enum VoiceOrigin {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:graph:unbounded-voice-count}
   The number of voices per staff instance \MUST{} be unbounded in
   the data model. Engraving heuristics (Chapter~\ref{ch:layout-ir}
   and beyond) may flag visual issues with high voice counts; the
@@ -5019,6 +5082,7 @@ pub enum VoiceOrigin {
 \end{requirement}
 
 \begin{requirement}
+  \label{req:graph:event-voice-membership}
   Every event \MUST{} belong to exactly one voice. Voice membership
   is stored on the event (the \texttt{voice} field) and \MUST{} agree
   with the membership of the voice's \texttt{events} list:
@@ -5037,6 +5101,7 @@ voice with \texttt{origin: VoiceOrigin::SystemPromoted}. This
 preserves the non-overlap invariant without rejecting user intent.
 
 \begin{requirement}
+  \label{req:graph:promoted-voice-id}
   The identifier of a system-promoted voice \MUST{} be derived
   deterministically from a fixed function of:
 
@@ -5111,6 +5176,7 @@ fn derive_promoted_voice_id(
 \end{requirement}
 
 \begin{requirement}
+  \label{req:graph:promoted-voice-visibility}
   System-promoted voices are first-class graph objects: they appear
   in the staff instance's \texttt{voices} list, they participate in
   cross-cutting structures, and they are visible to users. They are
@@ -5127,6 +5193,7 @@ fn derive_promoted_voice_id(
 \end{requirement}
 
 \begin{requirement}
+  \label{req:graph:voice-event-nonoverlap}
   Within a voice, events \MUST{} be sorted by position and \MUSTNOT{}
   overlap in time. Concurrent material on the same staff \MUST{} be
   expressed via multiple voices.
@@ -5290,6 +5357,7 @@ pub enum TieClass {
 \end{rationale}
 
 \begin{requirement}
+  \label{req:graph:tie-class-validation}
   Tie validation is class-specific:
 
   \begin{itemize}
@@ -5663,6 +5731,7 @@ pub struct StrokeSample {
 \subsection{Coordinates}
 
 \begin{requirement}
+  \label{req:graph:region-local-coordinates}
   Graphic objects \MUST{} be stored in region-local coordinates. The
   region's transform maps local coordinates to canvas coordinates.
   This permits regions to be moved, resized, or otherwise transformed
@@ -5778,6 +5847,7 @@ pub struct PartDefinition {
 \subsection{Parts Are Projections, Not Storage}
 
 \begin{requirement}
+  \label{req:graph:part-content-projection}
   A part \MUSTNOT{} store musical content directly; it \MUST{} consist
   only of references to score content and overrides. Edits to score
   content \MUST{} propagate to all parts that reference that content.
@@ -5840,6 +5910,7 @@ The score graph maintains a set of structural invariants. Implementations
 \MUST{} preserve these invariants across all edits.
 
 \begin{requirement}
+  \label{req:graph:score-graph-invariants}
   The following invariants hold over every well-formed score graph:
 
   \begin{enumerate}
@@ -5966,6 +6037,7 @@ specification states the required indexes; implementations \MAY{}
 construct additional indexes provided they are kept consistent.
 
 \begin{requirement}
+  \label{req:graph:required-indexes}
   Implementations \MUST{} maintain at least the following indexes:
 
   \begin{description}
@@ -6110,6 +6182,7 @@ pub struct HybridLogicalClock {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:semops:operation-stamp-stability}
   \texttt{OperationId} \MUST{} be stable: an operation's identity is
   fixed at the moment of authoring and \MUSTNOT{} change with
   reordering, retransmission, or merging into operation sets at
@@ -6146,6 +6219,7 @@ pub struct CausalContext {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:semops:dotted-version-vectors}
   Causal contexts \MUST{} be expressed as dotted version vectors as
   defined above. Exhaustive predecessor lists \MUSTNOT{} be used as
   the canonical causal representation; they may appear in debugging
@@ -6292,6 +6366,7 @@ pub enum OperationKind {
 \subsection{The Operation Set as CRDT}
 
 \begin{requirement}
+  \label{req:semops:grow-only-operation-set}
   The replicated operation set is a grow-only CRDT: replicas
   accumulate envelopes by gossip, broadcast, or any other
   delivery mechanism, and converge on the same set when they have
@@ -6341,6 +6416,7 @@ pub struct EnvelopeHash(pub [u8; 32]);
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:semops:operation-equivocation}
   Slot transitions are determined as follows, independently of
   arrival order:
 
@@ -6439,6 +6515,7 @@ replicas. Acceptance rules determine when an envelope enters the
 operation set.
 
 \begin{requirement}
+  \label{req:semops:envelope-well-formedness}
   An incoming envelope is well-formed if and only if all of the
   following hold:
   \begin{itemize}
@@ -6519,6 +6596,7 @@ pub enum ReplicaAnomalyReason {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:semops:per-replica-hlc-monotonicity}
   For any two envelopes accepted into the operation set that
   share the same authoring \texttt{ReplicaId}, with operation-
   counter values $c_1 < c_2$:
@@ -6628,6 +6706,7 @@ Every operation traverses four phases:
 \subsection{The Reduction Algorithm}
 
 \begin{requirement}
+  \label{req:semops:reduction-algorithm}
   The materialized score state is computed from the operation set as
   follows:
 
@@ -6659,6 +6738,7 @@ Every operation traverses four phases:
 \label{sec:semops:reduction-order}
 
 \begin{requirement}
+  \label{req:semops:canonical-reduction-order}
   The canonical reduction order is the lexicographic ordering by:
 
   \begin{enumerate}
@@ -6848,6 +6928,7 @@ pub enum RepairKind {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:semops:total-operation-effects}
   Every operation in the operation set \MUST{} produce exactly one
   \texttt{OperationEffect} under reduction. Effects \MUST{} be
   deterministic: every replica reducing the same operation set in
@@ -6859,6 +6940,7 @@ pub enum RepairKind {
 \label{sec:semops:caches}
 
 \begin{requirement}
+  \label{req:semops:cache-transparency}
   Caches, snapshots, and partial reductions are acceleration
   structures only. They \MUSTNOT{} affect the canonical materialized
   state, which is defined solely by the operation set, the active
@@ -6893,6 +6975,7 @@ identifier. Tombstoned identifiers are retained; their resolution
 yields a deletion record rather than the original object.
 
 \begin{requirement}
+  \label{req:semops:tombstone-state-machine}
   Identifiers \MUST{} have one of three states in the materialized
   graph:
 
@@ -6916,6 +6999,7 @@ yields a deletion record rather than the original object.
 \subsection{Tombstone Retention}
 
 \begin{requirement}
+  \label{req:semops:tombstone-retention}
   Tombstones \MUST{} be retained while any of the following hold:
   \begin{itemize}
     \item Pending replication: operations referencing the tombstoned
@@ -6936,6 +7020,7 @@ yields a deletion record rather than the original object.
 \subsection{Reference Resolution Across Tombstones}
 
 \begin{requirement}
+  \label{req:semops:tombstoned-reference-resolution}
   A reference to a tombstoned identifier resolves to a
   \texttt{TombstonedTarget} state rather than being silently
   invalidated. Operations targeting tombstoned identifiers reduce to
@@ -7117,6 +7202,7 @@ pub struct ConflictRegistry {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:semops:conflict-registry-persistence}
   The conflict registry is part of canonical materialized state.
   Conflict records persist until they are resolved or dismissed by
   explicit \texttt{ResolveConflict} operations. Conflict records
@@ -7140,6 +7226,7 @@ would produce conflict registries with disagreeing identifiers,
 breaking canonical state.
 
 \begin{requirement}
+  \label{req:semops:conflict-id-derivation}
   Each \texttt{ConflictId} \MUST{} be derived deterministically from
   the conflict's content via BLAKE3 truncation:
 
@@ -7210,6 +7297,7 @@ pub struct ResolveConflictPayload {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:semops:conflict-resolution-state}
   A \texttt{ResolveConflict} operation transitions a conflict's
   state from \texttt{Unresolved} to one of two states selected by its
   \texttt{action}. The \texttt{ResolutionAction::Dismiss} action
@@ -7293,6 +7381,7 @@ ordering between descriptor and members must be guaranteed by
 causal dependency, not by HLC stamps.
 
 \begin{requirement}
+  \label{req:semops:transaction-descriptor-causality}
   Every primitive operation member of a transaction \MUST{} causally
   depend on the transaction's \texttt{DeclareTransaction} envelope:
   the descriptor's \texttt{OperationId} \MUST{} appear in the
@@ -7342,6 +7431,7 @@ causal dependency, not by HLC stamps.
 \end{rationale}
 
 \begin{requirement}
+  \label{req:semops:atomic-transaction-reduction}
   Transactions reduce atomically. During reduction:
 
   \begin{itemize}
@@ -7442,6 +7532,7 @@ ordering. There is no discretionary search and no implementation
 freedom to choose among ``equally near'' candidates.
 
 \begin{requirement}
+  \label{req:semops:nearest-reanchor-order}
   For an object kind $K$ requiring re-anchoring to the nearest
   surviving $K$, ``nearest'' is computed as the strict lexicographic
   minimum over the surviving candidates of:
@@ -7598,6 +7689,7 @@ table is normative.
 \end{longtable}
 
 \begin{requirement}
+  \label{req:semops:synchronous-reanchoring}
   Re-anchoring \MUST{} be performed as part of the same reduction
   step that tombstones the referent. The resulting graph state
   \MUST{} satisfy every invariant in
@@ -7649,6 +7741,7 @@ pub enum UndoPolicy {
 \subsection{Undo Semantics}
 
 \begin{requirement}
+  \label{req:semops:compensating-undo}
   An \texttt{UndoTransaction} operation is committed to the operation
   set like any other operation; it does not modify history. Its
   reduction computes a compensating edit against the materialized
@@ -7722,6 +7815,7 @@ pub struct LwwAdvisory;
 \subsection{Eligible Fields}
 
 \begin{requirement}
+  \label{req:semops:lww-advisory-fields}
   The following classes of field \MAY{} be marked
   \texttt{LwwAdvisory} and reduced by last-writer-wins:
 
@@ -7780,6 +7874,7 @@ distinguish authoring contexts:
 \end{description}
 
 \begin{requirement}
+  \label{req:semops:precondition-validation-modes}
   Every operation specification \MUST{} classify each precondition
   as invariant or advisory. Invariant preconditions \MUST{} hold in
   all modes; advisory preconditions \MUST{} hold in authoring mode
@@ -8331,6 +8426,7 @@ is delivered as a separate conformance specification that extends
 this chapter.
 
 \begin{requirement}
+  \label{req:semops:operation-catalog-coverage}
   A conforming implementation \MUST{} provide every operation
   enumerated in the conformance catalog. Each operation \MUST{}
   satisfy the framework requirements stated in this chapter:
@@ -8466,6 +8562,7 @@ pub struct ScaleContext {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:layoutir:staff-space-coordinates}
   Spatial coordinates within the IR (in stages
   \texttt{LogicalLayoutIR}, \texttt{ConstrainedLayoutIR}, and
   \texttt{ResolvedLayoutIR}) \MUST{} be expressed in staff spaces.
@@ -8572,6 +8669,7 @@ pub struct LayoutObjectId(pub u128);
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:layoutir:provenance-completeness}
   Every layout object at every IR stage \MUST{} carry a non-empty
   \texttt{Provenance} record. Objects whose direct \texttt{source}
   does not correspond to a score graph object (engraver-synthesized
@@ -8680,6 +8778,7 @@ RenderIR
 \subsection{Stage Contracts}
 
 \begin{requirement}
+  \label{req:layoutir:deterministic-stage-transitions}
   Each pipeline stage \MUST{} accept its input stage as a pure
   function: identical inputs (plus identical configuration) \MUST{}
   produce identical outputs. The stages are deterministic by
@@ -9077,6 +9176,7 @@ pub enum OverrideOrigin {
 \subsection{Override Resolution}
 
 \begin{requirement}
+  \label{req:layoutir:override-enforcement}
   Overrides \MUST{} be applied during the engraving pass producing
   \texttt{LogicalLayoutIR}. Hard overrides \MUST{} be honored or the
   pass \MUST{} report an error. Soft overrides \MUST{} be honored
@@ -9086,6 +9186,7 @@ pub enum OverrideOrigin {
 \end{requirement}
 
 \begin{requirement}
+  \label{req:layoutir:override-target-lifetime}
   Overrides whose targets reference objects in the score graph (the
   \texttt{ScoreGraph} variant) \MUST{} be preserved across
   re-engraving. Overrides targeting IR-synthesized objects (the
@@ -9618,6 +9719,7 @@ pub struct RenderConfiguration {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:layoutir:render-provenance}
   Implementations producing \texttt{RenderIR} \MUST{} preserve
   provenance from \texttt{ResolvedLayoutIR}: every renderer primitive
   \MUST{} be traceable to its originating \texttt{ResolvedLayoutIR}
@@ -9670,6 +9772,7 @@ pub struct DependencyIndex {
 \subsection{Invalidation Rules}
 
 \begin{requirement}
+  \label{req:layoutir:dependency-invalidation}
   When a semantic operation (Chapter~\ref{ch:semops}) is applied to
   the score graph, the following invalidation \MUST{} occur:
 
@@ -9694,6 +9797,7 @@ pub struct DependencyIndex {
 \subsection{Frame-Budget Requirements}
 
 \begin{requirement}
+  \label{req:layoutir:incremental-frame-budget}
   The incremental layout system \MUST{} support the frame-budget
   requirements established in Chapter~\ref{ch:perf}: an edit
   affecting a single system on a 100-page orchestral score \MUST{}
@@ -9721,6 +9825,7 @@ expressed in:
 \end{itemize}
 
 \begin{requirement}
+  \label{req:layoutir:uniform-region-solving}
   All three region kinds \MUST{} use the same \texttt{LayoutRegion}
   container type. The constraint solver \MUST{} treat regions
   uniformly: it consumes spring slots and constraints without
@@ -9773,6 +9878,7 @@ pub struct GlyphRenderData {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:layoutir:glyph-catalog-lookups}
   Implementations \MUST{} use a glyph catalog for metric and render-data
   lookups during IR construction. Metrics \MUSTNOT{} be duplicated in
   the IR; the IR carries glyph identifiers and queries the catalog.
@@ -9816,6 +9922,7 @@ pub struct GlyphCatalogIdentity {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:layoutir:glyph-catalog-identity}
   Any layout conformance claim subject to byte-equal output
   (within-implementation determinism per
   Chapter~\ref{ch:solver}) \MUST{} declare the
@@ -9970,6 +10077,7 @@ contents. The definition is platform-abstracted.
 \end{description}
 
 \begin{requirement}
+  \label{req:format:durable-flush}
   Implementations \MUST{} use the platform's durable flush
   primitive at the points required by the atomic write protocol
   (Section~\ref{sec:format:commit}). Implementations \MAY NOT{}
@@ -10050,6 +10158,7 @@ pub struct FixedHeader {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:format:fixed-header-integrity}
   The header \MUST{} be exactly 64 bytes at file offset zero. Its
   contents \MUSTNOT{} change after file creation, except for the
   case where a major-version upgrade rewrites the entire file.
@@ -10148,6 +10257,7 @@ pub enum CommitState {
 \subsection{Superblock Selection}
 
 \begin{requirement}
+  \label{req:format:superblock-selection}
   On open, readers \MUST{} perform the following selection:
 
   \begin{enumerate}
@@ -10343,6 +10453,7 @@ relation to canonical state.
 \end{itemize}
 
 \begin{requirement}
+  \label{req:format:manifest-reachability}
   The manifest \MUST{} list every chunk that contributes to the
   current canonical state, transitively through its canonical
   roots (operation roots, canonical base, canonical blobs and
@@ -10403,6 +10514,7 @@ different identity question:
 \end{description}
 
 \begin{requirement}
+  \label{req:format:file-document-lineage-identity}
   Implementations \MUST{} assign a fresh \texttt{file\_uuid} on
   any Save As operation. They \MUSTNOT{} carry the source file's
   UUID into the new file: doing so would conflate physical and
@@ -10430,6 +10542,7 @@ superblock into the chunk graph. A cold reader needs to decode the
 manifest before it has any information from the chunk store.
 
 \begin{requirement}
+  \label{req:format:uncompressed-manifest}
   In this format version, the manifest chunk \MUST{} be stored
   \emph{uncompressed}. Its \texttt{CompressionAlgorithm} on disk
   is implicitly \texttt{None}; the superblock's
@@ -10487,6 +10600,7 @@ manifest before it has any information from the chunk store.
 Epiphany uses BLAKE3 as its single content-hashing algorithm.
 
 \begin{requirement}
+  \label{req:format:blake3-content-hashes}
   All content hashes in the bundle \MUST{} be BLAKE3-256 outputs
   (32 bytes). Implementations \MUSTNOT{} use any other algorithm
   for content addressing; SHA-256, SHA-3, and other algorithms
@@ -10526,6 +10640,7 @@ fn hash_preimage(
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:format:domain-separated-chunk-hashes}
   The content hash of a chunk \MUST{} be BLAKE3 of the canonical
   preimage above. The domain tag, chunk kind, schema version, and
   uncompressed length are part of the preimage; the compression
@@ -10686,6 +10801,7 @@ pub struct ChunkId(pub ContentHash);
 \end{requirement}
 
 \begin{requirement}
+  \label{req:format:immutable-verified-chunks}
   Chunks \MUST{} be immutable. Once a chunk is written and its bytes
   durably flushed, those bytes \MUSTNOT{} be modified. New state
   is encoded as new chunks with new identifiers; old chunks become
@@ -10749,6 +10865,7 @@ pub struct OperationBlockSummary {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:format:operation-block-bounds}
   Writers \SHOULD{} begin a new operation-envelope block when
   adding another envelope would cause the uncompressed block
   payload to exceed 1 \,MiB, except when an individual envelope's
@@ -10775,6 +10892,7 @@ block plus an offset within the block. It enables $O(\log n)$
 lookup of an operation by id.
 
 \begin{requirement}
+  \label{req:format:rebuildable-operation-index}
   The operation index is an acceleration structure, not canonical.
   If absent, readers rebuild it by scanning all blocks. If present
   but corrupt or stale, readers \MUST{} reject the index and
@@ -10831,6 +10949,7 @@ pub struct SnapshotRef {
 \subsection{The Canonical Document Identity}
 
 \begin{requirement}
+  \label{req:format:canonical-document-reduction}
   The canonical document is defined as follows:
 
   \begin{itemize}
@@ -10876,6 +10995,7 @@ pub struct SnapshotRef {
 \subsection{Pruning}
 
 \begin{requirement}
+  \label{req:format:pruning-state-preservation}
   Pruning is the act of removing operation envelopes that are
   causally covered by a new canonical base snapshot. Pruning:
 
@@ -10941,6 +11061,7 @@ pub struct BlobRef {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:format:lazy-bounded-blobs}
   Readers \MUST{} apply resource limits to blob loading:
   uncompressed length \MUST{} be checked against the reader's
   policy before decompression begins; \texttt{media\_type} \MUST{}
@@ -10966,6 +11087,7 @@ superblock now points at the new manifest); no intermediate state
 is visible.
 
 \begin{requirement}
+  \label{req:format:atomic-commit-sequence}
   Commits \MUST{} follow this sequence:
 
   \begin{enumerate}
@@ -10997,6 +11119,7 @@ is visible.
 \subsection{Crash Recovery}
 
 \begin{requirement}
+  \label{req:format:crash-recovery}
   On open after any crash, recovery follows the superblock
   selection rule (Section~\ref{sec:format:bundle}). The bundle is
   always in a recoverable state:
@@ -11050,6 +11173,7 @@ pub struct RetentionPolicy {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:format:manifest-retention}
   The active conformance profile \MUST{} declare a
   \texttt{RetentionPolicy}. Implementations \MUST{} honor the
   declared policy: chunks reachable from any retained manifest
@@ -11068,6 +11192,7 @@ pub struct RetentionPolicy {
 \subsection{Garbage Collection Rules}
 
 \begin{requirement}
+  \label{req:format:conservative-garbage-collection}
   Garbage collection is a conservative, optional, deferred
   operation. It \MUST{} preserve every byte reachable transitively
   from:
@@ -11232,6 +11357,7 @@ pub enum BarrierCondition {
 \subsection{Behavior Under Unknown Extensions}
 
 \begin{requirement}
+  \label{req:format:unknown-extension-preservation}
   When an implementation opens a bundle declaring an extension it
   does not understand:
 
@@ -11397,6 +11523,7 @@ pub struct SchemaVersion {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:format:schema-version-compatibility}
   Schema versioning rules:
 
   \begin{itemize}
@@ -11575,6 +11702,7 @@ pub struct ProfileConstraints {
 \end{requirement}
 
 \begin{requirement}
+  \label{req:format:profile-support}
   Every bundle \MUST{} declare at least one profile in its manifest's
   \texttt{profile\_declarations}. An implementation \MAY{} open a
   bundle if it supports any of the declared profiles, subject to
@@ -11605,6 +11733,7 @@ Each chunk \MAY{} be stored compressed. Compression is per-chunk
 metadata, not part of content identity.
 
 \begin{requirement}
+  \label{req:format:zstandard-support}
   Conforming implementations \MUST{} support reading chunks
   compressed with Zstandard at any level zstd defines. Writers
   \MAY{} choose to compress or not on a per-chunk basis;
@@ -11633,6 +11762,7 @@ prelude and chunk-graph design support this.
 \subsection{Required Locatability}
 
 \begin{requirement}
+  \label{req:format:chunk-locatability}
   The bundle \MUST{} guarantee that:
 
   \begin{itemize}
@@ -11696,6 +11826,7 @@ visible state is provisional until then.
 \subsection{Memory Mapping}
 
 \begin{requirement}
+  \label{req:format:safe-memory-mapping}
   Implementations \MAY{} memory-map the bundle file for efficient
   random access to chunks and blobs. The format's content-addressing
   and chunk immutability guarantees make memory mapping safe:
@@ -11951,6 +12082,7 @@ pub struct SolverBudgetUsed {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:solver:solver-purity}
   \texttt{solve} and \texttt{solve\_incremental} \MUST{} be pure
   functions of their inputs within the determinism contract
   (Section~\ref{sec:solver:determinism}). They \MUSTNOT{} consult
@@ -12040,6 +12172,7 @@ pub enum SolverWarningKind {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:solver:report-authority}
   The \texttt{SolveReport.layout} field is always populated, but
   its authority depends on \texttt{status}:
 
@@ -12101,6 +12234,7 @@ pub enum ConstraintStrength {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:solver:required-constraint-strength}
   A solver \MUSTNOT{} treat a \texttt{Required} constraint as
   if it were \texttt{Preferred} for any reason, including for
   quality optimization. A layout that violates a \texttt{Required}
@@ -12180,6 +12314,7 @@ pub struct ExtensionMetric {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:solver:normalized-metric-bounds}
   Every \texttt{NormalizedMetric} value \MUST{} satisfy:
   \begin{itemize}
     \item It is finite (not NaN, not infinity).
@@ -12205,6 +12340,7 @@ normative metrics. This is the design intent. It is not the
 conformance requirement.
 
 \begin{requirement}
+  \label{req:solver:pareto-efficiency}
   The normative metric set defines the axes along which layout
   quality is evaluated. Solvers \SHOULD{} produce Pareto-efficient
   layouts with respect to these metrics: layouts for which no
@@ -12234,6 +12370,7 @@ pub struct TieBreakingWeights {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:solver:tie-breaking-weight-defaults}
   Tie-breaking weights \MUST{} have normative defaults specified
   in the Quality Metric Catalog. Implementations \MAY{} permit
   users to customize these weights; the defaults represent the
@@ -12276,6 +12413,7 @@ is never satisfied by a solver declaring \texttt{Stub}.
 \subsection{Minimal Layout Solver}
 
 \begin{requirement}
+  \label{req:solver:minimal-tier}
   A solver claiming the Minimal tier \MUST{}:
 
   \begin{itemize}
@@ -12300,6 +12438,7 @@ is never satisfied by a solver declaring \texttt{Stub}.
 \subsection{Standard Engraving Solver}
 
 \begin{requirement}
+  \label{req:solver:standard-tier}
   A solver claiming the Standard tier \MUST{}:
 
   \begin{itemize}
@@ -12320,6 +12459,7 @@ is never satisfied by a solver declaring \texttt{Stub}.
 \subsection{Advanced / Extension-Aware Solver}
 
 \begin{requirement}
+  \label{req:solver:advanced-tier}
   A solver claiming the Advanced tier \MUST{}:
 
   \begin{itemize}
@@ -12340,6 +12480,7 @@ is never satisfied by a solver declaring \texttt{Stub}.
 \subsection{Tier Declaration and Document Compatibility}
 
 \begin{requirement}
+  \label{req:solver:solver-tier-compatibility}
   Documents \MAY{} declare a minimum solver tier required for
   faithful engraving in their profile declarations
   (Chapter~\ref{ch:format}). A solver with tier lower than the
@@ -12364,6 +12505,7 @@ implementation determinism} is a strict byte-equality obligation;
 \subsection{Within-Implementation Determinism}
 
 \begin{requirement}
+  \label{req:solver:within-implementation-byte-stability}
   A solver implementation at a fixed version \MUST{} produce
   byte-for-byte identical \texttt{SolveReport} output for
   identical inputs, where ``identical inputs'' means:
@@ -12398,6 +12540,7 @@ implementation determinism} is a strict byte-equality obligation;
 \subsection{Cross-Implementation Conformance}
 
 \begin{requirement}
+  \label{req:solver:cross-implementation-conformance}
   Cross-implementation determinism (byte-equality of outputs
   across different conforming solvers) is \emph{not} required.
   Different conforming solvers \MAY{} produce different layouts
@@ -12464,6 +12607,7 @@ pub struct InvalidationSet {
 \subsection{Observational Equivalence}
 
 \begin{requirement}
+  \label{req:solver:incremental-observational-equivalence}
   For any invalidation set with declared scope $S$,
   \texttt{solve\_incremental} \MUST{} produce a layout
   observationally equivalent to \texttt{solve} called on the
@@ -12489,6 +12633,7 @@ pub struct InvalidationSet {
 \subsection{Propagation Documentation}
 
 \begin{requirement}
+  \label{req:solver:propagation-scope-contract}
   Implementations \MUST{} document, per their published
   conformance contract, the maximum invalidation scope they can
   service for each constraint family. The documented bound is the
@@ -12504,6 +12649,7 @@ reference suite of test scores. Each tier has its own subset of
 the suite and its own metric thresholds.
 
 \begin{requirement}
+  \label{req:solver:reference-suite-passage}
   The Reference Suite is delivered as a companion specification.
   Each suite entry consists of:
 
@@ -12550,6 +12696,7 @@ with the reference suite. It is \emph{not} the normative algorithm
 and \emph{not} the aesthetic floor.
 
 \begin{requirement}
+  \label{req:solver:algorithm-independence}
   Conforming implementations are \emph{not} required to use the
   reference algorithm or to reproduce its layouts, except where
   a reference-suite entry explicitly fixes an expected behavior
@@ -12635,6 +12782,7 @@ This chapter therefore distinguishes three obligation classes:
 \end{description}
 
 \begin{requirement}
+  \label{req:perf:core-product-budget-boundary}
   Where this chapter states a performance target, the target is a
   \emph{core obligation} unless explicitly labeled product
   obligation. Core obligations \MUST{} be satisfiable by a
@@ -12697,6 +12845,7 @@ Reference Hardware Profile (2026 baseline):
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:perf:reference-hardware}
   Conforming implementations \MUST{} meet the targets in this chapter
   on the reference hardware profile. Implementations \MAY{} miss
   targets on hardware below the reference profile (e.g., older
@@ -12714,6 +12863,7 @@ Reference Hardware Profile (2026 baseline):
 \subsection{Interactive Edit Latency}
 
 \begin{requirement}
+  \label{req:perf:single-system-edit-latency}
   The \emph{core's portion} of a single-system edit (operation
   envelope construction, reduction, incremental layout through
   \texttt{ResolvedLayoutIR}) \MUST{} complete within one frame
@@ -12738,6 +12888,7 @@ Reference Hardware Profile (2026 baseline):
 \subsection{Multi-System Edits}
 
 \begin{requirement}
+  \label{req:perf:multi-system-edit-latency}
   Edits affecting up to ten systems (e.g., a transposition over
   a substantial passage) \MUST{} complete within four frames
   (66.7\,ms at 60\,Hz) at p99. The four-frame budget gives the
@@ -12748,6 +12899,7 @@ Reference Hardware Profile (2026 baseline):
 \subsection{Full Re-Layout}
 
 \begin{requirement}
+  \label{req:perf:full-relayout-latency}
   Full re-layout of a 100-page orchestral score (triggered, for
   example, by a tuning system change applied score-wide) \SHOULD{}
   complete within two seconds at p99. This is a soft target; the
@@ -12760,6 +12912,7 @@ Reference Hardware Profile (2026 baseline):
 \label{sec:perf:open}
 
 \begin{requirement}
+  \label{req:perf:cold-open-latency}
   The \emph{core's portion} of cold open of a 100-page orchestral
   score from a \texttt{.musc} bundle \MUST{} reach
   \emph{first-system-ready} state within one second on the
@@ -12790,6 +12943,7 @@ viewport.
 \subsection{Streaming Read Discipline}
 
 \begin{requirement}
+  \label{req:perf:streaming-cold-open}
   The cold open target \MUST{} be achieved through streaming reads
   per Chapter~\ref{ch:format}: the implementation \MUSTNOT{} load
   the full score into memory before displaying the first system.
@@ -12801,6 +12955,7 @@ viewport.
 \label{sec:perf:memory}
 
 \begin{requirement}
+  \label{req:perf:core-memory-budget}
   Steady-state resident memory for a 100-page orchestral score
   \SHOULD{} remain below 500\,MB on the reference hardware profile,
   exclusive of evictable caches. Evictable caches \MAY{} push total
@@ -12827,6 +12982,7 @@ For measurement, memory is partitioned into:
 \end{description}
 
 \begin{requirement}
+  \label{req:perf:memory-category-reporting}
   Implementations \MUST{} expose the core-data memory consumption
   separately from evictable caches. Reporting tools \MUST{} be able
   to distinguish them. The 500\,MB target applies to core data only.
@@ -12835,6 +12991,7 @@ For measurement, memory is partitioned into:
 \subsection{Per-Object Memory Discipline}
 
 \begin{requirement}
+  \label{req:perf:per-object-memory-layout}
   Implementations \MUSTNOT{} embed glyph metrics in IR objects
   (Chapter~\ref{ch:layout-ir}). Implementations \MUSTNOT{} embed
   spelling-attachment payloads on pitch objects
@@ -12852,6 +13009,7 @@ audio safety; audio-engine performance is the obligation of the
 product audio layer (Section~\ref{sec:perf:boundary}).
 
 \begin{requirement}
+  \label{req:perf:audio-thread-data-access}
   The core's read-only data structures consumed by an audio
   thread (pitch resolution, tempo map lookup, event arena
   queries) \MUST{} be designed for allocation-free, lock-free
@@ -12877,6 +13035,7 @@ product audio layer (Section~\ref{sec:perf:boundary}).
 \subsection{Snapshot API}
 
 \begin{requirement}
+  \label{req:perf:lock-free-snapshots}
   The core \MUST{} provide an immutable-snapshot API: the
   ability for any thread to acquire a read-only view of the
   score graph at a consistent point in time, suitable for use
@@ -12902,6 +13061,7 @@ product audio layer (Section~\ref{sec:perf:boundary}).
 \label{sec:perf:solver}
 
 \begin{requirement}
+  \label{req:perf:solver-latency}
   The constraint solver (Chapter~\ref{ch:solver}) \MUST{} satisfy:
 
   \begin{itemize}
@@ -12920,6 +13080,7 @@ product audio layer (Section~\ref{sec:perf:boundary}).
 \label{sec:perf:format}
 
 \begin{requirement}
+  \label{req:perf:file-operation-latency}
   File format operations \MUST{} satisfy:
 
   \begin{itemize}
@@ -12941,6 +13102,7 @@ product audio layer (Section~\ref{sec:perf:boundary}).
 \label{sec:perf:methodology}
 
 \begin{requirement}
+  \label{req:perf:measurement-methodology}
   Performance conformance \MUST{} be measured using:
 
   \begin{itemize}
@@ -12965,6 +13127,7 @@ product audio layer (Section~\ref{sec:perf:boundary}).
 \label{sec:perf:regression}
 
 \begin{requirement}
+  \label{req:perf:performance-regression-gate}
   Conforming implementations \SHOULD{} maintain continuous
   performance regression testing against the reference corpus, with
   alerts for regressions exceeding 10\% on any target. The
@@ -13168,6 +13331,7 @@ pub trait ExtensionRegistry {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:ext:registry-versioning}
   Every extension registry \MUST{} be versioned. Stored references
   to registered definitions \MUST{} include the registry version
   they target. Loading a score with references to registry versions
@@ -13178,6 +13342,7 @@ pub trait ExtensionRegistry {
 \subsection{Identifier Stability}
 
 \begin{requirement}
+  \label{req:ext:registry-id-stability}
   Registry identifiers \MUST{} be stable across registry versions
   within a major version. Renumbering, reassignment, or repurposing
   of identifiers is forbidden within a major version. Removal of a
@@ -13209,6 +13374,7 @@ in the feature compendium:
 \end{itemize}
 
 \begin{requirement}
+  \label{req:ext:disabled-extension-preservation}
   Extension points \MUST{} be designed such that disabling an
   extension does not invalidate stored content referencing it. The
   content remains in the score, opaque to the host, until the
@@ -13223,6 +13389,7 @@ Extensions do not affect core conformance directly, but they
 interact with it:
 
 \begin{requirement}
+  \label{req:ext:extension-conformance}
   A conforming implementation:
 
   \begin{itemize}
@@ -13543,6 +13710,7 @@ rules are normative here.
 \end{longtable}
 
 \begin{requirement}
+  \label{req:deferred:identity-semantics}
   Implementations \MUST{} respect the semantic identity rules
   declared above. They \MAY{} freely choose the bit-level
   encoding of each type (the Binary Format companion specifies
@@ -14013,6 +14181,7 @@ appendix says what that means.
 \label{sec:det:thesis}
 
 \begin{requirement}
+  \label{req:determinism:platform-independent-state}
   Canonical document state \MUST{} be independent of platform,
   CPU, locale, thread scheduling, hash-map iteration order,
   floating-point environment, compression settings, and
@@ -14077,6 +14246,7 @@ source of impossible requirements.
 \end{description}
 
 \begin{requirement}
+  \label{req:determinism:determinism-layer-scope}
   Byte-equality obligations \MUST{} be applied only to the layer
   for which they are stated. Implementations \MUSTNOT{} interpret
   ``deterministic'' more strongly than its layer specifies, and
@@ -14107,6 +14277,7 @@ source of impossible requirements.
 \subsection{Permitted Forms}
 
 \begin{requirement}
+  \label{req:determinism:canonical-floating-point}
   Canonical stored floating-point values \MUST{} be finite
   IEEE 754 binary64 values. NaN and infinity \MUSTNOT{} appear
   in canonical chunks: implementations \MUST{} reject them at
@@ -14127,6 +14298,7 @@ source of impossible requirements.
 \subsection{Serialization}
 
 \begin{requirement}
+  \label{req:determinism:floating-point-serialization}
   Canonical \texttt{f64} values are serialized as little-endian
   IEEE 754 binary64 octets after applying the
   \texttt{-0.0 $\to$ +0.0} canonicalization. The eight serialized
@@ -14142,6 +14314,7 @@ source of impossible requirements.
 \subsection{Equality}
 
 \begin{requirement}
+  \label{req:determinism:floating-point-equality}
   Canonical equality of two floating-point values is byte equality
   of their canonical serialized representations. The IEEE 754
   notion that \texttt{NaN $\ne$ NaN} is irrelevant in canonical
@@ -14159,6 +14332,7 @@ source of impossible requirements.
 \label{sec:det:rounding}
 
 \begin{requirement}
+  \label{req:determinism:floating-point-execution}
   Numerical operations whose results enter canonical state
   \MUST{} use IEEE 754 round-to-nearest, ties-to-even. The
   ambient floating-point rounding mode (which on most platforms
@@ -14232,6 +14406,7 @@ pub struct QuantizedCoord {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:determinism:layout-coordinate-quantization}
   The canonical spatial coordinate grid is $1/1024$ staff space
   per unit. Layout coordinates emitted into canonical
   \texttt{ResolvedLayoutIR} \MUST{} be quantized to this grid
@@ -14319,6 +14494,7 @@ pub enum ToleranceGovernance {
 \end{lstlisting}
 
 \begin{requirement}
+  \label{req:determinism:named-tolerances}
   Specifications and conformance documents \MUSTNOT{} introduce
   ad-hoc epsilon constants. Every numerical tolerance that
   affects normative behavior \MUST{} be declared as a named
@@ -14345,6 +14521,7 @@ Hash-map and B-tree implementation order leaks platform-specific
 behavior into canonical output if not controlled.
 
 \begin{requirement}
+  \label{req:determinism:canonical-collection-order}
   Whenever canonical output, canonical serialization, or canonical
   hashing depends on iterating a set, map, or other collection,
   iteration \MUST{} occur in a specified total order. The
@@ -14386,6 +14563,7 @@ Locale-dependent text behavior is a routine source of canonical
 divergence. The specification fixes this at the encoding layer.
 
 \begin{requirement}
+  \label{req:determinism:unicode-canonicalization}
   Canonical text fields \MUST{} be encoded as UTF-8 with Unicode
   NFC (Normalization Form Canonical Composition) applied. Two
   texts whose NFC byte representations are equal are canonically
@@ -14422,6 +14600,7 @@ divergence. The specification fixes this at the encoding layer.
 \subsection{Randomness}
 
 \begin{requirement}
+  \label{req:determinism:canonical-random-seeds}
   Randomness \MUSTNOT{} affect canonical output unless the
   random seed is an explicit canonical input.
 
@@ -14441,6 +14620,7 @@ divergence. The specification fixes this at the encoding layer.
 \subsection{Parallelism}
 
 \begin{requirement}
+  \label{req:determinism:parallel-baseline-equivalence}
   Parallel implementations of canonical algorithms \MUST{}
   produce results identical to a strict single-threaded baseline.
   Race timing, work-stealing order, and thread count \MUSTNOT{}
@@ -14460,6 +14640,7 @@ divergence. The specification fixes this at the encoding layer.
 \label{sec:det:compression}
 
 \begin{requirement}
+  \label{req:determinism:compression-independent-identity}
   Canonical content identity is the uncompressed payload bytes
   with the domain-separated preimage
   (Chapter~\ref{ch:format}). Compression algorithm choice and
@@ -14500,6 +14681,7 @@ below, each with a ratified default identifier
 and~\ref{req:time:decomposition-algorithm}).
 
 \begin{requirement}
+  \label{req:determinism:canonical-algorithm-registration}
   Any algorithm that affects canonical state \MUST{} satisfy one
   of:
 
@@ -14528,6 +14710,7 @@ and~\ref{req:time:decomposition-algorithm}).
 \label{sec:det:conformance}
 
 \begin{requirement}
+  \label{req:determinism:conformance-disclosure}
   Conforming implementations \MUST{} declare, as part of their
   published conformance statement:
 
