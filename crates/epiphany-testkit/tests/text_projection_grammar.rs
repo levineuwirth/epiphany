@@ -31,6 +31,10 @@
 //! 7. `transpose-interval` takes target bytes followed by a `value`; `interval`
 //!    is not allowed to become a grammar production parallel to the canonical
 //!    `TranspositionInterval` value spelling.
+//! 8. The worked example's header is the one implemented companion version.
+//! 9. Unreferenced blob lines have an explicitly labelled, cited rejection rule
+//!    with the round-trip and version-gating rationale that makes rejection
+//!    necessary.
 
 use std::collections::{BTreeSet, VecDeque};
 
@@ -62,6 +66,19 @@ fn grammar() -> &'static str {
         .find("\\end{lstlisting}")
         .expect("the grammar block is a listing");
     &SPEC[start..start + end]
+}
+
+/// The worked example's complete projection listing.
+fn worked_example() -> &'static str {
+    SPEC.split_once("\\chapter{A Worked Example}")
+        .expect("the specification contains the worked example")
+        .1
+        .split_once("\\begin{lstlisting}\n")
+        .expect("the worked example contains a projection listing")
+        .1
+        .split_once("\\end{lstlisting}")
+        .expect("the worked projection listing is closed")
+        .0
 }
 
 /// Strips `;` line comments, then removes `<...>` prose spans, which may run
@@ -513,5 +530,193 @@ fn the_derived_ordering_requirement_is_cited_where_it_applies() {
         citations >= 4,
         "expected the label plus citations from the value rule, the blob \
          requirement and the extension requirement; found {citations}"
+    );
+}
+
+/// The envelope already has a byte-exact production-code lock in
+/// `epiphany-ops`; the companion header above it must be locked as well. Derive
+/// the expected spelling from the title version so a future bump cannot update
+/// only one of the two.
+#[test]
+fn worked_example_header_is_the_implemented_companion_version() {
+    let title_version = SPEC
+        .lines()
+        .find_map(|line| {
+            line.split_once("Version ")
+                .and_then(|(_, rest)| rest.split_once(" ---"))
+                .map(|(version, _)| version)
+        })
+        .expect("the title page declares the companion version");
+    assert_eq!(
+        title_version, "0.7.0",
+        "this implementation targets exactly companion 0.7.0"
+    );
+
+    let expected = format!("(text-projection ({}))", title_version.replace('.', " "));
+    let actual = worked_example()
+        .lines()
+        .next()
+        .expect("the worked projection has a header");
+    assert_eq!(
+        actual, expected,
+        "the worked example header must match the implemented companion version"
+    );
+}
+
+/// At 0.7.0 no canonical state can reference a blob, so accepting a blob line
+/// would make the text round trip lossy. Lock both the normative rejection and
+/// the rationale/citations that prevent a future reader from treating it as an
+/// accidental incompatibility.
+#[test]
+fn unreferenced_blob_rejection_is_normative_labelled_and_cited() {
+    const LABEL: &str = "req:textproj:reject-unreferenced-blobs";
+    let label = format!("\\label{{{LABEL}}}");
+    let label_at = SPEC
+        .find(&label)
+        .unwrap_or_else(|| panic!("the blob rejection must be labelled `{LABEL}`"));
+    let requirement_start = SPEC[..label_at]
+        .rfind("\\begin{requirement}")
+        .expect("the blob-rejection label is on a normative requirement");
+    let section_end = SPEC[label_at..]
+        .find("\\section{Profile Declarations}")
+        .map(|offset| label_at + offset)
+        .expect("the blob rejection precedes profile declarations");
+    let rule_and_rationale = &SPEC[requirement_start..section_end];
+
+    assert!(
+        rule_and_rationale
+            .contains("A parser \\MUST{} reject every \\texttt{(blob ...)} line whose blob is"),
+        "the labelled requirement must reject every unreferenced blob line"
+    );
+    assert!(
+        rule_and_rationale.contains("req:textproj:canonical-blobs"),
+        "the rejection rule must cite the canonical-blob definition"
+    );
+    assert!(
+        SPEC.matches(LABEL).count() >= 2,
+        "`{LABEL}` must be both declared and cited"
+    );
+    for rationale_anchor in [
+        "necessarily non-canonical",
+        "next projection silently drops",
+        "causing data loss and falsifying",
+        "\\textrm{project}(\\textrm{serialize}(\\textrm{parse}(T))) = T",
+        "Forward compatibility belongs to header-version gating",
+        "req:textproj:header-version",
+    ] {
+        assert!(
+            rule_and_rationale.contains(rationale_anchor),
+            "the blob-rejection rationale must retain `{rationale_anchor}`"
+        );
+    }
+}
+
+/// The companion version declared on the title page.
+fn title_version() -> &'static str {
+    SPEC.lines()
+        .find_map(|line| {
+            line.split_once("Version ")
+                .and_then(|(_, rest)| rest.split_once(" ---"))
+                .map(|(version, _)| version)
+        })
+        .expect("the title page declares the companion version")
+}
+
+/// Every `\begin{requirement}`…`\end{requirement}` body.
+fn requirement_blocks() -> Vec<&'static str> {
+    let mut out = Vec::new();
+    let mut rest = SPEC;
+    while let Some((_, after)) = rest.split_once("\\begin{requirement}") {
+        let (body, tail) = after
+            .split_once("\\end{requirement}")
+            .expect("every requirement block is closed");
+        out.push(body);
+        rest = tail;
+    }
+    out
+}
+
+/// Version literals in `0.7.0` and `(0 7 0)` form, as `(major, minor, patch)`.
+fn version_literals(text: &str) -> Vec<String> {
+    let bytes: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    for i in 0..bytes.len() {
+        // `D.D.D`
+        if bytes[i].is_ascii_digit() {
+            let mut j = i;
+            let mut parts = Vec::new();
+            let mut cur = String::new();
+            while j < bytes.len() && (bytes[j].is_ascii_digit() || bytes[j] == '.') {
+                if bytes[j] == '.' {
+                    if cur.is_empty() {
+                        break;
+                    }
+                    parts.push(std::mem::take(&mut cur));
+                } else {
+                    cur.push(bytes[j]);
+                }
+                j += 1;
+            }
+            if !cur.is_empty() {
+                parts.push(cur);
+            }
+            if parts.len() == 3 && (i == 0 || !bytes[i - 1].is_ascii_digit()) {
+                out.push(parts.join("."));
+            }
+        }
+        // `(D D D)`
+        if bytes[i] == '(' {
+            let mut j = i + 1;
+            let mut parts = Vec::new();
+            let mut cur = String::new();
+            while j < bytes.len() && (bytes[j].is_ascii_digit() || bytes[j] == ' ') {
+                if bytes[j] == ' ' {
+                    if !cur.is_empty() {
+                        parts.push(std::mem::take(&mut cur));
+                    }
+                } else {
+                    cur.push(bytes[j]);
+                }
+                j += 1;
+            }
+            if !cur.is_empty() {
+                parts.push(cur);
+            }
+            if j < bytes.len() && bytes[j] == ')' && parts.len() == 3 {
+                out.push(parts.join("."));
+            }
+        }
+    }
+    out
+}
+
+/// A version number named inside a **normative** block must be *this* companion's
+/// version.
+///
+/// The version lives in six places in this document: the title page, two
+/// requirements, the worked example, and two revision-history cells. Only the
+/// title and the example were locked. The two requirements are the dangerous
+/// ones — they are normative, so a bump that misses them leaves the companion
+/// *requiring* parsers to accept a version it no longer is. The revision history
+/// is deliberately not covered: old rows name old versions, which is the point of
+/// a history.
+#[test]
+fn requirements_name_only_this_companion_version() {
+    let title = title_version();
+    let mut found = 0usize;
+    for block in requirement_blocks() {
+        for literal in version_literals(block) {
+            found += 1;
+            assert_eq!(
+                literal, title,
+                "a requirement names version `{literal}` but the companion is \
+                 `{title}`; normative text must not outlive a bump"
+            );
+        }
+    }
+    assert!(
+        found >= 2,
+        "expected the header-version and blob-rejection requirements to name a \
+         version; found {found} — this lock has stopped reaching them"
     );
 }

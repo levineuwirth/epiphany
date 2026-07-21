@@ -229,7 +229,7 @@
   {\Large\scshape\color{epiphanyslate}Text Projection}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.6.0 --- The operation vocabulary is grammar-directed; values enter exactly where named}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.7.0 --- Canonical blob rejection and single-version header gating}\\[4pt]
   {\small\color{epiphanyslate}Normative for the text form it defines}
   \vfill
 \end{titlepage}
@@ -459,6 +459,18 @@ A projection is, in order:
     (core specification Appendix~D).
 \end{enumerate}
 
+\begin{requirement}
+  \label{req:textproj:header-version}
+  A parser implementing this companion \MUST{} accept exactly one header
+  version: \texttt{(0 7 0)}, the version of the companion it implements. It
+  \MUST{} reject any other version at line one.
+
+  Multi-version acceptance and text migrate-on-read are deferred in the same
+  posture as op-payload migrate-on-read: support belongs in an explicit,
+  version-keyed migration path when a real consumer requires it. The current
+  parser \MUSTNOT{} speculate by accepting another version.
+\end{requirement}
+
 Every sequence is written in the normative order its binary counterpart uses. The
 projection introduces no ordering of its own.
 
@@ -481,6 +493,9 @@ projection introduces no ordering of its own.
 
   A blob referenced only by acceleration structures is non-canonical and
   \MUSTNOT{} be projected.
+
+  Parser handling of unreferenced blob lines is specified by
+  Requirement~\ref{req:textproj:reject-unreferenced-blobs}.
 \end{requirement}
 
 \begin{rationale}
@@ -491,6 +506,25 @@ projection introduces no ordering of its own.
   blob id the text no longer contains. This requirement was absent from version
   0.1.0 of this companion, and from the core specification's own list of what the
   projection preserves; both are corrected.
+\end{rationale}
+
+\begin{requirement}
+  \label{req:textproj:reject-unreferenced-blobs}
+  A parser \MUST{} reject every \texttt{(blob ...)} line whose blob is
+  unreferenced by canonical state
+  (Requirement~\ref{req:textproj:canonical-blobs}). At companion
+  version~0.7.0, neither a canonical operation nor canonical reduced state can
+  carry a \texttt{BlobId}; canonical state therefore cannot reference a blob,
+  and a parser \MUST{} reject every \texttt{(blob ...)} line.
+\end{requirement}
+
+\begin{rationale}
+  A blob-bearing text at this version is necessarily non-canonical. Accepting
+  one stages a blob into the bundle that the next projection silently drops,
+  causing data loss and falsifying
+  $\textrm{project}(\textrm{serialize}(\textrm{parse}(T))) = T$ for that text.
+  Forward compatibility belongs to header-version gating
+  (Requirement~\ref{req:textproj:header-version}), not to leniency here.
 \end{rationale}
 
 \section{Profile Declarations}
@@ -1069,19 +1103,19 @@ the tag.
 \chapter{A Worked Example}
 \label{ch:example}
 
-\emph{Non-normative.} The byte strings below are illustrative. The conformance
-vectors that pin real bytes are a deliverable of the implementation, not of this
-gate; elisions are marked \texttt{\dots}.
+\emph{Non-normative.} The byte strings below are illustrative but
+\emph{well-formed}: every one is a grammar-valid \texttt{bytes} terminal, because
+an example that cannot be parsed teaches the wrong lesson. The conformance vectors
+that pin \emph{real} bytes are a deliverable of the implementation.
 
 A document of one operation --- a transposition of two pitches up a perfect
-fifth, over a compacted base and one embedded image --- projects to six lines:
+fifth, over a compacted base --- projects to five lines:
 
 \begin{lstlisting}
-(text-projection (0 3 0))
+(text-projection (0 7 0))
 (document #x05050505050505050505050505050505)
 (profile full (0 1 0) (constraints 67108864 (retention 1 () true)))
-(canonical-base #x1f8b... #x00 1 full (schema 0 1) #x0000...)
-(blob "image/png" () #x89504e47...)
+(canonical-base #x1f8b0000000000000000000000000000 #x 1 full (schema 0 1) #x0000)
 (envelope #x00000000000000070000000000000001 #x00000000000000000000000011223344 (stamp 42 7 #x00000000000000070000000000000001) (causal ((#x0000000000000001 3)) (#x00000000000000020000000000000009)) (some #x00000000000000070000000000000005) (primitive (transpose-interval (#x00000000000000070000000000000001 #x00000000000000070000000000000002) (transposition-interval 4 7))))
 \end{lstlisting}
 
@@ -1248,6 +1282,24 @@ absorb it, exactly as the binary decoder does.
   position, and the grammar has no special \texttt{interval} production. The
   committed grammar gate locks the requirement, its reliance-point citations,
   and that absence. \\
+    \today & Chapters 3, 5 & 0.7.0 --- Canonical blob rejection and
+  single-version header gating. At this version no canonical operation or
+  canonical reduced state can reference a \texttt{BlobId}; every
+  \texttt{(blob ...)} line is therefore unreferenced and non-canonical, and a
+  parser must reject it
+  (\texttt{req:textproj:reject-unreferenced-blobs}). Accepting it would stage
+  content the next projection silently drops, lose data, and falsify the
+  text-to-binary-to-text round trip. Forward compatibility belongs to
+  header-version gating, not lenient blob acceptance.
+
+  The parser accepts exactly the implemented companion header,
+  \texttt{(0 7 0)}, and rejects every other version
+  (\texttt{req:textproj:header-version}). Multi-version acceptance and text
+  migrate-on-read remain deferred, in the same posture as op-payload
+  migrate-on-read: a future real consumer must bring an explicit,
+  version-keyed migration path rather than teaching the current parser to
+  speculate. The worked example now uses the implemented header and contains
+  only grammar-valid, canonical lines. \\
 \bottomrule
 \end{longtable}
 
