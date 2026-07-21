@@ -516,10 +516,34 @@ macro_rules! struct_codec {
                 Ok($ty { $($field),* })
             }
         }
+
+        impl crate::textvalue::TextValue for $ty {
+            fn project(&self) -> crate::textvalue::Sexp {
+                let $ty { $($field),* } = self;
+                crate::textvalue::Sexp::List(vec![
+                    crate::textvalue::Sexp::Symbol(crate::textvalue::kebab(stringify!($ty))),
+                    $( crate::textvalue::TextValue::project($field), )*
+                ])
+            }
+            fn parse(
+                s: &crate::textvalue::Sexp,
+            ) -> core::result::Result<Self, crate::textvalue::TextError> {
+                const ARITY: usize = [$(stringify!($field)),*].len();
+                let fields = s.expect_struct(&crate::textvalue::kebab(stringify!($ty)), ARITY)?;
+                let mut next = fields.iter();
+                $( let $field = crate::textvalue::TextValue::parse(
+                    next.next().expect("arity checked by expect_struct"))?; )*
+                Ok($ty { $($field),* })
+            }
+        }
     };
 }
 
-/// [`Codec`] for a zero-field unit struct: no bytes.
+/// [`Codec`] for a zero-field unit struct: no bytes. And its [`TextValue`]: the
+/// bare symbol, as a fieldless variant is. It encodes to no bytes and carries no
+/// value in the text either (`req:textproj:value-projection` clause 1).
+///
+/// [`TextValue`]: crate::textvalue::TextValue
 macro_rules! unit_codec {
     ($($ty:ident),* $(,)?) => {
         $(
@@ -529,11 +553,30 @@ macro_rules! unit_codec {
                     Ok($ty)
                 }
             }
+
+            impl crate::textvalue::TextValue for $ty {
+                fn project(&self) -> crate::textvalue::Sexp {
+                    crate::textvalue_impls::project_unit(stringify!($ty))
+                }
+                fn parse(
+                    s: &crate::textvalue::Sexp,
+                ) -> core::result::Result<Self, crate::textvalue::TextError> {
+                    crate::textvalue_impls::parse_unit(s, stringify!($ty)).map(|()| $ty)
+                }
+            }
         )*
     };
 }
 
-/// [`Codec`] for a fieldless ("C-like") enum: a single discriminant byte.
+/// [`Codec`] for a fieldless ("C-like") enum: a single discriminant byte. And its
+/// [`TextValue`]: the variant name as a bare symbol.
+///
+/// Both `match`es are exhaustive over the enum, so a variant added to the type and
+/// not to this invocation **fails to compile** — the guarantee
+/// `operation_kind_tag_vocabulary!` gives the operation decoder, here for every
+/// C-like enum in Chapter 5.
+///
+/// [`TextValue`]: crate::textvalue::TextValue
 macro_rules! cstyle_enum_codec {
     ($ty:ident { $($tag:literal => $variant:ident),* $(,)? }) => {
         impl Codec for $ty {
@@ -546,6 +589,30 @@ macro_rules! cstyle_enum_codec {
                     $( $tag => Ok($ty::$variant), )*
                     tag => Err(ScoreDecodeError::InvalidTag { kind: stringify!($ty), tag }),
                 }
+            }
+        }
+
+        impl crate::textvalue::TextValue for $ty {
+            fn project(&self) -> crate::textvalue::Sexp {
+                let variant = match self { $( $ty::$variant => stringify!($variant), )* };
+                crate::textvalue::Sexp::Symbol(crate::textvalue::kebab(variant))
+            }
+            fn parse(
+                s: &crate::textvalue::Sexp,
+            ) -> core::result::Result<Self, crate::textvalue::TextError> {
+                let name = s.as_symbol().ok_or(crate::textvalue::TextError::Expected {
+                    expected: "symbol",
+                    found: crate::textvalue_impls::class_of(s),
+                })?;
+                $(
+                    if name == crate::textvalue::kebab(stringify!($variant)) {
+                        return Ok($ty::$variant);
+                    }
+                )*
+                Err(crate::textvalue::TextError::UnknownConstructor {
+                    type_name: stringify!($ty),
+                    found: name.to_owned(),
+                })
             }
         }
     };
@@ -562,6 +629,21 @@ macro_rules! catalog_id_codec {
                 }
                 fn dec(r: &mut Reader<'_>) -> Result<Self> {
                     Ok($ty::new(String::dec(r)?))
+                }
+            }
+
+            // A catalog id is canonical text, so it projects as a quoted string.
+            // `new` folds to NFC, so `parse` interns and then *compares*: returning
+            // the folded value would accept a non-NFC spelling and silently
+            // normalize it (`req:textproj:strict-parse`).
+            impl crate::textvalue::TextValue for $ty {
+                fn project(&self) -> crate::textvalue::Sexp {
+                    crate::textvalue::Sexp::Str(self.as_str().to_owned())
+                }
+                fn parse(
+                    s: &crate::textvalue::Sexp,
+                ) -> core::result::Result<Self, crate::textvalue::TextError> {
+                    crate::textvalue_impls::parse_catalog_id(s, $ty::new, |v| v.as_str())
                 }
             }
         )*

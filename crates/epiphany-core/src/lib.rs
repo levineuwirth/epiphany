@@ -53,6 +53,11 @@ mod indexes;
 mod invariants;
 mod pitch;
 mod tempo;
+mod textvalue_event;
+mod textvalue_graph;
+mod textvalue_impls;
+mod textvalue_pitch;
+mod textvalue_time;
 mod time;
 
 pub mod fuzz;

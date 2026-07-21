@@ -438,7 +438,7 @@ pub const REGISTERED_TAG_DISCRIMINANT: u8 = 16;
 /// separate hand-maintained lists — two of them asserting the tag was *unknown*
 /// — stayed green (Push 5 / P4).
 macro_rules! operation_kind_tag_vocabulary {
-    ($($variant:ident = $disc:literal),+ $(,)?) => {
+    ($($variant:ident = $disc:literal => $catalog:literal),+ $(,)?) => {
         impl OperationKindTag {
             /// Every payload-free tag, in discriminant order. [`Registered`]
             /// is excluded: it carries an id and has no bare encoding.
@@ -465,41 +465,54 @@ macro_rules! operation_kind_tag_vocabulary {
                     _ => return None,
                 })
             }
+
+            /// The name this kind carries in the Text Projection, which is the
+            /// **Operation Catalog's** section name, not this enum's variant
+            /// name. The tag space renamed three pairs (`InsertRegion`,
+            /// `InsertStaff`, `InsertStaffInstance`); the projection keeps the
+            /// catalog's `create-*`, because that is what the specification a
+            /// reader holds calls them.
+            pub fn catalog_name(&self) -> &'static str {
+                match self {
+                    $(OperationKindTag::$variant => $catalog,)+
+                    OperationKindTag::Registered(_) => "registered",
+                }
+            }
         }
     };
 }
 
 operation_kind_tag_vocabulary! {
-    InsertEvent = 0,
-    DeleteEvent = 1,
-    ModifyEvent = 2,
-    RespellPitch = 3,
-    Transpose = 4,
-    CreateCrossCutting = 5,
-    DeleteCrossCutting = 6,
-    ModifyCrossCutting = 7,
-    ChangeRegionTimeModel = 8,
-    InsertRegion = 9,
-    DeleteRegion = 10,
-    InsertStaffInstance = 11,
-    DeleteStaffInstance = 12,
-    SetUserSystemBreak = 13,
-    SetUserPageBreak = 14,
-    DeclareTransaction = 15,
-    InsertIdentifiedPitch = 17,
-    DeleteIdentifiedPitch = 18,
-    ModifyIdentifiedPitch = 19,
-    CreateVoice = 20,
-    DeleteVoice = 21,
-    SetMetadata = 22,
-    SetMetricGrid = 23,
-    InsertStaff = 24,
-    SetTimeSignature = 25,
-    SetTempoSegment = 26,
-    SetStaffLayout = 27,
-    CreateRepeatStructure = 28,
-    DeleteRepeatStructure = 29,
-    TransposeInterval = 30,
+    InsertEvent = 0 => "insert-event",
+    DeleteEvent = 1 => "delete-event",
+    ModifyEvent = 2 => "modify-event",
+    RespellPitch = 3 => "respell-pitch",
+    Transpose = 4 => "transpose",
+    CreateCrossCutting = 5 => "create-cross-cutting",
+    DeleteCrossCutting = 6 => "delete-cross-cutting",
+    ModifyCrossCutting = 7 => "modify-cross-cutting",
+    ChangeRegionTimeModel = 8 => "change-region-time-model",
+    InsertRegion = 9 => "create-region",
+    DeleteRegion = 10 => "delete-region",
+    InsertStaffInstance = 11 => "create-staff-instance",
+    DeleteStaffInstance = 12 => "delete-staff-instance",
+    SetUserSystemBreak = 13 => "set-user-system-break",
+    SetUserPageBreak = 14 => "set-user-page-break",
+    DeclareTransaction = 15 => "declare-transaction",
+    InsertIdentifiedPitch = 17 => "insert-identified-pitch",
+    DeleteIdentifiedPitch = 18 => "delete-identified-pitch",
+    ModifyIdentifiedPitch = 19 => "modify-identified-pitch",
+    CreateVoice = 20 => "create-voice",
+    DeleteVoice = 21 => "delete-voice",
+    SetMetadata = 22 => "set-metadata",
+    SetMetricGrid = 23 => "set-metric-grid",
+    InsertStaff = 24 => "create-staff",
+    SetTimeSignature = 25 => "set-time-signature",
+    SetTempoSegment = 26 => "set-tempo-segment",
+    SetStaffLayout = 27 => "set-staff-layout",
+    CreateRepeatStructure = 28 => "create-repeat-structure",
+    DeleteRepeatStructure = 29 => "delete-repeat-structure",
+    TransposeInterval = 30 => "transpose-interval",
 }
 
 impl CanonicalEncode for OperationKindTag {

@@ -589,3 +589,71 @@ Two further claims from the Push-4a audit are **unverified** and should be
 checked, not inherited: that the JI dimension convention conflicts with its own
 prime-2 requirement, and that the named historical tunings lack exact
 deterministic ratio data. Neither was needed for 4a, and neither was confirmed.
+
+## The Text Projection value layer (`textvalue*.rs`)
+
+The Chapter-5 half of the Text Projection companion: `project` and `parse` for
+every value an operation payload can embed.
+
+**One field list drives both forms.** `struct_codec!`, `unit_codec!`,
+`cstyle_enum_codec!` and `catalog_id_codec!` now emit a `TextValue` impl beside
+the `Codec` impl, from the *same* invocation — 116 types whose field order cannot
+disagree between the binary form and the text, at zero call-site churn. This is
+the companion's own rationale applied to code: *a rule cannot drift from the
+listing it reads*, and two listings of one struct is the drift this project has
+already been bitten by (P13-I1). The `struct_codec!` expansion rebuilds through a
+struct literal and `cstyle_enum_codec!` matches exhaustively, so a field or
+variant added later **fails to compile** rather than silently vanishing from the
+text.
+
+The remaining 44 types have hand-written `Codec` impls and so need hand-written
+projections. Their field order was verified by a **mechanical diff** of the
+identifier sequence in each `fn enc` against the one in each `project`; all 44
+agree. Six apparent mismatches were regex artifacts — single-field variants whose
+binding is named differently on each side, and `.iter().map(…)` forms the pattern
+missed — each checked by hand.
+
+**Strictness is per-site, and the whole-value layer turned out to be dead.**
+The binary decoders enforce `req:binfmt`-style canonicality in two layers: a
+re-encode-and-compare guard, plus per-site checks for the order-preserving fields
+that guard is blind to. The text layer was built the same way, and then
+mutation-tested. The result:
+
+| check | verdict |
+|---|---|
+| set / map strictly-increasing walk | **live** |
+| `RationalTime` lowest-terms compare before construction | **live** |
+| catalog-id NFC intern-and-compare | **live** |
+| `EventArena` ascending-`EventId` walk | **live** |
+| `ensure_canonical` on `Tempo` | dead — removed |
+| `ensure_canonical` on `ReferencePitch` | dead — removed |
+| `ensure_canonical` on `SpellingPrecedence` | dead — removed |
+| `ensure_canonical` on `EventOrderingDAG` | dead — removed |
+
+A whole-value guard can only fire when a parse **normalizes**. Every Chapter-5
+constructor that normalizes (`RationalTime::new` reduces, `X::new` folds to NFC,
+`EventArena::insert` re-sorts, `BTreeSet`/`BTreeMap` re-sort) needed a check that
+*names the fault* anyway. The four constructors left — `Tempo::new`,
+`ReferencePitch::new`, `SpellingPrecedence::new`, `EventOrderingDAG::try_new` —
+**reject rather than adjust**, so an accepted value re-projects to exactly its
+input and the guard could never fire. A probe confirmed `try_new` returns its
+input map unchanged. The helper and all four call sites were removed: *a check
+that cannot fail is worse than no check, because it invites weakening the real
+one* — the same finding as the reader's two diagnostic-only branches.
+
+**What no round-trip test can see.** Two blind spots, both closed elsewhere:
+
+1. *Field order.* A `project`/`parse` pair that agrees with itself on a wrong
+   order round-trips perfectly, and two adjacent same-typed fields swapped in both
+   directions are invisible to the compiler too. Closed by construction for the
+   116 macro types and by the mechanical diff for the 44 hand-written ones.
+2. *Constructor names.* `Sexp::sym("measured-fracton")` round-trips, because
+   `parse` reads back the same wrong symbol `project` wrote. Closed by
+   `tests/textvalue_names.rs`, which recovers each type's Rust name from its
+   derived `Debug` and compares it to the symbol actually emitted.
+
+**One method error worth recording.** The work list came from `cargo check`
+errors, but the compiler reports only the *frontier* — `AnchorOffset`,
+`VoiceSelector`, `PowerOfTwo`, `OctaveOffset` and `NonZeroU16` were each hidden
+behind a type that had not compiled yet. The list has to be iterated to a
+fixpoint, never taken once.

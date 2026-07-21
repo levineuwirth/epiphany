@@ -16,26 +16,36 @@
 //! [`Sexp::Symbol`]. It has no `Ratio` or `Option` variant for the same reason:
 //! both are lists.
 //!
-//! # Strictness has two layers, as it does in the binary form
+//! # Strictness is per-site, and that is a finding, not a shortcut
 //!
-//! `req:textproj:strict-parse` forbids normalizing. The Binary Format companion
-//! learned this the expensive way (see `epiphany-bundle/DECISIONS.md`), and the
-//! same two layers apply here:
+//! `req:textproj:strict-parse` forbids normalizing. The binary decoders enforce
+//! the same rule in two layers: a whole-value re-encode-and-compare guard, plus
+//! per-site checks for the order-preserving fields that guard is blind to (see
+//! `epiphany-bundle/DECISIONS.md`).
 //!
-//! 1. A **whole-value re-project-and-compare guard** at the public parse boundary.
-//!    It is complete for everything a typed parse *normalizes* — a re-sorted
-//!    `BTreeSet`, a reduced rational, an NFC-folded catalog id — because the
-//!    normalized value projects back to different text than it was given.
+//! The text projection was built the same way and **the whole-value layer turned
+//! out to be dead here.** A re-project-and-compare guard can only fire when a
+//! parse *normalizes*, and in Chapter 5 every constructor that could normalize
+//! needed a check that names the fault anyway:
 //!
-//! 2. It is **blind to anything a typed parse accepts verbatim**, which is every
-//!    order-preserving sequence. Where the binary form constrains a `Vec`'s order
-//!    (the frozen `Transpose`'s non-decreasing `targets`), the text must carry the
-//!    same **per-site check**. A guard cannot see an order it faithfully preserves.
+//! * a set or map re-sorts and de-duplicates, so `parse` walks the elements and
+//!   rejects the first that does not strictly increase;
+//! * `RationalTime::new` reduces, so `parse` compares against `BigRational::new`'s
+//!   canonical form *before* constructing;
+//! * a catalog id folds to NFC, so `parse` interns and then compares;
+//! * `EventArena::insert` re-sorts, so `parse` checks ascending `EventId` itself.
 //!
-//! The parse functions in this module take layer 1 seriously: they never
-//! normalize silently. [`TextValue::parse`] for a set rejects an out-of-order or
-//! duplicate element rather than absorbing it, and a catalog id is built and then
-//! compared against its input rather than folded to NFC.
+//! Every one of those is mutation-verified live. The remaining validating
+//! constructors — `Tempo::new`, `ReferencePitch::new`, `SpellingPrecedence::new`,
+//! `EventOrderingDAG::try_new` — *reject* rather than adjust, so an accepted value
+//! re-projects to exactly its input and a whole-value guard could never fire. Four
+//! such guards were written, mutation-tested, found dead, and removed. A check
+//! that cannot fail is worse than no check: it invites weakening the real one.
+//!
+//! The blind spot the binary form documents still applies and still needs naming:
+//! where a `Vec`'s order is constrained (the frozen `Transpose`'s non-decreasing
+//! `targets`), only a per-site check can see it. Nothing in Chapter 5 constrains a
+//! `Vec` that way; the operation payloads do.
 
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
@@ -458,17 +468,30 @@ impl std::error::Error for TextError {}
 impl Sexp {
     /// Asserts this node is a list of exactly `arity` elements headed by the
     /// symbol `name`, and returns the fields after the head.
+    ///
+    /// A struct with zero fields never reaches here: it is the bare symbol
+    /// `name`, as a fieldless variant is.
     pub fn expect_struct(&self, name: &str, arity: usize) -> Result<&[Sexp], TextError> {
         let items = self.as_list().ok_or(TextError::Expected {
             expected: "struct",
             found: self.class(),
         })?;
-        let head = items.first().and_then(Sexp::as_symbol);
-        if head != Some(name) {
-            return Err(TextError::Syntax("struct head is not the type name"));
+        match items.first().and_then(Sexp::as_symbol) {
+            Some(head) if head == name => {}
+            Some(head) => {
+                return Err(TextError::UnknownConstructor {
+                    type_name: "struct",
+                    found: head.to_owned(),
+                })
+            }
+            None => return Err(TextError::Syntax("a struct is headed by its type name")),
         }
         if items.len() != arity + 1 {
-            return Err(TextError::Syntax("struct has the wrong field count"));
+            return Err(TextError::Arity {
+                type_name: "struct",
+                expected: arity,
+                found: items.len().saturating_sub(1),
+            });
         }
         Ok(&items[1..])
     }
@@ -651,6 +674,25 @@ impl<T: TextValue + Ord> TextValue for BTreeSet<T> {
             out.insert(value);
         }
         Ok(out)
+    }
+}
+
+/// A pair projects as a two-element list, exactly as a map entry does — the
+/// binary form writes its two components in order and adds nothing, so neither
+/// does the text.
+impl<A: TextValue, B: TextValue> TextValue for (A, B) {
+    fn project(&self) -> Sexp {
+        Sexp::List(vec![self.0.project(), self.1.project()])
+    }
+    fn parse(s: &Sexp) -> Result<Self, TextError> {
+        let items = s.as_list().ok_or(TextError::Expected {
+            expected: "pair",
+            found: s.class(),
+        })?;
+        let [first, second] = items else {
+            return Err(TextError::Syntax("a pair is `(<first> <second>)`"));
+        };
+        Ok((A::parse(first)?, B::parse(second)?))
     }
 }
 

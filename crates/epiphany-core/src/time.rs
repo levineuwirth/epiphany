@@ -108,7 +108,7 @@ impl RationalTime {
     /// [`RationalTime::Small`] when the normalized value fits the inline range.
     /// This is the single chokepoint that maintains the canonical-form
     /// invariant.
-    fn from_big(value: BigRational) -> Self {
+    pub(crate) fn from_big(value: BigRational) -> Self {
         // `BigRational` keeps the denominator positive and the fraction
         // reduced, so the sign lives on the numerator.
         let numer = value.numer();
@@ -126,7 +126,7 @@ impl RationalTime {
 
     /// The value as a [`BigRational`] (allocates for the inline case; used on
     /// the slow arithmetic path and for canonical encoding).
-    fn to_big(&self) -> BigRational {
+    pub(crate) fn to_big(&self) -> BigRational {
         match self {
             RationalTime::Small(s) => {
                 BigRational::new(BigInt::from(s.numerator), BigInt::from(s.denominator.get()))
