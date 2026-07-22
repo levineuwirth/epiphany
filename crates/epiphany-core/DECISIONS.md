@@ -588,10 +588,32 @@ implementation is now an explicit part of Push 4b. Remaining blockers:
 P13-S1 removed the former requirement-label blocker; Chapter 4's requirements
 are now independently citable.
 
-Two further claims from the Push-4a audit are **unverified** and should be
-checked, not inherited: that the JI dimension convention conflicts with its own
-prime-2 requirement, and that the named historical tunings lack exact
-deterministic ratio data. Neither was needed for 4a, and neither was confirmed.
+The two remaining Push-4a audit claims, carried here as **unverified** through
+two passes, were checked on 2026-07-22. **Both are real**, and both are Chapter 4
+defects standing in front of 4b rather than inside it. Filed as P13-S5 and
+P13-S6:
+
+- **The JI prime basis is specified at two lengths** (P13-S5).
+  `req:pitch:ji-vector-basis` says the built-in JI spaces order primes ascending
+  *starting with 2* and that `components.len()` must equal the basis size; the
+  built-in table calls `ji-5limit` "Two-dimensional (prime axes 3, 5)",
+  `ji-7limit` three-dimensional, `ji-11limit` four-dimensional — each exactly
+  one short, consistently, the table being octave-reduced and the requirement
+  full-register. Both are normative, so a 5-limit vector must be both length 2
+  and length 3. The requirement's octave-reduction clause normalizes the first
+  component; it does not remove it.
+- **No built-in tuning system's resolution is pinned** (P13-S6), and 14 of the
+  20 have no definition at all — only the six `tet-*` are specified, by
+  `EqualTemperament`'s structural rule. `TuningResolution::Function` delegates
+  the historical temperaments to a `TuningFunctionId` that Chapter 10 lists as
+  an *extension point*; no built-in is mapped to one and none is pinned. Against
+  `req:tuning:tuning-resolution-determinism`, which requires determinism across
+  platforms, two conforming implementations may choose different published
+  variants of Werckmeister III and both pass.
+
+The original phrasing understated the second: it is not missing ratio data but
+an unpinned resolution contract, and `req:pitch:spelling-algorithm`'s versioned
+`SpellingAlgorithmId "default"` is the in-house pattern for fixing it.
 
 ## The Text Projection value layer (`textvalue*.rs`)
 
