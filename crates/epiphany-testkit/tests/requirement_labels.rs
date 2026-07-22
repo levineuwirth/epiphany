@@ -9,9 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const CORE_REQUIREMENT_COUNT: usize = 209;
-const SUITE_REQUIREMENT_COUNT: usize = 279;
-const SUITE_LABEL_COUNT: usize = 279;
+const CORE_REQUIREMENT_COUNT: usize = 212;
+const SUITE_REQUIREMENT_COUNT: usize = 282;
+const SUITE_LABEL_COUNT: usize = 282;
 
 /// The normative chapter-to-area assignment. Keeping this as data makes adding a
 /// requirement under the wrong chapter fail without encoding chapter names in

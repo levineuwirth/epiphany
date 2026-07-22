@@ -3362,10 +3362,15 @@ pub enum TuningResolution {
 \subsection{Adaptive Tuning}
 
 Adaptive tuning systems compute frequency from position \emph{plus
-harmonic context}. In a 5-limit adaptive JI system, for example, the
-frequency of a given E depends on whether it is the major third of a C
-chord, the perfect fifth of an A chord, or a passing tone between
-other harmonic interpretations.
+harmonic context}. A registered adaptive tuning function \MAY{}
+resolve position per sonority --- for example, tuning a given E
+differently depending on whether it sounds as the major third of a C
+chord, the perfect fifth of an A chord, or a passing tone --- subject
+only to the purity constraint below
+(Requirement~\ref{req:tuning:adaptive-tuning-purity}). The built-in
+\texttt{ji-adaptive-5limit}, at its pinned version~1
+(Requirement~\ref{req:tuning:adaptive-default-version}), does not: it
+consumes only the harmonic context's tonal centre.
 
 \begin{lstlisting}[language=Rust]
 pub struct HarmonicContext {
@@ -3393,6 +3398,64 @@ systems ignore it; adaptive tuning systems consume it.
   and harmonic context. Implementations \MAY{} cache resolution
   results, but \MUST{} invalidate caches when the harmonic context
   changes.
+\end{requirement}
+
+\begin{requirement}
+  \label{req:tuning:adaptive-default-version}
+  \textbf{The built-in adaptive function, version 1.} The catalog
+  identifier \texttt{ji-adaptive-5limit} resolves to
+  \texttt{TuningResolution::Adaptive} with function identity
+  \texttt{"default-v1"} --- the version is part of the
+  machine-visible identifier string, not prose beside it. Version~1
+  is a pure function of (position, anchor pitch class):
+  \begin{itemize}
+    \item the position resolves through the construction of
+      Requirement~\ref{req:tuning:ji-static-construction}, transposed
+      so the anchor takes the role of $1/1$;
+    \item the anchor is the tonal centre supplied by the harmonic
+      context (Requirement~\ref{req:tuning:adaptive-anchor-derivation}
+      where that context is score-graph-derived); C (chromatic
+      position~0) when no tonal centre is supplied;
+    \item \texttt{concurrent}, \texttt{recent}, \texttt{hints},
+      \texttt{parameters}, and mode are \emph{ignored} by version~1,
+      exactly as \texttt{"default"} version~1 of
+      Requirement~\ref{req:pitch:spelling-algorithm} ignores the
+      context inputs it does not consult: consuming any of them is a
+      new version, not a silent behaviour change under the same
+      identity;
+    \item every result derives from the anchor and the reference
+      pitch alone. No adjustment is ever carried forward from a
+      previous resolution, so the construction is comma-drift-free by
+      shape, not by a correction step.
+  \end{itemize}
+  An unregistered or unknown \texttt{AdaptiveTuningFunctionId}
+  \MUST{} be a hard error; there is no silent fallback.
+  \texttt{AdaptiveTuningFunctionId} remains an extension point and
+  other functions \MAY{} be registered, but the built-in
+  \texttt{ji-adaptive-5limit} is bound to \texttt{"default-v1"} and
+  that binding \MUSTNOT{} be overridden.
+\end{requirement}
+
+\begin{requirement}
+  \label{req:tuning:adaptive-anchor-derivation}
+  Where a \texttt{HarmonicContext}'s tonal centre is derived from a
+  score graph, the anchor pitch class \MUST{} be computed from the
+  prevailing key signature as
+  \[
+    \texttt{anchor\_pc} = (7 \times \texttt{fifths}) \bmod 12,
+  \]
+  reading \texttt{fifths} (\texttt{KeySignature}, Chapter~\ref{ch:graph})
+  as the major tonic; mode is not consulted, so a signature of 0
+  anchors at C whether the prevailing key is C major or A minor. The
+  \emph{prevailing} key signature is the one on the staff containing
+  the pitch being resolved, taken from that staff's
+  \texttt{key\_sequence} (\texttt{StaffInstance::key\_sequence},
+  Chapter~\ref{ch:graph}) at the latest \texttt{KeySignatureChange}
+  whose anchor is at or before the pitch's onset. Both selections ---
+  staff and time --- \MUST{} be made this way: without them, a
+  polytonal or modulating score would resolve differently in two
+  conforming implementations, which
+  Requirement~\ref{req:tuning:tuning-resolution-determinism} forbids.
 \end{requirement}
 
 \section{Reference Pitch}
@@ -3615,8 +3678,8 @@ transposition algebra; automatic 24-chromatic spelling inference is deferred.
   \texttt{kirnberger-iii} & Kirnberger III well temperament. \\
   \texttt{young-ii} & Thomas Young's second temperament. \\
   \texttt{ji-static-5limit-C} & Static 5-limit JI anchored to C tonic. \\
-  \texttt{ji-static-5limit-G} & Static 5-limit JI anchored to G. \\
-  \texttt{ji-static-5limit-D} & Static 5-limit JI anchored to D. \\
+  \texttt{ji-static-5limit-G} & Static 5-limit JI anchored to G tonic. \\
+  \texttt{ji-static-5limit-D} & Static 5-limit JI anchored to D tonic. \\
   \texttt{ji-adaptive-5limit} & Adaptive 5-limit JI; resolves based on
   harmonic context. \\
   \bottomrule
@@ -3629,6 +3692,368 @@ transposition algebra; automatic 24-chromatic spelling inference is deferred.
   Implementations \MAY{} provide additional built-ins; they \MUSTNOT{}
   redefine the semantics of those listed.
 \end{requirement}
+
+\subsection{Temperament Constructions}
+\label{sec:tuning:temperament-constructions}
+
+This subsection gives the normative construction for each of the ten
+non-equal-tempered, non-just-intonation identifiers in the catalog
+above. Per the pitch-space/tuning-system independence stated in
+Section~\ref{sec:tuning:principles}, all ten are constructions over
+\texttt{cmn-12}'s twelve chromatic positions per octave (C,
+C$\sharp$/D$\flat$, D, \ldots, B) --- not over the open-ended
+\texttt{ji-5limit} lattice pitch space, which is a separate built-in
+with its own structure. Cents figures throughout are derived from the
+stated ratio or fraction-of-comma, never primary.
+
+\subsubsection{\texttt{pythagorean}}
+
+A chain of eleven pure $3/2$ fifths (twelve notes); every other interval
+is stacked fifths reduced by octaves. No comma is tempered anywhere in
+the chain --- the entire Pythagorean comma ($531441/524288 \approx
+23.460$ cents) is concentrated in the single interval where the chain
+does not close.
+
+The twelve-note selection is a choice of \emph{which} eleven consecutive
+fifths to keep, not a consequence of ``pure fifths'' alone. The
+conventional cut runs E$\flat$--B$\flat$--F--C--G--D--A--E--B--F$\sharp$--C$\sharp$--G$\sharp$
+(C at the center), leaving the wolf on the diminished sixth
+G$\sharp$--E$\flat$. An equally valid alternative cuts the spiral one
+step the other way (chain D$\flat$--\ldots--F$\sharp$, wolf at
+F$\sharp$--D$\flat$); either is a legitimate Pythagorean tuning. The
+E$\flat$--G$\sharp$ cut is the construction this identifier denotes.
+
+\begin{longtable}{p{1.8cm} p{4.5cm} p{4.5cm}}
+  \toprule
+  \textbf{Note} & \textbf{Ratio} & \textbf{Cents (derived)} \\
+  \midrule
+  \endhead
+  C & $1/1$ & 0.000 \\
+  C$\sharp$ & $2187/2048$ & 113.685 \\
+  D & $9/8$ & 203.910 \\
+  E$\flat$ & $32/27$ & 294.135 \\
+  E & $81/64$ & 407.820 \\
+  F & $4/3$ & 498.045 \\
+  F$\sharp$ & $729/512$ & 611.730 \\
+  G & $3/2$ & 701.955 \\
+  G$\sharp$ & $6561/4096$ & 815.640 \\
+  A & $27/16$ & 905.865 \\
+  B$\flat$ & $16/9$ & 996.090 \\
+  B & $243/128$ & 1109.775 \\
+  \bottomrule
+\end{longtable}
+
+The closing wolf fifth G$\sharp\to$E$\flat$ (octave-reduced) is
+$262144/177147 \approx 678.495$ cents.
+
+\textbf{Closure (non-circulating, by design).} Eleven pure fifths at
+701.955~c each, plus the closing wolf at 678.495~c:
+$11 \times 701.955 + 678.495 = 8400.000$~c exactly (seven octaves, as
+any assignment of twelve distinct pitch classes must sum to by
+construction). Relative to twelve
+\emph{pure} fifths ($12 \times 701.955 = 8423.460$~c), this construction
+is short by exactly $8423.460 - 8400.000 = 23.460$~c --- one Pythagorean
+comma, concentrated entirely on the single G$\sharp$--E$\flat$ interval
+rather than distributed. That concentration is what makes the tuning
+non-circulating: no pair of its twelve notes can be treated as
+interchangeable fifths the way a well temperament's can.
+
+\subsubsection{\texttt{meantone-1/4-comma}, \texttt{meantone-1/5-comma}, \texttt{meantone-1/6-comma}}
+
+Meantone is a \emph{regular} temperament: every one of the twelve fifths
+in the chain is tempered by the same fraction of the \emph{syntonic}
+comma ($81/80 \approx 21.506$ cents) --- not the Pythagorean comma used
+by the well temperaments below. All twelve fifths are tempered
+uniformly, so there is no ``which fifths'' selection the way there is
+for a well temperament; there is still a twelve-note chain-closing
+choice, structurally identical to \texttt{pythagorean}'s, and the same
+conventional cut places the wolf between G$\sharp$ and E$\flat$.
+
+The tempered fifth is $(3/2) \cdot (80/81)^{1/n}$ for $1/n$-comma. For
+$n=4$ this collapses to the exact form $5^{1/4}$; $n=5$ and $n=6$ are
+irrational and are given only as derived cents.
+
+\begin{longtable}{p{2.6cm} p{4.2cm} p{2.8cm} p{3.6cm}}
+  \toprule
+  \textbf{Variant} & \textbf{Fifth ratio} & \textbf{Cents (derived)} &
+  \textbf{Narrowing vs.\ pure $3/2$} \\
+  \midrule
+  \endhead
+  1/4-comma & $(3/2)(80/81)^{1/4} = 5^{1/4}$ exactly & 696.578 &
+    5.377~c $= \tfrac{1}{4} \cdot 21.506$~c \\
+  1/5-comma & $(3/2)(80/81)^{1/5}$ & 697.654 &
+    4.301~c $= \tfrac{1}{5} \cdot 21.506$~c \\
+  1/6-comma & $(3/2)(80/81)^{1/6}$ & 698.371 &
+    3.584~c $= \tfrac{1}{6} \cdot 21.506$~c \\
+  \bottomrule
+\end{longtable}
+
+Four ascending 1/4-comma fifths, lowered by two octaves, give the just
+major third: $4 \times 696.578 - 2 \times 1200 = 386.31$~c, the cents of
+$5/4$ --- the defining property of quarter-comma meantone.
+
+\textbf{Closure (non-circulating, by design; all three).} Because all
+twelve fifths are tempered equally, the residual wolf is the twelfth,
+closing interval forced to bring the total to 8400~c (seven octaves):
+
+\begin{longtable}{p{2.6cm} p{3.4cm} p{3.6cm} p{3.4cm}}
+  \toprule
+  \textbf{Variant} & \textbf{11 $\times$ tempered fifth} &
+  \textbf{Wolf (12th, closing)} & \textbf{Wolf vs.\ pure $3/2$} \\
+  \midrule
+  \endhead
+  1/4-comma & 7662.363~c & 737.637~c & $+35.682$~c (wide) \\
+  1/5-comma & 7674.191~c & 725.809~c & $+23.854$~c (wide) \\
+  1/6-comma & 7682.077~c & 717.923~c & $+15.968$~c (wide) \\
+  \bottomrule
+\end{longtable}
+
+All three wolves land on the wide side of a pure fifth --- the opposite
+sense from \texttt{pythagorean}'s narrow wolf.
+
+\subsubsection{\texttt{werckmeister-iii}}
+
+Fifths C--G, G--D, D--A, and B--F$\sharp$ are each narrowed by 1/4 of
+the \emph{Pythagorean} comma; the remaining eight fifths are pure.
+Because only four of twelve fifths are tempered and the pure fifths
+absorb none of the comma, all twelve notes remain usable as a tonic:
+there is no wolf.
+
+\begin{longtable}{p{9.5cm} p{2.5cm}}
+  \toprule
+  \textbf{Fifths} & \textbf{Tempering} \\
+  \midrule
+  \endhead
+  C--G, G--D, D--A, B--F$\sharp$ & narrow, 1/4 Pythagorean comma (4) \\
+  A--E, E--B, F$\sharp$--C$\sharp$, C$\sharp$--G$\sharp$,
+    G$\sharp$--E$\flat$, E$\flat$--B$\flat$, B$\flat$--F, F--C &
+    pure (8) \\
+  \bottomrule
+\end{longtable}
+
+Tempered-fifth cents: $(3/2)/(3^{12}/2^{19})^{1/4} \approx 696.090$
+(narrowing 5.865~c $= \tfrac{1}{4} \cdot 23.460$~c).
+
+\textbf{Closure.} $4 \times 5.865 = 23.460$~c exactly --- the chain
+closes.
+
+\subsubsection{\texttt{werckmeister-iv}}
+
+Fifths C--G, D--A, E--B, F$\sharp$--C$\sharp$, and B$\flat$--F are each
+narrowed by 1/3 of the Pythagorean comma; fifths G$\sharp$--D$\sharp$
+and E$\flat$--B$\flat$ are each \emph{widened} by 1/3 of the Pythagorean
+comma; the remaining five fifths are pure.
+
+\begin{longtable}{p{9.5cm} p{2.5cm}}
+  \toprule
+  \textbf{Fifths} & \textbf{Tempering} \\
+  \midrule
+  \endhead
+  C--G, D--A, E--B, F$\sharp$--C$\sharp$, B$\flat$--F &
+    narrow, 1/3 Pythagorean comma (5) \\
+  G$\sharp$--D$\sharp$, E$\flat$--B$\flat$ &
+    wide, 1/3 Pythagorean comma (2) \\
+  G--D, A--E, B--F$\sharp$, C$\sharp$--G$\sharp$, F--C & pure (5) \\
+  \bottomrule
+\end{longtable}
+
+Narrow-fifth cents: $(3/2)/(3^{12}/2^{19})^{1/3} \approx 694.135$
+(narrowing 7.820~c $= \tfrac{1}{3} \cdot 23.460$~c). Wide-fifth cents:
+$(3/2) \cdot (3^{12}/2^{19})^{1/3} \approx 709.775$ (widening 7.820~c).
+No wolf: all twelve notes remain usable as a tonic.
+
+\textbf{Closure.} $5 \times 7.820 - 2 \times 7.820 = 3 \times 7.820 =
+23.460$~c exactly --- the chain closes.
+
+\subsubsection{\texttt{vallotti}}
+
+Fifths F--C, C--G, G--D, D--A, A--E, and E--B (six consecutive) are each
+narrowed by 1/6 of the Pythagorean comma; the other six fifths are pure.
+
+\begin{longtable}{p{9.5cm} p{2.5cm}}
+  \toprule
+  \textbf{Fifths} & \textbf{Tempering} \\
+  \midrule
+  \endhead
+  F--C, C--G, G--D, D--A, A--E, E--B & narrow, 1/6 Pythagorean comma (6) \\
+  B--F$\sharp$, F$\sharp$--C$\sharp$, C$\sharp$--G$\sharp$,
+    G$\sharp$--E$\flat$, E$\flat$--B$\flat$, B$\flat$--F & pure (6) \\
+  \bottomrule
+\end{longtable}
+
+Tempered-fifth cents: $(3/2)/(3^{12}/2^{19})^{1/6} \approx 698.045$
+(narrowing 3.910~c $= \tfrac{1}{6} \cdot 23.460$~c). No wolf.
+
+\textbf{Closure.} $6 \times 3.910 = 23.460$~c exactly --- the chain
+closes.
+
+\subsubsection{\texttt{kirnberger-ii}}
+
+Fifths D--A and A--E are each narrowed by 1/2 the syntonic comma;
+fifth F$\sharp$--D$\flat$ (i.e.\ F$\sharp$--C$\sharp$, named with the
+flat spelling because the chain below is built outward from
+D$\flat$) is narrowed by a schisma (the difference between the
+Pythagorean and syntonic commas, $32805/32768 \approx 1.9537$~c); the
+remaining nine fifths are pure.
+
+\begin{longtable}{p{9.5cm} p{2.5cm}}
+  \toprule
+  \textbf{Fifths} & \textbf{Tempering} \\
+  \midrule
+  \endhead
+  D$\flat$--A$\flat$, A$\flat$--E$\flat$, E$\flat$--B$\flat$,
+    B$\flat$--F, F--C, C--G, G--D, E--B, B--F$\sharp$ & pure (9) \\
+  D--A, A--E & narrow, 1/2 syntonic comma (2) \\
+  F$\sharp$--D$\flat$ (closing) & narrow, 1 schisma (1) \\
+  \bottomrule
+\end{longtable}
+
+Cents by note, built by stacking the chain
+D$\flat$--A$\flat$--E$\flat$--B$\flat$--F--C--G--D--A--E--B--F$\sharp$
+from C~$= 1/1$:
+
+\begin{longtable}{p{2.2cm} p{3.5cm}}
+  \toprule
+  \textbf{Note} & \textbf{Cents (derived)} \\
+  \midrule
+  \endhead
+  C & 0.000 \\
+  D$\flat$ & 90.225 \\
+  D & 203.910 \\
+  E$\flat$ & 294.135 \\
+  E & 386.314 \\
+  F & 498.045 \\
+  F$\sharp$ & 590.224 \\
+  G & 701.955 \\
+  A$\flat$ & 792.180 \\
+  A & 895.112 \\
+  B$\flat$ & 996.090 \\
+  B & 1088.269 \\
+  \bottomrule
+\end{longtable}
+
+\textbf{Closure.} $2 \times 10.753$ (half-syntonic-comma fifths) $+ 1
+\times 1.9537$ (schisma fifth) $= 21.5063 + 1.9537 = 23.4600$~c exactly
+--- the chain closes.
+
+\subsubsection{\texttt{kirnberger-iii}}
+
+Fifths C--G, G--D, D--A, and A--E (four consecutive) are each narrowed
+by 1/4 the syntonic comma; fifth F$\sharp$--D$\flat$ is narrowed by a
+schisma (same position and same chain skeleton as
+\texttt{kirnberger-ii}); the remaining seven fifths are pure.
+
+\begin{longtable}{p{9.5cm} p{2.5cm}}
+  \toprule
+  \textbf{Fifths} & \textbf{Tempering} \\
+  \midrule
+  \endhead
+  D$\flat$--A$\flat$, A$\flat$--E$\flat$, E$\flat$--B$\flat$,
+    B$\flat$--F, F--C, E--B, B--F$\sharp$ & pure (7) \\
+  C--G, G--D, D--A, A--E & narrow, 1/4 syntonic comma (4) \\
+  F$\sharp$--D$\flat$ (closing) & narrow, 1 schisma (1) \\
+  \bottomrule
+\end{longtable}
+
+Cents by note, same chain skeleton as \texttt{kirnberger-ii}, from
+C~$= 1/1$:
+
+\begin{longtable}{p{2.2cm} p{3.5cm}}
+  \toprule
+  \textbf{Note} & \textbf{Cents (derived)} \\
+  \midrule
+  \endhead
+  C & 0.000 \\
+  D$\flat$ & 90.225 \\
+  D & 193.157 \\
+  E$\flat$ & 294.135 \\
+  E & 386.314 \\
+  F & 498.045 \\
+  F$\sharp$ & 590.224 \\
+  G & 696.578 \\
+  A$\flat$ & 792.180 \\
+  A & 889.735 \\
+  B$\flat$ & 996.090 \\
+  B & 1088.269 \\
+  \bottomrule
+\end{longtable}
+
+\textbf{Closure.} $4 \times 5.377$ (quarter-syntonic-comma fifths) $+ 1
+\times 1.9537$ (schisma fifth) $= 21.5063 + 1.9537 = 23.4600$~c exactly
+--- the chain closes.
+
+\subsubsection{\texttt{young-ii}}
+
+Thomas Young's \emph{second} temperament. Fifths C--G, G--D, D--A, A--E,
+E--B, and B--F$\sharp$ (six consecutive) are each narrowed by 1/6 of the
+Pythagorean comma; the remaining six fifths are pure.
+
+\begin{longtable}{p{9.5cm} p{2.5cm}}
+  \toprule
+  \textbf{Fifths} & \textbf{Tempering} \\
+  \midrule
+  \endhead
+  C--G, G--D, D--A, A--E, E--B, B--F$\sharp$ &
+    narrow, 1/6 Pythagorean comma (6) \\
+  F$\sharp$--C$\sharp$, C$\sharp$--G$\sharp$, G$\sharp$--E$\flat$,
+    E$\flat$--B$\flat$, B$\flat$--F, F--C & pure (6) \\
+  \bottomrule
+\end{longtable}
+
+This is the same six-tempered/six-pure, 1/6-Pythagorean-comma
+construction as \texttt{vallotti}, rotated: \texttt{young-ii}'s
+tempered run starts at C; \texttt{vallotti}'s starts at F. Tempered-fifth
+cents are therefore identical to \texttt{vallotti}'s: $\approx 698.045$
+(narrowing 3.910~c $= \tfrac{1}{6} \cdot 23.460$~c). No wolf.
+
+\textbf{Closure.} $6 \times 3.910 = 23.460$~c exactly --- the chain
+closes.
+
+\subsection{The Static 5-Limit Construction}
+\label{sec:tuning:ji-static}
+
+\begin{requirement}
+  \label{req:tuning:ji-static-construction}
+  The static 5-limit just-intonation systems are constructed from the
+  contiguous lattice block $\{3^a 5^b \mid a \in [-1,2],\ b \in
+  [-1,1]\}$ --- twelve cells, octave-reduced, assigned in ascending
+  order to the twelve chromatic positions of \texttt{cmn-12} starting
+  from the anchor, which takes the role of $1/1$. The block is
+  generated by its bounds; nothing is selected and nothing is
+  discarded.
+\end{requirement}
+
+The twelve, anchor-relative (position 0 is the anchor):
+
+\begin{longtable}{p{1.4cm} p{2.6cm} p{2.2cm} p{3.4cm}}
+  \toprule
+  \textbf{Step} & \textbf{Cell} & \textbf{Ratio} &
+  \textbf{Cents (derived)} \\
+  \midrule
+  \endhead
+  0 & $3^{0}5^{0}$ & $1/1$ & 0.000 \\
+  1 & $3^{-1}5^{-1}$ & $16/15$ & 111.731 \\
+  2 & $3^{2}5^{0}$ & $9/8$ & 203.910 \\
+  3 & $3^{1}5^{-1}$ & $6/5$ & 315.641 \\
+  4 & $3^{0}5^{1}$ & $5/4$ & 386.314 \\
+  5 & $3^{-1}5^{0}$ & $4/3$ & 498.045 \\
+  6 & $3^{2}5^{1}$ & $45/32$ & 590.224 \\
+  7 & $3^{1}5^{0}$ & $3/2$ & 701.955 \\
+  8 & $3^{0}5^{-1}$ & $8/5$ & 813.686 \\
+  9 & $3^{-1}5^{1}$ & $5/3$ & 884.359 \\
+  10 & $3^{2}5^{-1}$ & $9/5$ & 1017.596 \\
+  11 & $3^{1}5^{1}$ & $15/8$ & 1088.269 \\
+  \bottomrule
+\end{longtable}
+
+\texttt{ji-static-5limit-C}, \texttt{ji-static-5limit-G}, and
+\texttt{ji-static-5limit-D} are this one construction at three anchors,
+the named note taking the role of $1/1$. The catalog keeps exactly
+these three rows; additional anchors are an implementation extension
+and \MUSTNOT{} be read as a conformance obligation.
+
+No 12-note set built this way is inversionally symmetric: $45/32$ is
+present and its inverse $64/45$ is not.
 
 \subsection{Default Score Configuration}
 
@@ -3648,10 +4073,18 @@ A newly-created score with no explicit tuning context \MUST{} default to:
   \item \texttt{VoiceId}, \texttt{StaffId}, \texttt{RegionId},
     \texttt{VoiceSelector}, and the score graph's hierarchical
     organization are defined in Chapter~\ref{ch:graph}.
-  \item \texttt{KeyContext} and the harmonic-context construction
-    machinery are partially defined in Chapter~\ref{ch:graph} and
-    completed in the audio engine specification (out of scope for this
-    document).
+  \item \texttt{KeyContext} is not defined anywhere in this
+    specification; completing it is out of scope for this document.
+    Whatever completes it \MUST{} expose a tonal-centre chromatic
+    pitch class consistent with
+    Requirement~\ref{req:tuning:adaptive-anchor-derivation}.
+    Chapter~\ref{ch:graph} defines \texttt{KeySignature}, not
+    \texttt{KeyContext}. \texttt{ContextHint} and
+    \texttt{AdaptiveTuningParameters} are likewise undefined; the
+    built-in \texttt{ji-adaptive-5limit}, version~1
+    (Requirement~\ref{req:tuning:adaptive-default-version}), ignores
+    both, so defining them now would freeze a type surface on a
+    chapter with no consumer.
   \item The specific spelling algorithms referenced by
     \texttt{SpellingAlgorithmId} remain an open question; see the
     related open question in Section~\ref{sec:pitch:prepass}.
