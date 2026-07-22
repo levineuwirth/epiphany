@@ -933,7 +933,9 @@ relationships are defined.
 \begin{lstlisting}[language=Rust]
 pub struct ScalePosition {
     /// The pitch space this position is defined within. References an
-    /// entry in the score's pitch-space registry.
+    /// identifier in the built-in pitch-space catalog
+    /// (`sec:tuning:builtin`); a score selects from this catalog and
+    /// does not define its own entries.
     pub space: PitchSpaceId,
 
     /// The position within that space. Interpretation is space-defined.
@@ -1019,16 +1021,31 @@ pub enum PitchSpacePosition {
 
 \begin{requirement}
   \label{req:pitch:default-pitch-space}
-  Every score \MUST{} define at least one pitch space. The default
+  Every score \MUST{} select at least one pitch space from the
+  built-in catalog (Section~\ref{sec:tuning:builtin}). The default
   pitch space for CMN scores is \texttt{cmn-12}, which is
   diatonic-over-chromatic in structure (seven diatonic nominals
   A--G over twelve chromatic positions), anchored to the score's
   reference pitch as resolved through the score tuning context
-  (Chapter~\ref{ch:tuning}). Scores \MAY{} define additional pitch
-  spaces; pitches in different spaces cannot be directly compared
-  and operations between them \MUST{} go through an explicit
-  space-conversion mechanism.
+  (Chapter~\ref{ch:tuning}). Scores \MAY{} select additional pitch
+  spaces from that catalog; pitches in different spaces cannot be
+  directly compared and operations between them \MUST{} go through an
+  explicit space-conversion mechanism.
 \end{requirement}
+
+\begin{rationale}
+  Score-local pitch-space definition --- a score introducing a pitch
+  space of its own, beyond selecting from the built-in catalog --- is
+  deferred to a later schema major. The Chapter~\ref{ch:tuning} type
+  surface (\texttt{PitchSpace}, \texttt{PositionStructure},
+  \texttt{IntervalAlgebra}, and their kin) has never had a consumer;
+  committing a registry for it to the wire now would freeze that
+  surface permanently under \texttt{req:binfmt:frozen-layout}, before
+  any implementation has exercised it. Selecting from the built-in
+  catalog is the only reading the data model has ever supported: neither
+  \texttt{Score} nor \texttt{ScoreTuningContext} carries a pitch-space
+  or tuning-system registry, and none is added here.
+\end{rationale}
 
 \subsection{Octave Convention}
 \label{sec:pitch:octave}
@@ -3113,11 +3130,36 @@ pub enum PitchSpaceModification {
 
 \subsection{Accidental Engraving Metadata}
 
+\texttt{AccidentalEngraving} is reachable from canonical score state ---
+via \texttt{AccidentalDefinition} inside
+\texttt{ScoreAccidentalExtensions}, which hangs off
+\texttt{ScoreTuningContext} --- so every field it carries must itself be
+canonical. Its bounding box therefore cannot reuse
+Chapter~\ref{ch:layout-ir}'s \texttt{BoundingBox}, which is built on
+\texttt{StaffSpace} (single-precision \texttt{f32}) and belongs to the
+non-canonical resolved-layout cache. This chapter defines its own box
+type over \texttt{SpaceUnit} instead:
+
+\begin{lstlisting}[language=Rust]
+/// A bounding box over canonical space units, used for engraving
+/// metadata that lives in canonical score state. Distinct from
+/// Chapter 7's `BoundingBox` (built on `StaffSpace`, single precision,
+/// for the non-canonical resolved-layout cache): this type's edges are
+/// `SpaceUnit` (`CanonicalF64`), per
+/// `req:determinism:canonical-floating-point`.
+pub struct EngravingBoundingBox {
+    pub left: SpaceUnit,
+    pub right: SpaceUnit,
+    pub top: SpaceUnit,
+    pub bottom: SpaceUnit,
+}
+\end{lstlisting}
+
 \begin{lstlisting}[language=Rust]
 pub struct AccidentalEngraving {
-    /// Bounding box in staff-space units, relative to the glyph's
+    /// Bounding box in canonical space units, relative to the glyph's
     /// anchor point.
-    pub bounding_box: BoundingBox,
+    pub bounding_box: EngravingBoundingBox,
 
     /// Where the glyph attaches to the note: typically the geometric
     /// center or a custom anchor for compound glyphs.
@@ -3135,6 +3177,27 @@ pub struct AccidentalEngraving {
     pub default_parenthesized: bool,
 }
 \end{lstlisting}
+
+\begin{rationale}
+  Engraving metadata that lives in canonical state must carry canonical
+  precision. Chapter~\ref{ch:layout-ir}'s coordinates are
+  single-precision by requirement
+  (Requirement~\ref{req:layoutir:staff-space-coordinates}) and reach the
+  wire in the \texttt{LayoutCache}, which the Binary Format companion
+  defines as an independent \emph{non-canonical} chunk --- so
+  \texttt{StaffSpace} is correct there. But
+  \texttt{accidental\_extensions} lives on
+  \texttt{ScoreTuningContext}, which \emph{is} canonical, and
+  Requirement~\ref{req:determinism:canonical-floating-point} requires
+  canonical stored floats to be finite IEEE~754 binary64.
+  \texttt{EngravingBoundingBox} makes \texttt{AccidentalEngraving}
+  wholly core-typed, over the same \texttt{SpaceUnit} that
+  \texttt{advance\_width} already uses, and removes what would
+  otherwise be a backwards dependency from this chapter onto
+  Chapter~\ref{ch:layout-ir}. Chapter~\ref{ch:layout-ir}'s
+  \texttt{BoundingBox} is unaffected and remains the correct type for
+  resolved-layout coordinates.
+\end{rationale}
 
 \subsection{Combination Behavior}
 
@@ -3494,11 +3557,13 @@ identifiers with the specified semantics.
   \texttt{edo-72} & 72-tone equal division. Common in research and
   contemporary microtonal practice. \\
   \texttt{ji-5limit} & 5-limit just intonation lattice with HEJI
-  accidentals. Two-dimensional (prime axes 3, 5). \\
+  accidentals. Three-dimensional; prime basis $\{2, 3, 5\}$ in
+  ascending order (leading component is the octave, prime 2). \\
   \texttt{ji-7limit} & 7-limit JI lattice with HEJI accidentals.
-  Three-dimensional. \\
+  Four-dimensional; prime basis $\{2, 3, 5, 7\}$ in ascending order. \\
   \texttt{ji-11limit} & 11-limit JI lattice with HEJI accidentals.
-  Four-dimensional. \\
+  Five-dimensional; prime basis $\{2, 3, 5, 7, 11\}$ in ascending
+  order. \\
   \texttt{maqam-base} & Skeletal maqam framework with quarter-flat
   and quarter-sharp \texttt{CmnChromatic} accidentals, denominated by the
   space's chromatic layer under Requirement~\ref{req:pitch:alteration-unit}.
@@ -3507,6 +3572,16 @@ identifiers with the specified semantics.
   \texttt{gamelan-pelog} & Seven-tone pelog framework. \\
   \bottomrule
 \end{longtable}
+
+\begin{rationale}
+  The three JI spaces include prime 2 in their basis, per
+  Requirement~\ref{req:pitch:ji-vector-basis}, rather than assuming octave
+  equivalence. A \texttt{JiVector} is an absolute position, not a pitch
+  class: without the prime-2 exponent, \texttt{ji-5limit} could not
+  distinguish C4 from C5. None of these three declares octave-reduced
+  equivalence, so full register is preserved, as that requirement's
+  default already states.
+\end{rationale}
 
 \paragraph{Conformance note.}
 At this revision the default spelling pre-pass is structurally
