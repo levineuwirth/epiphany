@@ -1,0 +1,907 @@
+# Draft: P13-S6 built-in tuning constructions
+
+**Status: non-normative draft. Not part of the specification. Nothing here
+is true by virtue of being written down — it is true (or not) by virtue of
+the citation attached to it, and every citation is graded.**
+
+Produced under `spec/CONTRACT_P13S6_TEMPERAMENTS.md`, against Ruling B of
+`spec/PLAN_PUSH4B_TUNING.md`. Scope: the 14 `req:tuning:builtin-tuning-catalog`
+identifiers (`core_spec.tex:3531-3546`) that are not one of the six `tet-*`
+equal temperaments. Promotion of any entry below into `core_spec.tex` requires
+a human reviewer to check the citation and accept it — that review is the
+entire reason this is a separate file and not an edit to Chapter 4.
+
+Research for this draft was done by fetching and reading primary web sources
+today (2026-07-22): raw Wikipedia article text (via the MediaWiki `action=raw`
+endpoint, so what is quoted below is the article's own wording, not a
+third-party summary of it) for `Pythagorean_tuning`, `Meantone_temperament`,
+`Werckmeister_temperament`, `Vallotti_temperament`, `Kirnberger_temperament`,
+`Young_temperament`, and `Five-limit_tuning`; and (added in the correction
+round below) the raw HTML of Carey Beebe's "CBH Technical Library" practical
+tuning-instruction pages for Kirnberger II and III. Every numeric claim
+carried through to a cents figure below was independently recomputed from the
+stated ratio/fraction (shown as "self-check" where done) rather than copied
+from a rounded table — this is what Ruling B's "cents are derived, never
+primary" constraint means in practice. Where a source names a page-specific
+scholarly citation (author, title, year, page), that citation is given
+alongside as the primary source a reviewer would actually want to pull.
+
+**Revision note (correction round).** A reviewer ran the closure invariant
+(below) against the first version of this draft and found three entries
+wrong, all sharing one root cause: the draft cited a real source for *part*
+of a construction and then silently assumed "everything else is pure"
+without checking that the resulting temperament could actually close a
+twelve-note circle. `kirnberger-ii` and `kirnberger-iii` were each missing a
+schisma-tempered fifth that their own source's diagram caption named but
+this agent's first pass never located; `werckmeister-iii` carried an
+unresolved comma-type hedge into the summary table on a question closure
+actually answers. All three are corrected below, with the new source that
+supplied the missing element and the arithmetic that catches the defect
+shown in place, per the contract's amended "Check the arithmetic, not just
+the source" section. Nothing was adjusted to make the numbers work and then
+presented as sourced — where the correction required a new source, the new
+source is cited; nothing here is back-derived and passed off as historical.
+
+## How to read each entry
+
+* **Construction** — the generative rule: which fifths are tempered, by what
+  fraction of which comma (syntonic vs. Pythagorean, stated explicitly), and
+  which fifths are left pure.
+* **Chain/wolf placement** — stated explicitly wherever the construction
+  alone under-determines it.
+* **Closure check** — for every circulating (wolf-free) construction: all
+  twelve fifths enumerated exactly once each (narrowed / widened / pure), and
+  their signed sum shown to equal exactly one Pythagorean comma
+  (531441/524288, 23.4600 cents) — the amount twelve fifths must fall short
+  of 12×701.955 c for a twelve-note chain to return to its exact starting
+  pitch after seven octaves. For the non-circulating constructions
+  (`pythagorean`, the three meantones), the same sum is computed and shown
+  to deliberately **not** equal one comma — the residual is the wolf, stated
+  as a positive fact, not a gap. Where a source left the comma type
+  ambiguous, both readings are computed and whichever one actually closes is
+  reported as the answer, per the contract's "closure is also a decision
+  procedure" instruction.
+* **Cents (derived)** — always marked derived, with the arithmetic shown.
+  Exact-ratio form is given wherever the construction yields one.
+* **Source** — what was actually read, with URL and access date, plus the
+  upstream scholarly citation where the source names one.
+* **Confidence** — `verified` / `recalled` / `unknown`, per the contract,
+  under the stricter meaning this correction round establishes: `verified`
+  now requires **both** a specific, quoted, checkable source **and** a
+  passing closure/enumeration check computed independently by this agent. A
+  source citation alone, without the arithmetic check, is not sufficient to
+  claim `verified` any more — that gap is exactly what produced the three
+  errors this round fixes. `verified` still does **not** mean a primary
+  18th-century treatise or a physical copy of Barbour (1951) was consulted
+  directly by this agent — where a source names a page number in Barbour,
+  that page is reported as *that source's* citation, not independently
+  checked against the physical book.
+
+## Shared context (verified, `core_spec.tex`)
+
+`core_spec.tex:2822-2825` ("Design Principles", Chapter "Tuning Systems and
+Pitch Spaces"): *"a single pitch space (e.g., CMN) admits many tuning systems
+(12-TET, meantone, well-temperaments, just intonation, Pythagorean)"*. All 14
+constructions below are therefore constructions **over `cmn-12`'s twelve
+chromatic positions per octave** (C, C♯/D♭, D, ... B), not over the
+open-ended `ji-5limit` lattice pitch space — that space is a separate
+built-in with its own (already-specified) structure. This reading is the only
+one that makes "12-note selection" and "wolf fifth" meaningful for these
+identifiers at all; it is not separately stated for each identifier in
+Chapter 4, so flag it to reviewers as an inference from the design-principles
+text, not a quotation naming these specific 14 identifiers.
+
+`req:tuning:adaptive-tuning-purity` (`core_spec.tex:3327-3333`) — read in full
+before drafting §14: *"Adaptive tuning resolution MUST be a pure function of
+position and harmonic context. Implementations MAY cache resolution results,
+but MUST invalidate caches when the harmonic context changes."* This is the
+entire constraint the requirement places on `ji-adaptive-5limit`; it says
+**that** resolution must be pure and cache-safe, not **what** the function
+computes. It permits (does not itself choose) note-by-note nearest-just-ratio
+resolution against a concurrent sonority, roman-numeral/scale-degree-driven
+resolution, a fixed lattice walk from the most recent tonicization, or other
+designs — see §14.
+
+## Section A — the ten pinned constructions
+
+### 1. `pythagorean`
+
+**Construction.** A chain of eleven pure 3:2 fifths (twelve notes), all other
+intervals derived from stacked fifths reduced by octaves. No comma is
+tempered anywhere in the chain; the entire Pythagorean comma (≈23.460 cents)
+is concentrated in the single interval where the chain does not close.
+
+**Chain / wolf placement (a stated choice).** The twelve-note selection is
+not forced by "pure fifths" alone — it is a choice of *which* eleven
+consecutive fifths to keep, i.e., where to cut the infinite spiral. The
+conventional cut runs **E♭–B♭–F–C–G–D–A–E–B–F♯–C♯–G♯** (11 fifths, C at the
+center), leaving the wolf on the diminished sixth **G♯–E♭**. An equally valid
+alternative cuts the spiral one step the other way (chain D♭–...–F♯, wolf at
+F♯–D♭); Wikipedia's own Pythagorean-tuning article gives both and states
+explicitly that the wolf's position is relocatable this way. The E♭–G♯
+convention is stated here as *the* construction because it is the
+overwhelmingly common default in both historical and pedagogical sources, but
+it is being stated, not silently assumed, per the contract.
+
+**Ratios (exact, self-derived from the stacked-fifths definition, C = 1/1):**
+
+| Note | Ratio | Cents (derived) |
+|---|---|---|
+| C | 1/1 | 0.000 |
+| C♯ | 2187/2048 | 113.685 |
+| D | 9/8 | 203.910 |
+| E♭ | 32/27 | 294.135 |
+| E | 81/64 | 407.820 |
+| F | 4/3 | 498.045 |
+| F♯ | 729/512 | 611.730 |
+| G | 3/2 | 701.955 |
+| G♯ | 6561/4096 | 815.640 |
+| A | 27/16 | 905.865 |
+| B♭ | 16/9 | 996.090 |
+| B | 243/128 | 1109.775 |
+
+Wolf fifth G♯→E♭ (octave-reduced): ratio 262144/177147 ≈ 678.495 cents,
+i.e. a Pythagorean comma (23.460 c) narrower than the pure 701.955 c fifth.
+All figures independently recomputed by this agent from `(3/2)^n`
+octave-reduced; they match the Wikipedia article's stated 678.49 c / 701.96 c
+to the precision given there.
+
+**Closure check (non-circulating — this is the positive claim, not a gap).**
+Twelve fifths, each exactly once: 11 pure (E♭–B♭, B♭–F, F–C, C–G, G–D, D–A,
+A–E, E–B, B–F♯, F♯–C♯, C♯–G♯) at 701.955 c each, plus the closing G♯–E♭ at
+678.495 c. Sum = 11 × 701.955 + 678.495 = 8400.000 c exactly (= 7 octaves,
+as it must — any assignment of 12 distinct pitch classes closes arithmetically
+by definition). But note what that sum is built from: **relative to twelve
+*pure* fifths** (12 × 701.955 = 8423.460 c), this construction is short by
+exactly 8423.460 − 8400.000 = 23.460 c — one full Pythagorean comma, dumped
+entirely onto the single G♯–E♭ interval rather than distributed. That
+concentration, not the arithmetic closure, is what makes it a wolf and makes
+Pythagorean tuning non-circulating: an implementer cannot treat all 12
+"fifths" as interchangeable the way a well temperament's are.
+
+**Source.** Wikipedia, "Pythagorean tuning",
+<https://en.wikipedia.org/wiki/Pythagorean_tuning> (fetched 2026-07-22).
+Quoted: *"Starting from D for example (D-based tuning), six other notes are
+produced by moving six times a ratio 3:2 up, and the remaining ones by moving
+the same ratio down: E♭–B♭–F–C–G–D–A–E–B–F♯–C♯–G♯"*; *"one may use only the 12
+notes from E♭ to G♯ ... The remaining interval (the diminished sixth from G♯
+to E♭) is left badly out-of-tune"*; *"a C-based Pythagorean tuning would
+produce a stack of fifths running from D♭ to F♯, making F♯–D♭ the wolf
+interval"*; comma value *"≈ −23.460 cents"*.
+
+**Confidence: verified.**
+
+---
+
+### 2–4. The three meantone variants — `meantone-1/4-comma`, `meantone-1/5-comma`, `meantone-1/6-comma`
+
+**Construction (all three, differing only in fraction).** Meantone is a
+*regular* temperament: every one of the twelve fifths in the chain is
+tempered by the **same** fraction of the **syntonic** comma (81:80,
+≈21.506 cents) — not the Pythagorean comma. This is the classic
+confusable pair the contract calls out, and meantone is the case where
+getting it backwards is easy because Werckmeister/Vallotti/Kirnberger/Young
+(§5-10 below) use the Pythagorean comma instead. Quarter-comma meantone is
+the best-known member and the one usually meant by "meantone" unqualified;
+1/5- and 1/6-comma are documented alternate points on the same continuum in
+the same source.
+
+Because the temperament is regular (all fifths equal), there is no "which
+fifths are tempered" question the way there is for the well temperaments
+below — all twelve are, uniformly. There *is* still a twelve-note selection
+choice (the closing point of the spiral), structurally identical to
+Pythagorean's; the conventional cut again places the wolf between G♯ and E♭.
+
+**Cents (derived).** Fifth ratio = (3/2) / (81/80)^(1/n) for 1/n-comma. Exact
+form for n=4 collapses to 5^(1/4) (self-verified below); n=5, n=6 are
+irrational and left in that form, per the contract's instruction that not
+every construction yields a rational.
+
+| Variant | Fifth ratio | Cents (derived) | Narrowing vs. pure 3:2 |
+|---|---|---|---|
+| 1/4-comma | (3/2)·(80/81)^(1/4) = 5^(1/4) exactly | 696.578 | 5.377 c = ¼ · 21.506 c |
+| 1/5-comma | (3/2)·(80/81)^(1/5) | 697.654 | 4.301 c = ⅕ · 21.506 c |
+| 1/6-comma | (3/2)·(80/81)^(1/6) | 698.371 | 3.584 c = ⅙ · 21.506 c |
+
+Self-check: `5**0.25 == (3/2)/(81/80)**(1/4)` to full float precision
+(computed independently); this is the standard identity that four
+quarter-comma-narrowed fifths, minus two octaves, give the just major third
+5/4 — confirmed arithmetically (4 × 696.578 − 2×1200 = 386.31 c = cents of
+5/4).
+
+**Closure check (non-circulating — this is the positive claim for all three,
+not a gap).** All twelve fifths in a meantone chain are tempered by the
+*same* amount (that is the definition of "regular"), so unlike the well
+temperaments below there is no per-fifth enumeration to do — but the
+twelve-note cut still does not close, and the residual (the wolf) is
+computable the same way: eleven fifths at the tempered size, plus one
+closing interval forced to make the total exactly 8400 c (7 octaves).
+
+| Variant | 11 × tempered fifth | Wolf (12th, closing) = 8400 − that | Wolf vs. pure 3:2 | Wolf vs. ET 700 c |
+|---|---|---|---|---|
+| 1/4-comma | 7662.363 c | 737.637 c | +35.682 c (wide) | +37.637 c |
+| 1/5-comma | 7674.191 c | 725.809 c | +23.854 c (wide) | +25.809 c |
+| 1/6-comma | 7682.077 c | 717.923 c | +15.968 c (wide) | +17.923 c |
+
+All three wolves land on the *wide* side (unlike Pythagorean's narrow wolf) —
+independently confirming the source's own qualitative claim that the
+meantone residual gap is "in the sense opposite to the Pythagorean comma."
+The 1/4-comma figure (737.6 c) matches the commonly cited value for the
+quarter-comma-meantone wolf fifth.
+
+**Source.** Wikipedia, "Meantone temperament",
+<https://en.wikipedia.org/wiki/Meantone_temperament> (fetched 2026-07-22, raw
+wikitext). Quoted: *"Quarter-comma meantone, which tempers each of the twelve
+perfect fifths by 1/4 of a syntonic comma, is the best known type of meantone
+temperament ... Four ascending fifths (as C G D A E) tempered by 1/4 comma
+(and then lowered by two octaves) produce a just major third (C E) (with
+ratio 5:4), which is one syntonic comma ... narrower than the Pythagorean
+third."* The article's own comparative table (§"Meantone vs. Equitempered
+tunings") lists 1/5 and 1/6 as rows of the same "Meantone fraction of
+(syntonic) comma" column, confirming the same comma and the same uniform
+construction apply to all three. The table also cites Barbour, James Murray
+(2004 reprint of 1951 original). *Tuning and Temperament: A Historical
+Survey*, Dover, ISBN 978-0-486-43406-3, as the source for the historical
+fraction-of-comma naming convention generally.
+
+**Confidence: verified**, all three — construction and the non-closure
+(wolf-size) check both done.
+
+---
+
+### 5. `werckmeister-iii`
+
+**Construction.** Fifths **C–G, G–D, D–A, B–F♯** are each narrowed by
+**1/4 comma**; the other eight fifths are pure. Twelve fifths, each exactly
+once: C–G, G–D, D–A, B–F♯ narrowed (4); A–E, E–B, F♯–C♯, C♯–G♯, G♯–E♭,
+E♭–B♭, B♭–F, F–C pure (8). No wolf: because only four of twelve fifths are
+tempered and the untempered ones absorb none of the comma, all twelve notes
+remain usable as a tonic (a genuine well temperament, not a meantone).
+
+**Comma type — an answerable question, resolved by closure, not left as a
+hedge.** Werckmeister's own writing does not specify syntonic vs. Pythagorean
+comma, and the source says so explicitly (quoted below) — but a circulating
+temperament's twelve fifths must absorb *exactly* one Pythagorean comma
+(23.4600 c) for the circle to close, and only one of the two readings does
+that:
+
+| Reading | Each of 4 tempered fifths | × 4 | Closes (needs 23.4600 c)? |
+|---|---|---|---|
+| 1/4 **Pythagorean** comma | 696.090 c (narrowing 5.865 c) | 23.4600 c | **yes** |
+| 1/4 **syntonic** comma | 696.578 c (narrowing 5.377 c) | 21.5063 c | no — short by 1.9537 c, exactly one schisma |
+
+So **the Pythagorean-comma reading is the one that makes this construction a
+well temperament at all**; the syntonic-comma reading leaves a residual
+schisma unaccounted for and does not close a twelve-note circle with only
+four fifths tempered and eight left untouched. This resolves what the
+sources themselves leave open: it is worth keeping on record that
+Werckmeister's own historical ambiguity is real and sourced (quoted below,
+and the two readings differ by only ≈0.49 cents, consistent with the
+source's "almost inaudible" characterization) — but *for this catalog
+identifier*, which must denote one specific, computable construction, the
+closing reading is the answer, and this draft states it as the answer rather
+than carrying the historical hedge forward as if it were still open.
+
+**A naming trap, found and resolved during this research.** Wikipedia's
+current article numbers Werckmeister's temperaments by two different schemes
+simultaneously (presentation order vs. his own monochord labels) and states
+outright: *"The temperament commonly known as 'Werckmeister III' is referred
+to in this article as 'Werckmeister I (III)'."* There is a **different**
+section literally titled "Werckmeister III (V)" in the same article, which
+describes a materially different construction (fifths D–A, A–E, F♯–C♯,
+C♯–G♯, F–C narrowed 1/4 comma, G♯–D♯ *widened* 1/4 comma). That section is
+**not** the temperament this catalog identifier means — it is a related but
+distinct third Werckmeister tuning that happens to share the "III" digit
+under the article's alternate numbering. This draft's construction (C–G,
+G–D, D–A, B–F♯) is the one under the heading Wikipedia glosses as
+"commonly known as Werckmeister III," matching the plan document's own
+description (`PLAN_PUSH4B_TUNING.md`: *"Werckmeister III narrows four named
+fifths by 1/4 Pythagorean comma"*) and every secondary source found during
+search. Flagging this because an agent (or reviewer) skimming the article
+section-by-section could pick up the wrong construction under the right
+label, which is exactly the failure mode this whole exercise exists to catch.
+
+**Cents (derived), resolved reading:** fifth = (3/2)/(3^12/2^19)^(1/4) ≈
+696.090 cents (narrowing 5.865 c = ¼ · 23.460 c) — see the closure table
+above for why this reading, not the syntonic-comma one, is reported.
+
+**Source.** Wikipedia, "Werckmeister temperament",
+<https://en.wikipedia.org/wiki/Werckmeister_temperament> (fetched 2026-07-22,
+raw wikitext). Quoted: *"This tuning uses mostly pure (perfect) fifths, as in
+Pythagorean tuning, but each of the fifths C–G, G–D, D–A and B–F♯ is made
+smaller, i.e. tempered by 1/4 comma. No matter if the Pythagorean comma or
+the syntonic comma is used, the resulting tempered fifths are for all
+practical purposes the same as meantone temperament fifths ... because not
+all fifths are tempered, there is no wolf fifth and all 12 notes can be used
+as the tonic."* And on the comma ambiguity: *"Werckmeister was not explicit
+about whether the syntonic comma or Pythagorean comma was meant: The
+difference between them, the so-called schisma, is almost inaudible."* Cites
+Werckmeister, A. (1983) [1691], ed. Rudolf Rasch, *Musicalische Temperatur*,
+Diapason Press, ISBN 90-70907-02-X, as the primary treatise.
+
+**Confidence: verified** — construction, twelve-fifth enumeration, and the
+comma-type resolution (by closure) all checked. Superseded from the previous
+draft: that version carried the comma-type ambiguity into the summary table
+as if it were still open; this round's closure check resolves it to the
+Pythagorean-comma reading, per the contract's "closure is also a decision
+procedure" instruction.
+
+---
+
+### 6. `werckmeister-iv`
+
+**Construction.** Fifths **C–G, D–A, E–B, F♯–C♯, B♭–F** narrowed by **1/3
+comma**; fifths **G♯–D♯** and **E♭–B♭** *widened* by 1/3 comma; the
+remaining five fifths (G–D, A–E, B–F♯, C♯–G♯, F–C) pure. Twelve fifths total
+(5 narrow + 2 wide + 5 pure), self-checked by enumerating the full circle —
+E♭–B♭ and B♭–F are two distinct adjacent fifths sharing the note B♭, not a
+duplicate. Same syntonic-vs-Pythagorean ambiguity in the source as
+`werckmeister-iii` — resolved the same way, by closure, below.
+
+**Closure check, both readings (the same comma-type question as §5 applies
+here and gets the same treatment — the contract asks for this on every
+entry, not just the three flagged):**
+
+| Reading | 5 narrow @ ⅓ | 2 wide @ ⅓ (negative) | Net | Closes? |
+|---|---|---|---|---|
+| Pythagorean comma | 5 × 7.820 c = 39.100 c | −2 × 7.820 c = −15.640 c | **23.4600 c** | **yes** |
+| syntonic comma | 5 × 7.169 c = 35.843 c | −2 × 7.169 c = −14.338 c | 21.5063 c | no — short by 1.9537 c |
+
+Same resolution as `werckmeister-iii`: the Pythagorean-comma reading is the
+one under which this is a closing well temperament; report it as the
+construction, not as one of two open possibilities.
+
+**Cents (derived), resolved reading:**
+fifth (narrow) = (3/2)/(3^12/2^19)^(1/3) ≈ 694.135 cents (narrowing
+7.820 c = ⅓ · 23.460 c); fifth (wide) = (3/2)·(3^12/2^19)^(1/3) ≈
+709.775 cents (widening 7.820 c).
+
+**Source.** Same article as §5, section "Werckmeister II (IV)" (the
+article's own gloss again ties this to the commonly-known "Werckmeister IV"
+digit). Quoted: *"In Werckmeister II the fifths C–G, D–A, E–B, F♯–C♯, and
+B♭–F are tempered narrow by 1/3 comma, and the fifths G♯–D♯ and E♭–B♭ are
+widened by 1/3 comma. The other fifths are pure. Werckmeister designed this
+tuning for playing mainly diatonic music (i.e. rarely using the 'black
+notes')."*
+
+**Confidence: verified** — construction, twelve-fifth enumeration, and
+comma-type resolution by closure (added this round; the first draft computed
+this disambiguation only for §5, not here, even though the same ambiguity
+and the same resolution apply).
+
+---
+
+### 7. `vallotti`
+
+**Construction.** Fifths **F–C, C–G, G–D, D–A, A–E, E–B** (six consecutive)
+each narrowed by **1/6 of the Pythagorean comma**; the other six fifths
+(B–F♯, F♯–C♯, C♯–G♯, G♯–E♭, E♭–B♭, B♭–F) pure. This is the version in
+common (electronic-tuner, DAW, harpsichord-technician) use today, and it is
+the one Ruling B's own plan text describes ("narrows six consecutive fifths
+by 1/6 Pythagorean comma and leaves the rest pure").
+
+**An important historical wrinkle, worth carrying into the spec's
+description if this is promoted.** The construction above is *not* what
+Francesco Vallotti actually wrote down. Per the same Wikipedia article,
+Vallotti's own manuscript (unpublished until 1987) used **1/6 of the
+syntonic comma** on the same six fifths plus a schisma-sized correction on
+the seventh (B♭–F), and the attribution of the now-common construction to
+Vallotti at all is called "a mistake" by the article, though "audibly
+indistinguishable" from what he wrote (no interval differs by more than 2
+cents across the variants). The identifier `vallotti` in this catalog almost
+certainly means the common modern construction (matching Ruling B's text and
+every calculator/tuner-app source found), not Vallotti's original manuscript
+version — but a reviewer should know both exist and that they are not the
+same rational numbers.
+
+**Cents (derived):** fifth = (3/2)/(3^12/2^19)^(1/6) ≈ 698.045 cents
+(narrowing 3.910 c = ⅙ · 23.460 c).
+
+**Closure check.** Twelve fifths, each exactly once: F–C, C–G, G–D, D–A,
+A–E, E–B narrowed 1/6 Pythagorean comma (6); B–F♯, F♯–C♯, C♯–G♯, G♯–E♭,
+E♭–B♭, B♭–F pure (6). Sum = 6 × 3.910 c = 23.4600 c exactly — closes, and
+unambiguously (the source names the Pythagorean comma outright here, so
+there is no reading to disambiguate the way Werckmeister needed).
+
+**Source.** Wikipedia, "Vallotti temperament",
+<https://en.wikipedia.org/wiki/Vallotti_temperament> (fetched 2026-07-22, raw
+wikitext). Quoted: *"each of the fifths B-F♯, F♯-C♯, C♯-G♯, G♯-E♭, E♭-B♭, and
+B♭-F are perfectly just, while the fifths F-C, C-G, G-D, D-A, A-E, and E-B
+are each 1/6 of a Pythagorean (ditonic) comma narrower than just"*, citing
+Donahue, Thomas (2005), *A Guide to Musical Temperament*, Scarecrow Press,
+p. 28 (Google Books link given in the article). Historical-original claim
+cites Barbieri, Patrizio (1987) and Di Veroli, Enrico (2013), p. 125.
+
+**Confidence: verified** (both the common construction and the historical
+caveat).
+
+---
+
+### 8. `kirnberger-ii`
+
+**This entry was wrong in the first draft, and is corrected here.** The
+first version stated "the remaining ten fifths pure" and claimed this
+closes the circle. It does not: two fifths at 1/2 syntonic comma discharge
+exactly one syntonic comma (21.506 c), and a closing twelve-note circle must
+discharge exactly one **Pythagorean** comma (23.460 c) — short by 1.9537 c,
+one schisma, on the nose. The D–A/A–E tempering and the resulting pure
+thirds (kept below, unchanged) were correct; the error was inferring from
+them that every other fifth is untouched. It isn't — there is an eleventh,
+schisma-tempered fifth the first draft's source (Wikipedia) names in an
+image caption but never surfaces in its prose, and the first draft's ASCII
+transcription of that same diagram flattened the distinction to a uniform
+"p" for every non-D–A/A–E fifth. Re-sourced below from a source that states
+the missing fifth explicitly.
+
+**Construction (corrected).** Fifths **D–A** and **A–E** each narrowed by
+**1/2 the syntonic comma**; fifth **F♯–D♭** (i.e. F♯–C♯, spelled with the
+flat name because Kirnberger's own chain is built outward from D♭) narrowed
+by a **schisma** (the ratio between the Pythagorean and syntonic commas,
+32805/32768 ≈ 1.9537 c); the remaining **nine** fifths pure.
+
+Twelve fifths, each exactly once, enumerated around the chain
+D♭–A♭–E♭–B♭–F–C–G–D–A–E–B–F♯–(closing to D♭):
+
+| Fifth | Tempering |
+|---|---|
+| D♭–A♭, A♭–E♭, E♭–B♭, B♭–F, F–C, C–G, G–D, E–B, B–F♯ | pure (9) |
+| D–A, A–E | narrow, 1/2 syntonic comma (2) |
+| F♯–D♭ (closing) | narrow, 1 schisma (1) |
+
+**Closure check.** 2 × 10.753 c (half-syntonic-comma fifths) + 1 × 1.9537 c
+(schisma fifth) = 21.5063 + 1.9537 = **23.4600 c exactly** — closes. Verified
+independently in this session by summing all twelve fifths' cents directly:
+8400.000 c (= 7 octaves), confirming the schisma fifth is not just plausible
+but numerically required and sufficient.
+
+**Cents (derived), full twelve-note table, C = 1/1** (built by stacking the
+chain above from C, self-computed, not copied from either source):
+
+| Note | Cents (derived) |
+|---|---|
+| C | 0.000 |
+| D♭ | 90.225 |
+| D | 203.910 |
+| E♭ | 294.135 |
+| E | 386.314 |
+| F | 498.045 |
+| F♯ | 590.224 |
+| G | 701.955 |
+| A♭ | 792.180 |
+| A | 895.112 |
+| B♭ | 996.090 |
+| B | 1088.269 |
+
+**Pure thirds — recomputed from this agent's own chain, not restated from
+either source.** C–E, G–B, D–F♯ come out at exactly 386.314 c (5:4, pure);
+this **confirms** Wikipedia's "three pure thirds" claim and this draft's own
+original (pre-correction) derivation of *which* three — that part of the
+first draft was right and is unchanged. Db–F, E♭–G, A♭–C, B♭–D come out at
+exactly 407.820 c (81:64, Pythagorean-wide) — **four** thirds, not the three
+("B–D♯, F♯–A♯, D♭–F") the first draft's source names in prose. This is a
+finding, reported rather than silently resolved either way: the discrepancy
+traces to the schisma fifth. Wikipedia's own ASCII diagram (see above) does
+not distinguish the schisma-tempered fifth from a fully pure one, so its
+prose description of "three Pythagorean thirds" is very likely computed
+against the same idealized (schisma = 0) picture that fails to close — the
+same simplification that produced the first draft's error. Under the
+corrected, closing construction, the thirds nearest the schisma fifth
+(E–A♭, F–A, F♯–B♭, A–D♭, B–E♭) land at intermediate values (395–406 cents)
+that are neither pure nor exactly Pythagorean. Separately, Carey Beebe's
+tuning-instructions page (cited below, the source for the schisma fifth
+itself) states **four** pure thirds including F–A; recomputing F–A directly
+from the chain above gives 397.067 c, **not** pure (5:4 = 386.314 c, a
+10.75-cent difference — audible, not a rounding artifact) — so that claim is
+also not borne out by exact arithmetic, most likely because Beebe's page is
+an explicitly practical tuning guide ("we regard the syntonic comma as for
+all practical purposes the same size as the Pythagorean," his words, on the
+companion Kirnberger III page) rather than a source asserting exact ratios.
+Net: **three** thirds are exactly pure by this agent's independent
+computation, and that is what this draft reports; the "four pure thirds"
+figure appearing in one source is noted, not adopted.
+
+**Source (schisma fifth, corrected construction).** Carey Beebe,
+"Temperaments V — How to tune Kirnberger II", CBH Technical Library,
+Harpsichords Australia, <https://www.hpschd.nu/tech/tmp/kirnberger-2.html>
+(fetched 2026-07-22, raw HTML). Quoted in full: *"In theory, your error or
+schisma is located between F♯ and D♭ in the circle of keys—look for the
+'±0'—and is in fact an equal-tempered fifth in size."* And on the D–A/A–E
+tempering: *"Kirnberger has split the comma into two, giving you two very
+narrow half-comma fifths ... Tune your a a pure fifth above d, and then
+flatten the a until the interval d–a sounds almost as rough as a–e'."* The
+page's own bibliography (a specialist harpsichord-technician's reading list,
+not this agent's addition) cites: Barbour, J. Murray, *Tuning and
+Temperament*, Michigan State College Press, East Lansing, 1951, p. 158;
+Asselin, Pierre-Yves, *Musique et Tempérament*, Éditions Costallat, Paris,
+1985, p. 90; Jorgensen, Owen, *The Equal-Beating Temperaments*, The Sunbury
+Press, Raleigh, 1981, p. 23; Klop, G. C., *Harpsichord Tuning*, Werkplaats
+voor Clavecimbelbouw, Garderen, 1974, p. 22; Padgham, Charles, *The
+Well-Tempered Organ*, Positive Press, Oxford, 1986, p. 64.
+
+**Source (D–A/A–E tempering, thirds, general framing — first draft's
+source, retained).** Wikipedia, "Kirnberger temperament",
+<https://en.wikipedia.org/wiki/Kirnberger_temperament> (fetched 2026-07-22,
+raw wikitext). Quoted: *"Kirnberger's first method of compensating for and
+closing the circle of fifths was to split the 'wolf' interval ... in half
+between two different fifths. That is, to compensate for the one extra
+comma, he removed half a comma from two of the formerly perfect fifths ...
+So, Kirnberger allowed for three pure thirds, the rest being slightly wide
+and the worst being three Pythagorean thirds (22 cents wider than pure)."*
+The article's image caption (not its ASCII-art rendering of the same
+diagram) independently corroborates the schisma fifth's existence: *"Kirnberger
+II temperament; −Z/2 marks a tempered fifth flattened by a half comma; −Sch
+marks a schisma"* — confirming, after the fact, that this agent's first
+pass had the right source in hand and simply did not follow the image
+caption to its conclusion.
+
+**Confidence: verified** — construction (now including the schisma fifth),
+twelve-fifth enumeration, and closure all checked this round. The pure-third
+count is independently recomputed and reported at three, with the
+conflicting "three" (prose, wrong set of notes) and "four" (Beebe, includes
+a non-pure F–A) claims both surfaced as findings rather than silently
+adopted.
+
+---
+
+### 9. `kirnberger-iii`
+
+**This entry had the same defect as `kirnberger-ii`, for the same reason,
+and is corrected the same way.** Four fifths at 1/4 syntonic comma discharge
+exactly one syntonic comma (21.506 c), short of the 23.460 c a closing
+twelve-note circle requires by exactly one schisma (1.9537 c) — the
+first draft's "the remaining eight fifths pure" did not close. The first
+draft also flagged its own "which four fifths" identification as an
+arithmetic reconstruction rather than a quoted fact; re-sourcing below
+settles that too, from the same practical tuning-instruction source used to
+find §8's missing fifth.
+
+**Construction (corrected).** Fifths **C–G, G–D, D–A, A–E** (four
+consecutive, now directly quoted, not reconstructed — see source) each
+narrowed by **1/4 the syntonic comma**; fifth **F♯–D♭** narrowed by a
+**schisma** (same position as in Kirnberger II, and the same construction
+skeleton — Kirnberger III differs from II only in how many fifths share the
+discharged comma and by what fraction); the remaining **seven** fifths pure.
+Only the third C–E stays pure (5:4) — confirmed by this agent's own
+recomputed chain below, matching the source.
+
+Twelve fifths, each exactly once, same chain skeleton as §8
+(D♭–A♭–E♭–B♭–F–C–G–D–A–E–B–F♯–closing to D♭):
+
+| Fifth | Tempering |
+|---|---|
+| D♭–A♭, A♭–E♭, E♭–B♭, B♭–F, F–C, E–B, B–F♯ | pure (7) |
+| C–G, G–D, D–A, A–E | narrow, 1/4 syntonic comma (4) |
+| F♯–D♭ (closing) | narrow, 1 schisma (1) |
+
+**Closure check.** 4 × 5.377 c (quarter-syntonic-comma fifths) + 1 ×
+1.9537 c (schisma fifth) = 21.5063 + 1.9537 = **23.4600 c exactly** —
+closes. Independently confirmed by summing all twelve fifths directly:
+8400.000 c.
+
+**Cents (derived), full twelve-note table, C = 1/1** (self-computed from the
+corrected chain):
+
+| Note | Cents (derived) |
+|---|---|
+| C | 0.000 |
+| D♭ | 90.225 |
+| D | 193.157 |
+| E♭ | 294.135 |
+| E | 386.314 |
+| F | 498.045 |
+| F♯ | 590.224 |
+| G | 696.578 |
+| A♭ | 792.180 |
+| A | 889.735 |
+| B♭ | 996.090 |
+| B | 1088.269 |
+
+D (193.157 c = 5^(1/2)/2), G (696.578 c = 5^(1/4)), and A (889.735 c =
+5^(3/4)/2) match the first draft's arithmetic reconstruction exactly — that
+part of the earlier draft was correct and is unchanged; only the "rest is
+pure" assumption around it was wrong.
+
+**Note, retained from the first draft: this fifth (5^(1/4)) is numerically
+identical to quarter-comma meantone's fifth** — a correct consequence of
+"four 1/4-syntonic-comma fifths closing a just major third," not a
+coincidence.
+
+**Only C–E is exactly pure (5:4, 386.314 c), recomputed directly** — matching
+the source. D♭–F and A♭–C come out at exactly 407.820 c (81:64,
+Pythagorean-wide); the remaining **nine** thirds (1 pure + 2 Pythagorean-wide
++ 9 = 12, checked) are intermediate values affected by the schisma fifth,
+neither pure nor exactly Pythagorean-wide. This is fewer Pythagorean-wide
+thirds than `kirnberger-ii` (two, versus four), matching the source's
+qualitative claim that Kirnberger III has "fewer Pythagorean thirds" than
+II.
+
+**Source (schisma fifth and the four named fifths, corrected construction).**
+Carey Beebe, "Temperaments VI — How to tune Kirnberger III", CBH Technical
+Library, Harpsichords Australia,
+<https://www.hpschd.nu/tech/tmp/kirnberger.html> (fetched 2026-07-22, raw
+HTML). Quoted: *"All those four fifths C–G, G–D, D–A and A–E should sound
+equally rough"* — the four fifths directly named, resolving the first
+draft's "reconstructed, not quoted" caveat. And on the closing fifth:
+*"Tune all the fifths from the flat side of C around the circle of keys
+absolutely pure. Stop about the D♭, and begin again working around the
+sharp side of E, tuning all those fifths absolutely pure. (In theory, you'll
+end up with one fifth a little narrow, in fact very close to an equal
+tempered fifth, but in practice, they should all sound pretty much pure.)"*
+— which, by the same chain-construction logic worked out for Kirnberger II
+above (the flat-side chain from C stops at D♭; the sharp-side chain from E
+stops at F♯; the two meet at the F♯–D♭ interval), is the same schisma fifth
+named explicitly on the companion Kirnberger II page. The page's own
+bibliography: Asselin, Pierre-Yves, *Musique et Tempérament*, Éditions
+Costallat, Paris, 1985, p. 92; Klop, G. C., *Harpsichord Tuning*, Werkplaats
+voor Clavecimbelbouw, Garderen, 1974, p. 23; Padgham, Charles, *The
+Well-Tempered Organ*, Positive Press, Oxford, 1986, p. 68; Jorgensen, Owen,
+*The Equal-Beating Temperaments*, The Sunbury Press, Raleigh, 1981, p. 26.
+
+**Source (four fifths tempered, one third pure, general framing — first
+draft's source, retained).** Wikipedia, "Kirnberger temperament" (as §8).
+Quoted: *"This temperament splits the Syntonic comma between four fifths
+instead of two; 1/4 comma tempered fifths are used extensively in meantone
+... This also eliminates two of the three pure thirds found in Kirnberger
+II. Therefore, only one third remains pure (between C and E)."*
+
+**Confidence: verified** — construction (now including the schisma fifth),
+the four named fifths (now directly quoted rather than reconstructed),
+twelve-fifth enumeration, and closure all checked this round.
+
+---
+
+### 10. `young-ii`
+
+**Construction (Young's *second* temperament — this catalog identifier is
+`young-ii`, not Young's first, which is a different, more elaborate
+construction the same source also documents).** Fifths **C–G, G–D, D–A,
+A–E, E–B, B–F♯** (six consecutive) each narrowed by **1/6 of the Pythagorean
+(ditonic) comma**; fifths **F♯–C♯, C♯–G♯, G♯–E♭, E♭–B♭, B♭–F, F–C** pure.
+Structurally identical to `vallotti` above — six-tempered/six-pure,
+1/6 Pythagorean comma — but rotated: Young's tempered run starts at C,
+Vallotti's (common, modern) at F. The source states this relationship
+explicitly and gives the alternate name "Vallotti-Young" / "shifted Vallotti"
+for this reason.
+
+**Cents (derived):** identical to Vallotti's, since the fraction and comma
+are the same: fifth ≈ 698.045 cents (narrowing 3.910 c = ⅙ · 23.460 c); see
+§7 for the derivation.
+
+**Closure check.** Twelve fifths, each exactly once: C–G, G–D, D–A, A–E,
+E–B, B–F♯ narrowed 1/6 Pythagorean comma (6); F♯–C♯, C♯–G♯, G♯–E♭, E♭–B♭,
+B♭–F, F–C pure (6). Sum = 6 × 3.910 c = 23.4600 c exactly — closes,
+unambiguously (Pythagorean comma named outright in the source, same as
+Vallotti).
+
+**Source.** Wikipedia, "Young temperament",
+<https://en.wikipedia.org/wiki/Young_temperament> (fetched 2026-07-22, raw
+wikitext). Quoted: *"In the second temperament, [Young 1802] made each of the
+fifths F♯-C♯, C♯-G♯, G♯-E♭, E♭-B♭, B♭-F, and F-C perfectly just, while the
+fifths C-G, G-D, D-A, A-E, E-B, and B-F♯ are each 1/6 of a Pythagorean
+(ditonic) comma narrower than just."*, footnoted to **Barbour, James Murray
+(2004) [1951]. *Tuning and Temperament: A Historical Survey*, p. 163** (with
+a direct archive.org page-image link in the Wikipedia citation:
+`archive.org/stream/tuningtemperamen00barb#page/163/mode/1up`). And on the
+Vallotti relationship: *"Young's 2nd temperament is very similar to the
+Vallotti temperament which also has six consecutive pure fifths and six
+tempered by 1/6 of a Pythagorean comma. Young's temperament is shifted one
+note around the circle of fifths, with the first tempered fifth beginning on
+C instead of F."*, footnoted to Donahue (2005), pp. 28–29.
+
+**Confidence: verified.** This is the best-sourced entry in the draft: the
+Wikipedia claim carries a page-specific citation to Barbour (1951/2004) with
+a direct link to the scanned page, which a reviewer can open and check
+without needing to locate a physical copy of the book.
+
+---
+
+## Section B — the four open ratifications (surfaced, not decided)
+
+These four are **not** given a `verified`/`recalled`/`unknown` tag as if
+they were settled constructions with one right answer — the entire point of
+flagging them is that no single construction is "the" answer, and picking
+one here would be exactly the undisclosed musicological ratification the
+contract says not to make. What follows is: what candidates exist, how they
+were sourced, and what each optimizes. The *sourcing of the candidates* is
+verified; the *choice among them* is open.
+
+### 11–13. `ji-static-5limit-C`, `ji-static-5limit-G`, `ji-static-5limit-D`
+
+**The shape of the problem.** A 5-limit lattice (powers of 2, 3, and 5) has
+more than twelve justly-tunable pitch classes per octave once you include
+enough of the lattice to cover a chromatic scale — the standard construction
+(below) generates **fifteen** distinct pitches from a 5×3 grid of thirds and
+fifths, two more than fit in twelve chromatic slots. Reducing fifteen to
+twelve requires discarding three (one member from each of three enharmonic
+pairs, since the grid's extremes double up), and *which* three you discard
+changes the ratios assigned to some chromatic scale degrees. This is exactly
+the "genuinely unsettled" comma choice the contract describes, and it has
+been unsettled in the literature for centuries, not just in this repository.
+
+**The lattice (verified).** Building outward from C=1/1 by fifths (×3/2,
+÷3/2) and major thirds (×5/4, ÷5/4), octave-reduced, gives (Wikipedia's own
+layout, axes = powers of 3 across, powers of 5 down):
+
+| ×5 → / ×3 →↑ | 1/9 | 1/3 | 1 | 3 | 9 |
+|---|---|---|---|---|---|
+| **5** | D− 10/9 | A 5/3 | E 5/4 | B 15/8 | F♯+ 45/32 |
+| **1** | B♭− 16/9 | F 4/3 | **C 1/1** | G 3/2 | D 9/8 |
+| **1/5** | G♭− 64/45 | D♭− 16/15 | A♭ 8/5 | E♭ 6/5 | B♭ 9/5 |
+
+Fifteen cells, but D, B♭, and G♭ each appear **twice** (once with a trailing
+`−`/`+` marking a syntonic-comma-flatter/sharper twin). All three
+candidate 12-note scales below agree on discarding G♭ (the "far corner",
+enharmonically a diminished fifth from C, the least consonant and
+least-used cell) — that much is *not* contested. What's contested is which
+of the *other* two duplicate pairs (D vs D−, B♭ vs B♭−) to resolve, and how.
+
+**Three named candidates, per the same source:**
+
+1. **"Symmetric scale 1."** Discard the two opposite corners (D− and B♭−,
+   top-left/bottom-right). Keeps: D = 9/8 (203.910 c), B♭ = 16/9
+   (996.090 c). Optimizes: symmetric structure (B♭ and D are exact
+   inversions of each other around C); this is the scale that also matches
+   the D and B♭ used in C-based Pythagorean and quarter-comma-meantone
+   scales (source's own note), which may matter for cross-tuning-system
+   comparison work in this codebase.
+2. **"Symmetric scale 2."** Discard the two ends of the middle (`1`) row —
+   i.e. keep D− = 10/9 (182.404 c) and B♭ = 9/5 (1017.596 c) instead. Also
+   symmetric (same inversion property, different fixed point), but the D
+   and B♭ used differ from scale 1 by exactly a syntonic comma each
+   (21.506 c) — self-verified above.
+3. **"Asymmetric scale."** Discard the whole `1/9` column instead of one
+   cell from each of two rows. Keeps D = 9/8, B♭ = 9/5 (mixed: scale-1's D,
+   scale-2's B♭). Source states this variant has the "simplest" ratios
+   overall (nine pure fifths, eight pure major thirds, six pure minor
+   thirds by design) but **14** wolf intervals versus 12 for the symmetric
+   scales — more consonant chords, at the cost of more badly-tuned ones
+   elsewhere. This is the table this draft's derived-cents worked example
+   above (§ table) used, since it is the one with a full 12-note table
+   given directly in the source.
+
+**What each optimizes, briefly:** scale 1 favors symmetry and cross-system
+comparability; scale 2 favors symmetry with a different fixed point (and,
+per the source, is not otherwise singled out as preferable — it's presented
+as the third structurally-parallel option); the asymmetric scale favors
+maximizing the count of pure simple-ratio intervals at the cost of a wider
+spread of wolf intervals. None of the three is "the" standard in the sense
+`tet-12` is standard — reputable sources use different ones for different
+purposes, and the source consulted here presents all three side by side
+without endorsing one.
+
+**Do the three catalog identifiers differ only by transposition, or are they
+independently chosen?** The contract asks this explicitly; this draft's
+answer is: **most likely by transposition of a single chosen 12-note
+scale**, by direct analogy with `vallotti`/`young-ii` above (§7/§10), which
+are the *same* six-fifths/1-sixth-comma construction rotated to a different
+starting note. If `ji-static-5limit-C/G/D` follow that pattern, a reviewer
+picks **one** of the three candidate scales above (or another 5-limit
+construction entirely) anchored at C, and the G- and D-anchored systems are
+that same scale's ratio pattern transposed so G, respectively D, take the
+role of 1/1. This is **this agent's inference from the naming parallel**,
+not a sourced fact about these specific three identifiers — nothing in
+`core_spec.tex` states whether the three are meant to be transpositions of
+one scale or three independently-optimized 12-note constructions (e.g., a
+scale independently re-derived to make the dominant-of-the-dominant
+relationships pure in each), and the ratification should settle this
+explicitly rather than leave it to be assumed either way.
+
+**Source.** Wikipedia, "Five-limit tuning",
+<https://en.wikipedia.org/wiki/Five-limit_tuning> (fetched 2026-07-22, raw
+wikitext), section "Twelve-tone scale". All three named-scale ratio tables
+and the "discard G♭ / discard a duplicate pair" framing are quoted/derived
+directly from that section; no scholarly citation with page number was found
+attached to the *choice among the three* in this source (only to a related
+note about extending F♯ upward through D♭, cited to Randel, Don Michael
+(ed.), *The Harvard Dictionary of Music*, 4th ed., 2003, p. 415 — not
+directly about the three-way choice above).
+
+**Confidence: the existence and structure of the three candidates is
+verified** (quoted, and the syntonic-comma difference between them
+independently recomputed). **The choice among them, and whether the three
+catalog identifiers are transpositions of one choice, is open** — surfaced
+per the contract, not decided.
+
+---
+
+### 14. `ji-adaptive-5limit`
+
+**What the governing requirement permits (verified, `core_spec.tex`).**
+`req:tuning:adaptive-tuning-purity` (`core_spec.tex:3327-3333`, quoted in
+full above) constrains *how* an adaptive function must behave — pure in
+`(position, HarmonicContext)`, cacheable only with correct invalidation on
+context change — and says nothing about *what algorithm* computes the
+frequency. It permits, without choosing among:
+
+* Nearest-just-ratio resolution against the currently sounding
+  `HarmonicContext.concurrent` set (the textbook "adaptive JI" example given
+  in the surrounding prose at `core_spec.tex:3301-3305`: an E resolves
+  differently as the third of a C chord, the fifth of an A chord, or a
+  passing tone).
+* A decaying-weight blend using `HarmonicContext.recent` as well as
+  `concurrent`, for voice-leading continuity across a change of harmony.
+* A `key_context`- or `hints`-driven resolution that falls back to a fixed
+  static scale (e.g., one of the three candidates in §11–13) when no
+  harmonic information is available.
+* Comma-drift management (the classic problem where a long enough chain of
+  adaptive adjustments can walk pitch center away from the reference by a
+  syntonic comma or more) is itself a design choice `req:tuning:
+  adaptive-tuning-purity` is silent on, beyond requiring that whatever
+  choice is made stays a pure function of position and context.
+
+None of the above is proposed as *the* algorithm. Inventing one here would
+be precisely the failure mode this contract exists to prevent — a plausible-
+sounding, unverifiable algorithm written once into a document that looks
+authoritative.
+
+**The recommended pattern (surfaced, not decided).** `TuningResolution`
+already has an `Adaptive { function: AdaptiveTuningFunctionId, parameters:
+AdaptiveTuningParameters }` variant (`core_spec.tex:3341-3343`), and Chapter
+10's extension-point appendix already lists `AdaptiveTuningFunctionId` as a
+registered extension point (`core_spec.tex:13347-13349`, *"Registered
+adaptive tuning functions taking harmonic context as input"*) — so the
+plumbing this needs already exists in the data model; only the built-in's
+specific algorithm is unpinned. The in-house precedent for pinning "a
+versioned identifier names one specific algorithm, and any other identifier
+errors" is `req:pitch:spelling-algorithm` (`core_spec.tex:1517-1546`):
+`SpellingAlgorithmId "default"` names, at version 1, one specific named
+algorithm (a Temperley-style line-of-fifths centre-of-gravity rule), with
+the version number itself part of the identity so that a future refinement
+is a new version rather than a silent behavior change under the same name.
+The analogous move here is a versioned `AdaptiveTuningFunctionId "default"`
+whose version 1 pins one specific, fully-described algorithm — but *which*
+algorithm version 1 names is exactly the ratification this draft does not
+make. This is a recommendation about **form** (follow the spelling-algorithm
+precedent: reserved id, explicit version, hard error on any other
+identifier), not a recommendation about **content**.
+
+**Source.** `core_spec.tex:3301-3333` (Adaptive Tuning section and
+`req:tuning:adaptive-tuning-purity`, read in full per the contract's
+instruction); `core_spec.tex:3341-3343` (`TuningResolution::Adaptive`);
+`core_spec.tex:13347-13349` (extension-point listing); `core_spec.tex:
+1517-1546` (`req:pitch:spelling-algorithm`, the cited in-house pattern).
+All read directly from the repository's own `spec/core_spec.tex` in this
+session.
+
+**Confidence: the constraint (what the requirement permits) and the
+existence of the versioned-identifier precedent are verified** — both are
+direct quotations from `core_spec.tex` read in full this session. **The
+algorithm itself is, and must remain, undecided** by this draft.
+
+---
+
+## Summary table
+
+| Identifier | Comma | Fifths tempered | Closure sum | Confidence |
+|---|---|---|---|---|
+| `pythagorean` | Pythagorean, all in 1 fifth | 0 tempered, 1 wolf, 11 pure | 23.4600 c, on 1 fifth (non-circulating, by design) | verified |
+| `meantone-1/4-comma` | syntonic, 1/4 | 12 of 12 (regular) | does not close: wolf = 737.637 c (non-circulating, by design) | verified |
+| `meantone-1/5-comma` | syntonic, 1/5 | 12 of 12 (regular) | does not close: wolf = 725.809 c (non-circulating, by design) | verified |
+| `meantone-1/6-comma` | syntonic, 1/6 | 12 of 12 (regular) | does not close: wolf = 717.923 c (non-circulating, by design) | verified |
+| `werckmeister-iii` | **Pythagorean** (resolved by closure — was left ambiguous in the first draft) | 4 of 12 | 23.4600 c — closes | verified |
+| `werckmeister-iv` | **Pythagorean** (resolved by closure, same treatment as III) | 5 narrow + 2 wide of 12 | 23.4600 c — closes | verified |
+| `vallotti` | Pythagorean, 1/6 | 6 of 12 | 23.4600 c — closes | verified |
+| `kirnberger-ii` | syntonic (2 fifths) **+ 1 schisma fifth (corrected this round)** | 2 syntonic-tempered + 1 schisma + 9 pure | 23.4600 c — closes | verified |
+| `kirnberger-iii` | syntonic (4 fifths) **+ 1 schisma fifth (corrected this round)** | 4 syntonic-tempered + 1 schisma + 7 pure | 23.4600 c — closes | verified |
+| `young-ii` | Pythagorean, 1/6 | 6 of 12 | 23.4600 c — closes | verified |
+| `ji-static-5limit-C` | — (JI, no tempering) | n/a | n/a (not a fifths-chain construction) | **open** — 3 candidate scales sourced, choice not made |
+| `ji-static-5limit-G` | — | n/a | n/a | **open** — as above, plus transposition-vs-independent question open |
+| `ji-static-5limit-D` | — | n/a | n/a | **open** — as above |
+| `ji-adaptive-5limit` | n/a | n/a | n/a | **open** — constraint verified, algorithm not proposed |
+
+Every row in Section A now shows a closure sum computed independently by
+this agent, not asserted from a source. Two entries changed *construction*
+this round (`kirnberger-ii`, `kirnberger-iii` each gained a schisma-tempered
+twelfth fifth that the first draft's own source named in an image caption
+but the first draft never surfaced), and one changed from an open hedge to
+a resolved answer (`werckmeister-iii`'s comma type, with `werckmeister-iv`
+given the same treatment on the same logic even though it was not
+separately flagged). No entry in Section A is `recalled` or `unknown` —
+every constructible temperament in this batch had a directly quotable,
+fetchable source once searched for today. That remains true after this
+round, but it is no longer the headline fact: **the headline fact is that
+"verified" against a real citation was not sufficient by itself, and three
+entries were confidently wrong while individually citing real sources.**
+Sourcing catches fabrication; only computing the invariant catches a real
+source misapplied or incompletely transcribed. See the report for the
+counts under the corrected, stricter meaning of `verified`.
