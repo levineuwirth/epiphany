@@ -143,13 +143,13 @@ pub enum PreconditionFailureReason {
     PositionOutsideRegion,
     /// A pitch-space or tuning-context precondition failed.
     ///
-    /// Produced by `TransposeInterval` against a target whose
-    /// `scale_position.position` is not `Cmn`, so the interval's diatonic
-    /// component has no nominal to move (operation_catalog
-    /// §TransposeInterval). This was once documented as reserved pending the
-    /// Chapter 4 tuning catalog; that was an error — detecting a non-`Cmn`
-    /// position reads a discriminant, not a pitch-space registry. A genuine
-    /// tuning-context precondition would also land here.
+    /// Produced by `TransposeInterval` when a target position is not `Cmn`, so
+    /// the interval's diatonic component has no nominal to move, or when a CMN
+    /// target's enclosing chromatic structure cannot be established
+    /// (operation_catalog §TransposeInterval). Detecting the former reads only
+    /// the position discriminant. The latter intentionally fails closed until
+    /// Push 4b replaces built-in identifier recognition with structural
+    /// pitch-space resolution.
     PitchSpaceMismatch,
     /// The operation targeted a voice that does not exist or is tombstoned.
     VoiceMissing,

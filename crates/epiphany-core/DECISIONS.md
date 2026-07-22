@@ -555,35 +555,38 @@ not silent corruption. `inverse()` now returns `Option`, because an interval
 whose inverse is not representable is a fact about the type.)
 
 `alteration` and `octave` are `i8`. A transposition whose result does not fit
-refuses; so does one against a
-non-`Cmn` position (no nominal to move) or an `AcousticRealization::AbsoluteHz`
-pitch (which overrides the tuning system, so moving the scale position moves
-the notehead without moving the sound). Saturation is the worst possible
-failure here because it is invisible: it produces a pitch nobody asked for,
-reports success, and destroys the evidence. See `epiphany-ops/DECISIONS.md`
-§"Push 4a" for the operation-level consequences and the frozen `Transpose`.
+refuses; so does one against a non-`Cmn` position (no nominal to move), a
+`Cmn` position whose enclosing chromatic structure cannot be established, or
+an `AcousticRealization::AbsoluteHz` pitch (which overrides the tuning system,
+so moving the scale position moves the notehead without moving the sound).
+Saturation or guessed pitch-space arithmetic is the worst possible failure
+because it is invisible: it produces a pitch nobody asked for, reports
+success, and destroys the evidence. See `epiphany-ops/DECISIONS.md` §"Push 4a"
+for the operation-level consequences and the frozen `Transpose`.
 
-## Parked: Push 4b (the Chapter 4 tuning catalog) — what must be decided first
+## Push 4b (the Chapter 4 tuning catalog) — remaining implementation blockers
 
-Push 4a proved that transposition needs no tuning catalog. What the catalog is
-still needed for — resolving a scale position to a frequency, and applying an
-instrument's `transposition` at the written/sounding boundary — remains open,
-and Chapter 4 is not implementable as written. Verified blockers:
+Push 4a proved that built-in `cmn-12` transposition needs no tuning catalog.
+P13-S2 subsequently made the general algebra space-relative: interpreting a
+`Cmn` alteration requires the enclosing space's chromatic cardinality and
+nominal map. The specification contradiction is resolved, but the registry
+implementation is now an explicit part of Push 4b. Remaining blockers:
 
-- **`cmn-24` cannot exist** (P13-S2). The built-in pitch-space table declares it
-  as "CMN extended with 24-EDO quarter-tone accidentals", but
-  `PitchSpacePosition::Cmn.alteration` is an `i8` of *whole semitones*. Either
-  `cmn-24` is not `Cmn`-representable, or `alteration` changes unit — a
-  data-model major.
+- **Resolve pitch-space structure, then remove the interim name gate.** Until
+  the registry exists, `Pitch::transposed` and the `twelve_tet_*` helpers fail
+  closed for `Cmn` positions outside built-in `cmn-12`. Push 4b must resolve
+  `PitchSpaceId` to `PositionStructure::DiatonicOverChromatic`, use its
+  `chromatic_positions_per_octave` and `nominal_to_chromatic` mapping, and
+  replace identifier recognition rather than preserving it as policy
+  (P13-S2; `req:pitch:alteration-unit`,
+  `req:pitch:space-capability-refusal`).
 - **The core stores only the default space, tuning, and reference.** The
   overrides, accidental extensions, and SMuFL target Chapter 4 requires are
   absent, and none of the catalog/resolver types exist
   (`ScoreTuningContext` in `graph.rs` is the whole surface today).
-- **Chapter 4's nine requirement blocks are unlabeled**, so none is
-  independently citable in a conformance claim. This is not special to
-  Chapter 4 — 169 of 207 core_spec requirements are unlabeled (P13-S1) — but it
-  means Push 4b cannot declare conformance requirement-by-requirement without
-  first labelling what it implements.
+
+P13-S1 removed the former requirement-label blocker; Chapter 4's requirements
+are now independently citable.
 
 Two further claims from the Push-4a audit are **unverified** and should be
 checked, not inherited: that the JI dimension convention conflicts with its own

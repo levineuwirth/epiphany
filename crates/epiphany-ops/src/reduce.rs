@@ -5816,7 +5816,8 @@ impl<'a> Reducer<'a> {
                 Ok(next) => next,
                 Err(refusal) => {
                     let reason = match refusal {
-                        TransposeRefusal::NonCmnPosition => {
+                        TransposeRefusal::NonCmnPosition
+                        | TransposeRefusal::PitchSpaceUnavailable => {
                             PreconditionFailureReason::PitchSpaceMismatch
                         }
                         TransposeRefusal::AcousticPinned => {
@@ -9458,6 +9459,28 @@ mod tests {
             }
         );
         assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, 0, 127));
+    }
+
+    #[test]
+    fn unresolved_cmn_space_maps_to_canonical_pitch_space_mismatch() {
+        let mut unresolved = cmn_pitch(CmnNominal::E, -1, 4);
+        unresolved.scale_position.space = epiphany_core::PitchSpaceId::new("cmn-24");
+        let expected = unresolved.clone();
+        let (base, pid) = base_with_pitch(unresolved);
+
+        let (effect, score) = run_transpose(&base, &[pid], interval(4, 14));
+        assert_eq!(
+            effect,
+            OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::PitchSpaceMismatch,
+                },
+            }
+        );
+        let mut canonical = Vec::new();
+        effect.encode_canonical(&mut canonical);
+        assert_eq!(canonical, vec![4, 3, 6]);
+        assert_eq!(pitch_of(&score, pid), expected);
     }
 
     #[test]

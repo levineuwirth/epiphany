@@ -231,7 +231,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.8.0 --- Transpose algebra (TransposeInterval; the frozen Transpose)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.9.0 --- Space-relative CMN transposition}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -326,9 +326,22 @@ Transpose prototype (P12-K2), which anticipated a payload schema-major landing
 with the tuning catalog; neither proved necessary. Appended vocabulary (minor,
 append-only): \texttt{AcousticRealizationPinned} (14) and
 \texttt{TranspositionOutOfRange} (15) in \texttt{PreconditionFailureReason};
-\texttt{PitchSpaceMismatch} (6) is un-reserved and now produced, its previous
-dependency on the tuning catalog having been an error --- detecting a
-non-\texttt{Cmn} position reads a discriminant, not a pitch-space registry.
+\texttt{PitchSpaceMismatch} (6) is un-reserved and now produced for a
+non-\texttt{Cmn} position. That case reads the position discriminant and does
+not require a pitch-space registry.
+
+\medskip
+
+\noindent\textbf{Version 0.9.0 (P13-S2, space-relative CMN).} Broadens the
+\texttt{PitchSpaceMismatch} (6) case for \texttt{TransposeInterval}: a
+\texttt{Cmn} target whose enclosing chromatic structure or nominal mapping
+cannot be established now refuses under core requirement
+\texttt{req:pitch:space-capability-refusal}, rather than receiving guessed
+12-chromatic arithmetic. This capability check is distinct from the 0.8.0
+non-\texttt{Cmn} discriminant check and is replaced by structural registry
+resolution in Push~4b. No payload bytes change and no
+\texttt{PreconditionFailureReason} is appended; assignments 10 through 15
+remain exactly as ratified.
 
 % ===========================================================================
 \chapter{The Catalog Framework}
@@ -728,10 +741,13 @@ is transposed by \texttt{interval}.
   If any mutable target is \emph{not} transposable, the operation \MUST{}
   reduce to a no-op that changes no pitch, reporting the precondition failure
   of the first such target in canonical order. It \MUSTNOT{} transpose the
-  remaining targets. The three cases and their
+  remaining targets. The four cases and their
   \texttt{PreconditionFailureReason} discriminants:
   \begin{itemize}
     \item a non-\texttt{Cmn} \texttt{scale\_position.position} $\Rightarrow$
+      \texttt{PitchSpaceMismatch} (6);
+    \item a \texttt{Cmn} position whose enclosing chromatic structure or
+      nominal mapping cannot be established $\Rightarrow$
       \texttt{PitchSpaceMismatch} (6);
     \item an \texttt{AcousticRealization::AbsoluteHz} realization
       $\Rightarrow$ \texttt{AcousticRealizationPinned} (14);

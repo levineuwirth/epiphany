@@ -951,7 +951,7 @@ pub enum PitchSpacePosition {
     /// alteration plus octave. The fast path for tonal Western music.
     Cmn {
         nominal: CmnNominal,       // C, D, E, F, G, A, B
-        alteration: i8,            // -2..=+2 in semitones
+        alteration: i8,            // chromatic steps of the enclosing space
         octave: i8,                // scientific pitch notation
     },
 
@@ -977,6 +977,24 @@ pub enum PitchSpacePosition {
     Registered(PositionRegistryId),
 }
 \end{lstlisting}
+
+\begin{requirement}
+  \label{req:pitch:alteration-unit}
+  For a \texttt{PitchSpacePosition::Cmn} enclosed by a
+  \texttt{ScalePosition}, \texttt{alteration} \MUST{} be measured in steps of
+  that pitch space's chromatic layer. Its zero point for each nominal \MUST{}
+  be the space's \texttt{nominal\_to\_chromatic} mapping. A
+  \texttt{PitchSpaceModification::CmnChromatic} value \MUST{} use that same
+  unit in every pitch space whose accidental registry contains it. Thus one
+  step is a semitone in \texttt{cmn-12} and a quarter-tone in
+  \texttt{cmn-24}; a flat is respectively $-1$ and $-2$.
+
+  When a bare \texttt{PitchSpacePosition::Cmn} is embedded as
+  \texttt{ScoreTuningContext.reference.position}, the score's
+  \texttt{default\_pitch\_space} \MUST{} supply the chromatic layer and mapping
+  for this rule. Any other context embedding a bare CMN position \MUST{}
+  identify the pitch space that denominates it.
+\end{requirement}
 
 \begin{requirement}
   \label{req:pitch:ji-vector-basis}
@@ -1066,8 +1084,9 @@ pub struct TranspositionInterval {
     /// A perfect fifth up is +4 (C -> G); an octave up is +7.
     pub diatonic_steps: i32,
 
-    /// Signed chromatic steps, in semitones. A perfect fifth up
-    /// is +7; an octave up is +12.
+    /// Signed steps in the enclosing pitch space's chromatic layer.
+    /// A perfect fifth in cmn-12 is +7 and an octave is +12.
+    /// The corresponding values are space-relative.
     pub chromatic_steps: i32,
 }
 \end{lstlisting}
@@ -1078,25 +1097,29 @@ occupies --- and the chromatic component fixes the \emph{sound}. Neither
 determines the other: an augmented second $(+1, +3)$ and a minor third
 $(+2, +3)$ sound alike and are written differently, while a diminished
 sixth $(+5, +7)$ and a perfect fifth $(+4, +7)$ are written a step apart
-and sound the same. A scalar semitone count cannot express the difference,
-and an implementation carrying only one is not transposing but altering.
+and sound the same. A scalar chromatic-step count cannot express the
+difference, and an implementation carrying only one component is not
+transposing but altering.
 
 \begin{requirement}
   \label{req:pitch:transposition}
   Let $n$ be the \texttt{nominal}'s normative discriminant
-  (Section~\ref{sec:pitch:nominal}), and let a
-  \texttt{PitchSpacePosition::Cmn} position's \emph{absolute semitone} be
+  (Section~\ref{sec:pitch:nominal}). Let the enclosing pitch space have a
+  \texttt{DiatonicOverChromatic} structure with $C$ chromatic positions per
+  octave and nominal mapping $m$. A
+  \texttt{PitchSpacePosition::Cmn} position's \emph{absolute chromatic
+  coordinate} is
   \[
-    s \;=\; \texttt{nominal.chromatic()} \;+\; \texttt{alteration}
-        \;+\; 12 \cdot \texttt{octave}.
+    s \;=\; m(\texttt{nominal}) \;+\; \texttt{alteration}
+        \;+\; C \cdot \texttt{octave}.
   \]
-  Transposing that position by \texttt{TranspositionInterval \{ d, c \}}
-  \MUST{} produce
+  Transposing that position by \texttt{TranspositionInterval \{ d, c \}},
+  where $c$ is measured in steps of the same chromatic layer, \MUST{} produce
   \begin{align*}
     \texttt{nominal}' &= \textsc{CmnNominal}\big((n + d) \bmod 7\big), \\
     \texttt{octave}'  &= \texttt{octave} + \lfloor (n + d) / 7 \rfloor, \\
-    \texttt{alteration}' &= (s + c) - \big(\texttt{nominal}'\texttt{.chromatic()}
-        + 12 \cdot \texttt{octave}'\big),
+    \texttt{alteration}' &= (s + c) -
+      \big(m(\texttt{nominal}') + C \cdot \texttt{octave}'\big),
   \end{align*}
   where $\bmod$ and $\lfloor \cdot \rfloor$ are Euclidean (the remainder is
   non-negative). The diatonic component alone selects the nominal and the
@@ -1107,6 +1130,8 @@ and an implementation carrying only one is not transposing but altering.
   \begin{itemize}
     \item its \texttt{scale\_position.position} is not \texttt{Cmn}, so the
       \texttt{Interval} above has no defined action on it;
+    \item its enclosing pitch space cannot be resolved to a compatible
+      \texttt{DiatonicOverChromatic} structure and nominal mapping;
     \item its \texttt{acoustic.realization} is
       \texttt{AcousticRealization::AbsoluteHz}, which overrides the tuning
       system, so moving the scale position would move the notehead without
@@ -1114,19 +1139,32 @@ and an implementation carrying only one is not transposing but altering.
     \item the computed $\texttt{alteration}'$ or $\texttt{octave}'$ does not
       fit its field.
   \end{itemize}
-  An implementation \MUSTNOT{} saturate, clamp, or partially apply a
-  transposition in any of these cases.
+  An implementation \MUSTNOT{} saturate, clamp, guess a pitch-space
+  structure, or partially apply a transposition in any of these cases.
+\end{requirement}
+
+\begin{requirement}
+  \label{req:pitch:space-capability-refusal}
+  An implementation \MUST{} fail closed when it cannot establish the
+  pitch-space structure required to interpret a position. In particular,
+  transposition \MUST{} report a refusal when the enclosing CMN chromatic
+  layer or nominal mapping is unavailable, and a computation claiming a
+  12-chromatic pitch class or absolute semitone \MUST{} report
+  unavailability unless it can establish a twelve-position chromatic layer.
+  The \texttt{Cmn} position discriminant alone \MUSTNOT{} be treated as proof
+  of either capability.
 \end{requirement}
 
 \begin{rationale}
-  The refusal cases are the three ways a transposition can silently lie. A
-  non-CMN position has no nominal to move, so a semitone shift would have to
-  invent one. An \texttt{AbsoluteHz} pitch declares its own frequency: it can
-  be respelled or it can be resounded, but a transposition that claims to do
-  both does one and pretends to the other. And saturation is the worst of the
-  three, because it is invisible --- a transposition that clamps has produced
-  a pitch nobody asked for, reported success, and destroyed the information
-  needed to notice.
+  The refusal cases are the four ways a transposition can silently lie. A
+  non-CMN position has no nominal to move, so a chromatic shift would have to
+  invent one. An unresolved pitch space supplies neither the octave size nor
+  the nominal mapping, so arithmetic would have to guess both.
+  An \texttt{AbsoluteHz} pitch declares its own frequency: it can be respelled
+  or it can be resounded, but a transposition that claims to do both does one
+  and pretends to the other. And saturation is the worst of the four, because
+  it is invisible --- a transposition that clamps has produced a pitch nobody
+  asked for, reported success, and destroyed the information needed to notice.
 
   Refusing atomically, rather than skipping the offending target, follows from
   the same reasoning: a chord transposed except for one note is not a
@@ -3040,8 +3078,8 @@ pub struct AccidentalDefinition {
 
 \begin{lstlisting}[language=Rust]
 pub enum PitchSpaceModification {
-    /// CMN-style integer chromatic alteration. -2 = double flat,
-    /// -1 = flat, +1 = sharp, +2 = double sharp, etc.
+    /// CMN-style integer offset in chromatic steps of the enclosing
+    /// pitch space (`req:pitch:alteration-unit`).
     CmnChromatic(i8),
 
     /// Integer step offset in an EDO position space.
@@ -3318,7 +3356,10 @@ pub struct ReferencePitch {
   \label{req:tuning:reference-pitch}
   Every score \MUST{} declare a reference pitch. The reference pitch
   \MUST{} be expressible as a valid position within the score's default
-  pitch space. The frequency \MUST{} be positive and finite.
+  pitch space. When that position is \texttt{Cmn}, the default pitch space
+  \MUST{} supply its chromatic layer and nominal mapping under
+  Requirement~\ref{req:pitch:alteration-unit}. The frequency \MUST{} be
+  positive and finite.
 \end{requirement}
 
 \subsection{Multiple Reference Pitches}
@@ -3438,9 +3479,10 @@ identifiers with the specified semantics.
   \texttt{cmn-12} & Common Music Notation, 7 diatonic nominals (A--G)
   over 12 chromatic positions. Standard sharps, flats, double-sharps,
   and double-flats. The default for Western tonal and post-tonal music. \\
-  \texttt{cmn-24} & CMN extended with 24-EDO quarter-tone accidentals.
-  Used for Arabic-derived microtonal practice in CMN-compatible
-  notation. \\
+  \texttt{cmn-24} & CMN over 24 chromatic positions with
+  \texttt{nominal\_to\_chromatic} $=[0,4,8,10,14,18,22]$ and quarter-tone
+  alteration steps. A flat is $-2$ and a half-flat is $-1$. Used for
+  Arabic-derived microtonal practice in CMN-compatible notation. \\
   \texttt{edo-19} & 19-tone equal division of the octave.
   Notable for its closer-to-just major thirds. \\
   \texttt{edo-22} & 22-tone equal division. Distinguishes harmonic
@@ -3458,12 +3500,20 @@ identifiers with the specified semantics.
   \texttt{ji-11limit} & 11-limit JI lattice with HEJI accidentals.
   Four-dimensional. \\
   \texttt{maqam-base} & Skeletal maqam framework with quarter-flat
-  and quarter-sharp accidentals. Deep coverage of specific maqamat
-  is the province of grammar plugins. \\
+  and quarter-sharp \texttt{CmnChromatic} accidentals, denominated by the
+  space's chromatic layer under Requirement~\ref{req:pitch:alteration-unit}.
+  Deep coverage of specific maqamat is the province of grammar plugins. \\
   \texttt{gamelan-slendro} & Five-tone slendro framework. \\
   \texttt{gamelan-pelog} & Seven-tone pelog framework. \\
   \bottomrule
 \end{longtable}
+
+\paragraph{Conformance note.}
+At this revision the default spelling pre-pass is structurally
+12-chromatic and therefore reports \texttt{spelling\_unavailable} for
+\texttt{cmn-24} positions. This does not prevent storing or engraving an
+explicitly authored spelling, nor does it change the space-relative
+transposition algebra; automatic 24-chromatic spelling inference is deferred.
 
 \subsection{Built-in Tuning Systems}
 

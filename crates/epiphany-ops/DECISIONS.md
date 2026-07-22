@@ -1185,19 +1185,22 @@ Nothing downstream is at fault. `prepass::accidental_ids` faithfully renders
 `alteration: 12` as six double-sharps; the engraver draws what it is handed.
 The whole defect is in what `Transpose` *means*.
 
-**The false coupling (the reason this looked big).** `Pitch` has two
-orthogonal fields: `scale_position` and `acoustic`. Transposition adds an
-interval to a *scale position*. Tuning decides what frequency a scale position
-sounds at. Adding a fifth to C4 needs no tuning catalog. P12-K2's deferral
-welded together two things that do not touch, and the weld propagated: it is
-also why `PreconditionFailureReason::PitchSpaceMismatch` was documented as
-"Reserved: requires the Chapter 4 tuning catalog" (detecting a non-`Cmn`
-position reads a discriminant), and why `TranspositionInterval` was marked
-"ADVISORY until the Chapter 4 tuning catalog pins interval algebra". Push 4
-therefore splits: **4a is the transpose algebra, and needs no tuning catalog;
-4b is the Chapter 4 catalog**, which has its own unrelated blockers (`cmn-24`
-is in the spec's pitch-space table but cannot exist while `Cmn.alteration` is
-`i8` semitones and a quarter-tone is half of one).
+**The false coupling, and its limit.** `Pitch` has two orthogonal fields:
+`scale_position` and `acoustic`. Transposition adds an interval to a scale
+position; tuning decides what frequency that position sounds at. Push 4a
+therefore needed no tuning resolver for the built-in `cmn-12` arithmetic.
+It also corrected the claim that every
+`PreconditionFailureReason::PitchSpaceMismatch` needed the Chapter 4 catalog:
+detecting a non-`Cmn` position reads only its discriminant.
+
+P13-S2 later exposed the boundary of that result. Generalized `Cmn`
+transposition is space-relative, so its chromatic cardinality and nominal map
+do require pitch-space registry resolution. Until Push 4b lands that resolver,
+the core refuses a `Cmn` position outside provable built-in `cmn-12`, and
+`TransposeInterval` maps that distinct capability refusal to the existing
+`PitchSpaceMismatch` (6) effect. Push 4 therefore remains split: 4a owns the
+operation algebra and frozen replay semantics; 4b owns structural resolution,
+not a second transposition rule.
 
 **Four ratified calls (user, 2026-07-09).**
 

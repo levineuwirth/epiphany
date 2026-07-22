@@ -240,6 +240,12 @@ pub enum TransposeRefusal {
     /// The position is not [`PitchSpacePosition::Cmn`], so it has no nominal
     /// for the interval's diatonic component to move.
     NonCmnPosition,
+    /// The enclosing pitch space's chromatic layer or nominal mapping cannot
+    /// be established, so applying the interval would require guessed
+    /// arithmetic (`req:pitch:space-capability-refusal`). The pre-registry
+    /// implementation recognizes only built-in `cmn-12`; Push 4b replaces that
+    /// identifier check with structural pitch-space resolution.
+    PitchSpaceUnavailable,
     /// The pitch's [`AcousticRealization::AbsoluteHz`] overrides the tuning
     /// system, so moving the scale position would move the notehead without
     /// moving the sound.
@@ -252,7 +258,8 @@ impl Pitch {
     /// Transposes this pitch by `interval`, per Chapter 2
     /// `req:pitch:transposition`.
     ///
-    /// With `n` the nominal's normative discriminant and the absolute semitone
+    /// With `n` the nominal's normative discriminant and, for the proven
+    /// `cmn-12` structure, the absolute semitone
     /// `s = nominal.chromatic() + alteration + 12*octave`, transposing by
     /// `{ d, c }` yields
     ///
@@ -261,6 +268,10 @@ impl Pitch {
     /// octave'     = octave + (n + d).div_euclid(7)
     /// alteration' = (s + c) - (nominal'.chromatic() + 12*octave')
     /// ```
+    ///
+    /// Until Push 4b provides structural pitch-space resolution, a CMN
+    /// position outside built-in `cmn-12` is refused rather than interpreted
+    /// with this 12-chromatic map.
     ///
     /// The diatonic component alone selects the nominal and octave; the
     /// alteration absorbs exactly the residue. So `C4 + (7, 12)` is `C5`, not
@@ -284,6 +295,9 @@ impl Pitch {
         else {
             return Err(TransposeRefusal::NonCmnPosition);
         };
+        if self.scale_position.space.as_str() != "cmn-12" {
+            return Err(TransposeRefusal::PitchSpaceUnavailable);
+        }
 
         // Widen to `i64` before any arithmetic. The `i8` bound is a *result*
         // constraint, not an intermediate one, so an octave that overflows on
@@ -325,7 +339,10 @@ pub enum PitchSpacePosition {
     /// Common Music Notation: diatonic nominal + chromatic alteration + octave.
     Cmn {
         nominal: CmnNominal,
-        /// Chromatic alteration in semitones, conventionally `-2..=+2`.
+        /// Chromatic alteration in steps of the enclosing pitch space's
+        /// chromatic layer (`req:pitch:alteration-unit`), conventionally
+        /// `-2..=+2`. One step is a semitone in `cmn-12` and a quarter-tone in
+        /// `cmn-24`, so a flat is respectively `-1` and `-2`.
         alteration: i8,
         /// Scientific Pitch Notation octave; middle C is C4.
         octave: i8,
@@ -469,31 +486,38 @@ impl Pitch {
     }
 
     /// The 12-TET pitch class (`0..=11`) of this pitch's *scale position*, when
-    /// that is computable from the position alone: CMN positions and 12-EDO
-    /// integer positions. Returns `None` for positions whose 12-TET class is
-    /// not determinable without a tuning resolver (JI vectors, non-12 EDOs,
-    /// registered grammars). Octave-blind — for sounding comparison use
+    /// its 12-chromatic structure is established: CMN positions in built-in
+    /// `cmn-12` and 12-EDO integer positions. Returns `None` for unresolved CMN
+    /// spaces and positions whose 12-TET class is not determinable without a
+    /// tuning resolver (JI vectors, non-12 EDOs, registered grammars).
+    /// Octave-blind — for sounding comparison use
     /// [`Pitch::twelve_tet_semitone`].
     pub fn twelve_tet_class(&self) -> Option<u8> {
         self.twelve_tet_semitone().map(|s| s.rem_euclid(12) as u8)
     }
 
     /// The *absolute* 12-TET semitone of this pitch's scale position, octave
-    /// included, when computable from the position alone. For CMN this is
+    /// included, when its 12-chromatic structure is established. For built-in
+    /// `cmn-12` this is
     /// `octave*12 + nominal.chromatic() + alteration` (so C4 and C5 differ by a
     /// full octave); for 12-EDO integer positions it is the absolute `index`.
-    /// `None` for positions not determinable without a tuning resolver.
+    /// `None` for unresolved CMN spaces
+    /// (`req:pitch:space-capability-refusal`) and positions not determinable
+    /// without a tuning resolver.
     ///
     /// The CMN and 12-EDO frames use different zero references, so the absolute
-    /// value is only meaningful *within* a frame; [`Pitch::enharmonic_equivalent`]
-    /// compares only same-frame positions for that reason.
+    /// value is only meaningful *within* a frame;
+    /// [`Pitch::enharmonic_equivalent`] compares only same-frame positions for
+    /// that reason.
     pub fn twelve_tet_semitone(&self) -> Option<i32> {
         match &self.scale_position.position {
             PitchSpacePosition::Cmn {
                 nominal,
                 alteration,
                 octave,
-            } => Some(*octave as i32 * 12 + nominal.chromatic() as i32 + *alteration as i32),
+            } if self.scale_position.space.as_str() == "cmn-12" => {
+                Some(*octave as i32 * 12 + nominal.chromatic() as i32 + *alteration as i32)
+            }
             PitchSpacePosition::Integer { space_size, index } if *space_size == 12 => Some(*index),
             _ => None,
         }
@@ -1261,6 +1285,19 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_cmn_space_refuses_transposition_and_twelve_tet_conversion() {
+        let mut p = cmn(CmnNominal::E, -1, 4);
+        p.scale_position.space = PitchSpaceId::new("edo-31");
+
+        assert_eq!(
+            p.transposed(iv(4, 7)),
+            Err(TransposeRefusal::PitchSpaceUnavailable)
+        );
+        assert_eq!(p.twelve_tet_semitone(), None);
+        assert_eq!(p.twelve_tet_class(), None);
+    }
+
+    #[test]
     fn a_transposition_refuses_a_pitch_pinned_to_a_frequency() {
         // AbsoluteHz overrides the tuning system: moving the scale position
         // would move the notehead and leave the sound where it was.
@@ -1307,10 +1344,9 @@ mod tests {
         let other_frame = Pitch {
             scale_position: ScalePosition {
                 space: PitchSpaceId::new("cmn-19"),
-                position: PitchSpacePosition::Cmn {
-                    nominal: CmnNominal::C,
-                    alteration: 0,
-                    octave: 4,
+                position: PitchSpacePosition::Integer {
+                    space_size: 12,
+                    index: 48,
                 },
             },
             acoustic: AcousticPitch {
@@ -1318,6 +1354,7 @@ mod tests {
                 realization: AcousticRealization::Implicit,
             },
         };
+        assert_eq!(other_frame.twelve_tet_semitone(), Some(48));
         assert_eq!(range.contains(&other_frame), None);
     }
 
@@ -1353,12 +1390,27 @@ mod tests {
 
     #[test]
     fn enharmonic_requires_the_same_pitch_space() {
-        // Same 12-TET class but different spaces -> not directly comparable.
-        let mut other_space = cmn(CmnNominal::C, 1, 4); // C#4
-        other_space.scale_position.space = PitchSpaceId::new("edo-31");
+        // Both operands are independently computable as the same absolute
+        // 12-TET semitone. The rejection therefore proves the space-frame
+        // branch rather than passing through conversion unavailability.
         let cis = cmn(CmnNominal::C, 1, 4);
-        assert!(cis.enharmonic_equivalent(&cmn(CmnNominal::D, -1, 4))); // same space
-        assert!(!cis.enharmonic_equivalent(&other_space)); // different space
+        let other_space = Pitch {
+            scale_position: ScalePosition {
+                space: PitchSpaceId::new("edo-31"),
+                position: PitchSpacePosition::Integer {
+                    space_size: 12,
+                    index: 49,
+                },
+            },
+            acoustic: AcousticPitch {
+                tuning: TuningReference::Inherit,
+                realization: AcousticRealization::Implicit,
+            },
+        };
+        assert_eq!(cis.twelve_tet_semitone(), Some(49));
+        assert_eq!(other_space.twelve_tet_semitone(), Some(49));
+        assert!(cis.enharmonic_equivalent(&cmn(CmnNominal::D, -1, 4)));
+        assert!(!cis.enharmonic_equivalent(&other_space));
     }
 
     #[test]
