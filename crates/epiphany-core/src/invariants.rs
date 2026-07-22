@@ -1351,11 +1351,7 @@ impl<'a> GraphIndex<'a> {
                         "tempo segments overlap in musical time".to_string(),
                     );
                 }
-                prev_end = seg
-                    .end
-                    .as_ref()
-                    .and_then(&seg_pos)
-                    .or_else(|| start.clone());
+                prev_end = seg.end.as_ref().and_then(seg_pos).or_else(|| start.clone());
                 prev_start = start;
             }
         }

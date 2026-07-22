@@ -28,50 +28,18 @@ env:
   PINNED_STABLE: "1.95.0"
 
 jobs:
-  check:
-    name: fmt / clippy / test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust (pinned MSRV)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.85"
-          components: rustfmt, clippy
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Formatting
-        run: cargo fmt --all -- --check
-
-      # The demo GUI crate (eframe/resvg) needs a newer toolchain than the pinned
-      # MSRV, so it is excluded from these MSRV-pinned workspace commands and
-      # checked on current stable in the `editor-gui` job below.
-      - name: Clippy (all targets)
-        run: cargo clippy --workspace --exclude epiphany-editor-gui --all-targets -- -D warnings
-
-      - name: Test (workspace)
-        run: cargo test --workspace --exclude epiphany-editor-gui --all-targets
-
-      - name: Doc tests
-        run: cargo test --workspace --exclude epiphany-editor-gui --doc
-
-      # Deny rustdoc warnings (broken/private intra-doc links, etc.) across the
-      # whole workspace. `RUSTFLAGS` does not cover rustdoc, so `RUSTDOCFLAGS` is
-      # set explicitly.
-      - name: Doc warnings (workspace)
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: cargo doc --workspace --exclude epiphany-editor-gui --no-deps
-
-  # The demo GUI crate, on the pinned stable rather than the MSRV: its
-  # eframe/resvg tree pulls `image`, which declares 1.88 — three releases above
-  # the workspace floor. Separate so a GUI build break is its own attributable
-  # signal, not a regression in the core crates.
-  editor-gui:
-    name: editor GUI (pinned stable)
+  # Style and lint policy runs on exactly ONE toolchain, the pinned stable.
+  #
+  # It used to run on the MSRV toolchain as well, and that is not a stricter
+  # gate — it is a different one. Two clippy versions have two lint sets, and
+  # they can disagree in opposite directions: clippy 1.85 demands
+  # `.and_then(seg_pos)` where 1.95 is silent, while 1.97 rejects a bare `2.0`
+  # that 1.95 accepts. Satisfying the union is not a quality bar, it is a
+  # coincidence, and no developer can reproduce it locally without installing
+  # every toolchain in the matrix. Lints here; the MSRV job proves the floor
+  # compiles and passes its tests, which is the only thing an MSRV can mean.
+  lint:
+    name: fmt / clippy / doc (pinned stable)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,7 +48,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.PINNED_STABLE }}
-          components: clippy
+          components: rustfmt, clippy
 
       - name: Install GUI build dependencies
         run: |
@@ -92,8 +60,72 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Clippy (GUI)
-        run: cargo clippy -p epiphany-editor-gui --all-targets -- -D warnings
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      # The whole workspace, GUI crate included: on the pinned stable there is
+      # no toolchain reason to split it out.
+      - name: Clippy (all targets)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Deny rustdoc warnings (broken/private intra-doc links, etc.). `RUSTFLAGS`
+      # does not cover rustdoc, so `RUSTDOCFLAGS` is set explicitly.
+      - name: Doc warnings (workspace)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
+
+  # The floor, and only the floor: does the code this repository claims to
+  # support on 1.85 actually build and pass its tests there? No lints — see the
+  # `lint` job's comment.
+  check:
+    name: MSRV build + test (1.85)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (pinned MSRV)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # The demo GUI crate (eframe/resvg) pulls `image`, which declares 1.88, so
+      # it cannot build at the floor and is excluded here. It is linted in
+      # `lint` and tested in `editor-gui`, both on the pinned stable.
+      - name: Test (workspace)
+        run: cargo test --workspace --exclude epiphany-editor-gui --all-targets
+
+      - name: Doc tests
+        run: cargo test --workspace --exclude epiphany-editor-gui --doc
+
+  # The demo GUI crate's tests, kept as their own job so a GUI break is its own
+  # attributable signal rather than a regression buried in the core crates. Its
+  # eframe/resvg tree pulls `image`, which declares 1.88 — three releases above
+  # the workspace floor — so it cannot run in the MSRV job. Linting for this
+  # crate lives in `lint` with the rest of the workspace.
+  editor-gui:
+    name: editor GUI tests (pinned stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (pinned stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.PINNED_STABLE }}
+
+      - name: Install GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libssl-dev
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
 
       - name: Test (GUI)
         run: cargo test -p epiphany-editor-gui
