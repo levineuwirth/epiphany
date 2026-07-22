@@ -16,6 +16,16 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # Every blocking job pins an exact toolchain. With `-D warnings` and a
+  # floating `stable`, a Rust release turns this gate red with no repo change —
+  # which is exactly how it first failed, eight days after 1.97.1 added
+  # `float_literal_f32_fallback`. Worse, the developer machine cannot install
+  # arbitrary toolchains, so such a failure is unreproducible locally and the
+  # local gate stops meaning anything. Pinned here to the version developed
+  # against; bump it deliberately, as its own commit, with the lints it
+  # introduces fixed in that commit. The nightly soak floats on `stable` and is
+  # the drift detector.
+  PINNED_STABLE: "1.95.0"
 
 jobs:
   check:
@@ -27,7 +37,7 @@ jobs:
       - name: Install Rust (pinned MSRV)
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.77"
+          toolchain: "1.85"
           components: rustfmt, clippy
 
       - name: Cache cargo
@@ -56,18 +66,20 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --exclude epiphany-editor-gui --no-deps
 
-  # The demo GUI crate, on current stable (its eframe/resvg tree requires a newer
-  # toolchain than the workspace MSRV). Separate so a GUI build break is its own
-  # attributable signal, not a regression in the core crates.
+  # The demo GUI crate, on the pinned stable rather than the MSRV: its
+  # eframe/resvg tree pulls `image`, which declares 1.88 — three releases above
+  # the workspace floor. Separate so a GUI build break is its own attributable
+  # signal, not a regression in the core crates.
   editor-gui:
-    name: editor GUI (current stable)
+    name: editor GUI (pinned stable)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust (current stable)
+      - name: Install Rust (pinned stable)
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ env.PINNED_STABLE }}
           components: clippy
 
       - name: Install GUI build dependencies
@@ -94,6 +106,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.PINNED_STABLE }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -131,6 +145,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.PINNED_STABLE }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -139,6 +155,10 @@ jobs:
         run: cargo test -p epiphany-testkit --test prepass
 
   # A longer soak, scheduled nightly, exploring a wider seed space at scale.
+  # This job deliberately floats on `stable` while every blocking job is pinned:
+  # it is where toolchain drift surfaces, on a schedule, instead of in a push
+  # that has nothing to do with it. A red soak against a green push means Rust
+  # moved, not that the change did.
   soak:
     name: conformance soak (nightly)
     if: github.event_name == 'schedule'

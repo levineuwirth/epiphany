@@ -824,7 +824,7 @@ fn tempo_segment_shape_well_formed(segment: &TempoSegment) -> bool {
         TempoShape::Constant => segment
             .end_tempo
             .as_ref()
-            .map_or(true, |end| end == &segment.start_tempo),
+            .is_none_or(|end| end == &segment.start_tempo),
         TempoShape::Linear | TempoShape::Exponential | TempoShape::Curve => {
             segment.end_tempo.is_some() && segment.end.is_some()
         }
@@ -6620,7 +6620,7 @@ impl<'a> Reducer<'a> {
                     (0u8, signed)
                 };
                 let key = (rank, distance, direction, *event);
-                if best.as_ref().map_or(true, |current| key < *current) {
+                if best.as_ref().is_none_or(|current| key < *current) {
                     best = Some(key);
                 }
             }
@@ -7425,7 +7425,7 @@ fn first_missing_vector_predecessor(
 
         if !complete {
             let candidate = OperationId::new(replica, expected);
-            if first_missing.map_or(true, |current| candidate < current) {
+            if first_missing.is_none_or(|current| candidate < current) {
                 first_missing = Some(candidate);
             }
         }

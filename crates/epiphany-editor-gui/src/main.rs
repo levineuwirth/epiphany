@@ -484,7 +484,9 @@ impl EditorApp {
                 ui.painter().rect_stroke(
                     shape_rect(&region.shape, &vm),
                     0.0,
-                    egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 120, 215)),
+                    // Suffixed: `float_literal_f32_fallback` (Rust 1.97) rejects
+                    // inferring `f32` here, and it becomes a hard error later.
+                    egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(0, 120, 215)),
                 );
             }
         }

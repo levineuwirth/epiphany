@@ -1516,7 +1516,7 @@ fn stroke_fate(
         } else {
             0.0
         };
-        if best.map_or(true, |(_, d)| distance < d) {
+        if best.is_none_or(|(_, d)| distance < d) {
             best = Some((r, distance));
         }
     }
@@ -1595,7 +1595,7 @@ fn curve_fate(
     for (r, span) in region_spans.iter().enumerate() {
         let Some((rlo, rhi)) = span else { continue };
         let distance = interval_distance(lo, hi, (*rlo, *rhi));
-        if best.map_or(true, |(_, d)| distance < d) {
+        if best.is_none_or(|(_, d)| distance < d) {
             best = Some((r, distance));
         }
     }

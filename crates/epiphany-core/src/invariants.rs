@@ -1332,7 +1332,7 @@ impl<'a> GraphIndex<'a> {
                     TempoShape::Constant => flag(
                         seg.end_tempo
                             .as_ref()
-                            .map_or(true, |et| et == &seg.start_tempo),
+                            .is_none_or(|et| et == &seg.start_tempo),
                         "constant tempo segment has end_tempo != start_tempo".to_string(),
                     ),
                     TempoShape::Linear | TempoShape::Exponential | TempoShape::Curve => flag(

@@ -26,7 +26,12 @@ members = [
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.77"
+# 1.85 is the floor the dependency graph actually imposes, not a preference:
+# blake3 and its `constant_time_eq` both ship edition 2024, which no Cargo
+# before 1.85 can parse. The previous 1.77 claim was untestable until CI
+# existed and was false when it ran — raise this only against a measured
+# closure (`cargo metadata --filter-platform`), never to make a build pass.
+rust-version = "1.85"
 authors = ["Epiphany contributors"]
 repository = "https://github.com/epiphany-notation/epiphany"
 
