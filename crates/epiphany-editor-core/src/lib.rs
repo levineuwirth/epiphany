@@ -64,9 +64,9 @@ use epiphany_core::{
 };
 use epiphany_layout_ir::{
     active_clef_or, manifestation_layout_id, staff_step_pitch, to_constrained, to_logical,
-    to_render, ConstraintSolver, ExtensionRef, HitTestMap, LayoutContent, LayoutObjectId,
-    LogicalLayoutIR, Point, Rect, RenderIR, ResolvedLayoutIR, ResolvedSystem, SolverConfig,
-    TimePoint,
+    to_render, BoundingBox, ConstraintSolver, ExtensionRef, HitTestMap, LayoutContent,
+    LayoutObjectId, LogicalLayoutIR, Point, Rect, RenderIR, ResolvedLayoutIR, ResolvedSystem,
+    SolverConfig, TimePoint,
 };
 use epiphany_ops::{
     advisory_violations, AcceptOutcome, AuthorId, CausalContext, DeleteEventOp,
@@ -85,6 +85,148 @@ pub struct Selection {
     /// The layout object the selection is anchored on — content-independent, so it
     /// survives a relayout of an unchanged source.
     pub layout_object: LayoutObjectId,
+}
+
+/// The session's selection: a **set** of [`Selection`] members plus one member
+/// marked the **anchor** — the reference point single-target intents act on
+/// ([`EditorSession::alter_selection`] on a single member,
+/// [`EditorSession::move_selection_staff_step`], [`EditorSession::add_note_to_selection`],
+/// [`EditorSession::insert_note_after_selection`],
+/// [`EditorSession::set_selection_duration`]), and, later, where a paste lands.
+///
+/// * [`EditorSession::click`] / [`EditorSession::select`] ([`Self::replace_single`])
+///   replace the whole set with one member — today's single-selection behavior,
+///   unchanged.
+/// * [`EditorSession::select_within`] ([`Self::replace_members`]) seeds the set from
+///   the hit-test map's own **paint order** (back-to-front, matching
+///   [`HitTestMap::within`]), one score object per member (see
+///   [`EditorSession::select_within`] for how several primitives sharing one
+///   `source` — e.g. a note and its ledger lines — collapse to one member); the
+///   anchor is the first member painted.
+/// * [`EditorSession::toggle_at`] ([`Self::toggle`]) adds or removes one member,
+///   keeping the rest in their existing relative order; the anchor becomes the
+///   member just added.
+///
+/// **Anchor-fallback rule** (shared by [`Self::toggle`] removing the anchor and
+/// [`Self::reresolve`] dropping it across a relayout): the anchor falls to the
+/// member now occupying its old position in the set's order — i.e. the member that
+/// was right after it — wrapping to the first member if the anchor was last (or
+/// only), or to `None` if the set is now empty. Anchor identity is tracked by
+/// [`LayoutObjectId`] rather than duplicated as a `Selection` copy, so it can never
+/// desync from a member's refreshed `source` after a relayout — [`Self::anchor`]
+/// always looks it up in `members`.
+#[derive(Clone, Default, Debug, PartialEq)]
+struct SelectionSet {
+    /// Members in the set's current order (paint order when built by
+    /// [`Self::replace_from_paint_order`]; add order otherwise — see the type doc).
+    members: Vec<Selection>,
+    /// The anchor member's layout-object identity. `Some` only when that id names an
+    /// entry in `members` — every mutator below preserves this invariant.
+    anchor: Option<LayoutObjectId>,
+}
+
+impl SelectionSet {
+    /// The anchor member, if any.
+    fn anchor(&self) -> Option<&Selection> {
+        let id = self.anchor?;
+        self.members.iter().find(|m| m.layout_object == id)
+    }
+
+    /// Empties the set.
+    fn clear(&mut self) {
+        self.members.clear();
+        self.anchor = None;
+    }
+
+    /// Replaces the set with a single member, or clears it — [`EditorSession::click`]
+    /// and [`EditorSession::select`]'s shared behavior.
+    fn replace_single(&mut self, selection: Option<Selection>) {
+        match selection {
+            Some(sel) => {
+                self.members = vec![sel];
+                self.anchor = Some(sel.layout_object);
+            }
+            None => self.clear(),
+        }
+    }
+
+    /// Replaces the set with `members` verbatim (already deduped and ordered by the
+    /// caller — see [`EditorSession::select_within`]). Anchor = the first member.
+    fn replace_members(&mut self, members: Vec<Selection>) {
+        self.anchor = members.first().map(|s| s.layout_object);
+        self.members = members;
+    }
+
+    /// Adds `candidate` if its layout object is absent (anchor becomes it), or
+    /// removes it if present (see the type doc's anchor-fallback rule for what the
+    /// anchor becomes when the removed member was the anchor).
+    fn toggle(&mut self, candidate: Selection) {
+        match self
+            .members
+            .iter()
+            .position(|m| m.layout_object == candidate.layout_object)
+        {
+            Some(pos) => {
+                self.members.remove(pos);
+                if self.anchor == Some(candidate.layout_object) {
+                    self.anchor = self
+                        .members
+                        .get(pos)
+                        .or_else(|| self.members.first())
+                        .map(|m| m.layout_object);
+                }
+            }
+            None => {
+                self.members.push(candidate);
+                self.anchor = Some(candidate.layout_object);
+            }
+        }
+    }
+
+    /// Re-resolves the whole set against a fresh hit-test map: a member survives
+    /// (its `source` refreshed from the new region) if its layout object is still
+    /// present there, keeping the set's existing relative order (a stable filter —
+    /// the order was already meaningful, and filtering preserves it); a vanished
+    /// member drops. If the anchor's own member dropped, the anchor follows the type
+    /// doc's fallback rule, computed over the **surviving** members in their
+    /// original positions (so "the next member" skips other members that also
+    /// dropped). Returns whether the anchor's own member survived unchanged — the
+    /// single-selection `EditOutcome::selection_preserved` this generalizes.
+    fn reresolve(&mut self, map: &HitTestMap) -> bool {
+        let anchor_pos = self
+            .anchor
+            .and_then(|id| self.members.iter().position(|m| m.layout_object == id));
+        let mut survivors: Vec<(usize, Selection)> = Vec::with_capacity(self.members.len());
+        for (i, member) in self.members.iter().enumerate() {
+            if let Some(region) = map
+                .regions
+                .iter()
+                .find(|r| r.layout_object == member.layout_object)
+            {
+                survivors.push((
+                    i,
+                    Selection {
+                        source: region.source,
+                        layout_object: member.layout_object,
+                    },
+                ));
+            }
+        }
+        let anchor_survived = anchor_pos.is_some_and(|p| survivors.iter().any(|(i, _)| *i == p));
+        self.anchor = if anchor_survived {
+            self.anchor
+        } else if let Some(p) = anchor_pos {
+            survivors
+                .iter()
+                .find(|(i, _)| *i > p)
+                .or_else(|| survivors.first())
+                .map(|(_, s)| s.layout_object)
+        } else {
+            None
+        };
+        self.members = survivors.into_iter().map(|(_, s)| s).collect();
+        anchor_survived
+    }
 }
 
 /// What a click at a world point resolves to **vertically**: the staff under the
@@ -138,7 +280,11 @@ pub struct GridPosition {
 pub struct EditOutcome {
     /// The operation changed the score graph.
     pub graph_changed: bool,
-    /// The selection survived the relayout (its layout object still exists).
+    /// Whether the **anchor** member survived the relayout unchanged (its layout
+    /// object still exists) — the reference point single-target intents act on.
+    /// `false` if the anchor's own object is gone, even when the anchor then fell to
+    /// a different surviving member of the set (the anchor-fallback rule, applied
+    /// across a relayout), or the set emptied.
     pub selection_preserved: bool,
 }
 
@@ -301,7 +447,7 @@ pub struct EditorSession {
     // `(region, staff)`, since one staff can be tiled into several regions. The
     // vertical half of click-to-insert reads this to spell the clicked height.
     start_clefs: BTreeMap<(RegionId, StaffId), Clef>,
-    selection: Option<Selection>,
+    selection: SelectionSet,
     // Operation-minting identity. A real client supplies its own replica/author.
     // Minted operations form this replica's monotonic local history; the next op's
     // counter is `authored.len()` (never reused across undo), so a failed apply consumes
@@ -368,7 +514,7 @@ impl EditorSession {
             render,
             map,
             start_clefs,
-            selection: None,
+            selection: SelectionSet::default(),
             replica: ReplicaId(1),
             author: AuthorId(0),
             applied: Vec::new(),
@@ -422,9 +568,24 @@ impl EditorSession {
         &self.map
     }
 
-    /// The current selection, if any.
+    /// The current selection set, in the set's current order (paint order when
+    /// built by [`Self::select_within`], add order otherwise — see
+    /// [`Self::select_within`] and [`Self::toggle_at`]).
+    pub fn selections(&self) -> &[Selection] {
+        &self.selection.members
+    }
+
+    /// The anchor member — the reference point single-target intents act on.
+    /// `None` iff the set is empty.
+    pub fn anchor(&self) -> Option<&Selection> {
+        self.selection.anchor()
+    }
+
+    /// The anchor, if any. A compatibility accessor for callers that only ever dealt
+    /// with a single selection: with at most one member, the anchor *is* "the
+    /// selection", so this falls out of [`Self::anchor`] directly.
     pub fn selection(&self) -> Option<Selection> {
-        self.selection
+        self.selection.anchor().copied()
     }
 
     /// The operations **currently applied**, oldest first — the active prefix the
@@ -850,20 +1011,22 @@ impl EditorSession {
     }
 
     /// Resolves a click at a world `point`: selects the **topmost** hit there (what
-    /// a GUI selects), or clears the selection if the point hits nothing. Returns
-    /// the new selection.
+    /// a GUI selects) as the whole set's sole member, or clears the selection if the
+    /// point hits nothing. Returns the new (single) selection.
     pub fn click(&mut self, point: Point) -> Option<Selection> {
-        self.selection = self.map.hit(point).into_iter().next().map(|r| Selection {
+        let hit = self.map.hit(point).into_iter().next().map(|r| Selection {
             source: r.source,
             layout_object: r.layout_object,
         });
-        self.selection
+        self.selection.replace_single(hit);
+        hit
     }
 
     /// Selects a layout object by id (a programmatic / restored selection), if it is
-    /// present in the current layout. Returns the new selection.
+    /// present in the current layout, as the whole set's sole member. Returns the
+    /// new (single) selection.
     pub fn select(&mut self, layout_object: LayoutObjectId) -> Option<Selection> {
-        self.selection = self
+        let hit = self
             .map
             .regions
             .iter()
@@ -872,12 +1035,75 @@ impl EditorSession {
                 source: r.source,
                 layout_object,
             });
-        self.selection
+        self.selection.replace_single(hit);
+        hit
     }
 
-    /// Clears the selection.
+    /// Adds or removes the **topmost** hit at `point` (the same query [`Self::click`]
+    /// uses) to/from the selection set — a modifier click (Ctrl/Cmd-click). The
+    /// anchor becomes the member just added; removing the anchor falls it to the
+    /// member now at its old position (wrapping to the first member if it was
+    /// last), the same anchor-fallback rule a relayout uses. A point that hits
+    /// nothing leaves the set unchanged — unlike [`Self::click`], a modifier click
+    /// over empty space is not a deselect-all gesture. Returns the resulting set.
+    pub fn toggle_at(&mut self, point: Point) -> &[Selection] {
+        let hit = self.map.hit(point).into_iter().next().map(|r| Selection {
+            source: r.source,
+            layout_object: r.layout_object,
+        });
+        if let Some(candidate) = hit {
+            self.selection.toggle(candidate);
+        }
+        &self.selection.members
+    }
+
+    /// Selects every hit-test region under `rect` (a rubber-band drag) as the whole
+    /// set, in the hit-test map's own **paint order** ([`HitTestMap::within`],
+    /// ascending — back to front), **one member per score object**: several
+    /// primitives can share one `source` (a note's ledger lines are strokes
+    /// synthesized *from* its `Pitch` — see [`epiphany_layout_ir::SynthesisKind`] —
+    /// so a note needing ledger lines manifests as the ledger strokes *and* its own
+    /// notehead glyph, all sourced from the same pitch), and those must count as one
+    /// selected object, not several. Each group keeps the position of its
+    /// **first-painted** occurrence (so the group's overall paint order is right
+    /// even when its representative primitive isn't the first one seen — ledgers are
+    /// strokes and paint before glyphs at the same layer, so a ledgered note's group
+    /// is very often first-seen via a ledger stroke); the group's `layout_object` is
+    /// its **non-synthesized** occurrence when one is present (the note's own
+    /// manifestation, not an ancillary mark whose layout object can vanish on a
+    /// relayout that keeps the note but drops its need for that mark — tracking a
+    /// synthesized id there would wrongly drop the member). The anchor is the first
+    /// member painted. `rect`'s corners are order-independent (normalized internally
+    /// before querying), so a drag in any direction works. Returns the resulting
+    /// set.
+    pub fn select_within(&mut self, rect: BoundingBox) -> &[Selection] {
+        let normalized = BoundingBox::new(
+            rect.left.0.min(rect.right.0),
+            rect.bottom.0.min(rect.top.0),
+            rect.left.0.max(rect.right.0),
+            rect.bottom.0.max(rect.top.0),
+        );
+        let mut members: Vec<Selection> = Vec::new();
+        for region in self.map.within(normalized) {
+            match members.iter_mut().find(|m| m.source == region.source) {
+                Some(existing) => {
+                    if region.synthesis.is_none() {
+                        existing.layout_object = region.layout_object;
+                    }
+                }
+                None => members.push(Selection {
+                    source: region.source,
+                    layout_object: region.layout_object,
+                }),
+            }
+        }
+        self.selection.replace_members(members);
+        &self.selection.members
+    }
+
+    /// Clears the selection set.
     pub fn clear_selection(&mut self) {
-        self.selection = None;
+        self.selection.clear();
     }
 
     /// Builds an [`OperationEnvelope`] at operation `counter` under the session's
@@ -1306,11 +1532,15 @@ impl EditorSession {
         TransactionId::new(self.replica, next)
     }
 
-    /// Transposes the selected pitch by `interval`. Errors if nothing — or a
-    /// non-pitch — is selected. The operation *refuses* (a clean `NoOp` effect,
+    /// Transposes the **anchor**'s pitch by `interval`. Errors if nothing — or a
+    /// non-pitch — is the anchor. The operation *refuses* (a clean `NoOp` effect,
     /// `graph_changed == false`) if the pitch cannot be faithfully transposed:
     /// a non-CMN position, a pitch pinned to an absolute frequency, or a result
     /// that overflows its `alteration` or `octave`.
+    ///
+    /// A single-target intent (retargeted to the anchor, `req:` unaffected by the
+    /// selection set): a multi-member set's *other* members are not touched — batch
+    /// transpose over the whole set is [`Self::alter_selection`].
     ///
     /// Authors `TransposeInterval`. The frozen `Transpose` is never emitted by
     /// new authoring (`req:opcat:transpose-frozen`).
@@ -1318,7 +1548,11 @@ impl EditorSession {
         &mut self,
         interval: TranspositionInterval,
     ) -> Result<EditOutcome, EditorError> {
-        let selection = self.selection.ok_or(EditorError::NoSelection)?;
+        let selection = self
+            .selection
+            .anchor()
+            .copied()
+            .ok_or(EditorError::NoSelection)?;
         let TypedObjectId::Pitch(pitch) = selection.source else {
             return Err(EditorError::WrongSelection { expected: "pitch" });
         };
@@ -1328,43 +1562,108 @@ impl EditorSession {
         }))
     }
 
-    /// Sharpens (`+1`) or flattens (`-1`) the selected pitch: a chromatic
-    /// alteration with no diatonic motion, so the notehead keeps its staff line
-    /// and only the accidental changes. This is what a "+1 semitone" key does.
+    /// Sharpens (`+1`) or flattens (`-1`) **every selected pitch** by `semitones`: a
+    /// chromatic alteration with no diatonic motion, so each notehead keeps its
+    /// staff line and only the accidental changes — the "+1 semitone" key, batched
+    /// over the whole selection set.
     ///
     /// It is *not* general transposition. `alter_selection(12)` asks for a C
     /// with twelve sharps; `transpose_selection` with `(7, 12)` asks for the C
     /// an octave up. A scalar cannot tell those apart — precisely the defect
     /// that froze the old operation (P12-K2).
+    ///
+    /// **Batch, atomic, and *not* wrapped in [`Self::apply_transaction`]**:
+    /// `TransposeIntervalOp` already carries a *set* of targets and is atomic over
+    /// it at the reducer (`req:opcat:transpose-interval-atomic` — every target's new
+    /// value and spelling is resolved before any is written, and the whole operation
+    /// refuses if any target cannot transpose), so a selection's pitches ride one
+    /// primitive operation naming every one of them, exactly like
+    /// [`Self::transpose_selection`] does for its single target. This is a
+    /// deliberate departure from the delete-selection style (`DeclareTransaction` +
+    /// one member per object): wrapping N single-target `TransposeInterval` ops in a
+    /// transaction here would both add a `DeclareTransaction` envelope this method
+    /// has never emitted (breaking the N=1 op-stream compatibility every other
+    /// intent in this set model preserves) and replicate a strictly more verbose
+    /// encoding than the wire format already provides for this exact case — see
+    /// `DECISIONS.md`. Non-pitch members are **ignored**, not refused (an "alter"
+    /// has nothing to say about a selected slur or rest, unlike a delete). Errors
+    /// with [`EditorError::NoSelection`] if the set is empty, or
+    /// [`EditorError::WrongSelection`] if it holds no pitch at all — both match
+    /// today's single-selection errors exactly when the set has one member.
     pub fn alter_selection(&mut self, semitones: i32) -> Result<EditOutcome, EditorError> {
-        self.transpose_selection(TranspositionInterval {
-            diatonic_steps: 0,
-            chromatic_steps: semitones,
-        })
+        if self.selection.members.is_empty() {
+            return Err(EditorError::NoSelection);
+        }
+        let targets: BTreeSet<PitchId> = self
+            .selection
+            .members
+            .iter()
+            .filter_map(|selection| match selection.source {
+                TypedObjectId::Pitch(pitch) => Some(pitch),
+                _ => None,
+            })
+            .collect();
+        if targets.is_empty() {
+            return Err(EditorError::WrongSelection { expected: "pitch" });
+        }
+        self.apply(OperationKind::TransposeInterval(TransposeIntervalOp {
+            targets,
+            interval: TranspositionInterval {
+                diatonic_steps: 0,
+                chromatic_steps: semitones,
+            },
+        }))
     }
 
-    /// Deletes the selected object. A selected **pitch** (a notehead) is tombstoned
-    /// — the note's last pitch degrades its event to a rest of the same duration, so
-    /// the rhythm survives; a selected **event** (a rest, a stem) is deleted whole.
-    /// Errors if the selection is neither. The selection does not survive (its layout
-    /// object is gone), so it is cleared.
+    /// Deletes **every selected object**. A selected **pitch** (a notehead) is
+    /// tombstoned — the note's last pitch degrades its event to a rest of the same
+    /// duration, so the rhythm survives; a selected **event** (a rest, a stem) is
+    /// deleted whole. Errors — with nothing changed — if the set is empty, or any
+    /// member is neither a pitch nor an event (its delete op cannot even be built).
+    ///
+    /// **A single-member set applies exactly like today** (one primitive op via
+    /// [`Self::apply`], no transaction wrapper). **More than one member deletes as
+    /// one [`Self::apply_transaction`]**: the reducer applies transaction members
+    /// all-or-nothing, so a refused member (e.g. a tuplet member — the plain
+    /// `NotInTuplet` compensation this method always uses can never be valid for
+    /// one — refuses under `TupletCompensationInvalid`) rolls back the **whole
+    /// batch**, leaving the score byte-identical to before the call. This mirrors
+    /// [`Self::insert_note_at`] / [`Self::set_selection_duration`]'s existing
+    /// "no transaction for one op" rule, applied to selection size instead of
+    /// make-room size.
+    ///
+    /// The selection does not survive a delete (every deleted member's layout
+    /// object is gone), so the set is cleared.
     pub fn delete_selection(&mut self) -> Result<EditOutcome, EditorError> {
-        let selection = self.selection.ok_or(EditorError::NoSelection)?;
-        let kind = match selection.source {
-            TypedObjectId::Pitch(pitch) => {
-                OperationKind::DeleteIdentifiedPitch(DeleteIdentifiedPitchOp { pitch })
-            }
-            TypedObjectId::Event(event) => OperationKind::DeleteEvent(DeleteEventOp {
-                event,
-                tuplet_compensation: TupletCompensation::NotInTuplet,
-            }),
-            _ => {
-                return Err(EditorError::WrongSelection {
+        if self.selection.members.is_empty() {
+            return Err(EditorError::NoSelection);
+        }
+        let kinds: Vec<OperationKind> = self
+            .selection
+            .members
+            .iter()
+            .map(|selection| match selection.source {
+                TypedObjectId::Pitch(pitch) => Ok(OperationKind::DeleteIdentifiedPitch(
+                    DeleteIdentifiedPitchOp { pitch },
+                )),
+                TypedObjectId::Event(event) => Ok(OperationKind::DeleteEvent(DeleteEventOp {
+                    event,
+                    tuplet_compensation: TupletCompensation::NotInTuplet,
+                })),
+                _ => Err(EditorError::WrongSelection {
                     expected: "pitch or event",
-                })
-            }
-        };
-        self.apply(kind)
+                }),
+            })
+            .collect::<Result<_, _>>()?;
+        if kinds.len() == 1 {
+            self.apply(kinds.into_iter().next().expect("checked len == 1"))
+        } else {
+            self.apply_transaction(
+                "delete selection",
+                Some(TransactionCategory::NoteEntry),
+                kinds,
+            )
+        }
     }
 
     /// Moves the selected pitch by `steps` diatonic **staff steps** (`+1` is up one
@@ -1381,8 +1680,16 @@ impl EditorSession {
     /// Errors if nothing — or a non-pitch — is selected, or the selected pitch (or its
     /// override) has no CMN staff position to step (an N-tone or grammar-defined
     /// position).
+    ///
+    /// A single-target intent: acts on the **anchor** only (byte-identical to the
+    /// pre-selection-set behavior when the set has one member); the rest of a
+    /// multi-member set is untouched.
     pub fn move_selection_staff_step(&mut self, steps: i32) -> Result<EditOutcome, EditorError> {
-        let selection = self.selection.ok_or(EditorError::NoSelection)?;
+        let selection = self
+            .selection
+            .anchor()
+            .copied()
+            .ok_or(EditorError::NoSelection)?;
         let TypedObjectId::Pitch(pitch) = selection.source else {
             return Err(EditorError::WrongSelection { expected: "pitch" });
         };
@@ -1436,8 +1743,14 @@ impl EditorSession {
     /// one — is honored rather than refused. The default is deliberately minimal (a
     /// real client picks the inserted pitch); stepping above the top note means
     /// repeated calls build a rising chord rather than stacking on one position.
+    ///
+    /// A single-target intent: acts on the **anchor** only.
     pub fn add_note_to_selection(&mut self) -> Result<EditOutcome, EditorError> {
-        let selection = self.selection.ok_or(EditorError::NoSelection)?;
+        let selection = self
+            .selection
+            .anchor()
+            .copied()
+            .ok_or(EditorError::NoSelection)?;
         let TypedObjectId::Pitch(anchor) = selection.source else {
             return Err(EditorError::WrongSelection { expected: "pitch" });
         };
@@ -1508,8 +1821,14 @@ impl EditorSession {
     /// metric (musical) event in a metric region, or the position right after it is
     /// already occupied in the voice ([`EditorError::InsertSlotOccupied`]) — inserting
     /// into a packed voice needs an explicit make-room policy, a follow-up.
+    ///
+    /// A single-target intent: acts on the **anchor** only.
     pub fn insert_note_after_selection(&mut self) -> Result<EditOutcome, EditorError> {
-        let selection = self.selection.ok_or(EditorError::NoSelection)?;
+        let selection = self
+            .selection
+            .anchor()
+            .copied()
+            .ok_or(EditorError::NoSelection)?;
         let TypedObjectId::Pitch(anchor) = selection.source else {
             return Err(EditorError::WrongSelection { expected: "pitch" });
         };
@@ -1685,6 +2004,8 @@ impl EditorSession {
     /// it grows over a *nested* tuplet the flat cascade cannot treat atomically, and
     /// [`WrongSelection`](EditorError::WrongSelection) when nothing apt is selected or
     /// the event is not metric.
+    ///
+    /// A single-target intent: acts on the **anchor** only.
     pub fn set_selection_duration(
         &mut self,
         duration: MusicalDuration,
@@ -1692,7 +2013,11 @@ impl EditorSession {
         if !duration.is_positive() {
             return Err(EditorError::InvalidDuration);
         }
-        let selection = self.selection.ok_or(EditorError::NoSelection)?;
+        let selection = self
+            .selection
+            .anchor()
+            .copied()
+            .ok_or(EditorError::NoSelection)?;
         let event_id = match selection.source {
             TypedObjectId::Pitch(pitch) => self
                 .event_and_pitch_of(pitch)
@@ -2098,31 +2423,11 @@ impl EditorSession {
         PitchId::new(self.replica, next)
     }
 
-    /// Re-resolves the current selection against the current layout: keeps it
-    /// (refreshing its source) when its layout object survives, clears it otherwise.
-    /// Returns whether it survived.
+    /// Re-resolves the whole selection set against the current layout — see
+    /// [`SelectionSet::reresolve`] for the member-survival and anchor-fallback
+    /// rules. Returns whether the anchor's own member survived unchanged.
     fn reresolve_selection(&mut self) -> bool {
-        let Some(selection) = self.selection else {
-            return false;
-        };
-        match self
-            .map
-            .regions
-            .iter()
-            .find(|r| r.layout_object == selection.layout_object)
-        {
-            Some(region) => {
-                self.selection = Some(Selection {
-                    source: region.source,
-                    layout_object: selection.layout_object,
-                });
-                true
-            }
-            None => {
-                self.selection = None;
-                false
-            }
-        }
+        self.selection.reresolve(&self.map)
     }
 }
 
@@ -6243,6 +6548,509 @@ mod tests {
                 extension: ExtensionRef(0xE8),
                 operation: OperationKindTag::DeclareTransaction,
             })
+        );
+    }
+
+    // ==========================================================================
+    // Selection v2: the selection set with an anchor.
+    // ==========================================================================
+
+    /// Two glyph click points for two **distinct** pitches (skips a second glyph of
+    /// an already-seen pitch, e.g. an accidental) — for multi-member selection
+    /// tests that just need "two different objects", not specific ones.
+    fn two_notehead_points(session: &EditorSession) -> (Point, Point) {
+        let mut seen: Vec<PitchId> = Vec::new();
+        let mut points: Vec<Point> = Vec::new();
+        for r in &session.hit_test().regions {
+            if !r.primitive.is_glyph() {
+                continue;
+            }
+            let TypedObjectId::Pitch(pid) = r.source else {
+                continue;
+            };
+            if seen.contains(&pid) {
+                continue;
+            }
+            let HitShape::Box(b) = r.shape else { continue };
+            seen.push(pid);
+            points.push(Point::new(
+                (b.left.0 + b.right.0) / 2.0,
+                (b.bottom.0 + b.top.0) / 2.0,
+            ));
+            if points.len() == 2 {
+                break;
+            }
+        }
+        (points[0], points[1])
+    }
+
+    /// The pitch ids of every event in `region_index`'s first staff instance's
+    /// first voice, in voice order.
+    fn region_pitches(session: &EditorSession, region_index: usize) -> Vec<PitchId> {
+        let events = session.score().canvas.regions[region_index].staff_instances()[0].voices[0]
+            .events
+            .clone();
+        events
+            .iter()
+            .filter_map(|eid| {
+                let mut buf: Vec<&IdentifiedPitch> = Vec::new();
+                session
+                    .score()
+                    .events
+                    .get(*eid)?
+                    .collect_identified_pitches(&mut buf);
+                buf.first().map(|ip| ip.id)
+            })
+            .collect()
+    }
+
+    /// A pitch belonging to no tuplet — for tests that need an ordinary, always-
+    /// deletable/transposable target alongside a refusal-prone tuplet member.
+    fn non_tuplet_pitch(session: &EditorSession) -> PitchId {
+        let tuplet_events: std::collections::BTreeSet<EventId> = session
+            .score()
+            .cross_cutting
+            .tuplets
+            .iter()
+            .flat_map(|t| t.members.iter().copied())
+            .collect();
+        session
+            .score()
+            .events
+            .iter()
+            .filter(|e| !tuplet_events.contains(&e.id()))
+            .find_map(|e| {
+                let mut buf: Vec<&IdentifiedPitch> = Vec::new();
+                e.collect_identified_pitches(&mut buf);
+                buf.first().map(|ip| ip.id)
+            })
+            .expect("a non-tuplet pitch exists in the rich fixture")
+    }
+
+    /// Test-only: builds a selection set naming exactly `sources`, in that order
+    /// (anchor = the first), bypassing click/drag geometry so multi-member
+    /// fixtures for atomicity/ordering/relayout tests don't depend on exact
+    /// primitive layout. Each member's `layout_object` is looked up from the
+    /// current hit-test map when a region for that source exists there (so
+    /// relayout-preservation tests still see a real, trackable id); a source with
+    /// no current hit region (e.g. selecting an event directly, when only its
+    /// pitch renders a clickable glyph) gets a placeholder — irrelevant to intents
+    /// that only ever read `.source` (`delete_selection`, `alter_selection`).
+    fn select_sources(session: &mut EditorSession, sources: &[TypedObjectId]) {
+        let members: Vec<Selection> = sources
+            .iter()
+            .map(|&source| {
+                let layout_object = session
+                    .hit_test()
+                    .regions
+                    .iter()
+                    .find(|r| r.source == source)
+                    .map(|r| r.layout_object)
+                    .unwrap_or(LayoutObjectId(0));
+                Selection {
+                    source,
+                    layout_object,
+                }
+            })
+            .collect();
+        let anchor = members.first().map(|s| s.layout_object);
+        session.selection = SelectionSet { members, anchor };
+    }
+
+    #[test]
+    fn selections_and_anchor_track_a_single_click() {
+        let mut session = open_rich(0x5EED);
+        assert!(session.selections().is_empty(), "nothing selected at open");
+        assert_eq!(session.anchor(), None);
+        assert_eq!(session.selection(), None);
+
+        let selection = click_a_notehead(&mut session);
+        assert_eq!(session.selections(), &[selection]);
+        assert_eq!(session.anchor(), Some(&selection));
+        assert_eq!(
+            session.selection(),
+            Some(selection),
+            "selection() falls out as the anchor"
+        );
+
+        session.clear_selection();
+        assert!(session.selections().is_empty());
+        assert_eq!(session.anchor(), None);
+    }
+
+    #[test]
+    fn toggle_at_builds_a_set_anchor_tracks_last_added_and_wraps_on_removal() {
+        let mut session = open_rich(0x5EED);
+        let (a, b) = two_notehead_points(&session);
+
+        let sel_a = session.click(a).expect("a click selects a");
+        assert_eq!(session.selections(), &[sel_a]);
+
+        let members = session.toggle_at(b).to_vec();
+        assert_eq!(members.len(), 2, "b was added");
+        let sel_b = members[1];
+        assert_eq!(members, vec![sel_a, sel_b]);
+        assert_eq!(
+            session.anchor(),
+            Some(&sel_b),
+            "the just-added member is the anchor"
+        );
+
+        // Toggling `b` off again removes it; the anchor (b) is gone, so — per the
+        // fallback rule — it falls to the member now at b's old position (there is
+        // none after it, so it wraps to the first: `a`, the only member left).
+        let members = session.toggle_at(b).to_vec();
+        assert_eq!(members, vec![sel_a]);
+        assert_eq!(session.anchor(), Some(&sel_a));
+
+        // A miss leaves the set unchanged (unlike a plain click, which would clear
+        // it) — a modifier click over empty space is not a deselect-all gesture.
+        let miss = Point::new(-9999.0, -9999.0);
+        assert!(
+            session.hit_test().hit(miss).is_empty(),
+            "the point truly misses"
+        );
+        let members = session.toggle_at(miss).to_vec();
+        assert_eq!(members, vec![sel_a]);
+    }
+
+    #[test]
+    fn select_within_preserves_paint_order_and_anchors_first_m4() {
+        let mut session = open_rich(0x5EED);
+        // A generous rect over the whole rendered fixture.
+        let rect = BoundingBox::new(-10_000.0, -10_000.0, 10_000.0, 10_000.0);
+
+        // The expected set: `within`'s own paint order, deduped by score object
+        // (one member per `source`, keeping the position of its first occurrence)
+        // — exactly the relationship `select_within` is contracted to realize,
+        // computed here independently of `select_within`'s own implementation.
+        let mut expected: Vec<Selection> = Vec::new();
+        for r in session.hit_test().within(rect) {
+            // Order-only check below; the representative-id rule has its own
+            // dedicated test (`select_within_collapses_a_ledgered_notes…`).
+            if !expected.iter().any(|s: &Selection| s.source == r.source) {
+                expected.push(Selection {
+                    source: r.source,
+                    layout_object: r.layout_object,
+                });
+            }
+        }
+        assert!(
+            expected.len() >= 2,
+            "the fixture renders at least two distinct selectable objects"
+        );
+
+        let members = session.select_within(rect).to_vec();
+        let member_sources: Vec<TypedObjectId> = members.iter().map(|s| s.source).collect();
+        let expected_sources: Vec<TypedObjectId> = expected.iter().map(|s| s.source).collect();
+        assert_eq!(
+            member_sources, expected_sources,
+            "select_within must preserve within()'s paint order, one member per source"
+        );
+        assert_eq!(
+            session.anchor().map(|s| s.source),
+            expected_sources.first().copied(),
+            "the anchor is the first member in paint order"
+        );
+    }
+
+    #[test]
+    fn select_within_collapses_a_ledgered_notes_ledger_lines_to_one_member() {
+        let mut score = valid_score_rich(0xF00D);
+        // Region B's first event, pushed far above the staff so its notehead needs
+        // ledger lines: several primitives (the ledger strokes, synthesized *from*
+        // the pitch) that share the notehead's own `Pitch` source.
+        let event_id = score.canvas.regions[1].staff_instances()[0].voices[0].events[0];
+        let pitch_id = match score.events.get(event_id) {
+            Some(Event::Pitched(pe)) => pe.pitches[0].id,
+            _ => panic!("region B's first event is a note"),
+        };
+        if let Some(Event::Pitched(pe)) = score.events.get_mut(event_id) {
+            pe.pitches[0].pitch = cmn_pitch(CmnNominal::C, 8);
+        }
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+
+        // Confirm the fixture really produced ledger-line strokes for this pitch —
+        // otherwise the test would pass vacuously.
+        let ledger_count = session
+            .hit_test()
+            .regions
+            .iter()
+            .filter(|r| r.source == TypedObjectId::Pitch(pitch_id) && r.synthesis.is_some())
+            .count();
+        assert!(
+            ledger_count > 0,
+            "a note this high must render ledger lines"
+        );
+        let notehead_layout_object = session
+            .hit_test()
+            .regions
+            .iter()
+            .find(|r| r.source == TypedObjectId::Pitch(pitch_id) && r.synthesis.is_none())
+            .map(|r| r.layout_object)
+            .expect("the notehead's own (non-synthesized) glyph region");
+
+        // A rect covering every primitive sourced from this pitch.
+        let rect = session
+            .hit_test()
+            .regions
+            .iter()
+            .filter(|r| r.source == TypedObjectId::Pitch(pitch_id))
+            .map(|r| r.shape.aabb())
+            .fold(
+                BoundingBox::new(
+                    f32::INFINITY,
+                    f32::INFINITY,
+                    f32::NEG_INFINITY,
+                    f32::NEG_INFINITY,
+                ),
+                |acc, b| {
+                    BoundingBox::new(
+                        acc.left.0.min(b.left.0),
+                        acc.bottom.0.min(b.bottom.0),
+                        acc.right.0.max(b.right.0),
+                        acc.top.0.max(b.top.0),
+                    )
+                },
+            );
+
+        let members = session.select_within(rect);
+        let this_pitch: Vec<&Selection> = members
+            .iter()
+            .filter(|m| m.source == TypedObjectId::Pitch(pitch_id))
+            .collect();
+        assert_eq!(
+            this_pitch.len(),
+            1,
+            "the note and its ledger lines collapse to exactly one member"
+        );
+        assert_eq!(
+            this_pitch[0].layout_object, notehead_layout_object,
+            "the member tracks the notehead's own layout object, not a ledger's \
+             (which can vanish independently of the still-live note)"
+        );
+    }
+
+    #[test]
+    fn batch_delete_selection_removes_every_member_and_only_those_m1() {
+        let mut session = open_rich(0x5EED);
+        // Four ordinary (non-tuplet) pitches: both notes of region B and both of
+        // region C. The triplet's three pitches (region A) are deliberately NOT
+        // selected — they must survive untouched.
+        let mut targets = region_pitches(&session, 1); // region B
+        targets.extend(region_pitches(&session, 2)); // region C
+        assert_eq!(targets.len(), 4, "two proportional + two aleatoric notes");
+        let triplet_pitches = region_pitches(&session, 0); // region A (the triplet)
+        assert_eq!(triplet_pitches.len(), 3);
+
+        let sources: Vec<TypedObjectId> =
+            targets.iter().copied().map(TypedObjectId::Pitch).collect();
+        select_sources(&mut session, &sources);
+        assert_eq!(session.selections().len(), 4);
+
+        let outcome = session
+            .delete_selection()
+            .expect("the batch delete applies");
+        assert!(outcome.graph_changed);
+        assert!(session.selections().is_empty(), "the selection is cleared");
+
+        let live = session.score().live_pitch_ids();
+        for pid in &targets {
+            assert!(
+                !live.contains(pid),
+                "{pid:?} must be deleted (it was selected)"
+            );
+        }
+        for pid in &triplet_pitches {
+            assert!(
+                live.contains(pid),
+                "{pid:?} must survive — it was not selected"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_delete_rolls_back_atomically_on_a_refused_member_m2() {
+        let mut session = open_rich(0x5EED);
+        // A tuplet member's *event*: `delete_selection` always builds `DeleteEvent`
+        // with the plain `NotInTuplet` compensation, which the reducer's own
+        // `graph_delete_precondition` refuses for a real tuplet member
+        // (`TupletCompensationInvalid`) — the refusal-worthy member the contract
+        // names, not a construction-time error.
+        let tuplet_event = session.score().cross_cutting.tuplets[0].members[0];
+        let ordinary_pitch = non_tuplet_pitch(&session);
+        let before = session.score().canonical_bytes();
+
+        select_sources(
+            &mut session,
+            &[
+                TypedObjectId::Pitch(ordinary_pitch),
+                TypedObjectId::Event(tuplet_event),
+            ],
+        );
+
+        let err = session
+            .delete_selection()
+            .expect_err("the tuplet member's refusal rolls back the whole batch");
+        assert_eq!(err, EditorError::RejectedOperation);
+        assert_eq!(
+            session.score().canonical_bytes(),
+            before,
+            "atomicity: the ordinary pitch must NOT be deleted just because a \
+             sibling member refused"
+        );
+    }
+
+    #[test]
+    fn anchor_falls_to_the_next_surviving_member_across_a_relayout_m3() {
+        let mut session = open_rich(0x5EED);
+        let pids = region_pitches(&session, 1); // region B, two ordinary pitches
+        let (pid0, pid1) = (pids[0], pids[1]);
+
+        select_sources(
+            &mut session,
+            &[TypedObjectId::Pitch(pid0), TypedObjectId::Pitch(pid1)],
+        );
+        assert_eq!(
+            session.anchor().map(|s| s.source),
+            Some(TypedObjectId::Pitch(pid0))
+        );
+
+        // A plain single delete of the ANCHOR's pitch (bypassing `delete_selection`,
+        // to isolate the relayout/anchor-fallback mechanism from the batch-delete
+        // one m1/m2 already cover) — its notehead's layout object is gone
+        // afterward (degrades to a rest), while `pid1`'s is untouched.
+        let outcome = session
+            .apply(OperationKind::DeleteIdentifiedPitch(
+                DeleteIdentifiedPitchOp { pitch: pid0 },
+            ))
+            .expect("the delete applies");
+
+        assert!(
+            !outcome.selection_preserved,
+            "the anchor's own object did not survive"
+        );
+        assert_eq!(
+            session.selections().len(),
+            1,
+            "pid0's member dropped; pid1's survives"
+        );
+        assert_eq!(session.selections()[0].source, TypedObjectId::Pitch(pid1));
+        assert_eq!(
+            session.anchor().map(|s| s.source),
+            Some(TypedObjectId::Pitch(pid1)),
+            "the anchor falls to the next surviving member"
+        );
+    }
+
+    #[test]
+    fn alter_selection_single_member_mints_the_same_op_as_before_the_set_model() {
+        let mut session = open_rich(0x5EED);
+        let selection = click_a_notehead(&mut session);
+        let TypedObjectId::Pitch(pid) = selection.source else {
+            panic!("the clicked notehead selects a pitch");
+        };
+
+        session.alter_selection(1).expect("the sharpen applies");
+
+        assert_eq!(
+            session.applied_operations().len(),
+            1,
+            "no DeclareTransaction wrapper for one member"
+        );
+        let OperationPayload::Primitive(OperationKind::TransposeInterval(op)) =
+            &session.applied_operations()[0].payload
+        else {
+            panic!("a TransposeInterval was minted");
+        };
+        assert_eq!(op.targets, [pid].into_iter().collect());
+        assert_eq!(
+            op.interval,
+            TranspositionInterval {
+                diatonic_steps: 0,
+                chromatic_steps: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn alter_selection_batch_transposes_every_pitch_member_in_one_native_op() {
+        let mut session = open_rich(0x5EED);
+        let pids = region_pitches(&session, 1); // region B, two ordinary pitches
+        let before: Vec<Pitch> = pids
+            .iter()
+            .map(|p| session.current_pitch(*p).expect("live"))
+            .collect();
+
+        select_sources(
+            &mut session,
+            &pids
+                .iter()
+                .copied()
+                .map(TypedObjectId::Pitch)
+                .collect::<Vec<_>>(),
+        );
+        let outcome = session
+            .alter_selection(1)
+            .expect("the batch sharpen applies");
+        assert!(outcome.graph_changed);
+
+        // One native multi-target op, no `DeclareTransaction` wrapper — the design
+        // recorded in `DECISIONS.md`: `TransposeIntervalOp` is already atomic over
+        // a target *set*, so batching through it needs no transaction wrapper at
+        // any set size.
+        assert_eq!(session.applied_operations().len(), 1);
+        let OperationPayload::Primitive(OperationKind::TransposeInterval(op)) =
+            &session.applied_operations()[0].payload
+        else {
+            panic!("a TransposeInterval was minted");
+        };
+        let targets: std::collections::BTreeSet<PitchId> = pids.iter().copied().collect();
+        assert_eq!(op.targets, targets);
+
+        for (pid, before) in pids.iter().zip(&before) {
+            let after = session.current_pitch(*pid).expect("still live");
+            assert_ne!(&after, before, "{pid:?} was transposed");
+        }
+    }
+
+    #[test]
+    fn alter_selection_batch_is_atomic_on_an_untransposable_member() {
+        let mut score = valid_score_rich(0x5EED);
+        // Pin region C's first pitch to an absolute frequency — untransposable
+        // under `req:pitch:transposition` (`TransposeRefusal::AcousticPinned`).
+        let event_id = score.canvas.regions[2].staff_instances()[0].voices[0].events[0];
+        let pinned_pitch = match score.events.get(event_id) {
+            Some(Event::Pitched(pe)) => pe.pitches[0].id,
+            _ => panic!("a note"),
+        };
+        if let Some(Event::Pitched(pe)) = score.events.get_mut(event_id) {
+            pe.pitches[0].pitch.acoustic.realization = AcousticRealization::absolute_hz(440.0)
+                .expect("440 Hz is a valid absolute realization");
+        }
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+
+        let ordinary_pitch = region_pitches(&session, 1)[0]; // region B, untouched
+        let before = session.current_pitch(ordinary_pitch).expect("live");
+
+        select_sources(
+            &mut session,
+            &[
+                TypedObjectId::Pitch(ordinary_pitch),
+                TypedObjectId::Pitch(pinned_pitch),
+            ],
+        );
+        let outcome = session
+            .alter_selection(1)
+            .expect("a clean refusal, not an Err — matching a single pinned selection");
+        assert!(
+            !outcome.graph_changed,
+            "the pinned pitch refuses the WHOLE op — nothing moves"
+        );
+        let after = session.current_pitch(ordinary_pitch).expect("still live");
+        assert_eq!(
+            after, before,
+            "the ordinary pitch must NOT move just because a sibling target refused"
         );
     }
 }
