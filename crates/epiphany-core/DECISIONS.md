@@ -980,3 +980,198 @@ intra-doc links to the private `temperament_ratios`/`coordinate_ratio`
 were de-linked to plain code spans), `conformance_suite` (8/8), and
 `requirement_labels` (6 passed, counts unchanged at 212/282/282) all pass.
 No `.tex` file was touched and no requirement was added.
+
+## Push 4b tranche 3a: the accidental/glyph/engraving vocabulary lands, in memory, with two real consumers
+
+`spec/CONTRACT_PUSH4B_ACCIDENTALS.md`. Same reversible-first discipline as
+tranches 1/2/2b: the accidental-registry, glyph-reference, and engraving type
+surface from Chapter 4 §"Accidental Registries" / "Glyph References and
+SMuFL" lands in `epiphany-core`, in memory, with two real consumers, and
+**no `Codec`, no wire movement** — canonical bytes stay byte-identical. This
+splits tranche 3's full `ScoreTuningContext` completion in two: 3a builds and
+exercises the shapes while they are still free to change; 3b (a later
+tranche) puts `accidental_extensions`, `smufl`, and `overrides` on the wire
+together, opening schema major 3 — an irreversible freeze, so it is not done
+until the shapes have had a consumer.
+
+**New module `src/accidental.rs`.** Transcribed field-for-field from
+`core_spec.tex:3054`-`3277`, in spec order, with three ratified corrections
+(P13-S10/S11/S12, filed and ratified before dispatch):
+
+* **S10** — `PitchSpaceModification::Cents(CanonicalF64)`, not `Cents(f64)`:
+  a raw `f64` is unencodable in canonical state (`serialize.rs` decodes
+  floats only through `CanonicalF64::from_le_bytes`; there is no `Codec for
+  f64`). Locked by `accidental::tests::cents_round_trips_a_finite_value_and_guards_non_finite`,
+  which round-trips a finite cents value and shows `CanonicalF64::new` rejects
+  NaN/±infinity outright, so a `Cents` payload can never be non-finite.
+* **S11** — `AnchorPoint { x: SpaceUnit, y: SpaceUnit }`, defined core-native.
+  The specification references it (`:3166`, `AccidentalEngraving::anchor`)
+  but never defines it, and `epiphany-core` cannot depend on
+  `epiphany-layout-ir`. Doc comment pins the frame ratified alongside S11:
+  canonical space units, y-up, relative to the glyph's coordinate origin
+  (needed because `EngravingBoundingBox` is itself "relative to the glyph's
+  anchor point", `:3160`, so the anchor needs an unambiguous origin of its
+  own).
+* **S12** — `SmuflVersion { major: u16, minor_centi: u16 }`, the minor stored
+  fraction-normalized to hundredths (1.4 -> 40, 1.3 -> 30, 1.12 -> 12), built
+  only through the checked `SmuflVersion::from_decimal(major, minor_digits)`
+  constructor so a caller cannot pass a literal minor digit by mistake.
+  Locked by `accidental::tests::smufl_version_orders_the_real_release_sequence`,
+  which asserts SMuFL's actual release order (1.12 < 1.18 < 1.20 < 1.3 < 1.4)
+  — a test that would pass under literal-minor storage (where 1.3 and 1.4
+  sort before 1.12) would not lock S12 at all; see the mutation below, which
+  reproduces exactly that failure and confirms this test catches it. **Not**
+  `epiphany_layout_ir::SmuflVersion` (`glyph.rs:29`, literal-minor,
+  load-bearing for `GlyphCatalogIdentity`) — that type is untouched; the two
+  are a deliberate, bounded homonym (`epiphany-core` cannot depend on
+  `epiphany-layout-ir` in any case) until a later tranche unifies them and
+  moves `GlyphCatalogIdentity`, with golden regen.
+
+Also new: `CustomGlyphId`, `ModificationRegistryId`, `AccidentalGroupId`
+(`catalog_id!` entries in `pitch.rs`, beside `AccidentalRegistryId`/
+`AccidentalId`, which already existed). **No `Codec` impl exists for
+anything in `accidental.rs`.**
+
+**Two real consumers, so this does not become the `NOTEHEAD_ANCHORS` trap.**
+
+*(a) `resolve_accidental(base_registry, extensions, id)`* — resolution
+precedence per `core_spec.tex:3224` ("Extensions are stored on the score and
+override or augment the base registry during resolution"): an `overrides`
+entry wins over an `additions` entry wins over the base registry, checked by
+`accidental::tests::resolution_precedence_overrides_beats_additions_beats_base`
+across all three tiers plus the not-found case. `base_registry` is supplied
+by the caller rather than looked up from an in-core catalog: `epiphany-core`
+has no built-in catalog of accidental-registry *bodies* this tranche (the
+same deferred-data-catalog discipline tranche 1 applied to the six
+underdetermined pitch spaces) — inventing one would itself be the
+`NOTEHEAD_ANCHORS` failure this consumer exists to avoid.
+
+*(b) `accidental_modification_compatible_with_space(modification, space)`*,
+wired into `check_invariants` as
+`GraphIndex::check_accidental_modification_compatibility` — the
+`req:tuning:accidental-modification-compatibility` invariant
+(`core_spec.tex:3120`). `space` resolves structurally against
+`built_in_position_structure` (Push 4b tranche 1), the same catalog
+`Pitch::transposed` uses. The requirement's two named rules (`CmnChromatic`
+only in `DiatonicOverChromatic`-shaped spaces; `EdoSteps` only in
+`Chromatic` or `Registered`) are matched directly against
+`PositionStructure`; the contract's instruction to "extend the same shape"
+gives `JiRatio` the identical `JiLattice`-or-`Registered` rule. `Cents` and
+`Registered` modifications have no requirement-stated constraint, so they
+are accepted whenever the space itself resolves — inventing a constraint the
+requirement does not state would be the same failure as inventing a JI
+generator ratio. An unresolvable space (outside the built-in catalog, or one
+of the six catalog-named-but-underdetermined ones) fails closed for *every*
+modification kind, `Cents`/`Registered` included, mirroring tranche 1's
+`Pitch::transposed` discipline. `check_invariants` folds the result into the
+existing `GraphInvariant::CrossCuttingRefsResolve` tag rather than inventing
+a 20th spec-enumerated invariant — the same choice already made for the
+tempo-map and aleatoric-model checks, since this is a Chapter 4 requirement,
+not one of the 19 spec-enumerated Chapter 5 graph invariants.
+
+The check determines "every pitch space that references \[a\] registry"
+(the requirement's phrase) as every pitch space the score's tuning context
+concretely names: `default_pitch_space`, plus any per-scope override's
+`pitch_space` (`crate::tuning::TuningOverride`). `epiphany-core` has no
+built-in catalog linking an `AccidentalRegistryId` to the pitch space(s)
+that declare it their `accidental_registry` — tranche 1 built only the
+id -> `PositionStructure` map, not a populated `PitchSpace` catalog — so
+this is the referencing relation the score can actually attest to, stated
+honestly rather than invented. Because every existing generator leaves
+`accidental_extensions` empty (this tranche adds no test data to any
+generator), the new check is silent across the entire pre-existing
+test/property-test corpus — proven directly by
+`invariants::accidental_compatibility_tests::a_score_with_no_accidental_extensions_never_fires_this_check`.
+
+**Glyph and engraving metadata are carried, not consumed, in core.**
+`GlyphReference`, `AccidentalEngraving` (and its `EngravingBoundingBox`/
+`AnchorPoint`), and `AccidentalCombination` are read by both consumers only
+incidentally — resolution returns the whole `AccidentalDefinition`, and the
+compatibility check reads past `engraving`/`glyph`/`combination` straight to
+`modification`. Their deep consumer is the engraver, out of
+`epiphany-core`, a later tranche; no in-core consumer was fabricated for
+them to manufacture coverage.
+
+**`GlyphReference` is Chapter 4's own, deliberately not unified with
+`epiphany_layout_ir::GlyphReference`** (`glyph.rs:50`, a glyph *name*,
+`Cow<'static, str>`, a rendering concern): same name, unrelated types
+(Ruling D's "correction"). `epiphany-core` cannot depend on
+`epiphany-layout-ir` in any case, so within this crate there is no
+ambiguity.
+
+**`ScoreTuningContext` gains its second and third in-memory-only fields.**
+`accidental_extensions: Vec<ScoreAccidentalExtensions>` and
+`smufl: SmuflVersionRequirement` join `overrides` (Push 4b tranche 2) as
+Rust fields with **no wire presence**: the hand-written `Codec::enc` is
+byte-for-byte unchanged (still exactly `default_pitch_space`,
+`default_tuning_system`, `reference`, in that order); only `dec` grows two
+more defaults (`accidental_extensions: Vec::new()`, `smufl:
+SmuflVersionRequirement::default()`), alongside the pre-existing `overrides:
+Vec::new()`. `SmuflVersionRequirement::default()` is `{ minimum:
+SmuflVersion(1.4), authored_against: SmuflVersion(1.4) }` — the SMuFL
+version this repository already targets
+(`epiphany_layout_ir::glyph::GlyphCatalogIdentity`'s default), so the
+default aligns with what the layout-ir unification will target. The
+matching `impl TextValue` (`textvalue_graph.rs`) gets the identical
+treatment: `project` still emits exactly three fields, `parse` defaults all
+three in-memory fields.
+
+Proved with a new test extending tranche 2's
+`score_tuning_context_overrides_do_not_reach_the_wire` pattern to all three
+fields at once:
+`codec::tests::score_tuning_context_accidental_extensions_smufl_and_overrides_do_not_reach_the_wire`
+(binary) and
+`textvalue_graph::tests::score_tuning_context_accidental_extensions_smufl_and_overrides_do_not_project`
+(text) — a fixture with non-empty `accidental_extensions`, a non-default
+`smufl`, and a non-empty `overrides` encodes/projects byte-for-byte
+identically to the all-default fixture, and decoding/parsing either
+reconstructs all three as empty/default. The original tranche-2 tests are
+untouched, preserving their historical narrative.
+
+**Every new test was mutation-verified** (substitution made, test run to
+red, then reversed by undoing the exact substitution — never `git
+checkout`):
+
+* **S12**: `SmuflVersion::from_decimal` mutated to store the minor literally
+  (`minor_centi = value` unconditionally, dropping the ×10 for one-digit
+  input). Killed both `smufl_version_orders_the_real_release_sequence` (the
+  release-order lock: `(1, 20)` no longer sorted before `(1, 3)`) and
+  `smufl_version_from_decimal_normalizes_one_and_two_digit_minors`.
+* **S10**: `PitchSpaceModification::Cents` reverted to `Cents(f64)`. This is
+  a type-level correction, so the "test" is the type system itself: nine
+  call sites across `accidental.rs`'s own tests and the codec byte-identity
+  fixture failed to *compile* against the reverted shape (`Option<CanonicalF64>::map(Cents)`
+  no longer type-checks; direct `Cents(CanonicalF64::new(...).unwrap())`
+  construction no longer type-checks) — the strongest possible test failure.
+* **Resolution precedence**: `resolve_accidental` mutated to check
+  `base_registry` first, `additions` second, `overrides` last (precedence
+  reversed). Killed `resolution_precedence_overrides_beats_additions_beats_base`
+  (resolved to the base-registry entry, `-1`, instead of the overrides
+  entry, `-3`).
+* **Compatibility check**: `accidental_modification_compatible_with_space`
+  mutated to `true` unconditionally. Killed five tests at once:
+  `cmn_chromatic_is_compatible_only_with_diatonic_over_chromatic`,
+  `edo_steps_is_compatible_with_chromatic_and_registered_not_diatonic`,
+  `ji_ratio_is_compatible_only_with_ji_lattice`,
+  `every_modification_kind_fails_closed_on_an_unresolvable_space` (all four
+  in `accidental.rs`), and — proving the graph-level wiring is load-bearing,
+  not just the pure predicate —
+  `invariants::accidental_compatibility_tests::cmn_chromatic_accidental_in_edo_31_fires`.
+* **Wire invisibility**: `ScoreTuningContext::enc` mutated to push
+  `accidental_extensions.len() as u8`, and separately `impl TextValue::project`
+  mutated to append the same length as a projected field. The binary
+  mutation killed the new byte-identity test (last byte `1` vs `0`); the
+  text mutation killed *both* text-projection tests, including the
+  pre-existing tranche-2 one (`parse` still expects exactly 3 fields, so
+  even `ScoreTuningContext::default()`'s own round-trip failed to parse a
+  4-field list) — confirming the frozen field arity is what both tests
+  actually enforce.
+
+**Zero golden or digest movement**, confirmed by the full gate after every
+mutation was reverted: `cargo fmt --all --check`, `cargo clippy --workspace
+--all-targets` (0 warnings), `cargo test --workspace` (0 failed across every
+crate), `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` (0
+warnings, after one intra-doc link — `` [`:3160`] `` — was de-linked to a
+plain parenthetical citation), `conformance_suite` (8/8), and
+`requirement_labels` (6 passed, counts unchanged at 212/282/282) all pass.
+No `.tex` file was touched and no requirement was added.

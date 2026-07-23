@@ -1832,19 +1832,25 @@ struct_codec!(BeatGroup {
     subdivision,
     accent
 });
-// `ScoreTuningContext` gained a fourth, in-memory-only field (`overrides`,
-// Push 4b tranche 2, `spec/CONTRACT_PUSH4B_RESOLVER.md`) that must **not**
-// reach the wire: schema major 3 has not been opened. `struct_codec!` cannot
-// express that — its generated `dec` ends in a struct literal naming every
-// field it was given, so a fourth field either goes on the wire (freezing an
-// in-memory-only type before it has a consumer) or the macro cannot build the
-// value at all. Hand-written instead: encode/decode exactly the three wire
-// fields, in their original order, and construct `overrides: Vec::new()` on
-// decode. A round-trip test just below
-// (`score_tuning_context_overrides_do_not_reach_the_wire`) proves a non-empty
-// `overrides` encodes to the same bytes as an empty one; the matching text-
-// projection proof is `textvalue_graph.rs`'s
-// `score_tuning_context_round_trips_and_overrides_do_not_project`.
+// `ScoreTuningContext` has gained three in-memory-only fields beyond the
+// three wire fields — `overrides` (Push 4b tranche 2,
+// `spec/CONTRACT_PUSH4B_RESOLVER.md`), then `accidental_extensions` and
+// `smufl` (Push 4b tranche 3a, `spec/CONTRACT_PUSH4B_ACCIDENTALS.md`) — none
+// of which may reach the wire: schema major 3 has not been opened.
+// `struct_codec!` cannot express that — its generated `dec` ends in a struct
+// literal naming every field it was given, so an in-memory-only field either
+// goes on the wire (freezing a type before it has a consumer) or the macro
+// cannot build the value at all. Hand-written instead: encode/decode exactly
+// the three wire fields, in their original order, and default the other
+// three on decode (`overrides: Vec::new()`, `accidental_extensions:
+// Vec::new()`, `smufl: SmuflVersionRequirement::default()`). A round-trip
+// test just below (`score_tuning_context_overrides_do_not_reach_the_wire`)
+// proves a non-empty `overrides` encodes to the same bytes as an empty one; a
+// second (`score_tuning_context_accidental_extensions_smufl_and_overrides_do_not_reach_the_wire`)
+// extends the same proof to all three fields at once. The matching
+// text-projection proofs are `textvalue_graph.rs`'s
+// `score_tuning_context_round_trips_and_overrides_do_not_project` and
+// `score_tuning_context_accidental_extensions_smufl_and_overrides_do_not_project`.
 impl Codec for ScoreTuningContext {
     fn enc(&self, out: &mut Vec<u8>) {
         self.default_pitch_space.enc(out);
@@ -1859,6 +1865,8 @@ impl Codec for ScoreTuningContext {
             default_pitch_space,
             default_tuning_system,
             reference,
+            accidental_extensions: Vec::new(),
+            smufl: crate::accidental::SmuflVersionRequirement::default(),
             overrides: Vec::new(),
         })
     }
@@ -3442,6 +3450,60 @@ mod tests {
         // field never round-trips, by construction.
         let decoded = ScoreTuningContext::dec(&mut Reader::new(&bytes_with)).expect("decodes");
         assert_eq!(decoded, without_overrides);
+        assert!(decoded.overrides.is_empty());
+    }
+
+    #[test]
+    fn score_tuning_context_accidental_extensions_smufl_and_overrides_do_not_reach_the_wire() {
+        // The direct analogue of `score_tuning_context_overrides_do_not_reach_the_wire`
+        // above, extended to all three in-memory-only fields (Push 4b tranche
+        // 3a, `spec/CONTRACT_PUSH4B_ACCIDENTALS.md`): `accidental_extensions`
+        // and `smufl` join `overrides` off the wire.
+        use crate::accidental::{PitchSpaceModification, SmuflVersion, SmuflVersionRequirement};
+        use crate::graph::ScoreTuningContext;
+        use crate::ids::{ReplicaId, VoiceId};
+        use crate::pitch::TuningSystemId;
+        use crate::tuning::{TuningOverride, TuningScope};
+
+        let bare = ScoreTuningContext::default();
+        let mut loaded = ScoreTuningContext::default();
+        loaded
+            .accidental_extensions
+            .push(crate::accidental::fixture_extensions(
+                "heji",
+                PitchSpaceModification::CmnChromatic(1),
+            ));
+        loaded.smufl = SmuflVersionRequirement {
+            minimum: SmuflVersion::from_decimal(1, "12").unwrap(),
+            authored_against: SmuflVersion::from_decimal(1, "18").unwrap(),
+        };
+        loaded.overrides.push(TuningOverride {
+            scope: TuningScope::Voice(VoiceId::new(ReplicaId(1), 1)),
+            pitch_space: None,
+            tuning_system: Some(TuningSystemId::new("tet-19")),
+            reference: None,
+        });
+        // Sanity: the fixture actually differs in memory in all three
+        // fields, so the byte-identity assertion below is not vacuous.
+        assert_ne!(loaded, bare);
+        assert!(!loaded.accidental_extensions.is_empty());
+        assert_ne!(loaded.smufl, SmuflVersionRequirement::default());
+        assert!(!loaded.overrides.is_empty());
+
+        let mut bytes_loaded = Vec::new();
+        loaded.enc(&mut bytes_loaded);
+        let mut bytes_bare = Vec::new();
+        bare.enc(&mut bytes_bare);
+        assert_eq!(
+            bytes_loaded, bytes_bare,
+            "accidental_extensions, smufl, and overrides must not reach canonical bytes \
+             (Push 4b tranche 3a)"
+        );
+
+        let decoded = ScoreTuningContext::dec(&mut Reader::new(&bytes_loaded)).expect("decodes");
+        assert_eq!(decoded, bare);
+        assert!(decoded.accidental_extensions.is_empty());
+        assert_eq!(decoded.smufl, SmuflVersionRequirement::default());
         assert!(decoded.overrides.is_empty());
     }
 

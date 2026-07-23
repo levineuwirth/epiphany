@@ -1641,26 +1641,37 @@ pub struct ViewDefinition {
 
 /// The score's tuning environment (Chapter 4 §"Score Tuning Context"). Baseline:
 /// the default pitch space, tuning system, and reference pitch every score must
-/// declare; per-scope overrides land here (Push 4b tranche 2), accidental
-/// extensions are still deferred.
+/// declare; per-scope overrides land here (Push 4b tranche 2); accidental
+/// registry extensions and the SMuFL version requirement land here too (Push
+/// 4b tranche 3a) — all three in memory only.
 ///
-/// **Wire note (Push 4b tranche 2, `spec/CONTRACT_PUSH4B_RESOLVER.md`).** The
-/// canonical encoding stays **exactly** `default_pitch_space`,
-/// `default_tuning_system`, `reference`, in that order — schema major 3 has
-/// not been opened, so `overrides` is *not* on the wire this tranche. See the
-/// hand-written `impl Codec` in `codec.rs` and `impl TextValue` in
+/// **Wire note (Push 4b tranche 2, `spec/CONTRACT_PUSH4B_RESOLVER.md`; tranche
+/// 3a, `spec/CONTRACT_PUSH4B_ACCIDENTALS.md`).** The canonical encoding stays
+/// **exactly** `default_pitch_space`, `default_tuning_system`, `reference`, in
+/// that order — schema major 3 has not been opened, so `overrides`,
+/// `accidental_extensions`, and `smufl` are *not* on the wire this tranche.
+/// See the hand-written `impl Codec` in `codec.rs` and `impl TextValue` in
 /// `textvalue_graph.rs` (replacing the `struct_codec!` this type used to use,
-/// which named exactly three fields in its generated decoder and so cannot
-/// compile against a fourth). Where `overrides` sits in *this* Rust struct is
-/// free — the manual codec fixes the wire order independently of field
-/// declaration order — but the specification's eventual major-3 field order
-/// places `overrides` last, after `accidental_extensions` and `smufl`; adding
-/// those two remains the wire tranche's job, not this one's.
+/// which named every field it was given in its generated decoder and so
+/// cannot compile against an in-memory-only one). Where the three in-memory
+/// fields sit in *this* Rust struct is free — the manual codec fixes the wire
+/// order independently of field declaration order — but they are declared
+/// here in the specification's eventual major-3 field order
+/// (`accidental_extensions`, `smufl`, `overrides`) for readability. Putting
+/// all three on the wire in that order is tranche 3b's job, not this one's.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ScoreTuningContext {
     pub default_pitch_space: PitchSpaceId,
     pub default_tuning_system: TuningSystemId,
     pub reference: ReferencePitch,
+    /// Score-local accidental-registry extensions (Chapter 4 §"Score-Local
+    /// Extensions", `:3228`). **In memory only** this tranche (Push 4b
+    /// tranche 3a) — see the wire note above.
+    pub accidental_extensions: Vec<crate::accidental::ScoreAccidentalExtensions>,
+    /// The SMuFL version this score requires (Chapter 4 §"SMuFL Versioning",
+    /// `req:tuning:smufl-version-fallback`). **In memory only** this
+    /// tranche — see the wire note above.
+    pub smufl: crate::accidental::SmuflVersionRequirement,
     /// Per-scope overrides consulted by the tuning resolver
     /// (`crate::tuning::resolve_pitch_frequency`), scopes 2-4 of
     /// `req:tuning:tuning-resolution-order`. **In memory only** this
@@ -1676,6 +1687,8 @@ impl Default for ScoreTuningContext {
             default_pitch_space: PitchSpaceId::new("cmn-12"),
             default_tuning_system: TuningSystemId::new("tet-12"),
             reference: ReferencePitch::a440(),
+            accidental_extensions: Vec::new(),
+            smufl: crate::accidental::SmuflVersionRequirement::default(),
             overrides: Vec::new(),
         }
     }

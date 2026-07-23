@@ -29,7 +29,7 @@ use crate::graph::{
 use crate::ids::{
     EventId, MeasureId, PitchId, RegionId, ReplicaId, StaffId, StaffInstanceId, VoiceId,
 };
-use crate::pitch::{SpellingDirective, SpellingScope};
+use crate::pitch::{PitchSpaceId, SpellingDirective, SpellingScope};
 use crate::time::{
     AnchorOffset, ConcreteDuration, EventDuration, EventPosition, MusicalPosition, OffsetKind,
     TimeAnchor,
@@ -233,6 +233,7 @@ pub fn check_invariants(score: &Score) -> Vec<InvariantViolation> {
     idx.check_cross_cutting_refs(&mut v);
     idx.check_tempo_maps(&mut v);
     idx.check_aleatoric_models(&mut v);
+    idx.check_accidental_modification_compatibility(&mut v);
     idx.check_unique_identifiers(&mut v);
     idx.check_pitch_id_unique(&mut v);
     idx.check_spelling_scope_resolves(&mut v);
@@ -1406,6 +1407,58 @@ impl<'a> GraphIndex<'a> {
                             format!(
                                 "aleatoric region {:?} has a reversed (min > max) bound for event {:?}",
                                 r.id, e
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Accidental modification / pitch-space compatibility (Chapter 4
+    // §"Accidental Registries", `req:tuning:accidental-modification-compatibility`,
+    // `core_spec.tex:3120`; Push 4b tranche 3a,
+    // `spec/CONTRACT_PUSH4B_ACCIDENTALS.md`). Not one of the 19
+    // spec-enumerated Chapter 5 graph invariants (this is a Chapter 4
+    // requirement), so — like the tempo-map and aleatoric-model checks above
+    // — it is surfaced under an existing `GraphInvariant` tag rather than
+    // inventing a 20th. `CrossCuttingRefsResolve` is the closest fit: like
+    // those checks, this is "does this cross-cutting structure's content
+    // hold against the rest of the score", not a per-event/per-voice
+    // structural rule.
+    fn check_accidental_modification_compatibility(&self, out: &mut Vec<InvariantViolation>) {
+        // Every pitch space the score's tuning context concretely
+        // references: the default, plus any per-scope override's pitch
+        // space (`crate::tuning::TuningOverride::pitch_space`). This
+        // tranche has no built-in catalog linking an `AccidentalRegistryId`
+        // to the pitch space(s) that declare it as their
+        // `accidental_registry` (Push 4b tranche 1 built only
+        // `built_in_position_structure`'s id -> structure map, not a full
+        // `PitchSpace` catalog with that field populated) — so this is the
+        // referencing relation the score can actually attest to, honestly,
+        // rather than inventing catalog data (the `NOTEHEAD_ANCHORS`
+        // failure this project has already paid for twice).
+        let mut spaces: BTreeSet<&PitchSpaceId> = BTreeSet::new();
+        spaces.insert(&self.score.tuning_context.default_pitch_space);
+        for ov in &self.score.tuning_context.overrides {
+            if let Some(space) = &ov.pitch_space {
+                spaces.insert(space);
+            }
+        }
+        for ext in &self.score.tuning_context.accidental_extensions {
+            for def in ext.additions.iter().chain(ext.overrides.iter()) {
+                for space in &spaces {
+                    if !crate::accidental::accidental_modification_compatible_with_space(
+                        &def.modification,
+                        space,
+                    ) {
+                        out.push(InvariantViolation::new(
+                            GraphInvariant::CrossCuttingRefsResolve,
+                            format!(
+                                "accidental {:?} (registry {:?}) modification {:?} is not \
+                                 expressible in pitch space {:?}'s interval algebra \
+                                 (req:tuning:accidental-modification-compatibility)",
+                                def.id, ext.base, def.modification, space
                             ),
                         ));
                     }
@@ -3947,5 +4000,77 @@ mod review_fix_tests_4 {
         s.cross_cutting.tuplets[0].ratio =
             TupletRatio::new(5, 4).expect("5:4 is a valid tuplet ratio");
         assert!(fires(&s, GraphInvariant::TupletSum));
+    }
+}
+
+#[cfg(test)]
+mod accidental_compatibility_tests {
+    //! `check_accidental_modification_compatibility` (Push 4b tranche 3a,
+    //! `spec/CONTRACT_PUSH4B_ACCIDENTALS.md`, proof-of-life item 3): "a
+    //! `CmnChromatic` accidental in a `cmn-12` (`DiatonicOverChromatic`)
+    //! space passes; the same accidental in an `edo-31` (`Chromatic`) space
+    //! is rejected with the violation."
+    use super::*;
+    use crate::accidental::{fixture_extensions, PitchSpaceModification};
+    use crate::generators::valid_score;
+    use crate::pitch::PitchSpaceId;
+
+    fn fires(s: &Score, inv: GraphInvariant) -> bool {
+        !check_invariant(s, inv).is_empty()
+    }
+
+    #[test]
+    fn cmn_chromatic_accidental_in_cmn_12_does_not_fire() {
+        let mut s = valid_score(300);
+        s.tuning_context.default_pitch_space = PitchSpaceId::new("cmn-12");
+        s.tuning_context
+            .accidental_extensions
+            .push(fixture_extensions(
+                "cmn-accidentals",
+                PitchSpaceModification::CmnChromatic(1),
+            ));
+        let violations = check_invariant(&s, GraphInvariant::CrossCuttingRefsResolve);
+        assert!(
+            violations
+                .iter()
+                .all(|v| !v.witness.contains("accidental-modification-compatibility")),
+            "a CmnChromatic accidental in cmn-12 must not violate the compatibility \
+             invariant, got: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn cmn_chromatic_accidental_in_edo_31_fires() {
+        // A test that only checked the accept case above would miss this
+        // reject — the contract's own warning.
+        let mut s = valid_score(300);
+        s.tuning_context.default_pitch_space = PitchSpaceId::new("edo-31");
+        s.tuning_context
+            .accidental_extensions
+            .push(fixture_extensions(
+                "cmn-accidentals",
+                PitchSpaceModification::CmnChromatic(1),
+            ));
+        assert!(fires(&s, GraphInvariant::CrossCuttingRefsResolve));
+        let violations = check_invariant(&s, GraphInvariant::CrossCuttingRefsResolve);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.witness.contains("accidental-modification-compatibility")),
+            "expected an accidental-modification-compatibility violation, got: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn a_score_with_no_accidental_extensions_never_fires_this_check() {
+        // Every generator-produced score has an empty `accidental_extensions`
+        // (this tranche adds no data to any generator), so the new check must
+        // be silent across the existing test/property-test corpus.
+        let s = valid_score(301);
+        assert!(s.tuning_context.accidental_extensions.is_empty());
+        let violations = check_invariant(&s, GraphInvariant::CrossCuttingRefsResolve);
+        assert!(violations
+            .iter()
+            .all(|v| !v.witness.contains("accidental-modification-compatibility")));
     }
 }

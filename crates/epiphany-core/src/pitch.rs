@@ -157,6 +157,22 @@ catalog_id!(
     /// (Chapter 4 §"Transposition Behavior", `TranspositionBehavior::Registered`).
     TranspositionRegistryId
 );
+catalog_id!(
+    /// Identifies a custom (non-SMuFL) glyph (Chapter 4 §"Glyph References
+    /// and SMuFL", `crate::accidental::GlyphReference::Custom`).
+    CustomGlyphId
+);
+catalog_id!(
+    /// Identifies a registered (grammar-defined) pitch-space modification
+    /// (Chapter 4 §"Pitch Space Modifications",
+    /// `crate::accidental::PitchSpaceModification::Registered`).
+    ModificationRegistryId
+);
+catalog_id!(
+    /// Identifies a compatibility group for stacking accidentals (Chapter 4
+    /// §"Combination Behavior", `crate::accidental::AccidentalCombination::Stacking`).
+    AccidentalGroupId
+);
 
 impl SpellingAlgorithmId {
     /// The Phase-2 default spelling algorithm, registered under the id

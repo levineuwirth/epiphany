@@ -39,6 +39,15 @@
 //!   [`resolve_pitch_frequency`], the five-scope resolver from a pitch to a
 //!   frequency in Hz. In-memory only, same discipline as `pitch_space`
 //!   (Push 4b Ruling C).
+//! * `accidental` — the Chapter 4 accidental/glyph/engraving vocabulary
+//!   ([`AccidentalDefinition`], [`ScoreAccidentalExtensions`],
+//!   [`GlyphReference`], [`PitchSpaceModification`], [`AccidentalEngraving`],
+//!   [`SmuflVersion`], [`SmuflVersionRequirement`]), [`resolve_accidental`]
+//!   (override > addition > base-registry precedence), and
+//!   [`accidental_modification_compatible_with_space`]
+//!   (`req:tuning:accidental-modification-compatibility`, wired into
+//!   [`check_invariants`]). In-memory only, same discipline as `pitch_space`
+//!   and `tuning` (Push 4b tranche 3a; the wire tranche is 3b).
 //! * `event` — the [`Event`] taxonomy and the [`EventArena`] (Chapter 5
 //!   §"The Event Arena").
 //! * `graph` — [`Canvas`], [`Region`], [`Staff`]/[`StaffInstance`] (distinct
@@ -57,6 +66,7 @@
 //! event-arena storage via `slotmap` (decision 2), fully sync (decision 4),
 //! current stable Rust (decision 5). `unsafe` is forbidden crate-wide.
 
+mod accidental;
 mod codec;
 mod event;
 mod graph;
@@ -95,20 +105,27 @@ pub use time::{
 };
 
 pub use pitch::{
-    canonical_pitch_bytes, derive_system_pitch_id, spell, AccidentalId, AccidentalRegistryId,
-    AcousticPitch, AcousticRealization, CmnNominal, DecompositionAlgorithmId, ForeignFormatId,
-    IdentifiedPitch, IntervalAlgebraRegistryId, NominalRegistryId, Pitch, PitchRange, PitchSpaceId,
-    PitchSpacePosition, PitchSpelling, PositionRegistryId, PositionStructureRegistryId,
-    ReferencePitch, ScalePosition, SpellingAlgorithmId, SpellingAttachment, SpellingContext,
-    SpellingDirective, SpellingNominal, SpellingPrecedence, SpellingRenderHints, SpellingRule,
-    SpellingRuleSetId, SpellingScope, SpellingSource, SpellingSourceKind, StaffGroupKindRegistryId,
-    TieClassRegistryId, TransposeRefusal, TranspositionInterval, TranspositionRegistryId,
-    TuningFunctionId, TuningReference, TuningSystemId, VoiceSelector,
+    canonical_pitch_bytes, derive_system_pitch_id, spell, AccidentalGroupId, AccidentalId,
+    AccidentalRegistryId, AcousticPitch, AcousticRealization, CmnNominal, CustomGlyphId,
+    DecompositionAlgorithmId, ForeignFormatId, IdentifiedPitch, IntervalAlgebraRegistryId,
+    ModificationRegistryId, NominalRegistryId, Pitch, PitchRange, PitchSpaceId, PitchSpacePosition,
+    PitchSpelling, PositionRegistryId, PositionStructureRegistryId, ReferencePitch, ScalePosition,
+    SpellingAlgorithmId, SpellingAttachment, SpellingContext, SpellingDirective, SpellingNominal,
+    SpellingPrecedence, SpellingRenderHints, SpellingRule, SpellingRuleSetId, SpellingScope,
+    SpellingSource, SpellingSourceKind, StaffGroupKindRegistryId, TieClassRegistryId,
+    TransposeRefusal, TranspositionInterval, TranspositionRegistryId, TuningFunctionId,
+    TuningReference, TuningSystemId, VoiceSelector,
 };
 
 pub use pitch_space::{
     built_in_position_structure, IntervalAlgebra, JiRatio, PitchSpace, PositionStructure,
     SpellingParameters, SpellingRuleSet, TranspositionBehavior,
+};
+
+pub use accidental::{
+    accidental_modification_compatible_with_space, resolve_accidental, AccidentalCombination,
+    AccidentalDefinition, AccidentalEngraving, AnchorPoint, EngravingBoundingBox, GlyphReference,
+    PitchSpaceModification, ScoreAccidentalExtensions, SmuflVersion, SmuflVersionRequirement,
 };
 
 pub use prepass::{
