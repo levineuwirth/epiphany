@@ -31,3 +31,16 @@ epiphany-testkit.workspace = true
 eframe = "0.29"
 # Rasterizes the rendered SVG to a pixmap for display (bundles usvg + tiny-skia).
 resvg = "0.45"
+
+[dev-dependencies]
+# Used only by `goldens.rs`'s own comparator unit tests, to produce two
+# byte-different PNG encodings of identical pixels (different filter/compression
+# settings) and prove the golden comparator's decoded-pixel contract ignores
+# that difference. A caret requirement on the version `tiny-skia` already
+# resolves (Cargo.lock), so this is a dev-only edge that unifies with the
+# existing dependency-tree node — today and after any future `tiny-skia` bump
+# (an exact `=` pin would fork a duplicate node the day `tiny-skia` moves).
+# The comparator's own encode/decode path uses
+# `resvg::tiny_skia::Pixmap::{encode_png,decode_png}` exclusively; `png` is
+# never used at runtime.
+png = "0.17.16"

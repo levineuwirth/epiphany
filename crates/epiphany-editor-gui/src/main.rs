@@ -150,14 +150,16 @@ fn payload_label(payload: &OperationPayload) -> &'static str {
     }
 }
 
-/// Rasterizes a rendered SVG string to an `egui` image, returning the image and the
+/// Rasterizes a rendered SVG string to a `tiny_skia` pixmap, returning it and the
 /// SVG's **logical** (sub-pixel, pre-`ceil`) size. The pixmap dimensions are the
 /// logical size rounded up to whole pixels; the logical size is what the image must
 /// be *displayed* at so the click plane maps back to the layout exactly (displaying
 /// the rounded-up pixmap size would stretch the mapping past the content). The score
 /// is drawn over an opaque white background so the pixmap's premultiplied alpha is
-/// fully opaque, matching `from_rgba_unmultiplied`.
-fn rasterize(svg: &str) -> Option<(egui::ColorImage, egui::Vec2)> {
+/// fully opaque, matching `from_rgba_unmultiplied` (this crate's only consumer of the
+/// pixmap's raw bytes, [`rasterize`], and the golden-image tests in `goldens.rs`,
+/// which lock this exact pixmap — the surface the GUI displays).
+fn rasterize_pixmap(svg: &str) -> Option<(resvg::tiny_skia::Pixmap, egui::Vec2)> {
     let tree = resvg::usvg::Tree::from_str(svg, &resvg::usvg::Options::default()).ok()?;
     let size = tree.size();
     let logical = egui::vec2(size.width(), size.height());
@@ -170,8 +172,18 @@ fn rasterize(svg: &str) -> Option<(egui::ColorImage, egui::Vec2)> {
         resvg::tiny_skia::Transform::identity(),
         &mut pixmap.as_mut(),
     );
-    let image =
-        egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], pixmap.data());
+    Some((pixmap, logical))
+}
+
+/// Rasterizes a rendered SVG string to an `egui` image (the GUI's display path): a
+/// thin conversion over [`rasterize_pixmap`]'s pixmap, see its doc for the sizing and
+/// background contract.
+fn rasterize(svg: &str) -> Option<(egui::ColorImage, egui::Vec2)> {
+    let (pixmap, logical) = rasterize_pixmap(svg)?;
+    let image = egui::ColorImage::from_rgba_unmultiplied(
+        [pixmap.width() as usize, pixmap.height() as usize],
+        pixmap.data(),
+    );
     Some((image, logical))
 }
 
@@ -526,6 +538,12 @@ impl eframe::App for EditorApp {
         });
     }
 }
+
+// The pixel-golden comparator, bless machinery, and the four golden-state tests
+// (T1a); see `goldens.rs`'s module doc. Test-only: never compiled into the
+// shipped binary.
+#[cfg(test)]
+mod goldens;
 
 #[cfg(test)]
 mod tests {

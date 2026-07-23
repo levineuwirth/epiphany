@@ -130,6 +130,19 @@ jobs:
       - name: Test (GUI)
         run: cargo test -p epiphany-editor-gui
 
+      # Assertion-message artifact paths (`target/golden-failures/<name>/actual.png`
+      # etc.) name the ephemeral runner's filesystem — a local-reproduction aid, not
+      # a reviewable record on CI. This is the reviewable record: on a golden
+      # mismatch, the three per-test images (actual/expected/diff) upload so a
+      # reviewer can see the failure without reproducing it locally.
+      - name: Upload golden failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-failures
+          path: target/golden-failures/
+          if-no-files-found: ignore
+
   conformance:
     name: conformance suite (testkit)
     runs-on: ubuntu-latest
