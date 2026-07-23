@@ -162,7 +162,7 @@ jobs:
       # manifest-selection gates, convergence / reduction-determinism /
       # equivocation against the real epiphany-ops, and the layout round-trip.
       - name: Run conformance suite
-        run: cargo run --release -p epiphany-testkit --example conformance_suite 1
+        run: cargo run --release -p epiphany-testkit --example conformance_suite --features golden-gate 1
 
       # The Chapter 10 performance-budget gates (Phase 2 worklist F1), in
       # release with reduced sampling (EPIPHANY_BENCH_QUICK): the 1K and 10K

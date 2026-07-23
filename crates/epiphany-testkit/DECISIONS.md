@@ -352,3 +352,124 @@ mutation-verified two ways: restoring the 0.4.0 `value` production, and strippin
 the `schema-directed` citations. A grammar that claims to distinguish a struct
 from a sequence would be lying, so the test asserts the symbol-headed alternative
 is **absent**.
+
+## T2 W3 (2026-07-23) — Promoting the T1a visual goldens to gate `[9]`, behind `golden-gate`
+
+`spec/CONTRACT_EDITOR_T2_SELECTION.md` §W3. T1a
+(`crates/epiphany-editor-gui/src/goldens.rs`, `spec/CONTRACT_EDITOR_T1A_GOLDENS.md`)
+landed pixel-level golden tests in `epiphany-editor-gui` but left this crate's
+`conformance_suite` frozen at 8/8 — the harness existed but nothing counted it.
+This tranche adds gate 9, re-deriving the three T1a golden states headlessly
+inside `examples/conformance_suite.rs` and comparing against the same committed
+baselines, entirely behind a new `golden-gate` feature.
+
+**Why a feature, not an unconditional addition.** The MSRV `check` job
+(`.github/workflows/ci.yml`, the `check` job) runs `cargo test --workspace
+--exclude epiphany-editor-gui --all-targets` at the pinned floor (1.85) —
+`--all-targets` builds every example in this crate, `conformance_suite`
+included, with default features. `resvg` (and the transitive raster stack it
+pulls: `usvg`, `tiny-skia`, font/image decoding crates) is only ever exercised
+by `epiphany-editor-gui`, which is deliberately excluded from that job because
+one of its own dependencies (`image`, via `eframe`) declares a newer MSRV than
+the workspace floor. Making `resvg` reachable from `epiphany-testkit`
+unconditionally would silently re-impose that same floor on a crate the MSRV
+job is not supposed to skip. The fix is Cargo's standard shape for "a
+dependency only some callers need": `resvg` (and `epiphany-render-svg`, not
+previously a dependency of this crate at all) go into `[dependencies]` with
+`optional = true` — **dev-dependencies cannot be optional**, which is why
+example-only code still needs a `[dependencies]` entry — gated by a
+`golden-gate` feature that nothing enables by default. `cargo tree -p
+epiphany-testkit -e normal` shows zero `resvg` nodes without the feature and
+exactly one with it (`--features golden-gate`).
+
+`epiphany-editor-core` and `epiphany-engrave` needed no such treatment: T1a's
+`multisystem_click.rs` test and the Reference Suite harness (F5, above) already
+made both **unconditional dev-dependencies** of this crate, carrying no
+`resvg`-class MSRV risk of their own, so gate 9's `EditorSession` /
+`Engraver::default()` calls simply reuse them as-is.
+
+**Keeping the no-feature output byte-identical was the binding constraint,**
+stated in the contract as a hard requirement (the MSRV job's `--all-targets`
+build must see zero difference). The suite's gate-count denominator moved from
+a literal `8` in every `eprintln!` to a `TOTAL_GATES` const — `8` without
+`golden-gate`, `9` with it — so every existing print line renders
+byte-for-byte what it always has when the feature is off, and gate 9's own
+line plus the renumbered final `[9/9] ok:` line appear only when it is on.
+Verified directly: the pre-tranche example source, rebuilt and run at `SCALE=0`,
+produces output diffed byte-for-byte against the post-tranche no-feature build
+of the same invocation — `diff` reports no difference.
+
+**Gate 9's substance mirrors T1a's comparator, not its full machinery.** It
+re-renders `ten_measure_single_staff(0)` as opened, the same fixture after the
+scripted pencil insert (the click point re-derived by literally copying
+`goldens.rs::scripted_insert_target`'s algorithm — last system by lowest
+`bounding_box.origin.y`, rightmost Pitch-sourced notehead in that system's
+vertical band, +0.5 staff spaces right / +2.0 up — since this crate cannot
+call a `#[cfg(test)]`-private function in a different crate's binary), and
+`ten_measure_with_slurs(0)` as opened, rasterizing each exactly as
+`epiphany-editor-gui/src/main.rs::rasterize_pixmap` does (the algorithm
+copied for the same cross-crate-privacy reason: usvg parse, dimensions
+ceiling to whole pixels, opaque white background, `resvg::render`). Unlike
+`goldens.rs`'s own comparator, gate 9 is **compare-only**: no
+`EPIPHANY_BLESS_GOLDENS` path, no `actual.png`/`expected.png`/`diff.png`
+artifact writing. A mismatch's panic message points at `cargo test -p
+epiphany-editor-gui goldens` — the crate that owns the baselines, the bless
+mechanism, and the reviewable artifacts — as the place to diagnose, rather
+than duplicating that machinery here. G3 (undo-equals-G1) is deliberately not
+re-derived as a fourth comparison: it reuses G1's own baseline file in T1a,
+so covering G1 already covers what G3 would additionally lock at the pixel
+level for this gate's purposes.
+
+**The cross-crate baseline path is a documented coupling, not an accident.**
+The three committed PNGs live in `crates/epiphany-editor-gui/goldens/`, one
+level up and over from this crate's own directory. Gate 9 resolves that path
+from *this* crate's `CARGO_MANIFEST_DIR` (the only directory `env!` can see at
+compile time) as `{CARGO_MANIFEST_DIR}/../epiphany-editor-gui/goldens/`. A
+rename or relocation of either crate directory, or of
+`epiphany-editor-gui/goldens/`, breaks this path — silently succeeding at
+`cargo check` (it is a runtime path, not a compile-time one) but failing gate
+9 loudly at run time with a clear "no golden baseline at ..." panic (mutation
+m6 below), never a silent skip. This crate's own `Cargo.toml` comment on the
+`epiphany-render-svg`/`resvg` dependencies and the `golden_gate` module doc in
+`examples/conformance_suite.rs` carry the same note; `epiphany-editor-gui` is
+outside this packet's blast radius (`spec/CONTRACT_EDITOR_T2_SELECTION.md`
+§W3), so its own `DECISIONS.md` — which already documents the baseline
+directory from the T1a side — is left untouched here.
+
+**Mutation evidence (independently reproduced against gate 9's real run, not
+just described):**
+
+- **m5 — tamper one decoded pixel before comparison.** Rendering G1, XOR-ing
+  byte 0 of its pixmap with `0xFF`, then comparing that tampered pixmap
+  against the committed baseline made gate 9 die with (actual panic,
+  captured verbatim): `gate 9: ten_measure_open decoded RGBA differs from
+  the committed baseline at .../epiphany-editor-gui/goldens/ten_measure_open.png
+  (1 of 1119968 bytes differ); diagnose with \`cargo test -p
+  epiphany-editor-gui goldens\``. (The pixel comparison is a manual `if
+  actual.data() != expected.data() { panic!(...) }` reporting a differing-byte
+  count, not a bare `assert_eq!` — the latter was tried first and dumps both
+  full byte slices, ~1.1 MB each, into the panic message on a real score
+  raster; the differing-byte count is the useful signal, and the visual
+  artifacts to inspect already live in `epiphany-editor-gui`'s own comparator.)
+  Restored by reversing the exact same byte-flip line (not `git checkout`);
+  the suite returns to 9/9.
+- **m6 — point the baselines path at a nonexistent directory.** Appending
+  `-DOES-NOT-EXIST` to `baseline_path`'s directory component made the
+  `fs::read` call fail, and the gate panicked immediately with (captured
+  verbatim): `gate 9: no golden baseline at
+  .../epiphany-editor-gui/goldens-DOES-NOT-EXIST/ten_measure_open.png (No
+  such file or directory (os error 2)) — \`epiphany-editor-gui/goldens/\` must
+  contain the committed T1a baselines for this gate to compare against;
+  diagnose with \`cargo test -p epiphany-editor-gui goldens\`` — a loud,
+  named failure, never a silent skip or pass. Restored by reversing the
+  substitution; the suite returns to 9/9.
+
+**Baselines pin the raster stack (inherited from T1a, restated here because
+this crate now also depends on it).** Any `Cargo.lock` movement of
+`resvg`/`usvg`/`tiny-skia`/`png` is a golden-review event — for both crates
+now, not just `epiphany-editor-gui` — never a silent re-bless. Gate 9 has no
+bless mechanism of its own by design (above), so a deliberate raster-stack
+bump that changes pixels must be reviewed and re-blessed through
+`epiphany-editor-gui`'s own `EPIPHANY_BLESS_GOLDENS=1` path; gate 9 will then
+pass again against the newly-blessed baselines with no changes of its own
+needed.

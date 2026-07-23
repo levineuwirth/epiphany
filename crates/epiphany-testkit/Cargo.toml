@@ -17,6 +17,23 @@ epiphany-textproj.workspace = true
 # now drives the real crate instead of an in-tree stub.
 epiphany-layout-ir.workspace = true
 
+# T2 W3 — the `[9/9]` golden conformance gate (`golden-gate` feature,
+# `examples/conformance_suite.rs`): re-renders the T1a golden states headlessly
+# and rasterizes them exactly as `epiphany-editor-gui`'s demo binary does, to
+# compare against the baselines committed there
+# (`epiphany-editor-gui/goldens/*.png`). Both crates are example-only — used
+# solely by the `#[cfg(feature = "golden-gate")]` code — and `optional = true`
+# so the default (no-feature) build pulls in neither; dev-dependencies cannot
+# be optional, so both live here in [dependencies], gated by the
+# `golden-gate` feature (below) rather than always compiled. This is precisely
+# what keeps `resvg`'s raster stack out of the MSRV job's dependency closure:
+# that job runs `cargo test --workspace --all-targets` at the pinned MSRV
+# (`.github/workflows/ci.yml`, the `check` job), which builds every example in
+# this crate with default features only. See `DECISIONS.md` (T2 W3) and
+# `spec/CONTRACT_EDITOR_T2_SELECTION.md` §W3.
+epiphany-render-svg = { workspace = true, optional = true }
+resvg = { version = "0.45", optional = true }
+
 # The Chapter 10 performance benches (worklist F1) run under criterion; the
 # budget-gate logic itself lives in `src/budget.rs` on plain `std`, so the
 # library builds without it. The editor-core + engrave pair drives the
@@ -28,6 +45,16 @@ epiphany-layout-ir.workspace = true
 criterion.workspace = true
 epiphany-editor-core.workspace = true
 epiphany-engrave.workspace = true
+
+# T2 W3: gate 9's session/session-editing surface (`EditorSession`,
+# `Engraver::default()`) is exactly the pair the multi-system click test and
+# the reference-suite harness above already pull in as unconditional
+# dev-dependencies — reused as-is, not duplicated or made optional, since a
+# dev-dependency cannot be optional and these two carry no `resvg`-class
+# MSRV risk of their own (see the `[dependencies]` comment above for the two
+# that do).
+[features]
+golden-gate = ["dep:epiphany-render-svg", "dep:resvg"]
 
 # Drives the whole suite at scale outside the unit-test timeout — the analogue
 # of epiphany-determinism's `fuzz_roundtrip` and epiphany-bundle's `fuzz_crash`.

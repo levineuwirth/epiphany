@@ -1285,7 +1285,9 @@ dependencies = [
  "epiphany-engrave",
  "epiphany-layout-ir",
  "epiphany-ops",
+ "epiphany-render-svg",
  "epiphany-textproj",
+ "resvg",
 ]
 
 [[package]]

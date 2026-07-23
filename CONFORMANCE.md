@@ -128,3 +128,46 @@ substituting a vendor heuristic:
   continued-fraction with documented iteration/denominator bounds and a
   typed `TempoIntegration`-class tolerance) are advisory, per the
   floating-point declaration above.
+
+## The conformance suite's gate count
+
+`cargo run -p epiphany-testkit --example conformance_suite` runs the numbered
+gates described above (and several supplementary lettered stages) end to end,
+printing `[N/TOTAL] ...` as each gate starts and `[TOTAL/TOTAL] ok: full
+conformance suite passed` on a clean run; CI's `conformance` job
+(`.github/workflows/ci.yml:146-176`) runs it on every push and pull request.
+
+**Gate 9 — visual golden conformance, behind the `golden-gate` feature.**
+`epiphany-testkit`'s default build (`TOTAL = 8`) covers determinism,
+round-trip, crash recovery, equivocation, convergence, reduction, layout
+round-trip, and the cross-implementation/Text-Projection decode vectors — no
+rendering. Gate 9 (`TOTAL = 9` with the feature enabled) additionally
+re-derives the T1a visual golden states
+(`spec/CONTRACT_EDITOR_T1A_GOLDENS.md`) headlessly — `EditorSession::open`
+over the real engraver and renderer, rasterized with `resvg` exactly as
+`epiphany-editor-gui`'s demo binary does — and compares the decoded RGBA
+pixels against the baselines committed at
+`crates/epiphany-editor-gui/goldens/*.png`, dimensions first. It is
+compare-only: no bless mechanism, no artifact writing; a mismatch's panic
+names `cargo test -p epiphany-editor-gui goldens` as the crate that owns
+that machinery.
+
+**Why the gate is feature-gated rather than always on.** `epiphany-testkit`
+is a workspace member the MSRV `check` job (`.github/workflows/ci.yml`, pinned
+to Rust 1.85) builds with `--all-targets`, `conformance_suite` included — and
+that job deliberately excludes `epiphany-editor-gui`, because one of its own
+dependencies (`image`, pulled in via `eframe`) declares a newer MSRV than the
+workspace floor. `resvg` — the crate gate 9 needs to rasterize SVG the same
+way the demo GUI does — carries that same raster-stack dependency weight.
+Making it reachable unconditionally from `epiphany-testkit` would silently
+re-impose that floor on a crate the MSRV job is meant to keep covering. So
+`resvg` (and `epiphany-render-svg`, needed to produce the SVG in the first
+place) are `optional = true` dependencies of `epiphany-testkit`, gated by a
+`golden-gate` Cargo feature nothing enables by default; only the
+`conformance` job's suite invocation passes `--features golden-gate`
+(`.github/workflows/ci.yml:165`). Without the feature, `cargo tree -p
+epiphany-testkit -e normal` shows no `resvg` node in the dependency graph;
+with `--features golden-gate`, it shows exactly one. Full rationale, the
+mutation evidence, and the cross-crate baseline-path coupling are recorded in
+`crates/epiphany-testkit/DECISIONS.md` (T2 W3) and
+`spec/CONTRACT_EDITOR_T2_SELECTION.md` §W3.
