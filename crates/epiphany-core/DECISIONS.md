@@ -682,3 +682,82 @@ errors, but the compiler reports only the *frontier* — `AnchorOffset`,
 `VoiceSelector`, `PowerOfTwo`, `OctaveOffset` and `NonZeroU16` were each hidden
 behind a type that had not compiled yet. The list has to be iterated to a
 fixpoint, never taken once.
+
+## Push 4b tranche 1: the pitch-space vocabulary lands, in memory, with a real consumer
+
+`spec/CONTRACT_PUSH4B_PITCHSPACES.md`, dispatched as one vertical slice: types,
+the built-in catalog data that fills them, and the consumer that reads them,
+landing together rather than as three separate steps. The acceptance test is
+behavioural — a `cmn-24` pitch transposes end-to-end, with the resulting scale
+position asserted, not merely `is_ok()` — because a Chapter 4 type surface
+with no consumer is the `Staff::default_clef` / `NOTEHEAD_ANCHORS` shape this
+project has already paid for twice.
+
+**New module `src/pitch_space.rs`.** `PositionStructure` (all four variants:
+`Chromatic`, `DiatonicOverChromatic`, `JiLattice`, `Registered`), the checked
+constructor `PositionStructure::diatonic_over_chromatic` (enforces all three
+clauses of `req:tuning:diatonic-chromatic-mapping` — length, range, strictly
+increasing — the way `KeySignature::new` rejects out-of-range fifths), `JiRatio`,
+`IntervalAlgebra`, `TranspositionBehavior`, `SpellingRuleSet`, and `PitchSpace`
+itself, transcribed field-for-field from the specification's own listings. Plus
+`built_in_position_structure(&PitchSpaceId) -> Option<PositionStructure>`, the
+built-in catalog: the seven fully-determined spaces (`cmn-12`, `cmn-24`,
+`edo-19/22/31/53/72`) resolve; the six the specification names but does not
+structurally determine (the three `ji-*` lattice generators, `maqam-base`,
+`gamelan-slendro`, `gamelan-pelog`) return `None`, with a per-space comment
+recording exactly what the table does and does not fix, rather than a value
+this project would later discover was invented. `PositionStructureRegistryId`,
+`IntervalAlgebraRegistryId`, and `TranspositionRegistryId` (new `catalog_id!`
+entries in `pitch.rs`) back the three `Registered` variants.
+
+**`SpellingParameters` is a deliberate zero-field marker, not a transcription.**
+`SpellingRuleSet.parameters: SpellingParameters` is in the specification's own
+listing, but `SpellingParameters`' shape is never given anywhere in
+`core_spec.tex` — Chapter 4 calls the parameter schema of registered spelling
+algorithms an open question outright ("the catalog of *additional* registered
+spelling algorithms ... and their parameter schemas, which are normative once
+registered"), and the one currently-registered algorithm (`"default"`,
+`req:pitch:spelling-algorithm`) is a fixed rule with none. The type exists only
+so `SpellingRuleSet`'s field list matches the listing; it carries no state and
+nothing constructs one with content. This is the same "do not invent" discipline
+the contract applies to the six pitch spaces, applied one level down to a type
+rather than a data row.
+
+**No `Codec` impl exists for anything in `pitch_space.rs`, and none was added
+to `Score` or `ScoreTuningContext`** (Ruling C, `spec/PLAN_PUSH4B_TUNING.md`).
+These types are referenced only by id from canonical state; they stay in memory
+so a later tranche remains free to discover they are wrong.
+
+**The P13-S2 interim guard is retired, not widened.** `Pitch::transposed` and
+`Pitch::twelve_tet_semitone` no longer compare `scale_position.space.as_str()`
+against the literal `"cmn-12"` anywhere; both call a new private helper,
+`diatonic_over_chromatic_structure`, that looks the space up in
+`built_in_position_structure` and proceeds only when it resolves to
+`DiatonicOverChromatic` — `Chromatic`, `JiLattice`, `Registered`, an unknown
+identifier, and all six unresolved catalog spaces refuse identically via the
+existing `TransposeRefusal::PitchSpaceUnavailable`. `Pitch::transposed`'s
+arithmetic is now genuinely space-relative (`chromatic_positions_per_octave`
+and `nominal_to_chromatic` come from the resolved structure, not a hardcoded
+`12`/`CmnNominal::chromatic()`), which is what makes `cmn-24` transpose in
+quarter-tone steps rather than silently applying semitone arithmetic to a
+24-chromatic space. `twelve_tet_semitone` keeps its own, stricter gate
+(`chromatic_positions_per_octave == 12`) per the contract's instruction not to
+rename it: the name stays true because the function still only answers for a
+genuinely twelve-chromatic structure, proven structurally now rather than by
+identifier. Its six callers across three crates are unchanged.
+
+**One downstream test needed a fixture change, not a behavior change.**
+`epiphany-ops::reduce::tests::unresolved_cmn_space_maps_to_canonical_pitch_space_mismatch`
+used `"cmn-24"` as a stand-in for "a `Cmn` position in a space the core cannot
+resolve." `cmn-24` is now resolved — that is this tranche's entire point — so
+the fixture no longer witnesses that case; it now runs deep enough to hit a
+second, pre-existing, unrelated refusal (`resolve_transposed_spellings`'s
+`twelve_tet_semitone()?` gate, `TranspositionOutOfRange`) instead of the one the
+test names. Retargeted to `"edo-31"` (resolved, but to `Chromatic`, not
+`DiatonicOverChromatic` — still exactly the case the test is about), with a
+comment recording why `cmn-24` stopped serving as the witness. No assertion
+weakened, no wire byte or discriminant touched.
+
+**Requirement counts did not move.** No new requirement was added or cited that
+did not already exist; `crates/epiphany-testkit/tests/requirement_labels.rs`'s
+212/282/282 are unchanged.

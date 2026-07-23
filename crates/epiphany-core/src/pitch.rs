@@ -127,6 +127,21 @@ catalog_id!(
     /// spelling/decomposition provenance tag.
     ForeignFormatId
 );
+catalog_id!(
+    /// Identifies a registered (grammar-defined) position structure
+    /// (Chapter 4 §"Position Structure", `PositionStructure::Registered`).
+    PositionStructureRegistryId
+);
+catalog_id!(
+    /// Identifies a registered (grammar-defined) interval algebra
+    /// (Chapter 4 §"Interval Algebra", `IntervalAlgebra::Registered`).
+    IntervalAlgebraRegistryId
+);
+catalog_id!(
+    /// Identifies a registered (grammar-defined) transposition behavior
+    /// (Chapter 4 §"Transposition Behavior", `TranspositionBehavior::Registered`).
+    TranspositionRegistryId
+);
 
 impl SpellingAlgorithmId {
     /// The Phase-2 default spelling algorithm, registered under the id
@@ -242,9 +257,14 @@ pub enum TransposeRefusal {
     NonCmnPosition,
     /// The enclosing pitch space's chromatic layer or nominal mapping cannot
     /// be established, so applying the interval would require guessed
-    /// arithmetic (`req:pitch:space-capability-refusal`). The pre-registry
-    /// implementation recognizes only built-in `cmn-12`; Push 4b replaces that
-    /// identifier check with structural pitch-space resolution.
+    /// arithmetic (`req:pitch:space-capability-refusal`). Structural: the
+    /// space's [`PositionStructure`](crate::pitch_space::PositionStructure)
+    /// is looked up in [`crate::pitch_space::built_in_position_structure`]
+    /// and must resolve to
+    /// [`DiatonicOverChromatic`](crate::pitch_space::PositionStructure::DiatonicOverChromatic);
+    /// every other outcome — `Chromatic`, `JiLattice`, `Registered`, an
+    /// unknown identifier, or one of the six built-in spaces the
+    /// specification names but does not structurally determine — refuses.
     PitchSpaceUnavailable,
     /// The pitch's [`AcousticRealization::AbsoluteHz`] overrides the tuning
     /// system, so moving the scale position would move the notehead without
@@ -254,28 +274,60 @@ pub enum TransposeRefusal {
     OutOfRange,
 }
 
+/// Resolves `space` to its [`DiatonicOverChromatic`](crate::pitch_space::PositionStructure::DiatonicOverChromatic)
+/// chromatic cardinality and nominal mapping against the built-in catalog
+/// ([`crate::pitch_space::built_in_position_structure`]), or `None` for
+/// every other case — `Chromatic`, `JiLattice`, `Registered`, an unknown
+/// identifier, or one of the six catalog spaces the specification does not
+/// structurally determine. This is the structural replacement for the
+/// retired P13-S2 `"cmn-12"` identifier check
+/// (`req:pitch:space-capability-refusal`): [`Pitch::transposed`] and
+/// [`Pitch::twelve_tet_semitone`] are its only two call sites, matching the
+/// two places the interim guard used to live.
+fn diatonic_over_chromatic_structure(space: &PitchSpaceId) -> Option<(u16, Vec<u16>)> {
+    match crate::pitch_space::built_in_position_structure(space)? {
+        crate::pitch_space::PositionStructure::DiatonicOverChromatic {
+            chromatic_positions_per_octave,
+            nominal_to_chromatic,
+            ..
+        } => Some((chromatic_positions_per_octave, nominal_to_chromatic)),
+        _ => None,
+    }
+}
+
 impl Pitch {
     /// Transposes this pitch by `interval`, per Chapter 2
     /// `req:pitch:transposition`.
     ///
-    /// With `n` the nominal's normative discriminant and, for the proven
-    /// `cmn-12` structure, the absolute semitone
-    /// `s = nominal.chromatic() + alteration + 12*octave`, transposing by
+    /// With `n` the nominal's normative discriminant, `C` the enclosing
+    /// space's `chromatic_positions_per_octave`, and `m` its
+    /// `nominal_to_chromatic` mapping (both resolved structurally — see
+    /// below), the absolute chromatic coordinate is
+    /// `s = m(nominal) + alteration + C*octave`, and transposing by
     /// `{ d, c }` yields
     ///
     /// ```text
     /// nominal'    = CmnNominal((n + d).rem_euclid(7))
     /// octave'     = octave + (n + d).div_euclid(7)
-    /// alteration' = (s + c) - (nominal'.chromatic() + 12*octave')
+    /// alteration' = (s + c) - (m(nominal') + C*octave')
     /// ```
     ///
-    /// Until Push 4b provides structural pitch-space resolution, a CMN
-    /// position outside built-in `cmn-12` is refused rather than interpreted
-    /// with this 12-chromatic map.
+    /// `C` and `m` are resolved by looking `self.scale_position.space` up in
+    /// [`crate::pitch_space::built_in_position_structure`]: when it resolves
+    /// to [`DiatonicOverChromatic`](crate::pitch_space::PositionStructure::DiatonicOverChromatic),
+    /// that structure's own `chromatic_positions_per_octave` and
+    /// `nominal_to_chromatic` are used — which is what makes `cmn-24`
+    /// transpose in quarter-tone steps rather than semitones. Every other
+    /// resolution — `Chromatic`, `JiLattice`, `Registered`, an unknown
+    /// identifier, or one of the six built-in spaces the specification does
+    /// not structurally determine — refuses
+    /// ([`TransposeRefusal::PitchSpaceUnavailable`],
+    /// `req:pitch:space-capability-refusal`) rather than guessing a
+    /// structure.
     ///
     /// The diatonic component alone selects the nominal and octave; the
-    /// alteration absorbs exactly the residue. So `C4 + (7, 12)` is `C5`, not
-    /// "C with twelve sharps", and `C4 + (0, 1)` is `C#4`.
+    /// alteration absorbs exactly the residue. So in `cmn-12`, `C4 + (7, 12)`
+    /// is `C5`, not "C with twelve sharps", and `C4 + (0, 1)` is `C#4`.
     ///
     /// Refuses rather than saturating, clamping, or approximating: a
     /// transposition that silently produces a pitch nobody asked for reports
@@ -295,29 +347,32 @@ impl Pitch {
         else {
             return Err(TransposeRefusal::NonCmnPosition);
         };
-        if self.scale_position.space.as_str() != "cmn-12" {
-            return Err(TransposeRefusal::PitchSpaceUnavailable);
-        }
+        let (chromatic_card, nominal_to_chromatic) =
+            diatonic_over_chromatic_structure(&self.scale_position.space)
+                .ok_or(TransposeRefusal::PitchSpaceUnavailable)?;
 
         // Widen to `i64` before any arithmetic. The `i8` bound is a *result*
         // constraint, not an intermediate one, so an octave that overflows on
         // the way to a value that fits would be a spurious refusal — but
         // `i32` is not wide enough to hold the intermediates for an `i32`
         // interval, and the previous version of this function panicked on
-        // `diatonic_steps = i32::MAX` at `12 * new_octave`. Refusing is the
-        // contract; panicking on a value the public type admits is not.
+        // `diatonic_steps = i32::MAX` at `chromatic_card * new_octave`.
+        // Refusing is the contract; panicking on a value the public type
+        // admits is not.
         //
         // `i64` is amply wide: `step` is bounded by `6 + 2^31`, so
         // `new_octave` by `2^31/7 + 127`, and the largest intermediate
-        // `12 * new_octave` by roughly `3.7e9`.
+        // `chromatic_card * new_octave` by roughly `chromatic_card * 3e8`,
+        // nowhere near `i64::MAX` for any `u16` cardinality.
+        let chromatic_of = |nom: CmnNominal| i64::from(nominal_to_chromatic[nom as usize]);
+        let c = i64::from(chromatic_card);
         let n = i64::from(nominal as u8);
-        let semitone =
-            i64::from(nominal.chromatic()) + i64::from(alteration) + 12 * i64::from(octave);
+        let semitone = chromatic_of(nominal) + i64::from(alteration) + c * i64::from(octave);
         let step = n + i64::from(interval.diatonic_steps);
         let new_nominal = CmnNominal::from_index(step.rem_euclid(7) as i32);
         let new_octave = i64::from(octave) + step.div_euclid(7);
         let new_alteration = (semitone + i64::from(interval.chromatic_steps))
-            - (i64::from(new_nominal.chromatic()) + 12 * new_octave);
+            - (chromatic_of(new_nominal) + c * new_octave);
 
         let octave = i8::try_from(new_octave).map_err(|_| TransposeRefusal::OutOfRange)?;
         let alteration = i8::try_from(new_alteration).map_err(|_| TransposeRefusal::OutOfRange)?;
@@ -486,22 +541,33 @@ impl Pitch {
     }
 
     /// The 12-TET pitch class (`0..=11`) of this pitch's *scale position*, when
-    /// its 12-chromatic structure is established: CMN positions in built-in
-    /// `cmn-12` and 12-EDO integer positions. Returns `None` for unresolved CMN
-    /// spaces and positions whose 12-TET class is not determinable without a
-    /// tuning resolver (JI vectors, non-12 EDOs, registered grammars).
-    /// Octave-blind — for sounding comparison use
-    /// [`Pitch::twelve_tet_semitone`].
+    /// its 12-chromatic structure is established: `Cmn` positions whose space
+    /// resolves structurally to a `DiatonicOverChromatic` structure with
+    /// exactly 12 chromatic positions (built-in `cmn-12`, at this tranche's
+    /// catalog), and 12-EDO integer positions. Returns `None` for CMN
+    /// positions in spaces that do not resolve that way (e.g. `cmn-24`,
+    /// whose 24 quarter-tone positions are not a 12-TET pitch class at all)
+    /// and positions whose 12-TET class is not determinable without a tuning
+    /// resolver (JI vectors, non-12 EDOs, registered grammars). Octave-blind
+    /// — for sounding comparison use [`Pitch::twelve_tet_semitone`].
     pub fn twelve_tet_class(&self) -> Option<u8> {
         self.twelve_tet_semitone().map(|s| s.rem_euclid(12) as u8)
     }
 
     /// The *absolute* 12-TET semitone of this pitch's scale position, octave
-    /// included, when its 12-chromatic structure is established. For built-in
-    /// `cmn-12` this is
-    /// `octave*12 + nominal.chromatic() + alteration` (so C4 and C5 differ by a
-    /// full octave); for 12-EDO integer positions it is the absolute `index`.
-    /// `None` for unresolved CMN spaces
+    /// included, when its 12-chromatic structure is established. For a `Cmn`
+    /// position this is `octave*C + m(nominal) + alteration`, where `C` and
+    /// `m` come from the space's structural resolution
+    /// ([`crate::pitch_space::built_in_position_structure`]) — but only when
+    /// `C` is exactly `12`; a space resolving to `DiatonicOverChromatic` with
+    /// any other chromatic cardinality (`cmn-24`, for instance) is **not** a
+    /// 12-TET semitone and this deliberately does not answer for it (the
+    /// name `twelve_tet_semitone` stays honest per
+    /// `spec/CONTRACT_PUSH4B_PITCHSPACES.md` item 4: it answers only when the
+    /// resolved structure truly has twelve chromatic positions, never by
+    /// identifier). For 12-EDO integer positions it is the absolute `index`.
+    /// `None` for CMN positions whose space does not resolve to a
+    /// `DiatonicOverChromatic` structure with exactly 12 chromatic positions
     /// (`req:pitch:space-capability-refusal`) and positions not determinable
     /// without a tuning resolver.
     ///
@@ -515,8 +581,14 @@ impl Pitch {
                 nominal,
                 alteration,
                 octave,
-            } if self.scale_position.space.as_str() == "cmn-12" => {
-                Some(*octave as i32 * 12 + nominal.chromatic() as i32 + *alteration as i32)
+            } => {
+                let (chromatic_card, nominal_to_chromatic) =
+                    diatonic_over_chromatic_structure(&self.scale_position.space)?;
+                if chromatic_card != 12 {
+                    return None;
+                }
+                let m = nominal_to_chromatic[*nominal as usize] as i32;
+                Some(*octave as i32 * 12 + m + *alteration as i32)
             }
             PitchSpacePosition::Integer { space_size, index } if *space_size == 12 => Some(*index),
             _ => None,
@@ -1036,9 +1108,13 @@ mod tests {
     use super::*;
 
     fn cmn(nominal: CmnNominal, alteration: i8, octave: i8) -> Pitch {
+        cmn_in("cmn-12", nominal, alteration, octave)
+    }
+
+    fn cmn_in(space: &str, nominal: CmnNominal, alteration: i8, octave: i8) -> Pitch {
         Pitch {
             scale_position: ScalePosition {
-                space: PitchSpaceId::new("cmn-12"),
+                space: PitchSpaceId::new(space),
                 position: PitchSpacePosition::Cmn {
                     nominal,
                     alteration,
@@ -1286,6 +1362,11 @@ mod tests {
 
     #[test]
     fn unresolved_cmn_space_refuses_transposition_and_twelve_tet_conversion() {
+        // "edo-31" resolves structurally (the built-in catalog fully
+        // determines it — `PositionStructure::Chromatic { 31 }`), but a
+        // *resolved* structure in the wrong family is exactly as unusable to
+        // a `Cmn` position as an unresolved one: `Cmn` only has a defined
+        // action under `DiatonicOverChromatic`.
         let mut p = cmn(CmnNominal::E, -1, 4);
         p.scale_position.space = PitchSpaceId::new("edo-31");
 
@@ -1295,6 +1376,85 @@ mod tests {
         );
         assert_eq!(p.twelve_tet_semitone(), None);
         assert_eq!(p.twelve_tet_class(), None);
+    }
+
+    #[test]
+    fn transposition_refuses_a_ji_space_an_unknown_identifier_and_an_unresolved_catalog_space() {
+        // Three distinct ways `req:pitch:space-capability-refusal` is
+        // satisfied without guessing: a real catalog identifier whose family
+        // is JI (`ji-5limit`), an identifier the catalog has never heard of,
+        // and one of the six built-in identifiers the catalog names but does
+        // not structurally determine (`maqam-base`).
+        for space in ["ji-5limit", "not-a-built-in-pitch-space", "maqam-base"] {
+            let p = cmn_in(space, CmnNominal::C, 0, 4);
+            assert_eq!(
+                p.transposed(iv(4, 7)),
+                Err(TransposeRefusal::PitchSpaceUnavailable),
+                "{space} must refuse a transposition rather than guess a pitch-space structure"
+            );
+        }
+    }
+
+    #[test]
+    fn twelve_tet_semitone_stays_none_for_a_resolved_non_twelve_chromatic_structure() {
+        // `cmn-24` resolves structurally — it is one of the seven fully
+        // determined catalog entries — but its chromatic cardinality is 24,
+        // not 12. `twelve_tet_semitone`/`twelve_tet_class` must still refuse:
+        // resolving *a* structure is not the same as resolving a
+        // *twelve*-chromatic one (`spec/CONTRACT_PUSH4B_PITCHSPACES.md` item
+        // 4 — the name stays honest only if it keeps this gate).
+        let p = cmn_in("cmn-24", CmnNominal::E, -1, 4);
+        assert_eq!(p.twelve_tet_semitone(), None);
+        assert_eq!(p.twelve_tet_class(), None);
+    }
+
+    #[test]
+    fn cmn_24_transposes_using_its_own_quarter_tone_structure() {
+        // The tranche's acceptance criterion (`spec/CONTRACT_PUSH4B_PITCHSPACES.md`
+        // "Proof of life"): a `cmn-24` pitch transposes end-to-end, with the
+        // *resulting scale position* asserted — not merely `is_ok()`.
+
+        // First, the quarter-tone alteration unit itself
+        // (`core_spec.tex:3606`: "A flat is -2 and a half-flat is -1"), via a
+        // same-nominal chromatic-only shift.
+        let c4 = cmn_in("cmn-24", CmnNominal::C, 0, 4);
+        let half_flat = c4.transposed(iv(0, -1)).unwrap();
+        assert_eq!(
+            half_flat.scale_position.position,
+            PitchSpacePosition::Cmn {
+                nominal: CmnNominal::C,
+                alteration: -1,
+                octave: 4,
+            }
+        );
+        let flat = c4.transposed(iv(0, -2)).unwrap();
+        assert_eq!(
+            flat.scale_position.position,
+            PitchSpacePosition::Cmn {
+                nominal: CmnNominal::C,
+                alteration: -2,
+                octave: 4,
+            }
+        );
+
+        // Second, the case that only a genuinely 24-chromatic computation
+        // gets right: B4 up a semitone (2 quarter-tone steps) spelled as a
+        // diatonic step lands on a *natural* C5. `cmn-24`'s nominal map is
+        // `[0,4,8,10,14,18,22]` (`core_spec.tex:3609`) and its chromatic
+        // cardinality is 24 — not "2x the cmn-12 map applied to a 12-space".
+        // Arithmetic that silently fell back to `nominal.chromatic()` (the
+        // cmn-12 map, `B=11`) and a chromatic cardinality of 12 would instead
+        // compute `alteration' = (11+0+48+2) - (0+60) = 1`: a spurious C5♯.
+        let b4 = cmn_in("cmn-24", CmnNominal::B, 0, 4);
+        let up_a_semitone = b4.transposed(iv(1, 2)).unwrap();
+        assert_eq!(
+            up_a_semitone.scale_position.position,
+            PitchSpacePosition::Cmn {
+                nominal: CmnNominal::C,
+                alteration: 0,
+                octave: 5,
+            }
+        );
     }
 
     #[test]

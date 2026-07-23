@@ -5897,7 +5897,6 @@ impl<'a> Reducer<'a> {
         let Some(score) = self.graph.as_ref() else {
             return Some(Vec::new());
         };
-        let semitone = transposed.twelve_tet_semitone()?;
         let mut out = Vec::new();
         for (index, att) in score.spelling_attachments.iter().enumerate() {
             if att.layer.is_some() || matches!(att.source, SpellingSource::Propagated { .. }) {
@@ -5909,6 +5908,19 @@ impl<'a> Reducer<'a> {
             let SpellingDirective::Explicit(spelling) = &att.directive else {
                 continue;
             };
+            // The transposed 12-TET semitone is needed ONLY to rewrite an
+            // authored spelling, and the spelling pre-pass is still
+            // 12-chromatic (the built-in catalog's conformance note). So it is
+            // computed here, at point of use, and NOT before the loop: a pitch
+            // in a resolved non-12-chromatic space (`cmn-24`, since Push 4b
+            // tranche 1) transposes its *value* correctly and must not be
+            // refused merely for carrying no authored spelling to rewrite.
+            // When it does carry one, `?` still refuses — a 24-chromatic
+            // authored spelling is the documented spelling-layer limitation,
+            // not a silently stale write. Hoisting this above the loop is what
+            // made a spelling-less `cmn-24` transpose refuse (P13-S3-shaped:
+            // latent in code, made reachable the moment the space resolved).
+            let semitone = transposed.twelve_tet_semitone()?;
             out.push((index, spelling.transposed(interval, semitone)?));
         }
         Some(out)
@@ -9463,8 +9475,20 @@ mod tests {
 
     #[test]
     fn unresolved_cmn_space_maps_to_canonical_pitch_space_mismatch() {
+        // "edo-31": the built-in catalog resolves it, but to `Chromatic`, not
+        // `DiatonicOverChromatic` — a `Cmn` position has no defined action
+        // there, so `Pitch::transposed` refuses with
+        // `TransposeRefusal::PitchSpaceUnavailable`, which maps here to
+        // `PitchSpaceMismatch`. Before Push 4b tranche 1 this fixture used
+        // `"cmn-24"` and the interim `"cmn-12"`-only guard refused it; `cmn-24`
+        // is now fully resolved (`DiatonicOverChromatic`) and a spelling-less
+        // `cmn-24` pitch *transposes* — see
+        // `cmn_24_with_no_authored_spelling_transposes_at_the_operation_layer`
+        // below — so it no longer witnesses a refusal at all. `edo-31` is the
+        // stable witness: resolved, but to a structure a `Cmn` position cannot
+        // live in.
         let mut unresolved = cmn_pitch(CmnNominal::E, -1, 4);
-        unresolved.scale_position.space = epiphany_core::PitchSpaceId::new("cmn-24");
+        unresolved.scale_position.space = epiphany_core::PitchSpaceId::new("edo-31");
         let expected = unresolved.clone();
         let (base, pid) = base_with_pitch(unresolved);
 
@@ -9480,6 +9504,53 @@ mod tests {
         let mut canonical = Vec::new();
         effect.encode_canonical(&mut canonical);
         assert_eq!(canonical, vec![4, 3, 6]);
+        assert_eq!(pitch_of(&score, pid), expected);
+    }
+
+    #[test]
+    fn cmn_24_with_no_authored_spelling_transposes_at_the_operation_layer() {
+        // The operation-layer proof of life for Push 4b tranche 1. The core's
+        // `Pitch::transposed` handles `cmn-24`, but `resolve_transposed_spellings`
+        // used to compute the transposed 12-TET semitone BEFORE looking for any
+        // spelling to rewrite, so its `?` refused every `cmn-24` transpose —
+        // even one with nothing to spell — as `TranspositionOutOfRange`. That
+        // was a defect made reachable (not introduced) by the space resolving.
+        // With the semitone moved to point of use, a spelling-less `cmn-24`
+        // pitch now transposes end-to-end.
+        let mut c4 = cmn_pitch(CmnNominal::B, 0, 4);
+        c4.scale_position.space = epiphany_core::PitchSpaceId::new("cmn-24");
+        let (base, pid) = base_with_pitch(c4);
+
+        // B4 up a diatonic step + 2 quarter-tone chromatic steps = natural C5,
+        // the same 24-chromatic arithmetic the core's proof-of-life test pins.
+        let (effect, score) = run_transpose(&base, &[pid], interval(1, 2));
+        assert_eq!(effect, OperationEffect::Applied);
+        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, 0, 5));
+    }
+
+    #[test]
+    fn cmn_24_with_an_authored_spelling_still_refuses() {
+        // The complement: the spelling pre-pass remains 12-chromatic, so an
+        // *authored* spelling on a `cmn-24` pitch genuinely cannot be rewritten
+        // at the transposed position, and the operation refuses rather than
+        // leave the spelling stale — the point-of-use `?` still fires when
+        // there is a spelling to transpose.
+        let mut c4 = cmn_pitch(CmnNominal::B, 0, 4);
+        c4.scale_position.space = epiphany_core::PitchSpaceId::new("cmn-24");
+        let (mut base, pid) = base_with_pitch(c4);
+        author_spelling(&mut base, pid, PitchSpelling::cmn(CmnNominal::B, 4));
+        let expected = pitch_of(&base, pid);
+
+        let (effect, score) = run_transpose(&base, &[pid], interval(1, 2));
+        assert_eq!(
+            effect,
+            OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TranspositionOutOfRange,
+                },
+            }
+        );
+        // Refused atomically: the value is untouched, not left half-transposed.
         assert_eq!(pitch_of(&score, pid), expected);
     }
 

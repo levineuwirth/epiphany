@@ -27,6 +27,11 @@
 //! * `pitch` — [`Pitch`], [`ScalePosition`], [`IdentifiedPitch`],
 //!   [`PitchSpelling`], and the spelling-attachment subsystem (Chapter 2;
 //!   Chapter 4 for the tuning/pitch-space registry identifiers it references).
+//! * `pitch_space` — the Chapter 4 pitch-space vocabulary
+//!   ([`PositionStructure`], [`PitchSpace`], [`IntervalAlgebra`],
+//!   [`TranspositionBehavior`]) and [`built_in_position_structure`], the
+//!   built-in catalog `Pitch::transposed` resolves against. In-memory only —
+//!   no `Codec` impl exists for anything here (Push 4b Ruling C).
 //! * `event` — the [`Event`] taxonomy and the [`EventArena`] (Chapter 5
 //!   §"The Event Arena").
 //! * `graph` — [`Canvas`], [`Region`], [`Staff`]/[`StaffInstance`] (distinct
@@ -52,6 +57,7 @@ mod ids;
 mod indexes;
 mod invariants;
 mod pitch;
+mod pitch_space;
 mod tempo;
 mod textvalue_event;
 mod textvalue_graph;
@@ -83,12 +89,18 @@ pub use time::{
 pub use pitch::{
     canonical_pitch_bytes, derive_system_pitch_id, spell, AccidentalId, AccidentalRegistryId,
     AcousticPitch, AcousticRealization, CmnNominal, DecompositionAlgorithmId, ForeignFormatId,
-    IdentifiedPitch, NominalRegistryId, Pitch, PitchRange, PitchSpaceId, PitchSpacePosition,
-    PitchSpelling, PositionRegistryId, ReferencePitch, ScalePosition, SpellingAlgorithmId,
-    SpellingAttachment, SpellingContext, SpellingDirective, SpellingNominal, SpellingPrecedence,
-    SpellingRenderHints, SpellingRule, SpellingRuleSetId, SpellingScope, SpellingSource,
-    SpellingSourceKind, StaffGroupKindRegistryId, TieClassRegistryId, TransposeRefusal,
-    TranspositionInterval, TuningReference, TuningSystemId, VoiceSelector,
+    IdentifiedPitch, IntervalAlgebraRegistryId, NominalRegistryId, Pitch, PitchRange, PitchSpaceId,
+    PitchSpacePosition, PitchSpelling, PositionRegistryId, PositionStructureRegistryId,
+    ReferencePitch, ScalePosition, SpellingAlgorithmId, SpellingAttachment, SpellingContext,
+    SpellingDirective, SpellingNominal, SpellingPrecedence, SpellingRenderHints, SpellingRule,
+    SpellingRuleSetId, SpellingScope, SpellingSource, SpellingSourceKind, StaffGroupKindRegistryId,
+    TieClassRegistryId, TransposeRefusal, TranspositionInterval, TranspositionRegistryId,
+    TuningReference, TuningSystemId, VoiceSelector,
+};
+
+pub use pitch_space::{
+    built_in_position_structure, IntervalAlgebra, JiRatio, PitchSpace, PositionStructure,
+    SpellingParameters, SpellingRuleSet, TranspositionBehavior,
 };
 
 pub use prepass::{

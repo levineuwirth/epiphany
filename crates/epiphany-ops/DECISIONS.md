@@ -1667,3 +1667,41 @@ that locks it, and it fails under that mutation.
 `OperationId::new(ReplicaId(7), 1)` have *identical canonical bytes* — typed ids
 share their byte form. A byte-patching test that searches for an id finds the
 envelope's own leading id first. Patch by framing, or from the end.
+
+## Push 4b tranche 1 — the transpose reduction's own proof of life (2026-07-22)
+
+Core's `Pitch::transposed` learned to resolve `cmn-24` structurally (the
+tranche retires the P13-S2 `"cmn-12"` string guard). But the plan's stated proof
+of life — a `cmn-24` pitch transposing *end-to-end* — failed one layer up, in
+this crate, and the tranche's own test suite could not see it.
+
+`resolve_transposed_spellings` computed the transposed 12-TET semitone with a
+`?` **before** the loop that looks for an authored spelling to rewrite. The
+semitone is 12-chromatic-only (the spelling pre-pass has not changed), so it is
+`None` for `cmn-24` — and the early `?` therefore refused **every** `cmn-24`
+transpose, including one with no spelling to rewrite at all. Measured directly: a
+spelling-less `cmn-24` pitch reduced to `NoOp { TranspositionOutOfRange }`, value
+untouched.
+
+This is **P13-S3-shaped**: latent in code, correct-looking, and made *reachable*
+— not introduced — the moment the space it gates on started resolving. Before the
+tranche, `current.transposed()` refused `cmn-24` earlier, so control never
+reached this `?`. The same shape as the shared-undo-key defect above, and the
+same lesson: a capability landing upstream can turn a dormant downstream branch
+live, and only re-deriving the end-to-end behaviour catches it.
+
+**Fix: move the `?` to point of use, inside the loop.** The semitone is needed
+only to rewrite an authored spelling; computed where it is consumed, a
+spelling-less `cmn-24` transposes, and one *with* an authored spelling still
+refuses — the spelling pre-pass genuinely cannot write a 24-chromatic accidental,
+so refusing beats leaving it stale. Two tests lock the two halves, each
+mutation-killed by a *different* mutation: hoisting the `?` back kills the
+transposes-when-empty test; swallowing it with `unwrap_or(0)` kills the
+refuses-when-authored test.
+
+**Not a frozen-replay violation.** `TransposeInterval` (disc 30) is the live
+operation whose capability may widen; the frozen one is `Transpose` (disc 9),
+untouched. Widening what `TransposeInterval` can transpose is the tranche's
+ratified purpose, and the version skew it implies (an old replica refuses what a
+new one applies) is the tranche's property, not this fix's — the fix only makes
+the operation layer agree with the core layer the tranche already moved.
