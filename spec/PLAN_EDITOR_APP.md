@@ -538,6 +538,41 @@ antialiasing and curve flattening while being geometrically correct.
 Pixel-exact comparison is reserved for Ruling C, where both sides are the
 same SVG/resvg pipeline.
 
+### Ruling E — the clipboard fragment projection — **GRANTED 2026-07-23**
+
+**A versioned s-expression fragment format, values-only, paste-as-minting.**
+The T2 ruling the ladder reserved, now drafted:
+
+* **Header and versioning:** `(epiphany-fragment (major minor patch))`,
+  starting `(0 1 0)`. An unrecognized major is **rejected**, never partially
+  parsed. The fragment format is application-level and versioned — it is NOT
+  canonical wire format, opens no schema major, and may evolve.
+* **Values, never identities.** A fragment reuses the Text Projection's
+  *value/leaf productions* (pitches, durations, spellings — the ratified
+  textual forms) but NOT its document grammar: no document id, no envelopes,
+  no causal contexts, no object ids. Content is per-event **values** plus a
+  **rational onset relative to the fragment origin**, in per-voice lanes
+  keyed by ordinal (not `VoiceId`). Paste **mints fresh operations**
+  (`InsertEvent` + `RespellPitch` transactions, fresh ids from the session's
+  minters) — the §3.3 import-as-minting principle at clipboard scale.
+* **Closure, v1 (fail closed, report dropped):** notes/rests with their
+  per-event attachments copy; a slur copies iff **both** endpoints are inside
+  the range, else it is dropped and reported; a **partially-selected tuplet
+  refuses the copy** (the reducer's own refusal discipline); a tie cut by the
+  range boundary is dropped and reported; derived state (decomposition,
+  spellings that are merely inferred) is never copied — it re-derives.
+* **Placement:** `paste_at(point, &grid)` (pencil-style, via `position_at`)
+  and `paste_over_selection()` (at the anchor member's onset, in its voice) —
+  both with **make-room overwrite** semantics reusing `make_room`, and both
+  atomic transactions (a refused member rolls back the whole paste).
+* **Untrusted input:** hard caps on bytes, event count, and nesting depth,
+  each a named constant with a value-asserting rejection test; unknown
+  version → clean error. Fragments arrive from the OS clipboard; they are
+  input, not trusted state.
+
+Granting this ruling unblocks T2's W4 packet (copy/paste); W1–W3 do not
+depend on it.
+
 ### Ruling B — the document layer and persistence semantics — **REDRAFTED ×2 — NOT grantable yet**
 
 *(First draft withdrawn for violating the grow-only operation set. Second
