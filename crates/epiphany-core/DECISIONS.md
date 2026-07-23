@@ -874,3 +874,109 @@ something about them.
 
 **Requirement counts did not move again.** No `.tex` file was touched, no
 requirement added; the 212/282/282 counts stay put.
+
+## Push 4b tranche 2b: the ten historical temperaments resolve, built from their constructions
+
+`spec/CONTRACT_PUSH4B_TEMPERAMENTS.md`. The ten `TuningCatalogEntry::Deferred`
+entries tranche 2 left behind now resolve, via the specification's own third
+`TuningResolution` variant, `Function`. Same in-memory discipline as
+tranches 1 and 2: no `Codec`, no wire movement, canonical bytes untouched —
+only `tuning.rs`, `pitch.rs` (one new `catalog_id!`), and `lib.rs`
+(re-exports) changed.
+
+**`TuningResolution::Function { function: TuningFunctionId, parameters:
+TuningParameters }` lands, plus the `TuningFunctionId` catalog newtype**
+(`pitch.rs`, beside `TuningSystemId`). The ten temperaments are reserved
+built-in ids spelled identically to their `TuningSystemId` (`"pythagorean"`,
+`"werckmeister-iii"`, …); an id with no reserved built-in has no registry
+to fall back on, so `coordinate_ratio`'s `Function` arm returns `None` for
+it — the extension point fails closed, never a guessed frequency.
+`frequency_for_position`'s `divisions` match gains a `Function` arm too:
+since the variant carries no division count of its own, divisions comes
+from the *pitch space*'s chromatic cardinality instead (a new private
+`chromatic_cardinality(&PositionStructure) -> Option<u32>`, 12 for
+`cmn-12`), never from the resolution.
+
+**`TuningParameters` is a deliberate zero-field marker, exactly like
+`SpellingParameters`.** No built-in parameterizes a `Function` resolution —
+each of the ten temperaments is fixed entirely by its `TuningFunctionId`
+alone — and `core_spec.tex` never gives this type's shape (it calls the
+sibling `AdaptiveTuningParameters` "likewise undefined" for the identical
+reason, `:4083`). The type carries no state and exists only so
+`TuningResolution::Function`'s field list matches the specification's own
+listing.
+
+**The construction, not the cents table, is what's built.** Each temperament
+is represented as a `Construction = [FifthTempering; 12]`: one
+`FifthTempering` tag per fifth of the fixed circle-of-fifths chain
+`C–G–D–A–E–B–F♯–C♯–G♯–E♭–B♭–F–(C)` (`Pure`, `NarrowPythagorean(fraction)`,
+`WidePythagorean(fraction)`, `NarrowSyntonic(fraction)`, `NarrowSchisma`, or
+— for the four non-circulating temperaments' one closing wolf — `Residual`,
+whose cents are computed as whatever value brings the other eleven arcs'
+sum to exactly seven octaves, never given a fraction of its own). One shared
+`walk_temperament` function walks any construction forward from C,
+accumulating raw (unreduced) cents, then reduces each of the twelve chain
+notes' cumulative cents mod 1200 into its `cmn-12` chromatic degree's ratio.
+The same walk produces the wolf (for the four non-circulating constructions)
+and the full twelve-note closure (for the six circulating ones) without
+separate code paths — reducing mod 1200 is what lets the wolf simply fall
+out where the chain doesn't close, exactly as `core_spec.tex`'s own framing
+puts it ("any assignment of twelve distinct pitch classes must sum to seven
+octaves by construction"). The four comma sizes (`pure_fifth_cents`,
+`pythagorean_comma_cents`, `syntonic_comma_cents`, `schisma_cents`) are each
+`1200·log2(exact ratio)` in `f64` — never a hardcoded rounded cents
+constant — and the schisma is computed independently from `32805/32768`
+rather than derived as `pythagorean − syntonic`, so the closure tests prove
+that identity rather than assume it.
+
+**The closure invariant, recomputed in code, is what the tests assert.**
+For the six circulating temperaments (`werckmeister-iii`/`-iv`, `vallotti`,
+`kirnberger-ii`/`-iii`, `young-ii`), a test recomputes `12·pure_fifth_cents −
+raw_closure_cents` (the sum of the twelve fifths' deviations from pure) and
+asserts it equals `pythagorean_comma_cents()` (≈23.4600 c) within `1e-9`,
+plus a per-fifth bound (`<15 c` deviation from pure) proving none of the
+twelve is secretly a wolf. Computed values: werckmeister-iii, -iv, vallotti,
+kirnberger-ii, kirnberger-iii, and young-ii each summed to `23.460010…` c
+against the ratified `23.4600` c. For the four non-circulating ones
+(`pythagorean`, the three `meantone-*`), the residual wolf (chain arc 8,
+`G♯–E♭`) is asserted against the spec's ratified value: pythagorean
+678.495 c, computed 678.495 c; meantone-1/4 737.637 c, computed 737.637 c;
+meantone-1/5 725.809 c, computed 725.809 c; meantone-1/6 717.923 c,
+computed 717.923 c — all within `0.001` c.
+
+**The Kirnberger schisma-fifth trap and the Pythagorean-vs-syntonic comma
+trap were both reproduced as mutations, and both caught.** Dropping
+`kirnberger-ii`'s closing schisma fifth (changing its `F♯–C♯` arc from
+`NarrowSchisma` to `Pure`) landed the closure at 21.506 c — one schisma
+(1.954 c) short of 23.460 c — and only the closure test died. Changing
+`werckmeister-iii`'s comma from Pythagorean to syntonic (`NarrowPythagorean`
+→ `NarrowSyntonic` at the same fraction) landed the closure at 21.506 c
+(`4 × ¼ syntonic`) instead of 23.460 c, exactly the defect the contract
+predicted, and again only the closure test died. Both were reversed by
+undoing the exact substitution, never `git checkout`.
+
+**Discriminator and resolver-level tests were each mutation-verified too**
+(construction- or dispatch-level mutations, run to red, then reversed):
+swapping the `E`/`B` chromatic-degree slots in the shared
+`CHAIN_CHROMATIC_DEGREE` table killed both `pythagorean`'s E/F♯ test and the
+`meantone-1/4-comma` just-third test; doubling `kirnberger-iii`'s comma
+fraction to match `kirnberger-ii`'s killed the D-value discriminator (and,
+incidentally, the closure test, since the doubled fraction no longer sums to
+one Pythagorean comma either); moving `pythagorean`'s residual arc from
+index 8 to index 7 killed only the non-circulating wolf test; making
+`temperament_ratios`'s wildcard arm return `pythagorean`'s construction
+instead of `None` killed only the fail-closed test; typo-ing the
+`"vallotti"` match arm killed only the "all ten resolve" test; and making
+the resolver's `Function` arm ignore `function` and fall back to 12-TET
+killed both the `werckmeister-iii` C♯-distinctness test and the fail-closed
+test (the latter because an unknown id now also produced a ratio instead of
+`None`). Every mutation was reversed by undoing its exact substitution.
+
+**Zero golden or digest movement**, confirmed by the full gate: `cargo fmt
+--all --check`, `cargo clippy --workspace --all-targets` (0 warnings),
+`cargo test --workspace` (0 failed across every crate), `RUSTDOCFLAGS="-D
+warnings" cargo doc --workspace --no-deps` (0 warnings, after two
+intra-doc links to the private `temperament_ratios`/`coordinate_ratio`
+were de-linked to plain code spans), `conformance_suite` (8/8), and
+`requirement_labels` (6 passed, counts unchanged at 212/282/282) all pass.
+No `.tex` file was touched and no requirement was added.

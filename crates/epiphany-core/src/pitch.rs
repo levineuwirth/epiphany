@@ -77,6 +77,21 @@ catalog_id!(
     TuningSystemId
 );
 catalog_id!(
+    /// Identifies a registered tuning function consumed by
+    /// [`crate::tuning::TuningResolution::Function`] (Chapter 4
+    /// §"Tuning Resolution", `core_spec.tex:3318-3324`: "Procedural
+    /// definition: a registered tuning function that computes frequencies
+    /// from a reference. Historical temperaments ... live here."). The ten
+    /// historical temperaments (Push 4b tranche 2b) are reserved built-in
+    /// ids — `"pythagorean"`, `"werckmeister-iii"`, and so on — spelled
+    /// identically to their [`TuningSystemId`], since each temperament's
+    /// catalog entry and its tuning function share one identifier. An id
+    /// with no reserved built-in has no registry to resolve against
+    /// (`Function` is an extension point this tranche does not build a
+    /// registry for) and fails closed.
+    TuningFunctionId
+);
+catalog_id!(
     /// Identifies an accidental registry (Chapter 4 §"Accidental Registries").
     AccidentalRegistryId
 );

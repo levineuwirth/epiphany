@@ -103,7 +103,7 @@ pub use pitch::{
     SpellingDirective, SpellingNominal, SpellingPrecedence, SpellingRenderHints, SpellingRule,
     SpellingRuleSetId, SpellingScope, SpellingSource, SpellingSourceKind, StaffGroupKindRegistryId,
     TieClassRegistryId, TransposeRefusal, TranspositionInterval, TranspositionRegistryId,
-    TuningReference, TuningSystemId, VoiceSelector,
+    TuningFunctionId, TuningReference, TuningSystemId, VoiceSelector,
 };
 
 pub use pitch_space::{
@@ -151,8 +151,8 @@ pub use tempo::{
 
 pub use tuning::{
     built_in_tuning_system, frequency_for_position, resolve_pitch_frequency, resolve_tuning_scope,
-    PositionRatio, ResolvedTuning, TuningCatalogEntry, TuningOverride, TuningResolution,
-    TuningResolutionError, TuningScope, TuningSystem,
+    PositionRatio, ResolvedTuning, TuningCatalogEntry, TuningOverride, TuningParameters,
+    TuningResolution, TuningResolutionError, TuningScope, TuningSystem,
 };
 
 pub use codec::{CanonicalValue, ScoreDecodeError};

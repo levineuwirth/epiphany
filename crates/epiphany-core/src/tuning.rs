@@ -14,30 +14,34 @@
 //! codec in `codec.rs`), so they stay free to change once a later tranche
 //! discovers they are wrong.
 //!
-//! ## What this tranche resolves, and what it does not
+//! ## What resolves, and what still does not
 //!
 //! [`TuningResolution`] is a **six**-variant enum in the specification
-//! (`core_spec.tex:3309`); this tranche defines only the two variants the
-//! built-in catalog below actually constructs —
-//! [`TuningResolution::EqualTemperament`] and
-//! [`TuningResolution::PerPositionRatios`] — plus [`PositionRatio`]. The
-//! other four are transcribed only when a built-in needs them, so their
-//! unconstructed payload subtrees (`TuningParameters`, `ImportedTuningData`,
-//! `AdaptiveTuningParameters`, …) never become an unconsumed type surface
-//! (the `NOTEHEAD_ANCHORS` failure): `Function` waits on Push 4b tranche 2b,
-//! which re-derives the ten historical temperaments from their ratified
-//! constructions; `Adaptive` waits on `HarmonicContext`, which does not exist
-//! in Rust and whose completion `core_spec.tex` puts out of scope; `Overlay`
-//! and `Imported` wait on a built-in that needs a split-accidental keyboard
-//! or an imported `.scl`/MTS tuning respectively — nothing in the twenty-item
-//! catalog constructs either.
+//! (`core_spec.tex:3309`); this module defines three —
+//! [`TuningResolution::EqualTemperament`], [`TuningResolution::PerPositionRatios`],
+//! and, since Push 4b tranche 2b, [`TuningResolution::Function`] (plus
+//! [`PositionRatio`] and the marker [`TuningParameters`]). The other three are
+//! transcribed only when a built-in needs them, so their unconstructed payload
+//! subtrees (`ImportedTuningData`, `AdaptiveTuningParameters`, …) never become
+//! an unconsumed type surface (the `NOTEHEAD_ANCHORS` failure): `Adaptive`
+//! waits on `HarmonicContext`, which does not exist in Rust and whose
+//! completion `core_spec.tex` puts out of scope; `Overlay` and `Imported` wait
+//! on a built-in that needs a split-accidental keyboard or an imported
+//! `.scl`/MTS tuning respectively — nothing in the twenty-item catalog
+//! constructs either.
 //!
-//! [`built_in_tuning_system`] resolves **nine** of the twenty catalog
+//! [`built_in_tuning_system`] resolves **nineteen** of the twenty catalog
 //! identifiers (`req:tuning:builtin-tuning-catalog`): the six `tet-*` equal
-//! temperaments and the three `ji-static-5limit-*` just-intonation systems.
-//! The ten historical temperaments and `ji-adaptive-5limit` are real catalog
-//! entries whose resolution this tranche defers
-//! ([`TuningCatalogEntry::Deferred`]) — never a guessed frequency.
+//! temperaments, the three `ji-static-5limit-*` just-intonation systems, and,
+//! since tranche 2b, the ten historical temperaments (`pythagorean`, the three
+//! `meantone-*`, `werckmeister-iii`/`-iv`, `vallotti`, `kirnberger-ii`/`-iii`,
+//! `young-ii`) — each built from its ratified fifth-tempering construction
+//! (`core_spec.tex` §"Temperament Constructions", `:3696`-`4011`) by
+//! `temperament_ratios`, never from a pasted cents table. Only
+//! `ji-adaptive-5limit` is still a real catalog entry whose resolution this
+//! module defers ([`TuningCatalogEntry::Deferred`]) — never a guessed
+//! frequency — because it needs `HarmonicContext`, which does not exist in
+//! Rust.
 //!
 //! ## The compatibility check, narrowed the same way tranche 1 narrowed it
 //!
@@ -54,8 +58,8 @@ use core::num::NonZeroU32;
 use crate::graph::{Score, ScoreTuningContext};
 use crate::ids::{RegionId, StaffId, VoiceId};
 use crate::pitch::{
-    AcousticRealization, Pitch, PitchSpaceId, PitchSpacePosition, ReferencePitch, TuningReference,
-    TuningSystemId, VoiceSelector,
+    AcousticRealization, Pitch, PitchSpaceId, PitchSpacePosition, ReferencePitch, TuningFunctionId,
+    TuningReference, TuningSystemId, VoiceSelector,
 };
 use crate::pitch_space::{built_in_position_structure, JiRatio, PositionStructure};
 use crate::time::TimeAnchor;
@@ -86,11 +90,24 @@ pub struct PositionRatio {
     pub ratio: JiRatio,
 }
 
+/// Placeholder for [`TuningResolution::Function`]'s parameter schema
+/// (`core_spec.tex:3318-3324`). The specification never gives this type's
+/// shape — Chapter 4's own forward-reference list (`:4083`) singles out the
+/// sibling `AdaptiveTuningParameters` as "likewise undefined," for the same
+/// reason: no built-in in the twenty-item catalog parameterizes a `Function`
+/// resolution, since each of the ten historical temperaments this module
+/// builds is fixed entirely by its [`TuningFunctionId`] alone. The same
+/// discipline as [`SpellingParameters`](crate::pitch_space::SpellingParameters),
+/// one level down: a documented zero-field marker so
+/// `TuningResolution::Function`'s field list matches the specification's own
+/// listing, carrying no state and inventing no schema.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
+pub struct TuningParameters;
+
 /// How a tuning system resolves pitch-space positions to frequencies
 /// (`core_spec.tex:3309-3348`). **Deliberately partial**: the specification
-/// names six variants; this tranche defines the two the built-in catalog
-/// constructs. See the module doc for which tranche completes each of the
-/// other four.
+/// names six variants; this module defines three. See the module doc for
+/// which tranche completes each of the other three.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TuningResolution {
     /// N-tone equal temperament: each step is the Nth root of the octave
@@ -99,6 +116,22 @@ pub enum TuningResolution {
     /// Explicit per-position ratios, each relative to the reference
     /// position.
     PerPositionRatios(Vec<PositionRatio>),
+    /// Procedural definition: a registered tuning function that computes
+    /// frequencies from a reference (`core_spec.tex:3318-3324`: "Historical
+    /// temperaments (Werckmeister, Vallotti, meantone variants) live here").
+    /// The ten historical temperaments are reserved built-in
+    /// [`TuningFunctionId`]s, each re-derived from its ratified
+    /// fifth-tempering construction (`core_spec.tex` §"Temperament
+    /// Constructions", `:3696`-`4011`) by `temperament_ratios` rather than
+    /// transcribed from a cents table. No parameter schema exists yet
+    /// ([`TuningParameters`] is a documented marker); an unreserved
+    /// `TuningFunctionId` has no registry to resolve against and fails
+    /// closed (`coordinate_ratio` returns `None`) — `Function` is an
+    /// extension point, not a registry this module builds.
+    Function {
+        function: TuningFunctionId,
+        parameters: TuningParameters,
+    },
 }
 
 /// A tuning system: a map from pitch-space positions to frequencies, given a
@@ -163,7 +196,7 @@ pub enum TuningCatalogEntry {
 /// Looks up a built-in [`TuningSystem`] (Chapter 4 §"Built-in Catalog",
 /// `core_spec.tex:3656-3694`, `req:tuning:builtin-tuning-catalog`).
 ///
-/// Nine of the twenty resolve this tranche:
+/// Nineteen of the twenty resolve:
 ///
 /// * the six `tet-*` — [`TuningResolution::EqualTemperament`] from the
 ///   identifier's divisions. `tet-12` pairs with `cmn-12` (the default
@@ -175,16 +208,18 @@ pub enum TuningCatalogEntry {
 ///   computed by `ji_static_5limit_ratios` from the lattice block
 ///   (`req:tuning:ji-static-construction`), over `cmn-12`'s twelve chromatic
 ///   positions (`core_spec.tex:4019-4021`: "assigned in ascending order to
-///   the twelve chromatic positions of `cmn-12`").
-///
-/// The other eleven are real catalog entries whose resolution is deferred,
-/// not guessed ([`TuningCatalogEntry::Deferred`]):
-///
+///   the twelve chromatic positions of `cmn-12`");
 /// * the ten historical temperaments (`pythagorean`, three `meantone-*`,
 ///   `werckmeister-iii`/`-iv`, `vallotti`, `kirnberger-ii`/`-iii`,
-///   `young-ii`) — Push 4b tranche 2b re-derives each construction's
-///   twelve-fifth closure in code (see `spec/CONTRACT_PUSH4B_RESOLVER.md`'s
-///   closing section);
+///   `young-ii`, Push 4b tranche 2b) — [`TuningResolution::Function`], each
+///   built by `temperament_ratios` from its ratified fifth-tempering
+///   construction (`core_spec.tex` §"Temperament Constructions",
+///   `:3696`-`4011`), over `cmn-12`'s twelve chromatic positions exactly as
+///   the static-JI systems are.
+///
+/// The remaining one is a real catalog entry whose resolution is deferred,
+/// not guessed ([`TuningCatalogEntry::Deferred`]):
+///
 /// * `ji-adaptive-5limit` — needs `HarmonicContext`
 ///   (`req:tuning:adaptive-default-version`), which does not exist in Rust.
 ///
@@ -223,8 +258,23 @@ pub fn built_in_tuning_system(id: &TuningSystemId) -> Option<TuningCatalogEntry>
             )),
         })
     }
-    const DEFERRED_TEMPERAMENT: &str = "historical temperament; construction re-derivation is \
-        Push 4b tranche 2b (spec/CONTRACT_PUSH4B_RESOLVER.md, closing section)";
+    /// A historical temperament's catalog entry: [`TuningResolution::Function`]
+    /// naming `name` as its own [`TuningFunctionId`] (item 3 of
+    /// `spec/CONTRACT_PUSH4B_TEMPERAMENTS.md`: "`pitch_space` = `cmn-12`").
+    /// `desc` is transcribed from the built-in catalog table
+    /// (`core_spec.tex:3669-3679`).
+    fn temperament(name: &'static str, desc: &'static str) -> TuningCatalogEntry {
+        TuningCatalogEntry::Resolved(TuningSystem {
+            id: TuningSystemId::new(name),
+            name: name.to_owned(),
+            pitch_space: PitchSpaceId::new("cmn-12"),
+            resolution: TuningResolution::Function {
+                function: TuningFunctionId::new(name),
+                parameters: TuningParameters,
+            },
+            description: Some(desc.to_owned()),
+        })
+    }
     const DEFERRED_ADAPTIVE: &str =
         "adaptive tuning needs HarmonicContext, which does not exist in Rust (out of scope this tranche)";
     match id.as_str() {
@@ -242,9 +292,37 @@ pub fn built_in_tuning_system(id: &TuningSystemId) -> Option<TuningCatalogEntry>
         "ji-static-5limit-C" => Some(ji_static("ji-static-5limit-C", 0, "C")),
         "ji-static-5limit-G" => Some(ji_static("ji-static-5limit-G", 7, "G")),
         "ji-static-5limit-D" => Some(ji_static("ji-static-5limit-D", 2, "D")),
-        "pythagorean" | "meantone-1/4-comma" | "meantone-1/5-comma" | "meantone-1/6-comma"
-        | "werckmeister-iii" | "werckmeister-iv" | "vallotti" | "kirnberger-ii"
-        | "kirnberger-iii" | "young-ii" => Some(TuningCatalogEntry::Deferred(DEFERRED_TEMPERAMENT)),
+        "pythagorean" => Some(temperament(
+            "pythagorean",
+            "Pure-fifth (3:2) Pythagorean tuning.",
+        )),
+        "meantone-1/4-comma" => Some(temperament(
+            "meantone-1/4-comma",
+            "Quarter-comma meantone (pure major thirds).",
+        )),
+        "meantone-1/6-comma" => Some(temperament("meantone-1/6-comma", "Sixth-comma meantone.")),
+        "meantone-1/5-comma" => Some(temperament("meantone-1/5-comma", "Fifth-comma meantone.")),
+        "werckmeister-iii" => Some(temperament(
+            "werckmeister-iii",
+            "Werckmeister III well temperament.",
+        )),
+        "werckmeister-iv" => Some(temperament(
+            "werckmeister-iv",
+            "Werckmeister IV well temperament.",
+        )),
+        "vallotti" => Some(temperament("vallotti", "Vallotti well temperament.")),
+        "kirnberger-ii" => Some(temperament(
+            "kirnberger-ii",
+            "Kirnberger II well temperament.",
+        )),
+        "kirnberger-iii" => Some(temperament(
+            "kirnberger-iii",
+            "Kirnberger III well temperament.",
+        )),
+        "young-ii" => Some(temperament(
+            "young-ii",
+            "Thomas Young's second temperament.",
+        )),
         "ji-adaptive-5limit" => Some(TuningCatalogEntry::Deferred(DEFERRED_ADAPTIVE)),
         _ => None,
     }
@@ -321,6 +399,363 @@ fn ji_static_5limit_ratios(anchor_chromatic_degree: i32) -> Vec<PositionRatio> {
             },
         })
         .collect()
+}
+
+// ===========================================================================
+// The ten historical temperaments (item 2 of
+// `spec/CONTRACT_PUSH4B_TEMPERAMENTS.md`): the circle-of-fifths walk and the
+// ten ratified constructions it is walked over.
+// ===========================================================================
+
+/// The pure 3/2 fifth, the Pythagorean comma, the syntonic comma, and the
+/// schisma, each as `1200 · log2(exact ratio)` — never a hardcoded rounded
+/// cents value (`spec/CONTRACT_PUSH4B_TEMPERAMENTS.md` item 2 and "Do not":
+/// "Hardcode a rounded comma value"). `f64` throughout is correct here:
+/// these feed only non-canonical frequencies
+/// (`req:determinism:canonical-floating-point` binds *stored* canonical
+/// floats, not values computed and discarded in memory — read and confirmed
+/// before citing), and several fifths in the walk below (meantone's 1/5- and
+/// 1/6-comma variants) are irrational by construction, so there is no
+/// exact-rational alternative to begin with.
+fn pure_fifth_cents() -> f64 {
+    1200.0 * (3.0_f64 / 2.0).log2()
+}
+/// The Pythagorean comma, `531441/524288 ≈ 23.460` c (`core_spec.tex:3713`).
+fn pythagorean_comma_cents() -> f64 {
+    1200.0 * (531441.0_f64 / 524288.0).log2()
+}
+/// The syntonic comma, `81/80 ≈ 21.506` c (`core_spec.tex:3765`).
+fn syntonic_comma_cents() -> f64 {
+    1200.0 * (81.0_f64 / 80.0).log2()
+}
+/// The schisma, `32805/32768 ≈ 1.954` c (`core_spec.tex:3896`) — the
+/// Pythagorean comma minus the syntonic comma exactly: `syntonic + schisma =
+/// pythagorean`, which is why a Kirnberger construction's regular
+/// syntonic-tempered fifths plus its one schisma-tempered closing fifth
+/// reach exactly one Pythagorean comma of total tempering. Computed here
+/// directly from `32805/32768`, independently of [`pythagorean_comma_cents`]
+/// and [`syntonic_comma_cents`], so the closure tests below *prove* that
+/// identity rather than assume it.
+fn schisma_cents() -> f64 {
+    1200.0 * (32805.0_f64 / 32768.0).log2()
+}
+
+/// How one of the twelve fifths in the circle-of-fifths chain
+/// `C–G–D–A–E–B–F♯–C♯–G♯–E♭–B♭–F–(C)` is tempered by a historical
+/// construction (`core_spec.tex` §"Temperament Constructions",
+/// `:3696`-`4011`). This — which fifths, by what fraction of which comma —
+/// *is* the construction; the derived cents tables the specification also
+/// gives are checked against the walk below, never pasted in as data
+/// (`spec/CONTRACT_PUSH4B_TEMPERAMENTS.md` item 2).
+#[derive(Copy, Clone, Debug)]
+enum FifthTempering {
+    /// The untempered 3/2 ratio.
+    Pure,
+    /// Narrowed by `fraction` of the *Pythagorean* comma (Werckmeister
+    /// III/IV, Vallotti, Young II — the well temperaments).
+    NarrowPythagorean(f64),
+    /// Widened by `fraction` of the Pythagorean comma (Werckmeister IV's two
+    /// wide fifths, `G♯–E♭` and `E♭–B♭`).
+    WidePythagorean(f64),
+    /// Narrowed by `fraction` of the *syntonic* comma (meantone; Kirnberger's
+    /// regular tempered fifths).
+    NarrowSyntonic(f64),
+    /// Narrowed by exactly one schisma — Kirnberger's closing `F♯–D♭` fifth,
+    /// "the single most commonly omitted element of these ... constructions"
+    /// (`spec/CONTRACT_PUSH4B_TEMPERAMENTS.md`'s schisma-fifth trap).
+    NarrowSchisma,
+    /// The closing/residual fifth: given no fraction of its own, but
+    /// whatever cents value brings the twelve-fifth chain to exactly seven
+    /// octaves (8400 c) — the wolf, for the four non-circulating
+    /// constructions (`pythagorean`, the three `meantone-*`).
+    Residual,
+}
+
+/// A temperament's construction: the twelve fifths of the circle
+/// `C–G–D–A–E–B–F♯–C♯–G♯–E♭–B♭–F–(C)`
+/// (`spec/CONTRACT_PUSH4B_TEMPERAMENTS.md` item 2), in that fixed arc order —
+/// index 0 is `C–G`, index 1 is `G–D`, …, index 8 is `G♯–E♭` (the
+/// conventional wolf/closing position), index 11 is the final `F–C`.
+type Construction = [FifthTempering; 12];
+
+/// The `cmn-12` chromatic degree reached after each of the twelve chain
+/// arcs, in chain order starting from `C` itself: `C`(0), `G`(1), `D`(2),
+/// `A`(3), `E`(4), `B`(5), `F♯`(6), `C♯`(7), `G♯`(8), `E♭`(9), `B♭`(10),
+/// `F`(11) — i.e. `CHAIN_CHROMATIC_DEGREE[k]` is chain position `k`'s
+/// `cmn-12` degree (`C=0, C♯=1, D=2, …, B=11`).
+const CHAIN_CHROMATIC_DEGREE: [usize; 12] = [0, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10, 5];
+
+/// The result of walking a construction: the deliverable the closure tests
+/// below recompute from, never a hardcoded constant
+/// (`spec/CONTRACT_PUSH4B_TEMPERAMENTS.md`'s "closure invariant, recomputed
+/// in code").
+struct TemperamentWalk {
+    /// The twelve ratios relative to `C` (`1/1`), indexed by `cmn-12`
+    /// chromatic degree (`0..12`). The one field production code
+    /// ([`temperament_ratios`]) consumes.
+    ratios: [f64; 12],
+    /// The twelve individual fifths' actual cents, in chain order (index 0
+    /// is `C–G`, …, index 8 is `G♯–E♭`, index 11 is `F–C`) — read only by
+    /// the closure/wolf tests below, hence `#[cfg(test)]`: no production
+    /// code needs a single fifth's cents in isolation.
+    #[cfg(test)]
+    fifth_cents: [f64; 12],
+    /// The *raw* (unreduced) cumulative cents after walking all twelve
+    /// fifths forward from `C` — exactly `8400.0` (seven octaves) if and
+    /// only if the construction closes. Also test-only, for the same reason.
+    #[cfg(test)]
+    raw_closure_cents: f64,
+}
+
+/// Walks the circle-of-fifths chain under `construction`
+/// (`spec/CONTRACT_PUSH4B_TEMPERAMENTS.md` item 2: "one walk that places the
+/// twelve notes and derives their ratios"). At most one arc may be
+/// [`FifthTempering::Residual`] (the four non-circulating constructions);
+/// its cents are computed as whatever value brings the other eleven
+/// arcs' sum to seven octaves (`core_spec.tex:3749-3759`'s own framing:
+/// "any assignment of twelve distinct pitch classes must sum to
+/// [8400 c] ... by construction").
+fn walk_temperament(construction: &Construction) -> TemperamentWalk {
+    let pure = pure_fifth_cents();
+
+    // Pass 1: every fixed (non-residual) arc's actual cents, plus the index
+    // of the one residual (wolf) arc, if any.
+    let mut fifth_cents = [0.0f64; 12];
+    let mut residual_index: Option<usize> = None;
+    for (i, tempering) in construction.iter().enumerate() {
+        let deviation = match *tempering {
+            FifthTempering::Pure => 0.0,
+            FifthTempering::NarrowPythagorean(fraction) => fraction * pythagorean_comma_cents(),
+            FifthTempering::WidePythagorean(fraction) => -fraction * pythagorean_comma_cents(),
+            FifthTempering::NarrowSyntonic(fraction) => fraction * syntonic_comma_cents(),
+            FifthTempering::NarrowSchisma => schisma_cents(),
+            FifthTempering::Residual => {
+                debug_assert!(
+                    residual_index.is_none(),
+                    "a construction may have at most one residual (wolf) fifth"
+                );
+                residual_index = Some(i);
+                continue;
+            }
+        };
+        fifth_cents[i] = pure - deviation;
+    }
+    // Pass 2: the residual (wolf) arc, if any, closes the chain to exactly
+    // seven octaves.
+    if let Some(i) = residual_index {
+        let sum_of_others: f64 = fifth_cents
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, c)| *c)
+            .sum();
+        fifth_cents[i] = 8400.0 - sum_of_others;
+    }
+
+    // Walk forward from C, accumulating *raw* (unreduced) cents; reducing
+    // only when reading off each chain note's pitch class below is what
+    // lets the wolf (for the non-circulating four) fall out of the same
+    // walk as everything else, rather than needing separate handling.
+    let mut cumulative = [0.0f64; 13];
+    for i in 0..12 {
+        cumulative[i + 1] = cumulative[i] + fifth_cents[i];
+    }
+
+    let mut ratios = [0.0f64; 12];
+    for (chain_pos, &degree) in CHAIN_CHROMATIC_DEGREE.iter().enumerate() {
+        let pitch_class_cents = cumulative[chain_pos].rem_euclid(1200.0);
+        ratios[degree] = 2f64.powf(pitch_class_cents / 1200.0);
+    }
+
+    TemperamentWalk {
+        ratios,
+        #[cfg(test)]
+        fifth_cents,
+        #[cfg(test)]
+        raw_closure_cents: cumulative[12],
+    }
+}
+
+/// `pythagorean` (`core_spec.tex:3709-3759`): eleven pure fifths; the
+/// conventional `E♭–G♯` cut leaves the wolf at `G♯–E♭` (chain arc 8).
+fn pythagorean_construction() -> Construction {
+    use FifthTempering::{Pure, Residual};
+    [
+        Pure, Pure, Pure, Pure, Pure, Pure, Pure, Pure, Residual, Pure, Pure, Pure,
+    ]
+}
+
+/// `meantone-1/n-comma` (`core_spec.tex:3761-3812`): all eleven non-wolf
+/// fifths narrowed uniformly by `1/n` of the *syntonic* comma; same
+/// `E♭–G♯` cut as `pythagorean`, so the wolf is again chain arc 8.
+fn meantone_construction(comma_fraction: f64) -> Construction {
+    use FifthTempering::{NarrowSyntonic, Residual};
+    let n = NarrowSyntonic(comma_fraction);
+    [n, n, n, n, n, n, n, n, Residual, n, n, n]
+}
+
+/// `werckmeister-iii` (`core_spec.tex:3814-3838`): `C–G, G–D, D–A, B–F♯`
+/// narrowed 1/4 Pythagorean comma; the other eight pure. Circulating — no
+/// residual arc.
+fn werckmeister_iii_construction() -> Construction {
+    use FifthTempering::{NarrowPythagorean, Pure};
+    let quarter = NarrowPythagorean(0.25);
+    [
+        quarter, // 0: C-G
+        quarter, // 1: G-D
+        quarter, // 2: D-A
+        Pure,    // 3: A-E
+        Pure,    // 4: E-B
+        quarter, // 5: B-F#
+        Pure,    // 6: F#-C#
+        Pure,    // 7: C#-G#
+        Pure,    // 8: G#-Eb
+        Pure,    // 9: Eb-Bb
+        Pure,    // 10: Bb-F
+        Pure,    // 11: F-C
+    ]
+}
+
+/// `werckmeister-iv` (`core_spec.tex:3840-3866`): `C–G, D–A, E–B, F♯–C♯,
+/// B♭–F` narrowed 1/3 Pythagorean comma; `G♯–E♭, E♭–B♭` widened 1/3
+/// Pythagorean comma; the other five pure. Circulating.
+fn werckmeister_iv_construction() -> Construction {
+    use FifthTempering::{NarrowPythagorean, Pure, WidePythagorean};
+    let narrow = NarrowPythagorean(1.0 / 3.0);
+    let wide = WidePythagorean(1.0 / 3.0);
+    [
+        narrow, // 0: C-G
+        Pure,   // 1: G-D
+        narrow, // 2: D-A
+        Pure,   // 3: A-E
+        narrow, // 4: E-B
+        Pure,   // 5: B-F#
+        narrow, // 6: F#-C#
+        Pure,   // 7: C#-G#
+        wide,   // 8: G#-Eb
+        wide,   // 9: Eb-Bb
+        narrow, // 10: Bb-F
+        Pure,   // 11: F-C
+    ]
+}
+
+/// `vallotti` (`core_spec.tex:3868-3888`): `F–C, C–G, G–D, D–A, A–E, E–B`
+/// (six consecutive) narrowed 1/6 Pythagorean comma; the other six pure.
+/// Circulating.
+fn vallotti_construction() -> Construction {
+    use FifthTempering::{NarrowPythagorean, Pure};
+    let sixth = NarrowPythagorean(1.0 / 6.0);
+    [
+        sixth, // 0: C-G
+        sixth, // 1: G-D
+        sixth, // 2: D-A
+        sixth, // 3: A-E
+        sixth, // 4: E-B
+        Pure,  // 5: B-F#
+        Pure,  // 6: F#-C#
+        Pure,  // 7: C#-G#
+        Pure,  // 8: G#-Eb
+        Pure,  // 9: Eb-Bb
+        Pure,  // 10: Bb-F
+        sixth, // 11: F-C
+    ]
+}
+
+/// `young-ii` (`core_spec.tex:3985-4010`): `C–G, G–D, D–A, A–E, E–B, B–F♯`
+/// (six consecutive) narrowed 1/6 Pythagorean comma; the other six pure —
+/// the same construction as `vallotti`, rotated to start at `C` instead of
+/// `F` (compare this construction's tempered run, arcs 0-5, against
+/// `vallotti`'s, arcs 11,0-4). Circulating.
+fn young_ii_construction() -> Construction {
+    use FifthTempering::{NarrowPythagorean, Pure};
+    let sixth = NarrowPythagorean(1.0 / 6.0);
+    [
+        sixth, // 0: C-G
+        sixth, // 1: G-D
+        sixth, // 2: D-A
+        sixth, // 3: A-E
+        sixth, // 4: E-B
+        sixth, // 5: B-F#
+        Pure,  // 6: F#-C#
+        Pure,  // 7: C#-G#
+        Pure,  // 8: G#-Eb
+        Pure,  // 9: Eb-Bb
+        Pure,  // 10: Bb-F
+        Pure,  // 11: F-C
+    ]
+}
+
+/// `kirnberger-ii` (`core_spec.tex:3890-3937`): `D–A, A–E` narrowed 1/2
+/// syntonic comma; the closing fifth (named `F♯–D♭` in the specification,
+/// since Kirnberger's own chain is built outward from `D♭` — the *same
+/// physical arc* as chain position 6, `F♯–C♯`, `D♭` and `C♯` being one
+/// enharmonic pitch class) narrowed one schisma — the trap
+/// `spec/CONTRACT_PUSH4B_TEMPERAMENTS.md` calls out by name; the other nine
+/// pure. Circulating.
+fn kirnberger_ii_construction() -> Construction {
+    use FifthTempering::{NarrowSchisma, NarrowSyntonic, Pure};
+    let half = NarrowSyntonic(0.5);
+    [
+        Pure,          // 0: C-G
+        Pure,          // 1: G-D
+        half,          // 2: D-A
+        half,          // 3: A-E
+        Pure,          // 4: E-B
+        Pure,          // 5: B-F#
+        NarrowSchisma, // 6: F#-C# (the closing F#-Db fifth)
+        Pure,          // 7: C#-G#
+        Pure,          // 8: G#-Eb
+        Pure,          // 9: Eb-Bb
+        Pure,          // 10: Bb-F
+        Pure,          // 11: F-C
+    ]
+}
+
+/// `kirnberger-iii` (`core_spec.tex:3939-3983`): `C–G, G–D, D–A, A–E` (four
+/// consecutive) narrowed 1/4 syntonic comma; the same closing `F♯–D♭`
+/// (chain position 6) narrowed one schisma as `kirnberger-ii`; the other
+/// seven pure. Circulating.
+fn kirnberger_iii_construction() -> Construction {
+    use FifthTempering::{NarrowSchisma, NarrowSyntonic, Pure};
+    let quarter = NarrowSyntonic(0.25);
+    [
+        quarter,       // 0: C-G
+        quarter,       // 1: G-D
+        quarter,       // 2: D-A
+        quarter,       // 3: A-E
+        Pure,          // 4: E-B
+        Pure,          // 5: B-F#
+        NarrowSchisma, // 6: F#-C# (the closing F#-Db fifth)
+        Pure,          // 7: C#-G#
+        Pure,          // 8: G#-Eb
+        Pure,          // 9: Eb-Bb
+        Pure,          // 10: Bb-F
+        Pure,          // 11: F-C
+    ]
+}
+
+/// The twelve ratios (indexed by `cmn-12` chromatic degree) of the
+/// reserved-built-in temperament named by `function`, or `None` for any
+/// other id — the extension point's fail-closed path
+/// (`spec/CONTRACT_PUSH4B_TEMPERAMENTS.md` item 1: "An unknown
+/// `TuningFunctionId` returns `None` ... `Function` is an extension point and
+/// no registry exists"). Never memoized: each of the ten constructions is
+/// cheap arithmetic on twelve `f64`s, so there is no cache to keep coherent.
+fn temperament_ratios(function: &TuningFunctionId) -> Option<[f64; 12]> {
+    let construction = match function.as_str() {
+        "pythagorean" => pythagorean_construction(),
+        "meantone-1/4-comma" => meantone_construction(0.25),
+        "meantone-1/5-comma" => meantone_construction(0.2),
+        "meantone-1/6-comma" => meantone_construction(1.0 / 6.0),
+        "werckmeister-iii" => werckmeister_iii_construction(),
+        "werckmeister-iv" => werckmeister_iv_construction(),
+        "vallotti" => vallotti_construction(),
+        "kirnberger-ii" => kirnberger_ii_construction(),
+        "kirnberger-iii" => kirnberger_iii_construction(),
+        "young-ii" => young_ii_construction(),
+        _ => return None,
+    };
+    Some(walk_temperament(&construction).ratios)
 }
 
 // ===========================================================================
@@ -438,6 +873,26 @@ fn absolute_coordinate(
     }
 }
 
+/// The chromatic cardinality of `structure` — the "positions per octave"
+/// figure [`TuningResolution::Function`] borrows from the pitch space
+/// rather than carrying itself (the variant has no division-count field,
+/// `core_spec.tex:3318-3324`). Both `Chromatic` and `DiatonicOverChromatic`
+/// name one; `JiLattice` and `Registered` do not (a lattice or a grammar
+/// plugin has no single "positions per octave" scalar), so `None` there is
+/// a structural refusal, not an oversight.
+fn chromatic_cardinality(structure: &PositionStructure) -> Option<u32> {
+    match structure {
+        PositionStructure::Chromatic {
+            positions_per_octave,
+        } => Some(u32::from(*positions_per_octave)),
+        PositionStructure::DiatonicOverChromatic {
+            chromatic_positions_per_octave,
+            ..
+        } => Some(u32::from(*chromatic_positions_per_octave)),
+        PositionStructure::JiLattice { .. } | PositionStructure::Registered(_) => None,
+    }
+}
+
 /// The full-register frequency ratio of absolute coordinate `s`, relative to
 /// coordinate `0` under `resolution`.
 fn coordinate_ratio(resolution: &TuningResolution, s: i64) -> Option<f64> {
@@ -457,6 +912,18 @@ fn coordinate_ratio(resolution: &TuningResolution, s: i64) -> Option<f64> {
             let entry = table.iter().find(|pr| pr.position == degree)?;
             let base = f64::from(entry.ratio.numerator) / f64::from(entry.ratio.denominator.get());
             Some(base * 2f64.powi(octave))
+        }
+        TuningResolution::Function { function, .. } => {
+            // `degree = s.rem_euclid(12)`, `octave = s.div_euclid(12)`,
+            // `ratio = temperament_ratios[degree] · 2^octave`
+            // (`spec/CONTRACT_PUSH4B_TEMPERAMENTS.md` item 1). An unknown
+            // `TuningFunctionId` has no registry to consult, so
+            // `temperament_ratios` returns `None` and this fails closed —
+            // never a fallback frequency.
+            let ratios = temperament_ratios(function)?;
+            let degree = i32::try_from(s.rem_euclid(12)).ok()?;
+            let octave = i32::try_from(s.div_euclid(12)).ok()?;
+            Some(ratios[degree as usize] * 2f64.powi(octave))
         }
     }
 }
@@ -483,14 +950,20 @@ pub fn frequency_for_position(
 ) -> Result<f64, TuningResolutionError> {
     let structure = built_in_position_structure(&system.pitch_space)
         .ok_or_else(|| TuningResolutionError::UnresolvedPitchSpace(system.pitch_space.clone()))?;
-    let divisions = match &system.resolution {
-        TuningResolution::EqualTemperament {
-            divisions_per_octave,
-        } => u32::from(*divisions_per_octave),
-        TuningResolution::PerPositionRatios(table) => {
-            u32::try_from(table.len()).map_err(|_| TuningResolutionError::PositionUnavailable)?
-        }
-    };
+    let divisions =
+        match &system.resolution {
+            TuningResolution::EqualTemperament {
+                divisions_per_octave,
+            } => u32::from(*divisions_per_octave),
+            TuningResolution::PerPositionRatios(table) => u32::try_from(table.len())
+                .map_err(|_| TuningResolutionError::PositionUnavailable)?,
+            // `Function` carries no division count of its own (unlike the other
+            // two variants); divisions comes from the *pitch space*'s chromatic
+            // cardinality instead — 12 for `cmn-12`
+            // (`spec/CONTRACT_PUSH4B_TEMPERAMENTS.md` item 1).
+            TuningResolution::Function { .. } => chromatic_cardinality(&structure)
+                .ok_or(TuningResolutionError::PositionUnavailable)?,
+        };
     let s = absolute_coordinate(position, &structure, divisions)
         .ok_or(TuningResolutionError::PositionUnavailable)?;
     let s_ref = absolute_coordinate(&reference.position, &structure, divisions)
@@ -903,22 +1376,25 @@ mod tests {
         );
     }
 
-    // -- Proof of life 5: deferred systems fail closed. -----------------------
+    // -- Proof of life 5: a deferred system fails closed. ---------------------
 
     #[test]
-    fn deferred_systems_fail_closed_pythagorean_and_ji_adaptive() {
+    fn deferred_ji_adaptive_fails_closed() {
+        // As of Push 4b tranche 2b, `pythagorean` (and the other nine
+        // historical temperaments) resolve — see the temperament tests
+        // below. `ji-adaptive-5limit` is the one remaining catalog entry
+        // whose resolution is still deferred (it needs `HarmonicContext`,
+        // which does not exist in Rust).
         let f = fixture();
         let c5 = cmn_pitch("cmn-12", CmnNominal::C, 0, 5);
-        for deferred in ["pythagorean", "ji-adaptive-5limit"] {
-            let mut score = f.score.clone();
-            score.tuning_context.default_tuning_system = TuningSystemId::new(deferred);
-            let err = resolve_pitch_frequency(&score, &c5, f.voice_a)
-                .expect_err(&format!("{deferred} must not resolve to a frequency"));
-            assert!(
-                matches!(err, TuningResolutionError::NotYetSupported { .. }),
-                "{deferred} must report NotYetSupported (a known-but-deferred identifier), got {err:?}"
-            );
-        }
+        let mut score = f.score.clone();
+        score.tuning_context.default_tuning_system = TuningSystemId::new("ji-adaptive-5limit");
+        let err = resolve_pitch_frequency(&score, &c5, f.voice_a)
+            .expect_err("ji-adaptive-5limit must not resolve to a frequency");
+        assert!(
+            matches!(err, TuningResolutionError::NotYetSupported { .. }),
+            "ji-adaptive-5limit must report NotYetSupported (a known-but-deferred identifier), got {err:?}"
+        );
         // A genuinely unknown identifier reports differently, so the two
         // failure modes never blur together.
         let mut score = f.score.clone();
@@ -977,6 +1453,231 @@ mod tests {
         assert!(
             cents(0.01).within(cents_between(freq, expected), 0.0),
             "expected ~{expected} Hz, got {freq}"
+        );
+    }
+
+    // =========================================================================
+    // Push 4b tranche 2b: the ten historical temperaments. This is the
+    // tranche's reason to exist, per `spec/CONTRACT_PUSH4B_TEMPERAMENTS.md`'s
+    // "Proof of life" section — every assertion below recomputes its expected
+    // value from the walk (or from an exact comma ratio), never from a
+    // hardcoded cents constant copied out of the spec's tables.
+    // =========================================================================
+
+    /// `1200 · log2(ratio)` for chromatic `degree` in `walk` — the cents this
+    /// module's own walk assigns that degree, relative to C.
+    fn cents_of(walk: &TemperamentWalk, degree: usize) -> f64 {
+        1200.0 * walk.ratios[degree].log2()
+    }
+
+    // -- Closure 1: the six circulating temperaments sum to one Pythagorean --
+    // -- comma, and none of their twelve fifths is a wolf. -------------------
+
+    #[test]
+    fn circulating_temperaments_close_to_one_pythagorean_comma_with_no_wolf() {
+        let comma = pythagorean_comma_cents();
+        let cases: [(&str, Construction); 6] = [
+            ("werckmeister-iii", werckmeister_iii_construction()),
+            ("werckmeister-iv", werckmeister_iv_construction()),
+            ("vallotti", vallotti_construction()),
+            ("kirnberger-ii", kirnberger_ii_construction()),
+            ("kirnberger-iii", kirnberger_iii_construction()),
+            ("young-ii", young_ii_construction()),
+        ];
+        for (name, construction) in cases {
+            let walk = walk_temperament(&construction);
+            // The sum of the twelve fifths' deviations from pure equals one
+            // Pythagorean comma (`spec/CONTRACT_PUSH4B_TEMPERAMENTS.md`'s
+            // closure invariant for the circulating six), recomputed from
+            // the walk's raw (unreduced) closing cents rather than asserted
+            // directly against a constant.
+            let total_deviation = 12.0 * pure_fifth_cents() - walk.raw_closure_cents;
+            assert!(
+                (total_deviation - comma).abs() < 1e-9,
+                "{name}: twelve fifths should deviate from pure by exactly one \
+                 Pythagorean comma ({comma} c), computed {total_deviation} c"
+            );
+            // No fifth is a wolf: every one of the twelve stays within 15 c
+            // of a pure fifth. 15 c comfortably exceeds this construction's
+            // largest single tempering (kirnberger-ii's half-syntonic-comma
+            // fifths, ~10.75 c) while comfortably staying below any real
+            // historical wolf (pythagorean's is ~23.5 c narrow; meantone's
+            // are 16-36 c wide).
+            for (i, &fifth) in walk.fifth_cents.iter().enumerate() {
+                let deviation = (fifth - pure_fifth_cents()).abs();
+                assert!(
+                    deviation < 15.0,
+                    "{name}: chain arc {i} deviates from pure by {deviation} c -- too large, looks like a wolf"
+                );
+            }
+        }
+    }
+
+    // -- Closure 2: the four non-circulating temperaments' residual wolf ------
+    // -- matches the spec's ratified value.                                --
+
+    #[test]
+    fn noncirculating_temperaments_wolf_matches_the_ratified_spec_value() {
+        // Chain arc 8 (`G♯–E♭`) is the one `Residual` arc in each of these
+        // four constructions -- see each `*_construction` function's own
+        // comment.
+        const WOLF_ARC: usize = 8;
+        let cases: [(&str, Construction, f64); 4] = [
+            ("pythagorean", pythagorean_construction(), 678.495),
+            ("meantone-1/4-comma", meantone_construction(0.25), 737.637),
+            ("meantone-1/5-comma", meantone_construction(0.2), 725.809),
+            (
+                "meantone-1/6-comma",
+                meantone_construction(1.0 / 6.0),
+                717.923,
+            ),
+        ];
+        for (name, construction, expected_wolf) in cases {
+            let walk = walk_temperament(&construction);
+            let wolf = walk.fifth_cents[WOLF_ARC];
+            assert!(
+                (wolf - expected_wolf).abs() < 0.001,
+                "{name}: expected the wolf at {expected_wolf} c (`core_spec.tex`'s ratified value), computed {wolf} c"
+            );
+        }
+    }
+
+    // -- Discriminators: spot values the walk must reproduce against the -----
+    // -- spec's own independently-derived cents tables.                   ----
+
+    #[test]
+    fn pythagorean_e_and_fsharp_match_the_published_cents() {
+        let walk = walk_temperament(&pythagorean_construction());
+        let e = cents_of(&walk, CmnNominal::E.chromatic() as usize);
+        let fsharp = cents_of(&walk, 6); // F# = chromatic degree 6, no plain CmnNominal for it
+        assert!(
+            (e - 407.820).abs() < 0.001,
+            "pythagorean E: expected 407.820 c, got {e}"
+        );
+        assert!(
+            (fsharp - 611.730).abs() < 0.001,
+            "pythagorean F#: expected 611.730 c, got {fsharp}"
+        );
+    }
+
+    #[test]
+    fn meantone_quarter_comma_major_third_c_to_e_is_the_just_5_4() {
+        let walk = walk_temperament(&meantone_construction(0.25));
+        let c = cents_of(&walk, CmnNominal::C.chromatic() as usize);
+        let e = cents_of(&walk, CmnNominal::E.chromatic() as usize);
+        let third = e - c;
+        assert!(
+            (third - 386.31).abs() < 0.01,
+            "expected the just 5/4 major third (386.31 c), got {third} c"
+        );
+    }
+
+    #[test]
+    fn kirnberger_ii_and_iii_d_differ_though_the_chain_skeleton_is_the_same() {
+        // Same chain skeleton (D-A/A-E tempered, F#-Db schisma-tempered),
+        // different comma fraction -- a test that passes both proves the two
+        // are not secretly the same construction.
+        let ii = walk_temperament(&kirnberger_ii_construction());
+        let iii = walk_temperament(&kirnberger_iii_construction());
+        let d = CmnNominal::D.chromatic() as usize;
+        let d_ii = cents_of(&ii, d);
+        let d_iii = cents_of(&iii, d);
+        assert!(
+            (d_ii - 203.910).abs() < 0.001,
+            "kirnberger-ii D: expected 203.910 c, got {d_ii}"
+        );
+        assert!(
+            (d_iii - 193.157).abs() < 0.001,
+            "kirnberger-iii D: expected 193.157 c, got {d_iii}"
+        );
+        assert!(
+            (d_ii - d_iii).abs() > 1.0,
+            "kirnberger-ii and -iii should disagree audibly on D, got {d_ii} vs {d_iii}"
+        );
+    }
+
+    // -- Resolver-level: all ten resolve to a real frequency. -----------------
+
+    #[test]
+    fn all_ten_temperaments_resolve_and_produce_a_real_frequency() {
+        const TEN: [&str; 10] = [
+            "pythagorean",
+            "meantone-1/4-comma",
+            "meantone-1/5-comma",
+            "meantone-1/6-comma",
+            "werckmeister-iii",
+            "werckmeister-iv",
+            "vallotti",
+            "kirnberger-ii",
+            "kirnberger-iii",
+            "young-ii",
+        ];
+        let f = fixture();
+        let c5 = cmn_pitch("cmn-12", CmnNominal::C, 0, 5);
+        for id in TEN {
+            let mut score = f.score.clone();
+            score.tuning_context.default_tuning_system = TuningSystemId::new(id);
+            let freq = resolve_pitch_frequency(&score, &c5, f.voice_a)
+                .unwrap_or_else(|e| panic!("{id} must resolve to a frequency, got error: {e}"));
+            assert!(
+                freq.is_finite() && freq > 0.0,
+                "{id}: expected a real, positive frequency, got {freq}"
+            );
+        }
+    }
+
+    #[test]
+    fn werckmeister_iii_c_sharp_resolves_distinctly_from_tet_12_c_sharp() {
+        let f = fixture();
+        let c_sharp = cmn_pitch("cmn-12", CmnNominal::C, 1, 5);
+        let mut wm_score = f.score.clone();
+        wm_score.tuning_context.default_tuning_system = TuningSystemId::new("werckmeister-iii");
+        // `f.score` already defaults to tet-12.
+        let wm_freq = resolve_pitch_frequency(&wm_score, &c_sharp, f.voice_a)
+            .expect("werckmeister-iii resolves");
+        let tet_freq =
+            resolve_pitch_frequency(&f.score, &c_sharp, f.voice_a).expect("tet-12 resolves");
+        let diff = cents_between(wm_freq, tet_freq);
+        assert!(
+            diff > 0.5,
+            "expected werckmeister-iii's C# to differ audibly from tet-12's, diff was only {diff} c"
+        );
+    }
+
+    // -- Fail-closed: an unreserved TuningFunctionId never yields a frequency. -
+
+    #[test]
+    fn unknown_tuning_function_id_fails_closed() {
+        // Unit level: `coordinate_ratio` returns `None` directly -- the
+        // extension point has no registry
+        // (`spec/CONTRACT_PUSH4B_TEMPERAMENTS.md` item 1).
+        let bogus_resolution = TuningResolution::Function {
+            function: TuningFunctionId::new("not-a-real-temperament"),
+            parameters: TuningParameters,
+        };
+        assert_eq!(coordinate_ratio(&bogus_resolution, 0), None);
+
+        // Full-pipeline level: a `TuningSystem` carrying that resolution
+        // never produces a frequency, only an error -- `PositionUnavailable`,
+        // since `coordinate_ratio`'s `None` is exactly what
+        // `frequency_for_position` reports that way for.
+        let bogus_system = TuningSystem {
+            id: TuningSystemId::new("bogus"),
+            name: "bogus".to_owned(),
+            pitch_space: PitchSpaceId::new("cmn-12"),
+            resolution: bogus_resolution,
+            description: None,
+        };
+        let c5_position = PitchSpacePosition::Cmn {
+            nominal: CmnNominal::C,
+            alteration: 0,
+            octave: 5,
+        };
+        let err = frequency_for_position(&c5_position, &bogus_system, &ReferencePitch::a440())
+            .expect_err("an unknown TuningFunctionId must never resolve to a frequency");
+        assert!(
+            matches!(err, TuningResolutionError::PositionUnavailable),
+            "expected PositionUnavailable, got {err:?}"
         );
     }
 }
