@@ -25,11 +25,16 @@ use epiphany_determinism::{DomainTag, Preimage};
 use crate::spatial::{BoundingBox, Point};
 
 /// The SMuFL version a catalog targets (Chapter 7: `SmuflVersion`).
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct SmuflVersion {
-    pub major: u16,
-    pub minor: u16,
-}
+///
+/// This is [`epiphany_core::SmuflVersion`] (Chapter 4 §"SMuFL Versioning"):
+/// the glyph catalog's version and the tuning context's declared SMuFL
+/// version are **the same type**, unified here in Push 4b tranche 3b-ii
+/// (P13-S12). Layout-ir previously defined its own `{ major: u16, minor: u16
+/// }` storing the minor *literally*, whose derived `Ord` sorted 1.3/1.4
+/// before 1.12 — backwards versus SMuFL's real release order. See
+/// [`epiphany_core::SmuflVersion`]'s doc comment for the fraction-normalized
+/// `minor_centi` shape that fixes it.
+pub use epiphany_core::SmuflVersion;
 
 /// Identifier of a specific SMuFL font (Chapter 7: `FontId`).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -117,7 +122,8 @@ impl Default for GlyphCatalogIdentity {
     /// one over only the glyphs it references (the solve's true inputs).
     fn default() -> Self {
         GlyphCatalogIdentity {
-            smufl_version: SmuflVersion { major: 1, minor: 4 },
+            smufl_version: SmuflVersion::from_decimal(1, "4")
+                .expect("1.4 is a valid SMuFL version"),
             font_id: FontId::BRAVURA,
             font_version: Some(BRAVURA_VERSION),
             metrics_hash: metrics_hash_for(BRAVURA_METRICS.iter().map(|m| m.name.as_ref())),
@@ -329,7 +335,7 @@ impl GlyphCatalog for BravuraCatalog {
     }
 
     fn smufl_version(&self) -> SmuflVersion {
-        SmuflVersion { major: 1, minor: 4 }
+        SmuflVersion::from_decimal(1, "4").expect("1.4 is a valid SMuFL version")
     }
 
     fn identity(&self, consulted: &[&str]) -> GlyphCatalogIdentity {
@@ -421,6 +427,39 @@ mod tests {
             GlyphCatalogIdentity::default().font_version,
             Some(BRAVURA_VERSION)
         );
+    }
+
+    /// P13-S12 / Push 4b tranche 3b-ii: the live bug this tranche fixes.
+    /// Layout-ir used to define its own `SmuflVersion { major: u16, minor:
+    /// u16 }` storing the minor digit *literally*, so derived `Ord` sorted
+    /// 1.3 and 1.4 **before** 1.12 — backwards versus SMuFL's real release
+    /// order (1.12 → 1.18 → 1.20 → 1.3 → 1.4). Exercised through
+    /// [`GlyphCatalogIdentity::smufl_version`], not the bare type, because
+    /// that field is the layout-conformance identity the bug actually lived
+    /// on.
+    ///
+    /// Non-vacuous: reverting `crate::SmuflVersion` to the deleted literal-minor
+    /// shape (`{ major: u16, minor: u16 }` with derived `Ord`) and rebuilding
+    /// each identity as `{ major: 1, minor: <the literal digits> }` makes this
+    /// test fail — `{1,3}` and `{1,4}` sort *before* `{1,12}`, breaking the
+    /// third assertion in the loop below. Verified by hand against the
+    /// pre-unification type before it was deleted.
+    #[test]
+    fn catalog_identity_smufl_version_orders_the_real_release_sequence() {
+        let identity_with = |minor_digits: &str| GlyphCatalogIdentity {
+            smufl_version: SmuflVersion::from_decimal(1, minor_digits)
+                .expect("valid SMuFL version"),
+            ..GlyphCatalogIdentity::default()
+        };
+        let sequence = ["12", "18", "20", "3", "4"].map(identity_with);
+        for pair in sequence.windows(2) {
+            assert!(
+                pair[0].smufl_version < pair[1].smufl_version,
+                "{:?} did not sort before {:?} in SMuFL's real release order",
+                pair[0].smufl_version,
+                pair[1].smufl_version
+            );
+        }
     }
 
     #[test]
@@ -516,7 +555,7 @@ mod tests {
                 None
             }
             fn smufl_version(&self) -> SmuflVersion {
-                SmuflVersion { major: 1, minor: 4 }
+                SmuflVersion::from_decimal(1, "4").expect("1.4 is a valid SMuFL version")
             }
             fn identity(&self, _consulted: &[&str]) -> GlyphCatalogIdentity {
                 GlyphCatalogIdentity {

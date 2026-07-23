@@ -1022,10 +1022,22 @@ until the shapes have had a consumer.
   sort before 1.12) would not lock S12 at all; see the mutation below, which
   reproduces exactly that failure and confirms this test catches it. **Not**
   `epiphany_layout_ir::SmuflVersion` (`glyph.rs:29`, literal-minor,
-  load-bearing for `GlyphCatalogIdentity`) — that type is untouched; the two
-  are a deliberate, bounded homonym (`epiphany-core` cannot depend on
-  `epiphany-layout-ir` in any case) until a later tranche unifies them and
-  moves `GlyphCatalogIdentity`, with golden regen.
+  load-bearing for `GlyphCatalogIdentity`) — at this tranche that type was
+  untouched, the two a deliberate, bounded homonym (`epiphany-core` cannot
+  depend on `epiphany-layout-ir` in any case), pending a later unification.
+
+  **Superseded by tranche 3b-ii (2026-07-23), which corrects two forward-looking
+  claims made here.** The homonym is gone: layout-ir's type is deleted and
+  re-exports this one, so `GlyphCatalogIdentity` now carries the normalized
+  shape and its backwards ordering (live at the time this was written) is
+  fixed. And the anticipated **"golden regen" never happened — there was
+  nothing to regenerate.** No golden, baseline, or vector anywhere in the
+  workspace is pinned to the catalog identity: every assertion on
+  `ResolvedLayoutIR::canonical_bytes()` is *relative* (stability, determinism,
+  and a sensitivity check that mutates `metrics_hash`, never `smufl_version`),
+  and the committed SVG/PNG goldens do not embed it. The encoded minor moved
+  `0x04` → `0x28` with no committed bytes pinning it. See
+  `epiphany-layout-ir/DECISIONS.md` for the unification itself.
 
 Also new: `CustomGlyphId`, `ModificationRegistryId`, `AccidentalGroupId`
 (`catalog_id!` entries in `pitch.rs`, beside `AccidentalRegistryId`/

@@ -3266,6 +3266,41 @@ pub enum GlyphReference {
 \end{requirement}
 
 \begin{lstlisting}[language=Rust]
+pub struct SmuflVersion {
+    pub major: u16,
+
+    /// The fractional part, normalized to hundredths.
+    pub minor_centi: u16,
+}
+\end{lstlisting}
+
+A SMuFL version's fractional part is stored \emph{normalized to
+hundredths} in \texttt{minor\_centi}, not as the literal digits that
+follow the decimal point: 1.12 $\to$ \tablenums{12}, 1.18 $\to$
+\tablenums{18}, 1.20 $\to$ \tablenums{20}, 1.3 $\to$ \tablenums{30},
+1.4 $\to$ \tablenums{40}. SMuFL versions are decimal fractions, and
+this repository's published minor releases did not arrive in digit
+order: 1.12 and 1.18 shipped before 1.3 and 1.4. A literal-digit
+encoding (\texttt{minor: 3} for 1.3, \texttt{minor: 12} for 1.12) is
+\textbf{non-conforming} because the derived ordering on
+\texttt{(major, minor)} then sorts 1.3 and 1.4 \emph{before} 1.12,
+backwards versus the real release history. The hundredths
+normalization also collapses the 1.2/1.20 spelling ambiguity: both
+denote the same release and both normalize to \tablenums{20}. This is
+the single \texttt{SmuflVersion} type used throughout the
+specification --- by \texttt{SmuflVersionRequirement} below and, in
+Chapter~\ref{ch:layout-ir}, by \texttt{GlyphCatalog::smufl\_version()}
+(Section~\ref{sec:layoutir:catalog}) and \texttt{GlyphCatalogIdentity}
+(Section~\ref{sec:layoutir:catalog-identity}).
+
+\begin{rationale}
+  For reference, SMuFL's minor releases in their real order, each with
+  its normalized \texttt{minor\_centi} value: 1.12
+  (\tablenums{12}), 1.18 (\tablenums{18}), 1.20 (\tablenums{20}), 1.3
+  (\tablenums{30}), 1.4 (\tablenums{40}).
+\end{rationale}
+
+\begin{lstlisting}[language=Rust]
 pub struct SmuflVersionRequirement {
     /// Minimum SMuFL version required by this score.
     pub minimum: SmuflVersion,
@@ -10406,7 +10441,10 @@ expressed in:
 The IR references glyphs by identifier; glyph metrics are queried
 from a font catalog at IR construction. This section defines the
 interface; the catalog implementation is outside the core
-specification.
+specification. \texttt{SmuflVersion}, below, is the same type declared
+by a score's \texttt{SmuflVersionRequirement}
+(Section~\ref{sec:tuning:smufl}): the glyph catalog's version and the
+tuning context's declared version are one type, not two.
 
 \begin{lstlisting}[language=Rust]
 pub trait GlyphCatalog: Send + Sync {
@@ -10449,7 +10487,10 @@ pub struct GlyphRenderData {
 \label{sec:layoutir:catalog-identity}
 
 Layout output depends on glyph metrics. For reproducible layout,
-the exact glyph catalog used \MUST{} be identifiable.
+the exact glyph catalog used \MUST{} be identifiable. \texttt{smufl\_version}
+below is a \texttt{SmuflVersion} (Section~\ref{sec:tuning:smufl}), ordered
+by its fraction-normalized \texttt{minor\_centi} so a catalog identity's
+version compares correctly against SMuFL's real release history.
 
 \begin{lstlisting}[language=Rust]
 /// A reproducibility-quality identifier for the glyph catalog

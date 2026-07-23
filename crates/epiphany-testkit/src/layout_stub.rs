@@ -794,12 +794,17 @@ pub fn gen_glyph_metric(rng: &mut Rng) -> GlyphMetric {
     BRAVURA_METRICS[rng.below(BRAVURA_METRICS.len() as u64) as usize].clone()
 }
 
-/// A SMuFL version.
+/// A SMuFL version. `minor_centi` is fraction-normalized (P13-S12): a small
+/// integer sampled directly (as the previous generator did) would denote
+/// 1.00-1.05 as hundredths, versions SMuFL never released. Instead sample the
+/// minor digit string from real SMuFL minor releases and normalize it through
+/// [`SmuflVersion::from_decimal`], the same constructor production code uses,
+/// so the generator can never emit a value the type's own invariant forbids.
 pub fn gen_smufl_version(rng: &mut Rng) -> SmuflVersion {
-    SmuflVersion {
-        major: rng.range(1, 2) as u16,
-        minor: rng.range(0, 6) as u16,
-    }
+    const MINOR_RELEASES: [&str; 5] = ["12", "18", "20", "3", "4"];
+    let major = rng.range(1, 2) as u16;
+    let minor_digits = MINOR_RELEASES[rng.below(MINOR_RELEASES.len() as u64) as usize];
+    SmuflVersion::from_decimal(major, minor_digits).expect("a real SMuFL minor release")
 }
 
 /// A font identifier (the bundled font).

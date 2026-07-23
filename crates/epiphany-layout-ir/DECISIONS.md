@@ -874,3 +874,59 @@ end, where it tucked a full notehead width to the *left* of the final note.
 **Deferred (Standard tier):** breaking a slur that clearance would make absurdly
 tall, per-kind appearance (`SlurKind::Phrase` etc.), and shaping against ledger
 lines and accidentals rather than notehead boxes.
+
+## `SmuflVersion` unification: layout-ir's literal-minor homonym is deleted (Push 4b tranche 3b-ii, P13-S12, 2026-07-23)
+
+`epiphany-layout-ir` had its own `SmuflVersion { major: u16, minor: u16 }`
+(`glyph.rs:29`), storing the minor **literally**. Derived `Ord` therefore
+sorted 1.3 and 1.4 **before** 1.12 — backwards versus SMuFL's real release
+order (1.12 → 1.18 → 1.20 → 1.3 → 1.4) — and the type was a direct field of
+`GlyphCatalogIdentity`, layout-conformance identity. **That bug was live.**
+
+Tranche 3a (P13-S10/S11/S12, ratified together) defined the correct
+fraction-normalized type in `epiphany_core::accidental::SmuflVersion`
+(`minor_centi`, e.g. `from_decimal(1, "4")` → `40`) for the tuning-context
+use, deliberately leaving layout-ir's alone as a bounded homonym — core
+cannot depend on layout-ir, so there was no way to share the type from that
+side. This tranche closes the other half: layout-ir deletes its own type and
+re-exports core's (`glyph.rs`: `pub use epiphany_core::SmuflVersion;`), so
+`epiphany_layout_ir::SmuflVersion` keeps resolving for every downstream user
+with zero call-site churn beyond the three literal-construction sites
+(`GlyphCatalogIdentity::default`, `BravuraCatalog::smufl_version`, and the
+in-crate test catalog), which now go through `SmuflVersion::from_decimal`
+rather than a hand-written `minor_centi`, per that field's own doc (`4` and
+`40` look interchangeable at a glance and are not).
+
+**Blast radius: no wire change.** `ChunkKind::LayoutCache` is a regenerable
+major-0 role; this is a discard-and-regenerate identity, not a decoded one.
+The one line that changes emitted bytes is `resolved.rs`'s `encode_catalog`
+(`.minor` → `.minor_centi`); `solver.rs`'s `forged_catalog_metadata_is_rejected`
+mutates the same field (`+= 1`) to build a still-nonsense version, unchanged
+in intent. The PASS13_CANDIDATES.md P13-S12 entry's claim that the move
+lands "with golden/vector regen" was verified false and corrected in
+place — no golden, baseline, or vector is pinned to the catalog identity
+anywhere in the workspace (every `canonical_bytes()` assertion is relative).
+
+**The generator regains meaning too**: `epiphany-testkit`'s
+`gen_smufl_version` used to draw `minor: rng.range(0, 6)`, which under the
+now-shared fraction-normalized field would denote 1.00–1.05 — versions SMuFL
+never released. It now samples a minor-digit string from the real release
+set (`"12", "18", "20", "3", "4"`) through `SmuflVersion::from_decimal`, so
+it can never emit a value the type's own invariant forbids.
+
+**Locked by** `catalog_identity_smufl_version_orders_the_real_release_sequence`
+(`glyph.rs`), which builds five `GlyphCatalogIdentity`s from the real release
+digits and asserts `1.12 < 1.18 < 1.20 < 1.3 < 1.4`. Mutation-verified by
+hand: reverting the identities' construction to store the digit strings
+literally in `minor_centi` (simulating the deleted type's storage) fails the
+test at the first backwards pair (`1.20` sorting after `1.3`), confirming
+the assertion is not vacuous.
+
+**Spec**: `core_spec.tex` gains the `SmuflVersion` type listing near
+`SmuflVersionRequirement` (§"SMuFL Versioning", Chapter 4) that P13-S12
+reached Rust and the wire but never the core specification for — a type
+listing with normative prose (fraction-normalized minor, the real release
+table as a non-normative note) and no new `\label{req:...}` (counts stay
+212/282/282). Both Chapter 9 usages (`GlyphCatalog::smufl_version()`,
+`GlyphCatalogIdentity.smufl_version`) gain a cross-reference sentence back to
+this single definition.

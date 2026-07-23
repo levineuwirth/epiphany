@@ -35,11 +35,9 @@
 //!   pinned frame — see its doc comment.
 //! * **S12** — [`SmuflVersion`] stores its minor fraction-normalized to
 //!   hundredths (`minor_centi`), not literally, so derived `Ord` agrees with
-//!   SMuFL's real release order. **This is not**
-//!   `epiphany_layout_ir`'s existing, differently-shaped `SmuflVersion`
-//!   (`glyph.rs:29`, literal-minor) — see this type's doc comment for why the
-//!   two are a deliberate, bounded homonym until Push 4b tranche 3b unifies
-//!   them.
+//!   SMuFL's real release order. `epiphany_layout_ir` defined its own,
+//!   differently-shaped, literal-minor `SmuflVersion` until Push 4b tranche
+//!   3b-ii unified the two onto this type — see this type's doc comment.
 
 use core::num::NonZeroU32;
 
@@ -248,14 +246,10 @@ pub struct ScoreAccidentalExtensions {
 /// otherwise look interchangeable and are not: the former is 1.3, the latter
 /// is nonsensical).
 ///
-/// **This is not** `epiphany_layout_ir::SmuflVersion` (`glyph.rs:29`,
-/// `{ major: u16, minor: u16 }`, literal-minor, load-bearing for
-/// `GlyphCatalogIdentity`). That type is Chapter 7's own and stays untouched:
-/// unifying the two, and moving `GlyphCatalogIdentity` onto the normalized
-/// shape, is Push 4b tranche 3b's job, done deliberately with golden regen.
-/// `epiphany-core` cannot depend on `epiphany-layout-ir` in any case, so
-/// within this crate there is no ambiguity — the two are a deliberate,
-/// bounded homonym until then.
+/// This is also `epiphany_layout_ir::SmuflVersion`: Push 4b tranche 3b-ii
+/// (P13-S12) unified layout-ir's former literal-minor homonym onto this type
+/// (`glyph.rs` re-exports it), so the glyph catalog's version and the tuning
+/// context's version are the same type.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct SmuflVersion {
     pub major: u16,

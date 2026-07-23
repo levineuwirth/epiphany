@@ -766,7 +766,7 @@ mod tests {
         assert!(!report.satisfied_hard_constraints);
 
         let mut input = constrained(vec![glyph("noteheadBlack")]);
-        input.catalog.smufl_version.minor += 1;
+        input.catalog.smufl_version.minor_centi += 1;
         assert_eq!(
             StubSolver.solve(&input, &SolverConfig::default()).status,
             SolveStatus::InternalError

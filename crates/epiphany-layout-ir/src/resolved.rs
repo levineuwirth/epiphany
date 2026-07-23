@@ -361,7 +361,7 @@ fn encode_decision(out: &mut Vec<u8>, d: &EngravingDecision) {
 
 fn encode_catalog(out: &mut Vec<u8>, c: &GlyphCatalogIdentity) {
     out.extend_from_slice(&c.smufl_version.major.to_le_bytes());
-    out.extend_from_slice(&c.smufl_version.minor.to_le_bytes());
+    out.extend_from_slice(&c.smufl_version.minor_centi.to_le_bytes());
     let font = c.font_id.0.as_bytes();
     push_len(out, font.len());
     out.extend_from_slice(font);
