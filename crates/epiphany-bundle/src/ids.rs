@@ -188,6 +188,13 @@ impl SchemaVersion {
     /// operation-envelope block bearing a v2 value.
     pub const V2: SchemaVersion = SchemaVersion { major: 2, minor: 0 };
 
+    /// Schema major 3 — the third data-model expansion major (Binary Format
+    /// companion §"Schema Major 3", Push 4b tranche 3b-i): `ScoreTuningContext`
+    /// gains `smufl` and `overrides` on the wire. Stamped on the acceleration
+    /// full-`Score` snapshot only — no operation payload embeds the tuning
+    /// context, so `OperationEnvelopeBlock`'s accept-set is untouched.
+    pub const V3: SchemaVersion = SchemaVersion { major: 3, minor: 0 };
+
     /// Constructs a schema version.
     #[inline]
     pub const fn new(major: u16, minor: u16) -> Self {
@@ -195,16 +202,18 @@ impl SchemaVersion {
     }
 
     /// The current schema version at a given major: [`Self::V0`] for major 0,
-    /// [`Self::V1`] for major 1, [`Self::V2`] for major 2, and `{major, 0}`
-    /// for any higher (future) major. A writer maps a chunk's derived schema
-    /// major to a version this way — e.g. an operation-envelope block stamps
-    /// the max over its operations' `schema_major()`.
+    /// [`Self::V1`] for major 1, [`Self::V2`] for major 2, [`Self::V3`] for
+    /// major 3, and `{major, 0}` for any higher (future) major. A writer maps
+    /// a chunk's derived schema major to a version this way — e.g. an
+    /// operation-envelope block stamps the max over its operations'
+    /// `schema_major()`.
     #[inline]
     pub const fn for_major(major: u16) -> Self {
         match major {
             0 => SchemaVersion::V0,
             1 => SchemaVersion::V1,
             2 => SchemaVersion::V2,
+            3 => SchemaVersion::V3,
             m => SchemaVersion { major: m, minor: 0 },
         }
     }

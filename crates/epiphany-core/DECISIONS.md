@@ -1175,3 +1175,133 @@ warnings, after one intra-doc link — `` [`:3160`] `` — was de-linked to a
 plain parenthetical citation), `conformance_suite` (8/8), and
 `requirement_labels` (6 passed, counts unchanged at 212/282/282) all pass.
 No `.tex` file was touched and no requirement was added.
+
+## Push 4b tranche 3b-i: schema major 3 opens — `smufl` and `overrides` reach the wire
+
+`spec/CONTRACT_PUSH4B_3BI_WIRE.md`. The user split the original 3b sketch in
+two and staged it down: 3b-i (this) freezes only `smufl` and `overrides` onto
+the score wire; `accidental_extensions` stays in memory (no consumer yet —
+the engraver, out of `epiphany-core`); the `SmuflVersion` unification with
+`epiphany-layout-ir` and the `GlyphCatalogIdentity` move are **3b-ii**, a
+separate dispatch, untouched here. This is the first **irreversible** byte
+layout of Push 4b: schema major 3 is now open, and every layout below is
+frozen forever under `req:binfmt:frozen-layout`.
+
+**The frozen wire**, exactly as the contract specifies:
+`ScoreTuningContext(v3) = (default_pitch_space, default_tuning_system,
+reference)` (the untouched v0..v2 prefix) `⌢ smufl ⌢ overrides`. Four new
+leaf `Codec` impls, all hand-written (not `struct_codec!`/
+`cstyle_enum_codec!`, since those macros also generate a `TextValue` impl,
+and none of these four types has one — text projection is a separate
+surface this tranche does not touch, so the macro would either fail to
+compile, missing `TextValue for u16`/`TuningScope`, or silently open a new
+projection surface nobody asked for):
+
+* `SmuflVersion = major(u16 LE) ⌢ minor_centi(u16 LE)`.
+* `SmuflVersionRequirement = minimum(SmuflVersion) ⌢ authored_against(SmuflVersion)`.
+* `TuningScope`: one discriminant byte ⌢ body — `0` Voice(VoiceId), `1`
+  Staff(StaffId), `2` Region(RegionId), `3` Range { start, end, voices }
+  (`TimeAnchor`/`VoiceSelector` already encode).
+* `TuningOverride = scope(TuningScope) ⌢ pitch_space(Option<PitchSpaceId>) ⌢
+  tuning_system(Option<TuningSystemId>) ⌢ reference(Option<ReferencePitch>)`.
+
+**The reroute — the highest-risk edit, and it reaches further than the
+contract's own two named call sites.** The contract named
+`decode_v0_score`/`decode_v1_score` as the must-not-miss reroute onto a new
+frozen `dec_tuning_context_v2` (the pre-v3, 3-field form — "v2" because it is
+the form majors 0/1/2 all share, exactly the naming convention
+`dec_ccr_v1`/`dec_metadata_v1` already use for "the frozen form as of the
+prior major"). Auditing the two named decoders surfaced two more sites the
+contract's prose did not call out but the same bug applies to: **their
+byte-exact-inverse encoders**, `encode_v0_score` and `encode_v1_score`, both
+of which called `s.tuning_context.enc(&mut out)` — the *live* codec. Once the
+live codec became 5-field, both would have silently started emitting 5-field
+tuning-context bytes inside a nominally-frozen v0/v1 form, which
+`decode_v0_score`/`decode_v1_score`'s own strict-canonicality re-encode check
+(`encode_v0_score(&score) != bytes`) would then reject on *every* input —
+not a subtle bug, a total breakage of the v0/v1 migration paths, caught only
+because the goldens exercise real synthesized v0/v1 bytes rather than
+hand-written literals. Fixed by routing both through a new
+`enc_tuning_context_v2`, symmetric with `dec_tuning_context_v2`. Also added
+(named by the contract): `encode_v2_score`/`decode_v2_score`, the newly-frozen
+schema-major-2 score form — the live walk for the other 18 fields (unchanged
+between major 2 and 3) plus `enc_tuning_context_v2`/`dec_tuning_context_v2`
+for `tuning_context`. `decode_canonical_versioned` now dispatches
+`3 => decode_canonical, 2 => decode_v2_score, 1 => decode_v1_score, 0 =>
+decode_v0_score`.
+
+**Consequences the contract didn't spell out, found by re-running every
+existing test after the bump:**
+
+* Two pre-existing tests asserted `decode_canonical_versioned(bytes, 2)` where
+  `2` meant "the current major" (`v1_round_trips_non_default_values_for_every_new_field`,
+  `current_major_round_trips_non_default_values_for_every_major_2_field`) —
+  both bumped to `3`.
+* `v0_score_migrates_default_filling_all_three_new_fields` asserted major `3`
+  was *unsupported* (`decode_canonical_versioned(.., 3).is_err()`) — true
+  before this tranche, false after (3 is now current). Bumped the probe to
+  `4`, the new first-unsupported major.
+* `v1_score_migrates_default_filling_the_major_2_fields`'s exact byte-count
+  size anchor (`current.len() - v1.len() == expected_removed`) silently grew
+  by a flat 12 bytes — `smufl`'s 8 (two bare `u16` pairs) plus `overrides`'
+  empty-count 4 — present in `current` (now v3) but absent from `v1` (frozen
+  pre-v3). Added `+ 12` to `expected_removed`, documented why.
+* Added the contract's asked-for `v2_score_migrates_default_filling_smufl_and_overrides`,
+  mirroring the v0/v1 migration goldens: synthesizes real v2 bytes via
+  `encode_v2_score`, asserts the flat 12-byte size anchor, and checks the v2
+  bytes migrate to the same score `decode_canonical` reaches.
+
+**The two off-the-wire tests fold into one staging-boundary test**, per the
+contract: `score_tuning_context_overrides_do_not_reach_the_wire` (tranche 2)
+is deleted outright (fully superseded); `..._accidental_extensions_smufl_and_overrides_do_not_reach_the_wire`
+(tranche 3a) is renamed to
+`score_tuning_context_smufl_and_overrides_reach_the_wire_accidental_extensions_do_not`
+and inverted: the same three-field-loaded fixture now asserts `smufl`/`overrides`
+survive `enc`→`dec` equal, while `accidental_extensions` still decodes empty.
+Mutation-verified (weakened the test to also expect `accidental_extensions`
+survival — it failed, confirming the drop assertion is real, not vacuous).
+
+**`bundle.rs:1356`'s `UnsupportedCanonicalChunkMajor { schema_major: 3 }`
+case — inspected, not guessed, per the contract's own instruction.** It is
+`committing_an_unsupported_major_op_root_makes_the_live_bundle_read_only`,
+which stages an `OperationEnvelopeBlock` (not a canonical base) at schema
+major 3 to prove "beyond the op-block accept-set." Since no operation
+payload embeds the tuning context, `max_supported_major(OperationEnvelopeBlock)`
+stays at 2 this tranche (verified: a full search of `epiphany-ops` for
+`ScoreTuningContext`/`TuningOverride`/`tuning_context`/
+`SmuflVersionRequirement` finds nothing) — so major 3 is *still* beyond that
+role's accept-set. **Left at 3, unchanged**; bumping to 4 would have been
+wrong (it would stop testing the boundary this test actually exercises). The
+sibling canonical-base test (`a_canonical_base_stamped_above_major_0_opens_read_only`,
+`schema_major: 1`) is a different test entirely and was never in scope.
+
+**Version/accept-set**: `SchemaVersion::V3 = {3, 0}` (`epiphany-bundle/src/ids.rs`);
+`max_supported_major(Snapshot) = 3`, `max_supported_major(OperationEnvelopeBlock) = 2`
+(unchanged — the first data-model major where a chunk role's max does not
+move in lockstep with the others); `testkit::roundtrip::assert_score_serialization_stable`
+flips both `for_major(2)` sites to `for_major(3)`.
+
+**Spec**: new `spec/binary_format.tex` §"Schema Major 3" (mirrors §Schema
+Major 2's structure: where the fields reach, cross-major reader behavior,
+changed/new layouts, the v2→v3 migration table), the chunk-level-gate section
+updated to state the accept-set is per-role as of this bump (Snapshot 3,
+OperationEnvelopeBlock 2, everything else 0), a revision-history entry
+(0.10.0), and the title-page version line. **No `req:` label added** —
+requirement counts stay 212/282/282 (asserted unchanged by
+`requirement_labels`, which passed 6/6).
+
+**Full gate green** after the bump: `cargo fmt --all --check`; `cargo clippy
+--workspace --all-targets` (0 warnings); `cargo test --workspace` (1271
+passed, 0 failed); `RUSTDOCFLAGS="-D warnings" cargo doc --workspace
+--no-deps` (0 warnings); `conformance_suite` (8/8); `requirement_labels`
+(6/6, counts unchanged at 212/282/282 — there is no `--example
+requirement_labels`; it is the integration test at
+`epiphany-testkit/tests/requirement_labels.rs`, run via `cargo test -p
+epiphany-testkit --test requirement_labels`). Mutation-verified the reroute
+itself: reverting all three `dec_tuning_context_v2` call sites back to the
+live `Codec::dec` killed six tests at once (`v0_score_migrates_*`,
+`v1_score_migrates_*`, `v2_score_migrates_*`, `v0_regions_inside_canvas_decode_after_region_grew`,
+`v0_decode_is_strictly_canonical_over_the_v0_wire_form`,
+`v1_round_trips_non_default_values_for_every_new_field`) — confirming the
+reroute is load-bearing across the whole frozen-decoder family, not just the
+two sites the contract named.

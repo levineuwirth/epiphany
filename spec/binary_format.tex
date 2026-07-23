@@ -240,7 +240,7 @@
   {\Large\scshape\color{epiphanyslate}Binary Format}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.9.0 --- The decode vector corpus is ratified (the cross-implementation decoder test is no longer deferred)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.10.0 --- Schema major 3: the tuning context's SMuFL requirement and per-scope overrides reach the wire}\\[4pt]
   {\small\color{epiphanyslate}Normative for the byte layouts it defines}
   \vfill
 \end{titlepage}
@@ -2297,9 +2297,10 @@ governed by the Binary Format companion specification, which defines the
 wire encoding for each schema version''}). This chapter defines the wire
 rules for schema evolution. Chapters~\ref{ch:values}--\ref{ch:barriers}
 specify the schema-major-0 layouts; Section~\ref{sec:evolution:major1}
-specifies the schema-major-1 delta and the migration between them, and
+specifies the schema-major-1 delta and the migration between them,
 Section~\ref{sec:evolution:major2} the schema-major-2 delta and its
-migration from major~1.
+migration from major~1, and Section~\ref{sec:evolution:major3} the
+schema-major-3 delta and its migration from major~2.
 
 \section{The Chunk-Level Gate}
 \label{sec:evolution:gate}
@@ -2313,11 +2314,19 @@ Every chunk declares a \texttt{SchemaVersion} (major, minor) in its
     $[\textsc{min}, \textsc{max}]$ of majors and rejects any chunk whose major
     falls \emph{outside} $[\textsc{min}, \textsc{max}]$ --- too new (above
     \textsc{max}) or, once \textsc{min} rises past a retired major, too old
-    (Section~\ref{sec:evolution:major1}). Three majors are defined:
-    \tablenums{0}, \tablenums{1} (Section~\ref{sec:evolution:major1}), and
-    \tablenums{2} (Section~\ref{sec:evolution:major2}); the reference
-    implementation's accept-set is $\{0, 1, 2\}$ ($\textsc{min} = 0$,
-    $\textsc{max} = 2$).
+    (Section~\ref{sec:evolution:major1}). Four majors are defined:
+    \tablenums{0}, \tablenums{1} (Section~\ref{sec:evolution:major1}),
+    \tablenums{2} (Section~\ref{sec:evolution:major2}), and \tablenums{3}
+    (Section~\ref{sec:evolution:major3}). The accept-set is \textbf{per chunk
+    role}, not one shared bound (Section~\ref{sec:evolution:major1}'s ``raised
+    per chunk role'' rule, sharpened by major~3, the first bump under which the
+    roles' maxima genuinely diverge): the \texttt{Snapshot} role's max is
+    \tablenums{3}; the \texttt{OperationEnvelopeBlock} role's max stays
+    \tablenums{2} (schema major~3 embeds no operation payload, so this role
+    does not rise); every other role's max is \tablenums{0}. The reference
+    implementation's overall envelope is $\{0, 1, 2, 3\}$ ($\textsc{min} = 0$,
+    $\textsc{max} = 3$), realized as these differing per-role maxima rather
+    than a single shared bound.
   \item \textbf{Minor} = additive. v0 readers verify the major only; the
     minor is a \emph{record}, not a gate --- but it is a mandatory record:
     a writer \MUST{} raise the chunk schema minor when it emits any
@@ -2884,6 +2893,121 @@ rendering exactly: a migrated document draws byte-identically.
 \end{tabular}
 \end{center}
 
+\section{Schema Major 3}
+\label{sec:evolution:major3}
+
+Schema major~3 is the third data-model expansion major (Push 4b tranche
+3b-i, \sectionsc{Score Tuning Context}): \texttt{ScoreTuningContext} gains
+\texttt{smufl} (the score's declared SMuFL version requirement) and
+\texttt{overrides} (per-scope tuning overrides) on the canonical wire.
+\texttt{accidental\_extensions} --- the third field the core specification
+added alongside these two --- is deliberately \textbf{staged} to a later
+major: its consumer, the engraver, does not exist yet, and freezing a wire
+layout ahead of a real consumer is exactly what the frozen-layout rule
+(Requirement~\ref{req:binfmt:frozen-layout}) warns against. When
+\texttt{accidental\_extensions} does land, it appends \emph{after}
+\texttt{overrides}, per the append-only rule this chapter has followed since
+major~1.
+
+\subsection{Where the changed fields reach}
+Only one payload type changes, and it changes at exactly one site:
+
+\begin{itemize}
+  \item \textbf{Snapshot-only:} \texttt{ScoreTuningContext} reaches the wire
+    \emph{only} through the acceleration full-\texttt{Score} snapshot. No
+    operation payload embeds the tuning context (core Chapter~6's operation
+    vocabulary carries no \texttt{ScoreTuningContext} / \texttt{TuningOverride}
+    / \texttt{SmuflVersionRequirement} field anywhere), so the
+    \textbf{canonical operation layer is untouched}: no op payload is ``born
+    at v3'', and no frozen v2 op-payload decoder is needed. The
+    \texttt{OperationEnvelopeBlock} role's accept-set therefore stays at
+    major~2 (Section~\ref{sec:evolution:major2}) --- schema major~3 is the
+    first data-model bump under which a chunk role's max does \emph{not}
+    move in lockstep with the others.
+  \item \textbf{The canonical base is unchanged.} The
+    \texttt{MaterializedState} embeds no tuning context, so it remains
+    major~0, byte-identical across the bump --- the same keystone as
+    majors~1 and~2, and a conformance test \SHOULD{} assert it again.
+  \item The manifest stays major~0 (nothing here touches it).
+\end{itemize}
+
+\subsection{Cross-major reader behaviour}
+The major-1/major-2 rules extend unchanged: the acceleration snapshot is
+non-canonical, so a reader \MAY{} discard and regenerate a foreign-major one,
+or migrate it on read (the reference implementation migrates). Canonical
+chunks parse or the bundle opens read-only. Migration \emph{composes}: a
+major-3 reader migrates a major-0 snapshot
+v0${\to}$v1${\to}$v2${\to}$v3 in one read, each step total and
+default-filling. Because no operation payload changes at this major, a
+major-2-only reader's op-block admission is exactly as before this bump ---
+only the \texttt{Snapshot} role's accept-set widens, to \tablenums{3}
+(Section~\ref{sec:evolution:gate}).
+
+\subsection{Changed value layout}
+As in majors~1 and~2, the wire form appends new fields \emph{after} the
+existing ones, independent of the core specification's presentational field
+order (Section~\ref{sec:evolution:major1}'s note applies unchanged):
+
+\begin{itemize}
+  \item \texttt{ScoreTuningContext} $=$ \texttt{default\_pitch\_space} \cat{}
+    \texttt{default\_tuning\_system} \cat{} \texttt{reference} (the frozen
+    major-0/1/2 prefix, unchanged since major~0) \cat{}
+    \textbf{\texttt{smufl}} \cat{} \textbf{\texttt{overrides}}.
+    \texttt{accidental\_extensions} is \textbf{not} on the wire this major
+    (see above): a decoder default-fills it, exactly as it always has, and a
+    future major appends it after \texttt{overrides} when it lands.
+\end{itemize}
+
+\subsection{New leaf-type layouts}
+\begin{itemize}
+  \item \texttt{SmuflVersion} $=$ \texttt{major} (\texttt{u16} LE, bare) \cat{}
+    \texttt{minor\_centi} (\texttt{u16} LE, bare) --- the fractional SMuFL
+    version digits normalized to hundredths (1.12 $\to$ \tablenums{12}, 1.4
+    $\to$ \tablenums{40}, 1.3 $\to$ \tablenums{30}) so an integer comparison
+    on the pair agrees with SMuFL's real release order (1.12 shipped before
+    1.3, though \tablenums{3} literally sorts before \tablenums{12}).
+  \item \texttt{SmuflVersionRequirement} $=$ \texttt{minimum}
+    (\texttt{SmuflVersion}) \cat{} \texttt{authored\_against}
+    (\texttt{SmuflVersion}) --- $8$ bytes total, neither field framed as a
+    length-prefixed leaf (both are fixed-shape bare-integer pairs).
+  \item \texttt{TuningScope}: one discriminant byte \cat{} payload ---
+    \tablenums{0} Voice \cat{} \texttt{VoiceId}; \tablenums{1} Staff \cat{}
+    \texttt{StaffId}; \tablenums{2} Region \cat{} \texttt{RegionId};
+    \tablenums{3} Range \cat{} \texttt{start} (\texttt{TimeAnchor}) \cat{}
+    \texttt{end} (\texttt{TimeAnchor}) \cat{} \texttt{voices}
+    (\texttt{VoiceSelector}), fields in declaration order.
+  \item \texttt{TuningOverride} $=$ \texttt{scope} (\texttt{TuningScope})
+    \cat{} \texttt{pitch\_space} (\texttt{Option<PitchSpaceId>}) \cat{}
+    \texttt{tuning\_system} (\texttt{Option<TuningSystemId>}) \cat{}
+    \texttt{reference} (\texttt{Option<ReferencePitch>}) --- one presence
+    byte per \texttt{Option}, the inner catalog-id/pitch leaves under this
+    chapter's regime~(a) framing (a catalog id is a length-prefixed string;
+    \texttt{ReferencePitch} carries its own established layout).
+\end{itemize}
+
+\subsection{Migration from major 2}
+Total and default-filling, needing no score context; composes after the
+major-1 and major-2 migrations for major-1/major-0 input. The flat $12$
+default bytes this migration appends (\texttt{smufl} $= 8$,
+\texttt{overrides}' empty count $= 4$) are the same for every score,
+independent of its other content, since neither field depends on anything
+already on the wire.
+
+\begin{center}
+\begin{tabular}{p{1.9in} p{3.4in}}
+  \toprule
+  \textbf{major-2 form} & \textbf{major-3 form} \\
+  \midrule
+  \texttt{ScoreTuningContext} & append \texttt{smufl} $=$ $1.4$/$1.4$ (both
+    \texttt{minimum} and \texttt{authored\_against}, the version this
+    reference implementation already targets), \texttt{overrides} $=$ empty
+    \\
+  canonical-base \texttt{MaterializedState} & unchanged, byte-identical,
+    stays major~0 \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
 % ===========================================================================
 \chapter{Non-Canonical Pinned Encodings}
 \label{ch:noncanon}
@@ -3296,6 +3420,25 @@ only}: implementations need not agree on an error taxonomy.
   the verdict. Accepting a \texttt{reject} vector and normalizing it is
   \emph{accepting} it. The wire-format fuzzer remains an implementation
   deliverable. No wire layout changed. \\
+    \today & Schema evolution / Graph value layouts & 0.10.0 --- Defines
+  \textbf{schema major~3} (Section~\ref{sec:evolution:major3}, Push~4b
+  tranche 3b-i): \texttt{ScoreTuningContext} gains \texttt{smufl}
+  (\texttt{SmuflVersionRequirement}) and \texttt{overrides}
+  ($\mathrm{seq}$(\texttt{TuningOverride})) on the canonical wire, with
+  layouts for the four new leaf types (\texttt{SmuflVersion},
+  \texttt{SmuflVersionRequirement}, \texttt{TuningScope},
+  \texttt{TuningOverride}) and the total default-filling v2${\to}$v3
+  migration table. \texttt{accidental\_extensions} is deliberately staged to
+  a later major (no consumer yet) and stays off the wire. Reaches only the
+  acceleration full-\texttt{Score} snapshot --- no operation payload embeds
+  the tuning context, so the canonical operation layer and its accept-set
+  are untouched (the first data-model major under which a chunk role's max
+  does not move in lockstep with the others); the canonical base and
+  manifest stay major~0, byte-identical. Accept-set: \texttt{Snapshot}
+  widens to \tablenums{3}, \texttt{OperationEnvelopeBlock} stays at
+  \tablenums{2}. Semantics: core specification Chapter~4, \sectionsc{Score
+  Tuning Context} / \sectionsc{SMuFL Versioning}; the staging ruling itself
+  is Push~4b's own (\texttt{spec/CONTRACT\_PUSH4B\_3BI\_WIRE.md}). \\
 \bottomrule
 \end{longtable}
 

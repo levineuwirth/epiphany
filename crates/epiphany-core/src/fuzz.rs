@@ -240,8 +240,8 @@ pub fn run_decode_fuzz(iters: u64, seed: u64) {
         // The current-layout decoder: must not panic; an Ok must round-trip.
         check_score(Score::decode_canonical(&bytes), &bytes);
 
-        // The schema-version dispatch seam. Major 2 is the current layout;
-        // majors 1 and 0 run the frozen migrations; an arbitrary major
+        // The schema-version dispatch seam. Major 3 is the current layout;
+        // majors 2, 1, and 0 run the frozen migrations; an arbitrary major
         // exercises the defensive out-of-accept-set path. Each migration
         // default-fills the appended fields, so it does not round-trip to the
         // *current* form — but each is strictly canonical over its OWN wire

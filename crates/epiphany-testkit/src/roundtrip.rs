@@ -337,7 +337,7 @@ pub fn assert_score_serialization_stable(score: &Score, frontier: &[u8], seed: u
     );
 
     // serialize: stage the score as a properly-roled ACCELERATION snapshot
-    // (Binary Format §Schema Major 2): a `ChunkKind::Snapshot` stamped with
+    // (Binary Format §Schema Major 3): a `ChunkKind::Snapshot` stamped with
     // the current schema major and referenced from the manifest's
     // `acceleration_snapshots` — NOT the canonical base, which is the
     // MaterializedState's role and stays major 0. (The `SnapshotId` here is a
@@ -349,7 +349,7 @@ pub fn assert_score_serialization_stable(score: &Score, frontier: &[u8], seed: u
         Bundle::create(MemStore::new(), uuid, Manifest::empty(doc)).expect("create bundle");
     let snapshot = StagedChunk {
         kind: ChunkKind::Snapshot,
-        schema_version: SchemaVersion::for_major(2),
+        schema_version: SchemaVersion::for_major(3),
         payload: canonical.clone(),
     };
     let frontier = frontier.to_vec();
@@ -388,7 +388,7 @@ pub fn assert_score_serialization_stable(score: &Score, frontier: &[u8], seed: u
         .acceleration_snapshots
         .first()
         .expect("an acceleration snapshot");
-    assert_eq!(accel.root.schema_version, SchemaVersion::for_major(2));
+    assert_eq!(accel.root.schema_version, SchemaVersion::for_major(3));
     let loaded = reopened
         .read_chunk(&accel.root)
         .expect("read snapshot chunk back");

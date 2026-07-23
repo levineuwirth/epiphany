@@ -53,8 +53,10 @@ pub const SUPPORTED_SCHEMA_MAJOR: u16 = 0;
 /// `OperationEnvelopeBlock` admits major 2 (schema major 2 fills the
 /// cross-cutting/staff/metadata bodies its payloads embed; major 1 embedded a
 /// v1 `CreateRegion`; the reader treats the block bytes opaquely, so it
-/// parses a higher-major block without decoding the payload). `Snapshot`
-/// admits major 2 for the acceleration full-`Score` form (decoded through
+/// parses a higher-major block without decoding the payload). Schema major 3
+/// (Push 4b tranche 3b-i) does **not** raise this role: no operation payload
+/// embeds the tuning context, so no op block is ever born at v3. `Snapshot`
+/// admits major 3 for the acceleration full-`Score` form (decoded through
 /// the core versioned seam); the canonical BASE carried under the same kind
 /// must stay major 0, enforced per role. Every other role stays at
 /// [`SUPPORTED_SCHEMA_MAJOR`] until its own versioned path lands — the
@@ -67,11 +69,11 @@ pub fn max_supported_major(kind: ChunkKind) -> u16 {
         ChunkKind::OperationEnvelopeBlock => 2,
         // The payload-polymorphic Snapshot role: the acceleration
         // full-`Score` form is decoded through the core versioned seam
-        // (`Score::decode_canonical_versioned`, majors {0,1,2}). The
+        // (`Score::decode_canonical_versioned`, majors {0,1,2,3}). The
         // *canonical base* must stay major 0 regardless — that is enforced
         // per ROLE (`mis_stamped_canonical_base`, consulted at open and
         // commit), not by this per-kind bound.
-        ChunkKind::Snapshot => 2,
+        ChunkKind::Snapshot => 3,
         _ => SUPPORTED_SCHEMA_MAJOR,
     }
 }
@@ -1310,17 +1312,20 @@ mod tests {
         // CreateRegion), and schema major 2 to major 2 (a block bearing a v2
         // cross-cutting/staff/metadata value); every other role stays exact-0
         // until its own versioned path lands, and the manifest stays major 0
-        // forever.
+        // forever. Schema major 3 (Push 4b tranche 3b-i, §"Schema Major 3")
+        // raises only the snapshot role — no operation payload embeds the
+        // tuning context, so the op-block role's admission is untouched.
         assert_eq!(SchemaVersion::V1.major, 1);
         assert_eq!(SchemaVersion::V2.major, 2);
-        // The op-block role admits [0, 2].
+        assert_eq!(SchemaVersion::V3.major, 3);
+        // The op-block role admits [0, 2] — unchanged by schema major 3.
         assert_eq!(max_supported_major(ChunkKind::OperationEnvelopeBlock), 2);
-        // The snapshot role admits the major-2 acceleration form (decoded
+        // The snapshot role admits the major-3 acceleration form (decoded
         // through the core versioned seam); the canonical BASE stays major 0
         // per role (`mis_stamped_canonical_base`). The remaining roles stay
         // at the generic baseline: the layout cache and the operation index.
         assert_eq!(SUPPORTED_SCHEMA_MAJOR, 0);
-        assert_eq!(max_supported_major(ChunkKind::Snapshot), 2);
+        assert_eq!(max_supported_major(ChunkKind::Snapshot), 3);
         assert_eq!(max_supported_major(ChunkKind::LayoutCache), 0);
         assert_eq!(max_supported_major(ChunkKind::OperationIndex), 0);
         // The manifest gate is exact to the manifest's own major (0), independent

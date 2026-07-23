@@ -1643,22 +1643,26 @@ pub struct ViewDefinition {
 /// the default pitch space, tuning system, and reference pitch every score must
 /// declare; per-scope overrides land here (Push 4b tranche 2); accidental
 /// registry extensions and the SMuFL version requirement land here too (Push
-/// 4b tranche 3a) — all three in memory only.
+/// 4b tranche 3a). `smufl` and `overrides` reach the wire as of tranche 3b-i;
+/// `accidental_extensions` stays in memory only.
 ///
 /// **Wire note (Push 4b tranche 2, `spec/CONTRACT_PUSH4B_RESOLVER.md`; tranche
-/// 3a, `spec/CONTRACT_PUSH4B_ACCIDENTALS.md`).** The canonical encoding stays
-/// **exactly** `default_pitch_space`, `default_tuning_system`, `reference`, in
-/// that order — schema major 3 has not been opened, so `overrides`,
-/// `accidental_extensions`, and `smufl` are *not* on the wire this tranche.
-/// See the hand-written `impl Codec` in `codec.rs` and `impl TextValue` in
-/// `textvalue_graph.rs` (replacing the `struct_codec!` this type used to use,
-/// which named every field it was given in its generated decoder and so
-/// cannot compile against an in-memory-only one). Where the three in-memory
-/// fields sit in *this* Rust struct is free — the manual codec fixes the wire
-/// order independently of field declaration order — but they are declared
-/// here in the specification's eventual major-3 field order
-/// (`accidental_extensions`, `smufl`, `overrides`) for readability. Putting
-/// all three on the wire in that order is tranche 3b's job, not this one's.
+/// 3a, `spec/CONTRACT_PUSH4B_ACCIDENTALS.md`; tranche 3b-i,
+/// `spec/CONTRACT_PUSH4B_3BI_WIRE.md`, schema major 3).** The canonical
+/// encoding is `default_pitch_space` ⌢ `default_tuning_system` ⌢ `reference`
+/// (the frozen major-0..2 prefix) ⌢ `smufl` ⌢ `overrides` — append-after-existing,
+/// per the frozen-layout rule. `accidental_extensions` is **not** on the wire:
+/// it is staged to a later major, which will append it *after* `overrides`
+/// when it lands (its own consumer, the engraver, does not exist yet). See
+/// the hand-written `impl Codec` in `codec.rs` and `impl TextValue` in
+/// `textvalue_graph.rs` (the manual codec predates this bump and stays manual
+/// now for the one remaining in-memory field, `accidental_extensions`, since
+/// `struct_codec!`'s generated decoder cannot build a value from fewer fields
+/// than it declares). Where `accidental_extensions` sits in *this* Rust
+/// struct is free — the manual codec fixes the wire order independently of
+/// field declaration order — but it is declared here in the specification's
+/// eventual field order (`accidental_extensions`, `smufl`, `overrides`) for
+/// readability.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ScoreTuningContext {
     pub default_pitch_space: PitchSpaceId,

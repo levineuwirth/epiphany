@@ -39,6 +39,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_determinism::{CanonicalDecode, CanonicalEncode, CanonicalF64, ContentHash};
 
+use crate::accidental::{SmuflVersion, SmuflVersionRequirement};
 use crate::event::{
     ArticulationMark, CueEvent, CueRendering, DynamicMark, Event, EventArena, GraceKind,
     GraphicEvent, IndeterminacyHints, IndeterminacyKind, IndeterminateEvent, OrnamentMark,
@@ -84,6 +85,7 @@ use crate::time::{
     MeasurePosition, MusicalDuration, MusicalPosition, RationalTime, RegionEdge, TimeAnchor,
     TimeBounds, WallClockDuration, WallClockTime,
 };
+use crate::tuning::{TuningOverride, TuningScope};
 
 // ===========================================================================
 // Errors and the reader cursor.
@@ -1832,42 +1834,150 @@ struct_codec!(BeatGroup {
     subdivision,
     accent
 });
-// `ScoreTuningContext` has gained three in-memory-only fields beyond the
-// three wire fields — `overrides` (Push 4b tranche 2,
-// `spec/CONTRACT_PUSH4B_RESOLVER.md`), then `accidental_extensions` and
-// `smufl` (Push 4b tranche 3a, `spec/CONTRACT_PUSH4B_ACCIDENTALS.md`) — none
-// of which may reach the wire: schema major 3 has not been opened.
-// `struct_codec!` cannot express that — its generated `dec` ends in a struct
-// literal naming every field it was given, so an in-memory-only field either
-// goes on the wire (freezing a type before it has a consumer) or the macro
-// cannot build the value at all. Hand-written instead: encode/decode exactly
-// the three wire fields, in their original order, and default the other
-// three on decode (`overrides: Vec::new()`, `accidental_extensions:
-// Vec::new()`, `smufl: SmuflVersionRequirement::default()`). A round-trip
-// test just below (`score_tuning_context_overrides_do_not_reach_the_wire`)
-// proves a non-empty `overrides` encodes to the same bytes as an empty one; a
-// second (`score_tuning_context_accidental_extensions_smufl_and_overrides_do_not_reach_the_wire`)
-// extends the same proof to all three fields at once. The matching
-// text-projection proofs are `textvalue_graph.rs`'s
+// ===========================================================================
+// accidental.rs / tuning.rs — the schema-major-3 leaf layouts staged onto the
+// wire this tranche (Push 4b tranche 3b-i, `spec/CONTRACT_PUSH4B_3BI_WIRE.md`).
+// Only these four types gain a `Codec`; `accidental_extensions` and its whole
+// subtree stay in-memory-only (no `Codec` exists, or may exist, for them —
+// `accidental.rs`'s own module doc). Hand-written rather than
+// `struct_codec!`/`cstyle_enum_codec!`: `struct_codec!` also generates a
+// `TextValue` impl, and these four types have none (text projection is a
+// separate surface this tranche does not touch — see the staging-boundary
+// tests below and `textvalue_graph.rs`), so the macro would either fail to
+// compile (no `TextValue` for `u16`/`TuningScope`) or silently open a new
+// text-projection surface neither asked for nor specified. Every layout here
+// is now FROZEN (`req:binfmt:frozen-layout`) — get the field order right.
+impl Codec for SmuflVersion {
+    fn enc(&self, out: &mut Vec<u8>) {
+        self.major.enc(out);
+        self.minor_centi.enc(out);
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        let major = u16::dec(r)?;
+        let minor_centi = u16::dec(r)?;
+        Ok(SmuflVersion { major, minor_centi })
+    }
+}
+
+impl Codec for SmuflVersionRequirement {
+    fn enc(&self, out: &mut Vec<u8>) {
+        self.minimum.enc(out);
+        self.authored_against.enc(out);
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        let minimum = SmuflVersion::dec(r)?;
+        let authored_against = SmuflVersion::dec(r)?;
+        Ok(SmuflVersionRequirement {
+            minimum,
+            authored_against,
+        })
+    }
+}
+
+impl Codec for TuningScope {
+    fn enc(&self, out: &mut Vec<u8>) {
+        match self {
+            TuningScope::Voice(id) => {
+                out.push(0);
+                id.enc(out);
+            }
+            TuningScope::Staff(id) => {
+                out.push(1);
+                id.enc(out);
+            }
+            TuningScope::Region(id) => {
+                out.push(2);
+                id.enc(out);
+            }
+            TuningScope::Range { start, end, voices } => {
+                out.push(3);
+                start.enc(out);
+                end.enc(out);
+                voices.enc(out);
+            }
+        }
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        match r.u8()? {
+            0 => Ok(TuningScope::Voice(Codec::dec(r)?)),
+            1 => Ok(TuningScope::Staff(Codec::dec(r)?)),
+            2 => Ok(TuningScope::Region(Codec::dec(r)?)),
+            3 => Ok(TuningScope::Range {
+                start: Codec::dec(r)?,
+                end: Codec::dec(r)?,
+                voices: Codec::dec(r)?,
+            }),
+            tag => Err(ScoreDecodeError::InvalidTag {
+                kind: "TuningScope",
+                tag,
+            }),
+        }
+    }
+}
+
+impl Codec for TuningOverride {
+    fn enc(&self, out: &mut Vec<u8>) {
+        self.scope.enc(out);
+        self.pitch_space.enc(out);
+        self.tuning_system.enc(out);
+        self.reference.enc(out);
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        let scope = Codec::dec(r)?;
+        let pitch_space = Codec::dec(r)?;
+        let tuning_system = Codec::dec(r)?;
+        let reference = Codec::dec(r)?;
+        Ok(TuningOverride {
+            scope,
+            pitch_space,
+            tuning_system,
+            reference,
+        })
+    }
+}
+
+// `ScoreTuningContext` is schema major 3 (Push 4b tranche 3b-i,
+// `spec/CONTRACT_PUSH4B_3BI_WIRE.md`): `smufl` and `overrides` join the
+// major-0 prefix (`default_pitch_space`, `default_tuning_system`,
+// `reference`) on the wire, in that order — append-after-existing, per the
+// frozen-layout rule. `accidental_extensions` stays in-memory-only (staged to
+// a later major, appended after `overrides` when it lands); `struct_codec!`
+// still cannot express that one holdout, so this impl stays hand-written.
+// `dec` default-fills only `accidental_extensions: Vec::new()`.
+//
+// The pre-v3 form (3 fields; majors 0/1/2 all share it) is frozen separately
+// as `enc_tuning_context_v2`/`dec_tuning_context_v2` below, consumed by the
+// frozen `decode_v0_score`/`decode_v1_score`/`decode_v2_score` (and their
+// byte-exact-inverse `encode_v*_score` siblings) so those frozen forms never
+// drift when this live impl changes. A round-trip test just below
+// (`score_tuning_context_smufl_and_overrides_reach_the_wire_accidental_extensions_do_not`)
+// proves `smufl`/`overrides` now survive `enc`→`dec` while
+// `accidental_extensions` still does not. The matching text-projection
+// proofs are unchanged by this tranche — `textvalue_graph.rs`'s
 // `score_tuning_context_round_trips_and_overrides_do_not_project` and
-// `score_tuning_context_accidental_extensions_smufl_and_overrides_do_not_project`.
+// `score_tuning_context_accidental_extensions_smufl_and_overrides_do_not_project`
+// (text projection is a separate surface; see this tranche's contract).
 impl Codec for ScoreTuningContext {
     fn enc(&self, out: &mut Vec<u8>) {
         self.default_pitch_space.enc(out);
         self.default_tuning_system.enc(out);
         self.reference.enc(out);
+        self.smufl.enc(out);
+        self.overrides.enc(out);
     }
     fn dec(r: &mut Reader<'_>) -> Result<Self> {
         let default_pitch_space = Codec::dec(r)?;
         let default_tuning_system = Codec::dec(r)?;
         let reference = Codec::dec(r)?;
+        let smufl = Codec::dec(r)?;
+        let overrides = Codec::dec(r)?;
         Ok(ScoreTuningContext {
             default_pitch_space,
             default_tuning_system,
             reference,
             accidental_extensions: Vec::new(),
-            smufl: crate::accidental::SmuflVersionRequirement::default(),
-            overrides: Vec::new(),
+            smufl,
+            overrides,
         })
     }
 }
@@ -2450,7 +2560,7 @@ impl Score {
     /// Decodes the exact inverse of [`Score::canonical_bytes`], validating every
     /// tag, length, primitive, and type invariant. Trailing bytes are rejected.
     ///
-    /// This is the **current (schema major 2)** layout. To decode bytes whose
+    /// This is the **current (schema major 3)** layout. To decode bytes whose
     /// schema major is not known to be current, use
     /// [`Score::decode_canonical_versioned`].
     ///
@@ -2478,20 +2588,22 @@ impl Score {
     }
 
     /// The **schema-version dispatch seam** (Binary Format companion
-    /// §"Schema Major 1" / §"Schema Major 2"): decodes a full-`Score` snapshot
-    /// whose bytes were written under the given schema `major`, migrating a
-    /// lower-major encoding up to the current in-memory form on read. Major 2
-    /// is the current layout ([`Score::decode_canonical`]); majors 1 and 0 are
-    /// decoded through their frozen wire forms (`decode_v1_score`,
+    /// §"Schema Major 1" / §"Schema Major 2" / §"Schema Major 3"): decodes a
+    /// full-`Score` snapshot whose bytes were written under the given schema
+    /// `major`, migrating a lower-major encoding up to the current in-memory
+    /// form on read. Major 3 is the current layout
+    /// ([`Score::decode_canonical`]); majors 2, 1, and 0 are decoded through
+    /// their frozen wire forms (`decode_v2_score`, `decode_v1_score`,
     /// `decode_v0_score`), each a total default-filling migration — the
-    /// composed v0→v1→v2 translation happens in the one v0 read.
+    /// composed v0→v1→v2→v3 translation happens in the one v0 read.
     ///
     /// The caller (the bundle read path) only reaches this after the chunk gate
     /// has admitted the major into its accept-set, so a major outside
-    /// `{0, 1, 2}` is a defensive error, not an expected path.
+    /// `{0, 1, 2, 3}` is a defensive error, not an expected path.
     pub fn decode_canonical_versioned(bytes: &[u8], major: u16) -> Result<Score> {
         match major {
-            2 => Score::decode_canonical(bytes),
+            3 => Score::decode_canonical(bytes),
+            2 => decode_v2_score(bytes),
             1 => decode_v1_score(bytes),
             0 => decode_v0_score(bytes),
             _ => Err(ScoreDecodeError::InvalidValue("unsupported schema major")),
@@ -2505,8 +2617,11 @@ impl Score {
 /// This is the **frozen v0 wire form, decoded by value** — a hand-written walk
 /// of the 19 `Score` fields in declaration order, using the current [`Codec`]
 /// for every field whose layout is unchanged, the frozen **v1** sub-decoders
-/// (v0 == v1) for the types schema major 2 filled, and a frozen v0
-/// sub-decoder for the three that grew a field in schema major 1:
+/// (v0 == v1) for the types schema major 2 filled, the frozen **v2**
+/// sub-decoder ([`dec_tuning_context_v2`]) for `tuning_context` (v0 == v1 ==
+/// v2 — schema major 3 is the first bump to touch it, Push 4b tranche 3b-i),
+/// and a frozen v0 sub-decoder for the three that grew a field in schema
+/// major 1:
 ///
 /// * `Canvas` (field 2) — v0 was `regions` only; v1 appended `layout_defaults`.
 ///   [`dec_canvas_v0`] reads the region vector and default-fills the defaults.
@@ -2525,14 +2640,20 @@ impl Score {
 /// depends only on the v0 field lists above and the current codec for unchanged
 /// fields; the `v0_score_migrates_*` golden tests guard it (they synthesize real
 /// v0 bytes via a mirror v0 encoder and check the migration reconstructs the
-/// original score with the new fields at their defaults).
+/// original score with the new fields at their defaults). **Must** read
+/// `tuning_context` via [`dec_tuning_context_v2`], never via the live
+/// [`Codec`] — the live codec now reads/writes the 5-field schema-major-3
+/// form, and reading v0/v1/v2 bytes through it would desynchronize the
+/// cursor for every field after `tuning_context`.
 fn decode_v0_score(bytes: &[u8]) -> Result<Score> {
     let mut r = Reader::new(bytes);
     // The 19 Score fields in declaration order (codec.rs `struct_codec!(Score)`).
     // `canvas` (2) and `instruments` (3) carry v0-specific sub-forms; the
     // schema-major-2 fills route `metadata`, `staves`, `cross_cutting`, and
     // (transitively, inside regions) the staff instances through the frozen
-    // v1 sub-decoders — v0 == v1 for every type major 2 changed.
+    // v1 sub-decoders — v0 == v1 for every type major 2 changed. `tuning_context`
+    // routes through the frozen v2 sub-decoder — v0 == v1 == v2 for it, only
+    // major 3 changes it.
     let metadata = dec_metadata_v1(&mut r)?;
     let canvas = dec_canvas_v0(&mut r)?;
     let instruments = dec_instruments_v0(&mut r)?;
@@ -2541,7 +2662,7 @@ fn decode_v0_score(bytes: &[u8]) -> Result<Score> {
     let parts = Codec::dec(&mut r)?;
     let cross_cutting = dec_ccr_v1(&mut r)?;
     let time_signatures = Codec::dec(&mut r)?;
-    let tuning_context = Codec::dec(&mut r)?;
+    let tuning_context = dec_tuning_context_v2(&mut r)?;
     let tempo_map = Codec::dec(&mut r)?;
     let events = Codec::dec(&mut r)?;
     let spelling_attachments = Codec::dec(&mut r)?;
@@ -2592,7 +2713,9 @@ fn decode_v0_score(bytes: &[u8]) -> Result<Score> {
 
 /// The **frozen schema-major-0** encoding of a score — the byte-exact inverse of
 /// [`decode_v0_score`]'s field walk: `Canvas` without `layout_defaults`,
-/// `Instrument` without `range`, `Region` without `permits_spanning_slurs`;
+/// `Instrument` without `range`, `Region` without `permits_spanning_slurs`,
+/// `tuning_context` through the frozen 3-field [`enc_tuning_context_v2`] (not
+/// the live [`Codec`], which now writes the 5-field schema-major-3 form);
 /// every other field through the current [`Codec`]. Used by `decode_v0_score`
 /// to enforce strict v0 canonicality (and by the migration tests to synthesize
 /// genuine v0 bytes). A migrated score's schema-major-1 fields hold their
@@ -2629,7 +2752,7 @@ pub(crate) fn encode_v0_score(s: &Score) -> Vec<u8> {
     s.parts.enc(&mut out);
     enc_ccr_v1(&s.cross_cutting, &mut out);
     s.time_signatures.enc(&mut out);
-    s.tuning_context.enc(&mut out);
+    enc_tuning_context_v2(&s.tuning_context, &mut out);
     s.tempo_map.enc(&mut out);
     s.events.enc(&mut out);
     s.spelling_attachments.enc(&mut out);
@@ -3070,10 +3193,12 @@ fn dec_instruments_v1(r: &mut Reader<'_>) -> Result<Vec<Instrument>> {
 }
 
 /// The **frozen schema-major-1** encoding of a score — the byte-exact inverse
-/// of [`decode_v1_score`]'s field walk. Used by `decode_v1_score` to enforce
-/// strict v1 canonicality, and by migration tests and the decode fuzzer to
-/// synthesize genuine v1 bytes. A migrated score's schema-major-2 fields hold
-/// their defaults, so this simply omits them.
+/// of [`decode_v1_score`]'s field walk (`tuning_context` through the frozen
+/// [`enc_tuning_context_v2`], not the live [`Codec`] — see
+/// [`encode_v0_score`]'s note). Used by `decode_v1_score` to enforce strict v1
+/// canonicality, and by migration tests and the decode fuzzer to synthesize
+/// genuine v1 bytes. A migrated score's schema-major-2 fields hold their
+/// defaults, so this simply omits them.
 pub(crate) fn encode_v1_score(s: &Score) -> Vec<u8> {
     let mut out = Vec::new();
     enc_metadata_v1(&s.metadata, &mut out);
@@ -3084,7 +3209,7 @@ pub(crate) fn encode_v1_score(s: &Score) -> Vec<u8> {
     s.parts.enc(&mut out);
     enc_ccr_v1(&s.cross_cutting, &mut out);
     s.time_signatures.enc(&mut out);
-    s.tuning_context.enc(&mut out);
+    enc_tuning_context_v2(&s.tuning_context, &mut out);
     s.tempo_map.enc(&mut out);
     s.events.enc(&mut out);
     s.spelling_attachments.enc(&mut out);
@@ -3113,7 +3238,7 @@ fn decode_v1_score(bytes: &[u8]) -> Result<Score> {
     let parts = Codec::dec(&mut r)?;
     let cross_cutting = dec_ccr_v1(&mut r)?;
     let time_signatures = Codec::dec(&mut r)?;
-    let tuning_context = Codec::dec(&mut r)?;
+    let tuning_context = dec_tuning_context_v2(&mut r)?;
     let tempo_map = Codec::dec(&mut r)?;
     let events = Codec::dec(&mut r)?;
     let spelling_attachments = Codec::dec(&mut r)?;
@@ -3149,6 +3274,129 @@ fn decode_v1_score(bytes: &[u8]) -> Result<Score> {
     if encode_v1_score(&score) != bytes {
         return Err(ScoreDecodeError::InvalidValue(
             "non-canonical v1 Score encoding",
+        ));
+    }
+    Ok(score)
+}
+
+/// The **frozen schema-major-2** encoding of [`ScoreTuningContext`] — the
+/// 3-field pre-major-3 form (`default_pitch_space`, `default_tuning_system`,
+/// `reference`) that majors 0, 1, and 2 all share (schema major 3, Push 4b
+/// tranche 3b-i, `spec/CONTRACT_PUSH4B_3BI_WIRE.md`, is the first bump to
+/// change this type — it appends `smufl` and `overrides`). Used by
+/// `encode_v0_score`, `encode_v1_score`, and [`encode_v2_score`] — every
+/// frozen pre-major-3 score form — so none of them silently drift onto the
+/// live (now 5-field) [`Codec`].
+fn enc_tuning_context_v2(ctx: &ScoreTuningContext, out: &mut Vec<u8>) {
+    ctx.default_pitch_space.enc(out);
+    ctx.default_tuning_system.enc(out);
+    ctx.reference.enc(out);
+}
+
+/// The exact inverse of [`enc_tuning_context_v2`]: reads the 3-field
+/// pre-major-3 form and default-fills the fields major 3 (and earlier
+/// tranches) added — `accidental_extensions: Vec::new()`,
+/// `smufl: SmuflVersionRequirement::default()`, `overrides: Vec::new()`.
+/// Used by `decode_v0_score`, `decode_v1_score`, and [`decode_v2_score`].
+fn dec_tuning_context_v2(r: &mut Reader<'_>) -> Result<ScoreTuningContext> {
+    let default_pitch_space = Codec::dec(r)?;
+    let default_tuning_system = Codec::dec(r)?;
+    let reference = Codec::dec(r)?;
+    Ok(ScoreTuningContext {
+        default_pitch_space,
+        default_tuning_system,
+        reference,
+        accidental_extensions: Vec::new(),
+        smufl: SmuflVersionRequirement::default(),
+        overrides: Vec::new(),
+    })
+}
+
+/// The **frozen schema-major-2** encoding of a score — the byte-exact inverse
+/// of [`decode_v2_score`]'s field walk. Schema major 3 (Push 4b tranche 3b-i)
+/// changes only `tuning_context` (Section "the frozen major-3 wire layout");
+/// every other `Score` field is byte-identical to the live [`Codec`], so this
+/// walk uses the live codec directly for all 18 other fields and
+/// [`enc_tuning_context_v2`] for `tuning_context`. Used by [`decode_v2_score`]
+/// to enforce strict v2 canonicality, and by migration tests to synthesize
+/// genuine v2 bytes.
+pub(crate) fn encode_v2_score(s: &Score) -> Vec<u8> {
+    let mut out = Vec::new();
+    s.metadata.enc(&mut out);
+    s.canvas.enc(&mut out);
+    s.instruments.enc(&mut out);
+    s.staves.enc(&mut out);
+    s.staff_groups.enc(&mut out);
+    s.parts.enc(&mut out);
+    s.cross_cutting.enc(&mut out);
+    s.time_signatures.enc(&mut out);
+    enc_tuning_context_v2(&s.tuning_context, &mut out);
+    s.tempo_map.enc(&mut out);
+    s.events.enc(&mut out);
+    s.spelling_attachments.enc(&mut out);
+    s.decomposition_attachments.enc(&mut out);
+    s.spelling_precedence.enc(&mut out);
+    s.analysis_layers.enc(&mut out);
+    s.views.enc(&mut out);
+    s.identity.enc(&mut out);
+    s.tombstoned_pitches.enc(&mut out);
+    s.tombstoned_events.enc(&mut out);
+    out
+}
+
+/// Decodes **schema-major-2** `Score` bytes into the current-layout `Score`,
+/// migrating on read (total, default-filling — Binary Format §"Schema Major
+/// 3"'s migration table: `tuning_context` default-fills `smufl` and
+/// `overrides`; every other field is unchanged since major 2).
+/// Strictly canonical on the v2 wire form, like its v0/v1 siblings: re-encodes
+/// through [`encode_v2_score`] and rejects any input that is not already its
+/// canonical v2 encoding.
+fn decode_v2_score(bytes: &[u8]) -> Result<Score> {
+    let mut r = Reader::new(bytes);
+    let metadata = Codec::dec(&mut r)?;
+    let canvas = Codec::dec(&mut r)?;
+    let instruments = Codec::dec(&mut r)?;
+    let staves = Codec::dec(&mut r)?;
+    let staff_groups = Codec::dec(&mut r)?;
+    let parts = Codec::dec(&mut r)?;
+    let cross_cutting = Codec::dec(&mut r)?;
+    let time_signatures = Codec::dec(&mut r)?;
+    let tuning_context = dec_tuning_context_v2(&mut r)?;
+    let tempo_map = Codec::dec(&mut r)?;
+    let events = Codec::dec(&mut r)?;
+    let spelling_attachments = Codec::dec(&mut r)?;
+    let decomposition_attachments = Codec::dec(&mut r)?;
+    let spelling_precedence = Codec::dec(&mut r)?;
+    let analysis_layers = Codec::dec(&mut r)?;
+    let views = Codec::dec(&mut r)?;
+    let identity = Codec::dec(&mut r)?;
+    let tombstoned_pitches = Codec::dec(&mut r)?;
+    let tombstoned_events = Codec::dec(&mut r)?;
+    r.finish()?;
+    let score = Score {
+        metadata,
+        canvas,
+        instruments,
+        staves,
+        staff_groups,
+        parts,
+        cross_cutting,
+        time_signatures,
+        tuning_context,
+        tempo_map,
+        events,
+        spelling_attachments,
+        decomposition_attachments,
+        spelling_precedence,
+        analysis_layers,
+        views,
+        identity,
+        tombstoned_pitches,
+        tombstoned_events,
+    };
+    if encode_v2_score(&score) != bytes {
+        return Err(ScoreDecodeError::InvalidValue(
+            "non-canonical v2 Score encoding",
         ));
     }
     Ok(score)
@@ -3416,49 +3664,18 @@ mod tests {
     }
 
     #[test]
-    fn score_tuning_context_overrides_do_not_reach_the_wire() {
-        use crate::graph::ScoreTuningContext;
-        use crate::ids::{ReplicaId, VoiceId};
-        use crate::pitch::TuningSystemId;
-        use crate::tuning::{TuningOverride, TuningScope};
-
-        let without_overrides = ScoreTuningContext::default();
-        let mut with_overrides = ScoreTuningContext::default();
-        with_overrides.overrides.push(TuningOverride {
-            scope: TuningScope::Voice(VoiceId::new(ReplicaId(1), 1)),
-            pitch_space: None,
-            tuning_system: Some(TuningSystemId::new("tet-19")),
-            reference: None,
-        });
-        // Sanity: the two in-memory values actually differ, so a
-        // byte-identity assertion below is not vacuous.
-        assert_ne!(
-            with_overrides, without_overrides,
-            "the fixture must actually carry a non-empty override in memory"
-        );
-
-        let mut bytes_with = Vec::new();
-        with_overrides.enc(&mut bytes_with);
-        let mut bytes_without = Vec::new();
-        without_overrides.enc(&mut bytes_without);
-        assert_eq!(
-            bytes_with, bytes_without,
-            "overrides must not reach canonical bytes (Push 4b tranche 2, Ruling C)"
-        );
-
-        // Decoding either stream reconstructs `overrides` as empty — the
-        // field never round-trips, by construction.
-        let decoded = ScoreTuningContext::dec(&mut Reader::new(&bytes_with)).expect("decodes");
-        assert_eq!(decoded, without_overrides);
-        assert!(decoded.overrides.is_empty());
-    }
-
-    #[test]
-    fn score_tuning_context_accidental_extensions_smufl_and_overrides_do_not_reach_the_wire() {
-        // The direct analogue of `score_tuning_context_overrides_do_not_reach_the_wire`
-        // above, extended to all three in-memory-only fields (Push 4b tranche
-        // 3a, `spec/CONTRACT_PUSH4B_ACCIDENTALS.md`): `accidental_extensions`
-        // and `smufl` join `overrides` off the wire.
+    fn score_tuning_context_smufl_and_overrides_reach_the_wire_accidental_extensions_do_not() {
+        // Schema major 3 (Push 4b tranche 3b-i, `spec/CONTRACT_PUSH4B_3BI_WIRE.md`)
+        // moves `smufl` and `overrides` onto the wire — the direct
+        // **inversion** of the pre-major-3 proof this test replaces (formerly
+        // two tests: `score_tuning_context_overrides_do_not_reach_the_wire`,
+        // Push 4b tranche 2; and
+        // `score_tuning_context_accidental_extensions_smufl_and_overrides_do_not_reach_the_wire`,
+        // tranche 3a). `accidental_extensions` stays in memory only (staged to
+        // a later major, appended after `overrides` when it lands), so this
+        // is now a **staging-boundary** test: it proves the line falls
+        // exactly between `overrides` and `accidental_extensions`, not that
+        // nothing reaches the wire.
         use crate::accidental::{PitchSpaceModification, SmuflVersion, SmuflVersionRequirement};
         use crate::graph::ScoreTuningContext;
         use crate::ids::{ReplicaId, VoiceId};
@@ -3484,7 +3701,7 @@ mod tests {
             reference: None,
         });
         // Sanity: the fixture actually differs in memory in all three
-        // fields, so the byte-identity assertion below is not vacuous.
+        // fields, so neither assertion below is vacuous.
         assert_ne!(loaded, bare);
         assert!(!loaded.accidental_extensions.is_empty());
         assert_ne!(loaded.smufl, SmuflVersionRequirement::default());
@@ -3494,17 +3711,129 @@ mod tests {
         loaded.enc(&mut bytes_loaded);
         let mut bytes_bare = Vec::new();
         bare.enc(&mut bytes_bare);
-        assert_eq!(
+        // `smufl` and `overrides` differ in memory, so — unlike before major
+        // 3 — the two encodings must now differ too.
+        assert_ne!(
             bytes_loaded, bytes_bare,
-            "accidental_extensions, smufl, and overrides must not reach canonical bytes \
-             (Push 4b tranche 3a)"
+            "smufl and overrides must reach canonical bytes as of schema major 3"
         );
 
         let decoded = ScoreTuningContext::dec(&mut Reader::new(&bytes_loaded)).expect("decodes");
-        assert_eq!(decoded, bare);
+        // smufl and overrides round-trip exactly...
+        assert_eq!(decoded.smufl, loaded.smufl);
+        assert_eq!(decoded.overrides, loaded.overrides);
+        // ...but accidental_extensions is still dropped: never on the wire.
         assert!(decoded.accidental_extensions.is_empty());
-        assert_eq!(decoded.smufl, SmuflVersionRequirement::default());
-        assert!(decoded.overrides.is_empty());
+        assert_eq!(
+            decoded,
+            ScoreTuningContext {
+                accidental_extensions: Vec::new(),
+                ..loaded.clone()
+            }
+        );
+    }
+
+    /// Pins the **exact frozen bytes** of the schema-major-3
+    /// `ScoreTuningContext` wire form (Push 4b tranche 3b-i).
+    ///
+    /// Why a byte literal and not just a round-trip: the cross-implementation
+    /// decode corpus (`spec/vectors/decode_vectors.txt`,
+    /// `req:binfmt:decode-vectors`) covers only the **operation** and
+    /// **bundle** surfaces — there is no `epiphany-core` vectors module, so
+    /// the core score wire has no vector pinning it. Every other test here
+    /// round-trips `enc` against `dec`, which stays green under a
+    /// *self-consistent* reordering of the fields: swapping `smufl` and
+    /// `overrides` in both halves passes the entire workspace suite. That
+    /// would silently move a layout `req:binfmt:frozen-layout` freezes
+    /// permanently, and a second implementation would disagree. This golden
+    /// is what makes such a swap fail.
+    ///
+    /// If this test fails, the wire format changed. That is a schema-major
+    /// event — do not "fix" it by re-copying the bytes.
+    #[test]
+    fn schema_major_3_tuning_context_wire_bytes_are_frozen() {
+        use crate::accidental::{PitchSpaceModification, SmuflVersion, SmuflVersionRequirement};
+        use crate::graph::ScoreTuningContext;
+        use crate::ids::{ReplicaId, VoiceId};
+        use crate::pitch::TuningSystemId;
+        use crate::tuning::{TuningOverride, TuningScope};
+
+        fn hex(bytes: &[u8]) -> String {
+            bytes.iter().map(|b| format!("{b:02x}")).collect()
+        }
+
+        // --- the default context: what every score with untouched tuning
+        // encodes to, so this literal is the one that appears in practice.
+        //
+        //   06000000 636d6e2d3132   default_pitch_space  = "cmn-12"
+        //   06000000 7465742d3132   default_tuning_system = "tet-12"
+        //   00050004080000000000000000807b40             reference (frozen since major 0)
+        //   01002800                smufl.minimum          = {major 1, minor_centi 40} = 1.4
+        //   01002800                smufl.authored_against = 1.4
+        //   00000000                overrides              = u32 count 0
+        //
+        // Note the S12 normalization is visible on the wire: 1.4 stores
+        // `minor_centi` 40 (0x28), NOT a literal minor 4 — that is what makes
+        // 1.12 < 1.3 order correctly.
+        let mut bare = Vec::new();
+        ScoreTuningContext::default().enc(&mut bare);
+        assert_eq!(
+            hex(&bare),
+            "06000000636d6e2d3132060000007465742d3132000500040800000000000000             0080 7b40010028000100280000000000"
+                .replace(' ', ""),
+            "the default major-3 tuning-context wire form moved"
+        );
+        assert_eq!(bare.len(), 48);
+
+        // --- a fully loaded context: non-default smufl, one override, and a
+        // populated `accidental_extensions` that MUST contribute zero bytes
+        // (staged to a later major).
+        //
+        //   ...prefix and reference as above...
+        //   01000c00   smufl.minimum          = {1, 12} = 1.12
+        //   01001200   smufl.authored_against = {1, 18} = 1.18
+        //   01000000   overrides              = u32 count 1
+        //   <34 bytes> the TuningOverride body: TuningScope::Voice
+        //              (discriminant 0) + VoiceId, then the three Options
+        //              (pitch_space None, tuning_system Some("tet-19"),
+        //              reference None).
+        let mut loaded = ScoreTuningContext {
+            smufl: SmuflVersionRequirement {
+                minimum: SmuflVersion::from_decimal(1, "12").unwrap(),
+                authored_against: SmuflVersion::from_decimal(1, "18").unwrap(),
+            },
+            ..ScoreTuningContext::default()
+        };
+        loaded.overrides.push(TuningOverride {
+            scope: TuningScope::Voice(VoiceId::new(ReplicaId(1), 7)),
+            pitch_space: None,
+            tuning_system: Some(TuningSystemId::new("tet-19")),
+            reference: None,
+        });
+        loaded
+            .accidental_extensions
+            .push(crate::accidental::fixture_extensions(
+                "heji",
+                PitchSpaceModification::CmnChromatic(1),
+            ));
+        assert!(!loaded.accidental_extensions.is_empty());
+
+        let mut got = Vec::new();
+        loaded.enc(&mut got);
+        assert_eq!(
+            hex(&got),
+            "06000000636d6e2d3132060000007465742d31320005000408000000000000000080             7b4001000c000100120001000000001000000000000000000000010000000000000007             0001060000007465742d313900"
+                .replace(' ', ""),
+            "the loaded major-3 tuning-context wire form moved"
+        );
+        assert_eq!(got.len(), 82);
+
+        // The golden is bidirectional: the frozen bytes decode back to the
+        // value, with `accidental_extensions` dropped (it never encoded).
+        let back = ScoreTuningContext::dec(&mut Reader::new(&got)).expect("golden decodes");
+        assert_eq!(back.smufl, loaded.smufl);
+        assert_eq!(back.overrides, loaded.overrides);
+        assert!(back.accidental_extensions.is_empty());
     }
 
     #[test]
@@ -3571,10 +3900,10 @@ mod tests {
 
         let bytes = score.canonical_bytes();
         assert_eq!(Score::decode_canonical(&bytes).unwrap(), score);
-        assert_eq!(Score::decode_canonical_versioned(&bytes, 2).unwrap(), score);
+        assert_eq!(Score::decode_canonical_versioned(&bytes, 3).unwrap(), score);
         // The non-default major-1 values are representable at the frozen v1
         // wire form too: the v1 encoding migrates back to the same score
-        // (its major-2 fields are all defaults here).
+        // (its major-2 and major-3 fields are all defaults here).
         let v1 = encode_v1_score(&score);
         assert_eq!(Score::decode_canonical_versioned(&v1, 1).unwrap(), score);
     }
@@ -3623,22 +3952,23 @@ mod tests {
             );
 
             // Major 0: the shorter v0 bytes migrate up, default-filling all three
-            // (and, composed, every schema-major-2 default).
+            // (and, composed, every schema-major-2 default, and — composed
+            // further — the schema-major-3 `smufl`/`overrides` defaults).
             let migrated = Score::decode_canonical_versioned(&v0, 0).unwrap();
             assert_eq!(migrated, score);
-            // The migrated score re-encodes to the production (major-2) bytes.
+            // The migrated score re-encodes to the production (major-3) bytes.
             assert_eq!(migrated.canonical_bytes(), current);
             // Major 1: the frozen v1 bytes migrate to the same score.
             assert_eq!(Score::decode_canonical_versioned(&v1, 1).unwrap(), score);
-            // Major 2: the current bytes decode unchanged.
+            // Major 3: the current bytes decode unchanged.
             assert_eq!(
-                Score::decode_canonical_versioned(&current, 2).unwrap(),
+                Score::decode_canonical_versioned(&current, 3).unwrap(),
                 score
             );
         }
-        // A major outside {0, 1, 2} is a defensive decode error (the gate
+        // A major outside {0, 1, 2, 3} is a defensive decode error (the gate
         // rejects it upstream in practice).
-        assert!(Score::decode_canonical_versioned(&valid_score(1).canonical_bytes(), 3).is_err());
+        assert!(Score::decode_canonical_versioned(&valid_score(1).canonical_bytes(), 4).is_err());
     }
 
     #[test]
@@ -3671,7 +4001,12 @@ mod tests {
             // (abbreviation 1 + sound count 4 + transposition 1 + clef 3 +
             // full config 15 + members count 4); an overridden staff-instance
             // config 14; metadata 23 (three presence bytes + two i64
-            // timestamps + additional count 4).
+            // timestamps + additional count 4); plus a flat 12
+            // (schema-major-3 `tuning_context.smufl`/`overrides`: `smufl` is
+            // two bare `SmuflVersion`s = 4 x u16 = 8, `overrides` is an empty
+            // Vec = a bare u32 count = 4 — present at every score regardless
+            // of content, since `v1` is frozen at the pre-major-3 3-field
+            // `tuning_context` while `current` is now major 3).
             let expected_removed = c.slurs.len() * 4
                 + c.ties.len() * 2
                 + c.beams.len() * 5
@@ -3680,14 +4015,53 @@ mod tests {
                 + score.staves.len() * 17
                 + score.instruments.len() * 28
                 + override_sites * 14
-                + 23;
+                + 23
+                + 12;
             assert_eq!(
                 current.len() - v1.len(),
                 expected_removed,
-                "v1 omits exactly the appended major-2 default bytes"
+                "v1 omits exactly the appended major-2 default bytes (plus the flat \
+                 major-3 tuning-context default bytes, present regardless of content)"
             );
 
             let migrated = Score::decode_canonical_versioned(&v1, 1).unwrap();
+            assert_eq!(migrated, score);
+            assert_eq!(migrated.canonical_bytes(), current);
+        }
+    }
+
+    #[test]
+    fn v2_score_migrates_default_filling_smufl_and_overrides() {
+        // Schema major 3 (Push 4b tranche 3b-i, `spec/CONTRACT_PUSH4B_3BI_WIRE.md`)
+        // appends `tuning_context.smufl` and `.overrides`; a major-2 score
+        // carries neither, so migrate-on-read must reconstruct both at their
+        // canonical defaults. `accidental_extensions` is unaffected — it was
+        // never on the wire, at any major, so there is nothing for a v2->v3
+        // migration to default-fill for it. Genuine v2 bytes come from the
+        // mirror v2 encoder; the size anchor pins that v2 omits exactly the
+        // flat 12 default bytes (`smufl` 8 + `overrides` count 4), the same
+        // constant every score pays regardless of its other content, since
+        // the generator leaves `tuning_context` at its default.
+        for seed in 0..64u64 {
+            let score = valid_score(seed.wrapping_mul(0x9E37_79B9).wrapping_add(5));
+            // Precondition: the generator leaves tuning_context's smufl/overrides
+            // at their defaults, so a v2->v3 migration reconstructing the
+            // default IS reconstructing the original.
+            assert_eq!(
+                score.tuning_context.smufl,
+                crate::accidental::SmuflVersionRequirement::default()
+            );
+            assert!(score.tuning_context.overrides.is_empty());
+
+            let current = score.canonical_bytes();
+            let v2 = encode_v2_score(&score);
+            assert_eq!(
+                current.len() - v2.len(),
+                12,
+                "v2 omits exactly the flat smufl(8)+overrides-count(4) default bytes"
+            );
+
+            let migrated = Score::decode_canonical_versioned(&v2, 2).unwrap();
             assert_eq!(migrated, score);
             assert_eq!(migrated.canonical_bytes(), current);
         }
@@ -3875,7 +4249,7 @@ mod tests {
 
         let bytes = score.canonical_bytes();
         assert_eq!(Score::decode_canonical(&bytes).unwrap(), score);
-        assert_eq!(Score::decode_canonical_versioned(&bytes, 2).unwrap(), score);
+        assert_eq!(Score::decode_canonical_versioned(&bytes, 3).unwrap(), score);
         // The per-value seam carries the filled bodies too.
         let slur = &score.cross_cutting.slurs[0];
         assert_eq!(
