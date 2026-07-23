@@ -1641,12 +1641,31 @@ pub struct ViewDefinition {
 
 /// The score's tuning environment (Chapter 4 §"Score Tuning Context"). Baseline:
 /// the default pitch space, tuning system, and reference pitch every score must
-/// declare; per-scope overrides and accidental extensions are deferred.
+/// declare; per-scope overrides land here (Push 4b tranche 2), accidental
+/// extensions are still deferred.
+///
+/// **Wire note (Push 4b tranche 2, `spec/CONTRACT_PUSH4B_RESOLVER.md`).** The
+/// canonical encoding stays **exactly** `default_pitch_space`,
+/// `default_tuning_system`, `reference`, in that order — schema major 3 has
+/// not been opened, so `overrides` is *not* on the wire this tranche. See the
+/// hand-written `impl Codec` in `codec.rs` and `impl TextValue` in
+/// `textvalue_graph.rs` (replacing the `struct_codec!` this type used to use,
+/// which named exactly three fields in its generated decoder and so cannot
+/// compile against a fourth). Where `overrides` sits in *this* Rust struct is
+/// free — the manual codec fixes the wire order independently of field
+/// declaration order — but the specification's eventual major-3 field order
+/// places `overrides` last, after `accidental_extensions` and `smufl`; adding
+/// those two remains the wire tranche's job, not this one's.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ScoreTuningContext {
     pub default_pitch_space: PitchSpaceId,
     pub default_tuning_system: TuningSystemId,
     pub reference: ReferencePitch,
+    /// Per-scope overrides consulted by the tuning resolver
+    /// (`crate::tuning::resolve_pitch_frequency`), scopes 2-4 of
+    /// `req:tuning:tuning-resolution-order`. **In memory only** this
+    /// tranche — see the struct doc above.
+    pub overrides: Vec<crate::tuning::TuningOverride>,
 }
 
 impl Default for ScoreTuningContext {
@@ -1657,6 +1676,7 @@ impl Default for ScoreTuningContext {
             default_pitch_space: PitchSpaceId::new("cmn-12"),
             default_tuning_system: TuningSystemId::new("tet-12"),
             reference: ReferencePitch::a440(),
+            overrides: Vec::new(),
         }
     }
 }

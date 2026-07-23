@@ -761,3 +761,116 @@ weakened, no wire byte or discriminant touched.
 **Requirement counts did not move.** No new requirement was added or cited that
 did not already exist; `crates/epiphany-testkit/tests/requirement_labels.rs`'s
 212/282/282 are unchanged.
+
+## Push 4b tranche 2: the tuning resolver lands, in memory, resolving a pitch to a frequency
+
+`spec/CONTRACT_PUSH4B_RESOLVER.md`. Same vertical-slice discipline as tranche
+1: `TuningSystem`, `TuningResolution`, `TuningOverride`, `TuningScope`, a
+partial built-in catalog, and the five-scope resolver land together, proven
+with real frequencies (`tet-12` C5 ≈ 523.2511 Hz off A4 = 440; a JI major
+third measurably distinct from the equal-tempered one), not `is_ok()`.
+
+**New module `src/tuning.rs`.** `TuningResolution` is deliberately a
+**two**-of-six-variant enum: `EqualTemperament` and `PerPositionRatios` (plus
+`PositionRatio`, which the specification's own listing never spells out the
+fields of — defined here as a chromatic position plus a
+`crate::pitch_space::JiRatio`, reusing rather than inventing a second
+rational type). The other four variants (`Function`, `Overlay`, `Imported`,
+`Adaptive`) are not transcribed: nothing in this tranche's catalog
+constructs them, and their payload subtrees are exactly the unconsumed
+surface tranche 1 already declined twice over.
+
+**The built-in catalog resolves nine of twenty, honestly.** The six `tet-*`
+equal temperaments (`tet-12` pairs with `cmn-12`, the default pairing;
+`tet-19/22/31/53/72` pair with the matching `edo-*` pitch spaces — forced by
+the built-in catalog's cardinalities, not chosen) and the three
+`ji-static-5limit-{C,G,D}` just-intonation systems. The latter's twelve
+ratios are *computed* — `ji_static_5limit_ratios`, exact integer arithmetic
+over the lattice block $\{3^a5^b \mid a\in[-1,2], b\in[-1,1]\}$, octave-reduced
+by doubling/halving (never a float comparison) and sorted by cross-
+multiplication (never a float division) — not pasted from
+`core_spec.tex:4034-4046`'s table. A dedicated test
+(`ji_static_5limit_lattice_matches_the_published_construction`) spot-checks
+the code's output against that table at all three anchors, proving the two
+state the same construction rather than merely agreeing to look similar.
+
+The remaining eleven (the ten historical temperaments and
+`ji-adaptive-5limit`) are real catalog entries whose resolution this tranche
+**defers**, distinguished from a genuinely unknown identifier by
+`TuningCatalogEntry::{Resolved, Deferred}` — so `resolve_pitch_frequency`
+can report "not yet supported, here's why" for a known-but-deferred system
+and "not a built-in tuning system" for an unknown one, never the same error
+for both, and never a guessed frequency for either. Tranche 2b re-derives the
+ten temperaments from their ratified constructions (`core_spec.tex`
+§"Temperament Constructions"); `ji-adaptive-5limit` waits on `HarmonicContext`,
+out of scope per the spec itself.
+
+**Anchoring, done as a ratio-of-ratios so the arbitrary anchor cancels.**
+`frequency_for_position` places both the target position and the reference
+position on one absolute integer coordinate (generalizing
+`Pitch::twelve_tet_semitone`'s idea from a fixed 12 to any tuning's own
+divisions, and from `Cmn` positions to `Integer` ones for the EDO spaces),
+computes each one's frequency ratio relative to coordinate 0 under the
+tuning's resolution, and takes `reference.frequency_hz() * ratio(position) /
+ratio(reference.position)`. Which position a construction calls "1/1" cancels
+out of that quotient — proven the hard way: the first draft of the JI-major-
+third test anchored the comparison at A4 = 440 Hz (the score's own default
+reference) and asserted the just third would be flatter than tet-12's; it
+failed, because JI-static-5limit-C retunes A relative to C differently than
+tet-12 does, so comparing frequencies referenced through A silently mixes
+"how A retunes" into "how E retunes." The fix anchors the reference at C4
+itself for both systems, isolating the C-to-E interval the test is actually
+about — the resolver's arithmetic was correct throughout; the first test
+design wasn't.
+
+**The five-scope walk resolves each of pitch space, tuning system, and
+reference independently** (`req:tuning:tuning-resolution-order`), voice then
+staff then region then the score default, with an explicit
+`TuningReference::Explicit` short-circuiting the tuning-system component at
+step 1 (pitch space and reference have no step-1 concept of their own — an
+`AcousticPitch` carries no field for either) and `AcousticRealization::AbsoluteHz`
+short-circuiting the whole frequency, bypassing the walk and the catalog
+entirely. "Each region enclosing the pitch, innermost to outermost" turns out
+to be exactly **one** region in this data model: a `Voice` is owned by exactly
+one `StaffInstance`, owned by exactly one `Region` (containment, not a
+derived time-range query), so there is no nested-region multiplicity to walk.
+`TuningScope::Range` is defined (Chapter 4's fourth scope variant) but the
+walk never matches it — `req:tuning:tuning-resolution-order` enumerates
+exactly five steps and does not mention it, so inventing a sixth would be
+exactly the kind of unratified addition this project's process exists to
+catch; documented as a scope note, not silently dropped.
+
+**The compatibility check accepts only exact `pitch_space` equality**
+(`req:tuning:tuning-system-compatibility`): no compatibility-mapping registry
+exists, matching how tranche 1 left the pitch-space registry unbuilt. A
+mismatch (e.g. `tet-19`'s declared `edo-19` against an unchanged `cmn-12`
+default) is rejected, not silently resolved — proof-of-life item 4.
+
+**`ScoreTuningContext` gains `overrides: Vec<TuningOverride>`, in memory
+only.** This is the one wire-adjacent change, and it isn't a wire change: the
+type's canonical encoding stays exactly the three fields it always had
+(`default_pitch_space`, `default_tuning_system`, `reference`), because adding
+a fourth field to a `struct_codec!`-generated type breaks the macro outright
+— its generated `dec` ends in a struct literal naming every field it was
+given, so a fourth field cannot compile against it. The `struct_codec!` line
+is replaced with a hand-written `impl Codec` (`codec.rs`) and `impl TextValue`
+(`textvalue_graph.rs`) that encode/project exactly the three wire fields, in
+their original order, and construct `overrides: Vec::new()` unconditionally
+on decode/parse. Two round-trip tests prove the field never reaches either
+canonical surface: `codec::tests::score_tuning_context_overrides_do_not_reach_the_wire`
+(a context with a non-empty `overrides` encodes to byte-identical output as
+one with empty `overrides`, and decoding either reconstructs `overrides` as
+empty) and `textvalue_graph::tests::score_tuning_context_round_trips_and_overrides_do_not_project`
+(the same, for the text projection). Field order in the Rust struct is free
+(the manual codec fixes the wire order independently); the specification's
+eventual major-3 field order puts `overrides` last, after
+`accidental_extensions` and `smufl` — that pairing is the wire tranche's
+problem, not this one's.
+
+**No `Codec` impl exists for anything new in `tuning.rs`.** These types are
+referenced only by id and by the one in-memory `ScoreTuningContext` field;
+they stay free to change once the wire tranche (schema major 3) discovers
+something about them.
+
+**Requirement counts did not move again.** No `.tex` file was touched, no
+requirement added; the 212/282/282 counts stay put.

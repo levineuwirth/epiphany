@@ -32,6 +32,13 @@
 //!   [`TranspositionBehavior`]) and [`built_in_position_structure`], the
 //!   built-in catalog `Pitch::transposed` resolves against. In-memory only —
 //!   no `Codec` impl exists for anything here (Push 4b Ruling C).
+//! * `tuning` — the Chapter 4 tuning-resolution vocabulary
+//!   ([`TuningSystem`], [`TuningResolution`], [`TuningOverride`],
+//!   [`TuningScope`]), [`built_in_tuning_system`] (nine of the twenty
+//!   catalog identifiers; the rest fail closed), and
+//!   [`resolve_pitch_frequency`], the five-scope resolver from a pitch to a
+//!   frequency in Hz. In-memory only, same discipline as `pitch_space`
+//!   (Push 4b Ruling C).
 //! * `event` — the [`Event`] taxonomy and the [`EventArena`] (Chapter 5
 //!   §"The Event Arena").
 //! * `graph` — [`Canvas`], [`Region`], [`Staff`]/[`StaffInstance`] (distinct
@@ -65,6 +72,7 @@ mod textvalue_impls;
 mod textvalue_pitch;
 mod textvalue_time;
 mod time;
+mod tuning;
 
 pub mod fuzz;
 pub mod generators;
@@ -139,6 +147,12 @@ pub use graph::{
 pub use tempo::{
     inversion_tolerance, Tempo, TempoError, TempoMap, TempoSegment, TempoShape,
     INVERSION_MAX_DENOMINATOR, INVERSION_MAX_ITERATIONS,
+};
+
+pub use tuning::{
+    built_in_tuning_system, frequency_for_position, resolve_pitch_frequency, resolve_tuning_scope,
+    PositionRatio, ResolvedTuning, TuningCatalogEntry, TuningOverride, TuningResolution,
+    TuningResolutionError, TuningScope, TuningSystem,
 };
 
 pub use codec::{CanonicalValue, ScoreDecodeError};

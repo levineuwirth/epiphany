@@ -1832,11 +1832,37 @@ struct_codec!(BeatGroup {
     subdivision,
     accent
 });
-struct_codec!(ScoreTuningContext {
-    default_pitch_space,
-    default_tuning_system,
-    reference
-});
+// `ScoreTuningContext` gained a fourth, in-memory-only field (`overrides`,
+// Push 4b tranche 2, `spec/CONTRACT_PUSH4B_RESOLVER.md`) that must **not**
+// reach the wire: schema major 3 has not been opened. `struct_codec!` cannot
+// express that — its generated `dec` ends in a struct literal naming every
+// field it was given, so a fourth field either goes on the wire (freezing an
+// in-memory-only type before it has a consumer) or the macro cannot build the
+// value at all. Hand-written instead: encode/decode exactly the three wire
+// fields, in their original order, and construct `overrides: Vec::new()` on
+// decode. A round-trip test just below
+// (`score_tuning_context_overrides_do_not_reach_the_wire`) proves a non-empty
+// `overrides` encodes to the same bytes as an empty one; the matching text-
+// projection proof is `textvalue_graph.rs`'s
+// `score_tuning_context_round_trips_and_overrides_do_not_project`.
+impl Codec for ScoreTuningContext {
+    fn enc(&self, out: &mut Vec<u8>) {
+        self.default_pitch_space.enc(out);
+        self.default_tuning_system.enc(out);
+        self.reference.enc(out);
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        let default_pitch_space = Codec::dec(r)?;
+        let default_tuning_system = Codec::dec(r)?;
+        let reference = Codec::dec(r)?;
+        Ok(ScoreTuningContext {
+            default_pitch_space,
+            default_tuning_system,
+            reference,
+            overrides: Vec::new(),
+        })
+    }
+}
 // Schema major 2: the cross-cutting bodies filled (appended fields); the
 // frozen prior layouts are read by the `dec_*_v1` sub-decoders.
 struct_codec!(Slur {
@@ -3379,6 +3405,44 @@ mod tests {
                 "out-of-range fifth count {fifths} must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn score_tuning_context_overrides_do_not_reach_the_wire() {
+        use crate::graph::ScoreTuningContext;
+        use crate::ids::{ReplicaId, VoiceId};
+        use crate::pitch::TuningSystemId;
+        use crate::tuning::{TuningOverride, TuningScope};
+
+        let without_overrides = ScoreTuningContext::default();
+        let mut with_overrides = ScoreTuningContext::default();
+        with_overrides.overrides.push(TuningOverride {
+            scope: TuningScope::Voice(VoiceId::new(ReplicaId(1), 1)),
+            pitch_space: None,
+            tuning_system: Some(TuningSystemId::new("tet-19")),
+            reference: None,
+        });
+        // Sanity: the two in-memory values actually differ, so a
+        // byte-identity assertion below is not vacuous.
+        assert_ne!(
+            with_overrides, without_overrides,
+            "the fixture must actually carry a non-empty override in memory"
+        );
+
+        let mut bytes_with = Vec::new();
+        with_overrides.enc(&mut bytes_with);
+        let mut bytes_without = Vec::new();
+        without_overrides.enc(&mut bytes_without);
+        assert_eq!(
+            bytes_with, bytes_without,
+            "overrides must not reach canonical bytes (Push 4b tranche 2, Ruling C)"
+        );
+
+        // Decoding either stream reconstructs `overrides` as empty — the
+        // field never round-trips, by construction.
+        let decoded = ScoreTuningContext::dec(&mut Reader::new(&bytes_with)).expect("decodes");
+        assert_eq!(decoded, without_overrides);
+        assert!(decoded.overrides.is_empty());
     }
 
     #[test]

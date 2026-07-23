@@ -26,9 +26,9 @@ use epiphany_determinism::CanonicalF64;
 
 use crate::graph::{
     AnnotationAnchor, DecompositionSource, EventOrderingDAG, GestureAnchoring, KeySignature,
-    MetadataValue, RegionContent, RegionTimeModel, RepeatKind, SoundConfiguration, SpaceUnit,
-    SpannerKind, StaffGroupKind, TieClass, TimeSignature, TimeSignatureDisplay, Timestamp,
-    TupletRatio, VoiceOrigin,
+    MetadataValue, RegionContent, RegionTimeModel, RepeatKind, ScoreTuningContext,
+    SoundConfiguration, SpaceUnit, SpannerKind, StaffGroupKind, TieClass, TimeSignature,
+    TimeSignatureDisplay, Timestamp, TupletRatio, VoiceOrigin,
 };
 use crate::textvalue::{kebab, Sexp, TextError, TextValue};
 use crate::textvalue_impls::class_of;
@@ -283,6 +283,47 @@ impl TextValue for TimeSignature {
         TimeSignature::new(id, display, measure_duration, beat_groups).ok_or(
             TextError::NotCanonical("beat groups do not sum to the measure duration"),
         )
+    }
+}
+
+// ===========================================================================
+// A struct whose `Codec` is hand-written for a macro-incompatibility reason,
+// not a validating constructor.
+// ===========================================================================
+
+/// `(score-tuning-context <default-pitch-space> <default-tuning-system>
+/// <reference>)` — exactly the three wire fields, in `fn enc` order
+/// (Push 4b tranche 2, `spec/CONTRACT_PUSH4B_RESOLVER.md`).
+///
+/// `ScoreTuningContext` gained a fourth field, `overrides`, that is
+/// deliberately **not** part of this projection: it is in-memory only (no
+/// schema major 3 has been opened), so it must never reach the wire, and the
+/// text projection is the same canonical surface the binary codec is — a
+/// value that omits it here would otherwise silently launder a
+/// non-empty-`overrides` context into one indistinguishable from an
+/// empty-`overrides` context, which is exactly the intended behavior, not an
+/// oversight. `parse` always constructs `overrides: Vec::new()`, mirroring
+/// `Codec::dec`.
+impl TextValue for ScoreTuningContext {
+    fn project(&self) -> Sexp {
+        Sexp::List(vec![
+            Sexp::Symbol(kebab("ScoreTuningContext")),
+            self.default_pitch_space.project(),
+            self.default_tuning_system.project(),
+            self.reference.project(),
+        ])
+    }
+    fn parse(s: &Sexp) -> Result<Self, TextError> {
+        let fields = s.expect_struct(&kebab("ScoreTuningContext"), 3)?;
+        let default_pitch_space = TextValue::parse(&fields[0])?;
+        let default_tuning_system = TextValue::parse(&fields[1])?;
+        let reference = TextValue::parse(&fields[2])?;
+        Ok(ScoreTuningContext {
+            default_pitch_space,
+            default_tuning_system,
+            reference,
+            overrides: Vec::new(),
+        })
     }
 }
 
@@ -886,6 +927,33 @@ mod tests {
         edges.insert(event(2), vec![event(3)]);
         round_trip(EventOrderingDAG::try_new(edges).expect("acyclic"));
         round_trip(EventOrderingDAG::default());
+    }
+
+    #[test]
+    fn score_tuning_context_round_trips_and_overrides_do_not_project() {
+        // Empty overrides: ordinary identity round-trip.
+        round_trip(ScoreTuningContext::default());
+
+        // Non-empty overrides: the text projection is identical to the
+        // empty-overrides projection (the field is in-memory only, Push 4b
+        // tranche 2 / Ruling C), and parsing always reconstructs `overrides`
+        // as empty.
+        let mut with_overrides = ScoreTuningContext::default();
+        with_overrides
+            .overrides
+            .push(crate::tuning::TuningOverride {
+                scope: crate::tuning::TuningScope::Staff(StaffId::new(ReplicaId(1), 1)),
+                pitch_space: None,
+                tuning_system: None,
+                reference: None,
+            });
+        assert_eq!(
+            with_overrides.project().render(),
+            ScoreTuningContext::default().project().render(),
+            "overrides must not appear in the text projection"
+        );
+        let parsed = ScoreTuningContext::parse(&with_overrides.project()).unwrap();
+        assert!(parsed.overrides.is_empty());
     }
 
     #[test]

@@ -633,12 +633,15 @@ impl Pitch {
     /// tolerance of any *other* class is a category error and never matches.
     ///
     /// Frequency resolution in general depends on the full tuning-system catalog
-    /// and reference pitch — a separate subsystem (the acoustic engine,
-    /// Chapter 1; see `DECISIONS.md`), not modeled in this crate. Callers at that
-    /// layer pass a `resolve` closure mapping a pitch to its frequency in Hertz
-    /// (`None` if it cannot resolve it). An [`AcousticRealization::AbsoluteHz`]
-    /// pitch resolves to its own stated frequency without the closure. Returns
-    /// `false` if either frequency is unavailable.
+    /// and reference pitch. The deterministic part of that now lives in this
+    /// crate (`tuning::resolve_pitch_frequency`, Push 4b tranche 2); the full
+    /// acoustic engine (Chapter 1; see `DECISIONS.md`) remains a separate
+    /// subsystem. This method stays resolver-agnostic on purpose: callers pass a
+    /// `resolve` closure mapping a pitch to its frequency in Hertz (`None` if it
+    /// cannot resolve it), which may delegate to the in-crate resolver or any
+    /// other source. An [`AcousticRealization::AbsoluteHz`] pitch resolves to its
+    /// own stated frequency without the closure. Returns `false` if either
+    /// frequency is unavailable.
     pub fn sounding_equivalent(
         &self,
         other: &Pitch,
