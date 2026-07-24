@@ -1669,17 +1669,24 @@ pub struct ScoreTuningContext {
     pub default_tuning_system: TuningSystemId,
     pub reference: ReferencePitch,
     /// Score-local accidental-registry extensions (Chapter 4 §"Score-Local
-    /// Extensions", `:3228`). **In memory only** this tranche (Push 4b
-    /// tranche 3a) — see the wire note above.
+    /// Extensions", `:3228`). **In memory only**: staged out of schema major 3
+    /// and appended after `overrides` whenever a later major lands it — see
+    /// the wire note above. Neither the binary codec nor the text projection
+    /// carries it.
     pub accidental_extensions: Vec<crate::accidental::ScoreAccidentalExtensions>,
     /// The SMuFL version this score requires (Chapter 4 §"SMuFL Versioning",
-    /// `req:tuning:smufl-version-fallback`). **In memory only** this
-    /// tranche — see the wire note above.
+    /// `req:tuning:smufl-version-fallback`). **On the wire** as of schema
+    /// major 3 (tranche 3b-i), and projected to text alongside it — see the
+    /// wire note above.
     pub smufl: crate::accidental::SmuflVersionRequirement,
     /// Per-scope overrides consulted by the tuning resolver
     /// (`crate::tuning::resolve_pitch_frequency`), scopes 2-4 of
-    /// `req:tuning:tuning-resolution-order`. **In memory only** this
-    /// tranche — see the struct doc above.
+    /// `req:tuning:tuning-resolution-order`. **On the wire** as of schema
+    /// major 3 (tranche 3b-i), and projected to text alongside it — see the
+    /// wire note above. Note that reaching the wire is not the same as being
+    /// canonically persistable: no operation authors this field and the
+    /// canonical base does not carry it, so today it survives only in the
+    /// (regenerable) acceleration snapshot — P13-S13.
     pub overrides: Vec<crate::tuning::TuningOverride>,
 }
 

@@ -1952,11 +1952,14 @@ impl Codec for TuningOverride {
 // drift when this live impl changes. A round-trip test just below
 // (`score_tuning_context_smufl_and_overrides_reach_the_wire_accidental_extensions_do_not`)
 // proves `smufl`/`overrides` now survive `enc`→`dec` while
-// `accidental_extensions` still does not. The matching text-projection
-// proofs are unchanged by this tranche — `textvalue_graph.rs`'s
-// `score_tuning_context_round_trips_and_overrides_do_not_project` and
-// `score_tuning_context_accidental_extensions_smufl_and_overrides_do_not_project`
-// (text projection is a separate surface; see this tranche's contract).
+// `accidental_extensions` still does not. The text projection now draws the
+// staging line in the same place, and its proofs are the direct analogues:
+// `textvalue_graph.rs`'s `score_tuning_context_round_trips_and_overrides_project`
+// and `score_tuning_context_projects_smufl_and_overrides_but_not_accidental_extensions`.
+// (3b-i left the text surface untouched, deferring it; the parity pass that
+// followed moved `smufl`/`overrides` there for the reason stated in
+// `TextValue for ScoreTuningContext`'s doc — the text projection is the same
+// canonical surface this codec is.)
 impl Codec for ScoreTuningContext {
     fn enc(&self, out: &mut Vec<u8>) {
         self.default_pitch_space.enc(out);

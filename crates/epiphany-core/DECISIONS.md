@@ -1317,3 +1317,51 @@ live `Codec::dec` killed six tests at once (`v0_score_migrates_*`,
 `v1_round_trips_non_default_values_for_every_new_field`) — confirming the
 reroute is load-bearing across the whole frozen-decoder family, not just the
 two sites the contract named.
+
+## Text-projection parity: `smufl` and `overrides` project (2026-07-24)
+
+Schema major 3 (tranche 3b-i) put `smufl` and `overrides` on the binary wire
+but deliberately left the text surface alone, deferring it. This closes that
+gap: `TextValue for ScoreTuningContext` now projects five fields, in `fn enc`
+order, and four new `TextValue` impls carry the leaves
+(`SmuflVersion`, `SmuflVersionRequirement`, `TuningScope`, `TuningOverride` —
+mirroring the four `Codec` impls 3b-i froze).
+
+**The rule that moved them is the one this projection always followed** — the
+text projection is the same canonical surface the binary codec is. What
+changed is not the rule but a premise: the old doc comment justified excluding
+all three fields on the grounds that "no schema major 3 has been opened", and
+3b-i opened it. `accidental_extensions` was *staged* out of that major and is
+still in-memory only, so it is still correctly absent — the staging line now
+falls in exactly the same place on both surfaces, which is what the new tests
+assert.
+
+**No header-version bump, and no document vector moved.** This is a
+value-projection change, not a document-format change: `epiphany-textproj` has
+no reference to a tuning context anywhere, and the canonical base is projected
+as one opaque byte atom (`req:textproj:base-snapshot-inline`), not
+structurally. So `req:textproj:header-version`'s single accepted version
+`(0 7 0)` is untouched and all 13 document vectors are unchanged.
+`req:textproj:roundtrip` was never violated — the tuning context is not part
+of the projected document — so this is a consistency fix on a value impl, not
+a conformance repair.
+
+**Test renames** (following 3b-i's own treatment of the binary pair, rather
+than rewriting the tranche-2/3a entries above):
+`score_tuning_context_round_trips_and_overrides_do_not_project` →
+`..._and_overrides_project`, with its equality assertion inverted to
+`assert_ne!` plus a full round-trip; and
+`score_tuning_context_accidental_extensions_smufl_and_overrides_do_not_project`
+→ `score_tuning_context_projects_smufl_and_overrides_but_not_accidental_extensions`,
+now the text analogue of the binary staging-boundary test. Both were
+mutation-verified: making `overrides` project as an always-empty vector — the
+exact regression this pass fixes — fails both.
+
+**Found while scoping, not fixed here:** the tuning context has **no canonical
+persistence path at all**. No operation authors it (`epiphany-ops` has no
+tuning-context payload; the only `tuning` references are per-pitch
+`TuningReference::Inherit`), and `MaterializedState` does not carry it. Major 3
+made the *acceleration snapshot* able to carry it, and that snapshot is
+explicitly non-canonical and regenerable. So a tuning override survives a
+snapshot round-trip but cannot be authored, replicated, or merged. Filed as a
+Pass-13 candidate; it is a data-model question, not a codec one.

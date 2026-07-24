@@ -291,22 +291,133 @@ impl TextValue for TimeSignature {
 // not a validating constructor.
 // ===========================================================================
 
-/// `(score-tuning-context <default-pitch-space> <default-tuning-system>
-/// <reference>)` — exactly the three wire fields, in `fn enc` order
-/// (Push 4b tranche 2, `spec/CONTRACT_PUSH4B_RESOLVER.md`).
+/// `(smufl-version <major> <minor-centi>)`.
 ///
-/// `ScoreTuningContext` has gained three fields beyond these three —
-/// `overrides` (Push 4b tranche 2), then `accidental_extensions` and `smufl`
-/// (Push 4b tranche 3a, `spec/CONTRACT_PUSH4B_ACCIDENTALS.md`) — that are
-/// deliberately **not** part of this projection: all three are in-memory only
-/// (no schema major 3 has been opened), so none may reach the wire, and the
-/// text projection is the same canonical surface the binary codec is — a
-/// value that omitted them here would otherwise silently launder a
-/// non-empty context into one indistinguishable from an empty one, which is
-/// exactly the intended behavior, not an oversight. `parse` always
-/// constructs `accidental_extensions: Vec::new()`, `smufl:
-/// SmuflVersionRequirement::default()`, and `overrides: Vec::new()`,
-/// mirroring `Codec::dec`.
+/// `minor_centi` projects as the stored, already-normalized value (1.4 is
+/// `40`, 1.12 is `12`), not as the decimal digits a human writes — the text
+/// projection carries the canonical value, exactly as `Codec` does. Parsing
+/// validates no further than the binary decoder does, for the same reason.
+impl TextValue for crate::accidental::SmuflVersion {
+    fn project(&self) -> Sexp {
+        Sexp::List(vec![
+            Sexp::Symbol(kebab("SmuflVersion")),
+            TextValue::project(&self.major),
+            TextValue::project(&self.minor_centi),
+        ])
+    }
+    fn parse(s: &Sexp) -> Result<Self, TextError> {
+        let fields = s.expect_struct(&kebab("SmuflVersion"), 2)?;
+        Ok(crate::accidental::SmuflVersion {
+            major: <u16 as TextValue>::parse(&fields[0])?,
+            minor_centi: <u16 as TextValue>::parse(&fields[1])?,
+        })
+    }
+}
+
+/// `(smufl-version-requirement <minimum> <authored-against>)` — the two fields
+/// in `fn enc` order.
+impl TextValue for crate::accidental::SmuflVersionRequirement {
+    fn project(&self) -> Sexp {
+        Sexp::List(vec![
+            Sexp::Symbol(kebab("SmuflVersionRequirement")),
+            self.minimum.project(),
+            self.authored_against.project(),
+        ])
+    }
+    fn parse(s: &Sexp) -> Result<Self, TextError> {
+        let fields = s.expect_struct(&kebab("SmuflVersionRequirement"), 2)?;
+        Ok(crate::accidental::SmuflVersionRequirement {
+            minimum: TextValue::parse(&fields[0])?,
+            authored_against: TextValue::parse(&fields[1])?,
+        })
+    }
+}
+
+/// The tuning-scope union, in the discriminant order `Codec` assigns
+/// (`Voice` 0, `Staff` 1, `Region` 2, `Range` 3).
+impl TextValue for crate::tuning::TuningScope {
+    fn project(&self) -> Sexp {
+        use crate::tuning::TuningScope as S;
+        match self {
+            S::Voice(id) => variant("Voice", vec![id.project()]),
+            S::Staff(id) => variant("Staff", vec![id.project()]),
+            S::Region(id) => variant("Region", vec![id.project()]),
+            S::Range { start, end, voices } => variant(
+                "Range",
+                vec![start.project(), end.project(), voices.project()],
+            ),
+        }
+    }
+    fn parse(s: &Sexp) -> Result<Self, TextError> {
+        use crate::tuning::TuningScope as S;
+        let (ctor, fields) = split_variant(s)?;
+        if ctor == kebab("Voice") {
+            let f = fields_of(fields, "TuningScope", 1)?;
+            Ok(S::Voice(TextValue::parse(&f[0])?))
+        } else if ctor == kebab("Staff") {
+            let f = fields_of(fields, "TuningScope", 1)?;
+            Ok(S::Staff(TextValue::parse(&f[0])?))
+        } else if ctor == kebab("Region") {
+            let f = fields_of(fields, "TuningScope", 1)?;
+            Ok(S::Region(TextValue::parse(&f[0])?))
+        } else if ctor == kebab("Range") {
+            let f = fields_of(fields, "TuningScope", 3)?;
+            Ok(S::Range {
+                start: TextValue::parse(&f[0])?,
+                end: TextValue::parse(&f[1])?,
+                voices: TextValue::parse(&f[2])?,
+            })
+        } else {
+            Err(TextError::UnknownConstructor {
+                type_name: "TuningScope",
+                found: ctor.to_owned(),
+            })
+        }
+    }
+}
+
+/// `(tuning-override <scope> <pitch-space> <tuning-system> <reference>)` — the
+/// four fields in `fn enc` order; the last three are optional and inherit from
+/// the next-outer scope when absent.
+impl TextValue for crate::tuning::TuningOverride {
+    fn project(&self) -> Sexp {
+        Sexp::List(vec![
+            Sexp::Symbol(kebab("TuningOverride")),
+            self.scope.project(),
+            self.pitch_space.project(),
+            self.tuning_system.project(),
+            self.reference.project(),
+        ])
+    }
+    fn parse(s: &Sexp) -> Result<Self, TextError> {
+        let fields = s.expect_struct(&kebab("TuningOverride"), 4)?;
+        Ok(crate::tuning::TuningOverride {
+            scope: TextValue::parse(&fields[0])?,
+            pitch_space: TextValue::parse(&fields[1])?,
+            tuning_system: TextValue::parse(&fields[2])?,
+            reference: TextValue::parse(&fields[3])?,
+        })
+    }
+}
+
+/// `(score-tuning-context <default-pitch-space> <default-tuning-system>
+/// <reference> <smufl> <overrides>)` — exactly the five wire fields, in
+/// `fn enc` order.
+///
+/// **`smufl` and `overrides` project; `accidental_extensions` does not**, and
+/// the rule dividing them is the one this projection has always followed: the
+/// text projection is the same canonical surface the binary codec is. Schema
+/// major 3 (Push 4b tranche 3b-i, `spec/CONTRACT_PUSH4B_3BI_WIRE.md`) put
+/// `smufl` and `overrides` on the wire, so they belong here too — omitting
+/// them would silently launder a loaded context into one indistinguishable
+/// from an empty one. `accidental_extensions` was deliberately **staged** out
+/// of that major and remains in-memory only, so it is still correctly absent;
+/// `parse` constructs it as `Vec::new()`, mirroring `Codec::dec`. When a later
+/// major puts it on the wire, it joins this projection then and not before.
+///
+/// (An earlier revision of this comment justified excluding all three on the
+/// grounds that "no schema major 3 has been opened". That premise expired when
+/// 3b-i opened it; the rule it appealed to is what moved two of the three in.)
 impl TextValue for ScoreTuningContext {
     fn project(&self) -> Sexp {
         Sexp::List(vec![
@@ -314,20 +425,24 @@ impl TextValue for ScoreTuningContext {
             self.default_pitch_space.project(),
             self.default_tuning_system.project(),
             self.reference.project(),
+            self.smufl.project(),
+            self.overrides.project(),
         ])
     }
     fn parse(s: &Sexp) -> Result<Self, TextError> {
-        let fields = s.expect_struct(&kebab("ScoreTuningContext"), 3)?;
+        let fields = s.expect_struct(&kebab("ScoreTuningContext"), 5)?;
         let default_pitch_space = TextValue::parse(&fields[0])?;
         let default_tuning_system = TextValue::parse(&fields[1])?;
         let reference = TextValue::parse(&fields[2])?;
+        let smufl = TextValue::parse(&fields[3])?;
+        let overrides = TextValue::parse(&fields[4])?;
         Ok(ScoreTuningContext {
             default_pitch_space,
             default_tuning_system,
             reference,
             accidental_extensions: Vec::new(),
-            smufl: crate::accidental::SmuflVersionRequirement::default(),
-            overrides: Vec::new(),
+            smufl,
+            overrides,
         })
     }
 }
@@ -935,14 +1050,14 @@ mod tests {
     }
 
     #[test]
-    fn score_tuning_context_round_trips_and_overrides_do_not_project() {
+    fn score_tuning_context_round_trips_and_overrides_project() {
         // Empty overrides: ordinary identity round-trip.
         round_trip(ScoreTuningContext::default());
 
-        // Non-empty overrides: the text projection is identical to the
-        // empty-overrides projection (the field is in-memory only, Push 4b
-        // tranche 2 / Ruling C), and parsing always reconstructs `overrides`
-        // as empty.
+        // Non-empty overrides: as of schema major 3 (Push 4b tranche 3b-i)
+        // `overrides` is on the wire, so it projects and survives the round
+        // trip. This assertion is the **inversion** of the pre-major-3 one it
+        // replaces, which required the two projections to be identical.
         let mut with_overrides = ScoreTuningContext::default();
         with_overrides
             .overrides
@@ -952,20 +1067,24 @@ mod tests {
                 tuning_system: None,
                 reference: None,
             });
-        assert_eq!(
+        assert_ne!(
             with_overrides.project().render(),
             ScoreTuningContext::default().project().render(),
-            "overrides must not appear in the text projection"
+            "overrides must appear in the text projection as of schema major 3"
         );
+        round_trip(with_overrides.clone());
         let parsed = ScoreTuningContext::parse(&with_overrides.project()).unwrap();
-        assert!(parsed.overrides.is_empty());
+        assert_eq!(parsed.overrides, with_overrides.overrides);
     }
 
     #[test]
-    fn score_tuning_context_accidental_extensions_smufl_and_overrides_do_not_project() {
-        // The direct analogue of `score_tuning_context_round_trips_and_overrides_do_not_project`
-        // above, extended to all three in-memory-only fields (Push 4b tranche
-        // 3a, `spec/CONTRACT_PUSH4B_ACCIDENTALS.md`).
+    fn score_tuning_context_projects_smufl_and_overrides_but_not_accidental_extensions() {
+        // The text analogue of the binary staging-boundary test
+        // (`codec::tests::score_tuning_context_smufl_and_overrides_reach_the_wire_accidental_extensions_do_not`):
+        // schema major 3 put `smufl` and `overrides` on the wire, so both
+        // project; `accidental_extensions` was staged out of that major and is
+        // still in-memory only, so it must still be dropped. This proves the
+        // staging line falls in exactly the same place on both surfaces.
         use crate::accidental::{PitchSpaceModification, SmuflVersion, SmuflVersionRequirement};
 
         let mut loaded = ScoreTuningContext::default();
@@ -985,15 +1104,30 @@ mod tests {
             tuning_system: None,
             reference: None,
         });
-        assert_eq!(
+        // Sanity: the fixture differs from the default in all three fields, so
+        // neither half of the assertion below is vacuous.
+        assert!(!loaded.accidental_extensions.is_empty());
+        assert_ne!(loaded.smufl, SmuflVersionRequirement::default());
+        assert!(!loaded.overrides.is_empty());
+
+        assert_ne!(
             loaded.project().render(),
             ScoreTuningContext::default().project().render(),
-            "accidental_extensions, smufl, and overrides must not appear in the text projection"
+            "smufl and overrides must appear in the text projection as of schema major 3"
         );
         let parsed = ScoreTuningContext::parse(&loaded.project()).unwrap();
+        // smufl and overrides survive the round trip...
+        assert_eq!(parsed.smufl, loaded.smufl);
+        assert_eq!(parsed.overrides, loaded.overrides);
+        // ...but accidental_extensions is still dropped: staged, never projected.
         assert!(parsed.accidental_extensions.is_empty());
-        assert_eq!(parsed.smufl, SmuflVersionRequirement::default());
-        assert!(parsed.overrides.is_empty());
+        assert_eq!(
+            parsed,
+            ScoreTuningContext {
+                accidental_extensions: Vec::new(),
+                ..loaded.clone()
+            }
+        );
     }
 
     #[test]
