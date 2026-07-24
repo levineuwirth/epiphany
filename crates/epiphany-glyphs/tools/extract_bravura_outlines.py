@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
 """Extract genuine Bravura SMuFL glyph outlines into a Rust table.
 
-Reproducible generator for `epiphany-render-svg`'s bundled outline data. It
-fetches the official OFL `Bravura.otf` and the SMuFL `glyphnames.json`, then
-emits `src/outlines_generated.rs` with each glyph's outline as an SVG path in
-**staff-space**, **y-up** coordinates (the renderer's coordinate system).
+Reproducible generator for `epiphany-glyphs`'s bundled outline data (moved
+here from `epiphany-render-svg` at Editor T4-pre W2, the shared typed
+glyph-asset seam — `render-svg` now depends on this crate instead of owning
+the table itself). It fetches the official OFL `Bravura.otf` and the SMuFL
+`glyphnames.json`, then emits `src/outlines_generated.rs` with each glyph's
+outline as an SVG path in **staff-space**, **y-up** coordinates.
 
 Usage:
     python3 -m venv .venv && . .venv/bin/activate && pip install fonttools
-    python3 extract_bravura_outlines.py > ../crates/epiphany-render-svg/src/outlines_generated.rs
+    python3 extract_bravura_outlines.py > ../src/outlines_generated.rs
+
+    # Also regenerate epiphany-render-svg's embedded-font subset (that
+    # generated file stays in render-svg — W2 pin 2 — so the output path
+    # crosses back into the sibling crate):
+    python3 extract_bravura_outlines.py --font-out \
+        ../../epiphany-render-svg/src/font_subset_generated.rs \
+        > ../src/outlines_generated.rs
 
 The font is NOT vendored; only the generated Rust is committed. Bravura is
 © Steinberg Media Technologies GmbH under the SIL Open Font License 1.1; the
@@ -250,8 +259,10 @@ def main():
     o.append("")
     o.append("/// One bundled glyph outline: SMuFL name, codepoint, the SVG path `d` in")
     o.append("/// staff-space / y-up coordinates, and the outline's tight bounding box")
-    o.append("/// `[left, bottom, right, top]` in staff spaces.")
-    o.append("pub(crate) struct BravuraOutline {")
+    o.append("/// `[left, bottom, right, top]` in staff spaces. `pub`: this crate's whole")
+    o.append("/// point is to be a shared seam other crates (`epiphany-render-svg`, and a")
+    o.append("/// future canvas renderer) depend on for exactly these fields.")
+    o.append("pub struct BravuraOutline {")
     o.append("    pub name: &'static str,")
     o.append("    pub codepoint: u32,")
     o.append("    pub path: &'static str,")
@@ -273,6 +284,10 @@ def main():
     print(f"// extracted {len(rows)}/{len(NAMES)} glyphs", file=sys.stderr)
 
     # Optionally emit the embedded-font subset (renderer GlyphMode::EmbeddedFont).
+    # This generated file stays in `epiphany-render-svg` (W2 pin 2: an embeddable
+    # font subset is a renderer concern, not a shared asset), so `--font-out`
+    # crosses back into the sibling crate even though this script now lives in
+    # `epiphany-glyphs`.
     if "--font-out" in sys.argv:
         import fontTools
         out_path = sys.argv[sys.argv.index("--font-out") + 1]

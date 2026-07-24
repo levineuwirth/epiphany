@@ -55,23 +55,30 @@ only (display scale, margin, provenance attributes, and `glyph_mode` — inline
 ## Bundled Bravura data
 
 Two generated artifacts come from the official OFL `Bravura.otf` via
-`tools/extract_bravura_outlines.py` — the font is **not vendored**, only the
-generated Rust is committed:
+`epiphany-glyphs`'s `tools/extract_bravura_outlines.py` — the font is **not
+vendored**, only the generated Rust is committed. **The outlines moved to
+`epiphany-glyphs` in T4-pre W2** (a canvas renderer needs them too, so they are
+a shared asset rather than a renderer-private one); the font subset stayed here,
+because an embeddable OTF is a renderer concern:
 
-- `src/outlines_generated.rs` — the inline glyph outlines (geometry-only, so
-  byte-stable across fontTools versions);
+- `epiphany-glyphs/src/outlines_generated.rs` — the inline glyph outlines
+  (geometry-only, so byte-stable across fontTools versions). This crate reaches
+  them through `epiphany_glyphs::outline`, and re-exports
+  `bundled_glyph_count`/`smufl_codepoint` unchanged;
 - `src/font_subset_generated.rs` — a base64 OTF **subset** (just the pipeline's
   glyphs) for `GlyphMode::EmbeddedFont`. As a Modified Version, its primary font
   name is renamed off the Reserved Font Name "Bravura" per the OFL; a content
   BLAKE3 + decoded length are committed alongside as an integrity lock.
 
 Bravura is © Steinberg Media Technologies GmbH under the SIL Open Font License 1.1
-(`tools/OFL.txt`); both artifacts are redistributed under the same license. To
+(`../epiphany-glyphs/tools/OFL.txt`, which travels with the redistributed
+outlines); both artifacts are redistributed under the same license. To
 regenerate both (the subset step also needs the `blake3` package):
 
 ```sh
-cd crates/epiphany-render-svg/tools
+cd crates/epiphany-glyphs/tools
 python3 -m venv .venv && . .venv/bin/activate && pip install fonttools blake3
-python3 extract_bravura_outlines.py --font-out ../src/font_subset_generated.rs \
+python3 extract_bravura_outlines.py \
+    --font-out ../../epiphany-render-svg/src/font_subset_generated.rs \
     > ../src/outlines_generated.rs
 ```

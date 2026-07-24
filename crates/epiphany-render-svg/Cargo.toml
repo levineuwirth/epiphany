@@ -11,6 +11,12 @@ description = "Agent I's SVG renderer behind the Epiphany RenderIR interface (sp
 # The renderer consumes the Chapter 7 ResolvedLayoutIR / RenderIR and the glyph
 # catalog, all defined in epiphany-layout-ir.
 epiphany-layout-ir.workspace = true
+# The shared typed glyph-asset seam (Editor T4-pre W2): the bundled Bravura
+# outline table (and its extractor tool) moved here from this crate, so the
+# renderer now depends on it for the outline lookup instead of owning the
+# table privately. This crate still emits each glyph's stored `d` string
+# byte-for-byte in its SVG output, never the typed form.
+epiphany-glyphs.workspace = true
 
 [dev-dependencies]
 # The demo binary's `--solver=real` path drives Agent I's engrave solver; only

@@ -7,6 +7,7 @@ members = [
     "crates/epiphany-ops",
     "crates/epiphany-textproj",
     "crates/epiphany-layout-ir",
+    "crates/epiphany-glyphs",
     "crates/epiphany-engrave",
     "crates/epiphany-render-svg",
     "crates/epiphany-editor-core",
@@ -58,6 +59,14 @@ epiphany-textproj = { path = "crates/epiphany-textproj" }
 # (v0 acceptance criterion 6), so its path is declared here alongside the other
 # intra-workspace crates.
 epiphany-layout-ir = { path = "crates/epiphany-layout-ir" }
+# Editor T4-pre W2: the shared typed glyph-asset seam. Bundled genuine Bravura
+# SMuFL outline data (extracted from the official OFL Bravura.otf) plus a real
+# GlyphCatalog whose render_data returns genuine parsed outlines — depends on
+# epiphany-layout-ir only (no third-party dependency, no build.rs, MSRV-clean).
+# epiphany-render-svg depends on it (moved out of that crate, which used to
+# hold the table privately); a future canvas-tessellating editor-app renderer
+# is why it is its own crate rather than a layout-ir module.
+epiphany-glyphs = { path = "crates/epiphany-glyphs" }
 # Agent I's Phase-2 visible-slice crates: epiphany-engrave is the real
 # constraint solver (Chapter 9 Minimal tier — in progress) consuming the
 # ConstrainedLayoutIR; epiphany-render-svg is the SVG renderer behind the

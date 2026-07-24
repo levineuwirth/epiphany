@@ -126,3 +126,34 @@ loop. `content_bounds` grows by each curve's control-point hull ± half-thicknes
 the acceptance snapshot prints it and the `provenance_count == glyph + stroke`
 invariant became `+ curve`. `GlyphClass` is untouched — curves are not glyphs,
 so they carry no `data-class`.
+
+## Bundled outline table moved to `epiphany-glyphs` (Editor T4-pre W2, 2026-07-24)
+
+`src/outlines_generated.rs` and `tools/{extract_bravura_outlines.py,OFL.txt}`
+moved out of this crate into the new `epiphany-glyphs` crate — the shared
+typed glyph-asset seam a canvas tessellator needs (`spec/PLAN_EDITOR_APP.md`
+§3.7 / Ruling A), populated on top of `layout-ir`'s already-designed
+`PathCommand`/`GlyphRenderData`/`GlyphCatalog::render_data` interface. This
+crate now depends on `epiphany-glyphs` instead of owning the table; `outline()`,
+`bundled_glyph_count()`, and `smufl_codepoint()` in `src/outline.rs` became
+thin delegations (the latter two stay `pub` here per the W2 contract's pin 2,
+even though nothing outside this crate calls them — an API that costs one
+`pub use` is not worth breaking). The table's own tests (sortedness, pipeline
+coverage, metric/outline bbox containment, finite-bounds sanity) moved with
+it to `epiphany-glyphs`; this crate's `outline.rs` test module now holds only
+the font-subset-specific tests (`font_subset_generated.rs` deliberately
+**stayed** — an embeddable font subset is a renderer concern, not a shared
+asset) plus a thin delegation smoke test.
+
+**Byte-neutrality is unconditional.** `svg.rs`'s `GlyphMode::PathOutline` arm
+still reads `outline(name).path` — the stored `d` string — directly into the
+emitted `<path d="…">`. `epiphany-glyphs` additionally parses that same
+string into typed `PathCommand`s (for `BravuraGlyphCatalog::render_data`,
+consumed by a future canvas renderer, not by this crate), but that parser and
+its round-trip re-emitter are private to `epiphany-glyphs` and unreachable
+from here — this renderer has no code path that could route through the
+typed form even by mistake. Verified before/after against the base commit: a
+throwaway probe captured `ResolvedLayoutIR::canonical_bytes()` for every
+reference-suite fixture plus the two named W1 fixtures, and all five GUI
+goldens were re-run; every byte was identical (reported in the W2 packet
+report, not committed here).

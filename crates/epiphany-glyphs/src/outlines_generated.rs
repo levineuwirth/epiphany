@@ -18,8 +18,10 @@
 
 /// One bundled glyph outline: SMuFL name, codepoint, the SVG path `d` in
 /// staff-space / y-up coordinates, and the outline's tight bounding box
-/// `[left, bottom, right, top]` in staff spaces.
-pub(crate) struct BravuraOutline {
+/// `[left, bottom, right, top]` in staff spaces. `pub`: this crate's whole
+/// point is to be a shared seam other crates (`epiphany-render-svg`, and a
+/// future canvas renderer) depend on for exactly these fields.
+pub struct BravuraOutline {
     pub name: &'static str,
     pub codepoint: u32,
     pub path: &'static str,
