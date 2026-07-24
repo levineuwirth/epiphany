@@ -1365,3 +1365,23 @@ made the *acceleration snapshot* able to carry it, and that snapshot is
 explicitly non-canonical and regenerable. So a tuning override survives a
 snapshot round-trip but cannot be authored, replicated, or merged. Filed as a
 Pass-13 candidate; it is a data-model question, not a codec one.
+
+**Ratified 2026-07-24: S13 defers to the genesis-persistence ruling, and
+`epiphany-core` must not grow a tuning-specific fix for it.** The same gap runs
+across the whole `Score` — `spec/ANALYSIS_GENESIS_PERSISTENCE.md` tables eight
+fields no operation can produce (`canvas.layout_defaults`, `instruments`,
+`staff_groups`, `parts`, `tuning_context`, `spelling_precedence`,
+`analysis_layers`, `views`, plus `identity`), each reachable only through a base
+the reducer is handed, and pruning is licensed to replace that base with a
+`MaterializedState` carrying none of them. The tuning context is field 10 of
+that table, not a special case. Whatever disposition that ruling picks resolves
+this as a side effect.
+
+Concretely for this crate: **do not add a `SetTuningContext` operation, and do
+not widen `ScoreTuningContext`'s wire layout to compensate.** The layout is
+already frozen and correct under every disposition — the open question is which
+carrier embeds it, never how it encodes. And the per-field operation route
+carries a cost worth remembering: blocks stamp minimally, and `bundle.rs` caps
+`OperationEnvelopeBlock` at major 2 *because* no operation payload embeds the
+tuning context, so such an operation would drag a role accept-set raise along
+with it — for one field of eight.
