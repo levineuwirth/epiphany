@@ -74,7 +74,13 @@ fn from_hex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// Every vector, in a stable order: the operation layer, then the bundle wire.
+/// Every vector, in a stable order: the operation layer, then the bundle wire,
+/// then (last) the core score wire. Core is appended last deliberately: it
+/// keeps the regenerated corpus diff purely additive when this surface first
+/// lands, which is itself the proof that no existing vector's bytes moved —
+/// i.e. that adding the core surfaces changed no existing wire form. A
+/// nicer-looking dependency order (core before ops) would move all the
+/// pre-existing lines and destroy that property.
 fn all() -> Vec<(String, String, String, String, Vec<u8>)> {
     let ops = epiphany_ops::vectors::decode_vectors()
         .into_iter()
@@ -98,7 +104,18 @@ fn all() -> Vec<(String, String, String, String, Vec<u8>)> {
                 b,
             )
         });
-    ops.chain(bundle).collect()
+    let core = epiphany_core::vectors::decode_vectors()
+        .into_iter()
+        .map(|(s, v, c, n, b)| {
+            (
+                s.to_string(),
+                v.to_string(),
+                c.to_string(),
+                n.to_string(),
+                b,
+            )
+        });
+    ops.chain(bundle).chain(core).collect()
 }
 
 /// Renders the corpus file.
@@ -163,7 +180,8 @@ pub fn verify(text: &str) -> Result<usize, Vec<String>> {
     let mut failures = Vec::new();
     for row in &rows {
         let result = epiphany_ops::vectors::check(&row.surface, &row.bytes)
-            .or_else(|| epiphany_bundle::vectors::check(&row.surface, &row.bytes));
+            .or_else(|| epiphany_bundle::vectors::check(&row.surface, &row.bytes))
+            .or_else(|| epiphany_core::vectors::check(&row.surface, &row.bytes));
         let Some(result) = result else {
             failures.push(format!("{}: no decoder owns this surface", row.surface));
             continue;

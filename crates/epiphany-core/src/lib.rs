@@ -89,6 +89,7 @@ pub mod fuzz;
 pub mod generators;
 pub mod prepass;
 pub mod textvalue;
+pub mod vectors;
 
 pub use ids::{
     derive_system_id, AnalysisLayerId, AnalyticalAnnotationId, BarlineAlignmentGroupId, BeamId,

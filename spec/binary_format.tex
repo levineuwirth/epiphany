@@ -240,7 +240,7 @@
   {\Large\scshape\color{epiphanyslate}Binary Format}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.10.0 --- Schema major 3: the tuning context's SMuFL requirement and per-scope overrides reach the wire}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.11.0 --- The decode vector corpus extends to the core score wire}\\[4pt]
   {\small\color{epiphanyslate}Normative for the byte layouts it defines}
   \vfill
 \end{titlepage}
@@ -3294,6 +3294,29 @@ only}: implementations need not agree on an error taxonomy.
   A future revision should extend the corpus to the representative struct
   layouts of Section~\ref{sec:values:representative}, which remain round-trip
   locked rather than literal-byte locked.
+
+  \textbf{Delivered (\texttt{spec/CONTRACT\_CORE\_DECODE\_VECTORS.md}).} The
+  corpus now additionally pins all five representative layouts of
+  Section~\ref{sec:values:representative} (\texttt{RationalTime},
+  \texttt{TimeAnchor}, \texttt{Pitch}, \texttt{Event}, \texttt{Slur}), the
+  schema-major-3 tuning-context leaves (\texttt{SmuflVersion},
+  \texttt{SmuflVersionRequirement}, \texttt{TuningScope},
+  \texttt{TuningOverride}) and their container (\texttt{ScoreTuningContext}),
+  and one whole-\texttt{Score} snapshot at each schema major
+  \texttt{0}--\texttt{3}. The mandatory regression vector is the one that
+  motivated this extension: bytes encoding \texttt{ScoreTuningContext} with
+  \texttt{overrides} before \texttt{smufl} --- the exact self-consistent field
+  swap that previously passed the entire reference-implementation suite and
+  8/8 conformance, because round-trip locking cannot see a decoder and
+  encoder agreeing on the wrong order. Each per-major whole-\texttt{Score}
+  vector genuinely decodes at its stamped major through
+  \texttt{Score::decode\ub canonical\ub versioned}; majors \texttt{0}--\texttt{2}
+  assert only that decoding succeeds (a migration deliberately rewrites bytes
+  to the current layout, so the injectivity check there is that the input was
+  already canonical \emph{at its own major}, which the frozen per-major
+  encoder's own re-encode guard already established), while major \texttt{3}
+  additionally asserts the decoded value re-encodes to exactly the input
+  bytes.
 \end{rationale}
 
 % ===========================================================================
@@ -3439,6 +3462,19 @@ only}: implementations need not agree on an error taxonomy.
   \tablenums{2}. Semantics: core specification Chapter~4, \sectionsc{Score
   Tuning Context} / \sectionsc{SMuFL Versioning}; the staging ruling itself
   is Push~4b's own (\texttt{spec/CONTRACT\_PUSH4B\_3BI\_WIRE.md}). \\
+    \today & Golden anchors & 0.11.0 --- Extends the decode vector corpus
+  (Section~\ref{sec:goldens:decode-vectors}) to \texttt{epiphany-core}'s score
+  wire, closing the gap \S0.9.0 left open and delivering the ``future
+  revision'' this section's own rationale anticipated: all five
+  representative layouts of Section~\ref{sec:values:representative}
+  (\texttt{RationalTime}, \texttt{TimeAnchor}, \texttt{Pitch}, \texttt{Event},
+  \texttt{Slur}), the schema-major-3 tuning-context leaves and their
+  container, and one whole-\texttt{Score} vector per schema major
+  \texttt{0}--\texttt{3}. Includes the mandatory regression vector for the
+  tranche-3b-i defect (a swapped \texttt{smufl}/\texttt{overrides} field
+  order, which previously passed round-trip locking and 8/8 conformance).
+  No wire layout changed; no existing vector's bytes moved
+  (\texttt{spec/CONTRACT\_CORE\_DECODE\_VECTORS.md}). \\
 \bottomrule
 \end{longtable}
 

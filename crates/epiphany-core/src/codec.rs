@@ -3430,8 +3430,13 @@ fn decode_v2_score(bytes: &[u8]) -> Result<Score> {
 /// inherits core's conventions exactly, so core/ops stay consistent. See
 /// `DECISIONS.md` (P11-4 / the K↔J seam).
 ///
-/// Implemented only for the value types operation payloads embed, not for every
-/// `Codec` type, to keep the public surface intentional.
+/// Implemented for the value types operation payloads embed, and — since
+/// `spec/CONTRACT_CORE_DECODE_VECTORS.md` — for the value types the
+/// cross-implementation decode-vector corpus (`crate::vectors`) pins: the
+/// representative layouts of the Binary Format companion's
+/// §"Representative Complete Layouts" and the schema-major-3 tuning-context
+/// leaves. Not for every `Codec` type, to keep the public surface intentional;
+/// the intent has simply widened to a second reason.
 pub trait CanonicalValue: Sized {
     /// The canonical bytes of this single value, using the same layout the
     /// whole-score codec uses for it.
@@ -3508,6 +3513,19 @@ canonical_value! {
     // Repeat authoring (schema-major-2 revision) — CreateRepeatStructure
     // embeds the full value.
     RepeatStructure,
+    // Decode-vector corpus (`spec/CONTRACT_CORE_DECODE_VECTORS.md`): the fifth
+    // representative layout (`RationalTime` — the other four, `Pitch`,
+    // `TimeAnchor`, `Event`, `Slur`, are already above), plus the
+    // schema-major-3 tuning-context container and its four leaf types, frozen
+    // by Push 4b tranche 3b-i. None of these gain a byte layout here — every
+    // one already has a `Codec` impl the whole-score codec uses; this macro
+    // only makes that existing layout reachable per-value.
+    RationalTime,
+    ScoreTuningContext,
+    TuningOverride,
+    TuningScope,
+    SmuflVersionRequirement,
+    SmuflVersion,
 }
 
 #[cfg(test)]
