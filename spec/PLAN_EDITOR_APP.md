@@ -229,10 +229,11 @@ after the resolver tranche lands.
 * **T1b — the document layer (post-resolver; contract after its blockers
   resolve).** Rulings B and D: `EditorDocument` + single-writer enforcement
   in `epiphany-bundle`. Its runway, in order: (1) the **graph-state
-  persistence decision** — how canonical graph state is persisted across
-  *both* genesis *and* pruning, driven by the field-by-field `Score` table
-  (§Ruling B, blocker i); a coordinated spec/core/ops/format decision, or an
-  explicit T1b scope limit to empty/metadata/region documents; (2) the
+  persistence decision — RESOLVED 2026-07-24**
+  (`spec/RULING_GENESIS_PERSISTENCE.md`): the operation set absorbs genesis,
+  and pruning is parked until the canonical base carries graph values. The
+  lease/save/single-writer machinery does **not** depend on that tranche
+  landing and may be contracted in parallel with it; (2) the
   **versioned-decode disposition** — the migrate-on-read API in
   `epiphany-ops`, preferred and eventually mandatory, or the enforceable
   current-layout restriction (§Ruling B, blocker ii); (3) the **Ruling-D
@@ -433,9 +434,14 @@ consumes them and never blocks on them — and the sequencing currency is the
 **schema-major budget** ("a major is a budget to spend deliberately",
 `PLAN_PUSH4B_TUNING.md`), not editor tranche numbers:
 
-* **Genesis persistence (T1b blocker i, §Ruling B):** how genesis-only graph
-  data — instruments, canvas — is canonically persisted and travels with a
-  document. The one registry item that *does* gate an editor tranche.
+* **Genesis persistence (T1b blocker i, §Ruling B) — RULED 2026-07-24,
+  tranche not yet dispatched.** `spec/RULING_GENESIS_PERSISTENCE.md`: the
+  operation set absorbs genesis, so this stops being "how is genesis-only data
+  persisted" and becomes a normal operation-vocabulary tranche — three LWW
+  settings setters and six entity mint families, one `OperationEnvelopeBlock`
+  accept-set raise spent once, Pass-12 K8 reversed. Blocked on the `identity`
+  disposition. The one registry item that *did* gate an editor tranche; the
+  gate is now the tranche's execution, not the decision.
 * **Articulations, dynamics, ornaments are empty wire types.**
   `ArticulationMark` / `DynamicMark` / `OrnamentMark` are unit structs
   (`event.rs:49-57`) that already encode — giving them real payloads is a
@@ -573,12 +579,27 @@ The T2 ruling the ladder reserved, now drafted:
 Granting this ruling unblocks T2's W4 packet (copy/paste); W1–W3 do not
 depend on it.
 
-### Ruling B — the document layer and persistence semantics — **REDRAFTED ×2 — NOT grantable yet**
+### Ruling B — the document layer and persistence semantics — **REDRAFTED ×2 — blocker (i) RESOLVED 2026-07-24; blocker (ii) still open**
 
 *(First draft withdrawn for violating the grow-only operation set. Second
-draft amended by the 2026-07-23 second review. Two blockers stand between
+draft amended by the 2026-07-23 second review. Two blockers stood between
 this ruling and grant; both are outside the resolver-parallel blast radius,
 which is why T1b sequences after the resolver.)*
+
+> **Blocker (i) is RESOLVED — `spec/RULING_GENESIS_PERSISTENCE.md`, ratified
+> 2026-07-24.** The field-by-field table this blocker demanded was produced as
+> `spec/ANALYSIS_GENESIS_PERSISTENCE.md` (nine uncovered surfaces, not the
+> handful this text guessed at: `canvas.layout_defaults`, `instruments`,
+> `staff_groups`, `parts`, `tuning_context`, `spelling_precedence`,
+> `analysis_layers`, `views`, and `StaffInstance.measures`, plus `identity`).
+> The ruling takes **neither** (a)-as-written nor (b): the operation set
+> **absorbs** genesis — Pass-12 K8 is reversed, there is no genesis block, and
+> a document is `Score::empty(identity)` plus its envelope log. Execution is a
+> Push-4b-class coordinated tranche; the editor track consumes it. Two
+> constraints carry forward into T1b: **pruning may not be implemented until
+> disposition C lands** (a `MaterializedState` base cannot rebuild a score), and
+> `identity`'s disposition blocks specification of that tranche. The text below
+> is kept as the record of what the blocker was.
 
 **Blocker (i) — canonical graph-state persistence, across genesis AND
 pruning.** Two halves of one question. *Genesis:* "every piece of content

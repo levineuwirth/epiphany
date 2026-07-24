@@ -1,5 +1,11 @@
 # Analysis: canonical graph-state persistence across genesis and pruning
 
+> **Ruled 2026-07-24 — see `spec/RULING_GENESIS_PERSISTENCE.md`.** Disposition
+> **B** was taken: the operation set absorbs genesis. This document stays as
+> analysis and is not rewritten to match, so the evidence the ruling rests on
+> remains readable; the two amendments it carries (the `Measure` correction and
+> the promotion of `identity` to blocking) are marked inline where they belong.
+
 **Status: analysis, not a ruling.** This is the field-by-field `Score` table
 that `spec/PLAN_EDITOR_APP.md` §Ruling B blocker (i) requires *before* the
 blocker can be resolved, and that the T1b runway names as step (1). It
@@ -73,6 +79,7 @@ without a minting operation.
 |---|---|---|---|---|
 | 1 | `metadata` | ✅ | `SetMetadata` (LWW) | `reduce.rs:2713`, `:5249` |
 | 2 | `canvas.regions` | ✅ | `CreateRegion` / `DeleteRegion`, `ChangeRegionTimeModel`, `SetMetricGrid`, `SetTimeSignature`, `SetUserSystemBreak` / `SetUserPageBreak` | 29 sites incl. `:2656` |
+| 2a | ↳ `StaffInstance.measures` | ❌ **none** | — see the correction below | `Measure {` built only in `testkit/src/fixtures.rs` |
 | 3 | `canvas.layout_defaults` | ❌ **none** | — page size and margins | zero hits in `epiphany-ops` |
 | 4 | `instruments` | ❌ **none** | — no `CreateInstrument` exists | read-only at `:1318` |
 | 5 | `staves` | ✅ | `CreateStaff` (mint), tombstone removal | `:3850`, `:2560` |
@@ -92,10 +99,26 @@ without a minting operation.
 | 19 | `tombstoned_pitches` | ✅ derived | delete/tombstone paths | `:2526` |
 | 20 | `tombstoned_events` | ✅ derived | delete/tombstone paths | 3 sites |
 
-**Eight fields have no operation that can produce them** (3, 4, 6, 7, 10, 15,
-16, 17, plus `identity` at 18), and one more (14) can only be pruned back,
-never authored. Of the covered ones, several are covered *only in the
+**Eight top-level fields have no operation that can produce them** (3, 4, 6, 7,
+10, 15, 16, 17, plus `identity` at 18), and one more (14) can only be pruned
+back, never authored. Of the covered ones, several are covered *only in the
 graph-aware mode* — they write through `if let Some(score) = self.graph`.
+
+> **Correction (2026-07-24, made while ruling on this analysis).** Row 2 scored
+> `canvas.regions` op-covered at *container* granularity — regions, staff
+> instances, voices — and that hid a ninth gap one level deeper. **`Measure` is
+> authored by nothing**: no operation mints it, no reducer path writes it, and
+> `Measure {` is constructed only in `testkit/src/fixtures.rs` (`:137`, `:235`,
+> `:389`). `CreateStaffInstance` moreover *refuses* an instance carrying
+> measures (`reduce.rs:3715`, container-not-empty), so they cannot enter at
+> instance-mint either. A from-empty document therefore cannot have a measure,
+> which puts this on the critical path rather than in the margins. Ruled
+> **authored, not derived** (2026-07-24): `TimeAnchor::Measure { id, .. }` means
+> cross-cutting structures anchor to measure ids, so deriving measures from the
+> metric grid would make their identity a function of the meter and every
+> time-signature change would orphan the anchors pointing into them. The cost
+> accepted with that ruling is that measure/meter consistency becomes an
+> authoring obligation backed by a graph invariant, not a model guarantee.
 
 ---
 
@@ -224,6 +247,15 @@ added to `Score` — which argues, again, for C.
 2. **Is `identity` document state or session state?** It is on `Score` today
    with no op coverage. If a document has one `IdentityContext` and each
    session mints under its own replica id, the field's role needs stating.
+   **Promoted to blocking (2026-07-24):** under the ruled disposition,
+   reduction runs onto `Score::empty(identity)`, so whoever opens the document
+   chooses the value — and the codec *encodes* it (`codec.rs:2766`, `:3223`),
+   so two replicas reducing an identical log produce Scores differing in an
+   encoded field while the music is identical. `IdentityContext` is
+   `{replica_id, next_counter}`, replica-scoped by construction
+   (`ids.rs:711-717`). This must be dispositioned before the tranche can be
+   specified; the likely answer is that it belongs in the manifest rather than
+   the graph.
 3. **`decomposition_attachments` and `spelling_precedence`** are consumed by
    the prepass. Are they derived state that should be rebuilt rather than
    persisted — in which case they leave this table — or authored state?
