@@ -153,3 +153,72 @@ one additive step (`.github/workflows/ci.yml`): an `if: failure()`
 `golden-failures` artifact (`if-no-files-found: ignore`, since it produces
 nothing on a green run). This is the tranche's only CI change; nothing else
 in `ci.yml` moves.
+
+## 9. Rubber-band selection (2026-07-23, T2-W2) — drag threshold and anchor accent
+
+Dispatched under `spec/CONTRACT_EDITOR_T2_SELECTION.md` §W2, over W1's
+selection-set API (`selections()`, `anchor()`, `toggle_at`, `select_within`).
+`main.rs` only; no golden pixel moves — the overlay is drawn by `score_view`
+after the score texture is painted, entirely outside `goldens.rs`'s headless
+raster path, so none of it is exercised by a golden test.
+
+**Sensing.** The score view's `Sense` widens from `click()` to
+`click_and_drag()`. A plain click still resolves through
+`Response::clicked()`, unchanged. A drag is tracked in a new pure `DragRect`
+(origin + current screen `Pos2`, no `egui::Response`/`Context` dependency, so
+it is unit-testable headlessly), updated across frames via
+`drag_started`/`dragged`, and resolved on `drag_stopped`.
+
+**The drag threshold, and why it exists even though egui has its own.**
+`DragRect::RUBBER_BAND_THRESHOLD = 4.0` screen points: below it, a completed
+drag resolves as a plain click/toggle at the release point, not a
+rubber-band `select_within`. This exists on top of egui's own click-distance
+tolerance (`InputOptions::max_click_dist`, 6.0 points) because a widget
+sensing both click and drag reclassifies a **long, still press-and-hold**
+(no meaningful movement, held past `max_click_duration`, 0.8s) as "dragging"
+purely on elapsed time (`PointerState::is_decidedly_dragging`) — a gesture a
+user experiences as a click would otherwise silently become a near-empty
+rubber-band replace of the current selection. `DragRect::is_rubber_band`
+(`distance >= threshold`) and the release dispatch
+(`resolve_release(&DragRect, ctrl) -> ReleaseAction`) are pure and directly
+unit-tested, including the exact boundary (`>=`, not `>`).
+
+**World-space query stays unnormalized.** `select_within`'s `BoundingBox`
+normalizes its own corners (its doc: "rect's corners are order-independent");
+the release handler therefore maps `drag.origin`/`drag.current` straight
+through `ViewMap::screen_to_world` with no pre-normalization of its own.
+`DragRect::screen_rect`'s own min/max normalization is a separate concern
+(painting a valid, non-inverted rectangle for the live overlay) and never
+feeds the world-space query.
+
+**Ctrl/Cmd-click and the below-threshold-drag release** both resolve through
+one shared `EditorApp::resolve_click(world, grid, toggle)`: `toggle` calls
+`toggle_at`; otherwise `click`, with the exact same "empty — pencil would
+insert…" reporting the single-selection code already had. This keeps the
+plain-click behavior — including its status-line wording — identical to
+before this packet for both call sites.
+
+**Anchor accent.** Every member in `session.selections()` gets the existing
+2.0pt blue stroke (unchanged from the prior single-selection code, now
+looped); `session.anchor()` additionally gets a second pass with a 3.0pt
+orange stroke on top. A single-member selection's sole member is trivially
+the anchor, so it now receives both passes (blue then orange) where it
+previously received only the blue one — a deliberate, undocumented-by-any-
+golden visual change (the overlay is outside the golden raster path per
+above), not a behavior change: `click`'s selection-logic contract (single
+member, replaces the set) is unchanged, only its paint style gained an
+always-present anchor accent.
+
+**Debug panel and help text.** Adds a `selected: N member(s)` line and
+relabels the existing selection lines as the anchor's (`session.anchor()`
+directly, replacing the `session.selection()` compatibility read — the two
+are equal by construction, `selection()` is `anchor().copied()`). The help
+text now documents drag-to-select and Ctrl/Cmd-click, and states which
+toolbar/key intents act on the whole selection (`delete_selection`,
+`alter_selection` — both batch over every/every-pitch member per W1's
+`DECISIONS.md`) versus the anchor alone (`move_selection_staff_step`,
+`add_note_to_selection`, `insert_note_after_selection`,
+`set_selection_duration` — verified against each function's own
+`self.selection.anchor()` read in `epiphany-editor-core/src/lib.rs`, not
+assumed from the contract's own summary, which groups `alter` with the
+anchor-only intents even though its implementation batches).

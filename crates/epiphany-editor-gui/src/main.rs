@@ -27,7 +27,7 @@ use eframe::egui;
 use epiphany_core::NoteValue;
 use epiphany_editor_core::{EditOutcome, EditorError, EditorSession, GridResolution};
 use epiphany_engrave::Engraver;
-use epiphany_layout_ir::{BoundingBox, HitShape, Point};
+use epiphany_layout_ir::{BoundingBox, HitShape, LayoutObjectId, Point};
 use epiphany_ops::{OperationKind, OperationPayload};
 use epiphany_render_svg::{render, RenderOptions};
 
@@ -123,6 +123,106 @@ fn shape_rect(shape: &HitShape, vm: &ViewMap) -> egui::Rect {
     }
 }
 
+/// The screen rect for the hit-test region backing `layout_object`, if it is
+/// still present in the current layout — shared by the selection overlay's
+/// member and anchor passes.
+fn selection_rect(
+    session: &EditorSession,
+    layout_object: LayoutObjectId,
+    vm: &ViewMap,
+) -> Option<egui::Rect> {
+    session
+        .hit_test()
+        .regions
+        .iter()
+        .find(|r| r.layout_object == layout_object)
+        .map(|region| shape_rect(&region.shape, vm))
+}
+
+/// Accumulates a rubber-band drag's two screen-space corners (the point where
+/// the drag started and where the pointer currently is), pure and independent
+/// of any `egui::Response`/`Context` so it can be unit-tested headlessly. The
+/// *world*-space selection query ([`EditorSession::select_within`]) maps
+/// `origin`/`current` directly and lets that API normalize corner order
+/// itself (its own doc: "rect's corners are order-independent"); this
+/// struct's own min/max normalization ([`Self::screen_rect`]) exists only so
+/// the live overlay always paints a valid (non-inverted) screen rectangle,
+/// regardless of which direction the drag went.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DragRect {
+    origin: egui::Pos2,
+    current: egui::Pos2,
+}
+
+impl DragRect {
+    /// Below this screen-space distance (points), a completed drag still
+    /// resolves as a plain click/toggle rather than a rubber-band select.
+    /// Chosen smaller than egui's own default click-distance tolerance
+    /// (`InputOptions::max_click_dist`, 6.0 points): egui reclassifies a
+    /// long, still press-and-hold as "dragging" purely by elapsed time (see
+    /// `PointerState::is_decidedly_dragging`), even with ~0 pointer movement,
+    /// so a widget sensing both click and drag can receive
+    /// `drag_started`/`drag_stopped` for a gesture a user experiences as a
+    /// click. This threshold exists to catch exactly that case and resolve
+    /// it as a click, not a near-empty rubber-band replace.
+    const RUBBER_BAND_THRESHOLD: f32 = 4.0;
+
+    fn new(origin: egui::Pos2) -> Self {
+        DragRect {
+            origin,
+            current: origin,
+        }
+    }
+
+    fn update(&mut self, pos: egui::Pos2) {
+        self.current = pos;
+    }
+
+    /// The screen-space distance travelled from the drag's origin so far.
+    fn distance(&self) -> f32 {
+        self.origin.distance(self.current)
+    }
+
+    /// Whether the drag has moved far enough to count as a rubber-band
+    /// select rather than a click (see [`Self::RUBBER_BAND_THRESHOLD`]).
+    fn is_rubber_band(&self) -> bool {
+        self.distance() >= Self::RUBBER_BAND_THRESHOLD
+    }
+
+    /// The normalized on-screen rectangle spanning the drag so far — `min <=
+    /// max` on both axes regardless of which corner the drag started from.
+    /// The rubber-band overlay's paint rect.
+    fn screen_rect(&self) -> egui::Rect {
+        let min_x = self.origin.x.min(self.current.x);
+        let max_x = self.origin.x.max(self.current.x);
+        let min_y = self.origin.y.min(self.current.y);
+        let max_y = self.origin.y.max(self.current.y);
+        egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y))
+    }
+}
+
+/// What a drag's release should do, decided purely from the accumulated
+/// screen-space drag and whether Ctrl/Cmd was held at release — split out
+/// from the release handler itself so the threshold decision (rubber-band
+/// vs. click/toggle) has a headlessly testable seam.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReleaseAction {
+    /// At or above the rubber-band threshold: `select_within` over the
+    /// drag's rectangle.
+    RubberBand,
+    /// Below the threshold: resolves as a click (`toggle` = Ctrl/Cmd was
+    /// held, so toggle membership instead of replacing the selection).
+    Point { toggle: bool },
+}
+
+fn resolve_release(drag: &DragRect, ctrl: bool) -> ReleaseAction {
+    if drag.is_rubber_band() {
+        ReleaseAction::RubberBand
+    } else {
+        ReleaseAction::Point { toggle: ctrl }
+    }
+}
+
 /// A short label for the last applied op, for the debug panel.
 fn payload_label(payload: &OperationPayload) -> &'static str {
     match payload {
@@ -201,6 +301,10 @@ struct EditorApp {
     /// Pencil ("insert") mode: a click on the staff inserts a note at that pitch and
     /// beat (with make-room overwrite) instead of selecting.
     pencil: bool,
+    /// The in-progress rubber-band drag, if any (`None` outside a drag, and always
+    /// `None` in pencil mode — pencil's click-to-insert takes precedence and ignores
+    /// dragging entirely).
+    rubber_band: Option<DragRect>,
     status: String,
 }
 
@@ -217,6 +321,7 @@ impl EditorApp {
             px_per_staff_space: 12.0,
             needs_render: true,
             pencil: false,
+            rubber_band: None,
             status: "opened ten_measure_single_staff".to_string(),
         }
     }
@@ -344,10 +449,14 @@ impl EditorApp {
         ui.heading("State");
         ui.label(format!("status: {}", self.status));
         ui.separator();
-        match self.session.selection() {
+        ui.label(format!(
+            "selected: {} member(s)",
+            self.session.selections().len()
+        ));
+        match self.session.anchor() {
             Some(sel) => {
-                ui.label(format!("selection source: {:?}", sel.source));
-                ui.label(format!("layout id: {:?}", sel.layout_object));
+                ui.label(format!("anchor source: {:?}", sel.source));
+                ui.label(format!("anchor layout id: {:?}", sel.layout_object));
             }
             None => {
                 ui.label("selection: none");
@@ -369,7 +478,11 @@ impl EditorApp {
         }
         ui.separator();
         ui.label(format!(
-            "Click a notehead to select. Pencil mode: {}.\n\
+            "Click a notehead to select (replaces). Ctrl/Cmd-click toggles a member. Drag a \
+             rubber-band to select every hit within it. Pencil mode: {}.\n\
+             Delete and Transpose act on the whole selection; Move / Add chord / Insert after / \
+             duration act on the anchor (the drag/toggle reference point, drawn with the \
+             thicker accent stroke).\n\
              Keys: Del delete · ↑/↓ staff-step move · +/− transpose · A add chord · I insert after · P pencil · Ctrl/Cmd+Z undo · Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redo",
             if self.pencil { "ON — click to insert" } else { "off" }
         ));
@@ -425,6 +538,39 @@ impl EditorApp {
         }
     }
 
+    /// Resolves a non-pencil click/toggle at world `point`: Ctrl/Cmd held (`toggle`)
+    /// adds/removes it from the set ([`EditorSession::toggle_at`]); otherwise it
+    /// replaces the selection ([`EditorSession::click`], today's exact behavior),
+    /// reporting on empty space what a pencil click *would* insert. Shared by the
+    /// plain-click path and the release path for a drag that stayed under the
+    /// rubber-band threshold, so both resolve identically.
+    fn resolve_click(&mut self, world: Point, grid: &GridResolution, toggle: bool) {
+        if toggle {
+            let members = self.session.toggle_at(world);
+            self.status = format!("toggled — {} member(s) selected", members.len());
+            return;
+        }
+        // Select the topmost hit; on empty staff, report what a pencil click
+        // *would* insert (the pitch and grid-snapped beat).
+        let pitch = self.session.staff_pitch_at(world);
+        let position = self.session.position_at(world, grid);
+        self.status = match self.session.click(world) {
+            Some(_) => "selected".to_string(),
+            None => match (pitch, position) {
+                (Some(p), Some(gp)) => format!(
+                    "empty — pencil would insert {:?}{} at beat {:.3}",
+                    p.nominal,
+                    p.octave,
+                    gp.position.0.to_f64()
+                ),
+                (Some(p), None) => {
+                    format!("empty — pencil would insert {:?}{}", p.nominal, p.octave)
+                }
+                _ => "cleared selection".to_string(),
+            },
+        };
+    }
+
     fn score_view(&mut self, ui: &mut egui::Ui) {
         let Some(texture) = self.texture.clone() else {
             return;
@@ -434,7 +580,7 @@ impl EditorApp {
         // back to the layout exactly, with no sub-pixel stretch from the `ceil`.
         let pixmap = texture.size_vec2();
         let logical = self.logical_size;
-        let (rect, response) = ui.allocate_exact_size(logical, egui::Sense::click());
+        let (rect, response) = ui.allocate_exact_size(logical, egui::Sense::click_and_drag());
         let uv = egui::Rect::from_min_max(
             egui::pos2(0.0, 0.0),
             egui::pos2(logical.x / pixmap.x, logical.y / pixmap.y),
@@ -442,9 +588,76 @@ impl EditorApp {
         ui.painter()
             .image(texture.id(), rect, uv, egui::Color32::WHITE);
 
+        let vm = ViewMap::new(self.view_box, rect);
+
+        // Rubber-band drag tracking. Pencil mode ignores dragging entirely — it takes
+        // precedence, and its click-to-insert behavior below is unchanged — so no drag
+        // is ever started while it is on.
+        if !self.pencil {
+            if response.drag_started() {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    self.rubber_band = Some(DragRect::new(pos));
+                }
+            } else if response.dragged() {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    match self.rubber_band.as_mut() {
+                        Some(drag) => drag.update(pos),
+                        // `dragged` without a prior `drag_started` shouldn't happen, but
+                        // start tracking now rather than lose the gesture.
+                        None => self.rubber_band = Some(DragRect::new(pos)),
+                    }
+                }
+            }
+            if response.drag_stopped() {
+                if let Some(mut drag) = self.rubber_band.take() {
+                    // `dragged()` is already false on the release frame (egui clears it
+                    // before `drag_stopped` fires), but `interact_pointer_pos` still
+                    // reports the release position — fold it in so the rect's second
+                    // corner is the exact release point, not the prior frame's.
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        drag.update(pos);
+                    }
+                    let ctrl = ui.input(|i| i.modifiers.command);
+                    match resolve_release(&drag, ctrl) {
+                        ReleaseAction::RubberBand => {
+                            // `select_within`'s `BoundingBox` normalizes corner order
+                            // itself, so the two raw corners are passed through as-is.
+                            let a = vm.screen_to_world(drag.origin);
+                            let b = vm.screen_to_world(drag.current);
+                            let members = self
+                                .session
+                                .select_within(BoundingBox::new(a.x.0, a.y.0, b.x.0, b.y.0));
+                            self.status = format!("selected {} member(s)", members.len());
+                        }
+                        ReleaseAction::Point { toggle } => {
+                            let world = vm.screen_to_world(drag.current);
+                            let grid = self
+                                .session
+                                .default_grid_at(world)
+                                .unwrap_or_else(GridResolution::quarter);
+                            self.resolve_click(world, &grid, toggle);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Live rubber-band overlay while dragging.
+        if let Some(drag) = &self.rubber_band {
+            ui.painter().rect(
+                drag.screen_rect(),
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(0, 120, 215, 40),
+                egui::Stroke::new(
+                    1.5_f32,
+                    egui::Color32::from_rgba_unmultiplied(0, 120, 215, 180),
+                ),
+            );
+        }
+
         if response.clicked() {
             if let Some(pos) = response.interact_pointer_pos() {
-                let world = ViewMap::new(self.view_box, rect).screen_to_world(pos);
+                let world = vm.screen_to_world(pos);
                 // The grid the pencil snaps to: the meter's beat under the cursor,
                 // defaulting to a quarter off-staff.
                 let grid = self
@@ -461,44 +674,32 @@ impl EditorApp {
                     ui.ctx().request_repaint();
                     return;
                 } else {
-                    // Select the topmost hit; on empty staff, report what a pencil
-                    // click *would* insert (the pitch and grid-snapped beat).
-                    let pitch = self.session.staff_pitch_at(world);
-                    let position = self.session.position_at(world, &grid);
-                    self.status = match self.session.click(world) {
-                        Some(_) => "selected".to_string(),
-                        None => match (pitch, position) {
-                            (Some(p), Some(gp)) => format!(
-                                "empty — pencil would insert {:?}{} at beat {:.3}",
-                                p.nominal,
-                                p.octave,
-                                gp.position.0.to_f64()
-                            ),
-                            (Some(p), None) => {
-                                format!("empty — pencil would insert {:?}{}", p.nominal, p.octave)
-                            }
-                            _ => "cleared selection".to_string(),
-                        },
-                    };
+                    let ctrl = ui.input(|i| i.modifiers.command);
+                    self.resolve_click(world, &grid, ctrl);
                 }
             }
         }
 
-        if let Some(sel) = self.session.selection() {
-            if let Some(region) = self
-                .session
-                .hit_test()
-                .regions
-                .iter()
-                .find(|r| r.layout_object == sel.layout_object)
-            {
-                let vm = ViewMap::new(self.view_box, rect);
+        // Selection overlay: every member gets the existing highlight; the anchor
+        // additionally gets a thicker, differently-colored accent stroke on top (for a
+        // single selection the sole member is trivially the anchor, so it gets both).
+        for sel in self.session.selections() {
+            if let Some(rc) = selection_rect(&self.session, sel.layout_object, &vm) {
                 ui.painter().rect_stroke(
-                    shape_rect(&region.shape, &vm),
+                    rc,
                     0.0,
                     // Suffixed: `float_literal_f32_fallback` (Rust 1.97) rejects
                     // inferring `f32` here, and it becomes a hard error later.
                     egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(0, 120, 215)),
+                );
+            }
+        }
+        if let Some(anchor) = self.session.anchor() {
+            if let Some(rc) = selection_rect(&self.session, anchor.layout_object, &vm) {
+                ui.painter().rect_stroke(
+                    rc,
+                    0.0,
+                    egui::Stroke::new(3.0_f32, egui::Color32::from_rgb(255, 140, 0)),
                 );
             }
         }
@@ -612,5 +813,79 @@ mod tests {
         assert!((top_left.y.0 - 7.0).abs() < 1e-3);
         let bottom_left = vm.screen_to_world(egui::pos2(rect.min.x, rect.max.y));
         assert!((bottom_left.y.0 - (-5.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn drag_rect_screen_rect_normalizes_any_corner_order() {
+        // Dragging bottom-right -> top-left must paint the same rect as top-left ->
+        // bottom-right: `screen_rect` normalizes min<=max on both axes regardless of
+        // which corner the drag started from. A corner-math mutation (e.g. swapping
+        // which side takes `.min` vs `.max`) makes one of these directions produce an
+        // inverted (or simply wrong) rect, which this equality catches.
+        let mut forward = DragRect::new(egui::pos2(10.0, 20.0));
+        forward.update(egui::pos2(50.0, 80.0));
+        let mut backward = DragRect::new(egui::pos2(50.0, 80.0));
+        backward.update(egui::pos2(10.0, 20.0));
+
+        let expected = egui::Rect::from_min_max(egui::pos2(10.0, 20.0), egui::pos2(50.0, 80.0));
+        assert_eq!(forward.screen_rect(), expected);
+        assert_eq!(backward.screen_rect(), expected);
+
+        // Every other corner order too, so a mutation on just one axis's min/max still
+        // gets caught.
+        let mut mixed = DragRect::new(egui::pos2(50.0, 20.0));
+        mixed.update(egui::pos2(10.0, 80.0));
+        assert_eq!(mixed.screen_rect(), expected);
+    }
+
+    #[test]
+    fn drag_rect_distance_is_euclidean() {
+        let mut drag = DragRect::new(egui::pos2(0.0, 0.0));
+        drag.update(egui::pos2(3.0, 4.0));
+        assert!((drag.distance() - 5.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn drag_rect_threshold_distinguishes_click_from_rubber_band() {
+        // Below the threshold: still a click.
+        let mut small = DragRect::new(egui::pos2(0.0, 0.0));
+        small.update(egui::pos2(1.0, 1.0));
+        assert!(small.distance() < DragRect::RUBBER_BAND_THRESHOLD);
+        assert!(!small.is_rubber_band());
+
+        // At the threshold exactly: counts as a rubber-band (>=).
+        let mut at_threshold = DragRect::new(egui::pos2(0.0, 0.0));
+        at_threshold.update(egui::pos2(DragRect::RUBBER_BAND_THRESHOLD, 0.0));
+        assert!(at_threshold.is_rubber_band());
+
+        // Well above: a rubber-band.
+        let mut large = DragRect::new(egui::pos2(0.0, 0.0));
+        large.update(egui::pos2(100.0, 0.0));
+        assert!(large.is_rubber_band());
+    }
+
+    #[test]
+    fn resolve_release_below_threshold_is_a_point_carrying_the_modifier() {
+        let mut drag = DragRect::new(egui::pos2(0.0, 0.0));
+        drag.update(egui::pos2(1.0, 1.0));
+        assert_eq!(
+            resolve_release(&drag, false),
+            ReleaseAction::Point { toggle: false }
+        );
+        assert_eq!(
+            resolve_release(&drag, true),
+            ReleaseAction::Point { toggle: true }
+        );
+    }
+
+    #[test]
+    fn resolve_release_at_or_above_threshold_is_rubber_band_regardless_of_modifier() {
+        // This is mutation w2b's headlessly-testable seam: a release handler that
+        // dispatched `Point`/`click` here instead of `RubberBand`/`select_within` would
+        // fail this assertion outright.
+        let mut drag = DragRect::new(egui::pos2(0.0, 0.0));
+        drag.update(egui::pos2(100.0, 0.0));
+        assert_eq!(resolve_release(&drag, false), ReleaseAction::RubberBand);
+        assert_eq!(resolve_release(&drag, true), ReleaseAction::RubberBand);
     }
 }
