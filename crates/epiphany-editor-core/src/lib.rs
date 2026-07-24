@@ -45,8 +45,12 @@
 //! produces a [`RenderIR`]; turning that into pixels is the renderer's job.
 
 mod barriers;
+mod fragment;
 
 pub use barriers::ActiveExtension;
+pub use fragment::{
+    FragmentError, MAX_FRAGMENT_BYTES, MAX_FRAGMENT_EVENTS, MAX_FRAGMENT_NESTING_DEPTH,
+};
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -57,10 +61,10 @@ use epiphany_core::{
     AcousticPitch, AcousticRealization, Clef, CmnNominal, Event, EventDuration, EventId,
     EventPosition, IdentifiedPitch, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId,
     PitchSpaceId, PitchSpacePosition, PitchSpelling, PitchedEvent, RationalTime, RegionId,
-    RegionTimeModel, ReplicaId, ScalePosition, Score, SpellingDirective, SpellingNominal,
+    RegionTimeModel, ReplicaId, ScalePosition, Score, SlurId, SpellingDirective, SpellingNominal,
     SpellingScope, SpellingSourceKind, StaffId, StaffInstance, StaffInstanceId, StemConfiguration,
-    TimeSignature, TimeSignatureDisplay, TransactionId, TranspositionInterval, TuningReference,
-    TupletId, TypedObjectId, VoiceId, WallClockTime,
+    TieId, TimeSignature, TimeSignatureDisplay, TransactionId, TranspositionInterval,
+    TuningReference, TupletId, TypedObjectId, VoiceId, WallClockTime,
 };
 use epiphany_layout_ir::{
     active_clef_or, manifestation_layout_id, staff_step_pitch, to_constrained, to_logical,
@@ -288,6 +292,43 @@ pub struct EditOutcome {
     pub selection_preserved: bool,
 }
 
+/// A cross-cutting structure [`EditorSession::copy_selection`] could not
+/// carry into the fragment because only one of its two endpoints was inside
+/// the selection (Ruling E closure v1: "fail closed, report dropped"). The
+/// item itself — a slur or a tie fully inside the selection instead copies
+/// into the fragment text; it is never named here.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum DroppedItem {
+    /// A slur cut by the selection boundary, named by its source id (for
+    /// diagnostics only — the id never appears in the fragment text).
+    Slur(SlurId),
+    /// A tie cut by the selection boundary.
+    Tie(TieId),
+}
+
+/// What [`EditorSession::copy_selection`] produced.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CopyOutcome {
+    /// The fragment text (`(epiphany-fragment (0 1 0) …)`, Ruling E) — pass
+    /// this to [`EditorSession::paste_at`] / [`EditorSession::paste_over_selection`].
+    pub fragment: String,
+    /// Every slur/tie closure v1 dropped because only one endpoint was
+    /// inside the selection — the "report dropped" channel.
+    pub dropped: Vec<DroppedItem>,
+}
+
+/// What a [`EditorSession::paste_at`] / [`EditorSession::paste_over_selection`]
+/// inserted.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct PasteOutcome {
+    /// The underlying `apply`/`apply_transaction` outcome the paste's single
+    /// atomic transaction produced.
+    pub outcome: EditOutcome,
+    /// How many fragment events were inserted (one
+    /// [`OperationKind::InsertEvent`] each).
+    pub events_inserted: usize,
+}
+
 /// An editing error. None of these mutate the session.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum EditorError {
@@ -367,6 +408,39 @@ pub enum EditorError {
         /// The prohibited operation class.
         operation: OperationKindTag,
     },
+    // --- Fragment (copy/paste) errors: Ruling E, `spec/PLAN_EDITOR_APP.md`. ---
+    /// [`EditorSession::copy_selection`] refuses: the selection covers some,
+    /// but not all, of a live tuplet's members. Closure v1's own refusal
+    /// discipline (the reducer's own atomicity, applied at clipboard scale)
+    /// — a tuplet is atomic, so a fragment cannot represent part of one.
+    /// Nothing is minted; the selection is unchanged.
+    PartialTupletSelection {
+        /// The tuplet only partially covered by the selection.
+        tuplet: TupletId,
+    },
+    /// A pasted fragment's clipboard text was malformed, oversized, or an
+    /// unsupported version (Ruling E: "Fragments arrive from the OS
+    /// clipboard; they are input, not trusted state"). Nothing changes.
+    InvalidFragment(fragment::FragmentError),
+    /// A fragment names more voice **lanes** than the paste destination's
+    /// staff instance has voices to receive them. Ruling E names the
+    /// destination staff/voice but not a multi-lane mapping policy; this
+    /// session resolves it positionally — fragment lane `i` pastes into the
+    /// destination staff instance's `i`-th voice — and refuses rather than
+    /// guessing when the destination falls short (flagged in the W4a
+    /// report as a resolved ambiguity).
+    InsufficientVoicesForFragment {
+        /// How many voice lanes the fragment names.
+        needed: usize,
+        /// How many voices the destination staff instance actually has.
+        available: usize,
+    },
+    /// A pasted fragment decoded cleanly but named no events to insert
+    /// (every voice lane was empty). Nothing changes. A fragment produced by
+    /// [`EditorSession::copy_selection`] never has this shape (a copy always
+    /// requires a non-empty selection); this guards a hand-crafted or
+    /// corrupt fragment.
+    EmptyFragment,
 }
 
 impl fmt::Display for EditorError {
@@ -420,11 +494,31 @@ impl fmt::Display for EditorError {
                      (tombstoning that extension's data)"
                 )
             }
+            EditorError::PartialTupletSelection { tuplet } => write!(
+                f,
+                "the selection covers only some members of tuplet {tuplet:?}; a tuplet is \
+                 atomic and cannot be partially copied"
+            ),
+            EditorError::InvalidFragment(err) => write!(f, "invalid clipboard fragment: {err}"),
+            EditorError::InsufficientVoicesForFragment { needed, available } => write!(
+                f,
+                "the fragment names {needed} voice lane(s) but the destination staff instance \
+                 has only {available}"
+            ),
+            EditorError::EmptyFragment => {
+                f.write_str("the fragment names no events to paste")
+            }
         }
     }
 }
 
 impl std::error::Error for EditorError {}
+
+impl From<fragment::FragmentError> for EditorError {
+    fn from(err: fragment::FragmentError) -> Self {
+        EditorError::InvalidFragment(err)
+    }
+}
 
 /// A headless editor session over a score. A GUI opens one, queries its render and
 /// hit-test map to draw and to resolve clicks, and drives edits through it.
@@ -1993,6 +2087,381 @@ impl EditorSession {
         }
     }
 
+    /// Copies the current selection to the clipboard fragment projection
+    /// (Ruling E, `spec/PLAN_EDITOR_APP.md` §Ruling E): per-event **values**
+    /// (pitches, durations, an authored spelling override if the source
+    /// pitch carries one, relative onsets), in per-voice lanes keyed by
+    /// ordinal — never source ids. Paste mints fresh ones.
+    ///
+    /// **Closure v1** (fail closed, report dropped): a note/rest copies with
+    /// its per-event attachments; a slur or tie copies iff **both**
+    /// endpoints are in the selection, else it is omitted from the fragment
+    /// and named in [`CopyOutcome::dropped`]; a selection covering some but
+    /// not all of a live tuplet's members refuses the whole copy
+    /// ([`EditorError::PartialTupletSelection`]) — a tuplet is atomic, so a
+    /// fragment cannot represent part of one.
+    ///
+    /// Errors with [`EditorError::NoSelection`] if nothing is selected, or
+    /// [`EditorError::WrongSelection`] if a member is not a pitch/event, or
+    /// resolves to an event this session cannot yet copy — a non-metric
+    /// event, or a kind other than a note/rest (mirrors `Self::make_room`'s
+    /// own note/rest-only, metric-only scope; Ruling E names no event-kind
+    /// scope explicitly).
+    pub fn copy_selection(&self) -> Result<CopyOutcome, EditorError> {
+        if self.selection.members.is_empty() {
+            return Err(EditorError::NoSelection);
+        }
+        // A rubber-band `select_within` routinely also catches incidental
+        // geometry alongside the intended notes — staff lines, a barline, a
+        // directly-selected slur or tuplet-as-object — since those render
+        // real hit regions too (proven directly by this packet's own
+        // geometry-driven tests). Ruling E names no policy for a mixed
+        // selection; copy's own resolution, mirroring `alter_selection`'s
+        // established "silently ignored" precedent (`DECISIONS.md`) rather
+        // than `delete_selection`'s hard refusal: a member that is not a
+        // pitch/event (or a pitch/event that does not resolve to a live,
+        // metric note or rest) is skipped, not refused — copy is "copy the
+        // notes in this range", not "refuse unless the range is surgically
+        // exact". The whole copy still refuses if *nothing* usable remains.
+        let mut event_ids: BTreeSet<EventId> = BTreeSet::new();
+        for member in &self.selection.members {
+            let event_id = match member.source {
+                TypedObjectId::Pitch(pitch) => {
+                    self.event_and_pitch_of(pitch).map(|(event, _)| event)
+                }
+                TypedObjectId::Event(event) => Some(event),
+                _ => None,
+            };
+            if let Some(event_id) = event_id {
+                event_ids.insert(event_id);
+            }
+        }
+        if event_ids.is_empty() {
+            return Err(EditorError::WrongSelection {
+                expected: "a pitch or event",
+            });
+        }
+
+        // Closure v1: a partially-selected tuplet refuses the whole copy —
+        // the reducer's own atomicity discipline, at clipboard scale.
+        let mut covered_tuplets: BTreeSet<TupletId> = BTreeSet::new();
+        for &event_id in &event_ids {
+            covered_tuplets.extend(self.tuplets_containing(event_id));
+        }
+        for tuplet in covered_tuplets {
+            let members = self.tuplet_members(tuplet);
+            if !members.iter().all(|m| event_ids.contains(m)) {
+                return Err(EditorError::PartialTupletSelection { tuplet });
+            }
+        }
+
+        // Only a metric note/rest is copyable in v1 (mirrors `make_room`'s
+        // own scope; Ruling E names no event-kind scope explicitly). This
+        // pass records every usable member's voice and onset (skipping, per
+        // the policy above, anything that resolves but is not a live metric
+        // note/rest), so the origin (the earliest onset) can be found before
+        // any fragment event is built.
+        let mut located: Vec<(EventId, VoiceId, MusicalPosition)> =
+            Vec::with_capacity(event_ids.len());
+        for &event_id in &event_ids {
+            let Some(event) = self.score.events.get(event_id) else {
+                continue;
+            };
+            if !matches!(event, Event::Pitched(_) | Event::Rest(_)) {
+                continue;
+            }
+            let EventPosition::Musical(at) = event.position().clone() else {
+                continue;
+            };
+            located.push((event_id, event.voice(), at));
+        }
+        if located.is_empty() {
+            return Err(EditorError::WrongSelection {
+                expected: "a metric note or rest",
+            });
+        }
+        let origin = located
+            .iter()
+            .map(|(_, _, at)| at.clone())
+            .min()
+            .expect("located is non-empty, checked above");
+
+        let mut by_voice: BTreeMap<VoiceId, Vec<(EventId, MusicalPosition)>> = BTreeMap::new();
+        for (event_id, voice, at) in located {
+            by_voice.entry(voice).or_default().push((event_id, at));
+        }
+
+        // Fragment-local refs, keyed by source EventId — built once so the
+        // slur/tie pass below can resolve both endpoints without knowing
+        // anything about voices or ordering itself.
+        let mut refs: BTreeMap<EventId, fragment::EventRef> = BTreeMap::new();
+        let mut voices = Vec::with_capacity(by_voice.len());
+        for (voice_ordinal, (_voice, mut events)) in by_voice.into_iter().enumerate() {
+            events.sort_by(|a, b| a.1.cmp(&b.1));
+            for (event_ordinal, (event_id, _)) in events.iter().enumerate() {
+                refs.insert(
+                    *event_id,
+                    fragment::EventRef {
+                        voice: voice_ordinal as u32,
+                        event: event_ordinal as u32,
+                    },
+                );
+            }
+            let fragment_events = events
+                .iter()
+                .map(|(event_id, _)| self.fragment_event(*event_id, &origin))
+                .collect();
+            voices.push(fragment::FragmentVoice {
+                events: fragment_events,
+            });
+        }
+
+        // Closure v1: both endpoints in the selection carries the slur/tie
+        // into the fragment; exactly one is a boundary cut — dropped and
+        // reported; neither is irrelevant to this copy.
+        let mut slurs = Vec::new();
+        let mut ties = Vec::new();
+        let mut dropped = Vec::new();
+        for slur in &self.score.cross_cutting.slurs {
+            match (refs.get(&slur.start_event), refs.get(&slur.end_event)) {
+                (Some(&start), Some(&end)) => slurs.push(fragment::FragmentSlur {
+                    start,
+                    end,
+                    kind: slur.kind,
+                    curvature_override: slur.curvature_override.clone(),
+                    style: slur.style.clone(),
+                }),
+                (Some(_), None) | (None, Some(_)) => dropped.push(DroppedItem::Slur(slur.id)),
+                (None, None) => {}
+            }
+        }
+        for tie in &self.score.cross_cutting.ties {
+            match (refs.get(&tie.start_event), refs.get(&tie.end_event)) {
+                (Some(&start), Some(&end)) => ties.push(fragment::FragmentTie {
+                    start,
+                    end,
+                    class: tie.class.clone(),
+                    style: tie.style.clone(),
+                }),
+                (Some(_), None) | (None, Some(_)) => dropped.push(DroppedItem::Tie(tie.id)),
+                (None, None) => {}
+            }
+        }
+
+        let document = fragment::FragmentDocument {
+            voices,
+            slurs,
+            ties,
+        };
+        Ok(CopyOutcome {
+            fragment: fragment::encode(&document),
+            dropped,
+        })
+    }
+
+    /// The value-only [`fragment::FragmentEvent`] for the live `event_id`,
+    /// its onset expressed relative to `origin` — [`Self::copy_selection`]'s
+    /// per-event projection. `event_id` must already be known Pitched/Rest
+    /// and metric (checked by the caller).
+    fn fragment_event(
+        &self,
+        event_id: EventId,
+        origin: &MusicalPosition,
+    ) -> fragment::FragmentEvent {
+        let event = self
+            .score
+            .events
+            .get(event_id)
+            .expect("event_id came from the current score (copy_selection)");
+        let EventPosition::Musical(at) = event.position().clone() else {
+            unreachable!("checked Musical in copy_selection")
+        };
+        let EventDuration::Musical(duration) = event.duration().clone() else {
+            unreachable!("checked Musical in copy_selection")
+        };
+        let onset = span_between(origin, &at);
+        let content = match event {
+            Event::Rest(rest) => fragment::FragmentEventContent::Rest {
+                vertical_position: rest.vertical_position,
+                visible: rest.visible,
+            },
+            Event::Pitched(pe) => fragment::FragmentEventContent::Pitched {
+                pitches: pe
+                    .pitches
+                    .iter()
+                    .map(|ip| fragment::FragmentPitch {
+                        pitch: ip.pitch.clone(),
+                        spelling_override: authored_spelling(&self.score, ip.id),
+                    })
+                    .collect(),
+                articulations: pe.articulations.clone(),
+                dynamic: pe.dynamic.clone(),
+                ornaments: pe.ornaments.clone(),
+                stem: pe.stem.clone(),
+                grace: pe.grace.clone(),
+            },
+            _ => unreachable!("checked Pitched|Rest in copy_selection"),
+        };
+        fragment::FragmentEvent {
+            onset,
+            duration,
+            content,
+        }
+    }
+
+    /// Pastes `fragment` at a world `point` on `grid` — pencil-style, via
+    /// [`Self::position_at`] (the target musical position) and
+    /// [`Self::staff_pitch_at`] (the target staff instance; only its
+    /// `staff_instance` is used — the fragment's own pitches replace
+    /// whatever height was clicked). Ruling E: "`paste_at(point, &grid)`
+    /// (pencil-style via `position_at`) … make-room overwrite …, atomic
+    /// transaction".
+    ///
+    /// The fragment's voice **lanes** map positionally onto the clicked
+    /// staff instance's voices (lane 0 → its first voice, and so on); see
+    /// [`EditorError::InsufficientVoicesForFragment`] for what happens when
+    /// the destination has fewer.
+    pub fn paste_at(
+        &mut self,
+        point: Point,
+        grid: &GridResolution,
+        fragment: &str,
+    ) -> Result<PasteOutcome, EditorError> {
+        let pitch = self
+            .staff_pitch_at(point)
+            .ok_or(EditorError::NoInsertTarget)?;
+        let placed = self
+            .position_at(point, grid)
+            .ok_or(EditorError::NoInsertTarget)?;
+        let (region, si) = self
+            .score
+            .staff_instances()
+            .find(|(_, si)| si.id == pitch.staff_instance)
+            .ok_or(EditorError::NoInsertTarget)?;
+        if region != placed.region {
+            return Err(EditorError::NoInsertTarget);
+        }
+        let voice_ids: Vec<VoiceId> = si.voices.iter().map(|v| v.id).collect();
+        self.paste_document(fragment, pitch.staff_instance, &voice_ids, placed.position)
+    }
+
+    /// Pastes `fragment` at the **anchor** member's own onset, in its own
+    /// voice (Ruling E). The lane→voice mapping is [`Self::paste_at`]'s same
+    /// positional rule, rooted at the anchor's staff instance.
+    ///
+    /// Errors with [`EditorError::NoSelection`] if nothing is selected, or
+    /// [`EditorError::WrongSelection`] if the anchor is not a pitch/event
+    /// resolving to a live metric note or rest.
+    pub fn paste_over_selection(&mut self, fragment: &str) -> Result<PasteOutcome, EditorError> {
+        let selection = self
+            .selection
+            .anchor()
+            .copied()
+            .ok_or(EditorError::NoSelection)?;
+        let event_id = match selection.source {
+            TypedObjectId::Pitch(pitch) => self.event_and_pitch_of(pitch).map(|(e, _)| e),
+            TypedObjectId::Event(event) => Some(event),
+            _ => None,
+        }
+        .ok_or(EditorError::WrongSelection {
+            expected: "pitch or event",
+        })?;
+        let (voice, at) = {
+            let event = self
+                .score
+                .events
+                .get(event_id)
+                .ok_or(EditorError::WrongSelection {
+                    expected: "pitch or event",
+                })?;
+            let EventPosition::Musical(at) = event.position().clone() else {
+                return Err(EditorError::WrongSelection {
+                    expected: "metric event",
+                });
+            };
+            (event.voice(), at)
+        };
+        let staff_instance =
+            self.metric_staff_instance_of_voice(voice)
+                .ok_or(EditorError::WrongSelection {
+                    expected: "metric event",
+                })?;
+        let si = self
+            .score
+            .staff_instances()
+            .find(|(_, si)| si.id == staff_instance)
+            .map(|(_, si)| si)
+            .expect("metric_staff_instance_of_voice resolved a real staff instance");
+        let voice_ids: Vec<VoiceId> = si.voices.iter().map(|v| v.id).collect();
+        self.paste_document(fragment, staff_instance, &voice_ids, at)
+    }
+
+    /// The shared tail of [`Self::paste_at`] / [`Self::paste_over_selection`]:
+    /// decodes `fragment`, maps each voice lane onto `voice_ids` positionally
+    /// (lane `i` → `voice_ids[i]`), clears each lane's own span under
+    /// [`Self::make_room`]'s overwrite policy, and mints `InsertEvent` (+
+    /// `RespellPitch` for a carried authored spelling) for every fragment
+    /// event — all as **one** atomic transaction (Ruling E), so a refusal
+    /// anywhere (e.g. a lane's make-room hits a nested tuplet) rolls back
+    /// the whole paste.
+    fn paste_document(
+        &mut self,
+        fragment: &str,
+        staff_instance: StaffInstanceId,
+        voice_ids: &[VoiceId],
+        target_start: MusicalPosition,
+    ) -> Result<PasteOutcome, EditorError> {
+        let document = fragment::decode(fragment)?;
+        if document.voices.len() > voice_ids.len() {
+            return Err(EditorError::InsufficientVoicesForFragment {
+                needed: document.voices.len(),
+                available: voice_ids.len(),
+            });
+        }
+
+        let mut minter = self.minter();
+        let mut ops: Vec<OperationKind> = Vec::new();
+        let mut events_inserted = 0usize;
+        for (&voice, lane) in voice_ids.iter().zip(&document.voices) {
+            if lane.events.is_empty() {
+                continue;
+            }
+            let lane_end = lane
+                .events
+                .iter()
+                .map(|e| target_start.clone() + e.onset.clone() + e.duration.clone())
+                .max()
+                .expect("lane.events is non-empty, checked above");
+            let room = self.make_room(voice, &target_start, &lane_end, None)?;
+            ops.extend(self.make_room_ops(room, staff_instance, &mut minter));
+            for fe in &lane.events {
+                let position = target_start.clone() + fe.onset.clone();
+                let event_id = minter.event();
+                let (event, respells) =
+                    fragment_event_to_op_event(event_id, voice, position, fe, &mut minter);
+                ops.push(OperationKind::InsertEvent(InsertEventOp {
+                    staff_instance,
+                    event,
+                }));
+                events_inserted += 1;
+                ops.extend(respells);
+            }
+        }
+        if ops.is_empty() {
+            return Err(EditorError::EmptyFragment);
+        }
+
+        let outcome = if ops.len() == 1 {
+            self.apply(ops.into_iter().next().expect("len == 1"))?
+        } else {
+            self.apply_transaction("paste", Some(TransactionCategory::NoteEntry), ops)?
+        };
+        Ok(PasteOutcome {
+            outcome,
+            events_inserted,
+        })
+    }
+
     /// Sets the selected event's written **duration** (a notation duration-palette
     /// gesture; the selection may be a notehead or a rest/stem). Shrinking just frees
     /// the space after the event; **lengthening makes room** under the overwrite policy
@@ -2765,6 +3234,81 @@ fn note_event(
             stem: StemConfiguration,
             grace: None,
         })
+    }
+}
+
+/// Builds the [`Event`] a pasted fragment event mints, plus the
+/// `RespellPitch` op for every pitch that carried an authored spelling
+/// override — the insert precedes its own respells in the returned `Vec`, so
+/// appending them in order to a transaction's op list gives every respell
+/// the pitch it targets (the same discipline `EditorSession::make_room_ops`'s
+/// split-tail loop uses). A free function, not a method: it reads nothing
+/// from a session, only `fe` and the fresh ids `minter` mints.
+fn fragment_event_to_op_event(
+    id: EventId,
+    voice: VoiceId,
+    position: MusicalPosition,
+    fe: &fragment::FragmentEvent,
+    minter: &mut Minter,
+) -> (Event, Vec<OperationKind>) {
+    let position = EventPosition::Musical(position);
+    let duration = EventDuration::Musical(fe.duration.clone());
+    match &fe.content {
+        fragment::FragmentEventContent::Rest {
+            vertical_position,
+            visible,
+        } => (
+            Event::Rest(epiphany_core::Rest {
+                id,
+                voice,
+                position,
+                duration,
+                vertical_position: *vertical_position,
+                visible: *visible,
+            }),
+            Vec::new(),
+        ),
+        fragment::FragmentEventContent::Pitched {
+            pitches,
+            articulations,
+            dynamic,
+            ornaments,
+            stem,
+            grace,
+        } => {
+            let mut respells = Vec::with_capacity(pitches.len());
+            let identified: Vec<IdentifiedPitch> = pitches
+                .iter()
+                .map(|fp| {
+                    let pid = minter.pitch();
+                    if let Some(spelling) = &fp.spelling_override {
+                        respells.push(OperationKind::RespellPitch(RespellPitchOp {
+                            pitch: pid,
+                            spelling: spelling.clone(),
+                        }));
+                    }
+                    IdentifiedPitch {
+                        id: pid,
+                        pitch: fp.pitch.clone(),
+                    }
+                })
+                .collect();
+            (
+                Event::Pitched(PitchedEvent {
+                    id,
+                    voice,
+                    position,
+                    duration,
+                    pitches: identified,
+                    articulations: articulations.clone(),
+                    dynamic: dynamic.clone(),
+                    ornaments: ornaments.clone(),
+                    stem: stem.clone(),
+                    grace: grace.clone(),
+                }),
+                respells,
+            )
+        }
     }
 }
 
@@ -7051,6 +7595,750 @@ mod tests {
         assert_eq!(
             after, before,
             "the ordinary pitch must NOT move just because a sibling target refused"
+        );
+    }
+
+    // --- Fragment (copy/paste) tests: Ruling E, `spec/PLAN_EDITOR_APP.md` §W4a. ---
+
+    /// A tiny hand-built plain score: one staff/instrument, one metric region
+    /// on one staff instance, one voice with exactly `count` quarter-note
+    /// events at onsets `0/4, 1/4, …`. `valid_score`'s own event count is
+    /// seed-random (2..=4, `generators.rs`); fragment tests need a guaranteed
+    /// count to select a strict sub-range from, so this mirrors `valid_score`'s
+    /// shape with a fixed one instead.
+    fn small_metric_score(count: i64) -> Score {
+        use epiphany_core::{
+            Canvas, EventArena, IdentityContext, Instrument, InstrumentId, MetricTimeModel, Region,
+            RegionContent, Staff, StaffBasedContent, StaffExtent, StaffLineConfiguration,
+            TimeAnchor, TimeExtent, Voice,
+        };
+        let replica = ReplicaId(0x4321);
+        let mut idc = IdentityContext::new(replica);
+        let staff_id: StaffId = idc.mint();
+        let instrument: InstrumentId = idc.mint();
+        let region_id: RegionId = idc.mint();
+        let instance_id: StaffInstanceId = idc.mint();
+        let voice_id: VoiceId = idc.mint();
+
+        let mut arena = EventArena::new();
+        let mut voice = Voice::user(voice_id);
+        for index in 0..count {
+            let eid: EventId = idc.mint();
+            let pid: PitchId = idc.mint();
+            arena
+                .insert(Event::Pitched(PitchedEvent {
+                    id: eid,
+                    voice: voice_id,
+                    position: EventPosition::Musical(MusicalPosition(
+                        RationalTime::new(index, 4).unwrap(),
+                    )),
+                    duration: EventDuration::Musical(MusicalDuration(
+                        RationalTime::new(1, 4).unwrap(),
+                    )),
+                    pitches: vec![IdentifiedPitch {
+                        id: pid,
+                        // On the staff (treble clef's second line), so it never
+                        // needs a ledger line — geometry tests below select over
+                        // rendered rects and must not catch a neighbor's ledger.
+                        pitch: cmn_pitch(CmnNominal::G, 4),
+                    }],
+                    articulations: vec![],
+                    dynamic: None,
+                    ornaments: vec![],
+                    stem: StemConfiguration,
+                    grace: None,
+                }))
+                .expect("fresh event id");
+            voice.events.push(eid);
+        }
+        let mut instance = StaffInstance::new(instance_id, staff_id);
+        instance.voices.push(voice);
+
+        let region = Region {
+            id: region_id,
+            time_model: RegionTimeModel::Metric(MetricTimeModel::default()),
+            content: RegionContent::StaffBased(StaffBasedContent {
+                staff_instances: vec![instance],
+                ..Default::default()
+            }),
+            time_extent: TimeExtent {
+                start: TimeAnchor::WallClock {
+                    time: WallClockTime(0),
+                },
+                end: TimeAnchor::WallClock {
+                    time: WallClockTime(1_000_000),
+                },
+            },
+            staff_extent: StaffExtent {
+                staves: vec![staff_id],
+            },
+            local_tempo_map: None,
+            permits_spanning_slurs: false,
+        };
+
+        let mut score = Score::empty(idc.clone());
+        score.identity = idc;
+        score.staves = vec![Staff {
+            id: staff_id,
+            name: String::from("staff"),
+            abbreviation: None,
+            instrument,
+            default_staff_lines: StaffLineConfiguration::default(),
+            group: None,
+            default_clef: Clef::treble(),
+        }];
+        score.instruments = vec![Instrument::new(instrument, String::from("instrument"))];
+        score.events = arena;
+        score.canvas = Canvas {
+            regions: vec![region],
+            ..Default::default()
+        };
+        score
+    }
+
+    /// The bounding box covering every rendered glyph sourced from any of
+    /// `pitches` — the geometry `select_within` is exercised against (same
+    /// technique as `select_within_collapses_a_ledgered_notes_ledger_lines_to_one_member`).
+    fn rect_covering_pitches(session: &EditorSession, pitches: &[PitchId]) -> BoundingBox {
+        session
+            .hit_test()
+            .regions
+            .iter()
+            .filter(|r| matches!(r.source, TypedObjectId::Pitch(p) if pitches.contains(&p)))
+            .map(|r| r.shape.aabb())
+            .fold(
+                BoundingBox::new(
+                    f32::INFINITY,
+                    f32::INFINITY,
+                    f32::NEG_INFINITY,
+                    f32::NEG_INFINITY,
+                ),
+                |acc, b| {
+                    BoundingBox::new(
+                        acc.left.0.min(b.left.0),
+                        acc.bottom.0.min(b.bottom.0),
+                        acc.right.0.max(b.right.0),
+                        acc.top.0.max(b.top.0),
+                    )
+                },
+            )
+    }
+
+    /// The id of `eid`'s first pitch.
+    fn first_pitch_of(session: &EditorSession, eid: EventId) -> PitchId {
+        let mut buf: Vec<&IdentifiedPitch> = Vec::new();
+        session
+            .score()
+            .events
+            .get(eid)
+            .expect("live event")
+            .collect_identified_pitches(&mut buf);
+        buf.first().expect("a pitch").id
+    }
+
+    /// Round-trip: `select_within` over rendered geometry selects two
+    /// adjacent notes (one carrying an authored spelling override), copy,
+    /// paste at a position far past the fixture's own content. The pasted
+    /// events' VALUES — pitches (including the carried spelling override via
+    /// a fresh `RespellPitch`), durations, and their onset *relative to each
+    /// other* — equal the source's, and their ids are fresh.
+    ///
+    /// Mutation f1 (drop the `RespellPitch` carry, either the capture in
+    /// `EditorSession::fragment_event` or the mint in
+    /// `fragment_event_to_op_event`): the spelling-fidelity assertion below
+    /// dies.
+    #[test]
+    fn copy_paste_round_trip_preserves_values_with_fresh_ids() {
+        let mut session =
+            EditorSession::open(small_metric_score(4), Box::new(StubSolver)).expect("renders");
+        let region = a_clean_metric_region(&session);
+        let voice = primary_voice(&session, region);
+        let before = voice_events(&session, voice);
+        assert_eq!(before.len(), 4);
+
+        // Pin the first note's spelling with an explicit user override — copy
+        // must carry it via a fresh `RespellPitch`, not the source pitch id.
+        let source_pitch = first_pitch_of(&session, before[0].0);
+        let override_spelling = PitchSpelling::cmn(CmnNominal::D, 4);
+        session
+            .apply(OperationKind::RespellPitch(RespellPitchOp {
+                pitch: source_pitch,
+                spelling: override_spelling.clone(),
+            }))
+            .expect("the respell applies");
+
+        // Select the first two notes over their rendered geometry. The rect
+        // is built tightly around those two notes' own glyphs, but a real
+        // rubber-band `select_within` over a staff also sweeps in incidental
+        // geometry (the staff lines it visually crosses, each note's own
+        // stem) — `copy_selection` skips anything that is not a pitch/event
+        // resolving to a copyable note (see its doc comment); only the two
+        // targeted notes end up in the fragment, asserted below via the
+        // fragment's own event count rather than the raw selection's.
+        let pitch0 = first_pitch_of(&session, before[0].0);
+        let pitch1 = first_pitch_of(&session, before[1].0);
+        let rect = rect_covering_pitches(&session, &[pitch0, pitch1]);
+        session.select_within(rect);
+
+        let copy = session.copy_selection().expect("the selection copies");
+        assert!(
+            copy.dropped.is_empty(),
+            "nothing spans the selection boundary in this fixture"
+        );
+        let decoded = fragment::decode(&copy.fragment).expect("a well-formed fragment");
+        let fragment_event_count: usize = decoded.voices.iter().map(|v| v.events.len()).sum();
+        assert_eq!(
+            fragment_event_count, 2,
+            "exactly the two targeted notes made it into the fragment"
+        );
+
+        // Paste far past the fixture's own content (its four notes span
+        // [0, 1)) — a clearly distinct destination.
+        let far = MusicalPosition(RationalTime::new(50, 4).unwrap());
+        let (_, _, origin_y) = region_staff_line(&session, region);
+        let at = click_for_position(&session, region, &far, origin_y + 1.0);
+        let source_ids: BTreeSet<EventId> = before.iter().map(|(id, _, _)| *id).collect();
+
+        let outcome = session
+            .paste_at(at, &grid(1, 4), &copy.fragment)
+            .expect("the paste applies");
+        assert_eq!(outcome.events_inserted, 2);
+
+        let mut pasted: Vec<(EventId, MusicalPosition, MusicalDuration)> =
+            voice_events(&session, voice)
+                .into_iter()
+                .filter(|(id, _, _)| !source_ids.contains(id))
+                .collect();
+        pasted.sort_by(|a, b| a.1.cmp(&b.1));
+        assert_eq!(pasted.len(), 2, "two fresh events appeared");
+        for (id, _, _) in &pasted {
+            assert!(
+                !source_ids.contains(id),
+                "pasted ids are fresh, disjoint from the source"
+            );
+        }
+
+        // Onsets: the first pasted note lands exactly at the target, and the
+        // gap between the two pasted notes equals the source gap.
+        assert_eq!(
+            pasted[0].1, far,
+            "the first pasted note lands at the target"
+        );
+        let src_gap = before[1].1 .0.sub(&before[0].1 .0);
+        let dst_gap = pasted[1].1 .0.sub(&pasted[0].1 .0);
+        assert_eq!(src_gap, dst_gap, "the relative onset is preserved");
+
+        // Durations preserved.
+        assert_eq!(pasted[0].2, before[0].2);
+        assert_eq!(pasted[1].2, before[1].2);
+
+        // Pitch values preserved (raw nominal/octave), and the authored
+        // spelling override on the first note carried onto its fresh pitch.
+        let dst_pitch0 = first_pitch_of(&session, pasted[0].0);
+        let dst_pitch1 = first_pitch_of(&session, pasted[1].0);
+        assert_ne!(dst_pitch0, source_pitch, "the pasted pitch id is fresh");
+        assert_eq!(
+            session.current_pitch(dst_pitch0),
+            session.current_pitch(pitch0),
+            "the first pitch's value is preserved"
+        );
+        assert_eq!(
+            session.current_pitch(dst_pitch1),
+            session.current_pitch(pitch1),
+            "the second pitch's value is preserved"
+        );
+        assert_eq!(
+            authored_spelling(session.score(), dst_pitch0),
+            Some(override_spelling),
+            "the authored spelling override carried via a fresh RespellPitch"
+        );
+        assert_eq!(
+            authored_spelling(session.score(), dst_pitch1),
+            None,
+            "the second note never had an override — none is invented"
+        );
+    }
+
+    /// Partial tuplet refuses: a selection covering two of the rich fixture's
+    /// three triplet members (never all three) makes `copy_selection` return
+    /// the closure-v1 refusal, not a fragment.
+    ///
+    /// Mutation f2 (remove the tuplet-coverage check in `copy_selection`):
+    /// this test dies (the copy would succeed instead of refusing).
+    #[test]
+    fn copy_selection_refuses_a_partially_selected_tuplet() {
+        let session = open_rich(0x5EED);
+        let tuplet = session.score().cross_cutting.tuplets[0].clone();
+        assert_eq!(
+            tuplet.members.len(),
+            3,
+            "the rich fixture's triplet has three members"
+        );
+        let pitches = region_pitches(&session, 0); // region A, the triplet
+        assert_eq!(pitches.len(), 3);
+
+        let mut session = session;
+        select_sources(
+            &mut session,
+            &[
+                TypedObjectId::Pitch(pitches[0]),
+                TypedObjectId::Pitch(pitches[1]),
+            ],
+        );
+        assert_eq!(
+            session.copy_selection(),
+            Err(EditorError::PartialTupletSelection { tuplet: tuplet.id })
+        );
+    }
+
+    /// Paste refusal: pasting a one-note fragment onto a destination whose
+    /// make-room hits a nested tuplet (the same fixture shape as
+    /// `insert_note_at_over_a_nested_tuplet_is_refused`) errs, and the
+    /// destination's `canonical_bytes` are byte-identical to before the call
+    /// — `paste_document` builds its whole op list *before* ever calling
+    /// `apply`/`apply_transaction`, so a refusal discovered while building
+    /// it (as here) can never leave a partial mutation behind, regardless of
+    /// how the final application is shaped. `paste_atomicity_rolls_back_
+    /// mid_transaction_on_a_second_lanes_refusal` (below) is the test that
+    /// isolates the transaction-vs-individual-application question this
+    /// scenario cannot (mutation f3 lives there).
+    #[test]
+    fn paste_refuses_cleanly_on_a_nested_tuplet_and_changes_nothing() {
+        // A one-note fragment, copied from a plain, tuplet-free fixture.
+        let mut source =
+            EditorSession::open(small_metric_score(1), Box::new(StubSolver)).expect("renders");
+        let region = a_clean_metric_region(&source);
+        let voice = primary_voice(&source, region);
+        let events = voice_events(&source, voice);
+        let pid = first_pitch_of(&source, events[0].0);
+        let rect = rect_covering_pitches(&source, &[pid]);
+        source.select_within(rect);
+        let copy = source.copy_selection().expect("copies");
+
+        // A nested tuplet on the destination — the flat-cascade make-room
+        // rule refuses rather than misstate its ratio arithmetic (mirrors
+        // `insert_note_at_over_a_nested_tuplet_is_refused`).
+        use epiphany_core::generators::valid_score_rich;
+        use epiphany_core::{Tuplet, TupletRatio};
+        let mut score = valid_score_rich(0x5EED);
+        let triplet_id = score.cross_cutting.tuplets[0].id;
+        let replica = score.identity.replica_id;
+        score.cross_cutting.tuplets.push(Tuplet {
+            id: TupletId::new(replica, 7_000_002),
+            ratio: TupletRatio::new(3, 2).unwrap(),
+            members: vec![],
+            parent: Some(triplet_id),
+            required_total: MusicalDuration(RationalTime::new(1, 8).unwrap()),
+        });
+        let mut dest = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+        let region = a_region_with(&dest, true);
+        let voice = primary_voice(&dest, region);
+        let (_, pos, dur) = voice_events(&dest, voice).into_iter().next().unwrap();
+        let (_, _, origin_y) = region_staff_line(&dest, region);
+        let at = click_for_position(&dest, region, &pos, origin_y + 1.0);
+        let before = dest.score().canonical_bytes();
+
+        let err = dest
+            .paste_at(at, &GridResolution { step: dur }, &copy.fragment)
+            .expect_err("overlapping the nested tuplet refuses");
+        assert_eq!(err, EditorError::OverlapsTuplet);
+        assert_eq!(
+            dest.score().canonical_bytes(),
+            before,
+            "atomic: nothing changed"
+        );
+    }
+
+    /// A one-staff, one-region score whose single staff instance has exactly
+    /// two voices, each with one quarter-note event at onset 0 — the source
+    /// for a two-lane fragment (`copy_selection` groups by voice, so
+    /// selecting one note from each voice yields fragment lane 0 and lane 1).
+    fn two_voice_one_note_each_score() -> Score {
+        use epiphany_core::{
+            Canvas, EventArena, IdentityContext, Instrument, InstrumentId, MetricTimeModel, Region,
+            RegionContent, Staff, StaffBasedContent, StaffExtent, StaffLineConfiguration,
+            TimeAnchor, TimeExtent, Voice,
+        };
+        let replica = ReplicaId(0x8888);
+        let mut idc = IdentityContext::new(replica);
+        let staff_id: StaffId = idc.mint();
+        let instrument: InstrumentId = idc.mint();
+        let region_id: RegionId = idc.mint();
+        let instance_id: StaffInstanceId = idc.mint();
+
+        let mut arena = EventArena::new();
+        let mut instance = StaffInstance::new(instance_id, staff_id);
+        for _ in 0..2 {
+            let voice_id: VoiceId = idc.mint();
+            let mut voice = Voice::user(voice_id);
+            let eid: EventId = idc.mint();
+            let pid: PitchId = idc.mint();
+            arena
+                .insert(Event::Pitched(PitchedEvent {
+                    id: eid,
+                    voice: voice_id,
+                    position: EventPosition::Musical(MusicalPosition(
+                        RationalTime::new(0, 4).unwrap(),
+                    )),
+                    duration: EventDuration::Musical(MusicalDuration(
+                        RationalTime::new(1, 4).unwrap(),
+                    )),
+                    pitches: vec![IdentifiedPitch {
+                        id: pid,
+                        pitch: cmn_pitch(CmnNominal::G, 4),
+                    }],
+                    articulations: vec![],
+                    dynamic: None,
+                    ornaments: vec![],
+                    stem: StemConfiguration,
+                    grace: None,
+                }))
+                .expect("fresh event id");
+            voice.events.push(eid);
+            instance.voices.push(voice);
+        }
+
+        let region = Region {
+            id: region_id,
+            time_model: RegionTimeModel::Metric(MetricTimeModel::default()),
+            content: RegionContent::StaffBased(StaffBasedContent {
+                staff_instances: vec![instance],
+                ..Default::default()
+            }),
+            time_extent: TimeExtent {
+                start: TimeAnchor::WallClock {
+                    time: WallClockTime(0),
+                },
+                end: TimeAnchor::WallClock {
+                    time: WallClockTime(1_000_000),
+                },
+            },
+            staff_extent: StaffExtent {
+                staves: vec![staff_id],
+            },
+            local_tempo_map: None,
+            permits_spanning_slurs: false,
+        };
+
+        let mut score = Score::empty(idc.clone());
+        score.identity = idc;
+        score.staves = vec![Staff {
+            id: staff_id,
+            name: String::from("staff"),
+            abbreviation: None,
+            instrument,
+            default_staff_lines: StaffLineConfiguration::default(),
+            group: None,
+            default_clef: Clef::treble(),
+        }];
+        score.instruments = vec![Instrument::new(instrument, String::from("instrument"))];
+        score.events = arena;
+        score.canvas = Canvas {
+            regions: vec![region],
+            ..Default::default()
+        };
+        score
+    }
+
+    /// A destination fixture for the two-lane paste-atomicity test: one
+    /// staff instance with two voices — voice 0 is empty (a paste there
+    /// makes room trivially, over nothing), voice 1 hosts a three-member
+    /// flat triplet with a nested child tuplet pushed onto it (the same
+    /// shape `insert_note_at_over_a_nested_tuplet_is_refused` uses), whose
+    /// flat-cascade make-room rule refuses rather than misstate a nested
+    /// tuplet's ratio arithmetic.
+    fn two_voice_second_voice_has_a_nested_tuplet() -> Score {
+        use epiphany_core::{
+            Canvas, EventArena, IdentityContext, Instrument, InstrumentId, MetricTimeModel, Region,
+            RegionContent, Staff, StaffBasedContent, StaffExtent, StaffLineConfiguration,
+            TimeAnchor, TimeExtent, Tuplet, TupletRatio, Voice,
+        };
+        let replica = ReplicaId(0x9999);
+        let mut idc = IdentityContext::new(replica);
+        let staff_id: StaffId = idc.mint();
+        let instrument: InstrumentId = idc.mint();
+        let region_id: RegionId = idc.mint();
+        let instance_id: StaffInstanceId = idc.mint();
+
+        let voice0_id: VoiceId = idc.mint();
+        let voice0 = Voice::user(voice0_id);
+
+        let voice1_id: VoiceId = idc.mint();
+        let mut voice1 = Voice::user(voice1_id);
+        let mut arena = EventArena::new();
+        let mut triplet_members = Vec::new();
+        for k in 0..3i64 {
+            let eid: EventId = idc.mint();
+            let pid: PitchId = idc.mint();
+            arena
+                .insert(Event::Pitched(PitchedEvent {
+                    id: eid,
+                    voice: voice1_id,
+                    position: EventPosition::Musical(MusicalPosition(
+                        RationalTime::new(k, 12).unwrap(),
+                    )),
+                    duration: EventDuration::Musical(MusicalDuration(
+                        RationalTime::new(1, 12).unwrap(),
+                    )),
+                    pitches: vec![IdentifiedPitch {
+                        id: pid,
+                        pitch: cmn_pitch(CmnNominal::G, 4),
+                    }],
+                    articulations: vec![],
+                    dynamic: None,
+                    ornaments: vec![],
+                    stem: StemConfiguration,
+                    grace: None,
+                }))
+                .expect("fresh event id");
+            voice1.events.push(eid);
+            triplet_members.push(eid);
+        }
+
+        let mut instance = StaffInstance::new(instance_id, staff_id);
+        instance.voices.push(voice0);
+        instance.voices.push(voice1);
+
+        let region = Region {
+            id: region_id,
+            time_model: RegionTimeModel::Metric(MetricTimeModel::default()),
+            content: RegionContent::StaffBased(StaffBasedContent {
+                staff_instances: vec![instance],
+                ..Default::default()
+            }),
+            time_extent: TimeExtent {
+                start: TimeAnchor::WallClock {
+                    time: WallClockTime(0),
+                },
+                end: TimeAnchor::WallClock {
+                    time: WallClockTime(1_000_000),
+                },
+            },
+            staff_extent: StaffExtent {
+                staves: vec![staff_id],
+            },
+            local_tempo_map: None,
+            permits_spanning_slurs: false,
+        };
+
+        let mut score = Score::empty(idc.clone());
+        score.identity = idc;
+        score.staves = vec![Staff {
+            id: staff_id,
+            name: String::from("staff"),
+            abbreviation: None,
+            instrument,
+            default_staff_lines: StaffLineConfiguration::default(),
+            group: None,
+            default_clef: Clef::treble(),
+        }];
+        score.instruments = vec![Instrument::new(instrument, String::from("instrument"))];
+        score.events = arena;
+        score.canvas = Canvas {
+            regions: vec![region],
+            ..Default::default()
+        };
+
+        let triplet_id: TupletId = score.identity.mint();
+        score.cross_cutting.tuplets.push(Tuplet {
+            id: triplet_id,
+            ratio: TupletRatio::new(3, 2).expect("3:2 is a valid tuplet ratio"),
+            members: triplet_members,
+            parent: None,
+            required_total: MusicalDuration(RationalTime::new(1, 4).unwrap()),
+        });
+        // A nested child: the flat cascade cannot safely restate its ratio.
+        score.cross_cutting.tuplets.push(Tuplet {
+            id: TupletId::new(replica, 9_000_002),
+            ratio: TupletRatio::new(3, 2).expect("3:2 is a valid tuplet ratio"),
+            members: vec![],
+            parent: Some(triplet_id),
+            required_total: MusicalDuration(RationalTime::new(1, 8).unwrap()),
+        });
+        score
+    }
+
+    /// The mutation f3 test proper: a two-lane fragment (one note per voice)
+    /// pastes onto a destination whose lane 0 (voice 0) is clear — its
+    /// make-room and insert would succeed in complete isolation — and whose
+    /// lane 1 (voice 1) overlaps a nested tuplet, refusing. `paste_document`
+    /// builds *every* lane's ops before submitting *any* of them, so the
+    /// whole paste errs and the destination is untouched.
+    ///
+    /// Mutation f3 (commit each lane's ops immediately after building them —
+    /// e.g. via its own `self.apply_transaction(...)` call inside the lane
+    /// loop — instead of accumulating every lane into one list and
+    /// submitting it as a single transaction at the end): lane 0 (processed
+    /// first, since `voice_ids`/`document.voices` iterate in lane order) has
+    /// already committed its insert by the time lane 1's make-room refuses,
+    /// so `canonical_bytes` changes even though the overall call still
+    /// returns `Err` — this test dies on the `canonical_bytes` equality.
+    #[test]
+    fn paste_atomicity_rolls_back_mid_transaction_on_a_second_lanes_refusal() {
+        let mut source = EditorSession::open(two_voice_one_note_each_score(), Box::new(StubSolver))
+            .expect("renders");
+        let events: Vec<EventId> = source.score().events.iter().map(|e| e.id()).collect();
+        assert_eq!(events.len(), 2, "one note per voice");
+        let pitches: Vec<PitchId> = events
+            .iter()
+            .map(|&eid| first_pitch_of(&source, eid))
+            .collect();
+        let rect = rect_covering_pitches(&source, &pitches);
+        source.select_within(rect);
+        let copy = source.copy_selection().expect("copies");
+        let decoded = fragment::decode(&copy.fragment).expect("well-formed");
+        assert_eq!(decoded.voices.len(), 2, "two lanes, one event each");
+
+        let mut dest = EditorSession::open(
+            two_voice_second_voice_has_a_nested_tuplet(),
+            Box::new(StubSolver),
+        )
+        .expect("renders");
+        let region = a_region_with(&dest, true);
+        // Click voice 1's first triplet member's onset — `paste_at` resolves
+        // the *staff instance* under the click (both voices share one), and
+        // `paste_document` maps lane 0 -> the instance's voice 0, lane 1 ->
+        // voice 1, positionally, regardless of which voice was clicked.
+        let voice1 = dest
+            .score()
+            .staff_instances()
+            .find(|(r, _)| *r == region)
+            .expect("a staff instance")
+            .1
+            .voices[1]
+            .id;
+        let (_, pos, dur) = voice_events(&dest, voice1).into_iter().next().unwrap();
+        let (_, _, origin_y) = region_staff_line(&dest, region);
+        let at = click_for_position(&dest, region, &pos, origin_y + 1.0);
+        let before = dest.score().canonical_bytes();
+
+        let err = dest
+            .paste_at(at, &GridResolution { step: dur }, &copy.fragment)
+            .expect_err("lane 1 overlaps the nested tuplet");
+        assert_eq!(err, EditorError::OverlapsTuplet);
+        assert_eq!(
+            dest.score().canonical_bytes(),
+            before,
+            "atomic: lane 0's insert must not land just because lane 1 refused"
+        );
+    }
+
+    /// Coordinator-added (T2 W4a review): the commit's transactional **shape**
+    /// is itself canonical surface. The atomicity test above pins
+    /// build-everything-before-committing-anything (its refusal fires at
+    /// make-room time, inside `paste_document`'s build), but nothing there
+    /// reaches the commit itself — a mutation that keeps the build intact and
+    /// commits the finished op list **per op** survives it, because make-room
+    /// and the reducer agree by design and no mid-commit rejection is
+    /// reachable on that input. The difference that IS observable: a
+    /// transaction's `DeclareTransaction` descriptor grants its members
+    /// descriptor-precedence in concurrent reduction, so a paste emitting bare
+    /// ops would merge differently at a peer even though it applies
+    /// identically here. This pins the emitted stream: one descriptor plus
+    /// every member, appended by a single multi-op paste.
+    #[test]
+    fn paste_emits_one_transaction_descriptor_plus_members() {
+        let mut session =
+            EditorSession::open(small_metric_score(4), Box::new(StubSolver)).expect("renders");
+        let region = a_clean_metric_region(&session);
+        let voice = primary_voice(&session, region);
+        let before = voice_events(&session, voice);
+        let source_pitch = first_pitch_of(&session, before[0].0);
+        session
+            .apply(OperationKind::RespellPitch(RespellPitchOp {
+                pitch: source_pitch,
+                spelling: PitchSpelling::cmn(CmnNominal::D, 4),
+            }))
+            .expect("the respell applies");
+        let pitch0 = first_pitch_of(&session, before[0].0);
+        let pitch1 = first_pitch_of(&session, before[1].0);
+        let rect = rect_covering_pitches(&session, &[pitch0, pitch1]);
+        session.select_within(rect);
+        let copy = session.copy_selection().expect("the selection copies");
+
+        let far = MusicalPosition(RationalTime::new(50, 4).unwrap());
+        let (_, _, origin_y) = region_staff_line(&session, region);
+        let at = click_for_position(&session, region, &far, origin_y + 1.0);
+
+        let applied_before = session.applied_operations().len();
+        let outcome = session
+            .paste_at(at, &grid(1, 4), &copy.fragment)
+            .expect("the paste applies");
+        assert_eq!(outcome.events_inserted, 2);
+
+        let new = &session.applied_operations()[applied_before..];
+        let descriptors = new
+            .iter()
+            .filter(|e| {
+                matches!(
+                    &e.payload,
+                    OperationPayload::Primitive(OperationKind::DeclareTransaction(_))
+                )
+            })
+            .count();
+        assert_eq!(
+            descriptors, 1,
+            "a multi-op paste emits exactly one transaction descriptor"
+        );
+        assert!(
+            new.len() >= 4,
+            "descriptor + two inserts + the carried respell, got {}",
+            new.len()
+        );
+    }
+
+    /// Boundary slur: a slur spans event 0..event 2 of a four-note voice;
+    /// selecting only events 0 and 1 cuts it at the selection boundary. The
+    /// resulting fragment omits the slur, and `copy_selection`'s outcome
+    /// names it in `dropped`.
+    ///
+    /// Mutation f6 (suppress the dropped-report — e.g. drop the `dropped.push`
+    /// arm and just fall through to `(None, None) => {}`): this test dies.
+    #[test]
+    fn copy_selection_drops_a_boundary_cut_slur_and_reports_it() {
+        use epiphany_core::{RegionContent, Slur, SlurId, SlurKind, SpanStyle};
+
+        let mut score = small_metric_score(4);
+        let events: Vec<EventId> = {
+            let RegionContent::StaffBased(content) = &score.canvas.regions[0].content else {
+                panic!("region 0 is staff-based");
+            };
+            content.staff_instances[0].voices[0].events.clone()
+        };
+        let slur_id: SlurId = score.identity.mint();
+        score.cross_cutting.slurs.push(Slur {
+            id: slur_id,
+            start_event: events[0],
+            end_event: events[2],
+            kind: SlurKind::Legato,
+            curvature_override: None,
+            style: SpanStyle::default(),
+        });
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+
+        let pitch0 = first_pitch_of(&session, events[0]);
+        let pitch1 = first_pitch_of(&session, events[1]);
+        let rect = rect_covering_pitches(&session, &[pitch0, pitch1]);
+        session.select_within(rect);
+
+        let copy = session
+            .copy_selection()
+            .expect("the notes themselves still copy fine");
+        assert_eq!(
+            copy.dropped,
+            vec![DroppedItem::Slur(slur_id)],
+            "the boundary-cut slur is reported dropped"
+        );
+
+        let decoded = fragment::decode(&copy.fragment).expect("a well-formed fragment");
+        assert!(
+            decoded.slurs.is_empty(),
+            "the cut slur must not appear in the fragment text itself"
+        );
+        let fragment_event_count: usize = decoded.voices.iter().map(|v| v.events.len()).sum();
+        assert_eq!(
+            fragment_event_count, 2,
+            "exactly the two targeted (non-slur-endpoint-3) notes made it into the fragment"
         );
     }
 }
