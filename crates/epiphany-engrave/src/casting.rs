@@ -76,10 +76,10 @@ use epiphany_layout_ir::{
     continuation_instance_key, inter_staff_gap_id, is_barline_glyph, is_rigid_width_stroke,
     synthesized_layout_id, BreakClass, BreakKind, ConstrainedLayoutIR, Curve, DecisionSource,
     EngravingDecision, EngravingDecisionKind, EngravingOverrideId, GlyphObject, GlyphObjectId,
-    LayoutConstraint, LayoutObjectId, Margins, Point, Provenance, Rect, ResolvedGlyph,
-    ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem, Size2D, SpringSlotId, StaffSpace,
-    Stroke, SynthesisInstanceKey, SynthesisKind, SynthesisRegistryId, VerticalBand, VerticalBandId,
-    VerticalBandKind,
+    LayoutConstraint, LayoutObjectId, Margins, Point, PrimitiveIndices, Provenance, Rect,
+    ResolvedGlyph, ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem, Size2D,
+    SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey, SynthesisKind, SynthesisRegistryId,
+    VerticalBand, VerticalBandId, VerticalBandKind,
 };
 
 use crate::owning_glyph;
@@ -188,14 +188,17 @@ pub(crate) struct CastLayout {
     pub system_start_slots: BTreeSet<SpringSlotId>,
     /// Slots at which a page begins: the first slot of each page's first system.
     pub page_start_slots: BTreeSet<SpringSlotId>,
-    /// Which system (global index, page order) each realized slot landed in —
-    /// the casting pass's own assignment, which the quality-metric census
-    /// ranges over (a slot absent here was claimed by no region and its glyphs
-    /// belong to no per-system aggregate).
-    pub system_of_slot: BTreeMap<SpringSlotId, usize>,
+    /// The system each baked glyph landed in, parallel to `glyphs` — derived
+    /// once, inside the casting pass, from the slot→system assignment that
+    /// pass computes for its own use. **This is the glyph→system attribution,
+    /// full stop** (W1 pin 7): the raw slot map is deliberately *not*
+    /// published, so no consumer can grow a second copy of the rule that then
+    /// drifts. `None`: the glyph's slot was claimed by no region, so it
+    /// belongs to no per-system aggregate.
+    pub glyph_system: Vec<Option<usize>>,
     /// The system each baked stroke landed in, parallel to `strokes` (including
     /// the appended continuation segments). A stroke carries no spring slot, so
-    /// `system_of_slot` cannot answer for it; the casting pass records what it
+    /// the slot map cannot answer for it; the casting pass records what it
     /// already knew. `None`: claimed by no region.
     pub stroke_system: Vec<Option<usize>>,
     /// The system each baked curve landed in, parallel to `curves`.
@@ -203,6 +206,11 @@ pub(crate) struct CastLayout {
     /// The region each system slices, indexed by global system index (the
     /// per-region grouping the casting-off quality metrics aggregate by).
     pub region_of_system: Vec<usize>,
+    /// The primitives no system claims — `glyph_system`/`stroke_system`/
+    /// `curve_system` entries of `None`, gathered into the same shape
+    /// [`ResolvedSystem::primitives`] uses (W1 pin 3: unowned is a first-class
+    /// bucket, never coerced onto a system).
+    pub unowned: PrimitiveIndices,
 }
 
 /// One realized spring slot in spaced (pre-casting) coordinates, with the
@@ -987,13 +995,17 @@ pub(crate) fn cast_off(
             .copied()
             .unwrap_or(0.0)
     };
-    let glyphs: Vec<ResolvedGlyph> = spaced_glyphs
+    // Computed once, alongside the positioning it also drives (W1 pin 7): the
+    // quality-metric census consumes this published vector rather than
+    // re-deriving the same attribution from `system_of_slot` itself.
+    let (glyphs, glyph_system): (Vec<ResolvedGlyph>, Vec<Option<usize>>) = spaced_glyphs
         .iter()
         .zip(&input.glyphs)
         .enumerate()
         .map(|(gi, (spaced, glyph))| {
-            let (dx, dy) = match system_of_slot.get(&glyph.horizontal_slot) {
-                Some(&s) => {
+            let system = system_of_slot.get(&glyph.horizontal_slot).copied();
+            let (dx, dy) = match system {
+                Some(s) => {
                     // Slot-relative: every member of a slot translates by the
                     // map at the slot's source, so intra-slot offsets survive.
                     let sx = slot_source_x
@@ -1007,12 +1019,13 @@ pub(crate) fn cast_off(
                 }
                 None => (0.0, 0.0),
             };
-            ResolvedGlyph {
+            let resolved = ResolvedGlyph {
                 position: Point::new(spaced.position.x.0 + dx, spaced.position.y.0 + dy),
                 ..spaced.clone()
-            }
+            };
+            (resolved, system)
         })
-        .collect();
+        .unzip();
 
     // Per-system staff-line marks, for the resolved staff records below.
     let mut staff_marks: BTreeMap<(usize, StaffId), StaffAgg> = BTreeMap::new();
@@ -1164,6 +1177,34 @@ pub(crate) fn cast_off(
     curves.extend(curve_continuations);
     curve_system.extend(curve_continuation_system);
 
+    // ---- Per-system primitive ownership (W1) -------------------------------
+    // The partition already exists in `glyph_system`/`stroke_system`/
+    // `curve_system` above; this just stops discarding it. For each flat
+    // array, every index lands in exactly one system's list or in `unowned`
+    // (pin 4: a total, disjoint partition, tested in this module below).
+    let mut owned: Vec<PrimitiveIndices> = (0..systems.len())
+        .map(|_| PrimitiveIndices::default())
+        .collect();
+    let mut unowned = PrimitiveIndices::default();
+    for (i, system) in glyph_system.iter().enumerate() {
+        match system {
+            Some(s) => owned[*s].glyphs.push(i as u32),
+            None => unowned.glyphs.push(i as u32),
+        }
+    }
+    for (i, system) in stroke_system.iter().enumerate() {
+        match system {
+            Some(s) => owned[*s].strokes.push(i as u32),
+            None => unowned.strokes.push(i as u32),
+        }
+    }
+    for (i, system) in curve_system.iter().enumerate() {
+        match system {
+            Some(s) => owned[*s].curves.push(i as u32),
+            None => unowned.curves.push(i as u32),
+        }
+    }
+
     // ---- The resolved page tree ---------------------------------------------
     let resolved_systems: Vec<ResolvedSystem> = systems
         .iter()
@@ -1177,6 +1218,7 @@ pub(crate) fn cast_off(
                 &extents,
                 &placements,
                 &staff_marks,
+                owned[s].clone(),
             )
         })
         .collect();
@@ -1225,10 +1267,11 @@ pub(crate) fn cast_off(
         decisions,
         system_start_slots,
         page_start_slots,
-        system_of_slot,
+        glyph_system,
         stroke_system,
         curve_system,
         region_of_system: systems.iter().map(|plan| plan.region).collect(),
+        unowned,
     }
 }
 
@@ -1855,6 +1898,7 @@ fn mark_staff(
 /// the pipeline does not know is left empty, never fabricated: a staff with no
 /// engraved lines yields no staff record, and the final-barline measure (whose
 /// start no column marks) yields no measure record.
+#[allow(clippy::too_many_arguments)]
 fn build_system(
     system: usize,
     plan: &SystemPlan,
@@ -1863,6 +1907,7 @@ fn build_system(
     extents: &[Extent],
     placements: &[Placement],
     staff_marks: &BTreeMap<(usize, StaffId), StaffAgg>,
+    primitives: PrimitiveIndices,
 ) -> ResolvedSystem {
     let region = &input.regions[plan.region];
     let p = placements[system];
@@ -1952,6 +1997,7 @@ fn build_system(
         bounding_box,
         staves,
         measures,
+        primitives,
     }
 }
 
@@ -2332,6 +2378,198 @@ mod tests {
             hi - lo > 1.0,
             "the segments span distinct system y-bands (a real split), spread {}",
             hi - lo
+        );
+    }
+
+    /// (m1) For each of the layout's three flat arrays, every system's owned
+    /// index list plus the layout's `unowned` bucket covers `0..len` exactly
+    /// once — pin 4's total, disjoint partition. The load-bearing invariant,
+    /// checked directly rather than assumed from construction.
+    fn assert_total_disjoint_partition(layout: &epiphany_layout_ir::ResolvedLayoutIR) {
+        let check = |label: &str, len: usize, owned: Vec<&Vec<u32>>, unowned: &[u32]| {
+            let mut seen = vec![0u8; len];
+            for &i in owned.iter().flat_map(|v| v.iter()).chain(unowned.iter()) {
+                let idx = i as usize;
+                assert!(idx < len, "{label}: index {i} out of range (len {len})");
+                seen[idx] += 1;
+            }
+            for (i, &count) in seen.iter().enumerate() {
+                assert_eq!(
+                    count, 1,
+                    "{label}: index {i} covered {count} times (want exactly 1)"
+                );
+            }
+        };
+        let glyph_lists: Vec<&Vec<u32>> = layout.systems().map(|s| &s.primitives.glyphs).collect();
+        check(
+            "glyphs",
+            layout.glyphs.len(),
+            glyph_lists,
+            &layout.unowned.glyphs,
+        );
+        let stroke_lists: Vec<&Vec<u32>> =
+            layout.systems().map(|s| &s.primitives.strokes).collect();
+        check(
+            "strokes",
+            layout.strokes.len(),
+            stroke_lists,
+            &layout.unowned.strokes,
+        );
+        let curve_lists: Vec<&Vec<u32>> = layout.systems().map(|s| &s.primitives.curves).collect();
+        check(
+            "curves",
+            layout.curves.len(),
+            curve_lists,
+            &layout.unowned.curves,
+        );
+    }
+
+    #[test]
+    fn primitive_ownership_partitions_every_flat_array_totally_and_disjointly() {
+        use crate::Engraver;
+        use epiphany_layout_ir::{to_constrained, to_logical, ConstraintSolver, SolverConfig};
+
+        // The wrapping ten-measure fixture: real glyphs and strokes, no curves.
+        let wrapping = Engraver::default().solve(
+            &to_constrained(&to_logical(
+                &epiphany_testkit::fixtures::ten_measure_single_staff(0x000A_11CE),
+            )),
+            &SolverConfig::default(),
+        );
+        assert_eq!(
+            wrapping.layout.pages[0].systems.len(),
+            2,
+            "the fixture wraps into two systems"
+        );
+        assert!(!wrapping.layout.glyphs.is_empty());
+        assert!(!wrapping.layout.strokes.is_empty());
+        assert_total_disjoint_partition(&wrapping.layout);
+
+        // The slurred fixture: also exercises curves, including a
+        // system-spanning split (G4's own construction).
+        let slurred = Engraver::default().solve(
+            &to_constrained(&to_logical(
+                &epiphany_testkit::fixtures::ten_measure_with_slurs(0),
+            )),
+            &SolverConfig::default(),
+        );
+        let slurred_systems: usize = slurred.layout.pages.iter().map(|p| p.systems.len()).sum();
+        assert!(
+            slurred_systems > 1,
+            "casting-off wraps the slurred fixture too"
+        );
+        assert!(
+            !slurred.layout.curves.is_empty(),
+            "the slur produces real curves"
+        );
+        assert_total_disjoint_partition(&slurred.layout);
+    }
+
+    #[test]
+    fn attribution_correctness_matches_the_real_per_system_counts() {
+        // (m3) The *actual* per-system glyph/stroke counts of the two-system
+        // fixture — real numbers, not `> 0` — value-asserted directly against
+        // what casting-off computed.
+        use crate::Engraver;
+        use epiphany_layout_ir::{to_constrained, to_logical, ConstraintSolver, SolverConfig};
+
+        let report = Engraver::default().solve(
+            &to_constrained(&to_logical(
+                &epiphany_testkit::fixtures::ten_measure_single_staff(0x000A_11CE),
+            )),
+            &SolverConfig::default(),
+        );
+        let systems: Vec<_> = report.layout.systems().collect();
+        assert_eq!(systems.len(), 2, "two systems");
+        let glyph_counts: Vec<usize> = systems.iter().map(|s| s.primitives.glyphs.len()).collect();
+        let stroke_counts: Vec<usize> =
+            systems.iter().map(|s| s.primitives.strokes.len()).collect();
+        assert_eq!(
+            glyph_counts,
+            vec![26, 25],
+            "the six/four widow-rebalanced measure split's real per-system glyph counts"
+        );
+        assert_eq!(
+            stroke_counts,
+            vec![51, 45],
+            "the six/four widow-rebalanced measure split's real per-system stroke counts"
+        );
+        assert_eq!(
+            glyph_counts[0] + glyph_counts[1],
+            report.layout.glyphs.len()
+        );
+        assert_eq!(
+            stroke_counts[0] + stroke_counts[1],
+            report.layout.strokes.len()
+        );
+        assert!(
+            report.layout.unowned.glyphs.is_empty(),
+            "the whole score is inside the one region this fixture declares"
+        );
+    }
+
+    #[test]
+    fn continuation_segments_are_owned_by_the_system_they_split_into() {
+        // (m5) A slur crossing a system break: its synthesized continuation
+        // segment is owned by the system it was split INTO, not the source
+        // segment's system.
+        use crate::Engraver;
+        use epiphany_core::{Slur, SlurId, SlurKind, SpanStyle, TypedObjectId};
+        use epiphany_layout_ir::{to_constrained, to_logical, ConstraintSolver, SolverConfig};
+
+        let mut score = epiphany_testkit::fixtures::ten_measure_single_staff(0x000A_11CE);
+        let events: Vec<_> = score.canvas.regions[0].staff_instances()[0].voices[0]
+            .events
+            .clone();
+        let slur_id: SlurId = score.identity.mint();
+        score.cross_cutting.slurs.push(Slur {
+            id: slur_id,
+            start_event: events[0],
+            end_event: events[events.len() - 1],
+            kind: SlurKind::Legato,
+            curvature_override: None,
+            style: SpanStyle::default(),
+        });
+        let report = Engraver::default().solve(
+            &to_constrained(&to_logical(&score)),
+            &SolverConfig::default(),
+        );
+        assert_eq!(report.layout.pages[0].systems.len(), 2, "two systems");
+
+        let original_index = report
+            .layout
+            .curves
+            .iter()
+            .position(|c| {
+                c.provenance.source == TypedObjectId::Slur(slur_id)
+                    && c.provenance.synthesis.is_none()
+            })
+            .expect("one segment keeps the slur's exact provenance");
+        let continuation_index = report
+            .layout
+            .curves
+            .iter()
+            .position(|c| {
+                c.provenance.source == TypedObjectId::Slur(slur_id)
+                    && c.provenance.synthesis.is_some()
+            })
+            .expect("the break-spanning slur splits and synthesizes a continuation");
+
+        let owner_of = |index: usize| -> Option<usize> {
+            report
+                .layout
+                .systems()
+                .position(|s| s.primitives.curves.contains(&(index as u32)))
+        };
+        let owner_first = owner_of(original_index).expect("the original segment is owned");
+        let owner_continuation = owner_of(continuation_index).expect("the continuation is owned");
+        assert_eq!(
+            owner_first, 0,
+            "the original segment starts in the first system"
+        );
+        assert_eq!(
+            owner_continuation, 1,
+            "the continuation is owned by the system it was split INTO, not the source's"
         );
     }
 }

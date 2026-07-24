@@ -82,9 +82,9 @@ use epiphany_core::TypedObjectId;
 use epiphany_layout_ir::{
     all_available, profile_thresholds, Axis, BravuraCatalog, ConstrainedLayoutIR, ConstraintId,
     ConstraintSolver, ConstraintStrength, Curve, GlyphCatalog, GlyphObject, GlyphObjectId,
-    InvalidationSet, LayoutConstraint, Point, QualityMetricVector, Rect, ResolvedGlyph,
-    ResolvedLayoutIR, SolveReport, SolveStatus, SolverBudgetUsed, SolverConfig, SolverState,
-    SolverTier, SolverVersion, SolverWarning, SolverWarningKind, SpringSlotId, Stroke,
+    InvalidationSet, LayoutConstraint, Point, PrimitiveIndices, QualityMetricVector, Rect,
+    ResolvedGlyph, ResolvedLayoutIR, SolveReport, SolveStatus, SolverBudgetUsed, SolverConfig,
+    SolverState, SolverTier, SolverVersion, SolverWarning, SolverWarningKind, SpringSlotId, Stroke,
 };
 
 pub use casting::{PageGeometry, INTER_PAGE_GAP, SYSTEM_CONTINUATION_SYNTHESIS};
@@ -380,7 +380,7 @@ impl Engraver {
         // glyph/stroke positions baked, the engraver's break decisions appended
         // to the pipeline's (Chapter 7 §"ResolvedLayoutIR": decisions "including
         // any the solver itself made").
-        let (glyphs, strokes, curves, pages, engraving_decisions) = match cast {
+        let (glyphs, strokes, curves, pages, engraving_decisions, unowned) = match cast {
             Some(cast) => {
                 let mut decisions = input.engraving_decisions.clone();
                 decisions.extend(cast.decisions);
@@ -390,6 +390,7 @@ impl Engraver {
                     cast.curves,
                     cast.pages,
                     decisions,
+                    cast.unowned,
                 )
             }
             None => (
@@ -398,6 +399,7 @@ impl Engraver {
                 Vec::new(),
                 Vec::new(),
                 input.engraving_decisions.clone(),
+                PrimitiveIndices::default(),
             ),
         };
 
@@ -412,6 +414,7 @@ impl Engraver {
                 curves,
                 engraving_decisions,
                 catalog: input.catalog.clone(),
+                unowned,
             },
             unsatisfied_constraints,
             warnings,

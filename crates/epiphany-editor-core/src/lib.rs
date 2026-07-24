@@ -4745,6 +4745,10 @@ mod tests {
                     },
                 }],
                 measures: Vec::new(),
+                // Mechanical field-add only (CONTRACT_EDITOR_T4PRE_IR.md W1):
+                // this hit-test fixture tests neither ownership nor consumes
+                // it — editor-core adopts the accessor at T4, not here.
+                primitives: Default::default(),
             })
             .collect();
         let strokes: Vec<Stroke> = origins

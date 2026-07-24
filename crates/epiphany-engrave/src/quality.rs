@@ -229,7 +229,9 @@ fn census(input: &ConstrainedLayoutIR, cast: &CastLayout) -> SystemCensus {
     // convention the spacing and casting passes use for a slot's reference x.
     let mut columns: Vec<BTreeMap<SpringSlotId, f64>> = vec![BTreeMap::new(); count];
     for (index, glyph) in input.glyphs.iter().enumerate() {
-        let Some(&system) = cast.system_of_slot.get(&glyph.horizontal_slot) else {
+        // W1 pin 7: the published attribution, not a second derivation from
+        // `system_of_slot` — one glyph→system rule, computed once in casting.
+        let Some(system) = cast.glyph_system[index] else {
             // A slot no region claimed: positioned by no system, so its glyphs
             // join no per-system aggregate (catalog §"The Measurement Domain").
             continue;
@@ -369,11 +371,10 @@ fn vertical_units(
     // the BAKED output, so a shift the bake failed to apply to some primitive
     // class surfaces here as a real deviation rather than hiding behind the
     // solver's own intent.
-    let system_of_glyph = |index: usize| -> Option<usize> {
-        cast.system_of_slot
-            .get(&input.glyphs[index].horizontal_slot)
-            .copied()
-    };
+    // W1 pin 7, same as the census: the published attribution, not a second
+    // derivation. `glyph_system` is parallel to `input.glyphs`, exactly as the
+    // `stroke_system`/`curve_system` reads below are to their arrays.
+    let system_of_glyph = |index: usize| -> Option<usize> { cast.glyph_system[index] };
     let mut content: BTreeMap<(usize, VerticalBandId), (f64, f64)> = BTreeMap::new();
     {
         let mut add = |system: usize, band: VerticalBandId, lo: f64, hi: f64| {

@@ -29,7 +29,9 @@ use epiphany_core::TypedObjectId;
 
 use crate::constrained::{ConstrainedLayoutIR, GlyphObjectId};
 use crate::glyph::{all_available, BravuraCatalog, GlyphCatalog};
-use crate::resolved::{ResolvedGlyph, ResolvedLayoutIR, ResolvedPage, ResolvedSystem};
+use crate::resolved::{
+    PrimitiveIndices, ResolvedGlyph, ResolvedLayoutIR, ResolvedPage, ResolvedSystem,
+};
 use crate::spatial::{Margins, Rect, Size2D};
 use crate::vertical_band::VerticalBandId;
 
@@ -487,6 +489,15 @@ impl StubSolver {
             Vec::new()
         };
         let resolved_glyphs = glyphs.len();
+        // The stub resolves no per-system geometry (every region becomes one
+        // degenerate default-rect system, per below), so it has no honest
+        // per-system attribution to publish: every primitive is unowned
+        // rather than a fabricated claim (W1 pin 3).
+        let unowned = PrimitiveIndices {
+            glyphs: (0..glyphs.len() as u32).collect(),
+            strokes: (0..strokes.len() as u32).collect(),
+            curves: (0..curves.len() as u32).collect(),
+        };
         let pages = input
             .regions
             .first()
@@ -503,6 +514,7 @@ impl StubSolver {
                         bounding_box: Rect::default(),
                         staves: Vec::new(),
                         measures: Vec::new(),
+                        primitives: PrimitiveIndices::default(),
                     })
                     .collect(),
                 free_objects: Vec::new(),
@@ -523,6 +535,7 @@ impl StubSolver {
                 curves,
                 engraving_decisions: input.engraving_decisions.clone(),
                 catalog: input.catalog.clone(),
+                unowned,
             },
             unsatisfied_constraints: Vec::new(),
             warnings,
@@ -726,6 +739,76 @@ mod tests {
         assert_eq!(report.state.resolved_glyphs, 1);
         assert!(report.unsatisfied_constraints.is_empty());
         assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    fn the_stub_solver_publishes_every_primitive_unowned() {
+        // (m2) The stub resolves no per-system geometry (every region becomes
+        // one degenerate default-rect `ResolvedSystem`, `resolve` above), so
+        // it must not coerce an unattributed primitive onto system 0 — real,
+        // non-trivial counts, via the real `to_logical`/`to_constrained`
+        // pipeline over a rich generated score (RS-2's own construction).
+        use crate::{to_constrained, to_logical};
+        use epiphany_core::generators::valid_score_rich;
+
+        let score = valid_score_rich(0xF302);
+        let mut input = to_constrained(&to_logical(&score));
+        assert_eq!(
+            input.regions.len(),
+            3,
+            "the rich fixture's real region count"
+        );
+        // `valid_score_rich` carries no slur, so hand-add a curve (mirrors
+        // `strokes_survive_the_solve_and_enter_the_canonical_bytes` below) to
+        // exercise all three flat arrays, not just glyphs and strokes.
+        input.curves.push(crate::Curve {
+            provenance: input.glyphs[0].provenance.clone(),
+            p0: crate::Point::new(0.0, 0.0),
+            p1: crate::Point::new(1.0, 1.0),
+            p2: crate::Point::new(2.0, 1.0),
+            p3: crate::Point::new(3.0, 0.0),
+            thickness: crate::StaffSpace(0.1),
+            layer: 0,
+            style: crate::GlyphStyle::default(),
+            line: epiphany_core::LineStyle::Solid,
+            vertical_band: input.glyphs[0].vertical_band,
+        });
+
+        let report = StubSolver.solve(&input, &SolverConfig::default());
+        let layout = &report.layout;
+        // Real counts (not `> 0`): the rich fixture's own glyph/stroke tally.
+        assert_eq!(layout.glyphs.len(), input.glyphs.len());
+        assert_eq!(layout.strokes.len(), input.strokes.len());
+        assert_eq!(
+            layout.glyphs.len(),
+            11,
+            "the rich fixture's real glyph count"
+        );
+        assert_eq!(
+            layout.strokes.len(),
+            38,
+            "the rich fixture's real stroke count"
+        );
+        assert_eq!(layout.curves.len(), 1);
+
+        // Every system's own bucket is empty — the stub attributes nothing.
+        let system_count = layout.systems().count();
+        assert_eq!(system_count, input.regions.len());
+        for system in layout.systems() {
+            assert!(system.primitives.glyphs.is_empty());
+            assert!(system.primitives.strokes.is_empty());
+            assert!(system.primitives.curves.is_empty());
+        }
+        // Everything unowned: the exact index range, in order.
+        assert_eq!(
+            layout.unowned.glyphs,
+            (0..layout.glyphs.len() as u32).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            layout.unowned.strokes,
+            (0..layout.strokes.len() as u32).collect::<Vec<_>>()
+        );
+        assert_eq!(layout.unowned.curves, vec![0]);
     }
 
     #[test]

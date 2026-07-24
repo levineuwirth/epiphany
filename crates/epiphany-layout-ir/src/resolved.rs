@@ -65,6 +65,37 @@ pub struct ResolvedSystem {
     pub bounding_box: Rect,
     pub staves: Vec<ResolvedStaff>,
     pub measures: Vec<ResolvedMeasure>,
+    /// Which of the layout's flat `glyphs`/`strokes`/`curves` this system
+    /// owns — index lists, not copies (see [`PrimitiveIndices`]). A primitive
+    /// no system claims is not omitted; it is in [`ResolvedLayoutIR::unowned`]
+    /// instead, so the partition stays total (Chapter 7's flat arrays are
+    /// otherwise untouched by this field's existence — no primitive is split,
+    /// merged, reordered, or renumbered to populate it).
+    pub primitives: PrimitiveIndices,
+}
+
+/// Index lists into a [`ResolvedLayoutIR`]'s flat `glyphs`/`strokes`/`curves`
+/// arrays — never the primitives themselves. `u32`: matches the flat arrays'
+/// own canonical count-prefix width and comfortably exceeds any real layout
+/// (no resolved layout nears 4 billion primitives).
+///
+/// One of these lives on every [`ResolvedSystem`] (what it owns) and one on
+/// [`ResolvedLayoutIR`] itself (`unowned`: claimed by no system — e.g. every
+/// primitive under the stub solver, which resolves no per-system geometry
+/// and so publishes everything unowned rather than fabricating an
+/// attribution). For each of the three flat arrays, the union of every
+/// system's list plus the unowned bucket is exactly `0..len`, each index
+/// appearing exactly once — a tested invariant (`epiphany-engrave`'s casting
+/// module), not merely a convention.
+///
+/// **Not part of the canonical encoding** (see the exclusion note on
+/// [`ResolvedLayoutIR::canonical_bytes`]): this partition draws nothing, so
+/// two layouts differing only in it render identically and hash alike.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct PrimitiveIndices {
+    pub glyphs: Vec<u32>,
+    pub strokes: Vec<u32>,
+    pub curves: Vec<u32>,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -97,9 +128,22 @@ pub struct ResolvedLayoutIR {
     /// The catalog identity under which this layout was produced — required for
     /// any byte-equal conformance claim (Chapter 7 §7.3.2).
     pub catalog: GlyphCatalogIdentity,
+    /// The primitives no system claims — the other half of the total,
+    /// disjoint partition [`ResolvedSystem::primitives`] describes. See
+    /// [`PrimitiveIndices`].
+    pub unowned: PrimitiveIndices,
 }
 
 impl ResolvedLayoutIR {
+    /// Every system across every page, in page order (a page's systems in
+    /// their own stored order, pages visited in `pages` order) — top to
+    /// bottom, reading order. `epiphany-editor-core` hand-rolls this same
+    /// flatten today (`editor-core/src/lib.rs`); it adopts this accessor at
+    /// T4, not before.
+    pub fn systems(&self) -> impl Iterator<Item = &ResolvedSystem> {
+        self.pages.iter().flat_map(|page| page.systems.iter())
+    }
+
     /// The canonical serialized output (Appendix D §"Quantized Layout
     /// Coordinates"): the layout's *rendering fingerprint*, with glyph positions
     /// quantized to the `1/1024` grid. Equivalent to
@@ -113,6 +157,13 @@ impl ResolvedLayoutIR {
     /// carry `vertical_band` through but do not encode it. Band ownership tells a
     /// vertical solver which staff owns a primitive; it draws nothing, so two
     /// layouts differing only in it are the same rendered layout and hash alike.
+    /// **Per-system primitive ownership is excluded for the identical reason**:
+    /// [`ResolvedSystem::primitives`] and [`ResolvedLayoutIR::unowned`] name
+    /// which system (or no system) a primitive belongs to, and draw nothing —
+    /// two layouts differing only in that partition are the same rendered
+    /// layout and hash alike. Pinning it on the wire (if a future normative
+    /// requirement wants that) is a spec-side schema-major decision, not one
+    /// this type makes silently; see `DECISIONS.md`.
     ///
     /// Two solves whose internal f32 computations agree to better than `1/2048`
     /// staff space at every coordinate produce identical bytes; two layouts that
@@ -410,6 +461,7 @@ mod tests {
             curves: vec![],
             engraving_decisions: decisions,
             catalog: GlyphCatalogIdentity::default(),
+            unowned: PrimitiveIndices::default(),
         }
     }
 
@@ -540,5 +592,54 @@ mod tests {
     fn non_finite_geometry_is_rejected_not_normalized() {
         let bad = ir(vec![glyph(1, f32::NAN)], vec![]);
         let _ = bad.canonical_bytes();
+    }
+
+    #[test]
+    fn primitive_ownership_is_excluded_from_canonical_bytes() {
+        // (m6) Perturbing ONLY the ownership lists — a system's `primitives`
+        // and the layout's `unowned` bucket — must not change
+        // `canonical_bytes()`, even though `PartialEq` sees the difference:
+        // the same exclusion `vertical_band` gets (Chapter 7's ownership
+        // partition draws nothing).
+        let system = ResolvedSystem {
+            provenance: Provenance::projected(TypedObjectId::Event(EventId::from_raw(9)), vec![]),
+            bounding_box: Rect::default(),
+            staves: vec![],
+            measures: vec![],
+            primitives: PrimitiveIndices::default(),
+        };
+        let page = ResolvedPage {
+            provenance: Provenance::projected(TypedObjectId::Event(EventId::from_raw(10)), vec![]),
+            number: 1,
+            size: Size2D::default(),
+            margins: Margins::default(),
+            systems: vec![system],
+            free_objects: vec![],
+        };
+        let mut base = ir(vec![glyph(1, 1.0)], vec![]);
+        base.pages = vec![page];
+        let base_bytes = base.canonical_bytes();
+
+        let mut perturbed = base.clone();
+        perturbed.pages[0].systems[0].primitives = PrimitiveIndices {
+            glyphs: vec![0],
+            strokes: vec![],
+            curves: vec![],
+        };
+        perturbed.unowned = PrimitiveIndices {
+            glyphs: vec![],
+            strokes: vec![7],
+            curves: vec![3, 4],
+        };
+
+        assert_ne!(
+            base, perturbed,
+            "PartialEq must see the ownership difference"
+        );
+        assert_eq!(
+            base_bytes,
+            perturbed.canonical_bytes(),
+            "canonical bytes must not see it"
+        );
     }
 }

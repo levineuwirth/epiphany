@@ -1015,3 +1015,72 @@ cascade defect was adding. Single-staff and every stub golden are byte-stable.
 **Still open:** genuinely staff-less content placed *between* two staves. No
 primitive can name an `InterStaffGap` band today, so it remains unreachable
 rather than latent.
+
+## W1: casting-off publishes the per-system partition it already computes (Editor T4-pre, `CONTRACT_EDITOR_T4PRE_IR.md`, 2026-07-24)
+
+`cast_off` already knew which system every glyph, stroke, and curve landed
+in (`system_of_slot`/`stroke_system`/`curve_system`, private to `CastLayout`)
+— it just never left the module. Three changes make it leave:
+
+1. **`glyph_system: Vec<Option<usize>>` joins `CastLayout`**, computed once
+   in the same pass that bakes glyph positions (the glyphs-building `map`
+   that already reads `system_of_slot.get(&glyph.horizontal_slot)` for
+   `dx`/`dy` now also records that same lookup's result per glyph, via
+   `.unzip()`, instead of computing it twice). This is the single
+   glyph→system derivation pin 7 asks for: the quality census (`quality.rs`,
+   `census`) now reads `cast.glyph_system[index]` and no longer re-derives
+   the answer from `cast.system_of_slot` itself.
+2. **The index partition** (`owned: Vec<PrimitiveIndices>` plus one
+   `unowned: PrimitiveIndices`) is built from `glyph_system`/`stroke_system`/
+   `curve_system` right before `resolved_systems` is constructed, and handed
+   to each `build_system` call (which now takes a `PrimitiveIndices`
+   parameter — pushing it to 8 arguments, `#[allow(clippy::too_many_arguments)]`
+   added alongside the crate's existing precedent on `walk_region`) and to
+   the returned `CastLayout.unowned`. `epiphany-layout-ir`'s solve-report fold
+   (`lib.rs`) copies `cast.unowned` straight into `ResolvedLayoutIR.unowned`
+   with no further computation; the `None`-cast branch (structurally invalid
+   input) gets `PrimitiveIndices::default()`, consistent with its empty
+   glyphs/strokes/curves/pages.
+3. **No primitive changes shape.** The three flat arrays (`glyphs`, `strokes`
+   after continuation-append, `curves` after continuation-append) are exactly
+   what casting-off already produced; W1 publishes indices into them and
+   nothing else — including for the synthesized continuation segments a
+   system-spanning stroke or curve splits into, which were already being
+   pushed onto `stroke_system`/`curve_system` keyed by their *own* landing
+   system (`segments[k].0` inside the `Split` arm), not the source segment's.
+   W1 did not have to fix this; it only had to publish it faithfully, and the
+   mutation that deliberately breaks that faithfulness (attribute the
+   continuation to the source's system instead) kills a dedicated test
+   (`continuation_segments_are_owned_by_the_system_they_split_into`).
+
+**A second, un-migrated re-derivation was found while doing this packet, and
+closed rather than named.** `quality.rs`'s `vertical_raw` (the inter-staff-gap
+axis) had its own local closure, `system_of_glyph`, independently re-deriving
+a glyph's system from the slot map — the exact second copy of the attribution
+rule pin 7 exists to prevent, just not the one m4 tests for. The packet's
+first pass migrated only the census (pin 7 names it specifically) and recorded
+this as an open finding; coordinator review closed it instead, because a pin
+whose stated goal is "two copies drift, so make that impossible" is not met by
+migrating one of two copies.
+
+**And closing it made `CastLayout::system_of_slot` dead**, which is the real
+lesson: with both consumers on `glyph_system`, nothing outside the casting
+pass read the raw slot→system map any more. So the field is **removed** from
+the published struct — the map stays a local inside `cast_off`, where the
+stroke-fate walk still needs it. Pin 7 is now structural rather than
+conventional: a future consumer *cannot* grow a third copy of the glyph→system
+rule from `CastLayout`, because the raw material is no longer on it. The
+per-glyph answer is published, the derivation is not.
+
+**Byte-neutral:** see the `epiphany-layout-ir` DECISIONS.md entry of the same
+date for the full canonical-encoding exclusion rationale (two consequences:
+fingerprint fragility, and what a future cross-implementation relayout test
+may and may not compare) — `casting.rs`'s `encode_canonical` path
+(`epiphany-layout-ir/src/resolved.rs`) is unchanged by this tranche.
+
+**Locked by** `primitive_ownership_partitions_every_flat_array_totally_and_
+disjointly`, `attribution_correctness_matches_the_real_per_system_counts`,
+and `continuation_segments_are_owned_by_the_system_they_split_into`
+(`casting.rs`), each against the real engraver on real fixtures — the real
+per-system glyph/stroke counts are `[26, 25]` and `[51, 45]` for the
+`ten_measure_single_staff` two-system split, not asserted as `> 0`.

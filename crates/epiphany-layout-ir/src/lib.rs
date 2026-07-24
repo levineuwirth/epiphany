@@ -139,7 +139,8 @@ pub use render::{
     RenderTarget,
 };
 pub use resolved::{
-    ResolvedGlyph, ResolvedLayoutIR, ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem,
+    PrimitiveIndices, ResolvedGlyph, ResolvedLayoutIR, ResolvedMeasure, ResolvedPage,
+    ResolvedStaff, ResolvedSystem,
 };
 pub use roundtrip::{laid_out_object_ids, round_trip, round_trip_with, RoundTripReport};
 pub use solver::{

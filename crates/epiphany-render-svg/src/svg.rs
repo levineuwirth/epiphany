@@ -1054,6 +1054,7 @@ mod tests {
             curves: vec![],
             engraving_decisions: vec![],
             catalog: Default::default(),
+            unowned: Default::default(),
         };
         let out = render(&layout, &RenderOptions::default());
         assert!(out.is_well_formed());

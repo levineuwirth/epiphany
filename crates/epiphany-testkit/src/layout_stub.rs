@@ -467,6 +467,11 @@ pub fn gen_resolved_system(rng: &mut Rng) -> ResolvedSystem {
         measures: (0..rng.range_usize(0, 2))
             .map(|_| gen_resolved_measure(rng))
             .collect(),
+        // Not tied to any real flat array here (this generator builds an
+        // isolated `ResolvedSystem`, not a whole `ResolvedLayoutIR`), so a
+        // random index list would be equally fake; left empty rather than
+        // fabricated.
+        primitives: Default::default(),
     }
 }
 

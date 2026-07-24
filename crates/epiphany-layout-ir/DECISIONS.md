@@ -930,3 +930,95 @@ table as a non-normative note) and no new `\label{req:...}` (counts stay
 212/282/282). Both Chapter 9 usages (`GlyphCatalog::smufl_version()`,
 `GlyphCatalogIdentity.smufl_version`) gain a cross-reference sentence back to
 this single definition.
+
+## W1: per-system primitive ownership — a published partition, not a new computation (Editor T4-pre, `CONTRACT_EDITOR_T4PRE_IR.md`, 2026-07-24)
+
+`ResolvedSystem` gains one field, `primitives: PrimitiveIndices` (index lists
+— `u32`, one per flat array — into the layout's `glyphs`/`strokes`/`curves`);
+`ResolvedLayoutIR` gains one field of the same shape, `unowned`, for a
+primitive no system claims. Nothing is split, merged, reordered, or
+renumbered to populate either: casting-off (`epiphany-engrave`) already
+computed this partition (`system_of_slot`/`stroke_system`/`curve_system` on
+its private `CastLayout`) and discarded it at the fold into `ResolvedLayoutIR`;
+this tranche stops discarding it. `ResolvedLayoutIR` also gains a `systems()`
+accessor — every system across every page, in page order — which the
+partition's own tests use; `epiphany-editor-core` keeps its hand-rolled
+equivalent (`lib.rs`, `containing_system`) until it adopts the accessor at
+T4, not before (Ruling A's stated prerequisite boundary: this tranche is IR
+work, not editor-crate consumption).
+
+**Verified caution for T4b, recorded here because the aliasing is easy to miss
+and the bug it invites is specific.** A system's `provenance.stable_id` is
+**not** always distinct from its page's or its region's: a region's first
+system reuses the region's own provenance verbatim (`casting.rs`, `build_system`),
+and page 1 reuses the first region's provenance too (`casting.rs`, the page-tree
+construction) — so on the real engraver's path, a system's `stable_id` can equal
+a page's and a region's for the *first* system of the *first* region. On the
+**stub solver's path the aliasing is total, not just first-system**: every stub
+system reuses its region's provenance verbatim (`solver.rs`), because the stub
+resolves no per-system geometry and does not synthesize per-system identity
+either. Uniqueness *among systems* is structural regardless — synthesized ids
+are domain-tagged hashes over `(source, kind discriminant, namespaced instance
+key)`, and `KEY_NS_SYSTEM`/`KEY_NS_PAGE` occupy distinct namespaces — which is
+all W1 needs (position is primary; `stable_id` is available identity, not the
+addressing scheme). But **any future cross-kind map keyed on a raw
+`LayoutObjectId`/`SystemId` `u128`** (a T4b incremental-relayout cache
+keying systems, pages, and regions into one structure, say) **must
+disambiguate by kind** — collapsing them into one untyped key space will
+silently conflate a system with its page or region on exactly the inputs
+above, and the collision will not show up on any fixture that gives every
+region more than one system.
+
+**Byte-neutral by construction, and deliberately not revisited here.**
+`encode_canonical` is unchanged; the module's canonical-serialization note
+(`ResolvedLayoutIR::canonical_bytes`) now names `primitives`/`unowned`
+alongside `vertical_band` in its stated exclusions, same reasoning: the
+partition draws nothing a renderer paints, so two layouts differing only in
+it render identically and hash alike. Two consequences follow, stated
+outright so a later reader does not "fix" this by wiring the fields into the
+encoder:
+
+1. Encoding ownership would make the fingerprint **more fragile than the
+   rendering it fingerprints** — a casting-off refactor that re-partitions
+   systems without moving a single pixel (a different but equally valid
+   greedy-vs-optimal break search, say) would become a byte-level break and
+   force a schema major for a change no renderer and no conformance claim can
+   observe.
+2. Two conformant implementations may legitimately partition a layout
+   differently (the spec pins no partitioning algorithm, only that resolved
+   primitives exist). Pinning ownership on the wire would manufacture a false
+   disagreement between two implementations that render pixel-identical
+   output. **Any future cross-implementation test of incremental relayout
+   therefore compares final bytes, never intermediate partitions** — this is
+   the test-design consequence of (1), not a restatement of it.
+
+If a future normative requirement wants per-system ownership pinned on the
+wire regardless (a determinism claim about the partitioning algorithm itself,
+not just its output), that is a spec-side schema-major decision — not a call
+this packet's byte-neutrality budget was scoped to make.
+
+**Stub solver:** publishes every primitive unowned rather than fabricating an
+attribution — it resolves no per-system geometry (every region becomes one
+degenerate default-rect system), so any per-system claim would be a lie about
+what that path computed. Locked by
+`the_stub_solver_publishes_every_primitive_unowned` (`solver.rs`), which
+value-asserts the real per-system-zero / all-unowned shape against a
+non-trivial generated score (`epiphany_core::generators::valid_score_rich`:
+11 glyphs, 38 strokes, 3 regions, plus a hand-added curve exercising all
+three arrays) rather than a synthetic one-glyph fixture.
+
+**Locked by** (`epiphany-engrave`'s `casting.rs` test module and this crate's
+`solver.rs`/`resolved.rs`): the partition's totality/disjointness on a real
+multi-system engrave (`ten_measure_single_staff`, `ten_measure_with_slurs`);
+the stub-solver's all-unowned publication; the real per-system glyph/stroke
+counts of the two-system fixture (`[26, 25]` glyphs, `[51, 45]` strokes —
+value-asserted, not `> 0`); a system-spanning slur's synthesized continuation
+owned by the system it splits *into*, not the source segment's; and
+byte-identical `canonical_bytes()` before/after perturbing only the ownership
+fields, while `PartialEq` still sees the difference. Six mutations verified
+by hand (drop an index from a system's list; coerce the stub's unowned bucket
+onto system 0; off-by-one the system index; publish a wrong `glyph_system`
+while positioning stays correct; attribute a continuation to its source
+segment's system instead of the system it splits into; encode the ownership
+lists in `encode_canonical`) — each reverted by hand after observing the
+real failure, never `git checkout`.
