@@ -222,3 +222,112 @@ toolbar/key intents act on the whole selection (`delete_selection`,
 `self.selection.anchor()` read in `epiphany-editor-core/src/lib.rs`, not
 assumed from the contract's own summary, which groups `alter` with the
 anchor-only intents even though its implementation batches).
+
+## Clipboard wiring (2026-07-24, T2-W4b)
+
+Dispatched as the W4b packet's Half 2, over `epiphany-editor-core`'s
+`copy_selection`/`paste_over_selection`/`CopyOutcome`/`PasteOutcome`
+(fragment.rs's clipboard fragment projection, Ruling E). `main.rs` only; no
+golden pixel moves for the same structural reason W2's overlay didn't
+(decision 9): `goldens.rs` builds its own session and calls
+`render`/`rasterize_pixmap` directly, never through `EditorApp`, so nothing
+this packet touches (toolbar, keys, status line, a new `last_paste_text`
+field) is reachable from a golden test. Verified, not assumed: the three
+baseline PNGs (`ten_measure_open.png` 53638B, `ten_measure_insert.png`
+54590B, `ten_measure_slurs_castoff.png` 57891B) are byte-identical
+(`md5sum` before/after) and untouched by `git status` throughout this
+packet.
+
+**The clipboard mechanism egui 0.29 actually offers — verified against the
+vendored source (`~/.cargo/registry/…/egui-0.29.1`,
+`~/.cargo/registry/…/eframe-0.29.1`), not assumed from memory of a newer
+egui:**
+
+* **Write (copy): `egui::Context::output_mut`/`egui::Ui::output_mut`,
+  setting `PlatformOutput::copied_text`.** This is the *only* clipboard-write
+  surface in 0.29 (`egui/src/data/output.rs:107`, `egui/src/context.rs:1423`)
+  — the backend (`eframe`'s `egui-winit` integration) reads it after the
+  frame and pushes it to the OS clipboard. `do_copy` sets
+  `ctx.output_mut(|o| o.copied_text = outcome.fragment.clone())` on a
+  successful `copy_selection`.
+* **Read (paste): there is no synchronous "read the OS clipboard now" call
+  anywhere in `eframe::Frame`'s or `egui::Context`'s public API** — checked
+  directly (`grep -rn "pub fn" eframe-0.29.1/src/epi.rs`; the only clipboard
+  reference in `eframe`'s own source is `egui_winit.clipboard_text()`
+  inside the native integration's *internal* event-translation code,
+  `native/glow_integration.rs:681`, never exposed to app code). The **only**
+  way an app learns paste content is by consuming
+  **`egui::Event::Paste(String)`** from the input event queue
+  (`egui/src/data/input.rs:388`) — the backend detects an OS paste gesture
+  (Ctrl/Cmd+V, or an OS-level paste menu action), reads the clipboard
+  itself, and injects the text as one event, once, for that frame only.
+  `EditorApp::handle_clipboard_events` reads `ctx.input(|i| &i.events)`
+  every frame via the new pure helper `paste_event_text(&[egui::Event]) ->
+  Option<&str>` and, on a hit, both **acts immediately** (pastes over the
+  current selection) and **caches the text** (`last_paste_text`) for the
+  toolbar "Paste" button — which has no other way to act between paste
+  gestures, since a button click generates no `Event::Paste` of its own and
+  there is nothing else to read it from.
+
+**Why Copy is a plain keyboard edge but Paste cannot be.** `handle_keys`'s
+existing pattern is a boolean edge-read (`i.modifiers.command &&
+i.key_pressed(egui::Key::...)`), used for every other shortcut in this file.
+Ctrl/Cmd+C fits it exactly: `do_copy` needs nothing from egui *except* that
+the chord fired — the text it writes out comes from `copy_selection()`, not
+from any event payload — so `Keys` gained one more field (`copy`) the same
+way. Ctrl/Cmd+V structurally cannot fit that pattern: a bare `key_pressed`
+edge tells you *that* a paste gesture happened, never *what* was pasted, and
+only `Event::Paste`'s own `String` payload carries that. So paste has no
+`Keys` field at all — `handle_clipboard_events` (called once per frame from
+`update`, alongside `handle_keys`) is the whole mechanism, and it is what
+makes Ctrl/Cmd+V "just work": egui's own native integration already turns
+that chord into the event, this app only has to consume it.
+
+**No-selection paste policy.** `paste_over_selection` itself returns
+`Err(EditorError::NoSelection)` when nothing is selected — Display: "no
+selection", accurate but not actionable in a clipboard context (a user
+who never selected anything doesn't know that's what "no selection" means
+here). `do_paste` pre-checks `session.anchor().is_none()` and reports
+**"select a destination first"** instead, without ever calling
+`paste_over_selection` — a GUI-level policy decision, not a change to the
+core session's error semantics. Every *other* outcome — a successful paste
+(reports events/slur/tie counts from `PasteOutcome`) or any other
+`EditorError` — surfaces `{err}` verbatim, per the packet's brief ("the
+fragment error Display strings are user-grade"); `FragmentError`'s and
+`EditorError`'s `Display` impls (`epiphany-editor-core/src/fragment.rs`,
+`lib.rs`) are already written for a human reader, so this crate adds no
+translation layer over them.
+
+**Toolbar buttons.** "Copy" is always clickable (unguarded), matching this
+toolbar's existing convention for every other selection-dependent action
+(Delete, Transpose, Move, …) — none of them are `add_enabled`-gated on
+selection state; a `NoSelection`/`WrongSelection` error is left to surface
+normally through the status line. "Paste" **is** gated
+(`add_enabled(self.last_paste_text.is_some(), …)`), because unlike a
+domain error, "nothing has ever arrived to paste" is a structural
+precondition with no session-side error to report at all — the same class
+of gate `can_undo`/`can_redo` already use for Undo/Redo.
+
+**Pencil mode is untouched.** Clipboard actions (buttons, keys, and
+`handle_clipboard_events`) run unconditionally regardless of `self.pencil`
+— no new interaction with the pencil click-to-insert path, no new branch in
+`score_view`. Pencil's own behavior, and every existing test/golden that
+exercises it, is unchanged.
+
+**Testing scope, stated honestly.** `paste_event_text` is pure (no
+`egui::Context`/`InputState`/native-backend dependency) and gets four real
+unit tests, each proven live by a mutation (dropping `.rev()` — breaks
+"last `Paste` in the frame wins" — and matching the wrong `Event` variant
+— both confirmed to fail the expected tests, then reverted). Everything
+else this packet added — `do_copy`/`do_paste`/`do_paste_from_cache`/
+`handle_clipboard_events`'s own dispatch, the toolbar buttons, the
+`Keys::copy` edge, the help text — is **egui-side dispatch, reviewed but
+not unit-tested**: there is no headless way in this crate to synthesize an
+`egui::Context` frame, drive `ctx.input`/`output_mut`, or simulate an OS
+clipboard/paste gesture (the same limitation the rest of `main.rs`
+already lives with — `goldens.rs` exists precisely because rendering has
+no headless story either, and `resolve_release`/`DragRect` were pulled out
+pure for the same reason W2 needed to unit-test *something* about
+release-time dispatch). `cargo test -p epiphany-editor-gui` green (20/20,
+including all four golden tests) is this packet's regression gate for that
+untested surface, per the brief.

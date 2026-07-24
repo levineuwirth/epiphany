@@ -61,10 +61,10 @@ use epiphany_core::{
     AcousticPitch, AcousticRealization, Clef, CmnNominal, Event, EventDuration, EventId,
     EventPosition, IdentifiedPitch, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId,
     PitchSpaceId, PitchSpacePosition, PitchSpelling, PitchedEvent, RationalTime, RegionId,
-    RegionTimeModel, ReplicaId, ScalePosition, Score, SlurId, SpellingDirective, SpellingNominal,
-    SpellingScope, SpellingSourceKind, StaffId, StaffInstance, StaffInstanceId, StemConfiguration,
-    TieId, TimeSignature, TimeSignatureDisplay, TransactionId, TranspositionInterval,
-    TuningReference, TupletId, TypedObjectId, VoiceId, WallClockTime,
+    RegionTimeModel, ReplicaId, ScalePosition, Score, Slur, SlurId, SpellingDirective,
+    SpellingNominal, SpellingScope, SpellingSourceKind, StaffId, StaffInstance, StaffInstanceId,
+    StemConfiguration, Tie, TieId, TimeSignature, TimeSignatureDisplay, TransactionId,
+    TranspositionInterval, TuningReference, TupletId, TypedObjectId, VoiceId, WallClockTime,
 };
 use epiphany_layout_ir::{
     active_clef_or, manifestation_layout_id, staff_step_pitch, to_constrained, to_logical,
@@ -73,11 +73,12 @@ use epiphany_layout_ir::{
     SolverConfig, TimePoint,
 };
 use epiphany_ops::{
-    advisory_violations, AcceptOutcome, AuthorId, CausalContext, DeleteEventOp,
-    DeleteIdentifiedPitchOp, HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp,
-    ModifyEventOp, ModifyIdentifiedPitchOp, OperationEnvelope, OperationKind, OperationKindTag,
-    OperationPayload, OperationSet, OperationStamp, RespellPitchOp, TransactionCategory,
-    TransactionDescriptor, TransposeIntervalOp, TupletCompensation,
+    advisory_violations, AcceptOutcome, AuthorId, CausalContext, CreateCrossCuttingOp,
+    CrossCuttingValue, DeleteEventOp, DeleteIdentifiedPitchOp, HybridLogicalClock, InsertEventOp,
+    InsertIdentifiedPitchOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationEnvelope,
+    OperationKind, OperationKindTag, OperationPayload, OperationSet, OperationStamp,
+    RespellPitchOp, TransactionCategory, TransactionDescriptor, TransposeIntervalOp,
+    TupletCompensation,
 };
 
 /// The current selection: the score-graph object to act on, plus the stable layout
@@ -315,6 +316,12 @@ pub struct CopyOutcome {
     /// Every slur/tie closure v1 dropped because only one endpoint was
     /// inside the selection — the "report dropped" channel.
     pub dropped: Vec<DroppedItem>,
+    /// How many events made it into the fragment (summed over every voice
+    /// lane) — a GUI-facing count (T2 W4b) so a caller can report "N
+    /// event(s) copied" without decoding the fragment text itself (the
+    /// fragment grammar/decoder are crate-private; this is the supported
+    /// way to learn what a copy actually captured).
+    pub events_copied: usize,
 }
 
 /// What a [`EditorSession::paste_at`] / [`EditorSession::paste_over_selection`]
@@ -327,6 +334,22 @@ pub struct PasteOutcome {
     /// How many fragment events were inserted (one
     /// [`OperationKind::InsertEvent`] each).
     pub events_inserted: usize,
+    /// How many fragment slurs were re-minted as fresh
+    /// [`OperationKind::CreateCrossCutting`] operations (closing the W4a
+    /// follow-up, `DECISIONS.md` 2026-07-24): every fragment slur, once both
+    /// its endpoints resolve to freshly-minted destination events, is
+    /// replayed as a **brand-new** slur — a fresh [`SlurId`], never the
+    /// source's.
+    pub slurs_inserted: usize,
+    /// How many fragment ties were re-minted the same way. A replayed tie's
+    /// `pitch_pairing` is always `None`: the fragment format never carries
+    /// the source's explicit pairing (Ruling E: no object ids — pairing keys
+    /// on source `PitchId`s), so a replayed tie always falls back to the
+    /// reducer's implicit enharmonic-pairing-by-ascending-`PitchId` rule
+    /// (Chapter 5 §"Ties"; `DECISIONS.md` documents this is not a
+    /// structural blocker — the reducer accepts `pitch_pairing: None`
+    /// unconditionally).
+    pub ties_inserted: usize,
 }
 
 /// An editing error. None of these mutate the session.
@@ -2253,9 +2276,11 @@ impl EditorSession {
             slurs,
             ties,
         };
+        let events_copied = document.voices.iter().map(|v| v.events.len()).sum();
         Ok(CopyOutcome {
             fragment: fragment::encode(&document),
             dropped,
+            events_copied,
         })
     }
 
@@ -2401,9 +2426,36 @@ impl EditorSession {
     /// (lane `i` → `voice_ids[i]`), clears each lane's own span under
     /// [`Self::make_room`]'s overwrite policy, and mints `InsertEvent` (+
     /// `RespellPitch` for a carried authored spelling) for every fragment
-    /// event — all as **one** atomic transaction (Ruling E), so a refusal
-    /// anywhere (e.g. a lane's make-room hits a nested tuplet) rolls back
-    /// the whole paste.
+    /// event, then re-mints every fragment slur/tie whose endpoints resolve
+    /// to freshly-minted destination events as a fresh `CreateCrossCutting`
+    /// (closing the W4a follow-up, `DECISIONS.md` 2026-07-24) — all as
+    /// **one** atomic transaction (Ruling E), so a refusal anywhere (e.g. a
+    /// lane's make-room hits a nested tuplet) rolls back the whole paste,
+    /// cross-cuttings included.
+    ///
+    /// **Id mapping.** A fragment's [`fragment::EventRef`] names an event by
+    /// its position in the fragment's own per-voice lanes, never a source
+    /// id (Ruling E). `event_map[voice_ordinal][event_ordinal]` records the
+    /// fresh [`EventId`] minted for that position as the insert loop below
+    /// mints it, so the slur/tie pass afterward resolves every endpoint by a
+    /// plain index — never a source id, and never the source's own
+    /// `SlurId`/`TieId`, which this session never even decodes (the
+    /// fragment format carries none). Every reference [`fragment::decode`]
+    /// accepted is guaranteed to resolve here (it already rejected any
+    /// dangling one), so indexing is a direct array access, not a fallible
+    /// lookup.
+    ///
+    /// **Tie pairing.** A replayed tie's `pitch_pairing` is always `None` —
+    /// the fragment format never carries the source's explicit pairing
+    /// (Ruling E: no object ids; `fragment::FragmentTie` has no
+    /// `pitch_pairing` field at all). This is not a structural block: the
+    /// reducer accepts `pitch_pairing: None` unconditionally (it means
+    /// "pair enharmonically by ascending `PitchId`", Chapter 5 §"Ties") and
+    /// enforces nothing about it at `CreateCrossCutting` apply time — the
+    /// pairing-consistency check lives in `epiphany_core::invariants`, an
+    /// optional graph-wide check this session never runs as part of
+    /// `apply`/`apply_transaction`. See `DECISIONS.md` for the full
+    /// investigation.
     fn paste_document(
         &mut self,
         fragment: &str,
@@ -2422,8 +2474,14 @@ impl EditorSession {
         let mut minter = self.minter();
         let mut ops: Vec<OperationKind> = Vec::new();
         let mut events_inserted = 0usize;
+        // event_map[voice_ordinal][event_ordinal] -> the fresh EventId minted
+        // for that fragment-local position. Pushed once per lane (an empty
+        // Vec for a skipped/empty lane) so indices stay aligned with the
+        // fragment's own voice ordinals for the slur/tie pass below.
+        let mut event_map: Vec<Vec<EventId>> = Vec::with_capacity(document.voices.len());
         for (&voice, lane) in voice_ids.iter().zip(&document.voices) {
             if lane.events.is_empty() {
+                event_map.push(Vec::new());
                 continue;
             }
             let lane_end = lane
@@ -2434,9 +2492,11 @@ impl EditorSession {
                 .expect("lane.events is non-empty, checked above");
             let room = self.make_room(voice, &target_start, &lane_end, None)?;
             ops.extend(self.make_room_ops(room, staff_instance, &mut minter));
+            let mut lane_map = Vec::with_capacity(lane.events.len());
             for fe in &lane.events {
                 let position = target_start.clone() + fe.onset.clone();
                 let event_id = minter.event();
+                lane_map.push(event_id);
                 let (event, respells) =
                     fragment_event_to_op_event(event_id, voice, position, fe, &mut minter);
                 ops.push(OperationKind::InsertEvent(InsertEventOp {
@@ -2446,7 +2506,53 @@ impl EditorSession {
                 events_inserted += 1;
                 ops.extend(respells);
             }
+            event_map.push(lane_map);
         }
+
+        // Every InsertEvent above precedes every CreateCrossCutting below in
+        // the op list — required, not incidental: the reducer's own
+        // `create_cross_cutting` precondition demands both endpoint events
+        // already be Live in its per-envelope object registry
+        // (`reduce.rs`'s `anchor_object_refs` check), so a slur/tie naming a
+        // freshly-minted event only reduces cleanly when its insert has
+        // already been processed earlier in the same transaction.
+        let resolve =
+            |r: fragment::EventRef| -> EventId { event_map[r.voice as usize][r.event as usize] };
+
+        let mut slurs_inserted = 0usize;
+        for slur in &document.slurs {
+            let slur_id = minter.slur();
+            ops.push(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Slur(Slur {
+                    id: slur_id,
+                    start_event: resolve(slur.start),
+                    end_event: resolve(slur.end),
+                    kind: slur.kind,
+                    curvature_override: slur.curvature_override.clone(),
+                    style: slur.style.clone(),
+                }),
+            }));
+            slurs_inserted += 1;
+        }
+        let mut ties_inserted = 0usize;
+        for tie in &document.ties {
+            let tie_id = minter.tie();
+            ops.push(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Tie(Tie {
+                    id: tie_id,
+                    start_event: resolve(tie.start),
+                    end_event: resolve(tie.end),
+                    // The fragment never carries the source's explicit
+                    // pairing (see this method's doc); the reducer's
+                    // implicit enharmonic pairing applies.
+                    pitch_pairing: None,
+                    class: tie.class.clone(),
+                    style: tie.style.clone(),
+                }),
+            }));
+            ties_inserted += 1;
+        }
+
         if ops.is_empty() {
             return Err(EditorError::EmptyFragment);
         }
@@ -2459,6 +2565,8 @@ impl EditorSession {
         Ok(PasteOutcome {
             outcome,
             events_inserted,
+            slurs_inserted,
+            ties_inserted,
         })
     }
 
@@ -2763,6 +2871,8 @@ impl EditorSession {
             replica: self.replica,
             next_event: self.mint_event_id().counter(),
             next_pitch: self.mint_pitch_id().counter(),
+            next_slur: self.mint_slur_id().counter(),
+            next_tie: self.mint_tie_id().counter(),
         }
     }
 
@@ -2890,6 +3000,54 @@ impl EditorSession {
                 c.checked_add(1).expect("pitch id counter overflowed u64")
             });
         PitchId::new(self.replica, next)
+    }
+
+    /// Mints a fresh [`SlurId`] in the session's replica namespace, on the same
+    /// high-water-mark discipline as [`Self::mint_pitch_id`] — the pristine `base`, the
+    /// current score, and this session's **authored** history (so a since-deleted or
+    /// since-undone slur's id is never reused). Unlike a pitch, a deleted slur leaves
+    /// no separate tombstone bookkeeping to chain (`DeleteCrossCutting` only flips the
+    /// reducer's transient `objects` map, which this session does not retain), so the
+    /// authored-history source is what actually carries a deleted/undone slur's id
+    /// forward here.
+    fn mint_slur_id(&self) -> SlurId {
+        let ids = self
+            .base
+            .cross_cutting
+            .slurs
+            .iter()
+            .map(|s| s.id)
+            .chain(self.score.cross_cutting.slurs.iter().map(|s| s.id))
+            .chain(self.authored.iter().flat_map(inserted_slur_ids));
+        let next = ids
+            .filter(|s| s.replica() == self.replica)
+            .map(|s| s.counter())
+            .max()
+            .map_or(0, |c| {
+                c.checked_add(1).expect("slur id counter overflowed u64")
+            });
+        SlurId::new(self.replica, next)
+    }
+
+    /// Mints a fresh [`TieId`], the tie analogue of [`Self::mint_slur_id`] (same
+    /// discipline, same rationale).
+    fn mint_tie_id(&self) -> TieId {
+        let ids = self
+            .base
+            .cross_cutting
+            .ties
+            .iter()
+            .map(|t| t.id)
+            .chain(self.score.cross_cutting.ties.iter().map(|t| t.id))
+            .chain(self.authored.iter().flat_map(inserted_tie_ids));
+        let next = ids
+            .filter(|t| t.replica() == self.replica)
+            .map(|t| t.counter())
+            .max()
+            .map_or(0, |c| {
+                c.checked_add(1).expect("tie id counter overflowed u64")
+            });
+        TieId::new(self.replica, next)
     }
 
     /// Re-resolves the whole selection set against the current layout — see
@@ -3125,6 +3283,8 @@ struct Minter {
     replica: ReplicaId,
     next_event: u64,
     next_pitch: u64,
+    next_slur: u64,
+    next_tie: u64,
 }
 
 impl Minter {
@@ -3143,6 +3303,24 @@ impl Minter {
             .next_pitch
             .checked_add(1)
             .expect("pitch id counter overflowed u64");
+        id
+    }
+
+    fn slur(&mut self) -> SlurId {
+        let id = SlurId::new(self.replica, self.next_slur);
+        self.next_slur = self
+            .next_slur
+            .checked_add(1)
+            .expect("slur id counter overflowed u64");
+        id
+    }
+
+    fn tie(&mut self) -> TieId {
+        let id = TieId::new(self.replica, self.next_tie);
+        self.next_tie = self
+            .next_tie
+            .checked_add(1)
+            .expect("tie id counter overflowed u64");
         id
     }
 }
@@ -3330,6 +3508,31 @@ fn inserted_pitch_ids(env: &OperationEnvelope) -> Vec<PitchId> {
 fn inserted_event_ids(env: &OperationEnvelope) -> Vec<EventId> {
     match &env.payload {
         OperationPayload::Primitive(OperationKind::InsertEvent(op)) => vec![op.event_id()],
+        _ => Vec::new(),
+    }
+}
+
+/// The slur ids a session envelope brought into being — the slur-id analogue of
+/// [`inserted_pitch_ids`], so [`EditorSession::mint_slur_id`] never reuses a
+/// since-deleted or since-undone one.
+fn inserted_slur_ids(env: &OperationEnvelope) -> Vec<SlurId> {
+    match &env.payload {
+        OperationPayload::Primitive(OperationKind::CreateCrossCutting(op)) => match &op.structure {
+            CrossCuttingValue::Slur(slur) => vec![slur.id],
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
+/// The tie ids a session envelope brought into being — the tie analogue of
+/// [`inserted_slur_ids`].
+fn inserted_tie_ids(env: &OperationEnvelope) -> Vec<TieId> {
+    match &env.payload {
+        OperationPayload::Primitive(OperationKind::CreateCrossCutting(op)) => match &op.structure {
+            CrossCuttingValue::Tie(tie) => vec![tie.id],
+            _ => Vec::new(),
+        },
         _ => Vec::new(),
     }
 }
@@ -7726,9 +7929,16 @@ mod tests {
 
     /// The id of `eid`'s first pitch.
     fn first_pitch_of(session: &EditorSession, eid: EventId) -> PitchId {
+        first_pitch_id_in_score(session.score(), eid)
+    }
+
+    /// The id of `eid`'s first pitch, read directly off a `Score` — the
+    /// pre-`EditorSession::open` sibling of [`first_pitch_of`], for fixtures
+    /// that need a source `PitchId` before a session exists (e.g. to build
+    /// an explicit tie `pitch_pairing` on the raw score).
+    fn first_pitch_id_in_score(score: &Score, eid: EventId) -> PitchId {
         let mut buf: Vec<&IdentifiedPitch> = Vec::new();
-        session
-            .score()
+        score
             .events
             .get(eid)
             .expect("live event")
@@ -7790,6 +8000,10 @@ mod tests {
         assert_eq!(
             fragment_event_count, 2,
             "exactly the two targeted notes made it into the fragment"
+        );
+        assert_eq!(
+            copy.events_copied, 2,
+            "events_copied agrees with the fragment's own event count"
         );
 
         // Paste far past the fixture's own content (its four notes span
@@ -7857,6 +8071,204 @@ mod tests {
             None,
             "the second note never had an override — none is invented"
         );
+    }
+
+    /// r1 (T2 W4b, closing the W4a slur/tie-replay follow-up): copying a
+    /// range containing a **whole** slur, then pasting far away, mints a
+    /// brand-new slur at the destination — a fresh [`SlurId`], disjoint from
+    /// the source's, spanning **exactly** the two freshly-pasted events (not
+    /// the source's own event ids).
+    ///
+    /// Mutation r1 (skip the slur re-mint loop in `paste_document`): the
+    /// destination gains no new slur at all (`slurs_inserted` stays 0 and no
+    /// second slur appears in `cross_cutting.slurs`) — this test dies on the
+    /// `slurs_inserted`/slur-presence assertions below. Confirmed live, then
+    /// reverted.
+    #[test]
+    fn paste_replays_a_contained_slur_as_a_fresh_cross_cutting_structure() {
+        use epiphany_core::{RegionContent, Slur, SlurId, SlurKind, SpanStyle};
+
+        let mut score = small_metric_score(4);
+        let events: Vec<EventId> = {
+            let RegionContent::StaffBased(content) = &score.canvas.regions[0].content else {
+                panic!("region 0 is staff-based");
+            };
+            content.staff_instances[0].voices[0].events.clone()
+        };
+        let source_slur_id: SlurId = score.identity.mint();
+        score.cross_cutting.slurs.push(Slur {
+            id: source_slur_id,
+            start_event: events[0],
+            end_event: events[1],
+            kind: SlurKind::Phrase,
+            curvature_override: None,
+            style: SpanStyle::default(),
+        });
+
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+        let region = a_clean_metric_region(&session);
+        let voice = primary_voice(&session, region);
+        let before = voice_events(&session, voice);
+        let source_ids: BTreeSet<EventId> = before.iter().map(|(id, _, _)| *id).collect();
+
+        let pitch0 = first_pitch_of(&session, before[0].0);
+        let pitch1 = first_pitch_of(&session, before[1].0);
+        let rect = rect_covering_pitches(&session, &[pitch0, pitch1]);
+        session.select_within(rect);
+        let copy = session.copy_selection().expect("the selection copies");
+        assert!(copy.dropped.is_empty(), "the slur is fully inside the copy");
+        let decoded = fragment::decode(&copy.fragment).expect("well-formed");
+        assert_eq!(decoded.slurs.len(), 1, "the slur made it into the fragment");
+
+        let far = MusicalPosition(RationalTime::new(50, 4).unwrap());
+        let (_, _, origin_y) = region_staff_line(&session, region);
+        let at = click_for_position(&session, region, &far, origin_y + 1.0);
+        let outcome = session
+            .paste_at(at, &grid(1, 4), &copy.fragment)
+            .expect("the paste applies");
+        assert_eq!(outcome.events_inserted, 2);
+        assert_eq!(outcome.slurs_inserted, 1, "one slur re-minted");
+        assert_eq!(outcome.ties_inserted, 0);
+
+        let mut pasted: Vec<(EventId, MusicalPosition, MusicalDuration)> =
+            voice_events(&session, voice)
+                .into_iter()
+                .filter(|(id, _, _)| !source_ids.contains(id))
+                .collect();
+        pasted.sort_by(|a, b| a.1.cmp(&b.1));
+        assert_eq!(pasted.len(), 2, "two fresh events appeared");
+
+        assert_eq!(
+            session.score().cross_cutting.slurs.len(),
+            2,
+            "the source slur is untouched and a new one appeared"
+        );
+        let new_slur = session
+            .score()
+            .cross_cutting
+            .slurs
+            .iter()
+            .find(|s| s.id != source_slur_id)
+            .expect("a new slur exists");
+        assert_ne!(
+            new_slur.id, source_slur_id,
+            "the pasted slur's id is fresh, disjoint from the source's"
+        );
+        assert_eq!(
+            new_slur.start_event, pasted[0].0,
+            "the new slur starts at the first pasted event"
+        );
+        assert_eq!(
+            new_slur.end_event, pasted[1].0,
+            "the new slur ends at the second pasted event"
+        );
+        assert_eq!(
+            new_slur.kind,
+            SlurKind::Phrase,
+            "the slur kind carries over"
+        );
+        assert_eq!(new_slur.curvature_override, None);
+        assert_eq!(new_slur.style, SpanStyle::default());
+    }
+
+    /// r2 (T2 W4b): the tie equivalent of r1. A tie fully inside the copied
+    /// range replays as a fresh [`TieId`] at the destination, spanning
+    /// exactly the two pasted events, with `pitch_pairing: None` — the
+    /// fragment never carries the source's explicit pairing (Ruling E: no
+    /// object ids), and this is not a structural block: the reducer accepts
+    /// `pitch_pairing: None` unconditionally (see `DECISIONS.md`). The
+    /// source tie's own explicit pairing is deliberately set here so the
+    /// test also proves the drop is real, not merely untested.
+    ///
+    /// Mutation r2 (skip the tie re-mint loop in `paste_document`): dies on
+    /// the `ties_inserted`/tie-presence assertions below. Confirmed live,
+    /// then reverted.
+    #[test]
+    fn paste_replays_a_contained_tie_with_the_default_pairing() {
+        use epiphany_core::{RegionContent, SpanStyle, Tie, TieClass, TieId};
+
+        let mut score = small_metric_score(4);
+        let events: Vec<EventId> = {
+            let RegionContent::StaffBased(content) = &score.canvas.regions[0].content else {
+                panic!("region 0 is staff-based");
+            };
+            content.staff_instances[0].voices[0].events.clone()
+        };
+        let source_pitch0 = first_pitch_id_in_score(&score, events[0]);
+        let source_pitch1 = first_pitch_id_in_score(&score, events[1]);
+        let source_tie_id: TieId = score.identity.mint();
+        score.cross_cutting.ties.push(Tie {
+            id: source_tie_id,
+            start_event: events[0],
+            end_event: events[1],
+            // An explicit source pairing — proves the fragment really drops
+            // it (Ruling E), not merely that this test never exercised one.
+            pitch_pairing: Some(vec![(source_pitch0, source_pitch1)]),
+            class: TieClass::Standard,
+            style: SpanStyle::default(),
+        });
+
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+        let region = a_clean_metric_region(&session);
+        let voice = primary_voice(&session, region);
+        let before = voice_events(&session, voice);
+        let source_ids: BTreeSet<EventId> = before.iter().map(|(id, _, _)| *id).collect();
+
+        let pitch0 = first_pitch_of(&session, before[0].0);
+        let pitch1 = first_pitch_of(&session, before[1].0);
+        let rect = rect_covering_pitches(&session, &[pitch0, pitch1]);
+        session.select_within(rect);
+        let copy = session.copy_selection().expect("the selection copies");
+        assert!(copy.dropped.is_empty(), "the tie is fully inside the copy");
+        let decoded = fragment::decode(&copy.fragment).expect("well-formed");
+        assert_eq!(decoded.ties.len(), 1, "the tie made it into the fragment");
+
+        let far = MusicalPosition(RationalTime::new(50, 4).unwrap());
+        let (_, _, origin_y) = region_staff_line(&session, region);
+        let at = click_for_position(&session, region, &far, origin_y + 1.0);
+        let outcome = session
+            .paste_at(at, &grid(1, 4), &copy.fragment)
+            .expect("the paste applies");
+        assert_eq!(outcome.events_inserted, 2);
+        assert_eq!(outcome.slurs_inserted, 0);
+        assert_eq!(outcome.ties_inserted, 1, "one tie re-minted");
+
+        let mut pasted: Vec<(EventId, MusicalPosition, MusicalDuration)> =
+            voice_events(&session, voice)
+                .into_iter()
+                .filter(|(id, _, _)| !source_ids.contains(id))
+                .collect();
+        pasted.sort_by(|a, b| a.1.cmp(&b.1));
+        assert_eq!(pasted.len(), 2, "two fresh events appeared");
+
+        assert_eq!(
+            session.score().cross_cutting.ties.len(),
+            2,
+            "the source tie is untouched and a new one appeared"
+        );
+        let new_tie = session
+            .score()
+            .cross_cutting
+            .ties
+            .iter()
+            .find(|t| t.id != source_tie_id)
+            .expect("a new tie exists");
+        assert_ne!(
+            new_tie.id, source_tie_id,
+            "the pasted tie's id is fresh, disjoint from the source's"
+        );
+        assert_eq!(new_tie.start_event, pasted[0].0);
+        assert_eq!(new_tie.end_event, pasted[1].0);
+        assert_eq!(
+            new_tie.pitch_pairing, None,
+            "the source's explicit pairing is not carried; the default applies"
+        );
+        assert_eq!(
+            new_tie.class,
+            TieClass::Standard,
+            "the tie class carries over"
+        );
+        assert_eq!(new_tie.style, SpanStyle::default());
     }
 
     /// Partial tuplet refuses: a selection covering two of the rich fixture's
@@ -8037,6 +8449,139 @@ mod tests {
             regions: vec![region],
             ..Default::default()
         };
+        score
+    }
+
+    /// r3's source fixture (T2 W4b): a one-staff, one-region score whose
+    /// staff instance has two voices — voice 0 carries **two** quarter notes
+    /// (onset 0 and 1/4) joined by a slur, voice 1 carries one quarter note
+    /// at onset 0. Copying all three events yields a two-lane fragment whose
+    /// lane 0 (two events + the slur) is exactly [`two_voice_one_note_each_score`]'s
+    /// lane 0 with a slur added — the r3 atomicity test's proof that a
+    /// cross-cutting structure riding along a multi-lane paste does not
+    /// change the all-or-nothing guarantee.
+    fn two_voice_first_voice_has_two_notes_with_a_slur_second_voice_one_note_score() -> Score {
+        use epiphany_core::{
+            Canvas, EventArena, IdentityContext, Instrument, InstrumentId, MetricTimeModel, Region,
+            RegionContent, Slur, SlurKind, SpanStyle, Staff, StaffBasedContent, StaffExtent,
+            StaffLineConfiguration, TimeAnchor, TimeExtent, Voice,
+        };
+        let replica = ReplicaId(0x7777);
+        let mut idc = IdentityContext::new(replica);
+        let staff_id: StaffId = idc.mint();
+        let instrument: InstrumentId = idc.mint();
+        let region_id: RegionId = idc.mint();
+        let instance_id: StaffInstanceId = idc.mint();
+
+        let mut arena = EventArena::new();
+        let mut instance = StaffInstance::new(instance_id, staff_id);
+
+        // Voice 0: two notes, slurred.
+        let voice0_id: VoiceId = idc.mint();
+        let mut voice0 = Voice::user(voice0_id);
+        let mut voice0_events = Vec::new();
+        for index in 0..2i64 {
+            let eid: EventId = idc.mint();
+            let pid: PitchId = idc.mint();
+            arena
+                .insert(Event::Pitched(PitchedEvent {
+                    id: eid,
+                    voice: voice0_id,
+                    position: EventPosition::Musical(MusicalPosition(
+                        RationalTime::new(index, 4).unwrap(),
+                    )),
+                    duration: EventDuration::Musical(MusicalDuration(
+                        RationalTime::new(1, 4).unwrap(),
+                    )),
+                    pitches: vec![IdentifiedPitch {
+                        id: pid,
+                        pitch: cmn_pitch(CmnNominal::G, 4),
+                    }],
+                    articulations: vec![],
+                    dynamic: None,
+                    ornaments: vec![],
+                    stem: StemConfiguration,
+                    grace: None,
+                }))
+                .expect("fresh event id");
+            voice0.events.push(eid);
+            voice0_events.push(eid);
+        }
+        instance.voices.push(voice0);
+
+        // Voice 1: one note.
+        let voice1_id: VoiceId = idc.mint();
+        let mut voice1 = Voice::user(voice1_id);
+        let eid: EventId = idc.mint();
+        let pid: PitchId = idc.mint();
+        arena
+            .insert(Event::Pitched(PitchedEvent {
+                id: eid,
+                voice: voice1_id,
+                position: EventPosition::Musical(MusicalPosition(RationalTime::new(0, 4).unwrap())),
+                duration: EventDuration::Musical(MusicalDuration(RationalTime::new(1, 4).unwrap())),
+                pitches: vec![IdentifiedPitch {
+                    id: pid,
+                    pitch: cmn_pitch(CmnNominal::G, 4),
+                }],
+                articulations: vec![],
+                dynamic: None,
+                ornaments: vec![],
+                stem: StemConfiguration,
+                grace: None,
+            }))
+            .expect("fresh event id");
+        voice1.events.push(eid);
+        instance.voices.push(voice1);
+
+        let region = Region {
+            id: region_id,
+            time_model: RegionTimeModel::Metric(MetricTimeModel::default()),
+            content: RegionContent::StaffBased(StaffBasedContent {
+                staff_instances: vec![instance],
+                ..Default::default()
+            }),
+            time_extent: TimeExtent {
+                start: TimeAnchor::WallClock {
+                    time: WallClockTime(0),
+                },
+                end: TimeAnchor::WallClock {
+                    time: WallClockTime(1_000_000),
+                },
+            },
+            staff_extent: StaffExtent {
+                staves: vec![staff_id],
+            },
+            local_tempo_map: None,
+            permits_spanning_slurs: false,
+        };
+
+        let mut score = Score::empty(idc.clone());
+        score.identity = idc;
+        score.staves = vec![Staff {
+            id: staff_id,
+            name: String::from("staff"),
+            abbreviation: None,
+            instrument,
+            default_staff_lines: StaffLineConfiguration::default(),
+            group: None,
+            default_clef: Clef::treble(),
+        }];
+        score.instruments = vec![Instrument::new(instrument, String::from("instrument"))];
+        score.events = arena;
+        score.canvas = Canvas {
+            regions: vec![region],
+            ..Default::default()
+        };
+        let slur_id: SlurId = score.identity.mint();
+        score.cross_cutting.slurs.push(Slur {
+            id: slur_id,
+            start_event: voice0_events[0],
+            end_event: voice0_events[1],
+            kind: SlurKind::Legato,
+            curvature_override: None,
+            style: SpanStyle::default(),
+        });
         score
     }
 
@@ -8223,8 +8768,81 @@ mod tests {
         );
     }
 
-    /// Coordinator-added (T2 W4a review): the commit's transactional **shape**
-    /// is itself canonical surface. The atomicity test above pins
+    /// r3 (T2 W4b): the atomicity guarantee still holds with a cross-cutting
+    /// structure aboard the paste. Reuses the two-lane refusal scenario
+    /// above (`two_voice_second_voice_has_a_nested_tuplet` as the
+    /// destination), now with a slur spanning lane 0's two source events —
+    /// the whole paste, the slur's `CreateCrossCutting` included, still
+    /// rolls back byte-identically when lane 1's make-room refuses.
+    ///
+    /// Mutation r3 (the same "commit per lane inside the loop" mutation as
+    /// f3 above, reapplied now that lane 0 also carries a slur): lane 0's
+    /// two inserts land before lane 1's refusal is discovered, so
+    /// `canonical_bytes` changes even though the call still returns `Err` —
+    /// this test dies on the `canonical_bytes` equality. Confirmed live,
+    /// then reverted (see the packet report).
+    #[test]
+    fn paste_atomicity_rolls_back_mid_transaction_with_a_slur_aboard() {
+        let mut source = EditorSession::open(
+            two_voice_first_voice_has_two_notes_with_a_slur_second_voice_one_note_score(),
+            Box::new(StubSolver),
+        )
+        .expect("renders");
+        let events: Vec<EventId> = source.score().events.iter().map(|e| e.id()).collect();
+        assert_eq!(events.len(), 3, "two notes in voice 0, one in voice 1");
+        let pitches: Vec<PitchId> = events
+            .iter()
+            .map(|&eid| first_pitch_of(&source, eid))
+            .collect();
+        let rect = rect_covering_pitches(&source, &pitches);
+        source.select_within(rect);
+        let copy = source.copy_selection().expect("copies");
+        assert!(copy.dropped.is_empty(), "the slur is fully inside the copy");
+        let decoded = fragment::decode(&copy.fragment).expect("well-formed");
+        assert_eq!(decoded.voices.len(), 2, "two lanes");
+        assert_eq!(
+            decoded.voices[0].events.len(),
+            2,
+            "lane 0 carries both slurred notes"
+        );
+        assert_eq!(decoded.slurs.len(), 1, "the slur made it into the fragment");
+
+        let mut dest = EditorSession::open(
+            two_voice_second_voice_has_a_nested_tuplet(),
+            Box::new(StubSolver),
+        )
+        .expect("renders");
+        let region = a_region_with(&dest, true);
+        // Same click strategy as the test above: voice 1's first triplet
+        // member's onset — `paste_document` maps lane 0 -> the instance's
+        // voice 0, lane 1 -> voice 1, positionally.
+        let voice1 = dest
+            .score()
+            .staff_instances()
+            .find(|(r, _)| *r == region)
+            .expect("a staff instance")
+            .1
+            .voices[1]
+            .id;
+        let (_, pos, dur) = voice_events(&dest, voice1).into_iter().next().unwrap();
+        let (_, _, origin_y) = region_staff_line(&dest, region);
+        let at = click_for_position(&dest, region, &pos, origin_y + 1.0);
+        let before = dest.score().canonical_bytes();
+
+        let err = dest
+            .paste_at(at, &GridResolution { step: dur }, &copy.fragment)
+            .expect_err("lane 1 overlaps the nested tuplet");
+        assert_eq!(err, EditorError::OverlapsTuplet);
+        assert_eq!(
+            dest.score().canonical_bytes(),
+            before,
+            "atomic: the slur-bearing lane 0 must not land just because lane 1 refused"
+        );
+    }
+
+    /// Coordinator-added (T2 W4a review); extended T2 W4b (2026-07-24) to pin
+    /// a slur aboard the paste too. The commit's transactional **shape** is
+    /// itself canonical surface. The atomicity test above pins
     /// build-everything-before-committing-anything (its refusal fires at
     /// make-room time, inside `paste_document`'s build), but nothing there
     /// reaches the commit itself — a mutation that keeps the build intact and
@@ -8235,11 +8853,41 @@ mod tests {
     /// descriptor-precedence in concurrent reduction, so a paste emitting bare
     /// ops would merge differently at a peer even though it applies
     /// identically here. This pins the emitted stream: one descriptor plus
-    /// every member, appended by a single multi-op paste.
+    /// **exactly** every member — two inserts, the carried respell, and (W4b)
+    /// the re-minted slur's `CreateCrossCutting` — appended by a single
+    /// multi-op paste.
+    ///
+    /// Re-proven kill (W4b, per the packet's own instruction): temporarily
+    /// replacing the `if ops.len() == 1 { self.apply(...) } else {
+    /// self.apply_transaction(...) }` dispatch in `paste_document` with a
+    /// per-op `self.apply` loop still kills this test — `descriptors` drops
+    /// to 0 (a per-op loop never mints a `DeclareTransaction` at all), tripping
+    /// the `descriptors == 1` assertion. Confirmed live, then reverted (not
+    /// left in the tree — see the packet report).
     #[test]
     fn paste_emits_one_transaction_descriptor_plus_members() {
-        let mut session =
-            EditorSession::open(small_metric_score(4), Box::new(StubSolver)).expect("renders");
+        use epiphany_core::{RegionContent, Slur, SlurId, SlurKind, SpanStyle};
+
+        let mut score = small_metric_score(4);
+        let events: Vec<EventId> = {
+            let RegionContent::StaffBased(content) = &score.canvas.regions[0].content else {
+                panic!("region 0 is staff-based");
+            };
+            content.staff_instances[0].voices[0].events.clone()
+        };
+        // A slur fully inside the copied/pasted range (events 0 and 1) — it
+        // must ride along as one more transaction member.
+        let slur_id: SlurId = score.identity.mint();
+        score.cross_cutting.slurs.push(Slur {
+            id: slur_id,
+            start_event: events[0],
+            end_event: events[1],
+            kind: SlurKind::Legato,
+            curvature_override: None,
+            style: SpanStyle::default(),
+        });
+
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
         let region = a_clean_metric_region(&session);
         let voice = primary_voice(&session, region);
         let before = voice_events(&session, voice);
@@ -8255,6 +8903,9 @@ mod tests {
         let rect = rect_covering_pitches(&session, &[pitch0, pitch1]);
         session.select_within(rect);
         let copy = session.copy_selection().expect("the selection copies");
+        assert!(copy.dropped.is_empty(), "the slur is fully inside the copy");
+        let decoded = fragment::decode(&copy.fragment).expect("well-formed");
+        assert_eq!(decoded.slurs.len(), 1, "the slur made it into the fragment");
 
         let far = MusicalPosition(RationalTime::new(50, 4).unwrap());
         let (_, _, origin_y) = region_staff_line(&session, region);
@@ -8265,6 +8916,8 @@ mod tests {
             .paste_at(at, &grid(1, 4), &copy.fragment)
             .expect("the paste applies");
         assert_eq!(outcome.events_inserted, 2);
+        assert_eq!(outcome.slurs_inserted, 1);
+        assert_eq!(outcome.ties_inserted, 0);
 
         let new = &session.applied_operations()[applied_before..];
         let descriptors = new
@@ -8280,9 +8933,12 @@ mod tests {
             descriptors, 1,
             "a multi-op paste emits exactly one transaction descriptor"
         );
-        assert!(
-            new.len() >= 4,
-            "descriptor + two inserts + the carried respell, got {}",
+        // Exactly: descriptor + two inserts + the carried respell + the
+        // re-minted slur's CreateCrossCutting.
+        assert_eq!(
+            new.len(),
+            5,
+            "descriptor + two inserts + the carried respell + one CreateCrossCutting, got {}",
             new.len()
         );
     }

@@ -292,3 +292,115 @@ carries a nested tuplet; mutating the commit to run per-lane inside the
 loop (instead of once, over every lane's accumulated ops) lands voice 0's
 insert before voice 1's refusal is discovered, changing `canonical_bytes`
 even though the call still returns `Err` — killed, confirmed live.
+
+## Slur/tie replay on paste (2026-07-24, T2-W4b) — closing the W4a follow-up
+
+Dispatched as the W4b packet's Half 1, ratified by the user 2026-07-23. W4a
+(above, point 4) captured a fully-contained slur/tie into the fragment
+*format* but never re-minted it on paste, filed as a named follow-up rather
+than papered over. This closes it: `paste_document` now re-mints every
+fragment slur/tie, once both endpoints resolve to freshly-minted destination
+events, as a fresh `CreateCrossCutting` op — inside the same single atomic
+paste transaction as the inserts/respells (Ruling E), never a second unit.
+
+**Id mapping.** A fragment's `EventRef` names an event by its
+fragment-local position, never a source id (Ruling E: no object ids) — so
+paste needs its own map from that position to the *freshly minted*
+destination `EventId`. Implemented as `event_map: Vec<Vec<EventId>>`
+(`event_map[voice_ordinal][event_ordinal]`), built alongside the existing
+per-voice insert loop and pushed once per lane (an empty `Vec` for an
+empty/skipped lane) so indices stay aligned with the fragment's own voice
+ordinals — a plain array index, not a fallible lookup, because
+`fragment::decode` already rejected any dangling `EventRef` before this
+method ever sees the document (the module's own documented invariant: "an
+`EventRef` decode validated resolves — nothing downstream needs to
+re-check"). A `BTreeMap<fragment::EventRef, EventId>` was the first design
+considered; `EventRef` derives no `Ord`, and adding one purely for a
+paste-local, non-format concern was judged not worth extending a
+purpose-built, already-reviewed type's derive set. Fresh `SlurId`/`TieId`
+values come from two new session minters (`mint_slur_id`/`mint_tie_id`,
+mirroring `mint_event_id`/`mint_pitch_id`'s three-source high-water-mark
+discipline: `base`, current `score`, and this session's **authored**
+history) plus matching `Minter::slur`/`Minter::tie` fields, so several
+cross-cutting mints within one paste never collide and a since-deleted or
+since-undone slur/tie's id is never reused. Unlike a pitch, a deleted
+cross-cutting structure has no separate score-level tombstone list to chain
+(`DeleteCrossCutting` → `graph_delete_cross_cutting` removes it from
+`score.cross_cutting.{slurs,ties}` outright, `reduce.rs:3539`), so the
+`authored` source is what actually carries a deleted/undone slur/tie's id
+forward — the same reasoning `mint_pitch_id`'s doc already gives for
+pitches, just with no `base`/`score` tombstone list to add.
+
+**Ordering: inserts before cross-cuttings, same transaction.** The
+reducer's own `create_cross_cutting` precondition (`reduce.rs:3249`)
+requires every anchor event already `Live` in its per-envelope object
+registry — checked against reduction's own evolving state as the
+transaction's envelopes apply in order, not against `self.score` (which
+does not yet contain the paste at advisory-check time). `paste_document`
+therefore builds every lane's `InsertEvent`s first, then every
+`CreateCrossCutting` after, in one `ops` list — the existing
+`apply`/`apply_transaction` dispatch (N=1 unwrapped, else one
+`DeclareTransaction` + members) needed no change at all; a freshly-minted
+event and the slur/tie naming it simply ride the same transaction as any
+other multi-op paste. The pre-mint advisory gate
+(`epiphany_ops::validate::advisory_violations`) is unaffected: its
+`CreateCrossCutting(Slur)` check resolves both endpoints' regions against
+`self.score` (the pre-transaction state), so a freshly-minted event
+resolves to `None` on both sides and the boundary check passes vacuously —
+documented as intentional in that module ("conservative for the rare member
+that only violates against another member's intermediate effect").
+
+**Tie pairing: `None`, and this is NOT a structural block.** A replayed
+tie always carries `pitch_pairing: None` — the fragment format never
+carries the source's explicit pairing at all (W4a's `FragmentTie` has no
+such field; Ruling E: no object ids, and pairing keys on source `PitchId`s).
+The packet's brief asked to fail closed (skip tie replay, report it) *if*
+the model requires a pairing the fragment cannot express. Investigated and
+ruled out: `Tie::pitch_pairing: Option<...>` with `None` means "pair all
+pitches by enharmonic matching in ascending `PitchId` order" — a fully
+representable, spec-legitimate value (Chapter 5 §"Ties";
+`epiphany_core::invariants::check_tie_pairing`'s `None` arm implements
+exactly this rule as a *checkable* invariant, not a requirement the reducer
+enforces at mint time). `create_cross_cutting`'s only preconditions are (a)
+the structure id is not already live/tombstoned and (b) its anchor events
+are live — nothing inspects `pitch_pairing` at all
+(`materialize_graph_cross_cutting` pushes the `Tie` value verbatim). The
+pairing-consistency invariant check lives in `epiphany_core::invariants`, a
+graph-wide checker this session's `apply`/`apply_transaction` never runs
+(the crate's own tests call `epiphany_core::check_invariants` explicitly,
+separately, when they want it — `lib.rs`'s `commit` does not). So: full tie
+replay is implemented, unconditionally, with `pitch_pairing: None`; no
+`dropped`-style outcome field was needed because there is no fail-closed
+case to report on this path. `PasteOutcome` gained `slurs_inserted` /
+`ties_inserted` counts instead (both always equal to the fragment's own
+`slurs.len()`/`ties.len()` given a well-formed paste — a straightforward
+"how many landed" report, not a fallibility channel).
+
+**`CopyOutcome` gained `events_copied: usize` too** (same packet, needed by
+W4b's Half 2 GUI status line: "N event(s) copied"). The fragment
+grammar/decoder (`fragment.rs`) are crate-private by design (Ruling E's
+format is application-internal, not a public surface), so a caller outside
+this crate has no way to learn how many events a copy actually captured
+without this field — `copy_selection` now sums `document.voices[*].events.len()`
+once, right before encoding, and returns it alongside the fragment text.
+
+**Tests.** `paste_replays_a_contained_slur_as_a_fresh_cross_cutting_structure`
+(r1) and `paste_replays_a_contained_tie_with_the_default_pairing` (r2) each
+build a source fixture with the cross-cutting structure captured directly on
+the raw `Score` (mirroring `copy_selection_drops_a_boundary_cut_slur_and_reports_it`'s
+technique), copy, paste far away in the *same* session, and assert the
+destination carries a **second**, fresh-id structure spanning exactly the
+two pasted events — r2's source tie carries an explicit `pitch_pairing` on
+purpose, so the assertion that the replayed tie's pairing is `None` proves
+the drop is real, not merely untested. `paste_atomicity_rolls_back_mid_transaction_with_a_slur_aboard`
+(r3) reuses the existing two-lane refusal fixture shape
+(`two_voice_second_voice_has_a_nested_tuplet` as the destination) with a new
+source fixture whose lane 0 carries two notes and a slur; the whole paste —
+cross-cutting op included — still rolls back byte-identically when lane 1's
+make-room refuses. `paste_emits_one_transaction_descriptor_plus_members` (the
+coordinator-added transaction-shape test) now pins the **exact** member
+count with a slur aboard (descriptor + 2 inserts + 1 respell + 1
+`CreateCrossCutting` = 5), re-proven live against the same "per-op loop
+instead of the transaction dispatch" mutation the test's own doc comment
+already described for the pre-slur version — the mutation still kills it
+(0 descriptors instead of 1), confirmed and reverted.

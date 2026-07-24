@@ -433,10 +433,11 @@ impl TextValue for FragmentSlur {
 /// **not** carried (a decision this packet made explicitly, see
 /// `DECISIONS.md`): pairing keys on source `PitchId`s, which the fragment
 /// deliberately never carries, and remapping it through per-pitch ordinals
-/// was judged not worth the added grammar for a v1 whose paste does not yet
-/// re-mint cross-cutting structures at all (below). A pasted tie, when
-/// pasting is extended to replay one, falls back to `None` — the default
-/// enharmonic pairing.
+/// was judged not worth the added grammar for a rare feature. Paste (W4b,
+/// `crate::EditorSession::paste_document`) does replay a captured tie as a
+/// fresh `CreateCrossCutting`, always with `pitch_pairing: None` — the
+/// reducer's default enharmonic pairing (not a structural limitation: the
+/// reducer accepts `None` unconditionally, see `DECISIONS.md`).
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct FragmentTie {
     pub(crate) start: EventRef,

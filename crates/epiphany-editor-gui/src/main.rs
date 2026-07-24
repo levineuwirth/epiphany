@@ -223,6 +223,20 @@ fn resolve_release(drag: &DragRect, ctrl: bool) -> ReleaseAction {
     }
 }
 
+/// The text of the most recent `egui::Event::Paste` in `events`, if any (T2
+/// W4b) — pure and independent of `egui::Context`/`InputState`, so it is
+/// headlessly unit-testable; `EditorApp::handle_clipboard_events` is the only
+/// egui-side caller. If more than one `Paste` event lands in the same frame
+/// (unusual — one OS paste gesture is one event — but the queue is a plain
+/// `Vec`), the *last* one wins, mirroring `PlatformOutput::copied_text`'s own
+/// "most recent wins" discipline for the analogous output side.
+fn paste_event_text(events: &[egui::Event]) -> Option<&str> {
+    events.iter().rev().find_map(|e| match e {
+        egui::Event::Paste(text) => Some(text.as_str()),
+        _ => None,
+    })
+}
+
 /// A short label for the last applied op, for the debug panel.
 fn payload_label(payload: &OperationPayload) -> &'static str {
     match payload {
@@ -305,6 +319,14 @@ struct EditorApp {
     /// `None` in pencil mode — pencil's click-to-insert takes precedence and ignores
     /// dragging entirely).
     rubber_band: Option<DragRect>,
+    /// The most recent clipboard text egui delivered via `egui::Event::Paste`
+    /// (T2 W4b). egui 0.29 exposes no synchronous "read the OS clipboard now"
+    /// call (see `DECISIONS.md`) — the only way this app ever learns paste
+    /// text is by consuming that event as it arrives (on an OS paste gesture,
+    /// e.g. Ctrl/Cmd+V). Cached here so the toolbar "Paste" button has
+    /// something to act on between paste gestures, not just at the instant
+    /// one occurs.
+    last_paste_text: Option<String>,
     status: String,
 }
 
@@ -322,6 +344,7 @@ impl EditorApp {
             needs_render: true,
             pencil: false,
             rubber_band: None,
+            last_paste_text: None,
             status: "opened ten_measure_single_staff".to_string(),
         }
     }
@@ -355,6 +378,96 @@ impl EditorApp {
             None => format!("nothing to {name}"),
         };
         self.needs_render = true;
+    }
+
+    /// Copies the current selection (`EditorSession::copy_selection`) and puts
+    /// the fragment text on the OS clipboard via egui's own output channel
+    /// (`ctx.output_mut(|o| o.copied_text = ...)`, the only clipboard-write
+    /// path egui 0.29 exposes — see `DECISIONS.md`). The status line reports
+    /// how many events copied, plus anything `CopyOutcome::dropped` names (a
+    /// boundary-cut slur/tie); an error surfaces verbatim (`EditorError`'s
+    /// `Display` is user-grade).
+    fn do_copy(&mut self, ctx: &egui::Context) {
+        self.status = match self.session.copy_selection() {
+            Ok(outcome) => {
+                ctx.output_mut(|o| o.copied_text = outcome.fragment.clone());
+                if outcome.dropped.is_empty() {
+                    format!("copy: {} event(s) copied", outcome.events_copied)
+                } else {
+                    let dropped: Vec<String> =
+                        outcome.dropped.iter().map(|d| format!("{d:?}")).collect();
+                    format!(
+                        "copy: {} event(s) copied; dropped {}",
+                        outcome.events_copied,
+                        dropped.join(", ")
+                    )
+                }
+            }
+            Err(err) => format!("copy: {err}"),
+        };
+    }
+
+    /// Pastes `text` (clipboard fragment content) over the current selection
+    /// (`EditorSession::paste_over_selection`) — clipboard content has no
+    /// on-screen point to place it at (unlike pencil's click-to-insert), so
+    /// the destination is always the current selection, never `paste_at`.
+    /// Reports "select a destination first" — friendlier than
+    /// `paste_over_selection`'s own bare `EditorError::NoSelection`
+    /// ("no selection") — when nothing is selected; every other outcome
+    /// (success, or any other `EditorError`) surfaces verbatim.
+    fn do_paste(&mut self, text: &str) {
+        if self.session.anchor().is_none() {
+            self.status = "paste: select a destination first".to_string();
+            return;
+        }
+        self.status = match self.session.paste_over_selection(text) {
+            Ok(outcome) => {
+                let mut parts = vec![format!("{} event(s)", outcome.events_inserted)];
+                if outcome.slurs_inserted > 0 {
+                    parts.push(format!("{} slur(s)", outcome.slurs_inserted));
+                }
+                if outcome.ties_inserted > 0 {
+                    parts.push(format!("{} tie(s)", outcome.ties_inserted));
+                }
+                format!("paste: {} pasted", parts.join(", "))
+            }
+            Err(err) => format!("paste: {err}"),
+        };
+        self.needs_render = true;
+    }
+
+    /// The toolbar "Paste" button's action: egui 0.29 offers no synchronous
+    /// "read the OS clipboard now" call (`DECISIONS.md`), so a button click
+    /// cannot pull fresh clipboard text on demand — it reuses whatever
+    /// `egui::Event::Paste` most recently delivered
+    /// (`Self::handle_clipboard_events`/`last_paste_text`). Reports plainly
+    /// when nothing has arrived yet.
+    fn do_paste_from_cache(&mut self) {
+        match self.last_paste_text.clone() {
+            Some(text) => self.do_paste(&text),
+            None => {
+                self.status =
+                    "paste: no clipboard text yet — press Ctrl/Cmd+V once, or copy something \
+                     first"
+                        .to_string();
+            }
+        }
+    }
+
+    /// Consumes this frame's `egui::Event::Paste`, if any (the only mechanism
+    /// egui 0.29 offers for reading OS paste content — see `DECISIONS.md`):
+    /// caches it for the toolbar "Paste" button and immediately pastes it
+    /// over the current selection, so Ctrl/Cmd+V "just works" without a
+    /// separate keyboard shortcut of its own (a plain `key_pressed(V) &&
+    /// command` check, `handle_keys`'s usual pattern, cannot substitute here
+    /// — it would tell us *that* a paste gesture happened, never *what* was
+    /// pasted).
+    fn handle_clipboard_events(&mut self, ctx: &egui::Context) {
+        let text = ctx.input(|i| paste_event_text(&i.events).map(str::to_string));
+        if let Some(text) = text {
+            self.last_paste_text = Some(text.clone());
+            self.do_paste(&text);
+        }
     }
 
     /// Re-renders the session's resolved layout to a texture. The view box, logical
@@ -415,6 +528,16 @@ impl EditorApp {
             }
             if ui.button("Insert after").clicked() {
                 self.run("insert after", |s| s.insert_note_after_selection());
+            }
+            ui.separator();
+            if ui.button("Copy").clicked() {
+                self.do_copy(ui.ctx());
+            }
+            if ui
+                .add_enabled(self.last_paste_text.is_some(), egui::Button::new("Paste"))
+                .clicked()
+            {
+                self.do_paste_from_cache();
             }
             ui.separator();
             // Duration palette: set the selected note/rest's written value (make-room
@@ -483,7 +606,14 @@ impl EditorApp {
              Delete and Transpose act on the whole selection; Move / Add chord / Insert after / \
              duration act on the anchor (the drag/toggle reference point, drawn with the \
              thicker accent stroke).\n\
-             Keys: Del delete · ↑/↓ staff-step move · +/− transpose · A add chord · I insert after · P pencil · Ctrl/Cmd+Z undo · Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redo",
+             Copy/Paste: copies the selection to the fragment clipboard, pastes it over the \
+             current selection (a destination must be selected first — Paste with none selected \
+             reports that instead of pasting). The Paste button acts on the last clipboard text \
+             this app has seen (egui reads it only on an actual paste gesture); Ctrl/Cmd+V pastes \
+             immediately using that same text as it arrives.\n\
+             Keys: Del delete · ↑/↓ staff-step move · +/− transpose · A add chord · I insert after · \
+             P pencil · Ctrl/Cmd+C copy · Ctrl/Cmd+V paste · Ctrl/Cmd+Z undo · Ctrl/Cmd+Shift+Z or \
+             Ctrl/Cmd+Y redo",
             if self.pencil { "ON — click to insert" } else { "off" }
         ));
     }
@@ -504,6 +634,13 @@ impl EditorApp {
             add: i.key_pressed(egui::Key::A),
             insert: i.key_pressed(egui::Key::I),
             pencil: i.key_pressed(egui::Key::P),
+            // Copy is a plain boolean edge, same as every other shortcut here —
+            // `do_copy` needs nothing egui delivered *to* it, only the current
+            // selection, so it fits this file's usual `key_pressed` pattern.
+            // Paste does NOT get a matching edge here: reading the clipboard's
+            // actual text needs `egui::Event::Paste`'s payload, which a bare
+            // key-press check cannot provide (see `handle_clipboard_events`).
+            copy: i.modifiers.command && i.key_pressed(egui::Key::C),
         });
         if k.undo {
             self.run_history("undo", |s| s.undo());
@@ -535,6 +672,9 @@ impl EditorApp {
         }
         if k.insert {
             self.run("insert after", |s| s.insert_note_after_selection());
+        }
+        if k.copy {
+            self.do_copy(ctx);
         }
     }
 
@@ -718,11 +858,13 @@ struct Keys {
     add: bool,
     insert: bool,
     pencil: bool,
+    copy: bool,
 }
 
 impl eframe::App for EditorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_keys(ctx);
+        self.handle_clipboard_events(ctx);
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| self.toolbar(ui));
         egui::SidePanel::right("debug")
@@ -887,5 +1029,54 @@ mod tests {
         drag.update(egui::pos2(100.0, 0.0));
         assert_eq!(resolve_release(&drag, false), ReleaseAction::RubberBand);
         assert_eq!(resolve_release(&drag, true), ReleaseAction::RubberBand);
+    }
+
+    // T2 W4b: `paste_event_text`, the pure extraction helper over a frame's
+    // `egui::Event`s that `handle_clipboard_events` calls. This is the one
+    // piece of clipboard-wiring logic with no `egui::Context`/native-backend
+    // dependency, so it gets real unit tests (the surrounding egui-side
+    // dispatch — reading `ctx.input`, calling `output_mut`, wiring the
+    // toolbar buttons — is review-only, per the packet's own gate; there is
+    // no headless way to synthesize an `egui::Context` frame or an OS
+    // clipboard gesture here).
+
+    #[test]
+    fn paste_event_text_finds_the_paste_events_own_text() {
+        let events = vec![
+            egui::Event::Copy,
+            egui::Event::Text("x".to_string()),
+            egui::Event::Paste("hello fragment".to_string()),
+        ];
+        assert_eq!(paste_event_text(&events), Some("hello fragment"));
+    }
+
+    #[test]
+    fn paste_event_text_returns_none_without_a_paste_event() {
+        let events = vec![
+            egui::Event::Copy,
+            egui::Event::Cut,
+            egui::Event::Text("x".to_string()),
+        ];
+        assert_eq!(paste_event_text(&events), None);
+    }
+
+    #[test]
+    fn paste_event_text_on_an_empty_frame_is_none() {
+        assert_eq!(paste_event_text(&[]), None);
+    }
+
+    #[test]
+    fn paste_event_text_prefers_the_last_paste_event_in_the_frame() {
+        // Two Paste events in one frame is not a real egui scenario (one OS
+        // paste gesture is one event), but the queue is a plain `Vec`, and
+        // "most recent wins" is the documented contract — a mutation that
+        // took the *first* match instead of the last would pass every other
+        // test here (they carry at most one `Paste`) but fail this one.
+        let events = vec![
+            egui::Event::Paste("first".to_string()),
+            egui::Event::Copy,
+            egui::Event::Paste("second".to_string()),
+        ];
+        assert_eq!(paste_event_text(&events), Some("second"));
     }
 }
