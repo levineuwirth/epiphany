@@ -404,3 +404,168 @@ count with a slur aboard (descriptor + 2 inserts + 1 respell + 1
 instead of the transaction dispatch" mutation the test's own doc comment
 already described for the pre-slur version — the mutation still kills it
 (0 descriptors instead of 1), confirmed and reverted.
+
+## The note-entry caret (2026-07-24, T3-W1)
+
+Dispatched under `spec/CONTRACT_EDITOR_T3_CARET.md` §W1. Adds
+`EditorSession`'s `caret: Option<Caret>` (`Caret { voice, position,
+entry_duration }`, all `pub` fields) plus `caret()`, `clear_caret()`,
+`set_caret_at(point)`, `set_entry_duration(duration)`, `advance()`,
+`retreat()`, `enter_nominal(nominal)`, `enter_pitch(pitch)`, `enter_rest()`,
+the pure `midi_note_to_pitch(u8) -> Pitch`, and `x_at_position(region,
+within, position)`. Session-local, never in the op log; undo does not move
+it. `EditorError::NoCaret` is a new variant (see below).
+
+**`NoCaret`, not an overload of `NoSelection`.** The contract asked to
+check whether `NoSelection`'s shape generalizes. It doesn't cleanly: a
+caret and a selection are independent session-local cursors (one can be
+set while the other is empty, e.g. mid-caret-entry with nothing selected),
+and `NoSelection`'s doc ("An intent needed a selection but none is set")
+would read as a lie for a caret-only intent. `NoCaret` is its own variant,
+same shape, one line in `Display`.
+
+**One insertion core, reusing the pencil's machinery verbatim.**
+`enter_nominal`/`enter_pitch`/`enter_rest` all funnel to a private
+`enter_at_caret(pitch: Option<Pitch>)`: builds `[start, start+entry_duration)`
+from the caret, calls the *same* `make_room`/`make_room_ops`/`Minter` the
+pencil (`insert_note_at`) uses, appends one `InsertEvent`, dispatches
+through the existing `apply`/`apply_transaction` N=1 idiom, then advances
+the caret by the entry duration **only after** the apply/transaction
+succeeds (the `?` on the apply result runs before the advance, so a
+refused edit changes nothing including the caret). `enter_rest` passes
+`pitch: None` (an empty pitch list mints a `Rest` — `note_event`'s existing
+behavior, unchanged).
+
+**Caret re-resolution rides the same seam as selection re-resolution.**
+`reresolve_caret` (clears the caret iff `caret.voice` is absent from
+`self.score.voices()`) is called from the same three sites
+`reresolve_selection` already is — `commit`, `undo`, `redo` — right after
+`self.install(materialized)`. Unlike the selection set's survivor/fallback
+rule, a point cursor has no fallback: vanish just clears it.
+
+**The vanish test uses a real op, not a synthetic swap.** The contract's
+own fallback ("if no current op can remove a voice, ... test the clear via
+... a synthetic score swap") turned out not to be needed:
+`epiphany-ops::DeleteVoiceOp` exists (Chapter 6 §6.10, "tombstone an empty
+voice … precondition no-op if it still has live events") and cleanly
+deletes an empty voice. `caret_clears_when_its_voice_is_deleted` hand-adds
+a fresh empty `Voice` to a fixture's staff instance (`score.identity.mint()`
++ `Voice::user(id)`, pushed via `RegionContent::staff_based_mut()`), points
+the caret at it directly (`session.caret = Some(...)`, legal from the same-
+crate `tests` submodule), applies `DeleteVoice`, and asserts the caret is
+`None` afterward.
+
+**Octave inference: implemented, table-tested, and its tie-break is
+*provably unreachable* through the table.** `infer_octave(reference:
+Option<(CmnNominal, i8)>, nominal) -> i8` computes the nearest candidate
+octave in diatonic staff steps (`diff = ref_index - nominal_val = 7q + r`,
+`0 <= r < 7`; down candidate at distance `r`, up candidate at distance
+`7 - r`; `nearer_is_down(r, 7 - r)` picks). **Finding, verified by direct
+computation, not assumed:** because the candidate octaves for a fixed
+`nominal` are exactly 7 diatonic steps apart and 7 is odd, `r` and `7 - r`
+can never be equal for an integer `r` (equal would need `r = 3.5`) — so
+**no (reference, nominal) pair drawn from the seven CMN letters can ever
+produce a genuine tie**. The contract's own suggested case, "ref G4 enter
+D" (a perfect fifth either direction), was flagged by the contract itself
+as needing verification ("verify this IS the equidistant case in staff
+steps and if not, construct the true equidistant pair") — checked directly:
+down is 3 staff steps (G4→F4→E4→D4), up is 4 (G4→A4→B4→C5→D5); **not** a
+tie in staff steps (it's only a tie in semitones — a P5 both ways — which
+is not the metric the contract pins: "nearest ... in diatonic staff
+steps"). No true equidistant *letter* pair exists to substitute for it.
+Consequence for testing: the downward tie-break (`nearer_is_down`,
+`down_distance <= up_distance`) is implemented as specified and documented,
+but `octave_inference_table`'s four contract rows cannot kill a flipped
+comparison (verified directly — see the mutation report). `nearer_is_down`
+is therefore unit-tested on its own, directly, with a synthetic tied input
+(`nearer_is_down(3, 3)`) that no real call site can ever produce; this
+proves the *written comparison* is correct without pretending the table
+exercises it.
+
+**Reference-pitch policy, two silent decisions the contract left open,**
+both in `reference_pitch_before(voice, position)`: (1) **chord reference**
+— when the nearest preceding note is a chord, its **first** pitch (as
+authored) is the reference; the contract names no chord tie-break. (2)
+**non-CMN reference** — a preceding note whose pitch is not a `Cmn` scale
+position (a JI/serial score) is treated the same as "no reference"
+(falls back to octave 4), since there is no staff-step notion to measure
+from. Both are flagged here rather than silently baked in.
+
+**Naturals-only / sharp-spelled MIDI, as pinned.** `enter_nominal` mints
+via `cmn_pitch(nominal, octave)` (alteration always 0 — accidentals are a
+follow-up transpose gesture, unchanged). `midi_note_to_pitch` is new and
+needed an alteration-bearing pitch constructor `cmn_pitch` doesn't have;
+rather than duplicate `cmn_pitch`'s body, it now delegates to a new
+`chromatic_pitch(nominal, alteration, octave)`, and `midi_note_to_pitch`
+is `chromatic_pitch`'s only non-zero-alteration caller. The 12-entry table
+is the ordinary MIDI-to-SPN convention (`60 = C4`, `69 = A4`, every black
+key sharp) with octave `note/12 - 1` (integer division; correct for the
+full `u8` range including the low notes below MIDI 12, where it goes
+negative into `i8`).
+
+**`x_at_position`'s signature mirrors `position_anchors`, not
+`position_at`'s point-based one.** The contract left the shape open
+("region-or-point-context"). `position_at` starts from a `Point` because a
+*click* is a point; the caret has no click, only a `(region-bearing voice,
+position)`, and — under cast-off geometry — knowing *which system* a bare
+musical position falls on requires either a point to test against
+(`containing_system`) or scanning every system's anchor coverage, which is
+GUI-side work this packet doesn't own. So `x_at_position(region: RegionId,
+within: Option<&Rect>, position: &MusicalPosition) -> Option<f32>` takes
+exactly `position_anchors`'s own two scoping parameters — `within = None`
+reads the whole region as one flat run (the stub solver, and every test
+here); a GUI drawing into one system supplies that system's box the same
+way `position_at` derives one via `containing_system`. The engine,
+`forward_x`, is the literal mirror of `invert_x` with the roles of `x` and
+musical time swapped (interpolate the bracketing segment; extrapolate the
+nearest end segment's slope outside the anchored span).
+
+**`retreat`'s clamped subtraction.** There is no `MusicalPosition -
+MusicalDuration` in Chapter 3's type algebra (only `Duration - Duration`
+and `Position - Position -> Duration`) because an unclamped result could
+go negative, which is not a valid position. `retreat_position` reimplements
+it directly over the raw `RationalTime`, clamping at `MusicalPosition::origin()`.
+
+**`set_entry_duration`'s check order** mirrors `set_selection_duration`'s
+existing precedent: duration positivity (`InvalidDuration`) is checked
+*before* caret existence (`NoCaret`) — a malformed argument is rejected
+independent of session state.
+
+**Tests and mutations** (all substituted, observed failing, then reversed
+— never `git checkout`): t1 `caret_advances_across_a_would_be_barline`
+(mutation: skip the advance in `enter_at_caret` → `left: MusicalPosition
+(3/4)` vs `right: MusicalPosition(1/1)`, dies). t2
+`octave_inference_table` + `octave_tie_break_prefers_downward` +
+`enter_nominal_infers_octave_from_the_nearest_preceding_note` (mutation:
+flip `nearer_is_down`'s `<=` to `<` → kills `octave_tie_break_prefers_downward`
+only, confirming by direct observation that `octave_inference_table` is
+insensitive to it — the tie-break's real unreachability, not a testing
+gap). t3 `enter_pitch_reproduces_insert_note_at_s_overwrite` — twin
+sessions from the same seed, one via `insert_note_at`, one via the caret at
+the same voice/position/duration/pitch, asserted **byte-identical**
+(`assert_eq!(session_a.score(), session_b.score())`) rather than just
+field-by-field, since both sessions mint fresh ids deterministically from
+identical starting state (mutation: skip `make_room_ops`, insert directly
+→ **not** a reducer refusal — `apply` returns `Ok`, but the reducer's own
+overlap precondition silently no-ops the bare `InsertEvent` against the
+already-occupied slot, so `session_b`'s score is simply unchanged from
+before the edit while `session_a`'s carries the overwrite; the assertion
+catches the value mismatch, confirmed by inspecting both failing `Score`
+dumps). t4 `midi_note_to_pitch_table` (mutation: `note/12` instead of
+`note/12 - 1` → `A0` becomes `A1`, dies). t5
+`x_at_position_round_trips_with_position_at` +
+`forward_x_extrapolates_from_the_last_segment_not_the_first` — the
+"wrong segment" mutation (`n - 2` → `0` in `forward_x`'s past-the-last-
+anchor branch) does **not** kill the round-trip test: `valid_score`'s
+onsets are uniformly time-spaced and the stub renders them uniformly in
+`x`, so every segment shares one slope and segment 0 vs. the true last
+segment are indistinguishable there — an honest finding, not swept under
+the round-trip test's apparent coverage. A second, direct test calls
+`forward_x` with hand-built, deliberately non-uniform anchors (slopes 40
+and 8 x-per-whole-note); the mutation there gives 30 instead of the
+correct 14, confirmed killed, then reverted. t6
+`undo_restores_the_score_but_leaves_the_caret_advanced` (mutation: undo
+also retreats the caret by one entry duration → `1/1` vs `5/4`, dies) and
+`caret_clears_when_its_voice_is_deleted` (mutation: empty out
+`reresolve_caret`'s body → caret stays `Some` after `DeleteVoice`
+succeeds, dies).

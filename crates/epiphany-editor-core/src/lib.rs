@@ -280,6 +280,23 @@ pub struct GridPosition {
     pub position: MusicalPosition,
 }
 
+/// The note-entry caret: **session-local** editing-cursor state, never recorded
+/// in the op log (contract: `spec/CONTRACT_EDITOR_T3_CARET.md` §W1 — undo does
+/// not move it; `DECISIONS.md`). `(voice, position, entry_duration)`: the voice
+/// and musical position [`EditorSession::enter_nominal`] /
+/// [`EditorSession::enter_pitch`] / [`EditorSession::enter_rest`] insert at next,
+/// and the written duration they insert with (also the step
+/// [`EditorSession::advance`] / [`EditorSession::retreat`] move by).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Caret {
+    /// The voice the caret inserts into.
+    pub voice: VoiceId,
+    /// The musical position the caret inserts at.
+    pub position: MusicalPosition,
+    /// The written duration the caret inserts with (and steps by).
+    pub entry_duration: MusicalDuration,
+}
+
 /// What an [`EditorSession::apply`] did.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct EditOutcome {
@@ -382,6 +399,16 @@ pub enum EditorError {
         /// The kind of object the intent expected.
         expected: &'static str,
     },
+    /// An intent needed the note-entry **caret** ([`EditorSession::enter_nominal`],
+    /// [`EditorSession::enter_pitch`], [`EditorSession::enter_rest`],
+    /// [`EditorSession::advance`], [`EditorSession::retreat`],
+    /// [`EditorSession::set_entry_duration`]) but none is set
+    /// ([`EditorSession::set_caret_at`] places one). A caret and a selection are
+    /// independent session-local cursors (contract:
+    /// `spec/CONTRACT_EDITOR_T3_CARET.md` §W1), so this is its own variant rather
+    /// than an overload of [`NoSelection`](EditorError::NoSelection) — flagged as
+    /// an underdetermined call in `DECISIONS.md`.
+    NoCaret,
     /// An insert-after would land on a musical position already occupied by another
     /// event in the same voice (the reducer would silently no-op it). The edit is
     /// refused; inserting into a packed voice needs an explicit make-room policy.
@@ -480,6 +507,7 @@ impl fmt::Display for EditorError {
             EditorError::WrongSelection { expected } => {
                 write!(f, "the selection is not a {expected}")
             }
+            EditorError::NoCaret => f.write_str("no caret is set"),
             EditorError::InsertSlotOccupied => {
                 f.write_str("the position after the selection is already occupied in its voice")
             }
@@ -565,6 +593,12 @@ pub struct EditorSession {
     // vertical half of click-to-insert reads this to spell the clicked height.
     start_clefs: BTreeMap<(RegionId, StaffId), Clef>,
     selection: SelectionSet,
+    // The note-entry caret (contract: `spec/CONTRACT_EDITOR_T3_CARET.md` §W1) —
+    // session-local, never in the op log. `reresolve_caret` (called alongside
+    // `reresolve_selection` after every apply/undo/redo) clears it when its voice
+    // no longer exists; nothing else moves it except `advance`/`retreat` and a
+    // successful entry (which advances it by the entry duration).
+    caret: Option<Caret>,
     // Operation-minting identity. A real client supplies its own replica/author.
     // Minted operations form this replica's monotonic local history; the next op's
     // counter is `authored.len()` (never reused across undo), so a failed apply consumes
@@ -632,6 +666,7 @@ impl EditorSession {
             map,
             start_clefs,
             selection: SelectionSet::default(),
+            caret: None,
             replica: ReplicaId(1),
             author: AuthorId(0),
             applied: Vec::new(),
@@ -1027,6 +1062,93 @@ impl EditorSession {
         Some(self.region_default_grid(region))
     }
 
+    /// The current note-entry caret, if any (contract:
+    /// `spec/CONTRACT_EDITOR_T3_CARET.md` §W1). `None` until [`Self::set_caret_at`]
+    /// places one, or after [`Self::clear_caret`] or a voice-vanish re-resolution
+    /// (checked after every apply/undo/redo — see `DECISIONS.md`).
+    pub fn caret(&self) -> Option<Caret> {
+        self.caret.clone()
+    }
+
+    /// Clears the caret (no note-entry cursor).
+    pub fn clear_caret(&mut self) {
+        self.caret = None;
+    }
+
+    /// Places the caret at a world `point` — the same staff/region resolution
+    /// [`Self::insert_note_at`] uses (its private `nearest_manifestation`), taking the
+    /// staff instance's **primary voice** (or its first, mirroring
+    /// [`Self::insert_note_at`]'s own voice choice), the musical position snapped
+    /// via [`Self::default_grid_at`] + [`Self::position_at`], and the entry
+    /// duration initialized from that grid's step. Errors with
+    /// [`EditorError::NoInsertTarget`] under the same conditions
+    /// [`Self::insert_note_at`] does (off any staff, a non-metric region, or too
+    /// few rendered events to place a position).
+    pub fn set_caret_at(&mut self, point: Point) -> Result<Caret, EditorError> {
+        let (region, voice) = {
+            let (region, si, _origin) = self
+                .nearest_manifestation(point)
+                .ok_or(EditorError::NoInsertTarget)?;
+            let voice = si
+                .voices
+                .iter()
+                .find(|v| v.is_primary)
+                .or_else(|| si.voices.first())
+                .ok_or(EditorError::NoInsertTarget)?;
+            (region, voice.id)
+        };
+        let grid = self
+            .default_grid_at(point)
+            .ok_or(EditorError::NoInsertTarget)?;
+        let placed = self
+            .position_at(point, &grid)
+            .ok_or(EditorError::NoInsertTarget)?;
+        if placed.region != region {
+            return Err(EditorError::NoInsertTarget);
+        }
+        let caret = Caret {
+            voice,
+            position: placed.position,
+            entry_duration: grid.step,
+        };
+        self.caret = Some(caret.clone());
+        Ok(caret)
+    }
+
+    /// Sets the caret's entry duration — the written value
+    /// [`Self::enter_nominal`]/[`Self::enter_pitch`]/[`Self::enter_rest`] insert,
+    /// and the step [`Self::advance`]/[`Self::retreat`] move by. The duration is
+    /// checked first, independent of caret state (the same order
+    /// [`Self::set_selection_duration`] uses): [`EditorError::InvalidDuration`]
+    /// for a non-positive duration, else [`EditorError::NoCaret`] if no caret is
+    /// set.
+    pub fn set_entry_duration(&mut self, duration: MusicalDuration) -> Result<(), EditorError> {
+        if !duration.is_positive() {
+            return Err(EditorError::InvalidDuration);
+        }
+        let caret = self.caret.as_mut().ok_or(EditorError::NoCaret)?;
+        caret.entry_duration = duration;
+        Ok(())
+    }
+
+    /// Moves the caret forward by its entry duration. No insertion. Positions are
+    /// global rationals, so this crosses barlines with no special casing. Errors
+    /// with [`EditorError::NoCaret`] if no caret is set.
+    pub fn advance(&mut self) -> Result<Caret, EditorError> {
+        let caret = self.caret.as_mut().ok_or(EditorError::NoCaret)?;
+        caret.position = caret.position.clone() + caret.entry_duration.clone();
+        Ok(caret.clone())
+    }
+
+    /// Moves the caret backward by its entry duration, clamped at position zero
+    /// (the region origin) — never negative. No insertion. Errors with
+    /// [`EditorError::NoCaret`] if no caret is set.
+    pub fn retreat(&mut self) -> Result<Caret, EditorError> {
+        let caret = self.caret.as_mut().ok_or(EditorError::NoCaret)?;
+        caret.position = retreat_position(&caret.position, &caret.entry_duration);
+        Ok(caret.clone())
+    }
+
     /// The meter-derived default [`GridResolution`] for `region`: the beat (`1/
     /// denominator`) of its governing time signature — the first one a region measure
     /// references, else the score's first — and a quarter note when none is determinable
@@ -1296,6 +1418,7 @@ impl EditorSession {
                 self.redo_stack.clear();
                 self.install(materialized);
                 let selection_preserved = self.reresolve_selection();
+                self.reresolve_caret();
                 Ok(EditOutcome {
                     graph_changed,
                     selection_preserved,
@@ -1324,6 +1447,7 @@ impl EditorSession {
         self.undo_units.pop();
         self.install(materialized);
         let selection_preserved = self.reresolve_selection();
+        self.reresolve_caret();
         Some(EditOutcome {
             graph_changed,
             selection_preserved,
@@ -1345,6 +1469,7 @@ impl EditorSession {
         self.undo_units.push(unit.len());
         self.install(materialized);
         let selection_preserved = self.reresolve_selection();
+        self.reresolve_caret();
         Some(EditOutcome {
             graph_changed,
             selection_preserved,
@@ -2108,6 +2233,118 @@ impl EditorSession {
         } else {
             self.apply_transaction("insert note", Some(TransactionCategory::NoteEntry), ops)
         }
+    }
+
+    /// The world `x` a musical `position` in `region` renders at — the forward
+    /// companion of [`Self::position_at`], inverting the same piecewise-linear
+    /// `(onset, x)` anchors (its private `position_anchors`) it does, extrapolating
+    /// past the first/last anchor exactly as [`Self::position_at`]'s own inverse
+    /// (the private `invert_x`) does. `within` scopes the anchors to one cast-off system,
+    /// exactly mirroring `position_anchors`'s own parameter (`None` reads
+    /// the whole region as one flat monotonic run — the common case without cast
+    /// geometry, e.g. the stub solver); a caller drawing into a specific system
+    /// supplies its box the same way [`Self::position_at`] derives one from a
+    /// click point via its private `containing_system`. `None` when `region` is not
+    /// metric, or fewer than two of its events render inside `within` to fix a
+    /// scale — the same two-anchor floor [`Self::position_at`] enforces. `pub`
+    /// so a GUI (W2) can draw the caret at its exact musical position.
+    pub fn x_at_position(
+        &self,
+        region: RegionId,
+        within: Option<&Rect>,
+        position: &MusicalPosition,
+    ) -> Option<f32> {
+        if !self.region_is_metric(region) {
+            return None;
+        }
+        let anchors = self.position_anchors(region, within);
+        if anchors.len() < 2 {
+            return None;
+        }
+        Some(forward_x(&anchors, position))
+    }
+
+    /// Enters a **natural** `nominal` (no accidental — alteration is a follow-up
+    /// gesture via the existing transpose intents, MuseScore's model) at the
+    /// caret. The octave is inferred as the one nearest, in diatonic staff steps,
+    /// to the caret voice's reference pitch — the nearest preceding note strictly
+    /// before the caret's position (its private `reference_pitch_before`), or octave 4
+    /// with no reference (see the private `infer_octave` for the rule and its downward
+    /// tie-break). Funnels to this session's shared insertion core.
+    pub fn enter_nominal(&mut self, nominal: CmnNominal) -> Result<EditOutcome, EditorError> {
+        let caret = self.caret.clone().ok_or(EditorError::NoCaret)?;
+        let reference = self.reference_pitch_before(caret.voice, &caret.position);
+        let octave = infer_octave(reference, nominal);
+        self.enter_at_caret(Some(cmn_pitch(nominal, octave)))
+    }
+
+    /// Enters an explicit `pitch` at the caret — no octave inference; the caller
+    /// names the exact pitch (e.g. via [`midi_note_to_pitch`], the step-time MIDI
+    /// path `spec/PLAN_EDITOR_APP.md`'s T3 entry names as the primary input
+    /// method). Funnels to this session's shared insertion core.
+    pub fn enter_pitch(&mut self, pitch: Pitch) -> Result<EditOutcome, EditorError> {
+        self.enter_at_caret(Some(pitch))
+    }
+
+    /// Enters a rest at the caret. Funnels to this session's shared insertion core.
+    pub fn enter_rest(&mut self) -> Result<EditOutcome, EditorError> {
+        self.enter_at_caret(None)
+    }
+
+    /// The shared insertion core [`Self::enter_nominal`]/[`Self::enter_pitch`]/
+    /// [`Self::enter_rest`] funnel to: a fresh single-note (`pitch = Some`) or
+    /// rest (`pitch = None`) event at the caret's `(voice, position)`, its
+    /// written duration the caret's `entry_duration`, **make-room overwrite
+    /// exactly as [`Self::insert_note_at`]** — the same `make_room`/
+    /// `make_room_ops`/[`Minter`] machinery, one atomic apply/transaction (a bare
+    /// insert needs no transaction; a make-room insert commits as one) — then
+    /// **advances the caret by the entry duration, only on success**: a refused
+    /// edit changes nothing, including where the caret sits.
+    ///
+    /// Errors with [`EditorError::NoCaret`] if no caret is set, or the pencil's
+    /// own make-room refusals (see [`Self::insert_note_at`]).
+    fn enter_at_caret(&mut self, pitch: Option<Pitch>) -> Result<EditOutcome, EditorError> {
+        let caret = self.caret.clone().ok_or(EditorError::NoCaret)?;
+        let staff_instance = self
+            .metric_staff_instance_of_voice(caret.voice)
+            .ok_or(EditorError::NoInsertTarget)?;
+        let start = caret.position.clone();
+        let duration = caret.entry_duration.clone();
+        let end = start.clone() + duration.clone();
+        let room = self.make_room(caret.voice, &start, &end, None)?;
+
+        let mut minter = self.minter();
+        let mut ops = self.make_room_ops(room, staff_instance, &mut minter);
+        let pitches = match pitch {
+            Some(p) => vec![IdentifiedPitch {
+                id: minter.pitch(),
+                pitch: p,
+            }],
+            None => Vec::new(),
+        };
+        let new_event = note_event(
+            minter.event(),
+            caret.voice,
+            start,
+            duration.clone(),
+            pitches,
+        );
+        ops.push(OperationKind::InsertEvent(InsertEventOp {
+            staff_instance,
+            event: new_event,
+        }));
+
+        // A bare insert needs no transaction; a make-room insert is atomic.
+        let outcome = if ops.len() == 1 {
+            self.apply(ops.into_iter().next().expect("one op"))
+        } else {
+            self.apply_transaction("enter note", Some(TransactionCategory::NoteEntry), ops)
+        }?;
+
+        if let Some(c) = self.caret.as_mut() {
+            c.position = c.position.clone() + duration;
+        }
+        Ok(outcome)
     }
 
     /// Copies the current selection to the clipboard fragment projection
@@ -3056,6 +3293,70 @@ impl EditorSession {
     fn reresolve_selection(&mut self) -> bool {
         self.selection.reresolve(&self.map)
     }
+
+    /// Re-resolves the caret against the current score (contract:
+    /// `spec/CONTRACT_EDITOR_T3_CARET.md` §W1 — "if its voice ceases to exist,
+    /// the caret clears"; called alongside [`Self::reresolve_selection`] after
+    /// every apply/undo/redo). Unlike the selection set's survivor rule, a point
+    /// cursor has no fallback: a vanished voice simply clears the caret. Nothing
+    /// else here relocates the caret — undo does not move it (the contract's
+    /// own pin), and this method only ever clears, never repositions.
+    fn reresolve_caret(&mut self) {
+        if let Some(caret) = &self.caret {
+            if self.score.voices().all(|(_, _, v)| v.id != caret.voice) {
+                self.caret = None;
+            }
+        }
+    }
+
+    /// The reference pitch [`Self::enter_nominal`]'s octave inference measures
+    /// from: the nearest preceding **note** (a rest does not count — it has no
+    /// pitch) in `voice`, strictly before `position` — the closest earlier
+    /// onset — as its CMN nominal/octave (the alteration is dropped: only the
+    /// staff position matters for the nearest-in-steps rule). `None` with no
+    /// earlier note, or when the nearest one is not a CMN pitch (there is then
+    /// no staff-step notion to measure from) — both fall back to
+    /// [`infer_octave`]'s default octave 4.
+    ///
+    /// A chord's **first** pitch is the reference; the contract names no
+    /// chord tie-break, so this is a documented, arbitrary pick (`DECISIONS.md`).
+    fn reference_pitch_before(
+        &self,
+        voice: VoiceId,
+        position: &MusicalPosition,
+    ) -> Option<(CmnNominal, i8)> {
+        let mut best: Option<(MusicalPosition, Pitch)> = None;
+        for event in self.score.events.iter() {
+            if event.voice() != voice {
+                continue;
+            }
+            let Event::Pitched(pe) = event else {
+                continue;
+            };
+            let EventPosition::Musical(at) = &pe.position else {
+                continue;
+            };
+            if at >= position {
+                continue;
+            }
+            let Some(first) = pe.pitches.first() else {
+                continue;
+            };
+            let better = match &best {
+                None => true,
+                Some((best_at, _)) => at > best_at,
+            };
+            if better {
+                best = Some((at.clone(), first.pitch.clone()));
+            }
+        }
+        best.and_then(|(_, pitch)| match pitch.scale_position.position {
+            PitchSpacePosition::Cmn {
+                nominal, octave, ..
+            } => Some((nominal, octave)),
+            _ => None,
+        })
+    }
 }
 
 /// The pitch one or more diatonic **staff steps** from `pitch`: the CMN nominal is
@@ -3080,6 +3381,46 @@ fn staff_step(pitch: &Pitch, steps: i32) -> Option<Pitch> {
         octave: new_octave,
     };
     Some(moved)
+}
+
+/// The octave [`EditorSession::enter_nominal`] infers for `nominal`: the one
+/// that puts it nearest, in diatonic **staff steps**, to `reference` (its
+/// nominal + octave), or octave 4 with no reference. Equidistant ties resolve
+/// **downward** (contract-pinned: `spec/CONTRACT_EDITOR_T3_CARET.md` §W1) via
+/// [`nearer_is_down`].
+///
+/// **No (reference, nominal) pair drawn from the seven CMN letters can ever
+/// tie**, provably: the candidate octaves for a fixed `nominal` are exactly 7
+/// diatonic steps apart, so the two flanking distances from `reference` are `r`
+/// and `7 - r` for some integer `r` in `0..7`; these are equal only at `r =
+/// 3.5`, unreachable for an integer. `nearer_is_down` is still exercised
+/// directly, with a synthetic tied input, to prove the written comparison
+/// itself rather than leave it dead code no real table row can reach
+/// (`DECISIONS.md` — this is a documented finding, not an assumption).
+fn infer_octave(reference: Option<(CmnNominal, i8)>, nominal: CmnNominal) -> i8 {
+    let Some((ref_nominal, ref_octave)) = reference else {
+        return 4;
+    };
+    let ref_index = ref_octave as i64 * 7 + ref_nominal as i64;
+    let nominal_val = nominal as i64;
+    // `diff = ref_index - nominal_val = 7*q + r` (`0 <= r < 7`, `div_euclid`/
+    // `rem_euclid`): the down candidate is octave `q` (distance `r`, at or below
+    // the reference), the up candidate is octave `q + 1` (distance `7 - r`).
+    let diff = ref_index - nominal_val;
+    let r = diff.rem_euclid(7);
+    let q = diff.div_euclid(7);
+    let octave = if nearer_is_down(r, 7 - r) { q } else { q + 1 };
+    octave.clamp(i8::MIN as i64, i8::MAX as i64) as i8
+}
+
+/// The tie-break [`infer_octave`] applies when a candidate a diatonic-step
+/// distance of `down_distance` **below** the reference ties with one
+/// `up_distance` **above** it: downward wins — `<=`, not `<`, so an equal-
+/// distance tie resolves down while a strictly nearer "up" candidate still
+/// wins on its own merits. See [`infer_octave`]'s doc for why no real
+/// (reference, nominal) pair ever calls this with equal arguments.
+fn nearer_is_down(down_distance: i64, up_distance: i64) -> bool {
+    down_distance <= up_distance
 }
 
 /// A 5-line staff spans four staff spaces above its bottom line.
@@ -3157,6 +3498,40 @@ fn invert_x(anchors: &[(MusicalPosition, f32)], x: f32) -> f64 {
     p0 + (x as f64 - x0) / span * (p1 - p0)
 }
 
+/// Inverts a musical `position` to a world `x` through `(onset, x)` anchors in
+/// ascending order (`>= 2`, leftmost first) — [`EditorSession::x_at_position`]'s
+/// engine, and the exact mirror of [`invert_x`] with the roles of `x` and musical
+/// time swapped: within the anchored span it interpolates the bracketing segment;
+/// outside it, it extrapolates the nearest end segment's slope. `f64` for the same
+/// reason `invert_x` is: this is geometry, not exact musical time.
+fn forward_x(anchors: &[(MusicalPosition, f32)], position: &MusicalPosition) -> f32 {
+    let n = anchors.len();
+    debug_assert!(n >= 2, "forward_x needs at least two anchors for a scale");
+    let onset = |i: usize| anchors[i].0 .0.to_f64();
+    let x = |i: usize| anchors[i].1 as f64;
+    let target = position.0.to_f64();
+    // The segment to (inter/extra)polate on: the one bracketing `target`, clamped
+    // to the first/last segment when `target` is before / after every anchor.
+    let seg = if target <= onset(0) {
+        0
+    } else if target >= onset(n - 1) {
+        n - 2
+    } else {
+        (0..n - 1)
+            .find(|&i| target >= onset(i) && target <= onset(i + 1))
+            .unwrap_or(n - 2)
+    };
+    let (p0, p1) = (onset(seg), onset(seg + 1));
+    let (x0, x1) = (x(seg), x(seg + 1));
+    let span = p1 - p0;
+    let result = if span.abs() < f64::EPSILON {
+        x0
+    } else {
+        x0 + (target - p0) / span * (x1 - x0)
+    };
+    result as f32
+}
+
 /// Snaps a raw musical position to the nearest multiple of `step` from the origin,
 /// clamped to be non-negative (no position precedes the region start). The multiple
 /// is taken in `f64`, then the position is rebuilt by exact rational arithmetic
@@ -3169,6 +3544,22 @@ fn snap_to_grid(raw: f64, step: &MusicalDuration) -> MusicalPosition {
         0
     };
     MusicalPosition(step.0.mul(&RationalTime::from_int(k)))
+}
+
+/// [`EditorSession::retreat`]'s clamped subtraction: `position` moved back by
+/// `step`, clamped to the region origin (never negative). There is no
+/// `MusicalPosition - MusicalDuration` in the type-level algebra of Chapter 3
+/// (`crate::time`'s module doc: "position + position is not defined" — and
+/// symmetrically, an unclamped position minus a duration could go negative,
+/// which is not a valid position either), so this reimplements the subtraction
+/// directly over the raw [`RationalTime`], clamping the result.
+fn retreat_position(position: &MusicalPosition, step: &MusicalDuration) -> MusicalPosition {
+    let raw = position.0.sub(&step.0);
+    if raw.is_negative() {
+        MusicalPosition::origin()
+    } else {
+        MusicalPosition(raw)
+    }
 }
 
 /// The diatonic staff index of a CMN pitch — `octave * 7 + nominal`, so two pitches
@@ -3220,14 +3611,23 @@ fn note_stepped(top: &Pitch, steps: i32) -> Option<Pitch> {
 
 /// A natural CMN pitch at `nominal`/`octave`, sounding at its written position
 /// ([`AcousticRealization::Implicit`]) — the value a click-to-insert mints for the
-/// height under the cursor (a caller respells if an accidental is wanted).
+/// height under the cursor (a caller respells if an accidental is wanted), and
+/// [`EditorSession::enter_nominal`]'s own insertion value.
 fn cmn_pitch(nominal: CmnNominal, octave: i8) -> Pitch {
+    chromatic_pitch(nominal, 0, octave)
+}
+
+/// A CMN pitch at `nominal`/`alteration`/`octave`, sounding at its written
+/// position ([`AcousticRealization::Implicit`]) — the alteration generalization
+/// of [`cmn_pitch`] (naturals only); [`midi_note_to_pitch`] is its only
+/// non-zero-alteration caller today.
+fn chromatic_pitch(nominal: CmnNominal, alteration: i8, octave: i8) -> Pitch {
     Pitch {
         scale_position: ScalePosition {
             space: PitchSpaceId::new("cmn-12"),
             position: PitchSpacePosition::Cmn {
                 nominal,
-                alteration: 0,
+                alteration,
                 octave,
             },
         },
@@ -3236,6 +3636,34 @@ fn cmn_pitch(nominal: CmnNominal, octave: i8) -> Pitch {
             realization: AcousticRealization::Implicit,
         },
     }
+}
+
+/// The v1 MIDI-to-pitch policy [`EditorSession::enter_pitch`] takes note-on
+/// events through (contract: `spec/CONTRACT_EDITOR_T3_CARET.md` §W1 — the
+/// step-time MIDI path `spec/PLAN_EDITOR_APP.md`'s T3 names as the primary entry
+/// method, wired app-side onto this pure seam): scientific-pitch octave
+/// numbering (`60 = C4`, `69 = A4`) and every black key spelled **sharp**, never
+/// flat — a later spelling prepass may refine the enharmonic choice; this is
+/// deliberately the raw, un-key-aware mapping.
+pub fn midi_note_to_pitch(note: u8) -> Pitch {
+    const CHROMATIC: [(CmnNominal, i8); 12] = [
+        (CmnNominal::C, 0),
+        (CmnNominal::C, 1),
+        (CmnNominal::D, 0),
+        (CmnNominal::D, 1),
+        (CmnNominal::E, 0),
+        (CmnNominal::F, 0),
+        (CmnNominal::F, 1),
+        (CmnNominal::G, 0),
+        (CmnNominal::G, 1),
+        (CmnNominal::A, 0),
+        (CmnNominal::A, 1),
+        (CmnNominal::B, 0),
+    ];
+    let note = note as i32;
+    let octave = (note / 12 - 1) as i8;
+    let (nominal, alteration) = CHROMATIC[(note % 12) as usize];
+    chromatic_pitch(nominal, alteration, octave)
 }
 
 /// The musical duration spanning `from..to` (`to - from`), exact over rational time.
@@ -5031,6 +5459,364 @@ mod tests {
 
     fn dur(numerator: i64, denominator: i64) -> MusicalDuration {
         MusicalDuration(RationalTime::new(numerator, denominator).unwrap())
+    }
+
+    // --- T3-W1: the note-entry caret (`spec/CONTRACT_EDITOR_T3_CARET.md` §W1). ---
+
+    /// t1: the caret's advance arithmetic crosses a would-be barline with no
+    /// special casing — positions are global rationals. Entering a quarter at
+    /// 3/4 must land the caret at exactly whole-note 1 (`RationalTime` 1/1).
+    /// The literal fixture has no declared `TimeSignature`/measures (this is
+    /// deliberate, not an oversight — `DECISIONS.md`: the caret's positions are
+    /// meter-agnostic, so the test needs no real barline structure to make the
+    /// point that none is special-cased); it asserts the raw arithmetic
+    /// directly against a hand-placed caret.
+    #[test]
+    fn caret_advances_across_a_would_be_barline() {
+        let mut session = open_plain(0x5EED);
+        let region = a_clean_metric_region(&session);
+        let voice = primary_voice(&session, region);
+        session.caret = Some(Caret {
+            voice,
+            position: MusicalPosition(RationalTime::new(3, 4).unwrap()),
+            entry_duration: dur(1, 4),
+        });
+        session.enter_rest().expect("enters at the caret");
+        let caret = session.caret().expect("the caret is still set");
+        assert_eq!(
+            caret.position,
+            MusicalPosition(RationalTime::new(1, 1).unwrap()),
+            "3/4 + 1/4 lands exactly on whole-note 1"
+        );
+    }
+
+    /// t2 (table): the minimum octave-inference rows the contract pins,
+    /// including the "fifth below vs. fifth above" case — which this proves is
+    /// **not** actually equidistant in diatonic staff steps (down wins 3 steps
+    /// to 4), matching `infer_octave`'s own doc that no real letter pair ever
+    /// ties.
+    #[test]
+    fn octave_inference_table() {
+        assert_eq!(
+            infer_octave(Some((CmnNominal::C, 4)), CmnNominal::D),
+            4,
+            "ref C4 enter D -> D4 (up a step, distance 1, beats down distance 6)"
+        );
+        assert_eq!(
+            infer_octave(Some((CmnNominal::C, 4)), CmnNominal::B),
+            3,
+            "ref C4 enter B -> B3 (down a step, distance 1, beats up distance 6)"
+        );
+        assert_eq!(
+            infer_octave(Some((CmnNominal::G, 4)), CmnNominal::D),
+            4,
+            "ref G4 enter D -> D4: down 3 steps beats up 4 -- NOT a tie in staff \
+             steps (only a tie in semitones, a P5 either way); the downward \
+             tie-break plays no role here"
+        );
+        assert_eq!(
+            infer_octave(None, CmnNominal::A),
+            4,
+            "no reference -> the octave-4 default"
+        );
+    }
+
+    /// t2 (tie-break): `infer_octave`'s doc proves no (reference, nominal) pair
+    /// over the seven CMN letters can produce equal `down_distance`/
+    /// `up_distance` arguments (the candidate octaves are 7 apart, and 7 is
+    /// odd), so the downward tie-break is unreachable through the octave
+    /// table alone. This exercises the actual comparison directly, with a
+    /// synthetic tied input, so the policy is genuinely tested rather than
+    /// merely asserted in a doc comment.
+    #[test]
+    fn octave_tie_break_prefers_downward() {
+        assert!(
+            nearer_is_down(3, 3),
+            "an equal-distance tie resolves downward"
+        );
+        assert!(nearer_is_down(2, 3), "strictly nearer down still wins");
+        assert!(
+            !nearer_is_down(4, 3),
+            "strictly nearer up wins on its own merits"
+        );
+    }
+
+    /// t2 (end-to-end): `reference_pitch_before` finds the fixture's own last
+    /// note (whatever seed-dependent nominal/octave it happens to carry) and
+    /// `enter_nominal` inserts at the octave `infer_octave` computes from it --
+    /// proving the two pieces are wired together correctly, not just each
+    /// tested in isolation.
+    #[test]
+    fn enter_nominal_infers_octave_from_the_nearest_preceding_note() {
+        let mut session = open_plain(0x5EED);
+        let region = a_clean_metric_region(&session);
+        let voice = primary_voice(&session, region);
+        let events = voice_events(&session, voice);
+        let (last_id, last_pos, last_dur) = events.last().unwrap().clone();
+
+        let mut buf: Vec<&IdentifiedPitch> = Vec::new();
+        session
+            .score()
+            .events
+            .get(last_id)
+            .unwrap()
+            .collect_identified_pitches(&mut buf);
+        let PitchSpacePosition::Cmn {
+            nominal: ref_nominal,
+            octave: ref_octave,
+            ..
+        } = buf.first().unwrap().pitch.scale_position.position
+        else {
+            panic!("the fixture's notes are CMN pitches");
+        };
+
+        let insert_pos = MusicalPosition(last_pos.0.add(&last_dur.0));
+        session.caret = Some(Caret {
+            voice,
+            position: insert_pos.clone(),
+            entry_duration: dur(1, 4),
+        });
+        let entered = CmnNominal::D;
+        let expected_octave = infer_octave(Some((ref_nominal, ref_octave)), entered);
+        session.enter_nominal(entered).expect("enters at the caret");
+
+        let after = session
+            .score()
+            .events
+            .iter()
+            .find(|e| {
+                e.voice() == voice
+                    && matches!(e.position(), EventPosition::Musical(p) if *p == insert_pos)
+            })
+            .expect("the new note was inserted at the caret's pre-advance position");
+        let mut pbuf: Vec<&IdentifiedPitch> = Vec::new();
+        after.collect_identified_pitches(&mut pbuf);
+        let PitchSpacePosition::Cmn {
+            nominal: got_nominal,
+            octave: got_octave,
+            ..
+        } = pbuf.first().unwrap().pitch.scale_position.position
+        else {
+            panic!("enter_nominal inserts a CMN pitch");
+        };
+        assert_eq!(got_nominal, entered);
+        assert_eq!(got_octave, expected_octave);
+    }
+
+    /// t3: entering over an occupied beat via the caret reproduces
+    /// `insert_note_at`'s own make-room overwrite **exactly** -- compared on
+    /// twin sessions opened from the same seed (so their fresh ids mint
+    /// identically), one driven by the pencil, one by the caret at the same
+    /// voice/position/duration and the same pitch the pencil's click would
+    /// have resolved. The two resulting scores are asserted byte-for-byte
+    /// equal, the strongest form of "matches what `insert_note_at` produces".
+    #[test]
+    fn enter_pitch_reproduces_insert_note_at_s_overwrite() {
+        let seed = 0x5EED;
+        let mut session_a = open_plain(seed);
+        let region = a_clean_metric_region(&session_a);
+        let voice = primary_voice(&session_a, region);
+        let before = voice_events(&session_a, voice);
+        let (_, _, origin_y) = region_staff_line(&session_a, region);
+
+        // Click the last note with grid = its own duration: a full-cover overwrite.
+        let (_, pos, note_dur) = before.last().unwrap().clone();
+        let at = click_for_position(&session_a, region, &pos, origin_y + 1.0);
+        let grid = GridResolution {
+            step: note_dur.clone(),
+        };
+        let pitch = session_a
+            .staff_pitch_at(at)
+            .expect("a staff under the click");
+        session_a
+            .insert_note_at(at, &grid)
+            .expect("the pencil overwrites the covered note");
+
+        let mut session_b = open_plain(seed);
+        session_b.caret = Some(Caret {
+            voice,
+            position: pos,
+            entry_duration: note_dur,
+        });
+        session_b
+            .enter_pitch(cmn_pitch(pitch.nominal, pitch.octave))
+            .expect("the caret overwrites the covered note");
+
+        assert_eq!(
+            session_a.score(),
+            session_b.score(),
+            "the caret's make-room overwrite reproduces the pencil's exactly"
+        );
+    }
+
+    /// t4: the MIDI table (contract minimum: 21/60/61/69/108).
+    #[test]
+    fn midi_note_to_pitch_table() {
+        let check = |note: u8, nominal: CmnNominal, alteration: i8, octave: i8| {
+            let pitch = midi_note_to_pitch(note);
+            match pitch.scale_position.position {
+                PitchSpacePosition::Cmn {
+                    nominal: n,
+                    alteration: a,
+                    octave: o,
+                } => assert_eq!((n, a, o), (nominal, alteration, octave), "midi note {note}"),
+                other => panic!("midi note {note}: expected a CMN pitch, got {other:?}"),
+            }
+        };
+        check(21, CmnNominal::A, 0, 0); // A0
+        check(60, CmnNominal::C, 0, 4); // C4
+        check(61, CmnNominal::C, 1, 4); // C#4
+        check(69, CmnNominal::A, 0, 4); // A4
+        check(108, CmnNominal::C, 0, 8); // C8
+    }
+
+    /// t5: `x_at_position` round-trips with `position_at` — every anchor onset
+    /// (exact, already on the grid), and one point three grid steps past the
+    /// last note (extrapolated, still on an exact grid multiple so there is no
+    /// snapping error to budget for).
+    #[test]
+    fn x_at_position_round_trips_with_position_at() {
+        let session = open_plain(0x5EED);
+        let region = a_clean_metric_region(&session);
+        let anchors = session.position_anchors(region, None);
+        assert!(anchors.len() >= 2, "at least two onsets to fix a scale");
+        let (_, _, origin_y) = region_staff_line(&session, region);
+        let y = origin_y + 1.0;
+        let step = MusicalDuration(anchors[1].0 .0.sub(&anchors[0].0 .0));
+        let grid = GridResolution { step };
+
+        for (onset, x) in &anchors {
+            let gp = session
+                .position_at(Point::new(*x, y), &grid)
+                .expect("a metric region under the click");
+            assert_eq!(&gp.position, onset, "the click snaps to this onset exactly");
+            let x_back = session
+                .x_at_position(region, None, &gp.position)
+                .expect("the forward map resolves");
+            assert!(
+                (x_back - x).abs() < 1e-2,
+                "round trip at onset {onset:?}: {x_back} vs {x}"
+            );
+        }
+
+        let (last_onset, last_x) = anchors.last().cloned().unwrap();
+        let gap = last_x - anchors[anchors.len() - 2].1;
+        let reach = last_x + gap * 3.0; // three exact grid steps past the last note
+        let gp = session
+            .position_at(Point::new(reach, y), &grid)
+            .expect("empty space past the notes still resolves");
+        assert!(gp.position > last_onset, "past the last onset");
+        let x_back = session
+            .x_at_position(region, None, &gp.position)
+            .expect("the forward map extrapolates past the last anchor too");
+        assert!(
+            (x_back - reach).abs() < 1e-2,
+            "extrapolated round trip: {x_back} vs {reach}"
+        );
+    }
+
+    /// t5 (segment selection, direct): `valid_score`'s onsets are uniformly
+    /// spaced, so every segment shares one slope and
+    /// `x_at_position_round_trips_with_position_at`'s extrapolation cannot
+    /// distinguish "the last segment" from "the wrong segment" — both give the
+    /// same answer on a straight line. This calls [`forward_x`] directly with
+    /// deliberately **non-uniform** anchors so a wrong-segment bug is
+    /// observable: extrapolating past the last anchor must use the *last*
+    /// segment's own slope, not the first's.
+    #[test]
+    fn forward_x_extrapolates_from_the_last_segment_not_the_first() {
+        let p = |n: i64, d: i64| MusicalPosition(RationalTime::new(n, d).unwrap());
+        // Segment 0 (onset 0 -> 1/4): slope 40 x per whole note.
+        // Segment 1 (onset 1/4 -> 1/2, the *last* segment): slope 8 x per whole note.
+        let anchors = vec![(p(0, 1), 0.0_f32), (p(1, 4), 10.0), (p(1, 2), 12.0)];
+        // One more 1/4 step past the last anchor.
+        let target = p(3, 4);
+        let x = forward_x(&anchors, &target);
+        assert!(
+            (x - 14.0).abs() < 1e-4,
+            "extrapolating from the last segment's slope (8 x/whole-note) from \
+             (1/2, 12.0) by 1/4 more gives 14.0, got {x}"
+        );
+    }
+
+    /// t6 (undo): undo restores the score but leaves the caret exactly where
+    /// the entry advanced it -- undo does not move the caret (contract-pinned).
+    #[test]
+    fn undo_restores_the_score_but_leaves_the_caret_advanced() {
+        let mut session = open_plain(0x5EED);
+        let region = a_clean_metric_region(&session);
+        let voice = primary_voice(&session, region);
+        let before_score = session.score().clone();
+        let before_events = voice_events(&session, voice);
+
+        let (_, last_pos, last_dur) = before_events.last().unwrap().clone();
+        let start = MusicalPosition(last_pos.0.add(&last_dur.0));
+        session.caret = Some(Caret {
+            voice,
+            position: start.clone(),
+            entry_duration: dur(1, 4),
+        });
+        session.enter_rest().expect("enters at the caret");
+        let advanced = session.caret().expect("the caret is still set");
+        assert_eq!(
+            advanced.position,
+            MusicalPosition(start.0.add(&RationalTime::new(1, 4).unwrap())),
+            "the caret advanced by the entry duration"
+        );
+        assert_ne!(
+            session.score(),
+            &before_score,
+            "the entry changed the score"
+        );
+
+        session.undo().expect("undoes the entry");
+        assert_eq!(session.score(), &before_score, "undo restores the score");
+        assert_eq!(
+            session.caret(),
+            Some(advanced),
+            "undo does not move the caret"
+        );
+    }
+
+    /// t6 (vanish): a caret whose voice is deleted out from under it clears.
+    /// Built with a **real** op -- `DeleteVoiceOp` exists in `epiphany-ops` and
+    /// accepts an empty voice (Chapter 6 §6.10 DeleteVoice) -- rather than a
+    /// synthetic internal score swap: the contract asked for the synthetic
+    /// construction only "if no current op can remove a voice", and one does.
+    #[test]
+    fn caret_clears_when_its_voice_is_deleted() {
+        use epiphany_core::Voice;
+        use epiphany_ops::DeleteVoiceOp;
+
+        let mut score = valid_score(0x5EED);
+        let fresh_voice: VoiceId = score.identity.mint();
+        {
+            let staff_instance = &mut score.canvas.regions[0]
+                .content
+                .staff_based_mut()
+                .expect("the fixture's region is staff-based")
+                .staff_instances[0];
+            staff_instance.voices.push(Voice::user(fresh_voice));
+        }
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+        session.caret = Some(Caret {
+            voice: fresh_voice,
+            position: MusicalPosition::origin(),
+            entry_duration: dur(1, 4),
+        });
+        assert!(session.caret().is_some());
+
+        session
+            .apply(OperationKind::DeleteVoice(DeleteVoiceOp {
+                voice: fresh_voice,
+            }))
+            .expect("deletes the empty voice");
+
+        assert_eq!(
+            session.caret(),
+            None,
+            "the caret cleared when its voice vanished"
+        );
     }
 
     /// Selects the first pitch (notehead) of `event` and returns its id.

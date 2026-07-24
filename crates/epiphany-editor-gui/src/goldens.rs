@@ -602,4 +602,100 @@ mod tests {
 
         assert_golden("ten_measure_slurs_castoff", &pixmap1);
     }
+
+    /// **G5 — the note-entry caret loop** (`spec/CONTRACT_EDITOR_T3_CARET.md`
+    /// §W2). `ten_measure_single_staff(0)`, the same fixture and the same
+    /// [`scripted_insert_target`] click point G2/G3 use — "past the last
+    /// note" is exactly the extrapolation territory the contract asks G5 to
+    /// reuse — but driven through [`EditorSession::set_caret_at`] +
+    /// [`EditorSession::enter_nominal`] instead of the pencil's
+    /// `insert_note_at`. Locks the entry loop's visible result the same way
+    /// G2 locks the pencil's.
+    ///
+    /// **Value assertions before pixels** (contract's own ordering): the
+    /// grid/caret's exact position and entry duration are asserted as exact
+    /// rationals, then each of the four scripted entries' resulting caret
+    /// position, *before* any raster is taken — so a broken entry loop fails
+    /// as a named rational mismatch, not a mystery pixel diff.
+    #[test]
+    fn g5_ten_measure_caret_entry_matches_baseline() {
+        let score = fixtures::ten_measure_single_staff(0);
+        let mut session = EditorSession::open(score, Box::new(Engraver::default()))
+            .expect("the ten-measure fixture renders under the real engraver");
+
+        let target = scripted_insert_target(&session);
+
+        // Same target G2 proves lands exactly at whole-note 10 with a quarter-note
+        // grid (the fixture's 4/4 meter) — re-derived here independently, not just
+        // assumed from that other test.
+        let grid = session
+            .default_grid_at(target)
+            .expect("the target point sits over a metric region");
+        assert_eq!(
+            grid,
+            GridResolution {
+                step: MusicalDuration(RationalTime::new(1, 4).expect("1/4 is valid"))
+            },
+            "the 4/4 meter's default grid is a quarter-note step"
+        );
+
+        let caret = session
+            .set_caret_at(target)
+            .expect("the target sits over the staff");
+        assert_eq!(
+            caret.entry_duration, grid.step,
+            "the caret's entry duration is initialized from the grid step"
+        );
+        assert_eq!(
+            caret.position,
+            MusicalPosition(RationalTime::new(10, 1).expect("10/1 is valid")),
+            "the caret lands exactly at whole-note 10 — immediately after the \
+             fixture's last note ends, with nothing to overwrite"
+        );
+
+        // C, D, E, F at the caret's quarter entry duration: each entry must both
+        // change the graph and advance the caret by exactly 1/4.
+        let expected_positions = [
+            (10, 1, 41, 4), // 10        -> 10 + 1/4 = 41/4
+            (41, 4, 21, 2), // 41/4      -> 42/4 = 21/2
+            (21, 2, 43, 4), // 21/2      -> 43/4
+            (43, 4, 11, 1), // 43/4      -> 44/4 = 11
+        ];
+        for (nominal, (before_n, before_d, after_n, after_d)) in
+            [CmnNominal::C, CmnNominal::D, CmnNominal::E, CmnNominal::F]
+                .into_iter()
+                .zip(expected_positions)
+        {
+            let before = MusicalPosition(RationalTime::new(before_n, before_d).expect("valid"));
+            assert_eq!(
+                session.caret().map(|c| c.position),
+                Some(before),
+                "{nominal:?}: the caret sits at the expected pre-entry position"
+            );
+            let outcome = session
+                .enter_nominal(nominal)
+                .unwrap_or_else(|err| panic!("entering {nominal:?} at the caret: {err}"));
+            assert!(
+                outcome.graph_changed,
+                "{nominal:?}: entering into empty space changes the score"
+            );
+            let after = MusicalPosition(RationalTime::new(after_n, after_d).expect("valid"));
+            assert_eq!(
+                session.caret().map(|c| c.position),
+                Some(after),
+                "{nominal:?}: the caret advances by exactly the entry duration (1/4)"
+            );
+        }
+
+        let (svg1, pixmap1) = render_pixmap(&session, 12.0);
+        let (svg2, pixmap2) = render_pixmap(&session, 12.0);
+        assert_eq!(svg1, svg2, "G5 determinism double: SVG bytes must match");
+        assert_eq!(
+            pixmap1.data(),
+            pixmap2.data(),
+            "G5 determinism double: rasterized pixels must match"
+        );
+
+        assert_golden("ten_measure_caret_entry", &pixmap1);
+    }
 }

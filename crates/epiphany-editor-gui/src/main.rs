@@ -24,8 +24,8 @@
 
 use eframe::egui;
 
-use epiphany_core::NoteValue;
-use epiphany_editor_core::{EditOutcome, EditorError, EditorSession, GridResolution};
+use epiphany_core::{CmnNominal, NoteValue, TypedObjectId};
+use epiphany_editor_core::{Caret, EditOutcome, EditorError, EditorSession, GridResolution};
 use epiphany_engrave::Engraver;
 use epiphany_layout_ir::{BoundingBox, HitShape, LayoutObjectId, Point};
 use epiphany_ops::{OperationKind, OperationPayload};
@@ -139,6 +139,50 @@ fn selection_rect(
         .map(|region| shape_rect(&region.shape, vm))
 }
 
+/// The caret's on-screen vertical segment `(top, bottom)`, full staff height —
+/// `None` if there is no caret, or its voice's staff geometry cannot be
+/// resolved (its region/staff-instance vanished — should not happen once
+/// `EditorSession` itself clears a caret whose voice vanished, but this stays
+/// defensive; or `x_at_position` has too few rendered anchors to fix a scale).
+///
+/// Derived entirely from `EditorSession`'s existing **public** surface
+/// (`score()`, `resolved()`, `x_at_position()`) — no new core accessor was
+/// needed, per the packet's own preference. The voice→(region, staff instance)
+/// lookup mirrors `Score::voices()`'s own shape (used the same way inside
+/// `epiphany-editor-core`); the staff's y-extent is read from the same
+/// `resolved().strokes` staff-line records `EditorSession::staff_pitch_at`'s
+/// own tests already inspect this way (`epiphany-editor-core/src/lib.rs`'s
+/// `staff_pitch_at_reads_the_clicked_height`) — filtered to *this* caret's
+/// staff specifically (by `StaffId`), not just any `TypedObjectId::Staff(_)`,
+/// so a multi-staff score would still draw the caret on its own staff.
+fn caret_segment(session: &EditorSession, vm: &ViewMap) -> Option<(egui::Pos2, egui::Pos2)> {
+    let caret = session.caret()?;
+    let (region, staff_instance) = session
+        .score()
+        .voices()
+        .find(|(_, _, v)| v.id == caret.voice)
+        .map(|(region, staff_instance, _)| (region, staff_instance))?;
+    let staff_id = session
+        .score()
+        .staff_instances()
+        .find(|(_, si)| si.id == staff_instance)
+        .map(|(_, si)| si.staff)?;
+    let x = session.x_at_position(region, None, &caret.position)?;
+
+    let mut min_y = f32::INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for stroke in &session.resolved().strokes {
+        if matches!(stroke.provenance.source, TypedObjectId::Staff(id) if id == staff_id) {
+            min_y = min_y.min(stroke.from.y.0).min(stroke.to.y.0);
+            max_y = max_y.max(stroke.from.y.0).max(stroke.to.y.0);
+        }
+    }
+    if !min_y.is_finite() || !max_y.is_finite() {
+        return None;
+    }
+    Some((vm.world_to_screen(x, max_y), vm.world_to_screen(x, min_y)))
+}
+
 /// Accumulates a rubber-band drag's two screen-space corners (the point where
 /// the drag started and where the pointer currently is), pure and independent
 /// of any `egui::Response`/`Context` so it can be unit-tested headlessly. The
@@ -221,6 +265,47 @@ fn resolve_release(drag: &DragRect, ctrl: bool) -> ReleaseAction {
     } else {
         ReleaseAction::Point { toggle: ctrl }
     }
+}
+
+/// What a letter key (A–G) means, given whether note-entry mode is on — the
+/// mode-gated interpretation `spec/CONTRACT_EDITOR_T3_CARET.md` §W2 asks for,
+/// pulled out pure (mirrors [`resolve_release`]) so the gate itself is
+/// headlessly unit-testable, independent of `egui::Context`/`InputState`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LetterAction {
+    /// Note-entry mode is on: enter this natural at the caret
+    /// ([`EditorSession::enter_nominal`]).
+    Enter(CmnNominal),
+    /// Note-entry mode is off, and the letter is `A`: the existing "add a
+    /// chord note to the anchor" intent ([`EditorSession::add_note_to_selection`]),
+    /// unchanged from before this packet.
+    AddChordNote,
+    /// No binding: entry mode is off and the letter isn't `A` (B–G have no
+    /// meaning outside entry mode).
+    None,
+}
+
+fn resolve_letter(entry_mode: bool, nominal: CmnNominal) -> LetterAction {
+    if entry_mode {
+        LetterAction::Enter(nominal)
+    } else if nominal == CmnNominal::A {
+        LetterAction::AddChordNote
+    } else {
+        LetterAction::None
+    }
+}
+
+/// Toggles `this` (pencil or note-entry), forcing `other` off exactly when
+/// `this` turns **on** — the mutual-exclusion invariant §W2 pins ("the two
+/// modes are mutually exclusive"), pulled out pure so it is unit-tested
+/// directly rather than eyeballed at each of the toggle's four call sites (two
+/// keys, two toolbar buttons). Turning `this` off leaves `other` exactly as it
+/// was, whatever that was — this function does not itself assume the
+/// invariant holds going in, only that it holds coming out.
+fn toggle_exclusive(this: bool, other: bool) -> (bool, bool) {
+    let new_this = !this;
+    let new_other = if new_this { false } else { other };
+    (new_this, new_other)
 }
 
 /// The text of the most recent `egui::Event::Paste` in `events`, if any (T2
@@ -313,8 +398,14 @@ struct EditorApp {
     px_per_staff_space: f32,
     needs_render: bool,
     /// Pencil ("insert") mode: a click on the staff inserts a note at that pitch and
-    /// beat (with make-room overwrite) instead of selecting.
+    /// beat (with make-room overwrite) instead of selecting. Mutually exclusive with
+    /// `entry_mode` — see `toggle_exclusive` and `DECISIONS.md`.
     pencil: bool,
+    /// Note-entry mode (T3-W2): a click places the caret instead of selecting; A–G
+    /// enter a natural at the caret; the duration palette sets the caret's entry
+    /// duration instead of resizing a selection; ←/→ retreat/advance the caret; R
+    /// enters a rest. Mutually exclusive with `pencil`.
+    entry_mode: bool,
     /// The in-progress rubber-band drag, if any (`None` outside a drag, and always
     /// `None` in pencil mode — pencil's click-to-insert takes precedence and ignores
     /// dragging entirely).
@@ -343,6 +434,7 @@ impl EditorApp {
             px_per_staff_space: 12.0,
             needs_render: true,
             pencil: false,
+            entry_mode: false,
             rubber_band: None,
             last_paste_text: None,
             status: "opened ten_measure_single_staff".to_string(),
@@ -454,6 +546,51 @@ impl EditorApp {
         }
     }
 
+    /// A click in note-entry mode: places the caret at `world`
+    /// ([`EditorSession::set_caret_at`]) instead of selecting — pencil and
+    /// note-entry are mutually exclusive, so this is only ever reached with
+    /// pencil off. No score/layout mutation happens here, so no
+    /// `needs_render`: the caret overlay reads live session state fresh every
+    /// frame regardless of whether the score texture is stale.
+    fn do_set_caret_at(&mut self, world: Point) {
+        self.status = match self.session.set_caret_at(world) {
+            Ok(caret) => format!(
+                "caret set: voice {:?}, beat {:.3}, entry duration {:.3}",
+                caret.voice,
+                caret.position.0.to_f64(),
+                caret.entry_duration.0.to_f64()
+            ),
+            Err(err) => format!("caret: {err}"),
+        };
+    }
+
+    /// Runs a caret-only step ([`EditorSession::advance`]/[`EditorSession::retreat`]),
+    /// recording the outcome in the status line. Neither moves the score graph or
+    /// layout, so — like `do_set_caret_at` — this never sets `needs_render`; it is a
+    /// bespoke small handler (not `Self::run`) because these two return `Result<Caret,
+    /// EditorError>`, not `Result<EditOutcome, EditorError>`.
+    fn do_caret_step(
+        &mut self,
+        name: &str,
+        step: impl FnOnce(&mut EditorSession) -> Result<Caret, EditorError>,
+    ) {
+        self.status = match step(&mut self.session) {
+            Ok(caret) => format!("{name}: caret now at beat {:.3}", caret.position.0.to_f64()),
+            Err(err) => format!("{name}: {err}"),
+        };
+    }
+
+    /// The duration palette's action while note-entry mode is on: sets the caret's
+    /// entry duration ([`EditorSession::set_entry_duration`]) instead of resizing a
+    /// selection (`Self::toolbar`'s non-entry-mode branch keeps that meaning
+    /// unchanged). No score/layout mutation, so no `needs_render`.
+    fn set_entry_duration(&mut self, label: &str, value: NoteValue) {
+        self.status = match self.session.set_entry_duration(value.whole_note_fraction()) {
+            Ok(()) => format!("entry duration set to {label}"),
+            Err(err) => format!("entry duration {label}: {err}"),
+        };
+    }
+
     /// Consumes this frame's `egui::Event::Paste`, if any (the only mechanism
     /// egui 0.29 offers for reading OS paste content — see `DECISIONS.md`):
     /// caches it for the toolbar "Paste" button and immediately pastes it
@@ -540,8 +677,10 @@ impl EditorApp {
                 self.do_paste_from_cache();
             }
             ui.separator();
-            // Duration palette: set the selected note/rest's written value (make-room
-            // overwrite when lengthening).
+            // Duration palette: while note-entry mode is on, sets the caret's entry
+            // duration (`Self::set_entry_duration`); otherwise, its long-standing
+            // meaning — set the selected note/rest's written value (make-room overwrite
+            // when lengthening) — is unchanged.
             ui.label("Dur:");
             for (label, value) in [
                 ("1", NoteValue::Whole),
@@ -551,13 +690,33 @@ impl EditorApp {
                 ("1/16", NoteValue::Sixteenth),
             ] {
                 if ui.button(label).clicked() {
-                    self.run(&format!("duration {label}"), |s| {
-                        s.set_selection_duration(value.whole_note_fraction())
-                    });
+                    if self.entry_mode {
+                        self.set_entry_duration(label, value);
+                    } else {
+                        self.run(&format!("duration {label}"), |s| {
+                            s.set_selection_duration(value.whole_note_fraction())
+                        });
+                    }
                 }
             }
             ui.separator();
-            ui.toggle_value(&mut self.pencil, "✏ Pencil (insert)");
+            // Pencil and note-entry are mutually exclusive (`toggle_exclusive`,
+            // `DECISIONS.md`): turning either on from the toolbar clears the other,
+            // exactly as the matching key (P / N) does.
+            if ui
+                .toggle_value(&mut self.pencil, "✏ Pencil (insert)")
+                .changed()
+                && self.pencil
+            {
+                self.entry_mode = false;
+            }
+            if ui
+                .toggle_value(&mut self.entry_mode, "🎹 Note entry")
+                .changed()
+                && self.entry_mode
+            {
+                self.pencil = false;
+            }
             ui.separator();
             if ui
                 .add(egui::Slider::new(&mut self.px_per_staff_space, 6.0..=28.0).text("zoom"))
@@ -600,9 +759,26 @@ impl EditorApp {
             }
         }
         ui.separator();
+        match self.session.caret() {
+            Some(caret) => {
+                ui.label(format!("caret voice: {:?}", caret.voice));
+                ui.label(format!(
+                    "caret position: beat {:.3}",
+                    caret.position.0.to_f64()
+                ));
+                ui.label(format!(
+                    "caret entry duration: {:.3}",
+                    caret.entry_duration.0.to_f64()
+                ));
+            }
+            None => {
+                ui.label("caret: none");
+            }
+        }
+        ui.separator();
         ui.label(format!(
             "Click a notehead to select (replaces). Ctrl/Cmd-click toggles a member. Drag a \
-             rubber-band to select every hit within it. Pencil mode: {}.\n\
+             rubber-band to select every hit within it. Pencil mode: {}. Note-entry mode: {}.\n\
              Delete and Transpose act on the whole selection; Move / Add chord / Insert after / \
              duration act on the anchor (the drag/toggle reference point, drawn with the \
              thicker accent stroke).\n\
@@ -611,14 +787,40 @@ impl EditorApp {
              reports that instead of pasting). The Paste button acts on the last clipboard text \
              this app has seen (egui reads it only on an actual paste gesture); Ctrl/Cmd+V pastes \
              immediately using that same text as it arrives.\n\
-             Keys: Del delete · ↑/↓ staff-step move · +/− transpose · A add chord · I insert after · \
-             P pencil · Ctrl/Cmd+C copy · Ctrl/Cmd+V paste · Ctrl/Cmd+Z undo · Ctrl/Cmd+Shift+Z or \
-             Ctrl/Cmd+Y redo",
-            if self.pencil { "ON — click to insert" } else { "off" }
+             Note-entry mode (N; mutually exclusive with Pencil — turning one on turns the \
+             other off): click places the caret (drawn as a green vertical line spanning its \
+             staff), instead of selecting. A–G enter that natural at the caret, octave inferred \
+             from the nearest earlier note in its voice. R enters a rest. ←/→ retreat/advance \
+             the caret by its entry duration (no insertion). The duration palette sets the \
+             caret's entry duration instead of resizing a selection while this mode is on.\n\
+             Keys: Del delete · ↑/↓ staff-step move (always) · +/− transpose · A add chord \
+             (off) / enter A (entry mode) · B–G enter note (entry mode only) · I insert after · \
+             R enter rest (entry mode) · ←/→ retreat/advance caret (entry mode) · P pencil · \
+             N note-entry · Ctrl/Cmd+C copy · Ctrl/Cmd+V paste · Ctrl/Cmd+Z undo · \
+             Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redo",
+            if self.pencil {
+                "ON — click to insert"
+            } else {
+                "off"
+            },
+            if self.entry_mode {
+                "ON — click to place the caret"
+            } else {
+                "off"
+            }
         ));
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
+        const LETTER_KEYS: [(egui::Key, CmnNominal); 7] = [
+            (egui::Key::A, CmnNominal::A),
+            (egui::Key::B, CmnNominal::B),
+            (egui::Key::C, CmnNominal::C),
+            (egui::Key::D, CmnNominal::D),
+            (egui::Key::E, CmnNominal::E),
+            (egui::Key::F, CmnNominal::F),
+            (egui::Key::G, CmnNominal::G),
+        ];
         let k = ctx.input(|i| Keys {
             // Ctrl/Cmd-Z undo, Ctrl/Cmd-Shift-Z (or Ctrl/Cmd-Y) redo, read first so a
             // modified Z is not also taken as a plain key.
@@ -627,13 +829,26 @@ impl EditorApp {
                 && ((i.modifiers.shift && i.key_pressed(egui::Key::Z))
                     || i.key_pressed(egui::Key::Y)),
             delete: i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace),
+            // ↑/↓ keep their one meaning (staff-step move) in every mode; only ←/→
+            // are new (T3-W2), and only mean anything in note-entry mode.
             move_up: i.key_pressed(egui::Key::ArrowUp),
             move_down: i.key_pressed(egui::Key::ArrowDown),
+            retreat: i.key_pressed(egui::Key::ArrowLeft),
+            advance: i.key_pressed(egui::Key::ArrowRight),
             sharp: i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals),
             flat: i.key_pressed(egui::Key::Minus),
-            add: i.key_pressed(egui::Key::A),
+            // Whichever of A–G was pressed this frame, if any — `resolve_letter`
+            // decides what it means (mode-gated); at most one fires per frame in
+            // practice (one key event), but the search takes the first match either
+            // way, deterministic regardless.
+            letter: LETTER_KEYS
+                .into_iter()
+                .find(|(key, _)| i.key_pressed(*key))
+                .map(|(_, nominal)| nominal),
+            rest: i.key_pressed(egui::Key::R),
             insert: i.key_pressed(egui::Key::I),
             pencil: i.key_pressed(egui::Key::P),
+            entry_toggle: i.key_pressed(egui::Key::N),
             // Copy is a plain boolean edge, same as every other shortcut here —
             // `do_copy` needs nothing egui delivered *to* it, only the current
             // selection, so it fits this file's usual `key_pressed` pattern.
@@ -649,8 +864,15 @@ impl EditorApp {
             self.run_history("redo", |s| s.redo());
         }
         if k.pencil {
-            self.pencil = !self.pencil;
+            (self.pencil, self.entry_mode) = toggle_exclusive(self.pencil, self.entry_mode);
             self.status = format!("pencil mode {}", if self.pencil { "on" } else { "off" });
+        }
+        if k.entry_toggle {
+            (self.entry_mode, self.pencil) = toggle_exclusive(self.entry_mode, self.pencil);
+            self.status = format!(
+                "note-entry mode {}",
+                if self.entry_mode { "on" } else { "off" }
+            );
         }
         if k.delete {
             self.run("delete", |s| s.delete_selection());
@@ -661,14 +883,31 @@ impl EditorApp {
         if k.move_down {
             self.run("move down", |s| s.move_selection_staff_step(-1));
         }
+        if k.retreat && self.entry_mode {
+            self.do_caret_step("retreat", |s| s.retreat());
+        }
+        if k.advance && self.entry_mode {
+            self.do_caret_step("advance", |s| s.advance());
+        }
         if k.sharp {
             self.run("transpose +1", |s| s.alter_selection(1));
         }
         if k.flat {
             self.run("transpose -1", |s| s.alter_selection(-1));
         }
-        if k.add {
-            self.run("add chord note", |s| s.add_note_to_selection());
+        if let Some(nominal) = k.letter {
+            match resolve_letter(self.entry_mode, nominal) {
+                LetterAction::Enter(n) => {
+                    self.run(&format!("enter {n:?}"), |s| s.enter_nominal(n));
+                }
+                LetterAction::AddChordNote => {
+                    self.run("add chord note", |s| s.add_note_to_selection());
+                }
+                LetterAction::None => {}
+            }
+        }
+        if k.rest && self.entry_mode {
+            self.run("enter rest", |s| s.enter_rest());
         }
         if k.insert {
             self.run("insert after", |s| s.insert_note_after_selection());
@@ -730,10 +969,11 @@ impl EditorApp {
 
         let vm = ViewMap::new(self.view_box, rect);
 
-        // Rubber-band drag tracking. Pencil mode ignores dragging entirely — it takes
-        // precedence, and its click-to-insert behavior below is unchanged — so no drag
-        // is ever started while it is on.
-        if !self.pencil {
+        // Rubber-band drag tracking. Pencil and note-entry mode both ignore dragging
+        // entirely — each takes precedence over selection while it is on (their own
+        // click-to-insert / click-to-place-caret behavior below is unchanged) — so no
+        // drag is ever started while either is on.
+        if !self.pencil && !self.entry_mode {
             if response.drag_started() {
                 if let Some(pos) = response.interact_pointer_pos() {
                     self.rubber_band = Some(DragRect::new(pos));
@@ -813,6 +1053,11 @@ impl EditorApp {
                     self.run("insert note", |s| s.insert_note_at(world, &grid));
                     ui.ctx().request_repaint();
                     return;
+                } else if self.entry_mode {
+                    // Places the caret; no score/layout mutation, so — unlike pencil's
+                    // branch above — the hit-test map and texture stay valid and the
+                    // overlay code below can run this same frame with no early return.
+                    self.do_set_caret_at(world);
                 } else {
                     let ctrl = ui.input(|i| i.modifiers.command);
                     self.resolve_click(world, &grid, ctrl);
@@ -843,6 +1088,16 @@ impl EditorApp {
                 );
             }
         }
+
+        // The note-entry caret: a vertical line spanning its staff's full height, at
+        // its exact musical position (`x_at_position` through `vm`) — distinct in
+        // color from both the selection (blue) and anchor (orange) strokes.
+        if let Some((top, bottom)) = caret_segment(&self.session, &vm) {
+            ui.painter().line_segment(
+                [top, bottom],
+                egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(0, 170, 90)),
+            );
+        }
     }
 }
 
@@ -853,11 +1108,20 @@ struct Keys {
     delete: bool,
     move_up: bool,
     move_down: bool,
+    /// ←, note-entry mode only ([`EditorSession::retreat`]).
+    retreat: bool,
+    /// →, note-entry mode only ([`EditorSession::advance`]).
+    advance: bool,
     sharp: bool,
     flat: bool,
-    add: bool,
+    /// Whichever of A–G was pressed this frame, if any — see [`resolve_letter`].
+    letter: Option<CmnNominal>,
+    /// R, note-entry mode only ([`EditorSession::enter_rest`]).
+    rest: bool,
     insert: bool,
     pencil: bool,
+    /// N, toggles note-entry mode.
+    entry_toggle: bool,
     copy: bool,
 }
 
@@ -1029,6 +1293,60 @@ mod tests {
         drag.update(egui::pos2(100.0, 0.0));
         assert_eq!(resolve_release(&drag, false), ReleaseAction::RubberBand);
         assert_eq!(resolve_release(&drag, true), ReleaseAction::RubberBand);
+    }
+
+    // T3 W2: `resolve_letter` (the mode-gated letter interpretation) and
+    // `toggle_exclusive` (the pencil/note-entry mutual-exclusion invariant) —
+    // both pure, headlessly unit-tested exactly like `resolve_release` above.
+
+    #[test]
+    fn resolve_letter_enters_a_natural_in_entry_mode() {
+        for nominal in [
+            CmnNominal::A,
+            CmnNominal::B,
+            CmnNominal::C,
+            CmnNominal::D,
+            CmnNominal::E,
+            CmnNominal::F,
+            CmnNominal::G,
+        ] {
+            assert_eq!(resolve_letter(true, nominal), LetterAction::Enter(nominal));
+        }
+    }
+
+    #[test]
+    fn resolve_letter_outside_entry_mode_only_a_adds_a_chord_note() {
+        assert_eq!(
+            resolve_letter(false, CmnNominal::A),
+            LetterAction::AddChordNote
+        );
+        for nominal in [
+            CmnNominal::B,
+            CmnNominal::C,
+            CmnNominal::D,
+            CmnNominal::E,
+            CmnNominal::F,
+            CmnNominal::G,
+        ] {
+            assert_eq!(
+                resolve_letter(false, nominal),
+                LetterAction::None,
+                "{nominal:?} has no binding outside entry mode"
+            );
+        }
+    }
+
+    #[test]
+    fn toggle_exclusive_turning_on_clears_the_other() {
+        assert_eq!(toggle_exclusive(false, true), (true, false));
+    }
+
+    #[test]
+    fn toggle_exclusive_turning_off_leaves_the_other_alone() {
+        assert_eq!(toggle_exclusive(true, false), (false, false));
+        // Defensive: even from a (never-reachable-in-practice) state where both
+        // were somehow on, turning `this` off must not itself clear `other`.
+        assert_eq!(toggle_exclusive(true, true), (false, true));
     }
 
     // T2 W4b: `paste_event_text`, the pure extraction helper over a frame's

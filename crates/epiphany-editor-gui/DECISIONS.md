@@ -331,3 +331,141 @@ pure for the same reason W2 needed to unit-test *something* about
 release-time dispatch). `cargo test -p epiphany-editor-gui` green (20/20,
 including all four golden tests) is this packet's regression gate for that
 untested surface, per the brief.
+
+## Note-entry mode + G5 (2026-07-24, T3-W2)
+
+Dispatched under `spec/CONTRACT_EDITOR_T3_CARET.md` §W2, over W1's caret seam
+(`EditorSession::{caret, set_caret_at, set_entry_duration, advance, retreat,
+enter_nominal, enter_pitch, enter_rest, x_at_position}`, `Caret`). `main.rs`
+(mode, keys, palette gating, click dispatch, caret overlay, help/debug text)
+and `goldens.rs` (the new G5 test) only — **no editor-core change was
+needed**, confirmed by grep-checking the packet's own suggestion of a "tiny
+pub accessor": every piece the caret overlay needs (`score().voices()`,
+`score().staff_instances()`, `resolved().strokes`, `x_at_position()`) was
+already public.
+
+**Mode exclusivity.** `pencil: bool` and the new `entry_mode: bool` are
+mutually exclusive: turning either on always clears the other. Implemented
+once, as a pure `toggle_exclusive(this, other) -> (bool, bool)` (mirrors
+`resolve_release`'s role from T2-W2 — pulled out so the invariant itself is
+unit-tested, not eyeballed at each of its four call sites: the P/N keys and
+the two toolbar `toggle_value`s). `toggle_exclusive`'s contract is
+intentionally asymmetric: turning `this` **on** forces `other` off; turning
+`this` **off** leaves `other` exactly as it was (never assumes the
+invariant already holds coming in, only guarantees it holds going out).
+
+**Letter-key interpretation is mode-gated**, pulled out as a second pure
+function `resolve_letter(entry_mode, nominal) -> LetterAction` (`Enter`,
+`AddChordNote`, or `None`) — the packet's own named candidate for "the
+obvious testable pure fn". In entry mode every letter A–G enters that
+natural; outside it, only `A` keeps its pre-existing "add chord note to the
+anchor" meaning (B–G stay unbound outside entry mode, as they always were).
+`handle_keys` reads whichever of the seven letter keys fired this frame (at
+most one in practice — one key event — but the lookup takes the first match
+either way) into `Keys::letter: Option<CmnNominal>`, then dispatches through
+`resolve_letter`.
+
+**Key map, verified against the code rather than assumed from the
+contract's own summary** (the contract said "←/→ ... they currently move
+selection pitch", which does not match `handle_keys` as it stood — ↑/↓ move
+pitch, ←/→ were unbound; the coordinator's dispatch caught this and it is
+recorded here as the corrected, verified fact):
+
+* **N** — toggles note-entry mode (mutually exclusive with pencil).
+* **A–G**, entry mode on — `enter_nominal`. **A**, entry mode off — the
+  existing "add chord note" (unchanged). **B–G**, entry mode off — no
+  binding (unchanged: they never had one).
+* **R** — `enter_rest`, entry mode only. Verified free: `handle_keys` never
+  read `egui::Key::R` before this packet.
+* **←/→** — `retreat`/`advance`, entry mode only. Both new bindings (neither
+  was bound before); outside entry mode they remain inert, same as before
+  this packet.
+* **↑/↓** — unchanged in every mode: `move_selection_staff_step`.
+* Duration palette (toolbar buttons `1`/`1/2`/`1/4`/`1/8`/`1/16`) — while
+  entry mode is on, `set_entry_duration`; otherwise unchanged
+  (`set_selection_duration`). Gated per-click on `self.entry_mode`, not
+  a separate widget.
+
+**Click dispatch.** `score_view`'s three-way branch is now `pencil` →
+`insert_note_at` (unchanged) → else `entry_mode` → `set_caret_at` (new) →
+else the existing select/toggle path. Pencil's branch keeps its early
+`return` after `request_repaint()` (needed because `insert_note_at` mutates
+the score, staling the hit-test map the overlay code below would otherwise
+paint against this same frame). `set_caret_at` needs no such guard — it
+mutates no score/layout state at all, so the overlay code safely runs in
+the same frame using the just-updated caret. Rubber-band drag tracking
+(`DragRect`) is now gated on `!self.pencil && !self.entry_mode` (widened
+from `!self.pencil` alone) — an extension beyond the contract's literal
+text (which only names "a click in entry mode"), decided for the same
+reason pencil already excludes dragging: a click in either mode does
+something other than select, so a drag gesture in either mode has no
+selection to build either. Flagged as this packet's own call, not
+contract-mandated.
+
+**The caret overlay's region/staff derivation** (`caret_segment`, next to
+`selection_rect`): `caret.voice` → `(region, staff_instance)` via
+`session.score().voices()` (matches `epiphany-editor-core`'s own internal
+use of `Score::voices()`) → the staff's global `StaffId` via
+`session.score().staff_instances()` → that staff's *own* rendered line
+strokes, filtered from `session.resolved().strokes` by
+`TypedObjectId::Staff(staff_id)` (not just any staff — a multi-staff score
+needs the caret drawn on its own staff, not the topmost one) — min/max `y`
+across those strokes is the "full staff height" span, no hardcoded staff-
+space constant needed (unlike duplicating editor-core's private
+`STAFF_SPAN`, this reads the *actual* rendered geometry). `x` comes
+straight from `x_at_position(region, None, &caret.position)`. Drawn as a
+2.0pt line in a distinct green (`rgb(0, 170, 90)`), separate from the
+selection's blue and the anchor's orange.
+
+**G5 — the caret-entry golden.** `ten_measure_single_staff(0)`, the *same*
+fixture and the *same* `scripted_insert_target` click point G2/G3 already
+use (the contract's own ask: "the same extrapolation territory G2 used") —
+reused verbatim rather than deriving a second target function. Drives
+`set_caret_at` then four `enter_nominal(C/D/E/F)` calls at the caret's
+default (quarter, from the 4/4 meter) entry duration. **Value assertions
+before pixels**, per the contract: the grid step, the caret's post-
+`set_caret_at` position (independently re-derived, not just asserted equal
+to G2's own — though it does land on the same whole-note-10 slot G2 proves,
+since it is the identical target on the identical fixture) and entry
+duration, then each of the four entries' resulting caret position as an
+exact `MusicalPosition`/`RationalTime` before any raster is taken. Baseline:
+`goldens/ten_measure_caret_entry.png`, 57379 bytes — generated via
+`EPIPHANY_BLESS_GOLDENS=1`, **not judged correct here**: per plan §Ruling
+C's user deep-dive point, a new baseline is visually reviewed and approved
+by the user before being committed. G1–G4's three baselines
+(`ten_measure_open.png` 53638B, `ten_measure_insert.png` 54590B,
+`ten_measure_slurs_castoff.png` 57891B) are confirmed byte-identical
+(`git status` reports them untouched throughout this packet).
+
+**Mutations, each substituted, observed failing, then reversed** (never
+`git checkout`): (1) `resolve_letter`'s mode gate (`if entry_mode` →
+`if !entry_mode`) — kills both of its own tests (letters interpreted
+backwards in and out of entry mode). (2) `toggle_exclusive`'s clear branch
+(`other` always passed through unchanged) — kills
+`toggle_exclusive_turning_on_clears_the_other` (`(true, true)` vs expected
+`(true, false)`). (3) G5: skipping the D entry (substituting a hand-built
+`EditOutcome{graph_changed: true, ..}` in place of ever calling
+`enter_nominal`) — **the position assertion fires, not the pixel one**:
+the test panics at `session.caret().map(|c| c.position) == Some(after)`
+(`Some(MusicalPosition(41/4))` vs the expected `Some(MusicalPosition(21/2))`)
+long before reaching `render_pixmap`/`assert_golden` at all — confirming
+the contract's own ordering claim ("value assertions before pixels") is
+real, not just documented. (4) G5's determinism double: perturbing the
+second `render_pixmap` call's `px_per_staff_space` (12.0 → 13.0) — kills
+the `assert_eq!(svg1, svg2, ...)` check (a large SVG-string diff), proving
+the double is a real, load-bearing check and not vestigial boilerplate
+copied from G1–G4.
+
+**Testing scope, stated honestly.** `resolve_letter` and `toggle_exclusive`
+are pure and unit-tested directly, same discipline as `resolve_release`/
+`DragRect`. Everything else this packet added — the toolbar's two
+`toggle_value` calls and their `.changed()` mutual-exclusion glue, the
+`Keys` struct's new fields and their `ctx.input` reads, `do_set_caret_at`/
+`do_caret_step`/`set_entry_duration`'s own bodies, `score_view`'s click/drag
+branching, the caret overlay's paint call, the debug panel and help text —
+is **egui-side dispatch, reviewed but not unit-tested**, for the same
+structural reason T2-W2/W4b's equivalent surfaces are not: there is no
+headless way in this crate to synthesize an `egui::Context` frame or drive
+`ctx.input`/painter calls. `cargo test -p epiphany-editor-gui` green
+(25/25, including all five golden tests) is this packet's regression gate
+for that untested surface.
