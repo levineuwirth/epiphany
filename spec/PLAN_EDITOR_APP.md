@@ -232,8 +232,12 @@ after the resolver tranche lands.
   persistence decision — RESOLVED 2026-07-24**
   (`spec/RULING_GENESIS_PERSISTENCE.md`): the operation set absorbs genesis,
   and pruning is parked until the canonical base carries graph values. The
-  lease/save/single-writer machinery does **not** depend on that tranche
-  landing and may be contracted in parallel with it; (2) the
+  lease/save/single-writer machinery does not *depend* on that tranche, and
+  its parallel-safety is **per-rung** (`spec/PLAN_GENESIS_OPS.md`): G1
+  (`CreateInstrument`) needs no accept-set raise and never enters
+  `epiphany-bundle`, so T1b's bundle work runs beside it; **G2 spends the raise
+  in `bundle.rs`**, where T1b's single-writer enforcement also lands, so the
+  two must not fly together (corrected 2026-07-24); (2) the
   **versioned-decode disposition** — the migrate-on-read API in
   `epiphany-ops`, preferred and eventually mandatory, or the enforceable
   current-layout restriction (§Ruling B, blocker ii); (3) the **Ruling-D
@@ -598,8 +602,11 @@ which is why T1b sequences after the resolver.)*
 > Push-4b-class coordinated tranche; the editor track consumes it. Two
 > constraints carry forward into T1b: **pruning may not be implemented until
 > disposition C lands** (a `MaterializedState` base cannot rebuild a score), and
-> `identity`'s disposition blocks specification of that tranche. The text below
-> is kept as the record of what the blocker was.
+> the `identity` cursor is **ruled** in that document's §3 (it stays on `Score`,
+> byte-equality claims confine to `MaterializedState`, and from-empty reduction
+> derives the counter). Execution is laddered in `spec/PLAN_GENESIS_OPS.md`;
+> T1b's bundle work is parallel-safe with G1 but not with G2. The text below is
+> kept as the record of what the blocker was.
 
 **Blocker (i) — canonical graph-state persistence, across genesis AND
 pruning.** Two halves of one question. *Genesis:* "every piece of content

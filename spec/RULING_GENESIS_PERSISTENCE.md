@@ -237,9 +237,13 @@ existing types do not move.
 `spec/PLAN_EDITOR_APP.md` §Ruling B blocker (i) is **resolved**. Blocker (ii)
 — the version-aware envelope decoder — is unaffected and still open; its
 residual is one bounded ops packet. T1b's remaining runway is therefore
-blocker (ii) plus the Ruling-D ownership API, and the lease/save/single-writer
-machinery can be contracted in parallel with this tranche, since it does not
-depend on genesis being authorable.
+blocker (ii) plus the Ruling-D ownership API. The lease/save/single-writer
+machinery does not depend on genesis being authorable, but its parallel-safety
+is **per-rung** (`spec/PLAN_GENESIS_OPS.md`): G1 needs no accept-set raise and
+never enters `epiphany-bundle`, so T1b's bundle work runs beside it; **G2
+spends the raise in `bundle.rs`**, where T1b's single-writer enforcement also
+lands, so those two must not fly together. (Corrected 2026-07-24: this section
+originally claimed unconditional parallel-safety.)
 
 *Related: `spec/ANALYSIS_GENESIS_PERSISTENCE.md`, `spec/PLAN_EDITOR_APP.md`
 §Ruling B / §3.7, `spec/PLAN_PUSH4B_TUNING.md` (the tranche mold).*
