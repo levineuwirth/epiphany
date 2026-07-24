@@ -17,31 +17,37 @@
 //! ## What resolves, and what still does not
 //!
 //! [`TuningResolution`] is a **six**-variant enum in the specification
-//! (`core_spec.tex:3309`); this module defines three —
+//! (`core_spec.tex:3309`); this module defines four —
 //! [`TuningResolution::EqualTemperament`], [`TuningResolution::PerPositionRatios`],
-//! and, since Push 4b tranche 2b, [`TuningResolution::Function`] (plus
-//! [`PositionRatio`] and the marker [`TuningParameters`]). The other three are
-//! transcribed only when a built-in needs them, so their unconstructed payload
-//! subtrees (`ImportedTuningData`, `AdaptiveTuningParameters`, …) never become
-//! an unconsumed type surface (the `NOTEHEAD_ANCHORS` failure): `Adaptive`
-//! waits on `HarmonicContext`, which does not exist in Rust and whose
-//! completion `core_spec.tex` puts out of scope; `Overlay` and `Imported` wait
-//! on a built-in that needs a split-accidental keyboard or an imported
-//! `.scl`/MTS tuning respectively — nothing in the twenty-item catalog
-//! constructs either.
+//! [`TuningResolution::Function`] (Push 4b tranche 2b), and, since Push 4b's
+//! adaptive tranche, [`TuningResolution::Adaptive`] (plus [`PositionRatio`],
+//! the marker [`TuningParameters`], and the minimal [`HarmonicContext`]). The
+//! other two are transcribed only when a built-in needs them, so their
+//! unconstructed payload subtrees (`ImportedTuningData`, …) never become an
+//! unconsumed type surface (the `NOTEHEAD_ANCHORS` failure): `Overlay` and
+//! `Imported` wait on a built-in that needs a split-accidental keyboard or an
+//! imported `.scl`/MTS tuning respectively — nothing in the twenty-item
+//! catalog constructs either.
 //!
-//! [`built_in_tuning_system`] resolves **nineteen** of the twenty catalog
-//! identifiers (`req:tuning:builtin-tuning-catalog`): the six `tet-*` equal
-//! temperaments, the three `ji-static-5limit-*` just-intonation systems, and,
-//! since tranche 2b, the ten historical temperaments (`pythagorean`, the three
-//! `meantone-*`, `werckmeister-iii`/`-iv`, `vallotti`, `kirnberger-ii`/`-iii`,
-//! `young-ii`) — each built from its ratified fifth-tempering construction
-//! (`core_spec.tex` §"Temperament Constructions", `:3696`-`4011`) by
-//! `temperament_ratios`, never from a pasted cents table. Only
-//! `ji-adaptive-5limit` is still a real catalog entry whose resolution this
-//! module defers ([`TuningCatalogEntry::Deferred`]) — never a guessed
-//! frequency — because it needs `HarmonicContext`, which does not exist in
-//! Rust.
+//! [`built_in_tuning_system`] resolves **all twenty** catalog identifiers
+//! (`req:tuning:builtin-tuning-catalog`): the six `tet-*` equal temperaments,
+//! the three `ji-static-5limit-*` just-intonation systems, the ten historical
+//! temperaments (`pythagorean`, the three `meantone-*`,
+//! `werckmeister-iii`/`-iv`, `vallotti`, `kirnberger-ii`/`-iii`, `young-ii`,
+//! Push 4b tranche 2b) — each built from its ratified fifth-tempering
+//! construction (`core_spec.tex` §"Temperament Constructions",
+//! `:3696`-`4011`) by `temperament_ratios`, never from a pasted cents table —
+//! and, finally, `ji-adaptive-5limit`: [`TuningResolution::Adaptive`] bound to
+//! the one registered [`crate::pitch::AdaptiveTuningFunctionId`],
+//! `"default-v1"`, which is *exactly* `ji_static_5limit_ratios` re-anchored to
+//! the harmonic context's tonal centre (C, chromatic position 0, when none is
+//! supplied) — the same lattice construction the three static-JI built-ins
+//! use, never a second construction or a transcribed cents table. (An earlier
+//! draft of this module claimed adaptive resolution "needs `HarmonicContext`,
+//! which does not exist in Rust" — that was wrong even at the time: version 1
+//! is a pure function of position and anchor pitch class alone, per
+//! `req:tuning:adaptive-default-version`, and needed only the one-field
+//! `HarmonicContext` this module now defines.)
 //!
 //! ## The compatibility check, narrowed the same way tranche 1 narrowed it
 //!
@@ -55,14 +61,15 @@
 
 use core::num::NonZeroU32;
 
-use crate::graph::{Score, ScoreTuningContext};
+use crate::graph::{KeySignature, Score, ScoreTuningContext, StaffInstance};
 use crate::ids::{RegionId, StaffId, VoiceId};
 use crate::pitch::{
-    AcousticRealization, Pitch, PitchSpaceId, PitchSpacePosition, ReferencePitch, TuningFunctionId,
-    TuningReference, TuningSystemId, VoiceSelector,
+    AcousticRealization, AdaptiveTuningFunctionId, ChromaticPitchClass, Pitch, PitchSpaceId,
+    PitchSpacePosition, ReferencePitch, TuningFunctionId, TuningReference, TuningSystemId,
+    VoiceSelector,
 };
 use crate::pitch_space::{built_in_position_structure, JiRatio, PositionStructure};
-use crate::time::TimeAnchor;
+use crate::time::{EventPosition, MusicalPosition, TimeAnchor};
 
 // ===========================================================================
 // Types (Chapter 4 §"Tuning Systems" / §"Score Tuning Context and
@@ -104,10 +111,36 @@ pub struct PositionRatio {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct TuningParameters;
 
+/// Harmonic context supplied to adaptive tuning resolution (`core_spec.tex`
+/// §"Adaptive Tuning", `:3397-3428`). **Minimal**, not the four-field
+/// listing at `core_spec.tex:3411`
+/// (`concurrent: Vec<PitchId>`, `recent: Vec<(PitchId, f64)>`,
+/// `key_context: Option<KeyContext>`, `hints: Vec<ContextHint>`). Two of
+/// those fields are unimplementable by construction: `key_context` and
+/// `hints` are typed on `KeyContext` and `ContextHint`, which the
+/// specification leaves undefined on purpose (Forward References,
+/// `core_spec.tex:4111`: "defining them now would freeze a type surface on a
+/// chapter with no consumer"). The other two, `concurrent` and `recent`, are
+/// ignored by version 1 of the one adaptive function this module registers
+/// (`req:tuning:adaptive-default-version`: "`concurrent`, `recent`, `hints`,
+/// `parameters`, and mode are ignored by version 1") — carrying them here
+/// would mint exactly the unconsumed type surface the module doc's
+/// `NOTEHEAD_ANCHORS` note warns against. Each field arrives with the first
+/// function that actually consumes it.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
+pub struct HarmonicContext {
+    /// The active tonal centre as a chromatic pitch class (`0..=11`), if
+    /// known. `None` when no tonal centre could be determined (e.g.
+    /// [`derive_tonal_centre`] found no applicable key-signature change) —
+    /// the resolver then defaults to C (`req:tuning:adaptive-default-version`),
+    /// a defined default, never an error.
+    pub tonal_centre: Option<ChromaticPitchClass>,
+}
+
 /// How a tuning system resolves pitch-space positions to frequencies
 /// (`core_spec.tex:3309-3348`). **Deliberately partial**: the specification
-/// names six variants; this module defines three. See the module doc for
-/// which tranche completes each of the other three.
+/// names six variants; this module defines four. See the module doc for
+/// which tranche completes each of the other two.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TuningResolution {
     /// N-tone equal temperament: each step is the Nth root of the octave
@@ -132,6 +165,17 @@ pub enum TuningResolution {
         function: TuningFunctionId,
         parameters: TuningParameters,
     },
+    /// Adaptive resolution: frequency from position *plus* [`HarmonicContext`]
+    /// (`core_spec.tex:3397-3472`). The one built-in,
+    /// `"default-v1"` (`req:tuning:adaptive-default-version`), is a pure
+    /// function of (position, anchor pitch class): the position resolves
+    /// through `ji_static_5limit_ratios`, transposed so the harmonic
+    /// context's tonal centre takes the role of `1/1` (C, chromatic position
+    /// 0, when no context or no tonal centre is supplied — a defined
+    /// default, not a fallback). An unregistered `function` is a hard error
+    /// with no silent fallback, exactly as an unreserved `Function`
+    /// [`TuningFunctionId`] fails closed above.
+    Adaptive { function: AdaptiveTuningFunctionId },
 }
 
 /// A tuning system: a map from pitch-space positions to frequencies, given a
@@ -180,12 +224,16 @@ pub struct TuningOverride {
 
 /// A built-in catalog lookup result: a real, resolved [`TuningSystem`], or a
 /// real catalog identifier (`req:tuning:builtin-tuning-catalog` still
-/// requires it to resolve *eventually*) whose resolution this tranche
-/// defers. Distinguishing this from "not a built-in identifier at all"
-/// ([`built_in_tuning_system`] returning `None`) is what lets
+/// requires it to resolve *eventually*) whose resolution some tranche has
+/// not yet built. Distinguishing this from "not a built-in identifier at
+/// all" ([`built_in_tuning_system`] returning `None`) is what lets
 /// [`resolve_pitch_frequency`] report a genuinely unknown identifier and a
 /// known-but-deferred one differently, per the contract's "a clear 'not yet
-/// supported' error, never a fallback frequency."
+/// supported' error, never a fallback frequency." As of Push 4b's adaptive
+/// tranche, [`built_in_tuning_system`] constructs no `Deferred` entry — all
+/// twenty catalog identifiers resolve — but the variant stays: a future
+/// built-in (the 21st) could still land as a real, honestly-deferred entry
+/// rather than a silent guess.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TuningCatalogEntry {
     Resolved(TuningSystem),
@@ -196,7 +244,7 @@ pub enum TuningCatalogEntry {
 /// Looks up a built-in [`TuningSystem`] (Chapter 4 §"Built-in Catalog",
 /// `core_spec.tex:3656-3694`, `req:tuning:builtin-tuning-catalog`).
 ///
-/// Nineteen of the twenty resolve:
+/// All twenty resolve:
 ///
 /// * the six `tet-*` — [`TuningResolution::EqualTemperament`] from the
 ///   identifier's divisions. `tet-12` pairs with `cmn-12` (the default
@@ -215,13 +263,13 @@ pub enum TuningCatalogEntry {
 ///   built by `temperament_ratios` from its ratified fifth-tempering
 ///   construction (`core_spec.tex` §"Temperament Constructions",
 ///   `:3696`-`4011`), over `cmn-12`'s twelve chromatic positions exactly as
-///   the static-JI systems are.
-///
-/// The remaining one is a real catalog entry whose resolution is deferred,
-/// not guessed ([`TuningCatalogEntry::Deferred`]):
-///
-/// * `ji-adaptive-5limit` — needs `HarmonicContext`
-///   (`req:tuning:adaptive-default-version`), which does not exist in Rust.
+///   the static-JI systems are;
+/// * `ji-adaptive-5limit` — [`TuningResolution::Adaptive`] bound to the one
+///   registered [`AdaptiveTuningFunctionId`], `"default-v1"`
+///   (`req:tuning:adaptive-default-version`), over `cmn-12`'s twelve
+///   chromatic positions exactly as the static-JI systems. Resolving it to a
+///   frequency needs a harmonic context (or defaults to C without one) — see
+///   [`resolve_pitch_frequency`].
 ///
 /// `None` for any other identifier: not one of the twenty at all.
 pub fn built_in_tuning_system(id: &TuningSystemId) -> Option<TuningCatalogEntry> {
@@ -275,8 +323,26 @@ pub fn built_in_tuning_system(id: &TuningSystemId) -> Option<TuningCatalogEntry>
             description: Some(desc.to_owned()),
         })
     }
-    const DEFERRED_ADAPTIVE: &str =
-        "adaptive tuning needs HarmonicContext, which does not exist in Rust (out of scope this tranche)";
+    /// `ji-adaptive-5limit`'s catalog entry: [`TuningResolution::Adaptive`]
+    /// bound to the one registered [`AdaptiveTuningFunctionId`],
+    /// `"default-v1"` (`req:tuning:adaptive-default-version`), over
+    /// `cmn-12`'s twelve chromatic positions exactly as the static-JI
+    /// systems.
+    fn ji_adaptive() -> TuningCatalogEntry {
+        TuningCatalogEntry::Resolved(TuningSystem {
+            id: TuningSystemId::new("ji-adaptive-5limit"),
+            name: "ji-adaptive-5limit".to_owned(),
+            pitch_space: PitchSpaceId::new("cmn-12"),
+            resolution: TuningResolution::Adaptive {
+                function: AdaptiveTuningFunctionId::new("default-v1"),
+            },
+            description: Some(
+                "Adaptive 5-limit just intonation: the static 5-limit construction, \
+                 re-anchored per resolution to the prevailing tonal centre (C by default)."
+                    .to_owned(),
+            ),
+        })
+    }
     match id.as_str() {
         "tet-12" => Some(tet(
             "tet-12",
@@ -323,7 +389,7 @@ pub fn built_in_tuning_system(id: &TuningSystemId) -> Option<TuningCatalogEntry>
             "young-ii",
             "Thomas Young's second temperament.",
         )),
-        "ji-adaptive-5limit" => Some(TuningCatalogEntry::Deferred(DEFERRED_ADAPTIVE)),
+        "ji-adaptive-5limit" => Some(ji_adaptive()),
         _ => None,
     }
 }
@@ -802,6 +868,27 @@ pub enum TuningResolutionError {
     /// [`PitchSpacePosition`] variant in play, or between its chromatic
     /// cardinality and the tuning system's own divisions/table length.
     PositionUnavailable,
+    /// The resolved tuning system is [`TuningResolution::Adaptive`] naming an
+    /// [`AdaptiveTuningFunctionId`] other than the one registered built-in,
+    /// `"default-v1"` (`req:tuning:adaptive-default-version`'s final clause:
+    /// "An unregistered or unknown `AdaptiveTuningFunctionId` MUST be a hard
+    /// error; there is no silent fallback"). Never falls back to the C
+    /// default.
+    UnregisteredAdaptiveFunction(AdaptiveTuningFunctionId),
+    /// A [`crate::graph::KeySignatureChange`]'s anchor could not be ordered
+    /// against a pitch's onset while deriving an adaptive tonal centre
+    /// ([`derive_tonal_centre`], `req:tuning:adaptive-anchor-derivation`) —
+    /// either the two live on clocks that cannot be compared (a wall-clock
+    /// anchor against a musical onset, or vice versa), or the anchor is an
+    /// indirect form (`Event`/`Measure`/`Region`) the caller's injected
+    /// resolver could not place. A **deliberate deferral**, like
+    /// [`Self::IncompatiblePitchSpace`]: it says "this score uses an anchor
+    /// form the adaptive resolver does not order yet," never "your key
+    /// signature is wrong" — so it is never confused with a malformed score.
+    AnchorNotOrderable {
+        anchor: TimeAnchor,
+        reason: &'static str,
+    },
 }
 
 impl core::fmt::Display for TuningResolutionError {
@@ -826,6 +913,14 @@ impl core::fmt::Display for TuningResolutionError {
             Self::PositionUnavailable => {
                 f.write_str("the pitch space position could not be placed on the tuning system's coordinate frame")
             }
+            Self::UnregisteredAdaptiveFunction(id) => write!(
+                f,
+                "'{id}' is not a registered adaptive tuning function (only \"default-v1\" is built in)"
+            ),
+            Self::AnchorNotOrderable { anchor, reason } => write!(
+                f,
+                "cannot order the key-signature-change anchor {anchor:?} against the pitch's onset: {reason}"
+            ),
         }
     }
 }
@@ -925,6 +1020,17 @@ fn coordinate_ratio(resolution: &TuningResolution, s: i64) -> Option<f64> {
             let octave = i32::try_from(s.div_euclid(12)).ok()?;
             Some(ratios[degree as usize] * 2f64.powi(octave))
         }
+        TuningResolution::Adaptive { .. } => {
+            // An `Adaptive` resolution carries no anchor of its own: the
+            // anchor comes from a `HarmonicContext` this function is never
+            // given. `resolve_pitch_frequency` always converts `Adaptive` to
+            // a concrete `PerPositionRatios` (via `ji_static_5limit_ratios`)
+            // before reaching this layer; one arriving here unconverted (a
+            // caller invoking `frequency_for_position` directly) has no
+            // anchor to consult, so this fails closed exactly like an
+            // unregistered `Function` id, never guessing C.
+            None
+        }
     }
 }
 
@@ -962,6 +1068,12 @@ pub fn frequency_for_position(
             // cardinality instead — 12 for `cmn-12`
             // (`spec/CONTRACT_PUSH4B_TEMPERAMENTS.md` item 1).
             TuningResolution::Function { .. } => chromatic_cardinality(&structure)
+                .ok_or(TuningResolutionError::PositionUnavailable)?,
+            // Same reasoning as `Function`: `Adaptive` borrows the pitch
+            // space's chromatic cardinality rather than carrying its own.
+            // (In practice `resolve_pitch_frequency` never leaves `Adaptive`
+            // unconverted this far — see `coordinate_ratio`.)
+            TuningResolution::Adaptive { .. } => chromatic_cardinality(&structure)
                 .ok_or(TuningResolutionError::PositionUnavailable)?,
         };
     let s = absolute_coordinate(position, &structure, divisions)
@@ -1073,25 +1185,172 @@ pub fn resolve_tuning_scope(
 // 5), frequency.
 // ===========================================================================
 
-/// Locates the region and staff that structurally own `voice`: a `Voice`
-/// belongs to exactly one `StaffInstance`, which belongs to exactly one
-/// `Region` (Chapter 5's containment tree — ownership, not a derived
-/// time-range query). `None` if no region in `score.canvas.regions` owns a
-/// voice with this id.
-fn locate_voice(score: &Score, voice: VoiceId) -> Option<(RegionId, StaffId)> {
+/// Locates the region, staff, and **staff instance** that structurally own
+/// `voice`: a `Voice` belongs to exactly one `StaffInstance`, which belongs
+/// to exactly one `Region` (Chapter 5's containment tree — ownership, not a
+/// derived time-range query). `None` if no region in `score.canvas.regions`
+/// owns a voice with this id.
+///
+/// Returns the instance itself, not just its id: `key_sequence`
+/// (`req:tuning:adaptive-anchor-derivation`) lives on the *instance*
+/// (`StaffInstance::key_sequence`), not on the underlying `Staff`. An earlier
+/// version of this function returned only `(RegionId, StaffId)`, discarding
+/// the instance it already had in hand — the one structural blocker that
+/// made adaptive resolution impossible before [`derive_tonal_centre`] existed.
+fn locate_voice(score: &Score, voice: VoiceId) -> Option<(RegionId, StaffId, &StaffInstance)> {
     for region in &score.canvas.regions {
         for instance in region.staff_instances() {
             if instance.voices.iter().any(|v| v.id == voice) {
-                return Some((region.id, instance.staff));
+                return Some((region.id, instance.staff, instance));
             }
         }
     }
     None
 }
 
+/// A [`TimeAnchor`] or [`EventPosition`] placed on one common, directly
+/// comparable timeline — either absolute wall-clock nanoseconds or a
+/// region-relative [`MusicalPosition`]. [`derive_tonal_centre`] only ever
+/// compares two `Coordinate`s built from the *same* onset (see
+/// `anchor_coordinate`), so the two variants are never compared against each
+/// other in practice.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Coordinate {
+    WallClock(i64),
+    Musical(MusicalPosition),
+}
+
+/// Places `anchor` on the same clock as `onset`, or fails closed with a
+/// distinct, reported [`TuningResolutionError::AnchorNotOrderable`] — never
+/// a guessed ordering (`req:tuning:adaptive-anchor-derivation`).
+///
+/// Two shapes are unambiguously determinable: a [`TimeAnchor::WallClock`]
+/// anchor against a [`EventPosition::WallClock`] onset compares directly by
+/// nanosecond; any other anchor against a [`EventPosition::Musical`] onset is
+/// placed via the caller-injected `resolve` — the same `impl
+/// Fn(&TimeAnchor) -> Option<MusicalPosition>` shape
+/// `TempoMap::musical_to_wallclock_with` injects (`tempo.rs:331`), reused
+/// here rather than reinvented so this module stays out of the time-model
+/// business. Everything else — a wall-clock anchor against a musical onset
+/// or vice versa (cross-clock), or an indirect anchor the injected resolver
+/// declines to place — fails closed rather than guessing.
+fn anchor_coordinate(
+    anchor: &TimeAnchor,
+    onset: &EventPosition,
+    resolve: &impl Fn(&TimeAnchor) -> Option<MusicalPosition>,
+) -> Result<Coordinate, TuningResolutionError> {
+    match (anchor, onset) {
+        (TimeAnchor::WallClock { time }, EventPosition::WallClock(_)) => {
+            Ok(Coordinate::WallClock(time.0))
+        }
+        (TimeAnchor::WallClock { .. }, EventPosition::Musical(_)) => {
+            Err(TuningResolutionError::AnchorNotOrderable {
+                anchor: anchor.clone(),
+                reason: "a wall-clock key-signature anchor cannot be ordered against a \
+                         musical-time onset (cross-clock comparison)",
+            })
+        }
+        (_, EventPosition::WallClock(_)) => Err(TuningResolutionError::AnchorNotOrderable {
+            anchor: anchor.clone(),
+            reason: "a non-wall-clock key-signature anchor cannot be ordered against a \
+                     wall-clock onset (cross-clock comparison)",
+        }),
+        (_, EventPosition::Musical(_)) => {
+            resolve(anchor).map(Coordinate::Musical).ok_or_else(|| {
+                TuningResolutionError::AnchorNotOrderable {
+                    anchor: anchor.clone(),
+                    reason: "the key-signature anchor is an indirect form (Event/Measure/Region) \
+                         the injected resolver could not place on the musical timeline",
+                }
+            })
+        }
+    }
+}
+
+/// Derives the adaptive tonal centre from the score graph
+/// (`req:tuning:adaptive-anchor-derivation`, `core_spec.tex:3474-3489`): the
+/// prevailing key signature on the staff instance containing `voice` —
+/// specifically, the *latest* `KeySignatureChange` in that instance's
+/// `key_sequence` whose anchor is at or before `onset` — converted to a
+/// chromatic pitch class by `anchor_pc = (7 * fifths).rem_euclid(12)` (never
+/// `%`: `fifths` runs negative for flat keys, `KeySignature::MIN_FIFTHS ==
+/// -7`, and `%` would yield a negative pitch class). Mode is **not**
+/// consulted: `KeySignature` carries no mode field at all, so a signature of
+/// 0 anchors at C whether the prevailing key is C major or A minor —
+/// structurally guaranteed, not merely by omission.
+///
+/// `resolve` places any non-wall-clock `KeySignatureChange` anchor on the
+/// musical timeline for comparison against a musical `onset` — see
+/// `anchor_coordinate`, which this function uses for every entry in
+/// `key_sequence`; if *any* entry's anchor cannot be ordered against
+/// `onset`, this fails closed rather than risk skipping past the one that
+/// would have been the true prevailing signature.
+///
+/// `Ok(None)` when no key-signature change applies at or before `onset` —
+/// the resolver then defaults to C (`req:tuning:adaptive-default-version`);
+/// that default is applied in [`resolve_pitch_frequency`], not here, since a
+/// missing tonal centre is a defined default, not this function's failure to
+/// report. `Err` only for a caller error (`voice` unreachable from the score
+/// graph) or an anchor this function cannot order.
+pub fn derive_tonal_centre(
+    score: &Score,
+    voice: VoiceId,
+    onset: &EventPosition,
+    resolve: impl Fn(&TimeAnchor) -> Option<MusicalPosition>,
+) -> Result<Option<ChromaticPitchClass>, TuningResolutionError> {
+    let (_, _, instance) =
+        locate_voice(score, voice).ok_or(TuningResolutionError::VoiceNotFound(voice))?;
+    let onset_coordinate = match onset {
+        EventPosition::WallClock(t) => Coordinate::WallClock(t.0),
+        EventPosition::Musical(p) => Coordinate::Musical(p.clone()),
+    };
+    let mut prevailing: Option<(Coordinate, KeySignature)> = None;
+    for change in &instance.key_sequence {
+        let coordinate = anchor_coordinate(&change.anchor, onset, &resolve)?;
+        if coordinate <= onset_coordinate {
+            let is_later = match &prevailing {
+                Some((best, _)) => coordinate > *best,
+                None => true,
+            };
+            if is_later {
+                prevailing = Some((coordinate, change.key));
+            }
+        }
+    }
+    Ok(prevailing.map(|(_, key)| {
+        let anchor_pc = (7 * i32::from(key.fifths())).rem_euclid(12);
+        ChromaticPitchClass::new(anchor_pc as u8)
+            .expect("(7 * fifths).rem_euclid(12) is always in 0..=11")
+    }))
+}
+
+/// The anchor pitch class for adaptive resolution: a hard error if `function`
+/// is not the one reserved built-in, `"default-v1"`
+/// (`req:tuning:adaptive-default-version`'s final clause — no silent
+/// fallback to C), else `context`'s tonal centre when supplied, else C
+/// (chromatic position 0 — `core_spec.tex:3452-3453`'s spec-mandated
+/// default, not a fail-closed case).
+fn adaptive_anchor(
+    function: &AdaptiveTuningFunctionId,
+    context: Option<&HarmonicContext>,
+) -> Result<i32, TuningResolutionError> {
+    if function.as_str() != "default-v1" {
+        return Err(TuningResolutionError::UnregisteredAdaptiveFunction(
+            function.clone(),
+        ));
+    }
+    Ok(context
+        .and_then(|c| c.tonal_centre)
+        .map(|pc| i32::from(pc.get()))
+        .unwrap_or(0))
+}
+
 /// The full resolver: walks the five scopes, checks compatibility, and
 /// computes the frequency in Hz at which `pitch` sounds, given its location
-/// (`voice`) in `score`.
+/// (`voice`) in `score`. `context` supplies the harmonic context adaptive
+/// tuning consumes (`core_spec.tex:3426-3428`: "The harmonic context is
+/// constructed by the audio engine ... and passed to the tuning resolution
+/// function"); static systems ignore it entirely.
 ///
 /// Step 1's other short-circuit — [`AcousticRealization::AbsoluteHz`] —
 /// bypasses everything else: the frequency is already fixed, so neither the
@@ -1099,21 +1358,30 @@ fn locate_voice(score: &Score, voice: VoiceId) -> Option<(RegionId, StaffId)> {
 /// [`AcousticRealization::CentsOffset`] is applied multiplicatively on top
 /// of the resolved base frequency, per its own documented semantics ("an
 /// explicit offset in cents from the tuning system's result").
+///
+/// Resolution of [`TuningResolution::Adaptive`]: an unregistered `function`
+/// is a hard error (see `adaptive_anchor`); otherwise the anchor is
+/// `context`'s tonal centre, or C when none is supplied, and the position
+/// resolves through `ji_static_5limit_ratios(anchor)` — *exactly* the call
+/// the three static `ji-static-5limit-*` built-ins make, transposed to a
+/// runtime anchor rather than one of the three fixed ones. No second lattice
+/// construction, no cents table.
 pub fn resolve_pitch_frequency(
     score: &Score,
     pitch: &Pitch,
     voice: VoiceId,
+    context: Option<&HarmonicContext>,
 ) -> Result<f64, TuningResolutionError> {
     if let AcousticRealization::AbsoluteHz(hz) = pitch.acoustic.realization {
         return Ok(hz.get());
     }
-    let (region, staff) =
+    let (region, staff, _instance) =
         locate_voice(score, voice).ok_or(TuningResolutionError::VoiceNotFound(voice))?;
     let resolved = resolve_tuning_scope(pitch, voice, staff, region, &score.tuning_context);
     let entry = built_in_tuning_system(&resolved.tuning_system).ok_or_else(|| {
         TuningResolutionError::UnknownTuningSystem(resolved.tuning_system.clone())
     })?;
-    let system = match entry {
+    let mut system = match entry {
         TuningCatalogEntry::Resolved(system) => system,
         TuningCatalogEntry::Deferred(reason) => {
             return Err(TuningResolutionError::NotYetSupported {
@@ -1130,6 +1398,13 @@ pub fn resolve_pitch_frequency(
             tuning_system_pitch_space: system.pitch_space,
         });
     }
+    if let TuningResolution::Adaptive { function } = &system.resolution {
+        let anchor = adaptive_anchor(function, context)?;
+        // Reuse the static-JI construction verbatim, re-anchored at runtime
+        // — see `ji_static_5limit_ratios`'s own doc for why this is the same
+        // call the three static built-ins make, not a second construction.
+        system.resolution = TuningResolution::PerPositionRatios(ji_static_5limit_ratios(anchor));
+    }
     let base =
         frequency_for_position(&pitch.scale_position.position, &system, &resolved.reference)?;
     match pitch.acoustic.realization {
@@ -1143,8 +1418,8 @@ pub fn resolve_pitch_frequency(
 mod tests {
     use super::*;
     use crate::graph::{
-        Canvas, MetricTimeModel, Region, RegionContent, RegionTimeModel, StaffBasedContent,
-        StaffExtent, StaffInstance, TimeExtent, Voice,
+        Canvas, KeySignatureChange, MetricTimeModel, Region, RegionContent, RegionTimeModel,
+        StaffBasedContent, StaffExtent, StaffInstance, TimeExtent, Voice,
     };
     use crate::ids::{IdentityContext, ReplicaId, StaffInstanceId};
     use crate::pitch::{AcousticPitch, CmnNominal, ScalePosition};
@@ -1195,6 +1470,24 @@ mod tests {
         }
     }
 
+    /// A `KeySignatureChange` anchored at wall-clock nanosecond `t`, for the
+    /// adaptive-anchor-derivation tests below.
+    fn key_change(t: i64, fifths: i8) -> KeySignatureChange {
+        KeySignatureChange {
+            anchor: TimeAnchor::WallClock {
+                time: WallClockTime(t),
+            },
+            key: KeySignature::new(fifths).expect("fifths within -7..=7"),
+        }
+    }
+
+    /// A resolver that never places a `TimeAnchor` on the musical timeline --
+    /// sufficient for the wall-clock-only fixtures below, where
+    /// `derive_tonal_centre` never needs it.
+    fn no_musical_resolve(_: &TimeAnchor) -> Option<MusicalPosition> {
+        None
+    }
+
     /// A minimal score: one region, one staff instance, two voices — enough
     /// for `locate_voice` and the scope walk, nothing more.
     struct Fixture {
@@ -1242,7 +1535,8 @@ mod tests {
     fn tet12_a4_440_resolves_c5_to_523_2511_hz() {
         let f = fixture();
         let c5 = cmn_pitch("cmn-12", CmnNominal::C, 0, 5);
-        let freq = resolve_pitch_frequency(&f.score, &c5, f.voice_a).expect("tet-12 resolves");
+        let freq =
+            resolve_pitch_frequency(&f.score, &c5, f.voice_a, None).expect("tet-12 resolves");
         assert!(
             cents(0.01).within(cents_between(freq, 523.2511), 0.0),
             "expected ~523.2511 Hz, got {freq}"
@@ -1278,10 +1572,10 @@ mod tests {
         tet_score.tuning_context.reference = c4_ref;
 
         let e4 = cmn_pitch("cmn-12", CmnNominal::E, 0, 4);
-        let ji_freq = resolve_pitch_frequency(&ji_score, &e4, f.voice_a)
+        let ji_freq = resolve_pitch_frequency(&ji_score, &e4, f.voice_a, None)
             .expect("ji-static-5limit-C resolves");
         let tet_freq =
-            resolve_pitch_frequency(&tet_score, &e4, f.voice_a).expect("tet-12 resolves");
+            resolve_pitch_frequency(&tet_score, &e4, f.voice_a, None).expect("tet-12 resolves");
         // Just major third 5/4 (386.31 c) vs equal-tempered (400 c): the just
         // third is *flatter*, by the syntonic comma (~13.7 c).
         assert!(
@@ -1345,10 +1639,10 @@ mod tests {
             ),
         });
         let a4 = cmn_pitch("cmn-12", CmnNominal::A, 0, 4);
-        let in_voice_a =
-            resolve_pitch_frequency(&f.score, &a4, f.voice_a).expect("resolves under the override");
-        let in_voice_b =
-            resolve_pitch_frequency(&f.score, &a4, f.voice_b).expect("resolves under the default");
+        let in_voice_a = resolve_pitch_frequency(&f.score, &a4, f.voice_a, None)
+            .expect("resolves under the override");
+        let in_voice_b = resolve_pitch_frequency(&f.score, &a4, f.voice_b, None)
+            .expect("resolves under the default");
         assert!(
             cents(0.01).within(cents_between(in_voice_a, 415.0), 0.0),
             "voice A's own reference override must apply: got {in_voice_a}"
@@ -1368,7 +1662,7 @@ mod tests {
         // space stays cmn-12 (unchanged) — a genuine, catchable mismatch.
         f.score.tuning_context.default_tuning_system = TuningSystemId::new("tet-19");
         let c5 = cmn_pitch("cmn-12", CmnNominal::C, 0, 5);
-        let err = resolve_pitch_frequency(&f.score, &c5, f.voice_a)
+        let err = resolve_pitch_frequency(&f.score, &c5, f.voice_a, None)
             .expect_err("must reject the mismatch");
         assert!(
             matches!(err, TuningResolutionError::IncompatiblePitchSpace { .. }),
@@ -1376,30 +1670,33 @@ mod tests {
         );
     }
 
-    // -- Proof of life 5: a deferred system fails closed. ---------------------
+    // -- Proof of life 5: `ji-adaptive-5limit` now resolves; a genuinely -----
+    // -- unknown identifier still fails closed, distinctly.               ---
 
     #[test]
-    fn deferred_ji_adaptive_fails_closed() {
-        // As of Push 4b tranche 2b, `pythagorean` (and the other nine
-        // historical temperaments) resolve — see the temperament tests
-        // below. `ji-adaptive-5limit` is the one remaining catalog entry
-        // whose resolution is still deferred (it needs `HarmonicContext`,
-        // which does not exist in Rust).
+    fn ji_adaptive_5limit_resolves_and_unknown_ids_still_fail_closed() {
+        // Push 4b's adaptive tranche: `ji-adaptive-5limit` is no longer
+        // deferred (`TuningCatalogEntry::Deferred`) -- it resolves like every
+        // other built-in, closing the last entry of the twenty-item catalog.
+        // This test used to prove the opposite (a `NotYetSupported` error);
+        // it inverts rather than being deleted, per the contract.
         let f = fixture();
         let c5 = cmn_pitch("cmn-12", CmnNominal::C, 0, 5);
         let mut score = f.score.clone();
         score.tuning_context.default_tuning_system = TuningSystemId::new("ji-adaptive-5limit");
-        let err = resolve_pitch_frequency(&score, &c5, f.voice_a)
-            .expect_err("ji-adaptive-5limit must not resolve to a frequency");
+        let freq = resolve_pitch_frequency(&score, &c5, f.voice_a, None)
+            .expect("ji-adaptive-5limit must now resolve to a frequency");
         assert!(
-            matches!(err, TuningResolutionError::NotYetSupported { .. }),
-            "ji-adaptive-5limit must report NotYetSupported (a known-but-deferred identifier), got {err:?}"
+            freq.is_finite() && freq > 0.0,
+            "expected a real, positive frequency, got {freq}"
         );
-        // A genuinely unknown identifier reports differently, so the two
-        // failure modes never blur together.
+
+        // A genuinely unknown identifier still reports differently, so the
+        // two failure modes this test used to distinguish don't blur now
+        // that the catalog's one deferred entry is gone.
         let mut score = f.score.clone();
         score.tuning_context.default_tuning_system = TuningSystemId::new("not-a-built-in-system");
-        let err = resolve_pitch_frequency(&score, &c5, f.voice_a)
+        let err = resolve_pitch_frequency(&score, &c5, f.voice_a, None)
             .expect_err("unknown id must not resolve");
         assert!(matches!(err, TuningResolutionError::UnknownTuningSystem(_)));
     }
@@ -1414,7 +1711,7 @@ mod tests {
         f.score.tuning_context.default_tuning_system = TuningSystemId::new("not-a-built-in-system");
         let mut pinned = cmn_pitch("cmn-12", CmnNominal::C, 0, 5);
         pinned.acoustic.realization = AcousticRealization::absolute_hz(500.0).unwrap();
-        let freq = resolve_pitch_frequency(&f.score, &pinned, f.voice_a)
+        let freq = resolve_pitch_frequency(&f.score, &pinned, f.voice_a, None)
             .expect("AbsoluteHz must resolve without consulting the tuning system at all");
         assert_eq!(freq, 500.0);
     }
@@ -1448,7 +1745,7 @@ mod tests {
             },
         };
         let freq =
-            resolve_pitch_frequency(&f.score, &one_step, f.voice_a).expect("tet-19 resolves");
+            resolve_pitch_frequency(&f.score, &one_step, f.voice_a, None).expect("tet-19 resolves");
         let expected = 440.0 * 2f64.powf(1.0 / 19.0);
         assert!(
             cents(0.01).within(cents_between(freq, expected), 0.0),
@@ -1617,7 +1914,7 @@ mod tests {
         for id in TEN {
             let mut score = f.score.clone();
             score.tuning_context.default_tuning_system = TuningSystemId::new(id);
-            let freq = resolve_pitch_frequency(&score, &c5, f.voice_a)
+            let freq = resolve_pitch_frequency(&score, &c5, f.voice_a, None)
                 .unwrap_or_else(|e| panic!("{id} must resolve to a frequency, got error: {e}"));
             assert!(
                 freq.is_finite() && freq > 0.0,
@@ -1633,10 +1930,10 @@ mod tests {
         let mut wm_score = f.score.clone();
         wm_score.tuning_context.default_tuning_system = TuningSystemId::new("werckmeister-iii");
         // `f.score` already defaults to tet-12.
-        let wm_freq = resolve_pitch_frequency(&wm_score, &c_sharp, f.voice_a)
+        let wm_freq = resolve_pitch_frequency(&wm_score, &c_sharp, f.voice_a, None)
             .expect("werckmeister-iii resolves");
         let tet_freq =
-            resolve_pitch_frequency(&f.score, &c_sharp, f.voice_a).expect("tet-12 resolves");
+            resolve_pitch_frequency(&f.score, &c_sharp, f.voice_a, None).expect("tet-12 resolves");
         let diff = cents_between(wm_freq, tet_freq);
         assert!(
             diff > 0.5,
@@ -1679,5 +1976,332 @@ mod tests {
             matches!(err, TuningResolutionError::PositionUnavailable),
             "expected PositionUnavailable, got {err:?}"
         );
+    }
+
+    // =========================================================================
+    // Push 4b's adaptive tranche: `ji-adaptive-5limit`, `HarmonicContext`, and
+    // `derive_tonal_centre`. Every assertion below either recomputes its
+    // expected value from the arithmetic (`req:tuning:adaptive-anchor-derivation`'s
+    // `(7 * fifths).rem_euclid(12)`) or cross-checks against the already-tested
+    // static-JI built-ins, never a hardcoded frequency copied from nowhere.
+    // =========================================================================
+
+    /// An `Adaptive` `frequency_for_position` reached directly (never through
+    /// `resolve_pitch_frequency`, which always converts `Adaptive` to a
+    /// concrete `PerPositionRatios` first) has no anchor to consult and must
+    /// fail closed, not guess C -- the same shape as
+    /// `unknown_tuning_function_id_fails_closed`.
+    #[test]
+    fn adaptive_resolution_reaching_frequency_for_position_directly_fails_closed() {
+        assert_eq!(
+            coordinate_ratio(
+                &TuningResolution::Adaptive {
+                    function: AdaptiveTuningFunctionId::new("default-v1"),
+                },
+                0,
+            ),
+            None
+        );
+
+        let system = TuningSystem {
+            id: TuningSystemId::new("bogus-adaptive"),
+            name: "bogus-adaptive".to_owned(),
+            pitch_space: PitchSpaceId::new("cmn-12"),
+            resolution: TuningResolution::Adaptive {
+                function: AdaptiveTuningFunctionId::new("default-v1"),
+            },
+            description: None,
+        };
+        let c5_position = PitchSpacePosition::Cmn {
+            nominal: CmnNominal::C,
+            alteration: 0,
+            octave: 5,
+        };
+        let err = frequency_for_position(&c5_position, &system, &ReferencePitch::a440())
+            .expect_err("an unconverted Adaptive resolution must never resolve to a frequency");
+        assert!(
+            matches!(err, TuningResolutionError::PositionUnavailable),
+            "expected PositionUnavailable, got {err:?}"
+        );
+    }
+
+    /// `req:tuning:adaptive-default-version`'s final clause: an unregistered
+    /// `AdaptiveTuningFunctionId` is a hard error, never a silent fallback to
+    /// the C default.
+    #[test]
+    fn unregistered_adaptive_function_id_fails_closed_with_no_fallback_to_c() {
+        let bogus = AdaptiveTuningFunctionId::new("not-default-v1");
+        let err = adaptive_anchor(&bogus, None)
+            .expect_err("an unregistered adaptive function id must be a hard error");
+        assert!(
+            matches!(err, TuningResolutionError::UnregisteredAdaptiveFunction(_)),
+            "expected UnregisteredAdaptiveFunction, got {err:?}"
+        );
+    }
+
+    /// The spec-mandated default (`core_spec.tex:3452-3453`): no context, or
+    /// a context whose `tonal_centre` is `None`, resolves at anchor C --
+    /// bit-identical to `ji-static-5limit-C`'s result for the same position.
+    /// This pins the default against a future "fail closed when context is
+    /// missing" refactor -- a missing tonal centre is not an error.
+    #[test]
+    fn adaptive_with_no_context_defaults_to_c_matching_ji_static_5limit_c() {
+        let f = fixture();
+        let e4 = cmn_pitch("cmn-12", CmnNominal::E, 0, 4);
+
+        let mut adaptive_score = f.score.clone();
+        adaptive_score.tuning_context.default_tuning_system =
+            TuningSystemId::new("ji-adaptive-5limit");
+        let mut static_score = f.score.clone();
+        static_score.tuning_context.default_tuning_system =
+            TuningSystemId::new("ji-static-5limit-C");
+
+        let no_context = resolve_pitch_frequency(&adaptive_score, &e4, f.voice_a, None)
+            .expect("adaptive resolves with no context at all");
+        let empty_tonal_centre = resolve_pitch_frequency(
+            &adaptive_score,
+            &e4,
+            f.voice_a,
+            Some(&HarmonicContext { tonal_centre: None }),
+        )
+        .expect("adaptive resolves with an empty tonal centre");
+        let static_c = resolve_pitch_frequency(&static_score, &e4, f.voice_a, None)
+            .expect("ji-static-5limit-C resolves");
+
+        assert_eq!(
+            no_context.to_bits(),
+            static_c.to_bits(),
+            "no context: {no_context} != ji-static-5limit-C's {static_c}"
+        );
+        assert_eq!(
+            empty_tonal_centre.to_bits(),
+            static_c.to_bits(),
+            "empty tonal centre: {empty_tonal_centre} != ji-static-5limit-C's {static_c}"
+        );
+    }
+
+    /// The transposition identity the reviewer will check by hand: adaptive
+    /// at anchor 0 (C) matches `ji-static-5limit-C` position-for-position,
+    /// and at anchor 7 (G) matches `ji-static-5limit-G` -- because adaptive
+    /// resolution *is* `ji_static_5limit_ratios` called with a runtime
+    /// anchor, not a second construction.
+    #[test]
+    fn adaptive_transposition_identity_matches_static_c_and_g() {
+        let f = fixture();
+        let naturals = [
+            CmnNominal::C,
+            CmnNominal::D,
+            CmnNominal::E,
+            CmnNominal::F,
+            CmnNominal::G,
+            CmnNominal::A,
+            CmnNominal::B,
+        ];
+        for (anchor_pc, static_id) in [(0u8, "ji-static-5limit-C"), (7u8, "ji-static-5limit-G")] {
+            let mut adaptive_score = f.score.clone();
+            adaptive_score.tuning_context.default_tuning_system =
+                TuningSystemId::new("ji-adaptive-5limit");
+            let mut static_score = f.score.clone();
+            static_score.tuning_context.default_tuning_system = TuningSystemId::new(static_id);
+            let ctx = HarmonicContext {
+                tonal_centre: ChromaticPitchClass::new(anchor_pc),
+            };
+            for nominal in naturals {
+                let pitch = cmn_pitch("cmn-12", nominal, 0, 4);
+                let adaptive_freq =
+                    resolve_pitch_frequency(&adaptive_score, &pitch, f.voice_a, Some(&ctx))
+                        .unwrap_or_else(|e| panic!("adaptive must resolve {nominal:?}: {e}"));
+                let static_freq = resolve_pitch_frequency(&static_score, &pitch, f.voice_a, None)
+                    .unwrap_or_else(|e| panic!("{static_id} must resolve {nominal:?}: {e}"));
+                assert_eq!(
+                    adaptive_freq.to_bits(),
+                    static_freq.to_bits(),
+                    "anchor {anchor_pc}, {nominal:?}: adaptive {adaptive_freq} != {static_id} {static_freq}"
+                );
+            }
+        }
+    }
+
+    /// `req:tuning:adaptive-default-version`'s closing clause: "No adjustment
+    /// is ever carried forward from a previous resolution." Resolve the same
+    /// position repeatedly, interleaved with other resolutions in between --
+    /// a stateful (comma-drifting) implementation would let those leak in;
+    /// this one never does, by construction (every call recomputes from the
+    /// anchor and reference alone).
+    #[test]
+    fn adaptive_resolution_is_comma_drift_free_by_shape() {
+        let f = fixture();
+        let mut score = f.score.clone();
+        score.tuning_context.default_tuning_system = TuningSystemId::new("ji-adaptive-5limit");
+        let e4 = cmn_pitch("cmn-12", CmnNominal::E, 0, 4);
+        let c4 = cmn_pitch("cmn-12", CmnNominal::C, 0, 4);
+        let g4 = cmn_pitch("cmn-12", CmnNominal::G, 0, 4);
+        let ctx = HarmonicContext {
+            tonal_centre: ChromaticPitchClass::new(0),
+        };
+
+        let first =
+            resolve_pitch_frequency(&score, &e4, f.voice_a, Some(&ctx)).expect("adaptive resolves");
+        let _ =
+            resolve_pitch_frequency(&score, &c4, f.voice_a, Some(&ctx)).expect("adaptive resolves");
+        let _ =
+            resolve_pitch_frequency(&score, &g4, f.voice_a, Some(&ctx)).expect("adaptive resolves");
+        let second =
+            resolve_pitch_frequency(&score, &e4, f.voice_a, Some(&ctx)).expect("adaptive resolves");
+        let _ =
+            resolve_pitch_frequency(&score, &g4, f.voice_a, Some(&ctx)).expect("adaptive resolves");
+        let _ =
+            resolve_pitch_frequency(&score, &c4, f.voice_a, Some(&ctx)).expect("adaptive resolves");
+        let third =
+            resolve_pitch_frequency(&score, &e4, f.voice_a, Some(&ctx)).expect("adaptive resolves");
+
+        assert_eq!(first.to_bits(), second.to_bits());
+        assert_eq!(second.to_bits(), third.to_bits());
+    }
+
+    /// `req:tuning:adaptive-anchor-derivation`: mode is not consulted.
+    /// `KeySignature` carries no mode field at all, so `fifths = 0` anchors
+    /// at C whether the prevailing key is conceived as C major or A minor --
+    /// there is no mode input `derive_tonal_centre` could consult even if it
+    /// tried. This pins the arithmetic for that no-mode-information case.
+    #[test]
+    fn key_signature_zero_fifths_anchors_at_c_regardless_of_mode() {
+        let mut f = fixture();
+        {
+            let region = &mut f.score.canvas.regions[0];
+            let instances = region.content.staff_instances_mut().unwrap();
+            instances[0].key_sequence = vec![key_change(0, 0)];
+        }
+        let onset = EventPosition::WallClock(WallClockTime(500));
+        let pc = derive_tonal_centre(&f.score, f.voice_a, &onset, no_musical_resolve)
+            .expect("must resolve")
+            .expect("a prevailing key exists");
+        assert_eq!(
+            pc.get(),
+            0,
+            "fifths=0 must anchor at C (pc 0), got {}",
+            pc.get()
+        );
+    }
+
+    /// `req:tuning:adaptive-anchor-derivation`'s sign-bug trap: `fifths = -1`
+    /// (one flat) gives `(7 * -1).rem_euclid(12) = 5` (F). A buggy `%`
+    /// implementation would yield `-7`, an invalid pitch class -- this test
+    /// dies under that mutation.
+    #[test]
+    fn flat_key_signature_anchor_uses_rem_euclid_not_percent() {
+        let mut f = fixture();
+        {
+            let region = &mut f.score.canvas.regions[0];
+            let instances = region.content.staff_instances_mut().unwrap();
+            instances[0].key_sequence = vec![key_change(0, -1)];
+        }
+        let onset = EventPosition::WallClock(WallClockTime(100));
+        let pc = derive_tonal_centre(&f.score, f.voice_a, &onset, no_musical_resolve)
+            .expect("must resolve")
+            .expect("a prevailing key exists");
+        assert_eq!(pc.get(), 5, "expected F (pc 5), got {}", pc.get());
+    }
+
+    /// `req:tuning:adaptive-anchor-derivation`'s "prevailing" selection: with
+    /// two `KeySignatureChange`s on a staff, a pitch between them takes the
+    /// earlier; a pitch after both takes the later.
+    #[test]
+    fn prevailing_key_signature_selects_the_latest_at_or_before_onset() {
+        let mut f = fixture();
+        {
+            let region = &mut f.score.canvas.regions[0];
+            let instances = region.content.staff_instances_mut().unwrap();
+            instances[0].key_sequence = vec![
+                key_change(0, 0),   // C major/A minor at t=0.
+                key_change(500, 1), // G major/E minor at t=500.
+            ];
+        }
+
+        let onset_between = EventPosition::WallClock(WallClockTime(250));
+        let pc = derive_tonal_centre(&f.score, f.voice_a, &onset_between, no_musical_resolve)
+            .expect("must resolve")
+            .expect("a prevailing key exists");
+        assert_eq!(
+            pc.get(),
+            0,
+            "a pitch between the two changes takes the earlier (C)"
+        );
+
+        let onset_after = EventPosition::WallClock(WallClockTime(600));
+        let pc = derive_tonal_centre(&f.score, f.voice_a, &onset_after, no_musical_resolve)
+            .expect("must resolve")
+            .expect("a prevailing key exists");
+        assert_eq!(
+            pc.get(),
+            7,
+            "a pitch after both changes takes the later (G)"
+        );
+    }
+
+    /// No key-signature change at all ⇒ no tonal centre -- `Ok(None)`, never
+    /// an error. `resolve_pitch_frequency` is the one that defaults to C;
+    /// `derive_tonal_centre` just reports what it found.
+    #[test]
+    fn no_key_signature_change_yields_no_tonal_centre() {
+        let f = fixture();
+        let onset = EventPosition::WallClock(WallClockTime(0));
+        let centre = derive_tonal_centre(&f.score, f.voice_a, &onset, no_musical_resolve)
+            .expect("must resolve (absence of a tonal centre is not an error)");
+        assert_eq!(centre, None);
+    }
+
+    /// Cross-clock and indirect anchors fail closed with a distinct,
+    /// reported error rather than a guessed ordering.
+    #[test]
+    fn anchor_ordering_fails_closed_on_cross_clock_and_indirect_anchors() {
+        let mut f = fixture();
+        {
+            let region = &mut f.score.canvas.regions[0];
+            let instances = region.content.staff_instances_mut().unwrap();
+            // A wall-clock-anchored key change, but the pitch's onset is
+            // musical: cross-clock, unorderable.
+            instances[0].key_sequence = vec![key_change(0, 0)];
+        }
+        let musical_onset = EventPosition::Musical(MusicalPosition::origin());
+        let err = derive_tonal_centre(&f.score, f.voice_a, &musical_onset, no_musical_resolve)
+            .expect_err("a wall-clock anchor against a musical onset must not silently order");
+        assert!(
+            matches!(err, TuningResolutionError::AnchorNotOrderable { .. }),
+            "expected AnchorNotOrderable, got {err:?}"
+        );
+
+        // An indirect (Event-anchored) key change, with a musical onset and
+        // a resolver that declines to place it.
+        let mut f2 = fixture();
+        {
+            let region = &mut f2.score.canvas.regions[0];
+            let instances = region.content.staff_instances_mut().unwrap();
+            instances[0].key_sequence = vec![KeySignatureChange {
+                anchor: TimeAnchor::Event {
+                    id: crate::ids::EventId::new(ReplicaId(1), 1),
+                    offset: crate::time::AnchorOffset::Zero,
+                },
+                key: KeySignature::new(0).unwrap(),
+            }];
+        }
+        let err = derive_tonal_centre(&f2.score, f2.voice_a, &musical_onset, no_musical_resolve)
+            .expect_err("an indirect anchor the resolver declines must not silently order");
+        assert!(
+            matches!(err, TuningResolutionError::AnchorNotOrderable { .. }),
+            "expected AnchorNotOrderable, got {err:?}"
+        );
+    }
+
+    /// `derive_tonal_centre` reports the same caller error
+    /// (`VoiceNotFound`) as `resolve_pitch_frequency` for an orphaned voice.
+    #[test]
+    fn derive_tonal_centre_reports_voice_not_found_for_an_orphaned_voice() {
+        let f = fixture();
+        let orphan = VoiceId::new(ReplicaId(1), 999);
+        let onset = EventPosition::WallClock(WallClockTime(0));
+        let err = derive_tonal_centre(&f.score, orphan, &onset, no_musical_resolve)
+            .expect_err("an orphaned voice must not resolve");
+        assert!(matches!(err, TuningResolutionError::VoiceNotFound(_)));
     }
 }

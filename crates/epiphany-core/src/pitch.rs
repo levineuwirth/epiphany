@@ -92,6 +92,18 @@ catalog_id!(
     TuningFunctionId
 );
 catalog_id!(
+    /// Identifies a registered adaptive tuning function, consumed by
+    /// [`crate::tuning::TuningResolution::Adaptive`] (Chapter 4 §"Adaptive
+    /// Tuning", `req:tuning:adaptive-default-version`). The built-in catalog
+    /// entry `ji-adaptive-5limit` is bound to `"default-v1"` — the version
+    /// lives *inside* the identifier string, not as prose beside it, so a
+    /// future version 2 would mint a new identifier rather than silently
+    /// changing what `"default-v1"` means. An unregistered id (this tranche
+    /// registers exactly the one) is a hard error with no silent fallback to
+    /// a default version.
+    AdaptiveTuningFunctionId
+);
+catalog_id!(
     /// Identifies an accidental registry (Chapter 4 §"Accidental Registries").
     AccidentalRegistryId
 );
@@ -548,6 +560,35 @@ pub struct AcousticPitch {
     pub tuning: TuningReference,
     /// How the tuning system resolves to a frequency.
     pub realization: AcousticRealization,
+}
+
+/// A chromatic pitch class in `0..=11` — one of the twelve positions of the
+/// `cmn-12` chromatic layer, with no octave. Used where a value must name
+/// *which* pitch class rather than a full pitch, such as
+/// [`crate::tuning::HarmonicContext`]'s tonal centre
+/// (`req:tuning:adaptive-anchor-derivation`). [`Pitch::twelve_tet_class`],
+/// just below, already returns a `0..=11` `u8`; this newtype enforces that
+/// range in the type itself rather than merely documenting it, following
+/// [`crate::graph::KeySignature::new`]'s checked-constructor style — a raw
+/// `u8` field a caller could set to `200` is not a chromatic pitch class.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct ChromaticPitchClass(u8);
+
+impl ChromaticPitchClass {
+    /// Builds a chromatic pitch class, rejecting values outside `0..=11`.
+    pub const fn new(value: u8) -> Option<Self> {
+        if value <= 11 {
+            Some(ChromaticPitchClass(value))
+        } else {
+            None
+        }
+    }
+
+    /// The underlying `0..=11` value.
+    #[inline]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
 }
 
 /// A pitch's intrinsic identity: scale position plus acoustic realization

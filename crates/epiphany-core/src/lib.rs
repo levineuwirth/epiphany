@@ -34,10 +34,11 @@
 //!   no `Codec` impl exists for anything here (Push 4b Ruling C).
 //! * `tuning` — the Chapter 4 tuning-resolution vocabulary
 //!   ([`TuningSystem`], [`TuningResolution`], [`TuningOverride`],
-//!   [`TuningScope`]), [`built_in_tuning_system`] (nine of the twenty
-//!   catalog identifiers; the rest fail closed), and
-//!   [`resolve_pitch_frequency`], the five-scope resolver from a pitch to a
-//!   frequency in Hz. In-memory only, same discipline as `pitch_space`
+//!   [`TuningScope`], [`HarmonicContext`]), [`built_in_tuning_system`] (all
+//!   twenty catalog identifiers resolve), [`derive_tonal_centre`] (the
+//!   score-graph-derived adaptive anchor), and [`resolve_pitch_frequency`],
+//!   the five-scope resolver from a pitch to a frequency in Hz. In-memory
+//!   only, same discipline as `pitch_space`
 //!   (Push 4b Ruling C).
 //! * `accidental` — the Chapter 4 accidental/glyph/engraving vocabulary
 //!   ([`AccidentalDefinition`], [`ScoreAccidentalExtensions`],
@@ -106,15 +107,16 @@ pub use time::{
 
 pub use pitch::{
     canonical_pitch_bytes, derive_system_pitch_id, spell, AccidentalGroupId, AccidentalId,
-    AccidentalRegistryId, AcousticPitch, AcousticRealization, CmnNominal, CustomGlyphId,
-    DecompositionAlgorithmId, ForeignFormatId, IdentifiedPitch, IntervalAlgebraRegistryId,
-    ModificationRegistryId, NominalRegistryId, Pitch, PitchRange, PitchSpaceId, PitchSpacePosition,
-    PitchSpelling, PositionRegistryId, PositionStructureRegistryId, ReferencePitch, ScalePosition,
-    SpellingAlgorithmId, SpellingAttachment, SpellingContext, SpellingDirective, SpellingNominal,
-    SpellingPrecedence, SpellingRenderHints, SpellingRule, SpellingRuleSetId, SpellingScope,
-    SpellingSource, SpellingSourceKind, StaffGroupKindRegistryId, TieClassRegistryId,
-    TransposeRefusal, TranspositionInterval, TranspositionRegistryId, TuningFunctionId,
-    TuningReference, TuningSystemId, VoiceSelector,
+    AccidentalRegistryId, AcousticPitch, AcousticRealization, AdaptiveTuningFunctionId,
+    ChromaticPitchClass, CmnNominal, CustomGlyphId, DecompositionAlgorithmId, ForeignFormatId,
+    IdentifiedPitch, IntervalAlgebraRegistryId, ModificationRegistryId, NominalRegistryId, Pitch,
+    PitchRange, PitchSpaceId, PitchSpacePosition, PitchSpelling, PositionRegistryId,
+    PositionStructureRegistryId, ReferencePitch, ScalePosition, SpellingAlgorithmId,
+    SpellingAttachment, SpellingContext, SpellingDirective, SpellingNominal, SpellingPrecedence,
+    SpellingRenderHints, SpellingRule, SpellingRuleSetId, SpellingScope, SpellingSource,
+    SpellingSourceKind, StaffGroupKindRegistryId, TieClassRegistryId, TransposeRefusal,
+    TranspositionInterval, TranspositionRegistryId, TuningFunctionId, TuningReference,
+    TuningSystemId, VoiceSelector,
 };
 
 pub use pitch_space::{
@@ -167,9 +169,10 @@ pub use tempo::{
 };
 
 pub use tuning::{
-    built_in_tuning_system, frequency_for_position, resolve_pitch_frequency, resolve_tuning_scope,
-    PositionRatio, ResolvedTuning, TuningCatalogEntry, TuningOverride, TuningParameters,
-    TuningResolution, TuningResolutionError, TuningScope, TuningSystem,
+    built_in_tuning_system, derive_tonal_centre, frequency_for_position, resolve_pitch_frequency,
+    resolve_tuning_scope, HarmonicContext, PositionRatio, ResolvedTuning, TuningCatalogEntry,
+    TuningOverride, TuningParameters, TuningResolution, TuningResolutionError, TuningScope,
+    TuningSystem,
 };
 
 pub use codec::{CanonicalValue, ScoreDecodeError};
