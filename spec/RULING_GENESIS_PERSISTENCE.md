@@ -98,7 +98,8 @@ the tranche.
 
 ### Out of scope, with reasons
 
-* **`identity`** — not an authored field; see §3, which must be settled first.
+* **`identity`** — not an authored field; ruled in §3. It stays on `Score` and
+  on the wire, and reduction derives its counter. Nothing to author.
 * **`decomposition_attachments`** — **derived, not authored.** The prepass
   creates it (`core/src/prepass.rs:382`); reduction only ever *retains*
   (`reduce.rs:2342`). It leaves the table rather than gaining operations.
@@ -106,9 +107,7 @@ the tranche.
 
 ---
 
-## 3. The one open sub-decision, and it blocks specification
-
-**`identity` must be dispositioned before the tranche can be specified.**
+## 3. The `identity` sub-decision — **RULED 2026-07-24**
 
 `IdentityContext { replica_id, next_counter }` is replica-scoped by
 construction (`ids.rs:711-717`) yet lives on `Score`, which the codec
@@ -118,10 +117,70 @@ shared base, which masks the tension. Under this ruling reduction runs onto
 replicas reducing an identical log then produce Scores differing in an encoded
 field while the music is identical.
 
-Options: move it to the manifest (document-scoped, recommended); keep it on
-`Score` but exclude it from the canonical encoding; or accept
-replica-dependent `Score` bytes and confine byte-equality claims to
-`MaterializedState`. **Not ruled here.**
+### The framing above understates it
+
+Verified against the working tree while scoping the tranche:
+
+* **`epiphany-ops` contains no `.identity` reference at all.** Reduction never
+  reads or writes it. `next_counter` advances only through
+  `IdentityContext::take_counter` (`ids.rs:766`), reached from `mint` /
+  `mint_operation`, which reduction never calls.
+* **Invariant 11 does not bound the counter.** `invariants.rs:1746-1752` rejects
+  only the reserved `SYSTEM_DERIVED` replica; nothing checks `next_counter`
+  against the ids actually present in the score.
+* **No production code mints from `score.identity` yet** — every such site is
+  under `#[cfg(test)]` (`editor-core/src/lib.rs:4124`). The hazard is latent,
+  and this tranche is what activates it.
+
+So `Score::identity` is an **authoring cursor that reduction never advances**.
+Divergent bytes are the lesser problem. The real one: this tranche is precisely
+when production code begins minting genesis-entity ids. Under from-empty the
+cursor holds whatever seeded `Score::empty(identity)` — `0` for a fresh context
+— while the log already carries that replica's ids at counters `0..N`. Minting
+from it re-issues used counters, silently: no invariant, no reduction step, and
+no wire check catches it. **Every option originally listed relocates or accepts
+the field; none makes the cursor correct.**
+
+### The ruling
+
+**Accept replica-dependent `Score` bytes, and derive the cursor under
+from-empty reduction.**
+
+1. `identity` **stays on `Score` and stays canonically encoded.** No wire
+   change, and in particular no schema major 4 on the Score/Snapshot role that
+   tranche 3b-i froze at 3.
+2. **Byte-equality claims are confined to `MaterializedState`**, which carries
+   no identity field and whose `canonical_bytes` is already the asserted
+   convergence surface (`reduce.rs:10031`). §5's acceptance criterion is
+   *already* written against `MaterializedState`, so this costs no restatement.
+3. **From-empty reduction sets `next_counter` to `1 + max(counter)` over ids
+   authored by the reducing replica in the log**, or leaves the seed untouched
+   when that replica authored none. A function of the log and the chosen
+   `replica_id`, hence convergent for a given replica and correct by
+   construction.
+
+Point 3 makes reduction write `identity` for the first time. Name that in the
+tranche: it is a deliberate new behaviour, not an oversight, and it wants a
+test that mints from a reduced score and asserts no collision with the log.
+
+### Why not the alternatives
+
+* **Manifest (previously recommended here).** Rejected. `req:format:manifest-id`
+  (`core_spec.tex:11177`) promises normatively that "two conforming writers
+  committing the same manifest body at the same generation of the same document
+  derive identical `ManifestId`s". A replica-scoped field in a shipped,
+  content-addressed manifest either breaks that promise or must be excluded from
+  the preimage — at which point it is one replica's counter riding to another in
+  a field no reader may trust. It also grows the one structure `bundle.rs:63`
+  records as never growing a versioned layout.
+* **Exclude from the `Score` encoding.** A layout change under
+  `req:binfmt:frozen-layout` — schema major 4, a *second* wire raise on a
+  *different* role from §4's "one accept-set raise, spent once". And it leaves
+  the stale cursor standing.
+* **Remove from `Score` entirely** (session state the editor owns). The cleanest
+  end state, and worth revisiting later; priced here at major 4 plus an API
+  break across `Score::empty` and every construction site, which this tranche
+  does not need to buy in order to be correct.
 
 ---
 

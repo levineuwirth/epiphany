@@ -1385,3 +1385,19 @@ carries a cost worth remembering: blocks stamp minimally, and `bundle.rs` caps
 `OperationEnvelopeBlock` at major 2 *because* no operation payload embeds the
 tuning context, so such an operation would drag a role accept-set raise along
 with it — for one field of eight.
+
+**Superseded 2026-07-24 by `spec/RULING_GENESIS_PERSISTENCE.md` (011c68a).** The
+ruling reverses Pass-12 K8 and absorbs genesis into the operation set, so
+`SetTuningContext` **is** the disposition — arriving not as the tuning-specific
+fix this note forbade, but as one of nine surfaces in a single coordinated
+tranche. Read the prohibition as scoped to what it was aimed at: no tuning-only
+operation, and no widening of the wire layout to compensate for a missing
+carrier. Both still hold. The layout stays frozen exactly as this note says —
+the tranche changes which carrier embeds the value, never how it encodes.
+
+The accept-set cost above is unchanged as a *fact* and is now **spent
+deliberately**: the ruling's "one accept-set raise, spent once" lands every new
+kind in one batch at `OperationEnvelopeBlock` major 3, so the raise is amortised
+across nine surfaces rather than charged to one field of eight. Note that
+`bundle.rs`'s cap of 2 is documented *with that rationale in prose* — when the
+tranche lands, that comment becomes false and must move with the cap.
