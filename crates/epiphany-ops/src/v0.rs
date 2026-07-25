@@ -103,6 +103,10 @@ pub enum V0OperationKind {
     /// Born at wire-disc 30 under major-0 layouts (Push 4a); no lossy v0
     /// form, so it projects verbatim like the repeat-authoring pair.
     TransposeInterval(crate::payload::TransposeIntervalOp),
+    // Genesis tranche G1 — born at wire-disc 31; no lossy v0 form (v0 predates
+    // the catalog entirely), so it round-trips by identity like every other
+    // v1-native kind above.
+    CreateInstrument(crate::payload::CreateInstrumentOp),
 }
 
 /// v0 `InsertEvent`: the event was a bare [`EventId`] plus the reduction-relevant

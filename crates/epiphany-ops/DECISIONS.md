@@ -1705,3 +1705,111 @@ untouched. Widening what `TransposeInterval` can transpose is the tranche's
 ratified purpose, and the version skew it implies (an old replica refuses what a
 new one applies) is the tranche's property, not this fix's — the fix only makes
 the operation layer agree with the core layer the tranche already moved.
+
+## Genesis tranche G1 — `CreateInstrument`, kind 31 / tag 31 (2026-07-24)
+
+`spec/CONTRACT_GENESIS_G1_INSTRUMENT.md` lands the first rung of the genesis
+ladder (`spec/PLAN_GENESIS_OPS.md` §4): `CreateInstrument` mints an
+`Instrument` on the score root, set-union discipline identical to
+`create_staff` (`reduce.rs`), minus the graph-aware reference-resolution
+block — `Instrument` holds no outbound entity reference, so there is nothing
+for one to check. All fifteen touch points landed as specified: `codec.rs`'s
+`canonical_value!` (one line — `Instrument` already had a `Codec` and,
+because `struct_codec!` generates both, already had `TextValue` too, so the
+Text Projection touch point cost nothing extra); `payload.rs`'s
+`CreateInstrumentOp` + the five mechanical sites (`OperationKind` variant,
+`schema_major`, `discriminant`, `tag`, encode dispatch, tag-vocabulary
+entry); `envdecode.rs`'s decode arm and `sample_kind` sample;
+`v0.rs`/`migrate.rs`'s identity round-trip (born past v0, no lossy
+projection); `reduce.rs`'s dispatch + `create_instrument` +
+`instrument_values` (pin 8, six sites: both struct decls, init, the base
+seed, and the snapshot/restore pair); `textproj_kind.rs`'s production/parse;
+`fuzz.rs`'s generator arm 28 (`rng.below(28)` → `below(29)`); `vectors.rs`'s
+decode vector; `operation_catalog.tex`'s new section.
+
+**The identity cursor (pin 9) is gated on a *pristine-base* check the naive
+version got backwards.** The first attempt compared `self.graph` against
+`Score::empty(...)` at the *end* of `run()`, after every spine operation had
+already populated it — always false, so the cursor never advanced (the i5
+test caught this immediately: `next_counter` stayed `0`, not the expected
+`12`). The fix captures `from_empty_base` in `new_onto`, from the *pristine*
+`base` argument, before `graph` is cloned and mutated. This is also the
+mechanism that keeps the fix scoped to from-empty reduction only:
+`reduce_operation_set_onto` is the same entry point `epiphany-editor-core`
+calls on every edit (`EditorSession::materialize`), against a populated
+base, so an unconditional cursor-write there would have been a silent
+behavioral change to a crate this packet may not touch. Gating on
+`from_empty_base` makes onto-reduction against a populated base
+byte-for-byte unchanged — verified, not assumed, since editor-core is one of
+the crates the boundary below made un-editable, so its own test suite is the
+only check available and it does not run in this tree (see below).
+
+**The cursor's derivation walks two sources, not one.** `next_counter` is a
+*single* counter shared by every identifier kind
+(`IdentityContext::take_counter`), so scoping the fix to `InstrumentId`
+alone would have been wrong the moment a spine mixes kinds — which i1's own
+chain does (`CreateStaff`'s `StaffId`, `CreateVoice`'s `VoiceId`, ...).
+`derive_identity_cursor` takes the max over (a) every `OperationId` the
+`op_set` has ever accepted, via `OperationSet::slots()` — keyed by
+`OperationId`, so its key set is exactly "every id in the log" regardless of
+slot state (Single, Equivocated, held/pending) — and (b) every entity id in
+the final `self.objects`, decoded generically from `TypedObjectId`'s
+canonical form (2-byte discriminant + 16-byte `(replica, counter)`, for
+every variant but `Registered`) rather than a new per-kind accessor. This
+reads `TypedObjectId::canonical_bytes()` — already public — instead of
+adding a `replica()`/`counter()` method to `epiphany-core::ids`, which
+would have been a new public surface outside this packet's blast radius.
+Not fully general (a losing equivocation candidate's *entity* ids, as
+opposed to its `OperationId`, are invisible to this — no test in the
+required nine reaches that case, and closing it would need the same kind of
+new core-side accessor this design avoids); flagged rather than silently
+assumed complete.
+
+## Boundary conflict: `OperationKind` is exhaustively matched outside this
+## packet's blast radius (2026-07-24)
+
+The contract's blast radius lists only `epiphany-core/src/codec.rs` and
+eight `epiphany-ops/src/*.rs` files, and its "Parallel safety" note claims
+"this packet touches none of" `epiphany-editor-core`, `epiphany-editor-gui`,
+`epiphany-layout-ir`, `epiphany-render-svg`, `epiphany-glyphs`. That claim
+does not survive contact with the compiler: `OperationKind` gains a variant,
+and Rust's exhaustiveness check finds every downstream consumer.
+
+**`crates/epiphany-editor-core/src/barriers.rs:316`**, `subjects_of`, an
+exhaustive `match kind: &OperationKind` deriving edit-barrier subjects —
+fails to *compile* without a new arm (`CreateStaff`'s arm, one line, is the
+exact analogue: an instrument is a score-root object with no regional
+containment, same as a staff). Because `epiphany-testkit`,
+`epiphany-engrave`, `epiphany-render-svg`, and `epiphany-editor-gui` all
+depend on `epiphany-editor-core` (non-optionally), this one missing arm
+blocks the *entire* rest of the workspace from compiling — including
+`epiphany-testkit`, which owns `requirement_labels`, the decode-vector
+corpus regeneration/verification, and the conformance suite. `cargo test
+--workspace` and `cargo clippy --workspace --all-targets` both fail at this
+single error and never reach a single test.
+
+**`crates/epiphany-layout-ir/src/barrier.rs:1112`**,
+`decode_rejects_unknown_discriminants`, hardcodes `31u8` as "one past the
+[`OperationKindTag`] vocabulary" — a *runtime* test failure (the crate
+compiles fine), now stale because 31 is `CreateInstrument`. This is not a
+new failure mode: the test's own comment records it happened once already
+("This assertion named 30 until Push 5 / P4 — by which time 30 was
+`TransposeInterval`, so the test was pinning a bug"). The fix each time is
+mechanical: bump the literal to the new one-past-the-vocabulary value (`32`)
+and its expected `tag: 31` to `tag: 32`.
+
+Both files are on this packet's explicit do-not-touch list (a parallel agent
+owns them in a separate worktree), so neither was edited — an initial,
+incorrect edit to `barriers.rs` (made before re-deriving the boundary against
+the actual compiler output) was caught and reverted before landing; `git
+status` on both crates is clean in the delivered tree. Consequently:
+`cargo test --workspace`, `cargo clippy --workspace --all-targets`, the
+conformance suite, and `requirement_labels` could not be executed against
+the full workspace in the delivered state — only against the seven crates
+that do not depend on `epiphany-editor-core`
+(`epiphany-determinism`/`epiphany-core`/`epiphany-bundle`/`epiphany-ops`/
+`epiphany-textproj`/`epiphany-layout-ir`/`epiphany-glyphs`), all of which
+are green (`epiphany-layout-ir` excepted, for the one stale-vocabulary test
+above). This is reported to the coordinator rather than worked around; see
+the packet's final report for the exact reproduction commands and error
+text.

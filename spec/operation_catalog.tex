@@ -1075,6 +1075,69 @@ anchor; there is no \texttt{DeleteStaff} in this catalogue revision --- an
 empty-only staff delete mirroring the container discipline is a later
 schema-fill).
 
+\section{CreateInstrument}
+\label{sec:k0:create-instrument}
+
+Ratified with the genesis operation tranche's first rung (G1;
+\texttt{spec/CONTRACT\_GENESIS\_G1\_INSTRUMENT.md}, executing
+\texttt{spec/RULING\_GENESIS\_PERSISTENCE.md}). \texttt{CreateStaff}
+(Section~\ref{sec:k0:create-staff}) already requires a live
+\texttt{Instrument}, and until this primitive existed nothing could mint one
+except a canonical base --- so a document created empty
+(\texttt{Score::empty}) and given only operations could reach a
+\texttt{CreateStaff} but never satisfy it. \texttt{CreateInstrument} is the
+single missing link between an empty score and a note: with it, the chain
+\texttt{CreateInstrument} $\rightarrow$ \texttt{CreateStaff} $\rightarrow$
+\texttt{CreateRegion} $\rightarrow$ \texttt{CreateStaffInstance}
+$\rightarrow$ \texttt{CreateVoice} $\rightarrow$ \texttt{InsertEvent}
+materializes a note-bearing score from operations alone.
+
+\textbf{Payload schema.} \texttt{CreateInstrumentOp \{ instrument: Instrument
+\}} --- the full abstract-instrument value (schema major 2): identity, name,
+declared pitch range, abbreviation, sound configuration, transposition
+interval, default clef, default staff-line configuration, and unpitched
+members. Unlike every carried type in
+Section~\ref{sec:k0:structural-containers} and
+Section~\ref{sec:k0:create-staff}, \texttt{Instrument} holds no outbound
+entity reference, so this primitive needs no referential precondition at
+all --- only mint and idempotence.
+
+\textbf{Canonical encoding.} The length-framed canonical bytes of
+\texttt{instrument}. \texttt{Instrument}'s schema-major-2 appends
+(\texttt{sound\_config}, \texttt{default\_clef},
+\texttt{default\_staff\_lines}, and the rest) are mandatory fields, not
+\texttt{Option}-hidden, so no lower-major layout for this payload exists:
+under minimal stamping (Binary Format companion \sectionsc{Schema Major 2})
+a block carrying a \texttt{CreateInstrument} is \emph{born at v2}, exactly
+as \texttt{CreateStaff} is --- not the value-dependent shape
+\texttt{CreateRegion}/\texttt{SetStaffLayout} use.
+
+\textbf{Reduction rule.} Set-union creation of an \texttt{Instrument} on the
+score root, mirroring \texttt{CreateStaff}'s discipline exactly since
+neither carried type references another entity: a create mints the
+instrument live if its id is fresh; a repeat create carrying a
+byte-identical value reduces idempotently
+(\texttt{NoOpReason::AlreadyApplied}); a create whose id is already live
+with a \emph{differing} value is a precondition no-op with
+\texttt{RecreateContentMismatch}; and a create naming a tombstoned id is a
+precondition no-op with \texttt{TargetTombstoned}. There is no
+graph-aware reference-resolution block, because there is nothing for one to
+check.
+
+\textbf{Conflict cases.} None at reduction time (set-union; the
+differing-value re-create is a precondition gate, not a conflict).
+
+\textbf{Undo semantics.} Undo of a create tombstones the minted instrument;
+\texttt{StrictInverse} conflicts if a live staff references it (tombstoning
+it would strand the staff).
+
+\textbf{Re-anchoring.} Not applicable, for the same reason as
+\texttt{CreateStaff}: an instrument mint references no tombstonable anchor.
+There is no \texttt{DeleteInstrument} in this catalogue revision ---
+\texttt{CreateStaff} ships today with no \texttt{DeleteStaff} either, and
+full delete/modify coverage of the genesis-authored fields is later
+tranche work (\texttt{spec/PLAN\_GENESIS\_OPS.md} G3).
+
 \section{Repeat Structures}
 \label{sec:k0:repeat-structures}
 

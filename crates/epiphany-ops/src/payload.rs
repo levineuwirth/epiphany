@@ -33,9 +33,9 @@
 
 use epiphany_core::{
     Beam, CanonicalValue, Event, EventDuration, EventId, EventPosition, IdentifiedPitch,
-    InstrumentId, MetricGrid, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId,
-    PitchSpelling, Region, RegionId, RegionTimeModel, RepeatStructure, RepeatStructureId, Rest,
-    ScoreMetadata, Slur, Spanner, Staff, StaffId, StaffInstance, StaffInstanceId,
+    Instrument, InstrumentId, MetricGrid, MusicalDuration, MusicalPosition, OperationId, Pitch,
+    PitchId, PitchSpelling, Region, RegionId, RegionTimeModel, RepeatStructure, RepeatStructureId,
+    Rest, ScoreMetadata, Slur, Spanner, Staff, StaffId, StaffInstance, StaffInstanceId,
     StaffLineConfiguration, TempoSegment, Tie, TimeAnchor, TimeSignature, TransactionId,
     TranspositionInterval, TupletId, TypedObjectId, Voice, VoiceId,
 };
@@ -195,6 +195,14 @@ pub enum OperationKind {
     /// Push 4a: the faithful transpose. Appended past 29 — a schema-minor
     /// vocabulary append (`req:binfmt:kind-discriminants`).
     TransposeInterval(TransposeIntervalOp),
+    // --- Genesis tranche G1 (`spec/CONTRACT_GENESIS_G1_INSTRUMENT.md`): the
+    // from-empty spine's missing link. Discriminant extends additively past 30.
+    // ---
+    /// Mint an abstract instrument on the score root (set-union creation) —
+    /// the single missing link between `Score::empty` and a note:
+    /// `CreateStaff` already demands a live `Instrument` and nothing else can
+    /// create one.
+    CreateInstrument(CreateInstrumentOp),
 }
 
 impl OperationKind {
@@ -212,12 +220,17 @@ impl OperationKind {
     pub fn schema_major(&self) -> u16 {
         match self {
             // Mandatory v2 appends: CrossCuttingValue (Slur/Tie/Beam/Spanner
-            // bodies), Staff (default_clef + filled line config), and
-            // ScoreMetadata (six appended fields).
+            // bodies), Staff (default_clef + filled line config),
+            // ScoreMetadata (six appended fields), and Instrument
+            // (sound_config/default_clef/default_staff_lines et al. — G1;
+            // unconditional, not `Option`-hidden, so no lower-major layout for
+            // this payload exists — do not copy the value-dependent arm shape
+            // below).
             OperationKind::CreateCrossCutting(_)
             | OperationKind::ModifyCrossCutting(_)
             | OperationKind::CreateStaff(_)
-            | OperationKind::SetMetadata(_) => 2,
+            | OperationKind::SetMetadata(_)
+            | OperationKind::CreateInstrument(_) => 2,
             // Value-dependent: the embedded StaffLineConfiguration rides an
             // Option; None encodes byte-identically to the prior major.
             OperationKind::CreateRegion(op) => {
@@ -287,6 +300,10 @@ impl OperationKind {
             // Push 4a; appended past 29. Every constituent is a major-0
             // layout, so `schema_major` leaves it in the catch-all 0 arm.
             OperationKind::TransposeInterval(_) => 30,
+            // Genesis tranche G1; appended past 30. Coincides with tag 31 by
+            // accident, not by rule — the two spaces are independent and
+            // misaligned elsewhere (`RespellPitch` is kind 2 / tag 3).
+            OperationKind::CreateInstrument(_) => 31,
         }
     }
 
@@ -328,6 +345,10 @@ impl OperationKind {
             OperationKind::CreateRepeatStructure(_) => OperationKindTag::CreateRepeatStructure,
             OperationKind::DeleteRepeatStructure(_) => OperationKindTag::DeleteRepeatStructure,
             OperationKind::TransposeInterval(_) => OperationKindTag::TransposeInterval,
+            // Name-verbatim, as the two most recent additions (`CreateVoice`,
+            // `CreateRepeatStructure`) are — the tag layer's older
+            // Create→Insert convention is not followed here (contract pin 3).
+            OperationKind::CreateInstrument(_) => OperationKindTag::CreateInstrument,
         }
     }
 }
@@ -370,6 +391,7 @@ impl CanonicalEncode for OperationKind {
             OperationKind::SetStaffLayout(op) => op.encode_canonical(out),
             OperationKind::CreateRepeatStructure(op) => op.encode_canonical(out),
             OperationKind::DeleteRepeatStructure(op) => op.encode_canonical(out),
+            OperationKind::CreateInstrument(op) => op.encode_canonical(out),
         }
     }
 }
@@ -416,6 +438,10 @@ pub enum OperationKindTag {
     DeleteRepeatStructure,
     /// Push 4a.
     TransposeInterval,
+    /// Genesis tranche G1. Name-verbatim (contract pin 3): the tag layer's
+    /// older Create→Insert convention (`InsertStaff` for `CreateStaff`) is not
+    /// followed here, matching the two most recent additions.
+    CreateInstrument,
 }
 
 /// The discriminant of [`OperationKindTag::Registered`], the one tag that
@@ -513,6 +539,7 @@ operation_kind_tag_vocabulary! {
     CreateRepeatStructure = 28 => "create-repeat-structure",
     DeleteRepeatStructure = 29 => "delete-repeat-structure",
     TransposeInterval = 30 => "transpose-interval",
+    CreateInstrument = 31 => "create-instrument",
 }
 
 impl CanonicalEncode for OperationKindTag {
@@ -1411,6 +1438,35 @@ impl CreateStaffOp {
 impl CanonicalEncode for CreateStaffOp {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         push_lp_bytes(out, &self.staff.canonical_bytes());
+    }
+}
+
+// --- Genesis tranche G1 (`spec/CONTRACT_GENESIS_G1_INSTRUMENT.md`). ----------
+
+/// Mint an abstract [`Instrument`] on the score root (operation_catalog
+/// §CreateInstrument). Carries the full instrument value (schema major 2):
+/// identity, name, range, abbreviation, sound configuration, transposition,
+/// default clef, default staff-line configuration, and unpitched members.
+/// `Instrument` holds no outbound entity references, so this operation needs
+/// no referential preconditions — only mint and idempotence, exactly the
+/// `CreateStaff` discipline. Set-union creation: a repeat create carrying a
+/// byte-identical value is idempotent; a differing value under a live id is a
+/// precondition no-op.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CreateInstrumentOp {
+    pub instrument: Instrument,
+}
+
+impl CreateInstrumentOp {
+    /// The minted instrument's identifier.
+    pub fn instrument_id(&self) -> InstrumentId {
+        self.instrument.id
+    }
+}
+
+impl CanonicalEncode for CreateInstrumentOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_lp_bytes(out, &self.instrument.canonical_bytes());
     }
 }
 

@@ -19,7 +19,14 @@ use epiphany_ops::OperationEnvelope;
 ///
 /// A parser must reject every other version rather than migrating or
 /// normalizing it on read.
-pub const COMPANION_VERSION: (u32, u32, u32) = (0, 7, 0);
+///
+/// Bumped 0.7.0 → 0.8.0 by the genesis tranche G1, which appended
+/// `create-instrument` to the `kind` production — the first operation kind
+/// added since the header was gated to a single version. Extending the grammar
+/// without moving this constant would leave two incompatible grammars both
+/// claiming `(0 7 0)`. Cached projections do not migrate: a `TextProjection`
+/// chunk is a non-canonical accelerator, so a stale one is regenerated.
+pub const COMPANION_VERSION: (u32, u32, u32) = (0, 8, 0);
 
 /// A parsed canonical Text Projection document.
 ///

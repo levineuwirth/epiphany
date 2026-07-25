@@ -361,6 +361,13 @@ pub fn staff(id: StaffId, instrument: epiphany_core::InstrumentId) -> epiphany_c
     }
 }
 
+/// A minimal [`Instrument`](epiphany_core::Instrument) (genesis tranche G1) —
+/// the value a `CreateInstrument` mints: named for its counter, every
+/// schema-major-2 field at `Instrument::new`'s canonical default.
+pub fn instrument(id: epiphany_core::InstrumentId) -> epiphany_core::Instrument {
+    epiphany_core::Instrument::new(id, format!("instrument-{}", id.counter()))
+}
+
 /// A well-formed `numerator`/4 [`TimeSignature`](epiphany_core::TimeSignature)
 /// (Phase-3 tranche): `numerator` quarter-note beat groups summing exactly to
 /// the measure duration, so [`epiphany_core::TimeSignature::new`]'s beat-group

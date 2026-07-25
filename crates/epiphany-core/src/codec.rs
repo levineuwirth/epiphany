@@ -3513,6 +3513,12 @@ canonical_value! {
     TimeSignature,
     TempoSegment,
     StaffLineConfiguration,
+    // Genesis tranche G1 (`CONTRACT_GENESIS_G1_INSTRUMENT.md`) — CreateInstrument
+    // embeds the full value, mirroring CreateStaff's `Staff`. `Instrument`
+    // already has a `Codec` (`struct_codec!`, `:1756`) and already ships inside
+    // `Score`; this makes that existing layout reachable per-value, same as
+    // every other entry here.
+    Instrument,
     // Repeat authoring (schema-major-2 revision) — CreateRepeatStructure
     // embeds the full value.
     RepeatStructure,

@@ -301,10 +301,16 @@ fn the_kind_productions_are_the_operation_vocabulary() {
         // four bugs.
         .map(|t| t.catalog_name().to_string())
         .collect();
+    // The count is still hand-maintained, which is the same shape the comment
+    // above warns about — derived list, literal total. Every tranche that
+    // appends a tag must bump it (genesis G1 took it from 31 to 32 by adding
+    // `CreateInstrument`). It stays a literal on purpose: deriving it from
+    // `PAYLOAD_FREE.len()` would make the assertion vacuous, since that is the
+    // very list it exists to pin.
     assert_eq!(
         expected.len(),
-        31,
-        "30 payload-free kinds plus `Registered`"
+        32,
+        "31 payload-free kinds plus `Registered`"
     );
 
     let actual = alternatives("kind");
@@ -547,9 +553,16 @@ fn worked_example_header_is_the_implemented_companion_version() {
                 .map(|(version, _)| version)
         })
         .expect("the title page declares the companion version");
+    // Pinned to the crate constant rather than a literal: the point of this
+    // assertion is that the spec's title page and the implemented version never
+    // drift apart, and a literal here made a companion bump edit two places by
+    // hand — exactly the "update only one of the two" failure the doc comment
+    // above warns about. Genesis G1 bumped 0.7.0 → 0.8.0 and tripped it.
+    let (major, minor, patch) = epiphany_textproj::COMPANION_VERSION;
     assert_eq!(
-        title_version, "0.7.0",
-        "this implementation targets exactly companion 0.7.0"
+        title_version,
+        format!("{major}.{minor}.{patch}"),
+        "the spec title page must declare the version this implementation targets"
     );
 
     let expected = format!("(text-projection ({}))", title_version.replace('.', " "));

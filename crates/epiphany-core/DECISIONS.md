@@ -1401,3 +1401,23 @@ kind in one batch at `OperationEnvelopeBlock` major 3, so the raise is amortised
 across nine surfaces rather than charged to one field of eight. Note that
 `bundle.rs`'s cap of 2 is documented *with that rationale in prose* — when the
 tranche lands, that comment becomes false and must move with the cap.
+
+## Genesis tranche G1 — `Instrument` joins `canonical_value!` (2026-07-24)
+
+`spec/CONTRACT_GENESIS_G1_INSTRUMENT.md` (executing
+`spec/RULING_GENESIS_PERSISTENCE.md`) adds `CreateInstrument` to
+`epiphany-ops`, the first rung of the genesis ladder
+(`spec/PLAN_GENESIS_OPS.md` §4). Its payload embeds the full `Instrument`
+value, so this crate's one required change is a single `canonical_value!`
+line (`Instrument` already has a `Codec` via `struct_codec!`, `codec.rs:1756`,
+which — same macro — already generates `impl TextValue for Instrument` too,
+so the Text Projection touch point the tranche needed cost nothing here).
+
+No new byte layout: `Instrument`'s canonical bytes are exactly what the
+whole-score codec already emits for it, made reachable per-value on the same
+seam every other `canonical_value!` entry uses. `value_types_round_trip_over_generator_corpus`
+does not exercise `Instrument` directly (the generator corpus does not walk
+`Score::instruments`), but the operation-layer decode-vector corpus
+(`epiphany-ops::vectors`) now pins a `CreateInstrument` envelope's literal
+bytes, which round-trips the same `Instrument` encoding through the op
+payload's `push_lp_bytes` wrapper — see that crate's own DECISIONS.md entry.

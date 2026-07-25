@@ -34,13 +34,13 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use epiphany_core::{
     canonical_pitch_bytes, derive_promoted_voice_id, simplest_spelling, AnchorOffset,
     AnnotationAnchor, CanonicalValue, Event, EventDuration, EventId, EventPosition,
-    GestureAnchoring, InstrumentId, MeterChange, MetricGrid, MusicalDuration, MusicalPosition,
-    OperationId, Pitch, PitchId, PitchSpelling, RationalTime, RegionEdge, RegionId,
-    RegionTimeModel, ReplicaId, Score, ScoreMetadata, SpellingAttachment, SpellingDirective,
-    SpellingScope, SpellingSource, Staff, StaffId, StaffInstance, StaffInstanceId,
-    StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, TimeAnchor, TimeSignature,
-    TimeSignatureId, TransactionId, TransposeRefusal, TranspositionInterval, TypedObjectId, Voice,
-    VoiceId, VoiceOrigin,
+    GestureAnchoring, Instrument, InstrumentId, MeterChange, MetricGrid, MusicalDuration,
+    MusicalPosition, OperationId, Pitch, PitchId, PitchSpelling, RationalTime, RegionEdge,
+    RegionId, RegionTimeModel, ReplicaId, Score, ScoreMetadata, SpellingAttachment,
+    SpellingDirective, SpellingScope, SpellingSource, Staff, StaffId, StaffInstance,
+    StaffInstanceId, StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, TimeAnchor,
+    TimeSignature, TimeSignatureId, TransactionId, TransposeRefusal, TranspositionInterval,
+    TypedObjectId, Voice, VoiceId, VoiceOrigin,
 };
 use epiphany_determinism::CanonicalEncode;
 
@@ -56,13 +56,14 @@ use crate::encode::{push_canon, push_len, push_lp_bytes, push_u8_bool};
 use crate::envelope::OperationEnvelope;
 use crate::opset::OperationSet;
 use crate::payload::{
-    resolved_anchor_position, CreateCrossCuttingOp, CreateRegionOp, CreateRepeatStructureOp,
-    CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp,
-    DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteRepeatStructureOp,
-    DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
-    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationPayload,
-    RespellPitchOp, SetMetadataOp, SetMetricGridOp, SetStaffLayoutOp, SetTempoSegmentOp,
-    SetTimeSignatureOp, SetUserPageBreakOp, TransposeIntervalOp, TransposeOp, TupletCompensation,
+    resolved_anchor_position, CreateCrossCuttingOp, CreateInstrumentOp, CreateRegionOp,
+    CreateRepeatStructureOp, CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp,
+    CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
+    DeleteRegionOp, DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
+    InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
+    OperationKind, OperationPayload, RespellPitchOp, SetMetadataOp, SetMetricGridOp,
+    SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp, SetUserPageBreakOp,
+    TransposeIntervalOp, TransposeOp, TupletCompensation,
 };
 use crate::stamp::StampTuple;
 use crate::support::{ObjectKind, SerializedCanonicalInputs};
@@ -913,6 +914,13 @@ struct Reducer<'a> {
     // precondition no-op). Seeded from the base graph.
     staff_values: BTreeMap<StaffId, Staff>,
     time_signature_values: BTreeMap<TimeSignatureId, TimeSignature>,
+    // Carried values of set-union-minted instruments (genesis tranche G1),
+    // mirroring `staff_values`: the byte-identical-re-carry idempotence check
+    // against a *base* instrument (pin 8 of
+    // `CONTRACT_GENESIS_G1_INSTRUMENT.md`) has nothing to compare without this
+    // — `TypedObjectId::Instrument` liveness is seeded from the base
+    // (`seed_from_graph`), but the base seed left no value map before this.
+    instrument_values: BTreeMap<InstrumentId, Instrument>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     // Live child sets for the structural-container empty-only delete (Group 3):
     // a region's live staff instances, and a staff instance's live voices. (A
@@ -958,6 +966,13 @@ struct Reducer<'a> {
     equivocation_resolutions: BTreeMap<OperationId, (OperationId, crate::EnvelopeHash)>,
     promoted_singles: BTreeMap<OperationId, &'a OperationEnvelope>,
     graph: Option<Score>,
+    // Genesis tranche G1 (`spec/CONTRACT_GENESIS_G1_INSTRUMENT.md` pin 9):
+    // whether `new_onto`'s *pristine* base was exactly `Score::empty(identity)`
+    // — captured once, before any operation mutates `graph`, since by the time
+    // `run()` finishes `graph` is no longer empty and cannot answer this
+    // question itself. Gates the identity-cursor derivation to from-empty
+    // reduction only, never a transaction snapshot (fixed for the whole run).
+    from_empty_base: bool,
 }
 
 /// A snapshot of the working state, for atomic transaction rollback.
@@ -1003,6 +1018,7 @@ struct WorkingSnapshot {
     staff_layout_chain: BTreeMap<StaffInstanceId, WriteChain<StaffLayoutValue>>,
     staff_values: BTreeMap<StaffId, Staff>,
     time_signature_values: BTreeMap<TimeSignatureId, TimeSignature>,
+    instrument_values: BTreeMap<InstrumentId, Instrument>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     region_instances: BTreeMap<RegionId, BTreeSet<StaffInstanceId>>,
     instance_voices: BTreeMap<StaffInstanceId, BTreeSet<VoiceId>>,
@@ -1281,6 +1297,7 @@ impl<'a> Reducer<'a> {
             staff_layout_chain: BTreeMap::new(),
             staff_values: BTreeMap::new(),
             time_signature_values: BTreeMap::new(),
+            instrument_values: BTreeMap::new(),
             structures: BTreeMap::new(),
             region_instances: BTreeMap::new(),
             instance_voices: BTreeMap::new(),
@@ -1296,11 +1313,16 @@ impl<'a> Reducer<'a> {
             equivocation_resolutions: BTreeMap::new(),
             promoted_singles: BTreeMap::new(),
             graph: None,
+            from_empty_base: false,
         }
     }
 
     fn new_onto(op_set: &'a OperationSet, base: &Score) -> Self {
         let mut reducer = Self::new(op_set);
+        // Captured from the pristine `base` argument, before `graph` is
+        // populated and mutated below — `graph` is no longer empty by the
+        // time `run()` needs this answer.
+        reducer.from_empty_base = *base == Score::empty(base.identity.clone());
         reducer.graph = Some(base.clone());
         reducer.seed_from_graph();
         reducer
@@ -1318,6 +1340,12 @@ impl<'a> Reducer<'a> {
         for instrument in &score.instruments {
             self.objects
                 .insert(TypedObjectId::Instrument(instrument.id), ObjectState::Live);
+            // The carried value backs CreateInstrument's byte-identical-re-carry
+            // idempotence check against base instruments (contract pin 8) —
+            // without this, `TypedObjectId::Instrument` liveness is seeded but
+            // there is nothing to compare a re-carry against.
+            self.instrument_values
+                .insert(instrument.id, instrument.clone());
         }
         for staff in &score.staves {
             self.objects
@@ -1913,6 +1941,31 @@ impl<'a> Reducer<'a> {
             pending.into_iter().chain(held).collect();
         pending_vec.sort_by_key(|(id, _)| *id);
 
+        // Genesis tranche G1 (`spec/CONTRACT_GENESIS_G1_INSTRUMENT.md` pin 9;
+        // ruling §3 point 3): from-empty reduction is the first thing that
+        // ever writes `identity`. Gated on `from_empty_base`, captured in
+        // `new_onto` from the *pristine* base before any operation mutated
+        // `graph` — `graph` itself is no longer empty by this point, so a
+        // live re-comparison here would never fire. This keeps onto-reduction
+        // against a populated base (every other caller, notably
+        // `epiphany-editor-core`'s materialize-on-every-edit) byte-for-byte
+        // unchanged; nothing in this packet's blast radius touches that
+        // crate. Nothing between `new_onto` and here writes `identity`
+        // itself, so `graph.identity`'s replica and seed are still the
+        // pristine base's.
+        if self.from_empty_base {
+            if let Some(graph) = self.graph.as_ref() {
+                let replica = graph.identity.replica_id;
+                let seed = graph.identity.next_counter;
+                let next_counter = self.derive_identity_cursor(replica, seed);
+                self.graph
+                    .as_mut()
+                    .expect("checked Some above")
+                    .identity
+                    .next_counter = next_counter;
+            }
+        }
+
         let graph = self.graph.take();
         let state = MaterializedState {
             effects: self.effects,
@@ -1925,6 +1978,60 @@ impl<'a> Reducer<'a> {
             pending: pending_vec,
         };
         (state, graph)
+    }
+
+    /// Derives the from-empty identity cursor (ruling §3 point 3): `1 +
+    /// max(counter)` over every id — an envelope's own [`OperationId`], or an
+    /// entity id minted into the reduced graph — the reducing `replica`
+    /// authored anywhere in the log, or the untouched `seed` when that
+    /// replica authored none.
+    ///
+    /// `next_counter` is a *single* monotonic counter shared by every
+    /// identifier kind (`IdentityContext::take_counter`), so this cannot be
+    /// scoped to `Instrument` alone: any kind minted in the same log —
+    /// `CreateStaff`'s `StaffId`, `InsertEvent`'s `EventId`, and so on —
+    /// shares the same sequence, and a later mint from the returned identity
+    /// must not re-issue a counter the log already used for *any* kind.
+    fn derive_identity_cursor(&self, replica: ReplicaId, seed: u64) -> u64 {
+        let mut max_counter: Option<u64> = None;
+        let mut bump = |counter: u64| {
+            max_counter = Some(max_counter.map_or(counter, |m| m.max(counter)));
+        };
+        // Every operation id ever accepted into this set, in any slot state
+        // (Single, Equivocated, promoted or not): the set is keyed by
+        // `OperationId`, so its key set is exactly "every id in the log" —
+        // including pending/held/excluded envelopes, which still burned a
+        // counter at authoring time even though this reduction did not apply
+        // them.
+        for (id, _) in self.op_set.slots() {
+            if id.replica == replica {
+                bump(id.counter);
+            }
+        }
+        // Every entity id minted into the reduced graph, across every kind —
+        // not read via a per-kind accessor, but generically from the object
+        // universe every mint already populates. `TypedObjectId`'s canonical
+        // form is a 2-byte discriminant then the 16-byte `(replica, counter)`
+        // payload for every variant except `Registered` (an extension id with
+        // no such convention, and so skipped here); reading it this way
+        // avoids a new public replica/counter accessor on `TypedObjectId` in
+        // `epiphany-core`, which is out of this packet's blast radius.
+        for obj in self.objects.keys() {
+            let bytes = obj.canonical_bytes();
+            if bytes.len() == 18 {
+                let id_replica = ReplicaId(u64::from_be_bytes(
+                    bytes[2..10].try_into().expect("8 bytes"),
+                ));
+                if id_replica == replica {
+                    let counter = u64::from_be_bytes(bytes[10..18].try_into().expect("8 bytes"));
+                    bump(counter);
+                }
+            }
+        }
+        match max_counter {
+            Some(m) => seed.max(m + 1),
+            None => seed,
+        }
     }
 
     fn record_anomaly(&mut self, kind: IntegrityAnomalyKind) {
@@ -2635,6 +2742,7 @@ impl<'a> Reducer<'a> {
                 OperationKind::SetStaffLayout(op) => self.set_staff_layout(env, op),
                 OperationKind::CreateRepeatStructure(op) => self.create_repeat_structure(env, op),
                 OperationKind::DeleteRepeatStructure(op) => self.delete_repeat_structure(env, op),
+                OperationKind::CreateInstrument(op) => self.create_instrument(env, op),
             },
             OperationPayload::ResolveConflict(op) => self.resolve_conflict(env, op),
             OperationPayload::UndoTransaction(op) => self.undo_transaction(env, op),
@@ -3851,6 +3959,56 @@ impl<'a> Reducer<'a> {
         }
         self.mint_container(env, sobj);
         self.staff_values.insert(op.staff_id(), op.staff.clone());
+        OperationEffect::Applied
+    }
+
+    // --- Genesis tranche G1 (`spec/CONTRACT_GENESIS_G1_INSTRUMENT.md`). -------
+
+    /// Set-union creation of an `Instrument` on the score root
+    /// (operation_catalog §CreateInstrument): fresh id mints; a
+    /// byte-identical re-carry is idempotent; a differing value under a live
+    /// id is a precondition no-op — exactly `create_staff`'s discipline
+    /// (contract pin 6). Unlike `create_staff`, there is no graph-aware
+    /// reference-resolution block: `Instrument` holds no outbound entity
+    /// references (contract preamble), so this operation needs no referential
+    /// preconditions at all.
+    fn create_instrument(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &CreateInstrumentOp,
+    ) -> OperationEffect {
+        let iobj = TypedObjectId::Instrument(op.instrument_id());
+        match self.objects.get(&iobj) {
+            Some(ObjectState::Live) => {
+                let identical = self
+                    .instrument_values
+                    .get(&op.instrument_id())
+                    .is_some_and(|known| known == &op.instrument);
+                return if identical {
+                    OperationEffect::NoOp {
+                        reason: NoOpReason::AlreadyApplied,
+                    }
+                } else {
+                    OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::RecreateContentMismatch,
+                        },
+                    }
+                };
+            }
+            Some(ObjectState::Tombstoned { .. }) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::TargetTombstoned,
+                }
+            }
+            None => {}
+        }
+        if let Some(score) = self.graph.as_mut() {
+            score.instruments.push(op.instrument.clone());
+        }
+        self.mint_container(env, iobj);
+        self.instrument_values
+            .insert(op.instrument_id(), op.instrument.clone());
         OperationEffect::Applied
     }
 
@@ -7233,6 +7391,7 @@ impl<'a> Reducer<'a> {
             staff_layout_chain: self.staff_layout_chain.clone(),
             staff_values: self.staff_values.clone(),
             time_signature_values: self.time_signature_values.clone(),
+            instrument_values: self.instrument_values.clone(),
             structures: self.structures.clone(),
             region_instances: self.region_instances.clone(),
             instance_voices: self.instance_voices.clone(),
@@ -7269,6 +7428,7 @@ impl<'a> Reducer<'a> {
         self.staff_layout_chain = s.staff_layout_chain;
         self.staff_values = s.staff_values;
         self.time_signature_values = s.time_signature_values;
+        self.instrument_values = s.instrument_values;
         self.structures = s.structures;
         self.region_instances = s.region_instances;
         self.instance_voices = s.instance_voices;
@@ -7452,7 +7612,7 @@ mod tests {
     use crate::causal::CausalContext;
     use crate::stamp::{HybridLogicalClock, OperationStamp};
     use crate::support::AuthorId;
-    use epiphany_core::{RationalTime, ReplicaId, StaffInstanceId, WallClockTime};
+    use epiphany_core::{IdentityContext, RationalTime, ReplicaId, StaffInstanceId, WallClockTime};
 
     fn pos(n: i64) -> MusicalPosition {
         MusicalPosition(RationalTime::from_int(n as i32))
@@ -10486,6 +10646,27 @@ mod tests {
             0,
             "DeleteRepeatStructure carries a bare id — a major-0 layout"
         );
+
+        // Genesis tranche G1 (i7): CreateInstrument is *unconditionally* v2 —
+        // contract pin 4/trap 3. Unlike CreateRegion/SetStaffLayout above,
+        // whose v2 embedding rides an `Option` and is value-dependent,
+        // Instrument's schema-major-2 appends (sound_config, default_clef,
+        // default_staff_lines, ...) are mandatory fields, so even the most
+        // minimal instrument — every optional field at `None`, built via
+        // `Instrument::new` exactly like `valuegen::instrument` does — stamps
+        // 2. Asserted on the minimal value specifically, so an arm that
+        // becomes value-dependent (checking e.g. `range.is_some()`) is
+        // caught immediately rather than only on a richer fixture.
+        let minimal_instrument =
+            epiphany_core::Instrument::new(epiphany_core::InstrumentId::new(ReplicaId(9), 7), "x");
+        assert_eq!(
+            OperationKind::CreateInstrument(crate::payload::CreateInstrumentOp {
+                instrument: minimal_instrument,
+            })
+            .schema_major(),
+            2,
+            "CreateInstrument is unconditionally v2, even for the minimal instrument"
+        );
     }
 
     #[test]
@@ -10553,6 +10734,15 @@ mod tests {
         // moves. Nothing leaked: `canonical_bytes` embeds effects, conflicts,
         // and anomalies, never payload values, and the new payload's
         // constituents are major-0 layouts regardless.
+        //
+        // Re-pinned again at genesis tranche G1
+        // (`spec/CONTRACT_GENESIS_G1_INSTRUMENT.md`): `gen_payload` gained
+        // `CreateInstrument`, discriminant 31, and `rng.below(28)` became
+        // `below(29)` — the same reshuffle, for the same reason. Nothing
+        // leaked here either: `CreateInstrument.schema_major()` is 2
+        // (unconditionally, contract pin 4), but `MaterializedState` stamps
+        // no schema major at all — that is an `OperationEnvelopeBlock`
+        // concern in `epiphany-bundle`, which this packet does not touch.
         let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xBA5E);
         let envelopes = crate::fuzz::gen_envelope_set(&mut rng, 200);
         let mut set = OperationSet::new();
@@ -10562,7 +10752,7 @@ mod tests {
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "594f29e20250a9ff36f0033a59e380e4514aa32a6e78d062579b950667439e20"
+            "61af8ebbba1c4d98360ec44812e5d97a89a720738c1e3573d865f26b48addd1d"
         );
     }
 
@@ -12364,5 +12554,398 @@ mod tests {
                 "value-restoring undo must be permutation-invariant"
             );
         }
+    }
+
+    // === Genesis tranche G1 (`spec/CONTRACT_GENESIS_G1_INSTRUMENT.md`). =======
+
+    /// The full from-empty spine, one replica-1 operation per even counter
+    /// (0, 2, 4, 6, 8, 10) and one minted entity id per odd counter
+    /// (1, 3, 5, 7, 9, 11) — `CreateInstrument` (i1's load-bearing chain,
+    /// the ruling's acceptance criterion 1): `CreateInstrument` ->
+    /// `CreateStaff` -> `CreateRegion` -> `CreateStaffInstance` ->
+    /// `CreateVoice` -> `InsertEvent`. Returns the envelopes in canonical
+    /// authoring order, plus the ids a caller needs to inspect the result.
+    struct GenesisSpine {
+        envelopes: Vec<OperationEnvelope>,
+        event_id: EventId,
+    }
+
+    fn genesis_spine_envelopes() -> GenesisSpine {
+        let instrument_id = InstrumentId::new(ReplicaId(1), 1);
+        let staff_id = StaffId::new(ReplicaId(1), 3);
+        let region_id = RegionId::new(ReplicaId(1), 5);
+        let instance_id = StaffInstanceId::new(ReplicaId(1), 7);
+        let voice_id = VoiceId::new(ReplicaId(1), 9);
+        let event_id = EventId::new(ReplicaId(1), 11);
+
+        let create_instrument = prim_env(
+            1,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::CreateInstrument(CreateInstrumentOp {
+                instrument: crate::valuegen::instrument(instrument_id),
+            }),
+        );
+        let create_staff = prim_env(
+            1,
+            2,
+            20,
+            CausalContext::new(),
+            OperationKind::CreateStaff(CreateStaffOp {
+                staff: crate::valuegen::staff(staff_id, instrument_id),
+            }),
+        );
+        let create_region = prim_env(
+            1,
+            4,
+            30,
+            CausalContext::new(),
+            OperationKind::CreateRegion(CreateRegionOp {
+                region: crate::valuegen::region(region_id),
+            }),
+        );
+        let create_instance = prim_env(
+            1,
+            6,
+            40,
+            CausalContext::new(),
+            OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region: region_id,
+                instance: crate::valuegen::staff_instance(instance_id, staff_id),
+            }),
+        );
+        let create_voice = prim_env(
+            1,
+            8,
+            50,
+            CausalContext::new(),
+            OperationKind::CreateVoice(CreateVoiceOp {
+                staff_instance: instance_id,
+                voice: crate::valuegen::voice(voice_id),
+            }),
+        );
+        let insert_event = prim_env(
+            1,
+            10,
+            60,
+            CausalContext::new(),
+            OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: instance_id,
+                event: crate::valuegen::insert_event_value(
+                    event_id,
+                    voice_id,
+                    pos(0),
+                    epiphany_core::MusicalDuration::whole(),
+                    &[],
+                ),
+            }),
+        );
+        GenesisSpine {
+            envelopes: vec![
+                create_instrument,
+                create_staff,
+                create_region,
+                create_instance,
+                create_voice,
+                insert_event,
+            ],
+            event_id,
+        }
+    }
+
+    /// (i1) The packet's load-bearing test and the ruling's acceptance
+    /// criterion 1: a document created empty and given only operations
+    /// materializes a note-bearing `Score` — no fixture, no base.
+    /// `CreateInstrument` is the single missing link, so this also asserts
+    /// every intermediate link `Applied` rather than only the final note, so
+    /// a future regression is pinned at its actual source.
+    ///
+    /// **Mutation** (verified by hand, not left permanently in this test):
+    /// drop the `CreateInstrument` envelope from the set. `CreateStaff` then
+    /// finds no live instrument and reduces to
+    /// `NoOp{PreconditionFailedUnderReduction{TargetMissing}}`, which cascades
+    /// (no staff instance, no voice, no event) so the final `contains` check
+    /// fails too — see the report for the observed failure text.
+    #[test]
+    fn from_empty_operations_alone_materialize_a_note() {
+        let spine = genesis_spine_envelopes();
+        let mut set = OperationSet::new();
+        set.accept_all(spine.envelopes);
+        let identity = IdentityContext::new(ReplicaId(1));
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        for counter in [0, 2, 4, 6, 8, 10] {
+            assert_eq!(
+                effect_at(&out.state, counter),
+                Some(&OperationEffect::Applied),
+                "spine operation at counter {counter} must apply"
+            );
+        }
+        assert!(
+            out.score.events.contains(spine.event_id),
+            "the spine reaches a note"
+        );
+    }
+
+    /// (i2) Re-carry idempotence: the same `CreateInstrument` twice ->
+    /// `AlreadyApplied`, and a differing second carry under the same live id
+    /// -> `RecreateContentMismatch` — exactly `create_staff`'s discipline
+    /// (contract pin 6).
+    ///
+    /// **Mutation:** make the second carry differ in one field ->
+    /// `RecreateContentMismatch` where the baseline case (identical carries)
+    /// reduces `AlreadyApplied`. Both branches are standing assertions here
+    /// (not a temporary edit), so the contrast is permanent.
+    #[test]
+    fn create_instrument_recarry_is_idempotent_or_a_precondition_no_op() {
+        let instrument_id = InstrumentId::new(ReplicaId(1), 1);
+        let value = crate::valuegen::instrument(instrument_id);
+        let create = prim_env(
+            1,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::CreateInstrument(CreateInstrumentOp {
+                instrument: value.clone(),
+            }),
+        );
+        let identical = prim_env(
+            2,
+            0,
+            20,
+            CausalContext::new(),
+            OperationKind::CreateInstrument(CreateInstrumentOp {
+                instrument: value.clone(),
+            }),
+        );
+        let mut differing_value = value.clone();
+        differing_value.name = String::from("something else");
+        let differing = prim_env(
+            3,
+            0,
+            30,
+            CausalContext::new(),
+            OperationKind::CreateInstrument(CreateInstrumentOp {
+                instrument: differing_value,
+            }),
+        );
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![differing.clone(), identical.clone(), create.clone()]);
+        let state = set.reduce();
+        let effect_of = |id: OperationId| {
+            state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == id)
+                .map(|(_, eff)| eff)
+        };
+        assert_eq!(effect_of(create.id), Some(&OperationEffect::Applied));
+        assert_eq!(
+            effect_of(identical.id),
+            Some(&OperationEffect::NoOp {
+                reason: NoOpReason::AlreadyApplied,
+            }),
+            "a byte-identical re-create reduces idempotently"
+        );
+        assert_eq!(
+            effect_of(differing.id),
+            Some(&OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::RecreateContentMismatch,
+                },
+            }),
+            "a differing value under a live id is a precondition no-op"
+        );
+    }
+
+    /// (i3) Re-carry against a *base* instrument — the pin-8 case.
+    /// `TypedObjectId::Instrument` liveness is seeded from the base
+    /// (`seed_from_graph`), but without `instrument_values` seeded too, a
+    /// byte-identical re-carry against a base instrument has nothing to
+    /// compare.
+    ///
+    /// **Mutation:** skip seeding `instrument_values` in `seed_from_graph` ->
+    /// the byte-identical re-carry is misreported
+    /// `RecreateContentMismatch` instead of `AlreadyApplied`.
+    #[test]
+    fn create_instrument_recarry_against_a_base_instrument_is_idempotent() {
+        let instrument_id = InstrumentId::new(ReplicaId(1), 1);
+        let value = crate::valuegen::instrument(instrument_id);
+        let mut base = Score::empty(IdentityContext::new(ReplicaId(1)));
+        base.instruments.push(value.clone());
+
+        let recreate = prim_env(
+            2,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::CreateInstrument(CreateInstrumentOp { instrument: value }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![recreate.clone()]);
+        let out = reduce_operation_set_onto(&set, &base);
+
+        let effect = out
+            .state
+            .effects
+            .iter()
+            .find(|(id, _)| *id == recreate.id)
+            .map(|(_, eff)| eff);
+        assert_eq!(
+            effect,
+            Some(&OperationEffect::NoOp {
+                reason: NoOpReason::AlreadyApplied,
+            }),
+            "byte-identical re-carry against a base instrument is idempotent"
+        );
+        assert_eq!(
+            out.score.instruments.len(),
+            1,
+            "no duplicate instrument is minted"
+        );
+    }
+
+    /// (i4) Order independence (ruling acceptance criterion 2): two replicas
+    /// racing to create the *same* instrument id with differing values (a
+    /// concurrent genesis-era scenario) converge to byte-identical
+    /// `MaterializedState` regardless of delivery order — canonical order,
+    /// never insertion order, decides the winner.
+    ///
+    /// **Mutation:** perturb one op's reduction order (its stamp) — asserted
+    /// permanently below as `assert_ne!`, so the equality above is proven
+    /// non-vacuous: a *genuine* reordering really does change the converged
+    /// bytes, which is what the primary assertion would have caught had
+    /// insertion order actually leaked into the result.
+    #[test]
+    fn concurrent_differing_creates_of_the_same_instrument_converge_regardless_of_delivery_order() {
+        let instrument_id = InstrumentId::new(ReplicaId(9), 1);
+        let value_a = crate::valuegen::instrument(instrument_id);
+        let mut value_b = value_a.clone();
+        value_b.name = String::from("a concurrently-authored name");
+
+        let create_a = prim_env(
+            1,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::CreateInstrument(CreateInstrumentOp {
+                instrument: value_a,
+            }),
+        );
+        let create_b = prim_env(
+            2,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::CreateInstrument(CreateInstrumentOp {
+                instrument: value_b,
+            }),
+        );
+
+        let forward = {
+            let mut set = OperationSet::new();
+            set.accept_all(vec![create_a.clone(), create_b.clone()]);
+            set.reduce().canonical_bytes()
+        };
+        let reversed = {
+            let mut set = OperationSet::new();
+            set.accept_all(vec![create_b.clone(), create_a.clone()]);
+            set.reduce().canonical_bytes()
+        };
+        assert_eq!(
+            forward, reversed,
+            "delivery order must not affect the converged state"
+        );
+
+        // Proves the equality above is not vacuous: perturbing one op's own
+        // reduction-order-determining field (its HLC stamp) so it now sorts
+        // *before* its concurrent sibling really does flip the winner and
+        // change the converged bytes.
+        let perturbed = {
+            let mut earlier_b = create_b.clone();
+            earlier_b.stamp =
+                OperationStamp::new(HybridLogicalClock::new(WallClockTime(5), 0), earlier_b.id);
+            let mut set = OperationSet::new();
+            set.accept_all(vec![create_a.clone(), earlier_b]);
+            set.reduce().canonical_bytes()
+        };
+        assert_ne!(
+            forward, perturbed,
+            "a genuine reduction-order change must change the winner"
+        );
+    }
+
+    /// (i5) The identity cursor (ruling §3 point 3). Minting from a
+    /// reduced-from-empty score must not collide with any id the log already
+    /// used — `genesis_spine_envelopes` places replica 1's ids at counters
+    /// `0..=11` (an operation id at every even counter, a minted entity id at
+    /// every odd one), so the derived cursor must be exactly `12`.
+    ///
+    /// **Mutation:** leave `next_counter` at the seed (`0`) -> the next mint
+    /// collides with `create_instrument`'s own `OperationId` counter.
+    #[test]
+    fn identity_cursor_advances_past_every_id_the_replica_used() {
+        let spine = genesis_spine_envelopes();
+        let mut set = OperationSet::new();
+        set.accept_all(spine.envelopes);
+        let identity = IdentityContext::new(ReplicaId(1));
+        let mut out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        assert_eq!(
+            out.score.identity.next_counter, 12,
+            "the cursor advances past every id (op or entity) the log used"
+        );
+        let minted: EventId = out.score.identity.mint();
+        assert_eq!(
+            minted,
+            EventId::new(ReplicaId(1), 12),
+            "a fresh mint from the reduced identity collides with nothing in the log"
+        );
+    }
+
+    /// (i6) Base-free reduction skips a referential precondition that
+    /// graph-aware reduction enforces — a **designed asymmetry**, not a bug:
+    /// base-free reduction has no instrument universe to check against
+    /// (`reduce.rs` — `self.graph.is_some()` guards `create_staff`'s
+    /// reference-resolution block). A later reader must not "fix" this by
+    /// adding the check to base-free reduction; the fix, if this is ever
+    /// wrong, is to stop calling `reduce_operation_set` on a from-empty
+    /// document (contract pin 10 / ruling §4).
+    #[test]
+    fn base_free_reduction_skips_the_referential_precondition_graph_aware_reduction_enforces() {
+        let staff_id = StaffId::new(ReplicaId(1), 1);
+        let missing_instrument = InstrumentId::new(ReplicaId(1), 99); // never minted
+        let create_staff = prim_env(
+            1,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::CreateStaff(CreateStaffOp {
+                staff: crate::valuegen::staff(staff_id, missing_instrument),
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![create_staff.clone()]);
+
+        let base_free = reduce_operation_set(&set);
+        assert_eq!(
+            effect_at(&base_free, 0),
+            Some(&OperationEffect::Applied),
+            "base-free reduction has no instrument universe to check against"
+        );
+
+        let identity = IdentityContext::new(ReplicaId(1));
+        let onto = reduce_operation_set_onto(&set, &Score::empty(identity));
+        assert_eq!(
+            effect_at(&onto.state, 0),
+            Some(&OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            }),
+            "graph-aware reduction enforces the precondition base-free skipped"
+        );
     }
 }

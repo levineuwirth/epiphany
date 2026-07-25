@@ -32,13 +32,14 @@ use crate::envelope::OperationEnvelope;
 use crate::opset::OperationSet;
 use crate::payload::OperationKindTag;
 use crate::payload::{
-    CreateCrossCuttingOp, CreateRegionOp, CreateRepeatStructureOp, CreateStaffInstanceOp,
-    CreateStaffOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp,
-    DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteRepeatStructureOp, DeleteStaffInstanceOp,
-    DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp,
-    ModifyIdentifiedPitchOp, OperationKind, OperationPayload, RespellPitchOp, SetMetadataOp,
-    SetMetricGridOp, SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp, SetUserPageBreakOp,
-    SetUserSystemBreakOp, TransposeIntervalOp, TransposeOp, TupletCompensation,
+    CreateCrossCuttingOp, CreateInstrumentOp, CreateRegionOp, CreateRepeatStructureOp,
+    CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp,
+    DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteRepeatStructureOp,
+    DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
+    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationPayload,
+    RespellPitchOp, SetMetadataOp, SetMetricGridOp, SetStaffLayoutOp, SetTempoSegmentOp,
+    SetTimeSignatureOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransposeIntervalOp, TransposeOp,
+    TupletCompensation,
 };
 use crate::stamp::{HybridLogicalClock, OperationStamp};
 use crate::support::AuthorId;
@@ -89,7 +90,7 @@ fn pitch(n: u64) -> PitchId {
 
 /// Generates a random payload over the shared id space.
 fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
-    let kind = match rng.below(28) {
+    let kind = match rng.below(29) {
         0 => {
             let voice = VoiceId::new(ReplicaId(7), rng.below(3));
             let position = MusicalPosition(RationalTime::from_int(rng.below(4) as i32));
@@ -282,6 +283,15 @@ fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
                 diatonic_steps: rng.below(5) as i32 - 2,
                 chromatic_steps: rng.below(9) as i32 - 4,
             },
+        }),
+        // Genesis tranche G1, over the shared instrument-id space (arm 21's
+        // `CreateStaff` already references `InstrumentId::new(ReplicaId(7),
+        // rng.below(2))`, so mints/re-carries genuinely interact with it).
+        28 => OperationKind::CreateInstrument(CreateInstrumentOp {
+            instrument: valuegen::instrument(epiphany_core::InstrumentId::new(
+                ReplicaId(7),
+                rng.below(2),
+            )),
         }),
         _ => OperationKind::SetStaffLayout(SetStaffLayoutOp {
             staff_instance: StaffInstanceId::new(ReplicaId(7), rng.below(3)),

@@ -16,11 +16,11 @@
 //! The `class` string is informative, not normative: implementations need not
 //! agree on error taxonomy, only on the accept/reject verdict.
 
-use epiphany_core::{EventId, OperationId, ReplicaId, TypedObjectId};
+use epiphany_core::{EventId, InstrumentId, OperationId, ReplicaId, TypedObjectId};
 use epiphany_determinism::CanonicalEncode;
 
 use crate::{
-    IntegrityAnomaly, IntegrityAnomalyKind, MaterializedState, ObjectState,
+    IntegrityAnomaly, IntegrityAnomalyKind, MaterializedState, ObjectState, OperationEnvelope,
     OperationKindRegistryId, OperationKindTag, PendingReason,
 };
 
@@ -255,6 +255,49 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         short_registered,
     ));
 
+    // --- OperationEnvelope carrying CreateInstrument (genesis tranche G1) --
+    //
+    // `ops.operation_kind_tag` above pins only the bare, payload-free tag
+    // byte; nothing in this corpus previously exercised a *value-carrying*
+    // `OperationKind` payload's decode path at all. Committed here so a
+    // future encoder/decoder change to this payload moves this vector's
+    // bytes deliberately, in the diff (the 3b-i lesson the module doc names:
+    // round-trip locking alone cannot see a self-consistent reorder of both
+    // halves).
+    const OE: &str = "ops.operation_envelope";
+    let envelope = OperationEnvelope {
+        id: OperationId::new(ReplicaId(1), 1),
+        author: crate::support::AuthorId(0),
+        stamp: crate::stamp::OperationStamp::new(
+            crate::stamp::HybridLogicalClock::new(epiphany_core::WallClockTime(1), 1),
+            OperationId::new(ReplicaId(1), 1),
+        ),
+        causal_context: crate::causal::CausalContext::new(),
+        transaction: None,
+        payload: crate::payload::OperationPayload::Primitive(
+            crate::payload::OperationKind::CreateInstrument(crate::payload::CreateInstrumentOp {
+                instrument: crate::valuegen::instrument(InstrumentId::new(ReplicaId(1), 1)),
+            }),
+        ),
+    };
+    let envelope_bytes = envelope.to_canonical_bytes();
+    v.push(row(
+        OE,
+        "accept",
+        "-",
+        "create_instrument",
+        envelope_bytes.clone(),
+    ));
+    let mut trailing = envelope_bytes;
+    trailing.push(0);
+    v.push(row(
+        OE,
+        "reject",
+        "trailing-bytes",
+        "create_instrument_trailing",
+        trailing,
+    ));
+
     v
 }
 
@@ -277,6 +320,10 @@ pub fn check(surface: &str, bytes: &[u8]) -> Option<Result<bool, String>> {
             Err(e) => Err(format!("{e}")),
         }),
         "ops.operation_kind_tag" => Some(decode_tag(bytes)),
+        "ops.operation_envelope" => Some(match crate::envdecode::decode_envelope(bytes) {
+            Ok(env) => Ok(env.to_canonical_bytes() == bytes),
+            Err(e) => Err(format!("{e:?}")),
+        }),
         _ => None,
     }
 }
@@ -315,7 +362,11 @@ mod tests {
     /// pinning half a contract.
     #[test]
     fn every_surface_carries_both_verdicts() {
-        for surface in ["ops.materialized_state", "ops.operation_kind_tag"] {
+        for surface in [
+            "ops.materialized_state",
+            "ops.operation_kind_tag",
+            "ops.operation_envelope",
+        ] {
             let rows: Vec<_> = decode_vectors()
                 .into_iter()
                 .filter(|(s, ..)| *s == surface)
@@ -339,5 +390,44 @@ mod tests {
         let classes: Vec<&str> = decode_vectors().iter().map(|(_, _, c, ..)| *c).collect();
         assert!(classes.contains(&"non-canonical-map-order"));
         assert!(classes.contains(&"non-canonical-vec-order"));
+    }
+
+    /// (i8) Genesis tranche G1
+    /// (`spec/CONTRACT_GENESIS_G1_INSTRUMENT.md`): the `CreateInstrument`
+    /// envelope decode vector, pinned to a **literal byte array copied from
+    /// the committed corpus** (`spec/vectors/decode_vectors.txt`,
+    /// `ops.operation_envelope`/`create_instrument`) — not derived by calling
+    /// `.to_canonical_bytes()` here. `every_vector_gets_its_declared_verdict`
+    /// above checks `decode_vectors()`'s *own* output against `check`, which
+    /// cannot see a self-consistent encoder/decoder reorder: the 3b-i lesson
+    /// (`epiphany-core`'s `schema_major_3_tuning_context_wire_bytes_are_frozen`)
+    /// is that a swap applied identically to both halves passed 1283 tests
+    /// and 8/8 conformance, because every check in that failure mode compared
+    /// the live encoder against itself. Bytes written here by hand — as this
+    /// module's own `decode_vectors()` writes them, into the *committed* file
+    /// a future encoder change must move deliberately, in the diff — close
+    /// that hole for `CreateInstrument` specifically.
+    #[test]
+    fn create_instrument_envelope_decode_vector_is_pinned_to_literal_bytes() {
+        #[rustfmt::skip]
+        let bytes: Vec<u8> = vec![
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x1f, 0x41, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x0c, 0x00, 0x00,
+            0x00, 0x69, 0x6e, 0x73, 0x74, 0x72, 0x75, 0x6d, 0x65, 0x6e, 0x74, 0x2d, 0x31, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x05, 0x08, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let result = check("ops.operation_envelope", &bytes)
+            .expect("ops.operation_envelope is owned by this crate");
+        assert_eq!(
+            result,
+            Ok(true),
+            "the committed literal bytes must decode and re-encode injectively"
+        );
     }
 }

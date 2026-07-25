@@ -437,6 +437,13 @@ pub(crate) fn subjects_of(kind: &OperationKind, score: &Score) -> BarrierSubject
         OperationKind::CreateStaff(op) => {
             one(TypedObjectId::Staff(op.staff_id()), EditContext::default())
         }
+        // Genesis tranche G1: an instrument is a root entity with no outbound
+        // references, so — exactly like `CreateStaff` — it names only the
+        // object it mints, with no resolvable region or staff-instance context.
+        OperationKind::CreateInstrument(op) => one(
+            TypedObjectId::Instrument(op.instrument_id()),
+            EditContext::default(),
+        ),
         OperationKind::SetTimeSignature(op) => {
             let mut objects = vec![(TypedObjectId::Region(op.region), ctx(Some(op.region), None))];
             if let Some(signature) = &op.time_signature {

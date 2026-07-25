@@ -8,12 +8,13 @@ use epiphany_determinism::{sorted_canonical, CanonicalEncode};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::payload::{
-    ChangeRegionTimeModelOp, CreateCrossCuttingOp, CreateRegionOp, CreateRepeatStructureOp,
-    CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp, DeleteCrossCuttingOp, DeleteEventOp,
-    DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteRepeatStructureOp, DeleteStaffInstanceOp,
-    DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp,
-    ModifyIdentifiedPitchOp, OperationKind, OperationKindTag, RespellPitchOp, SetMetadataOp,
-    SetMetricGridOp, SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp, SetUserPageBreakOp,
+    ChangeRegionTimeModelOp, CreateCrossCuttingOp, CreateInstrumentOp, CreateRegionOp,
+    CreateRepeatStructureOp, CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp,
+    DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
+    DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
+    InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
+    OperationKind, OperationKindTag, RespellPitchOp, SetMetadataOp, SetMetricGridOp,
+    SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp, SetUserPageBreakOp,
     SetUserSystemBreakOp, TransactionDescriptor, TransposeIntervalOp, TransposeOp,
 };
 use crate::support::OperationKindRegistryId;
@@ -218,6 +219,9 @@ impl TextValue for OperationKind {
                 self.tag(),
                 vec![op.targets.project(), op.interval.project()],
             ),
+            OperationKind::CreateInstrument(op) => {
+                production(self.tag(), vec![op.instrument.project()])
+            }
         }
     }
 
@@ -531,6 +535,14 @@ impl TextValue for OperationKind {
                     interval: TextValue::parse(interval)?,
                 })
             }
+            OperationKindTag::CreateInstrument => {
+                let [instrument] = fields(s, tag, 1)? else {
+                    unreachable!("the arity-1 check returned one field")
+                };
+                OperationKind::CreateInstrument(CreateInstrumentOp {
+                    instrument: TextValue::parse(instrument)?,
+                })
+            }
         })
     }
 }
@@ -584,7 +596,7 @@ mod tests {
     #[test]
     fn every_operation_kind_round_trips_with_canonical_text() {
         let tags: Vec<_> = all_tags().collect();
-        assert_eq!(tags.len(), 31, "the grammar has 31 kind productions");
+        assert_eq!(tags.len(), 32, "the grammar has 32 kind productions");
         for tag in tags {
             round_trip(&sample_kind(tag));
         }

@@ -576,7 +576,11 @@ mod tests {
 
     #[test]
     fn header_matches_the_worked_example() {
-        assert_eq!(project_header().render(), "(text-projection (0 7 0))");
+        let (major, minor, patch) = crate::COMPANION_VERSION;
+        assert_eq!(
+            project_header().render(),
+            format!("(text-projection ({major} {minor} {patch}))")
+        );
     }
 
     #[test]

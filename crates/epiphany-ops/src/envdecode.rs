@@ -36,10 +36,10 @@ use epiphany_core::{
 };
 use epiphany_core::{CanonicalValue, TempoSegment};
 use epiphany_core::{
-    EventId, InstrumentId, MetricGrid, MusicalPosition, OperationId, PitchId, PitchSpelling,
-    RegionId, RegionTimeModel, RepeatStructureId, ReplicaId, ScoreMetadata, Staff, StaffInstance,
-    StaffInstanceId, StaffLineConfiguration, TimeAnchor, TimeSignature, TranspositionInterval,
-    TupletId, TypedObjectId, Voice, VoiceId, WallClockTime,
+    EventId, Instrument, InstrumentId, MetricGrid, MusicalPosition, OperationId, PitchId,
+    PitchSpelling, RegionId, RegionTimeModel, RepeatStructureId, ReplicaId, ScoreMetadata, Staff,
+    StaffInstance, StaffInstanceId, StaffLineConfiguration, TimeAnchor, TimeSignature,
+    TranspositionInterval, TupletId, TypedObjectId, Voice, VoiceId, WallClockTime,
 };
 use epiphany_determinism::{CanonicalDecode, CanonicalEncode};
 
@@ -586,6 +586,9 @@ fn operation_kind(r: &mut Reader<'_>) -> Result<OperationKind> {
                 },
             })
         }
+        31 => OperationKind::CreateInstrument(CreateInstrumentOp {
+            instrument: value::<Instrument>(r, "Instrument")?,
+        }),
         tag => {
             return Err(EnvelopeDecodeError::InvalidTag {
                 kind: "OperationKind",
@@ -868,6 +871,11 @@ pub(crate) mod tests {
             OperationKindTag::DeleteRepeatStructure => {
                 OperationKind::DeleteRepeatStructure(DeleteRepeatStructureOp {
                     repeat: RepeatStructureId::new(ReplicaId(7), 1),
+                })
+            }
+            OperationKindTag::CreateInstrument => {
+                OperationKind::CreateInstrument(CreateInstrumentOp {
+                    instrument: valuegen::instrument(InstrumentId::new(ReplicaId(7), 1)),
                 })
             }
         }

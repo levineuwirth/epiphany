@@ -642,12 +642,29 @@ mod tests {
         out
     }
 
-    const HEADER: &str = "(text-projection (0 7 0))";
+    // Bumped with `COMPANION_VERSION` (0.7.0 → 0.8.0, genesis G1). Kept a
+    // literal because `projection` takes `&[&str]` and a formatted String
+    // would ripple through every call site; `the_test_header_tracks_the_
+    // implemented_version` below fails loudly if the two ever drift.
+    const HEADER: &str = "(text-projection (0 8 0))";
     const DOCUMENT: &str = "(document #x00000000000000000000000000000001)";
 
     /// A minimal but complete valid projection: just the two mandatory lines.
     fn minimal_valid_document() -> String {
         projection(&[HEADER, DOCUMENT])
+    }
+
+    /// `HEADER` is a literal, so nothing but this test stops it drifting from
+    /// the version the crate actually implements. Without it a companion bump
+    /// leaves every fixture below silently rejected by the version gate, and
+    /// the failures point at section ordering rather than at the header.
+    #[test]
+    fn the_test_header_tracks_the_implemented_version() {
+        let (major, minor, patch) = COMPANION_VERSION;
+        assert_eq!(
+            HEADER,
+            format!("(text-projection ({major} {minor} {patch}))")
+        );
     }
 
     /// A simple, independent (empty causal context) envelope, so several of
