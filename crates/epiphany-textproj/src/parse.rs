@@ -642,11 +642,12 @@ mod tests {
         out
     }
 
-    // Bumped with `COMPANION_VERSION` (0.7.0 → 0.8.0, genesis G1). Kept a
-    // literal because `projection` takes `&[&str]` and a formatted String
-    // would ripple through every call site; `the_test_header_tracks_the_
-    // implemented_version` below fails loudly if the two ever drift.
-    const HEADER: &str = "(text-projection (0 8 0))";
+    // Bumped with `COMPANION_VERSION` (0.7.0 → 0.8.0, genesis G1; 0.8.0 →
+    // 0.9.0, genesis G2a). Kept a literal because `projection` takes `&[&str]`
+    // and a formatted String would ripple through every call site; `the_test_
+    // header_tracks_the_implemented_version` below fails loudly if the two
+    // ever drift.
+    const HEADER: &str = "(text-projection (0 9 0))";
     const DOCUMENT: &str = "(document #x00000000000000000000000000000001)";
 
     /// A minimal but complete valid projection: just the two mandatory lines.
@@ -849,6 +850,28 @@ mod tests {
         // The mutation-testing counterpart of the above: the exact version
         // this crate implements must still parse.
         assert!(parse_document(&minimal_valid_document()).is_ok());
+    }
+
+    /// (s9) Genesis tranche G2a (`spec/CONTRACT_GENESIS_G2A_SETTINGS.md`):
+    /// `(0 8 0)` — the version this crate implemented *before* this
+    /// packet's `kind` grammar extension — must now be rejected, not merely
+    /// "some other version". This is the specific case
+    /// `req:textproj:header-version`'s reject-all-others clause exists to
+    /// guard, and it is the one a lenient "any `(0 x 0)`" parser would still
+    /// pass.
+    ///
+    /// **Mutation:** widen the parser's version check from an exact `!=
+    /// COMPANION_VERSION` to accept any `(0 _ 0)` (e.g. `major == 0`) -> this
+    /// test dies, since `(0 8 0)` would then parse.
+    #[test]
+    fn the_immediately_superseded_companion_version_is_rejected() {
+        let text = projection(&["(text-projection (0 8 0))", DOCUMENT]);
+        assert_eq!(
+            parse_document(&text),
+            Err(TextError::NotCanonical(
+                "the header names a companion version other than the one this crate implements"
+            ))
+        );
     }
 
     #[test]

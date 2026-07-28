@@ -33,14 +33,14 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use epiphany_core::{
     canonical_pitch_bytes, derive_promoted_voice_id, simplest_spelling, AnchorOffset,
-    AnnotationAnchor, CanonicalValue, Event, EventDuration, EventId, EventPosition,
-    GestureAnchoring, Instrument, InstrumentId, MeterChange, MetricGrid, MusicalDuration,
-    MusicalPosition, OperationId, Pitch, PitchId, PitchSpelling, RationalTime, RegionEdge,
-    RegionId, RegionTimeModel, ReplicaId, Score, ScoreMetadata, SpellingAttachment,
-    SpellingDirective, SpellingScope, SpellingSource, Staff, StaffId, StaffInstance,
-    StaffInstanceId, StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, TimeAnchor,
-    TimeSignature, TimeSignatureId, TransactionId, TransposeRefusal, TranspositionInterval,
-    TypedObjectId, Voice, VoiceId, VoiceOrigin,
+    AnnotationAnchor, CanonicalValue, CanvasLayoutDefaults, Event, EventDuration, EventId,
+    EventPosition, GestureAnchoring, Instrument, InstrumentId, MeterChange, MetricGrid,
+    MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId, PitchSpelling, RationalTime,
+    RegionEdge, RegionId, RegionTimeModel, ReplicaId, Score, ScoreMetadata, SpellingAttachment,
+    SpellingDirective, SpellingPrecedence, SpellingScope, SpellingSource, Staff, StaffId,
+    StaffInstance, StaffInstanceId, StaffLineConfiguration, TempoMap, TempoSegment, TempoShape,
+    TimeAnchor, TimeSignature, TimeSignatureId, TransactionId, TransposeRefusal,
+    TranspositionInterval, TypedObjectId, Voice, VoiceId, VoiceOrigin,
 };
 use epiphany_determinism::CanonicalEncode;
 
@@ -61,9 +61,9 @@ use crate::payload::{
     CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
     DeleteRegionOp, DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
     InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
-    OperationKind, OperationPayload, RespellPitchOp, SetMetadataOp, SetMetricGridOp,
-    SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp, SetUserPageBreakOp,
-    TransposeIntervalOp, TransposeOp, TupletCompensation,
+    OperationKind, OperationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp,
+    SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
+    SetTimeSignatureOp, SetUserPageBreakOp, TransposeIntervalOp, TransposeOp, TupletCompensation,
 };
 use crate::stamp::StampTuple;
 use crate::support::{ObjectKind, SerializedCanonicalInputs};
@@ -785,6 +785,14 @@ enum ValueRestoration {
     Metadata {
         value: Option<ScoreMetadata>,
     },
+    /// Genesis tranche G2a.
+    CanvasLayoutDefaults {
+        value: Option<CanvasLayoutDefaults>,
+    },
+    /// Genesis tranche G2a.
+    SpellingPrecedence {
+        value: Option<SpellingPrecedence>,
+    },
     MetricGrid {
         region: RegionId,
         value: Option<MetricGrid>,
@@ -899,6 +907,13 @@ struct Reducer<'a> {
     cross_cutting_modify_chain: BTreeMap<TypedObjectId, WriteChain<CrossCuttingValue>>,
     metric_grid_chain: BTreeMap<RegionId, WriteChain<Option<MetricGrid>>>,
     metadata_chain: WriteChain<ScoreMetadata>,
+    // Genesis tranche G2a (`CONTRACT_GENESIS_G2A_SETTINGS.md` pin 6/7/8):
+    // score-singleton LWW chains for the two new settings setters, mirroring
+    // `metadata_chain` exactly — advisory last-writer-wins, seeded from the
+    // base so a value-restoring undo of the first operational write restores
+    // the pre-operational value.
+    canvas_layout_defaults_chain: WriteChain<CanvasLayoutDefaults>,
+    spelling_precedence_chain: WriteChain<SpellingPrecedence>,
     break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
     page_break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
     // Meter/tempo overwrite chains (Phase-3 tranche): `Some` = a set/replace at
@@ -1010,6 +1025,8 @@ struct WorkingSnapshot {
     cross_cutting_modify_chain: BTreeMap<TypedObjectId, WriteChain<CrossCuttingValue>>,
     metric_grid_chain: BTreeMap<RegionId, WriteChain<Option<MetricGrid>>>,
     metadata_chain: WriteChain<ScoreMetadata>,
+    canvas_layout_defaults_chain: WriteChain<CanvasLayoutDefaults>,
+    spelling_precedence_chain: WriteChain<SpellingPrecedence>,
     break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
     page_break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
     meter_change_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<Option<MeterChange>>>,
@@ -1290,6 +1307,8 @@ impl<'a> Reducer<'a> {
             cross_cutting_modify_chain: BTreeMap::new(),
             metric_grid_chain: BTreeMap::new(),
             metadata_chain: WriteChain::new(),
+            canvas_layout_defaults_chain: WriteChain::new(),
+            spelling_precedence_chain: WriteChain::new(),
             break_chain: BTreeMap::new(),
             page_break_chain: BTreeMap::new(),
             meter_change_chain: BTreeMap::new(),
@@ -1383,6 +1402,15 @@ impl<'a> Reducer<'a> {
         // value-restoring undo of the first operational write can restore the
         // pre-operational state (operation_catalog §UndoTransaction).
         self.metadata_chain.seed(score.metadata.clone());
+        // Genesis tranche G2a (contract pin 6): same discipline for the two new
+        // settings setters. Both are always-valued `Score` fields — like
+        // `metadata`, not a map key — so there is no "never authored" state to
+        // distinguish; restoring the seeded base default is correct whether the
+        // base was authored-to-default or never touched.
+        self.canvas_layout_defaults_chain
+            .seed(score.canvas.layout_defaults);
+        self.spelling_precedence_chain
+            .seed(score.spelling_precedence.clone());
         for segment in &score.tempo_map.segments {
             self.tempo_segment_chain
                 .entry((None, resolved_anchor_position(&segment.start)))
@@ -2743,6 +2771,10 @@ impl<'a> Reducer<'a> {
                 OperationKind::CreateRepeatStructure(op) => self.create_repeat_structure(env, op),
                 OperationKind::DeleteRepeatStructure(op) => self.delete_repeat_structure(env, op),
                 OperationKind::CreateInstrument(op) => self.create_instrument(env, op),
+                OperationKind::SetCanvasLayoutDefaults(op) => {
+                    self.set_canvas_layout_defaults(env, op)
+                }
+                OperationKind::SetSpellingPrecedence(op) => self.set_spelling_precedence(env, op),
             },
             OperationPayload::ResolveConflict(op) => self.resolve_conflict(env, op),
             OperationPayload::UndoTransaction(op) => self.undo_transaction(env, op),
@@ -2819,6 +2851,40 @@ impl<'a> Reducer<'a> {
             .record(env.id, env.transaction, op.metadata.clone());
         if let Some(score) = self.graph.as_mut() {
             score.metadata = op.metadata.clone();
+        }
+        OperationEffect::Applied
+    }
+
+    /// Genesis tranche G2a (`CONTRACT_GENESIS_G2A_SETTINGS.md` pin 5): copies
+    /// `set_metadata` structurally — advisory LWW, no conflict, no idempotence
+    /// short-circuit. A re-write of an identical value is a legitimate new
+    /// write, not a no-op.
+    fn set_canvas_layout_defaults(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &SetCanvasLayoutDefaultsOp,
+    ) -> OperationEffect {
+        self.canvas_layout_defaults_chain
+            .record(env.id, env.transaction, op.layout_defaults);
+        if let Some(score) = self.graph.as_mut() {
+            score.canvas.layout_defaults = op.layout_defaults;
+        }
+        OperationEffect::Applied
+    }
+
+    /// Genesis tranche G2a (`CONTRACT_GENESIS_G2A_SETTINGS.md` pin 5): copies
+    /// `set_metadata` structurally — advisory LWW, no conflict, no idempotence
+    /// short-circuit. A re-write of an identical value is a legitimate new
+    /// write, not a no-op.
+    fn set_spelling_precedence(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &SetSpellingPrecedenceOp,
+    ) -> OperationEffect {
+        self.spelling_precedence_chain
+            .record(env.id, env.transaction, op.precedence.clone());
+        if let Some(score) = self.graph.as_mut() {
+            score.spelling_precedence = op.precedence.clone();
         }
         OperationEffect::Applied
     }
@@ -5190,6 +5256,26 @@ impl<'a> Reducer<'a> {
                 })
             }
         }
+        // Genesis tranche G2a (contract pin 7): mirror `metadata_chain` for
+        // the two new score-singleton settings chains.
+        match self.canvas_layout_defaults_chain.undo_verdict(tx) {
+            ChainUndoVerdict::NotWritten => {}
+            ChainUndoVerdict::Superseded { by } => superseded.push(by),
+            ChainUndoVerdict::Restore(predecessor) => {
+                restorations.push(ValueRestoration::CanvasLayoutDefaults {
+                    value: predecessor.map(Predecessor::into_value),
+                })
+            }
+        }
+        match self.spelling_precedence_chain.undo_verdict(tx) {
+            ChainUndoVerdict::NotWritten => {}
+            ChainUndoVerdict::Superseded { by } => superseded.push(by),
+            ChainUndoVerdict::Restore(predecessor) => {
+                restorations.push(ValueRestoration::SpellingPrecedence {
+                    value: predecessor.map(Predecessor::into_value),
+                })
+            }
+        }
         for (region, chain) in &self.metric_grid_chain {
             if !slot_live(TypedObjectId::Region(*region)) {
                 continue;
@@ -5407,6 +5493,27 @@ impl<'a> Reducer<'a> {
                             score.metadata = value.clone();
                         }
                         self.metadata_chain.record(env.id, env.transaction, value);
+                    }
+                }
+                // Genesis tranche G2a (contract pin 7): mirror `Metadata`'s
+                // restoration-apply shape for the two new score-singleton
+                // settings chains.
+                ValueRestoration::CanvasLayoutDefaults { value } => {
+                    if let Some(value) = value {
+                        if let Some(score) = self.graph.as_mut() {
+                            score.canvas.layout_defaults = value;
+                        }
+                        self.canvas_layout_defaults_chain
+                            .record(env.id, env.transaction, value);
+                    }
+                }
+                ValueRestoration::SpellingPrecedence { value } => {
+                    if let Some(value) = value {
+                        if let Some(score) = self.graph.as_mut() {
+                            score.spelling_precedence = value.clone();
+                        }
+                        self.spelling_precedence_chain
+                            .record(env.id, env.transaction, value);
                     }
                 }
                 ValueRestoration::MetricGrid { region, value } => {
@@ -7384,6 +7491,8 @@ impl<'a> Reducer<'a> {
             cross_cutting_modify_chain: self.cross_cutting_modify_chain.clone(),
             metric_grid_chain: self.metric_grid_chain.clone(),
             metadata_chain: self.metadata_chain.clone(),
+            canvas_layout_defaults_chain: self.canvas_layout_defaults_chain.clone(),
+            spelling_precedence_chain: self.spelling_precedence_chain.clone(),
             break_chain: self.break_chain.clone(),
             page_break_chain: self.page_break_chain.clone(),
             meter_change_chain: self.meter_change_chain.clone(),
@@ -7421,6 +7530,8 @@ impl<'a> Reducer<'a> {
         self.cross_cutting_modify_chain = s.cross_cutting_modify_chain;
         self.metric_grid_chain = s.metric_grid_chain;
         self.metadata_chain = s.metadata_chain;
+        self.canvas_layout_defaults_chain = s.canvas_layout_defaults_chain;
+        self.spelling_precedence_chain = s.spelling_precedence_chain;
         self.break_chain = s.break_chain;
         self.page_break_chain = s.page_break_chain;
         self.meter_change_chain = s.meter_change_chain;
@@ -10667,6 +10778,41 @@ mod tests {
             2,
             "CreateInstrument is unconditionally v2, even for the minimal instrument"
         );
+
+        // (s5) Genesis tranche G2a: both new setters fall into the catch-all
+        // `_ => 0` arm — contract pin 3 is explicit that adding them to the
+        // `=> 2` arm alongside `SetMetadata` would be the bug, since
+        // `SetMetadata` sits there because `ScoreMetadata` has mandatory
+        // major-2 appends, a property of *that* type and nothing else.
+        // Asserted on non-default values so an arm that becomes
+        // value-dependent in the wrong direction cannot hide behind the
+        // `Default`.
+        let non_default_layout = {
+            let mut d = epiphany_core::CanvasLayoutDefaults::default();
+            d.page_size.width = epiphany_determinism::CanonicalF64::new(200.0).unwrap();
+            d
+        };
+        assert_eq!(
+            OperationKind::SetCanvasLayoutDefaults(crate::payload::SetCanvasLayoutDefaultsOp {
+                layout_defaults: non_default_layout,
+            })
+            .schema_major(),
+            0,
+            "SetCanvasLayoutDefaults stays in the major-0 catch-all"
+        );
+        let non_default_precedence = crate::valuegen::spelling_precedence(1);
+        assert_ne!(
+            non_default_precedence,
+            epiphany_core::SpellingPrecedence::default()
+        );
+        assert_eq!(
+            OperationKind::SetSpellingPrecedence(crate::payload::SetSpellingPrecedenceOp {
+                precedence: non_default_precedence,
+            })
+            .schema_major(),
+            0,
+            "SetSpellingPrecedence stays in the major-0 catch-all"
+        );
     }
 
     #[test]
@@ -10743,6 +10889,23 @@ mod tests {
         // (unconditionally, contract pin 4), but `MaterializedState` stamps
         // no schema major at all — that is an `OperationEnvelopeBlock`
         // concern in `epiphany-bundle`, which this packet does not touch.
+        //
+        // Re-pinned again at genesis tranche G2a
+        // (`spec/CONTRACT_GENESIS_G2A_SETTINGS.md`): `gen_payload` gained
+        // `SetCanvasLayoutDefaults` (arm 29) and `SetSpellingPrecedence`
+        // (arm 30), and `rng.below(29)` became `below(31)` — the same
+        // reshuffle, for the same reason: every operation id, effect, and
+        // conflict downstream of the first draw moves. Confirmed a corpus
+        // shift, not a value leak, by construction rather than inspection:
+        // `MaterializedState` (`reduce.rs:504`) embeds no `Score` field value
+        // for *any* setting, `SetMetadata` included — the base carries only
+        // effects, conflicts, anomalies, objects, spellings, breaks,
+        // page-breaks, and pending state. Neither new payload changes that
+        // shape, and both are schema major 0 unconditionally (pin 3: no new
+        // `schema_major()` arm), so there is no schema-major surface for a
+        // leak to appear on even if the base did stamp one (it does not —
+        // that is `OperationEnvelopeBlock`'s concern in `epiphany-bundle`,
+        // untouched by this packet).
         let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xBA5E);
         let envelopes = crate::fuzz::gen_envelope_set(&mut rng, 200);
         let mut set = OperationSet::new();
@@ -10752,7 +10915,7 @@ mod tests {
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "61af8ebbba1c4d98360ec44812e5d97a89a720738c1e3573d865f26b48addd1d"
+            "7fd6455a6ae304101774ba981d01702ad37c567575707b1e814dad6e153ab07d"
         );
     }
 
@@ -12946,6 +13109,341 @@ mod tests {
                 },
             }),
             "graph-aware reduction enforces the precondition base-free skipped"
+        );
+    }
+
+    // =========================================================================
+    // Genesis tranche G2a (`spec/CONTRACT_GENESIS_G2A_SETTINGS.md`): the two
+    // major-0 settings setters, `SetCanvasLayoutDefaults` and
+    // `SetSpellingPrecedence`, on the `SetMetadata` LWW pattern.
+    // =========================================================================
+
+    /// (s1) From-empty authoring: through `reduce_operation_set_onto`, each
+    /// new setter produces its authored value in the materialized `Score`.
+    ///
+    /// **Mutation:** drop the graph write in the setter fn (`score.canvas.
+    /// layout_defaults = op.layout_defaults;` / `score.spelling_precedence =
+    /// op.precedence.clone();`) -> the field stays at its `Default` while the
+    /// effect still reads `Applied`.
+    #[test]
+    fn from_empty_settings_setters_materialize_the_authored_value() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let layout = crate::valuegen::canvas_layout_defaults(1);
+        let precedence = crate::valuegen::spelling_precedence(1);
+        let set_layout = prim_env(
+            1,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::SetCanvasLayoutDefaults(SetCanvasLayoutDefaultsOp {
+                layout_defaults: layout,
+            }),
+        );
+        let set_precedence = prim_env(
+            1,
+            1,
+            11,
+            seen_r1(0),
+            OperationKind::SetSpellingPrecedence(SetSpellingPrecedenceOp {
+                precedence: precedence.clone(),
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![set_layout.clone(), set_precedence.clone()]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        assert_eq!(
+            out.score.canvas.layout_defaults, layout,
+            "SetCanvasLayoutDefaults materializes in the graph"
+        );
+        assert_eq!(
+            out.score.spelling_precedence, precedence,
+            "SetSpellingPrecedence materializes in the graph"
+        );
+        assert_eq!(effect_at(&out.state, 0), Some(&OperationEffect::Applied));
+        assert_eq!(effect_at(&out.state, 1), Some(&OperationEffect::Applied));
+    }
+
+    /// (s2) LWW: two concurrent differing writes (neither sees the other)
+    /// resolve to the later in canonical order, recording **no** conflict —
+    /// matching `SetMetadata` (`ops/tests/graph_reduction.rs:1408`).
+    ///
+    /// **Mutation:** *not* a reversed comparison — `set_canvas_layout_
+    /// defaults`/`set_spelling_precedence` contain no comparison at all; they
+    /// record and overwrite unconditionally. Mutate setter-locally to
+    /// first-write-wins instead (skip the record-and-overwrite when the chain
+    /// already holds a write) -> the earlier value survives and this test
+    /// dies.
+    #[test]
+    fn concurrent_differing_settings_setters_are_advisory_lww_no_conflict() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let layout_a = crate::valuegen::canvas_layout_defaults(1);
+        let layout_b = crate::valuegen::canvas_layout_defaults(2);
+        assert_ne!(layout_a, layout_b);
+        // Neither sees the other: both start from an empty causal context, so
+        // they are genuinely concurrent.
+        let a = prim_env(
+            1,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::SetCanvasLayoutDefaults(SetCanvasLayoutDefaultsOp {
+                layout_defaults: layout_a,
+            }),
+        );
+        let b = prim_env(
+            2,
+            0,
+            20,
+            CausalContext::new(),
+            OperationKind::SetCanvasLayoutDefaults(SetCanvasLayoutDefaultsOp {
+                layout_defaults: layout_b,
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![a.clone(), b.clone()]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        assert!(
+            out.state.conflicts.records().is_empty(),
+            "concurrent differing SetCanvasLayoutDefaults is advisory — no conflict"
+        );
+        assert!(
+            out.state.is_clean(),
+            "an advisory layout-defaults edit keeps the materialized state clean"
+        );
+        // `b` has the later physical time, so canonical order places it last;
+        // its value must be the one that survives.
+        assert_eq!(
+            out.score.canvas.layout_defaults, layout_b,
+            "the later-in-canonical-order write wins"
+        );
+    }
+
+    /// (s3) A re-write of an identical value is a **new write**, not a
+    /// no-op: assert the effect is `Applied` and not `AlreadyApplied`. This
+    /// test exists because pin 5 is the most likely thing for a subagent to
+    /// get wrong by pattern-matching on `create_staff`'s mint discipline.
+    ///
+    /// **Mutation:** add an `AlreadyApplied` short-circuit to the setter fn
+    /// (skip the record-and-write when the new value equals the current one)
+    /// -> dies.
+    #[test]
+    fn rewriting_an_identical_settings_value_is_a_new_write_not_a_no_op() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let precedence = crate::valuegen::spelling_precedence(1);
+        let first = prim_env(
+            1,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::SetSpellingPrecedence(SetSpellingPrecedenceOp {
+                precedence: precedence.clone(),
+            }),
+        );
+        let second = prim_env(
+            1,
+            1,
+            11,
+            seen_r1(0),
+            OperationKind::SetSpellingPrecedence(SetSpellingPrecedenceOp {
+                precedence: precedence.clone(),
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![first.clone(), second.clone()]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        assert_eq!(
+            effect_at(&out.state, 0),
+            Some(&OperationEffect::Applied),
+            "the first write applies"
+        );
+        assert_eq!(
+            effect_at(&out.state, 1),
+            Some(&OperationEffect::Applied),
+            "a byte-identical re-write is still a new Applied write, not AlreadyApplied"
+        );
+    }
+
+    /// (s4) Value-restoring undo reaches the seeded base — run both
+    /// from-empty (base = `Default`) and onto a loaded base with a
+    /// non-default value, so the test distinguishes "restored the base" from
+    /// "restored the type default".
+    ///
+    /// **Mutation:** remove the `.seed(...)` calls in `seed_from_graph` ->
+    /// the undo produces `Restore(None)` and the field does not move (it
+    /// stays at the transaction's authored value instead of reverting).
+    #[test]
+    fn value_restoring_undo_of_settings_setters_reaches_the_seeded_base() {
+        // Case A: from-empty. Base = Score::empty, so the seed is the type
+        // Default.
+        {
+            let identity = IdentityContext::new(ReplicaId(1));
+            let tx = TransactionId::from_raw(1);
+            let authored = crate::valuegen::canvas_layout_defaults(3);
+            let envelopes = vec![
+                declare_transaction(1, 0, 10, CausalContext::new(), tx),
+                tx_member(
+                    1,
+                    1,
+                    11,
+                    seen_r1(0),
+                    tx,
+                    OperationKind::SetCanvasLayoutDefaults(SetCanvasLayoutDefaultsOp {
+                        layout_defaults: authored,
+                    }),
+                ),
+                undo_env(1, 2, 12, seen_r1(1), tx, UndoPolicy::StrictInverse),
+            ];
+            let mut set = OperationSet::new();
+            set.accept_all(envelopes);
+            let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+            assert_eq!(
+                out.score.canvas.layout_defaults,
+                CanvasLayoutDefaults::default(),
+                "from-empty undo restores the seeded type Default"
+            );
+        }
+
+        // Case B: onto a loaded base whose value is already non-default —
+        // undo must restore *that* value, not the type Default.
+        {
+            let mut base = Score::empty(IdentityContext::new(ReplicaId(1)));
+            let base_value = crate::valuegen::spelling_precedence(1);
+            base.spelling_precedence = base_value.clone();
+            assert_ne!(base_value, SpellingPrecedence::default());
+
+            let tx = TransactionId::from_raw(2);
+            let authored = crate::valuegen::spelling_precedence(2);
+            let envelopes = vec![
+                declare_transaction(1, 0, 10, CausalContext::new(), tx),
+                tx_member(
+                    1,
+                    1,
+                    11,
+                    seen_r1(0),
+                    tx,
+                    OperationKind::SetSpellingPrecedence(SetSpellingPrecedenceOp {
+                        precedence: authored,
+                    }),
+                ),
+                undo_env(1, 2, 12, seen_r1(1), tx, UndoPolicy::StrictInverse),
+            ];
+            let mut set = OperationSet::new();
+            set.accept_all(envelopes);
+            let out = reduce_operation_set_onto(&set, &base);
+            assert_eq!(
+                out.score.spelling_precedence, base_value,
+                "undo onto a loaded base restores the base's own value, not the type Default"
+            );
+        }
+    }
+
+    /// (s7) Transaction rollback discards the write — and the assertion must
+    /// not be on the field. `WorkingSnapshot` (`:7480`) is the transaction
+    /// **rollback** mechanism: snapshot before, restore on failure. But
+    /// `restore` reassigns the whole graph independently of every write
+    /// chain, so a setter's *field* rolls back whether or not its chain was
+    /// snapshotted — an assertion on the field alone cannot see a missing
+    /// chain in the snapshot/restore pair.
+    ///
+    /// Shaped so the stale chain is observable: author inside a **failed**
+    /// transaction, then perform a **successful** write in a second
+    /// transaction, then **undo that second transaction** and assert it
+    /// restores the genuine predecessor — the pre-failure value, not the
+    /// rolled-back one.
+    ///
+    /// **Mutation:** omit `canvas_layout_defaults_chain` /
+    /// `spelling_precedence_chain` from the snapshot/restore pair (`:7480`
+    /// `snapshot`, `:7518` `restore`) -> the failed transaction's write
+    /// survives in the chain and the second undo restores it instead of the
+    /// true (pre-failure) predecessor.
+    #[test]
+    fn transaction_rollback_discards_the_write_from_the_chain_not_just_the_field() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let pre_failure = crate::valuegen::canvas_layout_defaults(1);
+        let failed_tx_value = crate::valuegen::canvas_layout_defaults(2);
+        let second_tx_value = crate::valuegen::canvas_layout_defaults(3);
+        assert_ne!(pre_failure, failed_tx_value);
+        assert_ne!(pre_failure, second_tx_value);
+        assert_ne!(failed_tx_value, second_tx_value);
+
+        let fail_tx = TransactionId::from_raw(10);
+        let ok_tx = TransactionId::from_raw(11);
+
+        // 1: a genuine, successful pre-failure write (not itself part of any
+        // transaction) — this is the predecessor the final undo must reach.
+        let pre = prim_env(
+            1,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::SetCanvasLayoutDefaults(SetCanvasLayoutDefaultsOp {
+                layout_defaults: pre_failure,
+            }),
+        );
+        // 2: a transaction whose only member operation targets a missing
+        // staff instance, so the transaction as a whole fails and rolls
+        // back — `WorkingSnapshot` restores the graph, but a chain missing
+        // from the snapshot/restore pair would leak this write into the
+        // chain regardless.
+        let missing_instance = StaffInstanceId::new(ReplicaId(1), 99);
+        let fail_decl = declare_transaction(1, 1, 11, seen_r1(0), fail_tx);
+        let fail_write = tx_member(
+            1,
+            2,
+            12,
+            seen_r1(1),
+            fail_tx,
+            OperationKind::SetCanvasLayoutDefaults(SetCanvasLayoutDefaultsOp {
+                layout_defaults: failed_tx_value,
+            }),
+        );
+        let fail_doomed = tx_member(
+            1,
+            3,
+            13,
+            seen_r1(2),
+            fail_tx,
+            OperationKind::SetStaffLayout(SetStaffLayoutOp {
+                staff_instance: missing_instance,
+                instrument_override: None,
+                staff_lines_override: None,
+                visible: true,
+            }),
+        );
+        // 3: a second, successful transaction that writes again.
+        let ok_decl = declare_transaction(1, 4, 14, seen_r1(3), ok_tx);
+        let ok_write = tx_member(
+            1,
+            5,
+            15,
+            seen_r1(4),
+            ok_tx,
+            OperationKind::SetCanvasLayoutDefaults(SetCanvasLayoutDefaultsOp {
+                layout_defaults: second_tx_value,
+            }),
+        );
+        // 4: undo the second (successful) transaction.
+        let undo = undo_env(1, 6, 16, seen_r1(5), ok_tx, UndoPolicy::StrictInverse);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            pre,
+            fail_decl,
+            fail_write,
+            fail_doomed,
+            ok_decl,
+            ok_write,
+            undo,
+        ]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        assert_eq!(
+            out.score.canvas.layout_defaults, pre_failure,
+            "undo of the second transaction must restore the genuine (pre-failure) \
+             predecessor, not the rolled-back transaction's write"
         );
     }
 }

@@ -234,7 +234,7 @@
   {\Large\scshape\color{epiphanyslate}Text Projection}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.8.0 --- The genesis operation vocabulary reaches the grammar}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.9.0 --- The genesis settings setters reach the grammar}\\[4pt]
   {\small\color{epiphanyslate}Normative for the text form it defines}
   \vfill
 \end{titlepage}
@@ -467,7 +467,7 @@ A projection is, in order:
 \begin{requirement}
   \label{req:textproj:header-version}
   A parser implementing this companion \MUST{} accept exactly one header
-  version: \texttt{(0 8 0)}, the version of the companion it implements. It
+  version: \texttt{(0 9 0)}, the version of the companion it implements. It
   \MUST{} reject any other version at line one.
 
   Multi-version acceptance and text migrate-on-read are deferred in the same
@@ -518,7 +518,7 @@ projection introduces no ordering of its own.
   A parser \MUST{} reject every \texttt{(blob ...)} line whose blob is
   unreferenced by canonical state
   (Requirement~\ref{req:textproj:canonical-blobs}). At companion
-  version~0.8.0, neither a canonical operation nor canonical reduced state can
+  version~0.9.0, neither a canonical operation nor canonical reduced state can
   carry a \texttt{BlobId}; canonical state therefore cannot reference a blob,
   and a parser \MUST{} reject every \texttt{(blob ...)} line.
 \end{requirement}
@@ -1042,6 +1042,8 @@ kind           ::= "(insert-event " bytes " " value ")"
                | "(delete-repeat-structure " bytes ")"
                | "(transpose-interval (" bytes* ") " value ")"
                | "(create-instrument " value ")"
+               | "(set-canvas-layout-defaults " value ")"
+               | "(set-spelling-precedence " value ")"
 
 tuplet-comp    ::= "not-in-tuplet" | "(replace-with-rest " value ")"
                | "(rewrite-tuplets (" bytes* "))"
@@ -1118,7 +1120,7 @@ A document of one operation --- a transposition of two pitches up a perfect
 fifth, over a compacted base --- projects to five lines:
 
 \begin{lstlisting}
-(text-projection (0 8 0))
+(text-projection (0 9 0))
 (document #x05050505050505050505050505050505)
 (profile full (0 1 0) (constraints 67108864 (retention 1 () true)))
 (canonical-base #x1f8b0000000000000000000000000000 #x 1 full (schema 0 1) #x0000)
@@ -1325,6 +1327,18 @@ absorb it, exactly as the binary decoder does.
   may discard, so a stale projection is regenerated from the canonical
   document rather than converted. Multi-version acceptance and text
   migrate-on-read remain deferred, unchanged. \\
+    \today & Chapter 5 & 0.9.0 --- The genesis settings setters reach the
+  grammar. The \texttt{kind} production gains
+  \texttt{"(set-canvas-layout-defaults " value ")"} and
+  \texttt{"(set-spelling-precedence " value ")"}
+  (\texttt{req:textproj:operation-vocabulary}), the second appended pair since
+  the header was gated to a single version at 0.7.0.
+
+  Same forcing reason as the 0.8.0 bump above: holding the version while
+  extending the grammar would leave two mutually incompatible grammars both
+  claiming \texttt{(0 8 0)}. Cached projections at \texttt{(0 8 0)} do not
+  migrate; a stale \texttt{TextProjection} chunk is regenerated, not
+  converted. \\
 \bottomrule
 \end{longtable}
 

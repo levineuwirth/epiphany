@@ -240,7 +240,7 @@
   {\Large\scshape\color{epiphanyslate}Binary Format}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.11.0 --- The decode vector corpus extends to the core score wire}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.12.0 --- The genesis operation tranche reaches the wire (G1 + G2a)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the byte layouts it defines}
   \vfill
 \end{titlepage}
@@ -1445,6 +1445,16 @@ and the reader disagree about the field's type.
     \texttt{diatonic\_steps} (\texttt{i32} LE, 4) \cat{}
     \texttt{chromatic\_steps} (\texttt{i32} LE, 4) &
     \sectionsc{TransposeInterval} \\
+  \tablenums{31} & \texttt{CreateInstrument} &
+    $\mathrm{lp}$(\texttt{Instrument}) --- the schema-major-2 layout,
+    unconditionally (born at v2; Section~\ref{sec:evolution:major2}) &
+    \sectionsc{CreateInstrument} \\
+  \tablenums{32} & \texttt{SetCanvasLayoutDefaults} &
+    $\mathrm{lp}$(\texttt{CanvasLayoutDefaults}) &
+    \sectionsc{SetCanvasLayoutDefaults} \\
+  \tablenums{33} & \texttt{SetSpellingPrecedence} &
+    $\mathrm{lp}$(\texttt{SpellingPrecedence}) &
+    \sectionsc{SetSpellingPrecedence} \\
   \bottomrule
 \end{longtable}
 \endgroup
@@ -1513,7 +1523,8 @@ discriminants and wrong lengths are decode errors. Append-only past
   \tablenums{24} & \texttt{InsertStaff} & \tablenums{25} & \texttt{SetTimeSignature} \\
   \tablenums{26} & \texttt{SetTempoSegment} & \tablenums{27} & \texttt{SetStaffLayout} \\
   \tablenums{28} & \texttt{CreateRepeatStructure} & \tablenums{29} & \texttt{DeleteRepeatStructure} \\
-  \tablenums{30} & \texttt{TransposeInterval} & & \\
+  \tablenums{30} & \texttt{TransposeInterval} & \tablenums{31} & \texttt{CreateInstrument} \\
+  \tablenums{32} & \texttt{SetCanvasLayoutDefaults} & \tablenums{33} & \texttt{SetSpellingPrecedence} \\
   \bottomrule
 \end{longtable}
 \endgroup
@@ -2426,13 +2437,27 @@ The three added fields land in different chunk classes, and the major is
 assigned \textbf{per payload type}, not per chunk kind:
 
 \begin{itemize}
-  \item \texttt{Canvas.layout\_defaults} and \texttt{Instrument.range} appear
-    \emph{only} in the acceleration-cache full-\texttt{Score} snapshot (a
-    \texttt{ChunkKind::Snapshot}). No operation payload embeds a
-    \texttt{Canvas} or an \texttt{Instrument} value (there is no
-    \texttt{CreateCanvas}/\texttt{CreateInstrument}; canvas is the inline
-    genesis singleton and instruments live in score genesis), so these two
-    are confined to that one \textbf{non-canonical} chunk.
+  \item \texttt{Canvas.layout\_defaults} and \texttt{Instrument.range} now
+    also reach the \textbf{canonical operation layer}, each by a different
+    genesis-tranche operation. \texttt{Instrument.range}: genesis tranche G1's
+    \texttt{CreateInstrument} (\S\ref{sec:ops:kinds} discriminant
+    \tablenums{31}) embeds the full \texttt{Instrument} value, whose
+    schema-major-2 appends are mandatory --- so this payload always carries
+    the complete (major-2) \texttt{Instrument} layout, \texttt{range}
+    included, and a block carrying it is stamped \textbf{major~2}
+    unconditionally, never merely major~1.
+    \texttt{Canvas.layout\_defaults}: genesis tranche G2a's
+    \texttt{SetCanvasLayoutDefaults} (discriminant \tablenums{32}) embeds the
+    full \texttt{CanvasLayoutDefaults} value directly, rather than through the
+    containing \texttt{Canvas} walk that carries the major-1 versioning ---
+    \texttt{CanvasLayoutDefaults} has exactly one layout as a standalone
+    value, so a block carrying this operation is stamped \textbf{major~0}.
+    What remains confined to the \textbf{non-canonical} acceleration-cache
+    full-\texttt{Score} snapshot (a \texttt{ChunkKind::Snapshot}) is the
+    canvas \emph{object itself}: there is still no \texttt{CreateCanvas}, no
+    \texttt{TypedObjectId} kind for it, and no operation mints, addresses, or
+    deletes it --- the canvas is the inline genesis singleton, and that half
+    of the earlier claim survives.
   \item \texttt{Region.permits\_spanning\_slurs} reaches the snapshot
     \emph{and} the \textbf{canonical operation layer}:
     \texttt{CreateRegion} embeds the full \texttt{Region} value
@@ -2596,19 +2621,29 @@ are defined in the same core revision; their wire layouts are below.
 The major is assigned per payload type, exactly as in major~1:
 
 \begin{itemize}
-  \item \textbf{Snapshot-only:} \texttt{Instrument} (no operation embeds
-    one); it reaches only the acceleration full-\texttt{Score} snapshot.
-    (\texttt{RepeatStructure} was snapshot-only when this section was
-    first ratified; the repeat-authoring pair moved it to the canonical
-    operation layer --- next bullet.)
-  \item \textbf{Canonical operation layer:} eight operation
-    payloads embed filled values. \texttt{CreateRepeatStructure} (this
-    revision --- Operation Catalog \sectionsc{Repeat Structures},
-    discriminant \tablenums{28}) embeds the v2 \texttt{RepeatStructure}
-    layout unconditionally (\texttt{kind} and \texttt{voltas} are not
-    optional fields) and is \emph{born at v2}: no lower-major layout for
-    its payload exists, so every block carrying one stamps major~2 under
-    minimal stamping. Its sibling \texttt{DeleteRepeatStructure}
+  \item \textbf{Snapshot-only:} nothing, as of genesis tranche G1.
+    \texttt{Instrument} was snapshot-only when this section was first
+    ratified (no operation embedded one; it reached only the acceleration
+    full-\texttt{Score} snapshot) and \texttt{RepeatStructure} likewise,
+    until the repeat-authoring pair moved it to the canonical operation
+    layer. \texttt{CreateInstrument} (genesis tranche G1, discriminant
+    \tablenums{31}) moved \texttt{Instrument} the same way --- see the next
+    bullet, which now names it.
+  \item \textbf{Canonical operation layer:} nine operation
+    payloads embed filled values. \texttt{CreateInstrument} (genesis
+    tranche G1 --- Operation Catalog \sectionsc{CreateInstrument},
+    discriminant \tablenums{31}) embeds the full \texttt{Instrument} value;
+    its schema-major-2 appends (\texttt{sound\_config},
+    \texttt{default\_clef}, \texttt{default\_staff\_lines}, and the rest)
+    are mandatory fields, not \texttt{Option}-hidden, so it is
+    \emph{born at v2} exactly as \texttt{CreateRepeatStructure} below is ---
+    no lower-major layout for this payload exists, and every block
+    carrying one stamps major~2 under minimal stamping.
+    \texttt{CreateRepeatStructure} (Operation Catalog
+    \sectionsc{Repeat Structures}, discriminant \tablenums{28}) embeds the
+    v2 \texttt{RepeatStructure} layout unconditionally (\texttt{kind} and
+    \texttt{voltas} are not optional fields) and is likewise \emph{born at
+    v2}. Its sibling \texttt{DeleteRepeatStructure}
     (\tablenums{29}) carries a bare identifier --- a major-0 layout ---
     so minimal stamping gives its blocks major~0; the kind discriminant
     itself is an append-only schema-\emph{minor} vocabulary event (the
@@ -2617,8 +2652,8 @@ The major is assigned per payload type, exactly as in major~1:
     kind's blocks \emph{stamp} always follows minimal stamping over its
     payload, as discriminant \tablenums{24}'s always-major-2
     \texttt{CreateStaff} shows). Neither changes anything about
-    lower-major layouts. The seven payloads of the first ratification
-    embed filled values ---
+    lower-major layouts. The seven remaining payloads of the first
+    ratification embed filled values ---
     \texttt{CreateCrossCutting} and \texttt{ModifyCrossCutting} (a
     \texttt{CrossCuttingValue} embedding \texttt{Slur}, \texttt{Tie},
     \texttt{Beam}, or \texttt{Spanner}); \texttt{CreateStaff} (a
@@ -2634,7 +2669,9 @@ The major is assigned per payload type, exactly as in major~1:
     embedding the filled \texttt{StaffLineConfiguration}. (Reduction
     preconditions a \emph{carried} region to be empty of typed children,
     but the byte form is representable and preserved in the canonical
-    set, so the wire must define it.)
+    set, so the wire must define it.) That is
+    $1~(\texttt{CreateInstrument}) + 1~(\texttt{CreateRepeatStructure}) +
+    7 = 9$ payloads total.
 
     \textbf{Minimal stamping.} A writer \MUST{} stamp each
     operation-envelope block with the \emph{lowest} schema major whose
@@ -3475,6 +3512,35 @@ only}: implementations need not agree on an error taxonomy.
   order, which previously passed round-trip locking and 8/8 conformance).
   No wire layout changed; no existing vector's bytes moved
   (\texttt{spec/CONTRACT\_CORE\_DECODE\_VECTORS.md}). \\
+    \today & Operation wire forms & 0.12.0 --- Genesis tranche G2a
+  (\texttt{spec/CONTRACT\_GENESIS\_G2A\_SETTINGS.md}), plus the repair of a
+  G1 omission this document's own contract wrongly declared out of scope.
+  Appends \texttt{OperationKind} wire discriminants \tablenums{31}
+  (\texttt{CreateInstrument}, genesis tranche G1 --- landed at
+  \texttt{3b09595} with no matching entry here), \tablenums{32}
+  (\texttt{SetCanvasLayoutDefaults}), and \tablenums{33}
+  (\texttt{SetSpellingPrecedence}), with their payload layouts, and the
+  matching \texttt{OperationKindTag} discriminants \tablenums{31}--\tablenums{33}
+  (name-verbatim projection, as the two most recent prior additions are) ---
+  schema-\emph{minor} evolutions under this document's own append-only
+  rules; no existing assignment changed. \texttt{CreateInstrument} embeds
+  the full \texttt{Instrument} value and is \emph{born at v2}
+  unconditionally (Section~\ref{sec:evolution:major2}), which the
+  Section~\ref{sec:evolution:major1}/\ref{sec:evolution:major2}
+  ``Where the changed fields reach'' bullets are corrected to name: neither
+  \texttt{Instrument} nor \texttt{Canvas.layout\_defaults} is
+  snapshot-only any longer, and the \sectionsc{Schema Major 2} canonical
+  operation-layer count moves from eight payloads to nine. Both new G2a
+  payloads --- \texttt{SetCanvasLayoutDefaultsOp} and
+  \texttt{SetSpellingPrecedenceOp} --- carry only major-0 layouts (neither
+  carried type has ever been versioned as a standalone value), so no
+  accept-set moves: \texttt{OperationEnvelopeBlock} stays at
+  \tablenums{2}. The chunk schema \emph{minor} is knowingly still not
+  stamped for any of \tablenums{24}--\tablenums{33} (filed as P13-S14, a
+  retroactive sweep sequenced after this rung). Semantics: Operation
+  Catalog \sectionsc{CreateInstrument} (retroactive),
+  \sectionsc{SetCanvasLayoutDefaults}, \sectionsc{SetSpellingPrecedence},
+  0.10.0. \\
 \bottomrule
 \end{longtable}
 

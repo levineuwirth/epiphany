@@ -36,10 +36,11 @@ use epiphany_core::{
 };
 use epiphany_core::{CanonicalValue, TempoSegment};
 use epiphany_core::{
-    EventId, Instrument, InstrumentId, MetricGrid, MusicalPosition, OperationId, PitchId,
-    PitchSpelling, RegionId, RegionTimeModel, RepeatStructureId, ReplicaId, ScoreMetadata, Staff,
-    StaffInstance, StaffInstanceId, StaffLineConfiguration, TimeAnchor, TimeSignature,
-    TranspositionInterval, TupletId, TypedObjectId, Voice, VoiceId, WallClockTime,
+    CanvasLayoutDefaults, EventId, Instrument, InstrumentId, MetricGrid, MusicalPosition,
+    OperationId, PitchId, PitchSpelling, RegionId, RegionTimeModel, RepeatStructureId, ReplicaId,
+    ScoreMetadata, SpellingPrecedence, Staff, StaffInstance, StaffInstanceId,
+    StaffLineConfiguration, TimeAnchor, TimeSignature, TranspositionInterval, TupletId,
+    TypedObjectId, Voice, VoiceId, WallClockTime,
 };
 use epiphany_determinism::{CanonicalDecode, CanonicalEncode};
 
@@ -589,6 +590,12 @@ fn operation_kind(r: &mut Reader<'_>) -> Result<OperationKind> {
         31 => OperationKind::CreateInstrument(CreateInstrumentOp {
             instrument: value::<Instrument>(r, "Instrument")?,
         }),
+        32 => OperationKind::SetCanvasLayoutDefaults(SetCanvasLayoutDefaultsOp {
+            layout_defaults: value::<CanvasLayoutDefaults>(r, "CanvasLayoutDefaults")?,
+        }),
+        33 => OperationKind::SetSpellingPrecedence(SetSpellingPrecedenceOp {
+            precedence: value::<SpellingPrecedence>(r, "SpellingPrecedence")?,
+        }),
         tag => {
             return Err(EnvelopeDecodeError::InvalidTag {
                 kind: "OperationKind",
@@ -876,6 +883,16 @@ pub(crate) mod tests {
             OperationKindTag::CreateInstrument => {
                 OperationKind::CreateInstrument(CreateInstrumentOp {
                     instrument: valuegen::instrument(InstrumentId::new(ReplicaId(7), 1)),
+                })
+            }
+            OperationKindTag::SetCanvasLayoutDefaults => {
+                OperationKind::SetCanvasLayoutDefaults(SetCanvasLayoutDefaultsOp {
+                    layout_defaults: valuegen::canvas_layout_defaults(1),
+                })
+            }
+            OperationKindTag::SetSpellingPrecedence => {
+                OperationKind::SetSpellingPrecedence(SetSpellingPrecedenceOp {
+                    precedence: valuegen::spelling_precedence(1),
                 })
             }
         }

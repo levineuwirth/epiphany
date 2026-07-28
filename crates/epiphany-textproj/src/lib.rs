@@ -26,7 +26,12 @@ use epiphany_ops::OperationEnvelope;
 /// without moving this constant would leave two incompatible grammars both
 /// claiming `(0 7 0)`. Cached projections do not migrate: a `TextProjection`
 /// chunk is a non-canonical accelerator, so a stale one is regenerated.
-pub const COMPANION_VERSION: (u32, u32, u32) = (0, 8, 0);
+///
+/// Bumped again 0.8.0 → 0.9.0 by the genesis tranche G2a, which appended
+/// `set-canvas-layout-defaults` and `set-spelling-precedence` to the `kind`
+/// production — the same reasoning: extending the grammar without moving this
+/// constant would leave two incompatible grammars both claiming `(0 8 0)`.
+pub const COMPANION_VERSION: (u32, u32, u32) = (0, 9, 0);
 
 /// A parsed canonical Text Projection document.
 ///

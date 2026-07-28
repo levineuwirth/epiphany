@@ -231,7 +231,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.9.0 --- Space-relative CMN transposition}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.10.0 --- The genesis operation tranche (G1 + G2a)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -342,6 +342,45 @@ non-\texttt{Cmn} discriminant check and is replaced by structural registry
 resolution in Push~4b. No payload bytes change and no
 \texttt{PreconditionFailureReason} is appended; assignments 10 through 15
 remain exactly as ratified.
+
+\medskip
+
+\noindent\textbf{Version 0.10.0, first half (genesis tranche G1,
+retroactively recorded).} \texttt{CreateInstrument}
+(Section~\ref{sec:k0:create-instrument}) landed at commit \texttt{3b09595}
+without a version bump or a changelog paragraph, against this document's own
+convention above --- an omission genesis tranche G2a repairs here rather than
+silently. Adds one operation kind, \texttt{CreateInstrument}, mint-only
+(set-union creation, no delete in this catalogue revision) on the score root,
+carrying the full \texttt{Instrument} value. It is the single missing link
+between an empty score (\texttt{Score::empty}) and a note: \texttt{CreateStaff}
+already demands a live \texttt{Instrument}, and nothing else could mint one.
+Schema major~2 unconditionally (\texttt{Instrument}'s major-2 appends are
+mandatory fields, not \texttt{Option}-hidden).
+
+\medskip
+
+\noindent\textbf{Version 0.10.0, second half (genesis tranche G2a).} Adds two
+operation kinds, \texttt{SetCanvasLayoutDefaults}
+(Section~\ref{sec:k0:set-canvas-layout-defaults}) and
+\texttt{SetSpellingPrecedence} (Section~\ref{sec:k0:set-spelling-precedence}),
+on exactly the \texttt{SetMetadata} advisory-LWW pattern
+(Section~\ref{sec:k0:score-settings}): the canvas's default layout advisories
+and the score's spelling-precedence configuration join the operation-authored
+surfaces. Both are schema major~0 unconditionally --- neither carried type's
+canonical encoding, taken as a standalone payload, has ever been versioned.
+No accept-set change: the third genesis-ladder setter,
+\texttt{SetTuningContext}, is schema major~3 and is deliberately deferred to
+its own rung (G2b) rather than anticipated here.
+
+The \emph{Value restoration} passage
+(Section~\ref{sec:k0:undo}) and the \emph{Retired slots} closing note both
+gain a repair alongside this addition: the former's LWW-family enumeration
+now names both new setters, and the latter's ``outside the operation set''
+clause is narrowed to the canvas object itself, per
+\texttt{spec/RULING\_GENESIS\_PERSISTENCE.md} --- the score's \emph{contents}
+are no longer outside the operation set; the canvas is still never
+op-minted.
 
 % ===========================================================================
 \chapter{The Catalog Framework}
@@ -1138,6 +1177,76 @@ There is no \texttt{DeleteInstrument} in this catalogue revision ---
 full delete/modify coverage of the genesis-authored fields is later
 tranche work (\texttt{spec/PLAN\_GENESIS\_OPS.md} G3).
 
+\section{SetCanvasLayoutDefaults}
+\label{sec:k0:set-canvas-layout-defaults}
+
+Ratified with the genesis operation tranche's G2a rung (\texttt{spec/CONTRACT\_
+GENESIS\_G2A\_SETTINGS.md}, executing \texttt{spec/RULING\_GENESIS\_
+PERSISTENCE.md}): the canvas's default layout advisories
+(\texttt{Canvas.layout\_defaults}) join the operation-authored surfaces, on
+exactly the \texttt{SetMetadata} pattern (Section~\ref{sec:k0:score-settings}).
+
+\textbf{Payload schema.} \texttt{SetCanvasLayoutDefaultsOp \{ layout\_defaults:
+CanvasLayoutDefaults \}} --- the full page-size-and-margins value.
+
+\textbf{Canonical encoding.} The length-framed canonical bytes of
+\texttt{layout\_defaults}. \texttt{CanvasLayoutDefaults} carries no
+schema-major-1-or-higher appends of its own --- the versioning that labels the
+type ``schema major 1'' lives in the \emph{containing} \texttt{Canvas} walk,
+not in this leaf --- so, as a standalone payload, it has exactly one layout
+and this operation is schema major~0 unconditionally.
+
+\textbf{Reduction rule.} An advisory last-writer-wins field overwrite,
+identical in discipline to \texttt{SetMetadata}: the latest write in canonical
+order silently wins and the operation always applies --- no working state, no
+conflict, and no idempotence short-circuit (a re-write of an identical value
+is a legitimate new write, not a no-op). Graph-aware reduction overwrites
+\texttt{Canvas.layout\_defaults}.
+
+\textbf{Conflict cases.} None (advisory LWW).
+
+\textbf{Undo semantics.} A value-restoring field overwrite
+(Section~\ref{sec:k0:undo}): the write chain is seeded from the base value at
+ingest, so undoing the first operational write restores the pre-operational
+state rather than absence.
+
+\textbf{Re-anchoring.} Not applicable: the field is a score singleton with no
+tombstonable anchor.
+
+\section{SetSpellingPrecedence}
+\label{sec:k0:set-spelling-precedence}
+
+Ratified with the genesis operation tranche's G2a rung, alongside
+\texttt{SetCanvasLayoutDefaults} above: the score's spelling-precedence
+configuration (\texttt{Score.spelling\_precedence}) joins the
+operation-authored surfaces, on the same \texttt{SetMetadata} pattern.
+
+\textbf{Payload schema.} \texttt{SetSpellingPrecedenceOp \{ precedence:
+SpellingPrecedence \}} --- the full total-ordering value over the five
+spelling-source kinds.
+
+\textbf{Canonical encoding.} The length-framed canonical bytes of
+\texttt{precedence}. \texttt{SpellingPrecedence} has never been versioned ---
+every codec walk that reads it, frozen and live alike, reads it through the
+plain unversioned codec --- so this operation is schema major~0
+unconditionally, exactly as \texttt{SetCanvasLayoutDefaults} is.
+
+\textbf{Reduction rule.} An advisory last-writer-wins field overwrite,
+identical in discipline to \texttt{SetMetadata} and
+\texttt{SetCanvasLayoutDefaults}: no working state, no conflict, no
+idempotence short-circuit. Graph-aware reduction overwrites
+\texttt{Score.spelling\_precedence}.
+
+\textbf{Conflict cases.} None (advisory LWW).
+
+\textbf{Undo semantics.} A value-restoring field overwrite
+(Section~\ref{sec:k0:undo}): the write chain is seeded from the base value at
+ingest, so undoing the first operational write restores the pre-operational
+state rather than absence.
+
+\textbf{Re-anchoring.} Not applicable: the field is a score singleton with no
+tombstonable anchor.
+
 \section{Repeat Structures}
 \label{sec:k0:repeat-structures}
 
@@ -1494,8 +1603,9 @@ transaction minted is tombstoned. \texttt{StrictInverse} conflicts
 
 \emph{Value restoration} (this revision): for every last-writer-wins overwrite
 the target transaction performed --- event and identified-pitch modification,
-respelling, cross-cutting modification, metadata, metric grid, meter change,
-tempo segment, staff layout, and the user break advisories --- the reducer
+respelling, cross-cutting modification, metadata, canvas layout defaults,
+spelling precedence, metric grid, meter change, tempo segment, staff layout,
+and the user break advisories --- the reducer
 maintains, per overwritten key, the \emph{canonical-order write chain} of
 (writer, value) pairs. Undoing the transaction restores each written key to
 its chain-predecessor value (or its absence, where the transaction introduced
@@ -1633,15 +1743,23 @@ a fresh design.
 \section*{Retired slots (ratified Pass~12: outside the operation set)}
 
 \begin{description}
-  \item[Create score / canvas --- retired, closing P12-K8]
-    The document root and the canvas are \emph{structural givens}, not
-    operation products: \texttt{TypedObjectId} has no Canvas kind, the root is
-    never op-minted, and genesis is normatively the empty-document constructor
-    plus bundle creation, outside the operation set (core specification,
-    Chapter~5 \sectionsc{The Canvas}). These are not ``unavailable slots''
-    awaiting a design --- no operation kind will be assigned to them. The
-    decision is revisited only if an addressable multi-canvas model is adopted
-    at a future schema major.
+  \item[Create score / canvas --- retired, closing P12-K8; narrowed by
+    \texttt{spec/RULING\_GENESIS\_PERSISTENCE.md}]
+    The document root and the canvas remain \emph{structural givens}, not
+    operation products: \texttt{TypedObjectId} has no Canvas kind, and the
+    root is never op-minted (core specification, Chapter~5
+    \sectionsc{The Canvas}). \texttt{RULING\_GENESIS\_PERSISTENCE} reverses
+    only the wider claim this slot's description used to carry --- that the
+    score's \emph{contents} arrive outside the operation set. They do not:
+    the genesis tranche makes every mutable \texttt{Score} field
+    operation-authored, \texttt{Canvas.layout\_defaults} among them
+    (Section~\ref{sec:k0:set-canvas-layout-defaults}). What survives, and is
+    load-bearing, is the narrower claim above --- the canvas \emph{itself} is
+    still never minted, addressed, or deleted by any operation, and no
+    \texttt{TypedObjectId} kind exists for it. These are not ``unavailable
+    slots'' awaiting a design --- no operation kind will be assigned to them.
+    The decision is revisited only if an addressable multi-canvas model is
+    adopted at a future schema major.
 \end{description}
 
 \begin{nongoal}

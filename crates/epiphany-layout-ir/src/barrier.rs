@@ -1100,25 +1100,28 @@ mod tests {
                 tag: 7
             })
         );
-        // Operation-kind tag 32 is one past the vocabulary (the Phase-3 ops
+        // Operation-kind tag 34 is one past the vocabulary (the Phase-3 ops
         // tranche appended 24..=27, the repeat pair 28/29, `TransposeInterval`
-        // 30, genesis G1's `CreateInstrument` 31; encodings are append-only).
+        // 30, genesis G1's `CreateInstrument` 31, genesis G2a's
+        // `SetCanvasLayoutDefaults` 32 and `SetSpellingPrecedence` 33;
+        // encodings are append-only).
         //
-        // This assertion named 30 until Push 5 / P4, and 31 until genesis G1 —
-        // each time, by then, the number had become a real kind, so the test
-        // was pinning a bug: a barrier that prohibited the new operation
-        // encoded fine and would not read back. It must be bumped by every
-        // tranche that appends a tag, and it is deliberately a literal rather
-        // than `PAYLOAD_FREE.len()` so the bump is a conscious act.
+        // This assertion named 30 until Push 5 / P4, 31 until genesis G1, and
+        // 32 until genesis G2a — each time, by then, the number had become a
+        // real kind, so the test was pinning a bug: a barrier that prohibited
+        // the new operation encoded fine and would not read back. It must be
+        // bumped by every tranche that appends a tag, and it is deliberately a
+        // literal rather than `PAYLOAD_FREE.len()` so the bump is a conscious
+        // act.
         let mut bytes = vec![0u8];
         bytes.extend(set_blob(&[]));
-        bytes.extend(set_blob(&[vec![32u8]]));
+        bytes.extend(set_blob(&[vec![34u8]]));
         bytes.push(0);
         assert_eq!(
             EditBarrier::decode_canonical_bytes(&bytes),
             Err(BarrierDecodeError::InvalidTag {
                 kind: "OperationKindTag",
-                tag: 32
+                tag: 34
             })
         );
     }

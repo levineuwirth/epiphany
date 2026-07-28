@@ -1813,3 +1813,78 @@ are green (`epiphany-layout-ir` excepted, for the one stale-vocabulary test
 above). This is reported to the coordinator rather than worked around; see
 the packet's final report for the exact reproduction commands and error
 text.
+
+## Genesis tranche G2a — `SetCanvasLayoutDefaults` / `SetSpellingPrecedence`,
+## kind 32/33, tag 32/33 (2026-07-28)
+
+`spec/CONTRACT_GENESIS_G2A_SETTINGS.md` lands the second rung of the genesis
+ladder: two more `Score` fields become operation-authored, both on the
+`SetMetadata` LWW pattern (`reduce.rs`) — advisory last-writer-wins, no
+conflict, no idempotence short-circuit, seeded from the base for
+value-restoring undo. Unlike G1's `CreateInstrument`, both new kinds are
+schema major 0 *unconditionally*: neither carried type (`CanvasLayoutDefaults`,
+`SpellingPrecedence`) has ever had more than one wire layout as a standalone
+value, so both fall through `OperationKind::schema_major`'s existing `_ => 0`
+catch-all with **no new arm** — pin 3's explicit trap (adding them to the
+`=> 2` arm alongside `SetMetadata` would be the bug, since `SetMetadata`
+sits there for a property of `ScoreMetadata`, not of the LWW pattern itself).
+Verified by mutation: temporarily joining the `=> 2` arm kills both
+`schema_majors_follow_the_minimal_stamping_rule` (`reduce.rs`) and a
+dedicated `epiphany-testkit` assertion.
+
+**This packet does not touch `epiphany-bundle`, and the boundary crossing
+this time is exactly the three sites the contract named** — `barriers.rs`,
+`layout-ir/src/barrier.rs`, and `text_projection_grammar.rs` — no wider than
+scoped, unlike G1's discovery that the crossing itself was mis-scoped in the
+contract. Both new kinds join the existing `SetMetadata(_) |
+DeclareTransaction(_)` score-wide arm in `barriers.rs::subjects_of` (they are
+score-level field overwrites with no resolvable region or object, exactly
+like `SetMetadata`); the layout-ir "one past the vocabulary" literal moves
+32→34; the testkit grammar kind-count literal moves 32→34.
+
+**`ops/src/envdecode.rs::sample_kind` and `ops/src/textproj_kind.rs::parse`
+are both `match` statements exhaustive over `OperationKindTag`**
+(compile-enforced, unlike `OperationKind::discriminant()`), so both needed a
+new arm per kind — correctly named by the contract's touch-point table
+(`envdecode.rs`'s "tag→kind (:819)" is exactly `sample_kind`;
+`textproj_kind.rs`'s "parse (:443)" is exactly this match), verified against
+the tree rather than assumed. Both compiled to a hard error the moment the
+new `OperationKindTag` variants existed without a corresponding arm, so
+neither site could have been missed silently.
+
+**Two more hand-maintained generator sites went stale by two tranches, not
+one**, confirming the contract's row-28/29 framing: `testkit/src/
+generators.rs::operation_payload`'s `rng.below(30)` bound had never grown
+past the repeat pair (28/29), so `TransposeInterval` (kind 30, Push-4a debt)
+and `CreateInstrument` (kind 31, G1 debt) were absent from every corpus this
+generator feeds, alongside this packet's own new kinds. Widened to
+`rng.below(34)` with all four appended; `testkit/src/
+layout_stub.rs::gen_operation_kind_tag` was rewritten to derive its built-in
+draw from `OperationKindTag::PAYLOAD_FREE` (excluding `Registered`, appended
+explicitly) rather than extended by hand — the structural fix the contract's
+blast-radius note asked for, following the in-crate `all_tags()` precedent
+(`payload.rs`). Five of the six hand-maintained sites the contract's
+blast-radius note lists remain manual for the next append; only row 29 was
+convertible to a derivation.
+
+**Test s7's three-times-wrong framing is now four-times right.** The
+contract's own text records that two earlier framings of "transaction
+rollback discards the write, not just the field" could not see their own
+mutation. The third framing — author inside a failed transaction, write
+again in a second transaction, undo the second, and assert the restored
+value is the pre-failure predecessor rather than the rolled-back write —
+was mutation-verified live: omitting `canvas_layout_defaults_chain` from
+`Reducer::restore` (keeping it in `snapshot`) makes the test observe the
+rolled-back transaction's value survive the undo instead of the genuine
+predecessor. Confirmed to fail for exactly that reason, not incidentally.
+
+**The canonical-base re-pin (`the_canonical_base_is_byte_identical_across_
+data_model_majors`) is a corpus shift, not a value leak** — verified by
+construction, not by re-running and hoping: `MaterializedState` embeds no
+`Score` field value for any setting, `SetMetadata` included, and both new
+kinds are schema major 0 unconditionally, so there is no schema-major
+surface for a leak to appear on even before checking the hash. `gen_payload`
+(`fuzz.rs`) widened from `rng.below(29)` to `rng.below(31)` with the two new
+arms appended, reshuffling the seeded RNG stream exactly as at Phase D, Push
+4a, and G1; the digest moved and was re-pinned with that reasoning recorded
+in the test's own comment.

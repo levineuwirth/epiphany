@@ -950,40 +950,25 @@ pub fn gen_vertical_band(rng: &mut Rng) -> VerticalBand {
 
 /// An operation-kind tag (every variant Agent C's type provides, including the
 /// registered form).
+///
+/// Genesis tranche G2a (row 29): **derived**, not hand-maintained. The prior
+/// hand-written `match` had already gone stale twice — it stopped at 23 until
+/// the Phase-3 tranche and again omitted the repeat pair — because nothing
+/// forces a hand-written arm list to move when the vocabulary grows, even
+/// though this generator's own doc promises *every* variant. Built-ins are
+/// drawn uniformly from `OperationKindTag::PAYLOAD_FREE`
+/// (`operation_kind_tag_vocabulary!`'s single source of truth, `payload.rs`) —
+/// `Registered` is excluded from `PAYLOAD_FREE` by design (it carries a
+/// payload, `payload.rs:469`) and is appended here explicitly. Every future
+/// built-in append then follows structurally, with no edit to this function;
+/// see `OperationKind::discriminant()`'s in-crate precedent
+/// (`payload.rs:2052`, `all_tags`).
 pub fn gen_operation_kind_tag(rng: &mut Rng) -> OperationKindTag {
-    match rng.below(30) {
-        0 => OperationKindTag::InsertEvent,
-        1 => OperationKindTag::DeleteEvent,
-        2 => OperationKindTag::ModifyEvent,
-        3 => OperationKindTag::RespellPitch,
-        4 => OperationKindTag::Transpose,
-        5 => OperationKindTag::CreateCrossCutting,
-        6 => OperationKindTag::DeleteCrossCutting,
-        7 => OperationKindTag::ModifyCrossCutting,
-        8 => OperationKindTag::ChangeRegionTimeModel,
-        9 => OperationKindTag::InsertRegion,
-        10 => OperationKindTag::DeleteRegion,
-        11 => OperationKindTag::InsertStaffInstance,
-        12 => OperationKindTag::DeleteStaffInstance,
-        13 => OperationKindTag::SetUserSystemBreak,
-        14 => OperationKindTag::SetUserPageBreak,
-        15 => OperationKindTag::DeclareTransaction,
-        16 => OperationKindTag::InsertIdentifiedPitch,
-        17 => OperationKindTag::DeleteIdentifiedPitch,
-        18 => OperationKindTag::ModifyIdentifiedPitch,
-        19 => OperationKindTag::CreateVoice,
-        20 => OperationKindTag::DeleteVoice,
-        21 => OperationKindTag::SetMetadata,
-        22 => OperationKindTag::SetMetricGrid,
-        // The appended vocabulary: the Phase-3 tranche (24..=27) — this
-        // generator had gone stale at 23 — and the repeat pair (28/29).
-        23 => OperationKindTag::InsertStaff,
-        24 => OperationKindTag::SetTimeSignature,
-        25 => OperationKindTag::SetTempoSegment,
-        26 => OperationKindTag::SetStaffLayout,
-        27 => OperationKindTag::CreateRepeatStructure,
-        28 => OperationKindTag::DeleteRepeatStructure,
-        _ => OperationKindTag::Registered(epiphany_ops::OperationKindRegistryId(
+    // +1 slot for `Registered`, drawn last.
+    let index = rng.below(OperationKindTag::PAYLOAD_FREE.len() as u64 + 1) as usize;
+    match OperationKindTag::PAYLOAD_FREE.get(index) {
+        Some(tag) => *tag,
+        None => OperationKindTag::Registered(epiphany_ops::OperationKindRegistryId(
             rng.next_u64() as u128
         )),
     }
@@ -1384,6 +1369,34 @@ mod tests {
     use crate::fixtures;
     use epiphany_core::TypedObjectId;
     use epiphany_determinism::CanonicalEncode;
+
+    /// (s10, row 29) `gen_operation_kind_tag`'s draw must cover exactly
+    /// `PAYLOAD_FREE` ∪ `{Registered}` — **not** merely the appended
+    /// discriminants 30..=33, which would pass even if the `Registered`
+    /// append (structurally different from every built-in: it is the one
+    /// variant `PAYLOAD_FREE` excludes by design, `payload.rs:469`) were
+    /// deleted from the generator entirely.
+    #[test]
+    fn gen_operation_kind_tag_covers_payload_free_and_registered() {
+        let mut rng = Rng::new(0x6E_57_A9);
+        let mut saw_registered = false;
+        let mut seen_builtins = std::collections::BTreeSet::new();
+        for _ in 0..5000 {
+            match gen_operation_kind_tag(&mut rng) {
+                OperationKindTag::Registered(_) => saw_registered = true,
+                other => {
+                    seen_builtins.insert(other);
+                }
+            }
+        }
+        assert!(saw_registered, "Registered never drawn in 5000 samples");
+        let expected: std::collections::BTreeSet<_> =
+            OperationKindTag::PAYLOAD_FREE.iter().copied().collect();
+        assert_eq!(
+            seen_builtins, expected,
+            "the draw's built-in coverage must be exactly PAYLOAD_FREE"
+        );
+    }
 
     #[test]
     fn edit_barrier_blob_codec_round_trips_generated_barriers() {

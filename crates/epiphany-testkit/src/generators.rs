@@ -22,7 +22,8 @@ use epiphany_core::{
     LyricLineId, MarkerId, MeasureId, MusicalDuration, MusicalPosition, ObjectKindRegistryId,
     OperationId, PartDefinitionId, PitchId, RationalTime, RegionId, RepeatStructureId, ReplicaId,
     SlurId, SpannerId, StaffGroupId, StaffId, StaffInstanceId, TieId, TimeSignatureId,
-    TransactionId, TupletId, TypedObjectId, ViewId, VoiceId, WallClockDuration, WallClockTime,
+    TransactionId, TranspositionInterval, TupletId, TypedObjectId, ViewId, VoiceId,
+    WallClockDuration, WallClockTime,
 };
 use epiphany_determinism::{
     CanonicalEncode, CanonicalF64, ChunkId, ContentHash, DomainTag, QuantizedCoord, Tolerance,
@@ -32,22 +33,23 @@ use epiphany_ops::valuegen;
 use epiphany_ops::{
     AnomalousReplicaSegment, AuthorId, CausalContext, ChangeRegionTimeModelOp, ConflictId,
     ConflictKind, ConflictKindRegistryId, ConflictRecord, ConflictRegistry,
-    ConflictResolutionState, CreateCrossCuttingOp, CreateRegionOp, CreateRepeatStructureOp,
-    CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp,
-    DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteRepeatStructureOp,
-    DeleteStaffInstanceOp, DeleteVoiceOp, ExtensionPreconditionId, FieldPath, HybridLogicalClock,
-    InsertEventOp, InsertIdentifiedPitchOp, IntegrityAnomaly, IntegrityAnomalyKind,
-    IntegrityAnomalyRegistryId, MaterializedState, ModifyCrossCuttingOp, ModifyEventOp,
-    ModifyIdentifiedPitchOp, NoOpReason, ObjectKind, ObjectState, OperationEffect,
-    OperationEnvelope, OperationKind, OperationKindRegistryId, OperationPayload, OperationSet,
-    OperationStamp, PendingReason, PositionRemapping, PreconditionFailureReason,
-    PreconditionFailureRegistryId, ReanchorReason, ReanchorReasonRegistryId, ReanchorResult,
-    RepairKind, RepairKindRegistryId, RepairRecord, ReplicaAnomalyReason, ReplicaAnomalyRegistryId,
-    ResolutionAction, ResolutionRegistryId, ResolveConflictPayload, RespellPitchOp,
-    SerializedCanonicalInputs, SetMetadataOp, SetMetricGridOp, SetStaffLayoutOp, SetTempoSegmentOp,
+    ConflictResolutionState, CreateCrossCuttingOp, CreateInstrumentOp, CreateRegionOp,
+    CreateRepeatStructureOp, CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp,
+    CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
+    DeleteRegionOp, DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp,
+    ExtensionPreconditionId, FieldPath, HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp,
+    IntegrityAnomaly, IntegrityAnomalyKind, IntegrityAnomalyRegistryId, MaterializedState,
+    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, NoOpReason, ObjectKind,
+    ObjectState, OperationEffect, OperationEnvelope, OperationKind, OperationKindRegistryId,
+    OperationPayload, OperationSet, OperationStamp, PendingReason, PositionRemapping,
+    PreconditionFailureReason, PreconditionFailureRegistryId, ReanchorReason,
+    ReanchorReasonRegistryId, ReanchorResult, RepairKind, RepairKindRegistryId, RepairRecord,
+    ReplicaAnomalyReason, ReplicaAnomalyRegistryId, ResolutionAction, ResolutionRegistryId,
+    ResolveConflictPayload, RespellPitchOp, SerializedCanonicalInputs, SetCanvasLayoutDefaultsOp,
+    SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
     SetTimeSignatureOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransactionCategory,
-    TransactionDescriptor, TransposeOp, TupletCompensation, TupletCompensationKind, UndoPolicy,
-    UndoTransactionPayload,
+    TransactionDescriptor, TransposeIntervalOp, TransposeOp, TupletCompensation,
+    TupletCompensationKind, UndoPolicy, UndoTransactionPayload,
 };
 
 use crate::rng::Rng;
@@ -644,7 +646,7 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
         }
         _ => {}
     }
-    let kind = match rng.below(30) {
+    let kind = match rng.below(34) {
         0 => {
             let pitches = if rng.boolean() {
                 vec![obj_pitch(rng.below(pitches))]
@@ -845,6 +847,29 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
         }),
         28 => OperationKind::DeleteRepeatStructure(DeleteRepeatStructureOp {
             repeat: RepeatStructureId::new(OBJ_REPLICA, rng.below(2)),
+        }),
+        // Push 4a (previously absent from this corpus — see row 28's contract
+        // note): the faithful transpose over the shared pitch-id space.
+        29 => OperationKind::TransposeInterval(TransposeIntervalOp {
+            targets: (0..1 + rng.below(2))
+                .map(|_| obj_pitch(rng.below(pitches)))
+                .collect(),
+            interval: TranspositionInterval {
+                diatonic_steps: rng.below(5) as i32 - 2,
+                chromatic_steps: rng.below(9) as i32 - 4,
+            },
+        }),
+        // Genesis tranche G1 (previously absent from this corpus — see row
+        // 28's contract note): mint an instrument on the score root.
+        30 => OperationKind::CreateInstrument(CreateInstrumentOp {
+            instrument: valuegen::instrument(InstrumentId::new(OBJ_REPLICA, rng.below(2))),
+        }),
+        // Genesis tranche G2a: the two major-0 settings setters.
+        31 => OperationKind::SetCanvasLayoutDefaults(SetCanvasLayoutDefaultsOp {
+            layout_defaults: valuegen::canvas_layout_defaults(rng.below(3) as u8),
+        }),
+        32 => OperationKind::SetSpellingPrecedence(SetSpellingPrecedenceOp {
+            precedence: valuegen::spelling_precedence(rng.below(3) as u8),
         }),
         _ => OperationKind::Registered(
             OperationKindRegistryId(rng.next_u64() as u128),
@@ -1800,6 +1825,86 @@ mod tests {
         for _ in 0..128 {
             let _ = operation_payload(&mut rng, 0, 0);
         }
+    }
+
+    /// (s6, half) Genesis tranche G2a's boundary against G2b: both new
+    /// setters are schema major 0 unconditionally, so a block carrying either
+    /// stamps well within the `OperationEnvelopeBlock` accept-set no matter
+    /// where that set's ceiling sits.
+    ///
+    /// The other half of s6 — `max_supported_major(OperationEnvelopeBlock) ==
+    /// 2` — is **not** assertable from this crate: `epiphany_bundle::
+    /// max_supported_major` (`bundle.rs:67`) is defined in a private module
+    /// (`mod bundle;`, not `pub mod`) and is not among `epiphany-bundle`'s
+    /// `pub use` re-exports, so no outside crate can name it. Contract pin 4a
+    /// forbids touching `epiphany-bundle` in this packet (not even to add a
+    /// re-export), so that half of s6 is verified by reading
+    /// `crates/epiphany-bundle/src/bundle.rs:69` directly (`ChunkKind::
+    /// OperationEnvelopeBlock => 2`, unedited by this packet) rather than by
+    /// a compiled assertion — a deviation from the contract's "assert it in
+    /// code" phrasing, reported rather than worked around.
+    ///
+    /// **Mutation:** stamp a payload carrying either new kind at a non-zero
+    /// major (as if it had been wrongly placed in the `=> 2` arm alongside
+    /// `SetMetadata`, exactly the bug pin 3 and test s5 both name) — this
+    /// assertion fires.
+    #[test]
+    fn the_two_new_settings_kinds_stamp_within_the_accept_set() {
+        for major in [
+            OperationKind::SetCanvasLayoutDefaults(SetCanvasLayoutDefaultsOp {
+                layout_defaults: valuegen::canvas_layout_defaults(1),
+            })
+            .schema_major(),
+            OperationKind::SetSpellingPrecedence(SetSpellingPrecedenceOp {
+                precedence: valuegen::spelling_precedence(1),
+            })
+            .schema_major(),
+        ] {
+            assert_eq!(major, 0, "both new kinds must stamp at major 0");
+        }
+    }
+
+    /// (s10, row 28) `operation_payload`'s bounded draw is a hand-maintained
+    /// arm list over `rng.below(N)`, which nothing forces to move when the
+    /// operation vocabulary grows — exactly how `TransposeInterval` (kind 30,
+    /// Push-4a debt) and `CreateInstrument` (kind 31, G1 debt) went missing
+    /// from every corpus this generator feeds despite every downstream suite
+    /// staying green. Assert a bounded draw actually reaches every kind
+    /// appended past the historically-tested range (discriminants 30..=33),
+    /// not just that the function does not panic.
+    #[test]
+    fn operation_payload_emits_every_appended_kind() {
+        let mut rng = Rng::new(17);
+        let (mut saw_transpose_interval, mut saw_create_instrument) = (false, false);
+        let (mut saw_canvas_layout_defaults, mut saw_spelling_precedence) = (false, false);
+        for _ in 0..2000 {
+            let OperationPayload::Primitive(kind) = operation_payload(&mut rng, 8, 8) else {
+                continue;
+            };
+            match kind {
+                OperationKind::TransposeInterval(_) => saw_transpose_interval = true,
+                OperationKind::CreateInstrument(_) => saw_create_instrument = true,
+                OperationKind::SetCanvasLayoutDefaults(_) => saw_canvas_layout_defaults = true,
+                OperationKind::SetSpellingPrecedence(_) => saw_spelling_precedence = true,
+                _ => {}
+            }
+        }
+        assert!(
+            saw_transpose_interval,
+            "TransposeInterval (kind 30) never drawn in 2000 samples"
+        );
+        assert!(
+            saw_create_instrument,
+            "CreateInstrument (kind 31) never drawn in 2000 samples"
+        );
+        assert!(
+            saw_canvas_layout_defaults,
+            "SetCanvasLayoutDefaults (kind 32) never drawn in 2000 samples"
+        );
+        assert!(
+            saw_spelling_precedence,
+            "SetSpellingPrecedence (kind 33) never drawn in 2000 samples"
+        );
     }
 
     #[test]

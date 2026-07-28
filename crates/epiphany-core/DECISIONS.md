@@ -1421,3 +1421,23 @@ does not exercise `Instrument` directly (the generator corpus does not walk
 (`epiphany-ops::vectors`) now pins a `CreateInstrument` envelope's literal
 bytes, which round-trips the same `Instrument` encoding through the op
 payload's `push_lp_bytes` wrapper — see that crate's own DECISIONS.md entry.
+
+## Genesis tranche G2a — `CanvasLayoutDefaults` and `SpellingPrecedence` join
+## `canonical_value!` (2026-07-28)
+
+`spec/CONTRACT_GENESIS_G2A_SETTINGS.md` adds `SetCanvasLayoutDefaults` and
+`SetSpellingPrecedence` to `epiphany-ops`, the G2a rung of the genesis ladder
+(`spec/PLAN_GENESIS_OPS.md` §4). Both payloads embed the full carried value —
+`CanvasLayoutDefaults` (already `Codec` via `struct_codec!`, `codec.rs:2115`)
+and `SpellingPrecedence` (already a hand-written `impl Codec`, `codec.rs:1144`)
+— so this crate's one required change is two more `canonical_value!` lines. No
+new byte layout, same as G1's `Instrument` entry above.
+
+Both types are schema major 0 as standalone payloads: `SpellingPrecedence` has
+never been versioned (the v0/v1/v2 decode walks and the live `Codec` all read
+it through plain `Codec::dec`), and `CanvasLayoutDefaults`'s versioning lives
+in the *containing* `Canvas` walk (`dec_canvas_v0` default-fills the field;
+`enc_canvas_v1` writes it through the live `Codec`), not in the leaf type
+itself. So neither op gains a `schema_major()` arm — both fall into the
+existing `_ => 0` catch-all in `epiphany-ops`. This is unlike G1's
+`CreateInstrument`, whose carried `Instrument` has mandatory major-2 appends.

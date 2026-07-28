@@ -368,6 +368,47 @@ pub fn instrument(id: epiphany_core::InstrumentId) -> epiphany_core::Instrument 
     epiphany_core::Instrument::new(id, format!("instrument-{}", id.counter()))
 }
 
+/// Canvas layout defaults with an `nth`-distinct page width (genesis tranche
+/// G2a) — distinct `nth` give distinct `CanvasLayoutDefaults` values so a
+/// harness can drive concurrent `SetCanvasLayoutDefaults`s, an advisory LWW
+/// field that resolves by canonical order with no conflict.
+pub fn canvas_layout_defaults(nth: u8) -> epiphany_core::CanvasLayoutDefaults {
+    let mut defaults = epiphany_core::CanvasLayoutDefaults::default();
+    defaults.page_size.width = epiphany_determinism::CanonicalF64::new(105.0 + f64::from(nth))
+        .expect("a small positive offset from the A4 default stays finite");
+    defaults
+}
+
+/// Spelling precedence with an `nth`-distinct order (genesis tranche G2a) — for
+/// even `nth`, the type default (`UserChosen > Imported > Propagated >
+/// Inferred > Analytical`); for odd `nth`, that order reversed. Both are total
+/// orderings over the five source kinds, so `SpellingPrecedence::new` always
+/// succeeds; distinct `nth` parities give distinct values so a harness can
+/// drive concurrent `SetSpellingPrecedence`s, an advisory LWW field that
+/// resolves by canonical order with no conflict.
+pub fn spelling_precedence(nth: u8) -> epiphany_core::SpellingPrecedence {
+    use epiphany_core::SpellingSourceKind;
+    let order = if nth % 2 == 0 {
+        vec![
+            SpellingSourceKind::UserChosen,
+            SpellingSourceKind::Imported,
+            SpellingSourceKind::Propagated,
+            SpellingSourceKind::Inferred,
+            SpellingSourceKind::Analytical,
+        ]
+    } else {
+        vec![
+            SpellingSourceKind::Analytical,
+            SpellingSourceKind::Inferred,
+            SpellingSourceKind::Propagated,
+            SpellingSourceKind::Imported,
+            SpellingSourceKind::UserChosen,
+        ]
+    };
+    epiphany_core::SpellingPrecedence::new(order)
+        .expect("both listed orders are total over the five source kinds")
+}
+
 /// A well-formed `numerator`/4 [`TimeSignature`](epiphany_core::TimeSignature)
 /// (Phase-3 tranche): `numerator` quarter-note beat groups summing exactly to
 /// the measure duration, so [`epiphany_core::TimeSignature::new`]'s beat-group

@@ -298,6 +298,81 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         trailing,
     ));
 
+    // --- OperationEnvelope carrying SetCanvasLayoutDefaults / SetSpellingPrecedence
+    // (genesis tranche G2a) — same rationale as CreateInstrument above: nothing
+    // else in this corpus exercises either payload's decode path, and a
+    // round-trip check alone cannot see a self-consistent encoder/decoder
+    // reorder (the 3b-i lesson).
+    let layout_envelope = OperationEnvelope {
+        id: OperationId::new(ReplicaId(1), 2),
+        author: crate::support::AuthorId(0),
+        stamp: crate::stamp::OperationStamp::new(
+            crate::stamp::HybridLogicalClock::new(epiphany_core::WallClockTime(1), 1),
+            OperationId::new(ReplicaId(1), 2),
+        ),
+        causal_context: crate::causal::CausalContext::new(),
+        transaction: None,
+        payload: crate::payload::OperationPayload::Primitive(
+            crate::payload::OperationKind::SetCanvasLayoutDefaults(
+                crate::payload::SetCanvasLayoutDefaultsOp {
+                    layout_defaults: crate::valuegen::canvas_layout_defaults(1),
+                },
+            ),
+        ),
+    };
+    let layout_envelope_bytes = layout_envelope.to_canonical_bytes();
+    v.push(row(
+        OE,
+        "accept",
+        "-",
+        "set_canvas_layout_defaults",
+        layout_envelope_bytes.clone(),
+    ));
+    let mut layout_trailing = layout_envelope_bytes;
+    layout_trailing.push(0);
+    v.push(row(
+        OE,
+        "reject",
+        "trailing-bytes",
+        "set_canvas_layout_defaults_trailing",
+        layout_trailing,
+    ));
+
+    let precedence_envelope = OperationEnvelope {
+        id: OperationId::new(ReplicaId(1), 3),
+        author: crate::support::AuthorId(0),
+        stamp: crate::stamp::OperationStamp::new(
+            crate::stamp::HybridLogicalClock::new(epiphany_core::WallClockTime(1), 1),
+            OperationId::new(ReplicaId(1), 3),
+        ),
+        causal_context: crate::causal::CausalContext::new(),
+        transaction: None,
+        payload: crate::payload::OperationPayload::Primitive(
+            crate::payload::OperationKind::SetSpellingPrecedence(
+                crate::payload::SetSpellingPrecedenceOp {
+                    precedence: crate::valuegen::spelling_precedence(1),
+                },
+            ),
+        ),
+    };
+    let precedence_envelope_bytes = precedence_envelope.to_canonical_bytes();
+    v.push(row(
+        OE,
+        "accept",
+        "-",
+        "set_spelling_precedence",
+        precedence_envelope_bytes.clone(),
+    ));
+    let mut precedence_trailing = precedence_envelope_bytes;
+    precedence_trailing.push(0);
+    v.push(row(
+        OE,
+        "reject",
+        "trailing-bytes",
+        "set_spelling_precedence_trailing",
+        precedence_trailing,
+    ));
+
     v
 }
 
@@ -421,6 +496,56 @@ mod tests {
             0x00, 0x69, 0x6e, 0x73, 0x74, 0x72, 0x75, 0x6d, 0x65, 0x6e, 0x74, 0x2d, 0x31, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x05, 0x08, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let result = check("ops.operation_envelope", &bytes)
+            .expect("ops.operation_envelope is owned by this crate");
+        assert_eq!(
+            result,
+            Ok(true),
+            "the committed literal bytes must decode and re-encode injectively"
+        );
+    }
+
+    /// (s8) Genesis tranche G2a (`spec/CONTRACT_GENESIS_G2A_SETTINGS.md`): the
+    /// `SetCanvasLayoutDefaults` and `SetSpellingPrecedence` envelope decode
+    /// vectors, pinned to literal byte arrays copied from the committed
+    /// corpus — not derived by calling `.to_canonical_bytes()` here, for the
+    /// same reason as `create_instrument_envelope_decode_vector_is_pinned_to_
+    /// literal_bytes` above (the 3b-i lesson: round-trip locking alone cannot
+    /// see a self-consistent encoder/decoder reorder). Each new payload
+    /// carries exactly one field, so there are no adjacent fields to swap;
+    /// the mutation this guards against is a swap of the two new
+    /// **discriminants** (32 ↔ 33) in both the encoder and the decoder —
+    /// self-consistent, so every round-trip test stays green, while these
+    /// correctly-named literal vectors die.
+    #[test]
+    fn set_canvas_layout_defaults_envelope_decode_vector_is_pinned_to_literal_bytes() {
+        #[rustfmt::skip]
+        let bytes: Vec<u8> = vec![
+            0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+            0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 72, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0,
+            0, 128, 90, 64, 8, 0, 0, 0, 0, 0, 0, 0, 0, 144, 98, 64, 8, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 30, 64, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 30, 64, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 30,
+            64, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 30, 64,
+        ];
+        let result = check("ops.operation_envelope", &bytes)
+            .expect("ops.operation_envelope is owned by this crate");
+        assert_eq!(
+            result,
+            Ok(true),
+            "the committed literal bytes must decode and re-encode injectively"
+        );
+    }
+
+    /// (s8) Same rationale as the sibling test above.
+    #[test]
+    fn set_spelling_precedence_envelope_decode_vector_is_pinned_to_literal_bytes() {
+        #[rustfmt::skip]
+        let bytes: Vec<u8> = vec![
+            0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+            0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 33, 9, 0, 0, 0, 5, 0, 0, 0, 4, 3, 2, 1, 0,
         ];
         let result = check("ops.operation_envelope", &bytes)
             .expect("ops.operation_envelope is owned by this crate");

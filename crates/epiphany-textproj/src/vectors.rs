@@ -323,16 +323,16 @@ pub fn document_vectors() -> Vec<TextVector> {
         .collect();
 
     // The rejected version must be one this crate does NOT implement. Genesis
-    // G1 moved `COMPANION_VERSION` to 0.8.0, which had been this vector's
+    // G2a moved `COMPANION_VERSION` to 0.9.0, which had been this vector's
     // "future" version — leaving it would have made the negative vector assert
-    // that the *correct* header is rejected. It now names 0.7.0, the
+    // that the *correct* header is rejected. It now names 0.8.0, the
     // immediately superseded companion, which is the better test anyway:
     // rejecting the version right behind you is exactly the deferred
     // migrate-on-read posture (`req:textproj:header-version`).
     let wrong_version = replace_once(
         minimal,
+        "(text-projection (0 9 0))",
         "(text-projection (0 8 0))",
-        "(text-projection (0 7 0))",
     );
     vectors.push((
         SURFACE,

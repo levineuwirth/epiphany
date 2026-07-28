@@ -3535,6 +3535,16 @@ canonical_value! {
     TuningScope,
     SmuflVersionRequirement,
     SmuflVersion,
+    // Genesis tranche G2a (`CONTRACT_GENESIS_G2A_SETTINGS.md`) —
+    // SetCanvasLayoutDefaults and SetSpellingPrecedence embed the full value,
+    // mirroring SetMetadata's `ScoreMetadata`. Both already have a `Codec`
+    // (`struct_codec!` for `CanvasLayoutDefaults` at `:2115`; the hand-written
+    // `impl Codec for SpellingPrecedence` at `:1144`) and already ship inside
+    // `Score`; this makes that existing layout reachable per-value, same as
+    // every other entry here. Neither carries a schema-major-1+ layout of its
+    // own — see the contract's "Why these two" table.
+    CanvasLayoutDefaults,
+    SpellingPrecedence,
 }
 
 #[cfg(test)]

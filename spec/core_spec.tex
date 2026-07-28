@@ -5110,16 +5110,28 @@ pub struct CueEvent {
 
 The canvas is the spatial root of the score. It contains regions.
 
-The score root and the canvas are \emph{structural givens}, not
-operation products (ratified Pass~12): genesis is the creation of an
-empty score together with its bundle, outside the operation set, and
-neither object is ever minted, addressed, or deleted by an operation
-(there is no \texttt{TypedObjectId} kind for either). This is
+The score root and the canvas remain \emph{structural givens}, not
+operation products (ratified Pass~12; narrowed by
+\texttt{spec/RULING\_GENESIS\_PERSISTENCE.md}): neither object is ever
+minted, addressed, or deleted by an operation, and there is still no
+\texttt{TypedObjectId} kind for either. This is
 deliberate --- a document that could mint its own root would admit a
 genesis race under concurrent editing, and every operation would need
 a defined semantics against a not-yet-existing root. The decision may
 be revisited only if an addressable multi-canvas model is adopted at
 a future schema major.
+
+What the genesis ruling reverses is the narrower claim this paragraph used
+to make alongside the above: that the score's \emph{contents} also arrive
+outside the operation set, as part of the same empty-score-plus-bundle
+genesis act. They do not. Every mutable field of \texttt{Score} becomes
+operation-authored under the genesis tranche
+(\texttt{spec/PLAN\_GENESIS\_OPS.md}): a document created empty
+(\texttt{Score::empty}) and given only operations can materialize a
+note-bearing score, reaching \texttt{Canvas.layout\_defaults}
+and \texttt{Score.spelling\_precedence} (genesis tranche G2a) among other
+surfaces. The root and the canvas themselves are the load-bearing
+exception that survives intact.
 
 \begin{lstlisting}[language=Rust]
 pub struct Canvas {
@@ -6911,6 +6923,8 @@ pub enum OperationKind {
     // Pitch and tuning operations
     RespellPitch(RespellPitchOp),
     Transpose(TransposeOp),
+    // The faithful transposition (Push 4a); Transpose above is frozen.
+    TransposeInterval(TransposeIntervalOp),
     InsertIdentifiedPitch(InsertIdentifiedPitchOp),
     DeleteIdentifiedPitch(DeleteIdentifiedPitchOp),
     ModifyIdentifiedPitch(ModifyIdentifiedPitchOp),
@@ -6934,6 +6948,10 @@ pub enum OperationKind {
     CreateVoice(CreateVoiceOp),
     DeleteVoice(DeleteVoiceOp),
 
+    // Genesis tranche G1: mints an abstract instrument on the score root ---
+    // the single missing link between Score::empty and a note.
+    CreateInstrument(CreateInstrumentOp),
+
     // Metric-model operations
     SetTimeSignature(SetTimeSignatureOp),
     SetTempoSegment(SetTempoSegmentOp),
@@ -6941,6 +6959,10 @@ pub enum OperationKind {
 
     // Score settings
     SetMetadata(SetMetadataOp),
+    // Genesis tranche G2a: the two major-0 settings setters, on the
+    // SetMetadata advisory-LWW pattern.
+    SetCanvasLayoutDefaults(SetCanvasLayoutDefaultsOp),
+    SetSpellingPrecedence(SetSpellingPrecedenceOp),
 
     // Layout-semantic operations
     SetUserSystemBreak(SetUserSystemBreakOp),
@@ -11900,6 +11922,15 @@ pub enum OperationKindTag {
     // its kind names verbatim, as the cross-cutting tags do.
     CreateRepeatStructure,
     DeleteRepeatStructure,
+    // Push 4a: the faithful transpose. Transpose above is frozen.
+    TransposeInterval,
+    // Genesis tranche G1: name-verbatim, as the two most recent prior
+    // additions are (the tag layer's older Create-to-Insert convention is
+    // not followed here).
+    CreateInstrument,
+    // Genesis tranche G2a: the two major-0 settings setters.
+    SetCanvasLayoutDefaults,
+    SetSpellingPrecedence,
 }
 
 pub enum BarrierScope {
@@ -12183,11 +12214,17 @@ non-canonical resolved-layout length-prefix width. Its wire form and the
 byte-for-byte migration from major~0 are defined in the Binary Format
 companion. The canonical-base \texttt{MaterializedState} embeds none of these
 values, so it is byte-identical across the bump and stays major~0.
-\texttt{Canvas.layout\_defaults} and \texttt{Instrument.range} reach only the
-non-canonical acceleration (full-\texttt{Score}) snapshot; but
 \texttt{Region.permits\_spanning\_slurs} also reaches the \emph{canonical}
 operation layer, because \texttt{CreateRegion} embeds a full \texttt{Region},
 so an operation-envelope block bearing a v1 \texttt{CreateRegion} is major~1.
+(As of the genesis operation tranche, \texttt{Canvas.layout\_defaults} and
+\texttt{Instrument.range} do too --- \texttt{SetCanvasLayoutDefaults}
+(G2a) and \texttt{CreateInstrument} (G1) embed the values directly --- but
+neither of those two payloads is itself major~1: the leaf value each embeds
+has exactly one layout, versioned only through the containing
+\texttt{Canvas}/\texttt{Instrument} walk, not through this schema-major-1
+bump. See the Binary Format companion \sectionsc{Schema Major 1} /
+\sectionsc{Schema Major 2} for the operation-by-operation accounting.)
 Consequently a major-0-only reader opens a major-1 bundle \emph{fully} only
 when the bundle carries no v1 \texttt{CreateRegion} operation; otherwise it
 reads the major-0 canonical base and manifest but opens read-only (it cannot
@@ -12204,7 +12241,7 @@ truncated bodies of the cross-cutting structures (\texttt{Slur},
 Chapter~5 definitions. The same per-payload-type rules apply: the
 canonical-base \texttt{MaterializedState} embeds none of these values and
 stays major~0; the filled values reach the acceleration snapshot
-\emph{and}, through the eight operation payloads that embed them
+\emph{and}, through the nine operation payloads that embed them
 (\texttt{CreateCrossCutting}, \texttt{ModifyCrossCutting},
 \texttt{InsertStaff} and \texttt{InsertStaffInstance} (the Operation
 Catalog's \texttt{CreateStaff} / \texttt{CreateStaffInstance}),
@@ -12213,11 +12250,17 @@ Catalog's \texttt{CreateStaff} / \texttt{CreateStaffInstance}),
 embeds the filled \texttt{RepeatStructure} unconditionally, so it is
 \emph{born at v2} and every block carrying one stamps major~2; its
 \texttt{DeleteRepeatStructure} sibling carries a bare identifier, a
-major-0 layout, and stamps major~0), and --- transitively,
+major-0 layout, and stamps major~0), \texttt{CreateInstrument} (genesis
+tranche G1 --- it embeds the filled \texttt{Instrument} unconditionally, so
+it too is \emph{born at v2}), and --- transitively,
 because an embedded \texttt{Region} may carry a \texttt{StaffInstance}
 whose \texttt{staff\_lines\_override} embeds the filled
 \texttt{StaffLineConfiguration} --- \texttt{InsertRegion}
-(\texttt{CreateRegion})), the canonical operation layer. A block is
+(\texttt{CreateRegion})), the canonical operation layer. That is nine:
+\texttt{CreateCrossCutting}, \texttt{ModifyCrossCutting},
+\texttt{InsertStaff}, \texttt{InsertStaffInstance}, \texttt{SetStaffLayout},
+\texttt{SetMetadata}, \texttt{CreateRepeatStructure}, \texttt{CreateInstrument},
+and \texttt{InsertRegion}. A block is
 stamped with the \emph{lowest} schema major whose layouts decode its
 bytes (the companion's minimal-stamping rule --- deterministic, so
 identical content hashes identically): any v2-dependent bytes make it
@@ -16426,7 +16469,11 @@ layouts they own versus inherit:
   the corresponding wire discriminants. This document's
   \texttt{OperationKind} listing gains the four kinds. The create
   score/canvas slots remain deliberately unavailable pending an
-  addressable root model (P12-K8).
+  addressable root model (P12-K8). (Reversed in part by
+  \texttt{spec/RULING\_GENESIS\_PERSISTENCE.md}, ratified with the genesis
+  operation tranche: the root/canvas \emph{objects} stay unavailable as
+  ratified here, but the score's \emph{contents} are no longer outside the
+  operation set --- see \sectionsc{The Canvas}, \S\ref{sec:graph:canvas}.)
   \\
   \today & Schema major 1 (data-model expansion) &
   Defines the two referenced-but-undefined types
@@ -16473,7 +16520,10 @@ layouts they own versus inherit:
   inference-ineligible targets surface
   (Requirement~\ref{req:pitch:authored-uninferred}, P12-H7). Identity:
   system-derived intrinsic content immutable under reduction (P12-K3). Genesis
-  ratified outside the operation set (P12-K8). Cross-region slur permission =
+  ratified outside the operation set (P12-K8 --- reversed in part by
+  \texttt{spec/RULING\_GENESIS\_PERSISTENCE.md}, as annotated above: the
+  root/canvas objects stay unavailable, the score's contents no longer do).
+  Cross-region slur permission =
   AND (P12-K12). Re-anchoring: cue cascade-on-any-source, Range truncate
   defined, annotation orphaning sanctioned, \texttt{ReanchorReason::
   SameCanvasNearer} appended (P12-C1/C2/C3/C4). Barriers: target-free and

@@ -32,12 +32,12 @@
 //! payloads.
 
 use epiphany_core::{
-    Beam, CanonicalValue, Event, EventDuration, EventId, EventPosition, IdentifiedPitch,
-    Instrument, InstrumentId, MetricGrid, MusicalDuration, MusicalPosition, OperationId, Pitch,
-    PitchId, PitchSpelling, Region, RegionId, RegionTimeModel, RepeatStructure, RepeatStructureId,
-    Rest, ScoreMetadata, Slur, Spanner, Staff, StaffId, StaffInstance, StaffInstanceId,
-    StaffLineConfiguration, TempoSegment, Tie, TimeAnchor, TimeSignature, TransactionId,
-    TranspositionInterval, TupletId, TypedObjectId, Voice, VoiceId,
+    Beam, CanonicalValue, CanvasLayoutDefaults, Event, EventDuration, EventId, EventPosition,
+    IdentifiedPitch, Instrument, InstrumentId, MetricGrid, MusicalDuration, MusicalPosition,
+    OperationId, Pitch, PitchId, PitchSpelling, Region, RegionId, RegionTimeModel, RepeatStructure,
+    RepeatStructureId, Rest, ScoreMetadata, Slur, Spanner, SpellingPrecedence, Staff, StaffId,
+    StaffInstance, StaffInstanceId, StaffLineConfiguration, TempoSegment, Tie, TimeAnchor,
+    TimeSignature, TransactionId, TranspositionInterval, TupletId, TypedObjectId, Voice, VoiceId,
 };
 use epiphany_determinism::{
     sorted_canonical, CanonicalDecode, CanonicalEncode, CanonicalSet, DecodeError,
@@ -203,6 +203,15 @@ pub enum OperationKind {
     /// `CreateStaff` already demands a live `Instrument` and nothing else can
     /// create one.
     CreateInstrument(CreateInstrumentOp),
+    // --- Genesis tranche G2a (`spec/CONTRACT_GENESIS_G2A_SETTINGS.md`): the
+    // two major-0 settings setters. Discriminants extend additively past 31.
+    // ---
+    /// Overwrite the canvas's default layout advisories (later-in-canonical-
+    /// order wins).
+    SetCanvasLayoutDefaults(SetCanvasLayoutDefaultsOp),
+    /// Overwrite the score's spelling precedence (later-in-canonical-order
+    /// wins).
+    SetSpellingPrecedence(SetSpellingPrecedenceOp),
 }
 
 impl OperationKind {
@@ -304,6 +313,10 @@ impl OperationKind {
             // accident, not by rule — the two spaces are independent and
             // misaligned elsewhere (`RespellPitch` is kind 2 / tag 3).
             OperationKind::CreateInstrument(_) => 31,
+            // Genesis tranche G2a; appended past 31. Coincide with tags 32/33
+            // by the same accident as above, not by rule.
+            OperationKind::SetCanvasLayoutDefaults(_) => 32,
+            OperationKind::SetSpellingPrecedence(_) => 33,
         }
     }
 
@@ -349,6 +362,8 @@ impl OperationKind {
             // `CreateRepeatStructure`) are — the tag layer's older
             // Create→Insert convention is not followed here (contract pin 3).
             OperationKind::CreateInstrument(_) => OperationKindTag::CreateInstrument,
+            OperationKind::SetCanvasLayoutDefaults(_) => OperationKindTag::SetCanvasLayoutDefaults,
+            OperationKind::SetSpellingPrecedence(_) => OperationKindTag::SetSpellingPrecedence,
         }
     }
 }
@@ -392,6 +407,8 @@ impl CanonicalEncode for OperationKind {
             OperationKind::CreateRepeatStructure(op) => op.encode_canonical(out),
             OperationKind::DeleteRepeatStructure(op) => op.encode_canonical(out),
             OperationKind::CreateInstrument(op) => op.encode_canonical(out),
+            OperationKind::SetCanvasLayoutDefaults(op) => op.encode_canonical(out),
+            OperationKind::SetSpellingPrecedence(op) => op.encode_canonical(out),
         }
     }
 }
@@ -442,6 +459,10 @@ pub enum OperationKindTag {
     /// older Create→Insert convention (`InsertStaff` for `CreateStaff`) is not
     /// followed here, matching the two most recent additions.
     CreateInstrument,
+    /// Genesis tranche G2a.
+    SetCanvasLayoutDefaults,
+    /// Genesis tranche G2a.
+    SetSpellingPrecedence,
 }
 
 /// The discriminant of [`OperationKindTag::Registered`], the one tag that
@@ -540,6 +561,8 @@ operation_kind_tag_vocabulary! {
     DeleteRepeatStructure = 29 => "delete-repeat-structure",
     TransposeInterval = 30 => "transpose-interval",
     CreateInstrument = 31 => "create-instrument",
+    SetCanvasLayoutDefaults = 32 => "set-canvas-layout-defaults",
+    SetSpellingPrecedence = 33 => "set-spelling-precedence",
 }
 
 impl CanonicalEncode for OperationKindTag {
@@ -1467,6 +1490,42 @@ impl CreateInstrumentOp {
 impl CanonicalEncode for CreateInstrumentOp {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         push_lp_bytes(out, &self.instrument.canonical_bytes());
+    }
+}
+
+// --- Genesis tranche G2a (`spec/CONTRACT_GENESIS_G2A_SETTINGS.md`): the two
+// major-0 settings setters. LWW field-overwrite, exactly the `SetMetadata`
+// discipline (advisory last-writer-wins, no conflict, no idempotence
+// short-circuit). ---
+
+/// Overwrite the canvas's default layout advisories (operation_catalog
+/// §SetCanvasLayoutDefaults). Carries the full [`CanvasLayoutDefaults`]; the
+/// score-singleton field-overwrite is *advisory* last-writer-wins — the latest
+/// write in canonical order silently wins and no conflict is recorded, exactly
+/// `SetMetadata`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SetCanvasLayoutDefaultsOp {
+    pub layout_defaults: CanvasLayoutDefaults,
+}
+
+impl CanonicalEncode for SetCanvasLayoutDefaultsOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_lp_bytes(out, &self.layout_defaults.canonical_bytes());
+    }
+}
+
+/// Overwrite the score's spelling precedence (operation_catalog
+/// §SetSpellingPrecedence). Carries the full [`SpellingPrecedence`]; the
+/// score-singleton field-overwrite is *advisory* last-writer-wins, exactly
+/// `SetMetadata`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SetSpellingPrecedenceOp {
+    pub precedence: SpellingPrecedence,
+}
+
+impl CanonicalEncode for SetSpellingPrecedenceOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_lp_bytes(out, &self.precedence.canonical_bytes());
     }
 }
 

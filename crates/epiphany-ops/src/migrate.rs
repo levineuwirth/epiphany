@@ -181,6 +181,13 @@ fn project_kind(kind: &OperationKind) -> V0OperationKind {
         OperationKind::TransposeInterval(op) => V0OperationKind::TransposeInterval(op.clone()),
         // Genesis tranche G1: born past v0; projected verbatim.
         OperationKind::CreateInstrument(op) => V0OperationKind::CreateInstrument(op.clone()),
+        // Genesis tranche G2a: born past v0; projected verbatim.
+        OperationKind::SetCanvasLayoutDefaults(op) => {
+            V0OperationKind::SetCanvasLayoutDefaults(op.clone())
+        }
+        OperationKind::SetSpellingPrecedence(op) => {
+            V0OperationKind::SetSpellingPrecedence(op.clone())
+        }
     }
 }
 
@@ -336,6 +343,13 @@ fn migrate_kind(kind: &V0OperationKind, context: &Score) -> Result<OperationKind
         V0OperationKind::DeleteRepeatStructure(op) => OperationKind::DeleteRepeatStructure(*op),
         // Genesis tranche G1: identity round-trip (no lossy v0 form).
         V0OperationKind::CreateInstrument(op) => OperationKind::CreateInstrument(op.clone()),
+        // Genesis tranche G2a: identity round-trip (no lossy v0 form).
+        V0OperationKind::SetCanvasLayoutDefaults(op) => {
+            OperationKind::SetCanvasLayoutDefaults(op.clone())
+        }
+        V0OperationKind::SetSpellingPrecedence(op) => {
+            OperationKind::SetSpellingPrecedence(op.clone())
+        }
     })
 }
 

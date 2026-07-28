@@ -13,9 +13,10 @@ use crate::payload::{
     DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
     DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
     InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
-    OperationKind, OperationKindTag, RespellPitchOp, SetMetadataOp, SetMetricGridOp,
-    SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp, SetUserPageBreakOp,
-    SetUserSystemBreakOp, TransactionDescriptor, TransposeIntervalOp, TransposeOp,
+    OperationKind, OperationKindTag, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp,
+    SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
+    SetTimeSignatureOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransactionDescriptor,
+    TransposeIntervalOp, TransposeOp,
 };
 use crate::support::OperationKindRegistryId;
 
@@ -221,6 +222,12 @@ impl TextValue for OperationKind {
             ),
             OperationKind::CreateInstrument(op) => {
                 production(self.tag(), vec![op.instrument.project()])
+            }
+            OperationKind::SetCanvasLayoutDefaults(op) => {
+                production(self.tag(), vec![op.layout_defaults.project()])
+            }
+            OperationKind::SetSpellingPrecedence(op) => {
+                production(self.tag(), vec![op.precedence.project()])
             }
         }
     }
@@ -543,6 +550,22 @@ impl TextValue for OperationKind {
                     instrument: TextValue::parse(instrument)?,
                 })
             }
+            OperationKindTag::SetCanvasLayoutDefaults => {
+                let [layout_defaults] = fields(s, tag, 1)? else {
+                    unreachable!("the arity-1 check returned one field")
+                };
+                OperationKind::SetCanvasLayoutDefaults(SetCanvasLayoutDefaultsOp {
+                    layout_defaults: TextValue::parse(layout_defaults)?,
+                })
+            }
+            OperationKindTag::SetSpellingPrecedence => {
+                let [precedence] = fields(s, tag, 1)? else {
+                    unreachable!("the arity-1 check returned one field")
+                };
+                OperationKind::SetSpellingPrecedence(SetSpellingPrecedenceOp {
+                    precedence: TextValue::parse(precedence)?,
+                })
+            }
         })
     }
 }
@@ -596,7 +619,7 @@ mod tests {
     #[test]
     fn every_operation_kind_round_trips_with_canonical_text() {
         let tags: Vec<_> = all_tags().collect();
-        assert_eq!(tags.len(), 32, "the grammar has 32 kind productions");
+        assert_eq!(tags.len(), 34, "the grammar has 34 kind productions");
         for tag in tags {
             round_trip(&sample_kind(tag));
         }
@@ -613,6 +636,34 @@ mod tests {
         };
         items.push(Sexp::int(0));
         assert!(OperationKind::parse(&Sexp::List(items)).is_err());
+    }
+
+    /// (s9, round-trip half) Genesis tranche G2a: a `set-canvas-layout-
+    /// defaults` production carrying `set-spelling-precedence`'s field shape
+    /// (relabeled under the other kind's tag) must not parse — the two
+    /// carried types have incompatible projected shapes (`CanvasLayoutDefaults`
+    /// projects a 2-field struct; `SpellingPrecedence` projects a 1-field
+    /// struct wrapping a sequence), so mislabeling one as the other is
+    /// rejected rather than mis-round-tripped.
+    ///
+    /// **Mutation:** none needed to demonstrate the reject — this test *is*
+    /// the reject-path exercise the contract asks for; a genuine defect
+    /// would be a decoder that silently accepted the mismatched shape.
+    #[test]
+    fn one_settings_kind_production_under_the_others_tag_is_rejected() {
+        let precedence_sample = sample_kind(OperationKindTag::SetSpellingPrecedence);
+        let Sexp::List(mut items) = precedence_sample.project() else {
+            panic!("operation projection is a list")
+        };
+        // Relabel the head symbol from `set-spelling-precedence` to
+        // `set-canvas-layout-defaults`, keeping SpellingPrecedence's field
+        // shape underneath.
+        items[0] = Sexp::sym(OperationKindTag::SetCanvasLayoutDefaults.catalog_name());
+        let mislabeled = Sexp::List(items);
+        assert!(
+            OperationKind::parse(&mislabeled).is_err(),
+            "a production under the wrong kind's tag must not parse"
+        );
     }
 
     #[test]
