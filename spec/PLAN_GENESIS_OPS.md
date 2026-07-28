@@ -166,7 +166,8 @@ added**; adding them to the `=> 2` arm would be the bug. No `epiphany-bundle`
 change of any kind.
 
 **G2b — `SetTuningContext` alone**, carrying the raise, the `bundle.rs` prose,
-and the S13 close. `bundle.rs:58` documents the current cap **with the
+and the S13 close. **Sequenced after G-minor, not immediately after G2a** — see
+that section: G2b appends kind 34, and the sweep is scoped to 24–33. `bundle.rs:58` documents the current cap **with the
 tuning-context rationale in prose** — "no operation payload embeds the tuning
 context, so no op block is ever born at v3". G2b is precisely what falsifies
 that sentence, so the comment must move with the number. Same for
@@ -228,15 +229,25 @@ operation normalizes the field away at construction and refuses a non-empty
 one. Decide that in the G2b contract, not in its implementation. Does not block
 G2a.
 
-### G-minor — the schema-minor sweep (ruled 2026-07-28, sequenced after G2a)
+### G-minor — the schema-minor sweep (ruled 2026-07-28)
+
+**Ladder order is G2a → G-minor → G2b, and the order is load-bearing.** The
+sweep is scoped to kinds 24–33, which is exactly what exists once G2a lands. Run
+G2b first and it appends kind 34 into a vocabulary the sweep has already been
+scoped against, so either the sweep grows mid-flight or 34 ships with the same
+defect the rung exists to retire. G2b therefore sequences *after* G-minor and
+inherits working machinery — the same reasoning that put the accept-set raise in
+its own packet.
 
 `binary_format.tex:2330` requires a writer to raise the chunk schema **minor**
 when it emits a discriminant appended after the minor it declares — a MUST with
 a stated rationale, so that an unknown-discriminant decode failure is
 attributable to version skew rather than corruption. No writer has ever done
-it: `SchemaVersion::for_major` (`bundle/src/ids.rs:204`) returns `{major, 0}`
-unconditionally and accepts no minor, and both staging paths derive only the
-major (`testkit/src/bundle_harness.rs:25`, `textproj/src/serialize.rs:183`).
+it: `SchemaVersion::for_major` (`bundle/src/ids.rs:204`) maps a major to a fixed
+constant — `V0` is `{0, 1}`, not `{0, 0}` (`ids.rs:173`); `V1`/`V2`/`V3` carry
+minor 0 — and, decisively, **accepts only a major**, so no per-kind additive
+minor can reach it. Both staging paths likewise derive only the major
+(`testkit/src/bundle_harness.rs:25`, `textproj/src/serialize.rs:183`).
 
 So kinds **24–27**, **28–29**, **30**, and **31** already carry no additive
 record, and G2a takes that to **32–33** knowingly. Filed as **P13-S14**. Ruled:

@@ -75,8 +75,10 @@ one must not anticipate it in any way.
    raise the chunk schema minor when it emits a discriminant appended after the
    minor it declares, so an unknown-discriminant decode failure is attributable
    to skew rather than corruption. `SchemaVersion::for_major`
-   (`bundle/src/ids.rs:204`) returns `{major, 0}` unconditionally and takes no
-   minor, and both staging paths derive only the major
+   (`bundle/src/ids.rs:204`) maps a major to a **fixed constant** — note `V0` is
+   `{0, 1}`, not `{0, 0}` (`ids.rs:173`), while `V1`/`V2`/`V3` carry minor 0 —
+   and, decisively, **accepts only a major**, so no per-kind additive minor can
+   reach it. Both staging paths likewise derive only the major
    (`testkit/src/bundle_harness.rs:25`, `textproj/src/serialize.rs:183`). So
    kinds 24–31 already have no additive-version record, and **G2a knowingly
    takes that from eight kinds to ten.** Filed as **P13-S14** and ruled
@@ -177,8 +179,9 @@ changelog paragraphs: one retroactively recording G1's `CreateInstrument`
 section as the 0.10.0 entry's first half (flag it explicitly as a G1 omission
 being repaired, not as new work), and the two new `\section`s for this packet.
 
-**`spec/core_spec.tex`** — five edits. The first is a doctrine amendment and
-must be done exactly as pinned; the rest are corrections of fact:
+**`spec/core_spec.tex`** — **five live-text edits plus one historical
+annotation**. The first is a doctrine amendment and must be done exactly as
+pinned; the rest are corrections of fact:
 
 * `:5114` — the Pass-12 K8 doctrine paragraph, which still reads *"genesis is
   the creation of an empty score together with its bundle, **outside the
@@ -190,10 +193,13 @@ must be done exactly as pinned; the rest are corrections of fact:
   is only the claim that the score's **contents** arrive outside the operation
   set. Cite the ruling.
 * `:6899` — the `pub enum OperationKind` listing, introduced by its own prose
-  as **normative for the core**. It is missing `CreateInstrument` (G1 debt) as
-  well as both new kinds. Add all three in the listing's existing grouped-by-
-  comment style.
-* `:11862` — the `OperationKindTag` listing, same treatment, same three.
+  as **normative for the core**. It needs **four** additions, not two:
+  `TransposeInterval` (kind 30, **Push-4a debt** — the listing carries the older
+  `Transpose` and never gained its successor), `CreateInstrument` (kind 31, G1
+  debt), and both new setters. Add them in the listing's existing
+  grouped-by-comment style.
+* `:11862` — the `OperationKindTag` listing, same treatment, **the same four**.
+  It likewise has `Transpose` and no `TransposeInterval`.
 * `:12186` — correct the sentence naming which values reach only the
   non-canonical snapshot. Do not restructure the surrounding schema-major-1
   narrative.
@@ -227,13 +233,20 @@ work above, two live-text repairs:
   minimal-stamping list that follows. Same rule as `core_spec.tex:12207`:
   recount from the list you write.
 
-**That is eleven normative sites across four documents, of which five are G1
-debt.** Two independent reviews each found sites the other missed, so treat the
-list as a floor, not a ceiling: **grep for the load-bearing phrases** —
-`CreateInstrument`, `layout_defaults`, `SpellingPrecedence`, "outside the
-operation set", "snapshot-only", and every spelled-out payload count — and
-report anything the list does not already name rather than silently fixing or
-silently skipping it.
+**That is eleven normative sites across four documents, and most of the work is
+not this packet's own:** five sites are G1 debt, and the two core listings are
+additionally **Push-4a debt** — they carry `Transpose` and never gained
+`TransposeInterval`, appended at kind 30 in 2026-07. So the vocabulary has been
+drifting from its normative listings for two tranches, not one.
+
+Three independent reviews each found sites the previous ones missed, so treat
+the list as a floor, not a ceiling: **grep for the load-bearing phrases** —
+`CreateInstrument`, `TransposeInterval`, `layout_defaults`,
+`SpellingPrecedence`, "outside the operation set", "snapshot-only", and every
+spelled-out payload count — and report anything the list does not already name
+rather than silently fixing or silently skipping it. **A count that disagrees
+with the enumeration beside it is the signature to look for**; two such counts
+are already known (`core_spec.tex:12207`, `binary_format.tex:2604`).
 
 ## The companion version bump
 
