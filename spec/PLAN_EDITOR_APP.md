@@ -479,6 +479,22 @@ consumes them and never blocks on them — and the sequencing currency is the
   lyrics, chord symbols, rehearsal marks, instrument names — with shaping,
   fallback, and metrics consistent across canvas, SVG/PDF export, hit
   testing, and accessibility (Ruling A criterion).
+  **Ownership landed W1 (`dd33b34`); the glyph-asset seam landed W2
+  (`24f8c80`, the `epiphany-glyphs` crate). The text-run decision is RULED —
+  `spec/ANALYSIS_TEXT_RUN_PRIMITIVES.md`, approved 2026-07-28: a fourth
+  resolved primitive carrying the source string *and* the canonical shaped
+  result, with a content-hashed face identity. Three consequences reach
+  outside this bullet.** (a) Three of the five categories named above —
+  lyrics, chord symbols, rehearsal marks — carry **no text in the model at
+  all**, so they are blocked on a core-track schema major, not on the IR; v1
+  renders the text that exists (metadata, instrument/staff names,
+  `TextLineDefinition`). (b) A **live compliance gap**: score text authored
+  through operations is not NFC-validated, because the score-bearing payloads
+  embed the core codec's deliberately non-folding bytes rather than the
+  envelope's NFC-checked string reader — independent of this tranche, and
+  core-track work. (c) The engraver gains a **pinned shaper**, and the
+  `.tex` amendment adding the primitive is a layout-fingerprint change
+  needing no bundle/wire schema-major move (it follows strokes and curves).
 * **The engraving-quality track:** the Standard-tier solver and real
   quality-metric computation (Chapter 9's nine axes) — repeatedly deferred,
   and the actual gate on "professional engraving" claims.
@@ -507,6 +523,11 @@ split views are more canvases, not more pipelines.
 **Prerequisites (before or at T4 open, from §3.7):** IR per-system primitive
 ownership; the shared typed glyph-asset seam; the text-run primitive decision.
 These are IR/render tranches this ruling *depends on*, not work it smuggles in.
+**All three are now discharged** — W1 `dd33b34`, W2 `24f8c80`, W3 ruled
+2026-07-28 (`ANALYSIS_TEXT_RUN_PRIMITIVES.md`). Criterion 3 below is restated
+by that ruling as five testable checks (§5 there): the engraver shapes, so the
+spike tests whether a candidate stack can *faithfully consume* a shaped
+result rather than whether it can shape correctly.
 
 What this ruling does **not** pin: the toolkit/tessellation stack. The T4
 spike decides it, bounded by these recorded criteria:
