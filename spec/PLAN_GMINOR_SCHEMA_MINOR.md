@@ -3,8 +3,10 @@
 **Filed as** P13-S14. **Ruled** 2026-07-28: its own rung, sequenced **after
 G2a and before G2b** (`spec/PLAN_GENESIS_OPS.md` §4).
 
-**Status:** scoped; policy ratified 2026-07-28 (§4). Not contracted — §5 lists
-the audit that must complete first.
+**Status:** scoped; policy ratified 2026-07-28 (§4); vocabulary audit landed
+(§5.1, `spec/AUDIT_GMINOR_VOCABULARIES.md`, c63258d). **Not contracted** — the
+**epoch ladder remains unratified**, and §4 records why it cannot be ratified
+as written. That ratification is now the only gate.
 
 > **Revision 2026-07-28.** The first draft of this plan got three things wrong
 > and recommended a policy that cannot work. Corrections are marked inline
@@ -152,8 +154,23 @@ decision, not a fallible parallel list — the same reasoning that made
 `operation_kind_tag_vocabulary!` safe.
 
 **Tentative epoch mapping** — Phase 3 → 2, repeats → 3, Push 4a → 4, G1 → 5,
-G2a → 6. Reasonable, but **not ratified**: it must wait until every
-post-baseline additive vocabulary is audited (§3), not just `OperationKind`.
+G2a → 6. **Still not ratified, and now known to be incomplete.** The audit
+(§5.1) placed three families this mapping never considered: `OperationPayload`
+3 (Push 3) and `ReanchorReason` 6 (Pass-12 G-pass) have no rung at all, and
+`PreconditionFailureReason` 10–15 spans four tranches of which M2c and the
+G-pass are unplaced. Ratification owes at least two new epochs plus an M2c
+decision, and must confirm the Phase-3 and Push-4a rungs cover their
+`PreconditionFailureReason` contributions and not only their `OperationKind`
+ones.
+
+**Baseline boundaries are per vocabulary, even though the epoch space is
+global.** The epoch answers *which revision introduced this variant*; the
+boundary answers *was this variant present at that vocabulary's own lock*.
+Only the second varies. M2c is the proof: it is baseline for `OperationKind`
+(absorbed into the golden-locked 0..=23) and a genuine append for
+`PreconditionFailureReason` (`ContainerNotEmpty` = 10, whose 0..=9 lock
+predates it). So `introduced_minor` is assigned **per variant, per
+vocabulary**.
 
 ### Consequent calls, all ruled 2026-07-28
 
@@ -177,15 +194,44 @@ post-baseline additive vocabulary is audited (§3), not just `OperationKind`.
 
 ## 5. What must complete before a contract
 
-1. **The vocabulary audit** (§3). This is now the gating work, and it is the
-   only thing standing between here and a contract. Its output is the epoch
-   annotation for every post-baseline additive variant in every vocabulary
-   reachable from an affected payload.
-2. Ratify the epoch mapping once that audit lands.
+1. ~~**The vocabulary audit** (§3).~~ **DONE** — see §5.1.
+2. Ratify the epoch mapping. **This is now the gating work**, and per §4 it
+   cannot be the tentative ladder as written.
 3. Confirm no third staging path has appeared beside the two in §1.
 4. Decide whether `decode_vectors.txt` moves — it is value-level, so it should
    not, but that is a check rather than an assumption.
 
-*Related: `spec/PASS13_CANDIDATES.md` (P13-S14), `spec/PLAN_GENESIS_OPS.md` §4,
+### 5.1 The audit landed — and it is the governing inventory
+
+**`spec/AUDIT_GMINOR_VOCABULARIES.md` (c63258d) supersedes §3's table as the
+authoritative reachability inventory.** §3 is retained as the reasoning that
+led here; where the two differ, the audit governs. It walks each of the nine
+`ChunkKind` roles' payload encoders and classifies every variant of every
+vocabulary actually emitted.
+
+What it changes about §3:
+
+* **The canonical base reaches more than §3 lists** — add `RepairKind`,
+  `ReanchorReason`, and `SpellingNominal`. Not cosmetic: `ReanchorReason` is
+  one of only two vocabularies in the tree with a real native append.
+* **The manifest reaches `OperationKindTag` with no operation envelope in
+  it**, through `ExtensionDeclaration::edit_barriers` →
+  `EditBarrier::prohibited_operation_kinds` (`layout-ir/src/barrier.rs:392`).
+  §3's table is framed entirely around the operation layer and names neither
+  the role nor the path. A manifest declaring a barrier on `CreateInstrument`
+  (tag 31) needs the same stamping discipline as a block containing one, and
+  the manifest chunk's minor is a separate decision from any op block's.
+* **`CompressionAlgorithm` is excluded** (audit §1.8): `ChunkRef` transport
+  metadata, not a discriminant emitted by the payload `SchemaVersion` governs,
+  and deliberately outside the chunk-identity preimage. Recorded so it is not
+  reopened.
+* **`binary_format.tex:2373` is stale narrative** — "append at ≥30" with a
+  history stopping at 29, while 30–33 are taken. The normative tables
+  (`:1443`, `:1526`) are current and authoritative. **The `.tex` correction is
+  owed by the G-minor implementation**, which must edit that paragraph
+  regardless, since it defines the mechanism the rung implements.
+
+*Related: `spec/AUDIT_GMINOR_VOCABULARIES.md`,
+`spec/PASS13_CANDIDATES.md` (P13-S14), `spec/PLAN_GENESIS_OPS.md` §4,
 `spec/binary_format.tex` §"Schema Versioning" / §"What ``Additive'' Means
 Here".*
