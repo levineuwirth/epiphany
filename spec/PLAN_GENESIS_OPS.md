@@ -8,8 +8,15 @@ which questions must be answered before a dispatch contract can be written.
 
 **Status:** **G1 landed** (3b09595, CI green) via
 `spec/CONTRACT_GENESIS_G1_INSTRUMENT.md`. **G2a contracted**
-(`spec/CONTRACT_GENESIS_G2A_SETTINGS.md`); G2b and G3 scoped, not contracted.
-§6 lists what still needs ratification.
+(`spec/CONTRACT_GENESIS_G2A_SETTINGS.md`); **G-minor**, G2b, and G3 scoped, not
+contracted. §6 lists what still needs ratification.
+
+**G1 shipped documentation debt** — five normative falsehoods across
+`binary_format.tex`, `core_spec.tex`, and `operation_catalog.tex`, because its
+contract declared the normative wire surfaces out of scope. G2a repairs them.
+The lesson generalises: **an operation-vocabulary append is a documented event
+in four specification documents**, and any contract on this track that does not
+name them all is wrong. See §4's split-cost accounting.
 
 ---
 
@@ -165,13 +172,25 @@ context, so no op block is ever born at v3". G2b is precisely what falsifies
 that sentence, so the comment must move with the number. Same for
 `DECISIONS.md`'s superseded prohibition, which is already marked.
 
-**The cost of splitting, stated honestly:** each packet appends *kind*
-productions to the text-projection grammar, and a kind append is a
-document-surface change (the G1 precedent). So the companion bumps twice —
-0.8.0 → 0.9.0 → 0.10.0 — and each bump re-sweeps five live version sites in
-`text_projection.tex` plus a changelog row, re-flips the negative
-`superseded_companion_version` vector, and regenerates the vector corpora.
-That is mechanical and pre-1.0; it is the cheaper of the two risks.
+**The cost of splitting, stated honestly — and it is larger than first
+written.** Each packet appends to the operation vocabulary, and that is a
+documented event in **three** companions, not one:
+
+* `text_projection.tex` — a new *kind* production is a document-surface change
+  (the G1 precedent), so `COMPANION_VERSION` bumps per packet: 0.8.0 → 0.9.0 →
+  0.10.0, each re-sweeping five live version sites plus a changelog row and
+  re-flipping the negative `superseded_companion_version` vector.
+* `binary_format.tex` — payload-layout and tag rows per kind, plus a version
+  bump and a Revision History row (the 0.2.0 entry is the precedent).
+* `operation_catalog.tex` — a `\section` per kind, plus a version bump and a
+  changelog paragraph.
+
+Plus `core_spec.tex`'s normative `OperationKind`/`OperationKindTag` listings
+and its spelled-out payload counts, and a regenerated vector corpus, per
+packet. So the split roughly **doubles the documentation work**, and G2b pays
+it again in full. Still the cheaper of the two risks — burying a one-way
+accept-set door in a packet of routine work is worse than repeating a
+mechanical sweep — but it is not the small tax the first draft implied.
 
 **P13-S13 closes at G2b — and on the metadata precedent, not on the canonical
 base.** The base cannot carry a v3 tuning context: it is role-bound to major 0
@@ -208,6 +227,29 @@ dispatch** — either the payload carries a wire-complete subset type, or the
 operation normalizes the field away at construction and refuses a non-empty
 one. Decide that in the G2b contract, not in its implementation. Does not block
 G2a.
+
+### G-minor — the schema-minor sweep (ruled 2026-07-28, sequenced after G2a)
+
+`binary_format.tex:2330` requires a writer to raise the chunk schema **minor**
+when it emits a discriminant appended after the minor it declares — a MUST with
+a stated rationale, so that an unknown-discriminant decode failure is
+attributable to version skew rather than corruption. No writer has ever done
+it: `SchemaVersion::for_major` (`bundle/src/ids.rs:204`) returns `{major, 0}`
+unconditionally and accepts no minor, and both staging paths derive only the
+major (`testkit/src/bundle_harness.rs:25`, `textproj/src/serialize.rs:183`).
+
+So kinds **24–27**, **28–29**, **30**, and **31** already carry no additive
+record, and G2a takes that to **32–33** knowingly. Filed as **P13-S14**. Ruled:
+one retroactive sweep over 24–33 after G2a, rather than blocking G2a on a debt
+already eight kinds deep or paying for two partial sweeps.
+
+What the rung owes: a minor-assignment policy (which minor each past append
+belongs to — a retroactive judgement, not a derivation), a per-kind minor, block
+minor = max over payloads, a `for_major` replacement that accepts one, and both
+staging paths. **Scope it only after checking whether the chunk header's minor
+reaches a pinned corpus** — that decides whether it is a vector-moving change.
+Orthogonal to the *major* accept-set, which stays 2 through G2a and rises to 3
+only at G2b.
 
 ### G3 — the remaining entity families
 

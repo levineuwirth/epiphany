@@ -65,11 +65,25 @@ one must not anticipate it in any way.
    `SetMetadata` would be the bug** — `SetMetadata` is there because
    `ScoreMetadata` has six mandatory major-2 appends, which is a property of
    *that* type and nothing else. Test i5 exists to catch exactly this.
-4. **No `epiphany-bundle` change of any kind.**
-   `max_supported_major(OperationEnvelopeBlock)` is 2 (`bundle.rs:69`) and
+4. **No `epiphany-bundle` change of any kind — and this now has two distinct
+   reasons, one of which is a deliberate deferral rather than a non-event.**
+   (a) `max_supported_major(OperationEnvelopeBlock)` is 2 (`bundle.rs:69`) and
    **stays 2**. Do not edit `bundle.rs`, and do not touch its cap comment at
    `:58` — that prose belongs to G2b and moving it early leaves a different
-   falsehood behind.
+   falsehood behind. (b) **The chunk schema *minor* is not stamped, and this
+   packet does not fix that.** `binary_format.tex:2330` is a MUST: a writer must
+   raise the chunk schema minor when it emits a discriminant appended after the
+   minor it declares, so an unknown-discriminant decode failure is attributable
+   to skew rather than corruption. `SchemaVersion::for_major`
+   (`bundle/src/ids.rs:204`) returns `{major, 0}` unconditionally and takes no
+   minor, and both staging paths derive only the major
+   (`testkit/src/bundle_harness.rs:25`, `textproj/src/serialize.rs:183`). So
+   kinds 24–31 already have no additive-version record, and **G2a knowingly
+   takes that from eight kinds to ten.** Filed as **P13-S14** and ruled
+   2026-07-28 to be its own rung, sequenced after G2a, sweeping 24–33 in one
+   retroactive pass. **Do not implement minor stamping in this packet, and do
+   not work around its absence** — if something here appears to need it, that is
+   a finding about the ruling, so report it.
 5. **Reduction copies `set_metadata` structurally** (`reduce.rs:2814`): advisory
    LWW, **no conflict, no idempotence short-circuit**, no `AlreadyApplied`. The
    write chain records unconditionally; the graph field is overwritten when a
@@ -163,10 +177,9 @@ changelog paragraphs: one retroactively recording G1's `CreateInstrument`
 section as the 0.10.0 entry's first half (flag it explicitly as a G1 omission
 being repaired, not as new work), and the two new `\section`s for this packet.
 
-**`spec/core_spec.tex`** — two edits, both narrow:
+**`spec/core_spec.tex`** — five edits. The first is a doctrine amendment and
+must be done exactly as pinned; the rest are corrections of fact:
 
-* `:12186` — correct the sentence to name which values now reach the canonical
-  operation layer. Do not restructure the surrounding schema-major-1 narrative.
 * `:5114` — the Pass-12 K8 doctrine paragraph, which still reads *"genesis is
   the creation of an empty score together with its bundle, **outside the
   operation set**"*. `spec/RULING_GENESIS_PERSISTENCE.md` reverses precisely
@@ -175,12 +188,52 @@ being repaired, not as new work), and the two new `\section`s for this packet.
   deletes, and there is still no `TypedObjectId` kind for either — *that half
   survives the ruling intact and is the load-bearing half*. What is superseded
   is only the claim that the score's **contents** arrive outside the operation
-  set. Cite the ruling. Leave `:16475`'s Pass-12 history entry alone — it is a
-  record of what was ratified then, not a live claim — but append a
-  parenthetical noting the reversal.
+  set. Cite the ruling.
+* `:6899` — the `pub enum OperationKind` listing, introduced by its own prose
+  as **normative for the core**. It is missing `CreateInstrument` (G1 debt) as
+  well as both new kinds. Add all three in the listing's existing grouped-by-
+  comment style.
+* `:11862` — the `OperationKindTag` listing, same treatment, same three.
+* `:12186` — correct the sentence naming which values reach only the
+  non-canonical snapshot. Do not restructure the surrounding schema-major-1
+  narrative.
+* `:12207` — *"through the **eight** operation payloads that embed them"*,
+  followed by an explicit enumeration. Both the count and the list move.
+  **Count them from the enumeration you write, not from arithmetic on the old
+  number.**
+* `:16475`'s Pass-12 history entry is a record of what was ratified then, not a
+  live claim: **leave the entry**, append a parenthetical noting the reversal.
 
-**If a fifth normative falsehood turns up while doing this, report it; do not
-silently widen scope beyond the five above.**
+**`spec/operation_catalog.tex`** — beyond the two new sections and the version
+work above, two live-text repairs:
+
+* `:1495` — the *Value restoration* passage enumerates the LWW families
+  exhaustively ("… metadata, metric grid, meter change, tempo segment, staff
+  layout, and the user break advisories"). Both new setters join that list.
+  This list is normative for undo behaviour, so an omission here is a silent
+  semantic gap, not a typo.
+* `:1633` — the *Retired slots* section, which asserts *"genesis is normatively
+  the empty-document constructor plus bundle creation, outside the operation
+  set"*. Same narrow amendment as `core_spec.tex:5114` and the **same trap**:
+  the *Create score / canvas* slot stays retired and the canvas is still never
+  op-minted. Only the outside-the-operation-set clause for score **contents**
+  is superseded.
+
+**`spec/binary_format.tex`** — beyond the tables and `:2432` above:
+
+* `:2595` — *"Snapshot-only: `Instrument` (no operation embeds one)"*. False
+  since G1.
+* `:2604` — *"Canonical operation layer: **eight** operation payloads"* and the
+  minimal-stamping list that follows. Same rule as `core_spec.tex:12207`:
+  recount from the list you write.
+
+**That is eleven normative sites across four documents, of which five are G1
+debt.** Two independent reviews each found sites the other missed, so treat the
+list as a floor, not a ceiling: **grep for the load-bearing phrases** —
+`CreateInstrument`, `layout_defaults`, `SpellingPrecedence`, "outside the
+operation set", "snapshot-only", and every spelled-out payload count — and
+report anything the list does not already name rather than silently fixing or
+silently skipping it.
 
 ## The companion version bump
 
@@ -238,9 +291,9 @@ unless noted.
 | 23 | `textproj/src/vectors.rs` | flip the superseded-version negative vector |
 | 23a | `textproj/src/parse.rs` | the literal `HEADER` fixture `"(text-projection (0 8 0))"` → `(0 9 0)` (`:645`). **`the_test_header_tracks_the_implemented_version` fails deliberately until this moves** — it is a tripwire, not a breakage |
 | 24 | `spec/text_projection.tex` | `kind` production + five version sites + changelog row |
-| 25 | `spec/operation_catalog.tex` | two new `\section`s + version 0.9.0 → 0.10.0 + changelog, **including the retroactive G1 entry** |
-| 26 | `spec/binary_format.tex` | three payload-layout rows + three tag rows + the `:2432` bullet rewrite + version 0.11.0 → 0.12.0 + Revision History row |
-| 27 | `spec/core_spec.tex` | the `:12186` correction and the narrow `:5114` amendment |
+| 25 | `spec/operation_catalog.tex` | two new `\section`s + the `:1495` and `:1633` repairs + version 0.9.0 → 0.10.0 + changelog, **including the retroactive G1 entry** |
+| 26 | `spec/binary_format.tex` | three payload-layout rows + three tag rows + the `:2432`, `:2595`, `:2604` rewrites + version 0.11.0 → 0.12.0 + Revision History row |
+| 27 | `spec/core_spec.tex` | five edits (`:5114`, `:6899`, `:11862`, `:12186`, `:12207`) + the `:16475` parenthetical |
 
 The tag vocabulary macro (#6) is a **single source of truth**: the decoder, fuzz
 corpus, conformance vectors, and edit-barrier round-trip all read
@@ -287,22 +340,34 @@ show it dies. A test that cannot see its own bug is not a test.
   block carrying either new kind stamps at major 0. **Mutation:** stamp a
   payload at 3 → the assertion fires. *This is the packet's boundary against
   G2b.*
-* **(s7) transaction rollback discards the write** — the pin-8 site.
-  `WorkingSnapshot` (`reduce.rs:7371`) is the **transaction rollback**
-  mechanism, not a persistence feature: snapshot before, restore on failure.
-  Author a setter inside a transaction that then fails, and assert the field
-  returns to its pre-transaction value. **Mutation:** omit either chain from
-  the snapshot/restore pair → the failed transaction's write is **retained**
-  rather than rolled back. (It does not "lose history" — the earlier framing
-  was backwards, and the wrong framing would have sent the test looking for
-  the wrong symptom.)
+* **(s7) transaction rollback discards the write — and the assertion must not
+  be on the field.** `WorkingSnapshot` (`reduce.rs:7371`) is the **transaction
+  rollback** mechanism: snapshot before, restore on failure. But `restore`
+  reassigns the **whole graph** (`self.graph = s.graph`, `reduce.rs:7441`)
+  independently of every write chain, so a setter's *field* rolls back whether
+  or not its chain was snapshotted. **An assertion on the field cannot see this
+  bug** — it passes under the mutation. Two framings of this test have now been
+  wrong; this is the third and it must be verified by actually running the
+  mutation, not by inspection.
+
+  Shape it so the stale chain is observable: author inside a **failed**
+  transaction, then perform a **successful** write in a second transaction, then
+  **undo that second transaction** and assert it restores the genuine
+  predecessor — the pre-failure value, not the rolled-back one. Alternatively
+  assert against chain contents directly. **Mutation:** omit either chain from
+  the snapshot/restore pair (`reduce.rs:7386`, `:7423`) → the failed
+  transaction's write survives in the chain and the undo restores it instead of
+  the true predecessor. **If the mutation does not kill the test, the test is
+  wrong — report that rather than weakening the mutation.**
 * **(s8) decode vectors pinned to literal bytes**, not round-trip. Round-trip
   locking cannot see a self-consistent encoder/decoder reorder — the 3b-i
   lesson, where a swap applied to both halves passed 1283 tests and 8/8
-  conformance. **Mutation:** swap two adjacent fields in *both* the encoder and
-  the decoder. Every round-trip test must stay green while the literal-byte
-  vector dies. If the vector survives too, it is pinned to a round-trip and is
-  not the test it claims to be.
+  conformance. **Mutation:** *not* a field swap — each new payload carries
+  exactly **one** field, so there are no adjacent fields to reorder. Swap the
+  two new **discriminants** (32 ↔ 33) in both the encoder and the decoder
+  instead: self-consistent, so every round-trip test stays green, while
+  correctly-named literal vectors die. If the vectors survive too, they are
+  pinned to a round-trip and are not the test they claim to be.
 * **(s9) text-projection round-trip** for both kinds, matching the existing
   per-kind coverage, plus a negative test that a `(0 8 0)` header is now
   **rejected**. **Mutation (round-trip half):** emit one kind's production
