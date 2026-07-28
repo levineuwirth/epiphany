@@ -400,10 +400,18 @@ show it dies. A test that cannot see its own bug is not a test.
   other suites treat as exhaustive, so a kind absent from them is untested
   everywhere downstream while every suite stays green — which is how
   `TransposeInterval` and `CreateInstrument` came to be missing from both.
-  Assert that a bounded draw from each generator yields all four appended kinds
-  (30–33). **Mutation:** drop one arm / leave a bound unwidened → the assertion
-  fires. Row 29's derived form should make its half of this unfailable by
-  construction; if it does not, the derivation is wrong.
+  For row 28, assert that a bounded draw yields all four appended kinds (30–33).
+  **Mutation:** drop one arm / leave the bound unwidened → the assertion fires.
+
+  For row 29, **do not assert 30–33** — that would pass with the derivation's
+  `Registered` append deleted, even though `PAYLOAD_FREE` excludes it by design
+  (`payload.rs:469`) and the generator's own doc promises *every* variant.
+  Assert the draw covers exactly **`PAYLOAD_FREE` ∪ {`Registered`}**.
+  **Mutation:** remove the `Registered` append → the assertion fires. Future
+  built-ins then follow structurally with no test change, while the one
+  payload-bearing variant that cannot follow structurally stays locked. If
+  either half of s10 can survive its mutation, the derivation is wrong — report
+  that rather than weakening the assertion.
 
 ## Blast radius
 
@@ -428,13 +436,25 @@ exists precisely because Push 4a added `TransposeInterval` to a hand-written
 match and nothing else, and its own doc says four hand-maintained lists stayed
 green (`payload.rs:461`). The macro made the *compile-enforced* half safe —
 and these three lists went stale at that same append anyway, because nothing
-forces a `rng.below(N)` bound or a literal count to move. So the vocabulary now
-has **four** hand-maintained literal sites (`layout-ir/src/barrier.rs:1105`,
-`testkit/tests/text_projection_grammar.rs:307`, `ops/src/textproj_kind.rs:597`,
-plus the two generator bounds), and each new kind must visit all of them. Row
-29's fix is the only structural one available here — derive from `PAYLOAD_FREE`
-— so **prefer deriving over extending wherever a list can be derived**, and say
-in the report which sites could not be.
+forces a hand-written match arm, an `rng.below(N)` bound, or a literal count to
+move. So **every new kind must visit six hand-maintained sites**, none of which
+the compiler checks:
+
+1. `ops/src/payload.rs:266` — `OperationKind::discriminant()`, a hand-written
+   match. **This is the exact site Push 4a got wrong**, and it is still
+   unguarded; the macro guards the *tag* space beside it, not this one.
+2. `layout-ir/src/barrier.rs:1105` — the "one past the vocabulary" literal.
+3. `testkit/tests/text_projection_grammar.rs:307` — a kind count.
+4. `ops/src/textproj_kind.rs:597` — a second kind count.
+5. `testkit/src/generators.rs:647` — an `rng.below(N)` bound over hand-written
+   arms.
+6. `testkit/src/layout_stub.rs:951` — the same, over tags.
+
+Row 29 converts **6** into a derivation, leaving **five** manual visits for
+every future append. That is the only structural fix available in this packet —
+so **prefer deriving over extending wherever a list can be derived**, and name
+in the report every site that could not be, so the next tranche inherits an
+accurate count rather than this one's.
 
 Expect `the_canonical_base_is_byte_identical_across_data_model_majors`
 (`reduce.rs:10715`) to require a **conscious re-pin**: the seeded corpus's
