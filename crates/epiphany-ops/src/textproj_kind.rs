@@ -646,9 +646,14 @@ mod tests {
     /// struct wrapping a sequence), so mislabeling one as the other is
     /// rejected rather than mis-round-tripped.
     ///
-    /// **Mutation:** none needed to demonstrate the reject — this test *is*
-    /// the reject-path exercise the contract asks for; a genuine defect
-    /// would be a decoder that silently accepted the mismatched shape.
+    /// **Mutation (required, and run):** make the parse arm silently accept a
+    /// mismatched shape — `TextValue::parse(layout_defaults).unwrap_or_default()`
+    /// in place of the `?` — which is exactly the defect this test names. The
+    /// assertion fires. An earlier note here claimed no mutation was needed
+    /// because the test *is* the reject-path exercise; that reasoning was
+    /// wrong. Being a reject-path test does not establish that the rejection
+    /// is caused by the mislabeling rather than by something incidental, and
+    /// only running the mutation shows the assertion is not vacuous.
     #[test]
     fn one_settings_kind_production_under_the_others_tag_is_rejected() {
         let precedence_sample = sample_kind(OperationKindTag::SetSpellingPrecedence);

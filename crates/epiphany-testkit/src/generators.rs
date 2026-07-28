@@ -1832,35 +1832,64 @@ mod tests {
     /// stamps well within the `OperationEnvelopeBlock` accept-set no matter
     /// where that set's ceiling sits.
     ///
-    /// The other half of s6 — `max_supported_major(OperationEnvelopeBlock) ==
-    /// 2` — is **not** assertable from this crate: `epiphany_bundle::
-    /// max_supported_major` (`bundle.rs:67`) is defined in a private module
-    /// (`mod bundle;`, not `pub mod`) and is not among `epiphany-bundle`'s
-    /// `pub use` re-exports, so no outside crate can name it. Contract pin 4a
-    /// forbids touching `epiphany-bundle` in this packet (not even to add a
-    /// re-export), so that half of s6 is verified by reading
-    /// `crates/epiphany-bundle/src/bundle.rs:69` directly (`ChunkKind::
-    /// OperationEnvelopeBlock => 2`, unedited by this packet) rather than by
-    /// a compiled assertion — a deviation from the contract's "assert it in
-    /// code" phrasing, reported rather than worked around.
+    /// The accept-set ceiling itself (`max_supported_major(
+    /// OperationEnvelopeBlock) == 2`) is **already** asserted in a compiled
+    /// test inside `epiphany-bundle` (`bundle.rs:1322`), which predates this
+    /// packet and which this packet leaves untouched. An earlier draft of
+    /// this comment claimed that half of s6 was unassertable because
+    /// `max_supported_major` is not re-exported — the privacy observation is
+    /// true but the conclusion was wrong, since the assertion does not need
+    /// to live *outside* the crate. **No re-export is needed, here or by the
+    /// G-minor rung.**
+    ///
+    /// What this test adds is the half the in-crate assertion cannot cover:
+    /// that a *staged block* carrying either new kind stamps major 0, which
+    /// is the contract's actual claim and which exercises the writer-side
+    /// derivation (`stage_operation_block`) rather than the bare kind.
     ///
     /// **Mutation:** stamp a payload carrying either new kind at a non-zero
     /// major (as if it had been wrongly placed in the `=> 2` arm alongside
-    /// `SetMetadata`, exactly the bug pin 3 and test s5 both name) — this
-    /// assertion fires.
+    /// `SetMetadata`, exactly the bug pin 3 and test s5 both name) — both
+    /// assertions fire.
     #[test]
     fn the_two_new_settings_kinds_stamp_within_the_accept_set() {
-        for major in [
+        let kinds = [
             OperationKind::SetCanvasLayoutDefaults(SetCanvasLayoutDefaultsOp {
                 layout_defaults: valuegen::canvas_layout_defaults(1),
-            })
-            .schema_major(),
+            }),
             OperationKind::SetSpellingPrecedence(SetSpellingPrecedenceOp {
                 precedence: valuegen::spelling_precedence(1),
-            })
-            .schema_major(),
-        ] {
-            assert_eq!(major, 0, "both new kinds must stamp at major 0");
+            }),
+        ];
+        for kind in &kinds {
+            assert_eq!(
+                kind.schema_major(),
+                0,
+                "both new kinds must stamp at major 0"
+            );
+        }
+        // The contract's claim is about the BLOCK, not the bare kind: a block
+        // carrying either kind must stamp major 0 through the writer-side
+        // derivation every real staging path uses.
+        for (n, kind) in kinds.into_iter().enumerate() {
+            let id = OperationId::new(ReplicaId(1), n as u64);
+            let env = OperationEnvelope {
+                id,
+                author: AuthorId(1),
+                stamp: OperationStamp::new(
+                    HybridLogicalClock::new(WallClockTime(10 + n as i64), 0),
+                    id,
+                ),
+                causal_context: CausalContext::new(),
+                transaction: None,
+                payload: OperationPayload::Primitive(kind),
+            };
+            assert!(epiphany_ops::well_formed(&env).is_ok());
+            let staged = crate::bundle_harness::stage_operation_block(&[env]);
+            assert_eq!(
+                staged.schema_version.major, 0,
+                "a staged block carrying a G2a setter stamps major 0"
+            );
         }
     }
 

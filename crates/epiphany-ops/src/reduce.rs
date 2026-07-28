@@ -13221,13 +13221,24 @@ mod tests {
     }
 
     /// (s3) A re-write of an identical value is a **new write**, not a
-    /// no-op: assert the effect is `Applied` and not `AlreadyApplied`. This
-    /// test exists because pin 5 is the most likely thing for a subagent to
-    /// get wrong by pattern-matching on `create_staff`'s mint discipline.
+    /// no-op. This test exists because pin 5 is the most likely thing for a
+    /// subagent to get wrong by pattern-matching on `create_staff`'s mint
+    /// discipline.
     ///
-    /// **Mutation:** add an `AlreadyApplied` short-circuit to the setter fn
-    /// (skip the record-and-write when the new value equals the current one)
-    /// -> dies.
+    /// The contract requires proving **both** halves: that the effect is
+    /// `Applied`, *and* that the write chain grew. Asserting effects alone is
+    /// insufficient — a mutant that returns `Applied` while skipping
+    /// `WriteChain::record` for an unchanged value passes an effects-only
+    /// test, and the damage surfaces only later, when undoing the earlier
+    /// transaction restores the base instead of reporting that the identical
+    /// later write superseded it. So the two writes here sit in **different
+    /// transactions**, and a strict undo of the first must report
+    /// supersession naming the second.
+    ///
+    /// **Mutations, both required:** (a) add an `AlreadyApplied`
+    /// short-circuit to the setter fn -> the effect half dies; (b) keep
+    /// `Applied` but skip `record` when the value is unchanged -> the
+    /// supersession half dies while the effect half stays green.
     #[test]
     fn rewriting_an_identical_settings_value_is_a_new_write_not_a_no_op() {
         let identity = IdentityContext::new(ReplicaId(1));
@@ -13252,7 +13263,7 @@ mod tests {
         );
         let mut set = OperationSet::new();
         set.accept_all(vec![first.clone(), second.clone()]);
-        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity.clone()));
 
         assert_eq!(
             effect_at(&out.state, 0),
@@ -13263,6 +13274,65 @@ mod tests {
             effect_at(&out.state, 1),
             Some(&OperationEffect::Applied),
             "a byte-identical re-write is still a new Applied write, not AlreadyApplied"
+        );
+
+        // The chain-growth half. Effects alone cannot see a mutant that
+        // returns `Applied` without recording, so put the two identical
+        // writes in different transactions and strict-undo the first: the
+        // chain must report the identical second write as superseding it.
+        let tx_a = TransactionId::from_raw(91);
+        let tx_b = TransactionId::from_raw(92);
+        let declare_a = declare_transaction(1, 0, 10, CausalContext::new(), tx_a);
+        let declare_b = declare_transaction(1, 2, 30, seen_r1(1), tx_b);
+        let mut write_a = prim_env(
+            1,
+            1,
+            20,
+            seen_r1(0),
+            OperationKind::SetSpellingPrecedence(SetSpellingPrecedenceOp {
+                precedence: precedence.clone(),
+            }),
+        );
+        write_a.transaction = Some(tx_a);
+        let mut write_b = prim_env(
+            1,
+            3,
+            40,
+            seen_r1(2),
+            OperationKind::SetSpellingPrecedence(SetSpellingPrecedenceOp {
+                precedence: precedence.clone(),
+            }),
+        );
+        write_b.transaction = Some(tx_b);
+        let strict = undo_env(1, 4, 50, seen_r1(3), tx_a, UndoPolicy::StrictInverse);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_a,
+            write_a,
+            declare_b,
+            write_b.clone(),
+            strict.clone(),
+        ]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        assert!(
+            matches!(
+                effect_at(&out.state, 4),
+                Some(OperationEffect::Conflicted { .. })
+            ),
+            "the identical later write must supersede tx_a's strict undo — if \
+             this passes as Applied, the second write was never recorded"
+        );
+        let record = out
+            .state
+            .conflicts
+            .records()
+            .iter()
+            .find(|record| record.caused_by.contains(&strict.id))
+            .expect("the strict undo records a conflict");
+        assert!(
+            record.caused_by.contains(&write_b.id),
+            "the supersession must name the identical second write"
         );
     }
 

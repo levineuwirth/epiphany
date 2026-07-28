@@ -12219,12 +12219,18 @@ operation layer, because \texttt{CreateRegion} embeds a full \texttt{Region},
 so an operation-envelope block bearing a v1 \texttt{CreateRegion} is major~1.
 (As of the genesis operation tranche, \texttt{Canvas.layout\_defaults} and
 \texttt{Instrument.range} do too --- \texttt{SetCanvasLayoutDefaults}
-(G2a) and \texttt{CreateInstrument} (G1) embed the values directly --- but
-neither of those two payloads is itself major~1: the leaf value each embeds
-has exactly one layout, versioned only through the containing
-\texttt{Canvas}/\texttt{Instrument} walk, not through this schema-major-1
-bump. See the Binary Format companion \sectionsc{Schema Major 1} /
-\sectionsc{Schema Major 2} for the operation-by-operation accounting.)
+(G2a) and \texttt{CreateInstrument} (G1) embed them --- but neither payload
+is major~1, and for \emph{different} reasons.
+\texttt{SetCanvasLayoutDefaults} carries the leaf
+\texttt{CanvasLayoutDefaults}, which has exactly one layout: the versioning
+sits in the containing \texttt{Canvas} walk, never in the leaf, so the
+payload stamps major~0. \texttt{CreateInstrument} carries a whole
+\texttt{Instrument}, which does have distinct major-0, major-1, and major-2
+layouts --- so it is not major~1 because it is \emph{always major~2}: the
+schema-major-2 appends are mandatory rather than \texttt{Option}-hidden, so
+no lower-major layout for that payload exists at any value. See the Binary
+Format companion \sectionsc{Schema Major 1} / \sectionsc{Schema Major 2} for
+the operation-by-operation accounting.)
 Consequently a major-0-only reader opens a major-1 bundle \emph{fully} only
 when the bundle carries no v1 \texttt{CreateRegion} operation; otherwise it
 reads the major-0 canonical base and manifest but opens read-only (it cannot
