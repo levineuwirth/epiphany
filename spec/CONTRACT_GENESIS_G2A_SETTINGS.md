@@ -273,8 +273,13 @@ superseded `(0 8 0)`, since `(0 9 0)` is now the accepted one.
 
 ## Touch points
 
-Derived by enumerating every `SetMetadata` site. Each row is **per setter**
-unless noted.
+**The earlier claim that this table was "derived by enumerating every
+`SetMetadata` site" was false.** That grep was run, and rows 28 and 29 below
+appeared in its output and were not carried into the table — the evidence was on
+screen and went unused, which is worse than not having looked. Treat the table
+as reviewed rather than derived, and check it against a fresh grep.
+
+Each row is **per setter** unless noted.
 
 | # | File | Site (SetMetadata analogue) |
 |---|---|---|
@@ -307,6 +312,9 @@ unless noted.
 | 25 | `spec/operation_catalog.tex` | two new `\section`s + the `:1495` and `:1633` repairs + version 0.9.0 → 0.10.0 + changelog, **including the retroactive G1 entry** |
 | 26 | `spec/binary_format.tex` | three payload-layout rows + three tag rows + the `:2432`, `:2595`, `:2604` rewrites + version 0.11.0 → 0.12.0 + Revision History row |
 | 27 | `spec/core_spec.tex` | five edits (`:5114`, `:6899`, `:11862`, `:12186`, `:12207`) + the `:16475` parenthetical |
+| 28 | `testkit/src/generators.rs` | the operation generator (`:647`), `rng.below(30)` over a hand-maintained arm list. **Already stale**: it stops after the repeat pair, so `TransposeInterval` (Push-4a debt) and `CreateInstrument` (G1 debt) are absent from every corpus it feeds. Add all four and widen the bound |
+| 29 | `testkit/src/layout_stub.rs` | `gen_operation_kind_tag` (`:951`), whose doc claims **"every variant Agent C's type provides"** while `rng.below(30)` omits tags 30 and 31. **Do not just extend it** — derive the built-ins from `OperationKindTag::PAYLOAD_FREE` and append `Registered` (excluded from `PAYLOAD_FREE` by design, `payload.rs:469`). `payload.rs:1991` already does exactly this and is the in-repo precedent |
+| 30 | `ops/src/textproj_kind.rs` | a **fourth** deliberate literal count (`:597`), currently 32 → 34 |
 
 The tag vocabulary macro (#6) is a **single source of truth**: the decoder, fuzz
 corpus, conformance vectors, and edit-barrier round-trip all read
@@ -388,6 +396,14 @@ show it dies. A test that cannot see its own bug is not a test.
   (version half):** widen the parser to accept any `(0 x 0)` → the negative
   test dies. That second one also guards `req:textproj:header-version`'s
   reject-all-others clause, which is the actual normative claim here.
+* **(s10) the generators actually emit the new kinds.** Rows 28–29 feed corpora
+  other suites treat as exhaustive, so a kind absent from them is untested
+  everywhere downstream while every suite stays green — which is how
+  `TransposeInterval` and `CreateInstrument` came to be missing from both.
+  Assert that a bounded draw from each generator yields all four appended kinds
+  (30–33). **Mutation:** drop one arm / leave a bound unwidened → the assertion
+  fires. Row 29's derived form should make its half of this unfailable by
+  construction; if it does not, the derivation is wrong.
 
 ## Blast radius
 
@@ -400,8 +416,25 @@ show it dies. A test that cannot see its own bug is not a test.
 `spec/{binary_format,core_spec,operation_catalog,text_projection}.tex` **and all
 four rebuilt PDFs**; `spec/vectors/*.txt` (regenerated, not hand-edited).
 
+Plus `crates/epiphany-testkit/src/{generators,layout_stub}.rs` (rows 28–29) —
+**generator source, not test enrichment**: both are already stale by two
+tranches, and both feed corpora that other suites treat as exhaustive.
+
 **Nothing else.** No `epiphany-bundle` — the accept-set is G2b's and this packet
 must not anticipate it. No `epiphany-editor-gui`, no golden re-blessing.
+
+**Note what rows 28–30 are evidence of.** `operation_kind_tag_vocabulary!`
+exists precisely because Push 4a added `TransposeInterval` to a hand-written
+match and nothing else, and its own doc says four hand-maintained lists stayed
+green (`payload.rs:461`). The macro made the *compile-enforced* half safe —
+and these three lists went stale at that same append anyway, because nothing
+forces a `rng.below(N)` bound or a literal count to move. So the vocabulary now
+has **four** hand-maintained literal sites (`layout-ir/src/barrier.rs:1105`,
+`testkit/tests/text_projection_grammar.rs:307`, `ops/src/textproj_kind.rs:597`,
+plus the two generator bounds), and each new kind must visit all of them. Row
+29's fix is the only structural one available here — derive from `PAYLOAD_FREE`
+— so **prefer deriving over extending wherever a list can be derived**, and say
+in the report which sites could not be.
 
 Expect `the_canonical_base_is_byte_identical_across_data_model_majors`
 (`reduce.rs:10715`) to require a **conscious re-pin**: the seeded corpus's
