@@ -543,24 +543,37 @@ spike decides it, bounded by these recorded criteria:
    number is uninformative while reduction or solving dominates; the spike
    measures the stages the toolkit actually owns.
    **MEASURED 2026-07-28** — `epiphany-testkit/benches/editor_pipeline.rs`,
-   gating the core's portion against `req:perf:single-system-edit-latency`
-   (16.7 ms). At log depth 100 / 1,000 / 10,000 on the ten-measure fixture:
-   reduce **194 µs / 1.74 ms / 16.99 ms**, engrave **276 / 311 / 263 µs**,
-   scene-build **135 / 155 / 123 µs**, paint **2.12 / 2.78 / 1.32 ms**. Four
-   consequences, all of which sharpen this criterion rather than satisfy it:
-   (a) **reduce is the only stage that scales with log depth** and it breaks
-   the frame budget at ~10,000 edits (17.26 ms core, a 3% miss — an order of
-   magnitude, not a threshold); (b) **engrave is flat and small**, and at
-   shallow depth is the *larger* half of the core's portion, so "uninformative
-   while reduction dominates" holds only past roughly depth 500; (c) **paint is
-   the largest single cost at every realistic depth** — 2.12 ms at depth 100 is
-   4.5× the whole core portion; (d) **scene-build is 3.5 µs of IR work plus
-   ~130 µs of SVG serialization** (measured by dropping the `golden-gate`
-   feature), so a canvas consuming the IR directly skips ~98% of today's
-   per-edit cost, none of it in the core. **Sequencing consequence: T4 before
-   T4b stands** — the dominant cost at the depths real sessions reach is the
-   demoted render path, not reduction. T4b's trigger is a session ~10k edits
-   deep, which the bench now watches for as an `Xfail` row.
+   gating the core's portion (envelope construction + reduction + layout, all
+   three the requirement names) against `req:perf:single-system-edit-latency`
+   (16.7 ms), on a **session-shaped log** — counters from 0 and each envelope
+   carrying `active_prior_context()`, because a context-free log measures a
+   different algorithm and understated reduce by ~3× in this bench's first
+   version. At depth 100 / 1,000 / 3,000 / 5,000 / 10,000 on the ten-measure
+   fixture: reduce **223 µs / 2.30 ms / 8.79 ms / 17.53 ms / 54.07 ms**,
+   engrave **268 / 314 / 327 / 317 / 260 µs**, scene-build **133 / 165 / 152 /
+   151 / 123 µs**, paint **2.21 / 2.86 / 2.80 / 2.78 / 1.36 ms** (depth 4,000
+   measured clean but ungated at 12.99 ms core — a `Pass` row at 78% of budget
+   flaps under load). Five consequences, all of which sharpen this criterion
+   rather than satisfy it: (a) **reduce is the only depth-scaling stage and is
+   superlinear** (~`n^1.4`; 10× the log costs ~23.5× the time), breaking the
+   frame **between 3,000 and 5,000 edits** — 9.11 ms then 17.84 ms core, so the
+   wall is ~4,500; (b) **engrave is flat and small** (260–327 µs) and at depth
+   100 is the *larger* half of the core's portion, so "uninformative while
+   reduction dominates" holds only past roughly depth 500; (c) **paint
+   dominates early and is overtaken by ~1,000 edits** — 4.5× the core at depth
+   100, level at 1,000, far behind after; (d) **scene-build is 3–5 µs of IR
+   work plus ~130 µs of SVG serialization**, so a direct-IR canvas avoids
+   2.34 ms at depth 100 = **83% of the full per-edit pipeline, 99.8% of the
+   render path alone** (both denominators stated; an unqualified "98%" was
+   supported by neither); (e) **depth is per session, not per document** —
+   `EditorSession::open` starts with an empty applied log — so the wall is a
+   budget on one sitting, though note entry mints one operation per note.
+   **Sequencing: T4 before T4b still stands** — the canvas removes what
+   dominates a session's first ~1,000 edits and is the architecture later
+   tranches build on — **but the two are no longer comfortably separated**, and
+   T4b's trigger is ~4,500 edits in a sitting rather than the ~10,000 this
+   bench's first, context-free version reported. The bench watches for it as an
+   `Xfail` row at depth 5,000.
 3. **Text pipeline (hard criterion):** shaping, font fallback, bidi/complex
    scripts, and metrics consistent between interactive canvas, SVG/PDF
    export, hit testing, and the accessibility tree. A stack with no credible

@@ -25,19 +25,38 @@
 //!
 //! | stage | what runs | in the core's budget? |
 //! |---|---|---|
+//! | construct | mint the one new `OperationEnvelope` | **yes** |
 //! | reduce | `OperationSet::accept` × log + `reduce_onto(&base)` | **yes** |
 //! | engrave | `to_logical` → `to_constrained` → `Engraver::solve` | **yes** |
 //! | scene-build | `to_render` + `hit_test_map` (+ SVG string) | no — product layer |
 //! | paint | `usvg` parse + `resvg` rasterize | no — product layer |
 //!
-//! Only the first two are gated. `req:perf:single-system-edit-latency` bounds
-//! "the core's portion" and says so explicitly — "End-to-end edit-to-pixel
-//! latency (input handling, hit testing, render submission, display flip) is a
-//! product-layer obligation" — so charging the SVG serializer and `resvg`
-//! against a core budget would be a category error. They are measured and
-//! printed because the ruling asks for the stages *separately*, and because
-//! today's scene-build+paint is the path Ruling A demotes: the number is the
-//! baseline a canvas must beat, not a budget to defend.
+//! Only the first three are gated, and all three are gated: the requirement
+//! names "operation envelope **construction**, reduction, incremental layout",
+//! so `construct` is timed and summed even though it is tens of nanoseconds and
+//! never moves the verdict. A gate that silently drops a named component is a
+//! proxy for the requirement rather than the requirement.
+//!
+//! `req:perf:single-system-edit-latency` bounds "the core's portion" and says
+//! so explicitly — "End-to-end edit-to-pixel latency (input handling, hit
+//! testing, render submission, display flip) is a product-layer obligation" —
+//! so charging the SVG serializer and `resvg` against a core budget would be a
+//! category error. They are measured and printed because the ruling asks for
+//! the stages *separately*, and because today's scene-build+paint is the path
+//! Ruling A demotes: the number is the baseline a canvas must beat, not a
+//! budget to defend.
+//!
+//! ## The log must be shaped like a session's, or the reduce column lies
+//!
+//! `reduce`'s cost is dominated by ordering work over the log's **causal
+//! edges**, so a log whose envelopes carry empty causal contexts measures a
+//! different algorithm than the one production runs. The first version of this
+//! bench made exactly that mistake and understated `reduce` by ~3× at depth
+//! 10,000 (17 ms rather than 54 ms), which moved the reported wall by more than
+//! a factor of two and would have mis-sequenced T4b. [`edit_log`] now
+//! reproduces `EditorSession`'s minting shape: counters from 0, only the root
+//! context empty, every later envelope carrying the head's context extended by
+//! the head.
 //!
 //! ## What the scale points vary, and what they deliberately do not
 //!
@@ -48,18 +67,27 @@
 //! still while the reduce column moves — which is what makes the two
 //! attributable.
 //!
-//! **The score's *size* is held fixed; its *content* is not, and one column
-//! reads that.** The edits are transpositions, so the reduced score differs
-//! from the base by up to ±1 semitone per pitch, and a transposed pitch may
-//! acquire an accidental. Because the edit log cycles the pitch list and
-//! alternates direction per pass, the accidental count depends on the *parity
-//! of the pass count* at that depth: depth 1,000 is 25 passes (odd — every
-//! pitch sits one semitone off the base, most carrying an accidental), while
-//! depth 10,000 is 250 passes (even — every pitch is back where it started).
-//! That is why `paint` is **non-monotonic** in depth below (2.78 ms at 1,000,
-//! 1.32 ms at 10,000): the deeper score simply has less ink. `reduce` is the
-//! only column that tracks depth; `engrave`, `scene-build`, and `paint` track
-//! score content. Reading paint's dip as a scaling win would be a mistake.
+//! **The score's *size* is held fixed; its *content* is not, and three columns
+//! read that.** The edits are transpositions, so the reduced score differs from
+//! the base by up to ±1 semitone per pitch, and a transposed pitch may acquire
+//! an accidental. Because the edit log cycles the pitch list and alternates
+//! direction per pass, the accidental count depends on the *parity of the pass
+//! count* at that depth: depths 1,000 / 3,000 / 5,000 are 25 / 75 / 125 passes
+//! (odd — every pitch sits one semitone off the base, most carrying an
+//! accidental), while 10,000 is 250 (even — every pitch is back where it
+//! started). That is why `paint` is **non-monotonic** in depth below: it sits
+//! near 2.8 ms at every odd-parity depth and drops to 1.36 ms at 10,000, where
+//! the score simply has less ink. `reduce` is the only column that tracks
+//! depth; `engrave`, `scene-build`, and `paint` track score content. Reading
+//! paint's dip at 10,000 as a scaling win would be a mistake.
+//!
+//! **Depth is per session, not per document.** `EditorSession::open` starts
+//! with an empty `applied` log (`editor-core/src/lib.rs`), so reopening a saved
+//! score resets the depth this bench varies: the reduced score becomes the new
+//! pristine base. The wall below is therefore a budget on **one sitting**, not
+//! on a document's lifetime — which is what keeps a four-figure number from
+//! being catastrophic. It is still reachable: note entry mints one operation
+//! per note.
 //!
 //! **The honest limitation:** no orchestral-scale score fixture exists in the
 //! testkit (the largest are three staves × ten measures), so the engrave and
@@ -121,42 +149,64 @@ struct ScalePoint {
 /// THE STAGE TABLE. Budget: the core's portion (reduce + engrave) within
 /// 16.7 ms, `req:perf:single-system-edit-latency`.
 ///
-/// Measured, dev profile, 2026-07-28, `--features golden-gate`:
+/// Measured, dev profile, 2026-07-28, `--features golden-gate`, on a
+/// **session-shaped log** (see the module note — the first published table used
+/// empty causal contexts and understated `reduce` by ~3× at depth 10,000):
 ///
-/// | depth | reduce | engrave | **core** | scene-build | paint | verdict |
-/// |-------|--------|---------|----------|-------------|-------|---------|
-/// | 100    | 194 µs   | 276 µs | **471 µs**  | 135 µs | 2.12 ms | Pass, ~35x margin |
-/// | 1,000  | 1.74 ms  | 311 µs | **2.06 ms** | 155 µs | 2.78 ms | Pass, ~8x margin |
-/// | 10,000 | 16.99 ms | 263 µs | **17.26 ms** | 123 µs | 1.32 ms | Xfail, 3% over |
+/// | depth | construct | reduce | engrave | **core** | scene-build | paint | verdict |
+/// |-------|-----------|--------|---------|----------|-------------|-------|---------|
+/// | 100    | 40 ns | 223 µs   | 268 µs | **491 µs**  | 133 µs | 2.21 ms | Pass, 34× margin |
+/// | 1,000  | 40 ns | 2.30 ms  | 314 µs | **2.61 ms** | 165 µs | 2.86 ms | Pass, 6.4× margin |
+/// | 3,000  | 40 ns | 8.79 ms  | 327 µs | **9.11 ms** | 152 µs | 2.80 ms | Pass, 55% of budget |
+/// | 5,000  | 40 ns | 17.53 ms | 317 µs | **17.84 ms** | 151 µs | 2.78 ms | **Xfail, 107%** |
+/// | 10,000 | 40 ns | 54.07 ms | 260 µs | **54.33 ms** | 123 µs | 1.36 ms | Xfail, 3.3× over |
+///
+/// (Depth 4,000, measured clean but not gated — see the note on the scale
+/// points: core **12.99 ms**, 78% of budget.)
 ///
 /// What the table says, in the order it matters:
 ///
-/// 1. **`reduce` is the only column that scales with depth**, and it does so
-///    close to linearly (194 µs → 1.74 ms → 16.99 ms for 100× the log). It is
-///    99% of the core's portion at depth 10,000 and 41% of it at depth 100.
-/// 2. **`engrave` is flat** — 263–311 µs regardless of depth, because the score
-///    it engraves is the same size at every point. At *shallow* depth it is the
-///    larger half of the core's portion, which qualifies Ruling A criterion 2's
-///    "uninformative while reduction dominates": reduction does not dominate
-///    until roughly depth 500.
-/// 3. **The budget breaks at ~10,000 edits in one session** — and only just
-///    (17.26 ms against 16.7 ms, on a dev box rather than the reference
-///    hardware profile, at median rather than the requirement's p99). Read it
-///    as "the wall is at this order of magnitude", not as a precise crossing.
-/// 4. **`paint` is the largest single cost at every realistic depth** — 2.12 ms
-///    at depth 100 is 4.5× the entire core portion. That is the SVG-string
-///    path Ruling A demotes to export, and it is measured here as the number a
-///    canvas has to beat.
+/// 1. **`reduce` is the only column that scales with depth, and it is
+///    superlinear** — 10× the log costs ~23.5× the time between depths 1,000
+///    and 10,000, roughly `O(n^1.4)`. It is 45% of the core's portion at depth
+///    100 and 99.5% at depth 10,000. (This does not contradict
+///    `benches/reduction.rs`'s subquadratic result at 50K envelopes: that log
+///    is generated across three replicas with a different causal shape. Two
+///    logs of equal length are not equal work.)
+/// 2. **The frame budget breaks between 3,000 and 5,000 edits** — 9.11 ms
+///    (55%), 12.99 ms at 4,000 (78%), then 17.84 ms (107%). Call the wall
+///    ~4,500 in one sitting, on a dev box rather than the reference hardware
+///    profile and at median rather than the requirement's p99, so treat it as
+///    an order of magnitude rather than a threshold.
+/// 3. **`engrave` is flat and small** — 260–327 µs at every depth, because the
+///    score it engraves is the same size throughout. At depth 100 it is the
+///    *larger* half of the core's portion, so criterion 2's "uninformative
+///    while reduction dominates" holds only past roughly depth 500, not from
+///    the start.
+/// 4. **`paint` dominates early and is overtaken by depth ~1,000.** At depth
+///    100 it is 2.21 ms against a 491 µs core — 4.5×. By 1,000 they are level
+///    (2.86 ms vs 2.61 ms). Past that the core runs away. The earlier claim
+///    that the render path dominates "at realistic depths" holds only for the
+///    first thousand-odd edits of a session.
 /// 5. **Almost all of `scene-build` is the SVG serializer, not the IR work.**
-///    Running the same rows *without* `golden-gate` — which drops the SVG
-///    string and leaves only `to_render` + `hit_test_map` — gives **3.5 µs** at
-///    depth 100 against the 135 µs above. So building the `RenderIR` and the
-///    hit-test map costs ~3.5 µs and serializing it to SVG costs ~130 µs. A
-///    canvas that consumes the IR directly (Ruling A) skips the 130 µs *and*
-///    the 2.12 ms rasterize; together that is ~98% of today's per-edit cost at
-///    depth 100, none of it in the core. Worth stating plainly because
-///    "scene-build 135 µs" invites attributing the cost to IR construction,
-///    which is off by a factor of nearly 40.
+///    The same rows *without* `golden-gate` — which drop the SVG string and
+///    leave only `to_render` + `hit_test_map` — measure **3–5 µs**, against
+///    133–165 µs with it. So the `RenderIR` and hit-test map cost a few
+///    microseconds and serializing to SVG costs ~130 µs. Stating that plainly
+///    matters because "scene-build 133 µs" invites attributing the cost to IR
+///    construction, which is off by a factor of ~30.
+/// 6. **What a direct-IR canvas avoids, with the denominator named.** It skips
+///    the ~129 µs serialize and the 2.21 ms rasterize: 2.34 ms at depth 100.
+///    That is **83% of the full measured per-edit pipeline** (2.83 ms) and
+///    **99.8% of the render path alone** (2.34 ms). Both figures are worth
+///    having and they answer different questions; an unqualified "98%" was
+///    supported by neither.
+///
+/// **Sequencing, stated carefully.** T4 (the canvas) still comes first: it
+/// removes the cost that dominates a session's first ~1,000 edits, and it is
+/// the architecture every later tranche builds on. But T4b's trigger is much
+/// nearer than the first version of this table suggested — ~4,500 edits in one
+/// sitting, not ~10,000 — and the two are no longer comfortably separated.
 ///
 /// A row that starts missing after being marked `Pass` is a fresh regression —
 /// fix the pipeline, do not re-mark it `Xfail` without a written decision (the
@@ -170,22 +220,51 @@ const SCALE_POINTS: &[ScalePoint] = &[
     },
     ScalePoint {
         // Drafted `Xfail` on the assumption that Fact 8 would already bite
-        // here; it does not, with ~8x margin, and the gate's XPASS notice said
-        // so. Promoted on first measurement rather than left stale.
+        // here; it does not, and the gate's XPASS notice said so. Promoted on
+        // first measurement rather than left stale.
         depth: 1_000,
         expectation: Expectation::Pass,
         gate_iters: (5, 3),
         criterion_time: Some(Duration::from_secs(10)),
     },
+    // 3,000 and 5,000 bracket the crossing. They exist because the first
+    // version of this bench put the wall at ~10,000 on a context-free log; with
+    // production-shaped contexts it arrives here instead, and a table that only
+    // sampled decades would have reported the wrong order of magnitude for the
+    // trigger T4b is sequenced against.
+    //
+    // The last `Pass` row is 3,000 rather than 4,000 deliberately. A clean run
+    // puts 4,000 at 12.99 ms — a real pass, but only 78% of budget, and a row
+    // that close flaps the moment the machine is doing anything else (a
+    // load-contaminated run measured it at 22.77 ms, *above* the 5,000 row,
+    // which is impossible clean). A `Pass` row that fails under load teaches
+    // people to ignore the gate. 4,000's clean number is kept as data in THE
+    // STAGE TABLE instead of as a gated row.
+    ScalePoint {
+        depth: 3_000,
+        expectation: Expectation::Pass,
+        gate_iters: (5, 3),
+        criterion_time: Some(Duration::from_secs(12)),
+    },
+    ScalePoint {
+        depth: 5_000,
+        expectation: Expectation::Xfail(
+            "Fact 8: `apply` re-reduces the whole log onto the pristine base on \
+             every edit, and each envelope's causal context makes that ordering \
+             work real, so one keystroke costs more than a frame from roughly \
+             this depth. T4b (checkpointed reduction + per-system re-engrave) \
+             owns the fix; engrave is NOT implicated, staying flat in the \
+             hundreds of microseconds at every depth",
+        ),
+        gate_iters: (5, 3),
+        criterion_time: Some(Duration::from_secs(12)),
+    },
     ScalePoint {
         depth: 10_000,
         expectation: Expectation::Xfail(
-            "Fact 8: `apply` re-reduces the whole log onto the pristine base on \
-             every edit, so one keystroke costs a frame once the session is ~10k \
-             edits deep (measured 17.26 ms against a 16.7 ms budget — a 3% miss, \
-             so treat the depth as an order of magnitude, not a threshold). T4b \
-             (checkpointed reduction + per-system re-engrave) owns the fix; \
-             engrave is NOT implicated at 263 µs",
+            "Fact 8, well past the wall — see the 5,000 row. Kept as the \
+             order-of-magnitude datum, and gate-only because a single timed \
+             reduction here is tens of milliseconds",
         ),
         gate_iters: (3, 0),
         criterion_time: None,
@@ -222,8 +301,13 @@ fn pitches(score: &Score) -> Vec<PitchId> {
 /// pitch by ±25 semitones at depth 1,000 (and would have by ±250 at 10,000),
 /// which silently inflated the engrave and paint columns with ledger lines and
 /// accidentals — a score-content change masquerading as a log-depth cost.
-fn edit_envelope(counter: u64, pitch: PitchId, direction: i32) -> OperationEnvelope {
-    let id = OperationId::new(ReplicaId(1), counter);
+fn edit_envelope(
+    counter: u64,
+    pitch: PitchId,
+    direction: i32,
+    causal_context: CausalContext,
+) -> OperationEnvelope {
+    let id = OperationId::new(REPLICA, counter);
     let chromatic_steps = direction;
     OperationEnvelope {
         id,
@@ -232,7 +316,7 @@ fn edit_envelope(counter: u64, pitch: PitchId, direction: i32) -> OperationEnvel
             HybridLogicalClock::new(WallClockTime(counter as i64 + 1), 0),
             id,
         ),
-        causal_context: CausalContext::new(),
+        causal_context,
         transaction: None,
         payload: OperationPayload::Primitive(OperationKind::TransposeInterval(
             TransposeIntervalOp {
@@ -246,20 +330,77 @@ fn edit_envelope(counter: u64, pitch: PitchId, direction: i32) -> OperationEnvel
     }
 }
 
-/// A reproducible edit log of `depth` envelopes over `score`'s own pitches.
+/// The replica the synthetic session authors as.
+const REPLICA: ReplicaId = ReplicaId(1);
+
+/// `EditorSession`'s `extend_context`, reproduced (`editor-core/src/lib.rs`):
+/// a context grows by absorbing the head into its contiguous vector when the
+/// head continues that replica's run, and by a dot otherwise. A single-replica
+/// session with no undo always takes the contiguous branch.
+fn extend_context(context: CausalContext, op: OperationId) -> CausalContext {
+    let continues = context
+        .vector
+        .get(&op.replica)
+        .map_or(op.counter == 0, |&high| op.counter == high + 1);
+    if continues {
+        context.with_seen(op.replica, op.counter)
+    } else {
+        context.with_dot(op)
+    }
+}
+
+/// A reproducible edit log of `depth` envelopes over `score`'s own pitches,
+/// **shaped like a real `EditorSession` log**.
+///
+/// Two details are load-bearing, and the first version of this bench got both
+/// wrong — with the empty-context version understating `reduce` by ~3x at depth
+/// 10,000, because a context-free log gives the reducer no causal edges to
+/// order and so skips most of `canonical_reduction_order`'s work:
+///
+/// * **Counters start at 0.** `EditorSession` mints with
+///   `counter = self.authored.len()`, so the root op is counter 0 — which is
+///   also what `extend_context` recognises as the start of a contiguous run.
+/// * **Only the root context is empty.** Every later envelope carries
+///   `active_prior_context()` — the head's own context extended by the head —
+///   so it covers the whole active prefix. This is what makes two sequential
+///   edits to one target read as intentional overwrites rather than concurrent
+///   conflicts, and it is what the reducer's topological ordering consumes.
 fn edit_log(score: &Score, depth: usize) -> Vec<OperationEnvelope> {
     let targets = pitches(score);
     assert!(
         !targets.is_empty(),
         "the fixture must carry pitches to transpose"
     );
-    (0..depth)
-        .map(|i| {
-            let pass = i / targets.len();
-            let direction = if pass % 2 == 0 { 1 } else { -1 };
-            edit_envelope(i as u64 + 1, targets[i % targets.len()], direction)
-        })
-        .collect()
+    let mut log: Vec<OperationEnvelope> = Vec::with_capacity(depth);
+    let mut context = CausalContext::new();
+    for i in 0..depth {
+        let pass = i / targets.len();
+        let direction = if pass % 2 == 0 { 1 } else { -1 };
+        let envelope = edit_envelope(
+            i as u64,
+            targets[i % targets.len()],
+            direction,
+            context.clone(),
+        );
+        context = extend_context(context, envelope.id);
+        log.push(envelope);
+    }
+    log
+}
+
+/// **Stage 0 — envelope construction.** The requirement names it first
+/// ("operation envelope construction, reduction, incremental layout"), so the
+/// gated core includes it rather than treating it as setup: this builds the
+/// *one new* envelope an edit mints, on top of a log already `depth` deep.
+fn construct(targets: &[PitchId], depth: usize, context: &CausalContext) -> OperationEnvelope {
+    let pass = depth / targets.len();
+    let direction = if pass % 2 == 0 { 1 } else { -1 };
+    edit_envelope(
+        depth as u64,
+        targets[depth % targets.len()],
+        direction,
+        context.clone(),
+    )
 }
 
 /// **Stage 1 — reduce.** `EditorSession::materialize`'s first half: accept the
@@ -327,6 +468,10 @@ struct StageInputs {
     log: Vec<OperationEnvelope>,
     edited: Score,
     resolved: ResolvedLayoutIR,
+    /// The construct stage's inputs: the fixture's pitch list and the causal
+    /// context the *next* edit would carry (the head's, extended by the head).
+    targets: Vec<PitchId>,
+    next_context: CausalContext,
     #[cfg(feature = "golden-gate")]
     svg: String,
 }
@@ -336,6 +481,11 @@ fn stage_inputs(depth: usize, engraver: &Engraver) -> StageInputs {
     let log = edit_log(&base, depth);
     let edited = reduce(&base, log.clone());
     let resolved = engrave(&edited, engraver).expect("the fixture engraves renderably");
+    let targets = pitches(&base);
+    let next_context = match log.last() {
+        None => CausalContext::new(),
+        Some(head) => extend_context(head.causal_context.clone(), head.id),
+    };
     #[cfg(feature = "golden-gate")]
     let svg =
         epiphany_render_svg::render(&resolved, &epiphany_render_svg::RenderOptions::default()).svg;
@@ -344,6 +494,8 @@ fn stage_inputs(depth: usize, engraver: &Engraver) -> StageInputs {
         log,
         edited,
         resolved,
+        targets,
+        next_context,
         #[cfg(feature = "golden-gate")]
         svg,
     }
@@ -365,6 +517,11 @@ fn criterion_measurements(criterion: &mut Criterion, quick: bool) {
         group.measurement_time(if quick { Duration::from_secs(2) } else { time });
         group.warm_up_time(Duration::from_millis(if quick { 500 } else { 1500 }));
 
+        group.bench_with_input(
+            BenchmarkId::new("construct", point.depth),
+            &inputs,
+            |b, inputs| b.iter(|| construct(&inputs.targets, point.depth, &inputs.next_context)),
+        );
         group.bench_with_input(
             BenchmarkId::new("reduce", point.depth),
             &inputs,
@@ -419,6 +576,15 @@ fn budget_gate(quick: bool) -> Vec<budget::GateReport> {
         }
         let inputs = stage_inputs(point.depth, &engraver);
 
+        // Envelope construction is the requirement's first named component, so
+        // it is timed and summed rather than treated as setup — even though it
+        // is sub-microsecond and never moves the verdict, because a gate that
+        // silently drops a named component is a proxy, not the gate.
+        let construct_median = budget::median_time(
+            iters,
+            || (),
+            |()| construct(&inputs.targets, point.depth, &inputs.next_context),
+        );
         let reduce_median = budget::median_time(
             iters,
             || inputs.log.clone(),
@@ -429,12 +595,13 @@ fn budget_gate(quick: bool) -> Vec<budget::GateReport> {
         let scene_median = budget::median_time(iters, || (), |()| scene_build(&inputs.resolved));
 
         // The gated row: the core's portion, which is exactly what the
-        // requirement bounds.
-        let core = reduce_median + engrave_median;
+        // requirement bounds — "operation envelope construction, reduction,
+        // incremental layout through ResolvedLayoutIR".
+        let core = construct_median + reduce_median + engrave_median;
         println!(
-            "stage edit/{}: reduce {:.2?} + engrave {:.2?} = core {:.2?}; \
+            "stage edit/{}: construct {:.2?} + reduce {:.2?} + engrave {:.2?} = core {:.2?}; \
              scene-build {:.2?} (product layer, no core budget)",
-            point.depth, reduce_median, engrave_median, core, scene_median
+            point.depth, construct_median, reduce_median, engrave_median, core, scene_median
         );
         #[cfg(feature = "golden-gate")]
         {
