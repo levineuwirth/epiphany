@@ -226,34 +226,42 @@ implements**, so it must also state the derivation the rung ships.
 
 ---
 
-## 2. Open pin requiring ratification BEFORE implementation
+## Pin 11 — the barrier-change oracle (RULED 2026-07-28: **(b)**, with **(a)**
+normative)
 
-**How does a text round-trip detect changed barrier bytes?**
+`epiphany-textproj`'s serialize path receives a whole `TextDocument`, has no
+prior state to diff against, and cannot decode barriers even if it did (no
+`layout-ir` dependency, pin 8). So a hand-edited document whose barrier bytes
+changed while its carried `SchemaVersion` did not is undetectable at that layer.
 
-Pin 6.5 requires an aware producer to recompute or refuse. But
-`epiphany-textproj`'s serialize path receives a whole `TextDocument` and has no
-prior state to diff against, and cannot decode barriers even if it did. So a
-hand-edited text document whose barrier bytes changed while its carried
-`SchemaVersion` did not is **undetectable at that layer**.
+**The normative design is (a).** `textproj` **stays a preserving producer**: it
+carries the declared manifest version verbatim and **never decodes barriers**.
+**The document author is responsible for updating that version when editing
+opaque barrier bytes.** Do not add `layout-ir` to `textproj`, and do not add a
+derivation to its serialize path.
 
-Three dispositions:
+**On top of that, ship an independent `testkit` conformance oracle** — testkit
+*does* depend on `layout-ir`. New gate **`[7f]`**, alongside the existing
+`[7b]`–`[7e]` in `testkit/examples/conformance_suite.rs`.
 
-* **(a) Preserving producer, documented.** `textproj` carries the version
-  verbatim and is explicitly *not* an aware producer. A hand-edited barrier with
-  a stale carried version is a producer error, exactly as hand-editing any other
-  opaque preserved payload is. **Recommended** — it is the only option
-  consistent with keeping the layer free of `layout-ir`.
-* **(b) Validate in conformance.** As (a), plus a `testkit` check (testkit
-  *does* depend on `layout-ir`) that recomputes the aggregate from decodable
-  barriers and fails on mismatch. Costs a conformance row; catches the in-tree
-  case only.
-* **(c) Make `textproj` aware.** Add `layout-ir` to `textproj`. **Rejected on
-  its face** — it inverts pin 8 and makes the projection depend on the barrier
-  vocabulary it exists to carry opaquely.
-
-**Do not implement until this is ruled.** (a) and (b) differ by a test, not a
-design, so this is cheap to settle — but it determines whether the packet ships
-a conformance row.
+1. **When every barrier blob in a fixture decodes**, recompute the exact
+   aggregate manifest version and require **equality — not `>=`**. Equality is
+   the whole point: `>=` catches under-stamping only, while equality also
+   catches **stale over-stamping after a contributing barrier is removed**,
+   which is the failure pin 6.5 exists to prevent.
+2. **Negative fixtures, both required:**
+   * a blob naming **tag 31** whose manifest carries the **baseline** version
+     (under-stamped);
+   * **removal of the sole maximum contributor** with the old aggregate
+     retained (over-stamped).
+3. **If any blob is undecodable, report it as not-checkable/opaque — never as a
+   pass.** A skipped check recorded as green is the exact failure this whole
+   track keeps finding. Its byte-and-version preservation is covered separately
+   by s10 and s13; the oracle must not claim that ground.
+4. **Describe the gate honestly in its own output and docs**: it validates
+   **known, decodable, in-tree artifacts**. It is **not** evidence that
+   `textproj` validates arbitrary edits, and must not be worded as though it
+   were.
 
 ---
 
@@ -275,8 +283,19 @@ a conformance row.
 | 12 | `textproj/src/parse.rs` | parse it back |
 | 13 | `textproj/src/lib.rs` | `COMPANION_VERSION` → `(0, 10, 0)` (:34) |
 | 14 | `spec/vectors/textproj_document_vectors.txt` | regenerate |
-| 15 | `spec/binary_format.tex` | pin 10 repair; version + Revision History row |
-| 16 | `spec/text_projection.tex` | companion 0.10.0 (:237, :521, :1330) + changelog stating the manifest cause |
+| 15 | `testkit/examples/conformance_suite.rs` | new gate **`[7f]`** (pin 11); bump `TOTAL_GATES` |
+| 16 | `testkit/src/` (fixture module, implementer's choice of file) | the `[7f]` fixtures, including **both** negative cases |
+| 17 | `spec/binary_format.tex` | pin 10 repair; version + Revision History row |
+| 18 | `spec/binary_format.pdf` | regenerated (tracked artifact) |
+| 19 | `spec/text_projection.tex` | companion 0.10.0 (:237, :521, :1330) + changelog stating the manifest cause |
+| 20 | `spec/text_projection.pdf` | regenerated (tracked artifact) |
+
+**On the PDFs.** All six `spec/*.pdf` are **tracked**, and the gate rebuilds
+all four documents. Rows 18 and 20 are the two whose `.tex` sources change and
+so **must** be committed. `core_spec.pdf` and `operation_catalog.pdf` stay
+**build-only**: rebuild them for the 0-undefined-references check, but commit
+them **only if byte-changed** — and if either *is* byte-changed, that is a
+**finding to report**, since this contract changes neither source.
 
 **Anything outside this table is a finding to report, not a fix to apply.**
 
@@ -305,6 +324,9 @@ signed off.**
 | s12 | A raised minor changes the `ChunkId` and therefore the `ManifestId` | Drop the schema from the hash preimage; must fail |
 | s13 | `TextDocument` round-trips the carried manifest `SchemaVersion` | Emit the baseline on serialize instead of the carried value; must fail |
 | s14 | The committed corpus parses at `(0 10 0)` and a `(0 9 0)` document is rejected | Leave `COMPANION_VERSION` at 0.9.0; must fail |
+| s15 | `[7f]` fails the **under-stamped** fixture (tag-31 blob, baseline version) | Relax the oracle's equality to `>=`; must still fail (this one `>=` catches) |
+| s16 | `[7f]` fails the **over-stamped** fixture (sole max contributor removed, old aggregate retained) | **Inverse mutation, deliberately.** Relax the oracle's equality to `>=` and the gate **goes green** — the over-stamp is no longer caught. Report the green as the observed result. This is the one place a *passing* run is the evidence: it proves equality is load-bearing and `>=` is not sufficient, which is the whole reason pin 11.1 specifies equality |
+| s17 | `[7f]` reports an undecodable blob as **not-checkable**, never as a pass | Treat undecodable as pass; must fail |
 
 ---
 
@@ -312,11 +334,15 @@ signed off.**
 
 * `cargo fmt --check` clean; `cargo clippy --workspace --all-targets` **0
   warnings**; `cargo test --workspace` green with the count reported.
-* Conformance suites reported with counts (they were 8/8 + 9/9 at G2a).
+* Conformance suites reported with counts (they were 8/8 + 9/9 at G2a), **plus
+  the new `[7f]` gate's own line** — including how many fixtures were checked
+  and how many were reported not-checkable.
+* **All four PDFs rebuilt at 0 undefined references.** Commit
+  `binary_format.pdf` and `text_projection.pdf`; report whether
+  `core_spec.pdf` or `operation_catalog.pdf` changed at all (they should not).
 * Decode vectors: report the count **and** pin 9's verification that the
   value-level corpus did not move.
 * Text-projection vectors regenerated; report the count.
-* All four PDFs build at **0 undefined references**.
 * `git status --short` **before and after**, in full. The only differences may
   be the files in §3's touch table. The tree is already dirty with the editor
   track's `M Cargo.toml` and untracked `spikes/` — **that dirt must appear
