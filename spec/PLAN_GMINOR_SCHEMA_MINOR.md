@@ -3,10 +3,12 @@
 **Filed as** P13-S14. **Ruled** 2026-07-28: its own rung, sequenced **after
 G2a and before G2b** (`spec/PLAN_GENESIS_OPS.md` §4).
 
-**Status:** scoped; policy ratified 2026-07-28 (§4); vocabulary audit landed
-(§5.1, `spec/AUDIT_GMINOR_VOCABULARIES.md`, c63258d). **Not contracted** — the
-**epoch ladder remains unratified**, and §4 records why it cannot be ratified
-as written. That ratification is now the only gate.
+**Status:** policy ratified 2026-07-28 (§4); vocabulary audit landed (§5.1,
+`spec/AUDIT_GMINOR_VOCABULARIES.md`, c63258d); **epoch ladder ratified
+2026-07-28** (§4, minors 2–9). **Every gate in §5 is now discharged — the
+implementation contract may be drafted.** Two things it must carry that are
+not yet designed: the manifest derivation seam across bundle-opaque barrier
+bytes (§4), and the `binary_format.tex:2373` correction (§5.1).
 
 > **Revision 2026-07-28.** The first draft of this plan got three things wrong
 > and recommended a policy that cannot work. Corrections are marked inline
@@ -153,15 +155,40 @@ without being assigned an epoch. That assignment is an unavoidable schema
 decision, not a fallible parallel list — the same reasoning that made
 `operation_kind_tag_vocabulary!` safe.
 
-**Tentative epoch mapping** — Phase 3 → 2, repeats → 3, Push 4a → 4, G1 → 5,
-G2a → 6. **Still not ratified, and now known to be incomplete.** The audit
-(§5.1) placed three families this mapping never considered: `OperationPayload`
-3 (Push 3) and `ReanchorReason` 6 (Pass-12 G-pass) have no rung at all, and
-`PreconditionFailureReason` 10–15 spans four tranches of which M2c and the
-G-pass are unplaced. Ratification owes at least two new epochs plus an M2c
-decision, and must confirm the Phase-3 and Push-4a rungs cover their
-`PreconditionFailureReason` contributions and not only their `OperationKind`
-ones.
+### The epoch mapping — RATIFIED 2026-07-28
+
+**These are schema-minor epochs, not companion semver numbers.** The two
+numbering spaces are unrelated and must not be cross-read.
+
+| Minor | Additive event | Variants introduced |
+|---|---|---|
+| 2 | M2c | `PreconditionFailureReason::ContainerNotEmpty` = 10 |
+| 3 | Push 3 | `OperationPayload::ResolveEquivocation` = 3 |
+| 4 | Phase-3 first tranche | `OperationKind`/`OperationKindTag` 24–27; `PreconditionFailureReason::TempoMapMalformed` = 11 |
+| 5 | Pass-12 G-pass | `ReanchorReason::SameCanvasNearer` = 6; `PreconditionFailureReason` 12–13 |
+| 6 | Schema-major-2 repeat revision | `OperationKind`/`OperationKindTag` 28–29 |
+| 7 | Push 4a | `OperationKind`/`OperationKindTag` 30; `PreconditionFailureReason` 14–15 |
+| 8 | Genesis G1 | `OperationKind`/`OperationKindTag` 31 |
+| 9 | Genesis G2a | `OperationKind`/`OperationKindTag` 32–33 |
+
+**The ladder is complete against the audit** — every post-baseline variant in
+`AUDIT_GMINOR_VOCABULARIES.md` appears exactly once: all ten kind/tag pairs,
+`OperationPayload` 3, `ReanchorReason` 6, and all six
+`PreconditionFailureReason` appends.
+
+**And it is monotonic in real time**, which is what makes a minor prefix-closed
+(a reader declaring minor *n* supports every epoch ≤ *n*). Verified against the
+introducing commits rather than assumed: M2c `a207077` (2026-06-25) → Push 3
+`92aaccf` (07-02) → Phase-3 `0316160` (07-02) → G-pass `e4edea6` (07-07) →
+repeat pair `9b5339f` (07-07) → Push 4a `2740a6c` (07-09) → G1 `3b09595`
+(07-24) → G2a `55eff00` (07-28). The two events sharing 2026-07-07 are ordered
+correctly: the G-pass precedes the repeat revision.
+
+**Existing major baselines are unchanged**: `V0` uses minor 1; `V1`–`V3` use
+minor 0. **Baseline variants impose no additive override** — M2c's *operation
+kinds* stay baseline (inside the golden-locked 0..=23) while M2c's
+`PreconditionFailureReason` append requires epoch 2. Same tranche, two
+vocabularies, two answers.
 
 **Baseline boundaries are per vocabulary, even though the epoch space is
 global.** The epoch answers *which revision introduced this variant*; the
@@ -184,9 +211,43 @@ vocabulary**.
   draft's "is the base exempt?", which was the wrong binary question: the base
   is neither exempt nor automatically dragged, it is content-minimally
   stamped like everything else.)*
-* **`Manifest::SCHEMA` stays unchanged.** A changed child `ChunkRef` is changed
-  manifest *data*, not a new manifest-layout discriminant; its body, id, and
-  chunk hash move naturally without raising the manifest's own schema.
+* ~~**`Manifest::SCHEMA` stays unchanged.**~~ **NARROWLY SUPERSEDED
+  2026-07-28 by the audit.** The original call was right about its own case and
+  wrong as an unconditional rule:
+
+  * **Still true** — a changed child `ChunkRef` is changed manifest *data*, not
+    a new manifest-layout discriminant. Its body, id, and chunk hash move
+    naturally, and **that alone never raises the manifest minor.**
+  * **Newly true** — **emitted barrier tags do.** The manifest reaches
+    `OperationKindTag` through `ExtensionDeclaration::edit_barriers` →
+    `EditBarrier::prohibited_operation_kinds` (audit §5.1, Part 2). **A
+    manifest containing an edit barrier naming a tag in 24–33 takes that tag's
+    epoch**; a manifest naming only baseline tags retains its baseline. This is
+    content-minimal stamping applied to the manifest like any other role — the
+    original call had simply not seen that the manifest emits an additive
+    vocabulary at all.
+  * **The manifest major remains 0.**
+
+  **The implementation contract must design the derivation seam across the
+  bundle-opaque barrier bytes**, and this is the hard part, not a detail.
+  `epiphany-bundle`'s entire dependency list is `epiphany-determinism` and
+  `zstd` — **not `epiphany-ops`, not `epiphany-layout-ir`, not
+  `epiphany-core`**. It holds `edit_barriers` as `Vec<u8>` by design
+  (`manifest.rs:283`: the barrier family "is owned by Agents C and E"), so the
+  layer that stamps the manifest is structurally incapable of reading the tags
+  that determine its minor. Three shapes are available — a new dependency edge,
+  a producer-supplied minor travelling beside the blob, or a
+  decode-and-inspect step at a higher layer that already depends on both —
+  and choosing among them is contract work.
+
+  **The genuinely hard case, which must not be discovered during
+  implementation:** barrier bytes are *preserved verbatim* across writes,
+  including for extensions the writer does not understand. A repack can
+  therefore carry a barrier blob it cannot decode, whose tags it cannot
+  enumerate, and whose epoch it cannot derive. The contract must rule on that
+  case explicitly — preserve the manifest's existing minor, refuse, or require
+  the minor to travel with the blob — because the "decode and inspect" shape
+  silently does not cover it.
 * **No migration.** Existing bundles are accepted as-is; newly emitted or
   repacked blocks are stamped correctly.
 * **Scope is "all additive discriminants reachable in affected chunk
@@ -195,11 +256,14 @@ vocabulary**.
 ## 5. What must complete before a contract
 
 1. ~~**The vocabulary audit** (§3).~~ **DONE** — see §5.1.
-2. Ratify the epoch mapping. **This is now the gating work**, and per §4 it
-   cannot be the tentative ladder as written.
-3. Confirm no third staging path has appeared beside the two in §1.
+2. ~~Ratify the epoch mapping.~~ **DONE** — §4, minors 2–9, complete against
+   the audit and monotonic in real time.
+3. Confirm no third staging path has appeared beside the two in §1. *(Contract
+   work — cheap, but a check rather than an assumption.)*
 4. Decide whether `decode_vectors.txt` moves — it is value-level, so it should
-   not, but that is a check rather than an assumption.
+   not, but that is a check rather than an assumption. *(Contract work.)*
+
+Items 3 and 4 are checks the contract performs, not gates on drafting it.
 
 ### 5.1 The audit landed — and it is the governing inventory
 

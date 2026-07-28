@@ -254,11 +254,29 @@ record, and G2a takes that to **32–33** knowingly. Filed as **P13-S14**. Ruled
 one retroactive sweep over 24–33 after G2a, rather than blocking G2a on a debt
 already eight kinds deep or paying for two partial sweeps.
 
-What the rung owes: a minor-assignment policy (which minor each past append
-belongs to — a retroactive judgement, not a derivation), a per-kind minor, block
-minor = max over payloads, a `for_major` replacement that accepts one, and both
-staging paths. **Scope it only after checking whether the chunk header's minor
-reaches a pinned corpus** — that decides whether it is a vector-moving change.
+What the rung owes — **policy and epoch ladder both ratified 2026-07-28**; see
+`spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4 and the governing inventory
+`spec/AUDIT_GMINOR_VOCABULARIES.md`:
+
+* a **global additive epoch** (minors 2–9, one per additive event), **not** the
+  per-kind minor this paragraph originally proposed — that was rejected,
+  because it cannot represent multiple independent vocabularies inside one
+  block, and its obvious generalisation is worse: an old `OperationKind` 23
+  would numerically mask a newly appended `OperationPayload` 3;
+* `introduced_minor` assigned **per variant, per vocabulary**, co-located with
+  the discriminant in an exhaustive macro/match with **no wildcard arm**, so a
+  new variant cannot compile without an epoch;
+* an **envelope's** required minor = the max over **every discriminant it
+  actually emits** (outer payload variant, primitive kind, every nested
+  additive variant), and a **block's** = the max over its envelopes;
+* **content-minimal derivation for the other payload roles** — including the
+  manifest, which takes a barrier tag's epoch when it names one;
+* a `for_major` replacement that accepts a minor, and both staging paths.
+
+**The scope is not "kinds 24–33."** The audit found appends in three further
+vocabularies (`OperationPayload` 3, `ReanchorReason` 6,
+`PreconditionFailureReason` 10–15) and a reachability path to
+`OperationKindTag` through the *manifest* with no operation envelope involved.
 Orthogonal to the *major* accept-set, which stays 2 through G2a and rises to 3
 only at G2b.
 
