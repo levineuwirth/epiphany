@@ -69,6 +69,16 @@ name = "conformance_suite"
 name = "reduction"
 harness = false
 
+# Ruling A criterion 2 (`spec/PLAN_EDITOR_APP.md`): the staged interactive-edit
+# latency bench — reduce / engrave / scene-build / paint measured separately,
+# gating the core's portion against `req:perf:single-system-edit-latency`. The
+# last two stages need `epiphany-render-svg` + `resvg`, so they are behind
+# `golden-gate` for the MSRV reason documented above; without the feature the
+# bench prints an explicit skip for those columns.
+[[bench]]
+name = "editor_pipeline"
+harness = false
+
 [[bench]]
 name = "bundle"
 harness = false

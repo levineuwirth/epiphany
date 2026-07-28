@@ -542,6 +542,25 @@ spike decides it, bounded by these recorded criteria:
    Chapter-10-style budgets (Fact 8). A toolkit verdict from an end-to-end
    number is uninformative while reduction or solving dominates; the spike
    measures the stages the toolkit actually owns.
+   **MEASURED 2026-07-28** — `epiphany-testkit/benches/editor_pipeline.rs`,
+   gating the core's portion against `req:perf:single-system-edit-latency`
+   (16.7 ms). At log depth 100 / 1,000 / 10,000 on the ten-measure fixture:
+   reduce **194 µs / 1.74 ms / 16.99 ms**, engrave **276 / 311 / 263 µs**,
+   scene-build **135 / 155 / 123 µs**, paint **2.12 / 2.78 / 1.32 ms**. Four
+   consequences, all of which sharpen this criterion rather than satisfy it:
+   (a) **reduce is the only stage that scales with log depth** and it breaks
+   the frame budget at ~10,000 edits (17.26 ms core, a 3% miss — an order of
+   magnitude, not a threshold); (b) **engrave is flat and small**, and at
+   shallow depth is the *larger* half of the core's portion, so "uninformative
+   while reduction dominates" holds only past roughly depth 500; (c) **paint is
+   the largest single cost at every realistic depth** — 2.12 ms at depth 100 is
+   4.5× the whole core portion; (d) **scene-build is 3.5 µs of IR work plus
+   ~130 µs of SVG serialization** (measured by dropping the `golden-gate`
+   feature), so a canvas consuming the IR directly skips ~98% of today's
+   per-edit cost, none of it in the core. **Sequencing consequence: T4 before
+   T4b stands** — the dominant cost at the depths real sessions reach is the
+   demoted render path, not reduction. T4b's trigger is a session ~10k edits
+   deep, which the bench now watches for as an `Xfail` row.
 3. **Text pipeline (hard criterion):** shaping, font fallback, bidi/complex
    scripts, and metrics consistent between interactive canvas, SVG/PDF
    export, hit testing, and the accessibility tree. A stack with no credible
