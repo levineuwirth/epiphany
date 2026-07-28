@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "probe-egui",
+    "probe-vello",
+    "probe-iced",
+]
+
+# a11y-verifier is a standalone Python script (a11y-verifier/verify.py), not
+# a Cargo crate: it uses gi.repository.Atspi (the official AT-SPI2
+# GObject-introspection binding), an "equivalent AT-SPI client" under the
+# contract's Round 0 evidence rule. It is not a workspace member because it
+# is not Rust.
+
+# This workspace is deliberately outside the repo-root workspace (see the
+# root Cargo.toml's `exclude = ["spikes"]`, and CONTRACT_EDITOR_T4_SPIKE.md
+# pin 1). It is throwaway spike code for the T4 toolkit decision and is never
+# intended to ship. It has its own committed Cargo.lock.
+
+[workspace.package]
+edition = "2021"
+publish = false

@@ -1,0 +1,42 @@
+[package]
+name = "probe-iced"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+# Round 0 desk survey + accessibility-route probe for candidate C3 (iced).
+# See CONTRACT_EDITOR_T4_SPIKE.md Round 0, and the candidate set's own
+# framing of C3: "AccessKit lists egui among integrated projects and does
+# not list iced, and iced's upstream accessibility issue (#552) remains
+# open. A manual accesskit_winit route may exist; round 0 demonstrates it
+# or C3 fails there."
+#
+# ROUND-0 RESULT: FAIL. C3 is eliminated at round 0 (adjudicated 2026-07-28,
+# no waiver). This crate is retained only as the evidence.
+#
+# Candidate limitation — the fact that fails the round: iced 0.14 ships no
+# accessibility integration at all (`accesskit` appears in no iced crate
+# manifest), and its STOCK RUNNER exposes to application code neither a
+# `winit::event_loop::ActiveEventLoop` nor a pre-visibility
+# `winit::window::Window`; both appear only inside `iced_winit`'s own private
+# `ApplicationHandler` impl, with `create_window` at `iced_winit-0.14.0/
+# src/lib.rs:350` inside iced's runner. Every `accesskit_winit::Adapter`
+# constructor requires them, and panics if the window is already visible.
+# Scoped deliberately to the stock runner: `iced_winit`'s docs offer a
+# `conversion` module "for users that decide to implement a custom event
+# loop", so a hand-built shell is CONCEIVABLE BUT UNPROVEN — and would mean
+# owning the shell. Upstream iced #552 remains open.
+#
+# Probe-design defect — why the first report read PASS: `accesskit_unix::
+# Adapter::new()` takes no window handle, so this probe registered a
+# hand-built static tree at process level, decoupled from iced's window,
+# focus, and event lifecycle, with actions discarded. It reads back cleanly
+# and proves nothing about iced: DELETING ICED FROM THIS PROBE WOULD PRODUCE
+# THE IDENTICAL READBACK. `accesskit_unix` being the layer beneath
+# `accesskit_winit` does not make it a route *for the candidate* — that was
+# the reasoning error.
+
+[dependencies]
+iced = "0.14"
+accesskit = "0.24"
+accesskit_unix = "0.22"

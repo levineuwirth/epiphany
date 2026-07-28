@@ -1,0 +1,8 @@
+READBACK: PASS
+attempt: 1, elapsed: 0.00s
+path: desktop / application:'probe-vello' / frame:'EpiphanyProbeVello' / button:'EpiphanyProbeButton'
+apps enumerated: 2
+full tree (role:name) seen during the matching walk:
+  desktop / application:'probe-vello'
+  desktop / application:'probe-vello' / frame:'EpiphanyProbeVello'
+  desktop / application:'probe-vello' / frame:'EpiphanyProbeVello' / button:'EpiphanyProbeButton'

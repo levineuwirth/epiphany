@@ -1,0 +1,22 @@
+[package]
+name = "probe-egui"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+# Round 0 desk survey + accessibility-route probe for candidate C1
+# (modern egui + lyon-tessellated meshes). See
+# CONTRACT_EDITOR_T4_SPIKE.md Round 0. This probe does NOT depend on any
+# epiphany crate (pin: Round 0 probes must not).
+#
+# accesskit is a default eframe feature (egui-winit/accesskit), so this is
+# egui's first-party integration route, not a manual accesskit_winit wiring.
+
+[dependencies]
+eframe = "0.35"
+egui = "0.35"
+# Pulled in only so C1's desk-survey dependency count reflects the actual
+# candidate pairing named by the contract (pin 16 step 3: "C1 = egui + lyon").
+# Round 0 does not tessellate anything with it yet (that is round 1); it is
+# declared here so `cargo tree` measures the real candidate.
+lyon = "1.0"

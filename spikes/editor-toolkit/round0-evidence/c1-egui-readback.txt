@@ -1,0 +1,10 @@
+
+(process:2403337): dbind-WARNING **: 18:07:00.684: AT-SPI: Error in GetItems, sender=:1.9, error=Unknown object '/org/a11y/atspi/cache'
+READBACK: PASS
+attempt: 1, elapsed: 0.00s
+path: desktop / application:'probe-egui' / frame:'' / button:'EpiphanyProbeButton'
+apps enumerated: 1
+full tree (role:name) seen during the matching walk:
+  desktop / application:'probe-egui'
+  desktop / application:'probe-egui' / frame:''
+  desktop / application:'probe-egui' / frame:'' / button:'EpiphanyProbeButton'

@@ -1,0 +1,25 @@
+[package]
+name = "probe-vello"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+
+# Round 0 desk survey + accessibility-route probe for candidate C2
+# (vello behind a winit shell). See CONTRACT_EDITOR_T4_SPIKE.md Round 0.
+# This probe does NOT depend on any epiphany crate.
+#
+# vello ships no widget toolkit and no accessibility integration of its own
+# (contract, candidate set: "the open questions are windowing and UI chrome
+# ... accessibility wiring, and maturity"), so this is a MANUAL
+# accesskit_winit route: we build the accessibility tree by hand and drive
+# accesskit_winit::Adapter ourselves, wired into the same winit event loop
+# that drives the vello RenderContext/Renderer/Scene.
+
+[dependencies]
+vello = "0.9"
+winit = "0.30"
+accesskit = "0.24"
+accesskit_winit = "0.33"
+pollster = "0.4"
+anyhow = "1"

@@ -1,0 +1,20 @@
+ROUND-0 RESULT: FAIL
+ATTRIBUTION: candidate limitation -- no qualifying iced 0.14 accessibility route demonstrated.
+RAW NON-QUALIFYING SIDE-CHANNEL READBACK: PASS
+
+Adjudicated 2026-07-28 by coordinator review. The raw verifier output below is
+factually correct and is preserved unedited: an AT-SPI tree WAS registered and
+read back. It does not qualify, because the tree is hand-built by the probe and
+registered process-level via accesskit_unix, independent of iced -- deleting
+iced from the probe would produce the identical readback. Round 0 asks whether
+the CANDIDATE exposes an accessibility route; this answers a different question.
+
+--- raw verifier output, unedited ---
+READBACK: PASS
+attempt: 1, elapsed: 0.02s
+path: desktop / application:'probe-iced' / frame:'EpiphanyProbeIced' / button:'EpiphanyProbeButton'
+apps enumerated: 2
+full tree (role:name) seen during the matching walk:
+  desktop / application:'probe-iced'
+  desktop / application:'probe-iced' / frame:'EpiphanyProbeIced'
+  desktop / application:'probe-iced' / frame:'EpiphanyProbeIced' / button:'EpiphanyProbeButton'
