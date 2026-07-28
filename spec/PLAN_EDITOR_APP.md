@@ -565,15 +565,19 @@ spike decides it, bounded by these recorded criteria:
    work plus ~130 µs of SVG serialization**, so a direct-IR canvas avoids
    2.34 ms at depth 100 = **83% of the full per-edit pipeline, 99.8% of the
    render path alone** (both denominators stated; an unqualified "98%" was
-   supported by neither); (e) **depth is per session, not per document** —
-   `EditorSession::open` starts with an empty applied log — so the wall is a
-   budget on one sitting, though note entry mints one operation per note.
-   **Sequencing: T4 before T4b still stands** — the canvas removes what
-   dominates a session's first ~1,000 edits and is the architecture later
-   tranches build on — **but the two are no longer comfortably separated**, and
-   T4b's trigger is ~4,500 edits in a sitting rather than the ~10,000 this
-   bench's first, context-free version reported. The bench watches for it as an
-   `Xfail` row at depth 5,000.
+   supported by neither); (e) **the measured depth is document-lifetime, not
+   per session** — **Ruling B** (below) makes reopen *full replay*: stored
+   envelopes load as a committed partition and materialization reduces
+   committed + session operations together. Nothing resets the depth until the
+   checkpoint/pruning machinery assigned to **T4b** can write a new
+   `canonical_base`. There is no session-reset mitigation to lean on, and note
+   entry mints one operation per note. **Sequencing: T4 before T4b still
+   stands** — the canvas removes what dominates a document's first ~1,000
+   edits and is the architecture later tranches build on — **but the two are
+   no longer comfortably separated**, and T4b's trigger is ~4,500 edits of
+   accumulated history rather than the ~10,000 this bench's first,
+   context-free version reported. The bench watches for it as an `Xfail` row
+   at depth 5,000.
 3. **Text pipeline (hard criterion):** shaping, font fallback, bidi/complex
    scripts, and metrics consistent between interactive canvas, SVG/PDF
    export, hit testing, and the accessibility tree. A stack with no credible

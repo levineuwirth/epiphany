@@ -81,13 +81,15 @@
 //! depth; `engrave`, `scene-build`, and `paint` track score content. Reading
 //! paint's dip at 10,000 as a scaling win would be a mistake.
 //!
-//! **Depth is per session, not per document.** `EditorSession::open` starts
-//! with an empty `applied` log (`editor-core/src/lib.rs`), so reopening a saved
-//! score resets the depth this bench varies: the reduced score becomes the new
-//! pristine base. The wall below is therefore a budget on **one sitting**, not
-//! on a document's lifetime — which is what keeps a four-figure number from
-//! being catastrophic. It is still reachable: note entry mints one operation
-//! per note.
+//! **Depth is document-lifetime, not per session.** The score-only
+//! `EditorSession::open` does start with an empty `applied` log, but that is
+//! the probe path, not the savable-document path: under Ruling B
+//! (`spec/PLAN_EDITOR_APP.md`) reopen is **full replay** — stored envelopes
+//! load as a committed partition and materialization reduces committed +
+//! session operations together. Nothing resets the depth this bench varies
+//! until the checkpoint/pruning machinery assigned to T4b exists to write a
+//! new `canonical_base`. So the wall below is a budget on a **document's
+//! whole edit history**, and note entry mints one operation per note.
 //!
 //! **The honest limitation:** no orchestral-scale score fixture exists in the
 //! testkit (the largest are three staves × ten measures), so the engrave and
@@ -146,8 +148,8 @@ struct ScalePoint {
     criterion_time: Option<Duration>,
 }
 
-/// THE STAGE TABLE. Budget: the core's portion (reduce + engrave) within
-/// 16.7 ms, `req:perf:single-system-edit-latency`.
+/// THE STAGE TABLE. Budget: the core's portion (envelope construction +
+/// reduce + engrave) within 16.7 ms, `req:perf:single-system-edit-latency`.
 ///
 /// Measured, dev profile, 2026-07-28, `--features golden-gate`, on a
 /// **session-shaped log** (see the module note — the first published table used
@@ -175,7 +177,7 @@ struct ScalePoint {
 ///    logs of equal length are not equal work.)
 /// 2. **The frame budget breaks between 3,000 and 5,000 edits** — 9.11 ms
 ///    (55%), 12.99 ms at 4,000 (78%), then 17.84 ms (107%). Call the wall
-///    ~4,500 in one sitting, on a dev box rather than the reference hardware
+///    ~4,500 edits of document history, on a dev box rather than the reference hardware
 ///    profile and at median rather than the requirement's p99, so treat it as
 ///    an order of magnitude rather than a threshold.
 /// 3. **`engrave` is flat and small** — 260–327 µs at every depth, because the
@@ -553,7 +555,8 @@ fn criterion_measurements(criterion: &mut Criterion, quick: bool) {
     group.finish();
 }
 
-/// The budget-gate side. Gates the **core's portion** (reduce + engrave) against
+/// The budget-gate side. Gates the **core's portion** (envelope construction +
+/// reduce + engrave — all three the requirement names) against
 /// `req:perf:single-system-edit-latency`; prints the product-layer stages as
 /// attributed measurements with no budget attached.
 fn budget_gate(quick: bool) -> Vec<budget::GateReport> {
