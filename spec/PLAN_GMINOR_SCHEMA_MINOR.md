@@ -75,6 +75,13 @@ rung is not a patch.
 > base. **No companion bump is required for op-block stamping.** A separate
 > decision to move canonical-base or extension schemas would change this;
 > the op-block sweep alone does not.
+>
+> **Still true, but no longer the whole answer (2026-07-28).** The manifest
+> seam ruling (§4) makes the manifest's aggregate `SchemaVersion` a *carried*
+> `TextDocument` attribute, so **G-minor does bump the companion** — 0.9.0 →
+> 0.10.0, with corpus regeneration. Op-block stamping remains
+> projection-invisible exactly as this correction says; the bump comes from the
+> manifest, not from it.
 
 **Sixty-six** occurrences of `SchemaVersion::{V0, new, for_major}` across
 sixteen files (corrected from 62), concentrated in `epiphany-bundle`,
@@ -181,8 +188,15 @@ numbering spaces are unrelated and must not be cross-read.
 introducing commits rather than assumed: M2c `a207077` (2026-06-25) → Push 3
 `92aaccf` (07-02) → Phase-3 `0316160` (07-02) → G-pass `e4edea6` (07-07) →
 repeat pair `9b5339f` (07-07) → Push 4a `2740a6c` (07-09) → G1 `3b09595`
-(07-24) → G2a `55eff00` (07-28). The two events sharing 2026-07-07 are ordered
-correctly: the G-pass precedes the repeat revision.
+(07-24) → **G2a `7df5ca1`** (07-28). The two events sharing 2026-07-07 are
+ordered correctly: the G-pass precedes the repeat revision.
+
+> **Correction 2026-07-28.** G2a's introducing commit is **`7df5ca1`**, where
+> kinds/tags 32–33 enter `ops/src/payload.rs`. `55eff00` is the *subsequent
+> review-fix* commit and introduces no discriminant. The distinction matters
+> because these hashes are the evidence for monotonicity: citing a follow-up
+> commit would make the ladder unverifiable at the one rung a future reader is
+> most likely to re-derive.
 
 **Existing major baselines are unchanged**: `V0` uses minor 1; `V1`–`V3` use
 minor 0. **Baseline variants impose no additive override** — M2c's *operation
@@ -240,14 +254,69 @@ vocabulary**.
   decode-and-inspect step at a higher layer that already depends on both —
   and choosing among them is contract work.
 
-  **The genuinely hard case, which must not be discovered during
-  implementation:** barrier bytes are *preserved verbatim* across writes,
-  including for extensions the writer does not understand. A repack can
-  therefore carry a barrier blob it cannot decode, whose tags it cannot
-  enumerate, and whose epoch it cannot derive. The contract must rule on that
-  case explicitly — preserve the manifest's existing minor, refuse, or require
-  the minor to travel with the blob — because the "decode and inspect" shape
-  silently does not cover it.
+  **The genuinely hard case:** barrier bytes are *preserved verbatim* across
+  writes, including for extensions the writer does not understand. A repack can
+  carry a barrier blob it cannot decode, whose tags it cannot enumerate, and
+  whose epoch it cannot derive. **"Decode and inspect" silently does not cover
+  this** — it looks complete until a foreign extension is present.
+
+### The seam — RULED 2026-07-28
+
+**`epiphany-bundle` stays opaque. No `epiphany-ops` or `epiphany-layout-ir`
+dependency is added.** The producer supplies the aggregate manifest
+`SchemaVersion` explicitly; the bundle records it and never derives it.
+
+1. **Producers supply the aggregate.** The write paths take the manifest's
+   `SchemaVersion` as an input instead of selecting a constant.
+2. **`CommitContext` must expose the previous manifest version**, so unchanged
+   barrier content can preserve it. **This is new plumbing, not a read-through:**
+   `CommitContext::previous_manifest` is a `&Manifest`, and **`Manifest` has no
+   schema-version field at all** — the version lives in the *superblock*
+   (`superblock.rs:174`, bytes 64..68). It must therefore travel as its own
+   `CommitContext` field.
+3. **It must NOT become a `Manifest` body field.** Adding one is a schema
+   **major** change regardless of type (`binary_format.tex:2360`), which would
+   defeat the entire rung. The wire slot already exists in the superblock; no
+   new one is needed.
+4. **Changed barrier bytes require an aware producer.** One that cannot
+   establish the exact new epoch **must refuse**. Blindly retaining the previous
+   aggregate is specifically wrong: **removing the sole barrier that contributed
+   the maximum would leave the manifest over-stamped**, claiming a vocabulary
+   level its content no longer needs.
+5. **Ordinary repacks preserving the complete barrier content preserve the
+   carried version exactly.** This is the common path and it stays cheap.
+
+**Consequently `Manifest::SCHEMA` becomes a baseline constant, not the
+universally emitted version** (`manifest.rs:591`, currently
+`SchemaVersion::V0` = `{0, 1}`). **Three** sites silently select it for
+hashing and must stop: `bundle.rs:220` (create), `bundle.rs:724` (commit), and
+the re-exported harness helper `manifest_chunk_hash` (`bundle.rs:1298`) —
+which is **public API**, so it is a signature change, not an internal edit. The
+major check at `bundle.rs:301` stays as-is and stays correct: it compares
+`.major` only, which is exactly the v0 rule that the minor is a record, not a
+gate.
+
+### The text-projection consequence — G-minor DOES need a companion bump
+
+**This reverses Correction 2 in §2 for the manifest, though not for op
+blocks.** The reasoning there still holds where it was aimed: op-block minors
+are discarded during projection, so **op-block stamping remains
+projection-invisible**. But the seam above makes the manifest's aggregate
+`SchemaVersion` a **carried document attribute**, and the projection cannot
+derive it — that is the whole point of keeping the bundle opaque, and the bytes
+may come from a future or unknown extension.
+
+So `TextDocument` gains the carried manifest `SchemaVersion`
+(it currently has no such field), which is a document-surface change:
+
+* **`COMPANION_VERSION` 0.9.0 → 0.10.0** (`textproj/src/lib.rs:34`).
+* **Corpus regeneration**, on the same reasoning as G2a's kind-production bump:
+  holding the version while changing the surface would leave two incompatible
+  grammars both claiming `(0 9 0)`.
+
+**Not** because of op-block stamping — because the manifest schema becomes a
+carried attribute. Recording the distinction because §2's "no companion bump"
+is otherwise still true and will read as contradictory.
 * **No migration.** Existing bundles are accepted as-is; newly emitted or
   repacked blocks are stamped correctly.
 * **Scope is "all additive discriminants reachable in affected chunk
