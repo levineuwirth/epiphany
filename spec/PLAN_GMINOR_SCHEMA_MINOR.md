@@ -1,10 +1,16 @@
-# Plan — G-minor: the chunk schema minor, and why it is not a small rung
+# Plan — G-minor: the chunk schema minor
 
 **Filed as** P13-S14. **Ruled** 2026-07-28: its own rung, sequenced **after
-G2a and before G2b** (`spec/PLAN_GENESIS_OPS.md` §4 — the sweep is scoped to
-kinds 24–33, and G2b appends 34).
+G2a and before G2b** (`spec/PLAN_GENESIS_OPS.md` §4).
 
-**Status:** scoped, not contracted. §5 lists what needs ratification first.
+**Status:** scoped; policy ratified 2026-07-28 (§4). Not contracted — §5 lists
+the audit that must complete first.
+
+> **Revision 2026-07-28.** The first draft of this plan got three things wrong
+> and recommended a policy that cannot work. Corrections are marked inline
+> rather than deleted, because two of them are the kind of mistake that
+> regenerates: an under-scoped vocabulary, and a corpus claim asserted from a
+> `grep -c` over *lines* rather than occurrences.
 
 ---
 
@@ -22,135 +28,164 @@ Three facts, each read from the tree:
 
 1. `SchemaVersion::for_major` (`bundle/src/ids.rs:204`) maps a major to a
    **fixed constant** and **accepts only a major**. There is no parameter a
-   per-kind minor could travel through. (Note `V0` is `{0, 1}` — `ids.rs:173`
-   — while `V1`/`V2`/`V3` are `{n, 0}`. The baselines are already inconsistent,
-   which matters for §4.)
-2. Both writer-side staging paths derive only the major:
-   `testkit/src/bundle_harness.rs:32` and `textproj/src/serialize.rs:189`, each
-   computing `max(schema_major)` and handing it to `for_major`.
-3. Therefore kinds **24–27** (Phase 3), **28–29** (major-2 repeats), **30**
-   (Push 4a), **31** (G1), and **32–33** (G2a) all ship with no additive
-   record. The requirement's own failure mode is exactly what the gap
-   produces: a reader meeting kind 33 from a newer writer cannot distinguish
-   "my vocabulary is stale" from "these bytes are damaged".
+   minor could travel through. (`V0` is `{0, 1}`; `V1`/`V2`/`V3` are `{n, 0}`.
+   The baselines are already inconsistent — §4 preserves that rather than
+   normalising it.)
+2. Both writer-side staging paths derive only the major
+   (`testkit/src/bundle_harness.rs:32`, `textproj/src/serialize.rs:189`).
+3. So every post-baseline append ships with no additive record. The
+   requirement's own failure mode is what the gap produces: a reader meeting an
+   unknown discriminant cannot distinguish a stale vocabulary from damaged
+   bytes.
 
-## 2. The decisive scoping finding: the minor is content-addressed
+## 2. The minor is content-addressed
 
-**This is what makes G-minor a real tranche rather than a one-line fix, and it
-must be settled before any contract is written.**
+`chunk_content_hash` (`bundle/src/chunk.rs:177`) pushes
+`schema.canonical_bytes()` into the preimage, and that is "major then minor,
+little-endian" (`ids.rs:222`). `chunk_id` dispatches to the same function
+(`chunk.rs:202`).
 
-`chunk_content_hash` (`bundle/src/chunk.rs:177`) builds the preimage as
+**So raising a chunk's minor changes its `ChunkId`**, which changes the
+manifest body naming it, and therefore the `ManifestId`. This is real **address
+churn** — a migration and deduplication cost — and it is the main reason the
+rung is not a patch.
 
-```rust
-p.push_bytes(&kind.canonical_bytes());
-p.push_bytes(&schema.canonical_bytes());   // <-- major AND minor
-p.push_u64_le(payload.len() as u64);
-p.push_bytes(payload);
-```
+> **Correction 1 (was P2).** The first draft framed this as tension with
+> `req:format:manifest-id`. It is not. That requirement
+> (`core_spec.tex:11213`) promises that *"two conforming writers committing
+> **the same manifest body** at the same generation of the same document derive
+> identical `ManifestId`s"*. Once a `ChunkRef` changes, the bodies are not the
+> same, so the promise does not apply. Two conforming writers both following
+> one normative minor derivation still agree — and the *historical* writer was
+> already violating the minor MUST. Churn, not a broken guarantee.
 
-and `SchemaVersion::canonical_bytes` (`ids.rs:222`) is "major then minor,
-little-endian" — the minor is *in* the preimage. `chunk_id` dispatches through
-`content_hash_for` to the same function (`chunk.rs:202`).
+> **Correction 2 (was P1).** The first draft claimed op-block minor changes
+> reach the text projection and therefore force another `COMPANION_VERSION`
+> bump. **They do not.** Operation blocks are decoded into envelopes and the
+> block's physical schema is discarded during projection
+> (`textproj/src/project.rs:424`); schemas are carried only for preserved
+> extension chunks and the canonical base (`:454`). The committed corpus holds
+> **seven** decoded `(schema 0 1)` forms in its *accepted* vectors — not the
+> six the draft claimed, an error from counting matching lines instead of
+> occurrences — and every one belongs to an extension chunk or a canonical
+> base. **No companion bump is required for op-block stamping.** A separate
+> decision to move canonical-base or extension schemas would change this;
+> the op-block sweep alone does not.
 
-**So raising a chunk's minor changes its `ChunkId`.** Every affected chunk gets
-a new content address, which propagates to the manifest that names it. This is
-not a semantic break — readers gate on the major only, exactly as the spec says
-— but it is a **content-address-moving change**, and it lands on the one
-structure `req:format:manifest-id` promises two conforming writers derive
-identically.
+**Sixty-six** occurrences of `SchemaVersion::{V0, new, for_major}` across
+sixteen files (corrected from 62), concentrated in `epiphany-bundle`,
+`epiphany-testkit`, and `epiphany-textproj`. Most are fixtures stamping `V0`
+and are unaffected; the load-bearing ones are the two staging paths.
 
-**Two corpora move with it:**
+## 3. The vocabulary inventory — the part the first draft missed
 
-* `spec/vectors/textproj_document_vectors.txt` — the text projection projects
-  the minor as a document surface: `project_schema` (`textproj/src/project.rs:270`)
-  emits `(schema <major> <minor>)`, and the committed corpus contains six
-  literal `(schema 0 1)` occurrences. If op-block minors rise, those texts
-  change — which makes this **another `COMPANION_VERSION` bump** on the G1/G2a
-  precedent.
-* `spec/vectors/decode_vectors.txt` — value-level, so it moves only if the
-  packet touches value codecs. It should not, and that is a check, not an
-  assumption.
+> **Correction 3 (was P1), and the reason the recommended policy died.** The
+> draft reduced the problem to a per-`OperationKind` minor. An envelope also
+> emits the **independent outer `OperationPayload` discriminant**, and
+> `ResolveEquivocation` — appended at 3 — contains no `OperationKind` at all
+> (`ops/src/payload.rs:60`). So the ambiguity lives **inside one role and one
+> block**, not merely between roles, and no per-kind method can discharge the
+> MUST.
 
-**Sixty-two sites across sixteen files construct a `SchemaVersion`**
-(`SchemaVersion::{V0,new,for_major}`), concentrated in `epiphany-bundle`
-(`chunk.rs`, `manifest.rs`, `superblock.rs`, `opindex.rs`, `bundle.rs`,
-`vectors.rs`, `fuzz.rs`), `epiphany-testkit` (`bundle_harness.rs`,
-`generators.rs`, `roundtrip.rs`, `benches/bundle.rs`), and `epiphany-textproj`
-(`serialize.rs`, `parse.rs`, `project.rs`, `vectors.rs`). Most are fixtures
-stamping `V0` and are unaffected; the ones that matter are the two staging
-paths and anything asserting a literal id.
+`binary_format.tex:2369` states that the *only* minor-additive mechanism in
+schema major 0 is appending discriminants to open vocabularies, and enumerates
+them:
 
-## 3. What the rung owes
+| Vocabulary | Appends at | Note |
+|---|---|---|
+| `OperationKind` | ≥ 30 | 24–27, 28–29 also took this mechanism |
+| `OperationKindTag` | ≥ 30 | independent space from `OperationKind` |
+| `OperationPayload` | ≥ 4 | **outer**; `ResolveEquivocation` carries no kind |
+| value-layer unions closed under `req:binfmt:frozen-layout` | — | appendable only via a ratified revision of that document; also minor-additive |
 
-1. A **minor-assignment policy** — see §4. This is a judgement, not a
-   derivation, and it is the reason this is a rung and not a patch.
-2. A per-kind minor (or an equivalent watermark) reachable from a payload.
-3. Block minor = **max over payloads**, mirroring how the major is derived.
-4. A `for_major` replacement that accepts a minor — `SchemaVersion::new`
-   already exists (`ids.rs:200`), so this is a call-site change, not a new API.
-5. Both staging paths, and a check that no third path has appeared.
-6. Regenerated corpora, a companion bump if §2's projection finding holds, and
-   the `binary_format.tex` accounting for whichever policy §4 ratifies.
+Two boundaries that keep the audit finite:
 
-## 4. The policy question — needs ratification before contracting
+* **`ChunkKind` is closed.** It has no `Registered` variant and its
+  discriminant enters every chunk's hash preimage, so a new chunk kind is a
+  format-**major** event, not a minor one.
+* **`Registered` escape variants are not schema changes at all** — the wire
+  form is already defined. `binary_format.tex` lists fifteen carriers
+  (`RepairKind`, `ReanchorReason`, `PreconditionFailureReason`,
+  `IntegrityAnomalyKind`, `TypedObjectId`, …). Extension through an escape is
+  out of scope; **appending a native variant to one of those same enums is
+  not**, and that distinction is the audit's sharpest edge.
 
-The spec says a writer must raise the minor "when it emits any discriminant
-appended **after the minor it otherwise declares**". That phrasing presumes a
-correspondence between each minor and a vocabulary watermark, but no such
-correspondence has ever been written down. Three candidate policies:
+**The rung must inventory every append-only discriminant reachable from each
+affected chunk payload**, not just `OperationKind`. For the canonical base that
+means the vocabularies `MaterializedState` actually emits — `OperationEffect`,
+`NoOpReason`, `PreconditionFailureReason`, `ConflictKind`,
+`IntegrityAnomalyKind`, `PendingReason`, `ObjectState`, `TypedObjectId` —
+which notably do **not** include `OperationKind`.
 
-**(a) One minor per tranche, monotonic.** Phase 3 → 2, repeats → 3, Push 4a →
-4, G1 → 5, G2a → 6. Matches the intuitive reading of "minor" as a format
-revision counter. **Cost:** the assignment is a retroactive judgement with no
-derivation behind it, so it must be written into the spec as a table and
-maintained by hand forever — a seventh hand-maintained site, on a track whose
-defining lesson is that those go stale.
+## 4. Policy — RATIFIED 2026-07-28
 
-**(b) Minor = the highest kind discriminant the chunk emits.** A block whose
-largest kind is 33 stamps minor 33. **Derivable, self-describing, and it
-satisfies the rationale exactly** — a reader seeing minor 33 knows precisely
-which vocabulary it needs. Nothing to remember and nothing to maintain.
-**Cost:** it redefines "minor" from *format revision* to *vocabulary
-watermark*, it collides with `V0`'s existing minor of `1`, and it is
-per-vocabulary — the layout cache and the operation index have their own
-discriminant spaces, so "the minor" would mean different things per role.
+**A global additive epoch with content-minimal stamping.** The first draft
+recommended "minor = highest discriminant emitted"; that is rejected. It cannot
+represent multiple independent vocabularies in one block, and generalising it
+to "highest from any vocabulary" is worse than useless — an old `OperationKind`
+23 would numerically mask a newly appended `OperationPayload` 3.
 
-**(c) Per-major append counter.** A hybrid: minor counts vocabulary appends
-within a major. Inherits (a)'s bookkeeping without (b)'s redefinition.
+The ratified rule:
 
-My recommendation is **(b)**, on the strength of the track's own history: every
-hand-maintained parallel list on this project has gone stale (four at Push 4a,
-six found during G2a), and (b) is the only option with nothing to maintain. But
-it is a genuine redefinition of a spec term and the per-role ambiguity is real,
-so it is a ruling, not a default.
+1. Each additive format revision receives **one globally meaningful minor
+   epoch**.
+2. Every appended variant is annotated with the epoch that introduced it.
+3. An **envelope's** required minor is the maximum across its outer payload
+   variant, its primitive kind, and every nested additive variant **actually
+   emitted**.
+4. A **block** takes the maximum required minor over its envelopes. The major
+   remains the independent maximum of `schema_major()`.
+5. Old content keeps its major's baseline — `V0`'s existing `1`, the others'
+   `0`. Baselines are not normalised.
 
-**A fourth option worth pricing before choosing:** amend the MUST. It was
-declined at P13-S14 filing on the ground that its rationale — distinguishing
-skew from corruption — is sound and unchallenged. If §2's content-address cost
-is judged too high for the benefit, that trade deserves an explicit re-look
-rather than a silent deferral.
+**Per-major counters are also rejected:** a mixed block can carry a new major-0
+kind beside a major-2 payload, so independently numbered minor namespaces do
+not compose after the block takes `max_major`.
 
-## 5. Open questions
+**Maintenance risk, and how it is controlled.** The obvious objection to an
+epoch table is the one this track keeps proving — hand-maintained parallel
+lists go stale (four at Push 4a, six found during G2a). The control is to
+**co-locate `introduced_minor` with each discriminant in an exhaustive macro or
+match with no wildcard arm**, so a newly appended variant *cannot compile*
+without being assigned an epoch. That assignment is an unavoidable schema
+decision, not a fallible parallel list — the same reasoning that made
+`operation_kind_tag_vocabulary!` safe.
 
-1. **The policy** (§4). Blocks everything.
-2. **Does the canonical base move?** Its major is pinned to 0 by role
-   (`mis_stamped_canonical_base`, `bundle.rs:866`), but its *minor* is
-   unconstrained, and `the_canonical_base_is_byte_identical_across_data_model_majors`
-   pins the `MaterializedState` **payload** bytes, not the chunk header. A base
-   whose minor rises keeps its payload and changes its `ChunkId`. Decide
-   deliberately whether the base is exempt.
-3. **Per-role or global?** Op blocks, layout cache, and operation index have
-   independent discriminant spaces. Policy (b) forces this question; (a) and
-   (c) can dodge it.
-4. **Does the manifest's own `manifest_schema_version`
-   (`superblock.rs:174`) participate?** The manifest is carried opaquely and
-   never grows a versioned layout, so probably not — but it is a
-   `SchemaVersion` and should be ruled in or out explicitly.
-5. **Migration.** Existing bundles carry minor 0/1 with appended kinds inside.
-   After this rung they are, by the new rule, mis-stamped. No production corpus
-   exists (local repo and test bundles only — the standing
-   `epiphany-ops/DECISIONS.md` position), so the answer is probably "nothing to
-   do", but it should be *stated* rather than assumed.
+**Tentative epoch mapping** — Phase 3 → 2, repeats → 3, Push 4a → 4, G1 → 5,
+G2a → 6. Reasonable, but **not ratified**: it must wait until every
+post-baseline additive vocabulary is audited (§3), not just `OperationKind`.
 
-*Related: `spec/PASS13_CANDIDATES.md` (P13-S14), `spec/PLAN_GENESIS_OPS.md` §4
-(the ladder), `spec/binary_format.tex` §"Schema Versioning".*
+### Consequent calls, all ruled 2026-07-28
+
+* **Keep the MUST.** Its cost is lower than §2 first claimed.
+* **No text-companion bump** for op-block stamping.
+* **The canonical base does not move merely because its source operations are
+  newer.** It never emits the op-kind discriminant. It retains its current
+  minor while its payload uses only baseline vocabulary, and rises only when
+  the `MaterializedState` bytes themselves emit a later-added discriminant —
+  a newly introduced effect or reason variant, say. *(This replaces the first
+  draft's "is the base exempt?", which was the wrong binary question: the base
+  is neither exempt nor automatically dragged, it is content-minimally
+  stamped like everything else.)*
+* **`Manifest::SCHEMA` stays unchanged.** A changed child `ChunkRef` is changed
+  manifest *data*, not a new manifest-layout discriminant; its body, id, and
+  chunk hash move naturally without raising the manifest's own schema.
+* **No migration.** Existing bundles are accepted as-is; newly emitted or
+  repacked blocks are stamped correctly.
+* **Scope is "all additive discriminants reachable in affected chunk
+  payloads"**, not "kinds 24–33".
+
+## 5. What must complete before a contract
+
+1. **The vocabulary audit** (§3). This is now the gating work, and it is the
+   only thing standing between here and a contract. Its output is the epoch
+   annotation for every post-baseline additive variant in every vocabulary
+   reachable from an affected payload.
+2. Ratify the epoch mapping once that audit lands.
+3. Confirm no third staging path has appeared beside the two in §1.
+4. Decide whether `decode_vectors.txt` moves — it is value-level, so it should
+   not, but that is a check rather than an assumption.
+
+*Related: `spec/PASS13_CANDIDATES.md` (P13-S14), `spec/PLAN_GENESIS_OPS.md` §4,
+`spec/binary_format.tex` §"Schema Versioning" / §"What ``Additive'' Means
+Here".*
