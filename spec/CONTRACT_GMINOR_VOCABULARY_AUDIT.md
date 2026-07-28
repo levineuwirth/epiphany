@@ -28,8 +28,29 @@ contract.**
 
 ## The deliverable
 
-One new file, `spec/AUDIT_GMINOR_VOCABULARIES.md`, whose core is a
-**reachability matrix** with exactly these columns:
+One new file, `spec/AUDIT_GMINOR_VOCABULARIES.md`, containing **two linked
+parts**.
+
+### Part 1 — the vocabulary ledger
+
+Every reachable vocabulary, with **every** variant and its discriminant,
+classified as one of:
+
+* **baseline** — present at the format's initial ratification;
+* **post-baseline native** — appended later (the rows the matrix cares about);
+* **escape / reserved** — `Registered` and any reserved slot.
+
+Baseline variants are **mandatory**, not optional. Enumerating them is what
+makes each post-baseline classification *checkable* against a complete list
+rather than asserted — and this plan has already been revised once for a
+vocabulary that was scoped by assertion.
+
+The ledger is the single place large baseline sets are written down, so the
+matrix can reference a vocabulary by name instead of repeating it per role.
+
+### Part 2 — the reachability matrix
+
+Keyed by role, **referencing** Part 1 rather than restating it:
 
 | chunk role | encoded payload type | discriminant vocabulary | post-baseline variants | introduction event | derivation site |
 
@@ -40,10 +61,13 @@ One new file, `spec/AUDIT_GMINOR_VOCABULARIES.md`, whose core is a
   role's payload. Some roles are payload-polymorphic (`Snapshot` is the
   canonical-base `MaterializedState` *or* the acceleration full-`Score`); those
   get one row per form, distinguished.
-* **discriminant vocabulary** — the enum whose tag is written.
+* **discriminant vocabulary** — the enum whose tag is written. This is the
+  reference into Part 1; the ledger holds its full variant set.
 * **post-baseline variants** — the specific variants appended after the
   format's initial ratification, listed individually with their discriminant
-  values. Not a count.
+  values. Not a count. **Must agree exactly** with Part 1's `post-baseline
+  native` classification for that vocabulary; a disagreement between the two
+  parts is a defect in the audit, not a nuance to explain away.
 * **introduction event** — the tranche or revision that appended it (e.g.
   "Phase-3 first tranche", "schema-major-2 repeat revision", "Push 4a",
   "genesis G1", "genesis G2a"). **Name the event, not an epoch number.**
@@ -68,21 +92,46 @@ method. Confirm reachability from a role by following the encoder.
 
 ## Inclusions and exclusions
 
-**IN scope:**
+**IN scope: every reachable discriminant vocabulary — whether open,
+append-only, or expanded by a ratified revision.** That last clause is not
+decorative: `binary_format.tex:2386` states that the value-layer unions
+*enumerated as closed* in `req:binfmt:frozen-layout` may still gain appended
+variants through a ratified revision of that document, **and that such appends
+are also minor-additive**. A vocabulary described as closed is therefore not
+automatically out of scope; only `ChunkKind` is (see below).
 
-* Native variants appended to any open vocabulary after baseline.
+* Native variants appended to any such vocabulary after baseline.
 * **Nested** additive variants — a vocabulary reached only through another
   value's encoder counts, at whatever depth.
 * Later native additions to enums that *also* carry a `Registered` escape.
   **This is the audit's sharpest edge**: the escape variant is out of scope,
   but a new native variant on the same enum is in scope, and the two are easy
-  to conflate. `binary_format.tex` names fifteen escape carriers
-  (`RepairKind`, `ReanchorReason`, `PreconditionFailureReason`,
-  `IntegrityAnomalyKind`, `ReplicaAnomalyReason`, `TransactionCategory`,
-  `ResolutionAction`, `ConflictKind` via `ExtensionConflict`,
-  `BarrierScope`/`BarrierCondition`, `TieClass`, `StaffGroupKind`,
-  `PitchSpacePosition`, `SpellingNominal`, `TypedObjectId`, and the barrier
-  `ObjectKind`); every one needs checking for native appends.
+  to conflate.
+
+  **This checklist is authoritative; no count of it is.** `BarrierScope` and
+  `BarrierCondition` are *separate* enums (`layout-ir/src/barrier.rs:60`,
+  `:75`), and a prose summary that pairs them undercounts — which is exactly
+  why the number is omitted here rather than corrected:
+
+  1. `RepairKind`
+  2. `ReanchorReason`
+  3. `PreconditionFailureReason`
+  4. `IntegrityAnomalyKind`
+  5. `ReplicaAnomalyReason`
+  6. `TransactionCategory`
+  7. `ResolutionAction`
+  8. `ConflictKind` (via `ExtensionConflict`)
+  9. `BarrierScope`
+  10. `BarrierCondition`
+  11. `TieClass`
+  12. `StaffGroupKind`
+  13. `PitchSpacePosition`
+  14. `SpellingNominal`
+  15. `TypedObjectId`
+  16. the barrier `ObjectKind`'s open value space
+
+  Every entry needs checking for native appends, and every entry needs a
+  recorded result — including the clean ones.
 
 **OUT of scope:**
 
@@ -132,10 +181,30 @@ method. Confirm reachability from a role by following the encoder.
 
 ## Completeness — how to know the matrix is done
 
-The audit's failure mode is a missed vocabulary, and it is silent. So the
-report must state, for each of the nine roles, either the rows it produced or
-why it produces none — an unlisted role is indistinguishable from an
-overlooked one.
+The audit's failure mode is a missed vocabulary, and it is silent. So every one
+of the nine roles must be accounted for — an unlisted role is
+indistinguishable from an overlooked one. **Each role resolves to exactly one
+of four dispositions**, and "opaque" is not one of them, because opacity is a
+property of a *layer*, not of the bytes:
+
+**(a) Rows.** The role's payload encoder is walked and yields matrix rows.
+
+**(b) Emits no additive discriminant.** Stated with the reason.
+
+**(c) Normatively typed bytes, opaque only to the immediate layer.** The
+carrying layer treats the payload as bytes, but a specification pins what
+produced them — operation envelopes inside an `OperationEnvelopeBlock`, and
+barrier blobs inside a manifest, are both of this shape. **The audit must cross
+that boundary and walk the specified producer's encoder.** Treating these as
+opaque would silently drop the single most important vocabulary in the whole
+matrix, since the op-block role is the entire reason G-minor exists.
+
+**(d) Truly producer-owned opaque bytes.** `ExtensionData` is the case: no core
+encoder produces it and no core derivation is possible. Record that explicitly
+— *the schema is carried from the producer, and core cannot derive a minor for
+it* — and do **not** write it up as emitting nothing. "We cannot see inside" and
+"there is nothing inside" are different findings, and only the first is true
+here.
 
 State explicitly:
 
@@ -154,9 +223,20 @@ wire record that then freezes.
 ## Gate
 
 `cargo fmt --check` and `cargo test --workspace` are expected to be **untouched
-and green** — that is the check that this packet really was read-only. Report
-`git status --short` verbatim so the file list can be seen to contain exactly
-one new file.
+and green** — that is the check that this packet really was read-only.
+
+**The status check is a delta, not an absolute.** The working tree is already
+dirty with the editor track's work — a modified root `Cargo.toml` and an
+untracked `spikes/` subtree — so "exactly one file" is unsatisfiable and any
+gate demanding it would have to be either faked or argued around. Instead:
+
+1. Capture `git status --short` **before** starting. Include it in the report.
+2. Capture `git status --short` **after**. Include it in full.
+3. The **only** difference between them must be the addition of
+   `?? spec/AUDIT_GMINOR_VOCABULARIES.md`.
+
+Any other delta — including a `Cargo.lock` touched by running `cargo` — is a
+finding to report, not something to clean up silently.
 
 ## Report
 
