@@ -188,6 +188,27 @@ disposition C) stops being a performance concern the moment G2b lands: pruning
 would then discard authored genesis state, not merely re-derivable state. G2b's
 contract must state this as an explicit non-goal.
 
+**G2b holdout — `accidental_extensions`, and why a naïve full-value
+`SetTuningContext` would be wrong.** `ScoreTuningContext`'s `Codec`
+**deliberately drops** `accidental_extensions` on encode and default-fills it
+to `Vec::new()` on decode (`core/src/codec.rs:1939`) — the field is staged out
+of schema major 3 and lands at a later one. Meanwhile `OperationSet::accept`
+stores the authored envelope **as an object**, not as bytes
+(`ops/src/opset.rs:70`). So a `SetTuningContext` carrying a non-empty
+`accidental_extensions` would reduce with those extensions present on the
+authoring replica, and reduce *without* them on any replica that received the
+document through serialization — a silent divergence between a live session and
+the same document reloaded.
+
+**`canonical_value!` does not catch this.** Its generated `decode_canonical`
+compares *bytes* (decode → `finish()` → re-encode → reject on mismatch); it
+never compares against the originating value, so a field that never reached the
+bytes is invisible to it. **G2b needs a normalization-or-subset pin before
+dispatch** — either the payload carries a wire-complete subset type, or the
+operation normalizes the field away at construction and refuses a non-empty
+one. Decide that in the G2b contract, not in its implementation. Does not block
+G2a.
+
 ### G3 — the remaining entity families
 
 `CreateStaffGroup`, `CreatePartDefinition`, `CreateAnalysisLayer`, `CreateView`,

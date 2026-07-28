@@ -120,6 +120,68 @@ containable to core + ops:
   hardcoded kind *count*, currently `32`, becomes `34`. Its own comment explains
   why it stays a literal; do not "fix" it into a derivation.
 
+## Normative documentation — and the G1 debt this packet repairs
+
+**The G1 contract said "no `binary_format.tex`". That was wrong, and G1 landed
+leaving four falsehoods in normative documents.** Verified against 3b09595,
+which touched `operation_catalog.tex` and `text_projection.tex` and no other
+`.tex`:
+
+* `binary_format.tex:1443` — the payload-layout table stops at kind **30**.
+  `req:binfmt:kind-discriminants` (`:1310`) says the table is golden-locked and
+  that *"each row also pins the payload's byte layout"* (`:1315`). Kind 31 is
+  assigned in code and pinned nowhere.
+* `binary_format.tex:1516` — the `OperationKindTag` table likewise stops at 30.
+* `binary_format.tex:2432` — still asserts *"there is no
+  `CreateCanvas`/`CreateInstrument` … instruments live in score genesis"*, and
+  that `Canvas.layout_defaults` and `Instrument.range` are *"confined to that
+  one **non-canonical** chunk"*. G1 falsified the `Instrument` half; **G2a
+  falsifies the `Canvas.layout_defaults` half.**
+* `core_spec.tex:12186` — the same claim in the schema-major-1 narrative:
+  *"`Canvas.layout_defaults` and `Instrument.range` reach only the
+  non-canonical acceleration snapshot."* Already false; G2a makes it doubly so.
+* `operation_catalog.tex` — G1 added `\section{CreateInstrument}` with **no
+  version bump and no changelog paragraph**, against that document's own
+  convention (`:301`, `:315`, `:335`).
+
+So the contract's earlier "no `binary_format.tex`" line is **struck**. Scope:
+
+**`spec/binary_format.tex` → version 0.11.0 (`:243`) becomes 0.12.0**, with a
+Revision History row (`:3323`) in the established shape — the 0.2.0 row is the
+exact precedent, since it appended kinds 24–27 with their payload layouts and
+their matching tag discriminants. The edit adds **three** payload-layout rows
+(31 `CreateInstrument` — the G1 repair — plus 32 `SetCanvasLayoutDefaults` and
+33 `SetSpellingPrecedence`) and the same three tag rows. Each new payload is
+`lp(T)` over the carried type; use the `SetMetadata` row as the shape.
+Rewrite the `:2432` bullet: `Canvas.layout_defaults` and `Instrument` now reach
+the canonical operation layer, and the "no `CreateInstrument`" clause goes. The
+canvas *itself* is still not minted by any operation — say that instead, since
+it remains true and is the reason the bullet existed.
+
+**`spec/operation_catalog.tex` → 0.9.0 (`:234`) becomes 0.10.0**, with **two**
+changelog paragraphs: one retroactively recording G1's `CreateInstrument`
+section as the 0.10.0 entry's first half (flag it explicitly as a G1 omission
+being repaired, not as new work), and the two new `\section`s for this packet.
+
+**`spec/core_spec.tex`** — two edits, both narrow:
+
+* `:12186` — correct the sentence to name which values now reach the canonical
+  operation layer. Do not restructure the surrounding schema-major-1 narrative.
+* `:5114` — the Pass-12 K8 doctrine paragraph, which still reads *"genesis is
+  the creation of an empty score together with its bundle, **outside the
+  operation set**"*. `spec/RULING_GENESIS_PERSISTENCE.md` reverses precisely
+  that clause. **Amend it narrowly and do not improvise:** the score root and
+  the canvas remain structural givens that no operation mints, addresses, or
+  deletes, and there is still no `TypedObjectId` kind for either — *that half
+  survives the ruling intact and is the load-bearing half*. What is superseded
+  is only the claim that the score's **contents** arrive outside the operation
+  set. Cite the ruling. Leave `:16475`'s Pass-12 history entry alone — it is a
+  record of what was ratified then, not a live claim — but append a
+  parenthetical noting the reversal.
+
+**If a fifth normative falsehood turns up while doing this, report it; do not
+silently widen scope beyond the five above.**
+
 ## The companion version bump
 
 Two new **kind** productions are a document-surface grammar change, so
@@ -168,13 +230,17 @@ unless noted.
 | 16 | `ops/src/fuzz.rs` | generator arm (`:197`) |
 | 17 | `ops/src/valuegen.rs` | LWW generator (`:325`) |
 | 18 | `ops/src/vectors.rs` | a decode vector per new payload |
+| 18a | `ops/src/lib.rs` | **public re-export** of both op types beside `SetMetadataOp` (`:126`) — downstream crates cannot name them otherwise |
 | 19 | `editor-core/src/barriers.rs` | join the score-level arm (`:468`) + module doc (`:22`) |
 | 20 | `layout-ir/src/barrier.rs` | literal 32 → 34 (`:1105`) |
 | 21 | `testkit/tests/text_projection_grammar.rs` | count 32 → 34 (`:307`) |
 | 22 | `textproj/src/lib.rs` | `COMPANION_VERSION` → `(0, 9, 0)` (`:29`) |
 | 23 | `textproj/src/vectors.rs` | flip the superseded-version negative vector |
+| 23a | `textproj/src/parse.rs` | the literal `HEADER` fixture `"(text-projection (0 8 0))"` → `(0 9 0)` (`:645`). **`the_test_header_tracks_the_implemented_version` fails deliberately until this moves** — it is a tripwire, not a breakage |
 | 24 | `spec/text_projection.tex` | `kind` production + five version sites + changelog row |
-| 25 | `spec/operation_catalog.tex` | §`SetCanvasLayoutDefaults`, §`SetSpellingPrecedence` |
+| 25 | `spec/operation_catalog.tex` | two new `\section`s + version 0.9.0 → 0.10.0 + changelog, **including the retroactive G1 entry** |
+| 26 | `spec/binary_format.tex` | three payload-layout rows + three tag rows + the `:2432` bullet rewrite + version 0.11.0 → 0.12.0 + Revision History row |
+| 27 | `spec/core_spec.tex` | the `:12186` correction and the narrow `:5114` amendment |
 
 The tag vocabulary macro (#6) is a **single source of truth**: the decoder, fuzz
 corpus, conformance vectors, and edit-barrier round-trip all read
@@ -194,8 +260,13 @@ show it dies. A test that cannot see its own bug is not a test.
   the field stays at its `Default` while the effect still reads `Applied`.
 * **(s2) LWW, last write wins, no conflict.** Two concurrent differing writes
   resolve to the later in canonical order and record **no** conflict — matching
-  `SetMetadata` (`ops/tests/graph_reduction.rs:1408`). **Mutation:** reverse the
-  canonical comparison → the earlier value wins.
+  `SetMetadata` (`ops/tests/graph_reduction.rs:1408`). **Mutation:** *not* a
+  reversed comparison — `set_metadata` contains **no comparison at all**
+  (`reduce.rs:2814`); it records and overwrites unconditionally, and the LWW
+  outcome falls out of canonical reduction order upstream. Mutate
+  setter-locally to first-write-wins instead: skip the record-and-overwrite
+  when the chain already holds a write → the earlier value survives and the
+  test dies.
 * **(s3) re-write of an identical value is a new write, not a no-op.** Assert
   the effect is `Applied` and the chain grew. **Mutation:** add an
   `AlreadyApplied` short-circuit → dies. *This test exists because pin 5 is the
@@ -216,31 +287,43 @@ show it dies. A test that cannot see its own bug is not a test.
   block carrying either new kind stamps at major 0. **Mutation:** stamp a
   payload at 3 → the assertion fires. *This is the packet's boundary against
   G2b.*
-* **(s7) undo survives snapshot/restore** — the pin-8 site. Snapshot the
-  reducer mid-run, restore, then undo. **Mutation:** omit either chain from the
-  snapshot/restore pair → the restored reducer loses the write history and the
-  undo silently no-ops.
+* **(s7) transaction rollback discards the write** — the pin-8 site.
+  `WorkingSnapshot` (`reduce.rs:7371`) is the **transaction rollback**
+  mechanism, not a persistence feature: snapshot before, restore on failure.
+  Author a setter inside a transaction that then fails, and assert the field
+  returns to its pre-transaction value. **Mutation:** omit either chain from
+  the snapshot/restore pair → the failed transaction's write is **retained**
+  rather than rolled back. (It does not "lose history" — the earlier framing
+  was backwards, and the wrong framing would have sent the test looking for
+  the wrong symptom.)
 * **(s8) decode vectors pinned to literal bytes**, not round-trip. Round-trip
   locking cannot see a self-consistent encoder/decoder reorder — the 3b-i
   lesson, where a swap applied to both halves passed 1283 tests and 8/8
-  conformance.
+  conformance. **Mutation:** swap two adjacent fields in *both* the encoder and
+  the decoder. Every round-trip test must stay green while the literal-byte
+  vector dies. If the vector survives too, it is pinned to a round-trip and is
+  not the test it claims to be.
 * **(s9) text-projection round-trip** for both kinds, matching the existing
   per-kind coverage, plus a negative test that a `(0 8 0)` header is now
-  **rejected**.
+  **rejected**. **Mutation (round-trip half):** emit one kind's production
+  under the other's tag → parse must reject or mis-round-trip. **Mutation
+  (version half):** widen the parser to accept any `(0 x 0)` → the negative
+  test dies. That second one also guards `req:textproj:header-version`'s
+  reject-all-others clause, which is the actual normative claim here.
 
 ## Blast radius
 
 `crates/epiphany-core/src/codec.rs` + its `DECISIONS.md`;
-`crates/epiphany-ops/src/{payload,envdecode,v0,migrate,reduce,textproj_kind,fuzz,valuegen,vectors}.rs`
-+ its `DECISIONS.md`; `crates/epiphany-textproj/src/{lib,vectors}.rs`;
+`crates/epiphany-ops/src/{lib,payload,envdecode,v0,migrate,reduce,textproj_kind,fuzz,valuegen,vectors}.rs`
++ its `DECISIONS.md`; `crates/epiphany-textproj/src/{lib,parse,vectors}.rs`;
 `crates/epiphany-editor-core/src/barriers.rs` and
 `crates/epiphany-layout-ir/src/barrier.rs` (the two authorized crossings only);
 `crates/epiphany-testkit/tests/text_projection_grammar.rs`;
-`spec/{operation_catalog,text_projection}.tex` **and their rebuilt PDFs**;
-`spec/vectors/*.txt` (regenerated, not hand-edited).
+`spec/{binary_format,core_spec,operation_catalog,text_projection}.tex` **and all
+four rebuilt PDFs**; `spec/vectors/*.txt` (regenerated, not hand-edited).
 
-**Nothing else.** No `epiphany-bundle`, no `binary_format.tex`, no
-`epiphany-editor-gui`, no golden re-blessing.
+**Nothing else.** No `epiphany-bundle` — the accept-set is G2b's and this packet
+must not anticipate it. No `epiphany-editor-gui`, no golden re-blessing.
 
 Expect `the_canonical_base_is_byte_identical_across_data_model_majors`
 (`reduce.rs:10715`) to require a **conscious re-pin**: the seeded corpus's
@@ -263,8 +346,12 @@ easy mistake is to re-pin without checking.
 * Vector corpora **regenerated** via
   `cargo run -q -p epiphany-testkit --example generate_vectors`, never
   hand-edited, with the decode-vector count reported before and after.
-* Both `.tex` PDFs rebuilt (`latexmk -xelatex`) with **0 undefined references**
-  reported. A `.tex` commit without its PDF has been a repeat lapse.
+* **All four** `.tex` PDFs rebuilt (`latexmk -xelatex`) with **0 undefined
+  references** reported for each. A `.tex` commit without its PDF has been a
+  repeat lapse, and this packet touches four documents.
+* The normative repairs actually landed: grep `binary_format.tex` for
+  `CreateInstrument` and confirm the `:2432` bullet no longer denies it, and
+  confirm both tables reach 33.
 * No `crates/epiphany-editor-gui/goldens/*.png` byte changes.
 
 ## What I will verify independently before committing
