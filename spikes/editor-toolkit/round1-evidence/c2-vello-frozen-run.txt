@@ -1,0 +1,91 @@
+=== C2 vello 0.9 + kurbo on AMD Radeon RX 7900 XTX (RADV NAVI31) (DiscreteGpu) [backend=Vulkan, vendor=0x1002, device=0x744c] ===
+msaa=8 (vello compute AA into a sample_count:1 storage texture) format=Rgba8Unorm luminance_threshold<128 fill_rule=NonZero
+--- gClef (6/6 points PASS) ---
+  idx  class       subpath  device(x,y)              rgba              verdict
+    0  Ink         -        (  919.80,  820.20)  (  0,  0,  0,255)  PASS
+    1  Ink         -        (  910.80,  833.20)  (  0,  0,  0,255)  PASS
+    2  Ink         -        (  952.80,  439.20)  (  0,  0,  0,255)  PASS
+    3  Background  -        ( 1001.80,  302.20)  (255,255,255,255)  PASS
+    4  Background  -        (  995.80,  316.20)  (255,255,255,255)  PASS
+    5  Background  -        ( 1007.80,  287.20)  (255,255,255,255)  PASS
+--- timeSig8 (6/6 points PASS) ---
+  idx  class       subpath  device(x,y)              rgba              verdict
+    0  Ink         -        ( 1005.80,  559.60)  (  0,  0,  0,255)  PASS
+    1  Ink         -        (  984.80,  544.60)  (  0,  0,  0,255)  PASS
+    2  Ink         -        (  968.80,  538.60)  (  0,  0,  0,255)  PASS
+    3  Background  -        (  941.80,  593.60)  (255,255,255,255)  PASS
+    4  Background  -        (  956.80,  598.60)  (255,255,255,255)  PASS
+    5  Background  -        (  972.80,  480.60)  (255,255,255,255)  PASS
+--- accidentalFlat (6/6 points PASS) ---
+  idx  class       subpath  device(x,y)              rgba              verdict
+    0  Ink         -        (  989.80,  561.80)  (  0,  0,  0,255)  PASS
+    1  Ink         -        (  990.80,  577.80)  (  0,  0,  0,255)  PASS
+    2  Ink         -        (  929.80,  554.80)  (  0,  0,  0,255)  PASS
+    3  Background  -        (  954.80,  580.80)  (255,255,255,255)  PASS
+    4  Background  -        (  951.80,  595.80)  (255,255,255,255)  PASS
+    5  Background  -        (  960.80,  566.80)  (255,255,255,255)  PASS
+--- noteheadHalf (6/6 points PASS) ---
+  idx  class       subpath  device(x,y)              rgba              verdict
+    0  Ink         -        (  941.00,  512.00)  (  0,  0,  0,255)  PASS
+    1  Ink         -        (  977.00,  569.00)  (  0,  0,  0,255)  PASS
+    2  Ink         -        (  990.00,  560.00)  (  0,  0,  0,255)  PASS
+    3  Background  -        (  960.00,  540.00)  (255,255,255,255)  PASS
+    4  Background  -        (  947.00,  548.00)  (255,255,255,255)  PASS
+    5  Background  -        (  973.00,  532.00)  (255,255,255,255)  PASS
+--- fClef (3/3 points PASS) ---
+  idx  class       subpath  device(x,y)              rgba              verdict
+    0  Ink         0        (  874.20,  467.40)  (  0,  0,  0,255)  PASS
+    1  Ink         1        ( 1075.80,  415.40)  (  0,  0,  0,255)  PASS
+    2  Ink         2        ( 1076.60,  515.00)  (  0,  0,  0,255)  PASS
+notes:
+  - AA is nominally 8x on both candidates — the highest sample count both name, so pin 4's identical-configuration requirement is met as stated. The mechanisms are NOT the same: C1 uses a hardware multisample render-target attachment (hence its TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES request), C2 uses vello's compute-shader AA into a sample_count:1 storage texture. Matching integers do not imply matching work or matching cost; this is immaterial to Round 1's capability verdict and material to Round 4's timings.
+  - Format deviation: Rgba8Unorm, not sRGB — vello's render_to_texture requires Rgba8Unorm + STORAGE_BINDING. Both candidates pinned to it for fairness; immaterial to fill correctness since only pure black/white are drawn.
+  - Whole outline filled as ONE compound BezPath in one Scene::fill call.
+RESULT AMD Radeon RX 7900 XTX (RADV NAVI31) :: 27/27 points PASS
+
+=== C2 vello 0.9 + kurbo on AMD Ryzen 7 9800X3D 8-Core Processor (RADV RAPHAEL_MENDOCINO) (IntegratedGpu) [backend=Vulkan, vendor=0x1002, device=0x13c0] ===
+msaa=8 (vello compute AA into a sample_count:1 storage texture) format=Rgba8Unorm luminance_threshold<128 fill_rule=NonZero
+--- gClef (6/6 points PASS) ---
+  idx  class       subpath  device(x,y)              rgba              verdict
+    0  Ink         -        (  919.80,  820.20)  (  0,  0,  0,255)  PASS
+    1  Ink         -        (  910.80,  833.20)  (  0,  0,  0,255)  PASS
+    2  Ink         -        (  952.80,  439.20)  (  0,  0,  0,255)  PASS
+    3  Background  -        ( 1001.80,  302.20)  (255,255,255,255)  PASS
+    4  Background  -        (  995.80,  316.20)  (255,255,255,255)  PASS
+    5  Background  -        ( 1007.80,  287.20)  (255,255,255,255)  PASS
+--- timeSig8 (6/6 points PASS) ---
+  idx  class       subpath  device(x,y)              rgba              verdict
+    0  Ink         -        ( 1005.80,  559.60)  (  0,  0,  0,255)  PASS
+    1  Ink         -        (  984.80,  544.60)  (  0,  0,  0,255)  PASS
+    2  Ink         -        (  968.80,  538.60)  (  0,  0,  0,255)  PASS
+    3  Background  -        (  941.80,  593.60)  (255,255,255,255)  PASS
+    4  Background  -        (  956.80,  598.60)  (255,255,255,255)  PASS
+    5  Background  -        (  972.80,  480.60)  (255,255,255,255)  PASS
+--- accidentalFlat (6/6 points PASS) ---
+  idx  class       subpath  device(x,y)              rgba              verdict
+    0  Ink         -        (  989.80,  561.80)  (  0,  0,  0,255)  PASS
+    1  Ink         -        (  990.80,  577.80)  (  0,  0,  0,255)  PASS
+    2  Ink         -        (  929.80,  554.80)  (  0,  0,  0,255)  PASS
+    3  Background  -        (  954.80,  580.80)  (255,255,255,255)  PASS
+    4  Background  -        (  951.80,  595.80)  (255,255,255,255)  PASS
+    5  Background  -        (  960.80,  566.80)  (255,255,255,255)  PASS
+--- noteheadHalf (6/6 points PASS) ---
+  idx  class       subpath  device(x,y)              rgba              verdict
+    0  Ink         -        (  941.00,  512.00)  (  0,  0,  0,255)  PASS
+    1  Ink         -        (  977.00,  569.00)  (  0,  0,  0,255)  PASS
+    2  Ink         -        (  990.00,  560.00)  (  0,  0,  0,255)  PASS
+    3  Background  -        (  960.00,  540.00)  (255,255,255,255)  PASS
+    4  Background  -        (  947.00,  548.00)  (255,255,255,255)  PASS
+    5  Background  -        (  973.00,  532.00)  (255,255,255,255)  PASS
+--- fClef (3/3 points PASS) ---
+  idx  class       subpath  device(x,y)              rgba              verdict
+    0  Ink         0        (  874.20,  467.40)  (  0,  0,  0,255)  PASS
+    1  Ink         1        ( 1075.80,  415.40)  (  0,  0,  0,255)  PASS
+    2  Ink         2        ( 1076.60,  515.00)  (  0,  0,  0,255)  PASS
+notes:
+  - AA is nominally 8x on both candidates — the highest sample count both name, so pin 4's identical-configuration requirement is met as stated. The mechanisms are NOT the same: C1 uses a hardware multisample render-target attachment (hence its TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES request), C2 uses vello's compute-shader AA into a sample_count:1 storage texture. Matching integers do not imply matching work or matching cost; this is immaterial to Round 1's capability verdict and material to Round 4's timings.
+  - Format deviation: Rgba8Unorm, not sRGB — vello's render_to_texture requires Rgba8Unorm + STORAGE_BINDING. Both candidates pinned to it for fairness; immaterial to fill correctness since only pure black/white are drawn.
+  - Whole outline filled as ONE compound BezPath in one Scene::fill call.
+RESULT AMD Ryzen 7 9800X3D 8-Core Processor (RADV RAPHAEL_MENDOCINO) :: 27/27 points PASS
+
+C2 vello: PASS on all 2 adapter(s)

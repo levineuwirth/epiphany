@@ -285,3 +285,127 @@ nothing.
 
 `oracle.json` and `ORACLE_SUMMARY.md` are regenerated from the amended code
 (`cargo run -p round1-oracle` from `spikes/editor-toolkit/round1-oracle/`).
+
+## Round 1 — compound-path fill correctness (candidates)
+
+**ROUND-1 RESULT: C1 PASS, C2 PASS.** Both candidates reproduce all 27
+precommitted sample points on both required adapters — 54 samples each, 108
+in total, every one landing exactly on `(0,0,0,255)` or `(255,255,255,255)`
+with no antialiased near-miss anywhere. Neither candidate is eliminated at
+this rung. Evidence: `round1-evidence/c1-egui-lyon-frozen-run.txt`,
+`round1-evidence/c2-vello-frozen-run.txt`.
+
+**The three SHAs this result is anchored to** (pin 12):
+
+| | |
+|---|---|
+| Root baseline | `0a35697d8e48e65d62cd96c19eec2431e414359c` |
+| Oracle commit | `0a35697d8e48e65d62cd96c19eec2431e414359c` |
+| Candidate-harness commit | `c20bc93` |
+
+The authoritative run was made from a detached `git worktree` at the root
+baseline, with the candidate harness extracted into it from `c20bc93` via
+`git archive`. So the `epiphany-glyphs` / `epiphany-layout-ir` code that
+supplied every outline is the frozen baseline's, not the working tree's — the
+parallel genesis-ops track has been editing `epiphany-core` and
+`epiphany-ops` throughout, and a run against the live tree could not have
+claimed a fixed subject. `oracle.json` hashes to
+`b3fc017bdccb7e19feb44a1fde9f15d6e0e8d403cafcb9296eaadf21f3b5bb96` in the
+worktree and in the working tree, unchanged since it was frozen.
+
+**Both candidates draw the whole outline as one compound path** — C1 one
+`lyon` `tessellate_path` over every contour, C2 one `BezPath` and one
+`Scene::fill`. Filling subpath-by-subpath would paint every counter solid and
+pass a test built to catch exactly that, so the single call is load-bearing,
+not stylistic.
+
+**C1 goes through egui's own paint pipeline, not a bare wgpu one.** Ruling A
+names the candidate as "lyon-tessellated meshes inside egui"; rendering the
+lyon mesh through a hand-rolled pipeline would test lyon and answer a
+different question — the same failure shape as Round 0's iced side channel,
+which read back cleanly while proving nothing about its subject. C1 builds a
+real `epaint::ClippedPrimitive` and calls `Renderer::update_buffers` +
+`Renderer::render`.
+
+**Carry forward — a blank target is a silent pass shape, and it happened.**
+C1's first run failed all 15 ink points while passing all 12 background
+points. That pattern is not a fill defect; it is the signature of nothing
+being drawn. The cause: the mesh named `TextureId::default()` (the font
+atlas) without one being uploaded, and `egui-wgpu` skips primitives whose
+texture id is unregistered — `if let Some(..) = self.textures.get(&mesh.texture_id)`
+(`egui-wgpu-0.35.0/src/renderer.rs:542`), no error, no warning. C1 now
+registers its own 1x1 opaque-white texture. **The general lesson matters more
+than the fix:** had Round 1 tested only background points, or only "does it
+render without erroring", a blank target would have passed. Every later round
+must keep at least one assertion that can only succeed if ink was actually
+deposited.
+
+**Carry forward — nominal 8x AA is not the same mechanism on both sides.**
+Pin 4 requires an identical MSAA sample count, and both candidates now declare
+8x (an earlier C1 revision ran 4x against C2's 8x, which is not a common
+configuration at all; vello's `AaConfig` offers only Area / Msaa8 / Msaa16, so
+8x is the ceiling both can name). **The integers match; the mechanisms do
+not.** C1's 8x is hardware multisampling — a `sample_count: 8` colour
+attachment resolved by the GPU, which is why C1 must request
+`TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`: 8x on `Rgba8Unorm` is outside the
+WebGPU baseline, which guarantees only `[1, 4]` for that format (both adapters
+report `[1, 2, 4, 8]` with the feature enabled). C2's `Msaa8` is vello's own
+compute-shader antialiasing writing into a `sample_count: 1` storage texture;
+no multisample attachment exists on that side at all. Pin 4 is satisfied **as
+stated** — same declared sample count — but equal integers do not imply equal
+work, equal memory traffic, or equal cost. Round 1 is a capability rung and is
+indifferent to the difference. **Round 4 is not**, because AA lands directly
+in the deciding latency numbers, and "8 == 8" must not be allowed to stand in
+for parity there. The run report prints the mechanism beside the number
+(`msaa=8 (hardware MSAA render-target attachment, GPU-resolved)` vs
+`msaa=8 (vello compute AA into a sample_count:1 storage texture)`) so the
+record carries it without anyone having to remember.
+
+**Format deviation, named.** Both candidates render to `Rgba8Unorm`, not the
+sRGB target pin 4 names, because vello's `render_to_texture` requires
+`Rgba8Unorm` + `STORAGE_BINDING`. Both are pinned to the same format for
+fairness. Immaterial to fill correctness — only pure black and white are
+drawn, and 0 and 255 map to themselves under any transfer function.
+
+**Both adapter classes are enforced, not assumed.** Each binary checks for one
+`DiscreteGpu` and one `IntegratedGpu` Vulkan adapter before it will report
+overall PASS; a missing class returns `NOT RUN` naming the adapters actually
+found, as an environment absence rather than a candidate failure. Reporting
+PASS after testing whichever adapter happened to enumerate would silently
+narrow the claim — and the integrated figure is the one that decides later
+rungs.
+
+**The harness errors rather than substituting.** Three readback failure modes
+were all capable of turning a broken run green, and all three are now hard
+errors: a short buffer previously yielded `(0,0,0,0)`, whose luma is 0, so it
+classifies as *ink* and every ink point would have passed; `device_index`
+clamped out-of-range coordinates to an edge pixel, which for a centred glyph
+is always background, so a mis-transformed sample reported on a pixel the
+oracle never named; and a non-opaque sample means the clear or the blend is
+wrong, not that the candidate drew the wrong colour. Buffer length, coordinate
+range, and sample opacity are all checked before any classification.
+
+**The oracle is no longer editable into agreement.** `deny_unknown_fields` on
+every deserialized type catches *structural* drift (serde ignores unknown
+fields by default, so without it the "drift is a deserialization error" claim
+this crate rests on was simply false). But semantic drift is the dangerous
+kind, and the first `OracleFile::validate` checked the oracle against **its
+own other fields** — each glyph's target against the *first glyph's* target,
+each subpath count against the oracle's own `expected_subpath_count`. That
+accepts any self-consistent file: deleting a glyph, renaming one, or resizing
+every target together all validated cleanly. The validator now checks against
+literals restated in the harness itself — the exact five-glyph roster with its
+requirement mapping, subpath counts and point counts, the 27-point census,
+1920x1080, an 8 px clearance floor and every individual sample's clearance,
+`ink_satisfied`, the relaxed-spacing flags, and the requirement-specific
+status flags. Bounded-hole evidence must be unfilled under **both** rules, not
+just even-odd, since that agreement is the measured fact criterion 1 rests on.
+
+Thirteen mutations were run against it and all thirteen are rejected: deleting
+`noteheadHalf`; renaming `gClef`; duplicating a glyph over another; dropping
+one sample point; retargeting every glyph to 3840x2160 together; lowering the
+declared clearance floor to 2; setting one sample's clearance to 3 px;
+clearing `ink_satisfied`; setting `ink_spacing_relaxed`; swapping `fClef`'s
+requirement class; changing `gClef`'s subpath count in both fields at once;
+marking hole evidence `nonzero_filled`; and declaring `round2`. The oracle was
+restored by reversal after each and re-hashes to `b3fc017b...`.
