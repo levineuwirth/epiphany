@@ -1418,17 +1418,26 @@ mod tests {
     /// fail.
     #[test]
     fn accept_set_doc_no_longer_claims_no_payload_embeds_the_tuning_context() {
-        let source = include_str!("bundle.rs");
+        // BOTH sources, not just this one. The first version of this guard
+        // read only `bundle.rs`, and an identical falsehood survived in
+        // `ids.rs`'s `V3` doc comment precisely because a file-scoped grep can
+        // only ever prove the file it greps. A sibling cross-reference in prose
+        // does not make the pair travel together; sharing one guard does.
         let stale_claim: String = ["no operation payload ", "embeds the tuning context"].concat();
         let stale_consequence: String = ["no op block is ever ", "born at v3"].concat();
-        assert!(
-            !source.contains(&stale_claim),
-            "the doc comment above max_supported_major must not assert the falsified claim anymore"
-        );
-        assert!(
-            !source.contains(&stale_consequence),
-            "the doc comment above max_supported_major must not assert the falsified consequence anymore"
-        );
+        for (name, source) in [
+            ("bundle.rs", include_str!("bundle.rs")),
+            ("ids.rs", include_str!("ids.rs")),
+        ] {
+            assert!(
+                !source.contains(&stale_claim),
+                "{name} still asserts the falsified claim about which payloads carry the tuning context"
+            );
+            assert!(
+                !source.contains(&stale_consequence),
+                "{name} still asserts the falsified consequence about op blocks and major 3"
+            );
+        }
     }
 
     #[test]

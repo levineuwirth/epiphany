@@ -2485,7 +2485,7 @@ mod tests {
     #[test]
     fn s1_operation_kind_epochs_match_tag_epochs_across_every_generated_kind() {
         // `OperationKind`'s own epoch table mirrors `OperationKindTag`'s (same
-        // ten events); rather than hand-build all thirty-four payloads, this
+        // eleven events); rather than hand-build all thirty-five payloads, this
         // checks every kind the corpus generator reaches agrees with its own
         // tag's already pin-1-verified epoch (s1 above) — so a divergence in
         // either table is caught.

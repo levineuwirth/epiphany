@@ -1905,7 +1905,7 @@ mod tests {
     /// Push-4a debt) and `CreateInstrument` (kind 31, G1 debt) went missing
     /// from every corpus this generator feeds despite every downstream suite
     /// staying green. Assert a bounded draw actually reaches every kind
-    /// appended past the historically-tested range (discriminants 30..=33),
+    /// appended past the historically-tested range (discriminants 30..=34),
     /// not just that the function does not panic.
     #[test]
     fn operation_payload_emits_every_appended_kind() {

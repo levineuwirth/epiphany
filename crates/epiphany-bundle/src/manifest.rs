@@ -591,7 +591,7 @@ impl Manifest {
     /// crate. Not the universally-emitted version (G-minor,
     /// `spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4, pin 7): a manifest naming an
     /// edit barrier that prohibits a post-baseline `OperationKindTag`
-    /// (24–33) must stamp that tag's epoch instead — see
+    /// (24–34) must stamp that tag's epoch instead — see
     /// `epiphany_layout_ir::barrier::edit_barriers_introduced_minor` for the
     /// aggregate derivation, and `Bundle::create_versioned` /
     /// `Bundle::commit_versioned` for the producer-supplied seam. This

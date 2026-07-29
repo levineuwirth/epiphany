@@ -267,11 +267,22 @@ fn accept_documents() -> Vec<(&'static str, String)> {
         ],
     };
 
-    // Genesis G2b: kind 34 in the committed corpus, carried at minor 10 —
-    // the epoch a block containing this operation actually requires.
+    // Genesis G2b: kind 34 in the committed corpus.
+    //
+    // The manifest version stays **baseline `V0`**, and that is the point. The
+    // `document` line carries the *manifest's* aggregate `SchemaVersion`
+    // (`req:textproj:manifest-schema-carried`), and this document declares no
+    // edit barriers, so an aware producer leaves it at baseline. The
+    // *operation block* serialized underneath independently stamps `{3, 10}` —
+    // a separate version domain that projection discards by design. Stamping
+    // the manifest at `{0, 10}` here would lock an over-stamped manifest into
+    // the corpus while appearing to prove the operation epoch, which is
+    // exactly the inference `text_projection.tex` §changelog forbids. The
+    // block's own stamp is proven where it lives, by
+    // `roundtrip::tests::a_set_tuning_context_block_stamps_3_10_and_reopens_read_write`.
     let tuning_context = TextDocument {
         document_id: DocumentId([5; 16]),
-        manifest_schema_version: SchemaVersion::new(0, 10),
+        manifest_schema_version: SchemaVersion::V0,
         lineage_id: None,
         profiles: profiles(false),
         extensions: Vec::new(),
