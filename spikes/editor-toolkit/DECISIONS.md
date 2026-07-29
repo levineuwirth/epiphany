@@ -409,3 +409,75 @@ clearing `ink_satisfied`; setting `ink_spacing_relaxed`; swapping `fClef`'s
 requirement class; changing `gClef`'s subpath count in both fields at once;
 marking hole evidence `nonzero_filled`; and declaring `round2`. The oracle was
 restored by reversal after each and re-hashes to `b3fc017b...`.
+
+---
+
+## Round 2 Packet 2A — the precommitted apparatus, and one carry-forward
+
+Packet 2A landed at `565b0f8` (recipe) + `ffe313c` (four crates), accepted
+2026-07-29. What it is, and the rulings recorded alongside it, are in
+`ROUND2_TEXT_RECIPE.md`. Recorded here because it outlives Round 2: the
+**check-5 asymmetry**, ruled 2026-07-29.
+
+### The asymmetry
+
+Check 5 (accessibility) is in the disqualifying set. The recipe pins it
+per-platform rather than in one toolkit's vocabulary, precisely so it does not
+encode one candidate's stack — but neutrality of the *criterion* does not make
+the *cost* symmetric. Two candidates can both read PASS while having paid
+different prices, and a PASS/FAIL cell has nowhere to say so.
+
+**What each candidate actually starts from, stated without inflating either
+side.** An earlier draft of this entry had it as "C1 inherits an accessibility
+tree; C2 must build one", which overstates both:
+
+* **C1 (egui)** inherits AccessKit and its **platform bridge** — the tree
+  plumbing and the OS-side adapters are already in the dependency graph. It
+  does **not** inherit correct semantic nodes for **custom-rendered text**: a
+  score canvas draws glyphs egui knows nothing about, so the nodes that carry
+  the source string, its role, and its bounds are C1's to create either way.
+  Inheriting the bridge is not inheriting the semantics.
+* **C2 (vello)** inherits **no** accessibility integration — vello is a
+  rendering crate. But it is free to integrate AccessKit itself, or another
+  bridge, so it does **not** face building an accessibility stack from
+  scratch. What it owns is the **additional integration and wiring**: bringing
+  a bridge in, driving it, and keeping it attached to a window/event loop that
+  egui already manages.
+
+So the delta is real but narrower than "has it / doesn't have it", and it is
+concentrated in integration and wiring rather than in the semantic node
+construction both candidates must do.
+
+**Packet 2B measures that delta. It does not presume its magnitude.** Writing
+down a guess at the size of the gap and then confirming it is the same failure
+as choosing a tolerance after seeing a candidate's output — the number has to
+come from the work, not from the expectation.
+
+### The ruling
+
+1. **Check 5 stays candidate-neutral PASS/FAIL.** The scoring does not change,
+   and is not adjusted for who had further to walk. A criterion that penalises
+   a candidate for the shape of its dependency graph is not a criterion.
+2. **Packet 2B measures the cost separately**, per candidate, as observed
+   facts rather than as a judgement about who had it easier:
+   * which parts of the accessibility path are **inherited** and which are
+     **candidate-owned** — reported at that granularity, since the honest
+     answer for both candidates is "some of each";
+   * the **dependencies added** to reach PASS, over the candidate's Round 1
+     baseline;
+   * which **platform adapters** are actually implemented, and which are not
+     (an adapter not built is not a failure — it is scope not covered, and it
+     must be reported as such rather than absorbed into a PASS);
+   * the **integration and wiring** each candidate writes itself, which is
+     where the real delta sits;
+   * the resulting **maintenance surface** — the code the project would own
+     forever if that candidate wins.
+3. **The final ruling weighs that cost**, and does so **without retroactively
+   changing check 5's scoring.** The verdict may prefer a candidate on
+   implementation cost; it may not relabel a PASS.
+
+The general rule this is an instance of, worth applying to later rungs: **an
+eligibility gate answers "may this candidate proceed", not "what will this
+candidate cost".** The two questions have different answers often enough that
+merging them into one cell loses the second one entirely — and the second is
+the one the project lives with after the ruling.
