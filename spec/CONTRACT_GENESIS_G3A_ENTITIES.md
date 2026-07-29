@@ -170,7 +170,7 @@ Consequence: **no `epiphany-bundle` change of any kind.** The op-block
 accept-set stays at 3 where G2b left it. If the implementation touches a bundle
 file, something is wrong.
 
-### Pin 3 — the four types need `canonical_value!` entries, and nothing else in core
+### Pin 3 — the four types need `canonical_value!` entries, and no other *code* change in core
 
 Each already has a `Codec` — `struct_codec!(PartDefinition …)`
 (`codec.rs:1790`), `AnalysisLayer` (`:1791`), `ViewDefinition` (`:1792`),
@@ -246,6 +246,28 @@ from empty cannot see a missing seed at all.
 by `CreateAnalysisLayer` in this same packet, so the ordering is testable
 end-to-end without a base score.
 
+### Pin 4b — §1.1's ruling MUST land on the normative surfaces, not only here
+
+**A normative ruling that lives only in a contract and a candidate ledger is
+not normative.** §1.1 assigns authority; until the specification and the field
+declarations say so, the normative record stays ambiguous and every reader
+outside this packet is entitled to the opposite reading. Pin 3's "nothing else
+in core" is therefore **narrowed to the codec surface only** — §1.1 adds a
+documentation obligation to `graph.rs`, and pin 8's four-document ritual gains
+two specific normative additions.
+
+Required, all four:
+
+| Site | What it must say |
+|---|---|
+| `core/src/graph.rs:819` — `Staff.group` | **Currently has no doc comment at all.** Write one: this field is the **sole authority** for group membership. |
+| `core/src/graph.rs:1614` — `StaffGroup.members` | **Currently has no doc comment at all.** Write one: a **non-authoritative denormalized projection**; MUST NOT be read to decide membership; may be stale in **both** directions. |
+| `core_spec.tex` — the `Staff`/`StaffGroup` declarations (`:5578`, `:4231`) | The same authority rule, normatively. This is the document that declared both fields without ranking them, so this is where the ambiguity actually lives. |
+| `operation_catalog.tex` — the **new** `CreateStaffGroup` section **and** the **existing** `CreateStaff` section (`:1104`) | Explicit stale-form semantics: both the missing and the spurious form are **permitted outcomes**, named as such, with the authoring orders that produce them. `CreateStaff` needs it too — it is the operation that *creates* the missing form, and its section currently promises nothing about the projection. |
+
+Cross-reference **P13-S16** from each, so a reader who meets the disagreement
+finds the ruling rather than filing it again.
+
 ### Pin 5 — every precondition must correspond to an existing invariant-10 check
 
 Invariant 10's **body** already resolves a staff's group, a group's members, a
@@ -290,6 +312,13 @@ naming the introducing commit once it exists.
 An operation-vocabulary append is a documented event in **four** specification
 documents. G1 shipped five normative falsehoods by declaring them out of scope;
 that is not repeatable.
+
+**Two of the four carry pin 4b's normative additions on top of the routine
+sweep**: `core_spec.tex` gains the authority rule at the `Staff`/`StaffGroup`
+declarations, and `operation_catalog.tex` gains explicit stale-form semantics
+in **both** the new `CreateStaffGroup` section and the existing `CreateStaff`
+section (`:1104`). Neither is optional, and neither is satisfied by the routine
+append alone.
 
 * `operation_catalog.tex` — a `\section` per kind (four), version bump,
   changelog paragraph.
@@ -339,10 +368,12 @@ Every line number below re-verified against the working tree 2026-07-29.
 |---|---|
 | `crates/epiphany-core/src/codec.rs` | four `canonical_value!` entries (`:3518` list) |
 | `crates/epiphany-core/src/invariants.rs` | pin 6: invariant-10 doc comment (`:59`–`:62`) |
+| `crates/epiphany-core/src/graph.rs` | **pin 4b**: write the authority doc comment on `Staff.group` (`:819`) and the projection doc comment on `StaffGroup.members` (`:1614`) — **neither field is documented today** |
 | `crates/epiphany-core/DECISIONS.md` | the rung's record |
 
-**Not touched:** `graph.rs` (all four types exist), `textvalue_graph.rs` (pin
-3), `lib.rs` (already exported).
+**Not touched:** `textvalue_graph.rs` (pin 3), `lib.rs` (already exported). No
+*type* changes anywhere in core — `graph.rs` gains documentation only, per pin
+4b; the four carried types already exist unchanged.
 
 ### Ops
 
@@ -445,12 +476,13 @@ t9 lesson from G2b.
 | t6 | All three referential loops refuse under a graph, **each asserted separately**: `CreateStaffGroup.members`, `CreatePartDefinition.staves`, and `CreateView.active_layers` naming a non-live target are each `TargetMissing` | **Three independent mutations**, one per loop: drop the members loop from `create_staff_group`; drop the staves loop from `create_part_definition`; drop the active-layers loop from `create_view`. Each must fail on its own row. *(The first draft omitted `PartDefinition.staves` entirely — one uncovered loop is one loop that can be deleted green.)* |
 | t7 | Those same preconditions are **not** enforced base-free | Remove the `if self.graph.is_some()` guard from one reducer; must fail — base-free has no universe to check against |
 | t8 | From empty, `CreateInstrument` → `CreateStaffGroup` → `CreateStaff` **with `group: Some(...)`** succeeds and reaches a note — i.e. `CreateStaff`'s group precondition becomes **satisfiable**. **Claim narrowed per §1.1: this asserts satisfiability, NOT that a bidirectionally consistent group is authorable** | Replace the `CreateStaffGroup` dispatch arm with `OperationKind::CreateStaffGroup(_) => OperationEffect::Applied`, keeping the match exhaustive; must fail at the grouped-staff assertion while the spine stays applied |
-| t8b | **Both permitted stale forms are pinned** (§1.1): the missing form (`CreateStaffGroup(g, [])` → `CreateStaff(s, Some(g))` ⟹ `s.group == Some(g)`, `g.members == []`) and the spurious form (`CreateStaff(s, None)` → `CreateStaffGroup(g, [s])` ⟹ `g.members == [s]`, `s.group == None`). Both asserted to **hold**, as states the ruling permits | Make `create_staff_group` maintain the projection (append the staff to `g.members`), i.e. implement disposition A; the missing-form assertion must fail. Separately, make `create_staff` clear a spurious back-reference; the spurious-form assertion must fail. **Two mutations — a test pinning only one order leaves the other free to change silently** |
+| t8b | **Both permitted stale forms are pinned** (§1.1): the missing form (`CreateStaffGroup(g, [])` → `CreateStaff(s, Some(g))` ⟹ `s.group == Some(g)`, `g.members == []`) and the spurious form (`CreateStaff(s, None)` → `CreateStaffGroup(g, [s])` ⟹ `g.members == [s]`, `s.group == None`). Both asserted to **hold**, as states the ruling permits | **Two mutations, each in the reducer that actually runs second in its order.** Missing form → mutate **`create_staff`**: when `group` is `Some(g)`, append the newly minted staff to `g.members` (disposition A's maintenance rule); the missing-form assertion must fail. Spurious form → mutate **`create_staff_group`**: reject or normalize away a non-empty carried `members`; the spurious-form assertion must fail. *(An earlier draft assigned these the other way round, which is impossible in both directions: `create_staff_group` runs first in the missing order and cannot append a staff that does not exist yet, and `create_staff` runs first in the spurious order and has no later group to repair. A mutation in the operation that runs first cannot reach the state the assertion names.)* **A test pinning only one order leaves the other free to change silently** |
 | t9 | A score reduced from empty through all four ops **passes `check_invariants`**, and each skipped reducer check **independently** makes invariant 10 fire (pin 5) | **The fixture is constant across all mutations**: the baseline input already attempts a dangling reference in each of the three loops, and passes because the reducer refuses them. Then mutate **only production**, one skipped check at a time — three separate mutations, each of which must let its dangling reference through and make invariant 10 fire. *(The first draft moved the fixture and the production code together, which proves only that a hand-built bad score fails a checker — not that the reducer's refusal is what was holding the line.)* |
 | t10 | All four kinds carry **epoch 11**, and a block containing them stamps minor **11** | Assign epoch 10 to one kind; must fail. Run against **both** epoch sites separately (vocabulary annotation, s1 table) — each must be independently able to fail |
 | t11 | Text projection round-trips all four kinds, and the companion version is **0.12.0**, with the negative vector rejecting **0.11.0** | Drop one parse arm; must fail. Separately, leave `COMPANION_VERSION` at 0.11.0; the negative vector must fail |
 | t12 | Invariant 10's doc comment names the four reference classes its body checks (pin 6) | Grep-assert the repaired prose is present **within the invariant-10 doc block only** — slice the source from the `/// 10.` line to the `CrossCuttingRefsResolve,` line and search *that*. Revert the comment to see it fail. **Searching the whole file passes on the implementation body**, which contains the same identifiers the doc comment is supposed to gain — a guard that cannot fail |
 | t13 | **Each of the four base seeds is load-bearing** (pin 4a, site 4) | **Four separate mutations**: skip seeding each of `staff_group_values`, `part_definition_values`, `analysis_layer_values`, `view_values` in `seed_from_graph`, one at a time. Each must make t5b fail. Model on G1's documented precedent for `instrument_values` (`reduce.rs:13264`–`:13268`) |
+| t14 | **The authority rule reached the field declarations** (pin 4b): `Staff.group`'s doc comment states it is authoritative, and `StaffGroup.members`' states it is a non-authoritative projection that may be stale in both directions | Grep-assert each, **slicing to that field's doc block only** — same discipline as t12, since `graph.rs` mentions both identifiers throughout and a file-wide search cannot fail. Delete either doc comment to see the corresponding assertion fail. *(The `.tex` halves of pin 4b are not machine-checkable here; they are gate items, reported explicitly.)* |
 
 **On t12's grep shape:** a self-matching needle is a real hazard — G2b hit it
 twice, once when a multi-line needle matched the test's own source and once
@@ -480,8 +512,10 @@ separately; that `schema_major()` gained **no** arm and no bundle file was
 touched; the four `canonical_value!` entries; that `textvalue_graph.rs` needed
 no change; **the four carried-value maps at all seven sites each, named site by
 site**; each of the three referential loops and its invariant-10
-correspondence; **which §1.1 disposition was implemented and what t8 therefore
-does and does not claim**; epoch 11 at both sites; the companion bump
+correspondence; **that §1.1's ruling reached all four pin-4b sites — both field
+doc comments, `core_spec.tex`, and both `operation_catalog.tex` sections —
+quoting the text written at each**, and what t8 therefore does and does not
+claim; epoch 11 at both sites; the companion bump
 0.11.0 → 0.12.0 with the negative vector rejecting 0.11.0; the four-document
 sweep; and the six boundary crossings — the one exhaustive-match site and the
 five sentinels, each with its new value. Report
