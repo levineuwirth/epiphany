@@ -1,13 +1,18 @@
 # Contract: Editor T4 — the toolkit spike
 
-**Revision 5** (2026-07-28), after four reviews. Revision 1 left discretion in
+**Revision 6** (2026-07-28), after five reviews. Revision 1 left discretion in
 the measurement and elimination mechanics; revision 2 reordered the ladder and
 pinned the deciding numbers, but its new structure carried its own defects —
 a damage oracle that compared the wrong thing, correctness failures dressed as
 environmental absences, and an escalation branch with no continuation.
 Revisions 3 and 4 closed those and introduced smaller ones of their own — a
 damage gate covering one rung, a censored median that flattered silence, and a
-latency threshold with no timer origin. This revision closes those.
+latency threshold with no timer origin. Revision 5 closed those. **Revision 6 amends Round 1** after building its
+oracle exposed two defects in the round as written: its glyph set was chosen by
+subpath count rather than by measured holes (`fClef` has none), and it framed
+criterion 1 around the fill *rule* when Bravura's oppositely-wound contours make
+even-odd and nonzero agree. Both are corrected below, and Ruling A criterion 1
+is amended to match.
 
 Repo root `/home/jeans/Repos/active/epiphany`. Governed by
 `spec/PLAN_EDITOR_APP.md` Ruling A ("What this ruling does **not** pin: the
@@ -46,10 +51,31 @@ two make it possible at all.
   `PathCommand::{MoveTo, LineTo, CurveTo, Close}` in staff-space units
   (`glyphs/src/catalog.rs:21,39`; `layout-ir/src/glyph.rs:283`). No candidate
   needs to parse SVG `d` strings, and no glyph work belongs in this packet.
-* **Glyphs with holes are in the bundled set, and can be named rather than
-  assumed.** 19 of the 37 bundled outlines have more than one subpath;
-  `gClef` (4), `fClef` (3), `timeSig8` (3), `accidentalFlat` (2) are the
-  useful ones. Criterion 1 has real material.
+* **Glyphs with holes are in the bundled set — but subpath count does not
+  identify them.** Revisions 1–5 named `gClef`/`fClef`/`timeSig8`/
+  `accidentalFlat` on the strength of "19 of the 37 bundled outlines have more
+  than one subpath". That conflates *multi-subpath* with *has a bounded hole*,
+  and `fClef` is the counter-example: its three subpaths are a bowl and **two
+  solid, disjoint dots**, nested in nothing. Measured over all 37 by
+  point-in-path (2026-07-28), exactly twelve carry a **bounded hole** —
+  `gClef`, `timeSig8`, `accidentalFlat`, `accidentalSharp`,
+  `accidentalNatural`, `noteheadHalf`, `noteheadWhole`, `noteheadDoubleWhole`,
+  `timeSig0`, `timeSig6`, `timeSig9`, `dynamicPiano` — while `fClef`, `cClef`,
+  `barlineFinal` and every repeat glyph carry none. Criterion 1 has real
+  material, and Round 1 below names it by that measurement rather than by
+  subpath count.
+* **Bravura's contours are correctly oppositely wound**, so even-odd and
+  nonzero *agree* on every bundled hole. Signed ring areas, as measured by the
+  Round 1 oracle's adaptive flattening (tolerance 0.0005 staff-space, the
+  authoritative figures — magnitudes are flattening-dependent, the **signs**
+  are the claim): `gClef` `[8.702, −0.691, −1.803, −0.509]`, `timeSig8`
+  `[2.674, −0.435, −0.515]`, `accidentalFlat` `[1.040, −0.257]`,
+  `noteheadHalf` `[0.903, −0.368]`; and `fClef` `[2.534, 0.153, 0.148]` —
+  **all positive**, which is the same fact from the other side: no counter,
+  three filled components. The
+  fill **rule** is therefore not the load-bearing property here; **preserving
+  every filled contour and every bounded counter** is. Ruling A criterion 1 is
+  amended to say so.
 * **Per-system ownership is populated only by the real solver.** `Engraver`'s
   casting module builds one `PrimitiveIndices` per system
   (`engrave/src/casting.rs:1185`); the **stub solver publishes everything
@@ -474,22 +500,42 @@ is a hard
 criterion, and discovering its absence in round 3 would waste three rounds —
 which is the whole claim of "cheapest disqualifier first".
 
-**Round 1 — criterion 1, fill correctness (HARD).** Each candidate draws
-`gClef`, `fClef`, `timeSig8`, `accidentalFlat` from `BravuraGlyphCatalog`'s
-typed outlines under pin 4's configuration. **Precommitted oracle (pin 13):**
-for each glyph, ≥3 must-be-ink and ≥3 must-be-background sample points in
-staff-space coordinates, **derived programmatically** by an even-odd
-point-in-path test over the `PathCommand` outline — not chosen by eye — each
-required to lie **≥8 device pixels from any outline edge** at the pinned
-render transform, so antialiasing cannot explain any result.
-**Every background point must lie inside a bounded hole** — enclosed by the
-glyph's outer silhouette yet unfilled under even-odd — asserted by the
-derivation, not assumed. Background points merely outside the silhouette test
-nothing: a renderer that fills holes solid passes them trivially, which was
-revision 2's false-pass path. The oracle file, the render transform, and the
-expected class per point are committed before any candidate renders.
-*Fails hard:* holes that are not holes — the disqualification Ruling A
-anticipated.
+**Round 1 — criterion 1, compound-path fill correctness (HARD).** Each
+candidate draws five glyphs from `BravuraGlyphCatalog`'s typed outlines under
+pin 4's configuration, in **two check classes testing two different
+properties**. All sample points are **derived programmatically** by
+point-in-path over the `PathCommand` outline — never chosen by eye — and every
+point must lie **≥8 device pixels from any outline edge** at the pinned render
+transform, so antialiasing cannot explain any result.
+
+* **Hole checks — `gClef`, `timeSig8`, `accidentalFlat`, `noteheadHalf`.**
+  ≥3 must-be-ink and **≥3 must-be-background points, each inside a bounded
+  hole** — enclosed by the glyph's outer silhouette yet unfilled — asserted by
+  the derivation, not assumed. A background point merely outside the silhouette
+  tests nothing, since a renderer that fills holes solid passes it trivially.
+  `noteheadHalf` is in this set deliberately: it is a frequently repeated and
+  semantically consequential glyph — a filled counter renders half notes as
+  quarter notes, a notation error rather than a cosmetic artifact. (It is not
+  the single most-drawn glyph; `noteheadBlack` is, and it has no counter.)
+* **Disjoint-component check — `fClef`.** It has **no bounded hole** (bowl plus
+  two solid dots), so it carries **no background requirement** and tests the
+  other half of compound-path correctness: **≥1 ink point inside each of its
+  three filled subpaths** — body and both dots — at the same clearance floor,
+  each tagged with its `subpath_index` so the oracle proves coverage of every
+  component rather than three generic ink points that could all land in the
+  bowl. A tessellator that keeps only the largest contour fails here and would
+  pass every hole check.
+
+**The oracle's status model must be explicit, not inferred from an absence.**
+Each glyph carries a requirement enum (or at minimum `background_required:
+bool`) *plus* an overall satisfied status. `fClef` passing with zero background
+points is a **satisfied** result under its own requirement class; recording it
+only as `background_satisfied = false` would make a correct outcome
+indistinguishable from a failed one.
+
+The oracle file, the render transform, and the expected class per point are
+committed before any candidate renders. *Fails hard:* **any bounded hole
+painted as ink, or any required filled subpath omitted.**
 
 **Round 2 — criterion 3, text (HARD).** W3 §5's five checks against pin 8's
 stand-in and pin 10's reference emitter: (1) **faithful consumption** — draws

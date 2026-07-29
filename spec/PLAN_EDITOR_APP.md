@@ -532,11 +532,25 @@ result rather than whether it can shape correctly.
 What this ruling does **not** pin: the toolkit/tessellation stack. The T4
 spike decides it, bounded by these recorded criteria:
 
-1. **Fill correctness:** `epaint`'s filled-path tessellator does not implement
-   even-odd/nonzero fill for paths with holes — and glyphs have holes — so
-   "just egui shapes" is likely out; the candidates are lyon-tessellated
-   meshes inside egui, or a vector renderer (e.g. Vello) behind a window
-   shell.
+1. **Compound-path / inner-subpath fill correctness** (**amended 2026-07-28**;
+   was "fill correctness", framed around the fill *rule*): `epaint`'s
+   `PathShape` is a **single point loop** documenting "Fill is only supported
+   for convex polygons" (`epaint-0.35.0/src/shapes/path_shape.rs:14`), so it
+   cannot express **compound-fill / subtractive-hole semantics** — a
+   `Shape::Vec` can group several loops, but grouping paints them, it does not
+   subtract a counter from its enclosing contour. Glyphs are multi-contour with
+   bounded counters, so "just egui shapes" is out; the
+   candidates are lyon-tessellated meshes inside egui, or a vector renderer
+   (e.g. Vello) behind a window shell.
+   **The fill rule is not the load-bearing property, and the original wording
+   implied it was.** Bravura's contours are correctly oppositely wound (measured
+   signed ring areas, e.g. `gClef` `[8.702, −0.691, −1.803, −0.509]`), so **even-odd
+   and nonzero agree on every bundled hole**. What a candidate must preserve is
+   **every filled contour and every bounded counter**: a tessellator that keeps
+   only the outer contour paints counters solid, and one that keeps only the
+   largest drops disjoint components such as `fClef`'s two dots. The T4 spike's
+   Round 1 tests both properties separately
+   (`spec/CONTRACT_EDITOR_T4_SPIKE.md`).
 2. **Staged latency, not end-to-end latency:** reduce / engrave / scene-build
    / paint measured **separately** on large multi-system fixtures against
    Chapter-10-style budgets (Fact 8). A toolkit verdict from an end-to-end
