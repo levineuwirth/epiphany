@@ -40,7 +40,7 @@ use epiphany_core::{
     SpellingDirective, SpellingPrecedence, SpellingScope, SpellingSource, Staff, StaffId,
     StaffInstance, StaffInstanceId, StaffLineConfiguration, TempoMap, TempoSegment, TempoShape,
     TimeAnchor, TimeSignature, TimeSignatureId, TransactionId, TransposeRefusal,
-    TranspositionInterval, TypedObjectId, Voice, VoiceId, VoiceOrigin,
+    TranspositionInterval, TuningContextSettings, TypedObjectId, Voice, VoiceId, VoiceOrigin,
 };
 use epiphany_determinism::CanonicalEncode;
 
@@ -63,7 +63,8 @@ use crate::payload::{
     InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
     OperationKind, OperationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp,
     SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
-    SetTimeSignatureOp, SetUserPageBreakOp, TransposeIntervalOp, TransposeOp, TupletCompensation,
+    SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp, TransposeIntervalOp, TransposeOp,
+    TupletCompensation,
 };
 use crate::stamp::StampTuple;
 use crate::support::{ObjectKind, SerializedCanonicalInputs};
@@ -851,6 +852,11 @@ enum ValueRestoration {
     SpellingPrecedence {
         value: Option<SpellingPrecedence>,
     },
+    /// Genesis tranche G2b. The subset type — `accidental_extensions` is not
+    /// part of it and is never touched by restoration.
+    TuningContext {
+        value: Option<TuningContextSettings>,
+    },
     MetricGrid {
         region: RegionId,
         value: Option<MetricGrid>,
@@ -972,6 +978,11 @@ struct Reducer<'a> {
     // the pre-operational value.
     canvas_layout_defaults_chain: WriteChain<CanvasLayoutDefaults>,
     spelling_precedence_chain: WriteChain<SpellingPrecedence>,
+    // Genesis tranche G2b (`CONTRACT_GENESIS_G2B_TUNING.md` pin 5): same
+    // discipline, carrying the **subset** type — `accidental_extensions`
+    // never participates in undo, because no operation ever writes it and
+    // undo must leave it exactly as it found it.
+    tuning_context_chain: WriteChain<TuningContextSettings>,
     break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
     page_break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
     // Meter/tempo overwrite chains (Phase-3 tranche): `Some` = a set/replace at
@@ -1085,6 +1096,7 @@ struct WorkingSnapshot {
     metadata_chain: WriteChain<ScoreMetadata>,
     canvas_layout_defaults_chain: WriteChain<CanvasLayoutDefaults>,
     spelling_precedence_chain: WriteChain<SpellingPrecedence>,
+    tuning_context_chain: WriteChain<TuningContextSettings>,
     break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
     page_break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
     meter_change_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<Option<MeterChange>>>,
@@ -1367,6 +1379,7 @@ impl<'a> Reducer<'a> {
             metadata_chain: WriteChain::new(),
             canvas_layout_defaults_chain: WriteChain::new(),
             spelling_precedence_chain: WriteChain::new(),
+            tuning_context_chain: WriteChain::new(),
             break_chain: BTreeMap::new(),
             page_break_chain: BTreeMap::new(),
             meter_change_chain: BTreeMap::new(),
@@ -1469,6 +1482,17 @@ impl<'a> Reducer<'a> {
             .seed(score.canvas.layout_defaults);
         self.spelling_precedence_chain
             .seed(score.spelling_precedence.clone());
+        // Genesis tranche G2b (contract pin 5): same discipline, seeded with
+        // only the five wire-bearing fields — the subset the chain's value
+        // type carries. `accidental_extensions` is not part of the seed and
+        // is never touched by undo.
+        self.tuning_context_chain.seed(TuningContextSettings {
+            default_pitch_space: score.tuning_context.default_pitch_space.clone(),
+            default_tuning_system: score.tuning_context.default_tuning_system.clone(),
+            reference: score.tuning_context.reference.clone(),
+            smufl: score.tuning_context.smufl,
+            overrides: score.tuning_context.overrides.clone(),
+        });
         for segment in &score.tempo_map.segments {
             self.tempo_segment_chain
                 .entry((None, resolved_anchor_position(&segment.start)))
@@ -2833,6 +2857,7 @@ impl<'a> Reducer<'a> {
                     self.set_canvas_layout_defaults(env, op)
                 }
                 OperationKind::SetSpellingPrecedence(op) => self.set_spelling_precedence(env, op),
+                OperationKind::SetTuningContext(op) => self.set_tuning_context(env, op),
             },
             OperationPayload::ResolveConflict(op) => self.resolve_conflict(env, op),
             OperationPayload::UndoTransaction(op) => self.undo_transaction(env, op),
@@ -2943,6 +2968,30 @@ impl<'a> Reducer<'a> {
             .record(env.id, env.transaction, op.precedence.clone());
         if let Some(score) = self.graph.as_mut() {
             score.spelling_precedence = op.precedence.clone();
+        }
+        OperationEffect::Applied
+    }
+
+    /// Genesis tranche G2b (`CONTRACT_GENESIS_G2B_TUNING.md` pin 5): copies
+    /// `set_metadata` structurally — advisory LWW, no conflict, no
+    /// idempotence short-circuit. Writes exactly the five subset fields onto
+    /// `score.tuning_context` and **leaves `accidental_extensions`
+    /// untouched** — the carried payload has no such field, and preserving
+    /// whatever the graph already held is the ruling (contract §1).
+    fn set_tuning_context(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &SetTuningContextOp,
+    ) -> OperationEffect {
+        self.tuning_context_chain
+            .record(env.id, env.transaction, op.settings.clone());
+        if let Some(score) = self.graph.as_mut() {
+            score.tuning_context.default_pitch_space = op.settings.default_pitch_space.clone();
+            score.tuning_context.default_tuning_system = op.settings.default_tuning_system.clone();
+            score.tuning_context.reference = op.settings.reference.clone();
+            score.tuning_context.smufl = op.settings.smufl;
+            score.tuning_context.overrides = op.settings.overrides.clone();
+            // accidental_extensions is intentionally not touched here.
         }
         OperationEffect::Applied
     }
@@ -5334,6 +5383,16 @@ impl<'a> Reducer<'a> {
                 })
             }
         }
+        // Genesis tranche G2b (contract pin 5): mirror the same shape.
+        match self.tuning_context_chain.undo_verdict(tx) {
+            ChainUndoVerdict::NotWritten => {}
+            ChainUndoVerdict::Superseded { by } => superseded.push(by),
+            ChainUndoVerdict::Restore(predecessor) => {
+                restorations.push(ValueRestoration::TuningContext {
+                    value: predecessor.map(Predecessor::into_value),
+                })
+            }
+        }
         for (region, chain) in &self.metric_grid_chain {
             if !slot_live(TypedObjectId::Region(*region)) {
                 continue;
@@ -5571,6 +5630,24 @@ impl<'a> Reducer<'a> {
                             score.spelling_precedence = value.clone();
                         }
                         self.spelling_precedence_chain
+                            .record(env.id, env.transaction, value);
+                    }
+                }
+                // Genesis tranche G2b (contract pin 5): mirror `Metadata`'s
+                // restoration-apply shape; writes only the five subset
+                // fields, leaving `accidental_extensions` untouched.
+                ValueRestoration::TuningContext { value } => {
+                    if let Some(value) = value {
+                        if let Some(score) = self.graph.as_mut() {
+                            score.tuning_context.default_pitch_space =
+                                value.default_pitch_space.clone();
+                            score.tuning_context.default_tuning_system =
+                                value.default_tuning_system.clone();
+                            score.tuning_context.reference = value.reference.clone();
+                            score.tuning_context.smufl = value.smufl;
+                            score.tuning_context.overrides = value.overrides.clone();
+                        }
+                        self.tuning_context_chain
                             .record(env.id, env.transaction, value);
                     }
                 }
@@ -7551,6 +7628,7 @@ impl<'a> Reducer<'a> {
             metadata_chain: self.metadata_chain.clone(),
             canvas_layout_defaults_chain: self.canvas_layout_defaults_chain.clone(),
             spelling_precedence_chain: self.spelling_precedence_chain.clone(),
+            tuning_context_chain: self.tuning_context_chain.clone(),
             break_chain: self.break_chain.clone(),
             page_break_chain: self.page_break_chain.clone(),
             meter_change_chain: self.meter_change_chain.clone(),
@@ -7590,6 +7668,7 @@ impl<'a> Reducer<'a> {
         self.metadata_chain = s.metadata_chain;
         self.canvas_layout_defaults_chain = s.canvas_layout_defaults_chain;
         self.spelling_precedence_chain = s.spelling_precedence_chain;
+        self.tuning_context_chain = s.tuning_context_chain;
         self.break_chain = s.break_chain;
         self.page_break_chain = s.page_break_chain;
         self.meter_change_chain = s.meter_change_chain;
@@ -10914,6 +10993,92 @@ mod tests {
             0,
             "SetSpellingPrecedence stays in the major-0 catch-all"
         );
+
+        // (t2) Genesis tranche G2b: the opposite of G2a's pin — SetTuningContext
+        // is *unconditionally* 3, the same "no lower-major layout exists" shape
+        // as CreateInstrument above (not a value-dependent Option-hidden
+        // embedding). Asserted on the minimal (default) settings specifically,
+        // so an arm that becomes value-dependent is caught immediately.
+        assert_eq!(
+            OperationKind::SetTuningContext(crate::payload::SetTuningContextOp {
+                settings: crate::valuegen::tuning_context_settings(0),
+            })
+            .schema_major(),
+            3,
+            "SetTuningContext is unconditionally v3, even for the minimal settings"
+        );
+    }
+
+    /// (t1) Genesis tranche G2b: kind and tag are both 34, and the
+    /// discriminant byte leads the canonical encoding of the op payload.
+    ///
+    /// **Mutation:** move either `OperationKind::SetTuningContext`'s
+    /// discriminant or `OperationKindTag::SetTuningContext`'s tag to 35;
+    /// must fail.
+    #[test]
+    fn t1_set_tuning_context_kind_and_tag_are_both_34() {
+        use crate::payload::{OperationKindTag, SetTuningContextOp};
+        let op = OperationKind::SetTuningContext(SetTuningContextOp {
+            settings: crate::valuegen::tuning_context_settings(1),
+        });
+        assert_eq!(op.tag(), OperationKindTag::SetTuningContext);
+        assert_eq!(op.tag().discriminant(), 34);
+        let mut bytes = Vec::new();
+        op.encode_canonical(&mut bytes);
+        assert_eq!(
+            bytes[0], 34,
+            "the discriminant byte must lead the canonical encoding"
+        );
+    }
+
+    /// (t3) Genesis tranche G2b: a block containing exactly one
+    /// `SetTuningContext` stamps schema major 3.
+    ///
+    /// **Mutation:** make `schema_major` ignore the `SetTuningContext` arm
+    /// (fold it into the catch-all `_ => 0`); must fail.
+    #[test]
+    fn t3_a_block_with_one_set_tuning_context_stamps_major_3() {
+        let op = OperationKind::SetTuningContext(crate::payload::SetTuningContextOp {
+            settings: crate::valuegen::tuning_context_settings(1),
+        });
+        let envelopes = [op.clone()];
+        let major = envelopes.iter().map(|k| k.schema_major()).max().unwrap();
+        assert_eq!(
+            major, 3,
+            "a block carrying only SetTuningContext stamps major 3"
+        );
+    }
+
+    /// (t8) Genesis tranche G2b: kind 34 carries epoch 10
+    /// (`spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4), and a block containing it
+    /// stamps schema minor 10.
+    ///
+    /// **Mutation:** assign epoch 9 instead of 10 in `introduced_minor`'s
+    /// `SetTuningContext` arm; must fail.
+    #[test]
+    fn t8_set_tuning_context_carries_epoch_10() {
+        let op = OperationKind::SetTuningContext(crate::payload::SetTuningContextOp {
+            settings: crate::valuegen::tuning_context_settings(1),
+        });
+        assert_eq!(op.introduced_minor(), Some(10));
+        assert_eq!(op.tag().introduced_minor(), Some(10));
+
+        let env = OperationEnvelope {
+            id: OperationId::new(ReplicaId(1), 1),
+            author: crate::support::AuthorId(0),
+            stamp: crate::stamp::OperationStamp::new(
+                crate::stamp::HybridLogicalClock::new(epiphany_core::WallClockTime(1), 1),
+                OperationId::new(ReplicaId(1), 1),
+            ),
+            causal_context: crate::causal::CausalContext::new(),
+            transaction: None,
+            payload: OperationPayload::Primitive(op),
+        };
+        assert_eq!(
+            crate::payload::operation_block_introduced_minor(&[env]),
+            Some(10),
+            "a block containing kind 34 stamps minor 10"
+        );
     }
 
     #[test]
@@ -11007,6 +11172,16 @@ mod tests {
         // leak to appear on even if the base did stamp one (it does not —
         // that is `OperationEnvelopeBlock`'s concern in `epiphany-bundle`,
         // untouched by this packet).
+        //
+        // Re-pinned again at genesis tranche G2b
+        // (`spec/CONTRACT_GENESIS_G2B_TUNING.md`): `gen_payload` gained
+        // `SetTuningContext` (arm 31), and `rng.below(31)` became
+        // `below(32)` — the same reshuffle, same reasoning. `SetTuningContext`
+        // is schema major **3**, unlike its siblings, but that is
+        // `OperationEnvelopeBlock`'s concern (`epiphany-bundle`), not
+        // `MaterializedState`'s: the canonical base still embeds no `Score`
+        // field value for any setting, so there remains no schema-major
+        // surface on this type for a leak to appear on.
         let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xBA5E);
         let envelopes = crate::fuzz::gen_envelope_set(&mut rng, 200);
         let mut set = OperationSet::new();
@@ -11016,7 +11191,7 @@ mod tests {
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "7fd6455a6ae304101774ba981d01702ad37c567575707b1e814dad6e153ab07d"
+            "116e88b4013a18864dcd1b09489ab297aa332e14800cf4ca00be9dfa100b4a08"
         );
     }
 
@@ -12952,6 +13127,55 @@ mod tests {
         );
     }
 
+    /// (t9) Regression guard: the from-empty spine still reaches a note, now
+    /// with a `SetTuningContext` authored alongside it — genesis tranche G2b
+    /// does not disturb the spine G1 established. Mutation is t2's (the
+    /// `schema_major` arm), which this test does not re-verify on its own;
+    /// its job is to prove the spine and the new op coexist cleanly.
+    #[test]
+    fn from_empty_spine_reaches_a_note_with_a_tuning_context_authored() {
+        let spine = genesis_spine_envelopes();
+        let settings = crate::valuegen::tuning_context_settings(1);
+        let set_tuning = prim_env(
+            1,
+            12,
+            70,
+            CausalContext::new(),
+            OperationKind::SetTuningContext(crate::payload::SetTuningContextOp {
+                settings: settings.clone(),
+            }),
+        );
+        let mut envelopes = spine.envelopes;
+        envelopes.push(set_tuning);
+        let mut set = OperationSet::new();
+        set.accept_all(envelopes);
+        let identity = IdentityContext::new(ReplicaId(1));
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        for counter in [0, 2, 4, 6, 8, 10, 12] {
+            assert_eq!(
+                effect_at(&out.state, counter),
+                Some(&OperationEffect::Applied),
+                "spine operation at counter {counter} must apply"
+            );
+        }
+        assert!(
+            out.score.events.contains(spine.event_id),
+            "the spine still reaches a note"
+        );
+        assert_eq!(
+            out.score.tuning_context.default_pitch_space,
+            settings.default_pitch_space
+        );
+        assert_eq!(
+            out.score.tuning_context.default_tuning_system,
+            settings.default_tuning_system
+        );
+        assert_eq!(out.score.tuning_context.reference, settings.reference);
+        assert_eq!(out.score.tuning_context.smufl, settings.smufl);
+        assert_eq!(out.score.tuning_context.overrides, settings.overrides);
+    }
+
     /// (i2) Re-carry idempotence: the same `CreateInstrument` twice ->
     /// `AlreadyApplied`, and a differing second carry under the same live id
     /// -> `RecreateContentMismatch` — exactly `create_staff`'s discipline
@@ -13507,6 +13731,245 @@ mod tests {
             assert_eq!(
                 out.score.spelling_precedence, base_value,
                 "undo onto a loaded base restores the base's own value, not the type Default"
+            );
+        }
+    }
+
+    // =========================================================================
+    // Genesis tranche G2b (`spec/CONTRACT_GENESIS_G2B_TUNING.md`): the sole
+    // genesis payload born at schema major 3, `SetTuningContext`.
+    // =========================================================================
+
+    /// (t5) **The pin's whole reason for existing** (contract §1): an op
+    /// authored **live** and the same op reloaded **from bytes** must
+    /// reduce to identical graph states, with a pre-existing non-empty
+    /// `accidental_extensions` preserved across both. This is what the
+    /// subset type (pin 1) makes structurally impossible to get wrong — a
+    /// full-value `SetTuningContext(ScoreTuningContext)` would diverge here,
+    /// because `OperationSet::accept` stores the authored envelope as a
+    /// **value** (live path keeps whatever `accidental_extensions` the
+    /// constructor set) while a decoded envelope always reconstructs it as
+    /// empty (the wire drops it).
+    ///
+    /// **Mutation:** make the payload carry the full `ScoreTuningContext`
+    /// instead of the subset `TuningContextSettings`; must fail. Performed
+    /// and reversed live for this rung (see the report) rather than left in
+    /// the tree, since it requires the type-level change pin 1 forbids.
+    #[test]
+    fn t5_live_authored_and_reloaded_from_bytes_agree_with_extensions_preserved() {
+        use epiphany_core::{AccidentalRegistryId, ScoreAccidentalExtensions};
+
+        // A base graph with a pre-existing, non-empty accidental_extensions —
+        // the field the op never carries and reduction must leave untouched.
+        let mut base = Score::empty(IdentityContext::new(ReplicaId(1)));
+        let pre_existing = vec![ScoreAccidentalExtensions {
+            base: AccidentalRegistryId::new("heji"),
+            additions: Vec::new(),
+            overrides: Vec::new(),
+        }];
+        base.tuning_context.accidental_extensions = pre_existing.clone();
+
+        let settings = crate::valuegen::tuning_context_settings(3);
+        let live_env = prim_env(
+            1,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::SetTuningContext(crate::payload::SetTuningContextOp {
+                settings: settings.clone(),
+            }),
+        );
+
+        // Path A: authored live — the envelope object itself, never touching
+        // bytes.
+        let mut live_set = OperationSet::new();
+        live_set.accept_all(vec![live_env.clone()]);
+        let live_out = reduce_operation_set_onto(&live_set, &base);
+
+        // Path B: the identical envelope, round-tripped through canonical
+        // bytes and decoded back before reduction.
+        let bytes = live_env.to_canonical_bytes();
+        let reloaded_env = crate::envdecode::decode_envelope(&bytes).expect("the envelope decodes");
+        let mut reloaded_set = OperationSet::new();
+        reloaded_set.accept_all(vec![reloaded_env]);
+        let reloaded_out = reduce_operation_set_onto(&reloaded_set, &base);
+
+        // The two graph states are identical.
+        assert_eq!(
+            live_out.score.tuning_context, reloaded_out.score.tuning_context,
+            "an op authored live and the same op reloaded from bytes must reduce identically"
+        );
+        // Both apply the authored five-field settings...
+        assert_eq!(
+            live_out.score.tuning_context.default_pitch_space,
+            settings.default_pitch_space
+        );
+        assert_eq!(live_out.score.tuning_context.reference, settings.reference);
+        // ...and both preserve the base's pre-existing accidental_extensions,
+        // untouched — the field the payload cannot carry.
+        assert_eq!(
+            live_out.score.tuning_context.accidental_extensions, pre_existing,
+            "live path: accidental_extensions preserved"
+        );
+        assert_eq!(
+            reloaded_out.score.tuning_context.accidental_extensions, pre_existing,
+            "reloaded path: accidental_extensions preserved"
+        );
+    }
+
+    /// (t6) Undo restores the previous (chain-predecessor) five-field value —
+    /// not the seeded base, and not the type default. Two `SetTuningContext`
+    /// writes in two separate transactions; undoing the *second* must restore
+    /// the *first*'s authored value.
+    ///
+    /// **Mutation:** in the `TuningContext` restoration-apply arm, restore
+    /// the default `TuningContextSettings` instead of the chain predecessor
+    /// (or drop the field writes entirely); must fail.
+    #[test]
+    fn t6_undo_restores_the_chain_predecessor_tuning_settings() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let first = crate::valuegen::tuning_context_settings(1);
+        let second = crate::valuegen::tuning_context_settings(2);
+        assert_ne!(first, second);
+
+        let tx2 = TransactionId::from_raw(2);
+        let envelopes = vec![
+            prim_env(
+                1,
+                0,
+                10,
+                CausalContext::new(),
+                OperationKind::SetTuningContext(crate::payload::SetTuningContextOp {
+                    settings: first.clone(),
+                }),
+            ),
+            declare_transaction(1, 1, 20, seen_r1(0), tx2),
+            tx_member(
+                1,
+                2,
+                21,
+                seen_r1(1),
+                tx2,
+                OperationKind::SetTuningContext(crate::payload::SetTuningContextOp {
+                    settings: second,
+                }),
+            ),
+            undo_env(1, 3, 22, seen_r1(2), tx2, UndoPolicy::StrictInverse),
+        ];
+        let mut set = OperationSet::new();
+        set.accept_all(envelopes);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        assert_eq!(
+            out.score.tuning_context.default_pitch_space,
+            first.default_pitch_space
+        );
+        assert_eq!(
+            out.score.tuning_context.default_tuning_system,
+            first.default_tuning_system
+        );
+        assert_eq!(out.score.tuning_context.reference, first.reference);
+        assert_eq!(out.score.tuning_context.smufl, first.smufl);
+        assert_eq!(
+            out.score.tuning_context.overrides, first.overrides,
+            "undo of the second write restores the first write's value"
+        );
+    }
+
+    /// (t7) Undo of the **first** authoring restores the **seeded base**
+    /// settings, identically whether the seed was the type default or a
+    /// non-default value — the never-authored / authored-to-default
+    /// distinction stays unobservable (contract pin 5, and plan trap 5's
+    /// withdrawal). `accidental_extensions` is untouched throughout: it is
+    /// not part of the carried subset type, so undo cannot move it, and this
+    /// test proves the base's own extensions survive both the write and the
+    /// undo unchanged.
+    ///
+    /// **Mutation:** skip `tuning_context_chain.seed(...)` in
+    /// `seed_from_graph` -> the first undo sees `NotWritten` (no predecessor
+    /// recorded) instead of `Restore(Base(seeded))`, and the field is left at
+    /// the authored value instead of reverting; must fail.
+    #[test]
+    fn t7_undo_of_first_authoring_restores_the_seeded_base_default_or_not() {
+        // Both cases run through the exact same assertion shape below — no
+        // branch distinguishes "the seed happened to be the type default"
+        // from "the seed was a genuine non-default value". That uniformity is
+        // itself the proof the distinction is unobservable, per pin 5's
+        // explicit instruction not to write code that tells them apart.
+        // A pre-existing, non-empty `accidental_extensions` fixture, built
+        // directly (its constructor is `pub(crate)` in `epiphany-core`, so
+        // this crate cannot reuse the core fixture helper).
+        let default_extensions = || {
+            vec![epiphany_core::ScoreAccidentalExtensions {
+                base: epiphany_core::AccidentalRegistryId::new("heji"),
+                additions: Vec::new(),
+                overrides: Vec::new(),
+            }]
+        };
+
+        for (case, base) in [
+            ("case A: from-empty, default seed", {
+                let mut b = Score::empty(IdentityContext::new(ReplicaId(1)));
+                b.tuning_context.accidental_extensions = default_extensions();
+                b
+            }),
+            ("case B: loaded base, non-default seed", {
+                let mut b = Score::empty(IdentityContext::new(ReplicaId(1)));
+                let non_default = crate::valuegen::tuning_context_settings(9);
+                b.tuning_context.default_pitch_space = non_default.default_pitch_space;
+                b.tuning_context.default_tuning_system = non_default.default_tuning_system;
+                b.tuning_context.reference = non_default.reference;
+                b.tuning_context.smufl = non_default.smufl;
+                b.tuning_context.overrides = non_default.overrides;
+                b.tuning_context.accidental_extensions = default_extensions();
+                b
+            }),
+        ] {
+            let seeded = base.tuning_context.clone();
+            let tx = TransactionId::from_raw(3);
+            let authored = crate::valuegen::tuning_context_settings(20);
+            let envelopes = vec![
+                declare_transaction(1, 0, 10, CausalContext::new(), tx),
+                tx_member(
+                    1,
+                    1,
+                    11,
+                    seen_r1(0),
+                    tx,
+                    OperationKind::SetTuningContext(crate::payload::SetTuningContextOp {
+                        settings: authored,
+                    }),
+                ),
+                undo_env(1, 2, 12, seen_r1(1), tx, UndoPolicy::StrictInverse),
+            ];
+            let mut set = OperationSet::new();
+            set.accept_all(envelopes);
+            let out = reduce_operation_set_onto(&set, &base);
+
+            assert_eq!(
+                out.score.tuning_context.default_pitch_space, seeded.default_pitch_space,
+                "{case}: undo restores the seeded default_pitch_space"
+            );
+            assert_eq!(
+                out.score.tuning_context.default_tuning_system, seeded.default_tuning_system,
+                "{case}: undo restores the seeded default_tuning_system"
+            );
+            assert_eq!(
+                out.score.tuning_context.reference, seeded.reference,
+                "{case}: undo restores the seeded reference"
+            );
+            assert_eq!(
+                out.score.tuning_context.smufl, seeded.smufl,
+                "{case}: undo restores the seeded smufl"
+            );
+            assert_eq!(
+                out.score.tuning_context.overrides, seeded.overrides,
+                "{case}: undo restores the seeded overrides"
+            );
+            assert_eq!(
+                out.score.tuning_context.accidental_extensions, seeded.accidental_extensions,
+                "{case}: accidental_extensions is untouched throughout — it is not part \
+                 of the carried subset type, so undo cannot move it"
             );
         }
     }

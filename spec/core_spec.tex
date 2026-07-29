@@ -6963,6 +6963,11 @@ pub enum OperationKind {
     // SetMetadata advisory-LWW pattern.
     SetCanvasLayoutDefaults(SetCanvasLayoutDefaultsOp),
     SetSpellingPrecedence(SetSpellingPrecedenceOp),
+    // Genesis tranche G2b: the sole genesis payload born at schema major 3,
+    // on the same advisory-LWW pattern. Carries TuningContextSettings, the
+    // authored subset of ScoreTuningContext (accidental_extensions is not
+    // on the wire and is left untouched by reduction).
+    SetTuningContext(SetTuningContextOp),
 
     // Layout-semantic operations
     SetUserSystemBreak(SetUserSystemBreakOp),
@@ -11931,6 +11936,8 @@ pub enum OperationKindTag {
     // Genesis tranche G2a: the two major-0 settings setters.
     SetCanvasLayoutDefaults,
     SetSpellingPrecedence,
+    // Genesis tranche G2b: name-verbatim, as the two prior additions are.
+    SetTuningContext,
 }
 
 pub enum BarrierScope {

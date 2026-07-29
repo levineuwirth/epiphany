@@ -20,8 +20,8 @@
 //!   container is what the barrier's **scope** is for, and scope is matched
 //!   against the target's real containment, precisely.
 //! * **Score-level operations** (`SetMetadata`, the transaction descriptor,
-//!   `SetCanvasLayoutDefaults`, `SetSpellingPrecedence`) name no graph object:
-//!   only a score-wide barrier (empty
+//!   `SetCanvasLayoutDefaults`, `SetSpellingPrecedence`, `SetTuningContext`)
+//!   name no graph object: only a score-wide barrier (empty
 //!   `affected_object_kinds`, `WholeScore`/`TuningContext`/`Registered` scope)
 //!   can match them.
 //! * **Extension-defined operations** (`OperationKind::Registered`) carry a
@@ -469,7 +469,11 @@ pub(crate) fn subjects_of(kind: &OperationKind, score: &Score) -> BarrierSubject
         OperationKind::SetMetadata(_)
         | OperationKind::DeclareTransaction(_)
         | OperationKind::SetCanvasLayoutDefaults(_)
-        | OperationKind::SetSpellingPrecedence(_) => BarrierSubjects::ScoreWide,
+        | OperationKind::SetSpellingPrecedence(_)
+        // Genesis tranche G2b (`CONTRACT_GENESIS_G2B_TUNING.md`, one-time
+        // authorization): another score-singleton field overwrite naming no
+        // resolvable region or object, exactly like `SetMetadata`.
+        | OperationKind::SetTuningContext(_) => BarrierSubjects::ScoreWide,
         OperationKind::CreateRepeatStructure(op) => one(
             TypedObjectId::RepeatStructure(op.repeat_structure_id()),
             repeat_context(score, &op.repeat),

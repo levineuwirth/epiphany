@@ -112,6 +112,10 @@ pub enum V0OperationKind {
     // every other v1-native kind above.
     SetCanvasLayoutDefaults(crate::payload::SetCanvasLayoutDefaultsOp),
     SetSpellingPrecedence(crate::payload::SetSpellingPrecedenceOp),
+    // Genesis tranche G2b — born at wire-disc 34; no lossy v0 form (v0
+    // predates the catalog entirely), so it round-trips by identity like
+    // every other v1-native kind above.
+    SetTuningContext(crate::payload::SetTuningContextOp),
 }
 
 /// v0 `InsertEvent`: the event was a bare [`EventId`] plus the reduction-relevant

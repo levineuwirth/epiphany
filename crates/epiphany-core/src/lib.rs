@@ -160,8 +160,8 @@ pub use graph::{
     SoundConfiguration, SpaceUnit, SpanStyle, Spanner, SpannerKind, Staff, StaffBasedContent,
     StaffBracketKind, StaffExtent, StaffGroup, StaffGroupKind, StaffInstance,
     StaffLineConfiguration, StemDirection, SubBeam, TempoMapReference, TextLineDefinition, Tie,
-    TieClass, TimeExtent, TimeSignature, TimeSignatureDisplay, Timestamp, Tuplet, TupletRatio,
-    UnpitchedMember, ViewDefinition, Voice, VoiceOrigin, Volta,
+    TieClass, TimeExtent, TimeSignature, TimeSignatureDisplay, Timestamp, TuningContextSettings,
+    Tuplet, TupletRatio, UnpitchedMember, ViewDefinition, Voice, VoiceOrigin, Volta,
 };
 
 pub use tempo::{

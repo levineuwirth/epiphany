@@ -90,7 +90,7 @@ fn pitch(n: u64) -> PitchId {
 
 /// Generates a random payload over the shared id space.
 fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
-    let kind = match rng.below(31) {
+    let kind = match rng.below(32) {
         0 => {
             let voice = VoiceId::new(ReplicaId(7), rng.below(3));
             let position = MusicalPosition(RationalTime::from_int(rng.below(4) as i32));
@@ -299,6 +299,10 @@ fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
         }),
         30 => OperationKind::SetSpellingPrecedence(crate::payload::SetSpellingPrecedenceOp {
             precedence: valuegen::spelling_precedence(rng.below(3) as u8),
+        }),
+        // Genesis tranche G2b: the sole genesis payload born at schema major 3.
+        31 => OperationKind::SetTuningContext(crate::payload::SetTuningContextOp {
+            settings: valuegen::tuning_context_settings(rng.below(3) as u8),
         }),
         _ => OperationKind::SetStaffLayout(SetStaffLayoutOp {
             staff_instance: StaffInstanceId::new(ReplicaId(7), rng.below(3)),

@@ -649,11 +649,12 @@ mod tests {
     }
 
     // Bumped with `COMPANION_VERSION` (0.7.0 → 0.8.0, genesis G1; 0.8.0 →
-    // 0.9.0, genesis G2a; 0.9.0 → 0.10.0, G-minor). Kept a literal because
-    // `projection` takes `&[&str]` and a formatted String would ripple
-    // through every call site; `the_test_header_tracks_the_implemented_
-    // version` below fails loudly if the two ever drift.
-    const HEADER: &str = "(text-projection (0 10 0))";
+    // 0.9.0, genesis G2a; 0.9.0 → 0.10.0, G-minor; 0.10.0 → 0.11.0, genesis
+    // G2b). Kept a literal because `projection` takes `&[&str]` and a
+    // formatted String would ripple through every call site;
+    // `the_test_header_tracks_the_implemented_version` below fails loudly if
+    // the two ever drift.
+    const HEADER: &str = "(text-projection (0 11 0))";
     const DOCUMENT: &str = "(document #x00000000000000000000000000000001 (schema 0 1))";
 
     /// A minimal but complete valid projection: just the two mandatory lines.

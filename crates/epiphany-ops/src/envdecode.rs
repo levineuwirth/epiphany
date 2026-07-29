@@ -39,8 +39,8 @@ use epiphany_core::{
     CanvasLayoutDefaults, EventId, Instrument, InstrumentId, MetricGrid, MusicalPosition,
     OperationId, PitchId, PitchSpelling, RegionId, RegionTimeModel, RepeatStructureId, ReplicaId,
     ScoreMetadata, SpellingPrecedence, Staff, StaffInstance, StaffInstanceId,
-    StaffLineConfiguration, TimeAnchor, TimeSignature, TranspositionInterval, TupletId,
-    TypedObjectId, Voice, VoiceId, WallClockTime,
+    StaffLineConfiguration, TimeAnchor, TimeSignature, TranspositionInterval,
+    TuningContextSettings, TupletId, TypedObjectId, Voice, VoiceId, WallClockTime,
 };
 use epiphany_determinism::{CanonicalDecode, CanonicalEncode};
 
@@ -596,6 +596,9 @@ fn operation_kind(r: &mut Reader<'_>) -> Result<OperationKind> {
         33 => OperationKind::SetSpellingPrecedence(SetSpellingPrecedenceOp {
             precedence: value::<SpellingPrecedence>(r, "SpellingPrecedence")?,
         }),
+        34 => OperationKind::SetTuningContext(SetTuningContextOp {
+            settings: value::<TuningContextSettings>(r, "TuningContextSettings")?,
+        }),
         tag => {
             return Err(EnvelopeDecodeError::InvalidTag {
                 kind: "OperationKind",
@@ -893,6 +896,11 @@ pub(crate) mod tests {
             OperationKindTag::SetSpellingPrecedence => {
                 OperationKind::SetSpellingPrecedence(SetSpellingPrecedenceOp {
                     precedence: valuegen::spelling_precedence(1),
+                })
+            }
+            OperationKindTag::SetTuningContext => {
+                OperationKind::SetTuningContext(SetTuningContextOp {
+                    settings: valuegen::tuning_context_settings(1),
                 })
             }
         }

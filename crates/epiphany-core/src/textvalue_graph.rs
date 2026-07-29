@@ -28,7 +28,7 @@ use crate::graph::{
     AnnotationAnchor, DecompositionSource, EventOrderingDAG, GestureAnchoring, KeySignature,
     MetadataValue, RegionContent, RegionTimeModel, RepeatKind, ScoreTuningContext,
     SoundConfiguration, SpaceUnit, SpannerKind, StaffGroupKind, TieClass, TimeSignature,
-    TimeSignatureDisplay, Timestamp, TupletRatio, VoiceOrigin,
+    TimeSignatureDisplay, Timestamp, TuningContextSettings, TupletRatio, VoiceOrigin,
 };
 use crate::textvalue::{kebab, Sexp, TextError, TextValue};
 use crate::textvalue_impls::class_of;
@@ -441,6 +441,38 @@ impl TextValue for ScoreTuningContext {
             default_tuning_system,
             reference,
             accidental_extensions: Vec::new(),
+            smufl,
+            overrides,
+        })
+    }
+}
+
+/// The **authored subset** of `ScoreTuningContext` that `SetTuningContext`
+/// carries (genesis tranche G2b, `spec/CONTRACT_GENESIS_G2B_TUNING.md` §1) —
+/// the same five fields, in the same order, as `ScoreTuningContext`'s
+/// projection above; `accidental_extensions` has no field here to project.
+impl TextValue for TuningContextSettings {
+    fn project(&self) -> Sexp {
+        Sexp::List(vec![
+            Sexp::Symbol(kebab("TuningContextSettings")),
+            self.default_pitch_space.project(),
+            self.default_tuning_system.project(),
+            self.reference.project(),
+            self.smufl.project(),
+            self.overrides.project(),
+        ])
+    }
+    fn parse(s: &Sexp) -> Result<Self, TextError> {
+        let fields = s.expect_struct(&kebab("TuningContextSettings"), 5)?;
+        let default_pitch_space = TextValue::parse(&fields[0])?;
+        let default_tuning_system = TextValue::parse(&fields[1])?;
+        let reference = TextValue::parse(&fields[2])?;
+        let smufl = TextValue::parse(&fields[3])?;
+        let overrides = TextValue::parse(&fields[4])?;
+        Ok(TuningContextSettings {
+            default_pitch_space,
+            default_tuning_system,
+            reference,
             smufl,
             overrides,
         })

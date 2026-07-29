@@ -686,12 +686,18 @@ mod tests {
     #[test]
     fn op_block_beyond_the_accept_set_opens_read_only() {
         use epiphany_bundle::IntegrityAnomaly;
-        // A newer writer's op block, stamped schema major 3 — beyond the reader's
-        // op-block accept-set [0,2]. The bundle opens read-only preservation (the
+        // A newer writer's op block, stamped schema major 4 — beyond the reader's
+        // op-block accept-set [0,3]. The bundle opens read-only preservation (the
         // canonical base and manifest still read) rather than hard-rejecting.
+        //
+        // Major 4, not 3: genesis tranche G2b raised the op-block accept-set
+        // to [0, 3] (`SetTuningContext` is born at major 3), so major 3 is
+        // now admitted and this test's "beyond the accept-set" major must
+        // move past it to stay an actual test of the read-only-on-overflow
+        // path.
         let block = StagedChunk::operation_block_versioned(
             encode_block(&[vec![1u8, 2, 3, 4]]),
-            SchemaVersion::new(3, 0),
+            SchemaVersion::new(4, 0),
         );
         let reopened = reopen_with_op_block(0xD2_0002, block);
         assert!(
@@ -700,7 +706,7 @@ mod tests {
         );
         assert!(reopened.anomalies().iter().any(|a| matches!(
             a,
-            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 3 }
+            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 4 }
         )));
     }
 

@@ -1705,6 +1705,49 @@ impl Default for ScoreTuningContext {
     }
 }
 
+/// The **authored subset** of [`ScoreTuningContext`] that `SetTuningContext`
+/// (genesis tranche G2b, `spec/CONTRACT_GENESIS_G2B_TUNING.md` §1) carries:
+/// exactly the five fields `ScoreTuningContext`'s `Codec` actually walks onto
+/// the wire (`codec.rs`'s hand-written `impl Codec for ScoreTuningContext`),
+/// in that same order. `accidental_extensions` is **not** a field of this
+/// type — it is deliberately absent, not cleared or normalized.
+///
+/// **Why a new type rather than reusing `ScoreTuningContext` directly.**
+/// `ScoreTuningContext`'s `Codec` drops `accidental_extensions` on encode and
+/// default-fills it to `Vec::new()` on decode: the field is staged out of
+/// schema major 3 and stays in-memory-only. If an operation carried the full
+/// `ScoreTuningContext`, `OperationSet::accept` would store the authored
+/// envelope as a **value** (with `accidental_extensions` intact), while a
+/// document reloaded from bytes would decode the same envelope with that
+/// field reconstructed as empty — two divergent graph states from one
+/// document, observable only by whether you just authored it or reloaded it.
+/// A field that never reaches the wire cannot be caught by
+/// `canonical_value!`'s decode → `finish()` → re-encode byte comparison,
+/// because that comparison never touches the originating value.
+///
+/// This type makes the divergence **unrepresentable**: it has no
+/// `accidental_extensions` field to diverge on. `SetTuningContext`'s
+/// reduction writes exactly these five fields onto `score.tuning_context` and
+/// leaves `accidental_extensions` untouched, preserving whatever the graph
+/// already held. This is a **type-level narrowing, not a new wire form** —
+/// `TuningContextSettings`'s canonical encoding is byte-for-byte identical to
+/// `ScoreTuningContext`'s existing five-field walk (asserted in
+/// `codec.rs`), so the packet designs no new layout.
+///
+/// When a later schema major lands `accidental_extensions` on the wire, this
+/// type gains the field like any other major payload change — the same cost
+/// normalization would have paid, but without making the never-authored /
+/// authored-to-default distinction depend on a clearing discipline enforced
+/// by nothing the compiler can see.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TuningContextSettings {
+    pub default_pitch_space: PitchSpaceId,
+    pub default_tuning_system: TuningSystemId,
+    pub reference: ReferencePitch,
+    pub smufl: crate::accidental::SmuflVersionRequirement,
+    pub overrides: Vec<crate::tuning::TuningOverride>,
+}
+
 /// The root object of a score (Chapter 5 §"Top-Level Score Structure").
 ///
 /// This carries the full Chapter 5 top-level shape. The invariant-bearing

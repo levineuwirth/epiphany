@@ -644,3 +644,45 @@ declaration order (`core_spec` §"Extension Declarations"), which had chunks bef
 kinds and barriers.
 
 Still no implementation. The companion is now complete enough to implement against.
+
+## Genesis tranche G2b: op-block accept-set raised to [0, 3] (2026-07-28)
+
+`spec/CONTRACT_GENESIS_G2B_TUNING.md` charges this crate alone with the raise:
+`max_supported_major(OperationEnvelopeBlock)` → 3. `SetTuningContext`
+(`epiphany-ops`) is the sole genesis-tranche payload born at schema major 3 —
+its carried `epiphany_core::TuningContextSettings` has mandatory (not
+`Option`-hidden) appends past major 2, so a block carrying one is now born at
+v3. This is the one-way door the governing plan (`PLAN_GENESIS_OPS.md` §4)
+warned against burying inside routine work: G2 was split into G2a/G2b
+precisely so the two major-0 setters (G2a) would not carry this raise, and it
+lands alone here instead.
+
+**The doc comment above `max_supported_major` asserted a rationale this rung
+falsifies, and it had to move with the number, not just the number itself.**
+The prior text ("Schema major 3 ... does not raise this role: no operation
+payload embeds the tuning context, so no op block is ever born at v3") is now
+false. Rewritten, and mutation-verified (`accept_set_doc_no_longer_claims_
+no_payload_embeds_the_tuning_context`, `bundle.rs`) that the exact stale
+sentence is absent from the source — not merely superseded by newer prose
+elsewhere in the file, which a reader skimming only the doc comment could
+still miss. This is the `binary_format.tex:2373` lesson applied to Rust doc
+comments, not just the LaTeX companion.
+
+**One existing test needed a value bump as a direct consequence, not a
+touch-table item.** `committing_an_unsupported_major_op_root_makes_the_live_
+bundle_read_only` staged a block at major 3 to exercise the "beyond the
+accept-set" read-only path; major 3 is now *inside* the accept-set, so the
+test silently stopped testing what its name claims (it would still pass,
+vacuously, for the wrong reason) — caught by running the full bundle suite
+after the raise, not by the touch table, which did not name this test.
+Moved to major 4, with a comment explaining why 3 no longer works. This is
+exactly the kind of collateral fix the touch table's "floor, not ceiling"
+framing anticipates: a file not listed can still need an edit when a change
+elsewhere makes its assumption stale.
+
+**No `epiphany-bundle` participation in the never-authored/authored-to-default
+question (pin 5).** This crate has no visibility into operation semantics —
+`edit_barriers` and the op-block bytes are opaque to it — so pin 5's
+seeded-undo discipline is entirely `epiphany-ops`'s concern. This crate's
+only stake is that the raise is now paid for real, once, by the value that
+actually needs it.

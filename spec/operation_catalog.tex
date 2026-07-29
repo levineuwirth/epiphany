@@ -231,7 +231,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.10.0 --- The genesis operation tranche (G1 + G2a)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.11.0 --- The genesis operation tranche reaches schema major 3 (G2b)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -381,6 +381,41 @@ clause is narrowed to the canvas object itself, per
 \texttt{spec/RULING\_GENESIS\_PERSISTENCE.md} --- the score's \emph{contents}
 are no longer outside the operation set; the canvas is still never
 op-minted.
+
+\medskip
+
+\noindent\textbf{Version 0.11.0 (genesis tranche G2b,
+\texttt{spec/CONTRACT\_GENESIS\_G2B\_TUNING.md}).} Adds one operation kind,
+\texttt{SetTuningContext} (Section~\ref{sec:k0:set-tuning-context}), the
+third and final genesis-ladder setter deferred at 0.10.0. Carries
+\texttt{TuningContextSettings}, the authored subset of
+\texttt{ScoreTuningContext} --- exactly its five wire-bearing fields, byte-
+identical to the existing schema-major-3 wire walk (Binary Format companion
+\sectionsc{Schema Major 3}) --- rather than the full graph type, so that
+\texttt{accidental\_extensions} (staged off the wire) cannot diverge between
+a live-authored session and the same document reloaded from bytes.
+
+\textbf{The sole accept-set-raising surface among the nine genesis
+settings/creates.} \texttt{SetTuningContext} is schema major~3
+\emph{unconditionally} (\texttt{ScoreTuningContext}'s \texttt{smufl}/
+\texttt{overrides} appends are mandatory, so no lower-major layout for this
+payload exists at any value), which is why it alone --- not
+\texttt{CreateInstrument} at major~2, and not either G2a setter at major~0 ---
+drags the \texttt{OperationEnvelopeBlock} accept-set from \texttt{[0, 2]} to
+\texttt{[0, 3]} (Binary Format companion \sectionsc{The Chunk-Level Gate}).
+This is the reason the genesis ladder split \texttt{SetTuningContext} into
+its own rung rather than landing it alongside \texttt{SetCanvasLayoutDefaults}
+/ \texttt{SetSpellingPrecedence}: a one-way accept-set door is not something
+to bury inside two unrelated major-0 setters.
+
+Undo restores the \textbf{seeded base} settings --- default or non-default
+alike --- exactly as \texttt{SetMetadata} does; the never-authored /
+authored-to-default distinction stays unobservable
+(Section~\ref{sec:k0:set-tuning-context}). This closes P13-S13: the
+canonical operation log is now the sole canonical carrier of the tuning
+context (the canonical base embeds no \texttt{Score} field value for any
+setting, \texttt{metadata} included), on the same reasoning that already
+applied to \texttt{SetMetadata}.
 
 % ===========================================================================
 \chapter{The Catalog Framework}
@@ -1247,6 +1282,79 @@ state rather than absence.
 \textbf{Re-anchoring.} Not applicable: the field is a score singleton with no
 tombstonable anchor.
 
+\section{SetTuningContext}
+\label{sec:k0:set-tuning-context}
+
+Ratified with the genesis operation tranche's G2b rung (\texttt{spec/
+CONTRACT\_GENESIS\_G2B\_TUNING.md}, executing \texttt{spec/
+RULING\_GENESIS\_PERSISTENCE.md}): the score's tuning context settings
+(\texttt{Score.tuning\_context}) join the operation-authored surfaces, on
+the same \texttt{SetMetadata} pattern as \texttt{SetCanvasLayoutDefaults}
+and \texttt{SetSpellingPrecedence} above. Unlike either sibling,
+\texttt{SetTuningContext} is the \textbf{sole genesis payload born at
+schema major~3} and is the surface that raises the
+\texttt{OperationEnvelopeBlock} accept-set from \texttt{[0, 2]} to
+\texttt{[0, 3]} (Binary Format companion \sectionsc{The Chunk-Level Gate}).
+
+\textbf{Payload schema.} \texttt{SetTuningContextOp \{ settings:
+TuningContextSettings \}}. \texttt{TuningContextSettings} is the
+\textbf{authored subset} of \texttt{ScoreTuningContext}: exactly its five
+wire-bearing fields (\texttt{default\_pitch\_space},
+\texttt{default\_tuning\_system}, \texttt{reference}, \texttt{smufl},
+\texttt{overrides}), in the codec's existing order --- not the full
+six-field graph type. \texttt{accidental\_extensions} is deliberately
+\textbf{not} a field of the carried payload: it is staged out of schema
+major~3 (Binary Format companion \sectionsc{Schema Major 3}) and
+\texttt{OperationSet::accept} stores the authored envelope as a
+\emph{value}, so a payload carrying the full \texttt{ScoreTuningContext}
+would let \texttt{accidental\_extensions} reach the graph on the authoring
+replica while decoding to empty on every replica that received the
+document through serialization --- the same document in two graph states,
+depending only on whether it was just authored or just reloaded. The
+subset type makes this divergence unrepresentable: a field the payload
+does not carry cannot be set inconsistently.
+
+\textbf{Canonical encoding.} The length-framed canonical bytes of
+\texttt{settings}. \texttt{TuningContextSettings}'s encoding is
+\textbf{byte-identical} to \texttt{ScoreTuningContext}'s existing
+five-field wire walk --- a type-level narrowing, not a new wire form. Since
+\texttt{ScoreTuningContext}'s \texttt{smufl} and \texttt{overrides} appends
+are mandatory (not \texttt{Option}-hidden), no lower-major layout for this
+payload exists at any value: \texttt{SetTuningContext} is \textbf{born at
+schema major~3 unconditionally}, the same shape as \texttt{CreateInstrument}'s
+unconditional birth at major~2 (Section~\ref{sec:k0:create-instrument}), not
+the value-dependent shape \texttt{CreateRegion}/\texttt{SetStaffLayout} use.
+
+\textbf{Reduction rule.} An advisory last-writer-wins field overwrite,
+identical in discipline to \texttt{SetMetadata}: no working state, no
+conflict, and no idempotence short-circuit. Graph-aware reduction writes
+exactly the five subset fields onto \texttt{Score.tuning\_context} and
+\textbf{leaves \texttt{accidental\_extensions} untouched} --- preserving
+whatever the graph already held, since the operation carries no
+information about that field and normalizing it away (clearing it at
+construction, or rejecting a populated in-memory value) would either make
+correctness depend on a clearing discipline the compiler cannot see, or
+turn an in-memory-only field into an authoring error for callers who never
+opted into its persistence.
+
+\textbf{Conflict cases.} None (advisory LWW).
+
+\textbf{Undo semantics.} A value-restoring field overwrite
+(Section~\ref{sec:k0:undo}), with the chain's value type the \textbf{subset}
+\texttt{TuningContextSettings}, not \texttt{ScoreTuningContext}: the write
+chain is seeded from the base's five wire-bearing fields at ingest, so
+undoing the first operational write restores the pre-operational settings
+rather than absence, identically whether the base was seeded with the type
+default or a genuine non-default value --- the never-authored /
+authored-to-default distinction is unobservable and stays so, since
+\texttt{ScoreTuningContext} is an always-valued \texttt{Score} field, like
+\texttt{metadata}, with no absent state to return to. \texttt{accidental\_
+extensions} never participates in undo: no operation ever writes it, so
+undo leaves it exactly as it found it.
+
+\textbf{Re-anchoring.} Not applicable: the field is a score singleton with no
+tombstonable anchor.
+
 \section{Repeat Structures}
 \label{sec:k0:repeat-structures}
 
@@ -1604,8 +1712,8 @@ transaction minted is tombstoned. \texttt{StrictInverse} conflicts
 \emph{Value restoration} (this revision): for every last-writer-wins overwrite
 the target transaction performed --- event and identified-pitch modification,
 respelling, cross-cutting modification, metadata, canvas layout defaults,
-spelling precedence, metric grid, meter change, tempo segment, staff layout,
-and the user break advisories --- the reducer
+spelling precedence, tuning context settings, metric grid, meter change,
+tempo segment, staff layout, and the user break advisories --- the reducer
 maintains, per overwritten key, the \emph{canonical-order write chain} of
 (writer, value) pairs. Undoing the transaction restores each written key to
 its chain-predecessor value (or its absence, where the transaction introduced

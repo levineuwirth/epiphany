@@ -1888,3 +1888,72 @@ surface for a leak to appear on even before checking the hash. `gen_payload`
 arms appended, reshuffling the seeded RNG stream exactly as at Phase D, Push
 4a, and G1; the digest moved and was re-pinned with that reasoning recorded
 in the test's own comment.
+
+## Genesis tranche G2b — `SetTuningContext`, kind/tag 34, the accept-set raise
+## (2026-07-28)
+
+`spec/CONTRACT_GENESIS_G2B_TUNING.md` lands the third rung: the sole genesis
+payload born at schema major 3, and the one surface among the nine
+settings/creates that drags `OperationEnvelopeBlock`'s accept-set from 2 to 3.
+Its carried type is **not** the full `ScoreTuningContext` but the new
+`epiphany_core::TuningContextSettings` — the authored subset of exactly the
+five wire-bearing fields; see that crate's `DECISIONS.md` for why (the
+never-authored / authored-to-default divergence a full-value payload would
+have introduced).
+
+`set_tuning_context` copies `set_metadata` structurally — advisory LWW, no
+conflict, no idempotence short-circuit — but writes onto `score.tuning_context`
+**field by field** rather than by whole-struct assignment, because the payload
+carries a different (narrower) type than the field it targets:
+`accidental_extensions` is left untouched in both the ordinary apply path and
+undo's restoration-apply path. This is the one place in this rung's reduction
+code that could not be a literal copy-paste of `set_metadata`/
+`set_canvas_layout_defaults`/`set_spelling_precedence` — those three write
+`score.<field> = op.<value>.clone()` in one line because the carried type
+*is* the field's type; here it is a strict subset, so the assignment is five
+lines, one per subset field, deliberately omitting `accidental_extensions`.
+
+**Pin 5, verified rather than assumed.** An earlier draft of the governing
+contract required undo to distinguish "never authored" from
+"authored-to-default" — `spec/PLAN_GENESIS_OPS.md` §5 trap 5, withdrawn
+2026-07-28 before this packet started. `tuning_context_chain` is seeded from
+`Score::empty`'s default in `seed_from_graph`, exactly as `metadata_chain` is,
+so the first undo of a `SetTuningContext` write yields
+`Restore(Some(Predecessor::Base(seeded)))` regardless of whether the seed (or
+the write) happened to equal the type default. Test t7 asserts the two cases
+(default seed, non-default seed) restore identically — proving the
+distinction unobservable, not merely failing to test for it.
+
+`schema_major()` gains a real, unconditional arm returning 3 — the opposite of
+G2a's "no arm" pin, because `ScoreTuningContext`'s `smufl`/`overrides` appends
+are mandatory (not `Option`-hidden), so no lower-major layout for this payload
+exists (a `CreateInstrument`-shaped arm, not a `CreateRegion`-shaped one).
+
+**The accept-set raise is entirely `epiphany-bundle`'s change** (see that
+crate's `DECISIONS.md`); this crate's contribution is making `SetTuningContext`
+the value that requires it.
+
+**Boundary crossings, budgeted as the contract's one-time authorization.**
+`editor-core/src/barriers.rs::subjects_of` gains kind 34 in the same
+score-wide `SetMetadata(_) | DeclareTransaction(_) | ...` arm G2a's two kinds
+joined — a score-level field overwrite with no resolvable region or object.
+`layout-ir/src/barrier.rs`'s "one past the vocabulary" literal moves 34→35.
+`testkit/src/generators.rs`'s `rng.below` bound and
+`testkit/tests/text_projection_grammar.rs`'s kind count both move by one.
+`testkit/src/layout_stub.rs`'s derived `PAYLOAD_FREE`-based draw needed no
+edit — confirmed, not assumed, per the contract's explicit ask (touch row 21)
+— because it derives from the vocabulary macro rather than being hand-extended.
+
+**Decode vector pinned to literal bytes** (`vectors.rs`,
+`set_tuning_context_envelope_decode_vector_is_pinned_to_literal_bytes`), not
+merely round-tripped — the plan's trap 4 (a self-consistent discriminant
+reorder once passed 1283 tests and 8/8 conformance). Mutation-verified: a
+one-byte corruption of the pinned discriminant produces
+`InvalidTag { kind: "OperationKind", tag: 99 }`, observed directly rather than
+inferred.
+
+**No pruning or compaction is implemented, enabled, or prepared here** — pin
+9's explicit non-goal. The op log is now the sole canonical carrier of the
+tuning context (the canonical base embeds no graph value for any `Score`
+field), which is exactly why a future prune must stay blocked on disposition
+C; this packet adds no `fn prune` and no scaffolding toward one.

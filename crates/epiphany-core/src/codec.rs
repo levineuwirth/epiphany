@@ -61,8 +61,8 @@ use crate::graph::{
     SpannerKind, Staff, StaffBasedContent, StaffBracketKind, StaffExtent, StaffGroup,
     StaffGroupKind, StaffInstance, StaffLineConfiguration, StemDirection, SubBeam,
     TempoMapReference, TextLineDefinition, Tie, TieClass, TimeExtent, TimeSignature,
-    TimeSignatureDisplay, Timestamp, Tuplet, TupletRatio, UnpitchedMember, ViewDefinition, Voice,
-    VoiceOrigin, Volta,
+    TimeSignatureDisplay, Timestamp, TuningContextSettings, Tuplet, TupletRatio, UnpitchedMember,
+    ViewDefinition, Voice, VoiceOrigin, Volta,
 };
 use crate::ids::{
     AnalysisLayerId, AnalyticalAnnotationId, BarlineAlignmentGroupId, BeamId, ChordSymbolId,
@@ -1984,6 +1984,40 @@ impl Codec for ScoreTuningContext {
         })
     }
 }
+
+// `TuningContextSettings` (genesis tranche G2b,
+// `spec/CONTRACT_GENESIS_G2B_TUNING.md` §1): the authored subset of
+// `ScoreTuningContext` that `SetTuningContext` carries — exactly its five
+// wire-bearing fields, in the codec's existing order. This walk is
+// **byte-identical** to `ScoreTuningContext`'s `enc`/`dec` above by
+// construction (same five fields, same order, same per-field codecs) — a
+// type-level narrowing, not a new wire form. The identity is asserted by a
+// round-trip test just below
+// (`tuning_context_settings_canonical_bytes_match_score_tuning_context`).
+impl Codec for TuningContextSettings {
+    fn enc(&self, out: &mut Vec<u8>) {
+        self.default_pitch_space.enc(out);
+        self.default_tuning_system.enc(out);
+        self.reference.enc(out);
+        self.smufl.enc(out);
+        self.overrides.enc(out);
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        let default_pitch_space = Codec::dec(r)?;
+        let default_tuning_system = Codec::dec(r)?;
+        let reference = Codec::dec(r)?;
+        let smufl = Codec::dec(r)?;
+        let overrides = Codec::dec(r)?;
+        Ok(TuningContextSettings {
+            default_pitch_space,
+            default_tuning_system,
+            reference,
+            smufl,
+            overrides,
+        })
+    }
+}
+
 // Schema major 2: the cross-cutting bodies filled (appended fields); the
 // frozen prior layouts are read by the `dec_*_v1` sub-decoders.
 struct_codec!(Slur {
@@ -3545,6 +3579,12 @@ canonical_value! {
     // own — see the contract's "Why these two" table.
     CanvasLayoutDefaults,
     SpellingPrecedence,
+    // Genesis tranche G2b (`CONTRACT_GENESIS_G2B_TUNING.md` §1) —
+    // SetTuningContext embeds this authored subset, not the full
+    // `ScoreTuningContext`. Its `Codec` above is byte-identical to
+    // `ScoreTuningContext`'s five-field walk; this makes that layout
+    // reachable per-value, exactly as `ScoreTuningContext` above is.
+    TuningContextSettings,
 }
 
 #[cfg(test)]
@@ -3871,6 +3911,65 @@ mod tests {
         assert_eq!(back.smufl, loaded.smufl);
         assert_eq!(back.overrides, loaded.overrides);
         assert!(back.accidental_extensions.is_empty());
+    }
+
+    /// Genesis tranche G2b (`CONTRACT_GENESIS_G2B_TUNING.md` §1, pin/touch-row
+    /// 3): `TuningContextSettings`'s canonical encoding is **byte-identical**
+    /// to `ScoreTuningContext`'s existing five-field walk — a type-level
+    /// narrowing, not a new wire form. Proven directly against non-default
+    /// values in all five fields, not just the default.
+    ///
+    /// **Mutation:** reorder two fields in `TuningContextSettings::enc` (e.g.
+    /// swap `smufl` and `overrides`) without making the matching change in
+    /// `ScoreTuningContext::enc`; must fail.
+    #[test]
+    fn tuning_context_settings_canonical_bytes_match_score_tuning_context() {
+        use crate::accidental::{SmuflVersion, SmuflVersionRequirement};
+        use crate::graph::{ScoreTuningContext, TuningContextSettings};
+        use crate::ids::{ReplicaId, VoiceId};
+        use crate::pitch::TuningSystemId;
+        use crate::tuning::{TuningOverride, TuningScope};
+
+        let full = ScoreTuningContext {
+            smufl: SmuflVersionRequirement {
+                minimum: SmuflVersion::from_decimal(1, "12").unwrap(),
+                authored_against: SmuflVersion::from_decimal(1, "18").unwrap(),
+            },
+            overrides: vec![TuningOverride {
+                scope: TuningScope::Voice(VoiceId::new(ReplicaId(1), 7)),
+                pitch_space: None,
+                tuning_system: Some(TuningSystemId::new("tet-19")),
+                reference: None,
+            }],
+            ..ScoreTuningContext::default()
+        };
+        let settings = TuningContextSettings {
+            default_pitch_space: full.default_pitch_space.clone(),
+            default_tuning_system: full.default_tuning_system.clone(),
+            reference: full.reference.clone(),
+            smufl: full.smufl,
+            overrides: full.overrides.clone(),
+        };
+
+        let mut full_bytes = Vec::new();
+        full.enc(&mut full_bytes);
+        let mut settings_bytes = Vec::new();
+        settings.enc(&mut settings_bytes);
+        assert_eq!(
+            settings_bytes, full_bytes,
+            "TuningContextSettings must encode byte-identically to ScoreTuningContext's five-field walk"
+        );
+
+        let decoded =
+            TuningContextSettings::dec(&mut Reader::new(&settings_bytes)).expect("decodes");
+        assert_eq!(decoded.default_pitch_space, settings.default_pitch_space);
+        assert_eq!(
+            decoded.default_tuning_system,
+            settings.default_tuning_system
+        );
+        assert_eq!(decoded.reference, settings.reference);
+        assert_eq!(decoded.smufl, settings.smufl);
+        assert_eq!(decoded.overrides, settings.overrides);
     }
 
     #[test]

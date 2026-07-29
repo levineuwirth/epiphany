@@ -373,6 +373,44 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         precedence_trailing,
     ));
 
+    // --- OperationEnvelope carrying SetTuningContext (genesis tranche G2b) —
+    // the sole genesis payload born at schema major 3. Same rationale as the
+    // siblings above: nothing else in this corpus exercises this payload's
+    // decode path, and a round-trip check alone cannot see a self-consistent
+    // encoder/decoder reorder (the 3b-i lesson).
+    let tuning_envelope = OperationEnvelope {
+        id: OperationId::new(ReplicaId(1), 4),
+        author: crate::support::AuthorId(0),
+        stamp: crate::stamp::OperationStamp::new(
+            crate::stamp::HybridLogicalClock::new(epiphany_core::WallClockTime(1), 1),
+            OperationId::new(ReplicaId(1), 4),
+        ),
+        causal_context: crate::causal::CausalContext::new(),
+        transaction: None,
+        payload: crate::payload::OperationPayload::Primitive(
+            crate::payload::OperationKind::SetTuningContext(crate::payload::SetTuningContextOp {
+                settings: crate::valuegen::tuning_context_settings(1),
+            }),
+        ),
+    };
+    let tuning_envelope_bytes = tuning_envelope.to_canonical_bytes();
+    v.push(row(
+        OE,
+        "accept",
+        "-",
+        "set_tuning_context",
+        tuning_envelope_bytes.clone(),
+    ));
+    let mut tuning_trailing = tuning_envelope_bytes;
+    tuning_trailing.push(0);
+    v.push(row(
+        OE,
+        "reject",
+        "trailing-bytes",
+        "set_tuning_context_trailing",
+        tuning_trailing,
+    ));
+
     v
 }
 
@@ -546,6 +584,35 @@ mod tests {
             0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
             0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 33, 9, 0, 0, 0, 5, 0, 0, 0, 4, 3, 2, 1, 0,
+        ];
+        let result = check("ops.operation_envelope", &bytes)
+            .expect("ops.operation_envelope is owned by this crate");
+        assert_eq!(
+            result,
+            Ok(true),
+            "the committed literal bytes must decode and re-encode injectively"
+        );
+    }
+
+    /// (s8 analogue) Genesis tranche G2b (`spec/CONTRACT_GENESIS_G2B_TUNING.md`
+    /// touch row 11): the `SetTuningContext` envelope decode vector, pinned to
+    /// a literal byte array copied from the committed corpus — not derived by
+    /// calling `.to_canonical_bytes()` here, for the same reason as the
+    /// sibling tests above (the 3b-i lesson: round-trip locking alone cannot
+    /// see a self-consistent encoder/decoder reorder). The mutation this
+    /// guards against is a swap of discriminant 34 with any neighboring
+    /// discriminant in both the encoder and the decoder — self-consistent, so
+    /// every round-trip test stays green, while this correctly-named literal
+    /// vector dies.
+    #[test]
+    fn set_tuning_context_envelope_decode_vector_is_pinned_to_literal_bytes() {
+        #[rustfmt::skip]
+        let bytes: Vec<u8> = vec![
+            0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+            0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 34, 48, 0, 0, 0, 6, 0, 0, 0, 99, 109, 110,
+            45, 49, 50, 6, 0, 0, 0, 116, 101, 116, 45, 49, 50, 0, 5, 0, 4, 8, 0, 0, 0, 0, 0, 0,
+            0, 0, 144, 123, 64, 1, 0, 40, 0, 1, 0, 40, 0, 0, 0, 0, 0,
         ];
         let result = check("ops.operation_envelope", &bytes)
             .expect("ops.operation_envelope is owned by this crate");

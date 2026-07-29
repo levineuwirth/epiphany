@@ -132,8 +132,9 @@ pub use payload::{
     ModifyIdentifiedPitchOp, OperationKind, OperationKindTag, OperationPayload, PositionRemapping,
     ResolveConflictPayload, ResolveEquivocationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp,
     SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
-    SetTimeSignatureOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransactionCategory,
-    TransactionDescriptor, TransposeIntervalOp, TransposeOp, TupletCompensation,
+    SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp,
+    TransactionCategory, TransactionDescriptor, TransposeIntervalOp, TransposeOp,
+    TupletCompensation,
 };
 pub use reduce::{
     canonical_reduction_order, GraphMaterialization, MaterializedState, ObjectState, PendingReason,

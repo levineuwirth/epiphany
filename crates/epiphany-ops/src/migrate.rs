@@ -188,6 +188,8 @@ fn project_kind(kind: &OperationKind) -> V0OperationKind {
         OperationKind::SetSpellingPrecedence(op) => {
             V0OperationKind::SetSpellingPrecedence(op.clone())
         }
+        // Genesis tranche G2b: born past v0; projected verbatim.
+        OperationKind::SetTuningContext(op) => V0OperationKind::SetTuningContext(op.clone()),
     }
 }
 
@@ -350,6 +352,8 @@ fn migrate_kind(kind: &V0OperationKind, context: &Score) -> Result<OperationKind
         V0OperationKind::SetSpellingPrecedence(op) => {
             OperationKind::SetSpellingPrecedence(op.clone())
         }
+        // Genesis tranche G2b: identity round-trip (no lossy v0 form).
+        V0OperationKind::SetTuningContext(op) => OperationKind::SetTuningContext(op.clone()),
     })
 }
 

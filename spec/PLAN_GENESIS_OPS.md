@@ -6,10 +6,28 @@ reverses Pass-12 K8 and makes every mutable field of `Score` operation-authored.
 This plan is the execution scope: what the tranche touches, in what order, and
 which questions must be answered before a dispatch contract can be written.
 
-**Status:** **G1 landed** (3b09595, CI green) via
-`spec/CONTRACT_GENESIS_G1_INSTRUMENT.md`. **G2a contracted**
-(`spec/CONTRACT_GENESIS_G2A_SETTINGS.md`); **G-minor**, G2b, and G3 scoped, not
-contracted. §6 lists what still needs ratification.
+**Status:** the ladder **G1 → G2a → G-minor → G2b** is **complete**; only **G3**
+remains.
+
+* **G1 landed** (3b09595) — `CreateInstrument`, kind/tag 31.
+* **G2a landed** (7df5ca1 + 55eff00) — `SetCanvasLayoutDefaults` and
+  `SetSpellingPrecedence`, kinds/tags 32/33, both major 0.
+* **G-minor landed** (ff9bd0f) — the chunk schema minor became a derived
+  record; epoch ladder ratified at minors 2–9 (`spec/PLAN_GMINOR_SCHEMA_MINOR.md`
+  §4), governed by `spec/AUDIT_GMINOR_VOCABULARIES.md`. Closed **P13-S14**.
+* **G2b landed** — `SetTuningContext`, kind/tag **34**, schema major **3**,
+  minor epoch **10**. Carried the sole accept-set raise
+  (`OperationEnvelopeBlock` 2→3) and rewrote the `bundle.rs` rationale it
+  falsified. Payload is the five-field subset
+  `epiphany_core::TuningContextSettings`, **not** the full graph type — §5
+  trap 7's holdout, resolved in the contract as *subset over normalization*.
+  Closed **P13-S13**.
+* **G3** — the five remaining mint families, plus the delete/modify coverage
+  design. Scoped, not contracted.
+
+§6 lists what still needs ratification. **Standing constraint, now with real
+teeth:** pruning MUST NOT be implemented until disposition C lands — after G2b
+it would discard *authored* genesis state, not merely re-derivable state.
 
 **G1 shipped documentation debt** — five normative falsehoods across
 `binary_format.tex`, `core_spec.tex`, and `operation_catalog.tex`, because its

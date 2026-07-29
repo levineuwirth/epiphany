@@ -37,7 +37,8 @@ use epiphany_core::{
     OperationId, Pitch, PitchId, PitchSpelling, Region, RegionId, RegionTimeModel, RepeatStructure,
     RepeatStructureId, Rest, ScoreMetadata, Slur, Spanner, SpellingPrecedence, Staff, StaffId,
     StaffInstance, StaffInstanceId, StaffLineConfiguration, TempoSegment, Tie, TimeAnchor,
-    TimeSignature, TransactionId, TranspositionInterval, TupletId, TypedObjectId, Voice, VoiceId,
+    TimeSignature, TransactionId, TranspositionInterval, TuningContextSettings, TupletId,
+    TypedObjectId, Voice, VoiceId,
 };
 use epiphany_determinism::{
     sorted_canonical, CanonicalDecode, CanonicalEncode, CanonicalSet, DecodeError,
@@ -263,6 +264,15 @@ pub enum OperationKind {
     /// Overwrite the score's spelling precedence (later-in-canonical-order
     /// wins).
     SetSpellingPrecedence(SetSpellingPrecedenceOp),
+    // --- Genesis tranche G2b (`spec/CONTRACT_GENESIS_G2B_TUNING.md`): the
+    // sole genesis payload born at schema major 3. Discriminant extends
+    // additively past 33.
+    // ---
+    /// Overwrite the score's tuning context settings (later-in-canonical-
+    /// order wins). Carries [`TuningContextSettings`], the authored subset of
+    /// `ScoreTuningContext` — `accidental_extensions` is not on the wire and
+    /// is left untouched by reduction (contract §1).
+    SetTuningContext(SetTuningContextOp),
 }
 
 impl OperationKind {
@@ -291,6 +301,13 @@ impl OperationKind {
             | OperationKind::CreateStaff(_)
             | OperationKind::SetMetadata(_)
             | OperationKind::CreateInstrument(_) => 2,
+            // Genesis tranche G2b (contract pin 2): unconditionally 3.
+            // `ScoreTuningContext`'s `smufl`/`overrides` appends are
+            // mandatory, not `Option`-hidden, so there is no lower-major
+            // layout for this payload — a `CreateInstrument`-shaped arm, not
+            // a `CreateRegion`-shaped one. The sole surface among the nine
+            // genesis settings/creates that raises the op-block accept-set.
+            OperationKind::SetTuningContext(_) => 3,
             // Value-dependent: the embedded StaffLineConfiguration rides an
             // Option; None encodes byte-identically to the prior major.
             OperationKind::CreateRegion(op) => {
@@ -368,6 +385,9 @@ impl OperationKind {
             // by the same accident as above, not by rule.
             OperationKind::SetCanvasLayoutDefaults(_) => 32,
             OperationKind::SetSpellingPrecedence(_) => 33,
+            // Genesis tranche G2b; appended past 33. Coincides with tag 34 by
+            // the same accident as G1/G2a, not by rule.
+            OperationKind::SetTuningContext(_) => 34,
         }
     }
 
@@ -424,6 +444,9 @@ impl OperationKind {
             OperationKind::SetCanvasLayoutDefaults(_) | OperationKind::SetSpellingPrecedence(_) => {
                 Some(9)
             }
+            // Minor 10 (Genesis tranche G2b), ratified
+            // `spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4.
+            OperationKind::SetTuningContext(_) => Some(10),
         }
     }
 
@@ -471,6 +494,7 @@ impl OperationKind {
             OperationKind::CreateInstrument(_) => OperationKindTag::CreateInstrument,
             OperationKind::SetCanvasLayoutDefaults(_) => OperationKindTag::SetCanvasLayoutDefaults,
             OperationKind::SetSpellingPrecedence(_) => OperationKindTag::SetSpellingPrecedence,
+            OperationKind::SetTuningContext(_) => OperationKindTag::SetTuningContext,
         }
     }
 }
@@ -516,6 +540,7 @@ impl CanonicalEncode for OperationKind {
             OperationKind::CreateInstrument(op) => op.encode_canonical(out),
             OperationKind::SetCanvasLayoutDefaults(op) => op.encode_canonical(out),
             OperationKind::SetSpellingPrecedence(op) => op.encode_canonical(out),
+            OperationKind::SetTuningContext(op) => op.encode_canonical(out),
         }
     }
 }
@@ -570,6 +595,8 @@ pub enum OperationKindTag {
     SetCanvasLayoutDefaults,
     /// Genesis tranche G2a.
     SetSpellingPrecedence,
+    /// Genesis tranche G2b.
+    SetTuningContext,
 }
 
 /// The discriminant of [`OperationKindTag::Registered`], the one tag that
@@ -684,6 +711,7 @@ operation_kind_tag_vocabulary! {
     CreateInstrument = 31 => "create-instrument" @ Some(8),
     SetCanvasLayoutDefaults = 32 => "set-canvas-layout-defaults" @ Some(9),
     SetSpellingPrecedence = 33 => "set-spelling-precedence" @ Some(9),
+    SetTuningContext = 34 => "set-tuning-context" @ Some(10),
 }
 
 impl CanonicalEncode for OperationKindTag {
@@ -1647,6 +1675,30 @@ pub struct SetSpellingPrecedenceOp {
 impl CanonicalEncode for SetSpellingPrecedenceOp {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         push_lp_bytes(out, &self.precedence.canonical_bytes());
+    }
+}
+
+// --- Genesis tranche G2b (`spec/CONTRACT_GENESIS_G2B_TUNING.md`): the sole
+// genesis payload born at schema major 3. LWW field-overwrite, the same
+// `SetMetadata` discipline. ---
+
+/// Overwrite the score's tuning context settings (operation_catalog
+/// §SetTuningContext). Carries [`TuningContextSettings`] — the **authored
+/// subset** of `ScoreTuningContext` (contract §1): exactly the five
+/// wire-bearing fields, in the codec's existing order.
+/// `accidental_extensions` is not a field of the carried type and is never
+/// touched by reduction, which writes only these five fields onto
+/// `score.tuning_context`. The score-singleton field-overwrite is *advisory*
+/// last-writer-wins — the latest write in canonical order silently wins and
+/// no conflict is recorded, exactly `SetMetadata`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SetTuningContextOp {
+    pub settings: TuningContextSettings,
+}
+
+impl CanonicalEncode for SetTuningContextOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_lp_bytes(out, &self.settings.canonical_bytes());
     }
 }
 

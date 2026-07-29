@@ -409,6 +409,30 @@ pub fn spelling_precedence(nth: u8) -> epiphany_core::SpellingPrecedence {
         .expect("both listed orders are total over the five source kinds")
 }
 
+/// Tuning context settings with an `nth`-distinct reference frequency
+/// (genesis tranche G2b) — the carried [`epiphany_core::TuningContextSettings`]
+/// of `SetTuningContext`. Distinct `nth` give distinct values so a harness can
+/// drive concurrent `SetTuningContext`s, an advisory LWW field that resolves
+/// by canonical order with no conflict.
+pub fn tuning_context_settings(nth: u8) -> epiphany_core::TuningContextSettings {
+    use epiphany_core::{CmnNominal, PitchSpacePosition, ReferencePitch};
+    epiphany_core::TuningContextSettings {
+        default_pitch_space: epiphany_core::PitchSpaceId::new("cmn-12"),
+        default_tuning_system: epiphany_core::TuningSystemId::new("tet-12"),
+        reference: ReferencePitch::new(
+            PitchSpacePosition::Cmn {
+                nominal: CmnNominal::A,
+                alteration: 0,
+                octave: 4,
+            },
+            440.0 + f64::from(nth),
+        )
+        .expect("a small positive offset from A440 stays finite and positive"),
+        smufl: epiphany_core::SmuflVersionRequirement::default(),
+        overrides: Vec::new(),
+    }
+}
+
 /// A well-formed `numerator`/4 [`TimeSignature`](epiphany_core::TimeSignature)
 /// (Phase-3 tranche): `numerator` quarter-note beat groups summing exactly to
 /// the measure duration, so [`epiphany_core::TimeSignature::new`]'s beat-group

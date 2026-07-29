@@ -1441,3 +1441,53 @@ in the *containing* `Canvas` walk (`dec_canvas_v0` default-fills the field;
 itself. So neither op gains a `schema_major()` arm — both fall into the
 existing `_ => 0` catch-all in `epiphany-ops`. This is unlike G1's
 `CreateInstrument`, whose carried `Instrument` has mandatory major-2 appends.
+
+## Genesis tranche G2b — `TuningContextSettings`, the subset type
+## (2026-07-28)
+
+`spec/CONTRACT_GENESIS_G2B_TUNING.md` §1 (RATIFIED, resolving
+`spec/PLAN_GENESIS_OPS.md` §3's open pin) adds `SetTuningContext` to
+`epiphany-ops`, the G2b rung of the genesis ladder. Unlike G1 and G2a, its
+carried payload is **not** the full `ScoreTuningContext` — it is a new type,
+`epiphany_core::TuningContextSettings`, holding exactly the five fields
+`ScoreTuningContext`'s `Codec` actually walks onto the wire
+(`default_pitch_space`, `default_tuning_system`, `reference`, `smufl`,
+`overrides`), in that same order.
+
+**Why a new type, not the full value or a normalizing construction check.**
+`ScoreTuningContext`'s `Codec` deliberately drops `accidental_extensions` on
+encode and default-fills it to `Vec::new()` on decode (the field is staged out
+of schema major 3). `OperationSet::accept` stores the authored envelope as a
+**value**, so a `SetTuningContext` carrying the full `ScoreTuningContext`
+would reduce with `accidental_extensions` intact on the authoring replica and
+empty on any replica that received the document through serialization — the
+same document in two graph states, depending only on whether you just
+authored it. `canonical_value!`'s generated `decode_canonical` cannot catch
+this: it compares decode → `finish()` → re-encode bytes, never the
+originating value, so a field that never reaches the bytes is invisible to
+it.
+
+Normalization (clearing the field at construction) and reject-on-non-empty
+were both rejected: normalization makes correctness depend on remembering to
+clear a field at every construction site, enforced by nothing the compiler or
+codec can see — a shape this track has been burned by twice already (four
+stale literal sites at Push 4a, six found during G2a); reject-on-non-empty
+turns an in-memory-only field into an authoring error for callers who never
+opted into persistence. The subset type makes the divergence
+**unrepresentable**: a field that does not exist cannot be set wrongly.
+
+**No new byte layout.** `TuningContextSettings`'s `Codec` is byte-identical to
+`ScoreTuningContext`'s existing five-field walk by construction — same five
+fields, same order, same per-field codecs — asserted directly by
+`tuning_context_settings_canonical_bytes_match_score_tuning_context`
+(`codec.rs`). This is a type-level narrowing, not a new wire form, so
+`canonical_value!` still applies and the G1/G2a payload template is
+unchanged. One more `canonical_value!` line makes it reachable per-value.
+
+`SetTuningContext` **does** gain a real `schema_major()` arm returning 3,
+unconditionally — the opposite of G2a. `ScoreTuningContext`'s wire form is
+born at schema major 3 and its appends (`smufl`, `overrides`) are mandatory,
+not `Option`-hidden, so there is no lower-major layout for this payload to
+fall back to. This is the sole surface among the nine genesis-tranche
+settings/creates that drags `OperationEnvelopeBlock`'s accept-set from 2 to 3
+(`epiphany-bundle`'s `DECISIONS.md`).

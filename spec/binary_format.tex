@@ -1455,6 +1455,13 @@ and the reader disagree about the field's type.
   \tablenums{33} & \texttt{SetSpellingPrecedence} &
     $\mathrm{lp}$(\texttt{SpellingPrecedence}) &
     \sectionsc{SetSpellingPrecedence} \\
+  \tablenums{34} & \texttt{SetTuningContext} &
+    $\mathrm{lp}$(\texttt{TuningContextSettings}) --- the \textbf{authored
+    subset} of \texttt{ScoreTuningContext}: exactly its five wire-bearing
+    fields, in the same order, byte-identical to the schema-major-3
+    \texttt{ScoreTuningContext} layout (Section~\ref{sec:evolution:major3});
+    born at v3 unconditionally &
+    \sectionsc{SetTuningContext} \\
   \bottomrule
 \end{longtable}
 \endgroup
@@ -1525,6 +1532,7 @@ discriminants and wrong lengths are decode errors. Append-only past
   \tablenums{28} & \texttt{CreateRepeatStructure} & \tablenums{29} & \texttt{DeleteRepeatStructure} \\
   \tablenums{30} & \texttt{TransposeInterval} & \tablenums{31} & \texttt{CreateInstrument} \\
   \tablenums{32} & \texttt{SetCanvasLayoutDefaults} & \tablenums{33} & \texttt{SetSpellingPrecedence} \\
+  \tablenums{34} & \texttt{SetTuningContext} & & \\
   \bottomrule
 \end{longtable}
 \endgroup
@@ -2332,9 +2340,13 @@ Every chunk declares a \texttt{SchemaVersion} (major, minor) in its
     role}, not one shared bound (Section~\ref{sec:evolution:major1}'s ``raised
     per chunk role'' rule, sharpened by major~3, the first bump under which the
     roles' maxima genuinely diverge): the \texttt{Snapshot} role's max is
-    \tablenums{3}; the \texttt{OperationEnvelopeBlock} role's max stays
-    \tablenums{2} (schema major~3 embeds no operation payload, so this role
-    does not rise); every other role's max is \tablenums{0}. The reference
+    \tablenums{3}; the \texttt{OperationEnvelopeBlock} role's max is
+    \tablenums{3} as of genesis tranche G2b
+    (\texttt{spec/CONTRACT\_GENESIS\_G2B\_TUNING.md} ---
+    \texttt{SetTuningContext}, \tablenums{34}, is born at v3
+    unconditionally; the role stayed at \tablenums{2} from Push~4b tranche
+    3b-i, when schema major~3 embedded no operation payload, until this
+    rung); every other role's max is \tablenums{0}. The reference
     implementation's overall envelope is $\{0, 1, 2, 3\}$ ($\textsc{min} = 0$,
     $\textsc{max} = 3$), realized as these differing per-role maxima rather
     than a single shared bound.
@@ -2370,22 +2382,26 @@ The \emph{only} minor-additive mechanism in schema major~0 is
 \textbf{appending discriminants to open vocabularies}:
 
 \begin{itemize}
-  \item \texttt{OperationKind}: append at ${\geq}\,\tablenums{34}$
+  \item \texttt{OperationKind}: append at ${\geq}\,\tablenums{35}$
     (Requirement~\ref{req:binfmt:kind-discriminants}; the Phase-3
     tranche took \tablenums{24}--\tablenums{27} under this mechanism,
     the repeat pair \tablenums{28}/\tablenums{29} in the
     schema-major-2 revision, Push~4a took \tablenums{30}
     (\texttt{TransposeInterval}), genesis tranche G1 took \tablenums{31}
-    (\texttt{CreateInstrument}), and genesis tranche G2a took
+    (\texttt{CreateInstrument}), genesis tranche G2a took
     \tablenums{32}/\tablenums{33} (\texttt{SetCanvasLayoutDefaults},
-    \texttt{SetSpellingPrecedence}) --- the discriminant space is one
-    append-only table across majors, but a kind's \emph{block stamp} follows
-    minimal stamping over its payload: \tablenums{28}'s payload embeds a v2
-    layout, so its blocks stamp major~2, Section~\ref{sec:evolution:major2});
-  \item \texttt{OperationKindTag}: append at ${\geq}\,\tablenums{34}$
-    (Requirement~\ref{req:binfmt:kind-tag}; the same ten variants as
-    \texttt{OperationKind}, at the same ten discriminants, appended by the
-    same five tranches);
+    \texttt{SetSpellingPrecedence}), and genesis tranche G2b took
+    \tablenums{34} (\texttt{SetTuningContext}) --- the discriminant space is
+    one append-only table across majors, but a kind's \emph{block stamp}
+    follows minimal stamping over its payload: \tablenums{28}'s payload
+    embeds a v2 layout, so its blocks stamp major~2,
+    Section~\ref{sec:evolution:major2}; \tablenums{34}'s payload embeds a v3
+    layout unconditionally, so its blocks stamp major~3,
+    Section~\ref{sec:evolution:major3} --- the sole appended kind to do so);
+  \item \texttt{OperationKindTag}: append at ${\geq}\,\tablenums{35}$
+    (Requirement~\ref{req:binfmt:kind-tag}; the same eleven variants as
+    \texttt{OperationKind}, at the same eleven discriminants, appended by
+    the same six tranches);
   \item \texttt{OperationPayload}: append at ${\geq}\,\tablenums{4}$
     (Section~\ref{sec:ops:payload}; \texttt{ResolveEquivocation} = 3, Push~3,
     is the one and only append this vocabulary has had);
@@ -2977,24 +2993,39 @@ layout ahead of a real consumer is exactly what the frozen-layout rule
 major~1.
 
 \subsection{Where the changed fields reach}
-Only one payload type changes, and it changes at exactly one site:
+
+\textbf{As first defined (Push~4b tranche 3b-i), no operation payload
+embedded the tuning context} --- \texttt{ScoreTuningContext} reached the
+wire only through the acceleration full-\texttt{Score} snapshot, and the
+\texttt{OperationEnvelopeBlock} role's accept-set stayed at major~2. This
+changed at genesis tranche G2b
+(\texttt{spec/CONTRACT\_GENESIS\_G2B\_TUNING.md}), which corrects the claim
+below:
 
 \begin{itemize}
-  \item \textbf{Snapshot-only:} \texttt{ScoreTuningContext} reaches the wire
-    \emph{only} through the acceleration full-\texttt{Score} snapshot. No
-    operation payload embeds the tuning context (core Chapter~6's operation
-    vocabulary carries no \texttt{ScoreTuningContext} / \texttt{TuningOverride}
-    / \texttt{SmuflVersionRequirement} field anywhere), so the
-    \textbf{canonical operation layer is untouched}: no op payload is ``born
-    at v3'', and no frozen v2 op-payload decoder is needed. The
-    \texttt{OperationEnvelopeBlock} role's accept-set therefore stays at
-    major~2 (Section~\ref{sec:evolution:major2}) --- schema major~3 is the
-    first data-model bump under which a chunk role's max does \emph{not}
-    move in lockstep with the others.
+  \item \textbf{Reaches two sites, as of genesis tranche G2b.}
+    \texttt{ScoreTuningContext} still reaches the wire through the
+    acceleration full-\texttt{Score} snapshot, \emph{and} its authored
+    subset --- \texttt{TuningContextSettings}, exactly the five
+    wire-bearing fields, byte-identical to this section's layout
+    (Section~\ref{sec:ops:kinds}, \tablenums{34}
+    \texttt{SetTuningContext}) --- now reaches the wire through the
+    canonical operation layer: \texttt{SetTuningContext} is \emph{born at
+    v3 unconditionally} (the same shape as \texttt{CreateInstrument}'s v2
+    birth, Section~\ref{sec:evolution:major2}), since \texttt{smufl} and
+    \texttt{overrides} are mandatory appends with no lower-major layout for
+    this payload to fall back to. The \texttt{OperationEnvelopeBlock}
+    role's accept-set therefore \textbf{widens to major~3}
+    (Section~\ref{sec:evolution:gate}) --- schema major~3 stopped being the
+    data-model bump under which a chunk role's max does not move in
+    lockstep with the others; that distinction now belongs to no major.
   \item \textbf{The canonical base is unchanged.} The
-    \texttt{MaterializedState} embeds no tuning context, so it remains
-    major~0, byte-identical across the bump --- the same keystone as
-    majors~1 and~2, and a conformance test \SHOULD{} assert it again.
+    \texttt{MaterializedState} embeds no tuning context (nor any other
+    \texttt{Score} field value), so it remains major~0, byte-identical
+    across the bump --- the same keystone as majors~1 and~2, and a
+    conformance test \SHOULD{} assert it again. This is unaffected by G2b:
+    the canonical carrier of the tuning context is the operation log, not
+    the base, so the base's own stamping never moves.
   \item The manifest stays major~0 (nothing here touches it).
 \end{itemize}
 
@@ -3005,10 +3036,14 @@ or migrate it on read (the reference implementation migrates). Canonical
 chunks parse or the bundle opens read-only. Migration \emph{composes}: a
 major-3 reader migrates a major-0 snapshot
 v0${\to}$v1${\to}$v2${\to}$v3 in one read, each step total and
-default-filling. Because no operation payload changes at this major, a
-major-2-only reader's op-block admission is exactly as before this bump ---
-only the \texttt{Snapshot} role's accept-set widens, to \tablenums{3}
-(Section~\ref{sec:evolution:gate}).
+default-filling. As originally defined (Push~4b tranche 3b-i), no operation
+payload changed at this major, so a major-2-only reader's op-block
+admission was exactly as before the bump and only the \texttt{Snapshot}
+role's accept-set widened, to \tablenums{3}
+(Section~\ref{sec:evolution:gate}). Genesis tranche G2b (above) changes
+this: a major-2-only reader now meets a possible major-3 op block
+(\texttt{SetTuningContext}) and opens read-only, exactly the one-way door
+Section~\ref{sec:evolution:gate} describes for every other accept-set raise.
 
 \subsection{Changed value layout}
 As in majors~1 and~2, the wire form appends new fields \emph{after} the

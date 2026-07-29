@@ -47,9 +47,9 @@ use epiphany_ops::{
     ReplicaAnomalyReason, ReplicaAnomalyRegistryId, ResolutionAction, ResolutionRegistryId,
     ResolveConflictPayload, RespellPitchOp, SerializedCanonicalInputs, SetCanvasLayoutDefaultsOp,
     SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
-    SetTimeSignatureOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransactionCategory,
-    TransactionDescriptor, TransposeIntervalOp, TransposeOp, TupletCompensation,
-    TupletCompensationKind, UndoPolicy, UndoTransactionPayload,
+    SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp,
+    TransactionCategory, TransactionDescriptor, TransposeIntervalOp, TransposeOp,
+    TupletCompensation, TupletCompensationKind, UndoPolicy, UndoTransactionPayload,
 };
 
 use crate::rng::Rng;
@@ -646,7 +646,7 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
         }
         _ => {}
     }
-    let kind = match rng.below(34) {
+    let kind = match rng.below(35) {
         0 => {
             let pitches = if rng.boolean() {
                 vec![obj_pitch(rng.below(pitches))]
@@ -870,6 +870,10 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
         }),
         32 => OperationKind::SetSpellingPrecedence(SetSpellingPrecedenceOp {
             precedence: valuegen::spelling_precedence(rng.below(3) as u8),
+        }),
+        // Genesis tranche G2b: the sole genesis payload born at schema major 3.
+        33 => OperationKind::SetTuningContext(SetTuningContextOp {
+            settings: valuegen::tuning_context_settings(rng.below(3) as u8),
         }),
         _ => OperationKind::Registered(
             OperationKindRegistryId(rng.next_u64() as u128),

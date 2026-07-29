@@ -15,8 +15,8 @@ use crate::payload::{
     InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
     OperationKind, OperationKindTag, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp,
     SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
-    SetTimeSignatureOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransactionDescriptor,
-    TransposeIntervalOp, TransposeOp,
+    SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp,
+    TransactionDescriptor, TransposeIntervalOp, TransposeOp,
 };
 use crate::support::OperationKindRegistryId;
 
@@ -228,6 +228,9 @@ impl TextValue for OperationKind {
             }
             OperationKind::SetSpellingPrecedence(op) => {
                 production(self.tag(), vec![op.precedence.project()])
+            }
+            OperationKind::SetTuningContext(op) => {
+                production(self.tag(), vec![op.settings.project()])
             }
         }
     }
@@ -566,6 +569,14 @@ impl TextValue for OperationKind {
                     precedence: TextValue::parse(precedence)?,
                 })
             }
+            OperationKindTag::SetTuningContext => {
+                let [settings] = fields(s, tag, 1)? else {
+                    unreachable!("the arity-1 check returned one field")
+                };
+                OperationKind::SetTuningContext(SetTuningContextOp {
+                    settings: TextValue::parse(settings)?,
+                })
+            }
         })
     }
 }
@@ -619,7 +630,7 @@ mod tests {
     #[test]
     fn every_operation_kind_round_trips_with_canonical_text() {
         let tags: Vec<_> = all_tags().collect();
-        assert_eq!(tags.len(), 34, "the grammar has 34 kind productions");
+        assert_eq!(tags.len(), 35, "the grammar has 35 kind productions");
         for tag in tags {
             round_trip(&sample_kind(tag));
         }

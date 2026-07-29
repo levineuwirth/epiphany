@@ -50,23 +50,26 @@ pub const SUPPORTED_SCHEMA_MAJOR: u16 = 0;
 /// bound of its per-role accept-set `[0, max]` (Binary Format companion
 /// §"Schema Major 1", "The accept-set gate").
 ///
-/// `OperationEnvelopeBlock` admits major 2 (schema major 2 fills the
+/// `OperationEnvelopeBlock` admits major 3 (schema major 2 fills the
 /// cross-cutting/staff/metadata bodies its payloads embed; major 1 embedded a
 /// v1 `CreateRegion`; the reader treats the block bytes opaquely, so it
-/// parses a higher-major block without decoding the payload). Schema major 3
-/// (Push 4b tranche 3b-i) does **not** raise this role: no operation payload
-/// embeds the tuning context, so no op block is ever born at v3. `Snapshot`
-/// admits major 3 for the acceleration full-`Score` form (decoded through
-/// the core versioned seam); the canonical BASE carried under the same kind
-/// must stay major 0, enforced per role. Every other role stays at
-/// [`SUPPORTED_SCHEMA_MAJOR`] until its own versioned path lands — the
-/// layout cache, the operation index, and the manifest (carried opaquely,
+/// parses a higher-major block without decoding the payload). **Schema major
+/// 3 is raised by genesis tranche G2b** (`spec/CONTRACT_GENESIS_G2B_TUNING.md`):
+/// `SetTuningContext` is the sole operation payload that embeds the tuning
+/// context (`epiphany_core::TuningContextSettings`, born at major 3
+/// unconditionally), so an op block carrying one is now born at v3 — this
+/// superseded the earlier Push 4b tranche 3b-i note claiming no payload ever
+/// would. `Snapshot` admits major 3 for the acceleration full-`Score` form
+/// (decoded through the core versioned seam); the canonical BASE carried
+/// under the same kind must stay major 0, enforced per role. Every other role
+/// stays at [`SUPPORTED_SCHEMA_MAJOR`] until its own versioned path lands —
+/// the layout cache, the operation index, and the manifest (carried opaquely,
 /// never grows a versioned layout). A chunk above its role's max is not
 /// admitted; for a **canonical** role that means the bundle opens read-only
 /// (a lower-major-only reader meeting a newer op block), not a hard reject.
 pub fn max_supported_major(kind: ChunkKind) -> u16 {
     match kind {
-        ChunkKind::OperationEnvelopeBlock => 2,
+        ChunkKind::OperationEnvelopeBlock => 3,
         // The payload-polymorphic Snapshot role: the acceleration
         // full-`Score` form is decoded through the core versioned seam
         // (`Score::decode_canonical_versioned`, majors {0,1,2,3}). The
@@ -1380,14 +1383,17 @@ mod tests {
         // CreateRegion), and schema major 2 to major 2 (a block bearing a v2
         // cross-cutting/staff/metadata value); every other role stays exact-0
         // until its own versioned path lands, and the manifest stays major 0
-        // forever. Schema major 3 (Push 4b tranche 3b-i, §"Schema Major 3")
-        // raises only the snapshot role — no operation payload embeds the
-        // tuning context, so the op-block role's admission is untouched.
+        // forever. Genesis tranche G2b (`spec/CONTRACT_GENESIS_G2B_TUNING.md`)
+        // raises the op-block role to major 3: `SetTuningContext` is the sole
+        // operation payload that embeds the tuning context, born at major 3
+        // unconditionally, so a block carrying one is now born at v3 — this
+        // supersedes the earlier Push 4b tranche 3b-i note claiming no
+        // payload ever would.
         assert_eq!(SchemaVersion::V1.major, 1);
         assert_eq!(SchemaVersion::V2.major, 2);
         assert_eq!(SchemaVersion::V3.major, 3);
-        // The op-block role admits [0, 2] — unchanged by schema major 3.
-        assert_eq!(max_supported_major(ChunkKind::OperationEnvelopeBlock), 2);
+        // (t4) The op-block role admits [0, 3] as of genesis tranche G2b.
+        assert_eq!(max_supported_major(ChunkKind::OperationEnvelopeBlock), 3);
         // The snapshot role admits the major-3 acceleration form (decoded
         // through the core versioned seam); the canonical BASE stays major 0
         // per role (`mis_stamped_canonical_base`). The remaining roles stay
@@ -1401,16 +1407,45 @@ mod tests {
         assert_eq!(Manifest::SCHEMA.major, 0);
     }
 
+    /// (t10) `CONTRACT_GENESIS_G2B_TUNING.md` pin 3: the doc comment above
+    /// `max_supported_major` used to assert a rationale G2b falsifies (no
+    /// operation payload reaches the tuning context, so no op block would
+    /// ever reach schema major 3). That claim must be gone from the source,
+    /// not merely superseded in prose elsewhere; a stale rationale beside a
+    /// corrected constant is exactly how `binary_format.tex:2373` decayed.
+    ///
+    /// **Mutation:** restore the stale sentence into the doc comment; must
+    /// fail.
+    #[test]
+    fn accept_set_doc_no_longer_claims_no_payload_embeds_the_tuning_context() {
+        let source = include_str!("bundle.rs");
+        let stale_claim: String = ["no operation payload ", "embeds the tuning context"].concat();
+        let stale_consequence: String = ["no op block is ever ", "born at v3"].concat();
+        assert!(
+            !source.contains(&stale_claim),
+            "the doc comment above max_supported_major must not assert the falsified claim anymore"
+        );
+        assert!(
+            !source.contains(&stale_consequence),
+            "the doc comment above max_supported_major must not assert the falsified consequence anymore"
+        );
+    }
+
     #[test]
     fn committing_an_unsupported_major_op_root_makes_the_live_bundle_read_only() {
         // A commit publishes an op block beyond this reader's accept-set (a
         // forward-compat write): structural validation lets it through, but the
         // LIVE bundle must go read-only at once — not only on the next reopen —
         // so no further commit runs against canonical history it cannot parse.
+        //
+        // Major 4, not 3: genesis tranche G2b raised the op-block accept-set
+        // to [0, 3] (`SetTuningContext` is born at major 3), so major 3 is now
+        // admitted and this test's "future major" must move past it to stay
+        // an actual test of the read-only-on-overflow path.
         let mut bundle = fresh_bundle();
         let block = StagedChunk::operation_block_versioned(
             crate::block::encode_block(&[vec![1u8, 2, 3]]),
-            SchemaVersion::new(3, 0),
+            SchemaVersion::new(4, 0),
         );
         bundle
             .commit(&[block], |ctx| {
@@ -1426,7 +1461,7 @@ mod tests {
         );
         assert!(bundle.anomalies().iter().any(|a| matches!(
             a,
-            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 3 }
+            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 4 }
         )));
         // A further commit against the now-read-only bundle is refused.
         let more = StagedChunk::operation_block_versioned(

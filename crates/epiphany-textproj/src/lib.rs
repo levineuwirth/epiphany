@@ -43,7 +43,13 @@ use epiphany_ops::OperationEnvelope;
 /// `epiphany-layout-ir` dependency and structurally cannot decode edit-barrier
 /// bytes). Holding the version while changing the grammar would leave two
 /// incompatible grammars both claiming `(0 9 0)`.
-pub const COMPANION_VERSION: (u32, u32, u32) = (0, 10, 0);
+///
+/// Bumped again 0.10.0 → 0.11.0 by the genesis tranche G2b
+/// (`spec/CONTRACT_GENESIS_G2B_TUNING.md`), which appended
+/// `set-tuning-context` to the `kind` production — the same reasoning as G1
+/// and G2a: extending the grammar without moving this constant would leave
+/// two incompatible grammars both claiming `(0 10 0)`.
+pub const COMPANION_VERSION: (u32, u32, u32) = (0, 11, 0);
 
 /// A parsed canonical Text Projection document.
 ///
