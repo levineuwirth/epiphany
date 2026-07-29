@@ -36,8 +36,85 @@ Two consequences hold in the tree today:
 * `TimeAnchor::Measure` (`reduce.rs:1280`) can never resolve from empty. That
   half is G3b's.
 
-G3a closes the staff-group half and completes the four root-level vectors. It
-is the last genesis rung that moves no wire bound.
+G3a completes the four root-level vectors. **How much of the staff-group half
+it closes depends on §1.1, which is unresolved.**
+
+---
+
+## 1.1 The pin, UNRESOLVED — `StaffGroup`/`Staff` authorship authority
+
+**Must be ratified before dispatch.** Drafted in the contract, decided by the
+user — the shape G2b's `accidental_extensions` pin took.
+
+### The cycle
+
+`CreateStaff` requires its `group` to be a live `StaffGroup`
+(`reduce.rs:4117`). `CreateStaffGroup` (pin 4) requires each of its `members`
+to be a live `Staff`. Neither can name the other first, so **with mints only,
+no authoring order produces a bidirectionally consistent group**:
+
+* `CreateStaffGroup(g, members: [])` → `CreateStaff(s, group: Some(g))` leaves
+  `s.group == Some(g)` while `g.members == []`.
+* `CreateStaff(s, group: None)` → `CreateStaffGroup(g, members: [s])` leaves
+  the mirror image, and re-carrying `CreateStaff` with `group: Some(g)` is
+  `RecreateContentMismatch`, not an amendment.
+
+There is no `ModifyStaffGroup` and no `ModifyStaff`, and deletes are deferred
+(§6.1). So the inconsistency is not merely unchecked — **it is unrepairable
+within this packet.**
+
+### Why nothing in the tree decides it
+
+Invariant 10 checks resolution in **both** directions independently — a staff's
+group is declared (`invariants.rs:1126`), a group's members are declared
+(`:1135`) — and **agreement in neither**. No agreement check exists anywhere in
+the crate. The specification declares `StaffGroup.members`
+(`core_spec.tex:4231`) and `Staff.group` (`:5578`, "Visual grouping: which
+staff group (if any) this staff belongs to") without stating which is
+authoritative or requiring them to agree. **This is genuinely unspecified, not
+merely unimplemented.**
+
+### Disposition A — `Staff.group` authoritative, `members` reduction-maintained
+
+`CreateStaffGroup` mints identity, name, and kind, and MUST carry
+`members: []`; a non-empty `members` is refused or normalized away at
+construction (the "subset over normalization" choice G2b faced). Thereafter
+`StaffGroup.members` is maintained **by reduction**: `create_staff` with
+`group: Some(g)` appends to `g.members`. Fully authorable from empty; joining
+is commutative and set-union, which fits the CRDT discipline.
+
+Costs, stated honestly: it makes `members` a *derived* field of a stored type,
+so byte-identical re-carry of `CreateStaffGroup` MUST compare against the
+**carried** value (empty), never the current derived state — an explicit
+sub-pin, and exactly the class of confusion `canonical_value!` cannot catch. It
+also expands G3a beyond a pure mint packet, which is the property that made
+this rung cheap.
+
+### Disposition B — declare the authority, defer the enforcement
+
+`Staff.group` is authoritative; `StaffGroup.members` is a denormalized
+projection that **G3a does not maintain**. `CreateStaffGroup` carries `members`
+as given and validates resolution only. Bidirectional agreement is stated as a
+**known, filed gap** — a P13 candidate and a candidate invariant 21 — and G3a
+claims nothing about it.
+
+Cost: a from-empty score can hold a grouped staff whose group lists no members.
+That is *incomplete* data under a stated deferral, not silently wrong data —
+but it is real, and the contract must not describe the defect as closed.
+
+### Recommendation
+
+**Disposition B**, and narrow the claim to match. A is the better end state,
+but it invents an authoritative/derived split the specification does not make,
+in the packet whose entire value is that it moves no bound and adds no
+semantics. Ruling the authority now costs nothing and unblocks A later;
+implementing A here buys a consistency property no consumer reads yet, at the
+cost of turning a mint into a mint-plus-maintenance.
+
+**Under either disposition, t8's claim is narrowed** — see §4. The unqualified
+"the defect closes" framing was wrong: what closes is that
+`CreateStaff.group`'s precondition becomes *satisfiable*, not that a consistent
+group becomes *authorable*.
 
 ---
 
@@ -108,6 +185,38 @@ byte-identical value is `NoOp { AlreadyApplied }`; a live id with a differing
 value is `NoOp { PreconditionFailedUnderReduction { RecreateContentMismatch } }`;
 a tombstoned id is `NoOp { TargetTombstoned }`.
 
+### Pin 4a — byte-identical re-carry needs a **carried-value map**, at seven sites each
+
+The first draft of pin 4 promised re-carry idempotence without the machinery
+that makes it work, which would have shipped the promise and not the property.
+Comparing "the same value" requires *retaining* the value; the object map holds
+only `Live`/`Tombstoned`.
+
+Exactly three such maps exist today — `staff_values`,
+`time_signature_values`, `instrument_values` (`reduce.rs:999`–`:1007`) — and
+each is threaded through **seven** sites. G3a adds four more
+(`staff_group_values`, `part_definition_values`, `analysis_layer_values`,
+`view_values`), so this is **28 touch points**, none of which appeared in the
+first draft's touch table:
+
+| # | Site | Existing lines |
+|---|---|---|
+| 1 | reducer state declaration | `reduce.rs:999`–`:1007` |
+| 2 | `WorkingSnapshot` declaration | `:1106`–`:1108` |
+| 3 | initialization | `:1388`–`:1390` |
+| 4 | **base seeding** in `seed_from_graph` | `:1437`, `:1445`, `:1460` |
+| 5 | mint insertion in the reducer | `:4134`, `:4183`, `:4219` |
+| 6 | snapshot | `:7637`–`:7639` |
+| 7 | restore | `:7677`–`:7679` |
+
+**Site 4 is the one that fails silently.** Without a base seed, a re-carry
+against an entity that came from the *base* score — not from the log — finds no
+retained value and misclassifies. G1 already documents this exact hazard and
+its mutation for `instrument_values` (`reduce.rs:13264`–`:13268`); copy that
+shape. **Each of the four omitted seeds must be killed separately** (t13), and
+a base-recarry test must exist (t5b) — a re-carry test that only ever reduces
+from empty cannot see a missing seed at all.
+
 **The packet is self-contained**: `CreateView`'s precondition target is minted
 by `CreateAnalysisLayer` in this same packet, so the ordering is testable
 end-to-end without a base score.
@@ -164,9 +273,13 @@ that is not repeatable.
 * `core_spec.tex` — the normative `OperationKind`/`OperationKindTag` listings
   and the spelled-out payload counts.
 * `text_projection.tex` — four new kind productions are a document-surface
-  change, so `COMPANION_VERSION` bumps (0.10.0 → 0.11.0), re-sweeping five live
-  version sites plus a changelog row and re-flipping the negative
-  `superseded_companion_version` vector.
+  change, so `COMPANION_VERSION` bumps **0.11.0 → 0.12.0**, re-sweeping five
+  live version sites plus a changelog row and re-flipping the negative
+  `superseded_companion_version` vector so it rejects **0.11.0**.
+  **The tree is already at 0.11.0** — G2b bumped it (`textproj/src/lib.rs:47`
+  and its doc comment). An earlier draft of this contract repeated G2b's
+  0.10.0 → 0.11.0, which would have re-declared the current version as new and
+  left the negative vector rejecting a version no longer superseded.
 
 Use `\sectionsc{...}` for cross-document references. **`\ref` cannot cross
 documents** — `operation_catalog.tex` shipped an undefined reference that way.
@@ -212,7 +325,7 @@ Every line number below re-verified against the working tree 2026-07-29.
 |---|---|
 | `crates/epiphany-ops/src/payload.rs` | four op structs + `CanonicalEncode`; `OperationKind` variants; `discriminant()` (`:390` region); `schema_major()` — **no arm**, pin 2; `introduced_minor()` (`:449` region); `tag()` (`:497` region); `encode_canonical` (`:543` region); tag vocabulary `@ Some(11)` (`:714` region); s1 epoch table (`:2475` region) |
 | `crates/epiphany-ops/src/envdecode.rs` | decode arms (`:599` region) and the tag-dispatch arms (`:901` region), plus validation |
-| `crates/epiphany-ops/src/reduce.rs` | four dispatch arms + four mint reducers, on `create_staff`'s shape (`:4075`, `:4148`) |
+| `crates/epiphany-ops/src/reduce.rs` | four dispatch arms + four mint reducers, on `create_staff`'s shape (`:4075`, `:4148`); **plus four carried-value maps at seven sites each — 28 touch points, see pin 4a** |
 | `crates/epiphany-ops/src/textproj_kind.rs` | production arms (`:232` region) **and** parse arms (`:572` region) |
 | `crates/epiphany-ops/src/migrate.rs` | both directions (`:192`, `:356` regions) |
 | `crates/epiphany-ops/src/v0.rs` | `V0OperationKind` variants (`:118` region) |
@@ -234,18 +347,25 @@ citations.
 | `crates/epiphany-layout-ir/src/barrier.rs` | the "one past the vocabulary" tag `35` → `39` (`:1156`, assertion at `:1170`/`:1176`) and its comment | Deliberately a literal; unbumped, it pins a bug — a barrier prohibiting a new op encodes fine and cannot read back |
 | `crates/epiphany-testkit/tests/text_projection_grammar.rs` | count `35` → `39` and the message string (`:315`) | Hand-maintained literal parallel to a derived list |
 | `crates/epiphany-testkit/src/generators.rs` | drawn range `30..=34` → `30..=38` (`:1908`) and the never-drawn guard (`:1947`) | A kind never drawn is a kind never fuzzed |
+| `crates/epiphany-testkit/src/layout_stub.rs` | the `30..=34` range in the s10/row-29 comment (`:1373`) | Prose, but it states the coverage claim the test rests on; stale text here is how a narrowed guard reads as a broad one |
 | `crates/epiphany-textproj/src/vectors.rs` | the negative vector whose "wrong version" moves with each bump | Silently passes for the wrong reason otherwise |
 
-**Both `barriers.rs` and `barrier.rs` are editor-track files.** The one-time
-authorization to edit them is per-packet and **does not generalise**; it is
-granted for this packet for these two files only, for the exhaustiveness arms
-and the literal bump. Touch nothing else in either crate.
+**Both `barriers.rs` and `barrier.rs` are editor-track files.** Authorization
+is per-packet and **does not generalise**. Granted 2026-07-29, narrowly:
+
+* `barriers.rs` — **the four required exhaustive `subjects_of` arms, and
+  nothing else.**
+* `barrier.rs` — **the invalid-tag literal, its comment, and its assertions,
+  35 → 39, and nothing else.**
+
+**No other change in either crate is authorized by this packet.** If the
+workspace appears to need one, stop and report rather than widening.
 
 ### Text projection
 
 | File | What |
 |---|---|
-| `crates/epiphany-textproj/src/lib.rs` | `COMPANION_VERSION` 0.10.0 → 0.11.0 and the live version sites |
+| `crates/epiphany-textproj/src/lib.rs` | `COMPANION_VERSION` **0.11.0 → 0.12.0** (`:47`) and the live version sites |
 | `crates/epiphany-textproj/src/parse.rs` | kind productions |
 | `crates/epiphany-textproj/src/vectors.rs` | four positive document vectors + the negative-vector flip |
 
@@ -287,15 +407,17 @@ t9 lesson from G2b.
 | t1 | All four kinds and tags are 35–38 in **both** spaces, and the discriminant byte leads each canonical encoding | Move any one kind to 39; then, separately, move its tag. Both must fail — the spaces are asserted independently (pin 1) |
 | t2 | `schema_major()` returns **0** for all four | Add them to the `=> 2` arm; must fail (pin 2's stated bug) |
 | t3 | A block containing all four stamps major **0**, and the op-block accept-set is untouched at 3 | Make one kind report major 2; must fail |
-| t4 | Each op round-trips through `encode` → `envdecode` → reduce, byte-identical, with its decode vector pinned to **literal bytes** | Swap two fields in one op's `encode_canonical`; must fail. *(A self-consistent reorder applied to both codec halves passes round-trip tests — trap 4, the 3b-i lesson. Literal-byte vectors are what catch it.)* |
+| t4 | Each op round-trips through `encode` → `envdecode` → reduce, byte-identical, with its decode vector pinned to **literal bytes** | **Swap two fields in the carried type's `struct_codec!` declaration** — e.g. `PartDefinition { id, name, staves }` → `{ id, staves, name }` (`core/src/codec.rs:1790`); the literal-byte vector must fail. *(A create op's `encode_canonical` is a single `push_lp_bytes` line over one carried value, so there is nothing in the op to reorder — the first draft's mutation was impossible. The reorder must go where the layout actually lives, and because `struct_codec!` moves both halves at once it is self-consistent and passes round-trip tests: trap 4, the 3b-i lesson. Literal-byte vectors are the only thing that catches it.)* |
 | t5 | Re-carrying a live id with a **byte-identical** value is `AlreadyApplied`; with a **differing** value is `RecreateContentMismatch`; a tombstoned id is `TargetTombstoned` | Return `Applied` for the differing-value case; must fail |
-| t6 | Referential preconditions refuse under a graph: a `CreateStaffGroup` naming a non-live `Staff`, and a `CreateView` naming a non-live `AnalysisLayer`, are both `TargetMissing` | Drop the members loop from `create_staff_group`; must fail |
+| t5b | **Re-carry against a base-derived entity**: reduce `new_onto` a score whose four vectors are already populated, re-carry each byte-identically, and get `AlreadyApplied` | Covered by t13 per-seed. A re-carry test that only reduces from empty **cannot see a missing base seed at all** — that is why this row is separate from t5 |
+| t6 | All three referential loops refuse under a graph, **each asserted separately**: `CreateStaffGroup.members`, `CreatePartDefinition.staves`, and `CreateView.active_layers` naming a non-live target are each `TargetMissing` | **Three independent mutations**, one per loop: drop the members loop from `create_staff_group`; drop the staves loop from `create_part_definition`; drop the active-layers loop from `create_view`. Each must fail on its own row. *(The first draft omitted `PartDefinition.staves` entirely — one uncovered loop is one loop that can be deleted green.)* |
 | t7 | Those same preconditions are **not** enforced base-free | Remove the `if self.graph.is_some()` guard from one reducer; must fail — base-free has no universe to check against |
-| t8 | **The defect closes**: from empty, `CreateInstrument` → `CreateStaffGroup` → `CreateStaff` **with `group: Some(...)`** succeeds and reaches a note | Replace the `CreateStaffGroup` dispatch arm with `OperationKind::CreateStaffGroup(_) => OperationEffect::Applied`, keeping the match exhaustive; must fail at the grouped-staff assertion while the spine stays applied |
-| t9 | A score reduced from empty through all four ops **passes `check_invariants`** (pin 5) | Make `create_view` skip the `active_layers` check *and* author a dangling layer reference; invariant 10 must fire |
+| t8 | From empty, `CreateInstrument` → `CreateStaffGroup` → `CreateStaff` **with `group: Some(...)`** succeeds and reaches a note — i.e. `CreateStaff`'s group precondition becomes **satisfiable** | Replace the `CreateStaffGroup` dispatch arm with `OperationKind::CreateStaffGroup(_) => OperationEffect::Applied`, keeping the match exhaustive; must fail at the grouped-staff assertion while the spine stays applied. **Claim narrowed per §1.1: this asserts satisfiability, NOT that a bidirectionally consistent group is authorable.** Under disposition B the test must additionally assert the known gap explicitly — `g.members` is empty while `s.group` is `Some(g)` — so the deferral is pinned rather than merely unmentioned |
+| t9 | A score reduced from empty through all four ops **passes `check_invariants`**, and each skipped reducer check **independently** makes invariant 10 fire (pin 5) | **The fixture is constant across all mutations**: the baseline input already attempts a dangling reference in each of the three loops, and passes because the reducer refuses them. Then mutate **only production**, one skipped check at a time — three separate mutations, each of which must let its dangling reference through and make invariant 10 fire. *(The first draft moved the fixture and the production code together, which proves only that a hand-built bad score fails a checker — not that the reducer's refusal is what was holding the line.)* |
 | t10 | All four kinds carry **epoch 11**, and a block containing them stamps minor **11** | Assign epoch 10 to one kind; must fail. Run against **both** epoch sites separately (vocabulary annotation, s1 table) — each must be independently able to fail |
-| t11 | Text projection round-trips all four kinds, and the companion version is 0.11.0 | Drop one parse arm; must fail |
-| t12 | Invariant 10's doc comment names the four reference classes its body checks (pin 6) | Grep-assert the repaired prose is present; revert the comment to see it fail |
+| t11 | Text projection round-trips all four kinds, and the companion version is **0.12.0**, with the negative vector rejecting **0.11.0** | Drop one parse arm; must fail. Separately, leave `COMPANION_VERSION` at 0.11.0; the negative vector must fail |
+| t12 | Invariant 10's doc comment names the four reference classes its body checks (pin 6) | Grep-assert the repaired prose is present **within the invariant-10 doc block only** — slice the source from the `/// 10.` line to the `CrossCuttingRefsResolve,` line and search *that*. Revert the comment to see it fail. **Searching the whole file passes on the implementation body**, which contains the same identifiers the doc comment is supposed to gain — a guard that cannot fail |
+| t13 | **Each of the four base seeds is load-bearing** (pin 4a, site 4) | **Four separate mutations**: skip seeding each of `staff_group_values`, `part_definition_values`, `analysis_layer_values`, `view_values` in `seed_from_graph`, one at a time. Each must make t5b fail. Model on G1's documented precedent for `instrument_values` (`reduce.rs:13264`–`:13268`) |
 
 **On t12's grep shape:** a self-matching needle is a real hazard — G2b hit it
 twice, once when a multi-line needle matched the test's own source and once
@@ -323,7 +445,12 @@ iterate `include_str!` over each.
 State, with evidence: kinds/tags assigned and the two spaces asserted
 separately; that `schema_major()` gained **no** arm and no bundle file was
 touched; the four `canonical_value!` entries; that `textvalue_graph.rs` needed
-no change; each precondition and its invariant-10 correspondence; the from-empty
-grouped-staff defect closing; epoch 11 at both sites; the four-document sweep;
-and the five boundary-crossing literals with their new values. Report each
-mutation's **observed** output. Anything not done, say so plainly.
+no change; **the four carried-value maps at all seven sites each, named site by
+site**; each of the three referential loops and its invariant-10
+correspondence; **which §1.1 disposition was implemented and what t8 therefore
+does and does not claim**; epoch 11 at both sites; the companion bump
+0.11.0 → 0.12.0 with the negative vector rejecting 0.11.0; the four-document
+sweep; and the six boundary-crossing literals with their new values. Report
+each mutation's **observed** output — t6, t9, and t13 are multi-mutation rows
+and each sub-mutation must be reported separately. Anything not done, say so
+plainly.

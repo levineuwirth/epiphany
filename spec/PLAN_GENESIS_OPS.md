@@ -24,7 +24,12 @@ remains, and it **splits into G3a and G3b** (ratified 2026-07-29, §4).
   Closed **P13-S13**.
 * **G3a** — the four root-level mint families (`CreateStaffGroup`,
   `CreatePartDefinition`, `CreateAnalysisLayer`, `CreateView`), kinds/tags
-  **35–38**, epoch **11**, all schema major **0**. Contracted.
+  **35–38**, epoch **11**, all schema major **0**. Contracted
+  (`spec/CONTRACT_GENESIS_G3A_ENTITIES.md`), **blocked on one unresolved pin**:
+  §1.1, the `StaffGroup`/`Staff` authorship-authority ruling. With mints only
+  there is no authoring order that yields a bidirectionally consistent staff
+  group, and neither the tree nor the specification says which of
+  `Staff.group` and `StaffGroup.members` is authoritative.
 * **G3b** — `CreateMeasure` alone, kind/tag **39**, epoch **12**, carrying
   graph invariant **20** and a new `PreconditionFailureReason` at discriminant
   **16**. Scoped, not contracted.
@@ -397,14 +402,16 @@ mints** — the same reasoning that kept the accept-set raise out of G2a.
    exhaustiveness forces an arm in `epiphany-editor-core`'s `subjects_of`
    (`barriers.rs:313`), and because `epiphany-testkit` depends on editor-core,
    a missing arm blocks conformance *and* `requirement_labels` — the gate
-   cannot run at all. Four further sites bake in a literal that only surfaces
+   cannot run at all. Five further sites bake in a literal that only surfaces
    once the workspace compiles: `layout-ir/src/barrier.rs:1156` (a tag
    "one past the vocabulary"), `testkit/tests/text_projection_grammar.rs:315`
    (a hardcoded kind *count*, with its message string at the same site),
    `testkit/src/generators.rs:1908` (a drawn-discriminant range plus a
-   never-drawn guard at `:1947`), and `textproj/src/vectors.rs` (a negative
-   vector whose "wrong version" is the one each bump moves to). Every G2/G3
-   contract MUST enumerate these and budget the boundary crossing up front.
+   never-drawn guard at `:1947`), `testkit/src/layout_stub.rs:1373` (the same
+   range restated in prose that carries the coverage claim), and
+   `textproj/src/vectors.rs` (a negative vector whose "wrong version" is the
+   one each bump moves to). Every G2/G3 contract MUST enumerate these and
+   budget the boundary crossing up front.
    *(All four citations re-verified 2026-07-29; the three carried in earlier
    revisions had drifted — `barriers.rs:437`, `barrier.rs:1105`,
    `text_projection_grammar.rs:307` — which is exactly the failure mode a
