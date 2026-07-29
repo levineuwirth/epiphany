@@ -214,6 +214,39 @@ impl PreconditionFailureReason {
     }
 }
 
+impl PreconditionFailureReason {
+    /// The G-minor schema-minor epoch this variant requires
+    /// (`spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4, pin 1's ratified table), or
+    /// `None` for a baseline (0..=9) variant — the distinct "no additive
+    /// requirement" sentinel pin 3 requires, never `0`. Exhaustive with no
+    /// wildcard arm (pin 2): a future variant cannot compile without an
+    /// epoch assignment.
+    pub fn introduced_minor(&self) -> Option<u16> {
+        match self {
+            PreconditionFailureReason::TargetMissing
+            | PreconditionFailureReason::TargetTombstoned
+            | PreconditionFailureReason::WrongRegionTimeModel
+            | PreconditionFailureReason::TupletCompensationInvalid
+            | PreconditionFailureReason::EventDurationInvalid
+            | PreconditionFailureReason::PositionOutsideRegion
+            | PreconditionFailureReason::PitchSpaceMismatch
+            | PreconditionFailureReason::VoiceMissing
+            | PreconditionFailureReason::ExtensionPrecondition(_)
+            | PreconditionFailureReason::Registered(_) => None,
+            // Minor 2 (M2c).
+            PreconditionFailureReason::ContainerNotEmpty => Some(2),
+            // Minor 4 (Phase-3 first tranche).
+            PreconditionFailureReason::TempoMapMalformed => Some(4),
+            // Minor 5 (Pass-12 G-pass).
+            PreconditionFailureReason::SystemDerivedContentImmutable => Some(5),
+            PreconditionFailureReason::RecreateContentMismatch => Some(5),
+            // Minor 7 (Push 4a).
+            PreconditionFailureReason::AcousticRealizationPinned => Some(7),
+            PreconditionFailureReason::TranspositionOutOfRange => Some(7),
+        }
+    }
+}
+
 impl CanonicalEncode for PreconditionFailureReason {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         push_tag(out, self.discriminant());
@@ -339,6 +372,25 @@ impl ReanchorReason {
             ReanchorReason::DeclaredByExtension(_) => 5,
             // Additive (Pass-12 G-pass, P12-C4); appended past 5.
             ReanchorReason::SameCanvasNearer => 6,
+        }
+    }
+}
+
+impl ReanchorReason {
+    /// The G-minor schema-minor epoch this variant requires, or `None` for a
+    /// baseline (0..=5) variant. See
+    /// [`PreconditionFailureReason::introduced_minor`] for the sentinel and
+    /// exhaustiveness discipline this mirrors.
+    pub fn introduced_minor(&self) -> Option<u16> {
+        match self {
+            ReanchorReason::SameVoiceNearer
+            | ReanchorReason::SameStaffInstanceNearer
+            | ReanchorReason::SameStaffNearer
+            | ReanchorReason::SameRegionNearer
+            | ReanchorReason::ExplicitFallback
+            | ReanchorReason::DeclaredByExtension(_) => None,
+            // Minor 5 (Pass-12 G-pass, P12-C4).
+            ReanchorReason::SameCanvasNearer => Some(5),
         }
     }
 }

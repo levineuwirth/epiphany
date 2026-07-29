@@ -12,8 +12,8 @@
 //! first violation.
 
 use epiphany_testkit::{
-    bundle_harness, convergence, corpus, editloop, equivocation, fixtures, generators, layout_stub,
-    negative, prepass_harness, roundtrip, textproj, Rng,
+    bundle_harness, convergence, corpus, editloop, equivocation, fixtures, generators, gminor,
+    layout_stub, negative, prepass_harness, roundtrip, textproj, Rng,
 };
 
 /// The suite's total gate count, printed in every `[N/TOTAL_GATES]` line and
@@ -208,6 +208,23 @@ fn main() {
                 failures.join("\n")
             ),
         }
+    }
+
+    // 7f. G-minor (spec/PLAN_GMINOR_SCHEMA_MINOR.md §4, pin 11): the
+    //     independent oracle over the manifest's carried schema minor, built
+    //     from known, decodable, in-tree fixtures — never routed through
+    //     `TOTAL_GATES`, the same convention 7b-7e already use (this is a
+    //     sub-gate of gate 7, not a new top-level numbered gate). It is NOT
+    //     evidence that `epiphany-textproj` validates arbitrary hand edits
+    //     (pin 11.4): that layer stays a preserving producer by ruled design
+    //     (a), carrying whatever SchemaVersion a document declares verbatim.
+    eprintln!("[7f ] G-minor: manifest schema-minor oracle over in-tree fixtures");
+    {
+        let (checked, not_checkable) = gminor::run_gate();
+        eprintln!(
+            "       {checked} fixture(s) checked (equality oracle), {not_checkable} \
+             reported not-checkable (never counted as a pass)"
+        );
     }
 
     // 8. T2 W3 — the [9/9] golden conformance gate (`golden-gate` feature

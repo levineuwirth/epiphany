@@ -124,14 +124,14 @@ pub use envelope::{
 pub use migrate::{migrate_v0_envelope, project_v1_to_v0, MigrationError};
 pub use opset::{AcceptOutcome, OperationSet};
 pub use payload::{
-    ChangeRegionTimeModelOp, CreateCrossCuttingOp, CreateInstrumentOp, CreateRegionOp,
-    CreateRepeatStructureOp, CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp,
-    CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
-    DeleteRegionOp, DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
-    InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
-    OperationKind, OperationKindTag, OperationPayload, PositionRemapping, ResolveConflictPayload,
-    ResolveEquivocationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp,
-    SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
+    operation_block_introduced_minor, ChangeRegionTimeModelOp, CreateCrossCuttingOp,
+    CreateInstrumentOp, CreateRegionOp, CreateRepeatStructureOp, CreateStaffInstanceOp,
+    CreateStaffOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp,
+    DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteRepeatStructureOp, DeleteStaffInstanceOp,
+    DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp,
+    ModifyIdentifiedPitchOp, OperationKind, OperationKindTag, OperationPayload, PositionRemapping,
+    ResolveConflictPayload, ResolveEquivocationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp,
+    SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
     SetTimeSignatureOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransactionCategory,
     TransactionDescriptor, TransposeIntervalOp, TransposeOp, TupletCompensation,
 };

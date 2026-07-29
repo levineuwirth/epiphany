@@ -45,7 +45,7 @@ use epiphany_determinism::{
 
 use crate::conflict::{ConflictId, ResolutionAction};
 use crate::encode::{push_canon, push_lp_bytes, push_seq, push_str, push_tag, push_u8_bool};
-use crate::envelope::EnvelopeHash;
+use crate::envelope::{EnvelopeHash, OperationEnvelope};
 use crate::support::OperationKindRegistryId;
 use crate::undo::UndoTransactionPayload;
 
@@ -93,6 +93,23 @@ impl OperationPayload {
             | OperationPayload::ResolveEquivocation(_) => 0,
         }
     }
+
+    /// The G-minor schema-minor epoch this payload's own **outer**
+    /// discriminant requires (`spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4, pin 1),
+    /// or `None` for "no additive requirement" — the distinct sentinel pin 3
+    /// requires, never `0`. This is the outer `OperationPayload` variant
+    /// only; a `Primitive`'s nested `OperationKind` epoch is a separate
+    /// contribution an envelope's derivation combines with this one (see
+    /// `OperationEnvelope::introduced_minor`, below).
+    pub fn introduced_minor(&self) -> Option<u16> {
+        match self {
+            OperationPayload::Primitive(_)
+            | OperationPayload::ResolveConflict(_)
+            | OperationPayload::UndoTransaction(_) => None,
+            // Minor 3 (Push 3).
+            OperationPayload::ResolveEquivocation(_) => Some(3),
+        }
+    }
 }
 
 impl CanonicalEncode for OperationPayload {
@@ -105,6 +122,40 @@ impl CanonicalEncode for OperationPayload {
             OperationPayload::ResolveEquivocation(p) => p.encode_canonical(out),
         }
     }
+}
+
+impl OperationEnvelope {
+    /// The G-minor schema-minor epoch this envelope's canonical bytes require
+    /// (`spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4, pin 3): the maximum over its
+    /// outer [`OperationPayload::introduced_minor`] and — when the payload is
+    /// [`OperationPayload::Primitive`] — the nested
+    /// [`OperationKind::introduced_minor`]. `None` when neither imposes a
+    /// requirement (both are baseline). No other nested vocabulary an
+    /// envelope's encoder reaches (`OperationEnvelope::encode_canonical`)
+    /// carries a post-baseline append: the embedded graph values ride
+    /// `epiphany-core`'s codec, which the G-minor audit found clean
+    /// (`spec/AUDIT_GMINOR_VOCABULARIES.md` Part 2).
+    pub fn introduced_minor(&self) -> Option<u16> {
+        let payload_epoch = self.payload.introduced_minor();
+        let kind_epoch = match &self.payload {
+            OperationPayload::Primitive(kind) => kind.introduced_minor(),
+            OperationPayload::ResolveConflict(_)
+            | OperationPayload::UndoTransaction(_)
+            | OperationPayload::ResolveEquivocation(_) => None,
+        };
+        payload_epoch.into_iter().chain(kind_epoch).max()
+    }
+}
+
+/// An operation-envelope block's required G-minor schema-minor epoch (pin 3):
+/// the maximum [`OperationEnvelope::introduced_minor`] over every envelope it
+/// carries, or `None` if the block carries no envelope or every envelope is
+/// baseline. Callers combine this with the block's schema **major** (an
+/// independent derivation, `OperationEnvelope::schema_major`) via
+/// `epiphany_bundle::SchemaVersion::for_major_at_epoch` — major and minor
+/// never influence each other (pin 3).
+pub fn operation_block_introduced_minor(envelopes: &[OperationEnvelope]) -> Option<u16> {
+    envelopes.iter().filter_map(|e| e.introduced_minor()).max()
 }
 
 /// The catalog of primitive operation kinds reduced by this crate (Chapter 6
@@ -320,6 +371,62 @@ impl OperationKind {
         }
     }
 
+    /// The G-minor schema-minor epoch this kind's own discriminant requires
+    /// (`spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4, pin 1's ratified table), or
+    /// `None` for a baseline (golden-locked 0..=23) variant — the distinct
+    /// "no additive requirement" sentinel pin 3 requires, never `0`.
+    ///
+    /// **Deliberately a separate match from [`Self::discriminant`]** (pin 2):
+    /// that hand-written match is the site Push 4a's `TransposeInterval`
+    /// append went wrong by being consulted for only one of the vocabulary's
+    /// several responsibilities. Exhaustive here too, with no wildcard arm,
+    /// so a future variant cannot compile without an epoch assignment.
+    pub fn introduced_minor(&self) -> Option<u16> {
+        match self {
+            OperationKind::InsertEvent(_)
+            | OperationKind::DeleteEvent(_)
+            | OperationKind::RespellPitch(_)
+            | OperationKind::CreateCrossCutting(_)
+            | OperationKind::ChangeRegionTimeModel(_)
+            | OperationKind::SetUserSystemBreak(_)
+            | OperationKind::DeclareTransaction(_)
+            | OperationKind::Registered(..)
+            | OperationKind::ModifyEvent(_)
+            | OperationKind::Transpose(_)
+            | OperationKind::InsertIdentifiedPitch(_)
+            | OperationKind::DeleteIdentifiedPitch(_)
+            | OperationKind::ModifyIdentifiedPitch(_)
+            | OperationKind::DeleteCrossCutting(_)
+            | OperationKind::ModifyCrossCutting(_)
+            | OperationKind::CreateRegion(_)
+            | OperationKind::DeleteRegion(_)
+            | OperationKind::CreateStaffInstance(_)
+            | OperationKind::DeleteStaffInstance(_)
+            | OperationKind::CreateVoice(_)
+            | OperationKind::DeleteVoice(_)
+            | OperationKind::SetMetadata(_)
+            | OperationKind::SetMetricGrid(_)
+            | OperationKind::SetUserPageBreak(_) => None,
+            // Minor 4 (Phase-3 first tranche).
+            OperationKind::CreateStaff(_)
+            | OperationKind::SetTimeSignature(_)
+            | OperationKind::SetTempoSegment(_)
+            | OperationKind::SetStaffLayout(_) => Some(4),
+            // Minor 6 (schema-major-2 repeat-authoring revision).
+            OperationKind::CreateRepeatStructure(_) | OperationKind::DeleteRepeatStructure(_) => {
+                Some(6)
+            }
+            // Minor 7 (Push 4a).
+            OperationKind::TransposeInterval(_) => Some(7),
+            // Minor 8 (Genesis tranche G1).
+            OperationKind::CreateInstrument(_) => Some(8),
+            // Minor 9 (Genesis tranche G2a).
+            OperationKind::SetCanvasLayoutDefaults(_) | OperationKind::SetSpellingPrecedence(_) => {
+                Some(9)
+            }
+        }
+    }
+
     /// The discriminator-only [`OperationKindTag`] for this kind. Used by edit
     /// barriers (Chapter 7/8 `prohibited_operation_kinds`) to name a kind
     /// without its payload.
@@ -485,7 +592,7 @@ pub const REGISTERED_TAG_DISCRIMINANT: u8 = 16;
 /// separate hand-maintained lists — two of them asserting the tag was *unknown*
 /// — stayed green (Push 5 / P4).
 macro_rules! operation_kind_tag_vocabulary {
-    ($($variant:ident = $disc:literal => $catalog:literal),+ $(,)?) => {
+    ($($variant:ident = $disc:literal => $catalog:literal @ $epoch:expr),+ $(,)?) => {
         impl OperationKindTag {
             /// Every payload-free tag, in discriminant order. [`Registered`]
             /// is excluded: it carries an id and has no bare encoding.
@@ -525,44 +632,58 @@ macro_rules! operation_kind_tag_vocabulary {
                     OperationKindTag::Registered(_) => "registered",
                 }
             }
+
+            /// The G-minor schema-minor epoch this tag requires
+            /// (`spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4, pin 1), or `None` for
+            /// "no additive requirement" — never `0`, a real baseline minor
+            /// for `V1`–`V3` (pin 3). **Co-located inside this macro** (pin
+            /// 2), not a sibling match: the macro is the compile-enforced
+            /// source of truth for this vocabulary, exhaustive over every
+            /// generated arm with no wildcard, including `Registered`.
+            pub fn introduced_minor(&self) -> Option<u16> {
+                match self {
+                    $(OperationKindTag::$variant => $epoch,)+
+                    OperationKindTag::Registered(_) => None,
+                }
+            }
         }
     };
 }
 
 operation_kind_tag_vocabulary! {
-    InsertEvent = 0 => "insert-event",
-    DeleteEvent = 1 => "delete-event",
-    ModifyEvent = 2 => "modify-event",
-    RespellPitch = 3 => "respell-pitch",
-    Transpose = 4 => "transpose",
-    CreateCrossCutting = 5 => "create-cross-cutting",
-    DeleteCrossCutting = 6 => "delete-cross-cutting",
-    ModifyCrossCutting = 7 => "modify-cross-cutting",
-    ChangeRegionTimeModel = 8 => "change-region-time-model",
-    InsertRegion = 9 => "create-region",
-    DeleteRegion = 10 => "delete-region",
-    InsertStaffInstance = 11 => "create-staff-instance",
-    DeleteStaffInstance = 12 => "delete-staff-instance",
-    SetUserSystemBreak = 13 => "set-user-system-break",
-    SetUserPageBreak = 14 => "set-user-page-break",
-    DeclareTransaction = 15 => "declare-transaction",
-    InsertIdentifiedPitch = 17 => "insert-identified-pitch",
-    DeleteIdentifiedPitch = 18 => "delete-identified-pitch",
-    ModifyIdentifiedPitch = 19 => "modify-identified-pitch",
-    CreateVoice = 20 => "create-voice",
-    DeleteVoice = 21 => "delete-voice",
-    SetMetadata = 22 => "set-metadata",
-    SetMetricGrid = 23 => "set-metric-grid",
-    InsertStaff = 24 => "create-staff",
-    SetTimeSignature = 25 => "set-time-signature",
-    SetTempoSegment = 26 => "set-tempo-segment",
-    SetStaffLayout = 27 => "set-staff-layout",
-    CreateRepeatStructure = 28 => "create-repeat-structure",
-    DeleteRepeatStructure = 29 => "delete-repeat-structure",
-    TransposeInterval = 30 => "transpose-interval",
-    CreateInstrument = 31 => "create-instrument",
-    SetCanvasLayoutDefaults = 32 => "set-canvas-layout-defaults",
-    SetSpellingPrecedence = 33 => "set-spelling-precedence",
+    InsertEvent = 0 => "insert-event" @ None,
+    DeleteEvent = 1 => "delete-event" @ None,
+    ModifyEvent = 2 => "modify-event" @ None,
+    RespellPitch = 3 => "respell-pitch" @ None,
+    Transpose = 4 => "transpose" @ None,
+    CreateCrossCutting = 5 => "create-cross-cutting" @ None,
+    DeleteCrossCutting = 6 => "delete-cross-cutting" @ None,
+    ModifyCrossCutting = 7 => "modify-cross-cutting" @ None,
+    ChangeRegionTimeModel = 8 => "change-region-time-model" @ None,
+    InsertRegion = 9 => "create-region" @ None,
+    DeleteRegion = 10 => "delete-region" @ None,
+    InsertStaffInstance = 11 => "create-staff-instance" @ None,
+    DeleteStaffInstance = 12 => "delete-staff-instance" @ None,
+    SetUserSystemBreak = 13 => "set-user-system-break" @ None,
+    SetUserPageBreak = 14 => "set-user-page-break" @ None,
+    DeclareTransaction = 15 => "declare-transaction" @ None,
+    InsertIdentifiedPitch = 17 => "insert-identified-pitch" @ None,
+    DeleteIdentifiedPitch = 18 => "delete-identified-pitch" @ None,
+    ModifyIdentifiedPitch = 19 => "modify-identified-pitch" @ None,
+    CreateVoice = 20 => "create-voice" @ None,
+    DeleteVoice = 21 => "delete-voice" @ None,
+    SetMetadata = 22 => "set-metadata" @ None,
+    SetMetricGrid = 23 => "set-metric-grid" @ None,
+    InsertStaff = 24 => "create-staff" @ Some(4),
+    SetTimeSignature = 25 => "set-time-signature" @ Some(4),
+    SetTempoSegment = 26 => "set-tempo-segment" @ Some(4),
+    SetStaffLayout = 27 => "set-staff-layout" @ Some(4),
+    CreateRepeatStructure = 28 => "create-repeat-structure" @ Some(6),
+    DeleteRepeatStructure = 29 => "delete-repeat-structure" @ Some(6),
+    TransposeInterval = 30 => "transpose-interval" @ Some(7),
+    CreateInstrument = 31 => "create-instrument" @ Some(8),
+    SetCanvasLayoutDefaults = 32 => "set-canvas-layout-defaults" @ Some(9),
+    SetSpellingPrecedence = 33 => "set-spelling-precedence" @ Some(9),
 }
 
 impl CanonicalEncode for OperationKindTag {
@@ -1688,6 +1809,121 @@ mod tests {
     use super::*;
     use epiphany_core::{RegionId, ReplicaId, SlurId};
 
+    fn envelope(id: u64, payload: OperationPayload) -> OperationEnvelope {
+        use crate::causal::CausalContext;
+        use crate::stamp::{HybridLogicalClock, OperationStamp};
+        use crate::support::AuthorId;
+        use epiphany_core::WallClockTime;
+        let oid = OperationId::new(ReplicaId(1), id);
+        OperationEnvelope {
+            id: oid,
+            author: AuthorId(1),
+            stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(id as i64), 0), oid),
+            causal_context: CausalContext::new(),
+            transaction: None,
+            payload,
+        }
+    }
+
+    fn create_instrument_envelope(id: u64) -> OperationEnvelope {
+        envelope(
+            id,
+            OperationPayload::Primitive(OperationKind::CreateInstrument(CreateInstrumentOp {
+                instrument: crate::valuegen::instrument(epiphany_core::InstrumentId::new(
+                    ReplicaId(1),
+                    id,
+                )),
+            })),
+        )
+    }
+
+    fn set_user_page_break_envelope(id: u64) -> OperationEnvelope {
+        // Baseline kind 23 (golden-locked 0..=23): no additive requirement.
+        envelope(
+            id,
+            OperationPayload::Primitive(OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+                region: RegionId::new(ReplicaId(1), id),
+                anchor: crate::valuegen::region_start_anchor(
+                    RegionId::new(ReplicaId(1), id),
+                    MusicalPosition::origin(),
+                ),
+                present: true,
+            })),
+        )
+    }
+
+    fn resolve_equivocation_envelope(id: u64) -> OperationEnvelope {
+        envelope(
+            id,
+            OperationPayload::ResolveEquivocation(ResolveEquivocationPayload {
+                target: OperationId::new(ReplicaId(1), id),
+                chosen: EnvelopeHash([0; 32]),
+            }),
+        )
+    }
+
+    fn create_repeat_structure_envelope(id: u64) -> OperationEnvelope {
+        let repeat_id = RepeatStructureId::new(ReplicaId(1), id);
+        let a = EventId::new(ReplicaId(1), id * 10 + 1);
+        let b = EventId::new(ReplicaId(1), id * 10 + 2);
+        envelope(
+            id,
+            OperationPayload::Primitive(OperationKind::CreateRepeatStructure(
+                CreateRepeatStructureOp {
+                    repeat: crate::valuegen::repeat_structure(repeat_id, a, b),
+                },
+            )),
+        )
+    }
+
+    // -----------------------------------------------------------------
+    // G-minor block/envelope derivation: s4, s5, s6.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn s4_a_block_containing_kind_31_stamps_minor_8() {
+        let envelopes = vec![create_instrument_envelope(1)];
+        assert_eq!(operation_block_introduced_minor(&envelopes), Some(8));
+    }
+
+    #[test]
+    fn s5_mixing_an_old_kind_23_with_resolve_equivocation_stamps_3_not_1() {
+        // `SetUserPageBreak` is kind 23 (baseline, no additive requirement);
+        // `ResolveEquivocation` is the outer payload appended at minor 3. The
+        // block's minor must be the *epoch* max (3), never the highest
+        // *discriminant* (23) — the rejected policy pin 3 names explicitly.
+        let envelopes = vec![
+            set_user_page_break_envelope(1),
+            resolve_equivocation_envelope(2),
+        ];
+        assert_eq!(operation_block_introduced_minor(&envelopes), Some(3));
+    }
+
+    #[test]
+    fn s6_major_and_minor_derive_independently() {
+        // `CreateRepeatStructure` (kind 28) is schema-major 2 (born at v2) and
+        // epoch 6 (schema-major-2 repeat-authoring revision). A major-2 block
+        // containing it must stamp minor 6 regardless of major — the two
+        // derivations must never influence each other.
+        let envelopes = vec![create_repeat_structure_envelope(1)];
+        let major = envelopes.iter().map(|e| e.schema_major()).max().unwrap();
+        assert_eq!(
+            major, 2,
+            "major derives from schema_major, independent of epoch"
+        );
+        let epoch_max = operation_block_introduced_minor(&envelopes);
+        assert_eq!(
+            epoch_max,
+            Some(6),
+            "minor epoch derives from introduced_minor, independent of major"
+        );
+        // `SchemaVersion::for_major_at_epoch(2, Some(6))` (tested directly in
+        // `epiphany-bundle`'s `ids.rs`, which this crate does not depend on)
+        // combines these two independent values into `{2, 6}` — this test's
+        // job is only to show the two inputs to that combination are each
+        // correct and mutually uninfluenced.
+    }
+
     #[test]
     fn operation_kind_wire_discriminants_are_golden() {
         // GOLDEN LOCK: the discriminant byte leads every canonically-encoded
@@ -2160,6 +2396,137 @@ mod tests {
             assert_eq!(tag.discriminant(), expected);
             assert_eq!(tag.to_canonical_bytes(), vec![expected]);
         }
+    }
+
+    // -----------------------------------------------------------------
+    // G-minor (`spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4, pin 1's ratified
+    // epoch table): s1, s2.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn s1_operation_kind_tag_epochs_match_pin1s_table() {
+        // Every post-baseline `OperationKindTag` epoch, transcribed from pin
+        // 1's ratified table.
+        for (tag, expected) in [
+            (OperationKindTag::InsertStaff, 4u16),
+            (OperationKindTag::SetTimeSignature, 4),
+            (OperationKindTag::SetTempoSegment, 4),
+            (OperationKindTag::SetStaffLayout, 4),
+            (OperationKindTag::CreateRepeatStructure, 6),
+            (OperationKindTag::DeleteRepeatStructure, 6),
+            (OperationKindTag::TransposeInterval, 7),
+            (OperationKindTag::CreateInstrument, 8),
+            (OperationKindTag::SetCanvasLayoutDefaults, 9),
+            (OperationKindTag::SetSpellingPrecedence, 9),
+        ] {
+            assert_eq!(
+                tag.introduced_minor(),
+                Some(expected),
+                "{tag:?} must require epoch {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn s1_operation_kind_epochs_match_tag_epochs_across_every_generated_kind() {
+        // `OperationKind`'s own epoch table mirrors `OperationKindTag`'s (same
+        // ten events); rather than hand-build all thirty-four payloads, this
+        // checks every kind the corpus generator reaches agrees with its own
+        // tag's already pin-1-verified epoch (s1 above) — so a divergence in
+        // either table is caught.
+        use crate::fuzz::gen_envelope_set;
+        use epiphany_determinism::fuzz::SplitMix64;
+        let mut rng = SplitMix64::new(0xC0FFEE);
+        let envelopes = gen_envelope_set(&mut rng, 400);
+        let mut seen_post_baseline = false;
+        for envelope in &envelopes {
+            if let OperationPayload::Primitive(kind) = &envelope.payload {
+                assert_eq!(
+                    kind.introduced_minor(),
+                    kind.tag().introduced_minor(),
+                    "{:?}: OperationKind and OperationKindTag epochs disagree",
+                    kind.tag()
+                );
+                seen_post_baseline |= kind.introduced_minor().is_some();
+            }
+        }
+        assert!(
+            seen_post_baseline,
+            "fixture reach: the generated set never reached a post-baseline kind"
+        );
+    }
+
+    #[test]
+    fn s1_operation_payload_and_reanchor_and_precondition_epochs_match_pin1() {
+        assert_eq!(
+            OperationPayload::ResolveEquivocation(ResolveEquivocationPayload {
+                target: OperationId::new(epiphany_core::ReplicaId(1), 1),
+                chosen: EnvelopeHash([0; 32]),
+            })
+            .introduced_minor(),
+            Some(3)
+        );
+        assert_eq!(
+            crate::effect::ReanchorReason::SameCanvasNearer.introduced_minor(),
+            Some(5)
+        );
+        for (reason, expected) in [
+            (
+                crate::effect::PreconditionFailureReason::ContainerNotEmpty,
+                2u16,
+            ),
+            (
+                crate::effect::PreconditionFailureReason::TempoMapMalformed,
+                4,
+            ),
+            (
+                crate::effect::PreconditionFailureReason::SystemDerivedContentImmutable,
+                5,
+            ),
+            (
+                crate::effect::PreconditionFailureReason::RecreateContentMismatch,
+                5,
+            ),
+            (
+                crate::effect::PreconditionFailureReason::AcousticRealizationPinned,
+                7,
+            ),
+            (
+                crate::effect::PreconditionFailureReason::TranspositionOutOfRange,
+                7,
+            ),
+        ] {
+            assert_eq!(reason.introduced_minor(), Some(expected), "{reason:?}");
+        }
+    }
+
+    #[test]
+    fn s2_every_baseline_variant_returns_no_additive_requirement() {
+        // A representative baseline member of each of the five vocabularies.
+        assert_eq!(OperationKindTag::InsertEvent.introduced_minor(), None);
+        assert_eq!(OperationKindTag::SetMetricGrid.introduced_minor(), None);
+        assert_eq!(
+            OperationPayload::Primitive(OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: StaffInstanceId::new(epiphany_core::ReplicaId(1), 1),
+                event: crate::valuegen::insert_event_value(
+                    EventId::new(epiphany_core::ReplicaId(1), 2),
+                    VoiceId::new(epiphany_core::ReplicaId(1), 3),
+                    MusicalPosition::origin(),
+                    MusicalDuration::whole(),
+                    &[],
+                ),
+            }))
+            .introduced_minor(),
+            None
+        );
+        assert_eq!(
+            crate::effect::ReanchorReason::SameVoiceNearer.introduced_minor(),
+            None
+        );
+        assert_eq!(
+            crate::effect::PreconditionFailureReason::TargetMissing.introduced_minor(),
+            None
+        );
     }
 
     #[test]

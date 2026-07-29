@@ -587,7 +587,17 @@ impl Manifest {
         Ok(manifest)
     }
 
-    /// The schema version manifests are encoded against in this crate.
+    /// The **baseline** schema version manifests are encoded against in this
+    /// crate. Not the universally-emitted version (G-minor,
+    /// `spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4, pin 7): a manifest naming an
+    /// edit barrier that prohibits a post-baseline `OperationKindTag`
+    /// (24–33) must stamp that tag's epoch instead — see
+    /// `epiphany_layout_ir::barrier::edit_barriers_introduced_minor` for the
+    /// aggregate derivation, and `Bundle::create_versioned` /
+    /// `Bundle::commit_versioned` for the producer-supplied seam. This
+    /// constant remains the correct value for a manifest declaring only
+    /// baseline barrier tags (or none), and the manifest **major** always
+    /// stays 0 regardless of the minor stamped.
     pub const SCHEMA: SchemaVersion = SchemaVersion::V0;
 
     /// The *chunk-typed* canonical roots: the operation blocks and the canonical

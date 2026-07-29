@@ -202,6 +202,7 @@ fn base(snapshot_byte: u8) -> TextCanonicalBase {
 fn accept_documents() -> Vec<(&'static str, String)> {
     let minimal = TextDocument {
         document_id: DocumentId([1; 16]),
+        manifest_schema_version: SchemaVersion::V0,
         lineage_id: None,
         profiles: profiles(false),
         extensions: Vec::new(),
@@ -211,6 +212,7 @@ fn accept_documents() -> Vec<(&'static str, String)> {
     };
     let lineage_custom = TextDocument {
         document_id: DocumentId([2; 16]),
+        manifest_schema_version: SchemaVersion::V0,
         lineage_id: Some(LineageId([0x12; 16])),
         profiles: profiles(true),
         extensions: Vec::new(),
@@ -220,6 +222,10 @@ fn accept_documents() -> Vec<(&'static str, String)> {
     };
     let extension_base_multi = TextDocument {
         document_id: DocumentId([3; 16]),
+        // A non-baseline carried version, so the corpus exercises the
+        // `document` line's schema field at a value other than the
+        // ubiquitous baseline (G-minor pin 8/11).
+        manifest_schema_version: SchemaVersion::new(0, 8),
         lineage_id: None,
         profiles: profiles(false),
         extensions: vec![extension(1, &[1, 2])],
@@ -229,6 +235,7 @@ fn accept_documents() -> Vec<(&'static str, String)> {
     };
     let rich = TextDocument {
         document_id: DocumentId([4; 16]),
+        manifest_schema_version: SchemaVersion::V0,
         lineage_id: Some(LineageId([0x14; 16])),
         profiles: profiles(true),
         extensions: vec![extension(1, &[1, 2]), extension(2, &[3])],
@@ -322,17 +329,17 @@ pub fn document_vectors() -> Vec<TextVector> {
         .map(|(name, text)| (SURFACE, "accept", "-", *name, text.as_bytes().to_vec()))
         .collect();
 
-    // The rejected version must be one this crate does NOT implement. Genesis
-    // G2a moved `COMPANION_VERSION` to 0.9.0, which had been this vector's
-    // "future" version — leaving it would have made the negative vector assert
-    // that the *correct* header is rejected. It now names 0.8.0, the
-    // immediately superseded companion, which is the better test anyway:
-    // rejecting the version right behind you is exactly the deferred
+    // The rejected version must be one this crate does NOT implement. The
+    // G-minor rung moved `COMPANION_VERSION` to 0.10.0, which had been this
+    // vector's "future" version — leaving it would have made the negative
+    // vector assert that the *correct* header is rejected. It now names
+    // 0.9.0, the immediately superseded companion, which is the better test
+    // anyway: rejecting the version right behind you is exactly the deferred
     // migrate-on-read posture (`req:textproj:header-version`).
     let wrong_version = replace_once(
         minimal,
+        "(text-projection (0 10 0))",
         "(text-projection (0 9 0))",
-        "(text-projection (0 8 0))",
     );
     vectors.push((
         SURFACE,

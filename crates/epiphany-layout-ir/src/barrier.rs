@@ -773,6 +773,27 @@ pub fn decode_edit_barriers(bytes: &[u8]) -> DecodeResult<Vec<EditBarrier>> {
     Ok(barriers)
 }
 
+/// The G-minor schema-minor epoch a set of **decoded** edit barriers requires
+/// (`spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4, pin 6; audit §5.1 Part 2): the
+/// maximum [`OperationKindTag::introduced_minor`] over every tag named in any
+/// barrier's `prohibited_operation_kinds`, or `None` if every named tag is
+/// baseline (including when `barriers` is empty).
+///
+/// `epiphany-layout-ir` is the only crate that can both decode `EditBarrier`
+/// and reach `OperationKindTag`'s epoch table (it depends on `epiphany-ops`;
+/// `epiphany-bundle` deliberately does not, pin 6's "the bundle stays
+/// opaque"). Callers with undecodable barrier bytes (a foreign extension's
+/// blob, say) cannot call this at all — they must fail closed rather than
+/// guess (pin 6.4): decode first with [`decode_edit_barriers`], and treat a
+/// decode error as "the exact epoch cannot be established", not as baseline.
+pub fn edit_barriers_introduced_minor(barriers: &[EditBarrier]) -> Option<u16> {
+    barriers
+        .iter()
+        .flat_map(|barrier| barrier.prohibited_operation_kinds.iter())
+        .filter_map(|tag| tag.introduced_minor())
+        .max()
+}
+
 /// Encodes a set of object kinds to the canonical blob stored in
 /// `ExtensionDeclaration.affected_object_kinds` (the same `push_set` framing
 /// as [`encode_edit_barriers`]; each element is the kind's 2 LE bytes).
@@ -800,6 +821,38 @@ mod tests {
 
     fn ev(raw: u128) -> TypedObjectId {
         TypedObjectId::Event(EventId::from_raw(raw))
+    }
+
+    // -----------------------------------------------------------------
+    // G-minor (`spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4, pin 6.5): s9.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn s9_removing_the_sole_max_contributing_barrier_lowers_the_aggregate() {
+        let max_barrier = EditBarrier {
+            scope: BarrierScope::WholeScore,
+            affected_object_kinds: Vec::new(),
+            prohibited_operation_kinds: vec![OperationKindTag::CreateInstrument], // epoch 8
+            condition: BarrierCondition::Always,
+        };
+        let baseline_barrier = EditBarrier {
+            scope: BarrierScope::WholeScore,
+            affected_object_kinds: Vec::new(),
+            prohibited_operation_kinds: vec![OperationKindTag::InsertEvent], // baseline
+            condition: BarrierCondition::Always,
+        };
+        let with_both = vec![max_barrier, baseline_barrier.clone()];
+        assert_eq!(
+            edit_barriers_introduced_minor(&with_both),
+            Some(8),
+            "the sole max contributor sets the aggregate"
+        );
+        let after_removal = vec![baseline_barrier];
+        assert_eq!(
+            edit_barriers_introduced_minor(&after_removal),
+            None,
+            "removing the sole max contributor must lower the aggregate, not retain it"
+        );
     }
 
     #[test]

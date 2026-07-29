@@ -171,11 +171,15 @@ pub fn project_header() -> Sexp {
     ])
 }
 
-/// `document ::= "(document " bytes ")" LF`.
-pub fn project_document(document_id: &DocumentId) -> Sexp {
+/// `document ::= "(document " bytes " " schema ")" LF`.
+///
+/// The `schema` field is the carried manifest `SchemaVersion` (G-minor,
+/// `spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4, pins 8/11; companion 0.10.0).
+pub fn project_document(document_id: &DocumentId, manifest_schema_version: &SchemaVersion) -> Sexp {
     Sexp::List(vec![
         Sexp::sym("document"),
         Sexp::Bytes(document_id.as_bytes().to_vec()),
+        project_schema(manifest_schema_version),
     ])
 }
 
@@ -491,6 +495,9 @@ pub fn document_from_bundle<S: BlockStore>(
 
     Ok(TextDocument {
         document_id: manifest.document_id,
+        // Carried from the superblock, never derived (pin 8/11): `Manifest`
+        // itself has no schema-version field (it lives in the superblock).
+        manifest_schema_version: bundle.superblock().manifest_schema_version,
         lineage_id: manifest.lineage_id,
         // `Manifest::decode`'s own re-encode check (see `epiphany-bundle`)
         // guarantees a bundle's `profile_declarations` are already the
@@ -518,7 +525,10 @@ pub fn document_from_bundle<S: BlockStore>(
 pub fn project_text_document(document: &TextDocument) -> String {
     let mut lines: Vec<Sexp> = Vec::new();
     lines.push(project_header());
-    lines.push(project_document(&document.document_id));
+    lines.push(project_document(
+        &document.document_id,
+        &document.manifest_schema_version,
+    ));
     if let Some(lineage_id) = &document.lineage_id {
         lines.push(project_lineage(lineage_id));
     }
@@ -587,8 +597,8 @@ mod tests {
     fn document_id_matches_the_worked_example() {
         let id = DocumentId([0x05; 16]);
         assert_eq!(
-            project_document(&id).render(),
-            "(document #x05050505050505050505050505050505)"
+            project_document(&id, &SchemaVersion::V0).render(),
+            "(document #x05050505050505050505050505050505 (schema 0 1))"
         );
     }
 
@@ -1095,6 +1105,7 @@ mod tests {
         let rich = document_from_bundle(&build_sample_bundle()).expect("bundle reads cleanly");
         let minimal = TextDocument {
             document_id: DocumentId([6; 16]),
+            manifest_schema_version: SchemaVersion::V0,
             lineage_id: None,
             profiles: vec![ProfileDeclaration::full()],
             extensions: Vec::new(),

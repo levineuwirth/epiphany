@@ -20,15 +20,19 @@ use epiphany_bundle::{
     Tear,
 };
 use epiphany_determinism::CanonicalEncode;
-use epiphany_ops::{peek_operation_id, OperationEnvelope};
+use epiphany_ops::{operation_block_introduced_minor, peek_operation_id, OperationEnvelope};
 
 /// Stages real operation envelopes into a single op-envelope block, **deriving**
 /// the block's schema version from its operations: the block major is the max
 /// over `OperationEnvelope::schema_major` under minimal stamping (a v1
 /// `CreateRegion` → major 1; a v2 cross-cutting/staff/metadata value →
-/// major 2), mapped to a version by [`SchemaVersion::for_major`]. This is the
-/// writer-side derivation every real-envelope staging path must use so a
-/// block carrying a versioned payload is never mis-stamped major 0.
+/// major 2), and the block minor is the max over
+/// `OperationEnvelope::introduced_minor` (G-minor,
+/// `spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4) — the block's actually-emitted
+/// discriminants, never a fixed baseline. Both are mapped to a version by
+/// [`SchemaVersion::for_major_at_epoch`]. This is the writer-side derivation
+/// every real-envelope staging path must use so a block carrying a versioned
+/// payload is never mis-stamped.
 pub fn stage_operation_block(envelopes: &[OperationEnvelope]) -> StagedChunk {
     let payloads: Vec<Vec<u8>> = envelopes.iter().map(|e| e.to_canonical_bytes()).collect();
     let major = envelopes
@@ -36,7 +40,11 @@ pub fn stage_operation_block(envelopes: &[OperationEnvelope]) -> StagedChunk {
         .map(|e| e.schema_major())
         .max()
         .unwrap_or(0);
-    StagedChunk::operation_block_versioned(encode_block(&payloads), SchemaVersion::for_major(major))
+    let epoch_max = operation_block_introduced_minor(envelopes);
+    StagedChunk::operation_block_versioned(
+        encode_block(&payloads),
+        SchemaVersion::for_major_at_epoch(major, epoch_max),
+    )
 }
 
 use crate::generators;

@@ -607,6 +607,64 @@ impl MaterializedState {
     pub fn is_clean(&self) -> bool {
         self.conflicts.is_empty() && self.anomalies.is_empty() && self.pending.is_empty()
     }
+
+    /// The canonical base's own G-minor schema-minor epoch (pin 5): the
+    /// maximum over every later-added discriminant its **own bytes** emit —
+    /// today, [`ReanchorReason::SameCanvasNearer`] (nested inside
+    /// [`RepairKind::Reanchored`], itself inside
+    /// [`OperationEffect::AppliedWithRepair`]) and any post-baseline
+    /// [`PreconditionFailureReason`] (nested inside
+    /// [`NoOpReason::PreconditionFailedUnderReduction`], itself inside
+    /// [`OperationEffect::NoOp`]). `None` if every effect is baseline.
+    ///
+    /// **Never `OperationKind`, `OperationKindTag`, or `OperationPayload`**
+    /// (pin 5): `MaterializedState`'s encoder
+    /// (`MaterializedState::canonical_bytes`) never emits any of those three
+    /// vocabularies, so a newer *source* operation alone — e.g. one whose
+    /// primitive kind is `CreateInstrument` (minor 8) — never moves this
+    /// value merely by having been reduced; only the effect it *produces*
+    /// can.
+    pub fn introduced_minor(&self) -> Option<u16> {
+        self.effects
+            .iter()
+            .filter_map(|(_, effect)| effect_introduced_minor(effect))
+            .max()
+    }
+}
+
+/// The G-minor epoch one [`OperationEffect`] contributes to
+/// [`MaterializedState::introduced_minor`] (pin 5): walks the two nested
+/// vocabularies the canonical base's encoder actually reaches —
+/// `RepairKind::Reanchored`'s [`ReanchorReason`] and
+/// `NoOpReason::PreconditionFailedUnderReduction`'s
+/// [`PreconditionFailureReason`] — and returns their maximum, or `None` if
+/// neither applies or both are baseline.
+fn effect_introduced_minor(effect: &OperationEffect) -> Option<u16> {
+    match effect {
+        OperationEffect::AppliedWithRepair { repairs } => repairs
+            .iter()
+            .filter_map(|repair| match &repair.kind {
+                RepairKind::Reanchored { reason, .. } => reason.introduced_minor(),
+                RepairKind::SpannerTruncated { .. }
+                | RepairKind::Orphaned
+                | RepairKind::CascadeDeleted
+                | RepairKind::AttachmentTombstoned
+                | RepairKind::VoicePromoted { .. }
+                | RepairKind::TupletCompensated { .. }
+                | RepairKind::Registered(_) => None,
+            })
+            .max(),
+        OperationEffect::NoOp { reason } => match reason {
+            NoOpReason::PreconditionFailedUnderReduction { reason } => reason.introduced_minor(),
+            NoOpReason::TargetTombstoned
+            | NoOpReason::AlreadyApplied
+            | NoOpReason::SupersededByLaterOperation { .. }
+            | NoOpReason::TransactionConflict => None,
+        },
+        OperationEffect::Applied
+        | OperationEffect::Conflicted { .. }
+        | OperationEffect::TombstonedTarget { .. } => None,
+    }
 }
 
 /// Reduces an [`OperationSet`] to its canonical [`MaterializedState`].
@@ -7727,6 +7785,49 @@ mod tests {
 
     fn pos(n: i64) -> MusicalPosition {
         MusicalPosition(RationalTime::from_int(n as i32))
+    }
+
+    // -----------------------------------------------------------------
+    // G-minor (`spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4, pin 5): s7.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn s7_a_canonical_base_whose_effects_include_same_canvas_nearer_stamps_5() {
+        use epiphany_core::EventId;
+        let from = TypedObjectId::Event(EventId::new(ReplicaId(1), 1));
+        let to = TypedObjectId::Event(EventId::new(ReplicaId(1), 2));
+        let state = MaterializedState {
+            effects: vec![(
+                OperationId::new(ReplicaId(1), 1),
+                OperationEffect::AppliedWithRepair {
+                    repairs: vec![RepairRecord {
+                        kind: RepairKind::Reanchored {
+                            from,
+                            to,
+                            reason: ReanchorReason::SameCanvasNearer,
+                        },
+                        target: from,
+                    }],
+                },
+            )],
+            ..Default::default()
+        };
+        assert_eq!(state.introduced_minor(), Some(5));
+    }
+
+    #[test]
+    fn s7_a_canonical_base_without_the_effect_stamps_baseline_even_from_kind_33_sources() {
+        // The base's own bytes carry only a plain `Applied` effect — never an
+        // `OperationKind`, `OperationKindTag`, or `OperationPayload` — so even
+        // though the *source operation* that produced it (not modeled in this
+        // state at all, by construction: pin 5) might have been kind 33
+        // (`SetSpellingPrecedence`, epoch 9), the base itself must not be
+        // dragged to epoch 9. It has no additive requirement.
+        let state = MaterializedState {
+            effects: vec![(OperationId::new(ReplicaId(1), 1), OperationEffect::Applied)],
+            ..Default::default()
+        };
+        assert_eq!(state.introduced_minor(), None);
     }
 
     fn insert(

@@ -158,6 +158,15 @@ pub struct CommitContext<'a> {
     pub new_chunks: &'a [ChunkRef],
     /// The generation the new manifest must declare (active + 1).
     pub generation: u64,
+    /// The schema version the *previous* manifest was stamped with (G-minor,
+    /// `spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4, pin 6.2): new plumbing, not a
+    /// read-through — [`CommitContext::previous_manifest`] is a `&Manifest`,
+    /// and [`Manifest`] carries no schema-version field at all (it lives in
+    /// the superblock, `Superblock::manifest_schema_version`). A build
+    /// closure whose commit preserves the complete barrier content unchanged
+    /// reads this to preserve the carried version exactly (pin 6.6), rather
+    /// than recomputing it from scratch.
+    pub previous_manifest_version: SchemaVersion,
 }
 
 /// An open bundle over a block store.
@@ -183,10 +192,29 @@ impl<S: BlockStore> Bundle<S> {
     /// A crash *during creation* may leave a half-formed file that [`Bundle::open`]
     /// rejects as corrupt — acceptable, since the file is not yet a bundle. The
     /// crash-safety guarantee is about *commits to an existing bundle*.
-    pub fn create(
+    ///
+    /// Stamps the manifest chunk at the **baseline** [`Manifest::SCHEMA`]
+    /// version. A manifest created here declares no canonical roots or
+    /// blobs (enforced below), so it cannot yet name an edit barrier whose
+    /// tag requires a higher epoch — see [`Bundle::create_versioned`] for a
+    /// caller (e.g. a repack seeding a non-empty initial manifest through a
+    /// different path) that must supply the version explicitly.
+    pub fn create(store: S, file_uuid: FileUuid, manifest: Manifest) -> Result<Self, BundleError> {
+        Self::create_versioned(store, file_uuid, manifest, Manifest::SCHEMA)
+    }
+
+    /// As [`Bundle::create`], but the manifest chunk is stamped at the given
+    /// `manifest_schema_version` rather than the baseline [`Manifest::SCHEMA`]
+    /// (G-minor pin 6.1: "producers supply the aggregate manifest
+    /// `SchemaVersion` explicitly"). `epiphany-bundle` itself never derives
+    /// this value — it has no dependency on `epiphany-ops` or
+    /// `epiphany-layout-ir` and cannot decode `prohibited_operation_kinds` —
+    /// so the caller (a producer with the right dependencies) computes it.
+    pub fn create_versioned(
         mut store: S,
         file_uuid: FileUuid,
         mut manifest: Manifest,
+        manifest_schema_version: SchemaVersion,
     ) -> Result<Self, BundleError> {
         manifest.generation = 0;
         manifest.manifest_id = manifest.derive_id();
@@ -216,8 +244,11 @@ impl<S: BlockStore> Bundle<S> {
         let manifest_payload = manifest.encode();
         enforce_limit(manifest_payload.len() as u64, MAX_MANIFEST_BYTES)?;
         let manifest = Manifest::decode(&manifest_payload)?;
-        let manifest_hash =
-            chunk_content_hash(ChunkKind::Manifest, Manifest::SCHEMA, &manifest_payload);
+        let manifest_hash = chunk_content_hash(
+            ChunkKind::Manifest,
+            manifest_schema_version,
+            &manifest_payload,
+        );
         store.write_at(BODY_START, &manifest_payload)?;
         store.flush()?;
 
@@ -226,7 +257,7 @@ impl<S: BlockStore> Bundle<S> {
             manifest_offset: BODY_START,
             manifest_length: manifest_payload.len() as u64,
             manifest_hash,
-            manifest_schema_version: Manifest::SCHEMA,
+            manifest_schema_version,
             reduction_algorithm_version: reduction_version_for(&manifest),
             profile_id: active_profile.profile_id,
             commit_state: CommitState::Committed,
@@ -605,9 +636,31 @@ impl<S: BlockStore> Bundle<S> {
     /// appended bytes. On an error *at* the commit-point flush the durable result
     /// is indeterminate (the new superblock may or may not have landed); the
     /// bundle is poisoned read-only and the caller must reopen from storage.
+    ///
+    /// Stamps the new manifest chunk at the **baseline** [`Manifest::SCHEMA`]
+    /// version. See [`Bundle::commit_versioned`] for a caller that must
+    /// supply a non-baseline aggregate (e.g. because the manifest the
+    /// closure builds names an edit barrier prohibiting a post-baseline
+    /// `OperationKindTag`).
     pub fn commit(
         &mut self,
         new_chunks: &[StagedChunk],
+        build: impl FnOnce(&CommitContext) -> Manifest,
+    ) -> Result<(), BundleError> {
+        self.commit_versioned(new_chunks, Manifest::SCHEMA, build)
+    }
+
+    /// As [`Bundle::commit`], but the new manifest chunk is stamped at the
+    /// given `manifest_schema_version` rather than the baseline
+    /// [`Manifest::SCHEMA`] (G-minor pin 6.1). The build closure reads
+    /// [`CommitContext::previous_manifest_version`] if it needs to decide
+    /// whether the previous aggregate is still exact (pin 6.6: an ordinary
+    /// repack preserving the complete barrier content preserves the carried
+    /// version exactly).
+    pub fn commit_versioned(
+        &mut self,
+        new_chunks: &[StagedChunk],
+        manifest_schema_version: SchemaVersion,
         build: impl FnOnce(&CommitContext) -> Manifest,
     ) -> Result<(), BundleError> {
         if self.read_only {
@@ -675,6 +728,7 @@ impl<S: BlockStore> Bundle<S> {
             previous_manifest: &previous,
             new_chunks: &new_refs,
             generation: next_generation,
+            previous_manifest_version: self.superblock.manifest_schema_version,
         });
 
         // Extension-root preservation (Chapter 8 §"Behavior Under Unknown
@@ -720,8 +774,11 @@ impl<S: BlockStore> Bundle<S> {
         let manifest_payload = manifest.encode();
         enforce_limit(manifest_payload.len() as u64, MAX_MANIFEST_BYTES)?;
         let manifest = Manifest::decode(&manifest_payload)?;
-        let manifest_hash =
-            chunk_content_hash(ChunkKind::Manifest, Manifest::SCHEMA, &manifest_payload);
+        let manifest_hash = chunk_content_hash(
+            ChunkKind::Manifest,
+            manifest_schema_version,
+            &manifest_payload,
+        );
         let manifest_offset = cursor;
         self.store.write_at(manifest_offset, &manifest_payload)?;
         cursor += manifest_payload.len() as u64;
@@ -734,7 +791,7 @@ impl<S: BlockStore> Bundle<S> {
             manifest_offset,
             manifest_length: manifest_payload.len() as u64,
             manifest_hash,
-            manifest_schema_version: Manifest::SCHEMA,
+            manifest_schema_version,
             reduction_algorithm_version: reduction_version_for(&manifest),
             profile_id: active_profile.profile_id,
             commit_state: CommitState::Committed,
@@ -1293,9 +1350,20 @@ fn verified_slot(
 
 // Re-exported helper for harnesses that build raw images: the body start offset
 // and the content hash of a manifest payload.
-/// The content hash of a manifest chunk payload (Chapter 8 §"Content Hashing").
+/// The content hash of a manifest chunk payload at the **baseline**
+/// [`Manifest::SCHEMA`] version (Chapter 8 §"Content Hashing"). See
+/// [`manifest_chunk_hash_versioned`] for a manifest stamped at a
+/// non-baseline aggregate (G-minor, `spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4,
+/// pin 7).
 pub fn manifest_chunk_hash(payload: &[u8]) -> ContentHash {
     chunk_content_hash(ChunkKind::Manifest, Manifest::SCHEMA, payload)
+}
+
+/// As [`manifest_chunk_hash`], but against the given `schema` rather than the
+/// baseline [`Manifest::SCHEMA`] — the hash a manifest naming a post-baseline
+/// edit-barrier tag must be content-addressed under.
+pub fn manifest_chunk_hash_versioned(payload: &[u8], schema: SchemaVersion) -> ContentHash {
+    chunk_content_hash(ChunkKind::Manifest, schema, payload)
 }
 
 #[cfg(test)]
@@ -1429,6 +1497,123 @@ mod tests {
             Manifest::empty(DocumentId([2; 16])),
         )
         .unwrap()
+    }
+
+    // -----------------------------------------------------------------
+    // G-minor (`spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4): s10, s11, s12.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn s10_a_repack_with_unchanged_barrier_content_preserves_the_carried_version() {
+        // A "repack" here: a second commit whose closure carries forward the
+        // manifest completely unchanged (no barrier content changed), reading
+        // the exact prior aggregate from `CommitContext::previous_manifest_
+        // version` (pin 6.2/6.6) rather than recomputing it. The carried
+        // version must survive byte-for-byte.
+        let mut bundle = Bundle::create_versioned(
+            MemStore::new(),
+            FileUuid([9; 16]),
+            Manifest::empty(DocumentId([9; 16])),
+            SchemaVersion::new(0, 8),
+        )
+        .unwrap();
+        assert_eq!(
+            bundle.superblock().manifest_schema_version,
+            SchemaVersion::new(0, 8)
+        );
+
+        let mut observed_previous = None;
+        bundle
+            .commit_versioned(&[], SchemaVersion::new(0, 8), |ctx| {
+                observed_previous = Some(ctx.previous_manifest_version);
+                ctx.previous_manifest.clone()
+            })
+            .unwrap();
+
+        assert_eq!(
+            observed_previous,
+            Some(SchemaVersion::new(0, 8)),
+            "CommitContext must expose the previous manifest version for the closure to read"
+        );
+        assert_eq!(
+            bundle.superblock().manifest_schema_version,
+            SchemaVersion::new(0, 8),
+            "an unchanged-content repack preserves the carried version exactly"
+        );
+    }
+
+    #[test]
+    fn s11_bundle_rs_301_accepts_a_manifest_minor_mismatch_at_the_same_major() {
+        // `open`'s gate at :301 compares `.major` only. A bundle whose
+        // manifest minor differs from `Manifest::SCHEMA`'s (but whose major
+        // matches) must still open — the v0 rule that the minor is a record,
+        // not a gate (pin 7). This is the exact conformance regression pin 7
+        // warns tightening the comparison to full-version equality would
+        // cause.
+        let bundle = Bundle::create_versioned(
+            MemStore::new(),
+            FileUuid([10; 16]),
+            Manifest::empty(DocumentId([10; 16])),
+            SchemaVersion::new(0, 8), // differs from Manifest::SCHEMA's minor (1)
+        )
+        .unwrap();
+        assert_ne!(SchemaVersion::new(0, 8), Manifest::SCHEMA);
+        assert_eq!(SchemaVersion::new(0, 8).major, Manifest::SCHEMA.major);
+
+        let image = bundle.into_store().into_bytes();
+        let reopened = Bundle::open(MemStore::from_bytes(image))
+            .expect("a major-matching minor mismatch opens");
+        assert!(!reopened.is_read_only());
+        assert_eq!(
+            reopened.superblock().manifest_schema_version,
+            SchemaVersion::new(0, 8)
+        );
+    }
+
+    #[test]
+    fn s12_a_raised_minor_changes_the_chunk_id_and_therefore_the_manifest_id() {
+        // Two operation blocks with byte-identical payloads but different
+        // schema minors must have different `ChunkId`s — the minor enters the
+        // hash preimage (`canonical_bytes`: major then minor). Naming that
+        // `ChunkRef` from a manifest's `operation_roots` then changes the
+        // manifest body, and therefore the `ManifestId`.
+        let payload = vec![1u8, 2, 3];
+        let id_v0 = crate::chunk::chunk_id(
+            ChunkKind::OperationEnvelopeBlock,
+            SchemaVersion::V0,
+            &payload,
+        );
+        let id_minor_8 = crate::chunk::chunk_id(
+            ChunkKind::OperationEnvelopeBlock,
+            SchemaVersion::new(0, 8),
+            &payload,
+        );
+        assert_ne!(
+            id_v0, id_minor_8,
+            "raising the minor must change the ChunkId"
+        );
+
+        let make_manifest = |chunk_id: epiphany_determinism::ChunkId, schema: SchemaVersion| {
+            let mut m = Manifest::empty(DocumentId([11; 16]));
+            m.operation_roots = vec![ChunkRef {
+                id: chunk_id,
+                kind: ChunkKind::OperationEnvelopeBlock,
+                schema_version: schema,
+                offset: 0,
+                compressed_length: payload.len() as u64,
+                uncompressed_length: payload.len() as u64,
+                compression: CompressionAlgorithm::None,
+                hash: chunk_id.content_hash(),
+            }];
+            m
+        };
+        let manifest_v0 = make_manifest(id_v0, SchemaVersion::V0);
+        let manifest_minor_8 = make_manifest(id_minor_8, SchemaVersion::new(0, 8));
+        assert_ne!(
+            manifest_v0.derive_id(),
+            manifest_minor_8.derive_id(),
+            "a changed ChunkRef in operation_roots must change the ManifestId"
+        );
     }
 
     #[test]

@@ -201,12 +201,22 @@ impl SchemaVersion {
         SchemaVersion { major, minor }
     }
 
-    /// The current schema version at a given major: [`Self::V0`] for major 0,
-    /// [`Self::V1`] for major 1, [`Self::V2`] for major 2, [`Self::V3`] for
-    /// major 3, and `{major, 0}` for any higher (future) major. A writer maps
-    /// a chunk's derived schema major to a version this way — e.g. an
-    /// operation-envelope block stamps the max over its operations'
-    /// `schema_major()`.
+    /// The **baseline** schema version at a given major: [`Self::V0`] for
+    /// major 0, [`Self::V1`] for major 1, [`Self::V2`] for major 2,
+    /// [`Self::V3`] for major 3, and `{major, 0}` for any higher (future)
+    /// major. A writer maps a chunk's derived schema major to a version this
+    /// way — e.g. an operation-envelope block stamps the max over its
+    /// operations' `schema_major()`.
+    ///
+    /// This yields the **baseline** minor only (G-minor,
+    /// `spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4, pin 4): a writer whose payload
+    /// emits a post-baseline discriminant (an appended `OperationKind`,
+    /// `OperationKindTag`, `OperationPayload`, `ReanchorReason`, or
+    /// `PreconditionFailureReason` variant) must use
+    /// [`Self::for_major_at_epoch`] instead, which raises the minor to the
+    /// epoch that variant requires. This constructor is **not** replaced —
+    /// `for_major_at_epoch` needs exactly the baseline this computes as its
+    /// floor (pin 3: `max(baseline_minor(major), epoch_max)`).
     #[inline]
     pub const fn for_major(major: u16) -> Self {
         match major {
@@ -216,6 +226,29 @@ impl SchemaVersion {
             3 => SchemaVersion::V3,
             m => SchemaVersion { major: m, minor: 0 },
         }
+    }
+
+    /// The schema version a writer stamps when its payload's discriminants
+    /// may require more than `major`'s own baseline minor (G-minor, pin 3):
+    /// `major` as given, and the minor raised to `epoch_max` when it exceeds
+    /// [`Self::for_major`]'s baseline minor for that major. `epoch_max` is
+    /// the maximum [`OperationKind::introduced_minor`](crate)-style epoch
+    /// actually emitted, or `None` for "no additive requirement" — the
+    /// distinct sentinel pin 3 requires (never `0`, which is a real baseline
+    /// minor for `V1`–`V3`). Baselines are never lowered: an `epoch_max` at
+    /// or below the baseline, or `None`, yields the baseline unchanged.
+    #[inline]
+    pub const fn for_major_at_epoch(major: u16, epoch_max: Option<u16>) -> Self {
+        let baseline = SchemaVersion::for_major(major);
+        if let Some(epoch) = epoch_max {
+            if epoch > baseline.minor {
+                return SchemaVersion {
+                    major,
+                    minor: epoch,
+                };
+            }
+        }
+        baseline
     }
 
     /// Canonical 4 bytes for the hash preimage (Chapter 8
@@ -379,6 +412,49 @@ mod tests {
         let c = ManifestId::derive(doc, 4, b"body-bytes");
         assert_eq!(a, b, "same inputs derive the same manifest id");
         assert_ne!(a, c, "a different generation derives a different id");
+    }
+
+    #[test]
+    fn for_major_at_epoch_keeps_the_baseline_when_no_epoch_applies() {
+        // s3 anchor: a major-0 payload emitting only baseline vocabulary
+        // stamps {0, 1} — V0's baseline — never {0, 0}.
+        assert_eq!(
+            SchemaVersion::for_major_at_epoch(0, None),
+            SchemaVersion::V0
+        );
+        assert_eq!(SchemaVersion::for_major_at_epoch(0, None).minor, 1);
+    }
+
+    #[test]
+    fn for_major_at_epoch_raises_the_minor_when_the_epoch_exceeds_baseline() {
+        assert_eq!(
+            SchemaVersion::for_major_at_epoch(0, Some(8)),
+            SchemaVersion::new(0, 8)
+        );
+    }
+
+    #[test]
+    fn s6_major_and_minor_combine_independently_kind_28_example() {
+        // A major-2 block containing `CreateRepeatStructure` (kind 28: schema
+        // major 2, G-minor epoch 6) stamps exactly {2, 6} — the major comes
+        // from `schema_major()`, the minor from `introduced_minor()`, and
+        // this constructor combines them without either influencing the
+        // other (`epiphany-ops`' own `s6_major_and_minor_derive_
+        // independently` test establishes the two inputs; this closes the
+        // loop by combining them the way a real writer does).
+        assert_eq!(
+            SchemaVersion::for_major_at_epoch(2, Some(6)),
+            SchemaVersion::new(2, 6)
+        );
+    }
+
+    #[test]
+    fn for_major_at_epoch_never_lowers_the_baseline() {
+        // V1's baseline minor is 0; an epoch below it must not lower it.
+        assert_eq!(
+            SchemaVersion::for_major_at_epoch(1, Some(0)),
+            SchemaVersion::V1
+        );
     }
 
     #[test]

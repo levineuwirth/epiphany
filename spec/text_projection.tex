@@ -234,7 +234,7 @@
   {\Large\scshape\color{epiphanyslate}Text Projection}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.9.0 --- The genesis settings setters reach the grammar}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.10.0 --- The carried manifest schema version reaches the document line}\\[4pt]
   {\small\color{epiphanyslate}Normative for the text form it defines}
   \vfill
 \end{titlepage}
@@ -454,8 +454,10 @@ A projection is, in order:
 \begin{enumerate}
   \item a \texttt{(text-projection <version>)} header line, naming the version of
     \emph{this companion} the text conforms to;
-  \item a \texttt{(document \#x<document-id>)} line, and a
-    \texttt{(lineage \#x<lineage-id>)} line if the manifest declares one;
+  \item a \texttt{(document \#x<document-id> (schema <major> <minor>))} line ---
+    the manifest's carried \texttt{SchemaVersion} is projected alongside the
+    document id, verbatim and never re-derived (Requirement~\ref{req:textproj:manifest-schema-carried}) ---
+    and a \texttt{(lineage \#x<lineage-id>)} line if the manifest declares one;
   \item zero or more \texttt{(profile ...)} lines, in canonical order;
   \item zero or more \texttt{(extension ...)} lines, in canonical order;
   \item at most one \texttt{(canonical-base ...)} line;
@@ -465,9 +467,23 @@ A projection is, in order:
 \end{enumerate}
 
 \begin{requirement}
+  \label{req:textproj:manifest-schema-carried}
+  The \texttt{document} line \MUST{} carry the manifest's aggregate
+  \texttt{SchemaVersion} (core specification Chapter~8,
+  \sectionsc{Schema Versioning}) as its second field. A binary-to-text
+  projector \MUST{} copy this value verbatim from the bundle superblock, and
+  a text-to-binary serializer \MUST{} use the value declared by the document
+  line verbatim as the bundle's manifest schema version. This companion
+  \MUSTNOT{} derive or validate the value from
+  \texttt{ExtensionDeclaration.edit\_barriers}; those bytes are opaque at
+  this layer. A document author editing opaque barrier bytes is responsible
+  for updating the field to match.
+\end{requirement}
+
+\begin{requirement}
   \label{req:textproj:header-version}
   A parser implementing this companion \MUST{} accept exactly one header
-  version: \texttt{(0 9 0)}, the version of the companion it implements. It
+  version: \texttt{(0 10 0)}, the version of the companion it implements. It
   \MUST{} reject any other version at line one.
 
   Multi-version acceptance and text migrate-on-read are deferred in the same
@@ -518,7 +534,7 @@ projection introduces no ordering of its own.
   A parser \MUST{} reject every \texttt{(blob ...)} line whose blob is
   unreferenced by canonical state
   (Requirement~\ref{req:textproj:canonical-blobs}). At companion
-  version~0.9.0, neither a canonical operation nor canonical reduced state can
+  version~0.10.0, neither a canonical operation nor canonical reduced state can
   carry a \texttt{BlobId}; canonical state therefore cannot reference a blob,
   and a parser \MUST{} reject every \texttt{(blob ...)} line.
 \end{requirement}
@@ -960,7 +976,8 @@ projection     ::= header document lineage? profile* extension*
 header         ::= "(text-projection " version ")" LF
 version        ::= "(" integer " " integer " " integer ")"
 
-document       ::= "(document " bytes ")" LF
+document       ::= "(document " bytes " " schema ")" LF
+                 ; id, then the carried manifest SchemaVersion (G-minor)
 lineage        ::= "(lineage " bytes ")" LF
 
 profile        ::= "(profile " profile-id " " version " " constraints ")" LF
@@ -1120,8 +1137,8 @@ A document of one operation --- a transposition of two pitches up a perfect
 fifth, over a compacted base --- projects to five lines:
 
 \begin{lstlisting}
-(text-projection (0 9 0))
-(document #x05050505050505050505050505050505)
+(text-projection (0 10 0))
+(document #x05050505050505050505050505050505 (schema 0 1))
 (profile full (0 1 0) (constraints 67108864 (retention 1 () true)))
 (canonical-base #x1f8b0000000000000000000000000000 #x 1 full (schema 0 1) #x0000)
 (envelope #x00000000000000070000000000000001 #x00000000000000000000000011223344 (stamp 42 7 #x00000000000000070000000000000001) (causal ((#x0000000000000001 3)) (#x00000000000000020000000000000009)) (some #x00000000000000070000000000000005) (primitive (transpose-interval (#x00000000000000070000000000000001 #x00000000000000070000000000000002) (transposition-interval 4 7))))
@@ -1337,6 +1354,22 @@ absorb it, exactly as the binary decoder does.
   Same forcing reason as the 0.8.0 bump above: holding the version while
   extending the grammar would leave two mutually incompatible grammars both
   claiming \texttt{(0 8 0)}. Cached projections at \texttt{(0 8 0)} do not
+  migrate; a stale \texttt{TextProjection} chunk is regenerated, not
+  converted. \\
+    \today & Chapters 8, 5 & 0.10.0 --- The carried manifest schema version
+  reaches the \texttt{document} line (the G-minor rung,
+  \texttt{spec/PLAN\_GMINOR\_SCHEMA\_MINOR.md}). The \texttt{document}
+  production gains a second field: the manifest's aggregate
+  \texttt{SchemaVersion}, carried verbatim and never derived
+  (\texttt{req:textproj:manifest-schema-carried}).
+
+  This bump is caused by the manifest attribute alone, \emph{not} by
+  operation-block schema-minor stamping: an operation block's physical schema
+  is discarded during projection exactly as before, and a reader must not
+  infer that op-block minors reach the text surface from this entry. The reasoning is the
+  same forcing argument as every prior grammar-extending bump: holding the
+  version while adding a field would leave two mutually incompatible grammars
+  both claiming \texttt{(0 9 0)}. Cached projections at \texttt{(0 9 0)} do not
   migrate; a stale \texttt{TextProjection} chunk is regenerated, not
   converted. \\
 \bottomrule

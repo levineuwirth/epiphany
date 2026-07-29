@@ -123,6 +123,7 @@ pub mod negative;
 
 pub mod bundle_harness;
 
+pub mod gminor;
 pub mod layout_stub;
 
 // The editing-loop vertical slice: hit-test → score object → operation → reduce →

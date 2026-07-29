@@ -57,7 +57,7 @@ use epiphany_bundle::{
     FileUuid, Manifest, SchemaVersion, SnapshotRef, StagedChunk,
 };
 use epiphany_determinism::CanonicalEncode;
-use epiphany_ops::OperationEnvelope;
+use epiphany_ops::{operation_block_introduced_minor, OperationEnvelope};
 
 use crate::TextDocument;
 
@@ -150,7 +150,12 @@ pub fn serialize_document<S: BlockStore>(
     }
     staged.push(stage_operation_envelope_block(document));
 
-    bundle.commit(&staged, |ctx| build_manifest(document, ctx))?;
+    // The carried manifest SchemaVersion is supplied explicitly (G-minor pin
+    // 6.1/8/11): this companion never derives it, it round-trips exactly
+    // what the document declares.
+    bundle.commit_versioned(&staged, document.manifest_schema_version, |ctx| {
+        build_manifest(document, ctx)
+    })?;
     Ok(bundle)
 }
 
@@ -186,7 +191,11 @@ fn stage_operation_envelope_block(document: &TextDocument) -> StagedChunk {
         .map(OperationEnvelope::schema_major)
         .max()
         .unwrap_or(0);
-    StagedChunk::operation_block_versioned(encode_block(&payloads), SchemaVersion::for_major(major))
+    let epoch_max = operation_block_introduced_minor(&document.envelopes);
+    StagedChunk::operation_block_versioned(
+        encode_block(&payloads),
+        SchemaVersion::for_major_at_epoch(major, epoch_max),
+    )
 }
 
 /// Builds the committed manifest from the previous (empty) manifest and the
@@ -279,6 +288,7 @@ mod tests {
     fn minimal_document(seed: u64) -> TextDocument {
         TextDocument {
             document_id: DocumentId([seed as u8; 16]),
+            manifest_schema_version: SchemaVersion::V0,
             lineage_id: None,
             profiles: vec![base_profile()],
             extensions: Vec::new(),
@@ -339,6 +349,20 @@ mod tests {
             .expect("a well-formed document serializes");
         let image = bundle.into_store().into_bytes();
         Bundle::open(MemStore::from_bytes(image)).expect("the serialized bundle reopens")
+    }
+
+    #[test]
+    fn s13_text_document_round_trips_the_carried_manifest_schema_version() {
+        let mut document = minimal_document(42);
+        document.manifest_schema_version = SchemaVersion::new(0, 8);
+        let reopened = serialize_and_reopen(&document);
+        let bundle_document =
+            crate::project::document_from_bundle(&reopened).expect("bundle reads cleanly");
+        assert_eq!(
+            bundle_document.manifest_schema_version,
+            SchemaVersion::new(0, 8),
+            "the carried manifest SchemaVersion must round-trip exactly, never the baseline"
+        );
     }
 
     #[test]
@@ -470,11 +494,12 @@ mod tests {
             expected_major > 0,
             "fixture must include a schema-major-bearing operation to exercise the derivation"
         );
+        let expected_epoch_max = operation_block_introduced_minor(&document.envelopes);
         let reopened = serialize_and_reopen(&document);
         let root = reopened.manifest().operation_roots[0];
         assert_eq!(
             root.schema_version,
-            SchemaVersion::for_major(expected_major)
+            SchemaVersion::for_major_at_epoch(expected_major, expected_epoch_max)
         );
     }
 

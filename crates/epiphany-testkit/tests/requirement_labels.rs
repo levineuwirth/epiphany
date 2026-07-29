@@ -10,8 +10,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const CORE_REQUIREMENT_COUNT: usize = 212;
-const SUITE_REQUIREMENT_COUNT: usize = 282;
-const SUITE_LABEL_COUNT: usize = 282;
+// +1 for req:textproj:manifest-schema-carried (G-minor, pins 8/11:
+// spec/PLAN_GMINOR_SCHEMA_MINOR.md).
+const SUITE_REQUIREMENT_COUNT: usize = 283;
+const SUITE_LABEL_COUNT: usize = 283;
 
 /// The normative chapter-to-area assignment. Keeping this as data makes adding a
 /// requirement under the wrong chapter fail without encoding chapter names in

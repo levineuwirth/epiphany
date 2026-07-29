@@ -83,10 +83,10 @@ pub mod time_axis;
 pub mod vertical_band;
 
 pub use barrier::{
-    decode_affected_object_kinds, decode_edit_barriers, encode_affected_object_kinds,
-    encode_edit_barriers, AlwaysLiveOracle, BarrierCondition, BarrierConditionRegistryId,
-    BarrierDecodeError, BarrierScope, BarrierScopeRegistryId, EditBarrier, EditContext, EditOracle,
-    ExtensionRef, ObjectKind, MAX_CONDITION_DEPTH,
+    decode_affected_object_kinds, decode_edit_barriers, edit_barriers_introduced_minor,
+    encode_affected_object_kinds, encode_edit_barriers, AlwaysLiveOracle, BarrierCondition,
+    BarrierConditionRegistryId, BarrierDecodeError, BarrierScope, BarrierScopeRegistryId,
+    EditBarrier, EditContext, EditOracle, ExtensionRef, ObjectKind, MAX_CONDITION_DEPTH,
 };
 pub use cache::{
     ConstrainedRegionCache, DependencyIndex, FineLayoutCache, LayoutCache, LogicalRegionCache,

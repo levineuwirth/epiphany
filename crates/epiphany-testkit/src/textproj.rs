@@ -9,7 +9,7 @@
 //! intentionally regenerates layout, collapses duplicate blobs, and omits
 //! non-canonical accelerators; none of those changes operation semantics.
 
-use epiphany_bundle::{DocumentId, FileUuid, MemStore, ProfileDeclaration};
+use epiphany_bundle::{DocumentId, FileUuid, MemStore, ProfileDeclaration, SchemaVersion};
 use epiphany_ops::{OperationEnvelope, OperationSet};
 use epiphany_textproj::parse::parse_document;
 use epiphany_textproj::project::{document_from_bundle, project_bundle};
@@ -36,6 +36,7 @@ pub fn assert_semantics_preserved(seed: u64) {
 
     let source = TextDocument {
         document_id: DocumentId(seed.to_le_bytes().repeat(2).try_into().expect("16 bytes")),
+        manifest_schema_version: SchemaVersion::V0,
         lineage_id: None,
         profiles: vec![ProfileDeclaration::full()],
         extensions: Vec::new(),

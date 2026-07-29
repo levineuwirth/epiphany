@@ -96,11 +96,11 @@ pub fn parse_document(text: &str) -> Result<TextDocument, TextError> {
     )?;
 
     // document: mandatory, immediately after the header.
-    let document_id = require_line(
+    let (document_id, manifest_schema_version) = require_line(
         &mut lines,
         "document",
         "a projection must carry a document line immediately after its header",
-        parse_document_id_line,
+        parse_document_line,
     )?;
 
     // lineage?
@@ -176,6 +176,7 @@ pub fn parse_document(text: &str) -> Result<TextDocument, TextError> {
 
     Ok(TextDocument {
         document_id,
+        manifest_schema_version,
         lineage_id,
         profiles,
         extensions,
@@ -404,13 +405,18 @@ fn parse_header(s: &Sexp) -> Result<(), TextError> {
     Ok(())
 }
 
-/// `document ::= "(document " bytes ")"`.
-fn parse_document_id_line(s: &Sexp) -> Result<DocumentId, TextError> {
-    let fields = s.expect_struct("document", 1)?;
-    Ok(DocumentId(parse_id16(
-        &fields[0],
-        "a DocumentId is exactly 16 bytes",
-    )?))
+/// `document ::= "(document " bytes " " schema ")"`.
+///
+/// The `schema` field is the carried manifest `SchemaVersion` (G-minor,
+/// `spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4, pins 8/11; companion 0.10.0):
+/// parsed back verbatim, never re-derived — this companion has no
+/// `epiphany-layout-ir` dependency and cannot decode edit-barrier bytes to
+/// check it.
+fn parse_document_line(s: &Sexp) -> Result<(DocumentId, SchemaVersion), TextError> {
+    let fields = s.expect_struct("document", 2)?;
+    let document_id = DocumentId(parse_id16(&fields[0], "a DocumentId is exactly 16 bytes")?);
+    let manifest_schema_version = parse_schema_version(&fields[1])?;
+    Ok((document_id, manifest_schema_version))
 }
 
 /// `lineage ::= "(lineage " bytes ")"`.
@@ -643,12 +649,12 @@ mod tests {
     }
 
     // Bumped with `COMPANION_VERSION` (0.7.0 → 0.8.0, genesis G1; 0.8.0 →
-    // 0.9.0, genesis G2a). Kept a literal because `projection` takes `&[&str]`
-    // and a formatted String would ripple through every call site; `the_test_
-    // header_tracks_the_implemented_version` below fails loudly if the two
-    // ever drift.
-    const HEADER: &str = "(text-projection (0 9 0))";
-    const DOCUMENT: &str = "(document #x00000000000000000000000000000001)";
+    // 0.9.0, genesis G2a; 0.9.0 → 0.10.0, G-minor). Kept a literal because
+    // `projection` takes `&[&str]` and a formatted String would ripple
+    // through every call site; `the_test_header_tracks_the_implemented_
+    // version` below fails loudly if the two ever drift.
+    const HEADER: &str = "(text-projection (0 10 0))";
+    const DOCUMENT: &str = "(document #x00000000000000000000000000000001 (schema 0 1))";
 
     /// A minimal but complete valid projection: just the two mandatory lines.
     fn minimal_valid_document() -> String {
@@ -852,10 +858,10 @@ mod tests {
         assert!(parse_document(&minimal_valid_document()).is_ok());
     }
 
-    /// (s9) Genesis tranche G2a (`spec/CONTRACT_GENESIS_G2A_SETTINGS.md`):
-    /// `(0 8 0)` — the version this crate implemented *before* this
-    /// packet's `kind` grammar extension — must now be rejected, not merely
-    /// "some other version". This is the specific case
+    /// G-minor (`spec/PLAN_GMINOR_SCHEMA_MINOR.md`, s14): `(0 9 0)` — the
+    /// version this crate implemented *before* this packet's `document`
+    /// grammar extension — must now be rejected, not merely "some other
+    /// version". This is the specific case
     /// `req:textproj:header-version`'s reject-all-others clause exists to
     /// guard, and it is the one a lenient "any `(0 x 0)`" parser would still
     /// pass.
@@ -865,13 +871,24 @@ mod tests {
     /// test dies, since `(0 8 0)` would then parse.
     #[test]
     fn the_immediately_superseded_companion_version_is_rejected() {
-        let text = projection(&["(text-projection (0 8 0))", DOCUMENT]);
+        let text = projection(&["(text-projection (0 9 0))", DOCUMENT]);
         assert_eq!(
             parse_document(&text),
             Err(TextError::NotCanonical(
                 "the header names a companion version other than the one this crate implements"
             ))
         );
+    }
+
+    /// s14: the committed companion version parses, and the immediately
+    /// superseded version is rejected — restated explicitly under its
+    /// contract label (`spec/CONTRACT_GMINOR_IMPLEMENTATION.md`), on top of
+    /// the two tests immediately above which already exercise both halves.
+    #[test]
+    fn s14_the_committed_corpus_parses_at_0_10_0_and_0_9_0_is_rejected() {
+        assert!(parse_document(&minimal_valid_document()).is_ok());
+        let superseded = projection(&["(text-projection (0 9 0))", DOCUMENT]);
+        assert!(parse_document(&superseded).is_err());
     }
 
     #[test]

@@ -240,7 +240,7 @@
   {\Large\scshape\color{epiphanyslate}Binary Format}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.12.0 --- The genesis operation tranche reaches the wire (G1 + G2a)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.13.0 --- The chunk schema minor becomes a derived record (G-minor)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the byte layouts it defines}
   \vfill
 \end{titlepage}
@@ -2370,23 +2370,53 @@ The \emph{only} minor-additive mechanism in schema major~0 is
 \textbf{appending discriminants to open vocabularies}:
 
 \begin{itemize}
-  \item \texttt{OperationKind}: append at ${\geq}\,\tablenums{30}$
+  \item \texttt{OperationKind}: append at ${\geq}\,\tablenums{34}$
     (Requirement~\ref{req:binfmt:kind-discriminants}; the Phase-3
     tranche took \tablenums{24}--\tablenums{27} under this mechanism,
-    and the repeat pair \tablenums{28}/\tablenums{29} in the
-    schema-major-2 revision --- the discriminant space is one append-only
-    table across majors, but a kind's \emph{block stamp} follows minimal
-    stamping over its payload: \tablenums{28}'s payload embeds a v2
-    layout, so its blocks stamp major~2,
-    Section~\ref{sec:evolution:major2});
-  \item \texttt{OperationKindTag}: append at ${\geq}\,\tablenums{30}$
-    (Requirement~\ref{req:binfmt:kind-tag});
+    the repeat pair \tablenums{28}/\tablenums{29} in the
+    schema-major-2 revision, Push~4a took \tablenums{30}
+    (\texttt{TransposeInterval}), genesis tranche G1 took \tablenums{31}
+    (\texttt{CreateInstrument}), and genesis tranche G2a took
+    \tablenums{32}/\tablenums{33} (\texttt{SetCanvasLayoutDefaults},
+    \texttt{SetSpellingPrecedence}) --- the discriminant space is one
+    append-only table across majors, but a kind's \emph{block stamp} follows
+    minimal stamping over its payload: \tablenums{28}'s payload embeds a v2
+    layout, so its blocks stamp major~2, Section~\ref{sec:evolution:major2});
+  \item \texttt{OperationKindTag}: append at ${\geq}\,\tablenums{34}$
+    (Requirement~\ref{req:binfmt:kind-tag}; the same ten variants as
+    \texttt{OperationKind}, at the same ten discriminants, appended by the
+    same five tranches);
   \item \texttt{OperationPayload}: append at ${\geq}\,\tablenums{4}$
-    (Section~\ref{sec:ops:payload});
+    (Section~\ref{sec:ops:payload}; \texttt{ResolveEquivocation} = 3, Push~3,
+    is the one and only append this vocabulary has had);
   \item the value-layer unions enumerated as closed in
     Requirement~\ref{req:binfmt:frozen-layout} may gain appended variants
     only through a ratified revision of this document, also minor-additive.
 \end{itemize}
+
+\paragraph{The schema-minor derivation (G-minor).} Every appended
+discriminant above is annotated with a \emph{global additive epoch}: one
+schema-minor value shared across every vocabulary, assigned in the order the
+revision that introduced it landed
+(\texttt{spec/PLAN\_GMINOR\_SCHEMA\_MINOR.md}~\S4). An envelope's required
+minor is the maximum epoch over every discriminant it actually emits --- its
+outer \texttt{OperationPayload} variant, its primitive \texttt{OperationKind}
+when \texttt{Primitive}, and any nested additive variant its encoder reaches;
+a block's is the maximum over its envelopes. The emitted version is
+$\{\text{major}, \max(\text{baseline\_minor}(\text{major}),
+\text{epoch\_max})\}$: existing baselines (\tablenums{1} for major~0,
+\tablenums{0} for majors~1--3) are never lowered, and a block emitting only
+baseline vocabulary keeps its major's baseline minor rather than being
+normalized to zero. This is content-minimal per-role stamping, not a single
+document-wide counter: the canonical base, the manifest, and each operation
+block are each stamped from only the discriminants their own bytes emit
+(Section~\ref{sec:evolution:additive}'s per-chunk framing extends
+unchanged). The manifest reaches \texttt{OperationKindTag} independently of
+any operation envelope, through
+\texttt{ExtensionDeclaration.edit\_barriers} $\to$
+\texttt{EditBarrier.prohibited\_operation\_kinds}: a manifest naming a
+barrier on a post-baseline tag takes that tag's epoch, and the manifest
+major stays~0 regardless.
 
 \texttt{ChunkKind} is \textbf{closed} --- it has no \texttt{Registered}
 variant and no append story inside major~0, because its discriminant enters
@@ -3541,6 +3571,21 @@ only}: implementations need not agree on an error taxonomy.
   Catalog \sectionsc{CreateInstrument} (retroactive),
   \sectionsc{SetCanvasLayoutDefaults}, \sectionsc{SetSpellingPrecedence},
   0.10.0. \\
+    \today & Schema Evolution & 0.13.0 --- G-minor
+  (\texttt{spec/CONTRACT\_GMINOR\_IMPLEMENTATION.md},
+  \texttt{spec/PLAN\_GMINOR\_SCHEMA\_MINOR.md}): implements the minor
+  \MUST{} of Section~\ref{sec:evolution:gate} for the first time
+  (\texttt{binary\_format.tex:2330}, unchanged in substance, wired to a real
+  writer-side derivation for the first time). Adds the global additive-epoch
+  derivation (this chapter, \sectionsc{What ``Additive'' Means Here}) and
+  repairs the stale \tablenums{30} next-free-slot narrative this section
+  previously carried, which omitted \tablenums{30}--\tablenums{33}
+  (\texttt{TransposeInterval}, \texttt{CreateInstrument},
+  \texttt{SetCanvasLayoutDefaults}, \texttt{SetSpellingPrecedence}) from both
+  the number and the history; the normative kind and tag tables were already
+  current. No discriminant, wire layout, or accept-set changes: this is a
+  correction to prose and a new writer-side derivation, not a new appended
+  variant. \\
 \bottomrule
 \end{longtable}
 

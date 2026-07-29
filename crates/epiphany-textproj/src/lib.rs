@@ -31,7 +31,19 @@ use epiphany_ops::OperationEnvelope;
 /// `set-canvas-layout-defaults` and `set-spelling-precedence` to the `kind`
 /// production — the same reasoning: extending the grammar without moving this
 /// constant would leave two incompatible grammars both claiming `(0 8 0)`.
-pub const COMPANION_VERSION: (u32, u32, u32) = (0, 9, 0);
+///
+/// Bumped again 0.9.0 → 0.10.0 by the G-minor rung
+/// (`spec/PLAN_GMINOR_SCHEMA_MINOR.md`), which added the carried manifest
+/// [`SchemaVersion`] to the `document` production
+/// (`document ::= "(document " bytes " " schema ")"`). **Not** because of
+/// operation-block schema-minor stamping — block schemas are discarded during
+/// projection and stay projection-invisible, exactly as before — but because
+/// the manifest's aggregate `SchemaVersion` becomes a carried `TextDocument`
+/// attribute that this companion cannot derive (`epiphany-textproj` has no
+/// `epiphany-layout-ir` dependency and structurally cannot decode edit-barrier
+/// bytes). Holding the version while changing the grammar would leave two
+/// incompatible grammars both claiming `(0 9 0)`.
+pub const COMPANION_VERSION: (u32, u32, u32) = (0, 10, 0);
 
 /// A parsed canonical Text Projection document.
 ///
@@ -49,6 +61,14 @@ pub const COMPANION_VERSION: (u32, u32, u32) = (0, 9, 0);
 pub struct TextDocument {
     /// Logical identity of the projected document.
     pub document_id: DocumentId,
+    /// The manifest's aggregate G-minor `SchemaVersion`
+    /// (`spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4, pins 8/11): carried verbatim,
+    /// never derived. This companion has no `epiphany-layout-ir` dependency
+    /// and cannot decode `ExtensionDeclaration::edit_barriers`, so it cannot
+    /// recompute this value from the document's other fields — the document
+    /// author is responsible for updating it when hand-editing barrier bytes
+    /// that change what tags they name (pin 11's ruled design (a)).
+    pub manifest_schema_version: SchemaVersion,
     /// Optional shared-ancestor identity used for document genealogy.
     pub lineage_id: Option<LineageId>,
     /// Profile declarations in canonical manifest order.
