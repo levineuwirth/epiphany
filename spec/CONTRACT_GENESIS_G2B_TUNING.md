@@ -334,7 +334,7 @@ plan.
 | t6 | Undo restores the previous five-field value | Restore the default instead of the predecessor; must fail |
 | t7 | Undo of the **first** authoring restores the **seeded base** settings, and does so identically whether the seed was the default or a non-default value — with `accidental_extensions` untouched throughout | Skip `seed()` on the tuning chain during base ingest, so the first undo yields `NotWritten` instead of `Restore(Base)`; must fail. **Assert the two cases are indistinguishable**, not that they differ |
 | t8 | Kind 34 carries **epoch 10** and a block containing it stamps minor 10 | Assign epoch 9; must fail |
-| t9 | The from-empty spine still reaches a note, now with a tuning context authored | — regression guard; mutation is t2's |
+| t9 | The from-empty spine still reaches a note, now with a tuning context authored | Replace the dispatch arm with `OperationKind::SetTuningContext(_) => OperationEffect::Applied` (`reduce.rs`), bypassing tuning reduction while keeping the match exhaustive; must fail on the **authored tuning-context** assertions while the spine ops stay applied and the note stays reachable. **Corrected 2026-07-29:** this row previously said "mutation is t2's", which the sweep disproved — t9 stayed green under t2's `schema_major` change, because the spine reaches a note regardless of stamping. A shared mutation that does not kill the test signs nothing |
 | t10 | The accept-set prose no longer claims no payload embeds the tuning context | Grep-assert the stale sentence is absent; restore it to see the test fail |
 
 ---

@@ -13129,9 +13129,20 @@ mod tests {
 
     /// (t9) Regression guard: the from-empty spine still reaches a note, now
     /// with a `SetTuningContext` authored alongside it — genesis tranche G2b
-    /// does not disturb the spine G1 established. Mutation is t2's (the
-    /// `schema_major` arm), which this test does not re-verify on its own;
-    /// its job is to prove the spine and the new op coexist cleanly.
+    /// does not disturb the spine G1 established.
+    ///
+    /// **Mutation:** replace this kind's dispatch arm with
+    /// `OperationKind::SetTuningContext(_) => OperationEffect::Applied`, which
+    /// bypasses tuning reduction without making the match non-exhaustive. The
+    /// spine ops stay applied and the note stays reachable; the *authored
+    /// tuning-context* assertions fail (the seeded default survives instead of
+    /// the authored value).
+    ///
+    /// This comment previously claimed the mutation was t2's (the
+    /// `schema_major` arm). The sweep disproved that: t9 stayed **green**
+    /// under it, because the spine reaches a note whatever the block stamps.
+    /// A mutation borrowed from another test signs nothing unless it is
+    /// observed to kill *this* one.
     #[test]
     fn from_empty_spine_reaches_a_note_with_a_tuning_context_authored() {
         let spine = genesis_spine_envelopes();
