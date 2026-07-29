@@ -4232,6 +4232,13 @@ pub struct StaffGroup {
     pub id: StaffGroupId,
     pub name: Option<String>,
     pub kind: StaffGroupKind,
+    /// A non-authoritative denormalized projection of group membership
+    /// (genesis tranche G3a, ratified disposition B, filed as P13-S16).
+    /// \texttt{Staff.group} below is the sole authority: this field
+    /// \MUSTNOT{} be read to decide whether a staff is in a group, and MAY
+    /// be stale in both directions --- a member missing here while
+    /// \texttt{Staff.group} names this group, or a staff listed here while
+    /// its own \texttt{Staff.group} is absent or names a different group.
     pub members: Vec<StaffId>,
 }
 
@@ -5576,7 +5583,12 @@ pub struct Staff {
     pub default_staff_lines: StaffLineConfiguration,
 
     /// Visual grouping: which staff group (if any) this staff
-    /// belongs to (e.g., piano grand staff, choral group).
+    /// belongs to (e.g., piano grand staff, choral group). The sole
+    /// authority for group membership (genesis tranche G3a, ratified
+    /// disposition B, filed as P13-S16): every consumer \MUST{} read
+    /// membership from this field, not from \texttt{StaffGroup.members}
+    /// above, which is a non-authoritative denormalized projection that MAY
+    /// disagree with this field in either direction.
     pub group: Option<StaffGroupId>,
 }
 
@@ -6968,6 +6980,16 @@ pub enum OperationKind {
     // authored subset of ScoreTuningContext (accidental_extensions is not
     // on the wire and is left untouched by reduction).
     SetTuningContext(SetTuningContextOp),
+
+    // Genesis tranche G3a: the four remaining root-level Score entity
+    // mints, on the InsertStaff set-union mint pattern. Staff.group is the
+    // sole authority for group membership (see the Staff/StaffGroup
+    // declarations below); CreateStaffGroup stores members as carried and
+    // neither maintains nor trusts it.
+    CreateStaffGroup(CreateStaffGroupOp),
+    CreatePartDefinition(CreatePartDefinitionOp),
+    CreateAnalysisLayer(CreateAnalysisLayerOp),
+    CreateView(CreateViewOp),
 
     // Layout-semantic operations
     SetUserSystemBreak(SetUserSystemBreakOp),
@@ -11938,6 +11960,12 @@ pub enum OperationKindTag {
     SetSpellingPrecedence,
     // Genesis tranche G2b: name-verbatim, as the two prior additions are.
     SetTuningContext,
+    // Genesis tranche G3a: the four remaining root-level entity mints,
+    // name-verbatim, as the three most recent prior additions are.
+    CreateStaffGroup,
+    CreatePartDefinition,
+    CreateAnalysisLayer,
+    CreateView,
 }
 
 pub enum BarrierScope {

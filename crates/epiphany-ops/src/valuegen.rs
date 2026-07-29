@@ -16,14 +16,15 @@ use std::collections::BTreeMap;
 
 use epiphany_core::{
     AcousticPitch, AcousticRealization, AleatoricAnchoringDiscipline, AleatoricTimeModel,
-    AnchorOffset, Beam, BeamId, CmnNominal, Event, EventId, EventOrderingDAG, EventPosition,
-    IdentifiedPitch, MetricTimeModel, MusicalDuration, MusicalPosition, Pitch, PitchId,
-    PitchSpaceId, PitchSpacePosition, PitchSpelling, PitchedEvent, ProportionalTimeModel, Region,
-    RegionContent, RegionEdge, RegionId, RegionTimeModel, RepeatKind, RepeatStructure,
-    RepeatStructureId, Rest, ScalePosition, Slur, SlurId, SpellingAttachment, SpellingDirective,
-    SpellingScope, SpellingSource, StaffBasedContent, StaffExtent, StaffId, StaffInstance,
-    StaffInstanceId, StemConfiguration, Tie, TieClass, TieId, TimeAnchor, TimeExtent, Voice,
-    VoiceId, VoiceOrigin, Volta, WallClockDuration, WallClockTime,
+    AnalysisLayerId, AnchorOffset, Beam, BeamId, CmnNominal, Event, EventId, EventOrderingDAG,
+    EventPosition, IdentifiedPitch, MetricTimeModel, MusicalDuration, MusicalPosition,
+    PartDefinitionId, Pitch, PitchId, PitchSpaceId, PitchSpacePosition, PitchSpelling,
+    PitchedEvent, ProportionalTimeModel, Region, RegionContent, RegionEdge, RegionId,
+    RegionTimeModel, RepeatKind, RepeatStructure, RepeatStructureId, Rest, ScalePosition, Slur,
+    SlurId, SpellingAttachment, SpellingDirective, SpellingScope, SpellingSource,
+    StaffBasedContent, StaffExtent, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
+    StemConfiguration, Tie, TieClass, TieId, TimeAnchor, TimeExtent, ViewId, Voice, VoiceId,
+    VoiceOrigin, Volta, WallClockDuration, WallClockTime,
 };
 
 /// A deterministic, fully-specified C4 pitch in the cmn-12 space — the neutral
@@ -366,6 +367,61 @@ pub fn staff(id: StaffId, instrument: epiphany_core::InstrumentId) -> epiphany_c
 /// schema-major-2 field at `Instrument::new`'s canonical default.
 pub fn instrument(id: epiphany_core::InstrumentId) -> epiphany_core::Instrument {
     epiphany_core::Instrument::new(id, format!("instrument-{}", id.counter()))
+}
+
+/// A minimal [`StaffGroup`](epiphany_core::StaffGroup) (genesis tranche G3a) —
+/// the value a `CreateStaffGroup` mints: named for its counter, a grand-staff
+/// kind, and the given `members` list carried exactly as given (contract
+/// §1.1, disposition B — this helper never normalizes `members`).
+pub fn staff_group(id: StaffGroupId, members: Vec<StaffId>) -> epiphany_core::StaffGroup {
+    epiphany_core::StaffGroup {
+        id,
+        name: Some(format!("staff-group-{}", id.counter())),
+        kind: epiphany_core::StaffGroupKind::GrandStaff,
+        members,
+    }
+}
+
+/// A minimal [`PartDefinition`](epiphany_core::PartDefinition) (genesis
+/// tranche G3a) — the value a `CreatePartDefinition` mints: named for its
+/// counter, referencing the given `staves`.
+pub fn part_definition(
+    id: PartDefinitionId,
+    staves: Vec<StaffId>,
+) -> epiphany_core::PartDefinition {
+    epiphany_core::PartDefinition {
+        id,
+        name: format!("part-{}", id.counter()),
+        staves,
+    }
+}
+
+/// A minimal [`AnalysisLayer`](epiphany_core::AnalysisLayer) (genesis tranche
+/// G3a) — the value a `CreateAnalysisLayer` mints: named for its counter, with
+/// no outbound entity reference.
+pub fn analysis_layer(id: AnalysisLayerId) -> epiphany_core::AnalysisLayer {
+    epiphany_core::AnalysisLayer {
+        id,
+        // Deliberately NOT `id`-width (16 bytes): a name that happens to
+        // share its encoded byte length with the 16-byte `id` field would
+        // make a `struct_codec!` field swap byte-invisible for this specific
+        // value (both fields are length-prefixed leaves; swapping two
+        // same-width leaves reproduces identical bytes) — silently defeating
+        // the one referential guard a two-field struct's literal-byte vector
+        // (contract t4) has to catch a reorder with.
+        name: format!("layer-{}", id.counter()),
+    }
+}
+
+/// A minimal [`ViewDefinition`](epiphany_core::ViewDefinition) (genesis
+/// tranche G3a) — the value a `CreateView` mints: named for its counter,
+/// referencing the given `active_layers`.
+pub fn view(id: ViewId, active_layers: Vec<AnalysisLayerId>) -> epiphany_core::ViewDefinition {
+    epiphany_core::ViewDefinition {
+        id,
+        name: format!("view-{}", id.counter()),
+        active_layers,
+    }
 }
 
 /// Canvas layout defaults with an `nth`-distinct page width (genesis tranche

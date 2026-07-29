@@ -1491,3 +1491,38 @@ not `Option`-hidden, so there is no lower-major layout for this payload to
 fall back to. This is the sole surface among the nine genesis-tranche
 settings/creates that drags `OperationEnvelopeBlock`'s accept-set from 2 to 3
 (`epiphany-bundle`'s `DECISIONS.md`).
+
+## Genesis tranche G3a — the four root-level entity mints join
+## `canonical_value!`, and `Staff.group`/`StaffGroup.members` gain their
+## authority doc comments (2026-07-29)
+
+`spec/CONTRACT_GENESIS_G3A_ENTITIES.md` adds `CreateStaffGroup`,
+`CreatePartDefinition`, `CreateAnalysisLayer`, and `CreateView` to
+`epiphany-ops`, closing G3a of the genesis ladder (`spec/PLAN_GENESIS_OPS.md`
+§4). All four carried types — `StaffGroup`, `PartDefinition`, `AnalysisLayer`,
+`ViewDefinition` — already had a `Codec` **and** a `TextValue` (both generated
+by the one `struct_codec!` macro, `codec.rs:510`/`:522`), so this crate's one
+required *code* change is four more `canonical_value!` lines. No new byte
+layout, same as G1/G2a/G2b's entries above; `textvalue_graph.rs` needed no
+change at all — the cheapest surface this tranche touches.
+
+All four are schema major 0 as standalone payloads: neither `decode_v0_score`
+nor the live `Codec` walk has ever versioned any of the four leaf types, so
+none gains a `schema_major()` arm in `epiphany-ops` — all four fall into the
+existing `_ => 0` catch-all, exactly G2a's shape, not G1/G2b's. Consequently no
+`epiphany-bundle` change of any kind: the op-block accept-set stays at 3 where
+G2b left it.
+
+**Pin 4b.** `spec/CONTRACT_GENESIS_G3A_ENTITIES.md` §1.1 (disposition B,
+ratified 2026-07-29) rules that `Staff.group` is the sole authority for group
+membership and `StaffGroup.members` is a non-authoritative denormalized
+projection that G3a stores but neither maintains nor trusts; both the missing-
+member and the spurious-member stale forms are permitted. Both fields gained a
+doc comment stating this — neither had one before — since a ruling that lives
+only in a contract and a candidate ledger (filed as P13-S16) is not normative
+until the fields themselves say so. `invariants.rs`'s invariant-10 doc comment
+was also repaired (pin 6, doc-only — no enum entry, no discriminant, no
+behaviour change): its body already resolved a staff's group, a group's
+members, a part's staves, a view's active layers, and measure/grid
+time-signature references; the doc comment previously named only cross-cutting
+structures and event-internal references.

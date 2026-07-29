@@ -6,8 +6,8 @@ reverses Pass-12 K8 and makes every mutable field of `Score` operation-authored.
 This plan is the execution scope: what the tranche touches, in what order, and
 which questions must be answered before a dispatch contract can be written.
 
-**Status:** the ladder **G1 → G2a → G-minor → G2b** is **complete**; only **G3**
-remains, and it **splits into G3a and G3b** (ratified 2026-07-29, §4).
+**Status:** the ladder **G1 → G2a → G-minor → G2b → G3a** is **complete**;
+only **G3b** remains (ratified 2026-07-29, §4).
 
 * **G1 landed** (3b09595) — `CreateInstrument`, kind/tag 31.
 * **G2a landed** (7df5ca1 + 55eff00) — `SetCanvasLayoutDefaults` and
@@ -22,12 +22,13 @@ remains, and it **splits into G3a and G3b** (ratified 2026-07-29, §4).
   `epiphany_core::TuningContextSettings`, **not** the full graph type — §5
   trap 7's holdout, resolved in the contract as *subset over normalization*.
   Closed **P13-S13**.
-* **G3a** — the four root-level mint families (`CreateStaffGroup`,
-  `CreatePartDefinition`, `CreateAnalysisLayer`, `CreateView`), kinds/tags
-  **35–38**, epoch **11**, all schema major **0**. Contracted
-  (`spec/CONTRACT_GENESIS_G3A_ENTITIES.md`) and **ready to dispatch**; §1.1's
+* **G3a landed** (commit pending) — the four root-level mint families
+  (`CreateStaffGroup`, `CreatePartDefinition`, `CreateAnalysisLayer`,
+  `CreateView`), kinds/tags **35–38**, epoch **11**, all schema major **0**.
+  Executed against `spec/CONTRACT_GENESIS_G3A_ENTITIES.md`; §1.1's
   `StaffGroup`/`Staff` authorship-authority pin was ratified 2026-07-29 as
-  disposition B and filed as **P13-S16**.
+  disposition B and filed as **P13-S16**. No `epiphany-bundle` change of any
+  kind; op-block accept-set stays at 3 where G2b left it.
 * **G3b** — `CreateMeasure` alone, kind/tag **39**, epoch **12**, carrying
   graph invariant **20** and a new `PreconditionFailureReason` at discriminant
   **16**. Scoped, not contracted.

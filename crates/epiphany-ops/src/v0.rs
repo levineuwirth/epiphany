@@ -116,6 +116,13 @@ pub enum V0OperationKind {
     // predates the catalog entirely), so it round-trips by identity like
     // every other v1-native kind above.
     SetTuningContext(crate::payload::SetTuningContextOp),
+    // Genesis tranche G3a — born at wire-discs 35..=38; no lossy v0 form (v0
+    // predates the catalog entirely), so all four round-trip by identity like
+    // every other v1-native kind above.
+    CreateStaffGroup(crate::payload::CreateStaffGroupOp),
+    CreatePartDefinition(crate::payload::CreatePartDefinitionOp),
+    CreateAnalysisLayer(crate::payload::CreateAnalysisLayerOp),
+    CreateView(crate::payload::CreateViewOp),
 }
 
 /// v0 `InsertEvent`: the event was a bare [`EventId`] plus the reduction-relevant

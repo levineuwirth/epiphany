@@ -305,14 +305,16 @@ fn the_kind_productions_are_the_operation_vocabulary() {
     // above warns about — derived list, literal total. Every tranche that
     // appends a tag must bump it (genesis G1 took it from 31 to 32 by adding
     // `CreateInstrument`; genesis G2a took it from 32 to 34 by adding
-    // `SetCanvasLayoutDefaults` and `SetSpellingPrecedence`; genesis G2b takes
-    // it from 34 to 35 by adding `SetTuningContext`). It stays a literal on
+    // `SetCanvasLayoutDefaults` and `SetSpellingPrecedence`; genesis G2b took
+    // it from 34 to 35 by adding `SetTuningContext`; genesis G3a takes it
+    // from 35 to 39 by adding `CreateStaffGroup`, `CreatePartDefinition`,
+    // `CreateAnalysisLayer`, and `CreateView`). It stays a literal on
     // purpose: deriving it from `PAYLOAD_FREE.len()` would make the assertion
     // vacuous, since that is the very list it exists to pin.
     assert_eq!(
         expected.len(),
-        35,
-        "34 payload-free kinds plus `Registered`"
+        39,
+        "38 payload-free kinds plus `Registered`"
     );
 
     let actual = alternatives("kind");

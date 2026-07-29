@@ -816,6 +816,12 @@ pub struct Staff {
     pub abbreviation: Option<String>,
     pub instrument: InstrumentId,
     pub default_staff_lines: StaffLineConfiguration,
+    /// Which staff group (if any) this staff belongs to. **The sole authority
+    /// for group membership** (genesis tranche G3a,
+    /// `spec/CONTRACT_GENESIS_G3A_ENTITIES.md` §1.1, disposition B, filed as
+    /// P13-S16): every consumer MUST read membership from this field, not
+    /// from [`StaffGroup::members`], which is a non-authoritative denormalized
+    /// projection that may disagree with this field in either direction.
     pub group: Option<StaffGroupId>,
     /// Default clef for new instances of this staff (schema major 2,
     /// appended last per the wire rule; migration default treble).
@@ -1611,6 +1617,13 @@ pub struct StaffGroup {
     pub id: StaffGroupId,
     pub name: Option<String>,
     pub kind: StaffGroupKind,
+    /// A **non-authoritative denormalized projection** of group membership
+    /// (genesis tranche G3a, `spec/CONTRACT_GENESIS_G3A_ENTITIES.md` §1.1,
+    /// disposition B, filed as P13-S16). [`Staff::group`] is the sole
+    /// authority: this field MUST NOT be read to decide whether a staff is in
+    /// a group, and MAY be stale in **both** directions — a member missing
+    /// here while `Staff.group` names this group, or a staff listed here
+    /// while its own `Staff.group` is `None` or names a different group.
     pub members: Vec<StaffId>,
 }
 
@@ -2064,5 +2077,84 @@ mod tests {
         assert!(EventOrderingDAG::try_new(selfloop).is_none());
         // The empty DAG is acyclic.
         assert!(EventOrderingDAG::default().is_acyclic());
+    }
+}
+
+/// Genesis tranche G3a (`spec/CONTRACT_GENESIS_G3A_ENTITIES.md` pin 4b): the
+/// authority-rule doc-comment guards for `Staff.group` and
+/// `StaffGroup.members`.
+#[cfg(test)]
+mod g3a_tests {
+    const SOURCE: &str = include_str!("graph.rs");
+
+    /// The production portion of this file only, ending right before the
+    /// first `#[cfg(test)]` module. Every needle this module searches for is
+    /// itself written, as a string literal, inside *this* test module — so
+    /// searching the whole file (including this module) risks the exact
+    /// self-matching trap `spec/CONTRACT_GENESIS_G3A_ENTITIES.md` §4 warns
+    /// about: a needle that matches the guard's own source cannot fail.
+    /// Restricting the haystack to the code *above* any test module removes
+    /// that risk structurally, rather than relying on needle length alone.
+    fn production_source() -> &'static str {
+        SOURCE
+            .split_once("#[cfg(test)]")
+            .map(|(before, _)| before)
+            .expect("this file contains at least one #[cfg(test)] module")
+    }
+
+    /// (t14) `Staff.group`'s doc comment states it is authoritative for
+    /// group membership. Grep-assert, **sliced to that field's doc block
+    /// only** — `graph.rs` mentions `group` throughout, so a file-wide
+    /// search cannot fail.
+    ///
+    /// **Mutation:** delete the doc comment (revert to no doc comment on
+    /// this field, its pre-G3a state); must fail.
+    #[test]
+    fn t14_staff_group_field_doc_comment_states_sole_authority() {
+        let source = production_source();
+        let start = source
+            .find("    /// Which staff group (if any) this staff belongs to.")
+            .expect("Staff.group's doc comment is present");
+        let end = source[start..]
+            .find("pub group: Option<StaffGroupId>,")
+            .map(|offset| start + offset)
+            .expect("the `group` field declaration follows its doc comment");
+        let doc_block = &source[start..end];
+        assert!(
+            doc_block.contains("sole authority"),
+            "Staff.group's doc comment must state it is the sole authority; block was:\n{doc_block}"
+        );
+    }
+
+    /// (t14) `StaffGroup.members`'s doc comment states it is a
+    /// non-authoritative projection that may be stale in **both**
+    /// directions. Grep-assert, **sliced to that field's doc block only** —
+    /// same discipline as the `Staff.group` guard above.
+    ///
+    /// **Mutation:** delete the doc comment (revert to no doc comment on
+    /// this field, its pre-G3a state); must fail.
+    #[test]
+    fn t14_staff_group_members_field_doc_comment_states_non_authoritative_projection() {
+        let source = production_source();
+        let start = source
+            .find("    /// A **non-authoritative denormalized projection** of group")
+            .expect("StaffGroup.members's doc comment is present");
+        let end = source[start..]
+            .find("pub members: Vec<StaffId>,")
+            .map(|offset| start + offset)
+            .expect("the `members` field declaration follows its doc comment");
+        let doc_block = &source[start..end];
+        assert!(
+            doc_block.contains("non-authoritative"),
+            "StaffGroup.members's doc comment must state it is non-authoritative; block was:\n{doc_block}"
+        );
+        assert!(
+            doc_block.contains("MUST NOT be read"),
+            "StaffGroup.members's doc comment must forbid reading it to decide membership; block was:\n{doc_block}"
+        );
+        assert!(
+            doc_block.contains("both** directions"),
+            "StaffGroup.members's doc comment must permit staleness in both directions; block was:\n{doc_block}"
+        );
     }
 }

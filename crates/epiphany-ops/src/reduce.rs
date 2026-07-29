@@ -32,15 +32,16 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use epiphany_core::{
-    canonical_pitch_bytes, derive_promoted_voice_id, simplest_spelling, AnchorOffset,
-    AnnotationAnchor, CanonicalValue, CanvasLayoutDefaults, Event, EventDuration, EventId,
-    EventPosition, GestureAnchoring, Instrument, InstrumentId, MeterChange, MetricGrid,
-    MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId, PitchSpelling, RationalTime,
-    RegionEdge, RegionId, RegionTimeModel, ReplicaId, Score, ScoreMetadata, SpellingAttachment,
-    SpellingDirective, SpellingPrecedence, SpellingScope, SpellingSource, Staff, StaffId,
-    StaffInstance, StaffInstanceId, StaffLineConfiguration, TempoMap, TempoSegment, TempoShape,
-    TimeAnchor, TimeSignature, TimeSignatureId, TransactionId, TransposeRefusal,
-    TranspositionInterval, TuningContextSettings, TypedObjectId, Voice, VoiceId, VoiceOrigin,
+    canonical_pitch_bytes, derive_promoted_voice_id, simplest_spelling, AnalysisLayer,
+    AnalysisLayerId, AnchorOffset, AnnotationAnchor, CanonicalValue, CanvasLayoutDefaults, Event,
+    EventDuration, EventId, EventPosition, GestureAnchoring, Instrument, InstrumentId, MeterChange,
+    MetricGrid, MusicalDuration, MusicalPosition, OperationId, PartDefinition, PartDefinitionId,
+    Pitch, PitchId, PitchSpelling, RationalTime, RegionEdge, RegionId, RegionTimeModel, ReplicaId,
+    Score, ScoreMetadata, SpellingAttachment, SpellingDirective, SpellingPrecedence, SpellingScope,
+    SpellingSource, Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
+    StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, TimeAnchor, TimeSignature,
+    TimeSignatureId, TransactionId, TransposeRefusal, TranspositionInterval, TuningContextSettings,
+    TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId, VoiceOrigin,
 };
 use epiphany_determinism::CanonicalEncode;
 
@@ -56,10 +57,11 @@ use crate::encode::{push_canon, push_len, push_lp_bytes, push_u8_bool};
 use crate::envelope::OperationEnvelope;
 use crate::opset::OperationSet;
 use crate::payload::{
-    resolved_anchor_position, CreateCrossCuttingOp, CreateInstrumentOp, CreateRegionOp,
-    CreateRepeatStructureOp, CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp,
-    CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
-    DeleteRegionOp, DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
+    resolved_anchor_position, CreateAnalysisLayerOp, CreateCrossCuttingOp, CreateInstrumentOp,
+    CreatePartDefinitionOp, CreateRegionOp, CreateRepeatStructureOp, CreateStaffGroupOp,
+    CreateStaffInstanceOp, CreateStaffOp, CreateViewOp, CreateVoiceOp, CrossCuttingValue,
+    DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
+    DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
     InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
     OperationKind, OperationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp,
     SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
@@ -1005,6 +1007,15 @@ struct Reducer<'a> {
     // — `TypedObjectId::Instrument` liveness is seeded from the base
     // (`seed_from_graph`), but the base seed left no value map before this.
     instrument_values: BTreeMap<InstrumentId, Instrument>,
+    // Carried values of the four genesis tranche G3a root-level mints
+    // (`spec/CONTRACT_GENESIS_G3A_ENTITIES.md` pin 4a), mirroring
+    // `staff_values`/`instrument_values`: the byte-identical-re-carry
+    // idempotence check against a *base*-seeded entity has nothing to compare
+    // without these.
+    staff_group_values: BTreeMap<StaffGroupId, StaffGroup>,
+    part_definition_values: BTreeMap<PartDefinitionId, PartDefinition>,
+    analysis_layer_values: BTreeMap<AnalysisLayerId, AnalysisLayer>,
+    view_values: BTreeMap<ViewId, ViewDefinition>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     // Live child sets for the structural-container empty-only delete (Group 3):
     // a region's live staff instances, and a staff instance's live voices. (A
@@ -1106,6 +1117,10 @@ struct WorkingSnapshot {
     staff_values: BTreeMap<StaffId, Staff>,
     time_signature_values: BTreeMap<TimeSignatureId, TimeSignature>,
     instrument_values: BTreeMap<InstrumentId, Instrument>,
+    staff_group_values: BTreeMap<StaffGroupId, StaffGroup>,
+    part_definition_values: BTreeMap<PartDefinitionId, PartDefinition>,
+    analysis_layer_values: BTreeMap<AnalysisLayerId, AnalysisLayer>,
+    view_values: BTreeMap<ViewId, ViewDefinition>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     region_instances: BTreeMap<RegionId, BTreeSet<StaffInstanceId>>,
     instance_voices: BTreeMap<StaffInstanceId, BTreeSet<VoiceId>>,
@@ -1388,6 +1403,10 @@ impl<'a> Reducer<'a> {
             staff_values: BTreeMap::new(),
             time_signature_values: BTreeMap::new(),
             instrument_values: BTreeMap::new(),
+            staff_group_values: BTreeMap::new(),
+            part_definition_values: BTreeMap::new(),
+            analysis_layer_values: BTreeMap::new(),
+            view_values: BTreeMap::new(),
             structures: BTreeMap::new(),
             region_instances: BTreeMap::new(),
             instance_voices: BTreeMap::new(),
@@ -1447,10 +1466,17 @@ impl<'a> Reducer<'a> {
         for group in &score.staff_groups {
             self.objects
                 .insert(TypedObjectId::StaffGroup(group.id), ObjectState::Live);
+            // Genesis tranche G3a (contract pin 4a, site 4): without this seed,
+            // a byte-identical re-carry against a *base* staff group finds no
+            // retained value and misclassifies (the G1 `instrument_values`
+            // hazard, `reduce.rs:13264`–`:13268`, copied here for all four
+            // families).
+            self.staff_group_values.insert(group.id, group.clone());
         }
         for part in &score.parts {
             self.objects
                 .insert(TypedObjectId::PartDefinition(part.id), ObjectState::Live);
+            self.part_definition_values.insert(part.id, part.clone());
         }
         for signature in &score.time_signatures {
             self.objects.insert(
@@ -1463,10 +1489,12 @@ impl<'a> Reducer<'a> {
         for layer in &score.analysis_layers {
             self.objects
                 .insert(TypedObjectId::AnalysisLayer(layer.id), ObjectState::Live);
+            self.analysis_layer_values.insert(layer.id, layer.clone());
         }
         for view in &score.views {
             self.objects
                 .insert(TypedObjectId::View(view.id), ObjectState::Live);
+            self.view_values.insert(view.id, view.clone());
         }
 
         // The score-level LWW chains seed with the base values so a
@@ -2858,6 +2886,10 @@ impl<'a> Reducer<'a> {
                 }
                 OperationKind::SetSpellingPrecedence(op) => self.set_spelling_precedence(env, op),
                 OperationKind::SetTuningContext(op) => self.set_tuning_context(env, op),
+                OperationKind::CreateStaffGroup(op) => self.create_staff_group(env, op),
+                OperationKind::CreatePartDefinition(op) => self.create_part_definition(env, op),
+                OperationKind::CreateAnalysisLayer(op) => self.create_analysis_layer(env, op),
+                OperationKind::CreateView(op) => self.create_view(env, op),
             },
             OperationPayload::ResolveConflict(op) => self.resolve_conflict(env, op),
             OperationPayload::UndoTransaction(op) => self.undo_transaction(env, op),
@@ -4182,6 +4214,228 @@ impl<'a> Reducer<'a> {
         self.mint_container(env, iobj);
         self.instrument_values
             .insert(op.instrument_id(), op.instrument.clone());
+        OperationEffect::Applied
+    }
+
+    // --- Genesis tranche G3a (`spec/CONTRACT_GENESIS_G3A_ENTITIES.md`): the
+    // four remaining root-level `Score` entity mints. All four ride
+    // `create_staff`'s set-union mint discipline exactly (contract pin 4):
+    // fresh id mints; byte-identical re-carry is idempotent; a differing
+    // value under a live id is a precondition no-op
+    // (`RecreateContentMismatch`); a tombstoned id is `TargetTombstoned`.
+    // Referential preconditions are graph-aware only — base-free reduction
+    // has no universe to check against. -------------------------------------
+
+    /// Set-union creation of a global `StaffGroup` on the score root
+    /// (operation_catalog §CreateStaffGroup). Graph-aware reduction
+    /// preconditions every carried member resolves to a live `Staff`. Per
+    /// §1.1 (disposition B), `members` is stored exactly as carried and
+    /// neither maintained nor trusted thereafter — `Staff.group` is the sole
+    /// authority for membership.
+    fn create_staff_group(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &CreateStaffGroupOp,
+    ) -> OperationEffect {
+        let gobj = TypedObjectId::StaffGroup(op.staff_group_id());
+        match self.objects.get(&gobj) {
+            Some(ObjectState::Live) => {
+                let identical = self
+                    .staff_group_values
+                    .get(&op.staff_group_id())
+                    .is_some_and(|known| known == &op.group);
+                return if identical {
+                    OperationEffect::NoOp {
+                        reason: NoOpReason::AlreadyApplied,
+                    }
+                } else {
+                    OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::RecreateContentMismatch,
+                        },
+                    }
+                };
+            }
+            Some(ObjectState::Tombstoned { .. }) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::TargetTombstoned,
+                }
+            }
+            None => {}
+        }
+        if self.graph.is_some() {
+            for member in &op.group.members {
+                if !matches!(
+                    self.objects.get(&TypedObjectId::Staff(*member)),
+                    Some(ObjectState::Live)
+                ) {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::TargetMissing,
+                        },
+                    };
+                }
+            }
+        }
+        if let Some(score) = self.graph.as_mut() {
+            score.staff_groups.push(op.group.clone());
+        }
+        self.mint_container(env, gobj);
+        self.staff_group_values
+            .insert(op.staff_group_id(), op.group.clone());
+        OperationEffect::Applied
+    }
+
+    /// Set-union creation of a `PartDefinition` on the score root
+    /// (operation_catalog §CreatePartDefinition). Graph-aware reduction
+    /// preconditions every carried staff resolves to a live `Staff`.
+    fn create_part_definition(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &CreatePartDefinitionOp,
+    ) -> OperationEffect {
+        let pobj = TypedObjectId::PartDefinition(op.part_definition_id());
+        match self.objects.get(&pobj) {
+            Some(ObjectState::Live) => {
+                let identical = self
+                    .part_definition_values
+                    .get(&op.part_definition_id())
+                    .is_some_and(|known| known == &op.part);
+                return if identical {
+                    OperationEffect::NoOp {
+                        reason: NoOpReason::AlreadyApplied,
+                    }
+                } else {
+                    OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::RecreateContentMismatch,
+                        },
+                    }
+                };
+            }
+            Some(ObjectState::Tombstoned { .. }) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::TargetTombstoned,
+                }
+            }
+            None => {}
+        }
+        if self.graph.is_some() {
+            for staff in &op.part.staves {
+                if !matches!(
+                    self.objects.get(&TypedObjectId::Staff(*staff)),
+                    Some(ObjectState::Live)
+                ) {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::TargetMissing,
+                        },
+                    };
+                }
+            }
+        }
+        if let Some(score) = self.graph.as_mut() {
+            score.parts.push(op.part.clone());
+        }
+        self.mint_container(env, pobj);
+        self.part_definition_values
+            .insert(op.part_definition_id(), op.part.clone());
+        OperationEffect::Applied
+    }
+
+    /// Set-union creation of an `AnalysisLayer` on the score root
+    /// (operation_catalog §CreateAnalysisLayer). `AnalysisLayer` holds no
+    /// outbound entity reference, so — exactly like `CreateInstrument` —
+    /// there is no graph-aware reference-resolution block.
+    fn create_analysis_layer(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &CreateAnalysisLayerOp,
+    ) -> OperationEffect {
+        let lobj = TypedObjectId::AnalysisLayer(op.analysis_layer_id());
+        match self.objects.get(&lobj) {
+            Some(ObjectState::Live) => {
+                let identical = self
+                    .analysis_layer_values
+                    .get(&op.analysis_layer_id())
+                    .is_some_and(|known| known == &op.layer);
+                return if identical {
+                    OperationEffect::NoOp {
+                        reason: NoOpReason::AlreadyApplied,
+                    }
+                } else {
+                    OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::RecreateContentMismatch,
+                        },
+                    }
+                };
+            }
+            Some(ObjectState::Tombstoned { .. }) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::TargetTombstoned,
+                }
+            }
+            None => {}
+        }
+        if let Some(score) = self.graph.as_mut() {
+            score.analysis_layers.push(op.layer.clone());
+        }
+        self.mint_container(env, lobj);
+        self.analysis_layer_values
+            .insert(op.analysis_layer_id(), op.layer.clone());
+        OperationEffect::Applied
+    }
+
+    /// Set-union creation of a `ViewDefinition` on the score root
+    /// (operation_catalog §CreateView). Graph-aware reduction preconditions
+    /// every carried active layer resolves to a live `AnalysisLayer`.
+    fn create_view(&mut self, env: &OperationEnvelope, op: &CreateViewOp) -> OperationEffect {
+        let vobj = TypedObjectId::View(op.view_id());
+        match self.objects.get(&vobj) {
+            Some(ObjectState::Live) => {
+                let identical = self
+                    .view_values
+                    .get(&op.view_id())
+                    .is_some_and(|known| known == &op.view);
+                return if identical {
+                    OperationEffect::NoOp {
+                        reason: NoOpReason::AlreadyApplied,
+                    }
+                } else {
+                    OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::RecreateContentMismatch,
+                        },
+                    }
+                };
+            }
+            Some(ObjectState::Tombstoned { .. }) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::TargetTombstoned,
+                }
+            }
+            None => {}
+        }
+        if self.graph.is_some() {
+            for layer in &op.view.active_layers {
+                if !matches!(
+                    self.objects.get(&TypedObjectId::AnalysisLayer(*layer)),
+                    Some(ObjectState::Live)
+                ) {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::TargetMissing,
+                        },
+                    };
+                }
+            }
+        }
+        if let Some(score) = self.graph.as_mut() {
+            score.views.push(op.view.clone());
+        }
+        self.mint_container(env, vobj);
+        self.view_values.insert(op.view_id(), op.view.clone());
         OperationEffect::Applied
     }
 
@@ -7637,6 +7891,10 @@ impl<'a> Reducer<'a> {
             staff_values: self.staff_values.clone(),
             time_signature_values: self.time_signature_values.clone(),
             instrument_values: self.instrument_values.clone(),
+            staff_group_values: self.staff_group_values.clone(),
+            part_definition_values: self.part_definition_values.clone(),
+            analysis_layer_values: self.analysis_layer_values.clone(),
+            view_values: self.view_values.clone(),
             structures: self.structures.clone(),
             region_instances: self.region_instances.clone(),
             instance_voices: self.instance_voices.clone(),
@@ -7677,6 +7935,10 @@ impl<'a> Reducer<'a> {
         self.staff_values = s.staff_values;
         self.time_signature_values = s.time_signature_values;
         self.instrument_values = s.instrument_values;
+        self.staff_group_values = s.staff_group_values;
+        self.part_definition_values = s.part_definition_values;
+        self.analysis_layer_values = s.analysis_layer_values;
+        self.view_values = s.view_values;
         self.structures = s.structures;
         self.region_instances = s.region_instances;
         self.instance_voices = s.instance_voices;
@@ -11182,6 +11444,15 @@ mod tests {
         // `MaterializedState`'s: the canonical base still embeds no `Score`
         // field value for any setting, so there remains no schema-major
         // surface on this type for a leak to appear on.
+        //
+        // Re-pinned again at genesis tranche G3a
+        // (`spec/CONTRACT_GENESIS_G3A_ENTITIES.md`): `gen_payload` gained the
+        // four remaining root-level mints (arms 32–35), and `rng.below(32)`
+        // became `below(36)` — the same reshuffle, same reasoning. All four
+        // are schema major 0 unconditionally (pin 2: no `schema_major()`
+        // arm), and `MaterializedState` still embeds no `Score` field value
+        // for any of the four carried types, so there remains no surface on
+        // this type for a leak to appear on.
         let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xBA5E);
         let envelopes = crate::fuzz::gen_envelope_set(&mut rng, 200);
         let mut set = OperationSet::new();
@@ -11191,7 +11462,7 @@ mod tests {
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "116e88b4013a18864dcd1b09489ab297aa332e14800cf4ca00be9dfa100b4a08"
+            "0c60a686097819d2c91a65b5bce4ad09c9ce2e640760608124fc999f1470e839"
         );
     }
 
@@ -14089,6 +14360,736 @@ mod tests {
             out.score.canvas.layout_defaults, pre_failure,
             "undo of the second transaction must restore the genuine (pre-failure) \
              predecessor, not the rolled-back transaction's write"
+        );
+    }
+
+    // =========================================================================
+    // Genesis tranche G3a (`spec/CONTRACT_GENESIS_G3A_ENTITIES.md`): the four
+    // remaining root-level `Score` entity mints.
+    // =========================================================================
+
+    fn staff_group_env(
+        replica: u64,
+        counter: u64,
+        physical: i64,
+        ctx: CausalContext,
+        group: epiphany_core::StaffGroup,
+    ) -> OperationEnvelope {
+        prim_env(
+            replica,
+            counter,
+            physical,
+            ctx,
+            OperationKind::CreateStaffGroup(CreateStaffGroupOp { group }),
+        )
+    }
+
+    fn part_definition_env(
+        replica: u64,
+        counter: u64,
+        physical: i64,
+        ctx: CausalContext,
+        part: epiphany_core::PartDefinition,
+    ) -> OperationEnvelope {
+        prim_env(
+            replica,
+            counter,
+            physical,
+            ctx,
+            OperationKind::CreatePartDefinition(CreatePartDefinitionOp { part }),
+        )
+    }
+
+    fn analysis_layer_env(
+        replica: u64,
+        counter: u64,
+        physical: i64,
+        ctx: CausalContext,
+        layer: epiphany_core::AnalysisLayer,
+    ) -> OperationEnvelope {
+        prim_env(
+            replica,
+            counter,
+            physical,
+            ctx,
+            OperationKind::CreateAnalysisLayer(CreateAnalysisLayerOp { layer }),
+        )
+    }
+
+    fn view_env(
+        replica: u64,
+        counter: u64,
+        physical: i64,
+        ctx: CausalContext,
+        view: epiphany_core::ViewDefinition,
+    ) -> OperationEnvelope {
+        prim_env(
+            replica,
+            counter,
+            physical,
+            ctx,
+            OperationKind::CreateView(CreateViewOp { view }),
+        )
+    }
+
+    /// One representative sample of each G3a kind, in §Scope order.
+    fn g3a_sample_kinds() -> [OperationKind; 4] {
+        [
+            OperationKind::CreateStaffGroup(CreateStaffGroupOp {
+                group: crate::valuegen::staff_group(StaffGroupId::new(ReplicaId(1), 1), vec![]),
+            }),
+            OperationKind::CreatePartDefinition(CreatePartDefinitionOp {
+                part: crate::valuegen::part_definition(
+                    PartDefinitionId::new(ReplicaId(1), 1),
+                    vec![],
+                ),
+            }),
+            OperationKind::CreateAnalysisLayer(CreateAnalysisLayerOp {
+                layer: crate::valuegen::analysis_layer(AnalysisLayerId::new(ReplicaId(1), 1)),
+            }),
+            OperationKind::CreateView(CreateViewOp {
+                view: crate::valuegen::view(ViewId::new(ReplicaId(1), 1), vec![]),
+            }),
+        ]
+    }
+
+    /// (t1) Genesis tranche G3a: kinds and tags are 35–38, in **both**
+    /// spaces, and the discriminant byte leads each canonical encoding
+    /// (contract pin 1).
+    ///
+    /// **Mutation:** move `OperationKind::CreateStaffGroup`'s discriminant to
+    /// 39 (in `discriminant()`); must fail. Then, separately, move
+    /// `OperationKindTag::CreateStaffGroup`'s tag to 39 (in the vocabulary
+    /// macro); must fail too — the two spaces are asserted independently.
+    #[test]
+    fn t1_g3a_kinds_and_tags_are_35_to_38_in_both_spaces() {
+        use crate::payload::OperationKindTag;
+        let kinds = g3a_sample_kinds();
+        for (kind, expected_disc, expected_tag) in [
+            (&kinds[0], 35u8, OperationKindTag::CreateStaffGroup),
+            (&kinds[1], 36, OperationKindTag::CreatePartDefinition),
+            (&kinds[2], 37, OperationKindTag::CreateAnalysisLayer),
+            (&kinds[3], 38, OperationKindTag::CreateView),
+        ] {
+            assert_eq!(kind.tag(), expected_tag);
+            assert_eq!(kind.tag().discriminant(), expected_disc);
+            let mut bytes = Vec::new();
+            kind.encode_canonical(&mut bytes);
+            assert_eq!(
+                bytes[0], expected_disc,
+                "the discriminant byte must lead the canonical encoding"
+            );
+        }
+    }
+
+    /// (t2) Genesis tranche G3a: `schema_major()` returns 0 for all four
+    /// kinds — the catch-all `_ => 0` arm is correct (pin 2).
+    ///
+    /// **Mutation:** add the four G3a kinds to the `=> 2` arm; must fail
+    /// (pin 2's stated bug).
+    #[test]
+    fn t2_g3a_schema_major_is_zero_for_all_four() {
+        for kind in g3a_sample_kinds() {
+            assert_eq!(
+                kind.schema_major(),
+                0,
+                "{:?} must be schema major 0",
+                kind.tag()
+            );
+        }
+    }
+
+    /// (t3) A block containing all four G3a kinds stamps schema major 0; the
+    /// op-block accept-set is untouched at 3 (no `epiphany-bundle` change of
+    /// any kind — verified structurally, since this crate does not depend on
+    /// `epiphany-bundle`).
+    ///
+    /// **Mutation:** make one kind report major 2; must fail.
+    #[test]
+    fn t3_a_block_with_all_four_g3a_kinds_stamps_major_zero() {
+        let kinds = g3a_sample_kinds();
+        let major = kinds.iter().map(|k| k.schema_major()).max().unwrap();
+        assert_eq!(
+            major, 0,
+            "a block carrying only the four G3a mints stamps major 0"
+        );
+    }
+
+    /// (t5) Genesis tranche G3a: re-carrying a live id with a
+    /// byte-identical value is `AlreadyApplied`; with a differing value is
+    /// `RecreateContentMismatch` — `create_staff`'s discipline, for all four
+    /// ops (pin 4).
+    ///
+    /// **Mutation:** in `create_staff_group`, return `OperationEffect::Applied`
+    /// for the differing-value case instead of the `RecreateContentMismatch`
+    /// no-op; must fail.
+    #[test]
+    fn t5_g3a_recarry_discipline_applied_alreadyapplied_or_recreatecontentmismatch() {
+        fn effect_of(state: &MaterializedState, id: OperationId) -> Option<OperationEffect> {
+            state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == id)
+                .map(|(_, eff)| eff.clone())
+        }
+        let already_applied = Some(OperationEffect::NoOp {
+            reason: NoOpReason::AlreadyApplied,
+        });
+        let mismatch = Some(OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::RecreateContentMismatch,
+            },
+        });
+
+        // CreateStaffGroup.
+        let group_value = crate::valuegen::staff_group(StaffGroupId::new(ReplicaId(9), 1), vec![]);
+        let create = staff_group_env(1, 0, 10, CausalContext::new(), group_value.clone());
+        let identical = staff_group_env(2, 0, 20, CausalContext::new(), group_value.clone());
+        let mut differing_value = group_value;
+        differing_value.name = Some(String::from("something else"));
+        let differing = staff_group_env(3, 0, 30, CausalContext::new(), differing_value);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![differing.clone(), identical.clone(), create.clone()]);
+        let state = set.reduce();
+        assert_eq!(effect_of(&state, create.id), Some(OperationEffect::Applied));
+        assert_eq!(effect_of(&state, identical.id), already_applied);
+        assert_eq!(effect_of(&state, differing.id), mismatch);
+
+        // CreatePartDefinition.
+        let part_value =
+            crate::valuegen::part_definition(PartDefinitionId::new(ReplicaId(9), 1), vec![]);
+        let create = part_definition_env(1, 1, 10, CausalContext::new(), part_value.clone());
+        let identical = part_definition_env(2, 1, 20, CausalContext::new(), part_value.clone());
+        let mut differing_value = part_value;
+        differing_value.name = String::from("something else");
+        let differing = part_definition_env(3, 1, 30, CausalContext::new(), differing_value);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![differing.clone(), identical.clone(), create.clone()]);
+        let state = set.reduce();
+        assert_eq!(effect_of(&state, create.id), Some(OperationEffect::Applied));
+        assert_eq!(effect_of(&state, identical.id), already_applied);
+        assert_eq!(effect_of(&state, differing.id), mismatch);
+
+        // CreateAnalysisLayer.
+        let layer_value = crate::valuegen::analysis_layer(AnalysisLayerId::new(ReplicaId(9), 1));
+        let create = analysis_layer_env(1, 2, 10, CausalContext::new(), layer_value.clone());
+        let identical = analysis_layer_env(2, 2, 20, CausalContext::new(), layer_value.clone());
+        let mut differing_value = layer_value;
+        differing_value.name = String::from("something else");
+        let differing = analysis_layer_env(3, 2, 30, CausalContext::new(), differing_value);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![differing.clone(), identical.clone(), create.clone()]);
+        let state = set.reduce();
+        assert_eq!(effect_of(&state, create.id), Some(OperationEffect::Applied));
+        assert_eq!(effect_of(&state, identical.id), already_applied);
+        assert_eq!(effect_of(&state, differing.id), mismatch);
+
+        // CreateView.
+        let view_value = crate::valuegen::view(ViewId::new(ReplicaId(9), 1), vec![]);
+        let create = view_env(1, 3, 10, CausalContext::new(), view_value.clone());
+        let identical = view_env(2, 3, 20, CausalContext::new(), view_value.clone());
+        let mut differing_value = view_value;
+        differing_value.name = String::from("something else");
+        let differing = view_env(3, 3, 30, CausalContext::new(), differing_value);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![differing.clone(), identical.clone(), create.clone()]);
+        let state = set.reduce();
+        assert_eq!(effect_of(&state, create.id), Some(OperationEffect::Applied));
+        assert_eq!(effect_of(&state, identical.id), already_applied);
+        assert_eq!(effect_of(&state, differing.id), mismatch);
+    }
+
+    /// (t5b, t13 baseline) Re-carry against a *base*-derived entity: reduce
+    /// `new_onto` a score whose four G3a vectors are already populated, then
+    /// re-carry each byte-identically and get `AlreadyApplied`. A re-carry
+    /// test that only ever reduces from empty (t5) cannot see a missing base
+    /// seed at all (pin 4a, site 4) — this is why this row is separate from
+    /// t5.
+    ///
+    /// **Mutation (t13, four separate sub-mutations, each run alone):** skip
+    /// seeding `staff_group_values` / `part_definition_values` /
+    /// `analysis_layer_values` / `view_values` in `seed_from_graph`, one at a
+    /// time. Each must make the corresponding assertion below misreport
+    /// `RecreateContentMismatch` instead of `AlreadyApplied`.
+    #[test]
+    fn t5b_base_recarry_is_idempotent_for_all_four_g3a_families() {
+        let group = crate::valuegen::staff_group(StaffGroupId::new(ReplicaId(1), 1), vec![]);
+        let part = crate::valuegen::part_definition(PartDefinitionId::new(ReplicaId(1), 2), vec![]);
+        let layer = crate::valuegen::analysis_layer(AnalysisLayerId::new(ReplicaId(1), 3));
+        let view = crate::valuegen::view(ViewId::new(ReplicaId(1), 4), vec![]);
+
+        let mut base = Score::empty(IdentityContext::new(ReplicaId(1)));
+        base.staff_groups.push(group.clone());
+        base.parts.push(part.clone());
+        base.analysis_layers.push(layer.clone());
+        base.views.push(view.clone());
+
+        let recreate_group = staff_group_env(2, 0, 10, CausalContext::new(), group);
+        let recreate_part = part_definition_env(2, 1, 11, CausalContext::new(), part);
+        let recreate_layer = analysis_layer_env(2, 2, 12, CausalContext::new(), layer);
+        let recreate_view = view_env(2, 3, 13, CausalContext::new(), view);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            recreate_group.clone(),
+            recreate_part.clone(),
+            recreate_layer.clone(),
+            recreate_view.clone(),
+        ]);
+        let out = reduce_operation_set_onto(&set, &base);
+
+        let effect_of = |id: OperationId| {
+            out.state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == id)
+                .map(|(_, eff)| eff.clone())
+        };
+        let already_applied = Some(OperationEffect::NoOp {
+            reason: NoOpReason::AlreadyApplied,
+        });
+        assert_eq!(
+            effect_of(recreate_group.id),
+            already_applied,
+            "StaffGroup base re-carry must be idempotent (pin 4a site 4)"
+        );
+        assert_eq!(
+            effect_of(recreate_part.id),
+            already_applied,
+            "PartDefinition base re-carry must be idempotent (pin 4a site 4)"
+        );
+        assert_eq!(
+            effect_of(recreate_layer.id),
+            already_applied,
+            "AnalysisLayer base re-carry must be idempotent (pin 4a site 4)"
+        );
+        assert_eq!(
+            effect_of(recreate_view.id),
+            already_applied,
+            "View base re-carry must be idempotent (pin 4a site 4)"
+        );
+
+        assert_eq!(out.score.staff_groups.len(), 1, "no duplicate group minted");
+        assert_eq!(out.score.parts.len(), 1, "no duplicate part minted");
+        assert_eq!(
+            out.score.analysis_layers.len(),
+            1,
+            "no duplicate layer minted"
+        );
+        assert_eq!(out.score.views.len(), 1, "no duplicate view minted");
+    }
+
+    /// (t6) Genesis tranche G3a: all three referential loops refuse under a
+    /// graph, each asserted separately: `CreateStaffGroup.members`,
+    /// `CreatePartDefinition.staves`, and `CreateView.active_layers` naming a
+    /// non-live target are each `TargetMissing`.
+    ///
+    /// **Mutation (three separate sub-mutations, each run alone):** drop the
+    /// members loop from `create_staff_group`; drop the staves loop from
+    /// `create_part_definition`; drop the active-layers loop from
+    /// `create_view`. Each must fail on its own row.
+    #[test]
+    fn t6_g3a_referential_loops_refuse_a_dangling_target_under_a_graph() {
+        let target_missing = Some(OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::TargetMissing,
+            },
+        });
+
+        // CreateStaffGroup.members naming a non-live staff.
+        let dangling_staff = StaffId::new(ReplicaId(1), 99);
+        let group =
+            crate::valuegen::staff_group(StaffGroupId::new(ReplicaId(1), 1), vec![dangling_staff]);
+        let group_env = staff_group_env(2, 0, 10, CausalContext::new(), group);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![group_env.clone()]);
+        let out =
+            reduce_operation_set_onto(&set, &Score::empty(IdentityContext::new(ReplicaId(2))));
+        assert_eq!(
+            out.state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == group_env.id)
+                .map(|(_, eff)| eff.clone()),
+            target_missing,
+            "CreateStaffGroup.members naming a non-live staff must refuse TargetMissing"
+        );
+
+        // CreatePartDefinition.staves naming a non-live staff.
+        let part = crate::valuegen::part_definition(
+            PartDefinitionId::new(ReplicaId(1), 1),
+            vec![dangling_staff],
+        );
+        let part_env = part_definition_env(3, 0, 10, CausalContext::new(), part);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![part_env.clone()]);
+        let out =
+            reduce_operation_set_onto(&set, &Score::empty(IdentityContext::new(ReplicaId(3))));
+        assert_eq!(
+            out.state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == part_env.id)
+                .map(|(_, eff)| eff.clone()),
+            target_missing,
+            "CreatePartDefinition.staves naming a non-live staff must refuse TargetMissing"
+        );
+
+        // CreateView.active_layers naming a non-live analysis layer.
+        let dangling_layer = AnalysisLayerId::new(ReplicaId(1), 99);
+        let view = crate::valuegen::view(ViewId::new(ReplicaId(1), 1), vec![dangling_layer]);
+        let view_env_ = view_env(4, 0, 10, CausalContext::new(), view);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![view_env_.clone()]);
+        let out =
+            reduce_operation_set_onto(&set, &Score::empty(IdentityContext::new(ReplicaId(4))));
+        assert_eq!(
+            out.state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == view_env_.id)
+                .map(|(_, eff)| eff.clone()),
+            target_missing,
+            "CreateView.active_layers naming a non-live analysis layer must refuse TargetMissing"
+        );
+    }
+
+    /// (t7) Genesis tranche G3a: those same referential preconditions are
+    /// **not** enforced base-free — base-free reduction has no universe to
+    /// check against.
+    ///
+    /// **Mutation:** remove the `if self.graph.is_some()` guard from
+    /// `create_staff_group`; must fail — the dangling member now refuses even
+    /// base-free.
+    #[test]
+    fn t7_g3a_referential_preconditions_are_not_enforced_base_free() {
+        let dangling_staff = StaffId::new(ReplicaId(1), 99);
+        let group =
+            crate::valuegen::staff_group(StaffGroupId::new(ReplicaId(1), 1), vec![dangling_staff]);
+        let group_env = staff_group_env(2, 0, 10, CausalContext::new(), group);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![group_env.clone()]);
+        let state = set.reduce(); // base-free
+        assert_eq!(
+            state
+                .effects
+                .iter()
+                .find(|(e, _)| *e == group_env.id)
+                .map(|(_, eff)| eff.clone()),
+            Some(OperationEffect::Applied),
+            "base-free reduction has no staff universe to check the dangling member against"
+        );
+    }
+
+    /// (t8) From empty, `CreateInstrument` -> `CreateStaffGroup` ->
+    /// `CreateStaff` **with `group: Some(...)`** succeeds and reaches a note
+    /// — i.e. `CreateStaff`'s group precondition becomes **satisfiable**.
+    /// **Claim narrowed per §1.1**: this asserts satisfiability, NOT that a
+    /// bidirectionally consistent group is authorable.
+    ///
+    /// **Mutation:** replace the `CreateStaffGroup` dispatch arm with
+    /// `OperationKind::CreateStaffGroup(_) => OperationEffect::Applied`,
+    /// keeping the match exhaustive; must fail at the grouped-staff assertion
+    /// while the spine stays applied.
+    #[test]
+    fn t8_create_staff_group_then_create_staff_makes_the_group_precondition_satisfiable() {
+        let instrument_id = InstrumentId::new(ReplicaId(1), 1);
+        let group_id = StaffGroupId::new(ReplicaId(1), 3);
+        let staff_id = StaffId::new(ReplicaId(1), 5);
+
+        let create_instrument = prim_env(
+            1,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::CreateInstrument(CreateInstrumentOp {
+                instrument: crate::valuegen::instrument(instrument_id),
+            }),
+        );
+        let create_group = staff_group_env(
+            1,
+            2,
+            20,
+            CausalContext::new(),
+            crate::valuegen::staff_group(group_id, vec![]),
+        );
+        let mut staff = crate::valuegen::staff(staff_id, instrument_id);
+        staff.group = Some(group_id);
+        let create_staff = prim_env(
+            1,
+            4,
+            30,
+            CausalContext::new(),
+            OperationKind::CreateStaff(CreateStaffOp { staff }),
+        );
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![create_instrument, create_group, create_staff]);
+        let out =
+            reduce_operation_set_onto(&set, &Score::empty(IdentityContext::new(ReplicaId(1))));
+
+        for counter in [0, 2, 4] {
+            assert_eq!(
+                effect_at(&out.state, counter),
+                Some(&OperationEffect::Applied),
+                "spine operation at counter {counter} must apply"
+            );
+        }
+        let staff = out
+            .score
+            .staves
+            .iter()
+            .find(|s| s.id == staff_id)
+            .expect("staff minted");
+        assert_eq!(
+            staff.group,
+            Some(group_id),
+            "the staff's group precondition is now satisfiable"
+        );
+    }
+
+    /// (t8b) Both permitted stale forms (§1.1, disposition B) are pinned:
+    /// the **missing** form (`CreateStaffGroup(g, [])` ->
+    /// `CreateStaff(s, Some(g))` ⟹ `s.group == Some(g)`, `g.members == []`)
+    /// and the **spurious** form (`CreateStaff(s, None)` ->
+    /// `CreateStaffGroup(g, [s])` ⟹ `g.members == [s]`, `s.group == None`).
+    /// Both asserted to **hold**, as states the ruling permits.
+    ///
+    /// **Mutation 1 (missing form; mutate `create_staff`, which runs SECOND
+    /// in this order):** when `group` is `Some(g)`, append the newly minted
+    /// staff to `g.members` (disposition A's maintenance rule); the
+    /// missing-form assertion must fail.
+    ///
+    /// **Mutation 2 (spurious form; mutate `create_staff_group`, which runs
+    /// SECOND in this order):** reject or normalize away a non-empty carried
+    /// `members`; the spurious-form assertion must fail.
+    ///
+    /// An earlier draft assigned these the other way round, which is
+    /// impossible in both directions: `create_staff_group` runs first in the
+    /// missing order and cannot append a staff that does not exist yet, and
+    /// `create_staff` runs first in the spurious order and has no later group
+    /// to repair.
+    #[test]
+    fn t8b_both_permitted_stale_forms_hold() {
+        let instrument_id = InstrumentId::new(ReplicaId(1), 1);
+
+        // Missing form: CreateStaffGroup(g, []) -> CreateStaff(s, Some(g)).
+        let group_id = StaffGroupId::new(ReplicaId(1), 3);
+        let staff_id = StaffId::new(ReplicaId(1), 5);
+        let create_instrument = prim_env(
+            1,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::CreateInstrument(CreateInstrumentOp {
+                instrument: crate::valuegen::instrument(instrument_id),
+            }),
+        );
+        let create_group = staff_group_env(
+            1,
+            2,
+            20,
+            CausalContext::new(),
+            crate::valuegen::staff_group(group_id, vec![]),
+        );
+        let mut staff = crate::valuegen::staff(staff_id, instrument_id);
+        staff.group = Some(group_id);
+        let create_staff = prim_env(
+            1,
+            4,
+            30,
+            CausalContext::new(),
+            OperationKind::CreateStaff(CreateStaffOp { staff }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![create_instrument, create_group, create_staff]);
+        let out =
+            reduce_operation_set_onto(&set, &Score::empty(IdentityContext::new(ReplicaId(1))));
+        let staff = out
+            .score
+            .staves
+            .iter()
+            .find(|s| s.id == staff_id)
+            .expect("staff minted");
+        assert_eq!(
+            staff.group,
+            Some(group_id),
+            "missing form: s.group == Some(g)"
+        );
+        let group = out
+            .score
+            .staff_groups
+            .iter()
+            .find(|g| g.id == group_id)
+            .expect("group minted");
+        assert_eq!(
+            group.members,
+            Vec::<StaffId>::new(),
+            "missing form: g.members stays empty (stored, not maintained)"
+        );
+
+        // Spurious form: CreateStaff(s, None) -> CreateStaffGroup(g, [s]).
+        let group_id2 = StaffGroupId::new(ReplicaId(2), 3);
+        let staff_id2 = StaffId::new(ReplicaId(2), 5);
+        let create_instrument2 = prim_env(
+            2,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::CreateInstrument(CreateInstrumentOp {
+                instrument: crate::valuegen::instrument(instrument_id),
+            }),
+        );
+        let staff2 = crate::valuegen::staff(staff_id2, instrument_id);
+        let create_staff2 = prim_env(
+            2,
+            2,
+            20,
+            CausalContext::new(),
+            OperationKind::CreateStaff(CreateStaffOp { staff: staff2 }),
+        );
+        let create_group2 = staff_group_env(
+            2,
+            4,
+            30,
+            CausalContext::new(),
+            crate::valuegen::staff_group(group_id2, vec![staff_id2]),
+        );
+        let mut set2 = OperationSet::new();
+        set2.accept_all(vec![create_instrument2, create_staff2, create_group2]);
+        let out2 =
+            reduce_operation_set_onto(&set2, &Score::empty(IdentityContext::new(ReplicaId(2))));
+        let group2 = out2
+            .score
+            .staff_groups
+            .iter()
+            .find(|g| g.id == group_id2)
+            .expect("group minted");
+        assert_eq!(
+            group2.members,
+            vec![staff_id2],
+            "spurious form: g.members == [s]"
+        );
+        let staff2 = out2
+            .score
+            .staves
+            .iter()
+            .find(|s| s.id == staff_id2)
+            .expect("staff minted");
+        assert_eq!(staff2.group, None, "spurious form: s.group == None");
+    }
+
+    /// (t9) A score reduced from empty through all four G3a ops **passes
+    /// `check_invariants`**, and each skipped reducer check **independently**
+    /// makes invariant 10 fire (pin 5). The fixture is constant across all
+    /// mutations: it already attempts a dangling reference in each of the
+    /// three referential loops, and passes only because the reducer refuses
+    /// them.
+    ///
+    /// **Mutation (three separate sub-mutations, each run alone; mutate
+    /// production only):** drop the members loop from `create_staff_group` /
+    /// the staves loop from `create_part_definition` / the active-layers loop
+    /// from `create_view`. Each must let its dangling reference through and
+    /// make invariant 10 fire.
+    #[test]
+    fn t9_from_empty_through_all_four_g3a_ops_passes_check_invariants() {
+        let dangling_staff_a = StaffId::new(ReplicaId(1), 90);
+        let dangling_staff_b = StaffId::new(ReplicaId(1), 91);
+        let dangling_layer = AnalysisLayerId::new(ReplicaId(1), 92);
+
+        let create_group = staff_group_env(
+            1,
+            0,
+            10,
+            CausalContext::new(),
+            crate::valuegen::staff_group(
+                StaffGroupId::new(ReplicaId(1), 1),
+                vec![dangling_staff_a],
+            ),
+        );
+        let create_part = part_definition_env(
+            1,
+            2,
+            20,
+            CausalContext::new(),
+            crate::valuegen::part_definition(
+                PartDefinitionId::new(ReplicaId(1), 2),
+                vec![dangling_staff_b],
+            ),
+        );
+        let create_view = view_env(
+            1,
+            4,
+            30,
+            CausalContext::new(),
+            crate::valuegen::view(ViewId::new(ReplicaId(1), 3), vec![dangling_layer]),
+        );
+        let create_layer = analysis_layer_env(
+            1,
+            6,
+            40,
+            CausalContext::new(),
+            crate::valuegen::analysis_layer(AnalysisLayerId::new(ReplicaId(1), 4)),
+        );
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![create_group, create_part, create_view, create_layer]);
+        let out =
+            reduce_operation_set_onto(&set, &Score::empty(IdentityContext::new(ReplicaId(1))));
+
+        // Baseline: the reducer refused all three dangling references, so the
+        // reduced score passes invariant 10 (and every other invariant).
+        assert!(
+            epiphany_core::check_invariants(&out.score).is_empty(),
+            "baseline: the reducer's refusals must keep the score invariant-clean: {:?}",
+            epiphany_core::check_invariants(&out.score)
+        );
+        let target_missing = Some(&OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::TargetMissing,
+            },
+        });
+        assert_eq!(
+            effect_at(&out.state, 0),
+            target_missing,
+            "CreateStaffGroup with a dangling member must refuse"
+        );
+        assert_eq!(
+            effect_at(&out.state, 2),
+            target_missing,
+            "CreatePartDefinition with a dangling staff must refuse"
+        );
+        assert_eq!(
+            effect_at(&out.state, 4),
+            target_missing,
+            "CreateView with a dangling active layer must refuse"
+        );
+        assert_eq!(
+            effect_at(&out.state, 6),
+            Some(&OperationEffect::Applied),
+            "CreateAnalysisLayer has no referential precondition and applies"
+        );
+    }
+
+    /// (t10) Genesis tranche G3a: all four kinds carry epoch 11, and a block
+    /// containing them stamps schema minor 11.
+    ///
+    /// **Mutation:** assign epoch 10 to one kind (e.g. `CreateStaffGroup`) in
+    /// `introduced_minor`; must fail. Run against **both** epoch sites
+    /// separately (the vocabulary annotation, and the s1 table in
+    /// `payload.rs`) — each must be independently able to fail.
+    #[test]
+    fn t10_g3a_kinds_carry_epoch_11() {
+        let kinds = g3a_sample_kinds();
+        for kind in &kinds {
+            assert_eq!(kind.introduced_minor(), Some(11), "{:?}", kind.tag());
+            assert_eq!(kind.tag().introduced_minor(), Some(11), "{:?}", kind.tag());
+        }
+        let env = prim_env(1, 1, 1, CausalContext::new(), kinds[0].clone());
+        assert_eq!(
+            crate::payload::operation_block_introduced_minor(&[env]),
+            Some(11),
+            "a block containing a G3a kind stamps minor 11"
         );
     }
 }

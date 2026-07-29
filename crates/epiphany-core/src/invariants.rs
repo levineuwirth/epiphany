@@ -59,7 +59,15 @@ pub enum GraphInvariant {
     /// 10. Every graph reference resolves to an extant object: cross-cutting
     ///     structures (incl. anchor targets, annotation layers, tuplet parents,
     ///     graphic objects) and event-internal references (indeterminate
-    ///     alternatives, trajectory event-pitches, graphic objects, cue sources).
+    ///     alternatives, trajectory event-pitches, graphic objects, cue sources);
+    ///     structural top-level references (a staff's declared instrument, a
+    ///     staff's group, a staff group's members, a part's staves, a view's
+    ///     active layers — genesis tranche G3a repairs this prose to name what
+    ///     the check body already enforced); and meter/time-signature
+    ///     references at every level a `MeterChange` can appear (a region's
+    ///     time-model meter changes, a region's default metric grid, a
+    ///     measure's declared time signature, a staff instance's local metric
+    ///     grid).
     CrossCuttingRefsResolve,
     /// 11. Identifiers are unique within their kind (every id kind), with
     ///     reserved-namespace (`SYSTEM_DERIVED`) misuse, tombstone/live
@@ -4072,5 +4080,62 @@ mod accidental_compatibility_tests {
         assert!(violations
             .iter()
             .all(|v| !v.witness.contains("accidental-modification-compatibility")));
+    }
+}
+
+/// Genesis tranche G3a (`spec/CONTRACT_GENESIS_G3A_ENTITIES.md` pin 6): the
+/// invariant-10 doc-comment reconciliation guard.
+#[cfg(test)]
+mod g3a_tests {
+    const SOURCE: &str = include_str!("invariants.rs");
+
+    /// The production portion of this file only, ending right before the
+    /// first `#[cfg(test)]` module. Every needle this module searches for is
+    /// itself written, as a string literal, inside a test module — so
+    /// searching the whole file risks the exact self-matching trap
+    /// `spec/CONTRACT_GENESIS_G3A_ENTITIES.md` §4 warns about (G2b hit it
+    /// twice: once via a needle matching the guard's own source, once via an
+    /// assertion message). Restricting the haystack structurally removes
+    /// that risk rather than relying on needle length alone.
+    fn production_source() -> &'static str {
+        SOURCE
+            .split_once("#[cfg(test)]")
+            .map(|(before, _)| before)
+            .expect("this file contains at least one #[cfg(test)] module")
+    }
+
+    /// (t12) Invariant 10's doc comment names the four reference classes its
+    /// body checks (pin 6). Grep-assert the repaired prose is present
+    /// **within the invariant-10 doc block only** — slice the source from
+    /// the `/// 10.` line to the `CrossCuttingRefsResolve,` line and search
+    /// *that*, since searching the whole file would pass on the
+    /// implementation body, which contains the same identifiers the doc
+    /// comment is supposed to gain.
+    ///
+    /// **Mutation:** revert the doc comment to its pre-G3a text (naming only
+    /// cross-cutting structures and event-internal references); must fail.
+    #[test]
+    fn t12_invariant_10_doc_comment_names_the_four_reference_classes() {
+        let source = production_source();
+        let start = source
+            .find("    /// 10. Every graph reference resolves")
+            .expect("invariant 10's doc comment is present");
+        let end = source[start..]
+            .find("CrossCuttingRefsResolve,")
+            .map(|offset| start + offset)
+            .expect("the CrossCuttingRefsResolve variant follows its doc comment");
+        let doc_block = &source[start..end];
+
+        for needle in [
+            "staff's group",
+            "group's members",
+            "part's staves",
+            "active layers",
+        ] {
+            assert!(
+                doc_block.contains(needle),
+                "invariant 10's doc comment must name `{needle}`; block was:\n{doc_block}"
+            );
+        }
     }
 }

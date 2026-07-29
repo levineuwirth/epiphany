@@ -16,7 +16,10 @@
 //! The `class` string is informative, not normative: implementations need not
 //! agree on error taxonomy, only on the accept/reject verdict.
 
-use epiphany_core::{EventId, InstrumentId, OperationId, ReplicaId, TypedObjectId};
+use epiphany_core::{
+    AnalysisLayerId, EventId, InstrumentId, OperationId, PartDefinitionId, ReplicaId, StaffGroupId,
+    StaffId, TypedObjectId, ViewId,
+};
 use epiphany_determinism::CanonicalEncode;
 
 use crate::{
@@ -411,6 +414,156 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         tuning_trailing,
     ));
 
+    // --- OperationEnvelope carrying the four genesis tranche G3a root-level
+    // mints (`spec/CONTRACT_GENESIS_G3A_ENTITIES.md`) — same rationale as the
+    // siblings above: nothing else in this corpus exercises any of these four
+    // payloads' decode paths, and a round-trip check alone cannot see a
+    // self-consistent encoder/decoder reorder (the 3b-i lesson; contract t4).
+    let staff_group_envelope = OperationEnvelope {
+        id: OperationId::new(ReplicaId(1), 5),
+        author: crate::support::AuthorId(0),
+        stamp: crate::stamp::OperationStamp::new(
+            crate::stamp::HybridLogicalClock::new(epiphany_core::WallClockTime(1), 1),
+            OperationId::new(ReplicaId(1), 5),
+        ),
+        causal_context: crate::causal::CausalContext::new(),
+        transaction: None,
+        payload: crate::payload::OperationPayload::Primitive(
+            crate::payload::OperationKind::CreateStaffGroup(crate::payload::CreateStaffGroupOp {
+                group: crate::valuegen::staff_group(
+                    StaffGroupId::new(ReplicaId(1), 1),
+                    vec![StaffId::new(ReplicaId(1), 1)],
+                ),
+            }),
+        ),
+    };
+    let staff_group_envelope_bytes = staff_group_envelope.to_canonical_bytes();
+    v.push(row(
+        OE,
+        "accept",
+        "-",
+        "create_staff_group",
+        staff_group_envelope_bytes.clone(),
+    ));
+    let mut staff_group_trailing = staff_group_envelope_bytes;
+    staff_group_trailing.push(0);
+    v.push(row(
+        OE,
+        "reject",
+        "trailing-bytes",
+        "create_staff_group_trailing",
+        staff_group_trailing,
+    ));
+
+    let part_definition_envelope = OperationEnvelope {
+        id: OperationId::new(ReplicaId(1), 6),
+        author: crate::support::AuthorId(0),
+        stamp: crate::stamp::OperationStamp::new(
+            crate::stamp::HybridLogicalClock::new(epiphany_core::WallClockTime(1), 1),
+            OperationId::new(ReplicaId(1), 6),
+        ),
+        causal_context: crate::causal::CausalContext::new(),
+        transaction: None,
+        payload: crate::payload::OperationPayload::Primitive(
+            crate::payload::OperationKind::CreatePartDefinition(
+                crate::payload::CreatePartDefinitionOp {
+                    part: crate::valuegen::part_definition(
+                        PartDefinitionId::new(ReplicaId(1), 1),
+                        vec![StaffId::new(ReplicaId(1), 1)],
+                    ),
+                },
+            ),
+        ),
+    };
+    let part_definition_envelope_bytes = part_definition_envelope.to_canonical_bytes();
+    v.push(row(
+        OE,
+        "accept",
+        "-",
+        "create_part_definition",
+        part_definition_envelope_bytes.clone(),
+    ));
+    let mut part_definition_trailing = part_definition_envelope_bytes;
+    part_definition_trailing.push(0);
+    v.push(row(
+        OE,
+        "reject",
+        "trailing-bytes",
+        "create_part_definition_trailing",
+        part_definition_trailing,
+    ));
+
+    let analysis_layer_envelope = OperationEnvelope {
+        id: OperationId::new(ReplicaId(1), 7),
+        author: crate::support::AuthorId(0),
+        stamp: crate::stamp::OperationStamp::new(
+            crate::stamp::HybridLogicalClock::new(epiphany_core::WallClockTime(1), 1),
+            OperationId::new(ReplicaId(1), 7),
+        ),
+        causal_context: crate::causal::CausalContext::new(),
+        transaction: None,
+        payload: crate::payload::OperationPayload::Primitive(
+            crate::payload::OperationKind::CreateAnalysisLayer(
+                crate::payload::CreateAnalysisLayerOp {
+                    layer: crate::valuegen::analysis_layer(AnalysisLayerId::new(ReplicaId(1), 1)),
+                },
+            ),
+        ),
+    };
+    let analysis_layer_envelope_bytes = analysis_layer_envelope.to_canonical_bytes();
+    v.push(row(
+        OE,
+        "accept",
+        "-",
+        "create_analysis_layer",
+        analysis_layer_envelope_bytes.clone(),
+    ));
+    let mut analysis_layer_trailing = analysis_layer_envelope_bytes;
+    analysis_layer_trailing.push(0);
+    v.push(row(
+        OE,
+        "reject",
+        "trailing-bytes",
+        "create_analysis_layer_trailing",
+        analysis_layer_trailing,
+    ));
+
+    let view_envelope = OperationEnvelope {
+        id: OperationId::new(ReplicaId(1), 8),
+        author: crate::support::AuthorId(0),
+        stamp: crate::stamp::OperationStamp::new(
+            crate::stamp::HybridLogicalClock::new(epiphany_core::WallClockTime(1), 1),
+            OperationId::new(ReplicaId(1), 8),
+        ),
+        causal_context: crate::causal::CausalContext::new(),
+        transaction: None,
+        payload: crate::payload::OperationPayload::Primitive(
+            crate::payload::OperationKind::CreateView(crate::payload::CreateViewOp {
+                view: crate::valuegen::view(
+                    ViewId::new(ReplicaId(1), 1),
+                    vec![AnalysisLayerId::new(ReplicaId(1), 1)],
+                ),
+            }),
+        ),
+    };
+    let view_envelope_bytes = view_envelope.to_canonical_bytes();
+    v.push(row(
+        OE,
+        "accept",
+        "-",
+        "create_view",
+        view_envelope_bytes.clone(),
+    ));
+    let mut view_trailing = view_envelope_bytes;
+    view_trailing.push(0);
+    v.push(row(
+        OE,
+        "reject",
+        "trailing-bytes",
+        "create_view_trailing",
+        view_trailing,
+    ));
+
     v
 }
 
@@ -613,6 +766,130 @@ mod tests {
             0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 34, 48, 0, 0, 0, 6, 0, 0, 0, 99, 109, 110,
             45, 49, 50, 6, 0, 0, 0, 116, 101, 116, 45, 49, 50, 0, 5, 0, 4, 8, 0, 0, 0, 0, 0, 0,
             0, 0, 144, 123, 64, 1, 0, 40, 0, 1, 0, 40, 0, 0, 0, 0, 0,
+        ];
+        let result = check("ops.operation_envelope", &bytes)
+            .expect("ops.operation_envelope is owned by this crate");
+        assert_eq!(
+            result,
+            Ok(true),
+            "the committed literal bytes must decode and re-encode injectively"
+        );
+    }
+
+    /// (t4) Genesis tranche G3a (`spec/CONTRACT_GENESIS_G3A_ENTITIES.md`): the
+    /// `CreateStaffGroup` envelope decode vector, pinned to a literal byte
+    /// array copied from the committed corpus — not derived by calling
+    /// `.to_canonical_bytes()` here, for the same reason as the sibling tests
+    /// above (the 3b-i lesson: round-trip locking alone cannot see a
+    /// self-consistent encoder/decoder reorder). **Mutation:** swap two
+    /// fields in `StaffGroup`'s `struct_codec!` declaration
+    /// (`core/src/codec.rs:2329`, e.g. `{ id, name, kind, members }` →
+    /// `{ id, kind, name, members }`); this literal-byte vector must fail
+    /// while every round-trip test stays green.
+    #[test]
+    fn create_staff_group_envelope_decode_vector_is_pinned_to_literal_bytes() {
+        #[rustfmt::skip]
+        let bytes: Vec<u8> = vec![
+            0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+            0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+            0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            35, 63, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 13, 0,
+            0, 0, 115, 116, 97, 102, 102, 45, 103, 114, 111, 117, 112, 45,
+            49, 0, 1, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1,
+        ];
+        let result = check("ops.operation_envelope", &bytes)
+            .expect("ops.operation_envelope is owned by this crate");
+        assert_eq!(
+            result,
+            Ok(true),
+            "the committed literal bytes must decode and re-encode injectively"
+        );
+    }
+
+    /// (t4) Same rationale as `create_staff_group_envelope_decode_vector_is_
+    /// pinned_to_literal_bytes` above. **Mutation:** swap two fields in
+    /// `PartDefinition`'s `struct_codec!` declaration
+    /// (`core/src/codec.rs:1790`, `{ id, name, staves }` →
+    /// `{ id, staves, name }`); this literal-byte vector must fail while
+    /// every round-trip test stays green.
+    #[test]
+    fn create_part_definition_envelope_decode_vector_is_pinned_to_literal_bytes() {
+        #[rustfmt::skip]
+        let bytes: Vec<u8> = vec![
+            0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+            0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+            0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            36, 54, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 6, 0, 0,
+            0, 112, 97, 114, 116, 45, 49, 1, 0, 0, 0, 16, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,
+            0, 0, 1,
+        ];
+        let result = check("ops.operation_envelope", &bytes)
+            .expect("ops.operation_envelope is owned by this crate");
+        assert_eq!(
+            result,
+            Ok(true),
+            "the committed literal bytes must decode and re-encode injectively"
+        );
+    }
+
+    /// (t4) Same rationale as the sibling tests above. **Mutation:** swap two
+    /// fields in `AnalysisLayer`'s `struct_codec!` declaration
+    /// (`core/src/codec.rs:1791`, `{ id, name }` → `{ name, id }`); this
+    /// literal-byte vector must fail while every round-trip test stays
+    /// green. `valuegen::analysis_layer`'s name is deliberately not 16 bytes
+    /// (the `id` field's width): a same-width swap of two length-prefixed
+    /// leaves re-encodes byte-identically regardless of which field is
+    /// which, so an accidental width match would make this vector blind to
+    /// exactly the reorder it exists to catch.
+    #[test]
+    fn create_analysis_layer_envelope_decode_vector_is_pinned_to_literal_bytes() {
+        #[rustfmt::skip]
+        let bytes: Vec<u8> = vec![
+            0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+            0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+            0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            37, 31, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 7, 0, 0,
+            0, 108, 97, 121, 101, 114, 45, 49,
+        ];
+        let result = check("ops.operation_envelope", &bytes)
+            .expect("ops.operation_envelope is owned by this crate");
+        assert_eq!(
+            result,
+            Ok(true),
+            "the committed literal bytes must decode and re-encode injectively"
+        );
+    }
+
+    /// (t4) Same rationale as the sibling tests above. **Mutation:** swap two
+    /// fields in `ViewDefinition`'s `struct_codec!` declaration
+    /// (`core/src/codec.rs:1792`, `{ id, name, active_layers }` →
+    /// `{ id, active_layers, name }`); this literal-byte vector must fail
+    /// while every round-trip test stays green.
+    #[test]
+    fn create_view_envelope_decode_vector_is_pinned_to_literal_bytes() {
+        #[rustfmt::skip]
+        let bytes: Vec<u8> = vec![
+            0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+            0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+            0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            38, 54, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 6, 0, 0,
+            0, 118, 105, 101, 119, 45, 49, 1, 0, 0, 0, 16, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,
+            0, 0, 1,
         ];
         let result = check("ops.operation_envelope", &bytes)
             .expect("ops.operation_envelope is owned by this crate");

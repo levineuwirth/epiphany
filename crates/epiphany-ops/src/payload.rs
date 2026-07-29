@@ -32,13 +32,14 @@
 //! payloads.
 
 use epiphany_core::{
-    Beam, CanonicalValue, CanvasLayoutDefaults, Event, EventDuration, EventId, EventPosition,
-    IdentifiedPitch, Instrument, InstrumentId, MetricGrid, MusicalDuration, MusicalPosition,
-    OperationId, Pitch, PitchId, PitchSpelling, Region, RegionId, RegionTimeModel, RepeatStructure,
-    RepeatStructureId, Rest, ScoreMetadata, Slur, Spanner, SpellingPrecedence, Staff, StaffId,
-    StaffInstance, StaffInstanceId, StaffLineConfiguration, TempoSegment, Tie, TimeAnchor,
+    AnalysisLayer, AnalysisLayerId, Beam, CanonicalValue, CanvasLayoutDefaults, Event,
+    EventDuration, EventId, EventPosition, IdentifiedPitch, Instrument, InstrumentId, MetricGrid,
+    MusicalDuration, MusicalPosition, OperationId, PartDefinition, PartDefinitionId, Pitch,
+    PitchId, PitchSpelling, Region, RegionId, RegionTimeModel, RepeatStructure, RepeatStructureId,
+    Rest, ScoreMetadata, Slur, Spanner, SpellingPrecedence, Staff, StaffGroup, StaffGroupId,
+    StaffId, StaffInstance, StaffInstanceId, StaffLineConfiguration, TempoSegment, Tie, TimeAnchor,
     TimeSignature, TransactionId, TranspositionInterval, TuningContextSettings, TupletId,
-    TypedObjectId, Voice, VoiceId,
+    TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId,
 };
 use epiphany_determinism::{
     sorted_canonical, CanonicalDecode, CanonicalEncode, CanonicalSet, DecodeError,
@@ -273,6 +274,26 @@ pub enum OperationKind {
     /// `ScoreTuningContext` — `accidental_extensions` is not on the wire and
     /// is left untouched by reduction (contract §1).
     SetTuningContext(SetTuningContextOp),
+    // --- Genesis tranche G3a (`spec/CONTRACT_GENESIS_G3A_ENTITIES.md`): the
+    // four remaining root-level `Score` entity mints. Discriminant extends
+    // additively past 34. ---
+    /// Mint a staff group on the score root (set-union creation). Graph-aware
+    /// reduction preconditions every carried member resolves to a live
+    /// `Staff`; the mint stores `members` as given and neither maintains nor
+    /// trusts it thereafter (contract §1.1, disposition B).
+    CreateStaffGroup(CreateStaffGroupOp),
+    /// Mint a part-extraction view definition on the score root (set-union
+    /// creation). Graph-aware reduction preconditions every carried staff
+    /// resolves to a live `Staff`.
+    CreatePartDefinition(CreatePartDefinitionOp),
+    /// Mint a first-class analysis layer on the score root (set-union
+    /// creation). Holds no outbound entity reference, so needs no referential
+    /// precondition — only mint and idempotence, exactly `CreateInstrument`.
+    CreateAnalysisLayer(CreateAnalysisLayerOp),
+    /// Mint a view recipe on the score root (set-union creation). Graph-aware
+    /// reduction preconditions every carried active layer resolves to a live
+    /// `AnalysisLayer`.
+    CreateView(CreateViewOp),
 }
 
 impl OperationKind {
@@ -388,6 +409,12 @@ impl OperationKind {
             // Genesis tranche G2b; appended past 33. Coincides with tag 34 by
             // the same accident as G1/G2a, not by rule.
             OperationKind::SetTuningContext(_) => 34,
+            // Genesis tranche G3a; appended past 34. Coincide with tags
+            // 35–38 by the same accident as G1/G2a/G2b, not by rule.
+            OperationKind::CreateStaffGroup(_) => 35,
+            OperationKind::CreatePartDefinition(_) => 36,
+            OperationKind::CreateAnalysisLayer(_) => 37,
+            OperationKind::CreateView(_) => 38,
         }
     }
 
@@ -447,6 +474,13 @@ impl OperationKind {
             // Minor 10 (Genesis tranche G2b), ratified
             // `spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4.
             OperationKind::SetTuningContext(_) => Some(10),
+            // Minor 11 (Genesis tranche G3a), ratified
+            // `spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4: one epoch for one
+            // additive event, the G2a precedent (two kinds at epoch 9).
+            OperationKind::CreateStaffGroup(_)
+            | OperationKind::CreatePartDefinition(_)
+            | OperationKind::CreateAnalysisLayer(_)
+            | OperationKind::CreateView(_) => Some(11),
         }
     }
 
@@ -495,6 +529,13 @@ impl OperationKind {
             OperationKind::SetCanvasLayoutDefaults(_) => OperationKindTag::SetCanvasLayoutDefaults,
             OperationKind::SetSpellingPrecedence(_) => OperationKindTag::SetSpellingPrecedence,
             OperationKind::SetTuningContext(_) => OperationKindTag::SetTuningContext,
+            // Genesis tranche G3a. Name-verbatim, as the four most recent
+            // additions are (contract pin 3's precedent — not the tag
+            // layer's older Create→Insert convention).
+            OperationKind::CreateStaffGroup(_) => OperationKindTag::CreateStaffGroup,
+            OperationKind::CreatePartDefinition(_) => OperationKindTag::CreatePartDefinition,
+            OperationKind::CreateAnalysisLayer(_) => OperationKindTag::CreateAnalysisLayer,
+            OperationKind::CreateView(_) => OperationKindTag::CreateView,
         }
     }
 }
@@ -541,6 +582,10 @@ impl CanonicalEncode for OperationKind {
             OperationKind::SetCanvasLayoutDefaults(op) => op.encode_canonical(out),
             OperationKind::SetSpellingPrecedence(op) => op.encode_canonical(out),
             OperationKind::SetTuningContext(op) => op.encode_canonical(out),
+            OperationKind::CreateStaffGroup(op) => op.encode_canonical(out),
+            OperationKind::CreatePartDefinition(op) => op.encode_canonical(out),
+            OperationKind::CreateAnalysisLayer(op) => op.encode_canonical(out),
+            OperationKind::CreateView(op) => op.encode_canonical(out),
         }
     }
 }
@@ -597,6 +642,14 @@ pub enum OperationKindTag {
     SetSpellingPrecedence,
     /// Genesis tranche G2b.
     SetTuningContext,
+    /// Genesis tranche G3a.
+    CreateStaffGroup,
+    /// Genesis tranche G3a.
+    CreatePartDefinition,
+    /// Genesis tranche G3a.
+    CreateAnalysisLayer,
+    /// Genesis tranche G3a.
+    CreateView,
 }
 
 /// The discriminant of [`OperationKindTag::Registered`], the one tag that
@@ -712,6 +765,10 @@ operation_kind_tag_vocabulary! {
     SetCanvasLayoutDefaults = 32 => "set-canvas-layout-defaults" @ Some(9),
     SetSpellingPrecedence = 33 => "set-spelling-precedence" @ Some(9),
     SetTuningContext = 34 => "set-tuning-context" @ Some(10),
+    CreateStaffGroup = 35 => "create-staff-group" @ Some(11),
+    CreatePartDefinition = 36 => "create-part-definition" @ Some(11),
+    CreateAnalysisLayer = 37 => "create-analysis-layer" @ Some(11),
+    CreateView = 38 => "create-view" @ Some(11),
 }
 
 impl CanonicalEncode for OperationKindTag {
@@ -1702,6 +1759,103 @@ impl CanonicalEncode for SetTuningContextOp {
     }
 }
 
+// --- Genesis tranche G3a (`spec/CONTRACT_GENESIS_G3A_ENTITIES.md`): the four
+// remaining root-level `Score` entity mints. All four ride the `CreateStaff`
+// set-union mint pattern (`reduce.rs:4075`) with byte-identical re-carry
+// idempotence. ---
+
+/// Mint a global [`StaffGroup`] on the score root (operation_catalog
+/// §CreateStaffGroup). Carries the full staff-group value: identity, optional
+/// name, kind, and the carried `members` list. Graph-aware reduction
+/// preconditions every carried member resolves to a live `Staff`; per §1.1
+/// (disposition B), the mint stores `members` exactly as given and neither
+/// maintains nor trusts it thereafter — `Staff.group` is the sole authority
+/// for membership.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CreateStaffGroupOp {
+    pub group: StaffGroup,
+}
+
+impl CreateStaffGroupOp {
+    /// The minted staff group's identifier.
+    pub fn staff_group_id(&self) -> StaffGroupId {
+        self.group.id
+    }
+}
+
+impl CanonicalEncode for CreateStaffGroupOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_lp_bytes(out, &self.group.canonical_bytes());
+    }
+}
+
+/// Mint a [`PartDefinition`] on the score root (operation_catalog
+/// §CreatePartDefinition). Carries the full part-extraction value: identity,
+/// name, and the carried `staves` list. Graph-aware reduction preconditions
+/// every carried staff resolves to a live `Staff`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CreatePartDefinitionOp {
+    pub part: PartDefinition,
+}
+
+impl CreatePartDefinitionOp {
+    /// The minted part definition's identifier.
+    pub fn part_definition_id(&self) -> PartDefinitionId {
+        self.part.id
+    }
+}
+
+impl CanonicalEncode for CreatePartDefinitionOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_lp_bytes(out, &self.part.canonical_bytes());
+    }
+}
+
+/// Mint an [`AnalysisLayer`] on the score root (operation_catalog
+/// §CreateAnalysisLayer). Carries the full value: identity and name.
+/// `AnalysisLayer` holds no outbound entity reference, so this operation
+/// needs no referential precondition at all — only mint and idempotence,
+/// exactly the `CreateInstrument` discipline.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CreateAnalysisLayerOp {
+    pub layer: AnalysisLayer,
+}
+
+impl CreateAnalysisLayerOp {
+    /// The minted analysis layer's identifier.
+    pub fn analysis_layer_id(&self) -> AnalysisLayerId {
+        self.layer.id
+    }
+}
+
+impl CanonicalEncode for CreateAnalysisLayerOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_lp_bytes(out, &self.layer.canonical_bytes());
+    }
+}
+
+/// Mint a [`ViewDefinition`] on the score root (operation_catalog
+/// §CreateView). Carries the full view-recipe value: identity, name, and the
+/// carried `active_layers` list. Graph-aware reduction preconditions every
+/// carried active layer resolves to a live `AnalysisLayer`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CreateViewOp {
+    pub view: ViewDefinition,
+}
+
+impl CreateViewOp {
+    /// The minted view's identifier.
+    pub fn view_id(&self) -> ViewId {
+        self.view.id
+    }
+}
+
+impl CanonicalEncode for CreateViewOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_lp_bytes(out, &self.view.canonical_bytes());
+    }
+}
+
 /// Set, replace, or (`None`) remove the single meter change at the anchor's
 /// resolved musical position in a region's default metric grid
 /// (operation_catalog §"Meter and Tempo Overwrites"). Carries the full
@@ -2473,6 +2627,12 @@ mod tests {
             // Genesis G2b. Kept in step with pin 1's table; an epoch omitted
             // here is an epoch this test cannot see go wrong.
             (OperationKindTag::SetTuningContext, 10),
+            // Genesis G3a. Same rationale: omitting any of the four here is
+            // an epoch this test cannot see go wrong.
+            (OperationKindTag::CreateStaffGroup, 11),
+            (OperationKindTag::CreatePartDefinition, 11),
+            (OperationKindTag::CreateAnalysisLayer, 11),
+            (OperationKindTag::CreateView, 11),
         ] {
             assert_eq!(
                 tag.introduced_minor(),

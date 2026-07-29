@@ -8,15 +8,16 @@ use epiphany_determinism::{sorted_canonical, CanonicalEncode};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::payload::{
-    ChangeRegionTimeModelOp, CreateCrossCuttingOp, CreateInstrumentOp, CreateRegionOp,
-    CreateRepeatStructureOp, CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp,
-    DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
-    DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
-    InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
-    OperationKind, OperationKindTag, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp,
-    SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
-    SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp,
-    TransactionDescriptor, TransposeIntervalOp, TransposeOp,
+    ChangeRegionTimeModelOp, CreateAnalysisLayerOp, CreateCrossCuttingOp, CreateInstrumentOp,
+    CreatePartDefinitionOp, CreateRegionOp, CreateRepeatStructureOp, CreateStaffGroupOp,
+    CreateStaffInstanceOp, CreateStaffOp, CreateViewOp, CreateVoiceOp, DeleteCrossCuttingOp,
+    DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteRepeatStructureOp,
+    DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
+    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationKindTag,
+    RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp, SetMetricGridOp,
+    SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp,
+    SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransactionDescriptor,
+    TransposeIntervalOp, TransposeOp,
 };
 use crate::support::OperationKindRegistryId;
 
@@ -232,6 +233,14 @@ impl TextValue for OperationKind {
             OperationKind::SetTuningContext(op) => {
                 production(self.tag(), vec![op.settings.project()])
             }
+            OperationKind::CreateStaffGroup(op) => production(self.tag(), vec![op.group.project()]),
+            OperationKind::CreatePartDefinition(op) => {
+                production(self.tag(), vec![op.part.project()])
+            }
+            OperationKind::CreateAnalysisLayer(op) => {
+                production(self.tag(), vec![op.layer.project()])
+            }
+            OperationKind::CreateView(op) => production(self.tag(), vec![op.view.project()]),
         }
     }
 
@@ -577,6 +586,38 @@ impl TextValue for OperationKind {
                     settings: TextValue::parse(settings)?,
                 })
             }
+            OperationKindTag::CreateStaffGroup => {
+                let [group] = fields(s, tag, 1)? else {
+                    unreachable!("the arity-1 check returned one field")
+                };
+                OperationKind::CreateStaffGroup(CreateStaffGroupOp {
+                    group: TextValue::parse(group)?,
+                })
+            }
+            OperationKindTag::CreatePartDefinition => {
+                let [part] = fields(s, tag, 1)? else {
+                    unreachable!("the arity-1 check returned one field")
+                };
+                OperationKind::CreatePartDefinition(CreatePartDefinitionOp {
+                    part: TextValue::parse(part)?,
+                })
+            }
+            OperationKindTag::CreateAnalysisLayer => {
+                let [layer] = fields(s, tag, 1)? else {
+                    unreachable!("the arity-1 check returned one field")
+                };
+                OperationKind::CreateAnalysisLayer(CreateAnalysisLayerOp {
+                    layer: TextValue::parse(layer)?,
+                })
+            }
+            OperationKindTag::CreateView => {
+                let [view] = fields(s, tag, 1)? else {
+                    unreachable!("the arity-1 check returned one field")
+                };
+                OperationKind::CreateView(CreateViewOp {
+                    view: TextValue::parse(view)?,
+                })
+            }
         })
     }
 }
@@ -630,7 +671,7 @@ mod tests {
     #[test]
     fn every_operation_kind_round_trips_with_canonical_text() {
         let tags: Vec<_> = all_tags().collect();
-        assert_eq!(tags.len(), 35, "the grammar has 35 kind productions");
+        assert_eq!(tags.len(), 39, "the grammar has 39 kind productions");
         for tag in tags {
             round_trip(&sample_kind(tag));
         }

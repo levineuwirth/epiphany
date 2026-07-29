@@ -178,6 +178,7 @@ numbering spaces are unrelated and must not be cross-read.
 | 8 | Genesis G1 | `OperationKind`/`OperationKindTag` 31 |
 | 9 | Genesis G2a | `OperationKind`/`OperationKindTag` 32–33 |
 | 10 | Genesis G2b | `OperationKind`/`OperationKindTag` 34 (`SetTuningContext`) |
+| 11 | Genesis G3a | `OperationKind`/`OperationKindTag` 35–38 (`CreateStaffGroup`, `CreatePartDefinition`, `CreateAnalysisLayer`, `CreateView`) |
 
 > **Epoch 10 ratified 2026-07-28**, with G2b as the event. This is the **first
 > exercise of the ladder's own growth path**: G-minor's `introduced_minor()` is
@@ -185,6 +186,13 @@ numbering spaces are unrelated and must not be cross-read.
 > epoch — the control working exactly as designed. The ladder stays monotonic
 > (G2b follows G2a) and prefix-closed. Epoch assignment remains a ratified
 > schema decision, never an implementer's choice.
+
+> **Epoch 11 ratified 2026-07-29**, with G3a as the event (introducing commit
+> pending — this rung has not yet landed a commit; update this citation once
+> it does, per the same discipline as the G2a correction above). One epoch for
+> the whole rung's four kinds, the G2a precedent (two kinds at epoch 9) rather
+> than one epoch per kind. The ladder stays monotonic (G3a follows G2b) and
+> prefix-closed.
 
 **The ladder is complete against the audit** — every post-baseline variant in
 `AUDIT_GMINOR_VOCABULARIES.md` appears exactly once: all ten kind/tag pairs,

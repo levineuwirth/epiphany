@@ -49,7 +49,14 @@ use epiphany_ops::OperationEnvelope;
 /// `set-tuning-context` to the `kind` production — the same reasoning as G1
 /// and G2a: extending the grammar without moving this constant would leave
 /// two incompatible grammars both claiming `(0 10 0)`.
-pub const COMPANION_VERSION: (u32, u32, u32) = (0, 11, 0);
+///
+/// Bumped again 0.11.0 → 0.12.0 by the genesis tranche G3a
+/// (`spec/CONTRACT_GENESIS_G3A_ENTITIES.md`), which appended
+/// `create-staff-group`, `create-part-definition`, `create-analysis-layer`,
+/// and `create-view` to the `kind` production — the same reasoning as every
+/// prior kind append: extending the grammar without moving this constant
+/// would leave two incompatible grammars both claiming `(0 11 0)`.
+pub const COMPANION_VERSION: (u32, u32, u32) = (0, 12, 0);
 
 /// A parsed canonical Text Projection document.
 ///

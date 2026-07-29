@@ -1957,3 +1957,106 @@ inferred.
 tuning context (the canonical base embeds no graph value for any `Score`
 field), which is exactly why a future prune must stay blocked on disposition
 C; this packet adds no `fn prune` and no scaffolding toward one.
+
+## Genesis tranche G3a — `CreateStaffGroup`/`CreatePartDefinition`/
+## `CreateAnalysisLayer`/`CreateView`, kinds/tags 35–38 (2026-07-29)
+
+`spec/CONTRACT_GENESIS_G3A_ENTITIES.md` lands the fourth rung: the four
+remaining root-level `Score` entity mints, closing the from-empty
+satisfiability gap G1 opened (`CreateStaff`'s `group` precondition was
+unsatisfiable under from-empty reduction until a `StaffGroup` could be
+minted). All four ride `create_staff`'s set-union mint discipline exactly
+(fresh id mints; byte-identical re-carry is idempotent; a differing value
+under a live id is `RecreateContentMismatch`; a tombstoned id is
+`TargetTombstoned`), all at schema major 0 (pin 2: **no** `schema_major()`
+arm — the catch-all `_ => 0` is correct, G2a's shape not G1/G2b's), all at
+epoch 11.
+
+**Pin 4a: four more carried-value maps, 28 touch points.**
+`staff_group_values`, `part_definition_values`, `analysis_layer_values`,
+`view_values` join `staff_values`/`time_signature_values`/`instrument_values`
+at the same seven sites each: reducer state declaration, `WorkingSnapshot`
+declaration, initialization, base seeding (`seed_from_graph` — the site that
+fails silently without it, per G1's documented `instrument_values` hazard),
+mint insertion, snapshot, restore. Site 4 is load-bearing and separately
+mutation-tested (t13, four sub-mutations, one per family) against a dedicated
+base-recarry test (t5b) that a from-empty-only re-carry test (t5) structurally
+cannot exercise.
+
+**The tombstoned branch is implemented but, like `create_staff`'s and
+`create_instrument`'s, not exercised by any test.** No delete exists for any
+of these six mint-only families (`CreateStaff`, `CreateInstrument`, and now
+the four G3a kinds), so `ObjectState::Tombstoned` is unreachable for any of
+them through the public operation API today. This is the pre-existing
+project convention, not a new gap this rung introduces.
+
+**§1.1, disposition B — the `Staff.group`/`StaffGroup.members` authority
+ruling, and why `create_staff_group` does the least possible thing.**
+`CreateStaffGroup` carries `members` **exactly as given** — no normalization,
+no validation beyond the graph-aware liveness loop (pin 4) — and reduction
+never writes `StaffGroup.members` from any other operation. `Staff.group` is
+the sole authority; `StaffGroup.members` is a stored, non-authoritative,
+denormalized projection that both the missing-member and spurious-member
+stale forms are permitted to reach (t8b, two independent mutations: one in
+`create_staff` proving disposition A's maintenance rule is *not* implemented,
+one in `create_staff_group` proving non-empty `members` is *not* normalized
+away). Filed as P13-S16; disposition A (the maintenance/enforcement fix) is
+sequenced after G3b.
+
+**Referential preconditions, graph-aware only, mirroring `create_staff`
+exactly.** `CreateStaffGroup.members` and `CreatePartDefinition.staves` each
+precondition every named id resolves to a live `Staff`; `CreateView.
+active_layers` preconditions every named id resolves to a live
+`AnalysisLayer`; `CreateAnalysisLayer` has no outbound reference and needs no
+precondition at all — the `CreateInstrument` shape, not the `CreateStaff`
+shape. All three loops are independently mutation-tested (t6, three
+sub-mutations) and independently shown unenforced base-free (t7). Pin 5:
+these preconditions were verified against invariant 10's existing check body
+(`core/src/invariants.rs:1120`–`:1159`), which already resolved all three
+reference classes before this rung — G3a's own contribution to invariant 10
+is the doc-comment reconciliation (pin 6, doc-only, no enum entry, no
+discriminant, no behaviour change), asserted structurally by a grep guard
+(t12) rather than by inspection.
+
+**t8, narrowed per §1.1.** From empty, `CreateInstrument` →
+`CreateStaffGroup` → `CreateStaff(group: Some(g))` reaches a note with the
+staff's group precondition satisfied — this closes the *satisfiability* half
+only. It does **not** claim a bidirectionally consistent group is authorable;
+t8b pins both permitted stale forms as the honest complement.
+
+**Decode vectors pinned to literal bytes** (`vectors.rs`, four new tests
+mirroring the G1/G2a/G2b precedent), not merely round-tripped. One genuine
+finding during construction: `valuegen::analysis_layer`'s original name
+format (`"analysis-layer-{n}"`) happened to be exactly 16 bytes for small
+counters — the same width as `AnalysisLayerId`'s canonical encoding — which
+made a `struct_codec!` field swap on the two-field `AnalysisLayer` type
+byte-invisible (decode-under-swap re-encodes to the identical original bytes,
+since both fields are equal-width length-prefixed leaves). Fixed by
+shortening the name format (`"layer-{n}"`); documented in both the helper and
+the corresponding literal-byte test so the hazard does not recur silently.
+All four field-swap mutations (`StaffGroup`, `PartDefinition`,
+`AnalysisLayer`, `ViewDefinition`) were then observed to kill their own
+vector, independently, and only their own.
+
+**Boundary crossings, budgeted as the contract's one-time authorization.**
+`editor-core/src/barriers.rs::subjects_of` gains four arms — each names only
+the object it mints with `EditContext::default()`, exactly `CreateStaff`'s
+and `CreateInstrument`'s shape, regardless of whether the carried value holds
+an outbound reference. `layout-ir/src/barrier.rs`'s "one past the vocabulary"
+literal moves 35→39. `testkit/src/generators.rs`'s `rng.below` bound moves
+35→39 with four new arms and a widened `operation_payload_emits_every_
+appended_kind` coverage assertion. `testkit/tests/text_projection_grammar.rs`'s
+kind count moves 35→39. `testkit/src/layout_stub.rs`'s prose range comment
+moves 30..=34→30..=38 (the derived `PAYLOAD_FREE`-based draw itself needed no
+edit, same as G2b).
+
+**`the_canonical_base_is_byte_identical_across_data_model_majors` re-pinned
+again**, same reasoning as every prior tranche: `gen_payload` gained four
+arms and its bounded draw widened, reshuffling the whole seeded RNG stream.
+Nothing leaked — all four kinds are schema major 0 unconditionally and
+`MaterializedState` embeds no `Score` field value for any of the four carried
+types.
+
+**No pruning or compaction is implemented, enabled, or prepared here** — pin
+9's explicit non-goal, restated: G3a adds four more authored families to the
+surface a future prune must not discard.

@@ -190,6 +190,13 @@ fn project_kind(kind: &OperationKind) -> V0OperationKind {
         }
         // Genesis tranche G2b: born past v0; projected verbatim.
         OperationKind::SetTuningContext(op) => V0OperationKind::SetTuningContext(op.clone()),
+        // Genesis tranche G3a: born past v0; projected verbatim.
+        OperationKind::CreateStaffGroup(op) => V0OperationKind::CreateStaffGroup(op.clone()),
+        OperationKind::CreatePartDefinition(op) => {
+            V0OperationKind::CreatePartDefinition(op.clone())
+        }
+        OperationKind::CreateAnalysisLayer(op) => V0OperationKind::CreateAnalysisLayer(op.clone()),
+        OperationKind::CreateView(op) => V0OperationKind::CreateView(op.clone()),
     }
 }
 
@@ -354,6 +361,13 @@ fn migrate_kind(kind: &V0OperationKind, context: &Score) -> Result<OperationKind
         }
         // Genesis tranche G2b: identity round-trip (no lossy v0 form).
         V0OperationKind::SetTuningContext(op) => OperationKind::SetTuningContext(op.clone()),
+        // Genesis tranche G3a: identity round-trip (no lossy v0 form).
+        V0OperationKind::CreateStaffGroup(op) => OperationKind::CreateStaffGroup(op.clone()),
+        V0OperationKind::CreatePartDefinition(op) => {
+            OperationKind::CreatePartDefinition(op.clone())
+        }
+        V0OperationKind::CreateAnalysisLayer(op) => OperationKind::CreateAnalysisLayer(op.clone()),
+        V0OperationKind::CreateView(op) => OperationKind::CreateView(op.clone()),
     })
 }
 

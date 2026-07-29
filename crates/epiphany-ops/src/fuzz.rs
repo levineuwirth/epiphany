@@ -21,9 +21,9 @@
 //! those paths are exercised for permutation-invariance too.
 
 use epiphany_core::{
-    EventId, MusicalDuration, MusicalPosition, OperationId, PitchId, RationalTime, RegionId,
-    RepeatStructureId, ReplicaId, SlurId, StaffId, StaffInstanceId, TranspositionInterval,
-    TypedObjectId, VoiceId,
+    AnalysisLayerId, EventId, MusicalDuration, MusicalPosition, OperationId, PartDefinitionId,
+    PitchId, RationalTime, RegionId, RepeatStructureId, ReplicaId, SlurId, StaffGroupId, StaffId,
+    StaffInstanceId, TranspositionInterval, TypedObjectId, ViewId, VoiceId,
 };
 use epiphany_determinism::fuzz::SplitMix64;
 
@@ -32,8 +32,9 @@ use crate::envelope::OperationEnvelope;
 use crate::opset::OperationSet;
 use crate::payload::OperationKindTag;
 use crate::payload::{
-    CreateCrossCuttingOp, CreateInstrumentOp, CreateRegionOp, CreateRepeatStructureOp,
-    CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp,
+    CreateAnalysisLayerOp, CreateCrossCuttingOp, CreateInstrumentOp, CreatePartDefinitionOp,
+    CreateRegionOp, CreateRepeatStructureOp, CreateStaffGroupOp, CreateStaffInstanceOp,
+    CreateStaffOp, CreateViewOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp,
     DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteRepeatStructureOp,
     DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
     ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationPayload,
@@ -90,7 +91,7 @@ fn pitch(n: u64) -> PitchId {
 
 /// Generates a random payload over the shared id space.
 fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
-    let kind = match rng.below(32) {
+    let kind = match rng.below(36) {
         0 => {
             let voice = VoiceId::new(ReplicaId(7), rng.below(3));
             let position = MusicalPosition(RationalTime::from_int(rng.below(4) as i32));
@@ -303,6 +304,30 @@ fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
         // Genesis tranche G2b: the sole genesis payload born at schema major 3.
         31 => OperationKind::SetTuningContext(crate::payload::SetTuningContextOp {
             settings: valuegen::tuning_context_settings(rng.below(3) as u8),
+        }),
+        // Genesis tranche G3a: the four remaining root-level mints, over the
+        // shared staff/analysis-layer id spaces so mints/re-carries genuinely
+        // interact with them (mirroring arm 21's `CreateStaff`).
+        32 => OperationKind::CreateStaffGroup(CreateStaffGroupOp {
+            group: valuegen::staff_group(
+                StaffGroupId::new(ReplicaId(7), rng.below(2)),
+                vec![StaffId::new(ReplicaId(7), rng.below(2))],
+            ),
+        }),
+        33 => OperationKind::CreatePartDefinition(CreatePartDefinitionOp {
+            part: valuegen::part_definition(
+                PartDefinitionId::new(ReplicaId(7), rng.below(2)),
+                vec![StaffId::new(ReplicaId(7), rng.below(2))],
+            ),
+        }),
+        34 => OperationKind::CreateAnalysisLayer(CreateAnalysisLayerOp {
+            layer: valuegen::analysis_layer(AnalysisLayerId::new(ReplicaId(7), rng.below(2))),
+        }),
+        35 => OperationKind::CreateView(CreateViewOp {
+            view: valuegen::view(
+                ViewId::new(ReplicaId(7), rng.below(2)),
+                vec![AnalysisLayerId::new(ReplicaId(7), rng.below(2))],
+            ),
         }),
         _ => OperationKind::SetStaffLayout(SetStaffLayoutOp {
             staff_instance: StaffInstanceId::new(ReplicaId(7), rng.below(3)),

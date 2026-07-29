@@ -32,16 +32,17 @@
 use std::collections::BTreeSet;
 
 use epiphany_core::{
+    AnalysisLayer, CanvasLayoutDefaults, EventId, Instrument, InstrumentId, MetricGrid,
+    MusicalPosition, OperationId, PartDefinition, PitchId, PitchSpelling, RegionId,
+    RegionTimeModel, RepeatStructureId, ReplicaId, ScoreMetadata, SpellingPrecedence, Staff,
+    StaffGroup, StaffInstance, StaffInstanceId, StaffLineConfiguration, TimeAnchor, TimeSignature,
+    TranspositionInterval, TuningContextSettings, TupletId, TypedObjectId, ViewDefinition, Voice,
+    VoiceId, WallClockTime,
+};
+use epiphany_core::{
     Beam, Event, IdentifiedPitch, Pitch, Region, RepeatStructure, Rest, Slur, Spanner, Tie,
 };
 use epiphany_core::{CanonicalValue, TempoSegment};
-use epiphany_core::{
-    CanvasLayoutDefaults, EventId, Instrument, InstrumentId, MetricGrid, MusicalPosition,
-    OperationId, PitchId, PitchSpelling, RegionId, RegionTimeModel, RepeatStructureId, ReplicaId,
-    ScoreMetadata, SpellingPrecedence, Staff, StaffInstance, StaffInstanceId,
-    StaffLineConfiguration, TimeAnchor, TimeSignature, TranspositionInterval,
-    TuningContextSettings, TupletId, TypedObjectId, Voice, VoiceId, WallClockTime,
-};
 use epiphany_determinism::{CanonicalDecode, CanonicalEncode};
 
 use crate::causal::CausalContext;
@@ -599,6 +600,18 @@ fn operation_kind(r: &mut Reader<'_>) -> Result<OperationKind> {
         34 => OperationKind::SetTuningContext(SetTuningContextOp {
             settings: value::<TuningContextSettings>(r, "TuningContextSettings")?,
         }),
+        35 => OperationKind::CreateStaffGroup(CreateStaffGroupOp {
+            group: value::<StaffGroup>(r, "StaffGroup")?,
+        }),
+        36 => OperationKind::CreatePartDefinition(CreatePartDefinitionOp {
+            part: value::<PartDefinition>(r, "PartDefinition")?,
+        }),
+        37 => OperationKind::CreateAnalysisLayer(CreateAnalysisLayerOp {
+            layer: value::<AnalysisLayer>(r, "AnalysisLayer")?,
+        }),
+        38 => OperationKind::CreateView(CreateViewOp {
+            view: value::<ViewDefinition>(r, "ViewDefinition")?,
+        }),
         tag => {
             return Err(EnvelopeDecodeError::InvalidTag {
                 kind: "OperationKind",
@@ -901,6 +914,38 @@ pub(crate) mod tests {
             OperationKindTag::SetTuningContext => {
                 OperationKind::SetTuningContext(SetTuningContextOp {
                     settings: valuegen::tuning_context_settings(1),
+                })
+            }
+            OperationKindTag::CreateStaffGroup => {
+                OperationKind::CreateStaffGroup(crate::payload::CreateStaffGroupOp {
+                    group: valuegen::staff_group(
+                        epiphany_core::StaffGroupId::new(ReplicaId(7), 1),
+                        vec![StaffId::new(ReplicaId(7), 1)],
+                    ),
+                })
+            }
+            OperationKindTag::CreatePartDefinition => {
+                OperationKind::CreatePartDefinition(crate::payload::CreatePartDefinitionOp {
+                    part: valuegen::part_definition(
+                        epiphany_core::PartDefinitionId::new(ReplicaId(7), 1),
+                        vec![StaffId::new(ReplicaId(7), 1)],
+                    ),
+                })
+            }
+            OperationKindTag::CreateAnalysisLayer => {
+                OperationKind::CreateAnalysisLayer(crate::payload::CreateAnalysisLayerOp {
+                    layer: valuegen::analysis_layer(epiphany_core::AnalysisLayerId::new(
+                        ReplicaId(7),
+                        1,
+                    )),
+                })
+            }
+            OperationKindTag::CreateView => {
+                OperationKind::CreateView(crate::payload::CreateViewOp {
+                    view: valuegen::view(
+                        epiphany_core::ViewId::new(ReplicaId(7), 1),
+                        vec![epiphany_core::AnalysisLayerId::new(ReplicaId(7), 1)],
+                    ),
                 })
             }
         }

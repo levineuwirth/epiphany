@@ -231,7 +231,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.11.0 --- The genesis operation tranche reaches schema major 3 (G2b)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.12.0 --- The genesis operation tranche completes the root-level entity mints (G3a)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -416,6 +416,65 @@ canonical operation log is now the sole canonical carrier of the tuning
 context (the canonical base embeds no \texttt{Score} field value for any
 setting, \texttt{metadata} included), on the same reasoning that already
 applied to \texttt{SetMetadata}.
+
+\medskip
+
+\noindent\textbf{Version 0.12.0 (genesis tranche G3a,
+\texttt{spec/CONTRACT\_GENESIS\_G3A\_ENTITIES.md}).} Adds four operation
+kinds --- \texttt{CreateStaffGroup} (Section~\ref{sec:k0:create-staff-group}),
+\texttt{CreatePartDefinition} (Section~\ref{sec:k0:create-part-definition}),
+\texttt{CreateAnalysisLayer} (Section~\ref{sec:k0:create-analysis-layer}),
+\texttt{CreateView} (Section~\ref{sec:k0:create-view}) --- completing the
+root-level \texttt{Score} entity mints: every remaining vector a Chapter~5
+top-level structure declares (\texttt{staff\_groups}, \texttt{parts},
+\texttt{analysis\_layers}, \texttt{views}) is now operation-authored. All
+four are mint-only (set-union creation, no delete in this catalogue
+revision), schema major~0 unconditionally, epoch~11.
+
+\textbf{The defect this closes, and what it does not close.} Until this
+rung, all four object kinds became live \emph{only} through canonical-base
+ingest; no operation minted any of them. Consequently \texttt{CreateStaff}'s
+\texttt{group} precondition (Section~\ref{sec:k0:create-staff}) was
+\textbf{unsatisfiable} under from-empty reduction --- a document built only
+from operations could never author a grouped staff. G3a closes exactly this
+satisfiability half. It does \textbf{not} make a bidirectionally consistent
+staff group authorable: with mints only, and no modify or delete operation
+for either side, no authoring order can bring \texttt{Staff.group} and
+\texttt{StaffGroup.members} into agreement once they disagree.
+
+\textbf{Ruled (disposition B, filed as P13-S16): \texttt{Staff.group} is the
+sole authority for group membership; \texttt{StaffGroup.members} is a
+non-authoritative denormalized projection.} \texttt{CreateStaffGroup} stores
+\texttt{members} exactly as carried and neither maintains nor trusts it
+thereafter. Both stale forms are permitted outcomes, not defects: a
+\textbf{missing} member (\texttt{Staff.group} names a group whose
+\texttt{members} omits that staff) and a \textbf{spurious} member
+(\texttt{StaffGroup.members} names a staff whose own \texttt{Staff.group} is
+absent or names a different group). Every consumer \MUST{} read group
+membership from \texttt{Staff.group} only; core specification Chapter~5's
+\texttt{Staff}/\texttt{StaffGroup} declarations (\sectionsc{Top-Level Score
+Structure}) now state this normatively, and Section~\ref{sec:k0:create-staff}
+above states the corresponding authoring-order consequence for
+\texttt{CreateStaff}. Disposition A (maintaining \texttt{members} by
+reduction, making it a derived field) remains the later
+maintenance/enforcement fix, sequenced after G3b.
+
+\textbf{Referential preconditions, graph-aware only, mirroring
+\texttt{CreateStaff} exactly.} \texttt{CreateStaffGroup.members} and
+\texttt{CreatePartDefinition.staves} each precondition every named id
+resolves to a live \texttt{Staff}; \texttt{CreateView.active\_layers}
+preconditions every named id resolves to a live analysis layer;
+\texttt{CreateAnalysisLayer} carries no outbound reference and needs no
+referential precondition at all, the \texttt{CreateInstrument} shape rather
+than the \texttt{CreateStaff} shape. Base-free reduction enforces none of
+these, exactly as for \texttt{CreateStaff}: there is no universe to check
+against. No new \texttt{PreconditionFailureReason} --- every referential
+refusal reuses \texttt{TargetMissing} (discriminant 0).
+
+No accept-set change: all four carried types have exactly one wire layout
+(core specification's \sectionsc{Binary Format Companion} confirms no
+versioned walk exists for any of the four), so none gains a
+\texttt{schema\_major()} arm beyond the existing catch-all.
 
 % ===========================================================================
 \chapter{The Catalog Framework}
@@ -1137,6 +1196,21 @@ With staves mintable, \texttt{CreateStaffInstance}
 instance's referenced \texttt{Staff} is live (previously the reference was
 satisfiable only from the seeded base, so the check was vacuous).
 
+\textbf{Stale-form semantics (genesis tranche G3a, disposition B, filed as
+P13-S16).} \texttt{Staff.group} is the \textbf{sole authority} for group
+membership; \texttt{StaffGroup.members}
+(Section~\ref{sec:k0:create-staff-group}) is a non-authoritative denormalized
+projection no consumer may read to decide membership. \texttt{CreateStaff}
+is the operation that authors the \textbf{missing-member} stale form: a
+\texttt{CreateStaffGroup(g, members: [])} followed by a
+\texttt{CreateStaff(s, group: Some(g))} leaves \texttt{s.group == Some(g)}
+while \texttt{g.members} omits \texttt{s} --- a \textbf{permitted} outcome,
+not a defect, since G3a mints only and no operation maintains
+\texttt{StaffGroup.members} by reduction. The mirror-image \textbf{spurious}
+form (a staff named in \texttt{members} whose own \texttt{group} is absent or
+different) is authored by \texttt{CreateStaffGroup} instead; see
+Section~\ref{sec:k0:create-staff-group}'s own stale-form paragraph.
+
 \textbf{Conflict cases.} None at reduction time (set-union; the differing-value
 re-create is a precondition gate, not a conflict).
 
@@ -1354,6 +1428,162 @@ undo leaves it exactly as it found it.
 
 \textbf{Re-anchoring.} Not applicable: the field is a score singleton with no
 tombstonable anchor.
+
+\section{CreateStaffGroup}
+\label{sec:k0:create-staff-group}
+
+Ratified with the genesis operation tranche's G3a rung (\texttt{spec/
+CONTRACT\_GENESIS\_G3A\_ENTITIES.md}, executing \texttt{spec/RULING\_
+GENESIS\_PERSISTENCE.md}): a global staff grouping (\texttt{Score.
+staff\_groups}) joins the operation-authored surfaces, on the
+\texttt{CreateStaff} set-union mint pattern (Section~\ref{sec:k0:create-staff}).
+
+\textbf{Payload schema.} \texttt{CreateStaffGroupOp \{ group: StaffGroup \}}
+--- the full staff-group value: identity, optional name, kind (grand staff,
+bracket, sub-bracket, choral, or a registered extension kind), and the
+carried \texttt{members} list.
+
+\textbf{Canonical encoding.} The length-framed canonical bytes of
+\texttt{group}. \texttt{StaffGroup} has never been versioned, so this
+operation is schema major~0 unconditionally.
+
+\textbf{Reduction rule.} Set-union creation, mirroring \texttt{CreateStaff}
+exactly: a create mints the group live if its id is fresh; a repeat create
+carrying a byte-identical value reduces idempotently
+(\texttt{NoOpReason::AlreadyApplied}); a create whose id is already live with
+a differing value is a precondition no-op with \texttt{RecreateContentMismatch};
+a create naming a tombstoned id is a precondition no-op with
+\texttt{TargetTombstoned}. Graph-aware reduction additionally preconditions
+that every id in \texttt{members} resolves to a live \texttt{Staff} ---
+reusing \texttt{TargetMissing} (discriminant 0), no new
+\texttt{PreconditionFailureReason} --- and is skipped entirely base-free,
+which has no staff universe to check against.
+
+\textbf{Stale-form semantics (disposition B, filed as P13-S16).}
+\texttt{Staff.group} (Section~\ref{sec:k0:create-staff}) is the \textbf{sole
+authority} for group membership; \texttt{members} here is a
+\textbf{non-authoritative denormalized projection}, stored exactly as carried
+and \textbf{neither maintained nor trusted} by any subsequent reduction. This
+operation authors the \textbf{spurious-member} stale form: a
+\texttt{CreateStaff(s, group: None)} followed by
+\texttt{CreateStaffGroup(g, members: [s])} leaves \texttt{g.members == [s]}
+while \texttt{s.group} stays \texttt{None} (or names a different group) ---
+a \textbf{permitted} outcome, not a defect. No consumer may read
+\texttt{members} to decide whether a staff belongs to a group.
+
+\textbf{Conflict cases.} None at reduction time (set-union; the differing-value
+re-create is a precondition gate, not a conflict).
+
+\textbf{Undo semantics.} Undo of a create tombstones the minted group
+(Section~\ref{sec:k0:undo}); \texttt{StrictInverse} conflicts if a live staff
+still names it (a stale reference, not a strand --- \texttt{Staff.group}
+degrading to point at a tombstoned id is the same shape core Chapter~6's
+re-anchoring rule table already treats for other dangling references).
+
+\textbf{Re-anchoring.} Not applicable (a staff-group mint references no
+tombstonable anchor; there is no \texttt{DeleteStaffGroup} in this catalogue
+revision, mirroring \texttt{CreateStaff}'s own absent delete).
+
+\section{CreatePartDefinition}
+\label{sec:k0:create-part-definition}
+
+Ratified with genesis tranche G3a, alongside \texttt{CreateStaffGroup} above:
+a part-extraction view definition (\texttt{Score.parts}) joins the
+operation-authored surfaces, on the same \texttt{CreateStaff} set-union mint
+pattern.
+
+\textbf{Payload schema.} \texttt{CreatePartDefinitionOp \{ part:
+PartDefinition \}} --- identity, name, and the carried \texttt{staves} list.
+Parts are projections, not storage (core specification Chapter~5
+\sectionsc{Parts}): only references and overrides.
+
+\textbf{Canonical encoding.} The length-framed canonical bytes of
+\texttt{part}. \texttt{PartDefinition} has never been versioned, so this
+operation is schema major~0 unconditionally.
+
+\textbf{Reduction rule.} Set-union creation, mirroring \texttt{CreateStaff}
+exactly (mint/idempotence/mismatch/tombstone as above). Graph-aware reduction
+additionally preconditions that every id in \texttt{staves} resolves to a
+live \texttt{Staff} (\texttt{TargetMissing}, no new failure reason), skipped
+base-free.
+
+\textbf{Conflict cases.} None at reduction time (set-union; the differing-value
+re-create is a precondition gate, not a conflict).
+
+\textbf{Undo semantics.} Undo of a create tombstones the minted part
+(Section~\ref{sec:k0:undo}); \texttt{StrictInverse} conflicts if concurrently
+mutated.
+
+\textbf{Re-anchoring.} Not applicable (a part mint references no tombstonable
+anchor; there is no \texttt{DeletePartDefinition} in this catalogue
+revision).
+
+\section{CreateAnalysisLayer}
+\label{sec:k0:create-analysis-layer}
+
+Ratified with genesis tranche G3a: a first-class analysis layer
+(\texttt{Score.analysis\_layers}) joins the operation-authored surfaces, on
+the \texttt{CreateInstrument} mint pattern
+(Section~\ref{sec:k0:create-instrument}) --- not \texttt{CreateStaff}'s,
+since \texttt{AnalysisLayer} holds no outbound entity reference.
+
+\textbf{Payload schema.} \texttt{CreateAnalysisLayerOp \{ layer:
+AnalysisLayer \}} --- identity and name only (core specification Chapter~5
+\sectionsc{Analysis Layers and Views}).
+
+\textbf{Canonical encoding.} The length-framed canonical bytes of
+\texttt{layer}. \texttt{AnalysisLayer} has never been versioned, so this
+operation is schema major~0 unconditionally.
+
+\textbf{Reduction rule.} Set-union creation, mirroring \texttt{CreateInstrument}
+exactly: mint/idempotence/mismatch/tombstone as above, with \textbf{no}
+graph-aware reference-resolution block --- there is nothing for one to check.
+
+\textbf{Conflict cases.} None at reduction time (set-union; the differing-value
+re-create is a precondition gate, not a conflict).
+
+\textbf{Undo semantics.} Undo of a create tombstones the minted layer
+(Section~\ref{sec:k0:undo}); \texttt{StrictInverse} conflicts if a live view
+still names it in \texttt{active\_layers} (Section~\ref{sec:k0:create-view}).
+
+\textbf{Re-anchoring.} Not applicable (an analysis-layer mint references no
+tombstonable anchor; there is no \texttt{DeleteAnalysisLayer} in this
+catalogue revision).
+
+\section{CreateView}
+\label{sec:k0:create-view}
+
+Ratified with genesis tranche G3a, the fourth and final root-level mint of
+this rung: a view recipe (\texttt{Score.views}) joins the operation-authored
+surfaces, on the \texttt{CreateStaff} set-union mint pattern.
+
+\textbf{Payload schema.} \texttt{CreateViewOp \{ view: ViewDefinition \}} ---
+identity, name, and the carried \texttt{active\_layers} list. The
+view-\emph{kind} detail (core specification Chapter~7) is out of scope for
+this baseline.
+
+\textbf{Canonical encoding.} The length-framed canonical bytes of
+\texttt{view}. \texttt{ViewDefinition} has never been versioned, so this
+operation is schema major~0 unconditionally.
+
+\textbf{Reduction rule.} Set-union creation, mirroring \texttt{CreateStaff}
+exactly (mint/idempotence/mismatch/tombstone as above). Graph-aware reduction
+additionally preconditions that every id in \texttt{active\_layers} resolves
+to a live \texttt{AnalysisLayer} (\texttt{TargetMissing}, no new failure
+reason), skipped base-free. \textbf{This packet is self-contained}: a
+\texttt{CreateView}'s precondition target can be minted by a
+\texttt{CreateAnalysisLayer} earlier in the same operation set, so the
+ordering is testable end-to-end without a canonical base.
+
+\textbf{Conflict cases.} None at reduction time (set-union; the differing-value
+re-create is a precondition gate, not a conflict).
+
+\textbf{Undo semantics.} Undo of a create tombstones the minted view
+(Section~\ref{sec:k0:undo}); \texttt{StrictInverse} conflicts if concurrently
+mutated.
+
+\textbf{Re-anchoring.} Not applicable (a view mint references no tombstonable
+anchor; there is no \texttt{DeleteView} in this catalogue revision).
 
 \section{Repeat Structures}
 \label{sec:k0:repeat-structures}

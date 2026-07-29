@@ -3585,6 +3585,19 @@ canonical_value! {
     // `ScoreTuningContext`'s five-field walk; this makes that layout
     // reachable per-value, exactly as `ScoreTuningContext` above is.
     TuningContextSettings,
+    // Genesis tranche G3a (`CONTRACT_GENESIS_G3A_ENTITIES.md` pin 3) — the
+    // four root-level mints (`CreateStaffGroup`, `CreatePartDefinition`,
+    // `CreateAnalysisLayer`, `CreateView`) embed the full value, mirroring
+    // `CreateStaff`'s `Staff` / `CreateInstrument`'s `Instrument`. All four
+    // already have a `Codec` (`struct_codec!` at `:1790`–`:1796` and `:2329`)
+    // and already ship inside `Score`; this makes those existing layouts
+    // reachable per-value, same as every other entry here. No new byte
+    // layout, and no `textvalue_graph.rs` work — `struct_codec!` already
+    // generated each type's `TextValue` impl alongside its `Codec`.
+    StaffGroup,
+    PartDefinition,
+    AnalysisLayer,
+    ViewDefinition,
 }
 
 #[cfg(test)]

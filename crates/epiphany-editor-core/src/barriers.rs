@@ -445,6 +445,27 @@ pub(crate) fn subjects_of(kind: &OperationKind, score: &Score) -> BarrierSubject
             TypedObjectId::Instrument(op.instrument_id()),
             EditContext::default(),
         ),
+        // Genesis tranche G3a: four more root-level `Score` entity mints,
+        // exactly like `CreateStaff`/`CreateInstrument` above — each names
+        // only the object it mints, with no resolvable region or
+        // staff-instance context, regardless of whether the carried value
+        // holds an outbound reference (`CreateStaffGroup.members`,
+        // `CreatePartDefinition.staves`, `CreateView.active_layers`).
+        OperationKind::CreateStaffGroup(op) => one(
+            TypedObjectId::StaffGroup(op.staff_group_id()),
+            EditContext::default(),
+        ),
+        OperationKind::CreatePartDefinition(op) => one(
+            TypedObjectId::PartDefinition(op.part_definition_id()),
+            EditContext::default(),
+        ),
+        OperationKind::CreateAnalysisLayer(op) => one(
+            TypedObjectId::AnalysisLayer(op.analysis_layer_id()),
+            EditContext::default(),
+        ),
+        OperationKind::CreateView(op) => {
+            one(TypedObjectId::View(op.view_id()), EditContext::default())
+        }
         OperationKind::SetTimeSignature(op) => {
             let mut objects = vec![(TypedObjectId::Region(op.region), ctx(Some(op.region), None))];
             if let Some(signature) = &op.time_signature {

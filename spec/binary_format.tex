@@ -240,7 +240,7 @@
   {\Large\scshape\color{epiphanyslate}Binary Format}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.13.0 --- The chunk schema minor becomes a derived record (G-minor)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.14.0 --- The genesis operation tranche completes the root-level entity mints (G3a)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the byte layouts it defines}
   \vfill
 \end{titlepage}
@@ -1462,6 +1462,18 @@ and the reader disagree about the field's type.
     \texttt{ScoreTuningContext} layout (Section~\ref{sec:evolution:major3});
     born at v3 unconditionally &
     \sectionsc{SetTuningContext} \\
+  \tablenums{35} & \texttt{CreateStaffGroup} &
+    $\mathrm{lp}$(\texttt{StaffGroup}) &
+    \sectionsc{CreateStaffGroup} \\
+  \tablenums{36} & \texttt{CreatePartDefinition} &
+    $\mathrm{lp}$(\texttt{PartDefinition}) &
+    \sectionsc{CreatePartDefinition} \\
+  \tablenums{37} & \texttt{CreateAnalysisLayer} &
+    $\mathrm{lp}$(\texttt{AnalysisLayer}) &
+    \sectionsc{CreateAnalysisLayer} \\
+  \tablenums{38} & \texttt{CreateView} &
+    $\mathrm{lp}$(\texttt{ViewDefinition}) &
+    \sectionsc{CreateView} \\
   \bottomrule
 \end{longtable}
 \endgroup
@@ -1532,7 +1544,9 @@ discriminants and wrong lengths are decode errors. Append-only past
   \tablenums{28} & \texttt{CreateRepeatStructure} & \tablenums{29} & \texttt{DeleteRepeatStructure} \\
   \tablenums{30} & \texttt{TransposeInterval} & \tablenums{31} & \texttt{CreateInstrument} \\
   \tablenums{32} & \texttt{SetCanvasLayoutDefaults} & \tablenums{33} & \texttt{SetSpellingPrecedence} \\
-  \tablenums{34} & \texttt{SetTuningContext} & & \\
+  \tablenums{34} & \texttt{SetTuningContext} & \tablenums{35} & \texttt{CreateStaffGroup} \\
+  \tablenums{36} & \texttt{CreatePartDefinition} & \tablenums{37} & \texttt{CreateAnalysisLayer} \\
+  \tablenums{38} & \texttt{CreateView} & & \\
   \bottomrule
 \end{longtable}
 \endgroup
@@ -2382,7 +2396,7 @@ The \emph{only} minor-additive mechanism in schema major~0 is
 \textbf{appending discriminants to open vocabularies}:
 
 \begin{itemize}
-  \item \texttt{OperationKind}: append at ${\geq}\,\tablenums{35}$
+  \item \texttt{OperationKind}: append at ${\geq}\,\tablenums{39}$
     (Requirement~\ref{req:binfmt:kind-discriminants}; the Phase-3
     tranche took \tablenums{24}--\tablenums{27} under this mechanism,
     the repeat pair \tablenums{28}/\tablenums{29} in the
@@ -2390,18 +2404,23 @@ The \emph{only} minor-additive mechanism in schema major~0 is
     (\texttt{TransposeInterval}), genesis tranche G1 took \tablenums{31}
     (\texttt{CreateInstrument}), genesis tranche G2a took
     \tablenums{32}/\tablenums{33} (\texttt{SetCanvasLayoutDefaults},
-    \texttt{SetSpellingPrecedence}), and genesis tranche G2b took
-    \tablenums{34} (\texttt{SetTuningContext}) --- the discriminant space is
+    \texttt{SetSpellingPrecedence}), genesis tranche G2b took
+    \tablenums{34} (\texttt{SetTuningContext}), and genesis tranche G3a took
+    \tablenums{35}--\tablenums{38} (\texttt{CreateStaffGroup},
+    \texttt{CreatePartDefinition}, \texttt{CreateAnalysisLayer},
+    \texttt{CreateView}) --- the discriminant space is
     one append-only table across majors, but a kind's \emph{block stamp}
     follows minimal stamping over its payload: \tablenums{28}'s payload
     embeds a v2 layout, so its blocks stamp major~2,
     Section~\ref{sec:evolution:major2}; \tablenums{34}'s payload embeds a v3
     layout unconditionally, so its blocks stamp major~3,
-    Section~\ref{sec:evolution:major3} --- the sole appended kind to do so);
-  \item \texttt{OperationKindTag}: append at ${\geq}\,\tablenums{35}$
-    (Requirement~\ref{req:binfmt:kind-tag}; the same eleven variants as
-    \texttt{OperationKind}, at the same eleven discriminants, appended by
-    the same six tranches);
+    Section~\ref{sec:evolution:major3} --- the sole appended kind to do so;
+    \tablenums{35}--\tablenums{38} are each major~0, no versioned walk
+    existing for any of their four carried types);
+  \item \texttt{OperationKindTag}: append at ${\geq}\,\tablenums{39}$
+    (Requirement~\ref{req:binfmt:kind-tag}; the same fifteen variants as
+    \texttt{OperationKind}, at the same fifteen discriminants, appended by
+    the same seven tranches);
   \item \texttt{OperationPayload}: append at ${\geq}\,\tablenums{4}$
     (Section~\ref{sec:ops:payload}; \texttt{ResolveEquivocation} = 3, Push~3,
     is the one and only append this vocabulary has had);
@@ -3621,6 +3640,23 @@ only}: implementations need not agree on an error taxonomy.
   current. No discriminant, wire layout, or accept-set changes: this is a
   correction to prose and a new writer-side derivation, not a new appended
   variant. \\
+    \today & Operation wire forms & 0.14.0 --- Genesis tranche G3a
+  (\texttt{spec/CONTRACT\_GENESIS\_G3A\_ENTITIES.md}): appends
+  \texttt{OperationKind} wire discriminants \tablenums{35}--\tablenums{38}
+  (\texttt{CreateStaffGroup}, \texttt{CreatePartDefinition},
+  \texttt{CreateAnalysisLayer}, \texttt{CreateView}) with their payload
+  layouts, and the matching \texttt{OperationKindTag} discriminants
+  \tablenums{35}--\tablenums{38} (name-verbatim, following the two most
+  recent additions rather than the tag space's older Create$\rightarrow$Insert
+  convention) --- a schema-\emph{minor} evolution (epoch~11,
+  \texttt{spec/PLAN\_GMINOR\_SCHEMA\_MINOR.md} \S4) under this document's own
+  append-only rules; no existing assignment changed. All four carried types
+  (\texttt{StaffGroup}, \texttt{PartDefinition}, \texttt{AnalysisLayer},
+  \texttt{ViewDefinition}) have never been versioned as standalone values, so
+  no accept-set moves: \texttt{OperationEnvelopeBlock} stays at
+  \tablenums{3} where genesis tranche G2b left it. Semantics: Operation
+  Catalog \sectionsc{CreateStaffGroup}, \sectionsc{CreatePartDefinition},
+  \sectionsc{CreateAnalysisLayer}, \sectionsc{CreateView}, 0.12.0. \\
 \bottomrule
 \end{longtable}
 

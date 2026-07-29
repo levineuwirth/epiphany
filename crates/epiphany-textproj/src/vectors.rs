@@ -21,9 +21,13 @@ use epiphany_bundle::{
     ProfileConstraints, ProfileDeclaration, ProfileId, ProfileRegistryId,
     ReductionAlgorithmVersion, SchemaVersion, SemVer, SnapshotId,
 };
-use epiphany_core::{OperationId, RegionId, ReplicaId, WallClockTime};
+use epiphany_core::{
+    AnalysisLayerId, OperationId, PartDefinitionId, RegionId, ReplicaId, StaffGroupId, StaffId,
+    ViewId, WallClockTime,
+};
 use epiphany_ops::{
-    AuthorId, CausalContext, DeleteRegionOp, HybridLogicalClock, OperationEnvelope, OperationKind,
+    AuthorId, CausalContext, CreateAnalysisLayerOp, CreatePartDefinitionOp, CreateStaffGroupOp,
+    CreateViewOp, DeleteRegionOp, HybridLogicalClock, OperationEnvelope, OperationKind,
     OperationPayload, OperationStamp, SetTuningContextOp,
 };
 
@@ -177,6 +181,83 @@ fn tuning_context_envelope(counter: u64, physical_time: i64) -> OperationEnvelop
     }
 }
 
+/// The four genesis tranche G3a envelopes (kinds 35–38,
+/// `spec/CONTRACT_GENESIS_G3A_ENTITIES.md`). Same rationale as
+/// `tuning_context_envelope` above: the typed all-kind round-trip test proves
+/// the *production* parses, but only a committed vector proves the emitted
+/// document text is stable across implementations.
+fn staff_group_envelope(counter: u64, physical_time: i64) -> OperationEnvelope {
+    let id = OperationId::new(ReplicaId(1), counter);
+    OperationEnvelope {
+        id,
+        author: AuthorId(0xAB),
+        stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(physical_time), 0), id),
+        causal_context: CausalContext::new(),
+        transaction: None,
+        payload: OperationPayload::Primitive(OperationKind::CreateStaffGroup(CreateStaffGroupOp {
+            group: epiphany_ops::valuegen::staff_group(
+                StaffGroupId::new(ReplicaId(1), 1),
+                vec![StaffId::new(ReplicaId(1), 1)],
+            ),
+        })),
+    }
+}
+
+fn part_definition_envelope(counter: u64, physical_time: i64) -> OperationEnvelope {
+    let id = OperationId::new(ReplicaId(1), counter);
+    OperationEnvelope {
+        id,
+        author: AuthorId(0xAB),
+        stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(physical_time), 0), id),
+        causal_context: CausalContext::new(),
+        transaction: None,
+        payload: OperationPayload::Primitive(OperationKind::CreatePartDefinition(
+            CreatePartDefinitionOp {
+                part: epiphany_ops::valuegen::part_definition(
+                    PartDefinitionId::new(ReplicaId(1), 1),
+                    vec![StaffId::new(ReplicaId(1), 1)],
+                ),
+            },
+        )),
+    }
+}
+
+fn analysis_layer_envelope(counter: u64, physical_time: i64) -> OperationEnvelope {
+    let id = OperationId::new(ReplicaId(1), counter);
+    OperationEnvelope {
+        id,
+        author: AuthorId(0xAB),
+        stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(physical_time), 0), id),
+        causal_context: CausalContext::new(),
+        transaction: None,
+        payload: OperationPayload::Primitive(OperationKind::CreateAnalysisLayer(
+            CreateAnalysisLayerOp {
+                layer: epiphany_ops::valuegen::analysis_layer(AnalysisLayerId::new(
+                    ReplicaId(1),
+                    1,
+                )),
+            },
+        )),
+    }
+}
+
+fn view_envelope(counter: u64, physical_time: i64) -> OperationEnvelope {
+    let id = OperationId::new(ReplicaId(1), counter);
+    OperationEnvelope {
+        id,
+        author: AuthorId(0xAB),
+        stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(physical_time), 0), id),
+        causal_context: CausalContext::new(),
+        transaction: None,
+        payload: OperationPayload::Primitive(OperationKind::CreateView(CreateViewOp {
+            view: epiphany_ops::valuegen::view(
+                ViewId::new(ReplicaId(1), 1),
+                vec![AnalysisLayerId::new(ReplicaId(1), 1)],
+            ),
+        })),
+    }
+}
+
 fn profiles(custom: bool) -> Vec<ProfileDeclaration> {
     let mut profiles = vec![ProfileDeclaration::full()];
     if custom {
@@ -291,6 +372,50 @@ fn accept_documents() -> Vec<(&'static str, String)> {
         envelopes: vec![tuning_context_envelope(7, 700)],
     };
 
+    // Genesis G3a: kinds 35–38 in the committed corpus. Same manifest-version
+    // discipline as `tuning_context` above — baseline `V0`, since none of
+    // these documents declares an edit barrier either.
+    let staff_group = TextDocument {
+        document_id: DocumentId([6; 16]),
+        manifest_schema_version: SchemaVersion::V0,
+        lineage_id: None,
+        profiles: profiles(false),
+        extensions: Vec::new(),
+        canonical_base: None,
+        blobs: Vec::new(),
+        envelopes: vec![staff_group_envelope(8, 800)],
+    };
+    let part_definition = TextDocument {
+        document_id: DocumentId([7; 16]),
+        manifest_schema_version: SchemaVersion::V0,
+        lineage_id: None,
+        profiles: profiles(false),
+        extensions: Vec::new(),
+        canonical_base: None,
+        blobs: Vec::new(),
+        envelopes: vec![part_definition_envelope(9, 900)],
+    };
+    let analysis_layer = TextDocument {
+        document_id: DocumentId([8; 16]),
+        manifest_schema_version: SchemaVersion::V0,
+        lineage_id: None,
+        profiles: profiles(false),
+        extensions: Vec::new(),
+        canonical_base: None,
+        blobs: Vec::new(),
+        envelopes: vec![analysis_layer_envelope(10, 1000)],
+    };
+    let view = TextDocument {
+        document_id: DocumentId([9; 16]),
+        manifest_schema_version: SchemaVersion::V0,
+        lineage_id: None,
+        profiles: profiles(false),
+        extensions: Vec::new(),
+        canonical_base: None,
+        blobs: Vec::new(),
+        envelopes: vec![view_envelope(11, 1100)],
+    };
+
     vec![
         ("minimal", project_text_document(&minimal)),
         ("set_tuning_context", project_text_document(&tuning_context)),
@@ -303,6 +428,16 @@ fn accept_documents() -> Vec<(&'static str, String)> {
             project_text_document(&extension_base_multi),
         ),
         ("rich_document", project_text_document(&rich)),
+        ("create_staff_group", project_text_document(&staff_group)),
+        (
+            "create_part_definition",
+            project_text_document(&part_definition),
+        ),
+        (
+            "create_analysis_layer",
+            project_text_document(&analysis_layer),
+        ),
+        ("create_view", project_text_document(&view)),
     ]
 }
 
@@ -387,16 +522,16 @@ pub fn document_vectors() -> Vec<TextVector> {
         .collect();
 
     // The rejected version must be one this crate does NOT implement. Genesis
-    // tranche G2b moved `COMPANION_VERSION` to 0.11.0, which had been this
+    // tranche G3a moved `COMPANION_VERSION` to 0.12.0, which had been this
     // vector's "future" version — leaving it would have made the negative
     // vector assert that the *correct* header is rejected. It now names
-    // 0.10.0, the immediately superseded companion, which is the better test
+    // 0.11.0, the immediately superseded companion, which is the better test
     // anyway: rejecting the version right behind you is exactly the deferred
     // migrate-on-read posture (`req:textproj:header-version`).
     let wrong_version = replace_once(
         minimal,
+        "(text-projection (0 12 0))",
         "(text-projection (0 11 0))",
-        "(text-projection (0 10 0))",
     );
     vectors.push((
         SURFACE,
@@ -716,7 +851,7 @@ mod tests {
     #[test]
     fn the_reference_implementation_agrees_with_every_vector() {
         match verify(COMMITTED) {
-            Ok(count) => assert_eq!(count, 14, "the corpus has unexpectedly thinned"),
+            Ok(count) => assert_eq!(count, 18, "the corpus has unexpectedly thinned"),
             Err(failures) => panic!(
                 "{} disagreement(s):\n{}",
                 failures.len(),
@@ -752,6 +887,63 @@ mod tests {
             expected_reach(),
             "the corpus must reach 2 extensions, 2 canonical bases, 2 custom profiles, \
              2 lineages, 2 multi-envelope documents, and one real rejection in each class"
+        );
+    }
+
+    /// (t11) Genesis tranche G3a: text projection round-trips all four new
+    /// kinds (`create-staff-group`, `create-part-definition`,
+    /// `create-analysis-layer`, `create-view`), and the companion version is
+    /// **0.12.0**, with the negative vector rejecting **0.11.0**.
+    ///
+    /// **Mutation:** drop one parse arm (e.g.
+    /// `OperationKindTag::CreateStaffGroup` from `OperationKind::parse` in
+    /// `textproj_kind.rs`); must fail. Separately, leave `COMPANION_VERSION`
+    /// at `(0, 11, 0)`; the negative vector must fail.
+    #[test]
+    fn t11_g3a_kinds_round_trip_and_companion_is_0_12_0_rejecting_0_11_0() {
+        assert_eq!(
+            crate::COMPANION_VERSION,
+            (0, 12, 0),
+            "the companion version must be 0.12.0"
+        );
+
+        for name in [
+            "create_staff_group",
+            "create_part_definition",
+            "create_analysis_layer",
+            "create_view",
+        ] {
+            let text = accept_documents()
+                .into_iter()
+                .find(|(n, _)| *n == name)
+                .unwrap_or_else(|| panic!("accept document is absent: {name}"))
+                .1;
+            let document =
+                parse_document(&text).unwrap_or_else(|e| panic!("{name} must parse: {e}"));
+            assert_eq!(document.envelopes.len(), 1, "{name} carries one envelope");
+            let reprojected = project_text_document(&document);
+            assert_eq!(
+                reprojected, text,
+                "{name}: project(serialize(parse(T))) == T must hold"
+            );
+        }
+
+        // The negative vector must reject exactly the immediately superseded
+        // companion, 0.11.0.
+        let rows = parse(COMMITTED).expect("the committed corpus parses");
+        let superseded = rows
+            .iter()
+            .find(|r| r.name == "superseded_companion_version")
+            .expect("the superseded_companion_version vector is present");
+        assert_eq!(superseded.verdict, "reject");
+        let text = String::from_utf8(superseded.text.clone()).expect("utf8");
+        assert!(
+            text.contains("(text-projection (0 11 0))"),
+            "the negative vector must name the immediately superseded companion 0.11.0, got: {text}"
+        );
+        assert!(
+            parse_document(&text).is_err(),
+            "the superseded companion version must be rejected"
         );
     }
 }

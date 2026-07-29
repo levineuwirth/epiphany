@@ -33,23 +33,24 @@ use epiphany_ops::valuegen;
 use epiphany_ops::{
     AnomalousReplicaSegment, AuthorId, CausalContext, ChangeRegionTimeModelOp, ConflictId,
     ConflictKind, ConflictKindRegistryId, ConflictRecord, ConflictRegistry,
-    ConflictResolutionState, CreateCrossCuttingOp, CreateInstrumentOp, CreateRegionOp,
-    CreateRepeatStructureOp, CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp,
-    CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
-    DeleteRegionOp, DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp,
-    ExtensionPreconditionId, FieldPath, HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp,
-    IntegrityAnomaly, IntegrityAnomalyKind, IntegrityAnomalyRegistryId, MaterializedState,
-    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, NoOpReason, ObjectKind,
-    ObjectState, OperationEffect, OperationEnvelope, OperationKind, OperationKindRegistryId,
-    OperationPayload, OperationSet, OperationStamp, PendingReason, PositionRemapping,
-    PreconditionFailureReason, PreconditionFailureRegistryId, ReanchorReason,
-    ReanchorReasonRegistryId, ReanchorResult, RepairKind, RepairKindRegistryId, RepairRecord,
-    ReplicaAnomalyReason, ReplicaAnomalyRegistryId, ResolutionAction, ResolutionRegistryId,
-    ResolveConflictPayload, RespellPitchOp, SerializedCanonicalInputs, SetCanvasLayoutDefaultsOp,
-    SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
-    SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp,
-    TransactionCategory, TransactionDescriptor, TransposeIntervalOp, TransposeOp,
-    TupletCompensation, TupletCompensationKind, UndoPolicy, UndoTransactionPayload,
+    ConflictResolutionState, CreateAnalysisLayerOp, CreateCrossCuttingOp, CreateInstrumentOp,
+    CreatePartDefinitionOp, CreateRegionOp, CreateRepeatStructureOp, CreateStaffGroupOp,
+    CreateStaffInstanceOp, CreateStaffOp, CreateViewOp, CreateVoiceOp, CrossCuttingValue,
+    DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
+    DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, ExtensionPreconditionId,
+    FieldPath, HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp, IntegrityAnomaly,
+    IntegrityAnomalyKind, IntegrityAnomalyRegistryId, MaterializedState, ModifyCrossCuttingOp,
+    ModifyEventOp, ModifyIdentifiedPitchOp, NoOpReason, ObjectKind, ObjectState, OperationEffect,
+    OperationEnvelope, OperationKind, OperationKindRegistryId, OperationPayload, OperationSet,
+    OperationStamp, PendingReason, PositionRemapping, PreconditionFailureReason,
+    PreconditionFailureRegistryId, ReanchorReason, ReanchorReasonRegistryId, ReanchorResult,
+    RepairKind, RepairKindRegistryId, RepairRecord, ReplicaAnomalyReason, ReplicaAnomalyRegistryId,
+    ResolutionAction, ResolutionRegistryId, ResolveConflictPayload, RespellPitchOp,
+    SerializedCanonicalInputs, SetCanvasLayoutDefaultsOp, SetMetadataOp, SetMetricGridOp,
+    SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp,
+    SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransactionCategory,
+    TransactionDescriptor, TransposeIntervalOp, TransposeOp, TupletCompensation,
+    TupletCompensationKind, UndoPolicy, UndoTransactionPayload,
 };
 
 use crate::rng::Rng;
@@ -646,7 +647,7 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
         }
         _ => {}
     }
-    let kind = match rng.below(35) {
+    let kind = match rng.below(39) {
         0 => {
             let pitches = if rng.boolean() {
                 vec![obj_pitch(rng.below(pitches))]
@@ -874,6 +875,29 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
         // Genesis tranche G2b: the sole genesis payload born at schema major 3.
         33 => OperationKind::SetTuningContext(SetTuningContextOp {
             settings: valuegen::tuning_context_settings(rng.below(3) as u8),
+        }),
+        // Genesis tranche G3a: the four remaining root-level mints, over the
+        // shared staff/analysis-layer id spaces.
+        34 => OperationKind::CreateStaffGroup(CreateStaffGroupOp {
+            group: valuegen::staff_group(
+                StaffGroupId::new(OBJ_REPLICA, rng.below(2)),
+                vec![StaffId::new(OBJ_REPLICA, rng.below(2))],
+            ),
+        }),
+        35 => OperationKind::CreatePartDefinition(CreatePartDefinitionOp {
+            part: valuegen::part_definition(
+                PartDefinitionId::new(OBJ_REPLICA, rng.below(2)),
+                vec![StaffId::new(OBJ_REPLICA, rng.below(2))],
+            ),
+        }),
+        36 => OperationKind::CreateAnalysisLayer(CreateAnalysisLayerOp {
+            layer: valuegen::analysis_layer(AnalysisLayerId::new(OBJ_REPLICA, rng.below(2))),
+        }),
+        37 => OperationKind::CreateView(CreateViewOp {
+            view: valuegen::view(
+                ViewId::new(OBJ_REPLICA, rng.below(2)),
+                vec![AnalysisLayerId::new(OBJ_REPLICA, rng.below(2))],
+            ),
         }),
         _ => OperationKind::Registered(
             OperationKindRegistryId(rng.next_u64() as u128),
@@ -1905,7 +1929,7 @@ mod tests {
     /// Push-4a debt) and `CreateInstrument` (kind 31, G1 debt) went missing
     /// from every corpus this generator feeds despite every downstream suite
     /// staying green. Assert a bounded draw actually reaches every kind
-    /// appended past the historically-tested range (discriminants 30..=34),
+    /// appended past the historically-tested range (discriminants 30..=38),
     /// not just that the function does not panic.
     #[test]
     fn operation_payload_emits_every_appended_kind() {
@@ -1913,6 +1937,8 @@ mod tests {
         let (mut saw_transpose_interval, mut saw_create_instrument) = (false, false);
         let (mut saw_canvas_layout_defaults, mut saw_spelling_precedence) = (false, false);
         let mut saw_tuning_context = false;
+        let (mut saw_create_staff_group, mut saw_create_part_definition) = (false, false);
+        let (mut saw_create_analysis_layer, mut saw_create_view) = (false, false);
         for _ in 0..2000 {
             let OperationPayload::Primitive(kind) = operation_payload(&mut rng, 8, 8) else {
                 continue;
@@ -1923,6 +1949,10 @@ mod tests {
                 OperationKind::SetCanvasLayoutDefaults(_) => saw_canvas_layout_defaults = true,
                 OperationKind::SetSpellingPrecedence(_) => saw_spelling_precedence = true,
                 OperationKind::SetTuningContext(_) => saw_tuning_context = true,
+                OperationKind::CreateStaffGroup(_) => saw_create_staff_group = true,
+                OperationKind::CreatePartDefinition(_) => saw_create_part_definition = true,
+                OperationKind::CreateAnalysisLayer(_) => saw_create_analysis_layer = true,
+                OperationKind::CreateView(_) => saw_create_view = true,
                 _ => {}
             }
         }
@@ -1945,6 +1975,22 @@ mod tests {
         assert!(
             saw_tuning_context,
             "SetTuningContext (kind 34, G2b debt) never drawn in 2000 samples"
+        );
+        assert!(
+            saw_create_staff_group,
+            "CreateStaffGroup (kind 35, G3a debt) never drawn in 2000 samples"
+        );
+        assert!(
+            saw_create_part_definition,
+            "CreatePartDefinition (kind 36, G3a debt) never drawn in 2000 samples"
+        );
+        assert!(
+            saw_create_analysis_layer,
+            "CreateAnalysisLayer (kind 37, G3a debt) never drawn in 2000 samples"
+        );
+        assert!(
+            saw_create_view,
+            "CreateView (kind 38, G3a debt) never drawn in 2000 samples"
         );
     }
 
