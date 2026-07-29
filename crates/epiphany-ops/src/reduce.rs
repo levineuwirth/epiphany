@@ -2807,6 +2807,25 @@ impl<'a> Reducer<'a> {
                 TypedObjectId::TimeSignature(id) => {
                     score.time_signatures.retain(|value| value.id != *id);
                 }
+                // Genesis tranche G3a mints, plus G1's `Instrument` (contract
+                // `spec/CONTRACT_GENESIS_G3A_UNDO_REPAIR.md` pin A1): the
+                // ledger tombstones these five kinds too, and the graph must
+                // agree — mirroring the `Staff` / `TimeSignature` arms above.
+                TypedObjectId::StaffGroup(id) => {
+                    score.staff_groups.retain(|value| value.id != *id);
+                }
+                TypedObjectId::PartDefinition(id) => {
+                    score.parts.retain(|value| value.id != *id);
+                }
+                TypedObjectId::AnalysisLayer(id) => {
+                    score.analysis_layers.retain(|value| value.id != *id);
+                }
+                TypedObjectId::View(id) => {
+                    score.views.retain(|value| value.id != *id);
+                }
+                TypedObjectId::Instrument(id) => {
+                    score.instruments.retain(|value| value.id != *id);
+                }
                 _ => {}
             }
         }
@@ -5451,10 +5470,14 @@ impl<'a> Reducer<'a> {
 
     /// `Some((blocked, referencer))` when tombstoning `target` under undo
     /// would strand a live reference: a minted `Staff` still manifested by a
-    /// live staff instance (operation_catalog §CreateStaff), or a minted
+    /// live staff instance (operation_catalog §CreateStaff), a minted
     /// `TimeSignature` still referenced by a meter change that survives the
-    /// restoration pass. References held by objects the same undo tombstones
-    /// do not block.
+    /// restoration pass, a minted `StaffGroup` still named by a live
+    /// `Staff.group`, a minted `AnalysisLayer` still named by a live
+    /// `ViewDefinition.active_layers`, or a minted `Instrument` still named by
+    /// a live `Staff.instrument` (contract
+    /// `spec/CONTRACT_GENESIS_G3A_UNDO_REPAIR.md` pin A2). References held by
+    /// objects the same undo tombstones do not block.
     fn undo_strand_block(
         &self,
         target: &TypedObjectId,
@@ -5496,6 +5519,42 @@ impl<'a> Reducer<'a> {
                                 .then_some((*target, TypedObjectId::Region(*region)))
                         })
                     })
+            }
+            // Genesis tranche G3a undo repair (pins A2-A6): these three
+            // guards read the carried-value maps, not `self.graph`, and are
+            // deliberately ungated (pin A3) — the ledger knows a live staff
+            // or view names this referent regardless of graph presence.
+            // `restorations` is not consulted (pin A6): none of
+            // `Staff.group`, `Staff.instrument`, or
+            // `ViewDefinition.active_layers` has a modify operation, so there
+            // is no write chain whose restoration could change the
+            // prospective post-undo value.
+            TypedObjectId::StaffGroup(group) => {
+                self.staff_values.iter().find_map(|(staff_id, staff)| {
+                    let sobj = TypedObjectId::Staff(*staff_id);
+                    (staff.group == Some(*group)
+                        && !targets.contains(&sobj)
+                        && matches!(self.objects.get(&sobj), Some(ObjectState::Live)))
+                    .then_some((*target, sobj))
+                })
+            }
+            TypedObjectId::AnalysisLayer(layer) => {
+                self.view_values.iter().find_map(|(view_id, view)| {
+                    let vobj = TypedObjectId::View(*view_id);
+                    (view.active_layers.contains(layer)
+                        && !targets.contains(&vobj)
+                        && matches!(self.objects.get(&vobj), Some(ObjectState::Live)))
+                    .then_some((*target, vobj))
+                })
+            }
+            TypedObjectId::Instrument(instrument) => {
+                self.staff_values.iter().find_map(|(staff_id, staff)| {
+                    let sobj = TypedObjectId::Staff(*staff_id);
+                    (staff.instrument == *instrument
+                        && !targets.contains(&sobj)
+                        && matches!(self.objects.get(&sobj), Some(ObjectState::Live)))
+                    .then_some((*target, sobj))
+                })
             }
             _ => None,
         }
@@ -15090,6 +15149,1192 @@ mod tests {
             crate::payload::operation_block_introduced_minor(&[env]),
             Some(11),
             "a block containing a G3a kind stamps minor 11"
+        );
+    }
+
+    // =========================================================================
+    // The G3a undo repair (`spec/CONTRACT_GENESIS_G3A_UNDO_REPAIR.md`, Packet
+    // A): the five `materialize_graph_tombstones` removal arms (pin A1) and
+    // the three `undo_strand_block` inbound-reference guards (pins A2-A6)
+    // this packet adds, plus the pin A7 re-create ordering they make correct.
+    // =========================================================================
+
+    fn instrument_env(
+        replica: u64,
+        counter: u64,
+        physical: i64,
+        ctx: CausalContext,
+        instrument: epiphany_core::Instrument,
+    ) -> OperationEnvelope {
+        prim_env(
+            replica,
+            counter,
+            physical,
+            ctx,
+            OperationKind::CreateInstrument(CreateInstrumentOp { instrument }),
+        )
+    }
+
+    fn staff_env(
+        replica: u64,
+        counter: u64,
+        physical: i64,
+        ctx: CausalContext,
+        staff: epiphany_core::Staff,
+    ) -> OperationEnvelope {
+        prim_env(
+            replica,
+            counter,
+            physical,
+            ctx,
+            OperationKind::CreateStaff(CreateStaffOp { staff }),
+        )
+    }
+
+    // --- u1a-u1e: removal and tombstoning (pin A1). -------------------------
+
+    /// (u1a) Undoing a `StaffGroup` mint removes it from `Score.staff_groups`
+    /// and tombstones it in `objects` (pin A1, table row 1).
+    ///
+    /// **Mutation:** delete the `StaffGroup` arm from
+    /// `materialize_graph_tombstones` (pin A1's table). Assertion (i) must
+    /// fail — the value stays in `Score.staff_groups`.
+    #[test]
+    fn u1a_undo_of_a_staff_group_mint_removes_it_and_tombstones() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let group_id = StaffGroupId::new(ReplicaId(1), 1);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::CreateStaffGroup(CreateStaffGroupOp {
+                    group: crate::valuegen::staff_group(group_id, vec![]),
+                }),
+            ),
+            undo_env(1, 2, 12, seen_r1(1), tx, UndoPolicy::StrictInverse),
+        ]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        assert!(
+            !out.score.staff_groups.iter().any(|g| g.id == group_id),
+            "(i) undo must remove the minted StaffGroup from Score.staff_groups"
+        );
+        assert!(
+            matches!(
+                out.state.objects.get(&TypedObjectId::StaffGroup(group_id)),
+                Some(ObjectState::Tombstoned { .. })
+            ),
+            "(ii) undo must tombstone the minted StaffGroup in objects"
+        );
+    }
+
+    /// (u1b) Undoing a `PartDefinition` mint removes it from `Score.parts`
+    /// and tombstones it in `objects` (pin A1, table row 2).
+    ///
+    /// **Mutation:** delete the `PartDefinition` arm from
+    /// `materialize_graph_tombstones`. Assertion (i) must fail.
+    #[test]
+    fn u1b_undo_of_a_part_definition_mint_removes_it_and_tombstones() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let part_id = PartDefinitionId::new(ReplicaId(1), 1);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::CreatePartDefinition(CreatePartDefinitionOp {
+                    part: crate::valuegen::part_definition(part_id, vec![]),
+                }),
+            ),
+            undo_env(1, 2, 12, seen_r1(1), tx, UndoPolicy::StrictInverse),
+        ]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        assert!(
+            !out.score.parts.iter().any(|p| p.id == part_id),
+            "(i) undo must remove the minted PartDefinition from Score.parts"
+        );
+        assert!(
+            matches!(
+                out.state
+                    .objects
+                    .get(&TypedObjectId::PartDefinition(part_id)),
+                Some(ObjectState::Tombstoned { .. })
+            ),
+            "(ii) undo must tombstone the minted PartDefinition in objects"
+        );
+    }
+
+    /// (u1c) Undoing an `AnalysisLayer` mint removes it from
+    /// `Score.analysis_layers` and tombstones it in `objects` (pin A1, table
+    /// row 3).
+    ///
+    /// **Mutation:** delete the `AnalysisLayer` arm from
+    /// `materialize_graph_tombstones`. Assertion (i) must fail.
+    #[test]
+    fn u1c_undo_of_an_analysis_layer_mint_removes_it_and_tombstones() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let layer_id = AnalysisLayerId::new(ReplicaId(1), 1);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::CreateAnalysisLayer(CreateAnalysisLayerOp {
+                    layer: crate::valuegen::analysis_layer(layer_id),
+                }),
+            ),
+            undo_env(1, 2, 12, seen_r1(1), tx, UndoPolicy::StrictInverse),
+        ]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        assert!(
+            !out.score.analysis_layers.iter().any(|l| l.id == layer_id),
+            "(i) undo must remove the minted AnalysisLayer from Score.analysis_layers"
+        );
+        assert!(
+            matches!(
+                out.state
+                    .objects
+                    .get(&TypedObjectId::AnalysisLayer(layer_id)),
+                Some(ObjectState::Tombstoned { .. })
+            ),
+            "(ii) undo must tombstone the minted AnalysisLayer in objects"
+        );
+    }
+
+    /// (u1d) Undoing a `View` mint removes it from `Score.views` and
+    /// tombstones it in `objects` (pin A1, table row 4).
+    ///
+    /// **Mutation:** delete the `View` arm from
+    /// `materialize_graph_tombstones`. Assertion (i) must fail.
+    #[test]
+    fn u1d_undo_of_a_view_mint_removes_it_and_tombstones() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let view_id = ViewId::new(ReplicaId(1), 1);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::CreateView(CreateViewOp {
+                    view: crate::valuegen::view(view_id, vec![]),
+                }),
+            ),
+            undo_env(1, 2, 12, seen_r1(1), tx, UndoPolicy::StrictInverse),
+        ]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        assert!(
+            !out.score.views.iter().any(|v| v.id == view_id),
+            "(i) undo must remove the minted View from Score.views"
+        );
+        assert!(
+            matches!(
+                out.state.objects.get(&TypedObjectId::View(view_id)),
+                Some(ObjectState::Tombstoned { .. })
+            ),
+            "(ii) undo must tombstone the minted View in objects"
+        );
+    }
+
+    /// (u1e) Undoing an `Instrument` mint removes it from `Score.instruments`
+    /// and tombstones it in `objects` (pin A1, table row 5; pin A8 —
+    /// `Instrument` is in scope as collateral).
+    ///
+    /// **Mutation:** delete the `Instrument` arm from
+    /// `materialize_graph_tombstones`. Assertion (i) must fail.
+    #[test]
+    fn u1e_undo_of_an_instrument_mint_removes_it_and_tombstones() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let instrument_id = InstrumentId::new(ReplicaId(1), 1);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::CreateInstrument(CreateInstrumentOp {
+                    instrument: crate::valuegen::instrument(instrument_id),
+                }),
+            ),
+            undo_env(1, 2, 12, seen_r1(1), tx, UndoPolicy::StrictInverse),
+        ]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        assert!(
+            !out.score.instruments.iter().any(|i| i.id == instrument_id),
+            "(i) undo must remove the minted Instrument from Score.instruments"
+        );
+        assert!(
+            matches!(
+                out.state
+                    .objects
+                    .get(&TypedObjectId::Instrument(instrument_id)),
+                Some(ObjectState::Tombstoned { .. })
+            ),
+            "(ii) undo must tombstone the minted Instrument in objects"
+        );
+    }
+
+    // --- u2a-u2c: a live outside referencer blocks the undo (pin A2). -------
+
+    /// (u2a) A live `Staff` naming a minted `StaffGroup` blocks the group's
+    /// strict undo, and the group survives (pin A2, table row 1).
+    ///
+    /// **Mutation:** delete the `StaffGroup` arm from `undo_strand_block`
+    /// (pin A2's table). The effect becomes `Applied` and the reference
+    /// strands.
+    #[test]
+    fn u2a_a_live_staff_naming_the_group_blocks_its_undo() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let instrument_id = InstrumentId::new(ReplicaId(9), 1);
+        let mut base = Score::empty(identity);
+        base.instruments
+            .push(crate::valuegen::instrument(instrument_id));
+
+        let group_id = StaffGroupId::new(ReplicaId(1), 1);
+        let staff_id = StaffId::new(ReplicaId(2), 1);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut staff_value = crate::valuegen::staff(staff_id, instrument_id);
+        staff_value.group = Some(group_id);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::CreateStaffGroup(CreateStaffGroupOp {
+                    group: crate::valuegen::staff_group(group_id, vec![]),
+                }),
+            ),
+            staff_env(2, 0, 20, CausalContext::new(), staff_value),
+            undo_env(1, 2, 30, seen_r1(1), tx, UndoPolicy::StrictInverse),
+        ]);
+        let out = reduce_operation_set_onto(&set, &base);
+
+        assert!(
+            matches!(
+                effect_at(&out.state, 2),
+                Some(OperationEffect::Conflicted { .. })
+            ),
+            "a live staff naming the group must block strict undo"
+        );
+        assert!(
+            out.score.staff_groups.iter().any(|g| g.id == group_id),
+            "the group must remain since undo was blocked"
+        );
+    }
+
+    /// (u2b) A live `ViewDefinition` naming a minted `AnalysisLayer` blocks
+    /// the layer's strict undo, and the layer survives (pin A2, table row
+    /// 2).
+    ///
+    /// **Mutation:** delete the `AnalysisLayer` arm from `undo_strand_block`.
+    /// The effect becomes `Applied` and the reference strands.
+    #[test]
+    fn u2b_a_live_view_naming_the_layer_blocks_its_undo() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let layer_id = AnalysisLayerId::new(ReplicaId(1), 1);
+        let view_id = ViewId::new(ReplicaId(2), 1);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::CreateAnalysisLayer(CreateAnalysisLayerOp {
+                    layer: crate::valuegen::analysis_layer(layer_id),
+                }),
+            ),
+            view_env(
+                2,
+                0,
+                20,
+                CausalContext::new(),
+                crate::valuegen::view(view_id, vec![layer_id]),
+            ),
+            undo_env(1, 2, 30, seen_r1(1), tx, UndoPolicy::StrictInverse),
+        ]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        assert!(
+            matches!(
+                effect_at(&out.state, 2),
+                Some(OperationEffect::Conflicted { .. })
+            ),
+            "a live view naming the layer must block strict undo"
+        );
+        assert!(
+            out.score.analysis_layers.iter().any(|l| l.id == layer_id),
+            "the layer must remain since undo was blocked"
+        );
+    }
+
+    /// (u2c) A live `Staff` naming a minted `Instrument` blocks the
+    /// instrument's strict undo, and the instrument survives (pin A2, table
+    /// row 3).
+    ///
+    /// **Mutation:** delete the `Instrument` arm from `undo_strand_block`.
+    /// The effect becomes `Applied` and the reference strands.
+    #[test]
+    fn u2c_a_live_staff_naming_the_instrument_blocks_its_undo() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let instrument_id = InstrumentId::new(ReplicaId(1), 1);
+        let staff_id = StaffId::new(ReplicaId(2), 1);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::CreateInstrument(CreateInstrumentOp {
+                    instrument: crate::valuegen::instrument(instrument_id),
+                }),
+            ),
+            staff_env(
+                2,
+                0,
+                20,
+                CausalContext::new(),
+                crate::valuegen::staff(staff_id, instrument_id),
+            ),
+            undo_env(1, 2, 30, seen_r1(1), tx, UndoPolicy::StrictInverse),
+        ]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        assert!(
+            matches!(
+                effect_at(&out.state, 2),
+                Some(OperationEffect::Conflicted { .. })
+            ),
+            "a live staff naming the instrument must block strict undo"
+        );
+        assert!(
+            out.score.instruments.iter().any(|i| i.id == instrument_id),
+            "the instrument must remain since undo was blocked"
+        );
+    }
+
+    // --- u2bf-a-u2bf-c: the guards hold base-free (signs pin A3). -----------
+
+    /// (u2bf-a) The `StaffGroup` guard holds under `reduce_operation_set`
+    /// (no base `Score`): base-free reduction skips `create_staff`'s
+    /// referential preconditions entirely, so the referencing staff mints
+    /// unconditionally and the ledger alone must refuse the group's undo.
+    ///
+    /// **Mutation:** wrap the `StaffGroup` guard arm in
+    /// `if self.graph.is_some() { .. } else { None }`. This row must go red
+    /// while u2a stays green — run both in the same pass and record both
+    /// observations.
+    #[test]
+    fn u2bf_a_the_staff_group_guard_holds_base_free() {
+        // Never minted; base-free reduction has no universe to check it
+        // against, so `create_staff` never looks.
+        let instrument_id = InstrumentId::new(ReplicaId(9), 1);
+        let group_id = StaffGroupId::new(ReplicaId(1), 1);
+        let staff_id = StaffId::new(ReplicaId(2), 1);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut staff_value = crate::valuegen::staff(staff_id, instrument_id);
+        staff_value.group = Some(group_id);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::CreateStaffGroup(CreateStaffGroupOp {
+                    group: crate::valuegen::staff_group(group_id, vec![]),
+                }),
+            ),
+            staff_env(2, 0, 20, CausalContext::new(), staff_value),
+            undo_env(1, 2, 30, seen_r1(1), tx, UndoPolicy::StrictInverse),
+        ]);
+        let state = reduce_operation_set(&set);
+
+        assert!(
+            matches!(
+                effect_at(&state, 2),
+                Some(OperationEffect::Conflicted { .. })
+            ),
+            "pin A3: the StaffGroup guard must hold base-free — the ledger alone \
+             knows the reference, with no graph to check against"
+        );
+    }
+
+    /// (u2bf-b) The `AnalysisLayer` guard holds base-free.
+    ///
+    /// **Mutation:** wrap the `AnalysisLayer` guard arm in
+    /// `if self.graph.is_some() { .. } else { None }`. This row must go red
+    /// while u2b stays green — run both in the same pass.
+    #[test]
+    fn u2bf_b_the_analysis_layer_guard_holds_base_free() {
+        let layer_id = AnalysisLayerId::new(ReplicaId(1), 1);
+        let view_id = ViewId::new(ReplicaId(2), 1);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::CreateAnalysisLayer(CreateAnalysisLayerOp {
+                    layer: crate::valuegen::analysis_layer(layer_id),
+                }),
+            ),
+            view_env(
+                2,
+                0,
+                20,
+                CausalContext::new(),
+                crate::valuegen::view(view_id, vec![layer_id]),
+            ),
+            undo_env(1, 2, 30, seen_r1(1), tx, UndoPolicy::StrictInverse),
+        ]);
+        let state = reduce_operation_set(&set);
+
+        assert!(
+            matches!(
+                effect_at(&state, 2),
+                Some(OperationEffect::Conflicted { .. })
+            ),
+            "pin A3: the AnalysisLayer guard must hold base-free — the ledger alone \
+             knows the reference, with no graph to check against"
+        );
+    }
+
+    /// (u2bf-c) The `Instrument` guard holds base-free.
+    ///
+    /// **Mutation:** wrap the `Instrument` guard arm in
+    /// `if self.graph.is_some() { .. } else { None }`. This row must go red
+    /// while u2c stays green — run both in the same pass.
+    #[test]
+    fn u2bf_c_the_instrument_guard_holds_base_free() {
+        let instrument_id = InstrumentId::new(ReplicaId(1), 1);
+        let staff_id = StaffId::new(ReplicaId(2), 1);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::CreateInstrument(CreateInstrumentOp {
+                    instrument: crate::valuegen::instrument(instrument_id),
+                }),
+            ),
+            staff_env(
+                2,
+                0,
+                20,
+                CausalContext::new(),
+                crate::valuegen::staff(staff_id, instrument_id),
+            ),
+            undo_env(1, 2, 30, seen_r1(1), tx, UndoPolicy::StrictInverse),
+        ]);
+        let state = reduce_operation_set(&set);
+
+        assert!(
+            matches!(
+                effect_at(&state, 2),
+                Some(OperationEffect::Conflicted { .. })
+            ),
+            "pin A3: the Instrument guard must hold base-free — the ledger alone \
+             knows the reference, with no graph to check against"
+        );
+    }
+
+    // --- u2tomb-a-u2tomb-c: a tombstoned referencer does not block (signs
+    // pin A4). -----------------------------------------------------------
+
+    /// (u2tomb-a) T1 mints `StaffGroup g`; T2 mints a `Staff s` naming it.
+    /// Undoing T2 first tombstones `s` (its value stays in `staff_values`,
+    /// pin A7); undoing T1 next must then proceed, since a tombstoned
+    /// referencer does not block (pin A4).
+    ///
+    /// **Mutation:** delete the
+    /// `matches!(self.objects.get(&sobj), Some(ObjectState::Live))` conjunct
+    /// from the `StaffGroup` guard arm. The dead referencer blocks; T1's
+    /// undo becomes `Conflicted`.
+    #[test]
+    fn u2tomb_a_a_tombstoned_referencing_staff_does_not_block_the_groups_undo() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let instrument_id = InstrumentId::new(ReplicaId(9), 1);
+        let mut base = Score::empty(identity);
+        base.instruments
+            .push(crate::valuegen::instrument(instrument_id));
+
+        let group_id = StaffGroupId::new(ReplicaId(1), 1);
+        let staff_id = StaffId::new(ReplicaId(1), 2);
+        let tx1 = TransactionId::new(ReplicaId(1), 900);
+        let tx2 = TransactionId::new(ReplicaId(1), 901);
+
+        let mut staff_value = crate::valuegen::staff(staff_id, instrument_id);
+        staff_value.group = Some(group_id);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx1),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx1,
+                OperationKind::CreateStaffGroup(CreateStaffGroupOp {
+                    group: crate::valuegen::staff_group(group_id, vec![]),
+                }),
+            ),
+            declare_transaction(1, 2, 20, seen_r1(1), tx2),
+            tx_member(
+                1,
+                3,
+                21,
+                seen_r1(2),
+                tx2,
+                OperationKind::CreateStaff(CreateStaffOp { staff: staff_value }),
+            ),
+            undo_env(1, 4, 30, seen_r1(3), tx2, UndoPolicy::StrictInverse),
+            undo_env(1, 5, 40, seen_r1(4), tx1, UndoPolicy::StrictInverse),
+        ]);
+        let out = reduce_operation_set_onto(&set, &base);
+
+        assert!(
+            matches!(
+                out.state.objects.get(&TypedObjectId::Staff(staff_id)),
+                Some(ObjectState::Tombstoned { .. })
+            ),
+            "T2's undo must tombstone the referencing staff"
+        );
+        assert!(
+            !out.score.staves.iter().any(|s| s.id == staff_id),
+            "the tombstoned staff leaves Score.staves"
+        );
+        assert!(
+            matches!(
+                effect_at(&out.state, 5),
+                Some(OperationEffect::Applied) | Some(OperationEffect::AppliedWithRepair { .. })
+            ),
+            "with the referencer already tombstoned, T1's undo must proceed"
+        );
+        assert!(
+            !out.score.staff_groups.iter().any(|g| g.id == group_id),
+            "the group leaves Score.staff_groups once T1's undo proceeds"
+        );
+    }
+
+    /// (u2tomb-b) T1 mints `AnalysisLayer l`; T2 mints a `ViewDefinition v`
+    /// naming it. Undoing T2 first tombstones `v`; undoing T1 next must then
+    /// proceed.
+    ///
+    /// **Mutation:** delete the liveness conjunct from the `AnalysisLayer`
+    /// guard arm. T1's undo becomes `Conflicted`.
+    #[test]
+    fn u2tomb_b_a_tombstoned_referencing_view_does_not_block_the_layers_undo() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let layer_id = AnalysisLayerId::new(ReplicaId(1), 1);
+        let view_id = ViewId::new(ReplicaId(1), 2);
+        let tx1 = TransactionId::new(ReplicaId(1), 900);
+        let tx2 = TransactionId::new(ReplicaId(1), 901);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx1),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx1,
+                OperationKind::CreateAnalysisLayer(CreateAnalysisLayerOp {
+                    layer: crate::valuegen::analysis_layer(layer_id),
+                }),
+            ),
+            declare_transaction(1, 2, 20, seen_r1(1), tx2),
+            tx_member(
+                1,
+                3,
+                21,
+                seen_r1(2),
+                tx2,
+                OperationKind::CreateView(CreateViewOp {
+                    view: crate::valuegen::view(view_id, vec![layer_id]),
+                }),
+            ),
+            undo_env(1, 4, 30, seen_r1(3), tx2, UndoPolicy::StrictInverse),
+            undo_env(1, 5, 40, seen_r1(4), tx1, UndoPolicy::StrictInverse),
+        ]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        assert!(
+            matches!(
+                out.state.objects.get(&TypedObjectId::View(view_id)),
+                Some(ObjectState::Tombstoned { .. })
+            ),
+            "T2's undo must tombstone the referencing view"
+        );
+        assert!(
+            !out.score.views.iter().any(|v| v.id == view_id),
+            "the tombstoned view leaves Score.views"
+        );
+        assert!(
+            matches!(
+                effect_at(&out.state, 5),
+                Some(OperationEffect::Applied) | Some(OperationEffect::AppliedWithRepair { .. })
+            ),
+            "with the referencer already tombstoned, T1's undo must proceed"
+        );
+        assert!(
+            !out.score.analysis_layers.iter().any(|l| l.id == layer_id),
+            "the layer leaves Score.analysis_layers once T1's undo proceeds"
+        );
+    }
+
+    /// (u2tomb-c) T1 mints `Instrument i`; T2 mints a `Staff s` naming it.
+    /// Undoing T2 first tombstones `s`; undoing T1 next must then proceed.
+    ///
+    /// **Mutation:** delete the liveness conjunct from the `Instrument`
+    /// guard arm. T1's undo becomes `Conflicted`.
+    #[test]
+    fn u2tomb_c_a_tombstoned_referencing_staff_does_not_block_the_instruments_undo() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let instrument_id = InstrumentId::new(ReplicaId(1), 1);
+        let staff_id = StaffId::new(ReplicaId(1), 2);
+        let tx1 = TransactionId::new(ReplicaId(1), 900);
+        let tx2 = TransactionId::new(ReplicaId(1), 901);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx1),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx1,
+                OperationKind::CreateInstrument(CreateInstrumentOp {
+                    instrument: crate::valuegen::instrument(instrument_id),
+                }),
+            ),
+            declare_transaction(1, 2, 20, seen_r1(1), tx2),
+            tx_member(
+                1,
+                3,
+                21,
+                seen_r1(2),
+                tx2,
+                OperationKind::CreateStaff(CreateStaffOp {
+                    staff: crate::valuegen::staff(staff_id, instrument_id),
+                }),
+            ),
+            undo_env(1, 4, 30, seen_r1(3), tx2, UndoPolicy::StrictInverse),
+            undo_env(1, 5, 40, seen_r1(4), tx1, UndoPolicy::StrictInverse),
+        ]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        assert!(
+            matches!(
+                out.state.objects.get(&TypedObjectId::Staff(staff_id)),
+                Some(ObjectState::Tombstoned { .. })
+            ),
+            "T2's undo must tombstone the referencing staff"
+        );
+        assert!(
+            !out.score.staves.iter().any(|s| s.id == staff_id),
+            "the tombstoned staff leaves Score.staves"
+        );
+        assert!(
+            matches!(
+                effect_at(&out.state, 5),
+                Some(OperationEffect::Applied) | Some(OperationEffect::AppliedWithRepair { .. })
+            ),
+            "with the referencer already tombstoned, T1's undo must proceed"
+        );
+        assert!(
+            !out.score.instruments.iter().any(|i| i.id == instrument_id),
+            "the instrument leaves Score.instruments once T1's undo proceeds"
+        );
+    }
+
+    // --- u3a-u3c: same-transaction teardown is allowed (signs pin A5). -----
+
+    /// (u3a) Minting `StaffGroup g` and a `Staff s` naming it inside the
+    /// *same* transaction undoes whole — the same-transaction exemption
+    /// (pin A5).
+    ///
+    /// **Mutation:** drop the `!targets.contains(&sobj)` conjunct from the
+    /// `StaffGroup` guard arm. The undo becomes `Conflicted`.
+    #[test]
+    fn u3a_minting_the_group_and_its_referencing_staff_in_one_transaction_undoes_whole() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let instrument_id = InstrumentId::new(ReplicaId(9), 1);
+        let mut base = Score::empty(identity);
+        base.instruments
+            .push(crate::valuegen::instrument(instrument_id));
+
+        let group_id = StaffGroupId::new(ReplicaId(1), 1);
+        let staff_id = StaffId::new(ReplicaId(1), 2);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut staff_value = crate::valuegen::staff(staff_id, instrument_id);
+        staff_value.group = Some(group_id);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::CreateStaffGroup(CreateStaffGroupOp {
+                    group: crate::valuegen::staff_group(group_id, vec![]),
+                }),
+            ),
+            tx_member(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                tx,
+                OperationKind::CreateStaff(CreateStaffOp { staff: staff_value }),
+            ),
+            undo_env(1, 3, 20, seen_r1(2), tx, UndoPolicy::StrictInverse),
+        ]);
+        let out = reduce_operation_set_onto(&set, &base);
+
+        assert!(
+            matches!(
+                effect_at(&out.state, 3),
+                Some(OperationEffect::Applied) | Some(OperationEffect::AppliedWithRepair { .. })
+            ),
+            "a transaction that mints both the group and its referencing staff must undo whole"
+        );
+        assert!(
+            !out.score.staff_groups.iter().any(|g| g.id == group_id),
+            "the group leaves Score.staff_groups"
+        );
+        assert!(
+            !out.score.staves.iter().any(|s| s.id == staff_id),
+            "the staff leaves Score.staves"
+        );
+    }
+
+    /// (u3b) Minting `AnalysisLayer l` and a `ViewDefinition v` naming it
+    /// inside the same transaction undoes whole.
+    ///
+    /// **Mutation:** drop the `!targets.contains(&vobj)` conjunct from the
+    /// `AnalysisLayer` guard arm. The undo becomes `Conflicted`.
+    #[test]
+    fn u3b_minting_the_layer_and_its_referencing_view_in_one_transaction_undoes_whole() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let layer_id = AnalysisLayerId::new(ReplicaId(1), 1);
+        let view_id = ViewId::new(ReplicaId(1), 2);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::CreateAnalysisLayer(CreateAnalysisLayerOp {
+                    layer: crate::valuegen::analysis_layer(layer_id),
+                }),
+            ),
+            tx_member(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                tx,
+                OperationKind::CreateView(CreateViewOp {
+                    view: crate::valuegen::view(view_id, vec![layer_id]),
+                }),
+            ),
+            undo_env(1, 3, 20, seen_r1(2), tx, UndoPolicy::StrictInverse),
+        ]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        assert!(
+            matches!(
+                effect_at(&out.state, 3),
+                Some(OperationEffect::Applied) | Some(OperationEffect::AppliedWithRepair { .. })
+            ),
+            "a transaction that mints both the layer and its referencing view must undo whole"
+        );
+        assert!(
+            !out.score.analysis_layers.iter().any(|l| l.id == layer_id),
+            "the layer leaves Score.analysis_layers"
+        );
+        assert!(
+            !out.score.views.iter().any(|v| v.id == view_id),
+            "the view leaves Score.views"
+        );
+    }
+
+    /// (u3c) Minting `Instrument i` and a `Staff s` naming it inside the same
+    /// transaction undoes whole.
+    ///
+    /// **Mutation:** drop the `!targets.contains(&sobj)` conjunct from the
+    /// `Instrument` guard arm. The undo becomes `Conflicted`.
+    #[test]
+    fn u3c_minting_the_instrument_and_its_referencing_staff_in_one_transaction_undoes_whole() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let instrument_id = InstrumentId::new(ReplicaId(1), 1);
+        let staff_id = StaffId::new(ReplicaId(1), 2);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::CreateInstrument(CreateInstrumentOp {
+                    instrument: crate::valuegen::instrument(instrument_id),
+                }),
+            ),
+            tx_member(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                tx,
+                OperationKind::CreateStaff(CreateStaffOp {
+                    staff: crate::valuegen::staff(staff_id, instrument_id),
+                }),
+            ),
+            undo_env(1, 3, 20, seen_r1(2), tx, UndoPolicy::StrictInverse),
+        ]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        assert!(
+            matches!(
+                effect_at(&out.state, 3),
+                Some(OperationEffect::Applied) | Some(OperationEffect::AppliedWithRepair { .. })
+            ),
+            "a transaction that mints both the instrument and its referencing staff must undo whole"
+        );
+        assert!(
+            !out.score.instruments.iter().any(|i| i.id == instrument_id),
+            "the instrument leaves Score.instruments"
+        );
+        assert!(
+            !out.score.staves.iter().any(|s| s.id == staff_id),
+            "the staff leaves Score.staves"
+        );
+    }
+
+    // --- u4a-u4e: objects outranks the retained value map (signs pin A7). --
+
+    /// (u4a) After u1a's undo, a byte-identical re-carry of the same
+    /// `CreateStaffGroup` must report `TargetTombstoned`, not
+    /// `AlreadyApplied` — `objects` outranks `staff_group_values` (pin A7).
+    ///
+    /// **Mutation:** in `create_staff_group`, make the
+    /// `Some(ObjectState::Tombstoned { .. })` arm fall through to the
+    /// value-map identity check instead of returning `TargetTombstoned`. The
+    /// row must observe `AlreadyApplied`.
+    #[test]
+    fn u4a_a_recreate_of_a_tombstoned_staff_group_reports_target_tombstoned() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let group_id = StaffGroupId::new(ReplicaId(1), 1);
+        let group_value = crate::valuegen::staff_group(group_id, vec![]);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::CreateStaffGroup(CreateStaffGroupOp {
+                    group: group_value.clone(),
+                }),
+            ),
+            undo_env(1, 2, 12, seen_r1(1), tx, UndoPolicy::StrictInverse),
+            staff_group_env(2, 0, 20, CausalContext::new(), group_value),
+        ]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        let recreate_effect = out
+            .state
+            .effects
+            .iter()
+            .find(|(id, _)| *id == OperationId::new(ReplicaId(2), 0))
+            .map(|(_, e)| e.clone())
+            .expect("recreate effect recorded");
+        assert_eq!(
+            recreate_effect,
+            OperationEffect::NoOp {
+                reason: NoOpReason::TargetTombstoned
+            },
+            "objects' Tombstoned state must outrank the retained staff_group_values \
+             entry, got {recreate_effect:?}"
+        );
+    }
+
+    /// (u4b) After u1b's undo, a byte-identical re-carry of the same
+    /// `CreatePartDefinition` must report `TargetTombstoned`, not
+    /// `AlreadyApplied`.
+    ///
+    /// **Mutation:** in `create_part_definition`, make the
+    /// `Some(ObjectState::Tombstoned { .. })` arm fall through to the
+    /// value-map identity check. The row must observe `AlreadyApplied`.
+    #[test]
+    fn u4b_a_recreate_of_a_tombstoned_part_definition_reports_target_tombstoned() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let part_id = PartDefinitionId::new(ReplicaId(1), 1);
+        let part_value = crate::valuegen::part_definition(part_id, vec![]);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::CreatePartDefinition(CreatePartDefinitionOp {
+                    part: part_value.clone(),
+                }),
+            ),
+            undo_env(1, 2, 12, seen_r1(1), tx, UndoPolicy::StrictInverse),
+            part_definition_env(2, 0, 20, CausalContext::new(), part_value),
+        ]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        let recreate_effect = out
+            .state
+            .effects
+            .iter()
+            .find(|(id, _)| *id == OperationId::new(ReplicaId(2), 0))
+            .map(|(_, e)| e.clone())
+            .expect("recreate effect recorded");
+        assert_eq!(
+            recreate_effect,
+            OperationEffect::NoOp {
+                reason: NoOpReason::TargetTombstoned
+            },
+            "objects' Tombstoned state must outrank the retained part_definition_values \
+             entry, got {recreate_effect:?}"
+        );
+    }
+
+    /// (u4c) After u1c's undo, a byte-identical re-carry of the same
+    /// `CreateAnalysisLayer` must report `TargetTombstoned`, not
+    /// `AlreadyApplied`.
+    ///
+    /// **Mutation:** in `create_analysis_layer`, make the
+    /// `Some(ObjectState::Tombstoned { .. })` arm fall through to the
+    /// value-map identity check. The row must observe `AlreadyApplied`.
+    #[test]
+    fn u4c_a_recreate_of_a_tombstoned_analysis_layer_reports_target_tombstoned() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let layer_id = AnalysisLayerId::new(ReplicaId(1), 1);
+        let layer_value = crate::valuegen::analysis_layer(layer_id);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::CreateAnalysisLayer(CreateAnalysisLayerOp {
+                    layer: layer_value.clone(),
+                }),
+            ),
+            undo_env(1, 2, 12, seen_r1(1), tx, UndoPolicy::StrictInverse),
+            analysis_layer_env(2, 0, 20, CausalContext::new(), layer_value),
+        ]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        let recreate_effect = out
+            .state
+            .effects
+            .iter()
+            .find(|(id, _)| *id == OperationId::new(ReplicaId(2), 0))
+            .map(|(_, e)| e.clone())
+            .expect("recreate effect recorded");
+        assert_eq!(
+            recreate_effect,
+            OperationEffect::NoOp {
+                reason: NoOpReason::TargetTombstoned
+            },
+            "objects' Tombstoned state must outrank the retained analysis_layer_values \
+             entry, got {recreate_effect:?}"
+        );
+    }
+
+    /// (u4d) After u1d's undo, a byte-identical re-carry of the same
+    /// `CreateView` must report `TargetTombstoned`, not `AlreadyApplied`.
+    ///
+    /// **Mutation:** in `create_view`, make the
+    /// `Some(ObjectState::Tombstoned { .. })` arm fall through to the
+    /// value-map identity check. The row must observe `AlreadyApplied`.
+    #[test]
+    fn u4d_a_recreate_of_a_tombstoned_view_reports_target_tombstoned() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let view_id = ViewId::new(ReplicaId(1), 1);
+        let view_value = crate::valuegen::view(view_id, vec![]);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::CreateView(CreateViewOp {
+                    view: view_value.clone(),
+                }),
+            ),
+            undo_env(1, 2, 12, seen_r1(1), tx, UndoPolicy::StrictInverse),
+            view_env(2, 0, 20, CausalContext::new(), view_value),
+        ]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        let recreate_effect = out
+            .state
+            .effects
+            .iter()
+            .find(|(id, _)| *id == OperationId::new(ReplicaId(2), 0))
+            .map(|(_, e)| e.clone())
+            .expect("recreate effect recorded");
+        assert_eq!(
+            recreate_effect,
+            OperationEffect::NoOp {
+                reason: NoOpReason::TargetTombstoned
+            },
+            "objects' Tombstoned state must outrank the retained view_values entry, \
+             got {recreate_effect:?}"
+        );
+    }
+
+    /// (u4e) After u1e's undo, a byte-identical re-carry of the same
+    /// `CreateInstrument` must report `TargetTombstoned`, not
+    /// `AlreadyApplied` (pin A8 — `Instrument` is in scope as collateral).
+    ///
+    /// **Mutation:** in `create_instrument`, make the
+    /// `Some(ObjectState::Tombstoned { .. })` arm fall through to the
+    /// value-map identity check. The row must observe `AlreadyApplied`.
+    #[test]
+    fn u4e_a_recreate_of_a_tombstoned_instrument_reports_target_tombstoned() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let instrument_id = InstrumentId::new(ReplicaId(1), 1);
+        let instrument_value = crate::valuegen::instrument(instrument_id);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::CreateInstrument(CreateInstrumentOp {
+                    instrument: instrument_value.clone(),
+                }),
+            ),
+            undo_env(1, 2, 12, seen_r1(1), tx, UndoPolicy::StrictInverse),
+            instrument_env(2, 0, 20, CausalContext::new(), instrument_value),
+        ]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        let recreate_effect = out
+            .state
+            .effects
+            .iter()
+            .find(|(id, _)| *id == OperationId::new(ReplicaId(2), 0))
+            .map(|(_, e)| e.clone())
+            .expect("recreate effect recorded");
+        assert_eq!(
+            recreate_effect,
+            OperationEffect::NoOp {
+                reason: NoOpReason::TargetTombstoned
+            },
+            "objects' Tombstoned state must outrank the retained instrument_values \
+             entry, got {recreate_effect:?}"
         );
     }
 }

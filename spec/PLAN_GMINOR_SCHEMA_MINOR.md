@@ -187,15 +187,14 @@ numbering spaces are unrelated and must not be cross-read.
 > (G2b follows G2a) and prefix-closed. Epoch assignment remains a ratified
 > schema decision, never an implementer's choice.
 
-> **Epoch 11 ratified 2026-07-29**, with G3a as the event (introducing commit
-> pending — this rung has not yet landed a commit; update this citation once
-> it does, per the same discipline as the G2a correction above). One epoch for
+> **Epoch 11 ratified 2026-07-29**, with G3a as the event (introducing
+> `6c5e69f`, per the same discipline as the G2a correction above). One epoch for
 > the whole rung's four kinds, the G2a precedent (two kinds at epoch 9) rather
 > than one epoch per kind. The ladder stays monotonic (G3a follows G2b) and
 > prefix-closed.
 
 **The ladder is complete against the audit** — every post-baseline variant in
-`AUDIT_GMINOR_VOCABULARIES.md` appears exactly once: all ten kind/tag pairs,
+`AUDIT_GMINOR_VOCABULARIES.md` appears exactly once: all fifteen kind/tag pairs,
 `OperationPayload` 3, `ReanchorReason` 6, and all six
 `PreconditionFailureReason` appends.
 

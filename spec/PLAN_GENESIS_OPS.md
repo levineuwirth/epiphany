@@ -22,13 +22,16 @@ only **G3b** remains (ratified 2026-07-29, §4).
   `epiphany_core::TuningContextSettings`, **not** the full graph type — §5
   trap 7's holdout, resolved in the contract as *subset over normalization*.
   Closed **P13-S13**.
-* **G3a landed** (commit pending) — the four root-level mint families
+* **G3a landed** (`6c5e69f`) — the four root-level mint families
   (`CreateStaffGroup`, `CreatePartDefinition`, `CreateAnalysisLayer`,
   `CreateView`), kinds/tags **35–38**, epoch **11**, all schema major **0**.
   Executed against `spec/CONTRACT_GENESIS_G3A_ENTITIES.md`; §1.1's
   `StaffGroup`/`Staff` authorship-authority pin was ratified 2026-07-29 as
   disposition B and filed as **P13-S16**. No `epiphany-bundle` change of any
-  kind; op-block accept-set stays at 3 where G2b left it.
+  kind; op-block accept-set stays at 3 where G2b left it. The undo repair
+  this rung's own sign-off missed — `ObjectState::Tombstoned` reachable but
+  under-covered for these four kinds plus `Instrument` — rides after it as
+  `spec/CONTRACT_GENESIS_G3A_UNDO_REPAIR.md` Packet A.
 * **G3b** — `CreateMeasure` alone, kind/tag **39**, epoch **12**, carrying
   graph invariant **20** and a new `PreconditionFailureReason` at discriminant
   **16**. Scoped, not contracted.

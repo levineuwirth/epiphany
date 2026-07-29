@@ -1983,12 +1983,69 @@ mutation-tested (t13, four sub-mutations, one per family) against a dedicated
 base-recarry test (t5b) that a from-empty-only re-carry test (t5) structurally
 cannot exercise.
 
-**The tombstoned branch is implemented but, like `create_staff`'s and
-`create_instrument`'s, not exercised by any test.** No delete exists for any
-of these six mint-only families (`CreateStaff`, `CreateInstrument`, and now
-the four G3a kinds), so `ObjectState::Tombstoned` is unreachable for any of
-them through the public operation API today. This is the pre-existing
-project convention, not a new gap this rung introduces.
+**Correction of record (`spec/CONTRACT_GENESIS_G3A_UNDO_REPAIR.md`, Packet A,
+2026-07-29).** The paragraph that originally stood here claimed: "No delete
+exists for any of these six mint-only families (`CreateStaff`,
+`CreateInstrument`, and now the four G3a kinds), so `ObjectState::Tombstoned`
+is unreachable for any of them through the public operation API today." That
+claim is **false**, and it was signed off in error. It is not being silently
+deleted; this paragraph replaces it and says so.
+
+The branch **is** reachable, with no delete operation required: mint the
+object inside a declared transaction, then carry `UndoTransaction`
+(`reduce.rs:5288`) against that transaction under `StrictInverse` or
+`BestEffort`. `tombstone_undo_targets` (`reduce.rs:5387`) writes
+`ObjectState::Tombstoned` into `objects` for every minted target this way —
+`CreateStaff` and `CreateInstrument` included, and this was already true
+**before** G3a landed. G3a's four kinds inherited the same reachable branch
+and the same unexamined wrong claim; none of the six families needed a
+dedicated delete operation to reach `Tombstoned`, only an undo of the
+transaction that minted them.
+
+The claim's real defect was upstream of G3a: undoing a `StaffGroup`,
+`PartDefinition`, `AnalysisLayer`, or `View` mint tombstoned the object in the
+ledger but left its value sitting in the corresponding `Score` vector (no
+removal arm in `materialize_graph_tombstones`), and undoing a `StaffGroup`,
+`AnalysisLayer`, or `Instrument` mint could strand a live `Staff.group` /
+`ViewDefinition.active_layers` / `Staff.instrument` reference (no guard in
+`undo_strand_block`). G3a shipped without sign-off coverage for a branch that
+was live and broken. `spec/CONTRACT_GENESIS_G3A_UNDO_REPAIR.md` Packet A
+closes both gaps:
+
+- **Five removal arms** in `materialize_graph_tombstones` (pin A1):
+  `StaffGroup` → `score.staff_groups`, `PartDefinition` → `score.parts`,
+  `AnalysisLayer` → `score.analysis_layers`, `View` → `score.views`,
+  `Instrument` → `score.instruments` — each mirrors the pre-existing `Staff`
+  / `TimeSignature` arms exactly.
+- **Three inbound-reference guards** in `undo_strand_block` (pins A2–A6):
+  `StaffGroup(g)` blocked by a live `Staff` whose `group == Some(g)`,
+  `AnalysisLayer(l)` blocked by a live `ViewDefinition` whose
+  `active_layers` contains `l`, `Instrument(i)` blocked by a live `Staff`
+  whose `instrument == i`. Each reads the carried-value maps
+  (`staff_values`/`view_values`), **not** `self.graph`, and is deliberately
+  **ungated** (pin A3, ratified ruling): the create-side referential
+  preconditions are graph-gated because base-free reduction has no universe
+  to resolve against, but the ledger's carried-value maps are populated by
+  mints regardless of graph presence — so gating the undo-side guard would
+  let base-free undo strand a reference the ledger can plainly see. Each
+  guard requires the referencer to be `ObjectState::Live` (pin A4 — an
+  already-tombstoned referencer never blocks) and excludes referencers
+  minted in the same transaction being undone (pin A5 — a transaction that
+  mints both sides is undoable whole). `restorations` is deliberately
+  **not** consulted by these three guards (pin A6, ratified ruling): unlike
+  `MeterChange`, none of `Staff.group`, `Staff.instrument`, or
+  `ViewDefinition.active_layers` has a modify operation, so no write chain's
+  restoration could ever change the prospective post-undo value — adding a
+  lookup here would be dead code asserting a write chain that does not
+  exist.
+
+`objects` outranks the retained value maps on re-create (pin A7): every
+create reducer already checks `self.objects` before its value map, so a
+re-create after undo hits `ObjectState::Tombstoned` and returns
+`TargetTombstoned`, never reaching the stale retained value — verified by
+row family u4 (u4a–u4e)'s byte-identical re-carry mutation (falling the
+`Tombstoned` arm through to the value-map identity check misreports
+`AlreadyApplied` instead).
 
 **§1.1, disposition B — the `Staff.group`/`StaffGroup.members` authority
 ruling, and why `create_staff_group` does the least possible thing.**
