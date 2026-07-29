@@ -177,6 +177,14 @@ numbering spaces are unrelated and must not be cross-read.
 | 7 | Push 4a | `OperationKind`/`OperationKindTag` 30; `PreconditionFailureReason` 14–15 |
 | 8 | Genesis G1 | `OperationKind`/`OperationKindTag` 31 |
 | 9 | Genesis G2a | `OperationKind`/`OperationKindTag` 32–33 |
+| 10 | Genesis G2b | `OperationKind`/`OperationKindTag` 34 (`SetTuningContext`) |
+
+> **Epoch 10 ratified 2026-07-28**, with G2b as the event. This is the **first
+> exercise of the ladder's own growth path**: G-minor's `introduced_minor()` is
+> exhaustive with no wildcard arm, so kind/tag 34 *cannot compile* without an
+> epoch — the control working exactly as designed. The ladder stays monotonic
+> (G2b follows G2a) and prefix-closed. Epoch assignment remains a ratified
+> schema decision, never an implementer's choice.
 
 **The ladder is complete against the audit** — every post-baseline variant in
 `AUDIT_GMINOR_VOCABULARIES.md` appears exactly once: all ten kind/tag pairs,
