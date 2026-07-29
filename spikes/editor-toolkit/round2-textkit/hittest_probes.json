@@ -1,0 +1,834 @@
+{
+  "contract": "spec/CONTRACT_EDITOR_T4_SPIKE.md pins 8, 9, 10, 13, 14",
+  "recipe": "spikes/editor-toolkit/ROUND2_TEXT_RECIPE.md §7",
+  "min_separation_device_px": 4.0,
+  "edge_margin_device_px": 20.0,
+  "fixtures": [
+    {
+      "fixture_id": "F-A",
+      "probes": [
+        {
+          "point": {
+            "x": 209.765625,
+            "y": 540.0
+          },
+          "expected_source_offset": 0,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 0 (interval byte 0..byte 1)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 278.173828125,
+            "y": 540.0
+          },
+          "expected_source_offset": 1,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 1 (interval byte 1..byte 2)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 315.4296875,
+            "y": 540.0
+          },
+          "expected_source_offset": 2,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 2 (interval byte 2..byte 3)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 364.697265625,
+            "y": 540.0
+          },
+          "expected_source_offset": 3,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 3 (interval byte 3..byte 4)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 431.884765625,
+            "y": 540.0
+          },
+          "expected_source_offset": 4,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 4 (interval byte 4..byte 5)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 493.75,
+            "y": 540.0
+          },
+          "expected_source_offset": 5,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 5 (interval byte 5..byte 6)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 553.955078125,
+            "y": 540.0
+          },
+          "expected_source_offset": 6,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 6 (interval byte 6..byte 7)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 604.8828125,
+            "y": 540.0
+          },
+          "expected_source_offset": 7,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 7 (interval byte 7..byte 8)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 652.880859375,
+            "y": 540.0
+          },
+          "expected_source_offset": 8,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 8 (interval byte 8..byte 9)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 704.833984375,
+            "y": 540.0
+          },
+          "expected_source_offset": 9,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 9 (interval byte 9..byte 10)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 744.7265625,
+            "y": 540.0
+          },
+          "expected_source_offset": 10,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 10 (interval byte 10..byte 11)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 795.3125,
+            "y": 540.0
+          },
+          "expected_source_offset": 11,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 11 (interval byte 11..byte 12)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 846.826171875,
+            "y": 540.0
+          },
+          "expected_source_offset": 12,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 12 (interval byte 12..byte 13)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 888.525390625,
+            "y": 540.0
+          },
+          "expected_source_offset": 13,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 13 (interval byte 13..byte 14)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 947.998046875,
+            "y": 540.0
+          },
+          "expected_source_offset": 14,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 14 (interval byte 14..byte 15)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 1021.533203125,
+            "y": 540.0
+          },
+          "expected_source_offset": 15,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 15 (interval byte 15..byte 16)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 1083.59375,
+            "y": 540.0
+          },
+          "expected_source_offset": 16,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 16 (interval byte 16..byte 17)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 1145.703125,
+            "y": 540.0
+          },
+          "expected_source_offset": 17,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 17 (interval byte 17..byte 18)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 1196.630859375,
+            "y": 540.0
+          },
+          "expected_source_offset": 18,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 18 (interval byte 18..byte 19)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 1276.611328125,
+            "y": 540.0
+          },
+          "expected_source_offset": 19,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 19 (interval byte 19..byte 22)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 1356.640625,
+            "y": 540.0
+          },
+          "expected_source_offset": 22,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 22 (interval byte 22..byte 23)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 1404.638671875,
+            "y": 540.0
+          },
+          "expected_source_offset": 23,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 23 (interval byte 23..byte 24)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 1455.2734375,
+            "y": 540.0
+          },
+          "expected_source_offset": 24,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 24 (interval byte 24..byte 25)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 1489.892578125,
+            "y": 540.0
+          },
+          "expected_source_offset": 25,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 25 (interval byte 25..byte 26)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 1525.244140625,
+            "y": 540.0
+          },
+          "expected_source_offset": 26,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 26 (interval byte 26..byte 27)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 1563.96484375,
+            "y": 540.0
+          },
+          "expected_source_offset": 27,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 27 (interval byte 27..byte 28)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 1620.556640625,
+            "y": 540.0
+          },
+          "expected_source_offset": 28,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: interior, grapheme starting at byte 28 (interval byte 28..byte 29)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 139.9609375,
+            "y": 540.0
+          },
+          "expected_source_offset": 0,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: before the first caret stop (byte 0)",
+          "kind": "BeforeFirst"
+        },
+        {
+          "point": {
+            "x": 1677.8125,
+            "y": 540.0
+          },
+          "expected_source_offset": 29,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-A: after the last caret stop (byte 29)",
+          "kind": "AfterLast"
+        }
+      ]
+    },
+    {
+      "fixture_id": "F-B",
+      "probes": [
+        {
+          "point": {
+            "x": 205.322265625,
+            "y": 540.0
+          },
+          "expected_source_offset": 0,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-B: interior, grapheme starting at byte 0 (interval byte 0..byte 1)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 285.64453125,
+            "y": 540.0
+          },
+          "expected_source_offset": 1,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-B: interior, grapheme starting at byte 1 (interval byte 1..byte 2)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 345.8984375,
+            "y": 540.0
+          },
+          "expected_source_offset": 2,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-B: interior, grapheme starting at byte 2 (interval byte 2..byte 3)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 406.103515625,
+            "y": 540.0
+          },
+          "expected_source_offset": 3,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-B: interior, grapheme starting at byte 3 (interval byte 3..byte 4)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 457.03125,
+            "y": 540.0
+          },
+          "expected_source_offset": 4,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-B: interior, grapheme starting at byte 4 (interval byte 4..byte 9)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 494.189453125,
+            "y": 540.0
+          },
+          "expected_source_offset": 9,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-B: interior, grapheme starting at byte 9 (interval byte 9..byte 7)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 546.142578125,
+            "y": 540.0
+          },
+          "expected_source_offset": 7,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-B: interior, grapheme starting at byte 7 (interval byte 7..byte 5)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 139.9609375,
+            "y": 540.0
+          },
+          "expected_source_offset": 0,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-B: before the first caret stop (byte 0)",
+          "kind": "BeforeFirst"
+        },
+        {
+          "point": {
+            "x": 596.953125,
+            "y": 540.0
+          },
+          "expected_source_offset": 5,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-B: after the last caret stop (byte 5)",
+          "kind": "AfterLast"
+        }
+      ]
+    },
+    {
+      "fixture_id": "F-C",
+      "probes": [
+        {
+          "point": {
+            "x": 205.322265625,
+            "y": 540.0
+          },
+          "expected_source_offset": 0,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-C: interior, grapheme starting at byte 0 (interval byte 0..byte 1)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 285.64453125,
+            "y": 540.0
+          },
+          "expected_source_offset": 1,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-C: interior, grapheme starting at byte 1 (interval byte 1..byte 2)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 345.8984375,
+            "y": 540.0
+          },
+          "expected_source_offset": 2,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-C: interior, grapheme starting at byte 2 (interval byte 2..byte 3)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 406.103515625,
+            "y": 540.0
+          },
+          "expected_source_offset": 3,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-C: interior, grapheme starting at byte 3 (interval byte 3..byte 4)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 457.03125,
+            "y": 540.0
+          },
+          "expected_source_offset": 4,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-C: interior, grapheme starting at byte 4 (interval byte 4..byte 5)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 139.9609375,
+            "y": 540.0
+          },
+          "expected_source_offset": 0,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-C: before the first caret stop (byte 0)",
+          "kind": "BeforeFirst"
+        },
+        {
+          "point": {
+            "x": 493.046875,
+            "y": 540.0
+          },
+          "expected_source_offset": 5,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-C: after the last caret stop (byte 5)",
+          "kind": "AfterLast"
+        }
+      ]
+    },
+    {
+      "fixture_id": "F-D",
+      "probes": [
+        {
+          "point": {
+            "x": 209.765625,
+            "y": 540.0
+          },
+          "expected_source_offset": 0,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: interior, grapheme starting at byte 0 (interval byte 0..byte 1)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 278.173828125,
+            "y": 540.0
+          },
+          "expected_source_offset": 1,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: interior, grapheme starting at byte 1 (interval byte 1..byte 2)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 315.4296875,
+            "y": 540.0
+          },
+          "expected_source_offset": 2,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: interior, grapheme starting at byte 2 (interval byte 2..byte 3)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 364.697265625,
+            "y": 540.0
+          },
+          "expected_source_offset": 3,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: interior, grapheme starting at byte 3 (interval byte 3..byte 4)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 431.884765625,
+            "y": 540.0
+          },
+          "expected_source_offset": 4,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: interior, grapheme starting at byte 4 (interval byte 4..byte 5)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 493.75,
+            "y": 540.0
+          },
+          "expected_source_offset": 5,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: interior, grapheme starting at byte 5 (interval byte 5..byte 6)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 553.955078125,
+            "y": 540.0
+          },
+          "expected_source_offset": 6,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: interior, grapheme starting at byte 6 (interval byte 6..byte 7)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 604.8828125,
+            "y": 540.0
+          },
+          "expected_source_offset": 7,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: interior, grapheme starting at byte 7 (interval byte 7..byte 12)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 642.041015625,
+            "y": 540.0
+          },
+          "expected_source_offset": 12,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: interior, grapheme starting at byte 12 (interval byte 12..byte 10)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 693.994140625,
+            "y": 540.0
+          },
+          "expected_source_offset": 10,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: interior, grapheme starting at byte 10 (interval byte 10..byte 8)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 763.232421875,
+            "y": 540.0
+          },
+          "expected_source_offset": 8,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: interior, grapheme starting at byte 8 (interval byte 8..byte 14)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 817.626953125,
+            "y": 540.0
+          },
+          "expected_source_offset": 14,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: interior, grapheme starting at byte 14 (interval byte 14..byte 15)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 862.01171875,
+            "y": 540.0
+          },
+          "expected_source_offset": 15,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: interior, grapheme starting at byte 15 (interval byte 15..byte 16)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 925.390625,
+            "y": 540.0
+          },
+          "expected_source_offset": 16,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: interior, grapheme starting at byte 16 (interval byte 16..byte 17)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 997.607421875,
+            "y": 540.0
+          },
+          "expected_source_offset": 17,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: interior, grapheme starting at byte 17 (interval byte 17..byte 18)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 1050.87890625,
+            "y": 540.0
+          },
+          "expected_source_offset": 18,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: interior, grapheme starting at byte 18 (interval byte 18..byte 19)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 1102.24609375,
+            "y": 540.0
+          },
+          "expected_source_offset": 19,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: interior, grapheme starting at byte 19 (interval byte 19..byte 20)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 1162.890625,
+            "y": 540.0
+          },
+          "expected_source_offset": 20,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: interior, grapheme starting at byte 20 (interval byte 20..byte 21)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 1206.54296875,
+            "y": 540.0
+          },
+          "expected_source_offset": 21,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: interior, grapheme starting at byte 21 (interval byte 21..byte 22)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 139.9609375,
+            "y": 540.0
+          },
+          "expected_source_offset": 0,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: before the first caret stop (byte 0)",
+          "kind": "BeforeFirst"
+        },
+        {
+          "point": {
+            "x": 1244.90234375,
+            "y": 540.0
+          },
+          "expected_source_offset": 22,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-D: after the last caret stop (byte 22)",
+          "kind": "AfterLast"
+        }
+      ]
+    },
+    {
+      "fixture_id": "F-E",
+      "probes": [
+        {
+          "point": {
+            "x": 205.322265625,
+            "y": 540.0
+          },
+          "expected_source_offset": 0,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-E: interior, grapheme starting at byte 0 (interval byte 0..byte 1)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 282.71484375,
+            "y": 540.0
+          },
+          "expected_source_offset": 1,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-E: interior, grapheme starting at byte 1 (interval byte 1..byte 2)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 335.400390625,
+            "y": 540.0
+          },
+          "expected_source_offset": 2,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-E: interior, grapheme starting at byte 2 (interval byte 2..byte 3)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 386.71875,
+            "y": 540.0
+          },
+          "expected_source_offset": 3,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-E: interior, grapheme starting at byte 3 (interval byte 3..byte 6)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 433.3984375,
+            "y": 540.0
+          },
+          "expected_source_offset": 6,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-E: interior, grapheme starting at byte 6 (interval byte 6..byte 7)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 513.37890625,
+            "y": 540.0
+          },
+          "expected_source_offset": 7,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-E: interior, grapheme starting at byte 7 (interval byte 7..byte 10)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 593.359375,
+            "y": 540.0
+          },
+          "expected_source_offset": 10,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-E: interior, grapheme starting at byte 10 (interval byte 10..byte 11)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 634.66796875,
+            "y": 540.0
+          },
+          "expected_source_offset": 11,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-E: interior, grapheme starting at byte 11 (interval byte 11..byte 12)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 690.625,
+            "y": 540.0
+          },
+          "expected_source_offset": 12,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-E: interior, grapheme starting at byte 12 (interval byte 12..byte 13)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 748.388671875,
+            "y": 540.0
+          },
+          "expected_source_offset": 13,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-E: interior, grapheme starting at byte 13 (interval byte 13..byte 14)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 814.111328125,
+            "y": 540.0
+          },
+          "expected_source_offset": 14,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-E: interior, grapheme starting at byte 14 (interval byte 14..byte 15)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 909.228515625,
+            "y": 540.0
+          },
+          "expected_source_offset": 15,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-E: interior, grapheme starting at byte 15 (interval byte 15..byte 16)",
+          "kind": "Interior"
+        },
+        {
+          "point": {
+            "x": 139.9609375,
+            "y": 540.0
+          },
+          "expected_source_offset": 0,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-E: before the first caret stop (byte 0)",
+          "kind": "BeforeFirst"
+        },
+        {
+          "point": {
+            "x": 985.72265625,
+            "y": 540.0
+          },
+          "expected_source_offset": 16,
+          "expected_affinity": "Downstream",
+          "source_grapheme": "F-E: after the last caret stop (byte 16)",
+          "kind": "AfterLast"
+        }
+      ]
+    }
+  ],
+  "dropped": []
+}

@@ -1,0 +1,38 @@
+[package]
+name = "round2-reference"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+# Packet 2A-iii, Deliverable 2 (ROUND2_TEXT_RECIPE.md §9/§10): the reference
+# rasters + D4 regions binary. This crate composes, but does not modify,
+# round2-textkit (fixtures), round2-svgref (the explicit-glyph SVG emitter),
+# and round2-diff (the bounded visual differential) — it exists so that
+# composition has a home that is neither "the fixture crate", "the emitter
+# crate", nor "the differential crate", each of which stays single-purpose.
+
+[dependencies]
+round2-textkit = { path = "../round2-textkit" }
+round2-svgref = { path = "../round2-svgref" }
+round2-diff = { path = "../round2-diff" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Pinned to the same version round2-textkit and round2-svgref use, for the
+# same reason they pin it: the emitter's face-coverage refusal (FacePolicy,
+# recipe §11 M6) must ask the *same* cmap implementation that resolved the
+# faces in the first place, or "this face covers this codepoint" could mean
+# two different things in one pipeline.
+ttf-parser = "=0.25.1"
+
+[[bin]]
+name = "generate_reference"
+path = "src/bin/generate_reference.rs"
+
+# Recipe §11 M4/M5/M6: the three text-specific mutations, executed against the
+# real frozen fixtures rather than the synthetic geometry `round2-diff`'s
+# selftest uses. They need shaped glyphs from real faces, which is why they
+# live here and not there. Exits non-zero if any required kill does not
+# happen.
+[[bin]]
+name = "text_mutations"
+path = "src/bin/text_mutations.rs"

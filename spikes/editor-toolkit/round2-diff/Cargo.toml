@@ -1,0 +1,31 @@
+[package]
+name = "round2-diff"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+# Packet 2A-ii (ROUND2_TEXT_RECIPE.md §10, §11): the bounded visual
+# differential itself. Pure image math over RGBA buffers — it takes two
+# already-rasterized `&[u8]` readbacks plus width/height plus the per-glyph
+# regions D4 scores, and returns a rich verdict (D1/D2/D3/D4, each with its
+# measured numbers, never just a bool).
+#
+# Deliberately zero dependencies: this crate must not know about fonts,
+# text shaping, GPU, or the emitter that produced either raster (§9's
+# `resvg`/`ttf-parser` pipeline, or whatever a future candidate uses). It
+# is candidate-neutral and stand-in-neutral in the same sense the Round 1
+# harness's oracle model is candidate-neutral — it validates and compares
+# pixels, and nothing about how those pixels were produced.
+#
+# The `selftest` binary (src/bin/selftest.rs) synthesizes its own reference
+# raster and mutates it, because Packet 2A has no candidate yet (§11):
+# exactly the role Round 1's oracle tranche played before any candidate
+# consumed it. It exits non-zero if a required kill does not happen. It covers
+# the geometric mutations only; the text mutations M4/M5/M6 need real shaped
+# glyphs and live in `round2-reference`'s `text_mutations` binary.
+
+[dependencies]
+
+[[bin]]
+name = "selftest"
+path = "src/bin/selftest.rs"

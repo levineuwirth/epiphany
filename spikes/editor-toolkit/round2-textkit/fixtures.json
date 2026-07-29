@@ -1,0 +1,3688 @@
+{
+  "contract": "spec/CONTRACT_EDITOR_T4_SPIKE.md pins 8, 9, 10, 13, 14",
+  "recipe": "spikes/editor-toolkit/ROUND2_TEXT_RECIPE.md",
+  "em_size_staff_space": 1.28,
+  "quantize_grid": 1024.0,
+  "target": {
+    "width": 1920.0,
+    "height": 1080.0
+  },
+  "faces": [
+    {
+      "chain_index": 0,
+      "path": "/usr/share/fonts/tex-gyre/texgyrepagella-regular.otf",
+      "identity": {
+        "family": "TeX Gyre Pagella",
+        "version": "Version 2.501;PS 2.501;ffdkm 0.1",
+        "file_hash": [
+          68,
+          230,
+          66,
+          96,
+          113,
+          109,
+          143,
+          43,
+          190,
+          65,
+          43,
+          170,
+          30,
+          233,
+          155,
+          124,
+          153,
+          81,
+          144,
+          172,
+          69,
+          115,
+          23,
+          124,
+          36,
+          222,
+          240,
+          185,
+          32,
+          4,
+          56,
+          199
+        ],
+        "face_index": 0,
+        "variations": [],
+        "synthesis": "None"
+      }
+    },
+    {
+      "chain_index": 1,
+      "path": "/usr/share/fonts/liberation-fonts/LiberationSerif-Regular.ttf",
+      "identity": {
+        "family": "Liberation Serif",
+        "version": "Version 2.1.5",
+        "file_hash": [
+          5,
+          142,
+          168,
+          8,
+          100,
+          174,
+          240,
+          154,
+          35,
+          244,
+          92,
+          190,
+          194,
+          187,
+          84,
+          0,
+          188,
+          61,
+          251,
+          222,
+          160,
+          28,
+          63,
+          16,
+          83,
+          138,
+          33,
+          252,
+          180,
+          151,
+          251,
+          116
+        ],
+        "face_index": 0,
+        "variations": [],
+        "synthesis": "None"
+      }
+    }
+  ],
+  "fixtures": [
+    {
+      "id": "F-A",
+      "purpose": "check 1 (faithful consumption), check 5 (accessibility)",
+      "resolved": {
+        "provenance": {
+          "source": {
+            "discriminant": 0,
+            "canonical_bytes_hex": "0000000000000000000000000000f00d0000"
+          },
+          "synthesis": null,
+          "dependencies": [],
+          "stable_id": "82875741697311382809239399464544864365"
+        },
+        "text": "Allegro affettuoso — al fine",
+        "shaping": {
+          "faces": [
+            {
+              "family": "TeX Gyre Pagella",
+              "version": "Version 2.501;PS 2.501;ffdkm 0.1",
+              "file_hash": [
+                68,
+                230,
+                66,
+                96,
+                113,
+                109,
+                143,
+                43,
+                190,
+                65,
+                43,
+                170,
+                30,
+                233,
+                155,
+                124,
+                153,
+                81,
+                144,
+                172,
+                69,
+                115,
+                23,
+                124,
+                36,
+                222,
+                240,
+                185,
+                32,
+                4,
+                56,
+                199
+              ],
+              "face_index": 0,
+              "variations": [],
+              "synthesis": "None"
+            },
+            {
+              "family": "Liberation Serif",
+              "version": "Version 2.1.5",
+              "file_hash": [
+                5,
+                142,
+                168,
+                8,
+                100,
+                174,
+                240,
+                154,
+                35,
+                244,
+                92,
+                190,
+                194,
+                187,
+                84,
+                0,
+                188,
+                61,
+                251,
+                222,
+                160,
+                28,
+                63,
+                16,
+                83,
+                138,
+                33,
+                252,
+                180,
+                151,
+                251,
+                116
+              ],
+              "face_index": 0,
+              "variations": [],
+              "synthesis": "None"
+            }
+          ],
+          "shaper": "rustybuzz",
+          "shaper_version": {
+            "major": 0,
+            "minor": 20,
+            "patch": 1
+          },
+          "features": [],
+          "unicode_bidi": {
+            "impl_name": "unicode-bidi",
+            "crate_version": "0.3.18",
+            "unicode_version": "16.0.0"
+          },
+          "unicode_segmentation": {
+            "impl_name": "unicode-segmentation",
+            "crate_version": "1.13.3",
+            "unicode_version": "17.0.0"
+          }
+        },
+        "segments": [
+          {
+            "face": 0,
+            "glyphs": [
+              {
+                "glyph_id": 34,
+                "offset": {
+                  "x": 0.0,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 77,
+                "offset": {
+                  "x": 0.99609375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 77,
+                "offset": {
+                  "x": 1.3681640625,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 70,
+                "offset": {
+                  "x": 1.7412109375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 72,
+                "offset": {
+                  "x": 2.353515625,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 83,
+                "offset": {
+                  "x": 3.0849609375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 80,
+                "offset": {
+                  "x": 3.5908203125,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 1,
+                "offset": {
+                  "x": 4.2890625,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 66,
+                "offset": {
+                  "x": 4.609375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 234,
+                "offset": {
+                  "x": 5.2490234375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 70,
+                "offset": {
+                  "x": 6.046875,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 85,
+                "offset": {
+                  "x": 6.66015625,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 85,
+                "offset": {
+                  "x": 7.0771484375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 86,
+                "offset": {
+                  "x": 7.494140625,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 80,
+                "offset": {
+                  "x": 8.2666015625,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 84,
+                "offset": {
+                  "x": 8.96484375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 80,
+                "offset": {
+                  "x": 9.5078125,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 1,
+                "offset": {
+                  "x": 10.20703125,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 119,
+                "offset": {
+                  "x": 10.5263671875,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 1,
+                "offset": {
+                  "x": 11.806640625,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 66,
+                "offset": {
+                  "x": 12.126953125,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 77,
+                "offset": {
+                  "x": 12.7666015625,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 1,
+                "offset": {
+                  "x": 13.1396484375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 97,
+                "offset": {
+                  "x": 13.458984375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 79,
+                "offset": {
+                  "x": 14.2333984375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 70,
+                "offset": {
+                  "x": 14.978515625,
+                  "y": 0.0
+                },
+                "transform": null
+              }
+            ],
+            "source": {
+              "start": 0,
+              "end": 30
+            },
+            "direction": "Ltr",
+            "script": "Latn",
+            "language": null,
+            "size": 1.28
+          }
+        ],
+        "clusters": {
+          "clusters": [
+            {
+              "source": {
+                "start": 0,
+                "end": 1
+              },
+              "segment": 0,
+              "glyph_indices": [
+                0
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 0,
+                  "position": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 1,
+                "end": 2
+              },
+              "segment": 0,
+              "glyph_indices": [
+                1
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 1,
+                  "position": {
+                    "x": 0.99609375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 2,
+                "end": 3
+              },
+              "segment": 0,
+              "glyph_indices": [
+                2
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 2,
+                  "position": {
+                    "x": 1.3681640625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 3,
+                "end": 4
+              },
+              "segment": 0,
+              "glyph_indices": [
+                3
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 3,
+                  "position": {
+                    "x": 1.7412109375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 4,
+                "end": 5
+              },
+              "segment": 0,
+              "glyph_indices": [
+                4
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 4,
+                  "position": {
+                    "x": 2.353515625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 5,
+                "end": 6
+              },
+              "segment": 0,
+              "glyph_indices": [
+                5
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 5,
+                  "position": {
+                    "x": 3.0849609375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 6,
+                "end": 7
+              },
+              "segment": 0,
+              "glyph_indices": [
+                6
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 6,
+                  "position": {
+                    "x": 3.5908203125,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 7,
+                "end": 8
+              },
+              "segment": 0,
+              "glyph_indices": [
+                7
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 7,
+                  "position": {
+                    "x": 4.2890625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 8,
+                "end": 9
+              },
+              "segment": 0,
+              "glyph_indices": [
+                8
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 8,
+                  "position": {
+                    "x": 4.609375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 9,
+                "end": 11
+              },
+              "segment": 0,
+              "glyph_indices": [
+                9
+              ],
+              "resolved": true,
+              "grapheme_count": 2,
+              "caret_stops": [
+                {
+                  "source_offset": 9,
+                  "position": {
+                    "x": 5.2490234375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                },
+                {
+                  "source_offset": 10,
+                  "position": {
+                    "x": 5.6484375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 11,
+                "end": 12
+              },
+              "segment": 0,
+              "glyph_indices": [
+                10
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 11,
+                  "position": {
+                    "x": 6.046875,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 12,
+                "end": 13
+              },
+              "segment": 0,
+              "glyph_indices": [
+                11
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 12,
+                  "position": {
+                    "x": 6.66015625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 13,
+                "end": 14
+              },
+              "segment": 0,
+              "glyph_indices": [
+                12
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 13,
+                  "position": {
+                    "x": 7.0771484375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 14,
+                "end": 15
+              },
+              "segment": 0,
+              "glyph_indices": [
+                13
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 14,
+                  "position": {
+                    "x": 7.494140625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 15,
+                "end": 16
+              },
+              "segment": 0,
+              "glyph_indices": [
+                14
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 15,
+                  "position": {
+                    "x": 8.2666015625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 16,
+                "end": 17
+              },
+              "segment": 0,
+              "glyph_indices": [
+                15
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 16,
+                  "position": {
+                    "x": 8.96484375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 17,
+                "end": 18
+              },
+              "segment": 0,
+              "glyph_indices": [
+                16
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 17,
+                  "position": {
+                    "x": 9.5078125,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 18,
+                "end": 19
+              },
+              "segment": 0,
+              "glyph_indices": [
+                17
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 18,
+                  "position": {
+                    "x": 10.20703125,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 19,
+                "end": 22
+              },
+              "segment": 0,
+              "glyph_indices": [
+                18
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 19,
+                  "position": {
+                    "x": 10.5263671875,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 22,
+                "end": 23
+              },
+              "segment": 0,
+              "glyph_indices": [
+                19
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 22,
+                  "position": {
+                    "x": 11.806640625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 23,
+                "end": 24
+              },
+              "segment": 0,
+              "glyph_indices": [
+                20
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 23,
+                  "position": {
+                    "x": 12.126953125,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 24,
+                "end": 25
+              },
+              "segment": 0,
+              "glyph_indices": [
+                21
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 24,
+                  "position": {
+                    "x": 12.7666015625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 25,
+                "end": 26
+              },
+              "segment": 0,
+              "glyph_indices": [
+                22
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 25,
+                  "position": {
+                    "x": 13.1396484375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 26,
+                "end": 28
+              },
+              "segment": 0,
+              "glyph_indices": [
+                23
+              ],
+              "resolved": true,
+              "grapheme_count": 2,
+              "caret_stops": [
+                {
+                  "source_offset": 26,
+                  "position": {
+                    "x": 13.458984375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                },
+                {
+                  "source_offset": 27,
+                  "position": {
+                    "x": 13.8466796875,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 28,
+                "end": 29
+              },
+              "segment": 0,
+              "glyph_indices": [
+                24
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 28,
+                  "position": {
+                    "x": 14.2333984375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 29,
+                "end": 30
+              },
+              "segment": 0,
+              "glyph_indices": [
+                25
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 29,
+                  "position": {
+                    "x": 14.978515625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            }
+          ]
+        },
+        "bounds": {
+          "left": 1.619140625,
+          "bottom": -0.3623046875,
+          "right": 17.1513671875,
+          "top": 0.931640625
+        },
+        "reserved_box": {
+          "left": 1.51953125,
+          "bottom": -0.4619140625,
+          "right": 17.2509765625,
+          "top": 1.03125
+        },
+        "origin": {
+          "x": 1.599609375,
+          "y": 0.0
+        },
+        "align": "Start",
+        "style": {
+          "rgba": 255
+        },
+        "layer": 0
+      },
+      "accessibility": {
+        "name": "Allegro affettuoso — al fine",
+        "name_bytes_hex": "416c6c6567726f20616666657474756f736f20e2809420616c2066696e65",
+        "name_byte_len": 30,
+        "name_composition": "single-text-node-name, or logical-order concatenation of the run subtree's text-descendant names — either must equal `name` byte for byte",
+        "accepted_roles": [
+          {
+            "platform": "accesskit-0.24",
+            "tokens": [
+              "Label",
+              "TextRun",
+              "Paragraph"
+            ]
+          },
+          {
+            "platform": "at-spi2",
+            "tokens": [
+              "label",
+              "static",
+              "text",
+              "paragraph"
+            ]
+          },
+          {
+            "platform": "aria",
+            "tokens": [
+              "(none)",
+              "text",
+              "paragraph"
+            ]
+          },
+          {
+            "platform": "macos-nsaccessibility",
+            "tokens": [
+              "AXStaticText"
+            ]
+          },
+          {
+            "platform": "windows-uia",
+            "tokens": [
+              "Text"
+            ]
+          }
+        ],
+        "prohibited_roles": [
+          {
+            "platform": "accesskit-0.24",
+            "tokens": [
+              "Image",
+              "GraphicsObject",
+              "GraphicsSymbol",
+              "GenericContainer",
+              "Unknown",
+              "Pane"
+            ]
+          },
+          {
+            "platform": "at-spi2",
+            "tokens": [
+              "image",
+              "canvas",
+              "filler",
+              "panel",
+              "unknown"
+            ]
+          },
+          {
+            "platform": "aria",
+            "tokens": [
+              "img",
+              "presentation",
+              "none",
+              "graphics-object",
+              "graphics-symbol"
+            ]
+          },
+          {
+            "platform": "macos-nsaccessibility",
+            "tokens": [
+              "AXImage",
+              "AXUnknown",
+              "AXGroup"
+            ]
+          },
+          {
+            "platform": "windows-uia",
+            "tokens": [
+              "Image",
+              "Pane",
+              "Custom"
+            ]
+          }
+        ],
+        "prohibited_outcomes": [
+          "absent-from-tree",
+          "name-empty",
+          "name-normalized",
+          "name-is-shaped-glyphs",
+          "name-drops-unresolved-codepoints"
+        ],
+        "note": "Ligatures: the name must be the source `ff`/`fi`, never the ligature glyphs that drew them."
+      }
+    },
+    {
+      "id": "F-B",
+      "purpose": "check 2 (fallback, forced)",
+      "resolved": {
+        "provenance": {
+          "source": {
+            "discriminant": 0,
+            "canonical_bytes_hex": "0000000000000000000000000000f00d0001"
+          },
+          "synthesis": null,
+          "dependencies": [],
+          "stable_id": "13546022191488132682411636294095908055"
+        },
+        "text": "Coro אבג",
+        "shaping": {
+          "faces": [
+            {
+              "family": "TeX Gyre Pagella",
+              "version": "Version 2.501;PS 2.501;ffdkm 0.1",
+              "file_hash": [
+                68,
+                230,
+                66,
+                96,
+                113,
+                109,
+                143,
+                43,
+                190,
+                65,
+                43,
+                170,
+                30,
+                233,
+                155,
+                124,
+                153,
+                81,
+                144,
+                172,
+                69,
+                115,
+                23,
+                124,
+                36,
+                222,
+                240,
+                185,
+                32,
+                4,
+                56,
+                199
+              ],
+              "face_index": 0,
+              "variations": [],
+              "synthesis": "None"
+            },
+            {
+              "family": "Liberation Serif",
+              "version": "Version 2.1.5",
+              "file_hash": [
+                5,
+                142,
+                168,
+                8,
+                100,
+                174,
+                240,
+                154,
+                35,
+                244,
+                92,
+                190,
+                194,
+                187,
+                84,
+                0,
+                188,
+                61,
+                251,
+                222,
+                160,
+                28,
+                63,
+                16,
+                83,
+                138,
+                33,
+                252,
+                180,
+                151,
+                251,
+                116
+              ],
+              "face_index": 0,
+              "variations": [],
+              "synthesis": "None"
+            }
+          ],
+          "shaper": "rustybuzz",
+          "shaper_version": {
+            "major": 0,
+            "minor": 20,
+            "patch": 1
+          },
+          "features": [],
+          "unicode_bidi": {
+            "impl_name": "unicode-bidi",
+            "crate_version": "0.3.18",
+            "unicode_version": "16.0.0"
+          },
+          "unicode_segmentation": {
+            "impl_name": "unicode-segmentation",
+            "crate_version": "1.13.3",
+            "unicode_version": "17.0.0"
+          }
+        },
+        "segments": [
+          {
+            "face": 0,
+            "glyphs": [
+              {
+                "glyph_id": 36,
+                "offset": {
+                  "x": 0.0,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 80,
+                "offset": {
+                  "x": 0.9072265625,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 83,
+                "offset": {
+                  "x": 1.6064453125,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 80,
+                "offset": {
+                  "x": 2.1123046875,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 1,
+                "offset": {
+                  "x": 2.810546875,
+                  "y": 0.0
+                },
+                "transform": null
+              }
+            ],
+            "source": {
+              "start": 0,
+              "end": 5
+            },
+            "direction": "Ltr",
+            "script": "Latn",
+            "language": null,
+            "size": 1.28
+          },
+          {
+            "face": 1,
+            "glyphs": [
+              {
+                "glyph_id": 1282,
+                "offset": {
+                  "x": 3.130859375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 1281,
+                "offset": {
+                  "x": 3.5537109375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 1280,
+                "offset": {
+                  "x": 4.169921875,
+                  "y": 0.0
+                },
+                "transform": null
+              }
+            ],
+            "source": {
+              "start": 5,
+              "end": 11
+            },
+            "direction": "Rtl",
+            "script": "Hebr",
+            "language": null,
+            "size": 1.28
+          }
+        ],
+        "clusters": {
+          "clusters": [
+            {
+              "source": {
+                "start": 0,
+                "end": 1
+              },
+              "segment": 0,
+              "glyph_indices": [
+                0
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 0,
+                  "position": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 1,
+                "end": 2
+              },
+              "segment": 0,
+              "glyph_indices": [
+                1
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 1,
+                  "position": {
+                    "x": 0.9072265625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 2,
+                "end": 3
+              },
+              "segment": 0,
+              "glyph_indices": [
+                2
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 2,
+                  "position": {
+                    "x": 1.6064453125,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 3,
+                "end": 4
+              },
+              "segment": 0,
+              "glyph_indices": [
+                3
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 3,
+                  "position": {
+                    "x": 2.1123046875,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 4,
+                "end": 5
+              },
+              "segment": 0,
+              "glyph_indices": [
+                4
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 4,
+                  "position": {
+                    "x": 2.810546875,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 5,
+                "end": 7
+              },
+              "segment": 1,
+              "glyph_indices": [
+                2
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 5,
+                  "position": {
+                    "x": 4.169921875,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                },
+                {
+                  "source_offset": 5,
+                  "position": {
+                    "x": 3.130859375,
+                    "y": 0.0
+                  },
+                  "affinity": "Upstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 7,
+                "end": 9
+              },
+              "segment": 1,
+              "glyph_indices": [
+                1
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 7,
+                  "position": {
+                    "x": 3.5537109375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 9,
+                "end": 11
+              },
+              "segment": 1,
+              "glyph_indices": [
+                0
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 9,
+                  "position": {
+                    "x": 3.130859375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            }
+          ]
+        },
+        "bounds": {
+          "left": 1.6279296875,
+          "bottom": -0.025390625,
+          "right": 6.4912109375,
+          "top": 0.9072265625
+        },
+        "reserved_box": {
+          "left": 1.5283203125,
+          "bottom": -0.125,
+          "right": 6.5908203125,
+          "top": 1.0068359375
+        },
+        "origin": {
+          "x": 1.599609375,
+          "y": 0.0
+        },
+        "align": "Start",
+        "style": {
+          "rgba": 255
+        },
+        "layer": 0
+      },
+      "accessibility": {
+        "name": "Coro אבג",
+        "name_bytes_hex": "436f726f20d790d791d792",
+        "name_byte_len": 11,
+        "name_composition": "single-text-node-name, or logical-order concatenation of the run subtree's text-descendant names — either must equal `name` byte for byte",
+        "accepted_roles": [
+          {
+            "platform": "accesskit-0.24",
+            "tokens": [
+              "Label",
+              "TextRun",
+              "Paragraph"
+            ]
+          },
+          {
+            "platform": "at-spi2",
+            "tokens": [
+              "label",
+              "static",
+              "text",
+              "paragraph"
+            ]
+          },
+          {
+            "platform": "aria",
+            "tokens": [
+              "(none)",
+              "text",
+              "paragraph"
+            ]
+          },
+          {
+            "platform": "macos-nsaccessibility",
+            "tokens": [
+              "AXStaticText"
+            ]
+          },
+          {
+            "platform": "windows-uia",
+            "tokens": [
+              "Text"
+            ]
+          }
+        ],
+        "prohibited_roles": [
+          {
+            "platform": "accesskit-0.24",
+            "tokens": [
+              "Image",
+              "GraphicsObject",
+              "GraphicsSymbol",
+              "GenericContainer",
+              "Unknown",
+              "Pane"
+            ]
+          },
+          {
+            "platform": "at-spi2",
+            "tokens": [
+              "image",
+              "canvas",
+              "filler",
+              "panel",
+              "unknown"
+            ]
+          },
+          {
+            "platform": "aria",
+            "tokens": [
+              "img",
+              "presentation",
+              "none",
+              "graphics-object",
+              "graphics-symbol"
+            ]
+          },
+          {
+            "platform": "macos-nsaccessibility",
+            "tokens": [
+              "AXImage",
+              "AXUnknown",
+              "AXGroup"
+            ]
+          },
+          {
+            "platform": "windows-uia",
+            "tokens": [
+              "Image",
+              "Pane",
+              "Custom"
+            ]
+          }
+        ],
+        "prohibited_outcomes": [
+          "absent-from-tree",
+          "name-empty",
+          "name-normalized",
+          "name-is-shaped-glyphs",
+          "name-drops-unresolved-codepoints"
+        ],
+        "note": "Two segments, two faces: the name must be the whole logical string, assembled in logical order, not the visual order the Hebrew tail is drawn in."
+      }
+    },
+    {
+      "id": "F-C",
+      "purpose": "check 2 (uncovered codepoint)",
+      "resolved": {
+        "provenance": {
+          "source": {
+            "discriminant": 0,
+            "canonical_bytes_hex": "0000000000000000000000000000f00d0002"
+          },
+          "synthesis": null,
+          "dependencies": [],
+          "stable_id": "153906977500971752007575741292334795301"
+        },
+        "text": "Coro ا",
+        "shaping": {
+          "faces": [
+            {
+              "family": "TeX Gyre Pagella",
+              "version": "Version 2.501;PS 2.501;ffdkm 0.1",
+              "file_hash": [
+                68,
+                230,
+                66,
+                96,
+                113,
+                109,
+                143,
+                43,
+                190,
+                65,
+                43,
+                170,
+                30,
+                233,
+                155,
+                124,
+                153,
+                81,
+                144,
+                172,
+                69,
+                115,
+                23,
+                124,
+                36,
+                222,
+                240,
+                185,
+                32,
+                4,
+                56,
+                199
+              ],
+              "face_index": 0,
+              "variations": [],
+              "synthesis": "None"
+            },
+            {
+              "family": "Liberation Serif",
+              "version": "Version 2.1.5",
+              "file_hash": [
+                5,
+                142,
+                168,
+                8,
+                100,
+                174,
+                240,
+                154,
+                35,
+                244,
+                92,
+                190,
+                194,
+                187,
+                84,
+                0,
+                188,
+                61,
+                251,
+                222,
+                160,
+                28,
+                63,
+                16,
+                83,
+                138,
+                33,
+                252,
+                180,
+                151,
+                251,
+                116
+              ],
+              "face_index": 0,
+              "variations": [],
+              "synthesis": "None"
+            }
+          ],
+          "shaper": "rustybuzz",
+          "shaper_version": {
+            "major": 0,
+            "minor": 20,
+            "patch": 1
+          },
+          "features": [],
+          "unicode_bidi": {
+            "impl_name": "unicode-bidi",
+            "crate_version": "0.3.18",
+            "unicode_version": "16.0.0"
+          },
+          "unicode_segmentation": {
+            "impl_name": "unicode-segmentation",
+            "crate_version": "1.13.3",
+            "unicode_version": "17.0.0"
+          }
+        },
+        "segments": [
+          {
+            "face": 0,
+            "glyphs": [
+              {
+                "glyph_id": 36,
+                "offset": {
+                  "x": 0.0,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 80,
+                "offset": {
+                  "x": 0.9072265625,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 83,
+                "offset": {
+                  "x": 1.6064453125,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 80,
+                "offset": {
+                  "x": 2.1123046875,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 1,
+                "offset": {
+                  "x": 2.810546875,
+                  "y": 0.0
+                },
+                "transform": null
+              }
+            ],
+            "source": {
+              "start": 0,
+              "end": 5
+            },
+            "direction": "Ltr",
+            "script": "Latn",
+            "language": null,
+            "size": 1.28
+          },
+          {
+            "face": null,
+            "glyphs": [],
+            "source": {
+              "start": 5,
+              "end": 7
+            },
+            "direction": "Rtl",
+            "script": "Arab",
+            "language": null,
+            "size": 1.28
+          }
+        ],
+        "clusters": {
+          "clusters": [
+            {
+              "source": {
+                "start": 0,
+                "end": 1
+              },
+              "segment": 0,
+              "glyph_indices": [
+                0
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 0,
+                  "position": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 1,
+                "end": 2
+              },
+              "segment": 0,
+              "glyph_indices": [
+                1
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 1,
+                  "position": {
+                    "x": 0.9072265625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 2,
+                "end": 3
+              },
+              "segment": 0,
+              "glyph_indices": [
+                2
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 2,
+                  "position": {
+                    "x": 1.6064453125,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 3,
+                "end": 4
+              },
+              "segment": 0,
+              "glyph_indices": [
+                3
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 3,
+                  "position": {
+                    "x": 2.1123046875,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 4,
+                "end": 5
+              },
+              "segment": 0,
+              "glyph_indices": [
+                4
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 4,
+                  "position": {
+                    "x": 2.810546875,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 5,
+                "end": 7
+              },
+              "segment": 1,
+              "glyph_indices": [],
+              "resolved": false,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 5,
+                  "position": {
+                    "x": 3.130859375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                },
+                {
+                  "source_offset": 5,
+                  "position": {
+                    "x": 3.130859375,
+                    "y": 0.0
+                  },
+                  "affinity": "Upstream"
+                }
+              ]
+            }
+          ]
+        },
+        "bounds": {
+          "left": 1.6279296875,
+          "bottom": -0.025390625,
+          "right": 4.3701171875,
+          "top": 0.9072265625
+        },
+        "reserved_box": {
+          "left": 1.5283203125,
+          "bottom": -0.125,
+          "right": 4.4697265625,
+          "top": 1.0068359375
+        },
+        "origin": {
+          "x": 1.599609375,
+          "y": 0.0
+        },
+        "align": "Start",
+        "style": {
+          "rgba": 255
+        },
+        "layer": 0
+      },
+      "accessibility": {
+        "name": "Coro ا",
+        "name_bytes_hex": "436f726f20d8a7",
+        "name_byte_len": 7,
+        "name_composition": "single-text-node-name, or logical-order concatenation of the run subtree's text-descendant names — either must equal `name` byte for byte",
+        "accepted_roles": [
+          {
+            "platform": "accesskit-0.24",
+            "tokens": [
+              "Label",
+              "TextRun",
+              "Paragraph"
+            ]
+          },
+          {
+            "platform": "at-spi2",
+            "tokens": [
+              "label",
+              "static",
+              "text",
+              "paragraph"
+            ]
+          },
+          {
+            "platform": "aria",
+            "tokens": [
+              "(none)",
+              "text",
+              "paragraph"
+            ]
+          },
+          {
+            "platform": "macos-nsaccessibility",
+            "tokens": [
+              "AXStaticText"
+            ]
+          },
+          {
+            "platform": "windows-uia",
+            "tokens": [
+              "Text"
+            ]
+          }
+        ],
+        "prohibited_roles": [
+          {
+            "platform": "accesskit-0.24",
+            "tokens": [
+              "Image",
+              "GraphicsObject",
+              "GraphicsSymbol",
+              "GenericContainer",
+              "Unknown",
+              "Pane"
+            ]
+          },
+          {
+            "platform": "at-spi2",
+            "tokens": [
+              "image",
+              "canvas",
+              "filler",
+              "panel",
+              "unknown"
+            ]
+          },
+          {
+            "platform": "aria",
+            "tokens": [
+              "img",
+              "presentation",
+              "none",
+              "graphics-object",
+              "graphics-symbol"
+            ]
+          },
+          {
+            "platform": "macos-nsaccessibility",
+            "tokens": [
+              "AXImage",
+              "AXUnknown",
+              "AXGroup"
+            ]
+          },
+          {
+            "platform": "windows-uia",
+            "tokens": [
+              "Image",
+              "Pane",
+              "Custom"
+            ]
+          }
+        ],
+        "prohibited_outcomes": [
+          "absent-from-tree",
+          "name-empty",
+          "name-normalized",
+          "name-is-shaped-glyphs",
+          "name-drops-unresolved-codepoints"
+        ],
+        "note": "Uncovered codepoint: U+0627 draws no ink in either declared face, and must appear in the name regardless — the tree carries the text, not the ink."
+      }
+    },
+    {
+      "id": "F-D",
+      "purpose": "SUPPLEMENTARY bidi evidence (Hebrew/Latin) — check 3 remains NOT RUN (no Arabic-capable face; recipe §1.2)",
+      "resolved": {
+        "provenance": {
+          "source": {
+            "discriminant": 0,
+            "canonical_bytes_hex": "0000000000000000000000000000f00d0003"
+          },
+          "synthesis": null,
+          "dependencies": [],
+          "stable_id": "58574227627094720634005627628385763371"
+        },
+        "text": "Allegro אבג con brio",
+        "shaping": {
+          "faces": [
+            {
+              "family": "TeX Gyre Pagella",
+              "version": "Version 2.501;PS 2.501;ffdkm 0.1",
+              "file_hash": [
+                68,
+                230,
+                66,
+                96,
+                113,
+                109,
+                143,
+                43,
+                190,
+                65,
+                43,
+                170,
+                30,
+                233,
+                155,
+                124,
+                153,
+                81,
+                144,
+                172,
+                69,
+                115,
+                23,
+                124,
+                36,
+                222,
+                240,
+                185,
+                32,
+                4,
+                56,
+                199
+              ],
+              "face_index": 0,
+              "variations": [],
+              "synthesis": "None"
+            },
+            {
+              "family": "Liberation Serif",
+              "version": "Version 2.1.5",
+              "file_hash": [
+                5,
+                142,
+                168,
+                8,
+                100,
+                174,
+                240,
+                154,
+                35,
+                244,
+                92,
+                190,
+                194,
+                187,
+                84,
+                0,
+                188,
+                61,
+                251,
+                222,
+                160,
+                28,
+                63,
+                16,
+                83,
+                138,
+                33,
+                252,
+                180,
+                151,
+                251,
+                116
+              ],
+              "face_index": 0,
+              "variations": [],
+              "synthesis": "None"
+            }
+          ],
+          "shaper": "rustybuzz",
+          "shaper_version": {
+            "major": 0,
+            "minor": 20,
+            "patch": 1
+          },
+          "features": [],
+          "unicode_bidi": {
+            "impl_name": "unicode-bidi",
+            "crate_version": "0.3.18",
+            "unicode_version": "16.0.0"
+          },
+          "unicode_segmentation": {
+            "impl_name": "unicode-segmentation",
+            "crate_version": "1.13.3",
+            "unicode_version": "17.0.0"
+          }
+        },
+        "segments": [
+          {
+            "face": 0,
+            "glyphs": [
+              {
+                "glyph_id": 34,
+                "offset": {
+                  "x": 0.0,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 77,
+                "offset": {
+                  "x": 0.99609375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 77,
+                "offset": {
+                  "x": 1.3681640625,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 70,
+                "offset": {
+                  "x": 1.7412109375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 72,
+                "offset": {
+                  "x": 2.353515625,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 83,
+                "offset": {
+                  "x": 3.0849609375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 80,
+                "offset": {
+                  "x": 3.5908203125,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 1,
+                "offset": {
+                  "x": 4.2890625,
+                  "y": 0.0
+                },
+                "transform": null
+              }
+            ],
+            "source": {
+              "start": 0,
+              "end": 8
+            },
+            "direction": "Ltr",
+            "script": "Latn",
+            "language": null,
+            "size": 1.28
+          },
+          {
+            "face": 1,
+            "glyphs": [
+              {
+                "glyph_id": 1282,
+                "offset": {
+                  "x": 4.609375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 1281,
+                "offset": {
+                  "x": 5.0322265625,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 1280,
+                "offset": {
+                  "x": 5.6484375,
+                  "y": 0.0
+                },
+                "transform": null
+              }
+            ],
+            "source": {
+              "start": 8,
+              "end": 14
+            },
+            "direction": "Rtl",
+            "script": "Hebr",
+            "language": null,
+            "size": 1.28
+          },
+          {
+            "face": 0,
+            "glyphs": [
+              {
+                "glyph_id": 1,
+                "offset": {
+                  "x": 6.4169921875,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 68,
+                "offset": {
+                  "x": 6.736328125,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 80,
+                "offset": {
+                  "x": 7.3046875,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 79,
+                "offset": {
+                  "x": 8.00390625,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 1,
+                "offset": {
+                  "x": 8.7490234375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 67,
+                "offset": {
+                  "x": 9.0693359375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 83,
+                "offset": {
+                  "x": 9.7763671875,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 74,
+                "offset": {
+                  "x": 10.2822265625,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 80,
+                "offset": {
+                  "x": 10.6494140625,
+                  "y": 0.0
+                },
+                "transform": null
+              }
+            ],
+            "source": {
+              "start": 14,
+              "end": 23
+            },
+            "direction": "Ltr",
+            "script": "Latn",
+            "language": null,
+            "size": 1.28
+          }
+        ],
+        "clusters": {
+          "clusters": [
+            {
+              "source": {
+                "start": 0,
+                "end": 1
+              },
+              "segment": 0,
+              "glyph_indices": [
+                0
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 0,
+                  "position": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 1,
+                "end": 2
+              },
+              "segment": 0,
+              "glyph_indices": [
+                1
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 1,
+                  "position": {
+                    "x": 0.99609375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 2,
+                "end": 3
+              },
+              "segment": 0,
+              "glyph_indices": [
+                2
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 2,
+                  "position": {
+                    "x": 1.3681640625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 3,
+                "end": 4
+              },
+              "segment": 0,
+              "glyph_indices": [
+                3
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 3,
+                  "position": {
+                    "x": 1.7412109375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 4,
+                "end": 5
+              },
+              "segment": 0,
+              "glyph_indices": [
+                4
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 4,
+                  "position": {
+                    "x": 2.353515625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 5,
+                "end": 6
+              },
+              "segment": 0,
+              "glyph_indices": [
+                5
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 5,
+                  "position": {
+                    "x": 3.0849609375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 6,
+                "end": 7
+              },
+              "segment": 0,
+              "glyph_indices": [
+                6
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 6,
+                  "position": {
+                    "x": 3.5908203125,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 7,
+                "end": 8
+              },
+              "segment": 0,
+              "glyph_indices": [
+                7
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 7,
+                  "position": {
+                    "x": 4.2890625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 8,
+                "end": 10
+              },
+              "segment": 1,
+              "glyph_indices": [
+                2
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 8,
+                  "position": {
+                    "x": 5.6484375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                },
+                {
+                  "source_offset": 8,
+                  "position": {
+                    "x": 4.609375,
+                    "y": 0.0
+                  },
+                  "affinity": "Upstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 10,
+                "end": 12
+              },
+              "segment": 1,
+              "glyph_indices": [
+                1
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 10,
+                  "position": {
+                    "x": 5.0322265625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 12,
+                "end": 14
+              },
+              "segment": 1,
+              "glyph_indices": [
+                0
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 12,
+                  "position": {
+                    "x": 4.609375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 14,
+                "end": 15
+              },
+              "segment": 2,
+              "glyph_indices": [
+                0
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 14,
+                  "position": {
+                    "x": 6.4169921875,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                },
+                {
+                  "source_offset": 14,
+                  "position": {
+                    "x": 4.609375,
+                    "y": 0.0
+                  },
+                  "affinity": "Upstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 15,
+                "end": 16
+              },
+              "segment": 2,
+              "glyph_indices": [
+                1
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 15,
+                  "position": {
+                    "x": 6.736328125,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 16,
+                "end": 17
+              },
+              "segment": 2,
+              "glyph_indices": [
+                2
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 16,
+                  "position": {
+                    "x": 7.3046875,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 17,
+                "end": 18
+              },
+              "segment": 2,
+              "glyph_indices": [
+                3
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 17,
+                  "position": {
+                    "x": 8.00390625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 18,
+                "end": 19
+              },
+              "segment": 2,
+              "glyph_indices": [
+                4
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 18,
+                  "position": {
+                    "x": 8.7490234375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 19,
+                "end": 20
+              },
+              "segment": 2,
+              "glyph_indices": [
+                5
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 19,
+                  "position": {
+                    "x": 9.0693359375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 20,
+                "end": 21
+              },
+              "segment": 2,
+              "glyph_indices": [
+                6
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 20,
+                  "position": {
+                    "x": 9.7763671875,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 21,
+                "end": 22
+              },
+              "segment": 2,
+              "glyph_indices": [
+                7
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 21,
+                  "position": {
+                    "x": 10.2822265625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 22,
+                "end": 23
+              },
+              "segment": 2,
+              "glyph_indices": [
+                8
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 22,
+                  "position": {
+                    "x": 10.6494140625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            }
+          ]
+        },
+        "bounds": {
+          "left": 1.619140625,
+          "bottom": -0.3623046875,
+          "right": 12.9072265625,
+          "top": 0.9296875
+        },
+        "reserved_box": {
+          "left": 1.51953125,
+          "bottom": -0.4619140625,
+          "right": 13.0068359375,
+          "top": 1.029296875
+        },
+        "origin": {
+          "x": 1.599609375,
+          "y": 0.0
+        },
+        "align": "Start",
+        "style": {
+          "rgba": 255
+        },
+        "layer": 0
+      },
+      "accessibility": {
+        "name": "Allegro אבג con brio",
+        "name_bytes_hex": "416c6c6567726f20d790d791d79220636f6e206272696f",
+        "name_byte_len": 23,
+        "name_composition": "single-text-node-name, or logical-order concatenation of the run subtree's text-descendant names — either must equal `name` byte for byte",
+        "accepted_roles": [
+          {
+            "platform": "accesskit-0.24",
+            "tokens": [
+              "Label",
+              "TextRun",
+              "Paragraph"
+            ]
+          },
+          {
+            "platform": "at-spi2",
+            "tokens": [
+              "label",
+              "static",
+              "text",
+              "paragraph"
+            ]
+          },
+          {
+            "platform": "aria",
+            "tokens": [
+              "(none)",
+              "text",
+              "paragraph"
+            ]
+          },
+          {
+            "platform": "macos-nsaccessibility",
+            "tokens": [
+              "AXStaticText"
+            ]
+          },
+          {
+            "platform": "windows-uia",
+            "tokens": [
+              "Text"
+            ]
+          }
+        ],
+        "prohibited_roles": [
+          {
+            "platform": "accesskit-0.24",
+            "tokens": [
+              "Image",
+              "GraphicsObject",
+              "GraphicsSymbol",
+              "GenericContainer",
+              "Unknown",
+              "Pane"
+            ]
+          },
+          {
+            "platform": "at-spi2",
+            "tokens": [
+              "image",
+              "canvas",
+              "filler",
+              "panel",
+              "unknown"
+            ]
+          },
+          {
+            "platform": "aria",
+            "tokens": [
+              "img",
+              "presentation",
+              "none",
+              "graphics-object",
+              "graphics-symbol"
+            ]
+          },
+          {
+            "platform": "macos-nsaccessibility",
+            "tokens": [
+              "AXImage",
+              "AXUnknown",
+              "AXGroup"
+            ]
+          },
+          {
+            "platform": "windows-uia",
+            "tokens": [
+              "Image",
+              "Pane",
+              "Custom"
+            ]
+          }
+        ],
+        "prohibited_outcomes": [
+          "absent-from-tree",
+          "name-empty",
+          "name-normalized",
+          "name-is-shaped-glyphs",
+          "name-drops-unresolved-codepoints"
+        ],
+        "note": "Three visual runs at levels 0/1/0: the concatenation is logical-order, so a tree built by walking the visual runs left to right fails here and only here."
+      }
+    },
+    {
+      "id": "F-E",
+      "purpose": "check 4 (hit testing / caret)",
+      "resolved": {
+        "provenance": {
+          "source": {
+            "discriminant": 0,
+            "canonical_bytes_hex": "0000000000000000000000000000f00d0004"
+          },
+          "synthesis": null,
+          "dependencies": [],
+          "stable_id": "44621424182266112310717110217199269314"
+        },
+        "text": "Café — resumé",
+        "shaping": {
+          "faces": [
+            {
+              "family": "TeX Gyre Pagella",
+              "version": "Version 2.501;PS 2.501;ffdkm 0.1",
+              "file_hash": [
+                68,
+                230,
+                66,
+                96,
+                113,
+                109,
+                143,
+                43,
+                190,
+                65,
+                43,
+                170,
+                30,
+                233,
+                155,
+                124,
+                153,
+                81,
+                144,
+                172,
+                69,
+                115,
+                23,
+                124,
+                36,
+                222,
+                240,
+                185,
+                32,
+                4,
+                56,
+                199
+              ],
+              "face_index": 0,
+              "variations": [],
+              "synthesis": "None"
+            },
+            {
+              "family": "Liberation Serif",
+              "version": "Version 2.1.5",
+              "file_hash": [
+                5,
+                142,
+                168,
+                8,
+                100,
+                174,
+                240,
+                154,
+                35,
+                244,
+                92,
+                190,
+                194,
+                187,
+                84,
+                0,
+                188,
+                61,
+                251,
+                222,
+                160,
+                28,
+                63,
+                16,
+                83,
+                138,
+                33,
+                252,
+                180,
+                151,
+                251,
+                116
+              ],
+              "face_index": 0,
+              "variations": [],
+              "synthesis": "None"
+            }
+          ],
+          "shaper": "rustybuzz",
+          "shaper_version": {
+            "major": 0,
+            "minor": 20,
+            "patch": 1
+          },
+          "features": [],
+          "unicode_bidi": {
+            "impl_name": "unicode-bidi",
+            "crate_version": "0.3.18",
+            "unicode_version": "16.0.0"
+          },
+          "unicode_segmentation": {
+            "impl_name": "unicode-segmentation",
+            "crate_version": "1.13.3",
+            "unicode_version": "17.0.0"
+          }
+        },
+        "segments": [
+          {
+            "face": 0,
+            "glyphs": [
+              {
+                "glyph_id": 36,
+                "offset": {
+                  "x": 0.0,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 66,
+                "offset": {
+                  "x": 0.9072265625,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 71,
+                "offset": {
+                  "x": 1.5478515625,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 198,
+                "offset": {
+                  "x": 1.9609375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 1,
+                "offset": {
+                  "x": 2.57421875,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 119,
+                "offset": {
+                  "x": 2.89453125,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 1,
+                "offset": {
+                  "x": 4.173828125,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 83,
+                "offset": {
+                  "x": 4.494140625,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 70,
+                "offset": {
+                  "x": 5.0,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 84,
+                "offset": {
+                  "x": 5.61328125,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 86,
+                "offset": {
+                  "x": 6.1552734375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 78,
+                "offset": {
+                  "x": 6.927734375,
+                  "y": 0.0
+                },
+                "transform": null
+              },
+              {
+                "glyph_id": 198,
+                "offset": {
+                  "x": 8.0576171875,
+                  "y": 0.0
+                },
+                "transform": null
+              }
+            ],
+            "source": {
+              "start": 0,
+              "end": 19
+            },
+            "direction": "Ltr",
+            "script": "Latn",
+            "language": null,
+            "size": 1.28
+          }
+        ],
+        "clusters": {
+          "clusters": [
+            {
+              "source": {
+                "start": 0,
+                "end": 1
+              },
+              "segment": 0,
+              "glyph_indices": [
+                0
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 0,
+                  "position": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 1,
+                "end": 2
+              },
+              "segment": 0,
+              "glyph_indices": [
+                1
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 1,
+                  "position": {
+                    "x": 0.9072265625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 2,
+                "end": 3
+              },
+              "segment": 0,
+              "glyph_indices": [
+                2
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 2,
+                  "position": {
+                    "x": 1.5478515625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 3,
+                "end": 6
+              },
+              "segment": 0,
+              "glyph_indices": [
+                3
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 3,
+                  "position": {
+                    "x": 1.9609375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 6,
+                "end": 7
+              },
+              "segment": 0,
+              "glyph_indices": [
+                4
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 6,
+                  "position": {
+                    "x": 2.57421875,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 7,
+                "end": 10
+              },
+              "segment": 0,
+              "glyph_indices": [
+                5
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 7,
+                  "position": {
+                    "x": 2.89453125,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 10,
+                "end": 11
+              },
+              "segment": 0,
+              "glyph_indices": [
+                6
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 10,
+                  "position": {
+                    "x": 4.173828125,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 11,
+                "end": 12
+              },
+              "segment": 0,
+              "glyph_indices": [
+                7
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 11,
+                  "position": {
+                    "x": 4.494140625,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 12,
+                "end": 13
+              },
+              "segment": 0,
+              "glyph_indices": [
+                8
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 12,
+                  "position": {
+                    "x": 5.0,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 13,
+                "end": 14
+              },
+              "segment": 0,
+              "glyph_indices": [
+                9
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 13,
+                  "position": {
+                    "x": 5.61328125,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 14,
+                "end": 15
+              },
+              "segment": 0,
+              "glyph_indices": [
+                10
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 14,
+                  "position": {
+                    "x": 6.1552734375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 15,
+                "end": 16
+              },
+              "segment": 0,
+              "glyph_indices": [
+                11
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 15,
+                  "position": {
+                    "x": 6.927734375,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            },
+            {
+              "source": {
+                "start": 16,
+                "end": 19
+              },
+              "segment": 0,
+              "glyph_indices": [
+                12
+              ],
+              "resolved": true,
+              "grapheme_count": 1,
+              "caret_stops": [
+                {
+                  "source_offset": 16,
+                  "position": {
+                    "x": 8.0576171875,
+                    "y": 0.0
+                  },
+                  "affinity": "Downstream"
+                }
+              ]
+            }
+          ]
+        },
+        "bounds": {
+          "left": 1.6279296875,
+          "bottom": -0.025390625,
+          "right": 10.23046875,
+          "top": 0.931640625
+        },
+        "reserved_box": {
+          "left": 1.5283203125,
+          "bottom": -0.125,
+          "right": 10.330078125,
+          "top": 1.03125
+        },
+        "origin": {
+          "x": 1.599609375,
+          "y": 0.0
+        },
+        "align": "Start",
+        "style": {
+          "rgba": 255
+        },
+        "layer": 0
+      },
+      "accessibility": {
+        "name": "Café — resumé",
+        "name_bytes_hex": "43616665cc8120e2809420726573756d65cc81",
+        "name_byte_len": 19,
+        "name_composition": "single-text-node-name, or logical-order concatenation of the run subtree's text-descendant names — either must equal `name` byte for byte",
+        "accepted_roles": [
+          {
+            "platform": "accesskit-0.24",
+            "tokens": [
+              "Label",
+              "TextRun",
+              "Paragraph"
+            ]
+          },
+          {
+            "platform": "at-spi2",
+            "tokens": [
+              "label",
+              "static",
+              "text",
+              "paragraph"
+            ]
+          },
+          {
+            "platform": "aria",
+            "tokens": [
+              "(none)",
+              "text",
+              "paragraph"
+            ]
+          },
+          {
+            "platform": "macos-nsaccessibility",
+            "tokens": [
+              "AXStaticText"
+            ]
+          },
+          {
+            "platform": "windows-uia",
+            "tokens": [
+              "Text"
+            ]
+          }
+        ],
+        "prohibited_roles": [
+          {
+            "platform": "accesskit-0.24",
+            "tokens": [
+              "Image",
+              "GraphicsObject",
+              "GraphicsSymbol",
+              "GenericContainer",
+              "Unknown",
+              "Pane"
+            ]
+          },
+          {
+            "platform": "at-spi2",
+            "tokens": [
+              "image",
+              "canvas",
+              "filler",
+              "panel",
+              "unknown"
+            ]
+          },
+          {
+            "platform": "aria",
+            "tokens": [
+              "img",
+              "presentation",
+              "none",
+              "graphics-object",
+              "graphics-symbol"
+            ]
+          },
+          {
+            "platform": "macos-nsaccessibility",
+            "tokens": [
+              "AXImage",
+              "AXUnknown",
+              "AXGroup"
+            ]
+          },
+          {
+            "platform": "windows-uia",
+            "tokens": [
+              "Image",
+              "Pane",
+              "Custom"
+            ]
+          }
+        ],
+        "prohibited_outcomes": [
+          "absent-from-tree",
+          "name-empty",
+          "name-normalized",
+          "name-is-shaped-glyphs",
+          "name-drops-unresolved-codepoints"
+        ],
+        "note": "NFD: `Cafe\\u{301}` must surface as NFD. A tree exposing `Café` (NFC) has silently normalized, and that is a FAIL, not a formatting difference."
+      }
+    }
+  ]
+}

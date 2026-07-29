@@ -1,0 +1,121 @@
+[
+  {
+    "label": "F-D seg0.glyph0 (face 0, gid 34)",
+    "x0": 161,
+    "y0": 450,
+    "x1": 257,
+    "y1": 541
+  },
+  {
+    "label": "F-D seg0.glyph1 (face 0, gid 77)",
+    "x0": 262,
+    "y0": 447,
+    "x1": 295,
+    "y1": 541
+  },
+  {
+    "label": "F-D seg0.glyph2 (face 0, gid 77)",
+    "x0": 299,
+    "y0": 447,
+    "x1": 332,
+    "y1": 541
+  },
+  {
+    "label": "F-D seg0.glyph3 (face 0, gid 70)",
+    "x0": 337,
+    "y0": 479,
+    "x1": 392,
+    "y1": 543
+  },
+  {
+    "label": "F-D seg0.glyph4 (face 0, gid 72)",
+    "x0": 399,
+    "y0": 479,
+    "x1": 465,
+    "y1": 577
+  },
+  {
+    "label": "F-D seg0.glyph5 (face 0, gid 83)",
+    "x0": 471,
+    "y0": 479,
+    "x1": 517,
+    "y1": 541
+  },
+  {
+    "label": "F-D seg0.glyph6 (face 0, gid 80)",
+    "x0": 523,
+    "y0": 479,
+    "x1": 585,
+    "y1": 543
+  },
+  {
+    "label": "F-D seg2.glyph1 (face 0, gid 68)",
+    "x0": 836,
+    "y0": 479,
+    "x1": 887,
+    "y1": 543
+  },
+  {
+    "label": "F-D seg2.glyph2 (face 0, gid 80)",
+    "x0": 894,
+    "y0": 479,
+    "x1": 957,
+    "y1": 543
+  },
+  {
+    "label": "F-D seg2.glyph3 (face 0, gid 79)",
+    "x0": 961,
+    "y0": 479,
+    "x1": 1034,
+    "y1": 541
+  },
+  {
+    "label": "F-D seg2.glyph5 (face 0, gid 67)",
+    "x0": 1064,
+    "y0": 447,
+    "x1": 1132,
+    "y1": 542
+  },
+  {
+    "label": "F-D seg2.glyph6 (face 0, gid 83)",
+    "x0": 1140,
+    "y0": 479,
+    "x1": 1186,
+    "y1": 541
+  },
+  {
+    "label": "F-D seg2.glyph7 (face 0, gid 74)",
+    "x0": 1190,
+    "y0": 457,
+    "x1": 1223,
+    "y1": 541
+  },
+  {
+    "label": "F-D seg2.glyph8 (face 0, gid 80)",
+    "x0": 1228,
+    "y0": 479,
+    "x1": 1291,
+    "y1": 543
+  },
+  {
+    "label": "F-D seg1.glyph0 (face 1, gid 1282)",
+    "x0": 621,
+    "y0": 464,
+    "x1": 660,
+    "y1": 542
+  },
+  {
+    "label": "F-D seg1.glyph1 (face 1, gid 1281)",
+    "x0": 664,
+    "y0": 464,
+    "x1": 720,
+    "y1": 540
+  },
+  {
+    "label": "F-D seg1.glyph2 (face 1, gid 1280)",
+    "x0": 730,
+    "y0": 464,
+    "x1": 797,
+    "y1": 542
+  }
+]

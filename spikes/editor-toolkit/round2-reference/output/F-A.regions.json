@@ -1,0 +1,156 @@
+[
+  {
+    "label": "F-A seg0.glyph0 (face 0, gid 34)",
+    "x0": 161,
+    "y0": 450,
+    "x1": 257,
+    "y1": 541
+  },
+  {
+    "label": "F-A seg0.glyph1 (face 0, gid 77)",
+    "x0": 262,
+    "y0": 447,
+    "x1": 295,
+    "y1": 541
+  },
+  {
+    "label": "F-A seg0.glyph2 (face 0, gid 77)",
+    "x0": 299,
+    "y0": 447,
+    "x1": 332,
+    "y1": 541
+  },
+  {
+    "label": "F-A seg0.glyph3 (face 0, gid 70)",
+    "x0": 337,
+    "y0": 479,
+    "x1": 392,
+    "y1": 543
+  },
+  {
+    "label": "F-A seg0.glyph4 (face 0, gid 72)",
+    "x0": 399,
+    "y0": 479,
+    "x1": 465,
+    "y1": 577
+  },
+  {
+    "label": "F-A seg0.glyph5 (face 0, gid 83)",
+    "x0": 471,
+    "y0": 479,
+    "x1": 517,
+    "y1": 541
+  },
+  {
+    "label": "F-A seg0.glyph6 (face 0, gid 80)",
+    "x0": 523,
+    "y0": 479,
+    "x1": 585,
+    "y1": 543
+  },
+  {
+    "label": "F-A seg0.glyph8 (face 0, gid 66)",
+    "x0": 624,
+    "y0": 479,
+    "x1": 682,
+    "y1": 542
+  },
+  {
+    "label": "F-A seg0.glyph9 (face 0, gid 234)",
+    "x0": 687,
+    "y0": 446,
+    "x1": 766,
+    "y1": 541
+  },
+  {
+    "label": "F-A seg0.glyph10 (face 0, gid 70)",
+    "x0": 767,
+    "y0": 479,
+    "x1": 822,
+    "y1": 543
+  },
+  {
+    "label": "F-A seg0.glyph11 (face 0, gid 85)",
+    "x0": 828,
+    "y0": 460,
+    "x1": 867,
+    "y1": 542
+  },
+  {
+    "label": "F-A seg0.glyph12 (face 0, gid 85)",
+    "x0": 870,
+    "y0": 460,
+    "x1": 909,
+    "y1": 542
+  },
+  {
+    "label": "F-A seg0.glyph13 (face 0, gid 86)",
+    "x0": 911,
+    "y0": 479,
+    "x1": 984,
+    "y1": 542
+  },
+  {
+    "label": "F-A seg0.glyph14 (face 0, gid 80)",
+    "x0": 990,
+    "y0": 479,
+    "x1": 1053,
+    "y1": 543
+  },
+  {
+    "label": "F-A seg0.glyph15 (face 0, gid 84)",
+    "x0": 1060,
+    "y0": 479,
+    "x1": 1107,
+    "y1": 543
+  },
+  {
+    "label": "F-A seg0.glyph16 (face 0, gid 80)",
+    "x0": 1114,
+    "y0": 479,
+    "x1": 1177,
+    "y1": 543
+  },
+  {
+    "label": "F-A seg0.glyph18 (face 0, gid 119)",
+    "x0": 1212,
+    "y0": 504,
+    "x1": 1341,
+    "y1": 512
+  },
+  {
+    "label": "F-A seg0.glyph20 (face 0, gid 66)",
+    "x0": 1376,
+    "y0": 479,
+    "x1": 1433,
+    "y1": 542
+  },
+  {
+    "label": "F-A seg0.glyph21 (face 0, gid 77)",
+    "x0": 1439,
+    "y0": 447,
+    "x1": 1472,
+    "y1": 541
+  },
+  {
+    "label": "F-A seg0.glyph23 (face 0, gid 97)",
+    "x0": 1508,
+    "y0": 446,
+    "x1": 1581,
+    "y1": 541
+  },
+  {
+    "label": "F-A seg0.glyph24 (face 0, gid 79)",
+    "x0": 1584,
+    "y0": 479,
+    "x1": 1657,
+    "y1": 541
+  },
+  {
+    "label": "F-A seg0.glyph25 (face 0, gid 70)",
+    "x0": 1661,
+    "y0": 479,
+    "x1": 1716,
+    "y1": 543
+  }
+]

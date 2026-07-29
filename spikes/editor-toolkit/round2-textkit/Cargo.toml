@@ -1,0 +1,42 @@
+[package]
+name = "round2-textkit"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+# Packet 2A-i (ROUND2_TEXT_RECIPE.md, governed by
+# spec/CONTRACT_EDITOR_T4_SPIKE.md pins 8, 9, 10, 13, 14, and
+# spec/ANALYSIS_TEXT_RUN_PRIMITIVES.md §3E / §5): the candidate-neutral text
+# fixture set. This crate mirrors W3's proposed `ResolvedText` shape
+# (non-canonically — see `src/lib.rs`), resolves the two declared faces,
+# shapes/itemizes/segments the five committed fixture strings with
+# `rustybuzz` + `unicode-bidi` + `unicode-segmentation`, asserts every W3 §5
+# invariant on the result, and writes `fixtures.json` + `FIXTURES_SUMMARY.md`
+# for candidates to consume in a later packet. It renders nothing itself —
+# the SVG reference emitter (recipe §9) and the bounded visual differential
+# (recipe §10/§11, `round2-diff`) are separate, parallel packets.
+#
+# Dependency versions are pinned exactly as the recipe measured them (§4):
+# a version bump would change what the generator's precommitted expectations
+# describe, which is the same discipline the Round 1 oracle applies to its
+# own frozen inputs.
+
+[dependencies]
+rustybuzz = "=0.20.1"
+unicode-bidi = "=0.3.18"
+unicode-segmentation = "=1.13.3"
+ttf-parser = "=0.25.1"
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+epiphany-layout-ir = { path = "../../../crates/epiphany-layout-ir" }
+epiphany-determinism = { path = "../../../crates/epiphany-determinism" }
+epiphany-core = { path = "../../../crates/epiphany-core" }
+
+[[bin]]
+name = "generate"
+path = "src/bin/generate.rs"
+
+[[bin]]
+name = "generate_hittest"
+path = "src/bin/generate_hittest.rs"

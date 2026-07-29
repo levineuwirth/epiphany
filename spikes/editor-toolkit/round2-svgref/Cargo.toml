@@ -1,0 +1,16 @@
+[package]
+name = "round2-svgref"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+# The explicit-glyph SVG reference emitter (pin 10 / ROUND2_TEXT_RECIPE.md §9).
+#
+# `ttf-parser` comes from rustybuzz's own tree, so the outlines emitted here
+# are read from the same parser that shaped the run — not a second, possibly
+# disagreeing, font implementation.
+[dependencies]
+ttf-parser = "0.25.1"
+resvg = "0.45"
+usvg = "0.45"
+tiny-skia = "0.11"
