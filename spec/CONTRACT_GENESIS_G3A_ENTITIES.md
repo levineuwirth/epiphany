@@ -36,14 +36,15 @@ Two consequences hold in the tree today:
 * `TimeAnchor::Measure` (`reduce.rs:1280`) can never resolve from empty. That
   half is G3b's.
 
-G3a completes the four root-level vectors. **How much of the staff-group half
-it closes depends on §1.1, which is unresolved.**
+G3a completes the four root-level vectors. **It closes the satisfiability half
+only** — §1.1 (ratified) rules that a bidirectionally consistent staff group
+remains unauthorable in this packet, by design and on the record.
 
 ---
 
-## 1.1 The pin, UNRESOLVED — `StaffGroup`/`Staff` authorship authority
+## 1.1 The pin, RESOLVED — `StaffGroup`/`Staff` authorship authority
 
-**Must be ratified before dispatch.** Drafted in the contract, decided by the
+**Ratified 2026-07-29: disposition B.** Drafted in the contract, decided by the
 user — the shape G2b's `accidental_extensions` pin took.
 
 ### The cycle
@@ -90,31 +91,55 @@ sub-pin, and exactly the class of confusion `canonical_value!` cannot catch. It
 also expands G3a beyond a pure mint packet, which is the property that made
 this rung cheap.
 
-### Disposition B — declare the authority, defer the enforcement
+### Disposition B — declare the authority, defer the enforcement — **RATIFIED**
 
-`Staff.group` is authoritative; `StaffGroup.members` is a denormalized
-projection that **G3a does not maintain**. `CreateStaffGroup` carries `members`
-as given and validates resolution only. Bidirectional agreement is stated as a
-**known, filed gap** — a P13 candidate and a candidate invariant 21 — and G3a
-claims nothing about it.
+Ratified 2026-07-29 with this precise meaning, which is **normative**:
 
-Cost: a from-empty score can hold a grouped staff whose group lists no members.
-That is *incomplete* data under a stated deferral, not silently wrong data —
-but it is real, and the contract must not describe the defect as closed.
+* **`Staff.group` is the sole authority for membership.** Every consumer reads
+  membership from `Staff.group`. Nothing may read `StaffGroup.members` to
+  decide whether a staff is in a group.
+* **`StaffGroup.members` is a non-authoritative denormalized projection.**
+* **G3a stores it but neither maintains nor trusts it.** `CreateStaffGroup`
+  carries `members` as given and validates resolution only (pin 4).
+* **G3a permits both stale forms**, and they are equally permitted:
+  * a **missing** member — `s.group == Some(g)` while `g.members` omits `s`;
+  * a **spurious** member — `g.members` contains `s` while `s.group` is `None`
+    or names a *different* group.
 
-### Recommendation
+  An earlier draft named only the first. Naming only the missing-member form
+  would have understated the ruling and left the spurious form looking like a
+  bug rather than a permitted state.
 
-**Disposition B**, and narrow the claim to match. A is the better end state,
-but it invents an authoritative/derived split the specification does not make,
-in the packet whose entire value is that it moves no bound and adds no
-semantics. Ruling the authority now costs nothing and unblocks A later;
-implementing A here buys a consistency property no consumer reads yet, at the
-cost of turning a mint into a mint-plus-maintenance.
+**This is a normative semantic ruling, not a deferral of one.** The earlier
+draft's argument for B — that it "adds no semantics" while A does — was wrong
+and is withdrawn. B *assigns authority to a field the specification left
+unranked*, which is a semantic change; what it defers is **enforcement**, not
+meaning. The honest statement of B's advantage over A is narrower: it adds
+semantics without adding *machinery*, leaving the mint a mint.
 
-**Under either disposition, t8's claim is narrowed** — see §4. The unqualified
-"the defect closes" framing was wrong: what closes is that
-`CreateStaff.group`'s precondition becomes *satisfiable*, not that a consistent
-group becomes *authorable*.
+**Filed as P13-S16** (`spec/PASS13_CANDIDATES.md`) — the concrete gap, both
+stale forms, the disposition-A fix, the candidate invariant 21, and the
+instruction that consumers read `Staff.group` only. The earlier draft claimed
+a "filed gap" while no such entry existed; it does now.
+
+**Disposition A remains the later maintenance/enforcement fix**, sequenced
+after G3b so an invariant append is not competing with invariant 20.
+
+### What t8 must therefore claim
+
+**t8's claim is narrowed** — see §4. The unqualified "the defect closes"
+framing was wrong: what closes is that `CreateStaff.group`'s precondition
+becomes *satisfiable*, not that a consistent group becomes *authorable*.
+
+**t8 must pin both asymmetric authoring orders**, not only the first:
+
+* `CreateStaffGroup(g, members: [])` → `CreateStaff(s, group: Some(g))`
+  ⟹ `s.group == Some(g)`, `g.members == []` — the **missing** form;
+* `CreateStaff(s, group: None)` → `CreateStaffGroup(g, members: [s])`
+  ⟹ `g.members == [s]`, `s.group == None` — the **spurious** form.
+
+Both must be asserted to *hold*, as permitted states under the ruling. A test
+that pins only one leaves the other free to change silently.
 
 ---
 
@@ -337,9 +362,16 @@ Every line number below re-verified against the working tree 2026-07-29.
 
 ### Boundary crossings — budgeted up front (trap 6)
 
-An `OperationKind` append is **not** containable to core + ops. All five
-re-verified 2026-07-29; earlier revisions of the plan carried three drifted
-citations.
+An `OperationKind` append is **not** containable to core + ops. **Six
+crossings: one exhaustive-match site plus five literal/prose sentinels.** All
+six re-verified 2026-07-29; earlier revisions of the plan carried three drifted
+citations, and earlier revisions of this contract alternated between five and
+six by counting the exhaustive-match site inconsistently.
+
+The two classes fail differently, which is why they are counted together but
+named apart. The **exhaustive-match** site fails loudly — the workspace will
+not compile. The five **sentinels** fail silently: each stays green while
+meaning something narrower than it says.
 
 | File | What | Why it bites |
 |---|---|---|
@@ -407,12 +439,13 @@ t9 lesson from G2b.
 | t1 | All four kinds and tags are 35–38 in **both** spaces, and the discriminant byte leads each canonical encoding | Move any one kind to 39; then, separately, move its tag. Both must fail — the spaces are asserted independently (pin 1) |
 | t2 | `schema_major()` returns **0** for all four | Add them to the `=> 2` arm; must fail (pin 2's stated bug) |
 | t3 | A block containing all four stamps major **0**, and the op-block accept-set is untouched at 3 | Make one kind report major 2; must fail |
-| t4 | Each op round-trips through `encode` → `envdecode` → reduce, byte-identical, with its decode vector pinned to **literal bytes** | **Swap two fields in the carried type's `struct_codec!` declaration** — e.g. `PartDefinition { id, name, staves }` → `{ id, staves, name }` (`core/src/codec.rs:1790`); the literal-byte vector must fail. *(A create op's `encode_canonical` is a single `push_lp_bytes` line over one carried value, so there is nothing in the op to reorder — the first draft's mutation was impossible. The reorder must go where the layout actually lives, and because `struct_codec!` moves both halves at once it is self-consistent and passes round-trip tests: trap 4, the 3b-i lesson. Literal-byte vectors are the only thing that catches it.)* |
+| t4 | Each op round-trips through `encode` → `envdecode` → reduce, byte-identical, with its decode vector pinned to **literal bytes** | **Four independent mutations, one per carried type** — swap two fields in each `struct_codec!` declaration: `PartDefinition { id, name, staves }` → `{ id, staves, name }` (`core/src/codec.rs:1790`), and likewise `AnalysisLayer` (`:1791`), `ViewDefinition` (`:1792`), `StaffGroup` (`:2329`). Each type's literal-byte vector must fail on its own. **These are four separate layouts; one mutation signs one of them.** Collapse to a single mutation only if the implementation consolidates all four behind one shared mechanism, and say so explicitly if it does. *(A create op's `encode_canonical` is a single `push_lp_bytes` line over one carried value, so there is nothing in the op to reorder — the first draft's mutation was impossible. The reorder must go where the layout actually lives, and because `struct_codec!` moves both halves at once it is self-consistent and passes round-trip tests: trap 4, the 3b-i lesson. Literal-byte vectors are the only thing that catches it.)* |
 | t5 | Re-carrying a live id with a **byte-identical** value is `AlreadyApplied`; with a **differing** value is `RecreateContentMismatch`; a tombstoned id is `TargetTombstoned` | Return `Applied` for the differing-value case; must fail |
 | t5b | **Re-carry against a base-derived entity**: reduce `new_onto` a score whose four vectors are already populated, re-carry each byte-identically, and get `AlreadyApplied` | Covered by t13 per-seed. A re-carry test that only reduces from empty **cannot see a missing base seed at all** — that is why this row is separate from t5 |
 | t6 | All three referential loops refuse under a graph, **each asserted separately**: `CreateStaffGroup.members`, `CreatePartDefinition.staves`, and `CreateView.active_layers` naming a non-live target are each `TargetMissing` | **Three independent mutations**, one per loop: drop the members loop from `create_staff_group`; drop the staves loop from `create_part_definition`; drop the active-layers loop from `create_view`. Each must fail on its own row. *(The first draft omitted `PartDefinition.staves` entirely — one uncovered loop is one loop that can be deleted green.)* |
 | t7 | Those same preconditions are **not** enforced base-free | Remove the `if self.graph.is_some()` guard from one reducer; must fail — base-free has no universe to check against |
-| t8 | From empty, `CreateInstrument` → `CreateStaffGroup` → `CreateStaff` **with `group: Some(...)`** succeeds and reaches a note — i.e. `CreateStaff`'s group precondition becomes **satisfiable** | Replace the `CreateStaffGroup` dispatch arm with `OperationKind::CreateStaffGroup(_) => OperationEffect::Applied`, keeping the match exhaustive; must fail at the grouped-staff assertion while the spine stays applied. **Claim narrowed per §1.1: this asserts satisfiability, NOT that a bidirectionally consistent group is authorable.** Under disposition B the test must additionally assert the known gap explicitly — `g.members` is empty while `s.group` is `Some(g)` — so the deferral is pinned rather than merely unmentioned |
+| t8 | From empty, `CreateInstrument` → `CreateStaffGroup` → `CreateStaff` **with `group: Some(...)`** succeeds and reaches a note — i.e. `CreateStaff`'s group precondition becomes **satisfiable**. **Claim narrowed per §1.1: this asserts satisfiability, NOT that a bidirectionally consistent group is authorable** | Replace the `CreateStaffGroup` dispatch arm with `OperationKind::CreateStaffGroup(_) => OperationEffect::Applied`, keeping the match exhaustive; must fail at the grouped-staff assertion while the spine stays applied |
+| t8b | **Both permitted stale forms are pinned** (§1.1): the missing form (`CreateStaffGroup(g, [])` → `CreateStaff(s, Some(g))` ⟹ `s.group == Some(g)`, `g.members == []`) and the spurious form (`CreateStaff(s, None)` → `CreateStaffGroup(g, [s])` ⟹ `g.members == [s]`, `s.group == None`). Both asserted to **hold**, as states the ruling permits | Make `create_staff_group` maintain the projection (append the staff to `g.members`), i.e. implement disposition A; the missing-form assertion must fail. Separately, make `create_staff` clear a spurious back-reference; the spurious-form assertion must fail. **Two mutations — a test pinning only one order leaves the other free to change silently** |
 | t9 | A score reduced from empty through all four ops **passes `check_invariants`**, and each skipped reducer check **independently** makes invariant 10 fire (pin 5) | **The fixture is constant across all mutations**: the baseline input already attempts a dangling reference in each of the three loops, and passes because the reducer refuses them. Then mutate **only production**, one skipped check at a time — three separate mutations, each of which must let its dangling reference through and make invariant 10 fire. *(The first draft moved the fixture and the production code together, which proves only that a hand-built bad score fails a checker — not that the reducer's refusal is what was holding the line.)* |
 | t10 | All four kinds carry **epoch 11**, and a block containing them stamps minor **11** | Assign epoch 10 to one kind; must fail. Run against **both** epoch sites separately (vocabulary annotation, s1 table) — each must be independently able to fail |
 | t11 | Text projection round-trips all four kinds, and the companion version is **0.12.0**, with the negative vector rejecting **0.11.0** | Drop one parse arm; must fail. Separately, leave `COMPANION_VERSION` at 0.11.0; the negative vector must fail |
@@ -450,7 +483,8 @@ site**; each of the three referential loops and its invariant-10
 correspondence; **which §1.1 disposition was implemented and what t8 therefore
 does and does not claim**; epoch 11 at both sites; the companion bump
 0.11.0 → 0.12.0 with the negative vector rejecting 0.11.0; the four-document
-sweep; and the six boundary-crossing literals with their new values. Report
+sweep; and the six boundary crossings — the one exhaustive-match site and the
+five sentinels, each with its new value. Report
 each mutation's **observed** output — t6, t9, and t13 are multi-mutation rows
 and each sub-mutation must be reported separately. Anything not done, say so
 plainly.
