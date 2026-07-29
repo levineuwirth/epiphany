@@ -5,6 +5,9 @@ members = [
     "probe-vello",
     "probe-iced",
     "round1-oracle",
+    "round1-candidates/harness",
+    "round1-candidates/c1-egui-lyon",
+    "round1-candidates/c2-vello",
 ]
 
 # a11y-verifier is a standalone Python script (a11y-verifier/verify.py), not

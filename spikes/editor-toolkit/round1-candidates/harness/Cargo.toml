@@ -1,0 +1,21 @@
+[package]
+name = "round1-harness"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+# Round 1 shared harness (CONTRACT_EDITOR_T4_SPIKE.md, Round 1: "criterion 1,
+# compound-path fill correctness"). Candidate-neutral: loads the frozen
+# round1-oracle/oracle.json, fetches typed outlines from BravuraGlyphCatalog,
+# and provides the pixel-classification / report-table plumbing shared by
+# both candidate binaries (c1-egui-lyon, c2-vello). This crate carries no
+# GPU/wgpu/windowing dependency of its own — each candidate binary owns its
+# own render path, per the contract's "the stack under test is the real one"
+# requirement; this crate only reads oracle data and post-processes a readback
+# buffer either candidate hands it.
+
+[dependencies]
+epiphany-glyphs = { path = "../../../../crates/epiphany-glyphs" }
+epiphany-layout-ir = { path = "../../../../crates/epiphany-layout-ir" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

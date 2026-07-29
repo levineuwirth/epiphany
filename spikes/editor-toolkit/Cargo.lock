@@ -639,6 +639,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "c1-egui-lyon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "egui",
+ "egui-wgpu",
+ "epiphany-layout-ir",
+ "lyon",
+ "lyon_path",
+ "lyon_tessellation",
+ "pollster",
+ "round1-harness",
+]
+
+[[package]]
+name = "c2-vello"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "epiphany-layout-ir",
+ "pollster",
+ "round1-harness",
+ "vello",
+]
+
+[[package]]
 name = "calloop"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3604,6 +3632,16 @@ name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
+
+[[package]]
+name = "round1-harness"
+version = "0.1.0"
+dependencies = [
+ "epiphany-glyphs",
+ "epiphany-layout-ir",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "round1-oracle"

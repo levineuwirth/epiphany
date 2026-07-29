@@ -1,0 +1,23 @@
+[package]
+name = "c2-vello"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+# Round 1 candidate C2: vello + kurbo, matching probe-vello's Round-0
+# version pin (vello 0.9). Windowless: vello's Renderer/RenderContext do not
+# require winit, so this binary drives its own headless wgpu Device/Queue.
+#
+# kurbo and wgpu are consumed via vello's own re-exports (`vello::kurbo`,
+# `vello::wgpu`) rather than as separate top-level dependencies, so there is
+# no risk of resolving a kurbo/wgpu version that disagrees with the one
+# vello 0.9 was actually built against (vello re-exports `peniko::kurbo`,
+# whose version peniko itself pins).
+
+[dependencies]
+round1-harness = { path = "../harness" }
+epiphany-layout-ir = { path = "../../../../crates/epiphany-layout-ir" }
+vello = "0.9"
+pollster = "0.4"
+bytemuck = "1"
+anyhow = "1"

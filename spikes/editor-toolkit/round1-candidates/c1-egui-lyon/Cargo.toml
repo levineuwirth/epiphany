@@ -1,0 +1,27 @@
+[package]
+name = "c1-egui-lyon"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+# Round 1 candidate C1: egui's own paint pipeline (egui_wgpu::Renderer),
+# fed an egui::epaint::Mesh tessellated by lyon from the typed PathCommand
+# outline. Matches/exceeds probe-egui's Round-0 version pins (egui/eframe
+# 0.35); egui_wgpu is added here specifically because Round 1 renders
+# through it (Round 0 did not need to render anything).
+
+# wgpu itself is consumed via egui_wgpu's own re-export (`egui_wgpu::wgpu`)
+# rather than as a separate top-level dependency, to guarantee the Device
+# passed into `egui_wgpu::Renderer::new` is the exact type it expects.
+
+[dependencies]
+round1-harness = { path = "../harness" }
+epiphany-layout-ir = { path = "../../../../crates/epiphany-layout-ir" }
+egui = "0.35"
+egui-wgpu = "0.35"
+lyon = "1.0"
+lyon_path = "1.0"
+lyon_tessellation = "1.0"
+pollster = "0.4"
+bytemuck = "1"
+anyhow = "1"
