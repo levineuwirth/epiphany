@@ -24,7 +24,7 @@ use epiphany_bundle::{
 use epiphany_core::{OperationId, RegionId, ReplicaId, WallClockTime};
 use epiphany_ops::{
     AuthorId, CausalContext, DeleteRegionOp, HybridLogicalClock, OperationEnvelope, OperationKind,
-    OperationPayload, OperationStamp,
+    OperationPayload, OperationStamp, SetTuningContextOp,
 };
 
 use crate::parse::parse_document;
@@ -158,6 +158,25 @@ fn sample_envelope(counter: u64, physical_time: i64) -> OperationEnvelope {
     }
 }
 
+/// A `SetTuningContext` envelope (kind 34, genesis G2b). The committed corpus
+/// must contain a real `set-tuning-context` document: the typed all-kind
+/// round-trip test proves the *production* parses, but only a committed vector
+/// proves the emitted document text is stable across implementations, which is
+/// what this corpus exists for.
+fn tuning_context_envelope(counter: u64, physical_time: i64) -> OperationEnvelope {
+    let id = OperationId::new(ReplicaId(1), counter);
+    OperationEnvelope {
+        id,
+        author: AuthorId(0xAB),
+        stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(physical_time), 0), id),
+        causal_context: CausalContext::new(),
+        transaction: None,
+        payload: OperationPayload::Primitive(OperationKind::SetTuningContext(SetTuningContextOp {
+            settings: epiphany_ops::valuegen::tuning_context_settings(7),
+        })),
+    }
+}
+
 fn profiles(custom: bool) -> Vec<ProfileDeclaration> {
     let mut profiles = vec![ProfileDeclaration::full()];
     if custom {
@@ -248,8 +267,22 @@ fn accept_documents() -> Vec<(&'static str, String)> {
         ],
     };
 
+    // Genesis G2b: kind 34 in the committed corpus, carried at minor 10 —
+    // the epoch a block containing this operation actually requires.
+    let tuning_context = TextDocument {
+        document_id: DocumentId([5; 16]),
+        manifest_schema_version: SchemaVersion::new(0, 10),
+        lineage_id: None,
+        profiles: profiles(false),
+        extensions: Vec::new(),
+        canonical_base: None,
+        blobs: Vec::new(),
+        envelopes: vec![tuning_context_envelope(7, 700)],
+    };
+
     vec![
         ("minimal", project_text_document(&minimal)),
+        ("set_tuning_context", project_text_document(&tuning_context)),
         (
             "lineage_custom_profile",
             project_text_document(&lineage_custom),
@@ -319,10 +352,23 @@ fn duplicate_first_line(text: &str, head: &str) -> String {
 /// Every whole-document vector in stable committed order.
 pub fn document_vectors() -> Vec<TextVector> {
     let accepts = accept_documents();
-    let minimal = &accepts[0].1;
-    let lineage_custom = &accepts[1].1;
-    let extension_base_multi = &accepts[2].1;
-    let rich = &accepts[3].1;
+    // Bound **by name, not by index**. These were positional (`accepts[0]`..
+    // `accepts[3]`), which silently coupled every negative vector to the
+    // insertion order of the accept list: adding the G2b
+    // `set_tuning_context` document shifted all four and made the reject
+    // builders operate on the wrong source text. By-name binding makes the
+    // accept list reorderable and extendable without touching this block.
+    let by_name = |name: &str| -> &String {
+        &accepts
+            .iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("accept document is absent: {name}"))
+            .1
+    };
+    let minimal = by_name("minimal");
+    let lineage_custom = by_name("lineage_custom_profile");
+    let extension_base_multi = by_name("extension_base_two_envelopes");
+    let rich = by_name("rich_document");
 
     let mut vectors: Vec<TextVector> = accepts
         .iter()
@@ -659,7 +705,7 @@ mod tests {
     #[test]
     fn the_reference_implementation_agrees_with_every_vector() {
         match verify(COMMITTED) {
-            Ok(count) => assert_eq!(count, 13, "the corpus has unexpectedly thinned"),
+            Ok(count) => assert_eq!(count, 14, "the corpus has unexpectedly thinned"),
             Err(failures) => panic!(
                 "{} disagreement(s):\n{}",
                 failures.len(),

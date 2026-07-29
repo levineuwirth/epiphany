@@ -1837,7 +1837,9 @@ mod tests {
     /// where that set's ceiling sits.
     ///
     /// The accept-set ceiling itself (`max_supported_major(
-    /// OperationEnvelopeBlock) == 2`) is **already** asserted in a compiled
+    /// OperationEnvelopeBlock)`, raised from 2 to **3** by genesis tranche
+    /// G2b, which introduced the first operation payload born at major 3)
+    /// is **already** asserted in a compiled
     /// test inside `epiphany-bundle` (`bundle.rs:1322`), which predates this
     /// packet and which this packet leaves untouched. An earlier draft of
     /// this comment claimed that half of s6 was unassertable because
@@ -1910,6 +1912,7 @@ mod tests {
         let mut rng = Rng::new(17);
         let (mut saw_transpose_interval, mut saw_create_instrument) = (false, false);
         let (mut saw_canvas_layout_defaults, mut saw_spelling_precedence) = (false, false);
+        let mut saw_tuning_context = false;
         for _ in 0..2000 {
             let OperationPayload::Primitive(kind) = operation_payload(&mut rng, 8, 8) else {
                 continue;
@@ -1919,6 +1922,7 @@ mod tests {
                 OperationKind::CreateInstrument(_) => saw_create_instrument = true,
                 OperationKind::SetCanvasLayoutDefaults(_) => saw_canvas_layout_defaults = true,
                 OperationKind::SetSpellingPrecedence(_) => saw_spelling_precedence = true,
+                OperationKind::SetTuningContext(_) => saw_tuning_context = true,
                 _ => {}
             }
         }
@@ -1937,6 +1941,10 @@ mod tests {
         assert!(
             saw_spelling_precedence,
             "SetSpellingPrecedence (kind 33) never drawn in 2000 samples"
+        );
+        assert!(
+            saw_tuning_context,
+            "SetTuningContext (kind 34, G2b debt) never drawn in 2000 samples"
         );
     }
 

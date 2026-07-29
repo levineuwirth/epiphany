@@ -89,7 +89,7 @@ fn parse_bytes(s: &Sexp) -> Result<Vec<u8>, TextError> {
     }
 }
 
-/// Projects and strictly parses all 31 `kind` productions from
+/// Projects and strictly parses all 35 `kind` productions from
 /// `spec/text_projection.tex`.
 impl TextValue for OperationKind {
     fn project(&self) -> Sexp {

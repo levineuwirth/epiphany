@@ -191,8 +191,16 @@ impl SchemaVersion {
     /// Schema major 3 — the third data-model expansion major (Binary Format
     /// companion §"Schema Major 3", Push 4b tranche 3b-i): `ScoreTuningContext`
     /// gains `smufl` and `overrides` on the wire. Stamped on the acceleration
-    /// full-`Score` snapshot only — no operation payload embeds the tuning
-    /// context, so `OperationEnvelopeBlock`'s accept-set is untouched.
+    /// full-`Score` snapshot **and** on any operation-envelope block carrying a
+    /// `SetTuningContext` payload.
+    ///
+    /// **Genesis tranche G2b raised `OperationEnvelopeBlock`'s accept-set to
+    /// `[0, 3]`** (`spec/CONTRACT_GENESIS_G2B_TUNING.md`). This comment
+    /// previously said major 3 was snapshot-only because no operation payload
+    /// embedded the tuning context; `SetTuningContext` (kind/tag 34) is exactly
+    /// that payload, carrying `epiphany_core::TuningContextSettings`, so the
+    /// claim no longer holds. See `max_supported_major` in `bundle.rs`, which
+    /// carried the same falsehood.
     pub const V3: SchemaVersion = SchemaVersion { major: 3, minor: 0 };
 
     /// Constructs a schema version.

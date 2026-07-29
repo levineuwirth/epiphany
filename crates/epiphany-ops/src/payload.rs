@@ -2470,6 +2470,9 @@ mod tests {
             (OperationKindTag::CreateInstrument, 8),
             (OperationKindTag::SetCanvasLayoutDefaults, 9),
             (OperationKindTag::SetSpellingPrecedence, 9),
+            // Genesis G2b. Kept in step with pin 1's table; an epoch omitted
+            // here is an epoch this test cannot see go wrong.
+            (OperationKindTag::SetTuningContext, 10),
         ] {
             assert_eq!(
                 tag.introduced_minor(),

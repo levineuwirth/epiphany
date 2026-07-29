@@ -683,6 +683,52 @@ mod tests {
         assert_eq!(blocks, vec![env.to_canonical_bytes()]);
     }
 
+    /// (G2b, t3+t4 as an integration) A **real** `SetTuningContext` envelope,
+    /// staged through the production writer path and reopened, must stamp
+    /// `{3, 10}` and be admitted **read-write**.
+    ///
+    /// The unit-level t3/t4 did not prove this. t3 computed
+    /// `max(schema_major())` over bare `OperationKind`s — never building a
+    /// block — and t4 only asserted the ceiling constant. Both would stay
+    /// green if `stage_operation_block` mis-derived the stamp or if the
+    /// accept-set gate rejected the block it now admits. This test is the one
+    /// that actually crosses ops → testkit → bundle.
+    #[test]
+    fn a_set_tuning_context_block_stamps_3_10_and_reopens_read_write() {
+        use epiphany_core::{OperationId, ReplicaId, WallClockTime};
+        use epiphany_ops::{
+            valuegen, AuthorId, CausalContext, HybridLogicalClock, OperationEnvelope,
+            OperationKind, OperationPayload, OperationStamp, SetTuningContextOp,
+        };
+
+        let id = OperationId::new(ReplicaId(1), 1);
+        let env = OperationEnvelope {
+            id,
+            author: AuthorId(0xAB),
+            stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(100), 0), id),
+            causal_context: CausalContext::new(),
+            transaction: None,
+            payload: OperationPayload::Primitive(OperationKind::SetTuningContext(
+                SetTuningContextOp {
+                    settings: valuegen::tuning_context_settings(3),
+                },
+            )),
+        };
+
+        let staged = crate::bundle_harness::stage_operation_block(&[env]);
+        assert_eq!(
+            staged.schema_version,
+            SchemaVersion::new(3, 10),
+            "a block carrying SetTuningContext stamps major 3 (the payload is              born at v3) and minor 10 (its ratified G2b epoch)"
+        );
+
+        let reopened = reopen_with_op_block(0xD2_0003, staged);
+        assert!(
+            !reopened.is_read_only(),
+            "major 3 is inside the raised op-block accept-set [0, 3], so the              bundle must open read-write"
+        );
+    }
+
     #[test]
     fn op_block_beyond_the_accept_set_opens_read_only() {
         use epiphany_bundle::IntegrityAnomaly;
