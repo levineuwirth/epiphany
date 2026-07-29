@@ -1,0 +1,651 @@
+{
+  "contract": "spec/CONTRACT_EDITOR_T4_SPIKE.md Round 1 (criterion 1, compound-path fill correctness)",
+  "round": "round1",
+  "render_transform_rule": "device = (staff.x * scale + tx, ty - staff.y * scale); scale = 100 device px per staff space; tx/ty center the glyph's own flattened bounding box in a 1920x1080 target (pin 4); staff-space is y-up, device space is y-down",
+  "flatten_tolerance_staff_space": 0.0005,
+  "clearance_floor_device_px": 8.0,
+  "glyphs": [
+    {
+      "name": "gClef",
+      "requirement": "BoundedHole",
+      "subpath_count": 4,
+      "expected_subpath_count": 4,
+      "transform": {
+        "scale": 100.0,
+        "tx": 825.7999992370605,
+        "ty": 628.0000114440918,
+        "target_width": 1920.0,
+        "target_height": 1080.0
+      },
+      "bbox_staff": [
+        0.0,
+        -2.631999969482422,
+        2.684000015258789,
+        4.392000198364258
+      ],
+      "outer_contour_ring_index": 0,
+      "ring_signed_areas": [
+        8.70199089321805,
+        -0.6913140433690712,
+        -1.8034304355375201,
+        -0.5093689639942818
+      ],
+      "points": [
+        {
+          "staff": [
+            0.9400000000000006,
+            -1.9219999694824352
+          ],
+          "device": [
+            919.7999992370605,
+            820.2000083923353
+          ],
+          "class": "Ink",
+          "clearance_device_px": 39.879224940156384,
+          "hole_evidence": null,
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            0.8500000000000005,
+            -2.0519999694824342
+          ],
+          "device": [
+            910.7999992370605,
+            833.2000083923352
+          ],
+          "class": "Ink",
+          "clearance_device_px": 31.152574135700984,
+          "hole_evidence": null,
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            1.270000000000001,
+            1.8880000305175677
+          ],
+          "device": [
+            952.7999992370607,
+            439.200008392335
+          ],
+          "class": "Ink",
+          "clearance_device_px": 29.458331559341232,
+          "hole_evidence": null,
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            1.7600000000000013,
+            3.258000030517541
+          ],
+          "device": [
+            1001.7999992370607,
+            302.2000083923377
+          ],
+          "class": "Background",
+          "clearance_device_px": 32.23617311771167,
+          "hole_evidence": {
+            "inside_outer_contour": true,
+            "even_odd_filled": false,
+            "nonzero_filled": false,
+            "outer_contour_ring_index": 0
+          },
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            1.7000000000000013,
+            3.118000030517544
+          ],
+          "device": [
+            995.7999992370607,
+            316.2000083923374
+          ],
+          "class": "Background",
+          "clearance_device_px": 31.015291567040098,
+          "hole_evidence": {
+            "inside_outer_contour": true,
+            "even_odd_filled": false,
+            "nonzero_filled": false,
+            "outer_contour_ring_index": 0
+          },
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            1.8200000000000014,
+            3.4080000305175377
+          ],
+          "device": [
+            1007.7999992370607,
+            287.200008392338
+          ],
+          "class": "Background",
+          "clearance_device_px": 29.838877367007576,
+          "hole_evidence": {
+            "inside_outer_contour": true,
+            "even_odd_filled": false,
+            "nonzero_filled": false,
+            "outer_contour_ring_index": 0
+          },
+          "subpath_index": null
+        }
+      ],
+      "ink_candidates_found": 27069,
+      "background_candidates_found": 18066,
+      "ink_spacing_relaxed": false,
+      "background_spacing_relaxed": false,
+      "ink_satisfied": true,
+      "background_required": true,
+      "background_satisfied": true,
+      "subpath_coverage_required": false,
+      "subpath_coverage_satisfied": true,
+      "satisfied": true,
+      "hole_diagnostic": {
+        "raw_hole_grid_hits": 30028,
+        "best_hole_clearance_device_px": 32.23617311771167
+      }
+    },
+    {
+      "name": "timeSig8",
+      "requirement": "BoundedHole",
+      "subpath_count": 3,
+      "expected_subpath_count": 3,
+      "transform": {
+        "scale": 100.0,
+        "tx": 872.7999983727932,
+        "ty": 540.0,
+        "target_width": 1920.0,
+        "target_height": 1080.0
+      },
+      "bbox_staff": [
+        0.07999999821186066,
+        -1.0360000133514404,
+        1.6640000343322754,
+        1.0360000133514404
+      ],
+      "outer_contour_ring_index": 0,
+      "ring_signed_areas": [
+        2.6743829783025608,
+        -0.43524448349075884,
+        -0.5148498430682749
+      ],
+      "points": [
+        {
+          "staff": [
+            1.3299999982118615,
+            -0.19600001335143968
+          ],
+          "device": [
+            1005.7999981939794,
+            559.6000013351439
+          ],
+          "class": "Ink",
+          "clearance_device_px": 28.64675883470137,
+          "hole_evidence": null,
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            1.1199999982118614,
+            -0.04600001335143965
+          ],
+          "device": [
+            984.7999981939794,
+            544.6000013351439
+          ],
+          "class": "Ink",
+          "clearance_device_px": 28.21134677772842,
+          "hole_evidence": null,
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            0.9599999982118613,
+            0.013999986648560359
+          ],
+          "device": [
+            968.7999981939794,
+            538.6000013351439
+          ],
+          "class": "Ink",
+          "clearance_device_px": 26.412730159918755,
+          "hole_evidence": null,
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            0.6899999982118611,
+            -0.53600001335144
+          ],
+          "device": [
+            941.7999981939793,
+            593.600001335144
+          ],
+          "class": "Background",
+          "clearance_device_px": 34.51401272338884,
+          "hole_evidence": {
+            "inside_outer_contour": true,
+            "even_odd_filled": false,
+            "nonzero_filled": false,
+            "outer_contour_ring_index": 0
+          },
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            0.8399999982118612,
+            -0.58600001335144
+          ],
+          "device": [
+            956.7999981939793,
+            598.600001335144
+          ],
+          "class": "Background",
+          "clearance_device_px": 31.74536201663279,
+          "hole_evidence": {
+            "inside_outer_contour": true,
+            "even_odd_filled": false,
+            "nonzero_filled": false,
+            "outer_contour_ring_index": 0
+          },
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            0.9999999982118614,
+            0.5939999866485607
+          ],
+          "device": [
+            972.7999981939794,
+            480.60000133514393
+          ],
+          "class": "Background",
+          "clearance_device_px": 29.916370370369677,
+          "hole_evidence": {
+            "inside_outer_contour": true,
+            "even_odd_filled": false,
+            "nonzero_filled": false,
+            "outer_contour_ring_index": 0
+          },
+          "subpath_index": null
+        }
+      ],
+      "ink_candidates_found": 8030,
+      "background_candidates_found": 5882,
+      "ink_spacing_relaxed": false,
+      "background_spacing_relaxed": false,
+      "ink_satisfied": true,
+      "background_required": true,
+      "background_satisfied": true,
+      "subpath_coverage_required": false,
+      "subpath_coverage_satisfied": true,
+      "satisfied": true,
+      "hole_diagnostic": {
+        "raw_hole_grid_hits": 9504,
+        "best_hole_clearance_device_px": 34.51401272338884
+      }
+    },
+    {
+      "name": "accidentalFlat",
+      "requirement": "BoundedHole",
+      "subpath_count": 2,
+      "expected_subpath_count": 2,
+      "transform": {
+        "scale": 100.0,
+        "tx": 914.8000007867813,
+        "ty": 592.80000269413,
+        "target_width": 1920.0,
+        "target_height": 1080.0
+      },
+      "bbox_staff": [
+        0.0,
+        -0.699999988079071,
+        0.9039999842643738,
+        1.75600004196167
+      ],
+      "outer_contour_ring_index": 0,
+      "ring_signed_areas": [
+        1.0400791647491505,
+        -0.2566232782507076
+      ],
+      "points": [
+        {
+          "staff": [
+            0.7500000000000004,
+            0.3100000119209296
+          ],
+          "device": [
+            989.8000007867813,
+            561.8000015020369
+          ],
+          "class": "Ink",
+          "clearance_device_px": 14.123904362928288,
+          "hole_evidence": null,
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            0.7600000000000005,
+            0.15000001192092943
+          ],
+          "device": [
+            990.8000007867813,
+            577.800001502037
+          ],
+          "class": "Ink",
+          "clearance_device_px": 13.242801200968785,
+          "hole_evidence": null,
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            0.15,
+            0.38000001192092964
+          ],
+          "device": [
+            929.8000007867813,
+            554.8000015020369
+          ],
+          "class": "Ink",
+          "clearance_device_px": 12.984644164814336,
+          "hole_evidence": null,
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            0.4000000000000002,
+            0.12000001192092942
+          ],
+          "device": [
+            954.8000007867813,
+            580.800001502037
+          ],
+          "class": "Background",
+          "clearance_device_px": 22.16023587801027,
+          "hole_evidence": {
+            "inside_outer_contour": true,
+            "even_odd_filled": false,
+            "nonzero_filled": false,
+            "outer_contour_ring_index": 0
+          },
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            0.37000000000000016,
+            -0.02999998807907056
+          ],
+          "device": [
+            951.8000007867813,
+            595.800001502037
+          ],
+          "class": "Background",
+          "clearance_device_px": 18.26919422193897,
+          "hole_evidence": {
+            "inside_outer_contour": true,
+            "even_odd_filled": false,
+            "nonzero_filled": false,
+            "outer_contour_ring_index": 0
+          },
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            0.46000000000000024,
+            0.26000001192092953
+          ],
+          "device": [
+            960.8000007867813,
+            566.800001502037
+          ],
+          "class": "Background",
+          "clearance_device_px": 13.87396974116893,
+          "hole_evidence": {
+            "inside_outer_contour": true,
+            "even_odd_filled": false,
+            "nonzero_filled": false,
+            "outer_contour_ring_index": 0
+          },
+          "subpath_index": null
+        }
+      ],
+      "ink_candidates_found": 1381,
+      "background_candidates_found": 1175,
+      "ink_spacing_relaxed": false,
+      "background_spacing_relaxed": false,
+      "ink_satisfied": true,
+      "background_required": true,
+      "background_satisfied": true,
+      "subpath_coverage_required": false,
+      "subpath_coverage_satisfied": true,
+      "satisfied": true,
+      "hole_diagnostic": {
+        "raw_hole_grid_hits": 2571,
+        "best_hole_clearance_device_px": 22.16023587801027
+      }
+    },
+    {
+      "name": "noteheadHalf",
+      "requirement": "BoundedHole",
+      "subpath_count": 2,
+      "expected_subpath_count": 2,
+      "transform": {
+        "scale": 100.0,
+        "tx": 901.0000026226044,
+        "ty": 540.0,
+        "target_width": 1920.0,
+        "target_height": 1080.0
+      },
+      "bbox_staff": [
+        0.0,
+        -0.5,
+        1.1799999475479126,
+        0.5
+      ],
+      "outer_contour_ring_index": 0,
+      "ring_signed_areas": [
+        0.9031883633805334,
+        -0.36761223428111944
+      ],
+      "points": [
+        {
+          "staff": [
+            0.4000000000000002,
+            0.2800000000000004
+          ],
+          "device": [
+            941.0000026226044,
+            511.99999999999994
+          ],
+          "class": "Ink",
+          "clearance_device_px": 12.347781160235112,
+          "hole_evidence": null,
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            0.7600000000000005,
+            -0.2899999999999998
+          ],
+          "device": [
+            977.0000026226044,
+            569.0
+          ],
+          "class": "Ink",
+          "clearance_device_px": 12.307512116945116,
+          "hole_evidence": null,
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            0.8900000000000006,
+            -0.19999999999999973
+          ],
+          "device": [
+            990.0000026226044,
+            560.0
+          ],
+          "class": "Ink",
+          "clearance_device_px": 11.678047475017337,
+          "hole_evidence": null,
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            0.5900000000000003,
+            3.0878077872387166e-16
+          ],
+          "device": [
+            960.0000026226044,
+            540.0
+          ],
+          "class": "Background",
+          "clearance_device_px": 21.285841339339235,
+          "hole_evidence": {
+            "inside_outer_contour": true,
+            "even_odd_filled": false,
+            "nonzero_filled": false,
+            "outer_contour_ring_index": 0
+          },
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            0.46000000000000024,
+            -0.0799999999999997
+          ],
+          "device": [
+            947.0000026226044,
+            548.0
+          ],
+          "class": "Background",
+          "clearance_device_px": 20.68272256548643,
+          "hole_evidence": {
+            "inside_outer_contour": true,
+            "even_odd_filled": false,
+            "nonzero_filled": false,
+            "outer_contour_ring_index": 0
+          },
+          "subpath_index": null
+        },
+        {
+          "staff": [
+            0.7200000000000004,
+            0.08000000000000031
+          ],
+          "device": [
+            973.0000026226044,
+            532.0
+          ],
+          "class": "Background",
+          "clearance_device_px": 20.1077663347467,
+          "hole_evidence": {
+            "inside_outer_contour": true,
+            "even_odd_filled": false,
+            "nonzero_filled": false,
+            "outer_contour_ring_index": 0
+          },
+          "subpath_index": null
+        }
+      ],
+      "ink_candidates_found": 949,
+      "background_candidates_found": 1919,
+      "ink_spacing_relaxed": false,
+      "background_spacing_relaxed": false,
+      "ink_satisfied": true,
+      "background_required": true,
+      "background_satisfied": true,
+      "subpath_coverage_required": false,
+      "subpath_coverage_satisfied": true,
+      "satisfied": true,
+      "hole_diagnostic": {
+        "raw_hole_grid_hits": 3681,
+        "best_hole_clearance_device_px": 21.285841339339235
+      }
+    },
+    {
+      "name": "fClef",
+      "requirement": "DisjointComponents",
+      "subpath_count": 3,
+      "expected_subpath_count": 3,
+      "transform": {
+        "scale": 100.0,
+        "tx": 824.1999969258904,
+        "ty": 465.40000081062317,
+        "target_width": 1920.0,
+        "target_height": 1080.0
+      },
+      "bbox_staff": [
+        -0.019999999552965164,
+        -2.5399999618530273,
+        2.7360000610351562,
+        1.0479999780654907
+      ],
+      "outer_contour_ring_index": 0,
+      "ring_signed_areas": [
+        2.5338203400622494,
+        0.15280048146661862,
+        0.1481298437718624
+      ],
+      "points": [
+        {
+          "staff": [
+            0.5000000004470351,
+            -0.019999961853036992
+          ],
+          "device": [
+            874.1999969705939,
+            467.39999699592687
+          ],
+          "class": "Ink",
+          "clearance_device_px": 41.559502835282714,
+          "hole_evidence": null,
+          "subpath_index": 0
+        },
+        {
+          "staff": [
+            2.5160000038146926,
+            0.5000000011920931
+          ],
+          "device": [
+            1075.7999973073597,
+            415.4000006914139
+          ],
+          "class": "Ink",
+          "clearance_device_px": 21.97428696274997,
+          "hole_evidence": null,
+          "subpath_index": 1
+        },
+        {
+          "staff": [
+            2.5239999008178664,
+            -0.4960000205039976
+          ],
+          "device": [
+            1076.599987007677,
+            515.000002861023
+          ],
+          "class": "Ink",
+          "clearance_device_px": 21.14908118002104,
+          "hole_evidence": null,
+          "subpath_index": 2
+        }
+      ],
+      "ink_candidates_found": 3,
+      "background_candidates_found": 0,
+      "ink_spacing_relaxed": false,
+      "background_spacing_relaxed": false,
+      "ink_satisfied": true,
+      "background_required": false,
+      "background_satisfied": true,
+      "subpath_coverage_required": true,
+      "subpath_coverage_satisfied": true,
+      "satisfied": true,
+      "hole_diagnostic": {
+        "raw_hole_grid_hits": 0,
+        "best_hole_clearance_device_px": null
+      }
+    }
+  ]
+}

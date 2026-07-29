@@ -1,0 +1,26 @@
+[package]
+name = "round1-oracle"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+# CONTRACT_EDITOR_T4_SPIKE.md, Round 1 (criterion 1, fill correctness).
+# Builds the precommitted oracle ONLY: sample points, their expected
+# ink/background class, and the render transform they are pinned against.
+#
+# This crate draws NOTHING. It depends on no rendering, tessellation, or
+# windowing crate of any kind (no egui, no lyon, no vello, no wgpu, no
+# winit). Round 1's own wording requires the oracle file, the render transform,
+# and the expected class per point to be "committed before any candidate
+# renders", so candidate runs happen in a later packet, only after the user
+# has reviewed and committed this. This crate's only job is deriving the oracle programmatically
+# from the typed glyph outlines and writing it out as data.
+#
+# The two epiphany dependencies below are the only epiphany dependencies, by
+# path, exactly as the packet's brief requires.
+
+[dependencies]
+epiphany-glyphs = { path = "../../../crates/epiphany-glyphs" }
+epiphany-layout-ir = { path = "../../../crates/epiphany-layout-ir" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

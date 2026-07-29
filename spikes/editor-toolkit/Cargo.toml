@@ -4,6 +4,7 @@ members = [
     "probe-egui",
     "probe-vello",
     "probe-iced",
+    "round1-oracle",
 ]
 
 # a11y-verifier is a standalone Python script (a11y-verifier/verify.py), not
