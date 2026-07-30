@@ -234,7 +234,7 @@
   {\Large\scshape\color{epiphanyslate}Text Projection}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.12.0 --- The four remaining genesis root-level entity mints reach the grammar}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.13.0 --- The genesis ladder closes: \texttt{create-measure} reaches the grammar}\\[4pt]
   {\small\color{epiphanyslate}Normative for the text form it defines}
   \vfill
 \end{titlepage}
@@ -483,7 +483,7 @@ A projection is, in order:
 \begin{requirement}
   \label{req:textproj:header-version}
   A parser implementing this companion \MUST{} accept exactly one header
-  version: \texttt{(0 12 0)}, the version of the companion it implements. It
+  version: \texttt{(0 13 0)}, the version of the companion it implements. It
   \MUST{} reject any other version at line one.
 
   Multi-version acceptance and text migrate-on-read are deferred in the same
@@ -534,7 +534,7 @@ projection introduces no ordering of its own.
   A parser \MUST{} reject every \texttt{(blob ...)} line whose blob is
   unreferenced by canonical state
   (Requirement~\ref{req:textproj:canonical-blobs}). At companion
-  version~0.12.0, neither a canonical operation nor canonical reduced state can
+  version~0.13.0, neither a canonical operation nor canonical reduced state can
   carry a \texttt{BlobId}; canonical state therefore cannot reference a blob,
   and a parser \MUST{} reject every \texttt{(blob ...)} line.
 \end{requirement}
@@ -1066,6 +1066,7 @@ kind           ::= "(insert-event " bytes " " value ")"
                | "(create-part-definition " value ")"
                | "(create-analysis-layer " value ")"
                | "(create-view " value ")"
+               | "(create-measure " value ")"
 
 tuplet-comp    ::= "not-in-tuplet" | "(replace-with-rest " value ")"
                | "(rewrite-tuplets (" bytes* "))"
@@ -1142,7 +1143,7 @@ A document of one operation --- a transposition of two pitches up a perfect
 fifth, over a compacted base --- projects to five lines:
 
 \begin{lstlisting}
-(text-projection (0 12 0))
+(text-projection (0 13 0))
 (document #x05050505050505050505050505050505 (schema 0 1))
 (profile full (0 1 0) (constraints 67108864 (retention 1 () true)))
 (canonical-base #x1f8b0000000000000000000000000000 #x 1 full (schema 0 1) #x0000)

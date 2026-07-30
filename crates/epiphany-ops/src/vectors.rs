@@ -564,6 +564,45 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         view_trailing,
     ));
 
+    // Genesis tranche G3b (kind 39, `spec/CONTRACT_GENESIS_G3B_MEASURE.md`).
+    let measure_envelope = OperationEnvelope {
+        id: OperationId::new(ReplicaId(1), 9),
+        author: crate::support::AuthorId(0),
+        stamp: crate::stamp::OperationStamp::new(
+            crate::stamp::HybridLogicalClock::new(epiphany_core::WallClockTime(1), 1),
+            OperationId::new(ReplicaId(1), 9),
+        ),
+        causal_context: crate::causal::CausalContext::new(),
+        transaction: None,
+        payload: crate::payload::OperationPayload::Primitive(
+            crate::payload::OperationKind::CreateMeasure(crate::payload::CreateMeasureOp {
+                instance: epiphany_core::StaffInstanceId::new(ReplicaId(1), 1),
+                measure: crate::valuegen::measure(
+                    epiphany_core::MeasureId::new(ReplicaId(1), 1),
+                    epiphany_core::TimeSignatureId::new(ReplicaId(1), 1),
+                    1,
+                ),
+            }),
+        ),
+    };
+    let measure_envelope_bytes = measure_envelope.to_canonical_bytes();
+    v.push(row(
+        OE,
+        "accept",
+        "-",
+        "create_measure",
+        measure_envelope_bytes.clone(),
+    ));
+    let mut measure_trailing = measure_envelope_bytes;
+    measure_trailing.push(0);
+    v.push(row(
+        OE,
+        "reject",
+        "trailing-bytes",
+        "create_measure_trailing",
+        measure_trailing,
+    ));
+
     v
 }
 

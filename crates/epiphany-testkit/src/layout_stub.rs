@@ -1372,7 +1372,7 @@ mod tests {
 
     /// (s10, row 29) `gen_operation_kind_tag`'s draw must cover exactly
     /// `PAYLOAD_FREE` ∪ `{Registered}` — **not** merely the appended
-    /// discriminants 30..=38, which would pass even if the `Registered`
+    /// discriminants 30..=39, which would pass even if the `Registered`
     /// append (structurally different from every built-in: it is the one
     /// variant `PAYLOAD_FREE` excludes by design, `payload.rs:469`) were
     /// deleted from the generator entirely.

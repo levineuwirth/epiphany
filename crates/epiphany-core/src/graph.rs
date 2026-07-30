@@ -584,6 +584,19 @@ impl Voice {
 
 /// A measure belonging to exactly one staff instance (Chapter 5
 /// §"Staff-Based Content").
+///
+/// Genesis tranche G3b (`spec/CONTRACT_GENESIS_G3B_MEASURE.md`): `CreateMeasure`
+/// is the sole authoring path, and it is append-only — a measure is always
+/// pushed at the end of the owning [`StaffInstance::measures`], never
+/// inserted. `time_signature: None` means *inherit* the effective grid's
+/// active signature at this measure's start; that inherited meter still
+/// governs boundary consistency (invariant 20's second clause) even though
+/// `None` exempts a measure from the first clause (agreement). Invariant 20's
+/// agreement and boundary checks ABSTAIN — emit no violation — where the
+/// comparison or delta they need is not computable (contract pin 7): this is
+/// deliberate, not a safety property, because base-ingested data may predate
+/// the rule. Pickup/anacrusis (a partial first measure) is deferred
+/// (P13-S19) and is never refused or flagged by this rung.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Measure {
     pub id: MeasureId,
@@ -607,7 +620,9 @@ pub struct StaffInstance {
     pub key_sequence: Vec<KeySignatureChange>,
     pub local_metric_grid: Option<MetricGrid>,
     /// Measures belonging to this instance, in order (per-staff; admits
-    /// polymeter).
+    /// polymeter). Append-only: `CreateMeasure` (genesis tranche G3b) always
+    /// pushes at the end, gated on the effective grid's agreement and
+    /// boundary-distance preconditions (contract pin 9).
     pub measures: Vec<Measure>,
     pub instrument_override: Option<InstrumentId>,
     pub staff_lines_override: Option<StaffLineConfiguration>,

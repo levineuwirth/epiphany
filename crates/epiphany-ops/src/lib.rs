@@ -125,17 +125,17 @@ pub use migrate::{migrate_v0_envelope, project_v1_to_v0, MigrationError};
 pub use opset::{AcceptOutcome, OperationSet};
 pub use payload::{
     operation_block_introduced_minor, ChangeRegionTimeModelOp, CreateAnalysisLayerOp,
-    CreateCrossCuttingOp, CreateInstrumentOp, CreatePartDefinitionOp, CreateRegionOp,
-    CreateRepeatStructureOp, CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp,
-    CreateViewOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp,
-    DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteRepeatStructureOp, DeleteStaffInstanceOp,
-    DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp,
-    ModifyIdentifiedPitchOp, OperationKind, OperationKindTag, OperationPayload, PositionRemapping,
-    ResolveConflictPayload, ResolveEquivocationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp,
-    SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
-    SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp,
-    TransactionCategory, TransactionDescriptor, TransposeIntervalOp, TransposeOp,
-    TupletCompensation,
+    CreateCrossCuttingOp, CreateInstrumentOp, CreateMeasureOp, CreatePartDefinitionOp,
+    CreateRegionOp, CreateRepeatStructureOp, CreateStaffGroupOp, CreateStaffInstanceOp,
+    CreateStaffOp, CreateViewOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp,
+    DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteRepeatStructureOp,
+    DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
+    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationKindTag,
+    OperationPayload, PositionRemapping, ResolveConflictPayload, ResolveEquivocationPayload,
+    RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp, SetMetricGridOp,
+    SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp,
+    SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransactionCategory,
+    TransactionDescriptor, TransposeIntervalOp, TransposeOp, TupletCompensation,
 };
 pub use reduce::{
     canonical_reduction_order, GraphMaterialization, MaterializedState, ObjectState, PendingReason,

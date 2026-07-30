@@ -9,15 +9,15 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::payload::{
     ChangeRegionTimeModelOp, CreateAnalysisLayerOp, CreateCrossCuttingOp, CreateInstrumentOp,
-    CreatePartDefinitionOp, CreateRegionOp, CreateRepeatStructureOp, CreateStaffGroupOp,
-    CreateStaffInstanceOp, CreateStaffOp, CreateViewOp, CreateVoiceOp, DeleteCrossCuttingOp,
-    DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteRepeatStructureOp,
-    DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
-    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationKindTag,
-    RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp, SetMetricGridOp,
-    SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp,
-    SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransactionDescriptor,
-    TransposeIntervalOp, TransposeOp,
+    CreateMeasureOp, CreatePartDefinitionOp, CreateRegionOp, CreateRepeatStructureOp,
+    CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateViewOp, CreateVoiceOp,
+    DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
+    DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
+    InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
+    OperationKind, OperationKindTag, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp,
+    SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
+    SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp,
+    TransactionDescriptor, TransposeIntervalOp, TransposeOp,
 };
 use crate::support::OperationKindRegistryId;
 
@@ -241,6 +241,10 @@ impl TextValue for OperationKind {
                 production(self.tag(), vec![op.layer.project()])
             }
             OperationKind::CreateView(op) => production(self.tag(), vec![op.view.project()]),
+            OperationKind::CreateMeasure(op) => production(
+                self.tag(),
+                vec![op.instance.project(), op.measure.project()],
+            ),
         }
     }
 
@@ -618,6 +622,15 @@ impl TextValue for OperationKind {
                     view: TextValue::parse(view)?,
                 })
             }
+            OperationKindTag::CreateMeasure => {
+                let [instance, measure] = fields(s, tag, 2)? else {
+                    unreachable!("the arity-2 check returned two fields")
+                };
+                OperationKind::CreateMeasure(CreateMeasureOp {
+                    instance: TextValue::parse(instance)?,
+                    measure: TextValue::parse(measure)?,
+                })
+            }
         })
     }
 }
@@ -671,7 +684,7 @@ mod tests {
     #[test]
     fn every_operation_kind_round_trips_with_canonical_text() {
         let tags: Vec<_> = all_tags().collect();
-        assert_eq!(tags.len(), 39, "the grammar has 39 kind productions");
+        assert_eq!(tags.len(), 40, "the grammar has 40 kind productions");
         for tag in tags {
             round_trip(&sample_kind(tag));
         }

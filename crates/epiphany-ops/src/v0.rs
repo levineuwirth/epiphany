@@ -123,6 +123,10 @@ pub enum V0OperationKind {
     CreatePartDefinition(crate::payload::CreatePartDefinitionOp),
     CreateAnalysisLayer(crate::payload::CreateAnalysisLayerOp),
     CreateView(crate::payload::CreateViewOp),
+    // Genesis tranche G3b — born at wire-disc 39; no lossy v0 form (v0
+    // predates the catalog entirely), so it round-trips by identity like
+    // every other v1-native kind above.
+    CreateMeasure(crate::payload::CreateMeasureOp),
 }
 
 /// v0 `InsertEvent`: the event was a bare [`EventId`] plus the reduction-relevant

@@ -56,7 +56,7 @@ use epiphany_ops::OperationEnvelope;
 /// and `create-view` to the `kind` production — the same reasoning as every
 /// prior kind append: extending the grammar without moving this constant
 /// would leave two incompatible grammars both claiming `(0 11 0)`.
-pub const COMPANION_VERSION: (u32, u32, u32) = (0, 12, 0);
+pub const COMPANION_VERSION: (u32, u32, u32) = (0, 13, 0);
 
 /// A parsed canonical Text Projection document.
 ///

@@ -17,14 +17,14 @@ use std::collections::BTreeMap;
 use epiphany_core::{
     AcousticPitch, AcousticRealization, AleatoricAnchoringDiscipline, AleatoricTimeModel,
     AnalysisLayerId, AnchorOffset, Beam, BeamId, CmnNominal, Event, EventId, EventOrderingDAG,
-    EventPosition, IdentifiedPitch, MetricTimeModel, MusicalDuration, MusicalPosition,
-    PartDefinitionId, Pitch, PitchId, PitchSpaceId, PitchSpacePosition, PitchSpelling,
-    PitchedEvent, ProportionalTimeModel, Region, RegionContent, RegionEdge, RegionId,
-    RegionTimeModel, RepeatKind, RepeatStructure, RepeatStructureId, Rest, ScalePosition, Slur,
-    SlurId, SpellingAttachment, SpellingDirective, SpellingScope, SpellingSource,
-    StaffBasedContent, StaffExtent, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
-    StemConfiguration, Tie, TieClass, TieId, TimeAnchor, TimeExtent, ViewId, Voice, VoiceId,
-    VoiceOrigin, Volta, WallClockDuration, WallClockTime,
+    EventPosition, IdentifiedPitch, Measure, MeasureId, MeasureNumberVisibility, MetricTimeModel,
+    MusicalDuration, MusicalPosition, PartDefinitionId, Pitch, PitchId, PitchSpaceId,
+    PitchSpacePosition, PitchSpelling, PitchedEvent, ProportionalTimeModel, Region, RegionContent,
+    RegionEdge, RegionId, RegionTimeModel, RepeatKind, RepeatStructure, RepeatStructureId, Rest,
+    ScalePosition, Slur, SlurId, SpellingAttachment, SpellingDirective, SpellingScope,
+    SpellingSource, StaffBasedContent, StaffExtent, StaffGroupId, StaffId, StaffInstance,
+    StaffInstanceId, StemConfiguration, Tie, TieClass, TieId, TimeAnchor, TimeExtent,
+    TimeSignatureId, ViewId, Voice, VoiceId, VoiceOrigin, Volta, WallClockDuration, WallClockTime,
 };
 
 /// A deterministic, fully-specified C4 pitch in the cmn-12 space — the neutral
@@ -421,6 +421,38 @@ pub fn view(id: ViewId, active_layers: Vec<AnalysisLayerId>) -> epiphany_core::V
         id,
         name: format!("view-{}", id.counter()),
         active_layers,
+    }
+}
+
+/// A minimal [`Measure`] (genesis tranche G3b) — the value a `CreateMeasure`
+/// appends: anchored to a `WallClock` point (deliberately, over an id-carrying
+/// shape — see below), with an explicit signature reference and number.
+///
+/// **Field-length distinguishability (contract §3's `valuegen` trap, from
+/// G3a's `analysis_layer` mistake — a name that happened to share its
+/// encoded byte width with the 16-byte `id` field made a field-swap mutation
+/// byte-invisible):** `Measure` has five fields; this fixture's chosen
+/// encodings are MUTUALLY DISTINCT in length — `id` (an identifier, a
+/// length-prefixed leaf: 4-byte length + 16-byte payload = 20 bytes),
+/// `start` (a `WallClock` anchor: 1-byte variant tag + a `WallClockTime` leaf,
+/// 4+8 = 12 bytes, so 13 total — deliberately not an `Event`/`Measure`/
+/// `Region` anchor, whose embedded id-leaf would collide with `id`'s own
+/// width), `time_signature` (`Some`: 1-byte tag + a 20-byte id-leaf = 21
+/// bytes), `explicit_number` (`Some`: 1-byte tag + a bare 4-byte `u32`, NOT
+/// leaf-framed = 5 bytes), and `number_visibility` (a C-style enum: 1 tag
+/// byte, no leaf framing) — 20, 13, 21, 5, 1 are pairwise distinct, so a
+/// `struct_codec!` field reorder (M12) changes the byte layout, not merely
+/// reinterprets it. Verified against `leaf_codec!`/`Option<T>`/`u32`'s actual
+/// `Codec` impls (`codec.rs`), not assumed.
+pub fn measure(id: MeasureId, time_signature: TimeSignatureId, explicit_number: u32) -> Measure {
+    Measure {
+        id,
+        start: TimeAnchor::WallClock {
+            time: WallClockTime(1_000_000_000 * i64::from(explicit_number)),
+        },
+        time_signature: Some(time_signature),
+        explicit_number: Some(explicit_number),
+        number_visibility: MeasureNumberVisibility::Auto,
     }
 }
 

@@ -34,23 +34,23 @@ use epiphany_ops::{
     AnomalousReplicaSegment, AuthorId, CausalContext, ChangeRegionTimeModelOp, ConflictId,
     ConflictKind, ConflictKindRegistryId, ConflictRecord, ConflictRegistry,
     ConflictResolutionState, CreateAnalysisLayerOp, CreateCrossCuttingOp, CreateInstrumentOp,
-    CreatePartDefinitionOp, CreateRegionOp, CreateRepeatStructureOp, CreateStaffGroupOp,
-    CreateStaffInstanceOp, CreateStaffOp, CreateViewOp, CreateVoiceOp, CrossCuttingValue,
-    DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
-    DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, ExtensionPreconditionId,
-    FieldPath, HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp, IntegrityAnomaly,
-    IntegrityAnomalyKind, IntegrityAnomalyRegistryId, MaterializedState, ModifyCrossCuttingOp,
-    ModifyEventOp, ModifyIdentifiedPitchOp, NoOpReason, ObjectKind, ObjectState, OperationEffect,
-    OperationEnvelope, OperationKind, OperationKindRegistryId, OperationPayload, OperationSet,
-    OperationStamp, PendingReason, PositionRemapping, PreconditionFailureReason,
-    PreconditionFailureRegistryId, ReanchorReason, ReanchorReasonRegistryId, ReanchorResult,
-    RepairKind, RepairKindRegistryId, RepairRecord, ReplicaAnomalyReason, ReplicaAnomalyRegistryId,
-    ResolutionAction, ResolutionRegistryId, ResolveConflictPayload, RespellPitchOp,
-    SerializedCanonicalInputs, SetCanvasLayoutDefaultsOp, SetMetadataOp, SetMetricGridOp,
-    SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp,
-    SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransactionCategory,
-    TransactionDescriptor, TransposeIntervalOp, TransposeOp, TupletCompensation,
-    TupletCompensationKind, UndoPolicy, UndoTransactionPayload,
+    CreateMeasureOp, CreatePartDefinitionOp, CreateRegionOp, CreateRepeatStructureOp,
+    CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateViewOp, CreateVoiceOp,
+    CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
+    DeleteRegionOp, DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp,
+    ExtensionPreconditionId, FieldPath, HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp,
+    IntegrityAnomaly, IntegrityAnomalyKind, IntegrityAnomalyRegistryId, MaterializedState,
+    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, NoOpReason, ObjectKind,
+    ObjectState, OperationEffect, OperationEnvelope, OperationKind, OperationKindRegistryId,
+    OperationPayload, OperationSet, OperationStamp, PendingReason, PositionRemapping,
+    PreconditionFailureReason, PreconditionFailureRegistryId, ReanchorReason,
+    ReanchorReasonRegistryId, ReanchorResult, RepairKind, RepairKindRegistryId, RepairRecord,
+    ReplicaAnomalyReason, ReplicaAnomalyRegistryId, ResolutionAction, ResolutionRegistryId,
+    ResolveConflictPayload, RespellPitchOp, SerializedCanonicalInputs, SetCanvasLayoutDefaultsOp,
+    SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
+    SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp,
+    TransactionCategory, TransactionDescriptor, TransposeIntervalOp, TransposeOp,
+    TupletCompensation, TupletCompensationKind, UndoPolicy, UndoTransactionPayload,
 };
 
 use crate::rng::Rng;
@@ -414,7 +414,7 @@ pub fn conflict_registry(rng: &mut Rng) -> ConflictRegistry {
 
 /// A typed precondition failure (every core and registered variant).
 pub fn precondition_failure_reason(rng: &mut Rng) -> PreconditionFailureReason {
-    match rng.below(14) {
+    match rng.below(19) {
         0 => PreconditionFailureReason::TargetMissing,
         1 => PreconditionFailureReason::TargetTombstoned,
         2 => PreconditionFailureReason::WrongRegionTimeModel,
@@ -427,7 +427,15 @@ pub fn precondition_failure_reason(rng: &mut Rng) -> PreconditionFailureReason {
         9 => PreconditionFailureReason::TempoMapMalformed,
         10 => PreconditionFailureReason::SystemDerivedContentImmutable,
         11 => PreconditionFailureReason::RecreateContentMismatch,
-        12 => PreconditionFailureReason::ExtensionPrecondition(ExtensionPreconditionId(
+        // Push 4a (previously a decoder hole this generator never reached —
+        // P13-S20, closed by genesis tranche G3b's row 12a repair).
+        12 => PreconditionFailureReason::AcousticRealizationPinned,
+        13 => PreconditionFailureReason::TranspositionOutOfRange,
+        // Genesis tranche G3b.
+        14 => PreconditionFailureReason::MeasureMeterMismatch,
+        15 => PreconditionFailureReason::MeasureOutOfOrder,
+        16 => PreconditionFailureReason::MeasureOrderUnverifiable,
+        17 => PreconditionFailureReason::ExtensionPrecondition(ExtensionPreconditionId(
             rng.next_u64() as u128,
         )),
         _ => PreconditionFailureReason::Registered(PreconditionFailureRegistryId(
@@ -647,7 +655,7 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
         }
         _ => {}
     }
-    let kind = match rng.below(39) {
+    let kind = match rng.below(40) {
         0 => {
             let pitches = if rng.boolean() {
                 vec![obj_pitch(rng.below(pitches))]
@@ -897,6 +905,16 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
             view: valuegen::view(
                 ViewId::new(OBJ_REPLICA, rng.below(2)),
                 vec![AnalysisLayerId::new(OBJ_REPLICA, rng.below(2))],
+            ),
+        }),
+        // Genesis tranche G3b: append a measure onto the shared
+        // staff-instance id space.
+        38 => OperationKind::CreateMeasure(CreateMeasureOp {
+            instance: StaffInstanceId::new(OBJ_REPLICA, rng.below(2)),
+            measure: valuegen::measure(
+                MeasureId::new(OBJ_REPLICA, rng.below(2)),
+                TimeSignatureId::new(OBJ_REPLICA, rng.below(2)),
+                rng.below(4) as u32,
             ),
         }),
         _ => OperationKind::Registered(
@@ -1929,7 +1947,7 @@ mod tests {
     /// Push-4a debt) and `CreateInstrument` (kind 31, G1 debt) went missing
     /// from every corpus this generator feeds despite every downstream suite
     /// staying green. Assert a bounded draw actually reaches every kind
-    /// appended past the historically-tested range (discriminants 30..=38),
+    /// appended past the historically-tested range (discriminants 30..=39),
     /// not just that the function does not panic.
     #[test]
     fn operation_payload_emits_every_appended_kind() {
@@ -1939,6 +1957,7 @@ mod tests {
         let mut saw_tuning_context = false;
         let (mut saw_create_staff_group, mut saw_create_part_definition) = (false, false);
         let (mut saw_create_analysis_layer, mut saw_create_view) = (false, false);
+        let mut saw_create_measure = false;
         for _ in 0..2000 {
             let OperationPayload::Primitive(kind) = operation_payload(&mut rng, 8, 8) else {
                 continue;
@@ -1953,6 +1972,7 @@ mod tests {
                 OperationKind::CreatePartDefinition(_) => saw_create_part_definition = true,
                 OperationKind::CreateAnalysisLayer(_) => saw_create_analysis_layer = true,
                 OperationKind::CreateView(_) => saw_create_view = true,
+                OperationKind::CreateMeasure(_) => saw_create_measure = true,
                 _ => {}
             }
         }
@@ -1991,6 +2011,54 @@ mod tests {
         assert!(
             saw_create_view,
             "CreateView (kind 38, G3a debt) never drawn in 2000 samples"
+        );
+        assert!(
+            saw_create_measure,
+            "CreateMeasure (kind 39, G3b debt) never drawn in 2000 samples"
+        );
+    }
+
+    /// (M66, row 23) `precondition_failure_reason`'s doc comment claims
+    /// "every core and registered variant" — assert the bounded draw
+    /// actually reaches every one, including the genesis tranche G3b
+    /// additions (16–18) and the previously-untested Push 4a pair (14–15,
+    /// P13-S20).
+    ///
+    /// **Mutation:** revert `rng.below(19)` to `rng.below(14)`; must fail —
+    /// the generator would then never reach discriminants 14 through 18.
+    #[test]
+    fn precondition_failure_reason_reaches_every_variant() {
+        let mut rng = Rng::new(23);
+        let mut seen: std::collections::BTreeSet<u8> = std::collections::BTreeSet::new();
+        for _ in 0..2000 {
+            let reason = precondition_failure_reason(&mut rng);
+            let discriminant = match reason {
+                PreconditionFailureReason::TargetMissing => 0,
+                PreconditionFailureReason::TargetTombstoned => 1,
+                PreconditionFailureReason::WrongRegionTimeModel => 2,
+                PreconditionFailureReason::TupletCompensationInvalid => 3,
+                PreconditionFailureReason::EventDurationInvalid => 4,
+                PreconditionFailureReason::PositionOutsideRegion => 5,
+                PreconditionFailureReason::PitchSpaceMismatch => 6,
+                PreconditionFailureReason::VoiceMissing => 7,
+                PreconditionFailureReason::ContainerNotEmpty => 8,
+                PreconditionFailureReason::TempoMapMalformed => 9,
+                PreconditionFailureReason::SystemDerivedContentImmutable => 10,
+                PreconditionFailureReason::RecreateContentMismatch => 11,
+                PreconditionFailureReason::AcousticRealizationPinned => 12,
+                PreconditionFailureReason::TranspositionOutOfRange => 13,
+                PreconditionFailureReason::MeasureMeterMismatch => 14,
+                PreconditionFailureReason::MeasureOutOfOrder => 15,
+                PreconditionFailureReason::MeasureOrderUnverifiable => 16,
+                PreconditionFailureReason::ExtensionPrecondition(_) => 17,
+                PreconditionFailureReason::Registered(_) => 18,
+            };
+            seen.insert(discriminant);
+        }
+        let expected: std::collections::BTreeSet<u8> = (0..=18).collect();
+        assert_eq!(
+            seen, expected,
+            "the bounded draw must reach every core and registered variant"
         );
     }
 

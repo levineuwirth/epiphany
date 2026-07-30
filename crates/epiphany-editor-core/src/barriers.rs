@@ -466,6 +466,17 @@ pub(crate) fn subjects_of(kind: &OperationKind, score: &Score) -> BarrierSubject
         OperationKind::CreateView(op) => {
             one(TypedObjectId::View(op.view_id()), EditContext::default())
         }
+        // Genesis tranche G3b: `Measure` is a nested container child of a
+        // `StaffInstance` (not a root-level entity like the mints above), so
+        // — exactly like `CreateVoice` — it names the region/staff-instance
+        // context its parent resolves to.
+        OperationKind::CreateMeasure(op) => one(
+            TypedObjectId::Measure(op.measure_id()),
+            ctx(
+                region_of_staff_instance(score, op.instance),
+                Some(op.instance),
+            ),
+        ),
         OperationKind::SetTimeSignature(op) => {
             let mut objects = vec![(TypedObjectId::Region(op.region), ctx(Some(op.region), None))];
             if let Some(signature) = &op.time_signature {

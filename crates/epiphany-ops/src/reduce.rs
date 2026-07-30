@@ -28,20 +28,21 @@
 //! deferred to the Operation Catalog (§6.11); see `DECISIONS.md` for the exact
 //! boundary.
 
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use epiphany_core::{
     canonical_pitch_bytes, derive_promoted_voice_id, simplest_spelling, AnalysisLayer,
     AnalysisLayerId, AnchorOffset, AnnotationAnchor, CanonicalValue, CanvasLayoutDefaults, Event,
-    EventDuration, EventId, EventPosition, GestureAnchoring, Instrument, InstrumentId, MeterChange,
-    MetricGrid, MusicalDuration, MusicalPosition, OperationId, PartDefinition, PartDefinitionId,
-    Pitch, PitchId, PitchSpelling, RationalTime, RegionEdge, RegionId, RegionTimeModel, ReplicaId,
-    Score, ScoreMetadata, SpellingAttachment, SpellingDirective, SpellingPrecedence, SpellingScope,
-    SpellingSource, Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
-    StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, TimeAnchor, TimeSignature,
-    TimeSignatureId, TransactionId, TransposeRefusal, TranspositionInterval, TuningContextSettings,
-    TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId, VoiceOrigin,
+    EventDuration, EventId, EventPosition, GestureAnchoring, Instrument, InstrumentId, Measure,
+    MeasureId, MeasurePosition, MeterChange, MetricGrid, MusicalDuration, MusicalPosition,
+    OperationId, PartDefinition, PartDefinitionId, Pitch, PitchId, PitchSpelling, RationalTime,
+    RegionEdge, RegionId, RegionTimeModel, ReplicaId, Score, ScoreMetadata, SpellingAttachment,
+    SpellingDirective, SpellingPrecedence, SpellingScope, SpellingSource, Staff, StaffGroup,
+    StaffGroupId, StaffId, StaffInstance, StaffInstanceId, StaffLineConfiguration, TempoMap,
+    TempoSegment, TempoShape, TimeAnchor, TimeSignature, TimeSignatureId, TransactionId,
+    TransposeRefusal, TranspositionInterval, TuningContextSettings, TypedObjectId, ViewDefinition,
+    ViewId, Voice, VoiceId, VoiceOrigin, WallClockDuration,
 };
 use epiphany_determinism::CanonicalEncode;
 
@@ -58,10 +59,10 @@ use crate::envelope::OperationEnvelope;
 use crate::opset::OperationSet;
 use crate::payload::{
     resolved_anchor_position, CreateAnalysisLayerOp, CreateCrossCuttingOp, CreateInstrumentOp,
-    CreatePartDefinitionOp, CreateRegionOp, CreateRepeatStructureOp, CreateStaffGroupOp,
-    CreateStaffInstanceOp, CreateStaffOp, CreateViewOp, CreateVoiceOp, CrossCuttingValue,
-    DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
-    DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
+    CreateMeasureOp, CreatePartDefinitionOp, CreateRegionOp, CreateRepeatStructureOp,
+    CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateViewOp, CreateVoiceOp,
+    CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
+    DeleteRegionOp, DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
     InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
     OperationKind, OperationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp,
     SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
@@ -784,6 +785,42 @@ impl<V> Predecessor<V> {
     }
 }
 
+/// Genesis tranche G3b (`spec/CONTRACT_GENESIS_G3B_MEASURE.md` pin 6c): how
+/// recently (in canonical order) a chain wrote, for comparing two
+/// INDEPENDENT chains' last writes (`metric_grid_chain` vs
+/// `meter_change_chain`) — see [`Reducer::chain_recency`]. Declaration order
+/// IS the intended `Ord`: a seeded-only base predates every real write, and
+/// a prospective (not-yet-applied) write is always the latest.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Recency {
+    /// No recorded operational write — only a seeded base, or nothing.
+    Base,
+    /// A recorded write, keyed by its authoring operation's canonical
+    /// position.
+    Write(crate::stamp::StampTuple),
+    /// An in-flight, not-yet-applied prospective write (pin 6c, M31a) —
+    /// always the most recent.
+    Prospective,
+}
+
+/// Genesis tranche G3b (`spec/CONTRACT_GENESIS_G3B_MEASURE.md` pin 6c): the
+/// outcome of finding the governing element of a partially-ordered set under
+/// [`Reducer::anchors_comparable_order`] — shared by the effective-grid
+/// oracle's governing meter change and by `CreateMeasure`'s "current last
+/// measure" lookup.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum GoverningElement<T> {
+    /// No candidate exists (an empty, or wholly-filtered-away, set) —
+    /// vacuous, not a violation (pin 6c step 1).
+    None,
+    /// Exactly one candidate is the unique maximum (pin 6c step 2).
+    Unique(T),
+    /// Either some candidate is incomparable to the reference point (step 0),
+    /// or multiple maxima are mutually incomparable to each other (step 3) —
+    /// the caller must refuse/abstain, never guess.
+    Indeterminate,
+}
+
 /// The per-key outcome of undoing a transaction's write chain.
 enum ChainUndoVerdict<V> {
     /// The transaction never wrote this key.
@@ -1016,6 +1053,24 @@ struct Reducer<'a> {
     part_definition_values: BTreeMap<PartDefinitionId, PartDefinition>,
     analysis_layer_values: BTreeMap<AnalysisLayerId, AnalysisLayer>,
     view_values: BTreeMap<ViewId, ViewDefinition>,
+    // Genesis tranche G3b (`CONTRACT_GENESIS_G3B_MEASURE.md` pin 5): carried
+    // values of append-only-minted measures, WITH the owning instance —
+    // `Measure` has no back-pointer to its parent, so a map keyed by
+    // `MeasureId` alone could not tell the graph-removal arm which
+    // `StaffInstance.measures` to remove from, nor support a re-carry's
+    // parent-mismatch check (a re-carry naming a *different* parent under an
+    // otherwise-identical measure is `RecreateContentMismatch`, not
+    // `AlreadyApplied` — the parent is part of identity here).
+    measure_values: BTreeMap<MeasureId, (StaffInstanceId, Measure)>,
+    // Genesis tranche G3b (contract pin 6c, disposition A): whether a staff
+    // instance authored a local metric-grid override, distinguishing override
+    // from "never told us" — `StaffInstance.local_metric_grid` overrides the
+    // enclosing region's default, but nothing tracked that distinction
+    // base-free before this. `Some(None)` = an authored explicit-inherit;
+    // `Some(Some(grid))` = an authored override; absent = never told (mint
+    // only ever inserts, so a live instance is always present after it is
+    // minted or base-seeded).
+    instance_grid: BTreeMap<StaffInstanceId, Option<MetricGrid>>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     // Live child sets for the structural-container empty-only delete (Group 3):
     // a region's live staff instances, and a staff instance's live voices. (A
@@ -1121,6 +1176,8 @@ struct WorkingSnapshot {
     part_definition_values: BTreeMap<PartDefinitionId, PartDefinition>,
     analysis_layer_values: BTreeMap<AnalysisLayerId, AnalysisLayer>,
     view_values: BTreeMap<ViewId, ViewDefinition>,
+    measure_values: BTreeMap<MeasureId, (StaffInstanceId, Measure)>,
+    instance_grid: BTreeMap<StaffInstanceId, Option<MetricGrid>>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     region_instances: BTreeMap<RegionId, BTreeSet<StaffInstanceId>>,
     instance_voices: BTreeMap<StaffInstanceId, BTreeSet<VoiceId>>,
@@ -1407,6 +1464,8 @@ impl<'a> Reducer<'a> {
             part_definition_values: BTreeMap::new(),
             analysis_layer_values: BTreeMap::new(),
             view_values: BTreeMap::new(),
+            measure_values: BTreeMap::new(),
+            instance_grid: BTreeMap::new(),
             structures: BTreeMap::new(),
             region_instances: BTreeMap::new(),
             instance_voices: BTreeMap::new(),
@@ -1582,6 +1641,12 @@ impl<'a> Reducer<'a> {
                         instance.staff_lines_override.clone(),
                         instance.visible,
                     ));
+                // Genesis tranche G3b (contract pin 6c, disposition A): record
+                // whether this instance authored a local grid override, so a
+                // later CreateMeasure can distinguish override from
+                // inheritance without consulting the graph (base-free parity).
+                self.instance_grid
+                    .insert(instance.id, instance.local_metric_grid.clone());
                 let voice_set = self.instance_voices.entry(instance.id).or_default();
                 for voice in &instance.voices {
                     voice_set.insert(voice.id);
@@ -1589,6 +1654,14 @@ impl<'a> Reducer<'a> {
                 for measure in &instance.measures {
                     self.objects
                         .insert(TypedObjectId::Measure(measure.id), ObjectState::Live);
+                    // Genesis tranche G3b (contract pin 5): the carried value
+                    // backs CreateMeasure's byte-identical-re-carry
+                    // idempotence check against a *base* measure — without
+                    // this, `TypedObjectId::Measure` liveness is seeded but
+                    // there is nothing to compare a re-carry against (the G1
+                    // `instrument_values` hazard).
+                    self.measure_values
+                        .insert(measure.id, (instance.id, measure.clone()));
                 }
                 for voice in &instance.voices {
                     self.objects
@@ -2909,6 +2982,7 @@ impl<'a> Reducer<'a> {
                 OperationKind::CreatePartDefinition(op) => self.create_part_definition(env, op),
                 OperationKind::CreateAnalysisLayer(op) => self.create_analysis_layer(env, op),
                 OperationKind::CreateView(op) => self.create_view(env, op),
+                OperationKind::CreateMeasure(op) => self.create_measure(env, op),
             },
             OperationPayload::ResolveConflict(op) => self.resolve_conflict(env, op),
             OperationPayload::UndoTransaction(op) => self.undo_transaction(env, op),
@@ -4073,6 +4147,12 @@ impl<'a> Reducer<'a> {
         self.instance_voices.entry(op.instance_id()).or_default();
         self.instance_staff
             .insert(op.instance_id(), op.instance.staff);
+        // Genesis tranche G3b (contract pin 6c, disposition A): record the
+        // minted instance's local grid override (or its absence) — this is
+        // the ONLY site that ever writes `local_metric_grid`, so the ledger's
+        // single write happens here.
+        self.instance_grid
+            .insert(op.instance_id(), op.instance.local_metric_grid.clone());
         // Seed the layout-advisory chain with the minted instance's fields, so
         // a later SetStaffLayout's chain-predecessor is the created state.
         self.staff_layout_chain
@@ -4455,6 +4535,577 @@ impl<'a> Reducer<'a> {
         }
         self.mint_container(env, vobj);
         self.view_values.insert(op.view_id(), op.view.clone());
+        OperationEffect::Applied
+    }
+
+    // --- Genesis tranche G3b (`spec/CONTRACT_GENESIS_G3B_MEASURE.md`): the
+    // final rung of the genesis ladder. `Measure` is a nested container
+    // child, so `create_measure` rides `CreateStaffInstance`'s parent-
+    // carrying mint shape (contract pin 4), not the nine root-level mints'
+    // bare-value shape above. The predicates below (pins 6/6b/6c) are shared,
+    // reusable functions — graph invariant 20 (packet 2) reuses every one of
+    // them; nothing here is inlined into `create_measure`. ---------------
+
+    /// The region enclosing `instance`, from reducer state alone (never
+    /// `self.graph`) — so it resolves identically in graph-aware and
+    /// base-free reduction (contract pin 6c, M30b): `region_instances` is
+    /// maintained in both modes (by `create_region`/`create_staff_instance`
+    /// and by `seed_from_graph`).
+    fn region_of_instance(&self, instance: StaffInstanceId) -> Option<RegionId> {
+        self.region_instances
+            .iter()
+            .find(|(_, instances)| instances.contains(&instance))
+            .map(|(region, _)| *region)
+    }
+
+    /// Pin 6: two `AnchorOffset`s are comparable iff they are the same clock,
+    /// or at least one is `Zero` — read as the additive identity of whichever
+    /// clock it is compared against. `Musical` against `WallClock` is never
+    /// comparable (the deferred wall-clock/musical reconciliation).
+    fn comparable_offset_order(a: &AnchorOffset, b: &AnchorOffset) -> Option<Ordering> {
+        match (a, b) {
+            (AnchorOffset::Musical(x), AnchorOffset::Musical(y)) => Some(x.cmp(y)),
+            (AnchorOffset::WallClock(x), AnchorOffset::WallClock(y)) => Some(x.cmp(y)),
+            (AnchorOffset::Zero, AnchorOffset::Zero) => Some(Ordering::Equal),
+            (AnchorOffset::Zero, AnchorOffset::Musical(y)) => Some(MusicalDuration::zero().cmp(y)),
+            (AnchorOffset::Musical(x), AnchorOffset::Zero) => Some(x.cmp(&MusicalDuration::zero())),
+            (AnchorOffset::Zero, AnchorOffset::WallClock(y)) => Some(WallClockDuration(0).cmp(y)),
+            (AnchorOffset::WallClock(x), AnchorOffset::Zero) => Some(x.cmp(&WallClockDuration(0))),
+            (AnchorOffset::Musical(_), AnchorOffset::WallClock(_))
+            | (AnchorOffset::WallClock(_), AnchorOffset::Musical(_)) => None,
+        }
+    }
+
+    /// c3's "vector index" ordering between two DISTINCT measures, both
+    /// anchored via `Measure{pos: Start, off: Zero}` (contract pin 6, c3):
+    /// their relative position within the SAME `StaffInstance.measures`, or
+    /// `None` if they are not both found in one instance's live measures.
+    ///
+    /// Graph-aware mode reads the actual `Vec` (ground truth). Base-free mode
+    /// has no graph at all — but base-free reduction has no *base* either, so
+    /// every live measure of an instance was minted by a `CreateMeasure`
+    /// processed in canonical order, and `minted_by`'s `OperationId` ordering
+    /// IS the append order; no separate order ledger is needed (contract §2
+    /// row 5 lists exactly `measure_values`/`instance_grid`, not a third).
+    fn measure_vector_order(&self, a: MeasureId, b: MeasureId) -> Option<Ordering> {
+        if let Some(score) = &self.graph {
+            for region in &score.canvas.regions {
+                for instance in region.staff_instances() {
+                    let pos_a = instance.measures.iter().position(|m| m.id == a);
+                    let pos_b = instance.measures.iter().position(|m| m.id == b);
+                    if let (Some(pa), Some(pb)) = (pos_a, pos_b) {
+                        return Some(pa.cmp(&pb));
+                    }
+                }
+            }
+            None
+        } else {
+            let oa = self.minted_by.get(&TypedObjectId::Measure(a))?;
+            let ob = self.minted_by.get(&TypedObjectId::Measure(b))?;
+            Some(oa.cmp(ob))
+        }
+    }
+
+    /// Pin 6: the comparable relation over `TimeAnchor`s, EXACTLY the five
+    /// shapes c1–c5. Everything else is NOT comparable, and no other
+    /// relation may be invented — pin 6's prohibition. The boundary selector
+    /// (`MeasurePosition`/`RegionEdge`) must be IDENTICAL; it is never
+    /// ordered (draft 3's `Start < End` was unsound and is not reproduced
+    /// here).
+    fn anchors_comparable_order(&self, a: &TimeAnchor, b: &TimeAnchor) -> Option<Ordering> {
+        match (a, b) {
+            // c1: same Event id.
+            (
+                TimeAnchor::Event { id: ia, offset: oa },
+                TimeAnchor::Event { id: ib, offset: ob },
+            ) if ia == ib => Self::comparable_offset_order(oa, ob),
+            // c2/c3: Measure anchors.
+            (
+                TimeAnchor::Measure {
+                    id: ia,
+                    position: pa,
+                    offset: oa,
+                },
+                TimeAnchor::Measure {
+                    id: ib,
+                    position: pb,
+                    offset: ob,
+                },
+            ) => {
+                if pa != pb {
+                    return None;
+                }
+                if ia == ib {
+                    // c2: same id and same pos.
+                    return Self::comparable_offset_order(oa, ob);
+                }
+                // c3: distinct ids, restricted to pos: Start, off: Zero (load-
+                // bearing — a nonzero offset or an `End` position can carry a
+                // point past its neighbour, so the index no longer bounds
+                // it).
+                if *pa != MeasurePosition::Start
+                    || !matches!(oa, AnchorOffset::Zero)
+                    || !matches!(ob, AnchorOffset::Zero)
+                {
+                    return None;
+                }
+                self.measure_vector_order(*ia, *ib)
+            }
+            // c4: same Region id and same edge.
+            (
+                TimeAnchor::Region {
+                    id: ia,
+                    edge: ea,
+                    offset: oa,
+                },
+                TimeAnchor::Region {
+                    id: ib,
+                    edge: eb,
+                    offset: ob,
+                },
+            ) if ia == ib && ea == eb => Self::comparable_offset_order(oa, ob),
+            // c5: WallClock, no referent id.
+            (TimeAnchor::WallClock { time: ta }, TimeAnchor::WallClock { time: tb }) => {
+                Some(ta.cmp(tb))
+            }
+            // Never Event<->Measure, never Measure<->Region, never two Events
+            // with different ids, never Musical against WallClock, and never
+            // across differing pos/edge selectors.
+            _ => None,
+        }
+    }
+
+    /// Pin 6b: the musical delta `b - a`, computable ONLY in shape c1, c2, or
+    /// c4 with BOTH offsets in the `Musical` clock (or `Zero`, normalized to
+    /// `Musical(0)`), and only when the boundary selector is identical. c3
+    /// supplies no delta at all (a vector index gives order, never distance).
+    /// `WallClock` deltas are not musical durations and are never returned.
+    fn anchor_musical_delta(&self, a: &TimeAnchor, b: &TimeAnchor) -> Option<MusicalDuration> {
+        fn musical(o: &AnchorOffset) -> Option<MusicalDuration> {
+            match o {
+                AnchorOffset::Musical(d) => Some(d.clone()),
+                AnchorOffset::Zero => Some(MusicalDuration::zero()),
+                AnchorOffset::WallClock(_) => None,
+            }
+        }
+        match (a, b) {
+            (
+                TimeAnchor::Event { id: ia, offset: oa },
+                TimeAnchor::Event { id: ib, offset: ob },
+            ) if ia == ib => Some(musical(ob)? - musical(oa)?),
+            (
+                TimeAnchor::Measure {
+                    id: ia,
+                    position: pa,
+                    offset: oa,
+                },
+                TimeAnchor::Measure {
+                    id: ib,
+                    position: pb,
+                    offset: ob,
+                },
+            ) if ia == ib && pa == pb => Some(musical(ob)? - musical(oa)?),
+            (
+                TimeAnchor::Region {
+                    id: ia,
+                    edge: ea,
+                    offset: oa,
+                },
+                TimeAnchor::Region {
+                    id: ib,
+                    edge: eb,
+                    offset: ob,
+                },
+            ) if ia == ib && ea == eb => Some(musical(ob)? - musical(oa)?),
+            _ => None,
+        }
+    }
+
+    /// The outcome of finding the governing element of a partially-ordered
+    /// set under [`Self::anchors_comparable_order`] (contract pin 6c steps
+    /// 0–3) — shared by the effective-grid oracle's governing meter change
+    /// AND `CreateMeasure`'s "current last measure" (an append-only sequence
+    /// poses exactly the same "find the unique maximum" problem).
+    fn unique_maximum<'x, T: Copy>(
+        &self,
+        candidates: impl IntoIterator<Item = (T, &'x TimeAnchor)>,
+    ) -> GoverningElement<T> {
+        let items: Vec<(T, &TimeAnchor)> = candidates.into_iter().collect();
+        if items.is_empty() {
+            return GoverningElement::None;
+        }
+        let mut maximal: Vec<T> = Vec::new();
+        for (key, anchor) in &items {
+            let dominated = items.iter().any(|(_, other)| {
+                self.anchors_comparable_order(other, anchor) == Some(Ordering::Greater)
+            });
+            if !dominated {
+                maximal.push(*key);
+            }
+        }
+        if maximal.len() == 1 {
+            GoverningElement::Unique(maximal[0])
+        } else {
+            GoverningElement::Indeterminate
+        }
+    }
+
+    /// Pin 6c steps 0–3: the governing element among `candidates` relative to
+    /// `reference` (e.g. a meter change's signature relative to a measure's
+    /// start). **Step 0 comes before any candidate set**: if ANY candidate's
+    /// anchor is incomparable to `reference`, the whole selection is
+    /// indeterminate — even when the not-after-filtered set would have been
+    /// empty (an incomparable change is unplaced, not absent, and it might
+    /// have governed).
+    fn governing_by_anchor<'x, T: Copy>(
+        &self,
+        reference: &TimeAnchor,
+        candidates: impl IntoIterator<Item = (T, &'x TimeAnchor)>,
+    ) -> GoverningElement<T> {
+        let mut not_after: Vec<(T, &TimeAnchor)> = Vec::new();
+        for (key, anchor) in candidates {
+            match self.anchors_comparable_order(anchor, reference) {
+                None => return GoverningElement::Indeterminate,
+                Some(Ordering::Greater) => {}
+                Some(_) => not_after.push((key, anchor)),
+            }
+        }
+        self.unique_maximum(not_after)
+    }
+
+    /// Pin 6c, disposition A: the effective metric grid for a staff
+    /// instance — its own local override when present, else the enclosing
+    /// region's whole-grid write layered with per-key meter-change writes,
+    /// in canonical write order (the whole-grid chain first, then the
+    /// per-key overlay — a later per-key write overrides an earlier
+    /// whole-grid write, and a later whole-grid write supersedes an earlier
+    /// per-key write). Consults ONLY `self.instance_grid`,
+    /// `self.metric_grid_chain`, and `self.meter_change_chain` — never
+    /// `self.graph` — so graph-aware and base-free reduction run the
+    /// IDENTICAL reconstruction (pin 6c, M30b).
+    ///
+    /// `grid_override`/`meter_change_overrides` let a caller ask "what would
+    /// the grid be under this PROSPECTIVE write", substituting a value the
+    /// corresponding chain does not (yet) hold — used to evaluate an
+    /// in-flight undo restoration without mutating the chains (pin 6c,
+    /// M31a). `None` (respectively, an absent key) means "no prospective
+    /// override; consult the chain".
+    fn effective_grid(
+        &self,
+        instance: StaffInstanceId,
+        region: Option<RegionId>,
+        grid_override: Option<&Option<MetricGrid>>,
+        meter_change_overrides: &BTreeMap<MusicalPosition, Option<MeterChange>>,
+    ) -> Vec<MeterChange> {
+        if let Some(Some(local)) = self.instance_grid.get(&instance) {
+            return local.meter_sequence.clone();
+        }
+
+        let whole_chain = region.and_then(|region| self.metric_grid_chain.get(&region));
+        let whole_recency = self.chain_recency(whole_chain, grid_override.is_some());
+        let whole_value: Option<MetricGrid> = match grid_override {
+            Some(over) => over.clone(),
+            None => whole_chain
+                .and_then(|chain| chain.current())
+                .cloned()
+                .flatten(),
+        };
+        let mut sequence: Vec<MeterChange> =
+            whole_value.map(|g| g.meter_sequence).unwrap_or_default();
+
+        // Every key either chain could speak to: positions the whole grid
+        // itself names, every per-key chain entry for this region, and any
+        // prospective per-key override.
+        let mut keys: BTreeSet<MusicalPosition> = sequence
+            .iter()
+            .map(|c| resolved_anchor_position(&c.anchor))
+            .collect();
+        if let Some(region) = region {
+            keys.extend(
+                self.meter_change_chain
+                    .keys()
+                    .filter(|(r, _)| *r == region)
+                    .map(|(_, pos)| pos.clone()),
+            );
+        }
+        keys.extend(meter_change_overrides.keys().cloned());
+
+        // Canonical write-order interleaving (pin 6c, M30c): at each key,
+        // whichever chain wrote MORE RECENTLY governs. A later whole-grid
+        // write supersedes an earlier per-key change at that position (so
+        // the whole grid's own content there stands, and any stale per-key
+        // value is ignored); a later per-key write overlays the whole grid.
+        // `metric_grid_chain` and `meter_change_chain` are independent —
+        // `set_metric_grid` never touches `meter_change_chain` — so this
+        // cannot be shortcut to "whole grid, then always overlay per-key".
+        for key in keys {
+            let per_key_chain =
+                region.and_then(|region| self.meter_change_chain.get(&(region, key.clone())));
+            let per_key_is_prospective = meter_change_overrides.contains_key(&key);
+            let per_key_recency = self.chain_recency(per_key_chain, per_key_is_prospective);
+
+            if per_key_recency > whole_recency {
+                let value: Option<MeterChange> = if per_key_is_prospective {
+                    meter_change_overrides.get(&key).cloned().flatten()
+                } else {
+                    per_key_chain
+                        .and_then(|chain| chain.current())
+                        .cloned()
+                        .flatten()
+                };
+                sequence.retain(|c| resolved_anchor_position(&c.anchor) != key);
+                if let Some(change) = value {
+                    sequence.push(change);
+                }
+            }
+            // Else: the whole grid's own content at this position (already
+            // reflected in `sequence`, or absent) governs — the per-key
+            // write, if any, predates it and is superseded.
+        }
+        sequence
+    }
+
+    /// The write-recency of a chain's last write, for comparing which of two
+    /// INDEPENDENT chains wrote more recently in canonical order (pin 6c,
+    /// M30c) — `(physical, logical, replica, counter)`, the same tuple
+    /// `canonical_reduction_order` sorts by. A chain with no recorded write
+    /// (only a seeded base, or absent) is [`Recency::Base`], which sorts
+    /// before every real write; `prospective` (an in-flight, not-yet-applied
+    /// restoration, pin 6c M31a) always sorts last.
+    fn chain_recency<V: Clone>(&self, chain: Option<&WriteChain<V>>, prospective: bool) -> Recency {
+        if prospective {
+            return Recency::Prospective;
+        }
+        match chain.and_then(|c| c.last_write()) {
+            Some(write) => self
+                .env_of(write.op)
+                .map(|env| Recency::Write(env.stamp.reduction_tuple()))
+                .unwrap_or(Recency::Base),
+            None => Recency::Base,
+        }
+    }
+
+    /// Pin 6c: the effective grid's governing time signature at `start`,
+    /// from an already-reconstructed `sequence` ([`Self::effective_grid`]).
+    fn governing_time_signature(
+        &self,
+        sequence: &[MeterChange],
+        start: &TimeAnchor,
+    ) -> GoverningElement<TimeSignatureId> {
+        self.governing_by_anchor(
+            start,
+            sequence.iter().map(|c| (c.time_signature, &c.anchor)),
+        )
+    }
+
+    /// All LIVE measures of `instance`, from `measure_values` filtered
+    /// through `self.objects` (a retained-but-tombstoned entry must not
+    /// contribute — contract pin 10.4's retention discipline, applied here to
+    /// the ordering computation too).
+    fn live_measure_starts(&self, instance: StaffInstanceId) -> Vec<(MeasureId, &TimeAnchor)> {
+        self.measure_values
+            .iter()
+            .filter_map(|(id, (parent, measure))| {
+                if *parent != instance {
+                    return None;
+                }
+                if !matches!(
+                    self.objects.get(&TypedObjectId::Measure(*id)),
+                    Some(ObjectState::Live)
+                ) {
+                    return None;
+                }
+                Some((*id, &measure.start))
+            })
+            .collect()
+    }
+
+    fn graph_create_measure(&mut self, instance: StaffInstanceId, measure: &Measure) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        for region in &mut score.canvas.regions {
+            if let Some(instances) = region.content.staff_instances_mut() {
+                if let Some(inst) = instances.iter_mut().find(|i| i.id == instance) {
+                    inst.measures.push(measure.clone());
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Append-only set-union creation of a `Measure` onto a live
+    /// `StaffInstance` (operation_catalog §CreateMeasure, contract pins
+    /// 4/5/8/9). Fresh id mints; a byte-identical re-carry under the SAME
+    /// parent is idempotent; a differing value, OR the same value under a
+    /// DIFFERENT parent (pin 5 — the parent is part of identity), is a
+    /// precondition no-op; a tombstoned id refuses.
+    fn create_measure(&mut self, env: &OperationEnvelope, op: &CreateMeasureOp) -> OperationEffect {
+        fn unverifiable() -> OperationEffect {
+            OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::MeasureOrderUnverifiable,
+                },
+            }
+        }
+
+        // Pin 8.1: the parent StaffInstance must be live — ungated (both
+        // graph-aware and base-free reduction; a mint into a non-existent
+        // parent has nowhere to go even base-free).
+        if !matches!(
+            self.objects.get(&TypedObjectId::StaffInstance(op.instance)),
+            Some(ObjectState::Live)
+        ) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
+
+        let mobj = TypedObjectId::Measure(op.measure_id());
+        match self.objects.get(&mobj) {
+            Some(ObjectState::Live) => {
+                let identical = self
+                    .measure_values
+                    .get(&op.measure_id())
+                    .is_some_and(|(parent, known)| *parent == op.instance && known == &op.measure);
+                return if identical {
+                    OperationEffect::NoOp {
+                        reason: NoOpReason::AlreadyApplied,
+                    }
+                } else {
+                    OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::RecreateContentMismatch,
+                        },
+                    }
+                };
+            }
+            Some(ObjectState::Tombstoned { .. }) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::TargetTombstoned,
+                }
+            }
+            None => {}
+        }
+
+        // Pins 8.2/8.3: reference-resolution preconditions are graph-aware
+        // only (base-free reduction has no universe to check against).
+        if self.graph.is_some() {
+            if let Some(sig) = op.measure.time_signature {
+                if !matches!(
+                    self.objects.get(&TypedObjectId::TimeSignature(sig)),
+                    Some(ObjectState::Live)
+                ) {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::TargetMissing,
+                        },
+                    };
+                }
+            }
+            let start_resolves = match &op.measure.start {
+                TimeAnchor::Event { id, .. } => matches!(
+                    self.objects.get(&TypedObjectId::Event(*id)),
+                    Some(ObjectState::Live)
+                ),
+                TimeAnchor::Measure { id, .. } => matches!(
+                    self.objects.get(&TypedObjectId::Measure(*id)),
+                    Some(ObjectState::Live)
+                ),
+                TimeAnchor::Region { id, .. } => matches!(
+                    self.objects.get(&TypedObjectId::Region(*id)),
+                    Some(ObjectState::Live)
+                ),
+                TimeAnchor::WallClock { .. } => true,
+            };
+            if !start_resolves {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                };
+            }
+        }
+
+        let region = self.region_of_instance(op.instance);
+
+        // Pin 9 clauses 1 & 3: the current last live measure of this
+        // instance — vacuous for the first measure (pin 9's pickup
+        // deferral, P13-S19).
+        let predecessor: Option<TimeAnchor> =
+            match self.unique_maximum(self.live_measure_starts(op.instance)) {
+                GoverningElement::None => None,
+                GoverningElement::Unique(id) => self
+                    .measure_values
+                    .get(&id)
+                    .map(|(_, measure)| measure.start.clone()),
+                GoverningElement::Indeterminate => return unverifiable(),
+            };
+
+        // Pin 9 clause 1: ordering.
+        if let Some(prev_start) = &predecessor {
+            match self.anchors_comparable_order(&op.measure.start, prev_start) {
+                None => return unverifiable(),
+                Some(Ordering::Greater) => {}
+                Some(_) => {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::MeasureOutOfOrder,
+                        },
+                    };
+                }
+            }
+        }
+
+        // Pin 9 clause 2: agreement — ONLY when `time_signature` is `Some`
+        // (pin 9b: `None` avoids only this clause, not clause 3).
+        let sequence = self.effective_grid(op.instance, region, None, &BTreeMap::new());
+        if let Some(sig) = op.measure.time_signature {
+            match self.governing_time_signature(&sequence, &op.measure.start) {
+                GoverningElement::Unique(active) if active == sig => {}
+                GoverningElement::Unique(_) | GoverningElement::None => {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::MeasureMeterMismatch,
+                        },
+                    };
+                }
+                GoverningElement::Indeterminate => return unverifiable(),
+            }
+        }
+
+        // Pin 9 clause 3: boundary distance — vacuous for the first measure.
+        if let Some(prev_start) = &predecessor {
+            let prev_duration: Option<MusicalDuration> =
+                match self.governing_time_signature(&sequence, prev_start) {
+                    GoverningElement::Unique(sig) => self
+                        .time_signature_values
+                        .get(&sig)
+                        .map(|ts| ts.measure_duration().clone()),
+                    GoverningElement::None | GoverningElement::Indeterminate => None,
+                };
+            match (
+                self.anchor_musical_delta(prev_start, &op.measure.start),
+                prev_duration,
+            ) {
+                (Some(delta), Some(expected)) if delta == expected => {}
+                (Some(_), Some(_)) => {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::MeasureMeterMismatch,
+                        },
+                    };
+                }
+                _ => return unverifiable(),
+            }
+        }
+
+        self.graph_create_measure(op.instance, &op.measure);
+        self.mint_container(env, mobj);
+        self.measure_values
+            .insert(op.measure_id(), (op.instance, op.measure.clone()));
         OperationEffect::Applied
     }
 
@@ -7954,6 +8605,8 @@ impl<'a> Reducer<'a> {
             part_definition_values: self.part_definition_values.clone(),
             analysis_layer_values: self.analysis_layer_values.clone(),
             view_values: self.view_values.clone(),
+            measure_values: self.measure_values.clone(),
+            instance_grid: self.instance_grid.clone(),
             structures: self.structures.clone(),
             region_instances: self.region_instances.clone(),
             instance_voices: self.instance_voices.clone(),
@@ -7998,6 +8651,8 @@ impl<'a> Reducer<'a> {
         self.part_definition_values = s.part_definition_values;
         self.analysis_layer_values = s.analysis_layer_values;
         self.view_values = s.view_values;
+        self.measure_values = s.measure_values;
+        self.instance_grid = s.instance_grid;
         self.structures = s.structures;
         self.region_instances = s.region_instances;
         self.instance_voices = s.instance_voices;
@@ -11512,6 +12167,15 @@ mod tests {
         // arm), and `MaterializedState` still embeds no `Score` field value
         // for any of the four carried types, so there remains no surface on
         // this type for a leak to appear on.
+        //
+        // Re-pinned again at genesis tranche G3b
+        // (`spec/CONTRACT_GENESIS_G3B_MEASURE.md`): `gen_payload` gained
+        // `CreateMeasure` (arm 36), and `rng.below(36)` became `below(37)` —
+        // the same reshuffle, same reasoning. `CreateMeasure` is schema major
+        // 0 unconditionally (pin 2: no `schema_major()` arm), and
+        // `MaterializedState` still embeds no `Score` field value for the
+        // carried `Measure`, so there remains no surface on this type for a
+        // leak to appear on.
         let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xBA5E);
         let envelopes = crate::fuzz::gen_envelope_set(&mut rng, 200);
         let mut set = OperationSet::new();
@@ -11521,7 +12185,7 @@ mod tests {
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "0c60a686097819d2c91a65b5bce4ad09c9ce2e640760608124fc999f1470e839"
+            "aefd8ecd6df3abecb84229d5b77585dead9575b6f6554097bbd6907c7b0329d7"
         );
     }
 
@@ -16335,6 +16999,1385 @@ mod tests {
             },
             "objects' Tombstoned state must outrank the retained instrument_values \
              entry, got {recreate_effect:?}"
+        );
+    }
+
+    // =========================================================================
+    // Genesis tranche G3b (`spec/CONTRACT_GENESIS_G3B_MEASURE.md`): CreateMeasure,
+    // the comparable relation (pin 6), the musical delta (pin 6b), and the
+    // effective-grid oracle (pin 6c).
+    // =========================================================================
+
+    fn g3b_measure_env(
+        replica: u64,
+        counter: u64,
+        physical: i64,
+        instance: StaffInstanceId,
+        measure: Measure,
+    ) -> OperationEnvelope {
+        prim_env(
+            replica,
+            counter,
+            physical,
+            CausalContext::new(),
+            OperationKind::CreateMeasure(CreateMeasureOp { instance, measure }),
+        )
+    }
+
+    fn g3b_region_and_instance_envs(
+        replica: u64,
+        region: RegionId,
+        instance: StaffInstanceId,
+        staff: StaffId,
+    ) -> Vec<OperationEnvelope> {
+        vec![
+            prim_env(
+                replica,
+                0,
+                0,
+                CausalContext::new(),
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region),
+                }),
+            ),
+            prim_env(
+                replica,
+                1,
+                1,
+                CausalContext::new(),
+                OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                    region,
+                    instance: crate::valuegen::staff_instance(instance, staff),
+                }),
+            ),
+        ]
+    }
+
+    fn g3b_wallclock_measure(id: MeasureId, nanos: i64) -> Measure {
+        Measure {
+            id,
+            start: TimeAnchor::WallClock {
+                time: WallClockTime(nanos),
+            },
+            time_signature: None,
+            explicit_number: None,
+            number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+        }
+    }
+
+    fn g3b_effect_of(state: &MaterializedState, id: OperationId) -> Option<OperationEffect> {
+        state
+            .effects
+            .iter()
+            .find(|(e, _)| *e == id)
+            .map(|(_, eff)| eff.clone())
+    }
+
+    /// (M16, M17, M18 base-free leg) `CreateMeasure`'s mint discipline: fresh
+    /// id mints; a byte-identical re-carry under the SAME parent is
+    /// idempotent (`AlreadyApplied`); a differing value under a live id is a
+    /// precondition no-op (`RecreateContentMismatch`, M16); the SAME value
+    /// under a DIFFERENT parent is ALSO `RecreateContentMismatch` — the
+    /// parent is part of identity (pin 5, M17); a dead parent refuses
+    /// (`TargetMissing`) base-free too (M18's ungated leg).
+    #[test]
+    fn g3b_create_measure_mint_discipline_base_free() {
+        let region = RegionId::new(ReplicaId(1), 1);
+        let instance_a = StaffInstanceId::new(ReplicaId(1), 2);
+        let instance_b = StaffInstanceId::new(ReplicaId(1), 3);
+        let staff = StaffId::new(ReplicaId(1), 4);
+        let mut envs = g3b_region_and_instance_envs(1, region, instance_a, staff);
+        envs.push(prim_env(
+            1,
+            2,
+            2,
+            CausalContext::new(),
+            OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region,
+                instance: crate::valuegen::staff_instance(instance_b, staff),
+            }),
+        ));
+
+        let measure_id = MeasureId::new(ReplicaId(1), 10);
+        let measure = g3b_wallclock_measure(measure_id, 1_000);
+        let mut differing = measure.clone();
+        differing.explicit_number = Some(99);
+
+        let create = g3b_measure_env(1, 10, 10, instance_a, measure.clone());
+        let recarry_identical = g3b_measure_env(1, 11, 11, instance_a, measure.clone());
+        let recarry_differing = g3b_measure_env(1, 12, 12, instance_a, differing);
+        let recarry_other_parent = g3b_measure_env(1, 13, 13, instance_b, measure);
+        let dead_parent = g3b_measure_env(
+            1,
+            14,
+            14,
+            StaffInstanceId::new(ReplicaId(1), 999),
+            g3b_wallclock_measure(MeasureId::new(ReplicaId(1), 11), 2_000),
+        );
+
+        envs.extend([
+            create.clone(),
+            recarry_identical.clone(),
+            recarry_differing.clone(),
+            recarry_other_parent.clone(),
+            dead_parent.clone(),
+        ]);
+        let mut set = OperationSet::new();
+        set.accept_all(envs);
+        let state = set.reduce();
+
+        assert_eq!(
+            g3b_effect_of(&state, create.id),
+            Some(OperationEffect::Applied)
+        );
+        assert_eq!(
+            g3b_effect_of(&state, recarry_identical.id),
+            Some(OperationEffect::NoOp {
+                reason: NoOpReason::AlreadyApplied
+            })
+        );
+        assert_eq!(
+            g3b_effect_of(&state, recarry_differing.id),
+            Some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::RecreateContentMismatch
+                }
+            })
+        );
+        assert_eq!(
+            g3b_effect_of(&state, recarry_other_parent.id),
+            Some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::RecreateContentMismatch
+                }
+            }),
+            "the parent is part of identity (pin 5): a re-carry under a different \
+             parent must not be AlreadyApplied"
+        );
+        assert_eq!(
+            g3b_effect_of(&state, dead_parent.id),
+            Some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing
+                }
+            }),
+            "a dead parent must refuse base-free too (pin 8.1, ungated)"
+        );
+    }
+
+    /// (M18 graph-aware leg) A dead parent refuses under a graph too.
+    #[test]
+    fn g3b_create_measure_dead_parent_graph_aware() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let dead_parent = g3b_measure_env(
+            1,
+            0,
+            0,
+            StaffInstanceId::new(ReplicaId(1), 999),
+            g3b_wallclock_measure(MeasureId::new(ReplicaId(1), 1), 1_000),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![dead_parent.clone()]);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+        assert_eq!(
+            g3b_effect_of(&out.state, dead_parent.id),
+            Some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing
+                }
+            })
+        );
+    }
+
+    /// (M19, M20 x3) Reference-resolution preconditions are graph-aware:
+    /// `time_signature: Some(id)` must resolve (M19); `start`'s referent must
+    /// resolve for each non-`WallClock` variant — `Event`, `Measure`,
+    /// `Region` (M20, three observations).
+    #[test]
+    fn g3b_create_measure_referential_preconditions_graph_aware() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let region = RegionId::new(ReplicaId(1), 1);
+        let instance = StaffInstanceId::new(ReplicaId(1), 2);
+        let staff = StaffId::new(ReplicaId(1), 3);
+        let instrument = epiphany_core::InstrumentId::new(ReplicaId(1), 4);
+        // Graph-aware mode preconditions CreateStaffInstance on a live
+        // Staff, which in turn preconditions a live Instrument — mint both
+        // first so the parent instance genuinely becomes Live, otherwise
+        // every CreateMeasure below would refuse on pin 8.1 (parent
+        // liveness) before ever reaching pins 8.2/8.3.
+        let mut envs = vec![
+            prim_env(
+                1,
+                0,
+                0,
+                CausalContext::new(),
+                OperationKind::CreateInstrument(CreateInstrumentOp {
+                    instrument: crate::valuegen::instrument(instrument),
+                }),
+            ),
+            prim_env(
+                1,
+                1,
+                1,
+                CausalContext::new(),
+                OperationKind::CreateStaff(CreateStaffOp {
+                    staff: crate::valuegen::staff(staff, instrument),
+                }),
+            ),
+            prim_env(
+                1,
+                2,
+                2,
+                CausalContext::new(),
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region),
+                }),
+            ),
+            prim_env(
+                1,
+                3,
+                3,
+                CausalContext::new(),
+                OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                    region,
+                    instance: crate::valuegen::staff_instance(instance, staff),
+                }),
+            ),
+        ];
+
+        // M19: an unresolvable time_signature.
+        let bad_signature = g3b_measure_env(
+            1,
+            10,
+            10,
+            instance,
+            Measure {
+                id: MeasureId::new(ReplicaId(1), 20),
+                start: TimeAnchor::WallClock {
+                    time: WallClockTime(1),
+                },
+                time_signature: Some(TimeSignatureId::new(ReplicaId(1), 999)),
+                explicit_number: None,
+                number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+            },
+        );
+        // M20 (Event): an unresolvable Event referent.
+        let bad_event = g3b_measure_env(
+            1,
+            11,
+            11,
+            instance,
+            Measure {
+                id: MeasureId::new(ReplicaId(1), 21),
+                start: TimeAnchor::Event {
+                    id: EventId::new(ReplicaId(1), 999),
+                    offset: AnchorOffset::Zero,
+                },
+                time_signature: None,
+                explicit_number: None,
+                number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+            },
+        );
+        // M20 (Measure): an unresolvable Measure referent.
+        let bad_measure_ref = g3b_measure_env(
+            1,
+            12,
+            12,
+            instance,
+            Measure {
+                id: MeasureId::new(ReplicaId(1), 22),
+                start: TimeAnchor::Measure {
+                    id: MeasureId::new(ReplicaId(1), 999),
+                    position: MeasurePosition::Start,
+                    offset: AnchorOffset::Zero,
+                },
+                time_signature: None,
+                explicit_number: None,
+                number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+            },
+        );
+        // M20 (Region): an unresolvable Region referent.
+        let bad_region_ref = g3b_measure_env(
+            1,
+            13,
+            13,
+            instance,
+            Measure {
+                id: MeasureId::new(ReplicaId(1), 23),
+                start: TimeAnchor::Region {
+                    id: RegionId::new(ReplicaId(1), 999),
+                    edge: RegionEdge::Start,
+                    offset: AnchorOffset::Zero,
+                },
+                time_signature: None,
+                explicit_number: None,
+                number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+            },
+        );
+
+        envs.extend([
+            bad_signature.clone(),
+            bad_event.clone(),
+            bad_measure_ref.clone(),
+            bad_region_ref.clone(),
+        ]);
+        let mut set = OperationSet::new();
+        set.accept_all(envs);
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        let target_missing = Some(OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::TargetMissing,
+            },
+        });
+        assert_eq!(
+            g3b_effect_of(&out.state, bad_signature.id),
+            target_missing,
+            "M19: an unresolvable time_signature must refuse graph-aware"
+        );
+        assert_eq!(
+            g3b_effect_of(&out.state, bad_event.id),
+            target_missing,
+            "M20 (Event): an unresolvable start referent must refuse graph-aware"
+        );
+        assert_eq!(
+            g3b_effect_of(&out.state, bad_measure_ref.id),
+            target_missing,
+            "M20 (Measure): an unresolvable start referent must refuse graph-aware"
+        );
+        assert_eq!(
+            g3b_effect_of(&out.state, bad_region_ref.id),
+            target_missing,
+            "M20 (Region): an unresolvable start referent must refuse graph-aware"
+        );
+    }
+
+    /// (M15) A byte-identical re-carry against a *base*-seeded measure is
+    /// idempotent — a re-carry test that only ever reduces from empty cannot
+    /// see a missing `measure_values` base seed at all.
+    #[test]
+    fn g3b_create_measure_base_recarry_is_idempotent() {
+        let measure = g3b_wallclock_measure(MeasureId::new(ReplicaId(1), 1), 5_000);
+        let instance_id = StaffInstanceId::new(ReplicaId(1), 2);
+        let mut instance =
+            crate::valuegen::staff_instance(instance_id, StaffId::new(ReplicaId(1), 3));
+        instance.measures.push(measure.clone());
+        let mut region = crate::valuegen::region(RegionId::new(ReplicaId(1), 4));
+        if let epiphany_core::RegionContent::StaffBased(content) = &mut region.content {
+            content.staff_instances.push(instance);
+        } else {
+            panic!("valuegen::region is staff-based");
+        }
+        let mut base = Score::empty(IdentityContext::new(ReplicaId(1)));
+        base.canvas.regions.push(region);
+
+        let recarry = g3b_measure_env(2, 0, 10, instance_id, measure);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![recarry.clone()]);
+        let out = reduce_operation_set_onto(&set, &base);
+        assert_eq!(
+            g3b_effect_of(&out.state, recarry.id),
+            Some(OperationEffect::NoOp {
+                reason: NoOpReason::AlreadyApplied
+            }),
+            "a base-seeded measure re-carried byte-identically must be AlreadyApplied \
+             (pin 5 site 4 — the G1 instrument_values hazard)"
+        );
+    }
+
+    /// (M23–M26) Pin 6's comparable relation, exactly the five shapes; pin
+    /// 6b's musical delta. Exercised directly on a bare `Reducer` (a
+    /// white-box test of the shared, reusable predicates — invariant 20,
+    /// packet 2, reuses these same functions).
+    #[test]
+    fn g3b_comparable_offsets_and_anchor_shapes() {
+        let op_set = OperationSet::new();
+        let mut r = Reducer::new(&op_set);
+
+        let ev_a = EventId::new(ReplicaId(1), 1);
+        let ev_b = EventId::new(ReplicaId(1), 2);
+        let m_a = MeasureId::new(ReplicaId(1), 10);
+        let m_b = MeasureId::new(ReplicaId(1), 11);
+        let rg_a = RegionId::new(ReplicaId(1), 20);
+        let rg_b = RegionId::new(ReplicaId(1), 21);
+
+        // c1: same Event id, comparable by offset.
+        let e1 = TimeAnchor::Event {
+            id: ev_a,
+            offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(1))),
+        };
+        let e2 = TimeAnchor::Event {
+            id: ev_a,
+            offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(2))),
+        };
+        assert_eq!(r.anchors_comparable_order(&e1, &e2), Some(Ordering::Less));
+        assert_eq!(
+            r.anchor_musical_delta(&e1, &e2),
+            Some(MusicalDuration(RationalTime::from_int(1)))
+        );
+        // Never two Events with different ids.
+        let e3 = TimeAnchor::Event {
+            id: ev_b,
+            offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(1))),
+        };
+        assert_eq!(r.anchors_comparable_order(&e1, &e3), None);
+
+        // M23: Musical vs WallClock offsets are never comparable, even under
+        // the same Event id.
+        let e_wc = TimeAnchor::Event {
+            id: ev_a,
+            offset: AnchorOffset::WallClock(WallClockDuration(5)),
+        };
+        assert_eq!(
+            r.anchors_comparable_order(&e1, &e_wc),
+            None,
+            "M23: Musical against WallClock must never be comparable"
+        );
+
+        // c2: same Measure id AND same pos, comparable by offset.
+        let ms1 = TimeAnchor::Measure {
+            id: m_a,
+            position: MeasurePosition::Start,
+            offset: AnchorOffset::Zero,
+        };
+        let ms2 = TimeAnchor::Measure {
+            id: m_a,
+            position: MeasurePosition::Start,
+            offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(3))),
+        };
+        assert_eq!(r.anchors_comparable_order(&ms1, &ms2), Some(Ordering::Less));
+        assert_eq!(
+            r.anchor_musical_delta(&ms1, &ms2),
+            Some(MusicalDuration(RationalTime::from_int(3)))
+        );
+        // Same id but DIFFERING pos: never comparable (the selector must be
+        // identical — never ordered).
+        let ms_end = TimeAnchor::Measure {
+            id: m_a,
+            position: MeasurePosition::End,
+            offset: AnchorOffset::Zero,
+        };
+        assert_eq!(r.anchors_comparable_order(&ms1, &ms_end), None);
+        assert_eq!(r.anchor_musical_delta(&ms1, &ms_end), None);
+
+        // c3: distinct Measure ids, both Start+Zero, in the same instance's
+        // (base-free) mint order — via `minted_by` OperationId comparison.
+        let instance = StaffInstanceId::new(ReplicaId(1), 99);
+        r.objects
+            .insert(TypedObjectId::Measure(m_a), ObjectState::Live);
+        r.objects
+            .insert(TypedObjectId::Measure(m_b), ObjectState::Live);
+        r.minted_by.insert(
+            TypedObjectId::Measure(m_a),
+            OperationId::new(ReplicaId(1), 1),
+        );
+        r.minted_by.insert(
+            TypedObjectId::Measure(m_b),
+            OperationId::new(ReplicaId(1), 2),
+        );
+        let _ = instance; // c3 does not need the parent directly here; minted_by suffices.
+        let c3_a = TimeAnchor::Measure {
+            id: m_a,
+            position: MeasurePosition::Start,
+            offset: AnchorOffset::Zero,
+        };
+        let c3_b = TimeAnchor::Measure {
+            id: m_b,
+            position: MeasurePosition::Start,
+            offset: AnchorOffset::Zero,
+        };
+        assert_eq!(
+            r.anchors_comparable_order(&c3_a, &c3_b),
+            Some(Ordering::Less),
+            "c3: distinct measure ids, Start+Zero, order by mint sequence"
+        );
+        assert_eq!(
+            r.anchor_musical_delta(&c3_a, &c3_b),
+            None,
+            "c3 supplies no delta — a vector index gives order, never distance"
+        );
+
+        // M24: widening c3 to admit a nonzero offset or an `End` position
+        // must NOT be comparable (a nonzero offset or End can carry the
+        // point past its neighbour).
+        let c3_nonzero = TimeAnchor::Measure {
+            id: m_b,
+            position: MeasurePosition::Start,
+            offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(1))),
+        };
+        assert_eq!(
+            r.anchors_comparable_order(&c3_a, &c3_nonzero),
+            None,
+            "M24: a nonzero-offset measure anchor must not be c3-comparable"
+        );
+        let c3_end = TimeAnchor::Measure {
+            id: m_b,
+            position: MeasurePosition::End,
+            offset: AnchorOffset::Zero,
+        };
+        // (Same-pos guard already forces None here since c3_a is Start; this
+        // documents that End never qualifies for c3 even at Zero offset.)
+        assert_eq!(r.anchors_comparable_order(&c3_a, &c3_end), None);
+
+        // c4: same Region id AND same edge, comparable by offset.
+        let rg1 = TimeAnchor::Region {
+            id: rg_a,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Zero,
+        };
+        let rg2 = TimeAnchor::Region {
+            id: rg_a,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(4))),
+        };
+        assert_eq!(r.anchors_comparable_order(&rg1, &rg2), Some(Ordering::Less));
+        assert_eq!(
+            r.anchor_musical_delta(&rg1, &rg2),
+            Some(MusicalDuration(RationalTime::from_int(4)))
+        );
+        // Never Region<->Region with different ids.
+        let rg3 = TimeAnchor::Region {
+            id: rg_b,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Zero,
+        };
+        assert_eq!(r.anchors_comparable_order(&rg1, &rg3), None);
+
+        // M25/M26: same Region id, DIFFERING edge (Start vs End) — never
+        // comparable, and never a delta, regardless of offset magnitude.
+        // Draft 3's `Start < End` ordering (and its offset subtraction) was
+        // unsound: with a nonzero offset the selector does not bound the
+        // point without the region's own (deferred) length.
+        let rg_start_100 = TimeAnchor::Region {
+            id: rg_a,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(100))),
+        };
+        let rg_end_0 = TimeAnchor::Region {
+            id: rg_a,
+            edge: RegionEdge::End,
+            offset: AnchorOffset::Zero,
+        };
+        assert_eq!(
+            r.anchors_comparable_order(&rg_start_100, &rg_end_0),
+            None,
+            "M25: Region{{Start, Musical(100)}} vs Region{{End, Zero}} must be unverifiable"
+        );
+        assert_eq!(
+            r.anchor_musical_delta(&rg_start_100, &rg_end_0),
+            None,
+            "M26: the delta across differing edges must not be computable"
+        );
+
+        // Never Event<->Measure, never Measure<->Region.
+        assert_eq!(r.anchors_comparable_order(&e1, &ms1), None);
+        assert_eq!(r.anchors_comparable_order(&ms1, &rg1), None);
+
+        // c5: WallClock, no referent id, comparable by time.
+        let wc1 = TimeAnchor::WallClock {
+            time: WallClockTime(1),
+        };
+        let wc2 = TimeAnchor::WallClock {
+            time: WallClockTime(2),
+        };
+        assert_eq!(r.anchors_comparable_order(&wc1, &wc2), Some(Ordering::Less));
+        // c5 offers no offsets to subtract; WallClock deltas are never
+        // musical durations.
+        assert_eq!(r.anchor_musical_delta(&wc1, &wc2), None);
+    }
+
+    fn g3b_region_anchor(region: RegionId, n: i32) -> TimeAnchor {
+        TimeAnchor::Region {
+            id: region,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(n))),
+        }
+    }
+
+    /// (M27, M28, M29) Pin 6c steps 0–3, direct on a bare `Reducer`.
+    #[test]
+    fn g3b_grid_oracle_governing_selection() {
+        let op_set = OperationSet::new();
+        let r = Reducer::new(&op_set);
+        let region = RegionId::new(ReplicaId(1), 1);
+        let sig_a = TimeSignatureId::new(ReplicaId(1), 10);
+        let sig_b = TimeSignatureId::new(ReplicaId(1), 11);
+
+        // M29: a genuinely empty sequence is vacuous, not indeterminate.
+        assert_eq!(
+            r.governing_by_anchor(
+                &g3b_region_anchor(region, 0),
+                Vec::<(TimeSignatureId, &TimeAnchor)>::new()
+            ),
+            GoverningElement::None,
+            "M29: an empty candidate set must be vacuous"
+        );
+
+        // Step 0 / M28: a change incomparable to the reference makes the
+        // WHOLE selection indeterminate, even though the (comparable-only)
+        // candidate set is empty. Use an Event-anchored change against a
+        // Region-anchored reference (never comparable, c1 vs c4).
+        let incomparable_anchor = TimeAnchor::Event {
+            id: EventId::new(ReplicaId(1), 1),
+            offset: AnchorOffset::Zero,
+        };
+        assert_eq!(
+            r.governing_by_anchor(
+                &g3b_region_anchor(region, 0),
+                vec![(sig_a, &incomparable_anchor)]
+            ),
+            GoverningElement::Indeterminate,
+            "M28: an incomparable change must be indeterminate, not vacuous \
+             (it is unplaced, not absent, and might have governed)"
+        );
+
+        // A unique maximum not-after the reference.
+        let a0 = g3b_region_anchor(region, 0);
+        let a2 = g3b_region_anchor(region, 2);
+        let reference = g3b_region_anchor(region, 5);
+        assert_eq!(
+            r.governing_by_anchor(&reference, vec![(sig_a, &a0), (sig_b, &a2)]),
+            GoverningElement::Unique(sig_b),
+            "the later not-after candidate must govern"
+        );
+
+        // M27: two maxima, mutually incomparable to each other (but each
+        // individually comparable to the reference) — via one c4 (Region)
+        // and one c1 (Event) candidate that each happen to also be
+        // comparable to a WallClock reference... Simpler: two candidates at
+        // the exact SAME resolved point via different, mutually-incomparable
+        // shapes is hard to stage without a synthetic reference; instead
+        // stage the canonical "tie" case pin 6c step 3 names directly: two
+        // Region-anchored candidates at the SAME offset (so both are
+        // `Ordering::Equal` to each other — neither dominates the other, so
+        // neither is uniquely maximal) is not directly expressible with two
+        // *distinct* MeterChanges at hand here without a c3-style id split;
+        // use the simplest faithful staging: a WallClock reference cannot
+        // relate to a Region candidate, so instead compare two candidates
+        // that are each comparable to the reference via c4 but not to each
+        // other because they are anchored to two DIFFERENT regions that
+        // BOTH happen to be "comparable to the reference" only through an
+        // artificial helper — not expressible under pin 6's real shapes.
+        // The faithful staging pin 6c step 3 describes is two maxima tied at
+        // Equal: both anchors identical in content to each other but
+        // reported as two distinct entries (a duplicate write at the same
+        // key from two different signatures is the realistic shape).
+        let tie_a = g3b_region_anchor(region, 3);
+        let tie_b = g3b_region_anchor(region, 3);
+        assert_eq!(
+            r.governing_by_anchor(&reference, vec![(sig_a, &tie_a), (sig_b, &tie_b)]),
+            GoverningElement::Indeterminate,
+            "M27: tied (mutually non-dominating) maxima must be indeterminate, \
+             never picked by document order"
+        );
+    }
+
+    /// (M30, M31) `instance_grid`'s base seed, and the local override
+    /// winning over the region default.
+    #[test]
+    fn g3b_grid_oracle_instance_override_wins_and_base_seed() {
+        let op_set = OperationSet::new();
+        let mut r = Reducer::new(&op_set);
+        let instance = StaffInstanceId::new(ReplicaId(1), 1);
+        let region = RegionId::new(ReplicaId(1), 2);
+        let sig_local = TimeSignatureId::new(ReplicaId(1), 10);
+        let sig_region = TimeSignatureId::new(ReplicaId(1), 11);
+
+        let local_grid = MetricGrid {
+            meter_sequence: vec![MeterChange {
+                anchor: g3b_region_anchor(region, 0),
+                time_signature: sig_local,
+            }],
+        };
+        r.instance_grid.insert(instance, Some(local_grid.clone()));
+
+        let mut whole_chain = WriteChain::new();
+        whole_chain.seed(Some(MetricGrid {
+            meter_sequence: vec![MeterChange {
+                anchor: g3b_region_anchor(region, 0),
+                time_signature: sig_region,
+            }],
+        }));
+        r.metric_grid_chain.insert(region, whole_chain);
+
+        assert_eq!(
+            r.effective_grid(instance, Some(region), None, &BTreeMap::new()),
+            local_grid.meter_sequence,
+            "M31: an authored local override must win over the region default"
+        );
+
+        // M30 (seed_from_graph): base-seeded, from-empty parity is exercised
+        // end-to-end by `g3b_create_measure_base_recarry_is_idempotent`
+        // and the `instance_grid` seeding in `seed_from_graph` (contract
+        // pin 6c, disposition A) — here confirmed directly: an instance
+        // with NO recorded local override (the seed never having run) falls
+        // through to the region default.
+        r.instance_grid.remove(&instance);
+        assert_eq!(
+            r.effective_grid(instance, Some(region), None, &BTreeMap::new()),
+            vec![MeterChange {
+                anchor: g3b_region_anchor(region, 0),
+                time_signature: sig_region,
+            }],
+            "with no instance_grid entry at all, the region default must govern"
+        );
+    }
+
+    /// (M30) `instance_grid`'s BASE seed (`seed_from_graph`), end-to-end: a
+    /// base Score whose `StaffInstance.local_metric_grid` is `Some(...)`
+    /// must be visible to a `CreateMeasure` reduced onto it, distinguishing
+    /// override from the region's (disagreeing) default — without this seed,
+    /// the override is invisible and the region default wins wrongly.
+    #[test]
+    fn g3b_grid_oracle_instance_grid_base_seed_end_to_end() {
+        let instance_id = StaffInstanceId::new(ReplicaId(1), 1);
+        let region_id = RegionId::new(ReplicaId(1), 2);
+        let sig_local = TimeSignatureId::new(ReplicaId(1), 10);
+        let sig_region = TimeSignatureId::new(ReplicaId(1), 11);
+
+        let mut instance =
+            crate::valuegen::staff_instance(instance_id, StaffId::new(ReplicaId(1), 3));
+        instance.local_metric_grid = Some(MetricGrid {
+            meter_sequence: vec![MeterChange {
+                anchor: g3b_region_anchor(region_id, 0),
+                time_signature: sig_local,
+            }],
+        });
+        let mut region = crate::valuegen::region(region_id);
+        if let epiphany_core::RegionContent::StaffBased(content) = &mut region.content {
+            content.staff_instances.push(instance);
+            content.default_metric_grid = Some(MetricGrid {
+                meter_sequence: vec![MeterChange {
+                    anchor: g3b_region_anchor(region_id, 0),
+                    time_signature: sig_region,
+                }],
+            });
+        }
+        let mut base = Score::empty(IdentityContext::new(ReplicaId(1)));
+        base.time_signatures
+            .push(crate::valuegen::time_signature(sig_local, 3));
+        base.time_signatures
+            .push(crate::valuegen::time_signature(sig_region, 5));
+        base.canvas.regions.push(region);
+
+        // Agree with the LOCAL override (sig_local) — must Apply only if the
+        // base seed made the override visible; otherwise the region default
+        // (sig_region) governs and this disagrees.
+        let measure = g3b_measure_env(
+            2,
+            0,
+            0,
+            instance_id,
+            Measure {
+                id: MeasureId::new(ReplicaId(1), 100),
+                start: g3b_region_anchor(region_id, 0),
+                time_signature: Some(sig_local),
+                explicit_number: None,
+                number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+            },
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![measure.clone()]);
+        let out = reduce_operation_set_onto(&set, &base);
+        assert_eq!(
+            g3b_effect_of(&out.state, measure.id),
+            Some(OperationEffect::Applied),
+            "M30: the base-seeded local override must be visible, not the region default"
+        );
+    }
+
+    /// (M31a) A prospective grid/meter-change override — the grid a
+    /// restoration WOULD install — must govern the reconstruction, standing
+    /// in for the chain's own (older) recorded state without mutating it.
+    #[test]
+    fn g3b_grid_oracle_prospective_overrides_govern() {
+        let op_set = OperationSet::new();
+        let mut r = Reducer::new(&op_set);
+        let region = RegionId::new(ReplicaId(1), 1);
+        let instance = StaffInstanceId::new(ReplicaId(1), 2);
+        let sig_current = TimeSignatureId::new(ReplicaId(1), 10);
+        let sig_prospective = TimeSignatureId::new(ReplicaId(1), 11);
+
+        let mut whole_chain = WriteChain::new();
+        whole_chain.seed(Some(MetricGrid {
+            meter_sequence: vec![MeterChange {
+                anchor: g3b_region_anchor(region, 0),
+                time_signature: sig_current,
+            }],
+        }));
+        r.metric_grid_chain.insert(region, whole_chain);
+
+        let prospective_sequence = vec![MeterChange {
+            anchor: g3b_region_anchor(region, 0),
+            time_signature: sig_prospective,
+        }];
+        let prospective_grid = Some(MetricGrid {
+            meter_sequence: prospective_sequence.clone(),
+        });
+        let with_override = r.effective_grid(
+            instance,
+            Some(region),
+            Some(&prospective_grid),
+            &BTreeMap::new(),
+        );
+        assert_eq!(
+            with_override, prospective_sequence,
+            "M31a: the prospective whole-grid override must govern the reconstruction"
+        );
+
+        // The chain itself is untouched — a second call with no override
+        // still sees the CURRENT (unrestored) state.
+        let without_override = r.effective_grid(instance, Some(region), None, &BTreeMap::new());
+        assert_eq!(
+            without_override,
+            vec![MeterChange {
+                anchor: g3b_region_anchor(region, 0),
+                time_signature: sig_current,
+            }],
+            "a prospective override must not mutate the chain"
+        );
+
+        // Prospective per-key override, same idea.
+        let key = MusicalPosition(RationalTime::from_int(0));
+        let mut overrides = BTreeMap::new();
+        overrides.insert(
+            key,
+            Some(MeterChange {
+                anchor: g3b_region_anchor(region, 0),
+                time_signature: sig_prospective,
+            }),
+        );
+        let with_key_override = r.effective_grid(instance, Some(region), None, &overrides);
+        assert_eq!(
+            with_key_override,
+            vec![MeterChange {
+                anchor: g3b_region_anchor(region, 0),
+                time_signature: sig_prospective,
+            }],
+            "M31a: a prospective per-key override must also govern"
+        );
+    }
+
+    /// (M30b) The effective-grid oracle consults ONLY the ledgers
+    /// (`instance_grid`, `metric_grid_chain`, `meter_change_chain`) — never
+    /// `self.graph` — so graph-aware and base-free reduction run the
+    /// IDENTICAL reconstruction. Proven by deliberately desynchronizing a
+    /// bare `Reducer`'s `graph` from its ledgers (something the real
+    /// reduction paths never do — `set_metric_grid`/`create_staff_instance`
+    /// always write both together) and confirming the oracle answers from
+    /// the ledger, not the graph.
+    #[test]
+    fn g3b_grid_oracle_never_reads_self_graph() {
+        let op_set = OperationSet::new();
+        let mut r = Reducer::new(&op_set);
+        let region = RegionId::new(ReplicaId(1), 1);
+        let instance = StaffInstanceId::new(ReplicaId(1), 2);
+        let sig_ledger = TimeSignatureId::new(ReplicaId(1), 10);
+        let sig_graph_only = TimeSignatureId::new(ReplicaId(1), 11);
+
+        let mut whole_chain = WriteChain::new();
+        whole_chain.seed(Some(MetricGrid {
+            meter_sequence: vec![MeterChange {
+                anchor: g3b_region_anchor(region, 0),
+                time_signature: sig_ledger,
+            }],
+        }));
+        r.metric_grid_chain.insert(region, whole_chain);
+
+        // A graph present, with a DIFFERENT (fictitious) default grid at the
+        // same region/position — graph-aware mode's presence alone must not
+        // change the answer.
+        let mut instance_value =
+            crate::valuegen::staff_instance(instance, StaffId::new(ReplicaId(1), 3));
+        instance_value.local_metric_grid = None;
+        let mut region_value = crate::valuegen::region(region);
+        if let epiphany_core::RegionContent::StaffBased(content) = &mut region_value.content {
+            content.staff_instances.push(instance_value);
+            content.default_metric_grid = Some(MetricGrid {
+                meter_sequence: vec![MeterChange {
+                    anchor: g3b_region_anchor(region, 0),
+                    time_signature: sig_graph_only,
+                }],
+            });
+        }
+        let mut score = Score::empty(IdentityContext::new(ReplicaId(1)));
+        score.canvas.regions.push(region_value);
+        r.graph = Some(score);
+
+        assert_eq!(
+            r.effective_grid(instance, Some(region), None, &BTreeMap::new()),
+            vec![MeterChange {
+                anchor: g3b_region_anchor(region, 0),
+                time_signature: sig_ledger,
+            }],
+            "M30b: the oracle must answer from the ledger, never from self.graph, \
+             even when a (deliberately desynchronized) graph is present"
+        );
+    }
+
+    /// (M30c) Canonical write-order interleaving between `metric_grid_chain`
+    /// and `meter_change_chain`, BOTH directions: a `SetTimeSignature`
+    /// **before** a later `SetMetricGrid` (the whole-grid write supersedes
+    /// the earlier per-key change), and **after** it (the per-key change
+    /// overlays). End-to-end through the real operations, so the test does
+    /// not encode its own assumptions about internal wiring.
+    #[test]
+    fn g3b_grid_oracle_canonical_write_order_both_interleavings() {
+        let region1 = RegionId::new(ReplicaId(1), 1);
+        let instance1 = StaffInstanceId::new(ReplicaId(1), 2);
+        let region2 = RegionId::new(ReplicaId(1), 3);
+        let instance2 = StaffInstanceId::new(ReplicaId(1), 4);
+        let staff = StaffId::new(ReplicaId(1), 5);
+        let sig_a = TimeSignatureId::new(ReplicaId(1), 10);
+        let sig_b = TimeSignatureId::new(ReplicaId(1), 11);
+        let sig_irrelevant = TimeSignatureId::new(ReplicaId(1), 12);
+
+        fn ctx(seen_through: u64) -> CausalContext {
+            CausalContext::new().with_seen(ReplicaId(1), seen_through)
+        }
+
+        let mut counter = 0u64;
+        let mut next = |kind: OperationKind, seen_through: u64| -> (OperationEnvelope, u64) {
+            let this_counter = counter;
+            let env = prim_env(
+                1,
+                this_counter,
+                this_counter as i64,
+                ctx(seen_through),
+                kind,
+            );
+            counter += 1;
+            (env, this_counter)
+        };
+
+        let mut envs = Vec::new();
+        let (env, c) = next(
+            OperationKind::CreateRegion(CreateRegionOp {
+                region: crate::valuegen::region(region1),
+            }),
+            0,
+        );
+        envs.push(env);
+        let (env, c) = next(
+            OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region: region1,
+                instance: crate::valuegen::staff_instance(instance1, staff),
+            }),
+            c,
+        );
+        envs.push(env);
+        let (env, c) = next(
+            OperationKind::CreateRegion(CreateRegionOp {
+                region: crate::valuegen::region(region2),
+            }),
+            c,
+        );
+        envs.push(env);
+        let (env, c) = next(
+            OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region: region2,
+                instance: crate::valuegen::staff_instance(instance2, staff),
+            }),
+            c,
+        );
+        envs.push(env);
+        // Mint sig_irrelevant, sig_a, sig_b once each, at throwaway positions
+        // in region1, before the interleaving scenarios begin.
+        let (env, c) = next(
+            OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region: region1,
+                anchor: g3b_region_anchor(region1, 999),
+                time_signature: Some(crate::valuegen::time_signature(sig_irrelevant, 3)),
+            }),
+            c,
+        );
+        envs.push(env);
+        let (env, c) = next(
+            OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region: region1,
+                anchor: g3b_region_anchor(region1, 998),
+                time_signature: Some(crate::valuegen::time_signature(sig_a, 3)),
+            }),
+            c,
+        );
+        envs.push(env);
+        let (env, c) = next(
+            OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region: region1,
+                anchor: g3b_region_anchor(region1, 997),
+                time_signature: Some(crate::valuegen::time_signature(sig_b, 3)),
+            }),
+            c,
+        );
+        envs.push(env);
+
+        // --- Scenario 1 (region1): SetTimeSignature(pos 0, sig_a) BEFORE a
+        // later SetMetricGrid(pos 0, sig_b) — the whole-grid write must
+        // supersede the earlier per-key change.
+        let (s1_set_time_sig, c) = next(
+            OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region: region1,
+                anchor: g3b_region_anchor(region1, 0),
+                time_signature: Some(crate::valuegen::time_signature(sig_a, 3)),
+            }),
+            c,
+        );
+        let (s1_set_grid, c) = next(
+            OperationKind::SetMetricGrid(SetMetricGridOp {
+                region: region1,
+                grid: Some(MetricGrid {
+                    meter_sequence: vec![MeterChange {
+                        anchor: g3b_region_anchor(region1, 0),
+                        time_signature: sig_b,
+                    }],
+                }),
+            }),
+            c,
+        );
+        let (s1_measure_expect_b, c) = next(
+            OperationKind::CreateMeasure(CreateMeasureOp {
+                instance: instance1,
+                measure: Measure {
+                    id: MeasureId::new(ReplicaId(1), 100),
+                    start: g3b_region_anchor(region1, 0),
+                    time_signature: Some(sig_b),
+                    explicit_number: None,
+                    number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+                },
+            }),
+            c,
+        );
+
+        // --- Scenario 2 (region2): SetMetricGrid(pos 0, sig_a) BEFORE a
+        // later SetTimeSignature(pos 0, sig_b) — the per-key change must
+        // overlay the (now-superseded) whole grid.
+        let (s2_set_grid, c) = next(
+            OperationKind::SetMetricGrid(SetMetricGridOp {
+                region: region2,
+                grid: Some(MetricGrid {
+                    meter_sequence: vec![MeterChange {
+                        anchor: g3b_region_anchor(region2, 0),
+                        time_signature: sig_a,
+                    }],
+                }),
+            }),
+            c,
+        );
+        let (s2_set_time_sig, c) = next(
+            OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region: region2,
+                anchor: g3b_region_anchor(region2, 0),
+                time_signature: Some(crate::valuegen::time_signature(sig_b, 3)),
+            }),
+            c,
+        );
+        let (s2_measure_expect_b, _c) = next(
+            OperationKind::CreateMeasure(CreateMeasureOp {
+                instance: instance2,
+                measure: Measure {
+                    id: MeasureId::new(ReplicaId(1), 101),
+                    start: g3b_region_anchor(region2, 0),
+                    time_signature: Some(sig_b),
+                    explicit_number: None,
+                    number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+                },
+            }),
+            c,
+        );
+
+        envs.extend([
+            s1_set_time_sig,
+            s1_set_grid,
+            s1_measure_expect_b.clone(),
+            s2_set_grid,
+            s2_set_time_sig,
+            s2_measure_expect_b.clone(),
+        ]);
+
+        let mut set = OperationSet::new();
+        set.accept_all(envs);
+        let state = set.reduce();
+
+        assert_eq!(
+            g3b_effect_of(&state, s1_measure_expect_b.id),
+            Some(OperationEffect::Applied),
+            "scenario 1 (SetTimeSignature before SetMetricGrid): the LATER \
+             whole-grid write (sig_b) must supersede the earlier per-key \
+             change (sig_a)"
+        );
+        assert_eq!(
+            g3b_effect_of(&state, s2_measure_expect_b.id),
+            Some(OperationEffect::Applied),
+            "scenario 2 (SetMetricGrid before SetTimeSignature): the LATER \
+             per-key change (sig_b) must overlay the earlier whole-grid write \
+             (sig_a)"
+        );
+    }
+
+    /// (M21, M22, M32, M33) `CreateMeasure`'s append-only ordering (pin 9
+    /// clause 1), agreement (clause 2), and boundary-distance (clause 3)
+    /// checks — base-free, so only pin 8.1's ungated parent-liveness
+    /// precondition applies and referent resolution (pin 8.3) is skipped.
+    #[test]
+    fn g3b_create_measure_ordering_agreement_boundary() {
+        let region = RegionId::new(ReplicaId(1), 1);
+        let staff = StaffId::new(ReplicaId(1), 2);
+        let mut envs =
+            g3b_region_and_instance_envs(1, region, StaffInstanceId::new(ReplicaId(1), 3), staff);
+
+        let sig_a = TimeSignatureId::new(ReplicaId(1), 10);
+        let sig_b = TimeSignatureId::new(ReplicaId(1), 11);
+        // sig_a's measure_duration is 3/4 (numerator 3 over 4).
+        let set_sig_a = prim_env(
+            1,
+            5,
+            5,
+            CausalContext::new(),
+            OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region,
+                anchor: g3b_region_anchor(region, 0),
+                time_signature: Some(crate::valuegen::time_signature(sig_a, 3)),
+            }),
+        );
+        let set_sig_b = prim_env(
+            1,
+            6,
+            6,
+            CausalContext::new(),
+            OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region,
+                anchor: g3b_region_anchor(region, 900),
+                time_signature: Some(crate::valuegen::time_signature(sig_b, 5)),
+            }),
+        );
+        envs.extend([set_sig_a.clone(), set_sig_b.clone()]);
+
+        // A distinct StaffInstance per sub-scenario, all in the SAME region,
+        // so they all see the SAME effective grid (sig_a at position 0,
+        // duration 3/4) without interfering with each other's ordering.
+        let instances: Vec<StaffInstanceId> = (10..17)
+            .map(|n| StaffInstanceId::new(ReplicaId(1), n))
+            .collect();
+        for (n, id) in instances.iter().enumerate() {
+            envs.push(prim_env(
+                1,
+                20 + n as u64,
+                20 + n as i64,
+                CausalContext::new(),
+                OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                    region,
+                    instance: crate::valuegen::staff_instance(*id, staff),
+                }),
+            ));
+        }
+
+        fn measure(id: u64, start: TimeAnchor, sig: Option<TimeSignatureId>) -> Measure {
+            Measure {
+                id: MeasureId::new(ReplicaId(1), id),
+                start,
+                time_signature: sig,
+                explicit_number: None,
+                number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+            }
+        }
+
+        // Scenario 0: the first measure of instances[0] — clauses 1 & 3 are
+        // vacuous; agreement (clause 2) still applies and passes.
+        let first = g3b_measure_env(
+            1,
+            40,
+            40,
+            instances[0],
+            measure(200, g3b_region_anchor(region, 0), Some(sig_a)),
+        );
+
+        // Scenario A (M21/M22): a second measure whose start is COMPARABLE
+        // to the predecessor but not strictly after it — MeasureOutOfOrder.
+        let base_first_a = g3b_measure_env(
+            1,
+            41,
+            41,
+            instances[1],
+            measure(201, g3b_region_anchor(region, 0), Some(sig_a)),
+        );
+        let reversed = g3b_measure_env(
+            1,
+            42,
+            42,
+            instances[1],
+            measure(202, g3b_region_anchor(region, -1), None),
+        );
+
+        // Scenario B: a second measure INCOMPARABLE to the predecessor
+        // (different anchor shape entirely) — MeasureOrderUnverifiable.
+        let base_first_b = g3b_measure_env(
+            1,
+            43,
+            43,
+            instances[2],
+            measure(203, g3b_region_anchor(region, 0), Some(sig_a)),
+        );
+        let incomparable = g3b_measure_env(
+            1,
+            44,
+            44,
+            instances[2],
+            measure(
+                204,
+                TimeAnchor::Event {
+                    id: EventId::new(ReplicaId(1), 999),
+                    offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(1))),
+                },
+                None,
+            ),
+        );
+
+        // Scenario C: correct order, correct distance (3/4), agreeing
+        // signature — Applied.
+        let base_first_c = g3b_measure_env(
+            1,
+            45,
+            45,
+            instances[3],
+            measure(205, g3b_region_anchor(region, 0), Some(sig_a)),
+        );
+        let correct = g3b_measure_env(
+            1,
+            46,
+            46,
+            instances[3],
+            measure(
+                206,
+                TimeAnchor::Region {
+                    id: region,
+                    edge: RegionEdge::Start,
+                    offset: AnchorOffset::Musical(MusicalDuration(
+                        RationalTime::new(3, 4).unwrap(),
+                    )),
+                },
+                Some(sig_a),
+            ),
+        );
+
+        // Scenario D (M32): correct order and distance, but a DISAGREEING
+        // signature — MeasureMeterMismatch.
+        let base_first_d = g3b_measure_env(
+            1,
+            47,
+            47,
+            instances[4],
+            measure(207, g3b_region_anchor(region, 0), Some(sig_a)),
+        );
+        let disagreeing = g3b_measure_env(
+            1,
+            48,
+            48,
+            instances[4],
+            measure(
+                208,
+                TimeAnchor::Region {
+                    id: region,
+                    edge: RegionEdge::Start,
+                    offset: AnchorOffset::Musical(MusicalDuration(
+                        RationalTime::new(3, 4).unwrap(),
+                    )),
+                },
+                Some(sig_b),
+            ),
+        );
+
+        // Scenario E (M33): correct order, agreeing (`None`, inherits), but
+        // the WRONG distance — MeasureMeterMismatch (the immediate-violation
+        // gap: comparable, correctly ordered, agreeing, and still wrong).
+        let base_first_e = g3b_measure_env(
+            1,
+            49,
+            49,
+            instances[5],
+            measure(209, g3b_region_anchor(region, 0), Some(sig_a)),
+        );
+        let wrong_distance = g3b_measure_env(
+            1,
+            50,
+            50,
+            instances[5],
+            measure(
+                210,
+                TimeAnchor::Region {
+                    id: region,
+                    edge: RegionEdge::Start,
+                    offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(1))),
+                },
+                None,
+            ),
+        );
+
+        envs.extend([
+            first.clone(),
+            base_first_a.clone(),
+            reversed.clone(),
+            base_first_b.clone(),
+            incomparable.clone(),
+            base_first_c.clone(),
+            correct.clone(),
+            base_first_d.clone(),
+            disagreeing.clone(),
+            base_first_e.clone(),
+            wrong_distance.clone(),
+        ]);
+
+        let mut set = OperationSet::new();
+        set.accept_all(envs);
+        let state = set.reduce();
+
+        assert_eq!(
+            g3b_effect_of(&state, first.id),
+            Some(OperationEffect::Applied),
+            "the first measure of an instance: clauses 1 & 3 are vacuous"
+        );
+        assert_eq!(
+            g3b_effect_of(&state, reversed.id),
+            Some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::MeasureOutOfOrder
+                }
+            }),
+            "M21/M22: a comparable-but-reversed start must be MeasureOutOfOrder \
+             (not silently appended, and not the wrong reason)"
+        );
+        assert_eq!(
+            g3b_effect_of(&state, incomparable.id),
+            Some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::MeasureOrderUnverifiable
+                }
+            }),
+            "an incomparable start must be MeasureOrderUnverifiable"
+        );
+        assert_eq!(
+            g3b_effect_of(&state, correct.id),
+            Some(OperationEffect::Applied),
+            "correct order, correct distance, agreeing signature: Applied"
+        );
+        assert_eq!(
+            g3b_effect_of(&state, disagreeing.id),
+            Some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::MeasureMeterMismatch
+                }
+            }),
+            "M32: a disagreeing signature must be MeasureMeterMismatch"
+        );
+        assert_eq!(
+            g3b_effect_of(&state, wrong_distance.id),
+            Some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::MeasureMeterMismatch
+                }
+            }),
+            "M33: comparable, correctly ordered, agreeing (None inherits), and \
+             STILL the wrong distance must be MeasureMeterMismatch — the \
+             immediate-violation gap"
         );
     }
 }

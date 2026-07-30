@@ -91,7 +91,7 @@ fn pitch(n: u64) -> PitchId {
 
 /// Generates a random payload over the shared id space.
 fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
-    let kind = match rng.below(36) {
+    let kind = match rng.below(37) {
         0 => {
             let voice = VoiceId::new(ReplicaId(7), rng.below(3));
             let position = MusicalPosition(RationalTime::from_int(rng.below(4) as i32));
@@ -327,6 +327,17 @@ fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
             view: valuegen::view(
                 ViewId::new(ReplicaId(7), rng.below(2)),
                 vec![AnalysisLayerId::new(ReplicaId(7), rng.below(2))],
+            ),
+        }),
+        // Genesis tranche G3b: append a measure onto the shared staff-instance
+        // id space, over the shared measure/time-signature id spaces so
+        // mints/re-carries genuinely interact with them.
+        36 => OperationKind::CreateMeasure(crate::payload::CreateMeasureOp {
+            instance: StaffInstanceId::new(ReplicaId(7), rng.below(3)),
+            measure: valuegen::measure(
+                epiphany_core::MeasureId::new(ReplicaId(7), rng.below(4)),
+                epiphany_core::TimeSignatureId::new(ReplicaId(7), rng.below(2)),
+                rng.below(4) as u32,
             ),
         }),
         _ => OperationKind::SetStaffLayout(SetStaffLayoutOp {

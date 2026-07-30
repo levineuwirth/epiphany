@@ -3598,6 +3598,14 @@ canonical_value! {
     PartDefinition,
     AnalysisLayer,
     ViewDefinition,
+    // Genesis tranche G3b (`CONTRACT_GENESIS_G3B_MEASURE.md` pin 3) —
+    // CreateMeasure embeds the full value, mirroring CreateStaffInstance's
+    // `StaffInstance`. `Measure` already has a `Codec` (`struct_codec!` at
+    // `:1825`) and already ships inside `Score`; this makes that existing
+    // layout reachable per-value, same as every other entry here. No new wire
+    // layout, and no `textvalue_graph.rs` work — `struct_codec!` already
+    // generated `Measure`'s `TextValue` impl alongside its `Codec`.
+    Measure,
 }
 
 #[cfg(test)]
@@ -3924,6 +3932,128 @@ mod tests {
         assert_eq!(back.smufl, loaded.smufl);
         assert_eq!(back.overrides, loaded.overrides);
         assert!(back.accidental_extensions.is_empty());
+    }
+
+    /// Genesis tranche G3b (`CONTRACT_GENESIS_G3B_MEASURE.md` pin 4, M12):
+    /// pins the exact frozen bytes of `Measure`'s `struct_codec!` wire form
+    /// (`id, start, time_signature, explicit_number, number_visibility`).
+    ///
+    /// The five field values are chosen so their encodings are MUTUALLY
+    /// DISTINCT in length (contract §3's `valuegen` trap, from G3a's
+    /// `analysis_layer` mistake where a same-width field pair made a
+    /// field-swap byte-invisible): `id` is a 20-byte id-leaf, `start` (a
+    /// `WallClock` anchor) is 13 bytes, `time_signature` (`Some`) is a
+    /// 21-byte id-leaf, `explicit_number` (`Some`) is a bare 5-byte `u32`,
+    /// and `number_visibility` is a 1-byte C-style enum tag.
+    ///
+    /// **Mutation:** reorder `struct_codec!(Measure { ... })`'s field list in
+    /// this file; must fail — a `struct_codec!` field reorder changes encode
+    /// and decode symmetrically and stays green under a round-trip-only
+    /// assertion, which is why this pins literal bytes instead.
+    #[test]
+    fn genesis_g3b_measure_wire_bytes_are_frozen() {
+        use crate::graph::{Measure, MeasureNumberVisibility};
+        use crate::ids::{MeasureId, ReplicaId, TimeSignatureId};
+        use crate::time::{TimeAnchor, WallClockTime};
+
+        fn hex(bytes: &[u8]) -> String {
+            bytes.iter().map(|b| format!("{b:02x}")).collect()
+        }
+
+        let measure = Measure {
+            id: MeasureId::new(ReplicaId(1), 2),
+            start: TimeAnchor::WallClock {
+                time: WallClockTime(3),
+            },
+            time_signature: Some(TimeSignatureId::new(ReplicaId(1), 4)),
+            explicit_number: Some(5),
+            number_visibility: MeasureNumberVisibility::Always,
+        };
+        let mut bytes = Vec::new();
+        measure.enc(&mut bytes);
+        let expected = "100000000000000000000001000000000000000203080000000300000000000000011000000000000000000000010000000000000004010500000001";
+        assert_eq!(hex(&bytes), expected, "the Measure wire form moved");
+        assert!(!bytes.is_empty());
+
+        let decoded = Measure::dec(&mut Reader::new(&bytes)).expect("golden decodes");
+        assert_eq!(decoded, measure);
+    }
+
+    /// Genesis tranche G3b (M14): the strict per-value re-encode comparison
+    /// in `canonical_value!` is the ONLY thing standing between an
+    /// unreduced `RationalTime` spelling and acceptance.
+    ///
+    /// `Measure.start` carries an `Event`-anchored `Musical` offset whose
+    /// `RationalTime` is spelled UNREDUCED, `2/4`. `RationalTime::dec` ends in
+    /// `BigRational::new`, which reduces on construction, so the decoded
+    /// value is `1/2`; re-encoding it then emits `1/2`'s magnitudes, which
+    /// differ from the fed-in `2/4` bytes. A structurally-decodable but
+    /// NONCANONICAL encoding — exactly what the strict per-value check
+    /// (decode → `finish()` → re-encode → reject on mismatch) exists to
+    /// reject.
+    ///
+    /// **Mutation:** in `canonical_value!`, remove the
+    /// `v.canonical_bytes() != bytes` check (return `Ok(v)` unconditionally);
+    /// must fail. NOT "remove `Measure` from `canonical_value!`" — that does
+    /// not compile: the ops-crate envelope decode arm calls `value::<Measure>`,
+    /// bound by `T: CanonicalValue`.
+    #[test]
+    fn genesis_g3b_measure_start_rejects_an_unreduced_rational_time() {
+        use crate::graph::{Measure, MeasureNumberVisibility};
+        use crate::ids::{EventId, MeasureId, ReplicaId};
+        use crate::time::{AnchorOffset, MusicalDuration, RationalTime, TimeAnchor};
+
+        // The canonical (reduced) 1/2 value this rung's fixture decodes to.
+        let reduced = Measure {
+            id: MeasureId::new(ReplicaId(1), 2),
+            start: TimeAnchor::Event {
+                id: EventId::new(ReplicaId(1), 3),
+                offset: AnchorOffset::Musical(MusicalDuration(
+                    RationalTime::new(1, 2).expect("1/2 is representable"),
+                )),
+            },
+            time_signature: None,
+            explicit_number: None,
+            number_visibility: MeasureNumberVisibility::Auto,
+        };
+        let mut good_bytes = Vec::new();
+        reduced.enc(&mut good_bytes);
+
+        // The RationalTime wire pattern for 1/2 (Plus sign, 1-byte numerator
+        // magnitude `01`, 1-byte denominator magnitude `02`) and its
+        // UNREDUCED 2/4 counterpart — same byte length (11), so substituting
+        // one for the other does not disturb any surrounding length prefix.
+        let pattern_1_2: [u8; 11] = [1, 1, 0, 0, 0, 0x01, 1, 0, 0, 0, 0x02];
+        let pattern_2_4: [u8; 11] = [1, 1, 0, 0, 0, 0x02, 1, 0, 0, 0, 0x04];
+
+        let occurrences = good_bytes
+            .windows(pattern_1_2.len())
+            .filter(|w| *w == pattern_1_2)
+            .count();
+        assert_eq!(
+            occurrences, 1,
+            "the 1/2 RationalTime pattern must appear exactly once, to substitute unambiguously"
+        );
+        let at = good_bytes
+            .windows(pattern_1_2.len())
+            .position(|w| w == pattern_1_2)
+            .unwrap();
+        let mut bad_bytes = good_bytes.clone();
+        bad_bytes[at..at + pattern_2_4.len()].copy_from_slice(&pattern_2_4);
+        assert_eq!(bad_bytes.len(), good_bytes.len());
+
+        // The reduced (canonical) bytes round-trip.
+        assert_eq!(
+            Measure::decode_canonical(&good_bytes).as_ref(),
+            Ok(&reduced)
+        );
+        // The unreduced (2/4) bytes are structurally decodable (RationalTime
+        // itself never rejects an unreduced input — it normalizes), but the
+        // outer strict re-encode comparison MUST reject them.
+        assert!(
+            Measure::decode_canonical(&bad_bytes).is_err(),
+            "an unreduced RationalTime spelling must be rejected by the strict re-encode check"
+        );
     }
 
     /// Genesis tranche G2b (`CONTRACT_GENESIS_G2B_TUNING.md` §1, pin/touch-row

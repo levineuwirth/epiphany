@@ -197,6 +197,8 @@ fn project_kind(kind: &OperationKind) -> V0OperationKind {
         }
         OperationKind::CreateAnalysisLayer(op) => V0OperationKind::CreateAnalysisLayer(op.clone()),
         OperationKind::CreateView(op) => V0OperationKind::CreateView(op.clone()),
+        // Genesis tranche G3b: born past v0; projected verbatim.
+        OperationKind::CreateMeasure(op) => V0OperationKind::CreateMeasure(op.clone()),
     }
 }
 
@@ -368,6 +370,8 @@ fn migrate_kind(kind: &V0OperationKind, context: &Score) -> Result<OperationKind
         }
         V0OperationKind::CreateAnalysisLayer(op) => OperationKind::CreateAnalysisLayer(op.clone()),
         V0OperationKind::CreateView(op) => OperationKind::CreateView(op.clone()),
+        // Genesis tranche G3b: identity round-trip (no lossy v0 form).
+        V0OperationKind::CreateMeasure(op) => OperationKind::CreateMeasure(op.clone()),
     })
 }
 

@@ -32,7 +32,7 @@
 use std::collections::BTreeSet;
 
 use epiphany_core::{
-    AnalysisLayer, CanvasLayoutDefaults, EventId, Instrument, InstrumentId, MetricGrid,
+    AnalysisLayer, CanvasLayoutDefaults, EventId, Instrument, InstrumentId, Measure, MetricGrid,
     MusicalPosition, OperationId, PartDefinition, PitchId, PitchSpelling, RegionId,
     RegionTimeModel, RepeatStructureId, ReplicaId, ScoreMetadata, SpellingPrecedence, Staff,
     StaffGroup, StaffInstance, StaffInstanceId, StaffLineConfiguration, TimeAnchor, TimeSignature,
@@ -612,6 +612,10 @@ fn operation_kind(r: &mut Reader<'_>) -> Result<OperationKind> {
         38 => OperationKind::CreateView(CreateViewOp {
             view: value::<ViewDefinition>(r, "ViewDefinition")?,
         }),
+        39 => OperationKind::CreateMeasure(CreateMeasureOp {
+            instance: staff_instance_id(r)?,
+            measure: value::<Measure>(r, "Measure")?,
+        }),
         tag => {
             return Err(EnvelopeDecodeError::InvalidTag {
                 kind: "OperationKind",
@@ -945,6 +949,16 @@ pub(crate) mod tests {
                     view: valuegen::view(
                         epiphany_core::ViewId::new(ReplicaId(7), 1),
                         vec![epiphany_core::AnalysisLayerId::new(ReplicaId(7), 1)],
+                    ),
+                })
+            }
+            OperationKindTag::CreateMeasure => {
+                OperationKind::CreateMeasure(crate::payload::CreateMeasureOp {
+                    instance: si(),
+                    measure: valuegen::measure(
+                        epiphany_core::MeasureId::new(ReplicaId(7), 1),
+                        epiphany_core::TimeSignatureId::new(ReplicaId(7), 1),
+                        1,
                     ),
                 })
             }

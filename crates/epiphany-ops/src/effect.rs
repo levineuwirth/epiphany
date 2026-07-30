@@ -185,6 +185,20 @@ pub enum PreconditionFailureReason {
     /// past its `i8` bound (Push 4a). The frozen `Transpose` saturates here
     /// and reports success; this refuses.
     TranspositionOutOfRange,
+    /// A `CreateMeasure` (or a prospective preservation check) found a
+    /// resolving `time_signature` that disagrees with the effective grid's
+    /// active signature (genesis tranche G3b, contract pin 8b) — distinct
+    /// from the resolution failure, which is `TargetMissing`.
+    MeasureMeterMismatch,
+    /// A `CreateMeasure`'s carried `start` is comparable to the current last
+    /// measure's start (contract pin 6) and is not strictly after it (genesis
+    /// tranche G3b, contract pin 8b).
+    MeasureOutOfOrder,
+    /// A `CreateMeasure` ordering or boundary-distance check could not be
+    /// verified: the two starts are not comparable (contract pin 6), or the
+    /// delta between them is not computable (contract pin 6b) (genesis
+    /// tranche G3b, contract pin 8b).
+    MeasureOrderUnverifiable,
 }
 
 impl PreconditionFailureReason {
@@ -210,6 +224,10 @@ impl PreconditionFailureReason {
             // Additive (Push 4a, TransposeInterval); appended past 13.
             PreconditionFailureReason::AcousticRealizationPinned => 14,
             PreconditionFailureReason::TranspositionOutOfRange => 15,
+            // Additive (Genesis tranche G3b); appended past 15.
+            PreconditionFailureReason::MeasureMeterMismatch => 16,
+            PreconditionFailureReason::MeasureOutOfOrder => 17,
+            PreconditionFailureReason::MeasureOrderUnverifiable => 18,
         }
     }
 }
@@ -243,6 +261,10 @@ impl PreconditionFailureReason {
             // Minor 7 (Push 4a).
             PreconditionFailureReason::AcousticRealizationPinned => Some(7),
             PreconditionFailureReason::TranspositionOutOfRange => Some(7),
+            // Minor 12 (Genesis tranche G3b).
+            PreconditionFailureReason::MeasureMeterMismatch => Some(12),
+            PreconditionFailureReason::MeasureOutOfOrder => Some(12),
+            PreconditionFailureReason::MeasureOrderUnverifiable => Some(12),
         }
     }
 }
@@ -509,6 +531,41 @@ mod tests {
         assert_eq!(
             ReanchorReason::ExplicitFallback.to_canonical_bytes(),
             vec![4]
+        );
+    }
+
+    /// (M5/M6/M7, M8/M9/M10) Genesis tranche G3b: the three new
+    /// `PreconditionFailureReason` variants sit at discriminants 16, 17, 18
+    /// (contract pin 8b), each at epoch `Some(12)`.
+    ///
+    /// **Mutation M5/M6/M7:** move any one discriminant to 19 (unused, so it
+    /// compiles); must fail. **Mutation M8/M9/M10:** move any one
+    /// `introduced_minor()` to `Some(11)`; must fail.
+    #[test]
+    fn genesis_g3b_reasons_are_16_17_18_at_epoch_12() {
+        assert_eq!(
+            PreconditionFailureReason::MeasureMeterMismatch.to_canonical_bytes(),
+            vec![16]
+        );
+        assert_eq!(
+            PreconditionFailureReason::MeasureOutOfOrder.to_canonical_bytes(),
+            vec![17]
+        );
+        assert_eq!(
+            PreconditionFailureReason::MeasureOrderUnverifiable.to_canonical_bytes(),
+            vec![18]
+        );
+        assert_eq!(
+            PreconditionFailureReason::MeasureMeterMismatch.introduced_minor(),
+            Some(12)
+        );
+        assert_eq!(
+            PreconditionFailureReason::MeasureOutOfOrder.introduced_minor(),
+            Some(12)
+        );
+        assert_eq!(
+            PreconditionFailureReason::MeasureOrderUnverifiable.introduced_minor(),
+            Some(12)
         );
     }
 

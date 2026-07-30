@@ -33,13 +33,14 @@
 
 use epiphany_core::{
     AnalysisLayer, AnalysisLayerId, Beam, CanonicalValue, CanvasLayoutDefaults, Event,
-    EventDuration, EventId, EventPosition, IdentifiedPitch, Instrument, InstrumentId, MetricGrid,
-    MusicalDuration, MusicalPosition, OperationId, PartDefinition, PartDefinitionId, Pitch,
-    PitchId, PitchSpelling, Region, RegionId, RegionTimeModel, RepeatStructure, RepeatStructureId,
-    Rest, ScoreMetadata, Slur, Spanner, SpellingPrecedence, Staff, StaffGroup, StaffGroupId,
-    StaffId, StaffInstance, StaffInstanceId, StaffLineConfiguration, TempoSegment, Tie, TimeAnchor,
-    TimeSignature, TransactionId, TranspositionInterval, TuningContextSettings, TupletId,
-    TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId,
+    EventDuration, EventId, EventPosition, IdentifiedPitch, Instrument, InstrumentId, Measure,
+    MeasureId, MetricGrid, MusicalDuration, MusicalPosition, OperationId, PartDefinition,
+    PartDefinitionId, Pitch, PitchId, PitchSpelling, Region, RegionId, RegionTimeModel,
+    RepeatStructure, RepeatStructureId, Rest, ScoreMetadata, Slur, Spanner, SpellingPrecedence,
+    Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
+    StaffLineConfiguration, TempoSegment, Tie, TimeAnchor, TimeSignature, TransactionId,
+    TranspositionInterval, TuningContextSettings, TupletId, TypedObjectId, ViewDefinition, ViewId,
+    Voice, VoiceId,
 };
 use epiphany_determinism::{
     sorted_canonical, CanonicalDecode, CanonicalEncode, CanonicalSet, DecodeError,
@@ -294,6 +295,15 @@ pub enum OperationKind {
     /// reduction preconditions every carried active layer resolves to a live
     /// `AnalysisLayer`.
     CreateView(CreateViewOp),
+    // --- Genesis tranche G3b (`spec/CONTRACT_GENESIS_G3B_MEASURE.md`): the
+    // final rung of the genesis ladder. Discriminant extends additively past
+    // 38. ---
+    /// Append a measure to a live staff instance (append-only set-union
+    /// creation, contract pin 4/9). Carries the owning instance id beside the
+    /// full `Measure` value, mirroring `CreateStaffInstance`: `Measure` has no
+    /// back-pointer to its parent, so the parent must ride along in the
+    /// payload (and in the reducer's carried-value map, contract pin 5).
+    CreateMeasure(CreateMeasureOp),
 }
 
 impl OperationKind {
@@ -415,6 +425,8 @@ impl OperationKind {
             OperationKind::CreatePartDefinition(_) => 36,
             OperationKind::CreateAnalysisLayer(_) => 37,
             OperationKind::CreateView(_) => 38,
+            // Genesis tranche G3b; appended past 38.
+            OperationKind::CreateMeasure(_) => 39,
         }
     }
 
@@ -481,6 +493,9 @@ impl OperationKind {
             | OperationKind::CreatePartDefinition(_)
             | OperationKind::CreateAnalysisLayer(_)
             | OperationKind::CreateView(_) => Some(11),
+            // Minor 12 (Genesis tranche G3b), ratified
+            // `spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4.
+            OperationKind::CreateMeasure(_) => Some(12),
         }
     }
 
@@ -536,6 +551,9 @@ impl OperationKind {
             OperationKind::CreatePartDefinition(_) => OperationKindTag::CreatePartDefinition,
             OperationKind::CreateAnalysisLayer(_) => OperationKindTag::CreateAnalysisLayer,
             OperationKind::CreateView(_) => OperationKindTag::CreateView,
+            // Genesis tranche G3b. Name-verbatim, as every genesis addition
+            // since G1 has been (contract pin 3's precedent).
+            OperationKind::CreateMeasure(_) => OperationKindTag::CreateMeasure,
         }
     }
 }
@@ -586,6 +604,7 @@ impl CanonicalEncode for OperationKind {
             OperationKind::CreatePartDefinition(op) => op.encode_canonical(out),
             OperationKind::CreateAnalysisLayer(op) => op.encode_canonical(out),
             OperationKind::CreateView(op) => op.encode_canonical(out),
+            OperationKind::CreateMeasure(op) => op.encode_canonical(out),
         }
     }
 }
@@ -650,6 +669,8 @@ pub enum OperationKindTag {
     CreateAnalysisLayer,
     /// Genesis tranche G3a.
     CreateView,
+    /// Genesis tranche G3b.
+    CreateMeasure,
 }
 
 /// The discriminant of [`OperationKindTag::Registered`], the one tag that
@@ -769,6 +790,7 @@ operation_kind_tag_vocabulary! {
     CreatePartDefinition = 36 => "create-part-definition" @ Some(11),
     CreateAnalysisLayer = 37 => "create-analysis-layer" @ Some(11),
     CreateView = 38 => "create-view" @ Some(11),
+    CreateMeasure = 39 => "create-measure" @ Some(12),
 }
 
 impl CanonicalEncode for OperationKindTag {
@@ -1856,6 +1878,39 @@ impl CanonicalEncode for CreateViewOp {
     }
 }
 
+// --- Genesis tranche G3b (`spec/CONTRACT_GENESIS_G3B_MEASURE.md`): the final
+// rung of the genesis ladder. `Measure` is a nested container child of
+// `StaffInstance`, not a `Score`-root vector, so this rides
+// `CreateStaffInstance`'s parent-carrying shape (contract pin 4), not the
+// nine root-level mints' bare-value shape above. ---
+
+/// Append a `Measure` to a live `StaffInstance` (operation_catalog
+/// §CreateMeasure). Carries the owning instance id beside the full `Measure`
+/// value — `Measure` has no back-pointer to its parent (`graph.rs`), so the
+/// parent must ride along, exactly like `CreateStaffInstanceOp::region`.
+/// Append-only set-union creation (contract pin 9): the measure is pushed at
+/// the end of `instance.measures`, gated on ordering, meter agreement, and
+/// boundary-distance preconditions against the effective grid.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CreateMeasureOp {
+    pub instance: StaffInstanceId,
+    pub measure: Measure,
+}
+
+impl CreateMeasureOp {
+    /// The appended measure's identifier.
+    pub fn measure_id(&self) -> MeasureId {
+        self.measure.id
+    }
+}
+
+impl CanonicalEncode for CreateMeasureOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_canon(out, &self.instance);
+        push_lp_bytes(out, &self.measure.canonical_bytes());
+    }
+}
+
 /// Set, replace, or (`None`) remove the single meter change at the anchor's
 /// resolved musical position in a region's default metric grid
 /// (operation_catalog §"Meter and Tempo Overwrites"). Carries the full
@@ -2764,5 +2819,129 @@ mod tests {
         let fwd = CrossCuttingValue::Slur(crate::valuegen::slur(s, a, b));
         let rev = CrossCuttingValue::Slur(crate::valuegen::slur(s, b, a));
         assert_ne!(fwd.to_canonical_bytes(), rev.to_canonical_bytes());
+    }
+
+    // -----------------------------------------------------------------
+    // Genesis tranche G3b (`spec/CONTRACT_GENESIS_G3B_MEASURE.md`).
+    // -----------------------------------------------------------------
+
+    fn g3b_sample_measure() -> Measure {
+        crate::valuegen::measure(
+            MeasureId::new(ReplicaId(1), 1),
+            epiphany_core::TimeSignatureId::new(ReplicaId(1), 1),
+            1,
+        )
+    }
+
+    /// (M1/M2) `CreateMeasure`'s kind discriminant and tag discriminant are
+    /// both 39, in both discriminant spaces (contract pin 1).
+    ///
+    /// **Mutation M1:** move the kind discriminant to 40; must fail.
+    /// **Mutation M2:** move the tag discriminant to 40; must fail. (The two
+    /// spaces are asserted independently — a G-minor lesson from
+    /// `TransposeInterval`.)
+    #[test]
+    fn g3b_m1_m2_kind_and_tag_discriminant_are_39() {
+        let kind = OperationKind::CreateMeasure(CreateMeasureOp {
+            instance: StaffInstanceId::new(ReplicaId(1), 1),
+            measure: g3b_sample_measure(),
+        });
+        let mut bytes = Vec::new();
+        kind.encode_canonical(&mut bytes);
+        assert_eq!(bytes[0], 39, "the kind discriminant byte must lead");
+        assert_eq!(kind.tag(), OperationKindTag::CreateMeasure);
+        assert_eq!(OperationKindTag::CreateMeasure.discriminant(), 39);
+    }
+
+    /// (M3/M4) `CreateMeasure`'s epoch is `Some(12)` in BOTH the kind's own
+    /// `introduced_minor()` and the tag vocabulary's epoch.
+    ///
+    /// **Mutation M3:** change `OperationKind::introduced_minor()`'s
+    /// `CreateMeasure` arm to `Some(11)`; must fail.
+    /// **Mutation M4:** change the tag vocabulary's `@ Some(12)` to
+    /// `Some(11)`; must fail.
+    #[test]
+    fn g3b_m3_m4_epoch_is_12_in_both_spaces() {
+        let kind = OperationKind::CreateMeasure(CreateMeasureOp {
+            instance: StaffInstanceId::new(ReplicaId(1), 1),
+            measure: g3b_sample_measure(),
+        });
+        assert_eq!(kind.introduced_minor(), Some(12));
+        assert_eq!(OperationKindTag::CreateMeasure.introduced_minor(), Some(12));
+    }
+
+    /// (M11) `CreateMeasure` gains NO `schema_major()` arm (pin 2: `Measure`
+    /// is schema major 0, so `OperationEnvelopeBlock` stays at 3). A block
+    /// containing ONLY a `CreateMeasure` envelope stamps major 0 — the block
+    /// composition is load-bearing: a mixed block would stamp from another
+    /// kind and pass even with an errant arm present.
+    ///
+    /// **Mutation:** add `OperationKind::CreateMeasure(_) => 3` to
+    /// `schema_major()`; must fail.
+    #[test]
+    fn g3b_m11_create_measure_only_block_stamps_major_zero() {
+        let kind = OperationKind::CreateMeasure(CreateMeasureOp {
+            instance: StaffInstanceId::new(ReplicaId(1), 1),
+            measure: g3b_sample_measure(),
+        });
+        assert_eq!(
+            kind.schema_major(),
+            0,
+            "CreateMeasure falls through the catch-all _ => 0 arm"
+        );
+        let envelopes = [envelope(
+            1,
+            OperationPayload::Primitive(OperationKind::CreateMeasure(CreateMeasureOp {
+                instance: StaffInstanceId::new(ReplicaId(1), 1),
+                measure: g3b_sample_measure(),
+            })),
+        )];
+        let major = envelopes
+            .iter()
+            .map(|e| e.schema_major())
+            .max()
+            .expect("one envelope");
+        assert_eq!(
+            major, 0,
+            "a block carrying only CreateMeasure stamps major 0"
+        );
+    }
+
+    /// (M13) `CreateMeasureOp::encode_canonical` pushes the parent
+    /// `StaffInstanceId` THEN the value — mirroring `CreateStaffInstanceOp`
+    /// (contract pin 4). Frozen literal bytes, not a round-trip assertion:
+    /// swapping the two fields' encode order round-trips fine on its own
+    /// (each half decodes to the right type), so only a byte literal catches
+    /// the reorder.
+    ///
+    /// **Mutation:** swap the two `push_canon`/`push_lp_bytes` calls in
+    /// `CreateMeasureOp::encode_canonical`; must fail.
+    #[test]
+    fn g3b_m13_create_measure_op_encodes_parent_then_value() {
+        let op = CreateMeasureOp {
+            instance: StaffInstanceId::new(ReplicaId(1), 7),
+            measure: g3b_sample_measure(),
+        };
+        let mut bytes = Vec::new();
+        op.encode_canonical(&mut bytes);
+
+        // The instance id leads: its own canonical form (`push_canon`) is a
+        // fixed-width id encoding, and this exact prefix is what a
+        // parent/value swap would move.
+        let mut instance_bytes = Vec::new();
+        push_canon(&mut instance_bytes, &op.instance);
+        assert!(
+            bytes.starts_with(&instance_bytes),
+            "the parent StaffInstanceId must be the first bytes encoded"
+        );
+
+        let mut value_bytes = Vec::new();
+        push_lp_bytes(&mut value_bytes, &op.measure.canonical_bytes());
+        assert_eq!(
+            bytes.len(),
+            instance_bytes.len() + value_bytes.len(),
+            "the payload is exactly parent-bytes then value-bytes, nothing else"
+        );
+        assert_eq!(&bytes[instance_bytes.len()..], &value_bytes[..]);
     }
 }

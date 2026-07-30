@@ -223,6 +223,14 @@ fn precondition_reason(reader: &mut Reader<'_>) -> Result<PreconditionFailureRea
         11 => Ok(PreconditionFailureReason::TempoMapMalformed),
         12 => Ok(PreconditionFailureReason::SystemDerivedContentImmutable),
         13 => Ok(PreconditionFailureReason::RecreateContentMismatch),
+        // Additive (Push 4a); a pre-existing decoder hole (P13-S20) — these
+        // two encode but could not decode until this rung.
+        14 => Ok(PreconditionFailureReason::AcousticRealizationPinned),
+        15 => Ok(PreconditionFailureReason::TranspositionOutOfRange),
+        // Additive (Genesis tranche G3b).
+        16 => Ok(PreconditionFailureReason::MeasureMeterMismatch),
+        17 => Ok(PreconditionFailureReason::MeasureOutOfOrder),
+        18 => Ok(PreconditionFailureReason::MeasureOrderUnverifiable),
         tag => Err(MaterializedDecodeError::InvalidTag {
             kind: "PreconditionFailureReason",
             tag,
@@ -618,8 +626,36 @@ mod tests {
             ReanchorReason::SameCanvasNearer
         );
         // The vocabularies stay bounded: one past the append rejects.
-        assert!(exact(&[14], precondition_reason).is_err());
+        assert!(exact(&[19], precondition_reason).is_err());
         assert!(exact(&[7], reanchor_reason).is_err());
+    }
+
+    /// Genesis tranche G3b (contract row 12a / M64–M66): reasons 14 and 15
+    /// (Push 4a's `AcousticRealizationPinned`/`TranspositionOutOfRange`) were
+    /// a pre-existing decoder hole — they encoded but could not decode
+    /// (P13-S20) — and this rung's own 16–18 must decode too.
+    #[test]
+    fn genesis_g3b_and_the_p13_s20_hole_decode() {
+        assert_eq!(
+            exact(&[14], precondition_reason).unwrap(),
+            PreconditionFailureReason::AcousticRealizationPinned
+        );
+        assert_eq!(
+            exact(&[15], precondition_reason).unwrap(),
+            PreconditionFailureReason::TranspositionOutOfRange
+        );
+        assert_eq!(
+            exact(&[16], precondition_reason).unwrap(),
+            PreconditionFailureReason::MeasureMeterMismatch
+        );
+        assert_eq!(
+            exact(&[17], precondition_reason).unwrap(),
+            PreconditionFailureReason::MeasureOutOfOrder
+        );
+        assert_eq!(
+            exact(&[18], precondition_reason).unwrap(),
+            PreconditionFailureReason::MeasureOrderUnverifiable
+        );
     }
 
     #[test]
