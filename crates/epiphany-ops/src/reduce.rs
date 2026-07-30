@@ -4600,9 +4600,38 @@ impl<'a> Reducer<'a> {
             }
             None
         } else {
+            // Repair (spec/CONTRACT_GENESIS_G3B_MEASURE.md pin 6 c3, review
+            // fix): c3 requires both measures in the SAME
+            // `StaffInstance.measures` — the graph-aware branch above
+            // enforces this implicitly (it only returns from within one
+            // instance's Vec), so the base-free branch must check it
+            // explicitly via `measure_values`'s carried parent id.
+            let (parent_a, _) = self.measure_values.get(&a)?;
+            let (parent_b, _) = self.measure_values.get(&b)?;
+            if parent_a != parent_b {
+                return None;
+            }
+            // Both measures must be LIVE — a retained-but-tombstoned entry
+            // (pin 10.4's retention discipline) must not contribute to the
+            // ordering.
+            if !matches!(
+                self.objects.get(&TypedObjectId::Measure(a)),
+                Some(ObjectState::Live)
+            ) || !matches!(
+                self.objects.get(&TypedObjectId::Measure(b)),
+                Some(ObjectState::Live)
+            ) {
+                return None;
+            }
+            // Order by the minters' canonical reduction-order stamp tuple —
+            // NOT by `OperationId`'s own `Ord`, which is `(replica,
+            // counter)` authoring identity (ids.rs:409), not reduction
+            // order. This is the same tuple `chain_recency` compares.
             let oa = self.minted_by.get(&TypedObjectId::Measure(a))?;
             let ob = self.minted_by.get(&TypedObjectId::Measure(b))?;
-            Some(oa.cmp(ob))
+            let ta = self.env_of(*oa)?.stamp.reduction_tuple();
+            let tb = self.env_of(*ob)?.stamp.reduction_tuple();
+            Some(ta.cmp(&tb))
         }
     }
 
@@ -4844,7 +4873,23 @@ impl<'a> Reducer<'a> {
             let per_key_is_prospective = meter_change_overrides.contains_key(&key);
             let per_key_recency = self.chain_recency(per_key_chain, per_key_is_prospective);
 
-            if per_key_recency > whole_recency {
+            // Repair (spec/CONTRACT_GENESIS_G3B_MEASURE.md pin 6c, review
+            // fix): `Recency::Prospective` is a unit variant, so two
+            // simultaneous prospective restorations (a whole-grid
+            // restoration and a per-key restoration under the same undo)
+            // compare EQUAL, and a strict `>` would hand governance to the
+            // whole grid even though restoration actually applies the
+            // per-key write AFTER the whole grid, under the same undo
+            // operation id. Ratified tie-break: on equal recency, the
+            // per-key write governs — but ONLY for the prospective family.
+            // Do NOT widen this to a plain `>=`: when both sides are
+            // `Recency::Base` the per-key chain has no write, so `value`
+            // below resolves to `None` and the overlay would DELETE the
+            // whole grid's entry at this key — a regression.
+            if per_key_recency > whole_recency
+                || (per_key_recency == Recency::Prospective
+                    && whole_recency == Recency::Prospective)
+            {
                 let value: Option<MeterChange> = if per_key_is_prospective {
                     meter_change_overrides.get(&key).cloned().flatten()
                 } else {
@@ -5065,40 +5110,54 @@ impl<'a> Reducer<'a> {
         if let Some(sig) = op.measure.time_signature {
             match self.governing_time_signature(&sequence, &op.measure.start) {
                 GoverningElement::Unique(active) if active == sig => {}
-                GoverningElement::Unique(_) | GoverningElement::None => {
+                GoverningElement::Unique(_) => {
                     return OperationEffect::NoOp {
                         reason: NoOpReason::PreconditionFailedUnderReduction {
                             reason: PreconditionFailureReason::MeasureMeterMismatch,
                         },
                     };
                 }
+                // Pin 6c case 1 / pin 7: no active signature governs this
+                // start — agreement is vacuous, not a violation. Fall
+                // through (no refusal).
+                GoverningElement::None => {}
                 GoverningElement::Indeterminate => return unverifiable(),
             }
         }
 
         // Pin 9 clause 3: boundary distance — vacuous for the first measure.
+        // `None` (no active signature governs the previous start) and
+        // `Indeterminate` (selection cannot be resolved) are NOT the same
+        // outcome: pin 6c case 1 makes `None` an abstention (allow the
+        // mint), while `Indeterminate` still fails closed with
+        // `MeasureOrderUnverifiable` (pin 7). Collapsing them was the bug.
         if let Some(prev_start) = &predecessor {
-            let prev_duration: Option<MusicalDuration> =
-                match self.governing_time_signature(&sequence, prev_start) {
-                    GoverningElement::Unique(sig) => self
+            match self.governing_time_signature(&sequence, prev_start) {
+                GoverningElement::Unique(sig) => {
+                    let expected = self
                         .time_signature_values
                         .get(&sig)
-                        .map(|ts| ts.measure_duration().clone()),
-                    GoverningElement::None | GoverningElement::Indeterminate => None,
-                };
-            match (
-                self.anchor_musical_delta(prev_start, &op.measure.start),
-                prev_duration,
-            ) {
-                (Some(delta), Some(expected)) if delta == expected => {}
-                (Some(_), Some(_)) => {
-                    return OperationEffect::NoOp {
-                        reason: NoOpReason::PreconditionFailedUnderReduction {
-                            reason: PreconditionFailureReason::MeasureMeterMismatch,
-                        },
-                    };
+                        .map(|ts| ts.measure_duration().clone());
+                    match (
+                        self.anchor_musical_delta(prev_start, &op.measure.start),
+                        expected,
+                    ) {
+                        (Some(delta), Some(expected)) if delta == expected => {}
+                        (Some(_), Some(_)) => {
+                            return OperationEffect::NoOp {
+                                reason: NoOpReason::PreconditionFailedUnderReduction {
+                                    reason: PreconditionFailureReason::MeasureMeterMismatch,
+                                },
+                            };
+                        }
+                        _ => return unverifiable(),
+                    }
                 }
-                _ => return unverifiable(),
+                // Pin 6c case 1 / pin 7: no active signature governs the
+                // previous measure's start — boundary consistency abstains.
+                // Not a violation; allow the mint.
+                GoverningElement::None => {}
+                GoverningElement::Indeterminate => return unverifiable(),
             }
         }
 
@@ -17391,15 +17450,43 @@ mod tests {
     /// packet 2, reuses these same functions).
     #[test]
     fn g3b_comparable_offsets_and_anchor_shapes() {
-        let op_set = OperationSet::new();
-        let mut r = Reducer::new(&op_set);
-
         let ev_a = EventId::new(ReplicaId(1), 1);
         let ev_b = EventId::new(ReplicaId(1), 2);
         let m_a = MeasureId::new(ReplicaId(1), 10);
         let m_b = MeasureId::new(ReplicaId(1), 11);
         let rg_a = RegionId::new(ReplicaId(1), 20);
         let rg_b = RegionId::new(ReplicaId(1), 21);
+        let instance = StaffInstanceId::new(ReplicaId(1), 99);
+
+        // Repair 1 (spec/CONTRACT_GENESIS_G3B_MEASURE.md, review fix): the
+        // base-free c3 branch now reads real minter envelopes' stamp
+        // reduction tuples, so the op set must actually carry them — a
+        // stamp order that AGREES with OperationId order here (replica 1,
+        // counters 1 then 2, physical 1_000 then 2_000), so this base case
+        // does not itself distinguish the two orderings (that is
+        // `g3b_c3_order_follows_stamp_not_operation_id`, below).
+        let measure_a = g3b_wallclock_measure(m_a, 1_000);
+        let measure_b = g3b_wallclock_measure(m_b, 2_000);
+        let mut op_set = OperationSet::new();
+        op_set.accept_all(vec![
+            g3b_measure_env(1, 1, 1_000, instance, measure_a.clone()),
+            g3b_measure_env(1, 2, 2_000, instance, measure_b.clone()),
+        ]);
+        let mut r = Reducer::new(&op_set);
+        r.objects
+            .insert(TypedObjectId::Measure(m_a), ObjectState::Live);
+        r.objects
+            .insert(TypedObjectId::Measure(m_b), ObjectState::Live);
+        r.minted_by.insert(
+            TypedObjectId::Measure(m_a),
+            OperationId::new(ReplicaId(1), 1),
+        );
+        r.minted_by.insert(
+            TypedObjectId::Measure(m_b),
+            OperationId::new(ReplicaId(1), 2),
+        );
+        r.measure_values.insert(m_a, (instance, measure_a));
+        r.measure_values.insert(m_b, (instance, measure_b));
 
         // c1: same Event id, comparable by offset.
         let e1 = TimeAnchor::Event {
@@ -17461,21 +17548,11 @@ mod tests {
         assert_eq!(r.anchor_musical_delta(&ms1, &ms_end), None);
 
         // c3: distinct Measure ids, both Start+Zero, in the same instance's
-        // (base-free) mint order — via `minted_by` OperationId comparison.
-        let instance = StaffInstanceId::new(ReplicaId(1), 99);
-        r.objects
-            .insert(TypedObjectId::Measure(m_a), ObjectState::Live);
-        r.objects
-            .insert(TypedObjectId::Measure(m_b), ObjectState::Live);
-        r.minted_by.insert(
-            TypedObjectId::Measure(m_a),
-            OperationId::new(ReplicaId(1), 1),
-        );
-        r.minted_by.insert(
-            TypedObjectId::Measure(m_b),
-            OperationId::new(ReplicaId(1), 2),
-        );
-        let _ = instance; // c3 does not need the parent directly here; minted_by suffices.
+        // (base-free) mint order — via the minters' stamp reduction-tuple
+        // comparison (Repair 1: NOT `OperationId`'s own `Ord`, and both
+        // measures must share the SAME `StaffInstanceId` in `measure_values`
+        // and be Live — see `g3b_c3_requires_same_staff_instance` and
+        // `g3b_c3_requires_live_measures` below for the negative cases).
         let c3_a = TimeAnchor::Measure {
             id: m_a,
             position: MeasurePosition::Start,
@@ -17584,6 +17661,185 @@ mod tests {
         // c5 offers no offsets to subtract; WallClock deltas are never
         // musical durations.
         assert_eq!(r.anchor_musical_delta(&wc1, &wc2), None);
+    }
+
+    /// Repair 1 regression (spec/CONTRACT_GENESIS_G3B_MEASURE.md pin 6 c3):
+    /// two measures anchored via `Measure{pos: Start, off: Zero}` are NOT
+    /// c3-comparable when `measure_values` records them under DIFFERENT
+    /// `StaffInstanceId`s — the graph-aware branch enforces "same instance"
+    /// implicitly (it only returns from within one instance's `Vec`); the
+    /// base-free branch must check it explicitly.
+    ///
+    /// **Mutation:** drop the `parent_a != parent_b` check from
+    /// `measure_vector_order`'s base-free branch. This row must observe red.
+    #[test]
+    fn g3b_c3_requires_same_staff_instance() {
+        let m_a = MeasureId::new(ReplicaId(1), 30);
+        let m_b = MeasureId::new(ReplicaId(1), 31);
+        let instance_a = StaffInstanceId::new(ReplicaId(1), 199);
+        let instance_b = StaffInstanceId::new(ReplicaId(1), 200);
+
+        let measure_a = g3b_wallclock_measure(m_a, 1_000);
+        let measure_b = g3b_wallclock_measure(m_b, 2_000);
+        let mut op_set = OperationSet::new();
+        op_set.accept_all(vec![
+            g3b_measure_env(1, 1, 1_000, instance_a, measure_a.clone()),
+            g3b_measure_env(1, 2, 2_000, instance_b, measure_b.clone()),
+        ]);
+        let mut r = Reducer::new(&op_set);
+        r.objects
+            .insert(TypedObjectId::Measure(m_a), ObjectState::Live);
+        r.objects
+            .insert(TypedObjectId::Measure(m_b), ObjectState::Live);
+        r.minted_by.insert(
+            TypedObjectId::Measure(m_a),
+            OperationId::new(ReplicaId(1), 1),
+        );
+        r.minted_by.insert(
+            TypedObjectId::Measure(m_b),
+            OperationId::new(ReplicaId(1), 2),
+        );
+        // The load-bearing part of this fixture: the two measures are
+        // recorded under DIFFERENT parent instances.
+        r.measure_values.insert(m_a, (instance_a, measure_a));
+        r.measure_values.insert(m_b, (instance_b, measure_b));
+
+        let c3_a = TimeAnchor::Measure {
+            id: m_a,
+            position: MeasurePosition::Start,
+            offset: AnchorOffset::Zero,
+        };
+        let c3_b = TimeAnchor::Measure {
+            id: m_b,
+            position: MeasurePosition::Start,
+            offset: AnchorOffset::Zero,
+        };
+        assert_eq!(
+            r.anchors_comparable_order(&c3_a, &c3_b),
+            None,
+            "c3: measures anchored in DIFFERENT StaffInstances must not be comparable"
+        );
+    }
+
+    /// Repair 1 regression: a c3 comparison against a measure that is not
+    /// `Live` (e.g. retained-but-tombstoned, pin 10.4's retention
+    /// discipline) must not contribute to the ordering.
+    ///
+    /// **Mutation:** drop the `Live` conjunct from `measure_vector_order`'s
+    /// base-free branch. This row must observe red.
+    #[test]
+    fn g3b_c3_requires_live_measures() {
+        let m_a = MeasureId::new(ReplicaId(1), 32);
+        let m_b = MeasureId::new(ReplicaId(1), 33);
+        let instance = StaffInstanceId::new(ReplicaId(1), 201);
+
+        let measure_a = g3b_wallclock_measure(m_a, 1_000);
+        let measure_b = g3b_wallclock_measure(m_b, 2_000);
+        let mut op_set = OperationSet::new();
+        op_set.accept_all(vec![
+            g3b_measure_env(1, 1, 1_000, instance, measure_a.clone()),
+            g3b_measure_env(1, 2, 2_000, instance, measure_b.clone()),
+        ]);
+        let mut r = Reducer::new(&op_set);
+        r.objects
+            .insert(TypedObjectId::Measure(m_a), ObjectState::Live);
+        // b is tombstoned, not live, but its value is still retained (pin
+        // 10.4's uniform retention discipline).
+        r.objects.insert(
+            TypedObjectId::Measure(m_b),
+            ObjectState::Tombstoned {
+                deleted_by: OperationId::new(ReplicaId(9), 9),
+                minted_by: OperationId::new(ReplicaId(1), 2),
+            },
+        );
+        r.minted_by.insert(
+            TypedObjectId::Measure(m_a),
+            OperationId::new(ReplicaId(1), 1),
+        );
+        r.minted_by.insert(
+            TypedObjectId::Measure(m_b),
+            OperationId::new(ReplicaId(1), 2),
+        );
+        r.measure_values.insert(m_a, (instance, measure_a));
+        r.measure_values.insert(m_b, (instance, measure_b));
+
+        let c3_a = TimeAnchor::Measure {
+            id: m_a,
+            position: MeasurePosition::Start,
+            offset: AnchorOffset::Zero,
+        };
+        let c3_b = TimeAnchor::Measure {
+            id: m_b,
+            position: MeasurePosition::Start,
+            offset: AnchorOffset::Zero,
+        };
+        assert_eq!(
+            r.anchors_comparable_order(&c3_a, &c3_b),
+            None,
+            "c3: a Tombstoned measure must not contribute to the ordering"
+        );
+    }
+
+    /// Repair 1 regression: `measure_vector_order`'s base-free branch must
+    /// order by the minters' canonical reduction-order STAMP tuple, not by
+    /// `OperationId`'s own `(replica, counter)` `Ord` (ids.rs:409). Here `m_a`
+    /// was minted with the LARGER counter but the EARLIER physical stamp, and
+    /// `m_b` with the SMALLER counter but the LATER physical stamp — the two
+    /// orderings disagree, so this is the only fixture that distinguishes
+    /// them.
+    ///
+    /// **Mutation:** revert the base-free branch to `oa.cmp(ob)` on the raw
+    /// `OperationId`s. This row must observe red (it would report
+    /// `Some(Ordering::Greater)`, the opposite of the correct answer).
+    #[test]
+    fn g3b_c3_order_follows_stamp_not_operation_id() {
+        let m_a = MeasureId::new(ReplicaId(1), 34);
+        let m_b = MeasureId::new(ReplicaId(1), 35);
+        let instance = StaffInstanceId::new(ReplicaId(1), 202);
+
+        let measure_a = g3b_wallclock_measure(m_a, 1_000);
+        let measure_b = g3b_wallclock_measure(m_b, 2_000);
+        let mut op_set = OperationSet::new();
+        op_set.accept_all(vec![
+            // m_a: OperationId counter 2, but the EARLIER physical stamp.
+            g3b_measure_env(1, 2, 100, instance, measure_a.clone()),
+            // m_b: OperationId counter 1, but the LATER physical stamp.
+            g3b_measure_env(1, 1, 200, instance, measure_b.clone()),
+        ]);
+        let mut r = Reducer::new(&op_set);
+        r.objects
+            .insert(TypedObjectId::Measure(m_a), ObjectState::Live);
+        r.objects
+            .insert(TypedObjectId::Measure(m_b), ObjectState::Live);
+        r.minted_by.insert(
+            TypedObjectId::Measure(m_a),
+            OperationId::new(ReplicaId(1), 2),
+        );
+        r.minted_by.insert(
+            TypedObjectId::Measure(m_b),
+            OperationId::new(ReplicaId(1), 1),
+        );
+        r.measure_values.insert(m_a, (instance, measure_a));
+        r.measure_values.insert(m_b, (instance, measure_b));
+
+        let c3_a = TimeAnchor::Measure {
+            id: m_a,
+            position: MeasurePosition::Start,
+            offset: AnchorOffset::Zero,
+        };
+        let c3_b = TimeAnchor::Measure {
+            id: m_b,
+            position: MeasurePosition::Start,
+            offset: AnchorOffset::Zero,
+        };
+        // OperationId order says m_b (counter 1) < m_a (counter 2); stamp
+        // order says m_a (physical 100) < m_b (physical 200). The correct
+        // answer follows the stamp: c3_a (m_a) is Less than c3_b (m_b).
+        assert_eq!(
+            r.anchors_comparable_order(&c3_a, &c3_b),
+            Some(Ordering::Less),
+            "c3 ordering must follow the minters' stamp reduction tuple, not OperationId::cmp"
+        );
     }
 
     fn g3b_region_anchor(region: RegionId, n: i32) -> TimeAnchor {
@@ -17855,6 +18111,190 @@ mod tests {
                 time_signature: sig_prospective,
             }],
             "M31a: a prospective per-key override must also govern"
+        );
+    }
+
+    /// Repair 3 (spec/CONTRACT_GENESIS_G3B_MEASURE.md pin 6c, review fix): a
+    /// SINGLE undo restoring both a whole-grid write and a per-key
+    /// meter-change write, at the SAME position, under the SAME undo
+    /// operation id — so both restorations tie under `Recency::Prospective`
+    /// when evaluated in flight (pin 9c's aggregate safety check, before the
+    /// undo commits). The ratified tie-break — per-key governs on a tie, but
+    /// ONLY within the prospective family — must make that PROSPECTIVE
+    /// prediction agree with what restoration ACTUALLY installs once it runs
+    /// for real: production code collects and applies every
+    /// `metric_grid_chain` restoration before it begins `meter_change_chain`
+    /// restorations (`reduce.rs` ~6419-6457), so the per-key predecessor is
+    /// written to the graph strictly AFTER the whole-grid predecessor, and
+    /// must be what's left standing.
+    #[test]
+    fn g3b_grid_oracle_aggregate_prospective_restoration_matches_real_undo() {
+        let region = RegionId::new(ReplicaId(1), 1);
+        let instance = StaffInstanceId::new(ReplicaId(1), 2);
+        let staff = StaffId::new(ReplicaId(1), 3);
+        let sig_whole_baseline = TimeSignatureId::new(ReplicaId(1), 10);
+        let sig_perkey_baseline = TimeSignatureId::new(ReplicaId(1), 11);
+        let sig_whole_new = TimeSignatureId::new(ReplicaId(1), 12);
+        let sig_perkey_new = TimeSignatureId::new(ReplicaId(1), 13);
+        let pos0 = g3b_region_anchor(region, 0);
+        let key = MusicalPosition(RationalTime::from_int(0));
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let create_region = prim_env(
+            1,
+            0,
+            0,
+            CausalContext::new(),
+            OperationKind::CreateRegion(CreateRegionOp {
+                region: crate::valuegen::region(region),
+            }),
+        );
+        let create_instance = prim_env(
+            1,
+            1,
+            1,
+            seen_r1(0),
+            OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region,
+                instance: crate::valuegen::staff_instance(instance, staff),
+            }),
+        );
+        // Pre-transaction baseline: a whole-grid write, then a per-key write
+        // that overlays it at pos0 — these establish the PREDECESSORS the
+        // undo below will restore to.
+        let set_grid_baseline = prim_env(
+            1,
+            2,
+            2,
+            seen_r1(1),
+            OperationKind::SetMetricGrid(SetMetricGridOp {
+                region,
+                grid: Some(MetricGrid {
+                    meter_sequence: vec![MeterChange {
+                        anchor: pos0.clone(),
+                        time_signature: sig_whole_baseline,
+                    }],
+                }),
+            }),
+        );
+        let set_time_sig_baseline = prim_env(
+            1,
+            3,
+            3,
+            seen_r1(2),
+            OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region,
+                anchor: pos0.clone(),
+                time_signature: Some(crate::valuegen::time_signature(sig_perkey_baseline, 3)),
+            }),
+        );
+
+        // The transaction: overwrites BOTH the whole grid and the per-key
+        // change, at the SAME position, in one undoable unit.
+        let decl = declare_transaction(1, 10, 10, seen_r1(3), tx);
+        let tx_set_grid = tx_member(
+            1,
+            11,
+            11,
+            seen_r1(10),
+            tx,
+            OperationKind::SetMetricGrid(SetMetricGridOp {
+                region,
+                grid: Some(MetricGrid {
+                    meter_sequence: vec![MeterChange {
+                        anchor: pos0.clone(),
+                        time_signature: sig_whole_new,
+                    }],
+                }),
+            }),
+        );
+        let tx_set_time_sig = tx_member(
+            1,
+            12,
+            12,
+            seen_r1(11),
+            tx,
+            OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region,
+                anchor: pos0.clone(),
+                time_signature: Some(crate::valuegen::time_signature(sig_perkey_new, 3)),
+            }),
+        );
+        let undo = undo_env(1, 20, 20, seen_r1(12), tx, UndoPolicy::StrictInverse);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            create_region,
+            create_instance,
+            set_grid_baseline,
+            set_time_sig_baseline,
+            decl,
+            tx_set_grid,
+            tx_set_time_sig,
+            undo,
+        ]);
+        let identity = IdentityContext::new(ReplicaId(1));
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        // What restoration ACTUALLY installs: read the materialized graph.
+        let region_value = out
+            .score
+            .canvas
+            .regions
+            .iter()
+            .find(|r| r.id == region)
+            .expect("region present");
+        let installed = region_value
+            .content
+            .staff_based()
+            .and_then(|c| c.default_metric_grid.as_ref())
+            .expect("a default metric grid after restoration")
+            .meter_sequence
+            .clone();
+        assert_eq!(
+            installed,
+            vec![MeterChange {
+                anchor: pos0.clone(),
+                time_signature: sig_perkey_baseline
+            }],
+            "actual restoration installs the whole-grid predecessor, then \
+             overlays the per-key predecessor at pos0 (applied strictly \
+             after) — the per-key value must be what the graph shows"
+        );
+
+        // The oracle's PROSPECTIVE prediction, evaluated as pin 9c's
+        // aggregate safety check would (BEFORE the undo commits): both the
+        // whole-grid and per-key restorations are simultaneously "in
+        // flight" under the SAME undo, so both tie under
+        // `Recency::Prospective`.
+        let op_set = OperationSet::new();
+        let r = Reducer::new(&op_set);
+        let prospective_grid = Some(MetricGrid {
+            meter_sequence: vec![MeterChange {
+                anchor: pos0.clone(),
+                time_signature: sig_whole_baseline,
+            }],
+        });
+        let mut meter_change_overrides = BTreeMap::new();
+        meter_change_overrides.insert(
+            key,
+            Some(MeterChange {
+                anchor: pos0.clone(),
+                time_signature: sig_perkey_baseline,
+            }),
+        );
+        let predicted = r.effective_grid(
+            instance,
+            Some(region),
+            Some(&prospective_grid),
+            &meter_change_overrides,
+        );
+        assert_eq!(
+            predicted, installed,
+            "the aggregate prospective evaluation must agree with what \
+             restoration actually installs (pin 6c's ratified tie-break: on \
+             equal recency, the per-key write governs — but ONLY for the \
+             prospective family)"
         );
     }
 
@@ -18378,6 +18818,96 @@ mod tests {
             "M33: comparable, correctly ordered, agreeing (None inherits), and \
              STILL the wrong distance must be MeasureMeterMismatch — the \
              immediate-violation gap"
+        );
+    }
+
+    /// Repair 2 (spec/CONTRACT_GENESIS_G3B_MEASURE.md pin 6c case 1 / pin 7):
+    /// creating a measure against a WHOLLY EMPTY effective grid — no
+    /// `local_metric_grid`, no region `default_metric_grid`, and no
+    /// `SetMetricGrid`/`SetTimeSignature` writes anywhere — must Applied. No
+    /// active signature means agreement is vacuous and the boundary clause
+    /// abstains; neither is a violation.
+    ///
+    /// The original defect wrongly grouped `GoverningElement::None` with a
+    /// disagreeing `Unique` in the agreement match (`MeasureMeterMismatch`),
+    /// and collapsed `None` into `Indeterminate` for the boundary clause's
+    /// `prev_duration`, so the final `_ => unverifiable()` arm fired
+    /// (`MeasureOrderUnverifiable`) once a computable delta met a `None`
+    /// duration.
+    ///
+    /// This is deliberately END-TO-END: the white-box selector test
+    /// (`g3b_grid_oracle_governing_selection`) already exercises
+    /// `governing_by_anchor`'s `None` outcome correctly in isolation — the
+    /// bug was entirely in how `create_measure`'s caller handled that
+    /// `None`, so only a real mint through the caller proves the fix.
+    #[test]
+    fn g3b_create_measure_applies_against_an_empty_effective_grid_end_to_end() {
+        let region = RegionId::new(ReplicaId(1), 60);
+        let instance = StaffInstanceId::new(ReplicaId(1), 61);
+        let staff = StaffId::new(ReplicaId(1), 62);
+        // No SetMetricGrid, no SetTimeSignature: the effective grid is
+        // empty for the whole life of this test.
+        let mut envs = g3b_region_and_instance_envs(1, region, instance, staff);
+
+        fn measure(id: u64, start: TimeAnchor, sig: Option<TimeSignatureId>) -> Measure {
+            Measure {
+                id: MeasureId::new(ReplicaId(1), id),
+                start,
+                time_signature: sig,
+                explicit_number: None,
+                number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+            }
+        }
+
+        // The first measure of the instance: clauses 1 & 3 are vacuous for
+        // it regardless of Repair 2 (pin 9's pickup exemption), so it does
+        // not by itself distinguish the bug from the fix.
+        let first = g3b_measure_env(
+            1,
+            70,
+            70,
+            instance,
+            measure(300, g3b_region_anchor(region, 0), None),
+        );
+        // The SECOND measure: comparable to, and a nonzero Musical delta
+        // from, the first (c4 — same Region id and edge), AND declaring a
+        // time signature — even though nothing ever wrote the grid. Under
+        // the original bug, the agreement clause alone already refused
+        // (`MeasureMeterMismatch`) before the boundary clause was reached;
+        // dropping `time_signature` to `None` would additionally exercise
+        // the boundary-only half of the same defect.
+        let second = g3b_measure_env(
+            1,
+            71,
+            71,
+            instance,
+            measure(
+                301,
+                TimeAnchor::Region {
+                    id: region,
+                    edge: RegionEdge::Start,
+                    offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(4))),
+                },
+                Some(TimeSignatureId::new(ReplicaId(1), 999)),
+            ),
+        );
+
+        envs.extend([first.clone(), second.clone()]);
+        let mut set = OperationSet::new();
+        set.accept_all(envs);
+        let state = set.reduce();
+
+        assert_eq!(
+            g3b_effect_of(&state, first.id),
+            Some(OperationEffect::Applied)
+        );
+        assert_eq!(
+            g3b_effect_of(&state, second.id),
+            Some(OperationEffect::Applied),
+            "an empty effective grid (no active signature anywhere) must be \
+             vacuous agreement and an abstaining boundary — NOT \
+             MeasureMeterMismatch and NOT MeasureOrderUnverifiable \
+             (pin 6c case 1 / pin 7)"
         );
     }
 }
