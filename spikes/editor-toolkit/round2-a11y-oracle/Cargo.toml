@@ -1,0 +1,40 @@
+[package]
+name = "round2-a11y-oracle"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+# Packet 2B-A (ROUND2_TEXT_RECIPE.md §8, spec/CONTRACT_EDITOR_T4_SPIKE.md pin
+# 13): the check-5 accessibility oracle's *comparison-data* half. This crate
+# reads the already-committed, already-validated `round2-textkit/fixtures.json`
+# (via `round2_textkit::output::load_fixtures`, which validates it against its
+# embedded digest — see that crate) and writes
+# `round2-a11y-oracle/a11y_expectations.json`: per fixture, the exact accepted/
+# prohibited at-spi2 roles and the exact byte strings each `PROHIBITED_OUTCOMES`
+# classification would produce, so `a11y-verifier/verify.py`'s live-tree mode
+# compares observed bytes against precommitted bytes rather than guessing what
+# a wrong name "looks like".
+#
+# This crate must exist and be reviewed *before* either Round 2 candidate
+# builds a tree (pin 13): if a candidate's own tree shaped what this oracle
+# expects, the oracle would no longer be neutral evidence.
+#
+# Deliberately no rendering, windowing, or accessibility crate here — this
+# crate never touches a live tree; that is `a11y-verifier/verify.py`'s job.
+
+[dependencies]
+round2-textkit = { path = "../round2-textkit" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Pinned to the same version already resolved transitively (epiphany-core /
+# epiphany-ops both already pull it), so adding this dependency changes
+# nothing in Cargo.lock's resolution.
+unicode-normalization = "=0.1.25"
+# Same version round2-textkit shapes fixtures with, for the same reason it
+# pins it: grapheme-boundary derivation here must agree with the grapheme
+# boundaries `crate::hittest`'s caret stops were built from.
+unicode-segmentation = "=1.13.3"
+
+[[bin]]
+name = "generate_a11y_expectations"
+path = "src/bin/generate_a11y_expectations.rs"

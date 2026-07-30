@@ -1,0 +1,144 @@
+{
+  "contract": "spec/CONTRACT_EDITOR_T4_SPIKE.md pin 13",
+  "recipe": "spikes/editor-toolkit/ROUND2_TEXT_RECIPE.md §8",
+  "platform": "at-spi2",
+  "source_fixtures_digest": "acc13c0d02624a0741cca5dffa7470a8971d3ecef5c6fb6f9e533ded684e7ed1",
+  "fixtures": [
+    {
+      "fixture_id": "F-A",
+      "expected_name": "Allegro affettuoso — al fine",
+      "expected_name_hex": "416c6c6567726f20616666657474756f736f20e2809420616c2066696e65",
+      "expected_name_byte_len": 30,
+      "accepted_roles": [
+        "label",
+        "static",
+        "text",
+        "paragraph"
+      ],
+      "prohibited_roles": [
+        "image",
+        "canvas",
+        "filler",
+        "panel",
+        "unknown"
+      ],
+      "source_atoms": [
+        "Allegro affettuoso — al fine"
+      ],
+      "alternative_forms": {
+        "name-is-shaped-glyphs": [
+          "Allegro afettuoso — al fne",
+          "Allegro aﬀettuoso — al ﬁne"
+        ]
+      }
+    },
+    {
+      "fixture_id": "F-B",
+      "expected_name": "Coro אבג",
+      "expected_name_hex": "436f726f20d790d791d792",
+      "expected_name_byte_len": 11,
+      "accepted_roles": [
+        "label",
+        "static",
+        "text",
+        "paragraph"
+      ],
+      "prohibited_roles": [
+        "image",
+        "canvas",
+        "filler",
+        "panel",
+        "unknown"
+      ],
+      "source_atoms": [
+        "Coro ",
+        "אבג"
+      ],
+      "alternative_forms": {},
+      "visual_order_name": "Coro גבא",
+      "visual_order_name_hex": "436f726f20d792d791d790"
+    },
+    {
+      "fixture_id": "F-C",
+      "expected_name": "Coro ا",
+      "expected_name_hex": "436f726f20d8a7",
+      "expected_name_byte_len": 7,
+      "accepted_roles": [
+        "label",
+        "static",
+        "text",
+        "paragraph"
+      ],
+      "prohibited_roles": [
+        "image",
+        "canvas",
+        "filler",
+        "panel",
+        "unknown"
+      ],
+      "source_atoms": [
+        "Coro ",
+        "ا"
+      ],
+      "alternative_forms": {
+        "name-drops-unresolved-codepoints": [
+          "Coro "
+        ]
+      }
+    },
+    {
+      "fixture_id": "F-D",
+      "expected_name": "Allegro אבג con brio",
+      "expected_name_hex": "416c6c6567726f20d790d791d79220636f6e206272696f",
+      "expected_name_byte_len": 23,
+      "accepted_roles": [
+        "label",
+        "static",
+        "text",
+        "paragraph"
+      ],
+      "prohibited_roles": [
+        "image",
+        "canvas",
+        "filler",
+        "panel",
+        "unknown"
+      ],
+      "source_atoms": [
+        "Allegro ",
+        "אבג",
+        " con brio"
+      ],
+      "alternative_forms": {},
+      "visual_order_name": "Allegro גבא con brio",
+      "visual_order_name_hex": "416c6c6567726f20d792d791d79020636f6e206272696f"
+    },
+    {
+      "fixture_id": "F-E",
+      "expected_name": "Café — resumé",
+      "expected_name_hex": "43616665cc8120e2809420726573756d65cc81",
+      "expected_name_byte_len": 19,
+      "accepted_roles": [
+        "label",
+        "static",
+        "text",
+        "paragraph"
+      ],
+      "prohibited_roles": [
+        "image",
+        "canvas",
+        "filler",
+        "panel",
+        "unknown"
+      ],
+      "source_atoms": [
+        "Café — resumé"
+      ],
+      "alternative_forms": {
+        "name-normalized": [
+          "Café — resumé"
+        ]
+      }
+    }
+  ]
+}

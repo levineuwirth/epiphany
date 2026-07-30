@@ -1,0 +1,24 @@
+[package]
+name = "round2-candidatekit"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+# Packet 2B-0 (ROUND2_TEXT_RECIPE.md, spec/CONTRACT_EDITOR_T4_SPIKE.md pins
+# 8, 9, 10, 13, 14): the ONLY code shared between the two Round 2 text
+# candidates (C1 = egui+lyon, C2 = vello). See src/lib.rs's crate doc
+# comment for the neutrality boundary this crate exists to hold — it loads
+# and validates Packet 2A's fixtures/probes/reference apparatus, and defines
+# the shared report shape and scoring rule both candidates are measured
+# against. It does NOT render, resolve hit tests, or build accessibility
+# trees.
+#
+# tests/dependency_deny_list.rs enforces the boundary by reading THIS file
+# at test time, not by convention: it fails if a rendering, windowing, GPU,
+# or platform-accessibility crate is ever added to [dependencies] below.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+round2-textkit = { path = "../round2-textkit" }
+round2-diff = { path = "../round2-diff" }

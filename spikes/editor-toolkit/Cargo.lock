@@ -3808,6 +3808,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "round2-a11y-oracle"
+version = "0.1.0"
+dependencies = [
+ "round2-textkit",
+ "serde",
+ "serde_json",
+ "unicode-normalization",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "round2-candidatekit"
+version = "0.1.0"
+dependencies = [
+ "round2-diff",
+ "round2-textkit",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "round2-diff"
 version = "0.1.0"
 
