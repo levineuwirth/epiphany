@@ -37,12 +37,12 @@ use epiphany_core::{
     EventDuration, EventId, EventPosition, GestureAnchoring, Instrument, InstrumentId, Measure,
     MeasureId, MeasurePosition, MeterChange, MetricGrid, MusicalDuration, MusicalPosition,
     OperationId, PartDefinition, PartDefinitionId, Pitch, PitchId, PitchSpelling, RationalTime,
-    RegionEdge, RegionId, RegionTimeModel, ReplicaId, Score, ScoreMetadata, SpellingAttachment,
-    SpellingDirective, SpellingPrecedence, SpellingScope, SpellingSource, Staff, StaffGroup,
-    StaffGroupId, StaffId, StaffInstance, StaffInstanceId, StaffLineConfiguration, TempoMap,
-    TempoSegment, TempoShape, TimeAnchor, TimeSignature, TimeSignatureId, TransactionId,
-    TransposeRefusal, TranspositionInterval, TuningContextSettings, TypedObjectId, ViewDefinition,
-    ViewId, Voice, VoiceId, VoiceOrigin, WallClockDuration,
+    RegionEdge, RegionId, RegionTimeModel, RepeatStructure, RepeatStructureId, ReplicaId, Score,
+    ScoreMetadata, SpellingAttachment, SpellingDirective, SpellingPrecedence, SpellingScope,
+    SpellingSource, Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
+    StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, TimeAnchor, TimeSignature,
+    TimeSignatureId, TransactionId, TransposeRefusal, TranspositionInterval, TuningContextSettings,
+    TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId, VoiceOrigin, WallClockDuration,
 };
 use epiphany_determinism::CanonicalEncode;
 
@@ -1090,6 +1090,17 @@ struct Reducer<'a> {
     // otherwise-identical measure is `RecreateContentMismatch`, not
     // `AlreadyApplied` — the parent is part of identity here).
     measure_values: BTreeMap<MeasureId, (StaffInstanceId, Measure)>,
+    // Genesis tranche G3b (contract pin 10.4): carried values of minted repeat
+    // structures. `CrossCuttingValue` is `Tie | Slur | Beam | Spanner` — it has
+    // no `RepeatStructure` variant, so `cross_cutting_modify_chain` can never
+    // hold one, and the repeat strand-guard surface (pin 10.5) needs a value
+    // to read `anchor_sites()` from. Deliberately NO delete site:
+    // `delete_repeat_structure` tombstones the id in `objects` but leaves the
+    // entry here — the uniform project discipline every other value map
+    // follows (no `.remove` anywhere in this reducer), and the retained value
+    // is what makes a tombstoned repeat still observably name a measure (the
+    // guard's `Live` conjunct is what blocks a corpse, not pruning the map).
+    repeat_values: BTreeMap<RepeatStructureId, RepeatStructure>,
     // Genesis tranche G3b (contract pin 6c, disposition A): whether a staff
     // instance authored a local metric-grid override, distinguishing override
     // from "never told us" — `StaffInstance.local_metric_grid` overrides the
@@ -1205,6 +1216,7 @@ struct WorkingSnapshot {
     analysis_layer_values: BTreeMap<AnalysisLayerId, AnalysisLayer>,
     view_values: BTreeMap<ViewId, ViewDefinition>,
     measure_values: BTreeMap<MeasureId, (StaffInstanceId, Measure)>,
+    repeat_values: BTreeMap<RepeatStructureId, RepeatStructure>,
     instance_grid: BTreeMap<StaffInstanceId, Option<MetricGrid>>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
     region_instances: BTreeMap<RegionId, BTreeSet<StaffInstanceId>>,
@@ -1384,6 +1396,51 @@ fn anchor_object_refs<'a>(anchors: impl IntoIterator<Item = &'a TimeAnchor>) -> 
         .collect()
 }
 
+/// Genesis tranche G3b (`spec/CONTRACT_GENESIS_G3B_MEASURE.md` pin 10.5):
+/// whether a write-chain key's prospective POST-UNDO value references the
+/// strand guard's target. Shared by every restoration-capable surface of
+/// the `Measure` strand guard — spanner (`cross_cutting_modify_chain`),
+/// meter change, system break, page break, and tempo segment (both anchor
+/// sites) — so mutations M59/M60 target this ONE function, not five
+/// separate call sites.
+///
+/// `matcher` returns `Some(restored_value)` when the restoration is FOR
+/// this key (the target undo wrote it — `restored_value` itself may be
+/// `None`, meaning "no predecessor: absent"), else `None` (this
+/// restoration is unrelated to the key, i.e. the undone transaction never
+/// wrote it). `references_target` asks, of a bare surface value, whether
+/// IT ITSELF names the target — the one place that question is answered,
+/// so a non-referencing value and an absent value are already equivalent
+/// to every caller (no caller ever wants the value back, only whether it
+/// blocks).
+///
+/// The three arms are independently mutable:
+/// - a written key whose restoration REFERENCES the target blocks (M59:
+///   mutating this arm to fall through to `current` instead is the
+///   REINSTATED-reference regression — the restoration that would put the
+///   reference back is ignored);
+/// - a written key whose restoration does NOT reference the target does
+///   NOT block, regardless of what the about-to-be-superseded `current`
+///   value (written by the SAME undone transaction) says (M60: mutating
+///   this arm to consult `current` instead is the ADDED-reference
+///   regression — the transaction's own now-superseded write wrongly
+///   governs);
+/// - an unwritten key falls through to `current` (unaffected by M59/M60;
+///   this is what the six base "surface blocks" rows exercise).
+fn prospective_references_target<V>(
+    restorations: &[ValueRestoration],
+    matcher: impl Fn(&ValueRestoration) -> Option<Option<V>>,
+    current: Option<V>,
+    references_target: impl Fn(&V) -> bool,
+) -> bool {
+    let current_references = current.is_some_and(|v| references_target(&v));
+    match restorations.iter().find_map(matcher) {
+        Some(Some(restored)) if references_target(&restored) => true,
+        Some(_) => false,
+        None => current_references,
+    }
+}
+
 /// The event references among a set of [`TimeAnchor`]s (the referent-index
 /// entries a tombstone must repair). Non-event anchors contribute nothing.
 fn anchor_event_refs<'a>(anchors: impl IntoIterator<Item = &'a TimeAnchor>) -> Vec<TypedObjectId> {
@@ -1493,6 +1550,7 @@ impl<'a> Reducer<'a> {
             analysis_layer_values: BTreeMap::new(),
             view_values: BTreeMap::new(),
             measure_values: BTreeMap::new(),
+            repeat_values: BTreeMap::new(),
             instance_grid: BTreeMap::new(),
             structures: BTreeMap::new(),
             region_instances: BTreeMap::new(),
@@ -1912,6 +1970,10 @@ impl<'a> Reducer<'a> {
                 self.structures
                     .insert(TypedObjectId::RepeatStructure(repeat.id), refs);
             }
+            // Genesis tranche G3b (contract pin 10.4): the carried value backs
+            // the strand guard's repeat surface, which reads `anchor_sites()`
+            // directly — `cross_cutting_modify_chain` cannot hold a repeat.
+            self.repeat_values.insert(repeat.id, repeat.clone());
         }
         for lyric in &score.cross_cutting.lyrics {
             self.objects
@@ -2927,6 +2989,26 @@ impl<'a> Reducer<'a> {
                 TypedObjectId::Instrument(id) => {
                     score.instruments.retain(|value| value.id != *id);
                 }
+                // Genesis tranche G3b (contract pin 10.1): `Measure` is a
+                // nested container child of `StaffInstance.measures`, not a
+                // root vector, so this cannot be a bare `retain` over
+                // `score` — it must reach the owning instance. `measure_values`
+                // (pin 5) carries that parent id, so no search over every
+                // region/instance is needed.
+                TypedObjectId::Measure(id) => {
+                    if let Some((instance, _)) = self.measure_values.get(id) {
+                        let instance = *instance;
+                        for region in &mut score.canvas.regions {
+                            if let Some(instances) = region.content.staff_instances_mut() {
+                                if let Some(inst) = instances.iter_mut().find(|i| i.id == instance)
+                                {
+                                    inst.measures.retain(|m| m.id != *id);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -3850,6 +3932,10 @@ impl<'a> Reducer<'a> {
         if !endpoints.is_empty() {
             self.structures.insert(sid, endpoints);
         }
+        // Genesis tranche G3b (contract pin 10.4): carry the value so the
+        // strand guard's repeat surface can read `anchor_sites()` — there is
+        // no write chain a repeat could be recorded into.
+        self.repeat_values.insert(op.repeat.id, op.repeat.clone());
         OperationEffect::Applied
     }
 
@@ -6553,6 +6639,19 @@ impl<'a> Reducer<'a> {
         repairs
     }
 
+    /// Genesis tranche G3b (contract pin 10.5): whether the OWNER of an
+    /// owned strand-guard surface licenses that surface to block — it must
+    /// be `Live` and not itself one of the undone transaction's own
+    /// `targets` (a same-transaction teardown strands nothing, since the
+    /// owner is going away too). Shared by all seven owned rows of the
+    /// `Measure` guard's surfaces (six always-owned classes plus
+    /// region-scoped tempo segments), so mutations M61 (drop the `targets`
+    /// conjunct) and M62 (drop the `Live` conjunct) each target this ONE
+    /// function rather than seven separate call sites.
+    fn owner_licenses_block(&self, owner: TypedObjectId, targets: &[TypedObjectId]) -> bool {
+        !targets.contains(&owner) && matches!(self.objects.get(&owner), Some(ObjectState::Live))
+    }
+
     /// `Some((blocked, referencer))` when tombstoning `target` under undo
     /// would strand a live reference: a minted `Staff` still manifested by a
     /// live staff instance (operation_catalog §CreateStaff), a minted
@@ -6604,6 +6703,26 @@ impl<'a> Reducer<'a> {
                                 .then_some((*target, TypedObjectId::Region(*region)))
                         })
                     })
+                    // Contract pin 9c.3 / `spec/CONTRACT_GENESIS_G3B_MEASURE.md`
+                    // §0 "six boundary crossings" #1 / M48: this hole exists
+                    // TODAY, before G3b — a minted `TimeSignature` still named
+                    // by a live `Measure.time_signature` was not checked.
+                    // `measure_values` is an immutable value map (no modify
+                    // operation ever rewrites a live measure's declared
+                    // signature), so no restoration-awareness applies here —
+                    // ungated exactly like the StaffGroup/AnalysisLayer/
+                    // Instrument guards below.
+                    .or_else(|| {
+                        self.measure_values
+                            .iter()
+                            .find_map(|(measure_id, (_, measure))| {
+                                let mobj = TypedObjectId::Measure(*measure_id);
+                                (measure.time_signature == Some(*id)
+                                    && !targets.contains(&mobj)
+                                    && matches!(self.objects.get(&mobj), Some(ObjectState::Live)))
+                                .then_some((*target, mobj))
+                            })
+                    })
             }
             // Genesis tranche G3a undo repair (pins A2-A6): these three
             // guards read the carried-value maps, not `self.graph`, and are
@@ -6640,6 +6759,194 @@ impl<'a> Reducer<'a> {
                         && matches!(self.objects.get(&sobj), Some(ObjectState::Live)))
                     .then_some((*target, sobj))
                 })
+            }
+            // Genesis tranche G3b (`spec/CONTRACT_GENESIS_G3B_MEASURE.md` pin
+            // 10.2/10.5): the Measure strand guard, across all SEVEN inbound
+            // surface classes. This CANNOT be written against `self.structures`
+            // — that index is event-only by construction (the base-seed walk
+            // filters through `anchor_event_refs`, which drops every
+            // `Measure`/`Region`/`WallClock` anchor; see its "Non-event
+            // anchorings ... contribute no entry" comment above). Six of the
+            // seven surfaces are always OWNED (the referencing object must be
+            // `Live` and not itself one of `targets`); the seventh
+            // (score-level `tempo_segment_chain` entries, keyed `None`) is
+            // genuinely ownerless and blocks on the reference itself. Five
+            // surfaces are real `WriteChain`s and so are restoration-aware —
+            // the prospective *post-undo* value governs, mirroring the
+            // `TimeSignature` arm above; `repeat_values` and `measure_values`
+            // are immutable value maps (N/A for restoration — nothing ever
+            // rewrites a live repeat's or measure's anchors in place).
+            TypedObjectId::Measure(_) => {
+                // 1. Spanner (`cross_cutting_modify_chain`) — restoration-aware,
+                // owned by the cross-cutting structure itself.
+                self.cross_cutting_modify_chain
+                    .iter()
+                    .find_map(|(sid, chain)| {
+                        let names = prospective_references_target(
+                            restorations,
+                            |restoration| match restoration {
+                                ValueRestoration::CrossCutting { id: rid, value } if rid == sid => {
+                                    Some(value.clone())
+                                }
+                                _ => None,
+                            },
+                            chain.current().cloned(),
+                            |value: &CrossCuttingValue| value.anchor_object_refs().contains(target),
+                        );
+                        (names && self.owner_licenses_block(*sid, targets))
+                            .then_some((*target, *sid))
+                    })
+                    // 2. Repeat (`repeat_values`) — immutable value map, N/A
+                    // for restoration; owned by the repeat structure.
+                    .or_else(|| {
+                        self.repeat_values.iter().find_map(|(rid, repeat)| {
+                            let robj = TypedObjectId::RepeatStructure(*rid);
+                            let names = anchor_object_refs(repeat.anchor_sites()).contains(target);
+                            (names && self.owner_licenses_block(robj, targets))
+                                .then_some((*target, robj))
+                        })
+                    })
+                    // 3. Another measure's `start` (`measure_values`) —
+                    // immutable value map, N/A for restoration; owned by that
+                    // measure.
+                    .or_else(|| {
+                        self.measure_values.iter().find_map(|(mid, (_, measure))| {
+                            let mobj = TypedObjectId::Measure(*mid);
+                            let names = anchor_object_refs([&measure.start]).contains(target);
+                            (names && self.owner_licenses_block(mobj, targets))
+                                .then_some((*target, mobj))
+                        })
+                    })
+                    // 4. Meter change (`meter_change_chain`) — restoration-
+                    // aware, owned by the enclosing region.
+                    .or_else(|| {
+                        self.meter_change_chain
+                            .iter()
+                            .find_map(|((region, position), chain)| {
+                                let names = prospective_references_target(
+                                    restorations,
+                                    |restoration| match restoration {
+                                        ValueRestoration::MeterChange {
+                                            region: r,
+                                            position: p,
+                                            value,
+                                        } if r == region && p == position => Some(value.clone()),
+                                        _ => None,
+                                    },
+                                    chain.current().cloned().flatten(),
+                                    |meter: &MeterChange| {
+                                        anchor_object_refs([&meter.anchor]).contains(target)
+                                    },
+                                );
+                                let robj = TypedObjectId::Region(*region);
+                                (names && self.owner_licenses_block(robj, targets))
+                                    .then_some((*target, robj))
+                            })
+                    })
+                    // 5. System break (`break_chain`) — restoration-aware,
+                    // owned by the enclosing region. `present == false` means
+                    // no break is actually asserted at this key (mirroring
+                    // `MeterChange`'s `None` meaning "no active change"), so
+                    // it does not block even if the withdrawn anchor named
+                    // the measure.
+                    .or_else(|| {
+                        self.break_chain
+                            .iter()
+                            .find_map(|((region, position), chain)| {
+                                let names = prospective_references_target(
+                                    restorations,
+                                    |restoration| match restoration {
+                                        ValueRestoration::SystemBreak {
+                                            region: r,
+                                            position: p,
+                                            predecessor,
+                                        } if r == region && p == position => {
+                                            Some(predecessor.clone().map(Predecessor::into_value))
+                                        }
+                                        _ => None,
+                                    },
+                                    chain.current().cloned(),
+                                    |(anchor, present): &(TimeAnchor, bool)| {
+                                        *present && anchor_object_refs([anchor]).contains(target)
+                                    },
+                                );
+                                let robj = TypedObjectId::Region(*region);
+                                (names && self.owner_licenses_block(robj, targets))
+                                    .then_some((*target, robj))
+                            })
+                    })
+                    // 6. Page break (`page_break_chain`) — same shape as (5).
+                    .or_else(|| {
+                        self.page_break_chain
+                            .iter()
+                            .find_map(|((region, position), chain)| {
+                                let names = prospective_references_target(
+                                    restorations,
+                                    |restoration| match restoration {
+                                        ValueRestoration::PageBreak {
+                                            region: r,
+                                            position: p,
+                                            predecessor,
+                                        } if r == region && p == position => {
+                                            Some(predecessor.clone().map(Predecessor::into_value))
+                                        }
+                                        _ => None,
+                                    },
+                                    chain.current().cloned(),
+                                    |(anchor, present): &(TimeAnchor, bool)| {
+                                        *present && anchor_object_refs([anchor]).contains(target)
+                                    },
+                                );
+                                let robj = TypedObjectId::Region(*region);
+                                (names && self.owner_licenses_block(robj, targets))
+                                    .then_some((*target, robj))
+                            })
+                    })
+                    // 7. Tempo segment (`tempo_segment_chain`) — restoration-
+                    // aware, checked at BOTH anchor sites (`start` and
+                    // `end`). Keyed `(Option<RegionId>, MusicalPosition)`:
+                    // `Some(region)` is owned exactly like the other six;
+                    // `None` is score-level and genuinely ownerless — there is
+                    // no object to test liveness against, so the guard blocks
+                    // on the prospective reference itself. That prospective
+                    // computation (restoration override, else chain-current)
+                    // already IS the "exempt a write belonging to the undone
+                    // transaction" rule: if `tx` last-wrote this key, its
+                    // restoration (chain-predecessor) governs instead of the
+                    // about-to-be-superseded current value.
+                    .or_else(|| {
+                        self.tempo_segment_chain
+                            .iter()
+                            .find_map(|((scope, position), chain)| {
+                                let names = prospective_references_target(
+                                    restorations,
+                                    |restoration| match restoration {
+                                        ValueRestoration::TempoSegment {
+                                            region: r,
+                                            position: p,
+                                            value,
+                                        } if r == scope && p == position => Some(value.clone()),
+                                        _ => None,
+                                    },
+                                    chain.current().cloned().flatten(),
+                                    |segment: &TempoSegment| {
+                                        let mut sites: Vec<&TimeAnchor> = vec![&segment.start];
+                                        if let Some(end) = &segment.end {
+                                            sites.push(end);
+                                        }
+                                        anchor_object_refs(sites).contains(target)
+                                    },
+                                );
+                                match scope {
+                                    Some(region) => {
+                                        let robj = TypedObjectId::Region(*region);
+                                        (names && self.owner_licenses_block(robj, targets))
+                                            .then_some((*target, robj))
+                                    }
+                                    None => names.then_some((*target, *target)),
+                                }
+                            })
+                    })
             }
             _ => None,
         }
@@ -9040,6 +9347,7 @@ impl<'a> Reducer<'a> {
             analysis_layer_values: self.analysis_layer_values.clone(),
             view_values: self.view_values.clone(),
             measure_values: self.measure_values.clone(),
+            repeat_values: self.repeat_values.clone(),
             instance_grid: self.instance_grid.clone(),
             structures: self.structures.clone(),
             region_instances: self.region_instances.clone(),
@@ -9086,6 +9394,7 @@ impl<'a> Reducer<'a> {
         self.analysis_layer_values = s.analysis_layer_values;
         self.view_values = s.view_values;
         self.measure_values = s.measure_values;
+        self.repeat_values = s.repeat_values;
         self.instance_grid = s.instance_grid;
         self.structures = s.structures;
         self.region_instances = s.region_instances;
@@ -20612,6 +20921,1789 @@ mod tests {
                 "BestEffort's canonical-order greedy must SKIP the disagreeing \
                  whole-grid restoration (G0/sig0) — pos0 must still show sig1, the \
                  transaction's own write, unreverted"
+            );
+        }
+    }
+
+    /// Genesis tranche G3b, packet 3a (`spec/CONTRACT_GENESIS_G3B_MEASURE.md`
+    /// pin 10, mutations M48-M63): the undo surfaces. `materialize_graph_
+    /// tombstones`'s `Measure` arm, the `Measure` strand guard across all
+    /// seven inbound surface classes, the `TimeSignature` extension, and
+    /// post-undo re-create ordering.
+    #[cfg(test)]
+    mod g3b_undo_surface_tests {
+        use super::*;
+        use epiphany_core::{RepeatKind, SpanStyle, Spanner, SpannerId, SpannerKind, Tempo};
+
+        /// Minimal G3b undo-surface fixture: the full prerequisite chain
+        /// (CreateInstrument -> CreateStaff -> CreateRegion ->
+        /// CreateStaffInstance), non-transactional, followed by a
+        /// single-member transaction `tx` that mints one bare `Measure`
+        /// (`time_signature: None`, so agreement/boundary are vacuous — the
+        /// first measure of the instance). Contiguous counters from 0,
+        /// `physical` stepped in lockstep, `seen_r1(prev)` chained, per the
+        /// fixture discipline.
+        struct G3bUndoFixture {
+            labeled: Vec<(&'static str, OperationEnvelope)>,
+            region: RegionId,
+            instance: StaffInstanceId,
+            measure: MeasureId,
+            tx: TransactionId,
+            next_counter: u64,
+            next_causal: CausalContext,
+        }
+
+        impl G3bUndoFixture {
+            fn push(&mut self, label: &'static str, kind: OperationKind) -> OperationEnvelope {
+                let counter = self.next_counter;
+                let env = prim_env(1, counter, counter as i64, self.next_causal.clone(), kind);
+                self.labeled.push((label, env.clone()));
+                self.next_counter += 1;
+                self.next_causal = seen_r1(counter);
+                env
+            }
+
+            fn push_tx(&mut self, label: &'static str, kind: OperationKind) -> OperationEnvelope {
+                let counter = self.next_counter;
+                let env = tx_member(
+                    1,
+                    counter,
+                    counter as i64,
+                    self.next_causal.clone(),
+                    self.tx,
+                    kind,
+                );
+                self.labeled.push((label, env.clone()));
+                self.next_counter += 1;
+                self.next_causal = seen_r1(counter);
+                env
+            }
+
+            fn push_undo(&mut self, label: &'static str, policy: UndoPolicy) -> OperationEnvelope {
+                let counter = self.next_counter;
+                let env = undo_env(
+                    1,
+                    counter,
+                    counter as i64,
+                    self.next_causal.clone(),
+                    self.tx,
+                    policy,
+                );
+                self.labeled.push((label, env.clone()));
+                self.next_counter += 1;
+                self.next_causal = seen_r1(counter);
+                env
+            }
+
+            /// Runs every envelope pushed so far against an empty base,
+            /// asserting every envelope EXCEPT the last `unchecked_tail` is
+            /// exactly `Applied`, that every accepted envelope produced an
+            /// effect entry (no silently dropped/pending op), and that there
+            /// are no anomalies — the fixture discipline. Returns the
+            /// materialization so the caller can inspect the tail
+            /// envelope(s)' own effect.
+            fn run_allowing_tail_conflict(&self, unchecked_tail: usize) -> GraphMaterialization {
+                self.run_onto(
+                    &Score::empty(IdentityContext::new(ReplicaId(1))),
+                    unchecked_tail,
+                )
+            }
+
+            /// Like [`Self::run_allowing_tail_conflict`], but onto a caller-
+            /// supplied base graph (for the restoration-direction fixtures,
+            /// which inject a base-seeded value the operations never mint).
+            fn run_onto(&self, base: &Score, unchecked_tail: usize) -> GraphMaterialization {
+                let mut set = OperationSet::new();
+                let envelopes: Vec<OperationEnvelope> =
+                    self.labeled.iter().map(|(_, e)| e.clone()).collect();
+                let accepted_count = envelopes.len();
+                set.accept_all(envelopes);
+                let out = reduce_operation_set_onto(&set, base);
+                let clean_len = self.labeled.len() - unchecked_tail;
+                for (label, env) in &self.labeled[..clean_len] {
+                    assert_eq!(
+                        g3b_effect_of(&out.state, env.id),
+                        Some(OperationEffect::Applied),
+                        "setup op `{label}` (id {:?}) must be Applied",
+                        env.id
+                    );
+                }
+                assert_eq!(
+                    out.state.effects.len(),
+                    accepted_count,
+                    "every accepted envelope must produce an effect entry — a \
+                     dropped (pending) op fails loudly here instead of silently \
+                     vanishing"
+                );
+                assert!(
+                    out.state.anomalies.is_empty(),
+                    "no anomalies: {:?}",
+                    out.state.anomalies
+                );
+                out
+            }
+        }
+
+        /// Builds the fixture through the target `CreateMeasure`, WITHOUT the
+        /// closing `DeclareTransaction`/`CreateMeasure` pair applied yet — for
+        /// callers that need to inject base-seeded state referencing the
+        /// eventual measure id before minting it. Use [`g3b_undo_fixture`] for
+        /// the common case.
+        fn g3b_undo_fixture_prereqs_only() -> G3bUndoFixture {
+            let region = RegionId::new(ReplicaId(1), 1);
+            let instance = StaffInstanceId::new(ReplicaId(1), 2);
+            let staff = StaffId::new(ReplicaId(1), 3);
+            let instrument = InstrumentId::new(ReplicaId(1), 4);
+            let measure = MeasureId::new(ReplicaId(1), 100);
+            let tx = TransactionId::new(ReplicaId(1), 900);
+
+            let mut f = G3bUndoFixture {
+                labeled: Vec::new(),
+                region,
+                instance,
+                measure,
+                tx,
+                next_counter: 0,
+                next_causal: CausalContext::new(),
+            };
+            f.push(
+                "CreateInstrument",
+                OperationKind::CreateInstrument(CreateInstrumentOp {
+                    instrument: crate::valuegen::instrument(instrument),
+                }),
+            );
+            f.push(
+                "CreateStaff",
+                OperationKind::CreateStaff(CreateStaffOp {
+                    staff: crate::valuegen::staff(staff, instrument),
+                }),
+            );
+            f.push(
+                "CreateRegion",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region),
+                }),
+            );
+            f.push(
+                "CreateStaffInstance",
+                OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                    region,
+                    instance: crate::valuegen::staff_instance(instance, staff),
+                }),
+            );
+            f
+        }
+
+        /// The common fixture: prerequisites, then `tx` = {DeclareTransaction,
+        /// CreateMeasure(measure)}.
+        impl G3bUndoFixture {
+            /// Opens the target transaction — `DeclareTransaction` then
+            /// `CreateMeasure` of the fixture's own `measure` — as its first
+            /// two members. MUST be called only after every non-tx op the
+            /// transaction's LATER members will depend on: a transaction
+            /// block reduces atomically at the canonical position of its
+            /// EARLIEST member, so a non-member op canonically BETWEEN two
+            /// members of this tx has not been applied yet when the block
+            /// runs (found the hard way — see the `measure_values` M61 row's
+            /// doc comment).
+            fn open_target_tx(&mut self) {
+                let region = self.region;
+                let instance = self.instance;
+                let measure = self.measure;
+                let tx = self.tx;
+                let pos0 = g3b_region_anchor(region, 0);
+                self.push_tx(
+                    "DeclareTransaction",
+                    OperationKind::DeclareTransaction(crate::payload::TransactionDescriptor {
+                        id: tx,
+                        label: String::from("g3b undo surface"),
+                        category: None,
+                    }),
+                );
+                self.push_tx(
+                    "CreateMeasure (target)",
+                    OperationKind::CreateMeasure(CreateMeasureOp {
+                        instance,
+                        measure: Measure {
+                            id: measure,
+                            start: pos0,
+                            time_signature: None,
+                            explicit_number: None,
+                            number_visibility: Default::default(),
+                        },
+                    }),
+                );
+            }
+        }
+
+        fn g3b_undo_fixture() -> G3bUndoFixture {
+            let mut f = g3b_undo_fixture_prereqs_only();
+            f.open_target_tx();
+            f
+        }
+
+        fn measure_anchor(measure: MeasureId, position: MeasurePosition) -> TimeAnchor {
+            TimeAnchor::Measure {
+                id: measure,
+                position,
+                offset: AnchorOffset::Zero,
+            }
+        }
+
+        fn assert_blocks(out: &GraphMaterialization, env: &OperationEnvelope, why: &str) {
+            assert!(
+                matches!(
+                    g3b_effect_of(&out.state, env.id),
+                    Some(OperationEffect::Conflicted { .. })
+                ),
+                "{why}: undo must be Conflicted, got {:?}",
+                g3b_effect_of(&out.state, env.id)
+            );
+        }
+
+        fn assert_undo_applied(out: &GraphMaterialization, env: &OperationEnvelope, why: &str) {
+            assert!(
+                matches!(
+                    g3b_effect_of(&out.state, env.id),
+                    Some(OperationEffect::Applied)
+                        | Some(OperationEffect::AppliedWithRepair { .. })
+                ),
+                "{why}: undo must be Applied, got {:?}",
+                g3b_effect_of(&out.state, env.id)
+            );
+        }
+
+        fn bare_spanner(id: SpannerId, start: TimeAnchor, end: TimeAnchor) -> Spanner {
+            Spanner {
+                id,
+                start,
+                end,
+                staves: Vec::new(),
+                kind: SpannerKind::default(),
+                style: SpanStyle::default(),
+            }
+        }
+
+        fn bare_repeat(
+            id: RepeatStructureId,
+            start: TimeAnchor,
+            end: TimeAnchor,
+        ) -> RepeatStructure {
+            RepeatStructure {
+                id,
+                start,
+                end,
+                kind: RepeatKind::SimpleRepeat { count: 2 },
+                voltas: Vec::new(),
+            }
+        }
+
+        fn bare_tempo_segment(start: TimeAnchor, end: Option<TimeAnchor>) -> TempoSegment {
+            TempoSegment {
+                start,
+                end,
+                start_tempo: Tempo::quarter(120.0).expect("positive finite bpm"),
+                end_tempo: None,
+                shape: TempoShape::Constant,
+            }
+        }
+
+        // === M51-M58: each surface blocks a live outside referencer. =======
+
+        /// (M51) A live `Spanner` anchored to the measure blocks its undo.
+        #[test]
+        fn m51_spanner_surface_blocks_measure_undo() {
+            let mut f = g3b_undo_fixture();
+            let sid = SpannerId::new(ReplicaId(1), 200);
+            f.push(
+                "CreateCrossCutting spanner->measure",
+                OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Spanner(bare_spanner(
+                        sid,
+                        measure_anchor(f.measure, MeasurePosition::Start),
+                        measure_anchor(f.measure, MeasurePosition::End),
+                    )),
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_blocks(&out, &undo, "a live spanner anchored to the measure");
+        }
+
+        /// (M52) A live `RepeatStructure` anchored to the measure blocks its
+        /// undo (signs pin 10.4: `repeat_values`, not `cross_cutting_modify_
+        /// chain`, since `CrossCuttingValue` has no `RepeatStructure`
+        /// variant).
+        #[test]
+        fn m52_repeat_surface_blocks_measure_undo() {
+            let mut f = g3b_undo_fixture();
+            let rid = RepeatStructureId::new(ReplicaId(1), 201);
+            f.push(
+                "CreateRepeatStructure ->measure",
+                OperationKind::CreateRepeatStructure(CreateRepeatStructureOp {
+                    repeat: bare_repeat(
+                        rid,
+                        measure_anchor(f.measure, MeasurePosition::Start),
+                        measure_anchor(f.measure, MeasurePosition::End),
+                    ),
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_blocks(
+                &out,
+                &undo,
+                "a live repeat structure anchored to the measure",
+            );
+        }
+
+        /// (M53) A repeat structure present in the BASE graph (not minted by
+        /// any operation) still blocks the measure's undo — exercises
+        /// `repeat_values`'s BASE-SEED site (`seed_from_graph`), distinct
+        /// from the create-insertion site M52 exercises.
+        #[test]
+        fn m53_base_seeded_repeat_blocks_measure_undo() {
+            let prereqs = g3b_undo_fixture_prereqs_only();
+            let mut base = prereqs.run_allowing_tail_conflict(0).score;
+            let rid = RepeatStructureId::new(ReplicaId(1), 201);
+            base.cross_cutting.repeats.push(bare_repeat(
+                rid,
+                measure_anchor(prereqs.measure, MeasurePosition::Start),
+                measure_anchor(prereqs.measure, MeasurePosition::End),
+            ));
+
+            let mut f = g3b_fixture_onto(&prereqs);
+            f.open_target_tx();
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_onto(&base, 1);
+            assert_blocks(
+                &out,
+                &undo,
+                "a base-seeded repeat anchored to the measure must block",
+            );
+        }
+
+        /// (M54) A live measure C, in a SECOND staff instance so ordering is
+        /// vacuous, whose `start` anchors to the measure under test blocks
+        /// its undo (`measure_values`).
+        #[test]
+        fn m54_measure_values_surface_blocks_measure_undo() {
+            let mut f = g3b_undo_fixture();
+            let instance2 = StaffInstanceId::new(ReplicaId(1), 5);
+            let staff = StaffId::new(ReplicaId(1), 3);
+            let c = MeasureId::new(ReplicaId(1), 101);
+            f.push(
+                "CreateStaffInstance 2",
+                OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                    region: f.region,
+                    instance: crate::valuegen::staff_instance(instance2, staff),
+                }),
+            );
+            f.push(
+                "CreateMeasure C -> measure (instance2, first measure: vacuous order)",
+                OperationKind::CreateMeasure(CreateMeasureOp {
+                    instance: instance2,
+                    measure: Measure {
+                        id: c,
+                        start: measure_anchor(f.measure, MeasurePosition::Start),
+                        time_signature: None,
+                        explicit_number: None,
+                        number_visibility: Default::default(),
+                    },
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_blocks(
+                &out,
+                &undo,
+                "a live measure whose start anchors to the measure",
+            );
+        }
+
+        /// (M55) A live meter change, owned by a SECOND (empty) region, whose
+        /// anchor names the measure under test blocks its undo
+        /// (`meter_change_chain`).
+        #[test]
+        fn m55_meter_change_surface_blocks_measure_undo() {
+            let mut f = g3b_undo_fixture();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            let sig = TimeSignatureId::new(ReplicaId(1), 300);
+            f.push(
+                "CreateRegion 2 (empty)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            f.push(
+                "SetTimeSignature region2 -> measure",
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region: region2,
+                    anchor: measure_anchor(f.measure, MeasurePosition::Start),
+                    time_signature: Some(crate::valuegen::time_signature(sig, 4)),
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_blocks(&out, &undo, "a live meter change anchored to the measure");
+        }
+
+        /// (M56) A live user system-break whose anchor names the measure
+        /// under test blocks its undo (`break_chain`).
+        #[test]
+        fn m56_system_break_surface_blocks_measure_undo() {
+            let mut f = g3b_undo_fixture();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            f.push(
+                "CreateRegion 2 (empty)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            f.push(
+                "SetUserSystemBreak region2 -> measure",
+                OperationKind::SetUserSystemBreak(crate::payload::SetUserSystemBreakOp {
+                    region: region2,
+                    anchor: measure_anchor(f.measure, MeasurePosition::Start),
+                    present: true,
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_blocks(&out, &undo, "a live system break anchored to the measure");
+        }
+
+        /// (M57) A live user page-break whose anchor names the measure under
+        /// test blocks its undo (`page_break_chain`).
+        #[test]
+        fn m57_page_break_surface_blocks_measure_undo() {
+            let mut f = g3b_undo_fixture();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            f.push(
+                "CreateRegion 2 (empty)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            f.push(
+                "SetUserPageBreak region2 -> measure",
+                OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+                    region: region2,
+                    anchor: measure_anchor(f.measure, MeasurePosition::Start),
+                    present: true,
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_blocks(&out, &undo, "a live page break anchored to the measure");
+        }
+
+        /// (M58, site 1/2: `start`) A live REGION-SCOPED tempo segment whose
+        /// `start` anchor names the measure blocks its undo.
+        #[test]
+        fn m58_tempo_segment_region_scoped_start_blocks_measure_undo() {
+            let mut f = g3b_undo_fixture();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            f.push(
+                "CreateRegion 2 (empty)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            let start = measure_anchor(f.measure, MeasurePosition::Start);
+            f.push(
+                "SetTempoSegment region2 start -> measure",
+                OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                    region: Some(region2),
+                    start: start.clone(),
+                    segment: Some(bare_tempo_segment(start, None)),
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_blocks(
+                &out,
+                &undo,
+                "a live region-scoped tempo segment whose start anchors to the measure",
+            );
+        }
+
+        /// (M58, site 2/2: `end`) A live REGION-SCOPED tempo segment whose
+        /// `end` anchor (NOT `start`) names the measure still blocks its
+        /// undo — a `start`-only guard would miss this.
+        #[test]
+        fn m58_tempo_segment_region_scoped_end_blocks_measure_undo() {
+            let mut f = g3b_undo_fixture();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            f.push(
+                "CreateRegion 2 (empty)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            // A `Measure` anchor resolves to `MusicalPosition::origin()`
+            // (only `Region`+`Musical` gets special-cased), so `start` must
+            // ALSO resolve to origin or `prospective_tempo_write_well_formed`
+            // rejects the end as preceding the start.
+            let start = g3b_region_anchor(region2, 0);
+            let end = measure_anchor(f.measure, MeasurePosition::End);
+            f.push(
+                "SetTempoSegment region2 end -> measure",
+                OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                    region: Some(region2),
+                    start: start.clone(),
+                    segment: Some(bare_tempo_segment(start, Some(end))),
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_blocks(
+                &out,
+                &undo,
+                "a live region-scoped tempo segment whose end anchors to the measure",
+            );
+        }
+
+        /// (M58, score-level `None`, both sites) A live SCORE-LEVEL
+        /// (`region: None`) tempo segment naming the measure blocks its undo
+        /// too, even though this key has no owner object at all.
+        #[test]
+        fn m58_tempo_segment_score_level_blocks_measure_undo() {
+            for (label, start, end) in [
+                (
+                    "start",
+                    measure_anchor(MeasureId::new(ReplicaId(1), 100), MeasurePosition::Start),
+                    None,
+                ),
+                (
+                    "end",
+                    g3b_region_anchor(RegionId::new(ReplicaId(1), 1), 0),
+                    Some(measure_anchor(
+                        MeasureId::new(ReplicaId(1), 100),
+                        MeasurePosition::End,
+                    )),
+                ),
+            ] {
+                let mut f = g3b_undo_fixture();
+                f.push(
+                    "SetTempoSegment score-level -> measure",
+                    OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                        region: None,
+                        start: start.clone(),
+                        segment: Some(bare_tempo_segment(start, end)),
+                    }),
+                );
+                let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+                let out = f.run_allowing_tail_conflict(1);
+                assert_blocks(
+                    &out,
+                    &undo,
+                    &format!(
+                        "a live score-level tempo segment whose {label} anchors to the measure"
+                    ),
+                );
+            }
+        }
+
+        // === M61: same-transaction teardown exempts all seven surfaces. ====
+        //
+        // The referencing structure (or its owning region) is minted by the
+        // SAME transaction as the measure, so it is itself in `targets` and
+        // the `!targets.contains(...)` conjunct excludes it — undo must NOT
+        // block, and must tombstone everything.
+
+        /// (M61, row 1/7: spanner) The spanner is minted in the same tx.
+        #[test]
+        fn m61_same_transaction_teardown_exempts_spanner() {
+            let mut f = g3b_undo_fixture();
+            let sid = SpannerId::new(ReplicaId(1), 200);
+            f.push_tx(
+                "CreateCrossCutting spanner (same tx)",
+                OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Spanner(bare_spanner(
+                        sid,
+                        measure_anchor(f.measure, MeasurePosition::Start),
+                        measure_anchor(f.measure, MeasurePosition::End),
+                    )),
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_undo_applied(&out, &undo, "same-tx spanner mint must not strand-block");
+        }
+
+        /// (M61, row 2/7: repeat) The repeat is minted in the same tx.
+        #[test]
+        fn m61_same_transaction_teardown_exempts_repeat() {
+            let mut f = g3b_undo_fixture();
+            let rid = RepeatStructureId::new(ReplicaId(1), 201);
+            f.push_tx(
+                "CreateRepeatStructure (same tx)",
+                OperationKind::CreateRepeatStructure(CreateRepeatStructureOp {
+                    repeat: bare_repeat(
+                        rid,
+                        measure_anchor(f.measure, MeasurePosition::Start),
+                        measure_anchor(f.measure, MeasurePosition::End),
+                    ),
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_undo_applied(&out, &undo, "same-tx repeat mint must not strand-block");
+        }
+
+        /// (M61, row 3/7: `measure_values`) The referencing measure C is
+        /// minted in the same tx. `instance2` MUST be created before the
+        /// transaction's EARLIEST member (`DeclareTransaction`), not merely
+        /// before C's own `CreateMeasure`: a transaction block reduces
+        /// atomically at the canonical position of its first member, so a
+        /// non-member op canonically BETWEEN two tx members has not been
+        /// applied yet when the block runs (found via this row going red
+        /// with `TransactionConflict` before this fix).
+        #[test]
+        fn m61_same_transaction_teardown_exempts_measure_values() {
+            let mut f = g3b_undo_fixture_prereqs_only();
+            let instance2 = StaffInstanceId::new(ReplicaId(1), 5);
+            let staff = StaffId::new(ReplicaId(1), 3);
+            let c = MeasureId::new(ReplicaId(1), 101);
+            f.push(
+                "CreateStaffInstance 2",
+                OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                    region: f.region,
+                    instance: crate::valuegen::staff_instance(instance2, staff),
+                }),
+            );
+            let measure = f.measure;
+            f.open_target_tx();
+            f.push_tx(
+                "CreateMeasure C -> measure (same tx)",
+                OperationKind::CreateMeasure(CreateMeasureOp {
+                    instance: instance2,
+                    measure: Measure {
+                        id: c,
+                        start: measure_anchor(measure, MeasurePosition::Start),
+                        time_signature: None,
+                        explicit_number: None,
+                        number_visibility: Default::default(),
+                    },
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_undo_applied(&out, &undo, "same-tx measure mint must not strand-block");
+        }
+
+        /// (M61, row 4/7: meter change) The owning region is minted in the
+        /// same tx; the write itself need not be transactional.
+        #[test]
+        fn m61_same_transaction_teardown_exempts_meter_change() {
+            let mut f = g3b_undo_fixture();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            let sig = TimeSignatureId::new(ReplicaId(1), 300);
+            f.push_tx(
+                "CreateRegion 2 (same tx)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            f.push(
+                "SetTimeSignature region2 -> measure",
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region: region2,
+                    anchor: measure_anchor(f.measure, MeasurePosition::Start),
+                    time_signature: Some(crate::valuegen::time_signature(sig, 4)),
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_undo_applied(&out, &undo, "same-tx region mint must not strand-block");
+        }
+
+        /// (M61, row 5/7: system break) The owning region is minted in the
+        /// same tx.
+        #[test]
+        fn m61_same_transaction_teardown_exempts_system_break() {
+            let mut f = g3b_undo_fixture();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            f.push_tx(
+                "CreateRegion 2 (same tx)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            f.push(
+                "SetUserSystemBreak region2 -> measure",
+                OperationKind::SetUserSystemBreak(crate::payload::SetUserSystemBreakOp {
+                    region: region2,
+                    anchor: measure_anchor(f.measure, MeasurePosition::Start),
+                    present: true,
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_undo_applied(&out, &undo, "same-tx region mint must not strand-block");
+        }
+
+        /// (M61, row 6/7: page break) The owning region is minted in the
+        /// same tx.
+        #[test]
+        fn m61_same_transaction_teardown_exempts_page_break() {
+            let mut f = g3b_undo_fixture();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            f.push_tx(
+                "CreateRegion 2 (same tx)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            f.push(
+                "SetUserPageBreak region2 -> measure",
+                OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+                    region: region2,
+                    anchor: measure_anchor(f.measure, MeasurePosition::Start),
+                    present: true,
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_undo_applied(&out, &undo, "same-tx region mint must not strand-block");
+        }
+
+        /// (M61, row 7/7: region-scoped tempo segment) The owning region is
+        /// minted in the same tx.
+        #[test]
+        fn m61_same_transaction_teardown_exempts_tempo_segment_region_scoped() {
+            let mut f = g3b_undo_fixture();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            f.push_tx(
+                "CreateRegion 2 (same tx)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            let start = measure_anchor(f.measure, MeasurePosition::Start);
+            f.push(
+                "SetTempoSegment region2 start -> measure",
+                OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                    region: Some(region2),
+                    start: start.clone(),
+                    segment: Some(bare_tempo_segment(start, None)),
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_undo_applied(&out, &undo, "same-tx region mint must not strand-block");
+        }
+
+        // === M62: a TOMBSTONED referencer does not block (the `Live`
+        // conjunct). Six always-owned rows plus region-scoped tempo; score-
+        // level (`None`) tempo has no owner conjunct and is N/A. ============
+
+        /// (M62, row 1/7: spanner) `DeleteCrossCutting` ALSO removes the
+        /// spanner's `cross_cutting_modify_chain` entry, which would make
+        /// this row pass regardless of the `Live` conjunct — vacuous, and
+        /// found the hard way (this row was originally written that way and
+        /// stayed green under M62). Instead, the spanner is minted in its
+        /// OWN transaction and THAT transaction is undone: `tombstone_undo_
+        /// targets` marks it `Tombstoned` in `objects` WITHOUT removing the
+        /// chain entry, so the (still-present, still-naming-the-measure)
+        /// value is exactly what the `Live` conjunct must exclude.
+        #[test]
+        fn m62_tombstoned_spanner_does_not_block() {
+            let mut f = g3b_undo_fixture();
+            let sid = SpannerId::new(ReplicaId(1), 200);
+            let tx_s = TransactionId::new(ReplicaId(1), 902);
+
+            let counter = f.next_counter;
+            let declare_s = tx_member(
+                1,
+                counter,
+                counter as i64,
+                f.next_causal.clone(),
+                tx_s,
+                OperationKind::DeclareTransaction(crate::payload::TransactionDescriptor {
+                    id: tx_s,
+                    label: String::from("g3b undo surface: spanner"),
+                    category: None,
+                }),
+            );
+            f.labeled.push(("DeclareTransaction (S)", declare_s));
+            f.next_counter += 1;
+            f.next_causal = seen_r1(counter);
+
+            let counter = f.next_counter;
+            let create_s = tx_member(
+                1,
+                counter,
+                counter as i64,
+                f.next_causal.clone(),
+                tx_s,
+                OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Spanner(bare_spanner(
+                        sid,
+                        measure_anchor(f.measure, MeasurePosition::Start),
+                        measure_anchor(f.measure, MeasurePosition::End),
+                    )),
+                }),
+            );
+            f.labeled
+                .push(("CreateCrossCutting spanner (own tx)", create_s));
+            f.next_counter += 1;
+            f.next_causal = seen_r1(counter);
+
+            let counter = f.next_counter;
+            let undo_s = undo_env(
+                1,
+                counter,
+                counter as i64,
+                f.next_causal.clone(),
+                tx_s,
+                UndoPolicy::StrictInverse,
+            );
+            f.labeled.push((
+                "undo S's own tx (tombstones S, chain entry survives)",
+                undo_s.clone(),
+            ));
+            f.next_counter += 1;
+            f.next_causal = seen_r1(counter);
+
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(2);
+            assert_undo_applied(&out, &undo_s, "undoing S's own tx must succeed (Applied)");
+            assert_undo_applied(
+                &out,
+                &undo,
+                "a tombstoned spanner, with its chain entry still present, must not \
+                 strand-block",
+            );
+        }
+
+        /// (M62, row 2/7: repeat) Delete the repeat before undoing the
+        /// measure's tx.
+        #[test]
+        fn m62_tombstoned_repeat_does_not_block() {
+            let mut f = g3b_undo_fixture();
+            let rid = RepeatStructureId::new(ReplicaId(1), 201);
+            f.push(
+                "CreateRepeatStructure ->measure",
+                OperationKind::CreateRepeatStructure(CreateRepeatStructureOp {
+                    repeat: bare_repeat(
+                        rid,
+                        measure_anchor(f.measure, MeasurePosition::Start),
+                        measure_anchor(f.measure, MeasurePosition::End),
+                    ),
+                }),
+            );
+            f.push(
+                "DeleteRepeatStructure",
+                OperationKind::DeleteRepeatStructure(DeleteRepeatStructureOp { repeat: rid }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_undo_applied(
+                &out,
+                &undo,
+                "a tombstoned repeat must not strand-block — and its retained \
+                 `repeat_values` entry (pin 10.4) is what makes this row \
+                 reachable at all",
+            );
+        }
+
+        /// (M62, row 3/7: `measure_values`) Undo measure C's OWN transaction
+        /// first (tombstoning C — the only way to tombstone a measure), then
+        /// undo the target measure's tx.
+        #[test]
+        fn m62_tombstoned_measure_referencer_does_not_block() {
+            let mut f = g3b_undo_fixture();
+            let instance2 = StaffInstanceId::new(ReplicaId(1), 5);
+            let staff = StaffId::new(ReplicaId(1), 3);
+            let c = MeasureId::new(ReplicaId(1), 101);
+            let tx_c = TransactionId::new(ReplicaId(1), 901);
+            f.push(
+                "CreateStaffInstance 2",
+                OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                    region: f.region,
+                    instance: crate::valuegen::staff_instance(instance2, staff),
+                }),
+            );
+            // C's own (separate) transaction.
+            let counter = f.next_counter;
+            let declare_c = tx_member(
+                1,
+                counter,
+                counter as i64,
+                f.next_causal.clone(),
+                tx_c,
+                OperationKind::DeclareTransaction(crate::payload::TransactionDescriptor {
+                    id: tx_c,
+                    label: String::from("g3b undo surface: measure C"),
+                    category: None,
+                }),
+            );
+            f.labeled.push(("DeclareTransaction (C)", declare_c));
+            f.next_counter += 1;
+            f.next_causal = seen_r1(counter);
+
+            let counter = f.next_counter;
+            let create_c = tx_member(
+                1,
+                counter,
+                counter as i64,
+                f.next_causal.clone(),
+                tx_c,
+                OperationKind::CreateMeasure(CreateMeasureOp {
+                    instance: instance2,
+                    measure: Measure {
+                        id: c,
+                        start: measure_anchor(f.measure, MeasurePosition::Start),
+                        time_signature: None,
+                        explicit_number: None,
+                        number_visibility: Default::default(),
+                    },
+                }),
+            );
+            f.labeled.push(("CreateMeasure C (own tx)", create_c));
+            f.next_counter += 1;
+            f.next_causal = seen_r1(counter);
+
+            let counter = f.next_counter;
+            let undo_c = undo_env(
+                1,
+                counter,
+                counter as i64,
+                f.next_causal.clone(),
+                tx_c,
+                UndoPolicy::StrictInverse,
+            );
+            f.labeled
+                .push(("undo C's tx (tombstones C)", undo_c.clone()));
+            f.next_counter += 1;
+            f.next_causal = seen_r1(counter);
+
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(2);
+            assert_undo_applied(&out, &undo_c, "undoing C's own tx must succeed (Applied)");
+            assert_undo_applied(
+                &out,
+                &undo,
+                "a tombstoned measure C must not strand-block the target measure",
+            );
+        }
+
+        /// (M62, row 4/7: meter change) Delete the owning (throwaway, empty)
+        /// region before undoing the measure's tx.
+        #[test]
+        fn m62_tombstoned_meter_change_owner_does_not_block() {
+            let mut f = g3b_undo_fixture();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            let sig = TimeSignatureId::new(ReplicaId(1), 300);
+            f.push(
+                "CreateRegion 2 (empty)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            f.push(
+                "SetTimeSignature region2 -> measure",
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region: region2,
+                    anchor: measure_anchor(f.measure, MeasurePosition::Start),
+                    time_signature: Some(crate::valuegen::time_signature(sig, 4)),
+                }),
+            );
+            f.push(
+                "DeleteRegion 2 (empty, so deletable)",
+                OperationKind::DeleteRegion(crate::payload::DeleteRegionOp { region: region2 }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_undo_applied(
+                &out,
+                &undo,
+                "a tombstoned owning region must not strand-block via meter change",
+            );
+        }
+
+        /// (M62, row 5/7: system break) Delete the owning region.
+        #[test]
+        fn m62_tombstoned_system_break_owner_does_not_block() {
+            let mut f = g3b_undo_fixture();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            f.push(
+                "CreateRegion 2 (empty)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            f.push(
+                "SetUserSystemBreak region2 -> measure",
+                OperationKind::SetUserSystemBreak(crate::payload::SetUserSystemBreakOp {
+                    region: region2,
+                    anchor: measure_anchor(f.measure, MeasurePosition::Start),
+                    present: true,
+                }),
+            );
+            f.push(
+                "DeleteRegion 2 (empty, so deletable)",
+                OperationKind::DeleteRegion(crate::payload::DeleteRegionOp { region: region2 }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_undo_applied(
+                &out,
+                &undo,
+                "a tombstoned owning region must not strand-block via system break",
+            );
+        }
+
+        /// (M62, row 6/7: page break) Delete the owning region.
+        #[test]
+        fn m62_tombstoned_page_break_owner_does_not_block() {
+            let mut f = g3b_undo_fixture();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            f.push(
+                "CreateRegion 2 (empty)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            f.push(
+                "SetUserPageBreak region2 -> measure",
+                OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+                    region: region2,
+                    anchor: measure_anchor(f.measure, MeasurePosition::Start),
+                    present: true,
+                }),
+            );
+            f.push(
+                "DeleteRegion 2 (empty, so deletable)",
+                OperationKind::DeleteRegion(crate::payload::DeleteRegionOp { region: region2 }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_undo_applied(
+                &out,
+                &undo,
+                "a tombstoned owning region must not strand-block via page break",
+            );
+        }
+
+        /// (M62, row 7/7: region-scoped tempo) Delete the owning region.
+        /// Score-level (`None`) tempo has NO owner conjunct at all and is
+        /// N/A for this row (pin 10.5).
+        #[test]
+        fn m62_tombstoned_tempo_segment_owner_does_not_block() {
+            let mut f = g3b_undo_fixture();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            f.push(
+                "CreateRegion 2 (empty)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            let start = measure_anchor(f.measure, MeasurePosition::Start);
+            f.push(
+                "SetTempoSegment region2 start -> measure",
+                OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                    region: Some(region2),
+                    start: start.clone(),
+                    segment: Some(bare_tempo_segment(start, None)),
+                }),
+            );
+            f.push(
+                "DeleteRegion 2 (empty, so deletable)",
+                OperationKind::DeleteRegion(crate::payload::DeleteRegionOp { region: region2 }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_undo_applied(
+                &out,
+                &undo,
+                "a tombstoned owning region must not strand-block via tempo segment",
+            );
+        }
+
+        // === M59/M60: restoration-awareness on the five `WriteChain`
+        // surfaces (`repeat_values`/`measure_values` are immutable value
+        // maps — N/A, not tested here; see M52/M54 above for their
+        // coverage). Six observations each (tempo at both anchor sites). ===
+        //
+        // M60 (this section): the ADDED direction. A write, WITHIN the
+        // measure's own transaction, adds a reference from an already-live
+        // structure to the fresh measure. Undoing the transaction restores
+        // the pre-tx (necessarily M-free, since M did not exist before this
+        // tx) value — the reference is REMOVED — and undo MUST NOT block.
+
+        /// (M60, 1/6: spanner) `S` pre-exists (WallClock endpoints); a
+        /// same-tx `ModifyCrossCutting` retargets it to the fresh measure.
+        #[test]
+        fn m60_added_direction_spanner_does_not_block() {
+            let mut f = g3b_undo_fixture_prereqs_only();
+            let sid = SpannerId::new(ReplicaId(1), 200);
+            let benign = |n: i64| TimeAnchor::WallClock {
+                time: WallClockTime(n),
+            };
+            f.push(
+                "CreateCrossCutting spanner (benign, pre-tx)",
+                OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Spanner(bare_spanner(sid, benign(1), benign(2))),
+                }),
+            );
+            let measure = f.measure;
+            f.open_target_tx();
+            f.push_tx(
+                "ModifyCrossCutting spanner -> measure (same tx, adds the reference)",
+                OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+                    structure: CrossCuttingValue::Spanner(bare_spanner(
+                        sid,
+                        measure_anchor(measure, MeasurePosition::Start),
+                        measure_anchor(measure, MeasurePosition::End),
+                    )),
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_undo_applied(
+                &out,
+                &undo,
+                "an added spanner reference, undone, must be removed and must not block",
+            );
+        }
+
+        /// (M60, 2/6: meter change) A benign meter change pre-exists at the
+        /// SAME (region, resolved-position) key; a same-tx `SetTimeSignature`
+        /// overwrites it to reference the fresh measure.
+        #[test]
+        fn m60_added_direction_meter_change_does_not_block() {
+            let mut f = g3b_undo_fixture_prereqs_only();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            let sig0 = TimeSignatureId::new(ReplicaId(1), 300);
+            let sig1 = TimeSignatureId::new(ReplicaId(1), 301);
+            f.push(
+                "CreateRegion 2 (empty)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            f.push(
+                "SetTimeSignature region2 (benign, pre-tx)",
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region: region2,
+                    anchor: g3b_region_anchor(region2, 0),
+                    time_signature: Some(crate::valuegen::time_signature(sig0, 4)),
+                }),
+            );
+            let measure = f.measure;
+            f.open_target_tx();
+            f.push_tx(
+                "SetTimeSignature region2 -> measure (same tx, adds the reference)",
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region: region2,
+                    anchor: measure_anchor(measure, MeasurePosition::Start),
+                    time_signature: Some(crate::valuegen::time_signature(sig1, 4)),
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_undo_applied(
+                &out,
+                &undo,
+                "an added meter-change reference, undone, must be removed and must not block",
+            );
+        }
+
+        /// (M60, 3/6: system break) A benign break pre-exists at the SAME
+        /// key; a same-tx `SetUserSystemBreak` overwrites it to reference the
+        /// fresh measure.
+        #[test]
+        fn m60_added_direction_system_break_does_not_block() {
+            let mut f = g3b_undo_fixture_prereqs_only();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            f.push(
+                "CreateRegion 2 (empty)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            f.push(
+                "SetUserSystemBreak region2 (benign, pre-tx)",
+                OperationKind::SetUserSystemBreak(crate::payload::SetUserSystemBreakOp {
+                    region: region2,
+                    anchor: g3b_region_anchor(region2, 0),
+                    present: true,
+                }),
+            );
+            let measure = f.measure;
+            f.open_target_tx();
+            f.push_tx(
+                "SetUserSystemBreak region2 -> measure (same tx, adds the reference)",
+                OperationKind::SetUserSystemBreak(crate::payload::SetUserSystemBreakOp {
+                    region: region2,
+                    anchor: measure_anchor(measure, MeasurePosition::Start),
+                    present: true,
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_undo_applied(
+                &out,
+                &undo,
+                "an added system-break reference, undone, must be removed and must not block",
+            );
+        }
+
+        /// (M60, 4/6: page break) Same shape as (3) via `SetUserPageBreak`.
+        #[test]
+        fn m60_added_direction_page_break_does_not_block() {
+            let mut f = g3b_undo_fixture_prereqs_only();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            f.push(
+                "CreateRegion 2 (empty)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            f.push(
+                "SetUserPageBreak region2 (benign, pre-tx)",
+                OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+                    region: region2,
+                    anchor: g3b_region_anchor(region2, 0),
+                    present: true,
+                }),
+            );
+            let measure = f.measure;
+            f.open_target_tx();
+            f.push_tx(
+                "SetUserPageBreak region2 -> measure (same tx, adds the reference)",
+                OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+                    region: region2,
+                    anchor: measure_anchor(measure, MeasurePosition::Start),
+                    present: true,
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_undo_applied(
+                &out,
+                &undo,
+                "an added page-break reference, undone, must be removed and must not block",
+            );
+        }
+
+        /// (M60, 5/6: tempo segment, `start` site) A benign segment
+        /// pre-exists at the SAME key; a same-tx `SetTempoSegment` overwrites
+        /// it so `start` names the fresh measure.
+        #[test]
+        fn m60_added_direction_tempo_segment_start_does_not_block() {
+            let mut f = g3b_undo_fixture_prereqs_only();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            f.push(
+                "CreateRegion 2 (empty)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            let key_pos = g3b_region_anchor(region2, 0);
+            f.push(
+                "SetTempoSegment region2 (benign, pre-tx)",
+                OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                    region: Some(region2),
+                    start: key_pos.clone(),
+                    segment: Some(bare_tempo_segment(key_pos.clone(), None)),
+                }),
+            );
+            let measure = f.measure;
+            f.open_target_tx();
+            let new_start = measure_anchor(measure, MeasurePosition::Start);
+            f.push_tx(
+                "SetTempoSegment region2 start -> measure (same tx, adds the reference)",
+                OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                    region: Some(region2),
+                    start: key_pos,
+                    segment: Some(bare_tempo_segment(new_start, None)),
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_undo_applied(
+                &out,
+                &undo,
+                "an added tempo-segment start reference, undone, must be removed and \
+                 must not block",
+            );
+        }
+
+        /// (M60, 6/6: tempo segment, `end` site) Same shape as (5), but the
+        /// added reference is the segment's `end`, not its `start`.
+        #[test]
+        fn m60_added_direction_tempo_segment_end_does_not_block() {
+            let mut f = g3b_undo_fixture_prereqs_only();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            f.push(
+                "CreateRegion 2 (empty)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            let key_pos = g3b_region_anchor(region2, 0);
+            f.push(
+                "SetTempoSegment region2 (benign, pre-tx)",
+                OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                    region: Some(region2),
+                    start: key_pos.clone(),
+                    segment: Some(bare_tempo_segment(key_pos.clone(), None)),
+                }),
+            );
+            let measure = f.measure;
+            f.open_target_tx();
+            let new_end = measure_anchor(measure, MeasurePosition::End);
+            f.push_tx(
+                "SetTempoSegment region2 end -> measure (same tx, adds the reference)",
+                OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                    region: Some(region2),
+                    start: key_pos.clone(),
+                    segment: Some(bare_tempo_segment(key_pos, Some(new_end))),
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_undo_applied(
+                &out,
+                &undo,
+                "an added tempo-segment end reference, undone, must be removed and \
+                 must not block",
+            );
+        }
+
+        // === M59: the REINSTATED direction. ================================
+        //
+        // A restoration's chain-predecessor is the graph's own pre-
+        // operational BASE — the only place a reference to the fixture's
+        // measure can predate the measure's own mint, since nothing can
+        // validly WRITE such a reference before the measure exists (proven
+        // by exhaustion while drafting this packet: any reference authored
+        // by an operation must be canonically ordered after `CreateMeasure`,
+        // and a chain-predecessor search skips every write tagged with the
+        // SAME transaction being undone — so an intra-tx swap can only ever
+        // demonstrate M60's ADDED direction). Seeding performs no cross-
+        // reference validation, so injecting a base value that names the
+        // fixture's own (not-yet-minted) measure id is a structurally valid
+        // way to construct the one case seeding CAN present: a dangling
+        // forward reference. Within the target tx, a write REMOVES that
+        // reference (current, pre-undo: no reference); undoing the tx
+        // restores the chain to its base value — REINSTATING the reference —
+        // and MUST block.
+
+        /// A fresh, empty-transaction-history fixture reusing `prereqs`'
+        /// region/instance/measure/tx ids, for reduction onto a caller-
+        /// mutated base.
+        fn g3b_fixture_onto(prereqs: &G3bUndoFixture) -> G3bUndoFixture {
+            G3bUndoFixture {
+                labeled: Vec::new(),
+                region: prereqs.region,
+                instance: prereqs.instance,
+                measure: prereqs.measure,
+                tx: prereqs.tx,
+                next_counter: 0,
+                next_causal: CausalContext::new(),
+            }
+        }
+
+        /// (M59, 1/6: spanner) The base graph already carries a `Spanner`
+        /// referencing the fixture's own (not-yet-minted) measure.
+        #[test]
+        fn m59_reinstated_direction_spanner_blocks() {
+            let prereqs = g3b_undo_fixture_prereqs_only();
+            let mut base = prereqs.run_allowing_tail_conflict(0).score;
+            let sid = SpannerId::new(ReplicaId(1), 200);
+            base.cross_cutting.spanners.push(bare_spanner(
+                sid,
+                measure_anchor(prereqs.measure, MeasurePosition::Start),
+                measure_anchor(prereqs.measure, MeasurePosition::End),
+            ));
+
+            let mut f = g3b_fixture_onto(&prereqs);
+            f.open_target_tx();
+            let benign_a = TimeAnchor::WallClock {
+                time: WallClockTime(9),
+            };
+            let benign_b = TimeAnchor::WallClock {
+                time: WallClockTime(10),
+            };
+            f.push_tx(
+                "ModifyCrossCutting spanner -> benign (same tx, removes the reference)",
+                OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+                    structure: CrossCuttingValue::Spanner(bare_spanner(sid, benign_a, benign_b)),
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_onto(&base, 1);
+            assert_blocks(
+                &out,
+                &undo,
+                "a restoration reinstating the spanner's measure reference must block",
+            );
+        }
+
+        /// (M59, 2/6: meter change) The base graph's region2 already carries
+        /// a `MeterChange` referencing the fixture's own (not-yet-minted)
+        /// measure.
+        #[test]
+        fn m59_reinstated_direction_meter_change_blocks() {
+            let mut prereqs = g3b_undo_fixture_prereqs_only();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            prereqs.push(
+                "CreateRegion 2 (empty)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            let mut base = prereqs.run_allowing_tail_conflict(0).score;
+            let dangling_sig = TimeSignatureId::new(ReplicaId(1), 300);
+            {
+                let region = base
+                    .canvas
+                    .regions
+                    .iter_mut()
+                    .find(|r| r.id == region2)
+                    .expect("region2 present");
+                let content = region.content.staff_based_mut().expect("staff-based");
+                content.default_metric_grid = Some(MetricGrid {
+                    meter_sequence: vec![MeterChange {
+                        anchor: measure_anchor(prereqs.measure, MeasurePosition::Start),
+                        time_signature: dangling_sig,
+                    }],
+                });
+            }
+
+            let mut f = g3b_fixture_onto(&prereqs);
+            f.open_target_tx();
+            f.push_tx(
+                "SetTimeSignature region2 (same tx, removes the reference)",
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region: region2,
+                    anchor: measure_anchor(prereqs.measure, MeasurePosition::Start),
+                    time_signature: None,
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_onto(&base, 1);
+            assert_blocks(
+                &out,
+                &undo,
+                "a restoration reinstating the meter change's measure reference must block",
+            );
+        }
+
+        /// (M59, 3/6: system break) The base graph's region2 already carries
+        /// a user system-break anchored to the fixture's own (not-yet-
+        /// minted) measure.
+        #[test]
+        fn m59_reinstated_direction_system_break_blocks() {
+            let mut prereqs = g3b_undo_fixture_prereqs_only();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            prereqs.push(
+                "CreateRegion 2 (empty)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            let mut base = prereqs.run_allowing_tail_conflict(0).score;
+            {
+                let region = base
+                    .canvas
+                    .regions
+                    .iter_mut()
+                    .find(|r| r.id == region2)
+                    .expect("region2 present");
+                let content = region.content.staff_based_mut().expect("staff-based");
+                content
+                    .user_system_breaks
+                    .push(measure_anchor(prereqs.measure, MeasurePosition::Start));
+            }
+
+            let mut f = g3b_fixture_onto(&prereqs);
+            f.open_target_tx();
+            f.push_tx(
+                "SetUserSystemBreak region2 (same tx, removes the reference)",
+                OperationKind::SetUserSystemBreak(crate::payload::SetUserSystemBreakOp {
+                    region: region2,
+                    anchor: measure_anchor(prereqs.measure, MeasurePosition::Start),
+                    present: false,
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_onto(&base, 1);
+            assert_blocks(
+                &out,
+                &undo,
+                "a restoration reinstating the system break's measure reference must block",
+            );
+        }
+
+        /// (M59, 4/6: page break) Same shape as (3) via `user_page_breaks` /
+        /// `SetUserPageBreak`.
+        #[test]
+        fn m59_reinstated_direction_page_break_blocks() {
+            let mut prereqs = g3b_undo_fixture_prereqs_only();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            prereqs.push(
+                "CreateRegion 2 (empty)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            let mut base = prereqs.run_allowing_tail_conflict(0).score;
+            {
+                let region = base
+                    .canvas
+                    .regions
+                    .iter_mut()
+                    .find(|r| r.id == region2)
+                    .expect("region2 present");
+                let content = region.content.staff_based_mut().expect("staff-based");
+                content
+                    .user_page_breaks
+                    .push(measure_anchor(prereqs.measure, MeasurePosition::Start));
+            }
+
+            let mut f = g3b_fixture_onto(&prereqs);
+            f.open_target_tx();
+            f.push_tx(
+                "SetUserPageBreak region2 (same tx, removes the reference)",
+                OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+                    region: region2,
+                    anchor: measure_anchor(prereqs.measure, MeasurePosition::Start),
+                    present: false,
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_onto(&base, 1);
+            assert_blocks(
+                &out,
+                &undo,
+                "a restoration reinstating the page break's measure reference must block",
+            );
+        }
+
+        /// (M59, 5/6: tempo segment, `start` site) The base graph's
+        /// region2's local tempo map already carries a segment whose `start`
+        /// names the fixture's own (not-yet-minted) measure.
+        #[test]
+        fn m59_reinstated_direction_tempo_segment_start_blocks() {
+            let mut prereqs = g3b_undo_fixture_prereqs_only();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            prereqs.push(
+                "CreateRegion 2 (empty)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            let mut base = prereqs.run_allowing_tail_conflict(0).score;
+            let dangling_start = measure_anchor(prereqs.measure, MeasurePosition::Start);
+            {
+                let region = base
+                    .canvas
+                    .regions
+                    .iter_mut()
+                    .find(|r| r.id == region2)
+                    .expect("region2 present");
+                region.local_tempo_map = Some(TempoMap {
+                    initial: None,
+                    segments: vec![bare_tempo_segment(dangling_start.clone(), None)],
+                });
+            }
+
+            let mut f = g3b_fixture_onto(&prereqs);
+            f.open_target_tx();
+            f.push_tx(
+                "SetTempoSegment region2 start (same tx, removes the reference)",
+                OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                    region: Some(region2),
+                    start: dangling_start,
+                    segment: None,
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_onto(&base, 1);
+            assert_blocks(
+                &out,
+                &undo,
+                "a restoration reinstating the tempo segment's start measure \
+                 reference must block",
+            );
+        }
+
+        /// (M59, 6/6: tempo segment, `end` site) The dangling segment's
+        /// `start` is benign (a region anchor); only its `end` names the
+        /// fixture's own (not-yet-minted) measure.
+        #[test]
+        fn m59_reinstated_direction_tempo_segment_end_blocks() {
+            let mut prereqs = g3b_undo_fixture_prereqs_only();
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            prereqs.push(
+                "CreateRegion 2 (empty)",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region2),
+                }),
+            );
+            let mut base = prereqs.run_allowing_tail_conflict(0).score;
+            let key_start = g3b_region_anchor(region2, 0);
+            let dangling_end = measure_anchor(prereqs.measure, MeasurePosition::End);
+            {
+                let region = base
+                    .canvas
+                    .regions
+                    .iter_mut()
+                    .find(|r| r.id == region2)
+                    .expect("region2 present");
+                region.local_tempo_map = Some(TempoMap {
+                    initial: None,
+                    segments: vec![bare_tempo_segment(key_start.clone(), Some(dangling_end))],
+                });
+            }
+
+            let mut f = g3b_fixture_onto(&prereqs);
+            f.open_target_tx();
+            f.push_tx(
+                "SetTempoSegment region2 end (same tx, removes the reference)",
+                OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                    region: Some(region2),
+                    start: key_start,
+                    segment: None,
+                }),
+            );
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_onto(&base, 1);
+            assert_blocks(
+                &out,
+                &undo,
+                "a restoration reinstating the tempo segment's end measure \
+                 reference must block",
+            );
+        }
+
+        // === M48: the `TimeSignature` <-> `Measure` extension. ==============
+
+        /// (M48) A minted `TimeSignature`, still named by a live
+        /// `Measure.time_signature`, blocks the signature's own undo — the
+        /// hole that exists TODAY, before G3b (`undo_strand_block`'s
+        /// existing `TimeSignature` arm consulted only `meter_change_chain`).
+        #[test]
+        fn m48_time_signature_still_named_by_live_measure_blocks_undo() {
+            let mut f = g3b_undo_fixture_prereqs_only();
+            let sig = TimeSignatureId::new(ReplicaId(1), 300);
+            let tx_ts = f.tx;
+            let pos0 = g3b_region_anchor(f.region, 0);
+            f.push_tx(
+                "DeclareTransaction (mints the signature)",
+                OperationKind::DeclareTransaction(crate::payload::TransactionDescriptor {
+                    id: tx_ts,
+                    label: String::from("g3b undo surface: signature"),
+                    category: None,
+                }),
+            );
+            f.push_tx(
+                "SetTimeSignature (mints sig)",
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region: f.region,
+                    anchor: pos0.clone(),
+                    time_signature: Some(crate::valuegen::time_signature(sig, 4)),
+                }),
+            );
+            f.push(
+                "CreateMeasure naming sig (non-tx, first measure: agreement holds)",
+                OperationKind::CreateMeasure(CreateMeasureOp {
+                    instance: f.instance,
+                    measure: Measure {
+                        id: f.measure,
+                        start: pos0,
+                        time_signature: Some(sig),
+                        explicit_number: None,
+                        number_visibility: Default::default(),
+                    },
+                }),
+            );
+            let undo = f.push_undo("undo the signature's own tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_blocks(
+                &out,
+                &undo,
+                "a live measure still naming the time signature must block its undo",
+            );
+        }
+
+        // === M49: the `Measure` graph-removal arm. ===========================
+
+        /// (M49) Undoing a measure's mint removes it from the OWNING
+        /// `StaffInstance.measures` — not merely tombstones it in `objects`
+        /// (`materialize_graph_tombstones` cannot be a bare `retain` over
+        /// `score`, since `Measure` is a nested container child).
+        #[test]
+        fn m49_undo_removes_measure_from_owning_instance() {
+            let mut f = g3b_undo_fixture();
+            let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let out = f.run_allowing_tail_conflict(1);
+            assert_undo_applied(&out, &undo, "an unblocked measure undo must be Applied");
+            let region_value = out
+                .score
+                .canvas
+                .regions
+                .iter()
+                .find(|r| r.id == f.region)
+                .expect("region present");
+            let instance_value = region_value
+                .staff_instances()
+                .iter()
+                .find(|i| i.id == f.instance)
+                .expect("instance present");
+            assert!(
+                !instance_value.measures.iter().any(|m| m.id == f.measure),
+                "the tombstoned measure must be REMOVED from StaffInstance.measures, \
+                 not merely tombstoned in `objects`"
+            );
+            assert!(
+                matches!(
+                    out.state.objects.get(&TypedObjectId::Measure(f.measure)),
+                    Some(ObjectState::Tombstoned { .. })
+                ),
+                "the ledger must also record the tombstone"
+            );
+        }
+
+        // === M63: post-undo re-create ordering. ==============================
+
+        /// (M63) After an undo tombstones a measure, a byte-identical
+        /// re-carry of the original `CreateMeasure` must observe
+        /// `TargetTombstoned`, not `AlreadyApplied` — `create_measure`'s
+        /// `Tombstoned` arm must NOT fall through to the value-map identity
+        /// check.
+        #[test]
+        fn m63_recreate_after_undo_is_target_tombstoned_not_already_applied() {
+            let mut f = g3b_undo_fixture();
+            f.push_undo("undo target tx", UndoPolicy::StrictInverse);
+            let pos0 = g3b_region_anchor(f.region, 0);
+            let recreate = f.push(
+                "byte-identical re-carry of CreateMeasure",
+                OperationKind::CreateMeasure(CreateMeasureOp {
+                    instance: f.instance,
+                    measure: Measure {
+                        id: f.measure,
+                        start: pos0,
+                        time_signature: None,
+                        explicit_number: None,
+                        number_visibility: Default::default(),
+                    },
+                }),
+            );
+            let out = f.run_allowing_tail_conflict(2);
+            assert_eq!(
+                g3b_effect_of(&out.state, recreate.id),
+                Some(OperationEffect::NoOp {
+                    reason: NoOpReason::TargetTombstoned
+                }),
+                "a byte-identical re-carry after undo must be TargetTombstoned, \
+                 not AlreadyApplied"
             );
         }
     }
