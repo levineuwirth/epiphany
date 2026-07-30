@@ -730,6 +730,59 @@ pub fn violating_score(inv: GraphInvariant, seed: u64) -> Score {
                     });
             }
         }
+        MeasureMeterConsistency => {
+            // A measure whose declared time signature disagrees with the
+            // effective grid's active signature at its start (Genesis
+            // tranche G3b, contract pins 6/6c/9b's agreement clause). Both
+            // anchored at the region's start (`TimeAnchor::Region`) so the
+            // comparison is c4-comparable and determinate.
+            use crate::graph::{BeatGroup, MeterChange, MetricGrid, PowerOfTwo, TimeSignature};
+            let sig_active: crate::ids::TimeSignatureId = s.identity.mint();
+            let sig_declared: crate::ids::TimeSignatureId = s.identity.mint();
+            let measure_duration = MusicalDuration::whole();
+            let beat_groups = vec![BeatGroup {
+                duration: measure_duration.clone(),
+                subdivision: None,
+                accent: 0,
+            }];
+            let display = crate::graph::TimeSignatureDisplay::Standard {
+                numerator: 4,
+                denominator: PowerOfTwo::new(4).unwrap(),
+            };
+            s.time_signatures.push(
+                TimeSignature::new(
+                    sig_active,
+                    display.clone(),
+                    measure_duration.clone(),
+                    beat_groups.clone(),
+                )
+                .unwrap(),
+            );
+            s.time_signatures.push(
+                TimeSignature::new(sig_declared, display, measure_duration, beat_groups).unwrap(),
+            );
+            let region_id = s.canvas.regions[0].id;
+            let region_start = TimeAnchor::Region {
+                id: region_id,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Zero,
+            };
+            if let RegionContent::StaffBased(content) = &mut s.canvas.regions[0].content {
+                content.default_metric_grid = Some(MetricGrid {
+                    meter_sequence: vec![MeterChange {
+                        anchor: region_start.clone(),
+                        time_signature: sig_active,
+                    }],
+                });
+                content.staff_instances[0].measures.push(Measure {
+                    id: MeasureId::new(replica, 5_000_000),
+                    start: region_start,
+                    time_signature: Some(sig_declared),
+                    explicit_number: Some(1),
+                    number_visibility: Default::default(),
+                });
+            }
+        }
     }
     s
 }

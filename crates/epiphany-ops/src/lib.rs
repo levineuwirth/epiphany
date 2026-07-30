@@ -138,7 +138,8 @@ pub use payload::{
     TransactionDescriptor, TransposeIntervalOp, TransposeOp, TupletCompensation,
 };
 pub use reduce::{
-    canonical_reduction_order, GraphMaterialization, MaterializedState, ObjectState, PendingReason,
+    canonical_reduction_order, measure_anchor_relation_for_agreement_test, GraphMaterialization,
+    MaterializedState, ObjectState, PendingReason,
 };
 pub use slot::OperationSlot;
 pub use stamp::{HybridLogicalClock, OperationStamp, StampTuple};

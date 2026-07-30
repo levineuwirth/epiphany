@@ -8,9 +8,13 @@
 //! [`InvariantViolation`] witness identifying the smallest offending objects.
 //!
 //! **Count.** The QUICKSTART says "the 18 graph invariants enumerated in
-//! Chapter 5"; the spec body actually enumerates **19** items (1–19 in
-//! §"Graph Invariants"). We implement all 19 and record the discrepancy as a
-//! Pass 11 candidate in `DECISIONS.md` (the spec is the contract).
+//! Chapter 5"; the spec body (pre-G3b) enumerates **19** items (1–19 in
+//! §"Graph Invariants"). We implement all 19 of those and record the
+//! discrepancy as a Pass 11 candidate in `DECISIONS.md` (the spec is the
+//! contract). Genesis tranche G3b
+//! (`spec/CONTRACT_GENESIS_G3B_MEASURE.md`) adds a 20th, measure-meter
+//! consistency, ahead of `core_spec.tex`'s own update (a later packet in the
+//! same tranche) — see [`GraphInvariant::MeasureMeterConsistency`].
 //!
 //! **Scope of structural decidability.** A few invariants depend on resolving
 //! [`crate::TimeAnchor`]s to absolute time (region time-overlap, anchor-offset
@@ -19,20 +23,22 @@
 //! flag the cases this prototype can resolve (notably wall-clock-anchored
 //! extents) and never raise a false positive. This is documented per check.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::event::Event;
 use crate::graph::{
-    derive_promoted_voice_id, CoordinateDiscipline, Region, RegionTimeModel, Score, TieClass,
-    VoiceOrigin,
+    derive_promoted_voice_id, CoordinateDiscipline, MeterChange, Region, RegionTimeModel, Score,
+    TieClass, TimeSignature, VoiceOrigin,
 };
 use crate::ids::{
-    EventId, MeasureId, PitchId, RegionId, ReplicaId, StaffId, StaffInstanceId, VoiceId,
+    EventId, MeasureId, PitchId, RegionId, ReplicaId, StaffId, StaffInstanceId, TimeSignatureId,
+    VoiceId,
 };
 use crate::pitch::{PitchSpaceId, SpellingDirective, SpellingScope};
 use crate::time::{
-    AnchorOffset, ConcreteDuration, EventDuration, EventPosition, MusicalPosition, OffsetKind,
-    TimeAnchor,
+    AnchorOffset, ConcreteDuration, EventDuration, EventPosition, MeasurePosition, MusicalDuration,
+    MusicalPosition, OffsetKind, TimeAnchor, WallClockDuration,
 };
 
 /// The Chapter 5 graph invariants, numbered as in §"Graph Invariants".
@@ -89,6 +95,22 @@ pub enum GraphInvariant {
     VoiceOriginConsistent,
     /// 19. Barline-group members stay within one region.
     BarlineGroupSameRegion,
+    /// 20. Genesis tranche G3b (`spec/CONTRACT_GENESIS_G3B_MEASURE.md` pins
+    ///     6/6b/6c/9b): a measure's declared time signature AGREES with the
+    ///     effective metric grid's active signature at its start, and
+    ///     consecutive measure starts are separated by the governing
+    ///     signature's `measure_duration()` (BOUNDARY consistency).
+    ///     `time_signature: None` exempts only the agreement clause — the
+    ///     inherited meter still governs boundary consistency. This check
+    ///     does NOT duplicate invariant 10's signature-*resolution* check
+    ///     (`CrossCuttingRefsResolve`): it only compares ALREADY-RESOLVING
+    ///     signatures. It ABSTAINS — emits no violation — wherever pin 6's
+    ///     comparable relation or pin 6b's musical delta cannot decide the
+    ///     comparison (base-ingested data may predate the rule); this is
+    ///     deliberate abstention, not a soundness gap (pin 7). A
+    ///     pickup/anacrusis first measure has no predecessor and is never
+    ///     flagged (P13-S19, deferred).
+    MeasureMeterConsistency,
 }
 
 impl GraphInvariant {
@@ -115,11 +137,12 @@ impl GraphInvariant {
             TiePairing => 17,
             VoiceOriginConsistent => 18,
             BarlineGroupSameRegion => 19,
+            MeasureMeterConsistency => 20,
         }
     }
 
-    /// All 19 invariants in enumeration order.
-    pub fn all() -> [GraphInvariant; 19] {
+    /// All 20 invariants in enumeration order.
+    pub fn all() -> [GraphInvariant; 20] {
         use GraphInvariant::*;
         [
             EventVoiceBacklink,
@@ -141,6 +164,7 @@ impl GraphInvariant {
             TiePairing,
             VoiceOriginConsistent,
             BarlineGroupSameRegion,
+            MeasureMeterConsistency,
         ]
     }
 }
@@ -251,7 +275,34 @@ pub fn check_invariants(score: &Score) -> Vec<InvariantViolation> {
     idx.check_tie_pairing(&mut v);
     idx.check_voice_origin_consistent(&mut v);
     idx.check_barline_group_same_region(&mut v);
+    idx.check_measure_meter_consistency(&mut v);
     v
+}
+
+/// Cross-crate agreement-test oracle hook for the pin 6/6b comparable
+/// relation and musical delta (G3b packet 2 architecture note: exposed so
+/// `epiphany-testkit`'s cross-crate agreement test can drive the SAME
+/// anchor pairs through this crate's independent invariant-20
+/// implementation ([`GraphIndex::measure20_comparable_order`] /
+/// [`GraphIndex::measure20_musical_delta`]) and through `epiphany-ops`'s
+/// `Reducer` (which computes the identical normative relation privately,
+/// over operational write chains rather than a materialized graph) and
+/// assert they agree. This is the guard against maintaining one normative
+/// relation in two places without sharing code: the dependency direction
+/// (`epiphany-ops` depends on `epiphany-core`, never the reverse) forbids
+/// `epiphany-core` from calling into `epiphany-ops`, so invariant 20 cannot
+/// reuse the reducer's private methods, and there is no third crate either
+/// could delegate to.
+pub fn measure_anchor_relation(
+    score: &Score,
+    a: &TimeAnchor,
+    b: &TimeAnchor,
+) -> (Option<Ordering>, Option<MusicalDuration>) {
+    let idx = GraphIndex::build(score);
+    (
+        idx.measure20_comparable_order(a, b),
+        idx.measure20_musical_delta(a, b),
+    )
 }
 
 /// Checks a single invariant (useful for targeted negative property tests).
@@ -2343,6 +2394,354 @@ impl<'a> GraphIndex<'a> {
             }
         }
     }
+
+    // --- 20. Measure-meter agreement and boundary consistency (Genesis
+    // tranche G3b, `spec/CONTRACT_GENESIS_G3B_MEASURE.md`). This mirrors
+    // `epiphany-ops::reduce::Reducer`'s pin 6/6b/6c relation as an
+    // INDEPENDENT implementation over the MATERIALIZED graph: there are no
+    // operational write chains to reconstruct here (the architecture note in
+    // the contract) — a `StaffInstance`'s effective grid is simply its own
+    // `local_metric_grid`, falling back WHOLE to the enclosing region's
+    // `default_metric_grid`, both already fully-resolved `MetricGrid`
+    // values once persisted, and c3's "vector index" is literally
+    // `StaffInstance.measures`' index, with no `minted_by` indirection.
+    // Divergence from the ops-crate implementation is guarded by
+    // `epiphany-testkit`'s cross-crate agreement test
+    // (`measure_anchor_relation` above), not by code sharing — the
+    // dependency direction (`epiphany-ops` -> `epiphany-core`, never the
+    // reverse) forbids this crate from calling into that one.
+
+    /// Pin 6: two `AnchorOffset`s are comparable iff they are the same
+    /// clock, or at least one is `Zero` — read as the additive identity of
+    /// whichever clock it is compared against. `Musical` against
+    /// `WallClock` is never comparable (the deferred wall-clock/musical
+    /// reconciliation).
+    fn measure20_offset_order(a: &AnchorOffset, b: &AnchorOffset) -> Option<Ordering> {
+        match (a, b) {
+            (AnchorOffset::Musical(x), AnchorOffset::Musical(y)) => Some(x.cmp(y)),
+            (AnchorOffset::WallClock(x), AnchorOffset::WallClock(y)) => Some(x.cmp(y)),
+            (AnchorOffset::Zero, AnchorOffset::Zero) => Some(Ordering::Equal),
+            (AnchorOffset::Zero, AnchorOffset::Musical(y)) => Some(MusicalDuration::zero().cmp(y)),
+            (AnchorOffset::Musical(x), AnchorOffset::Zero) => Some(x.cmp(&MusicalDuration::zero())),
+            (AnchorOffset::Zero, AnchorOffset::WallClock(y)) => Some(WallClockDuration(0).cmp(y)),
+            (AnchorOffset::WallClock(x), AnchorOffset::Zero) => Some(x.cmp(&WallClockDuration(0))),
+            (AnchorOffset::Musical(_), AnchorOffset::WallClock(_))
+            | (AnchorOffset::WallClock(_), AnchorOffset::Musical(_)) => None,
+        }
+    }
+
+    /// c3's "vector index" ordering between two DISTINCT measures, both
+    /// anchored via `Measure{pos: Start, off: Zero}` (contract pin 6, c3):
+    /// their relative position within the SAME `StaffInstance.measures`,
+    /// read directly off the materialized graph — no ledger indirection
+    /// needed (unlike `epiphany-ops`'s base-free branch, which has no
+    /// materialized graph to read at all).
+    fn measure20_vector_order(&self, a: MeasureId, b: MeasureId) -> Option<Ordering> {
+        for region in &self.score.canvas.regions {
+            for instance in region.staff_instances() {
+                let pos_a = instance.measures.iter().position(|m| m.id == a);
+                let pos_b = instance.measures.iter().position(|m| m.id == b);
+                if let (Some(pa), Some(pb)) = (pos_a, pos_b) {
+                    return Some(pa.cmp(&pb));
+                }
+            }
+        }
+        None
+    }
+
+    /// Pin 6: the comparable relation over `TimeAnchor`s, EXACTLY the five
+    /// shapes c1-c5 (contract table). Everything else is NOT comparable,
+    /// and no other relation may be invented — pin 6's prohibition. The
+    /// boundary selector (`MeasurePosition`/`RegionEdge`) must be
+    /// IDENTICAL; it is never ordered.
+    fn measure20_comparable_order(&self, a: &TimeAnchor, b: &TimeAnchor) -> Option<Ordering> {
+        match (a, b) {
+            // c1: same Event id.
+            (
+                TimeAnchor::Event { id: ia, offset: oa },
+                TimeAnchor::Event { id: ib, offset: ob },
+            ) if ia == ib => Self::measure20_offset_order(oa, ob),
+            // c2/c3: Measure anchors.
+            (
+                TimeAnchor::Measure {
+                    id: ia,
+                    position: pa,
+                    offset: oa,
+                },
+                TimeAnchor::Measure {
+                    id: ib,
+                    position: pb,
+                    offset: ob,
+                },
+            ) => {
+                if pa != pb {
+                    return None;
+                }
+                if ia == ib {
+                    // c2: same id and same pos.
+                    return Self::measure20_offset_order(oa, ob);
+                }
+                // c3: distinct ids, restricted to pos: Start, off: Zero.
+                if *pa != MeasurePosition::Start
+                    || !matches!(oa, AnchorOffset::Zero)
+                    || !matches!(ob, AnchorOffset::Zero)
+                {
+                    return None;
+                }
+                self.measure20_vector_order(*ia, *ib)
+            }
+            // c4: same Region id and same edge.
+            (
+                TimeAnchor::Region {
+                    id: ia,
+                    edge: ea,
+                    offset: oa,
+                },
+                TimeAnchor::Region {
+                    id: ib,
+                    edge: eb,
+                    offset: ob,
+                },
+            ) if ia == ib && ea == eb => Self::measure20_offset_order(oa, ob),
+            // c5: WallClock, no referent id.
+            (TimeAnchor::WallClock { time: ta }, TimeAnchor::WallClock { time: tb }) => {
+                Some(ta.cmp(tb))
+            }
+            // Never Event<->Measure, never Measure<->Region, never two
+            // Events with different ids, never Musical against WallClock,
+            // and never across differing pos/edge selectors.
+            _ => None,
+        }
+    }
+
+    /// Pin 6b: the musical delta `b - a`, computable ONLY in shape c1, c2,
+    /// or c4 with BOTH offsets in the `Musical` clock (or `Zero`,
+    /// normalized to `Musical(0)`), and only when the boundary selector is
+    /// identical. c3 supplies no delta at all (a vector index gives order,
+    /// never distance). `WallClock` deltas are never returned.
+    fn measure20_musical_delta(&self, a: &TimeAnchor, b: &TimeAnchor) -> Option<MusicalDuration> {
+        fn musical(o: &AnchorOffset) -> Option<MusicalDuration> {
+            match o {
+                AnchorOffset::Musical(d) => Some(d.clone()),
+                AnchorOffset::Zero => Some(MusicalDuration::zero()),
+                AnchorOffset::WallClock(_) => None,
+            }
+        }
+        match (a, b) {
+            (
+                TimeAnchor::Event { id: ia, offset: oa },
+                TimeAnchor::Event { id: ib, offset: ob },
+            ) if ia == ib => Some(musical(ob)? - musical(oa)?),
+            (
+                TimeAnchor::Measure {
+                    id: ia,
+                    position: pa,
+                    offset: oa,
+                },
+                TimeAnchor::Measure {
+                    id: ib,
+                    position: pb,
+                    offset: ob,
+                },
+            ) if ia == ib && pa == pb => Some(musical(ob)? - musical(oa)?),
+            (
+                TimeAnchor::Region {
+                    id: ia,
+                    edge: ea,
+                    offset: oa,
+                },
+                TimeAnchor::Region {
+                    id: ib,
+                    edge: eb,
+                    offset: ob,
+                },
+            ) if ia == ib && ea == eb => Some(musical(ob)? - musical(oa)?),
+            _ => None,
+        }
+    }
+
+    /// Pin 6c steps 1-3: the unique maximum of `candidates` under
+    /// [`Self::measure20_comparable_order`] — shared by the effective-grid
+    /// oracle's governing meter change and (were it needed here) an
+    /// append-only "current last element" search.
+    fn measure20_unique_maximum<'x, T: Copy>(
+        &self,
+        candidates: impl IntoIterator<Item = (T, &'x TimeAnchor)>,
+    ) -> Governing20<T> {
+        let items: Vec<(T, &TimeAnchor)> = candidates.into_iter().collect();
+        if items.is_empty() {
+            return Governing20::None;
+        }
+        let mut maximal: Vec<T> = Vec::new();
+        for (key, anchor) in &items {
+            let dominated = items.iter().any(|(_, other)| {
+                self.measure20_comparable_order(other, anchor) == Some(Ordering::Greater)
+            });
+            if !dominated {
+                maximal.push(*key);
+            }
+        }
+        if maximal.len() == 1 {
+            Governing20::Unique(maximal[0])
+        } else {
+            Governing20::Indeterminate
+        }
+    }
+
+    /// Pin 6c steps 0-3: the governing element among `candidates` relative
+    /// to `reference`. **Step 0 comes before any candidate set**: if ANY
+    /// candidate's anchor is incomparable to `reference`, the whole
+    /// selection is indeterminate — even when the not-after-filtered set
+    /// would have been empty (an incomparable change is unplaced, not
+    /// absent, and it might have governed).
+    fn measure20_governing_by_anchor<'x, T: Copy>(
+        &self,
+        reference: &TimeAnchor,
+        candidates: impl IntoIterator<Item = (T, &'x TimeAnchor)>,
+    ) -> Governing20<T> {
+        let mut not_after: Vec<(T, &TimeAnchor)> = Vec::new();
+        for (key, anchor) in candidates {
+            match self.measure20_comparable_order(anchor, reference) {
+                None => return Governing20::Indeterminate,
+                Some(Ordering::Greater) => {}
+                Some(_) => not_after.push((key, anchor)),
+            }
+        }
+        self.measure20_unique_maximum(not_after)
+    }
+
+    /// Pin 6c: the effective grid's governing time signature at `start`,
+    /// from an already-resolved `sequence` (this crate's effective grid is
+    /// simply the instance's own local grid, or else the region default —
+    /// see [`Self::check_measure_meter_consistency`]).
+    fn measure20_governing_time_signature(
+        &self,
+        sequence: &[MeterChange],
+        start: &TimeAnchor,
+    ) -> Governing20<TimeSignatureId> {
+        self.measure20_governing_by_anchor(
+            start,
+            sequence.iter().map(|c| (c.time_signature, &c.anchor)),
+        )
+    }
+
+    /// 20. Agreement and boundary consistency (contract pins 6/6b/6c/9b).
+    ///     ABSTAINS (emits no violation) wherever the comparison or delta is
+    ///     not computable — base-ingested data may predate the rule (pin 7);
+    ///     this is deliberate abstention, not a soundness gap. Does NOT
+    ///     duplicate invariant 10's signature-resolution check: only
+    ///     ALREADY-RESOLVING signatures are compared (pin 9b, "a resolving
+    ///     `Some(id)`"), whether that is the measure's own declared
+    ///     signature or a grid entry's.
+    fn check_measure_meter_consistency(&self, out: &mut Vec<InvariantViolation>) {
+        let time_sigs: HashMap<TimeSignatureId, &TimeSignature> = self
+            .score
+            .time_signatures
+            .iter()
+            .map(|t| (t.id, t))
+            .collect();
+        for region in &self.score.canvas.regions {
+            let default_grid = region
+                .content
+                .staff_based()
+                .and_then(|c| c.default_metric_grid.as_ref());
+            for instance in region.staff_instances() {
+                let sequence: &[MeterChange] = instance
+                    .local_metric_grid
+                    .as_ref()
+                    .map(|g| g.meter_sequence.as_slice())
+                    .or_else(|| default_grid.map(|g| g.meter_sequence.as_slice()))
+                    .unwrap_or(&[]);
+                let measures = &instance.measures;
+                for (i, m) in measures.iter().enumerate() {
+                    // Agreement clause: ONLY a resolving `Some(id)` (pin
+                    // 9b) — an unresolving reference is invariant 10's
+                    // business, not this one's, and `None` avoids this
+                    // clause entirely (but not the boundary clause below).
+                    if let Some(sig) = m.time_signature {
+                        if time_sigs.contains_key(&sig) {
+                            match self.measure20_governing_time_signature(sequence, &m.start) {
+                                Governing20::Unique(active) if active != sig => {
+                                    out.push(InvariantViolation::new(
+                                        GraphInvariant::MeasureMeterConsistency,
+                                        format!(
+                                            "measure {:?} declares time signature {:?} but the \
+                                             effective grid's active signature at its start is \
+                                             {:?}",
+                                            m.id, sig, active
+                                        ),
+                                    ));
+                                }
+                                Governing20::Unique(_) | Governing20::None => {}
+                                // Indeterminate selection: abstain (pin 7).
+                                Governing20::Indeterminate => {}
+                            }
+                        }
+                    }
+                    // Boundary clause: vacuous for the first measure (no
+                    // predecessor — pickup/anacrusis deferral, P13-S19).
+                    if i == 0 {
+                        continue;
+                    }
+                    let prev = &measures[i - 1];
+                    match self.measure20_governing_time_signature(sequence, &prev.start) {
+                        Governing20::Unique(sig) => {
+                            let Some(ts) = time_sigs.get(&sig) else {
+                                // The grid's own entry doesn't resolve:
+                                // invariant 10's business, not this one's —
+                                // abstain.
+                                continue;
+                            };
+                            match self.measure20_musical_delta(&prev.start, &m.start) {
+                                Some(delta) if &delta == ts.measure_duration() => {}
+                                Some(_) => {
+                                    out.push(InvariantViolation::new(
+                                        GraphInvariant::MeasureMeterConsistency,
+                                        format!(
+                                            "measure {:?} start is not exactly one \
+                                             measure_duration ({:?}, under governing \
+                                             signature {:?}) after predecessor measure \
+                                             {:?}'s start",
+                                            m.id,
+                                            ts.measure_duration(),
+                                            sig,
+                                            prev.id
+                                        ),
+                                    ));
+                                }
+                                // Delta not computable: abstain (pin 7).
+                                None => {}
+                            }
+                        }
+                        // No active signature governs the predecessor's
+                        // start: vacuous, not a violation (pin 6c case 1).
+                        Governing20::None => {}
+                        // Indeterminate selection: abstain (pin 7).
+                        Governing20::Indeterminate => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Genesis tranche G3b (`spec/CONTRACT_GENESIS_G3B_MEASURE.md` pin 6c): the
+/// outcome of finding the governing element of a partially-ordered set under
+/// [`GraphIndex::measure20_comparable_order`] — an INDEPENDENT (core-only)
+/// implementation of the SAME normative relation `epiphany-ops`'s `Reducer`
+/// computes privately (see the architecture note on invariant 20's checker
+/// methods, above).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Governing20<T> {
+    /// No candidate at all (an empty, or wholly-filtered-away, set) —
+    /// vacuous, not a violation.
+    None,
+    /// Exactly one candidate is the unique maximum.
+    Unique(T),
+    /// Either some candidate is incomparable to the reference point, or
+    /// multiple maxima are mutually incomparable to each other — the check
+    /// ABSTAINS rather than guessing.
+    Indeterminate,
 }
 
 /// Whether an aleatoric interval bound is ordered (`min <= max`): `Some(true)`
@@ -4137,5 +4536,420 @@ mod g3a_tests {
                 "invariant 10's doc comment must name `{needle}`; block was:\n{doc_block}"
             );
         }
+    }
+}
+
+/// Genesis tranche G3b packet 2 (`spec/CONTRACT_GENESIS_G3B_MEASURE.md`):
+/// mutations M34-M39 for invariant 20 (M40 lives in `g3b_dispatch_tests`
+/// below, since it targets `check_invariants`' dispatch rather than the
+/// check body).
+#[cfg(test)]
+mod g3b_measure20_tests {
+    use super::*;
+    use crate::graph::{
+        BeatGroup, Measure, MeterChange, MetricGrid, MetricTimeModel, PowerOfTwo, Region,
+        RegionContent, RegionTimeModel, StaffBasedContent, StaffExtent, StaffInstance, TimeExtent,
+        TimeSignature, TimeSignatureDisplay,
+    };
+    use crate::ids::{
+        IdentityContext, MeasureId, RegionId, ReplicaId, StaffId, StaffInstanceId, TimeSignatureId,
+    };
+    use crate::time::{
+        AnchorOffset, MusicalDuration, RationalTime, RegionEdge, WallClockDuration, WallClockTime,
+    };
+
+    fn fires(score: &Score, inv: GraphInvariant) -> bool {
+        !check_invariant(score, inv).is_empty()
+    }
+
+    /// A time signature with `measure_duration` one whole note.
+    fn sig(replica: ReplicaId, n: u64) -> (TimeSignatureId, TimeSignature) {
+        let id = TimeSignatureId::new(replica, n);
+        let measure_duration = MusicalDuration::whole();
+        let ts = TimeSignature::new(
+            id,
+            TimeSignatureDisplay::Standard {
+                numerator: 4,
+                denominator: PowerOfTwo::new(4).unwrap(),
+            },
+            measure_duration.clone(),
+            vec![BeatGroup {
+                duration: measure_duration,
+                subdivision: None,
+                accent: 0,
+            }],
+        )
+        .unwrap();
+        (id, ts)
+    }
+
+    /// A minimal metric-region score: one staff instance carrying
+    /// `measures`, and (if `active` is `Some`) a region-default grid naming
+    /// it, active from the region's own start.
+    fn score_with(
+        active: Option<TimeSignatureId>,
+        declared: Vec<TimeSignature>,
+        measures: Vec<Measure>,
+    ) -> (Score, RegionId) {
+        let replica = ReplicaId(7);
+        let mut idc = IdentityContext::new(replica);
+        let region_id: RegionId = idc.mint();
+        let staff_id: StaffId = idc.mint();
+        let instance_id: StaffInstanceId = idc.mint();
+        let mut instance = StaffInstance::new(instance_id, staff_id);
+        instance.measures = measures;
+        let region_start = TimeAnchor::Region {
+            id: region_id,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Zero,
+        };
+        let default_metric_grid = active.map(|active_sig| MetricGrid {
+            meter_sequence: vec![MeterChange {
+                anchor: region_start,
+                time_signature: active_sig,
+            }],
+        });
+        let region = Region {
+            id: region_id,
+            time_model: RegionTimeModel::Metric(MetricTimeModel::default()),
+            content: RegionContent::StaffBased(StaffBasedContent {
+                staff_instances: vec![instance],
+                default_metric_grid,
+                ..Default::default()
+            }),
+            time_extent: TimeExtent {
+                start: TimeAnchor::WallClock {
+                    time: WallClockTime(0),
+                },
+                end: TimeAnchor::WallClock {
+                    time: WallClockTime(1_000_000),
+                },
+            },
+            staff_extent: StaffExtent {
+                staves: vec![staff_id],
+            },
+            local_tempo_map: None,
+            permits_spanning_slurs: false,
+        };
+        let mut score = Score::empty(idc.clone());
+        score.identity = idc;
+        score.time_signatures = declared;
+        score.canvas.regions = vec![region];
+        (score, region_id)
+    }
+
+    /// A measure anchored at `whole_notes` whole notes after `region`'s
+    /// start (c4-comparable to a grid entry built the same way by
+    /// [`score_with`], since both use `TimeAnchor::Region{edge: Start, ..}`).
+    fn measure_at(
+        id: MeasureId,
+        region: RegionId,
+        whole_notes: i32,
+        declared: Option<TimeSignatureId>,
+    ) -> Measure {
+        Measure {
+            id,
+            start: TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: if whole_notes == 0 {
+                    AnchorOffset::Zero
+                } else {
+                    AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(whole_notes)))
+                },
+            },
+            time_signature: declared,
+            explicit_number: None,
+            number_visibility: Default::default(),
+        }
+    }
+
+    /// Discovers the region id `score_with` will mint (its `IdentityContext`
+    /// is deterministic given no prior mints), so a test can build
+    /// [`Measure`]s referencing it before constructing the real score.
+    fn probe_region_id() -> RegionId {
+        let (_, region) = score_with(None, vec![], vec![]);
+        region
+    }
+
+    #[test]
+    fn agreement_and_boundary_hold_together() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let region = probe_region_id();
+        let m0 = measure_at(MeasureId::new(replica, 10), region, 0, Some(active));
+        let m1 = measure_at(MeasureId::new(replica, 11), region, 1, Some(active));
+        let (score, _) = score_with(Some(active), vec![ts_active], vec![m0, m1]);
+        assert!(
+            !fires(&score, GraphInvariant::MeasureMeterConsistency),
+            "agreeing, correctly-spaced measures must not violate invariant 20"
+        );
+    }
+
+    /// M34: removing the agreement clause must let this go undetected.
+    #[test]
+    fn m34_agreement_flags_disagreement() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let (declared, ts_declared) = sig(replica, 2);
+        let region = probe_region_id();
+        let m0 = measure_at(MeasureId::new(replica, 10), region, 0, Some(declared));
+        let (score, _) = score_with(Some(active), vec![ts_active, ts_declared], vec![m0]);
+        assert!(
+            fires(&score, GraphInvariant::MeasureMeterConsistency),
+            "a measure declaring a signature that disagrees with the effective grid's \
+             active signature must violate invariant 20"
+        );
+    }
+
+    /// M35: removing the boundary clause must let this go undetected. Both
+    /// measures avoid the agreement clause (`None`) so only boundary can
+    /// fire.
+    #[test]
+    fn m35_boundary_flags_wrong_distance() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let region = probe_region_id();
+        let m0 = measure_at(MeasureId::new(replica, 10), region, 0, None);
+        // Half a whole note later — not a full measure_duration away.
+        let m1 = Measure {
+            id: MeasureId::new(replica, 11),
+            start: TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(MusicalDuration(RationalTime::new(1, 2).unwrap())),
+            },
+            time_signature: None,
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let (score, _) = score_with(Some(active), vec![ts_active], vec![m0, m1]);
+        assert!(
+            fires(&score, GraphInvariant::MeasureMeterConsistency),
+            "a measure at the wrong distance from its predecessor must violate invariant 20 \
+             even though neither declares a time signature"
+        );
+    }
+
+    /// M36: `None` avoids only agreement, not boundary consistency.
+    #[test]
+    fn m36_none_still_bound_by_boundary() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let region = probe_region_id();
+        let m0 = measure_at(MeasureId::new(replica, 10), region, 0, Some(active));
+        // Wrong distance, and `None` (so agreement can never be the cause).
+        let m1 = Measure {
+            id: MeasureId::new(replica, 11),
+            start: TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(MusicalDuration(RationalTime::new(3, 2).unwrap())),
+            },
+            time_signature: None,
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let (score, _) = score_with(Some(active), vec![ts_active], vec![m0, m1]);
+        assert!(
+            fires(&score, GraphInvariant::MeasureMeterConsistency),
+            "None exempts only agreement -- a None measure at the wrong distance must still \
+             violate invariant 20's boundary clause"
+        );
+    }
+
+    /// M37: an incomparable case (cross-clock offsets) must ABSTAIN, not
+    /// flag.
+    #[test]
+    fn m37_incomparable_abstains() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let region = probe_region_id();
+        // The grid's own entry is anchored at the region's start with a
+        // WallClock offset — cross-clock against a Musical-offset measure
+        // start sharing the same id/edge, so it is incomparable (pin 6).
+        let grid = MetricGrid {
+            meter_sequence: vec![MeterChange {
+                anchor: TimeAnchor::Region {
+                    id: region,
+                    edge: RegionEdge::Start,
+                    offset: AnchorOffset::WallClock(WallClockDuration(0)),
+                },
+                time_signature: active,
+            }],
+        };
+        let m0 = Measure {
+            id: MeasureId::new(replica, 10),
+            start: TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(MusicalDuration::whole()),
+            },
+            time_signature: Some(active),
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let (mut score, _) = score_with(None, vec![ts_active], vec![]);
+        if let RegionContent::StaffBased(content) = &mut score.canvas.regions[0].content {
+            content.default_metric_grid = Some(grid);
+            content.staff_instances[0].measures.push(m0);
+        }
+        assert!(
+            !fires(&score, GraphInvariant::MeasureMeterConsistency),
+            "an incomparable grid entry must make the check ABSTAIN, not flag -- an \
+             incomparable change is unplaced, not absent, and might have governed"
+        );
+    }
+
+    /// M38: a pickup (partial) first measure must never be flagged -- it
+    /// has no predecessor, so the boundary clause is vacuous for it.
+    ///
+    /// **On the mutation's failure mode:** the M38 mutation (removing the
+    /// `if i == 0 { continue; }` guard in `check_measure_meter_consistency`)
+    /// is observed as an `attempt to subtract with overflow` PANIC, not a
+    /// wrong-flag assertion failure. This is expected and still a valid red
+    /// signal, not a weak one: that `i == 0` guard is simultaneously the
+    /// pickup-measure exemption AND the only thing standing between `i - 1`
+    /// and a `usize` underflow, so any mutation that removes or weakens it
+    /// crashes before it could ever produce a wrong (but well-formed)
+    /// verdict to assert against.
+    #[test]
+    fn m38_pickup_first_measure_not_flagged() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let region = probe_region_id();
+        // A single, lone first measure at a nonzero, arbitrary offset --
+        // there is no predecessor to be "the wrong distance" from.
+        let m0 = Measure {
+            id: MeasureId::new(replica, 10),
+            start: TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(MusicalDuration(RationalTime::new(1, 3).unwrap())),
+            },
+            time_signature: None,
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let (score, _) = score_with(Some(active), vec![ts_active], vec![m0]);
+        assert!(
+            !fires(&score, GraphInvariant::MeasureMeterConsistency),
+            "a lone first (pickup) measure must never be flagged by invariant 20"
+        );
+    }
+
+    /// M39: an unresolvable measure time-signature reference is invariant
+    /// 10's business, not invariant 20's -- invariant 20 must NOT duplicate
+    /// the resolution check.
+    #[test]
+    fn m39_unresolvable_reference_is_invariant_10_only() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let undeclared = TimeSignatureId::new(replica, 999);
+        let region = probe_region_id();
+        let m0 = measure_at(MeasureId::new(replica, 10), region, 0, Some(undeclared));
+        let (score, _) = score_with(Some(active), vec![ts_active], vec![m0]);
+        assert!(
+            fires(&score, GraphInvariant::CrossCuttingRefsResolve),
+            "an undeclared measure time-signature reference must violate invariant 10"
+        );
+        assert!(
+            !fires(&score, GraphInvariant::MeasureMeterConsistency),
+            "invariant 20 must NOT duplicate invariant 10's resolution check -- an \
+             unresolving reference is only invariant 10's violation"
+        );
+    }
+}
+
+/// Genesis tranche G3b packet 2: M40, asserted BEHAVIOURALLY against
+/// `check_invariants`' dispatch (`spec/CONTRACT_GENESIS_G3B_MEASURE.md` pin
+/// 11) -- `all().len() == 20` passes even with the dispatch arm deleted, so
+/// this row must instead show a score violating ONLY invariant 20 is
+/// actually flagged by the top-level `check_invariants` entry point.
+#[cfg(test)]
+mod g3b_dispatch_tests {
+    use super::*;
+    use crate::graph::{
+        BeatGroup, Measure, MeterChange, MetricGrid, PowerOfTwo, RegionContent, TimeSignature,
+        TimeSignatureDisplay,
+    };
+    use crate::ids::{MeasureId, TimeSignatureId};
+    use crate::time::{AnchorOffset, MusicalDuration, RationalTime, RegionEdge};
+
+    /// M40: deleting invariant 20's arm from `check_invariants`' dispatch
+    /// must be observed here -- `all().len() == 20` alone would not notice.
+    #[test]
+    fn m40_check_invariants_dispatches_invariant_20() {
+        assert_eq!(GraphInvariant::all().len(), 20);
+        let mut s = crate::generators::valid_score(4242);
+        let replica = s.identity.replica_id;
+        // Corrupt ONLY invariant 20: two measures, both `None` (so
+        // agreement never fires), at the wrong boundary distance from each
+        // other.
+        let region_id = s.canvas.regions[0].id;
+        let sig_id = TimeSignatureId::new(replica, 900);
+        let measure_duration = MusicalDuration::whole();
+        let ts_val = TimeSignature::new(
+            sig_id,
+            TimeSignatureDisplay::Standard {
+                numerator: 4,
+                denominator: PowerOfTwo::new(4).unwrap(),
+            },
+            measure_duration.clone(),
+            vec![BeatGroup {
+                duration: measure_duration,
+                subdivision: None,
+                accent: 0,
+            }],
+        )
+        .unwrap();
+        s.time_signatures.push(ts_val);
+        let m0 = Measure {
+            id: MeasureId::new(replica, 501),
+            start: TimeAnchor::Region {
+                id: region_id,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Zero,
+            },
+            time_signature: None,
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let m1 = Measure {
+            id: MeasureId::new(replica, 502),
+            start: TimeAnchor::Region {
+                id: region_id,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(MusicalDuration(RationalTime::new(1, 3).unwrap())),
+            },
+            time_signature: None,
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        if let RegionContent::StaffBased(content) = &mut s.canvas.regions[0].content {
+            content.default_metric_grid = Some(MetricGrid {
+                meter_sequence: vec![MeterChange {
+                    anchor: TimeAnchor::Region {
+                        id: region_id,
+                        edge: RegionEdge::Start,
+                        offset: AnchorOffset::Zero,
+                    },
+                    time_signature: sig_id,
+                }],
+            });
+            content.staff_instances[0].measures = vec![m0, m1];
+        }
+        assert!(
+            !check_invariant(&s, GraphInvariant::MeasureMeterConsistency).is_empty(),
+            "the score must violate invariant 20 directly"
+        );
+        assert!(
+            check_invariants(&s)
+                .iter()
+                .any(|v| v.invariant == GraphInvariant::MeasureMeterConsistency),
+            "check_invariants (the top-level dispatch) must surface the invariant-20 \
+             violation -- this is the behavioural assertion M40 needs, since \
+             all().len() == 20 alone passes even with the dispatch arm deleted"
+        );
     }
 }

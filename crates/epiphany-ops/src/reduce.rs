@@ -685,6 +685,34 @@ pub fn reduce_operation_set_onto(op_set: &OperationSet, base: &Score) -> GraphMa
     }
 }
 
+/// Genesis tranche G3b packet 2 (`spec/CONTRACT_GENESIS_G3B_MEASURE.md`):
+/// exposes this crate's pin 6/6b comparable relation and musical delta —
+/// [`Reducer::anchors_comparable_order`] / [`Reducer::anchor_musical_delta`],
+/// which stay private to this crate — so `epiphany-testkit`'s cross-crate
+/// agreement test can drive the SAME anchor pairs through this
+/// implementation and through `epiphany-core`'s independent invariant-20
+/// implementation of the same normative relation
+/// (`epiphany_core::invariants::measure_anchor_relation`) and assert they
+/// agree. This is the guard against maintaining one normative relation in
+/// two places without sharing code: `epiphany-core` cannot depend on this
+/// crate (the dependency direction is fixed the other way), so invariant 20
+/// cannot reuse `Reducer`'s methods, and there is no third crate either
+/// could delegate to. `graph` seeds the reducer graph-aware, so c3 (the
+/// vector-index shape) resolves exactly as production reduction resolves
+/// it.
+pub fn measure_anchor_relation_for_agreement_test(
+    graph: &Score,
+    a: &TimeAnchor,
+    b: &TimeAnchor,
+) -> (Option<std::cmp::Ordering>, Option<MusicalDuration>) {
+    let op_set = OperationSet::new();
+    let reducer = Reducer::new_onto(&op_set, graph);
+    (
+        reducer.anchors_comparable_order(a, b),
+        reducer.anchor_musical_delta(a, b),
+    )
+}
+
 /// One write in a per-key canonical-order write chain (operation_catalog
 /// §UndoTransaction, "Value restoration"): the writer, the transaction it was a
 /// member of (if any), and the value it wrote.
@@ -3149,6 +3177,16 @@ impl<'a> Reducer<'a> {
                 }
             }
         }
+        // Contract pin 9c.1: the RESULTING grid must not break invariant
+        // 20's agreement or boundary clause for any live measure the change
+        // reaches. Checked before any write (there is no mint in this
+        // operation to leak, but the check precedes the write regardless,
+        // for uniformity with `set_time_signature`).
+        if let Some(effect) =
+            self.check_grid_preserves_invariant20(op.region, Some(&op.grid), &BTreeMap::new(), None)
+        {
+            return effect;
+        }
         let prev = self
             .metric_grid_chain
             .get(&op.region)
@@ -4971,6 +5009,295 @@ impl<'a> Reducer<'a> {
             .collect()
     }
 
+    /// All LIVE measures of `instance`, in append order — the graph's own
+    /// `Vec` order graph-aware, or (base-free) sorted by
+    /// [`Self::measure_vector_order`]'s minted-stamp-tuple comparison, which
+    /// IS the append order for a mint-only, append-only family (contract pin
+    /// 9c). Shared by `CreateMeasure`'s "current last measure" walk's
+    /// sibling checks and by the preservation checks below, which must
+    /// evaluate every EXISTING live measure of an instance, not merely the
+    /// last one — a whole-grid or per-key rewrite can break agreement or
+    /// boundary consistency for ANY of them.
+    fn measures_of_instance_in_order(&self, instance: StaffInstanceId) -> Vec<Measure> {
+        let mut list: Vec<(MeasureId, Measure)> = self
+            .measure_values
+            .iter()
+            .filter(|(id, (parent, _))| {
+                *parent == instance
+                    && matches!(
+                        self.objects.get(&TypedObjectId::Measure(**id)),
+                        Some(ObjectState::Live)
+                    )
+            })
+            .map(|(id, (_, m))| (*id, m.clone()))
+            .collect();
+        list.sort_by(|a, b| {
+            self.measure_vector_order(a.0, b.0)
+                .unwrap_or(Ordering::Equal)
+        });
+        list.into_iter().map(|(_, m)| m).collect()
+    }
+
+    /// Contract pin 9c: mirrors invariant 20's own two-clause definition
+    /// (agreement, boundary) over `sequence` — the RESULTING effective grid
+    /// a prospective write or an undo restoration set would install — for
+    /// every live measure of `instance`, in append order. Shared by both
+    /// grid setters' forward-path preservation checks (pin 9c.1) and by undo
+    /// restoration-safety evaluation (pin 9c.3, both undo policies), so a
+    /// single implementation — not three near-duplicates — defines "does
+    /// this grid preserve invariant 20". `None` when clean.
+    /// `prospective_signature` lets a caller whose write mints a BRAND-NEW
+    /// `TimeSignature` (as part of the SAME operation) supply its value for
+    /// this check to consult — the check MUST run before the mint (pin
+    /// 9c.2 / M45), so `self.time_signature_values` does not yet carry it.
+    /// `None` for callers with nothing new to add (`SetMetricGrid`, whose
+    /// own precondition already requires every referenced signature to
+    /// pre-exist; undo restoration, which only ever reinstalls
+    /// already-known signatures).
+    fn invariant20_violation(
+        &self,
+        instance: StaffInstanceId,
+        sequence: &[MeterChange],
+        prospective_signature: Option<&TimeSignature>,
+    ) -> Option<PreconditionFailureReason> {
+        let duration_of = |sig: TimeSignatureId| -> Option<MusicalDuration> {
+            if let Some(p) = prospective_signature {
+                if p.id == sig {
+                    return Some(p.measure_duration().clone());
+                }
+            }
+            self.time_signature_values
+                .get(&sig)
+                .map(|ts| ts.measure_duration().clone())
+        };
+        let resolves = |sig: TimeSignatureId| -> bool {
+            matches!(
+                self.objects.get(&TypedObjectId::TimeSignature(sig)),
+                Some(ObjectState::Live)
+            ) || prospective_signature.is_some_and(|p| p.id == sig)
+        };
+        let measures = self.measures_of_instance_in_order(instance);
+        for (i, m) in measures.iter().enumerate() {
+            // Agreement clause: ONLY a resolving `Some(id)` (pin 9b) — an
+            // unresolving reference is invariant 10's business, and `None`
+            // avoids only this clause, not the boundary clause below.
+            if let Some(sig) = m.time_signature {
+                if resolves(sig) {
+                    match self.governing_time_signature(sequence, &m.start) {
+                        GoverningElement::Unique(active) if active != sig => {
+                            return Some(PreconditionFailureReason::MeasureMeterMismatch);
+                        }
+                        GoverningElement::Unique(_) | GoverningElement::None => {}
+                        GoverningElement::Indeterminate => {
+                            return Some(PreconditionFailureReason::MeasureOrderUnverifiable);
+                        }
+                    }
+                }
+            }
+            // Boundary clause: vacuous for the first measure (no
+            // predecessor — pickup/anacrusis deferral, P13-S19).
+            if i == 0 {
+                continue;
+            }
+            let prev = &measures[i - 1];
+            match self.governing_time_signature(sequence, &prev.start) {
+                GoverningElement::Unique(sig) => {
+                    let expected = duration_of(sig);
+                    match (self.anchor_musical_delta(&prev.start, &m.start), expected) {
+                        (Some(delta), Some(expected)) if delta == expected => {}
+                        (Some(_), Some(_)) => {
+                            return Some(PreconditionFailureReason::MeasureMeterMismatch);
+                        }
+                        _ => return Some(PreconditionFailureReason::MeasureOrderUnverifiable),
+                    }
+                }
+                GoverningElement::None => {}
+                GoverningElement::Indeterminate => {
+                    return Some(PreconditionFailureReason::MeasureOrderUnverifiable);
+                }
+            }
+        }
+        None
+    }
+
+    /// Contract pin 9c.1: refuses `SetMetricGrid`/`SetTimeSignature` when
+    /// the RESULTING grid (`grid_override` for a whole-grid write, or
+    /// `meter_change_overrides` for a per-key write) would violate
+    /// invariant 20's agreement or boundary clause for any live measure of
+    /// any staff instance of `region` the change reaches. An instance
+    /// carrying its own local override is unaffected: `effective_grid`
+    /// ignores these override params once a local override governs, so
+    /// checking it here is harmless (it just re-derives the same clean
+    /// local grid). MUST be called before any mint (pin 9c.2 / M45).
+    fn check_grid_preserves_invariant20(
+        &self,
+        region: RegionId,
+        grid_override: Option<&Option<MetricGrid>>,
+        meter_change_overrides: &BTreeMap<MusicalPosition, Option<MeterChange>>,
+        prospective_signature: Option<&TimeSignature>,
+    ) -> Option<OperationEffect> {
+        let instances = self
+            .region_instances
+            .get(&region)
+            .cloned()
+            .unwrap_or_default();
+        for instance in instances {
+            let sequence = self.effective_grid(
+                instance,
+                Some(region),
+                grid_override,
+                meter_change_overrides,
+            );
+            if let Some(reason) =
+                self.invariant20_violation(instance, &sequence, prospective_signature)
+            {
+                return Some(OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction { reason },
+                });
+            }
+        }
+        None
+    }
+
+    /// Contract pin 9c.3: whether the effective grid of `region`, with
+    /// `whole`/`per_key`'s prospective overrides (if any) applied, would
+    /// leave invariant 20 clean for every live measure of every instance of
+    /// that region — the single-region primitive both the `StrictInverse`
+    /// aggregate check and `BestEffort`'s canonical-order greedy fold over.
+    fn region_grid_clean(
+        &self,
+        region: RegionId,
+        whole: &BTreeMap<RegionId, Option<MetricGrid>>,
+        per_key: &BTreeMap<RegionId, BTreeMap<MusicalPosition, Option<MeterChange>>>,
+    ) -> bool {
+        let grid_override = whole.get(&region);
+        let empty = BTreeMap::new();
+        let meter_change_overrides = per_key.get(&region).unwrap_or(&empty);
+        let instances = self
+            .region_instances
+            .get(&region)
+            .cloned()
+            .unwrap_or_default();
+        for instance in instances {
+            let sequence = self.effective_grid(
+                instance,
+                Some(region),
+                grid_override,
+                meter_change_overrides,
+            );
+            if self
+                .invariant20_violation(instance, &sequence, None)
+                .is_some()
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Contract pin 9c.3, `StrictInverse`/`Cascade`: whether the WHOLE
+    /// restoration set, applied together, would violate invariant 20 for
+    /// any region it touches — evaluated in AGGREGATE (never
+    /// per-restoration): individually-unsafe restorations can be jointly
+    /// safe, and individually-safe ones can be jointly unsafe.
+    fn aggregate_restorations_violate_invariant20(
+        &self,
+        restorations: &[ValueRestoration],
+    ) -> bool {
+        let mut whole: BTreeMap<RegionId, Option<MetricGrid>> = BTreeMap::new();
+        let mut per_key: BTreeMap<RegionId, BTreeMap<MusicalPosition, Option<MeterChange>>> =
+            BTreeMap::new();
+        for r in restorations {
+            match r {
+                ValueRestoration::MetricGrid { region, value } => {
+                    whole.insert(*region, value.clone());
+                }
+                ValueRestoration::MeterChange {
+                    region,
+                    position,
+                    value,
+                } => {
+                    per_key
+                        .entry(*region)
+                        .or_default()
+                        .insert(position.clone(), value.clone());
+                }
+                _ => {}
+            }
+        }
+        let mut regions: BTreeSet<RegionId> = whole.keys().copied().collect();
+        regions.extend(per_key.keys().copied());
+        regions
+            .into_iter()
+            .any(|region| !self.region_grid_clean(region, &whole, &per_key))
+    }
+
+    /// Contract pin 9c.3, `BestEffort`: the canonical-order greedy — walks
+    /// `restorations` in `collect_restorations`' existing (canonical,
+    /// BTreeMap-keyed) order, admitting each grid/meter-change restoration
+    /// whose addition keeps the ACCUMULATED prospective state
+    /// invariant-20-clean, skipping the rest. Non-grid restorations (event,
+    /// pitch, cross-cutting, …) are unaffected by invariant 20 and are
+    /// always admitted. "Maximal" means maximal under this deterministic
+    /// rule, not set-theoretically maximum: the greedy never backtracks to
+    /// try a different admission order, and the true maximum subset is not
+    /// uniquely defined.
+    fn select_invariant20_safe_restorations(
+        &self,
+        restorations: Vec<ValueRestoration>,
+    ) -> Vec<ValueRestoration> {
+        let mut admitted_whole: BTreeMap<RegionId, Option<MetricGrid>> = BTreeMap::new();
+        let mut admitted_per_key: BTreeMap<
+            RegionId,
+            BTreeMap<MusicalPosition, Option<MeterChange>>,
+        > = BTreeMap::new();
+        let mut out = Vec::new();
+        for restoration in restorations {
+            match &restoration {
+                ValueRestoration::MetricGrid { region, value } => {
+                    let saved = admitted_whole.insert(*region, value.clone());
+                    if self.region_grid_clean(*region, &admitted_whole, &admitted_per_key) {
+                        out.push(restoration);
+                    } else {
+                        match saved {
+                            Some(prev) => {
+                                admitted_whole.insert(*region, prev);
+                            }
+                            None => {
+                                admitted_whole.remove(region);
+                            }
+                        }
+                    }
+                }
+                ValueRestoration::MeterChange {
+                    region,
+                    position,
+                    value,
+                } => {
+                    let entry = admitted_per_key.entry(*region).or_default();
+                    let saved = entry.insert(position.clone(), value.clone());
+                    if self.region_grid_clean(*region, &admitted_whole, &admitted_per_key) {
+                        out.push(restoration);
+                    } else {
+                        let entry = admitted_per_key
+                            .get_mut(region)
+                            .expect("just inserted above");
+                        match saved {
+                            Some(prev) => {
+                                entry.insert(position.clone(), prev);
+                            }
+                            None => {
+                                entry.remove(position);
+                            }
+                        }
+                    }
+                }
+                _ => out.push(restoration),
+            }
+        }
+        out
+    }
+
     fn graph_create_measure(&mut self, instance: StaffInstanceId, measure: &Measure) {
         let Some(score) = self.graph.as_mut() else {
             return;
@@ -5231,17 +5558,34 @@ impl<'a> Reducer<'a> {
         if let Some(effect) = self.layout_region_slot(op.region) {
             return effect;
         }
-        if let Some(signature) = &op.time_signature {
-            if let Err(effect) = self.mint_time_signature(env, signature) {
-                return effect;
-            }
-        }
+        // Contract pin 9c.2/M45: EVERY invariant check must precede any
+        // mint. `written`'s signature id is a field read off `op` itself —
+        // no mint needed to know it — so the prospective invariant-20
+        // preservation check (pin 9c.1) can and must run BEFORE
+        // `mint_time_signature` below. A refusal here leaves no residue: no
+        // fresh `TimeSignature` was ever minted for it to leak from
+        // `objects`, `time_signature_values`, or the graph.
         let key = (op.region, op.resolved_position());
         let written: Option<MeterChange> =
             op.time_signature.as_ref().map(|signature| MeterChange {
                 anchor: op.anchor.clone(),
                 time_signature: signature.id,
             });
+        let mut prospective_overrides = BTreeMap::new();
+        prospective_overrides.insert(key.1.clone(), written.clone());
+        if let Some(effect) = self.check_grid_preserves_invariant20(
+            op.region,
+            None,
+            &prospective_overrides,
+            op.time_signature.as_ref(),
+        ) {
+            return effect;
+        }
+        if let Some(signature) = &op.time_signature {
+            if let Err(effect) = self.mint_time_signature(env, signature) {
+                return effect;
+            }
+        }
         let prev = self
             .meter_change_chain
             .get(&key)
@@ -6089,6 +6433,25 @@ impl<'a> Reducer<'a> {
                     self.conflicts.insert(conflict);
                     return OperationEffect::Conflicted { conflict: cid };
                 }
+                // Contract pin 9c.3, `StrictInverse`/`Cascade`: the WHOLE
+                // restoration set, evaluated TOGETHER — never
+                // per-restoration — must leave invariant 20 clean. A
+                // restoration reinstating a prior grid or meter change
+                // breaks agreement/boundary exactly as a forward write
+                // does.
+                if self.aggregate_restorations_violate_invariant20(&restorations) {
+                    let conflict = ConflictRecord::new(
+                        ConflictKind::TransactionConflict {
+                            transaction: op.target,
+                            failed_members: vec![env.id],
+                        },
+                        vec![env.id],
+                        vec![],
+                    );
+                    let cid = conflict.id;
+                    self.conflicts.insert(conflict);
+                    return OperationEffect::Conflicted { conflict: cid };
+                }
                 let repairs = self.tombstone_undo_targets(env, &targets);
                 self.apply_restorations(env, restorations);
                 if repairs.is_empty() {
@@ -6107,7 +6470,13 @@ impl<'a> Reducer<'a> {
                     .copied()
                     .collect();
                 let repairs = self.tombstone_undo_targets(env, &tombstonable);
-                self.apply_restorations(env, restorations);
+                // Contract pin 9c.3, `BestEffort`: the canonical-order
+                // greedy applies the MAXIMAL safe subset of grid/meter-
+                // change restorations (never a naive per-restoration
+                // filter evaluated independently of the others already
+                // admitted) — see `select_invariant20_safe_restorations`.
+                let safe_restorations = self.select_invariant20_safe_restorations(restorations);
+                self.apply_restorations(env, safe_restorations);
                 if repairs.is_empty() {
                     OperationEffect::Applied
                 } else {
@@ -19242,5 +19611,1008 @@ mod tests {
              MeasureMeterMismatch and NOT MeasureOrderUnverifiable \
              (pin 6c case 1 / pin 7)"
         );
+    }
+
+    // =============================================================================
+    // Genesis tranche G3b packet 2 (`spec/CONTRACT_GENESIS_G3B_MEASURE.md`):
+    // preservation (pin 9c, M41-M47).
+    // =============================================================================
+
+    #[cfg(test)]
+    mod g3b_preservation_tests {
+        use super::*;
+
+        /// A minimal G3b preservation fixture (contract pin 9c): the full
+        /// prerequisite chain, one active `TimeSignature` installed at `pos0`
+        /// via `SetTimeSignature`, and two measures one whole note apart.
+        /// `declared` controls whether the measures declare `Some(active)`
+        /// (isolates the agreement clause — the boundary clause holds
+        /// trivially, since a same-duration replacement never breaks it) or
+        /// `None` (isolates the boundary clause, which `None` does not
+        /// exempt). Contiguous counters from 0, `physical` stepped in
+        /// lockstep, `seen_r1(prev)` chained, per the fixture discipline.
+        struct G3bPreservationFixture {
+            labeled: Vec<(&'static str, OperationEnvelope)>,
+            region: RegionId,
+            /// The id of the `SetTimeSignature`-installed active signature at
+            /// `pos0` — not read by every test, but part of the fixture's
+            /// documented shape.
+            #[allow(dead_code)]
+            active: TimeSignatureId,
+            next_counter: u64,
+            next_causal: CausalContext,
+        }
+
+        impl G3bPreservationFixture {
+            /// Appends one more envelope, chaining the counter/causal-context
+            /// bookkeeping automatically.
+            fn push(&mut self, label: &'static str, kind: OperationKind) -> OperationEnvelope {
+                let counter = self.next_counter;
+                let env = prim_env(1, counter, counter as i64, self.next_causal.clone(), kind);
+                self.labeled.push((label, env.clone()));
+                self.next_counter += 1;
+                self.next_causal = seen_r1(counter);
+                env
+            }
+
+            /// Runs every envelope pushed so far, asserting every one EXCEPT
+            /// the last `unchecked_tail` labeled envelopes is exactly
+            /// `Applied` (the fixture discipline), with no conflicts/anomalies
+            /// and no dropped (pending) op. Returns the materialization so the
+            /// caller can inspect the tail envelopes' own effects.
+            fn run(&self, unchecked_tail: usize) -> GraphMaterialization {
+                let mut set = OperationSet::new();
+                let envelopes: Vec<OperationEnvelope> =
+                    self.labeled.iter().map(|(_, e)| e.clone()).collect();
+                let accepted_count = envelopes.len();
+                set.accept_all(envelopes);
+                let identity = IdentityContext::new(ReplicaId(1));
+                let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+                let clean_len = self.labeled.len() - unchecked_tail;
+                g3b_assert_fixture_ran_cleanly(&out, &self.labeled[..clean_len], accepted_count);
+                out
+            }
+
+            /// Appends one more envelope as a MEMBER of transaction `tx`,
+            /// chaining the counter/causal-context bookkeeping exactly like
+            /// [`Self::push`].
+            fn push_tx(
+                &mut self,
+                label: &'static str,
+                tx: TransactionId,
+                kind: OperationKind,
+            ) -> OperationEnvelope {
+                let counter = self.next_counter;
+                let env = tx_member(
+                    1,
+                    counter,
+                    counter as i64,
+                    self.next_causal.clone(),
+                    tx,
+                    kind,
+                );
+                self.labeled.push((label, env.clone()));
+                self.next_counter += 1;
+                self.next_causal = seen_r1(counter);
+                env
+            }
+
+            /// Like [`Self::run`], but WITHOUT the global "no conflicts, no
+            /// anomalies" assertion `g3b_assert_fixture_ran_cleanly` makes —
+            /// for a fixture whose own TAIL envelope (the undo under test) is
+            /// expected to conflict. Every envelope EXCEPT the last
+            /// `unchecked_tail` is still asserted `Applied`, and every
+            /// accepted envelope is still asserted to have produced an
+            /// effect (no silently-dropped/pending op), so a setup failure
+            /// still fails loudly — only the conflict-registry assertion is
+            /// left to the caller, scoped to whatever it actually expects.
+            fn run_allowing_tail_conflict(&self, unchecked_tail: usize) -> GraphMaterialization {
+                let mut set = OperationSet::new();
+                let envelopes: Vec<OperationEnvelope> =
+                    self.labeled.iter().map(|(_, e)| e.clone()).collect();
+                let accepted_count = envelopes.len();
+                set.accept_all(envelopes);
+                let identity = IdentityContext::new(ReplicaId(1));
+                let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+                let clean_len = self.labeled.len() - unchecked_tail;
+                for (label, env) in &self.labeled[..clean_len] {
+                    assert_eq!(
+                        g3b_effect_of(&out.state, env.id),
+                        Some(OperationEffect::Applied),
+                        "setup op `{label}` (id {:?}) must be Applied",
+                        env.id
+                    );
+                }
+                assert_eq!(
+                    out.state.effects.len(),
+                    accepted_count,
+                    "every accepted envelope must produce an effect entry — a dropped \
+                     (pending) op fails loudly here instead of silently vanishing"
+                );
+                assert!(
+                    out.state.anomalies.is_empty(),
+                    "no anomalies: {:?}",
+                    out.state.anomalies
+                );
+                out
+            }
+        }
+
+        fn g3b_preservation_fixture(declared: bool) -> G3bPreservationFixture {
+            let region = RegionId::new(ReplicaId(1), 1);
+            let instance = StaffInstanceId::new(ReplicaId(1), 2);
+            let staff = StaffId::new(ReplicaId(1), 3);
+            let instrument = InstrumentId::new(ReplicaId(1), 4);
+            let active = TimeSignatureId::new(ReplicaId(1), 10);
+            let pos0 = g3b_region_anchor(region, 0);
+            let pos1 = g3b_region_anchor(region, 1);
+
+            let mut f = G3bPreservationFixture {
+                labeled: Vec::new(),
+                region,
+                active,
+                next_counter: 0,
+                next_causal: CausalContext::new(),
+            };
+            f.push(
+                "CreateInstrument",
+                OperationKind::CreateInstrument(CreateInstrumentOp {
+                    instrument: crate::valuegen::instrument(instrument),
+                }),
+            );
+            f.push(
+                "CreateStaff",
+                OperationKind::CreateStaff(CreateStaffOp {
+                    staff: crate::valuegen::staff(staff, instrument),
+                }),
+            );
+            f.push(
+                "CreateRegion",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region),
+                }),
+            );
+            f.push(
+                "CreateStaffInstance",
+                OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                    region,
+                    instance: crate::valuegen::staff_instance(instance, staff),
+                }),
+            );
+            f.push(
+                "SetTimeSignature (install active at pos0)",
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region,
+                    anchor: pos0.clone(),
+                    time_signature: Some(crate::valuegen::time_signature(active, 4)),
+                }),
+            );
+            let sig = if declared { Some(active) } else { None };
+            f.push(
+                "CreateMeasure m0",
+                OperationKind::CreateMeasure(CreateMeasureOp {
+                    instance,
+                    measure: Measure {
+                        id: MeasureId::new(ReplicaId(1), 100),
+                        start: pos0,
+                        time_signature: sig,
+                        explicit_number: None,
+                        number_visibility: Default::default(),
+                    },
+                }),
+            );
+            f.push(
+                "CreateMeasure m1",
+                OperationKind::CreateMeasure(CreateMeasureOp {
+                    instance,
+                    measure: Measure {
+                        id: MeasureId::new(ReplicaId(1), 101),
+                        start: pos1,
+                        time_signature: sig,
+                        explicit_number: None,
+                        number_visibility: Default::default(),
+                    },
+                }),
+            );
+            f
+        }
+
+        fn measure_meter_mismatch_noop() -> OperationEffect {
+            OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::MeasureMeterMismatch,
+                },
+            }
+        }
+
+        /// M41: `SetMetricGrid`'s agreement precondition. `declared = true`
+        /// baseline: m0/m1 both declare `Some(active)`. A whole-grid write
+        /// naming a DIFFERENT (but SAME-duration) signature at `pos0` disagrees
+        /// with m0's declared signature while leaving boundary distance intact
+        /// (same duration) — isolating the agreement clause.
+        #[test]
+        fn m41_set_metric_grid_preserves_agreement() {
+            let mut f = g3b_preservation_fixture(true);
+            let replacement = TimeSignatureId::new(ReplicaId(1), 20);
+            let throwaway = g3b_region_anchor(f.region, 1000);
+            f.push(
+                "mint replacement (throwaway)",
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region: f.region,
+                    anchor: throwaway.clone(),
+                    time_signature: Some(crate::valuegen::time_signature(replacement, 4)),
+                }),
+            );
+            f.push(
+                "clear throwaway",
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region: f.region,
+                    anchor: throwaway,
+                    time_signature: None,
+                }),
+            );
+            let disruptive = f.push(
+                "SetMetricGrid (disagreeing whole grid)",
+                OperationKind::SetMetricGrid(SetMetricGridOp {
+                    region: f.region,
+                    grid: Some(MetricGrid {
+                        meter_sequence: vec![MeterChange {
+                            anchor: g3b_region_anchor(f.region, 0),
+                            time_signature: replacement,
+                        }],
+                    }),
+                }),
+            );
+            let out = f.run(1);
+            assert_eq!(
+                g3b_effect_of(&out.state, disruptive.id),
+                Some(measure_meter_mismatch_noop()),
+                "a whole-grid write that disagrees with an existing measure's declared \
+             signature must refuse with MeasureMeterMismatch"
+            );
+        }
+
+        /// M42: `SetMetricGrid`'s boundary precondition. `declared = false`
+        /// baseline (agreement can never fire): a whole-grid write installing a
+        /// DIFFERENT-DURATION signature at `pos0` makes m0-to-m1's one-whole-note
+        /// distance wrong under the new governing duration.
+        #[test]
+        fn m42_set_metric_grid_preserves_boundary() {
+            let mut f = g3b_preservation_fixture(false);
+            let short = TimeSignatureId::new(ReplicaId(1), 21);
+            let throwaway = g3b_region_anchor(f.region, 1000);
+            f.push(
+                "mint short-duration replacement (throwaway)",
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region: f.region,
+                    anchor: throwaway.clone(),
+                    // numerator 2 => measure_duration 2/4 = half a whole note.
+                    time_signature: Some(crate::valuegen::time_signature(short, 2)),
+                }),
+            );
+            f.push(
+                "clear throwaway",
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region: f.region,
+                    anchor: throwaway,
+                    time_signature: None,
+                }),
+            );
+            let disruptive = f.push(
+                "SetMetricGrid (shorter-duration whole grid)",
+                OperationKind::SetMetricGrid(SetMetricGridOp {
+                    region: f.region,
+                    grid: Some(MetricGrid {
+                        meter_sequence: vec![MeterChange {
+                            anchor: g3b_region_anchor(f.region, 0),
+                            time_signature: short,
+                        }],
+                    }),
+                }),
+            );
+            let out = f.run(1);
+            assert_eq!(
+                g3b_effect_of(&out.state, disruptive.id),
+                Some(measure_meter_mismatch_noop()),
+                "a whole-grid write whose new governing duration no longer matches an \
+             existing measure boundary's distance must refuse with MeasureMeterMismatch"
+            );
+        }
+
+        /// M43: `SetTimeSignature`'s agreement precondition. Same shape as M41,
+        /// but the disruptive write is the per-key `SetTimeSignature` itself
+        /// (self-minting its replacement — no separate pre-mint needed).
+        #[test]
+        fn m43_set_time_signature_preserves_agreement() {
+            let mut f = g3b_preservation_fixture(true);
+            let replacement = TimeSignatureId::new(ReplicaId(1), 22);
+            let disruptive = f.push(
+                "SetTimeSignature (disagreeing replacement at pos0)",
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region: f.region,
+                    anchor: g3b_region_anchor(f.region, 0),
+                    time_signature: Some(crate::valuegen::time_signature(replacement, 4)),
+                }),
+            );
+            let out = f.run(1);
+            assert_eq!(
+                g3b_effect_of(&out.state, disruptive.id),
+                Some(measure_meter_mismatch_noop()),
+                "a per-key write that disagrees with an existing measure's declared \
+             signature must refuse with MeasureMeterMismatch"
+            );
+        }
+
+        /// M44: `SetTimeSignature`'s boundary precondition. Same shape as M42,
+        /// but the disruptive write is the per-key `SetTimeSignature` itself.
+        #[test]
+        fn m44_set_time_signature_preserves_boundary() {
+            let mut f = g3b_preservation_fixture(false);
+            let short = TimeSignatureId::new(ReplicaId(1), 23);
+            let disruptive = f.push(
+                "SetTimeSignature (shorter-duration replacement at pos0)",
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region: f.region,
+                    anchor: g3b_region_anchor(f.region, 0),
+                    time_signature: Some(crate::valuegen::time_signature(short, 2)),
+                }),
+            );
+            let out = f.run(1);
+            assert_eq!(
+                g3b_effect_of(&out.state, disruptive.id),
+                Some(measure_meter_mismatch_noop()),
+                "a per-key write whose new governing duration no longer matches an \
+             existing measure boundary's distance must refuse with MeasureMeterMismatch"
+            );
+        }
+
+        /// M45: every invariant-20 check in `set_time_signature` MUST precede
+        /// `mint_time_signature` — a refusal must leave NO RESIDUE: no entry in
+        /// `objects`, none in the graph's `time_signatures`. (The third channel,
+        /// the carried-value map `time_signature_values`, is private to
+        /// `Reducer` and not observable after `run()` consumes it; per this
+        /// codebase's ratified value-map discipline — every reader gates on
+        /// `self.objects` first — an entry there with no `objects` counterpart
+        /// is structurally inert, never read by any future decision.)
+        #[test]
+        fn m45_refused_set_time_signature_leaves_no_residue() {
+            let mut f = g3b_preservation_fixture(true);
+            let fresh = TimeSignatureId::new(ReplicaId(1), 999);
+            let disruptive = f.push(
+                "SetTimeSignature (disagreeing FRESH signature at pos0)",
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region: f.region,
+                    anchor: g3b_region_anchor(f.region, 0),
+                    time_signature: Some(crate::valuegen::time_signature(fresh, 4)),
+                }),
+            );
+            let out = f.run(1);
+            assert_eq!(
+                g3b_effect_of(&out.state, disruptive.id),
+                Some(measure_meter_mismatch_noop()),
+                "the disruptive write must be refused"
+            );
+            assert!(
+                !out.state
+                    .objects
+                    .contains_key(&TypedObjectId::TimeSignature(fresh)),
+                "a refused SetTimeSignature must leave no residue in `objects` -- the fresh \
+             signature must never have been minted"
+            );
+            assert!(
+                !out.score.time_signatures.iter().any(|t| t.id == fresh),
+                "a refused SetTimeSignature must leave no residue in the graph -- the fresh \
+             signature must never have been pushed onto `score.time_signatures`"
+            );
+        }
+
+        /// M46: aggregate restoration safety under `StrictInverse`/`Cascade`,
+        /// evaluated on the WHOLE restoration set together — never
+        /// per-restoration. Direct unit tests on `Reducer::aggregate_
+        /// restorations_violate_invariant20` (bypassing the full undo/
+        /// transaction machinery, whose OWN forward-path preservation checks
+        /// -- M41-M44 -- would otherwise refuse a transaction that transiently
+        /// disagrees mid-transaction, a different, already-covered concern).
+        /// Two `MeterChange` restorations at DIFFERENT resolved positions,
+        /// each comparable to the reference (`m0.start`, a `Zero`-offset
+        /// anchor -- comparable to any clock) but built so the two directions
+        /// below hold.
+        #[test]
+        fn m46_aggregate_restoration_safety_both_directions() {
+            let region = RegionId::new(ReplicaId(1), 1);
+            let instance = StaffInstanceId::new(ReplicaId(1), 2);
+            let m0 = MeasureId::new(ReplicaId(1), 100);
+            let m1 = MeasureId::new(ReplicaId(1), 101);
+            let sig1 = TimeSignatureId::new(ReplicaId(1), 10);
+            let sig2 = TimeSignatureId::new(ReplicaId(1), 11);
+            let reference_start = TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Zero,
+            };
+            // m1 one whole note after m0 -- the boundary distance every
+            // scenario below checks against.
+            let after_start = TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(1))),
+            };
+
+            // ---- Direction 1: individually safe, jointly UNSAFE (must
+            // conflict). `sig1` (duration 1, correct) is anchored via a
+            // Musical-clock Region anchor at position bucket 0; `sig2`
+            // (duration 1, ALSO correct in isolation) via a WallClock-clock
+            // Region anchor at position bucket 1. Both are individually
+            // comparable to the Zero-offset reference (Zero is the additive
+            // identity of whichever clock it is compared against, pin 6), but
+            // mutually incomparable to EACH OTHER (Musical vs WallClock, pin
+            // 6) -- so admitting only one is an unambiguous unique maximum,
+            // while admitting BOTH makes selection indeterminate (pin 6c step
+            // 3), which `invariant20_violation` treats as unsafe.
+            {
+                let op_set = OperationSet::new();
+                let mut r = Reducer::new(&op_set);
+                r.region_instances.insert(region, [instance].into());
+                r.objects
+                    .insert(TypedObjectId::StaffInstance(instance), ObjectState::Live);
+                for (id, start) in [(m0, reference_start.clone()), (m1, after_start.clone())] {
+                    r.objects
+                        .insert(TypedObjectId::Measure(id), ObjectState::Live);
+                    r.measure_values.insert(
+                        id,
+                        (
+                            instance,
+                            Measure {
+                                id,
+                                start,
+                                time_signature: None,
+                                explicit_number: None,
+                                number_visibility: Default::default(),
+                            },
+                        ),
+                    );
+                }
+                for sig in [sig1, sig2] {
+                    r.objects
+                        .insert(TypedObjectId::TimeSignature(sig), ObjectState::Live);
+                    r.time_signature_values
+                        .insert(sig, crate::valuegen::time_signature(sig, 4));
+                }
+                let pos0 = MusicalPosition(RationalTime::from_int(0));
+                let pos1 = MusicalPosition(RationalTime::from_int(1));
+                let restorations = vec![
+                    ValueRestoration::MeterChange {
+                        region,
+                        position: pos0,
+                        value: Some(MeterChange {
+                            anchor: TimeAnchor::Region {
+                                id: region,
+                                edge: RegionEdge::Start,
+                                offset: AnchorOffset::Musical(MusicalDuration(
+                                    RationalTime::from_int(0),
+                                )),
+                            },
+                            time_signature: sig1,
+                        }),
+                    },
+                    ValueRestoration::MeterChange {
+                        region,
+                        position: pos1,
+                        value: Some(MeterChange {
+                            anchor: TimeAnchor::Region {
+                                id: region,
+                                edge: RegionEdge::Start,
+                                offset: AnchorOffset::WallClock(WallClockDuration(0)),
+                            },
+                            time_signature: sig2,
+                        }),
+                    },
+                ];
+                assert!(
+                    r.aggregate_restorations_violate_invariant20(&restorations),
+                    "M46 direction 1: each restoration alone is safe, but the pairing is \
+                 mutually incomparable (Musical vs WallClock) -- the WHOLE set, \
+                 evaluated jointly, must be flagged unsafe (Indeterminate governing \
+                 selection, pin 6c step 3), never accepted by a per-restoration \
+                 evaluation"
+                );
+            }
+
+            // ---- Direction 2: individually UNSAFE, jointly safe (must
+            // apply). Each position's REAL current chain content is a
+            // wrong-duration signature; each restoration ALONE leaves the
+            // OTHER position's bad real content as the sole (and thus
+            // governing) candidate -- unsafe. Restoring BOTH (to explicit
+            // absence) empties the grid entirely, which is VACUOUS (pin 6c
+            // case 1), not a violation.
+            {
+                let op_set = OperationSet::new();
+                let mut r = Reducer::new(&op_set);
+                r.region_instances.insert(region, [instance].into());
+                r.objects
+                    .insert(TypedObjectId::StaffInstance(instance), ObjectState::Live);
+                for (id, start) in [(m0, reference_start.clone()), (m1, after_start.clone())] {
+                    r.objects
+                        .insert(TypedObjectId::Measure(id), ObjectState::Live);
+                    r.measure_values.insert(
+                        id,
+                        (
+                            instance,
+                            Measure {
+                                id,
+                                start,
+                                time_signature: None,
+                                explicit_number: None,
+                                number_visibility: Default::default(),
+                            },
+                        ),
+                    );
+                }
+                r.objects
+                    .insert(TypedObjectId::TimeSignature(sig1), ObjectState::Live);
+                r.time_signature_values
+                    .insert(sig1, crate::valuegen::time_signature(sig1, 2));
+
+                let pos0 = MusicalPosition(RationalTime::from_int(0));
+                let pos1 = MusicalPosition(RationalTime::from_int(1));
+                let bad_musical = TimeAnchor::Region {
+                    id: region,
+                    edge: RegionEdge::Start,
+                    offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(0))),
+                };
+                let bad_wallclock = TimeAnchor::Region {
+                    id: region,
+                    edge: RegionEdge::Start,
+                    offset: AnchorOffset::WallClock(WallClockDuration(0)),
+                };
+                // The REAL (current, pre-undo) chain content at both keys:
+                // wrong duration (1/2, not 1), each individually the sole
+                // (unambiguous) governor if the OTHER position is restored to
+                // absence instead.
+                let mut chain0: WriteChain<Option<MeterChange>> = WriteChain::new();
+                chain0.record(
+                    OperationId::new(ReplicaId(1), 1),
+                    None,
+                    Some(MeterChange {
+                        anchor: bad_musical,
+                        time_signature: sig1,
+                    }),
+                );
+                r.meter_change_chain.insert((region, pos0.clone()), chain0);
+                let mut chain1: WriteChain<Option<MeterChange>> = WriteChain::new();
+                chain1.record(
+                    OperationId::new(ReplicaId(1), 2),
+                    None,
+                    Some(MeterChange {
+                        anchor: bad_wallclock,
+                        time_signature: sig1,
+                    }),
+                );
+                r.meter_change_chain.insert((region, pos1.clone()), chain1);
+
+                let restorations = vec![
+                    ValueRestoration::MeterChange {
+                        region,
+                        position: pos0,
+                        value: None,
+                    },
+                    ValueRestoration::MeterChange {
+                        region,
+                        position: pos1,
+                        value: None,
+                    },
+                ];
+                assert!(
+                    !r.aggregate_restorations_violate_invariant20(&restorations),
+                    "M46 direction 2: each restoration ALONE leaves the OTHER position's \
+                 wrong-duration REAL content governing (individually unsafe), but \
+                 removing BOTH empties the grid -- vacuous, not a violation -- so the \
+                 WHOLE set, evaluated jointly, must be SAFE"
+                );
+            }
+        }
+
+        /// M47: `BestEffort`'s canonical-order greedy applies the safe subset.
+        /// Reuses M46 direction 1's individually-safe/jointly-unsafe pair: in
+        /// canonical (BTreeMap key) order, position 0's restoration is
+        /// considered first and admitted (alone, it is clean); position 1's is
+        /// considered next and REJECTED, because admitting it on top of the
+        /// already-admitted position-0 restoration makes selection
+        /// indeterminate. A naive per-restoration filter (each restoration
+        /// checked independently, never against what has already been
+        /// admitted) would admit BOTH.
+        #[test]
+        fn m47_best_effort_applies_only_the_documented_safe_subset() {
+            let region = RegionId::new(ReplicaId(1), 1);
+            let instance = StaffInstanceId::new(ReplicaId(1), 2);
+            let m0 = MeasureId::new(ReplicaId(1), 100);
+            let m1 = MeasureId::new(ReplicaId(1), 101);
+            let sig1 = TimeSignatureId::new(ReplicaId(1), 10);
+            let sig2 = TimeSignatureId::new(ReplicaId(1), 11);
+            let reference_start = TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Zero,
+            };
+            let after_start = TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(1))),
+            };
+
+            let op_set = OperationSet::new();
+            let mut r = Reducer::new(&op_set);
+            r.region_instances.insert(region, [instance].into());
+            r.objects
+                .insert(TypedObjectId::StaffInstance(instance), ObjectState::Live);
+            for (id, start) in [(m0, reference_start), (m1, after_start)] {
+                r.objects
+                    .insert(TypedObjectId::Measure(id), ObjectState::Live);
+                r.measure_values.insert(
+                    id,
+                    (
+                        instance,
+                        Measure {
+                            id,
+                            start,
+                            time_signature: None,
+                            explicit_number: None,
+                            number_visibility: Default::default(),
+                        },
+                    ),
+                );
+            }
+            for sig in [sig1, sig2] {
+                r.objects
+                    .insert(TypedObjectId::TimeSignature(sig), ObjectState::Live);
+                r.time_signature_values
+                    .insert(sig, crate::valuegen::time_signature(sig, 4));
+            }
+
+            let pos0 = MusicalPosition(RationalTime::from_int(0));
+            let pos1 = MusicalPosition(RationalTime::from_int(1));
+            let restorations = vec![
+                ValueRestoration::MeterChange {
+                    region,
+                    position: pos0,
+                    value: Some(MeterChange {
+                        anchor: TimeAnchor::Region {
+                            id: region,
+                            edge: RegionEdge::Start,
+                            offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(
+                                0,
+                            ))),
+                        },
+                        time_signature: sig1,
+                    }),
+                },
+                ValueRestoration::MeterChange {
+                    region,
+                    position: pos1,
+                    value: Some(MeterChange {
+                        anchor: TimeAnchor::Region {
+                            id: region,
+                            edge: RegionEdge::Start,
+                            offset: AnchorOffset::WallClock(WallClockDuration(0)),
+                        },
+                        time_signature: sig2,
+                    }),
+                },
+            ];
+            let safe = r.select_invariant20_safe_restorations(restorations);
+            assert_eq!(
+                safe.len(),
+                1,
+                "BestEffort's canonical-order greedy must admit EXACTLY ONE of the two \
+             restorations -- a naive independent filter would admit both, since \
+             each is individually safe"
+            );
+            match &safe[0] {
+                ValueRestoration::MeterChange {
+                    region: r,
+                    position,
+                    value: Some(change),
+                } => {
+                    assert_eq!(*r, region);
+                    assert_eq!(*position, MusicalPosition(RationalTime::from_int(0)));
+                    assert_eq!(
+                        change.time_signature, sig1,
+                        "the admitted restoration must be the FIRST one in canonical \
+                     (position) order -- position 0's, naming sig1"
+                    );
+                }
+                _ => panic!("expected the admitted restoration to be a MeterChange with a value"),
+            }
+        }
+
+        /// Genesis tranche G3b packet 2, coordinator-directed follow-up:
+        /// the direct-`Reducer` M46/M47 tests above sign the ALGORITHMS
+        /// (`aggregate_restorations_violate_invariant20`,
+        /// `select_invariant20_safe_restorations`), but nothing proved
+        /// `undo_transaction` actually CALLS them — deleting the call site
+        /// (replacing the `if
+        /// self.aggregate_restorations_violate_invariant20(&restorations)`
+        /// guard with `if false`, or replacing
+        /// `self.select_invariant20_safe_restorations(restorations)` with
+        /// the identity) left the whole workspace suite green, since the
+        /// existing tests bypass `undo_transaction` entirely. These two
+        /// close that gap end-to-end through the normal
+        /// envelope/`OperationSet` path.
+        ///
+        /// Construction (avoids M41-M44's forward-path checks refusing a
+        /// transiently-disagreeing transaction member): the measure is
+        /// created AFTER the transaction commits, so nothing on the
+        /// forward path ever disagrees — only the UNDO's restoration
+        /// disagrees with the (already-live) measure. Shape: prerequisite
+        /// chain, pre-minted `sig0`/`sig1`, a pre-transaction baseline
+        /// whole grid G0 naming `sig0`, a transaction rewriting it to G1
+        /// naming `sig1`, then (after the transaction) a `CreateMeasure`
+        /// that agrees with G1. Undoing the transaction restores G0, which
+        /// disagrees with the live measure.
+        fn build_end_to_end_undo_setup() -> (
+            G3bPreservationFixture,
+            TransactionId,
+            TimeSignatureId,
+            TimeSignatureId,
+        ) {
+            let region = RegionId::new(ReplicaId(1), 1);
+            let instance = StaffInstanceId::new(ReplicaId(1), 2);
+            let staff = StaffId::new(ReplicaId(1), 3);
+            let instrument = InstrumentId::new(ReplicaId(1), 4);
+            let sig0 = TimeSignatureId::new(ReplicaId(1), 10);
+            let sig1 = TimeSignatureId::new(ReplicaId(1), 11);
+            let throwaway = g3b_region_anchor(region, 1000);
+            let pos0 = g3b_region_anchor(region, 0);
+            let tx = TransactionId::new(ReplicaId(1), 700);
+
+            let mut f = G3bPreservationFixture {
+                labeled: Vec::new(),
+                region,
+                active: sig0,
+                next_counter: 0,
+                next_causal: CausalContext::new(),
+            };
+            f.push(
+                "CreateInstrument",
+                OperationKind::CreateInstrument(CreateInstrumentOp {
+                    instrument: crate::valuegen::instrument(instrument),
+                }),
+            );
+            f.push(
+                "CreateStaff",
+                OperationKind::CreateStaff(CreateStaffOp {
+                    staff: crate::valuegen::staff(staff, instrument),
+                }),
+            );
+            f.push(
+                "CreateRegion",
+                OperationKind::CreateRegion(CreateRegionOp {
+                    region: crate::valuegen::region(region),
+                }),
+            );
+            f.push(
+                "CreateStaffInstance",
+                OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                    region,
+                    instance: crate::valuegen::staff_instance(instance, staff),
+                }),
+            );
+            f.push(
+                "mint sig0 (throwaway)",
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region,
+                    anchor: throwaway.clone(),
+                    time_signature: Some(crate::valuegen::time_signature(sig0, 4)),
+                }),
+            );
+            f.push(
+                "clear throwaway (sig0)",
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region,
+                    anchor: throwaway.clone(),
+                    time_signature: None,
+                }),
+            );
+            f.push(
+                "mint sig1 (throwaway)",
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region,
+                    anchor: throwaway.clone(),
+                    time_signature: Some(crate::valuegen::time_signature(sig1, 4)),
+                }),
+            );
+            f.push(
+                "clear throwaway (sig1)",
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region,
+                    anchor: throwaway,
+                    time_signature: None,
+                }),
+            );
+            f.push(
+                "SetMetricGrid baseline G0 (sig0)",
+                OperationKind::SetMetricGrid(SetMetricGridOp {
+                    region,
+                    grid: Some(MetricGrid {
+                        meter_sequence: vec![MeterChange {
+                            anchor: pos0.clone(),
+                            time_signature: sig0,
+                        }],
+                    }),
+                }),
+            );
+            f.push_tx(
+                "DeclareTransaction",
+                tx,
+                OperationKind::DeclareTransaction(crate::payload::TransactionDescriptor {
+                    id: tx,
+                    label: String::from("g3b end-to-end undo integration"),
+                    category: None,
+                }),
+            );
+            f.push_tx(
+                "tx SetMetricGrid (to G1/sig1)",
+                tx,
+                OperationKind::SetMetricGrid(SetMetricGridOp {
+                    region,
+                    grid: Some(MetricGrid {
+                        meter_sequence: vec![MeterChange {
+                            anchor: pos0.clone(),
+                            time_signature: sig1,
+                        }],
+                    }),
+                }),
+            );
+            f.push(
+                "CreateMeasure m0 (agrees with G1)",
+                OperationKind::CreateMeasure(CreateMeasureOp {
+                    instance,
+                    measure: Measure {
+                        id: MeasureId::new(ReplicaId(1), 100),
+                        start: pos0,
+                        time_signature: Some(sig1),
+                        explicit_number: None,
+                        number_visibility: Default::default(),
+                    },
+                }),
+            );
+            (f, tx, sig0, sig1)
+        }
+
+        /// M46, end-to-end: `StrictInverse` undoing the transaction must
+        /// CONFLICT — restoring G0 (`sig0`) disagrees with the live
+        /// measure (which declares `sig1`, agreeing with G1). Deleting the
+        /// `aggregate_restorations_violate_invariant20` call site in
+        /// `undo_transaction` (replacing its `if` guard with `if false`)
+        /// must make this go red (the undo would report `Applied`
+        /// instead).
+        #[test]
+        fn m46_end_to_end_strict_inverse_conflicts_on_disagreeing_restoration() {
+            let (mut f, tx, _sig0, _sig1) = build_end_to_end_undo_setup();
+            let undo = undo_env(
+                1,
+                f.next_counter,
+                f.next_counter as i64,
+                f.next_causal.clone(),
+                tx,
+                UndoPolicy::StrictInverse,
+            );
+            f.labeled
+                .push(("UndoTransaction (StrictInverse)", undo.clone()));
+
+            let out = f.run_allowing_tail_conflict(1);
+            let effect = g3b_effect_of(&out.state, undo.id);
+            assert!(
+                matches!(effect, Some(OperationEffect::Conflicted { .. })),
+                "StrictInverse must CONFLICT when restoring the whole-grid predecessor \
+                 (G0/sig0) would disagree with a live measure (which declares sig1, \
+                 agreeing with G1) — got {effect:?}"
+            );
+            assert_eq!(
+                out.state.conflicts.records().len(),
+                1,
+                "exactly one conflict — the undo's own — must be recorded"
+            );
+            // The graph must show the undo did NOT revert the grid: the
+            // aggregate check refuses before `apply_restorations` runs.
+            let region_value = out
+                .score
+                .canvas
+                .regions
+                .iter()
+                .find(|r| r.id == f.region)
+                .expect("region present");
+            let sequence = region_value
+                .content
+                .staff_based()
+                .and_then(|c| c.default_metric_grid.as_ref())
+                .map(|g| g.meter_sequence.clone())
+                .unwrap_or_default();
+            assert_eq!(
+                sequence,
+                vec![MeterChange {
+                    anchor: g3b_region_anchor(f.region, 0),
+                    time_signature: _sig1,
+                }],
+                "a conflicted (refused) undo must leave the grid exactly as the \
+                 transaction left it — G1/sig1, not reverted to G0/sig0"
+            );
+        }
+
+        /// M47, end-to-end: `BestEffort` undoing the SAME transaction must
+        /// apply the documented canonical-order-greedy safe subset. This
+        /// scenario adds a SECOND, unrelated restoration (a per-key
+        /// `SetTimeSignature` write at a position no measure references,
+        /// freshly minted inside the transaction) that is vacuously safe
+        /// alone: BestEffort must admit it (graph shows it removed after
+        /// undo) while SKIPPING the whole-grid restoration (graph must
+        /// still show `sig1` at pos0, NOT reverted to `sig0`). Replacing
+        /// `select_invariant20_safe_restorations(restorations)`'s call
+        /// site with the identity (`restorations` unchanged) must make
+        /// this go red — it would apply BOTH, reverting pos0 to `sig0` and
+        /// disagreeing with the live measure.
+        #[test]
+        fn m47_end_to_end_best_effort_applies_safe_subset_skips_unsafe() {
+            let (mut f, tx, _sig0, sig1) = build_end_to_end_undo_setup();
+            let sig_far = TimeSignatureId::new(ReplicaId(1), 12);
+            let far_anchor = g3b_region_anchor(f.region, 50);
+            f.push_tx(
+                "tx SetTimeSignature (mint sig_far at a position no measure references)",
+                tx,
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region: f.region,
+                    anchor: far_anchor,
+                    time_signature: Some(crate::valuegen::time_signature(sig_far, 4)),
+                }),
+            );
+            let undo = undo_env(
+                1,
+                f.next_counter,
+                f.next_counter as i64,
+                f.next_causal.clone(),
+                tx,
+                UndoPolicy::BestEffort,
+            );
+            f.labeled
+                .push(("UndoTransaction (BestEffort)", undo.clone()));
+
+            let out = f.run_allowing_tail_conflict(1);
+            let effect = g3b_effect_of(&out.state, undo.id);
+            assert!(
+                matches!(
+                    effect,
+                    Some(OperationEffect::Applied)
+                        | Some(OperationEffect::AppliedWithRepair { .. })
+                ),
+                "BestEffort must never refuse wholesale — got {effect:?}"
+            );
+            assert!(
+                out.state.conflicts.is_empty(),
+                "BestEffort must not conflict"
+            );
+            let region_value = out
+                .score
+                .canvas
+                .regions
+                .iter()
+                .find(|r| r.id == f.region)
+                .expect("region present");
+            let sequence = region_value
+                .content
+                .staff_based()
+                .and_then(|c| c.default_metric_grid.as_ref())
+                .map(|g| g.meter_sequence.clone())
+                .unwrap_or_default();
+            assert_eq!(
+                sequence,
+                vec![MeterChange {
+                    anchor: g3b_region_anchor(f.region, 0),
+                    time_signature: sig1,
+                }],
+                "BestEffort's canonical-order greedy must SKIP the disagreeing \
+                 whole-grid restoration (G0/sig0) — pos0 must still show sig1, the \
+                 transaction's own write, unreverted"
+            );
+        }
     }
 }
