@@ -4880,15 +4880,21 @@ impl<'a> Reducer<'a> {
             // compare EQUAL, and a strict `>` would hand governance to the
             // whole grid even though restoration actually applies the
             // per-key write AFTER the whole grid, under the same undo
-            // operation id. Ratified tie-break: on equal recency, the
-            // per-key write governs — but ONLY for the prospective family.
+            // operation id. Ratified tie-break: on EQUAL NON-`Base` recency,
+            // the per-key write governs — this is not limited to the
+            // prospective family. Two REAL writes tied under the same
+            // recorded op id resolve the identical way: once an undo
+            // actually commits, `apply_restorations` records every
+            // restoration it applies — the whole-grid one and the per-key
+            // one alike — under that SAME undo's operation id, so their
+            // `Recency::Write(..)` tuples are equal too, and the rule must
+            // still hand governance to the per-key write.
             // Do NOT widen this to a plain `>=`: when both sides are
             // `Recency::Base` the per-key chain has no write, so `value`
             // below resolves to `None` and the overlay would DELETE the
             // whole grid's entry at this key — a regression.
             if per_key_recency > whole_recency
-                || (per_key_recency == Recency::Prospective
-                    && whole_recency == Recency::Prospective)
+                || (per_key_recency == whole_recency && per_key_recency != Recency::Base)
             {
                 let value: Option<MeterChange> = if per_key_is_prospective {
                     meter_change_overrides.get(&key).cloned().flatten()
@@ -18114,59 +18120,158 @@ mod tests {
         );
     }
 
-    /// Repair 3 (spec/CONTRACT_GENESIS_G3B_MEASURE.md pin 6c, review fix): a
-    /// SINGLE undo restoring both a whole-grid write and a per-key
-    /// meter-change write, at the SAME position, under the SAME undo
-    /// operation id — so both restorations tie under `Recency::Prospective`
-    /// when evaluated in flight (pin 9c's aggregate safety check, before the
-    /// undo commits). The ratified tie-break — per-key governs on a tie, but
-    /// ONLY within the prospective family — must make that PROSPECTIVE
-    /// prediction agree with what restoration ACTUALLY installs once it runs
-    /// for real: production code collects and applies every
-    /// `metric_grid_chain` restoration before it begins `meter_change_chain`
-    /// restorations (`reduce.rs` ~6419-6457), so the per-key predecessor is
-    /// written to the graph strictly AFTER the whole-grid predecessor, and
-    /// must be what's left standing.
-    #[test]
-    fn g3b_grid_oracle_aggregate_prospective_restoration_matches_real_undo() {
+    /// The shared G3b aggregate-tie fixture (repair 4,
+    /// `spec/CONTRACT_GENESIS_G3B_MEASURE.md` pin 6c): every envelope needed
+    /// to reach a SINGLE undo that restores both a whole-grid write and a
+    /// per-key meter-change write at the SAME position, under the SAME undo
+    /// operation id.
+    ///
+    /// **Every counter is contiguous from 0 — no gaps.** The prior fixture
+    /// jumped 3 → 10 → 11 → 12 → 20 while still asserting `seen_r1` up
+    /// through those higher counters; `compute_pending`'s
+    /// missing-vector-predecessor rule (`reduce.rs` `first_missing_vector_predecessor`,
+    /// ~8857ff) then held every op past a gap PENDING, so ops 11, 12 and 20
+    /// (the transaction members and the undo) never reduced at all. The
+    /// fixture that test built its "genuinely restored" claim on had, in
+    /// fact, never run the transaction or the undo.
+    ///
+    /// **The full referential prerequisite chain is present.**
+    /// `CreateInstrument` → `CreateStaff` → `CreateRegion` →
+    /// `CreateStaffInstance`: `create_staff_instance` requires the carried
+    /// instance's `staff` to be live once a graph is present
+    /// (`reduce.rs:4129`ff), and `create_staff` in turn requires its
+    /// `instrument` to be live (`reduce.rs:4236`ff). Skipping either left the
+    /// prior fixture's `CreateStaffInstance` a silent `TargetMissing`.
+    ///
+    /// **Every `TimeSignature` a `SetMetricGrid` names in its literal grid is
+    /// pre-minted.** `set_metric_grid` refuses a grid naming an undeclared
+    /// signature (`reduce.rs:3137`ff), and `SetTimeSignature` is the only op
+    /// that mints one — `SetMetricGrid`'s own literal content never does.
+    /// `sig_whole_baseline` and `sig_whole_new` are minted (and then
+    /// immediately cleared again) at a THROWAWAY position, distinct from
+    /// `pos0`, so no residue survives into the grid content the two proof
+    /// tests compare against.
+    fn g3b_aggregate_tie_fixture() -> G3bAggregateFixture {
         let region = RegionId::new(ReplicaId(1), 1);
         let instance = StaffInstanceId::new(ReplicaId(1), 2);
         let staff = StaffId::new(ReplicaId(1), 3);
+        let instrument = InstrumentId::new(ReplicaId(1), 4);
         let sig_whole_baseline = TimeSignatureId::new(ReplicaId(1), 10);
         let sig_perkey_baseline = TimeSignatureId::new(ReplicaId(1), 11);
         let sig_whole_new = TimeSignatureId::new(ReplicaId(1), 12);
         let sig_perkey_new = TimeSignatureId::new(ReplicaId(1), 13);
         let pos0 = g3b_region_anchor(region, 0);
-        let key = MusicalPosition(RationalTime::from_int(0));
+        let throwaway = g3b_region_anchor(region, 1000);
         let tx = TransactionId::new(ReplicaId(1), 900);
 
-        let create_region = prim_env(
+        let create_instrument = prim_env(
             1,
             0,
             0,
             CausalContext::new(),
+            OperationKind::CreateInstrument(CreateInstrumentOp {
+                instrument: crate::valuegen::instrument(instrument),
+            }),
+        );
+        let create_staff = prim_env(
+            1,
+            1,
+            1,
+            seen_r1(0),
+            OperationKind::CreateStaff(CreateStaffOp {
+                staff: crate::valuegen::staff(staff, instrument),
+            }),
+        );
+        let create_region = prim_env(
+            1,
+            2,
+            2,
+            seen_r1(1),
             OperationKind::CreateRegion(CreateRegionOp {
                 region: crate::valuegen::region(region),
             }),
         );
         let create_instance = prim_env(
             1,
-            1,
-            1,
-            seen_r1(0),
+            3,
+            3,
+            seen_r1(2),
             OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
                 region,
                 instance: crate::valuegen::staff_instance(instance, staff),
             }),
         );
+        // Mint `sig_whole_baseline`, `sig_whole_new`, and `sig_perkey_new`,
+        // all at a THROWAWAY position distinct from `pos0` — then clear that
+        // position back to `None` so none leaves a residual entry in the
+        // region's default grid. Each `TimeSignature` object stays live once
+        // minted regardless of whether its meter-change write is later
+        // cleared.
+        //
+        // `sig_perkey_new` is pre-minted here (not left for the transaction
+        // member below to mint fresh) so the transaction mints NOTHING:
+        // `set_time_signature`'s mint step is a no-op re-carry once the
+        // SAME `TimeSignature` value is already live (`reduce.rs:5180`ff,
+        // the `identical` branch), so `tx_set_time_sig`'s later carry of
+        // this exact value registers no `tx_minted` target. With nothing
+        // minted inside the transaction, its undo has nothing to
+        // tombstone/cascade-delete, and reduces to a clean `Applied` rather
+        // than `AppliedWithRepair` — the fixture's own assertions require
+        // exact equality with `Applied`, not merely "applied in some form".
+        let perkey_new_value = crate::valuegen::time_signature(sig_perkey_new, 5);
+        let mint_whole_baseline = prim_env(
+            1,
+            4,
+            4,
+            seen_r1(3),
+            OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region,
+                anchor: throwaway.clone(),
+                time_signature: Some(crate::valuegen::time_signature(sig_whole_baseline, 4)),
+            }),
+        );
+        let mint_whole_new = prim_env(
+            1,
+            5,
+            5,
+            seen_r1(4),
+            OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region,
+                anchor: throwaway.clone(),
+                time_signature: Some(crate::valuegen::time_signature(sig_whole_new, 6)),
+            }),
+        );
+        let mint_perkey_new = prim_env(
+            1,
+            6,
+            6,
+            seen_r1(5),
+            OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region,
+                anchor: throwaway.clone(),
+                time_signature: Some(perkey_new_value.clone()),
+            }),
+        );
+        let clear_throwaway = prim_env(
+            1,
+            7,
+            7,
+            seen_r1(6),
+            OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region,
+                anchor: throwaway.clone(),
+                time_signature: None,
+            }),
+        );
+
         // Pre-transaction baseline: a whole-grid write, then a per-key write
         // that overlays it at pos0 — these establish the PREDECESSORS the
         // undo below will restore to.
         let set_grid_baseline = prim_env(
             1,
-            2,
-            2,
-            seen_r1(1),
+            8,
+            8,
+            seen_r1(7),
             OperationKind::SetMetricGrid(SetMetricGridOp {
                 region,
                 grid: Some(MetricGrid {
@@ -18179,9 +18284,9 @@ mod tests {
         );
         let set_time_sig_baseline = prim_env(
             1,
-            3,
-            3,
-            seen_r1(2),
+            9,
+            9,
+            seen_r1(8),
             OperationKind::SetTimeSignature(SetTimeSignatureOp {
                 region,
                 anchor: pos0.clone(),
@@ -18191,7 +18296,7 @@ mod tests {
 
         // The transaction: overwrites BOTH the whole grid and the per-key
         // change, at the SAME position, in one undoable unit.
-        let decl = declare_transaction(1, 10, 10, seen_r1(3), tx);
+        let decl = declare_transaction(1, 10, 10, seen_r1(9), tx);
         let tx_set_grid = tx_member(
             1,
             11,
@@ -18217,24 +18322,166 @@ mod tests {
             OperationKind::SetTimeSignature(SetTimeSignatureOp {
                 region,
                 anchor: pos0.clone(),
-                time_signature: Some(crate::valuegen::time_signature(sig_perkey_new, 3)),
+                time_signature: Some(perkey_new_value),
             }),
         );
-        let undo = undo_env(1, 20, 20, seen_r1(12), tx, UndoPolicy::StrictInverse);
+        let undo = undo_env(1, 13, 13, seen_r1(12), tx, UndoPolicy::StrictInverse);
 
-        let mut set = OperationSet::new();
-        set.accept_all(vec![
+        G3bAggregateFixture {
+            create_instrument,
+            create_staff,
             create_region,
             create_instance,
+            mint_whole_baseline,
+            mint_whole_new,
+            mint_perkey_new,
+            clear_throwaway,
             set_grid_baseline,
             set_time_sig_baseline,
             decl,
             tx_set_grid,
             tx_set_time_sig,
             undo,
-        ]);
+            region,
+            instance,
+            sig_whole_baseline,
+            sig_perkey_baseline,
+            pos0,
+        }
+    }
+
+    /// The G3b aggregate-tie fixture's envelopes plus the identifiers a
+    /// caller needs to make assertions about the reduction — see
+    /// [`g3b_aggregate_tie_fixture`].
+    struct G3bAggregateFixture {
+        create_instrument: OperationEnvelope,
+        create_staff: OperationEnvelope,
+        create_region: OperationEnvelope,
+        create_instance: OperationEnvelope,
+        mint_whole_baseline: OperationEnvelope,
+        mint_whole_new: OperationEnvelope,
+        mint_perkey_new: OperationEnvelope,
+        clear_throwaway: OperationEnvelope,
+        set_grid_baseline: OperationEnvelope,
+        set_time_sig_baseline: OperationEnvelope,
+        decl: OperationEnvelope,
+        tx_set_grid: OperationEnvelope,
+        tx_set_time_sig: OperationEnvelope,
+        undo: OperationEnvelope,
+        region: RegionId,
+        instance: StaffInstanceId,
+        sig_whole_baseline: TimeSignatureId,
+        sig_perkey_baseline: TimeSignatureId,
+        pos0: TimeAnchor,
+    }
+
+    impl G3bAggregateFixture {
+        /// All fourteen envelopes in delivery order, each labeled for
+        /// per-op failure messages — used to assert every one of them
+        /// actually applied (not merely "not `TransactionConflict`") before
+        /// any grid or oracle claim is trusted.
+        fn labeled_envelopes(&self) -> Vec<(&'static str, OperationEnvelope)> {
+            vec![
+                ("CreateInstrument", self.create_instrument.clone()),
+                ("CreateStaff", self.create_staff.clone()),
+                ("CreateRegion", self.create_region.clone()),
+                ("CreateStaffInstance", self.create_instance.clone()),
+                (
+                    "mint sig_whole_baseline (throwaway)",
+                    self.mint_whole_baseline.clone(),
+                ),
+                (
+                    "mint sig_whole_new (throwaway)",
+                    self.mint_whole_new.clone(),
+                ),
+                (
+                    "mint sig_perkey_new (throwaway)",
+                    self.mint_perkey_new.clone(),
+                ),
+                ("clear throwaway per-key slot", self.clear_throwaway.clone()),
+                ("SetMetricGrid baseline", self.set_grid_baseline.clone()),
+                (
+                    "SetTimeSignature baseline",
+                    self.set_time_sig_baseline.clone(),
+                ),
+                ("DeclareTransaction", self.decl.clone()),
+                ("tx SetMetricGrid member", self.tx_set_grid.clone()),
+                ("tx SetTimeSignature member", self.tx_set_time_sig.clone()),
+                ("UndoTransaction (StrictInverse)", self.undo.clone()),
+            ]
+        }
+    }
+
+    /// Asserts the fixture's `labeled` envelopes are ALL `Applied`, that
+    /// `out.state.effects` has exactly one entry per accepted envelope (so a
+    /// dropped/pending op fails loudly instead of silently vanishing), and
+    /// that there are no conflicts and no anomalies. This is the point of
+    /// repair 4: a fixture that silently fails to deliver, fails a
+    /// prerequisite, conflicts a member, or skips the undo must go RED here
+    /// — never pass vacuously on a stale prediction.
+    fn g3b_assert_fixture_ran_cleanly(
+        out: &GraphMaterialization,
+        labeled: &[(&'static str, OperationEnvelope)],
+        accepted_count: usize,
+    ) {
+        for (label, env) in labeled {
+            assert_eq!(
+                g3b_effect_of(&out.state, env.id),
+                Some(OperationEffect::Applied),
+                "fixture op `{label}` (id {:?}) must be Applied",
+                env.id
+            );
+        }
+        assert_eq!(
+            out.state.effects.len(),
+            accepted_count,
+            "every accepted envelope must produce an effect entry — a \
+             dropped (pending) op fails loudly here instead of silently \
+             vanishing from the effect log"
+        );
+        assert!(
+            out.state.conflicts.is_empty(),
+            "no conflicts: {:?}",
+            out.state.conflicts
+        );
+        assert!(
+            out.state.anomalies.is_empty(),
+            "no anomalies: {:?}",
+            out.state.anomalies
+        );
+    }
+
+    /// Repair 4 (`spec/CONTRACT_GENESIS_G3B_MEASURE.md` pin 6c): the
+    /// PROSPECTIVE half of the aggregate-tie proof, now rebuilt on
+    /// [`g3b_aggregate_tie_fixture`] so the "real undo" it compares against
+    /// is a genuinely delivered, fully applied restoration — not a fixture
+    /// three of whose eight envelopes silently never reduced. Both
+    /// restorations tie under `Recency::Prospective` when evaluated in
+    /// flight (pin 9c's aggregate safety check, before the undo commits).
+    /// The ratified tie-break — on equal NON-`Base` recency, the per-key
+    /// write governs — must make that PROSPECTIVE prediction agree with
+    /// what restoration ACTUALLY installs once it runs for real: production
+    /// code collects and applies every `metric_grid_chain` restoration
+    /// before it begins `meter_change_chain` restorations
+    /// (`collect_restorations`/`apply_restorations`, `reduce.rs` ~6418ff),
+    /// so the per-key predecessor is written to the graph strictly AFTER
+    /// the whole-grid predecessor, and must be what's left standing.
+    ///
+    /// See [`g3b_create_measure_after_undo_agrees_with_restored_per_key`]
+    /// for the companion REAL-write proof of the same tie.
+    #[test]
+    fn g3b_grid_oracle_aggregate_prospective_restoration_matches_real_undo() {
+        let fixture = g3b_aggregate_tie_fixture();
+        let labeled = fixture.labeled_envelopes();
+        let mut set = OperationSet::new();
+        let envelopes: Vec<OperationEnvelope> =
+            labeled.iter().map(|(_, env)| env.clone()).collect();
+        let accepted_count = envelopes.len();
+        set.accept_all(envelopes);
         let identity = IdentityContext::new(ReplicaId(1));
         let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        g3b_assert_fixture_ran_cleanly(&out, &labeled, accepted_count);
 
         // What restoration ACTUALLY installs: read the materialized graph.
         let region_value = out
@@ -18242,7 +18489,7 @@ mod tests {
             .canvas
             .regions
             .iter()
-            .find(|r| r.id == region)
+            .find(|r| r.id == fixture.region)
             .expect("region present");
         let installed = region_value
             .content
@@ -18254,8 +18501,8 @@ mod tests {
         assert_eq!(
             installed,
             vec![MeterChange {
-                anchor: pos0.clone(),
-                time_signature: sig_perkey_baseline
+                anchor: fixture.pos0.clone(),
+                time_signature: fixture.sig_perkey_baseline
             }],
             "actual restoration installs the whole-grid predecessor, then \
              overlays the per-key predecessor at pos0 (applied strictly \
@@ -18271,21 +18518,22 @@ mod tests {
         let r = Reducer::new(&op_set);
         let prospective_grid = Some(MetricGrid {
             meter_sequence: vec![MeterChange {
-                anchor: pos0.clone(),
-                time_signature: sig_whole_baseline,
+                anchor: fixture.pos0.clone(),
+                time_signature: fixture.sig_whole_baseline,
             }],
         });
+        let key = MusicalPosition(RationalTime::from_int(0));
         let mut meter_change_overrides = BTreeMap::new();
         meter_change_overrides.insert(
             key,
             Some(MeterChange {
-                anchor: pos0.clone(),
-                time_signature: sig_perkey_baseline,
+                anchor: fixture.pos0.clone(),
+                time_signature: fixture.sig_perkey_baseline,
             }),
         );
         let predicted = r.effective_grid(
-            instance,
-            Some(region),
+            fixture.instance,
+            Some(fixture.region),
             Some(&prospective_grid),
             &meter_change_overrides,
         );
@@ -18293,8 +18541,93 @@ mod tests {
             predicted, installed,
             "the aggregate prospective evaluation must agree with what \
              restoration actually installs (pin 6c's ratified tie-break: on \
-             equal recency, the per-key write governs — but ONLY for the \
-             prospective family)"
+             equal non-Base recency, the per-key write governs — not only \
+             for the prospective family; g3b_create_measure_after_undo_\
+             agrees_with_restored_per_key proves the identical tie for REAL \
+             writes)"
+        );
+    }
+
+    /// Repair 4 (`spec/CONTRACT_GENESIS_G3B_MEASURE.md` pin 6c): the REAL
+    /// half of the aggregate-tie proof — after the undo in
+    /// [`g3b_aggregate_tie_fixture`] actually commits, a `CreateMeasure`
+    /// whose `time_signature` is the restored PER-KEY signature
+    /// (`sig_perkey_baseline`) must apply, exercising `create_measure`'s own
+    /// agreement clause (`reduce.rs:5108`ff) against genuinely materialized
+    /// state — not a synthetic prediction.
+    ///
+    /// Both restorations are recorded under the SAME undo operation id:
+    /// `apply_restorations` (`reduce.rs:6562`ff) records every restoration
+    /// it applies — the whole-grid one and the per-key one alike — with
+    /// `env.id`, i.e. the undo's own id. Their `Recency::Write(..)` tuples
+    /// are therefore equal too, once the undo has actually run — not merely
+    /// while the restoration is still in flight. Only the WIDENED tie-break
+    /// (equal NON-`Base` recency, not "equal `Prospective` recency")
+    /// resolves this correctly; under the narrowed rule the whole-grid
+    /// predecessor (`sig_whole_baseline`) would wrongly govern and this
+    /// `CreateMeasure` would refuse `MeasureMeterMismatch`.
+    #[test]
+    fn g3b_create_measure_after_undo_agrees_with_restored_per_key() {
+        let fixture = g3b_aggregate_tie_fixture();
+        let labeled = fixture.labeled_envelopes();
+        let measure_id = MeasureId::new(ReplicaId(1), 500);
+        let measure = Measure {
+            id: measure_id,
+            // Shape c4 (pin 6): the same region id and `RegionEdge`, a
+            // `Musical` offset — the SAME anchor the fixture's meter
+            // changes are written at, so it is directly comparable.
+            start: fixture.pos0.clone(),
+            time_signature: Some(fixture.sig_perkey_baseline),
+            explicit_number: None,
+            number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+        };
+        let create = prim_env(
+            1,
+            14,
+            14,
+            seen_r1(13),
+            OperationKind::CreateMeasure(CreateMeasureOp {
+                instance: fixture.instance,
+                measure,
+            }),
+        );
+
+        let mut envelopes: Vec<OperationEnvelope> =
+            labeled.iter().map(|(_, env)| env.clone()).collect();
+        envelopes.push(create.clone());
+        let accepted_count = envelopes.len();
+        let mut set = OperationSet::new();
+        set.accept_all(envelopes);
+        let identity = IdentityContext::new(ReplicaId(1));
+        let out = reduce_operation_set_onto(&set, &Score::empty(identity));
+
+        g3b_assert_fixture_ran_cleanly(&out, &labeled, accepted_count);
+
+        assert_eq!(
+            g3b_effect_of(&out.state, create.id),
+            Some(OperationEffect::Applied),
+            "a CreateMeasure naming the restored PER-KEY signature must \
+             apply — a real-write tie, not a synthetic prediction. Under \
+             the narrowed (prospective-only) tie-break this refuses \
+             MeasureMeterMismatch instead, because the whole-grid \
+             predecessor (sig_whole_baseline) would wrongly govern"
+        );
+
+        let region_value = out
+            .score
+            .canvas
+            .regions
+            .iter()
+            .find(|r| r.id == fixture.region)
+            .expect("region present");
+        let instance_value = region_value
+            .content
+            .staff_based()
+            .and_then(|c| c.staff_instances.iter().find(|i| i.id == fixture.instance))
+            .expect("instance present");
+        assert!(
+            instance_value.measures.iter().any(|m| m.id == measure_id),
+            "the measure must reach the graph"
         );
     }
 
