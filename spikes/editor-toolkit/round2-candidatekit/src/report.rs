@@ -215,7 +215,7 @@ pub struct DependencyDelta {
 /// would have survived only as prose in `notes` — which is exactly how the
 /// two candidates diverged in the first place. So it is typed, required on
 /// every `Implemented` row, and therefore impossible to omit.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub enum IntegrationOwnership {
     /// The integration came with a dependency the candidate adopted; the
@@ -231,6 +231,66 @@ pub enum IntegrationOwnership {
     /// The candidate wrote the integration itself — the bridge wiring, the
     /// event plumbing, the adapter lifecycle.
     CandidateOwned,
+}
+
+impl IntegrationOwnership {
+    /// Checked constructor: rejects an empty-or-whitespace-only provider.
+    ///
+    /// The amendment that introduced [`IntegrationOwnership::Inherited`]
+    /// justified it as a claim "a reader can check against the dependency
+    /// graph rather than take on trust" — and then let the field be `""`,
+    /// which is checkable against nothing. An unnamed provider is not a
+    /// weaker claim of inheritance; it is the same claim with its evidence
+    /// removed, and it reads as `Inherited` in every table it appears in.
+    pub fn inherited(provider: impl Into<String>) -> Result<Self, String> {
+        let provider = provider.into();
+        if provider.trim().is_empty() {
+            return Err(
+                "IntegrationOwnership::inherited: provider must not be empty or \
+                 whitespace-only — an inherited integration whose provider is unnamed cannot be \
+                 checked against the dependency graph, which is the only reason this variant \
+                 carries a provider at all"
+                    .to_string(),
+            );
+        }
+        Ok(IntegrationOwnership::Inherited { provider })
+    }
+}
+
+/// Deserialization shadow for [`IntegrationOwnership`], so the JSON path
+/// runs the same provider check the constructor does. Without it a
+/// hand-edited or differently-generated report could carry
+/// `{"Inherited": {"provider": ""}}` straight past a guard that only ever
+/// existed in Rust — the same hole, and the same fix, as
+/// [`crate::outcome::CheckOutcome`]'s reason strings.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+enum IntegrationOwnershipWire {
+    Inherited { provider: String },
+    CandidateOwned,
+}
+
+impl TryFrom<IntegrationOwnershipWire> for IntegrationOwnership {
+    type Error = String;
+
+    fn try_from(wire: IntegrationOwnershipWire) -> Result<Self, String> {
+        match wire {
+            IntegrationOwnershipWire::Inherited { provider } => {
+                IntegrationOwnership::inherited(provider)
+            }
+            IntegrationOwnershipWire::CandidateOwned => Ok(IntegrationOwnership::CandidateOwned),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for IntegrationOwnership {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = IntegrationOwnershipWire::deserialize(deserializer)?;
+        IntegrationOwnership::try_from(wire).map_err(serde::de::Error::custom)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -551,6 +611,78 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("integration_ownership"), "{err}");
+    }
+
+    /// Mutation: the checked constructor refuses an empty provider. If this
+    /// passes, `Inherited`'s "checkable against the dependency graph" claim
+    /// is decorative.
+    #[test]
+    fn the_inherited_constructor_rejects_an_empty_provider() {
+        let err = IntegrationOwnership::inherited("").unwrap_err();
+        assert!(err.contains("provider"), "{err}");
+        assert!(err.contains("dependency graph"), "{err}");
+    }
+
+    /// Whitespace-only is the same hole wearing a space — a provider of
+    /// `"   "` renders as `Inherited` in a table and names nothing.
+    #[test]
+    fn the_inherited_constructor_rejects_a_whitespace_only_provider() {
+        assert!(IntegrationOwnership::inherited("  \t \n ").is_err());
+    }
+
+    #[test]
+    fn the_inherited_constructor_accepts_a_real_provider() {
+        let own = IntegrationOwnership::inherited("eframe 0.35").unwrap();
+        assert_eq!(
+            own,
+            IntegrationOwnership::Inherited {
+                provider: "eframe 0.35".to_string()
+            }
+        );
+    }
+
+    /// The JSON path must run the same check — a hand-edited report is
+    /// exactly where an unnamed provider would arrive from.
+    #[test]
+    fn deserializing_an_empty_provider_is_refused() {
+        let bad = serde_json::json!({ "Inherited": { "provider": "" } });
+        let err = serde_json::from_value::<IntegrationOwnership>(bad)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("provider"), "{err}");
+    }
+
+    #[test]
+    fn deserializing_a_whitespace_only_provider_is_refused() {
+        let bad = serde_json::json!({ "Inherited": { "provider": "   " } });
+        assert!(serde_json::from_value::<IntegrationOwnership>(bad).is_err());
+    }
+
+    /// An empty provider must be refused when it arrives nested inside a
+    /// whole adapter row, not only when deserialized on its own — that is
+    /// the shape a real report carries it in.
+    #[test]
+    fn an_adapter_row_with_an_empty_provider_is_refused() {
+        let bad = serde_json::json!({
+            "Implemented": {
+                "platform": "at-spi2",
+                "notes": "n",
+                "integration_ownership": { "Inherited": { "provider": "" } }
+            }
+        });
+        let err = serde_json::from_value::<AdapterStatus>(bad)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("provider"), "{err}");
+    }
+
+    #[test]
+    fn deserializing_candidate_owned_still_works() {
+        let ok = serde_json::json!("CandidateOwned");
+        assert_eq!(
+            serde_json::from_value::<IntegrationOwnership>(ok).unwrap(),
+            IntegrationOwnership::CandidateOwned
+        );
     }
 
     #[test]
