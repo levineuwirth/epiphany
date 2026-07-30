@@ -63,7 +63,8 @@ pub use inputs::{load_all, NeutralInputs, ReferenceFixture};
 pub use outcome::CheckOutcome;
 pub use report::{
     A11yEvidence, AdapterStatus, BusUnreachableEvidence, CandidateReport, CostRecord,
-    DependencyDelta, DiffReportRecord, HitTestProbeResult, LocByPart, RegionMassRecord, ReportPart,
+    DependencyDelta, DiffReportRecord, HitTestProbeResult, IntegrationOwnership, LocByPart,
+    RegionMassRecord, ReportPart,
 };
 pub use scoring::{
     criterion_cell, is_eligible, CellOutcome, CHECK_3_RULING, DISQUALIFYING_CHECKS,

@@ -198,13 +198,61 @@ pub struct DependencyDelta {
 /// [`crate::scoring::ROUND0_READBACK_EVIDENCE`] and
 /// [`CandidateReport::check5_bus_unreachable_evidence`] for the field that
 /// actually governs whether check 5 is allowed to be `NotRun`.
+/// Who *owns* the integration behind an [`AdapterStatus::Implemented`] row.
+///
+/// Added by the pin-13 schema amendment (2026-07-30), because the first
+/// pair of real reports proved that `Implemented`/`NotBuilt` alone cannot
+/// carry what Packet 2B was chartered to record. C1 reached AT-SPI through
+/// AccessKit **inherited from eframe** and reported that platform as
+/// `NotBuilt` ("no separate AccessKit-native readback was built"); C2
+/// reached AT-SPI through AccessKit **it wired by hand** and reported
+/// `Implemented`. Same underlying fact, opposite rows — and the one that
+/// said `NotBuilt` was simply false, since the AccessKit path was present
+/// and exercised.
+///
+/// Relabelling C1's row `Implemented` would have fixed the falsehood and
+/// still lost the distinction, because "inherited or candidate-owned?"
+/// would have survived only as prose in `notes` — which is exactly how the
+/// two candidates diverged in the first place. So it is typed, required on
+/// every `Implemented` row, and therefore impossible to omit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum IntegrationOwnership {
+    /// The integration came with a dependency the candidate adopted; the
+    /// candidate did not write it. `provider` names what supplied it (e.g.
+    /// `"eframe 0.35 (bundled AccessKit integration)"`), so a reader can
+    /// check the claim against the dependency graph rather than take it.
+    ///
+    /// Inheriting an integration is **not** inheriting the semantics drawn
+    /// on top of it: a candidate that inherits a bridge still writes the
+    /// accessible nodes for anything it painted itself, and that work shows
+    /// up in [`ReportPart::AccessibilityTreeConstruction`], not here.
+    Inherited { provider: String },
+    /// The candidate wrote the integration itself — the bridge wiring, the
+    /// event plumbing, the adapter lifecycle.
+    CandidateOwned,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum AdapterStatus {
     /// The candidate built and exercised an adapter for this platform.
-    Implemented { platform: String, notes: String },
+    ///
+    /// `integration_ownership` is **required**: a platform the candidate
+    /// actually exposed a tree on is `Implemented` whether the integration
+    /// was inherited or written, and the difference between those two is
+    /// the measurement, not a footnote.
+    Implemented {
+        platform: String,
+        notes: String,
+        integration_ownership: IntegrationOwnership,
+    },
     /// The candidate did not build an adapter for this platform.
     /// **Scope not covered — not a failure.**
+    ///
+    /// Reserved **exclusively** for uncovered scope. A platform the
+    /// candidate reached — by any route, inherited or its own — is
+    /// `Implemented`, never this.
     NotBuilt { platform: String, reason: String },
 }
 
@@ -416,6 +464,118 @@ mod tests {
         };
         assert!(matches!(a, AdapterStatus::NotBuilt { .. }));
         assert!(!matches!(a, AdapterStatus::Implemented { .. }));
+    }
+
+    // ---- pin-13 schema amendment: integration ownership ----
+
+    fn implemented(platform: &str, own: IntegrationOwnership) -> AdapterStatus {
+        AdapterStatus::Implemented {
+            platform: platform.to_string(),
+            notes: "n".to_string(),
+            integration_ownership: own,
+        }
+    }
+
+    /// The amendment's whole point: two candidates that both reached a
+    /// platform are both `Implemented`, and the inherited-vs-owned
+    /// difference survives as *data* rather than as prose in `notes`. This
+    /// is the comparison the first pair of real reports could not express —
+    /// C1 reached AT-SPI through AccessKit inherited from eframe and
+    /// reported `NotBuilt`; C2 reached it through AccessKit it wired itself
+    /// and reported `Implemented`.
+    #[test]
+    fn two_candidates_on_one_platform_differ_only_in_ownership() {
+        let c1 = implemented(
+            "accesskit-0.24",
+            IntegrationOwnership::Inherited {
+                provider: "eframe 0.35".to_string(),
+            },
+        );
+        let c2 = implemented("accesskit-0.24", IntegrationOwnership::CandidateOwned);
+        for a in [&c1, &c2] {
+            assert!(matches!(a, AdapterStatus::Implemented { .. }));
+        }
+        let own = |a: &AdapterStatus| match a {
+            AdapterStatus::Implemented {
+                integration_ownership,
+                ..
+            } => integration_ownership.clone(),
+            _ => unreachable!(),
+        };
+        assert_ne!(own(&c1), own(&c2));
+    }
+
+    /// `Inherited` must name its provider, so the claim is checkable
+    /// against the dependency graph instead of taken on trust.
+    #[test]
+    fn inherited_carries_its_provider_and_is_not_conflated_with_owned() {
+        let inherited = IntegrationOwnership::Inherited {
+            provider: "eframe 0.35 (bundled AccessKit integration)".to_string(),
+        };
+        match &inherited {
+            IntegrationOwnership::Inherited { provider } => {
+                assert!(provider.contains("eframe"), "{provider}")
+            }
+            IntegrationOwnership::CandidateOwned => panic!("wrong variant"),
+        }
+        assert_ne!(inherited, IntegrationOwnership::CandidateOwned);
+    }
+
+    /// Mutation: an `Implemented` row that omits `integration_ownership`
+    /// must fail to deserialize. If this ever passes, the field has become
+    /// optional in practice and the amendment is decorative — a report
+    /// could once again carry the distinction only in prose.
+    #[test]
+    fn an_implemented_row_without_integration_ownership_is_refused() {
+        let bad = serde_json::json!({
+            "Implemented": { "platform": "at-spi2", "notes": "n" }
+        });
+        let err = serde_json::from_value::<AdapterStatus>(bad)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("integration_ownership"), "{err}");
+    }
+
+    /// `NotBuilt` is for uncovered scope only, so it takes no ownership
+    /// field — a platform reached by *any* route is `Implemented`.
+    #[test]
+    fn not_built_takes_no_ownership_field() {
+        let bad = serde_json::json!({
+            "NotBuilt": {
+                "platform": "windows-uia",
+                "reason": "no runner",
+                "integration_ownership": "CandidateOwned"
+            }
+        });
+        let err = serde_json::from_value::<AdapterStatus>(bad)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("integration_ownership"), "{err}");
+    }
+
+    #[test]
+    fn adapter_rows_round_trip_through_json_both_ways() {
+        for a in [
+            implemented("at-spi2", IntegrationOwnership::CandidateOwned),
+            implemented(
+                "accesskit-0.24",
+                IntegrationOwnership::Inherited {
+                    provider: "eframe 0.35".to_string(),
+                },
+            ),
+            AdapterStatus::NotBuilt {
+                platform: "windows-uia".to_string(),
+                reason: "no runner".to_string(),
+            },
+        ] {
+            let json = serde_json::to_string(&a).unwrap();
+            let back: AdapterStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                serde_json::to_string(&back).unwrap(),
+                json,
+                "round trip changed the row"
+            );
+        }
     }
 
     /// An unknown field on the wire must be refused, not ignored — the same
