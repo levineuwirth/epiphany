@@ -179,6 +179,7 @@ numbering spaces are unrelated and must not be cross-read.
 | 9 | Genesis G2a | `OperationKind`/`OperationKindTag` 32–33 |
 | 10 | Genesis G2b | `OperationKind`/`OperationKindTag` 34 (`SetTuningContext`) |
 | 11 | Genesis G3a | `OperationKind`/`OperationKindTag` 35–38 (`CreateStaffGroup`, `CreatePartDefinition`, `CreateAnalysisLayer`, `CreateView`) |
+| 12 | Genesis G3b | `OperationKind`/`OperationKindTag` 39 (`CreateMeasure`); `PreconditionFailureReason` 16–18 (`MeasureMeterMismatch`, `MeasureOutOfOrder`, `MeasureOrderUnverifiable`) |
 
 > **Epoch 10 ratified 2026-07-28**, with G2b as the event. This is the **first
 > exercise of the ladder's own growth path**: G-minor's `introduced_minor()` is
@@ -193,9 +194,19 @@ numbering spaces are unrelated and must not be cross-read.
 > than one epoch per kind. The ladder stays monotonic (G3a follows G2b) and
 > prefix-closed.
 
+> **Epoch 12 ratified 2026-07-30**, with G3b as the event — the final rung of
+> the genesis ladder (`spec/PLAN_GENESIS_OPS.md`), closing it. One epoch for
+> the rung's one kind and its three `PreconditionFailureReason` appends
+> together, the Push 4a precedent (epoch 7 bundled kind 30 with reasons 14–15)
+> rather than a kind epoch and a reason epoch separately. The introducing
+> commit is this packet's own — the committing session owns `HEAD`, not this
+> packet, so the hash is recorded once committed rather than invented here.
+> The ladder stays monotonic (G3b follows G3a) and prefix-closed.
+
 **The ladder is complete against the audit** — every post-baseline variant in
-`AUDIT_GMINOR_VOCABULARIES.md` appears exactly once: all fifteen kind/tag pairs,
-`OperationPayload` 3, `ReanchorReason` 6, and all six
+`AUDIT_GMINOR_VOCABULARIES.md` appears exactly once: all fifteen kind/tag pairs
+through G3a, plus G3b's kind/tag 39 and its three reason appends,
+`OperationPayload` 3, `ReanchorReason` 6, and all nine
 `PreconditionFailureReason` appends.
 
 **And it is monotonic in real time**, which is what makes a minor prefix-closed
@@ -203,8 +214,18 @@ numbering spaces are unrelated and must not be cross-read.
 introducing commits rather than assumed: M2c `a207077` (2026-06-25) → Push 3
 `92aaccf` (07-02) → Phase-3 `0316160` (07-02) → G-pass `e4edea6` (07-07) →
 repeat pair `9b5339f` (07-07) → Push 4a `2740a6c` (07-09) → G1 `3b09595`
-(07-24) → **G2a `7df5ca1`** (07-28). The two events sharing 2026-07-07 are
-ordered correctly: the G-pass precedes the repeat revision.
+(07-24) → **G2a `7df5ca1`** (07-28) → **G2b `13c3d2f`** (07-29) → **G3a
+`6c5e69f`** (07-29) → **G3b** (this packet's own commit — the committing
+session owns `HEAD`, hash recorded there rather than invented here). The two
+events sharing 2026-07-07 are ordered correctly: the G-pass precedes the
+repeat revision. The two events sharing 2026-07-29 are ordered **by ancestry,
+not timestamp**: `13c3d2f` is an ancestor of `6c5e69f` (verified with
+`git merge-base --is-ancestor 13c3d2f 6c5e69f`), so G2b precedes G3a. **Only
+these three additive events — G2b, G3a, G3b — extend the chain past G2a**;
+G-minor (`ff9bd0f`) built the epoch machinery itself and introduced no
+additive variant, and P13-S17's restoration commit (`6170015`) repaired a
+document's history rather than appending vocabulary, so neither belongs in
+this chain.
 
 > **Correction 2026-07-28.** G2a's introducing commit is **`7df5ca1`**, where
 > kinds/tags 32–33 enter `ops/src/payload.rs`. `55eff00` is the *subsequent

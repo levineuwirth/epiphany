@@ -28,21 +28,27 @@
 //! — it is recorded retroactively *inside* the G2a row ("genesis tranche G1
 //! --- landed at `3b09595` with no matching entry here"). Demanding a
 //! principal marker for G1 would make this guard born red against a
-//! document that pin B2 leaves correct, so only G2a, G-minor, G2b, and G3a
-//! get principal-marker assertions here. Do not "fix" this by adding a
-//! fifth marker; that rediscovers the contradiction pin B6 already resolved.
+//! document that pin B2 leaves correct, so only G2a, G-minor, G2b, G3a, and
+//! G3b get principal-marker assertions here. Do not "fix" this by adding a
+//! sixth marker; that rediscovers the contradiction pin B6 already resolved.
+//!
+//! **G3b** (`spec/CONTRACT_GENESIS_G3B_MEASURE.md` pin 14) extends this same
+//! guard to its own Revision History row, closing the genesis ladder: the
+//! contract's own M71 deletes the G3b row, observes this guard fail, and
+//! restores it by hand.
 
 use std::fs;
 use std::path::Path;
 
 /// The rung name immediately preceded by the row's `---` separator, in the
 /// exact spelling each row uses (G-minor is never prefixed "Genesis
-/// tranche" in the document; the other three are).
-const PRINCIPAL_MARKERS: [(&str, &str); 4] = [
+/// tranche" in the document; the other four are).
+const PRINCIPAL_MARKERS: [(&str, &str); 5] = [
     ("G2a", "--- Genesis tranche G2a"),
     ("G-minor", "--- G-minor"),
     ("G2b", "--- Genesis tranche G2b"),
     ("G3a", "--- Genesis tranche G3a"),
+    ("G3b", "--- Genesis tranche G3b"),
 ];
 
 fn binary_format_source() -> String {
@@ -126,9 +132,9 @@ fn revision_history_has_exactly_one_principal_marker_per_rung() {
     }
 }
 
-/// The four marked rungs appear in ladder order: G1 -> G2a -> G-minor ->
-/// G2b -> G3a. G1 has no marker of its own (see the module comment), so
-/// this checks the remaining four.
+/// The five marked rungs appear in ladder order: G1 -> G2a -> G-minor ->
+/// G2b -> G3a -> G3b. G1 has no marker of its own (see the module comment),
+/// so this checks the remaining five.
 #[test]
 fn revision_history_rungs_are_strictly_ordered() {
     let source = binary_format_source();
@@ -156,7 +162,7 @@ fn revision_history_rungs_are_strictly_ordered() {
             earlier_offset < later_offset,
             "expected {earlier_rung} (offset {earlier_offset}) to precede {later_rung} \
              (offset {later_offset}) in the Revision History chapter; ladder order is \
-             G2a < G-minor < G2b < G3a"
+             G2a < G-minor < G2b < G3a < G3b"
         );
     }
 }

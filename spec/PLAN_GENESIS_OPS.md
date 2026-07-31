@@ -6,8 +6,9 @@ reverses Pass-12 K8 and makes every mutable field of `Score` operation-authored.
 This plan is the execution scope: what the tranche touches, in what order, and
 which questions must be answered before a dispatch contract can be written.
 
-**Status:** the ladder **G1 → G2a → G-minor → G2b → G3a** is **complete**;
-only **G3b** remains (ratified 2026-07-29, §4).
+**Status:** the ladder **G1 → G2a → G-minor → G2b → G3a → G3b** is
+**CLOSED** (`spec/CONTRACT_GENESIS_G3B_MEASURE.md`, ratified). The genesis
+operation tranche is complete.
 
 * **G1 landed** (3b09595) — `CreateInstrument`, kind/tag 31.
 * **G2a landed** (7df5ca1 + 55eff00) — `SetCanvasLayoutDefaults` and
@@ -32,9 +33,15 @@ only **G3b** remains (ratified 2026-07-29, §4).
   this rung's own sign-off missed — `ObjectState::Tombstoned` reachable but
   under-covered for these four kinds plus `Instrument` — rides after it as
   `spec/CONTRACT_GENESIS_G3A_UNDO_REPAIR.md` Packet A.
-* **G3b** — `CreateMeasure` alone, kind/tag **39**, epoch **12**, carrying
-  graph invariant **20** and a new `PreconditionFailureReason` at discriminant
-  **16**. Scoped, not contracted.
+* **G3b landed** (packet 1 `e64a4b7` + repairs `b92023a`/`b622498`, packet 2
+  `314cd7a`, packet 3a `acd7a76`, packet 3b — this rung) — `CreateMeasure`
+  alone, kind/tag **39**, epoch **12**, carrying graph invariant **20** and
+  three new `PreconditionFailureReason` discriminants **16–18**
+  (`MeasureMeterMismatch`, `MeasureOutOfOrder`, `MeasureOrderUnverifiable`).
+  No `epiphany-bundle` change of any kind; op-block accept-set stays at 3
+  where G2b left it. Closes the genesis ladder. Filed **P13-S18** (invariant
+  20's abstention residue) and **P13-S19** (the pickup/anacrusis deferral),
+  both open by design.
 
 **Deletes are deferred out of G3 entirely** (§6.1, ratified 2026-07-29). Both
 packets are mints only.

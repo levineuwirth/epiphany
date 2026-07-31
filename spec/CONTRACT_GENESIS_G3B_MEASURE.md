@@ -1,6 +1,6 @@
 # Contract: genesis tranche G3b — `CreateMeasure`, invariant 20, and the close of the genesis ladder
 
-**Status:** DRAFT — awaiting ratification.
+**Status:** RATIFIED.
 **Governs:** the final rung of `spec/PLAN_GENESIS_OPS.md`. One kind, one
 invariant, three precondition reasons, one epoch.
 **Predecessors:** G3a `6c5e69f`; the G3a undo repair `4b0abaf`; P13-S17

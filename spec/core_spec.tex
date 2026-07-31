@@ -6615,6 +6615,22 @@ The score graph maintains a set of structural invariants. Implementations
       \texttt{Measure}s belonging to those instances. Group members
       \MUSTNOT{} reference staff instances or measures across
       region boundaries.
+    \item (Genesis tranche G3b.) A measure's declared time signature
+      \texttt{Measure.time\_signature}, when it resolves, AGREES with
+      the effective metric grid's active signature at the measure's
+      start; and consecutive measure starts within a staff instance
+      are separated by the governing signature's
+      \texttt{measure\_duration()} (BOUNDARY consistency).
+      \texttt{time\_signature: None} exempts only the agreement
+      clause --- the inherited meter still governs boundary
+      consistency. This invariant \MUSTNOT{} duplicate the
+      signature-\emph{resolution} check above (invariant 10): it
+      compares only already-resolving signatures. It ABSTAINS ---
+      raises no violation --- wherever the comparison or the
+      distance cannot be decided (base-ingested data may predate
+      this rule); this is deliberate abstention, not a soundness
+      gap. A pickup/anacrusis first measure has no predecessor and
+      is never flagged.
   \end{enumerate}
 
   Implementations \MUST{} reject graph configurations that violate any
@@ -6623,10 +6639,14 @@ The score graph maintains a set of structural invariants. Implementations
   changes that restore them within the same operation.
 \end{requirement}
 
-This enumeration contains exactly \textbf{19} invariants. (Earlier
+This enumeration contains exactly \textbf{20} invariants. (Earlier
 summary material, including the QUICKSTART, referred to ``18 graph
-invariants''; the authoritative count is 19, matching this
-enumeration and the reference implementation.) These 19 are
+invariants''; a subsequent revision of this document corrected that
+to 19; genesis tranche G3b
+(\texttt{spec/CONTRACT\_GENESIS\_G3B\_MEASURE.md}) then appended a
+20th, measure-meter consistency, above --- the authoritative count is
+20, matching this enumeration and the reference implementation.)
+These 20 are
 \emph{runtime} invariants: they hold over every well-formed graph and
 are restored by compensating changes when an edit would break them.
 
@@ -6990,6 +7010,12 @@ pub enum OperationKind {
     CreatePartDefinition(CreatePartDefinitionOp),
     CreateAnalysisLayer(CreateAnalysisLayerOp),
     CreateView(CreateViewOp),
+
+    // Genesis tranche G3b: the final rung of the genesis ladder. Appends a
+    // Measure to a live StaffInstance (StaffInstance.measures), on the
+    // InsertStaffInstance parent-carrying mint pattern rather than the
+    // bare-value shape above -- Measure has no back-pointer to its parent.
+    CreateMeasure(CreateMeasureOp),
 
     // Layout-semantic operations
     SetUserSystemBreak(SetUserSystemBreakOp),
@@ -11966,6 +11992,9 @@ pub enum OperationKindTag {
     CreatePartDefinition,
     CreateAnalysisLayer,
     CreateView,
+    // Genesis tranche G3b: the final rung, name-verbatim, as the four most
+    // recent prior additions are. Closes the genesis ladder.
+    CreateMeasure,
 }
 
 pub enum BarrierScope {

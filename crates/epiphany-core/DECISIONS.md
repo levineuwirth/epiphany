@@ -1526,3 +1526,63 @@ behaviour change): its body already resolved a staff's group, a group's
 members, a part's staves, a view's active layers, and measure/grid
 time-signature references; the doc comment previously named only cross-cutting
 structures and event-internal references.
+
+## Genesis tranche G3b — graph invariant 20, and the anchor-relation oracle
+## implemented twice (2026-07-29/30)
+
+`spec/CONTRACT_GENESIS_G3B_MEASURE.md` closes the genesis ladder
+(`spec/PLAN_GENESIS_OPS.md` §4: G1 → G2a → G-minor → G2b → G3a → G3b). This
+crate's share is graph invariant **20** — measure/meter agreement and
+boundary consistency — plus the doc-only invariant-10 note it does not
+duplicate, and one deliberate, unusual export.
+
+**Invariant 20 checks two things and nothing else** (pin 9b): that a
+measure's *resolving* `time_signature` AGREES with the effective metric
+grid's active signature at its start, and that consecutive measure starts
+are separated by the governing signature's `measure_duration()` (BOUNDARY
+consistency). It does **not** re-check signature *resolution* — invariant 10
+already does that (`invariants.rs:1180`–`:1212`) — so a `time_signature`
+that fails to resolve is invariant 10's business, not invariant 20's.
+`time_signature: None` exempts only the agreement clause; the inherited
+meter still governs boundary consistency, so a `None` measure landing at the
+wrong distance from its predecessor is still flagged.
+
+**It ABSTAINS rather than fails closed** (pin 7) wherever pin 6's comparable
+relation cannot order two measure starts, or pin 6b's musical delta cannot
+be computed between them: cross-clock offsets, differing boundary selectors,
+or any anchor this prototype's `resolve_anchor` cannot place (notably a
+`Measure` *end*, `invariants.rs:503`–`:516`). This is the deliberate
+opposite of `create_measure`'s own precondition, which fails closed on the
+identical incomputable cases (`epiphany-ops` `DECISIONS.md`) — base-ingested
+data may predate the rule, and flagging every incomputable case would make
+the invariant useless on real scores. The residue is filed as **P13-S18**,
+open by design. A pickup/anacrusis first measure has no predecessor and is
+therefore never flagged by the boundary clause — filed as **P13-S19**, also
+open by design (the create-side mirror of this deferral lives in
+`epiphany-ops`).
+
+**The two anchor-relation hooks, and why they are a deliberate, unusual
+export.** `epiphany-ops` depends on this crate and never the reverse, so
+invariant 20 cannot call into `epiphany-ops`'s `Reducer` to reuse its
+private pin 6/6b methods — and there is no third crate either could
+delegate to instead. The normative comparable relation and musical delta
+are therefore implemented **twice**: once here, over a materialized `Score`
+(`GraphIndex::measure20_comparable_order` / `measure20_musical_delta`,
+private to `invariants.rs`), and once in `epiphany-ops`'s `Reducer`, over
+operational write chains. Two implementations of one normative relation is
+a divergence hazard by construction, so this crate re-exports a narrow
+oracle hook, `measure_anchor_relation` (`invariants.rs:296`ff, re-exported
+from `lib.rs`), purely so `epiphany-testkit`'s cross-crate agreement test
+(`g3b_measure_anchor_agreement.rs`) can drive the same anchor pairs through
+both implementations and assert they agree — on the comparable-or-not
+verdict, the ordering when comparable, and the musical delta. The mirror
+hook, `epiphany_ops::measure_anchor_relation_for_agreement_test`, is
+documented in `epiphany-ops`'s own `DECISIONS.md`.
+
+**This is the hook's only sanctioned use.** It is not a general-purpose
+anchor-comparison API: it exists solely to make the divergence-hazard test
+possible from a third crate, and no other caller should reach for it. A
+mutation perturbing only one implementation's boundary-selector or
+cross-clock handling is caught by the agreement test going red, independent
+of whether either implementation individually still passes its own unit
+coverage.

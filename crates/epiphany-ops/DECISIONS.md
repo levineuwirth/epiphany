@@ -2117,3 +2117,172 @@ types.
 **No pruning or compaction is implemented, enabled, or prepared here** — pin
 9's explicit non-goal, restated: G3a adds four more authored families to the
 surface a future prune must not discard.
+
+## Genesis tranche G3b — `CreateMeasure`, kind/tag 39, closing the genesis
+## ladder (2026-07-29/30, packets 1–3a: `e64a4b7`, `b92023a`, `b622498`,
+## `314cd7a`, `acd7a76`)
+
+`spec/CONTRACT_GENESIS_G3B_MEASURE.md` lands the fifth and final rung
+(`spec/PLAN_GENESIS_OPS.md` §4: G1 → G2a → G-minor → G2b → G3a → G3b).
+Unlike every G3a family, `Measure` is a **nested container child** of
+`StaffInstance` (`graph.rs:611`), not a `Score`-root vector, so
+`CreateMeasure` rides `CreateStaffInstance`'s parent-carrying shape
+(`payload.rs:1510`, reducer `reduce.rs:4026`) rather than the four G3a
+families' bare-value shape: `CreateMeasureOp { instance: StaffInstanceId,
+measure: Measure }`, `measure_id()` returning `self.measure.id`.
+`Measure` is schema major 0 (`struct_codec!` is a plain unversioned walk and
+its only non-scalar field, `TimeAnchor`, has a hand-written `Codec` with no
+version branching), so `schema_major()` gains **no** arm and
+`OperationEnvelopeBlock` stays at 3 where G2b left it.
+
+**The carried-value map must carry the owning instance** (pin 5):
+`measure_values: BTreeMap<MeasureId, (StaffInstanceId, Measure)>`, not a
+bare `Measure` map, because `Measure` has no back-pointer to its parent — the
+graph-removal arm and the per-instance ordering check both need it. Threaded
+through the same **seven** sites every carried-value map uses (declaration,
+`WorkingSnapshot` declaration, initialization, base seed in
+`seed_from_graph`, mint insertion, snapshot, restore). Set-union discipline:
+byte-identical re-carry under the **same** parent is `AlreadyApplied`; a
+differing value, **or the same measure under a different parent**, is
+`RecreateContentMismatch` — the parent is part of identity here.
+
+**Three new `PreconditionFailureReason` variants, all epoch 12:**
+`MeasureMeterMismatch` (16), `MeasureOutOfOrder` (17), and
+`MeasureOrderUnverifiable` (18). `create_measure`'s append-only discipline
+(pin 9, `reduce.rs:5407`ff) checks, in order: the parent `StaffInstance` is
+live (ungated); a resolving `time_signature` names a live `TimeSignature`
+and every non-`WallClock` referent of `start` resolves (graph-aware only);
+the carried `start` is comparable to the current last live measure's start
+and strictly after it (`MeasureOutOfOrder`, or `MeasureOrderUnverifiable` if
+incomparable); agreement against the effective grid's active signature
+(`MeasureMeterMismatch`); and the boundary distance from the predecessor
+equals the governing `measure_duration()` (`MeasureMeterMismatch`, or
+`MeasureOrderUnverifiable` if the delta is not computable). All three
+clauses are vacuous for an instance's first measure — no predecessor to
+compare against — which is the pickup/anacrusis deferral filed as
+**P13-S19**, open by design (core `DECISIONS.md` files the invariant-side
+mirror). `CreateMeasure` fails **closed** on every incomputable case; graph
+invariant 20 (core `DECISIONS.md`) **abstains** on the identical cases —
+deliberately opposite postures, not an inconsistency.
+
+**The effective-grid oracle, and the instance-grid ledger the reducer
+previously lacked** (pin 6c). `StaffInstance.local_metric_grid` overrides
+the region default, but the reducer retained no instance-local grid state
+before this rung, so base-free reduction could not distinguish an override
+from an inherited default. Disposition **(A)** is ratified: an
+`instance_grid: BTreeMap<StaffInstanceId, Option<MetricGrid>>` ledger (the
+same seven sites), seeded by `create_staff_instance` and by
+`seed_from_graph`, **plus** a shared oracle that reconstructs the inherited
+grid from `metric_grid_chain` (whole-grid writes) layered under
+`meter_change_chain` (per-key changes) **in canonical write order**, folding
+in prospective undo restorations, and run identically in **both** reduction
+modes — so graph-aware and base-free reduction never disagree on a case this
+rung can decide. Selection over a partially-comparable `meter_sequence`
+follows pin 6c exactly: an incomparable change makes selection
+indeterminate even from an otherwise-empty candidate set (an incomparable
+change is unplaced, not absent, and might have governed); a genuinely empty
+candidate set is vacuous, not a violation; multiple mutually-incomparable
+maxima are indeterminate, never resolved by document order or id.
+
+**Two repair commits, both found by tests the white-box coverage could not
+see** (`b92023a`, `b622498`). Base-free c3 ordering originally trusted
+`OperationId`'s `Ord` (replica, counter — authoring identity) instead of the
+minters' canonical reduction-order stamps, and never checked the two
+measures shared a live `StaffInstance`. An empty effective grid originally
+refused instead of abstaining, because agreement collapsed `None` into a
+disagreeing `Unique` and boundary distance collapsed `None` into
+`Indeterminate`; they are now separate outcomes. Simultaneous prospective
+whole-grid and per-key restorations had no tie-break (`Recency::Prospective`
+being a unit variant made both compare equal), repaired to let the per-key
+write govern on equal recency within the prospective family — matching how
+`undo_transaction` actually records a whole-grid restoration before its
+meter-change restoration under the same undo. The second repair rebuilt the
+regression fixture itself: it never ran its own transaction, so
+`compute_pending`'s missing-vector-predecessor rule (envelope counters
+jumping 3 → 10 → 11 → 12 → 20) left every member permanently pending and the
+test's "prediction" was checked only against itself, never against the
+materialized graph.
+
+**Undo coverage: the graph-removal arm, and the Measure strand guard across
+all SEVEN inbound surface classes** (pin 10, packet 3a `acd7a76`).
+`materialize_graph_tombstones` gains a `TypedObjectId::Measure(id)` arm that
+reaches the owning instance through `measure_values`'s carried parent — no
+search needed. The strand guard **cannot** be written against
+`self.structures`: that index is event-only by construction (the base-seed
+walk filters through `anchor_event_refs`, which drops every
+`Measure`/`Region`/`WallClock` anchor), so a guard against it is born green
+— rewriting it that way was tried and breaks fifteen tests, proving the
+point rather than merely asserting it. The seven surfaces, each with its own
+owner rule: spanner (`cross_cutting_modify_chain`, owned by the structure),
+repeat (`repeat_values`, owned by the repeat structure — see below), another
+measure's `start` (`measure_values`, owned by that measure), meter change
+(`meter_change_chain`, owned by the region), system break (`break_chain`,
+owned by the region), page break (`page_break_chain`, owned by the region),
+and tempo segment (`tempo_segment_chain`, keyed `(Option<RegionId>,
+MusicalPosition)` — a `Some(region)` entry is owned by that region;
+score-level `None` entries are genuinely ownerless and block on the
+reference itself). `TempoSegment` carries **two** anchor sites, `start` and
+optional `end` (`tempo.rs:109`), both guarded independently. Five of the
+seven surfaces are real `WriteChain`s and restoration-aware in both
+directions (a restoration reinstating a reference blocks; one removing a
+reference does not); `repeat_values` and `measure_values` are immutable
+value maps — nothing ever rewrites a live repeat's or measure's anchors in
+place, so restoration-awareness is N/A for exactly those two.
+
+**`RepeatStructure` needed its own ledger, not the cross-cutting chain**
+(pin 10.4). `CrossCuttingValue` is `Tie | Slur | Beam | Spanner` —
+`RepeatStructure` is not a variant, so `cross_cutting_modify_chain`
+structurally cannot hold one. `repeat_values: BTreeMap<RepeatStructureId,
+RepeatStructure>` carries it instead, at the same seven sites, **with no
+delete site** — retention matches the ratified project discipline (no value
+map is ever pruned; every reader consults `self.objects` first) and is what
+makes the tombstoned-referencer test row reachable at all: a tombstoned
+repeat's value stays in the map and still names the measure, so the guard
+can be shown *not* blocking on a corpse only if the value is still there to
+check.
+
+**Also closes a hole that predates G3b.** `undo_strand_block`'s existing
+`TimeSignature` arm consulted only `meter_change_chain`; a minted
+`TimeSignature` still named by a live `Measure.time_signature` was not
+checked and could be stranded by an undo. `measure_values` is an immutable
+value map, so this extension is ungated exactly like the pre-existing
+StaffGroup/AnalysisLayer/Instrument guards.
+
+**`SetMetricGrid`/`SetTimeSignature` now preserve invariant 20**, both
+clauses, on both forward paths and both undo restoration policies, with
+every check running before any mint (`set_time_signature` previously minted
+its carried `TimeSignature` before writing the meter change; a prospective
+refusal appended afterward would have leaked a minted signature from a
+non-transactional operation with no undo to reclaim it — restructured so
+every check precedes the mint, and tested that a refusal leaves no residue
+in `objects`, any carried-value map, or the graph). Restoration safety is
+evaluated in **aggregate**, not per-restoration: a single undo can collect a
+whole-grid restoration and one or more meter-change restorations together,
+and individually-unsafe restorations can be jointly safe (or the reverse).
+`StrictInverse`/`Cascade` evaluate the prospective post-undo state with the
+**whole** restoration set applied and conflict if unsafe; `BestEffort`
+applies the maximal safe subset under a documented deterministic
+canonical-order greedy (consider restorations in canonical order, admit
+each one that keeps the accumulated state clean, skip the rest — "maximal"
+under this rule, not the set-theoretic maximum, which is not uniquely
+defined).
+
+**The cross-crate anchor-relation agreement test, and the hook that makes it
+possible.** `epiphany-ops` depends on `epiphany-core`, never the reverse, so
+invariant 20 (`epiphany-core`) cannot reuse this crate's private
+`Reducer::anchors_comparable_order` / `Reducer::anchor_musical_delta`, and
+implements the identical pin 6/6b relation a second time over the graph
+alone. Two implementations of one normative relation is a divergence
+hazard, so this crate exports a narrow oracle hook,
+`measure_anchor_relation_for_agreement_test` (`reduce.rs:703`, re-exported
+from `lib.rs`), whose **only** sanctioned use is
+`epiphany-testkit`'s `g3b_measure_anchor_agreement.rs`, which drives a table
+of anchor pairs through both this hook and core's
+`measure_anchor_relation` and asserts they agree — comparable-or-not,
+ordering when comparable, and musical delta. It is not a general-purpose
+anchor API. This crate's `DECISIONS.md` entry and core's document the same
+pair of hooks from each side.
+
+**No `epiphany-bundle` change of any kind**, mirroring G3a: `Measure`'s one
+wire layout never gained a `schema_major()` arm, so the accept-set never
+moved.

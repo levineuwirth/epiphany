@@ -231,7 +231,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.12.0 --- The genesis operation tranche completes the root-level entity mints (G3a)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.13.0 --- The genesis operation tranche closes: \texttt{CreateMeasure} and graph invariant 20 (G3b)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -475,6 +475,47 @@ No accept-set change: all four carried types have exactly one wire layout
 (core specification's \sectionsc{Binary Format Companion} confirms no
 versioned walk exists for any of the four), so none gains a
 \texttt{schema\_major()} arm beyond the existing catch-all.
+
+\medskip
+
+\noindent\textbf{Version 0.13.0 (genesis tranche G3b,
+\texttt{spec/CONTRACT\_GENESIS\_G3B\_MEASURE.md}), the final rung of the
+genesis operation tranche (\texttt{spec/PLAN\_GENESIS\_OPS.md}).} Adds one
+operation kind, \texttt{CreateMeasure} (Section~\ref{sec:k0:create-measure}):
+\texttt{StaffInstance.measures} joins the operation-authored surfaces, on the
+\texttt{CreateStaffInstance} parent-carrying mint pattern rather than the
+bare-value shape the four G3a families above use --- \texttt{Measure} is a
+nested container child, not a \texttt{Score}-root vector, and carries no
+back-pointer to its parent. Schema major~0 unconditionally, epoch~12.
+
+Also adds graph invariant 20 (core specification \sectionsc{Graph
+Invariants}) --- measure/meter agreement and boundary consistency --- and
+three \texttt{PreconditionFailureReason} appends, all epoch~12:
+\texttt{MeasureMeterMismatch} (16), \texttt{MeasureOutOfOrder} (17), and
+\texttt{MeasureOrderUnverifiable} (18). \texttt{CreateMeasure} itself refuses
+whenever the comparison or delta invariant 20 needs is not computable
+(\texttt{MeasureOrderUnverifiable}); invariant 20 instead \emph{abstains} ---
+emits no violation --- over the same incomputable cases, because base-ingested
+data may predate the rule. This is a deliberate split, not an inconsistency:
+fail closed at the operation, abstain at the invariant.
+
+\textbf{Two existing operations now preserve invariant 20.} \texttt{SetMetricGrid}
+(Section~\ref{sec:k0:meter-tempo}) and \texttt{SetTimeSignature}
+(Section~\ref{sec:k0:meter-tempo}) both gain prospective preconditions,
+covering agreement and boundary consistency, on their forward paths and on
+both undo restoration policies (\texttt{StrictInverse}/\texttt{Cascade}
+conflict on an unsafe restoration set; \texttt{BestEffort} applies the
+maximal safe subset under a documented canonical-order greedy). Every check
+runs before any mint, so a refused write leaves no residue in \texttt{objects},
+any carried-value map, or the graph.
+
+No accept-set change: \texttt{Measure} has never been versioned as a
+standalone value --- its only non-scalar field, \texttt{TimeAnchor}, has a
+hand-written codec with no version branching of its own --- so
+\texttt{OperationEnvelopeBlock} stays at \texttt{3} where genesis tranche
+G2b left it. This closes the genesis ladder
+(\texttt{spec/PLAN\_GENESIS\_OPS.md} \S4): G1 $\rightarrow$ G2a $\rightarrow$
+G-minor $\rightarrow$ G2b $\rightarrow$ G3a $\rightarrow$ G3b.
 
 % ===========================================================================
 \chapter{The Catalog Framework}
@@ -1584,6 +1625,102 @@ mutated.
 
 \textbf{Re-anchoring.} Not applicable (a view mint references no tombstonable
 anchor; there is no \texttt{DeleteView} in this catalogue revision).
+
+\section{CreateMeasure}
+\label{sec:k0:create-measure}
+
+Ratified with genesis tranche G3b (\texttt{spec/CONTRACT\_GENESIS\_G3B\_MEASURE.md}),
+the final rung of the genesis operation tranche
+(\texttt{spec/PLAN\_GENESIS\_OPS.md}): a staff instance's measure sequence
+(\texttt{StaffInstance.measures}) joins the operation-authored surfaces.
+Unlike Section~\ref{sec:k0:create-staff-group} through
+Section~\ref{sec:k0:create-view}, \texttt{Measure} is a \textbf{nested
+container child} of \texttt{StaffInstance}, not a \texttt{Score}-root vector
+--- so \texttt{CreateMeasure} rides \texttt{CreateStaffInstance}'s
+parent-carrying shape (Section~\ref{sec:k0:structural-containers}), not the
+four G3a families' bare-value shape.
+
+\textbf{Payload schema.} \texttt{CreateMeasureOp \{ instance: StaffInstanceId,
+measure: Measure \}} --- the owning staff instance's identifier beside the
+full \texttt{Measure} value. \texttt{Measure} carries no back-pointer to its
+parent, so the parent must ride along, exactly like
+\texttt{CreateStaffInstanceOp::region}.
+
+\textbf{Canonical encoding.} \texttt{instance} (canonical bytes), then the
+length-framed canonical bytes of \texttt{measure}. \texttt{Measure} has never
+been versioned --- its only non-scalar field, \texttt{TimeAnchor}, has a
+hand-written codec with no version branching of its own --- so this operation
+is schema major~0 unconditionally.
+
+\textbf{Reduction rule.} Set-union creation, on the same discipline as
+\texttt{CreateStaffInstance}: a create mints the measure live, appended to the
+\textbf{end} of \texttt{instance.measures} (\texttt{Measure} order is
+append-only), if its id is fresh; a repeat create carrying a byte-identical
+value under the \textbf{same} owning instance reduces idempotently
+(\texttt{NoOpReason::AlreadyApplied}); a create whose id is already live with a
+differing value, \textbf{or the same measure value under a different owning
+instance}, is a precondition no-op with \texttt{RecreateContentMismatch} ---
+the owning instance is part of identity here, since a \texttt{Measure} carries
+no parent reference of its own; a create naming a tombstoned id is a
+precondition no-op with \texttt{TargetTombstoned}.
+
+Referential preconditions: the parent \texttt{StaffInstance} must be live
+(ungated --- checked graph-aware and base-free alike, mirroring
+\texttt{CreateStaffInstance}'s own region check: a mint into a non-existent
+parent has nowhere to go even base-free); graph-aware only, a resolving
+\texttt{measure.time\_signature} must name a live \texttt{TimeSignature}, and
+every non-\texttt{WallClock} referent of \texttt{measure.start} (an
+\texttt{Event}, another \texttt{Measure}, or a \texttt{Region}) must resolve.
+
+\textbf{Ordering and boundary-distance preconditions (core specification
+\sectionsc{Graph Invariants}, invariant 20).} Graph-aware, against the current
+last live measure of the same instance (vacuous for an instance's first
+measure --- a pickup/anacrusis is never refused or flagged on this account):
+the carried \texttt{start} must be \textbf{comparable} to the predecessor's
+start and \textbf{strictly after} it (else \texttt{MeasureOutOfOrder}), and,
+when a governing time signature is determinable, the \textbf{musical delta}
+between the two starts must equal that signature's
+\texttt{measure\_duration()} (else \texttt{MeasureMeterMismatch}). Either
+comparison being \textbf{unverifiable} --- the two starts are not comparable,
+or the delta is not computable --- refuses with
+\texttt{MeasureOrderUnverifiable} rather than silently permitting an
+unverifiable mint. A resolving \texttt{time\_signature} that \textbf{disagrees}
+with the effective grid's active signature at the measure's start also refuses
+with \texttt{MeasureMeterMismatch}; \texttt{time\_signature: None} skips only
+this agreement check, not the boundary-distance check above.
+
+\textbf{The effective grid} is \texttt{StaffInstance.local\_metric\_grid} when
+present, else the enclosing region's default metric grid, reconstructed from
+the same operational write chains (\texttt{SetMetricGrid}'s whole-grid writes
+layered under \texttt{SetTimeSignature}'s per-key changes, in canonical write
+order, folding in any prospective undo restoration) in both graph-aware and
+base-free reduction, so the two modes never disagree.
+
+\textbf{Conflict cases.} None at reduction time (set-union; the differing-value
+re-create is a precondition gate, not a conflict).
+
+\textbf{Undo semantics.} Undo of a create tombstones the minted measure and
+removes it from the owning instance's \texttt{measures} vector
+(Section~\ref{sec:k0:undo}). \texttt{StrictInverse} conflicts if a live
+reference would be stranded, across \textbf{seven} inbound surface classes: a
+spanner endpoint, a repeat structure's anchor sites, another measure's
+\texttt{start}, a meter change, a system-break advisory, a page-break
+advisory, or a tempo segment's \texttt{start} or optional \texttt{end}. Six of
+the seven surfaces are owned (the referencing object must be live and not
+itself part of the transaction being undone); a score-level
+(\texttt{region: None}) tempo segment has no owning object and blocks on the
+reference itself. Five of the seven are restoration-aware --- a prospective
+undo restoration that would \emph{reinstate} a reference to the measure still
+blocks, and one that would \emph{remove} a reference does not; the remaining
+two (another measure's \texttt{start}, and a repeat structure's anchors) are
+immutable value maps with no modify operation, so restoration-awareness does
+not apply to them. Also closes a pre-existing hole: a minted
+\texttt{TimeSignature} still named by a live \texttt{Measure.time\_signature}
+now blocks its own undo, exactly as a live meter-change reference already did.
+
+\textbf{Re-anchoring.} Not applicable (a measure mint references no
+tombstonable anchor of its own; there is no \texttt{DeleteMeasure} in this
+catalogue revision).
 
 \section{Repeat Structures}
 \label{sec:k0:repeat-structures}
