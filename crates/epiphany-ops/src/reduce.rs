@@ -19832,6 +19832,246 @@ mod tests {
         );
     }
 
+    /// Pin 4 (spec/CONTRACT_P13S19_PARTIAL.md): a pickup's successor is
+    /// refused end-to-end, not merely read off the reducer's source. The
+    /// pickup itself — first measure of the instance, `time_signature:
+    /// None` so the agreement clause (clause 2, which is NOT
+    /// predecessor-dependent) is avoided by declaration rather than by any
+    /// first-measure exemption — mints `Applied`: clauses 1 and 3 are
+    /// vacuous for it (no predecessor). Its successor, ALSO declaring
+    /// `time_signature: None` (so its own clause 2 is out of the way and
+    /// the refusal below cannot be clause 2's), starts only HALF a
+    /// `measure_duration` after the pickup — the pickup's own actual
+    /// (unmodelled) content length, not the governing signature's full
+    /// whole-note bar — and clause 3 refuses it: `MeasureMeterMismatch`.
+    /// The governing signature's own write and the pickup's mint are both
+    /// asserted `Applied` before the refusal is asserted, so envelope
+    /// counter gaps cannot make either op silently pending and pass the
+    /// refusal off as something it isn't.
+    #[test]
+    fn g3b_create_measure_pickup_successor_refused_end_to_end() {
+        let region = RegionId::new(ReplicaId(1), 90);
+        let instance = StaffInstanceId::new(ReplicaId(1), 91);
+        let staff = StaffId::new(ReplicaId(1), 92);
+        let mut envs = g3b_region_and_instance_envs(1, region, instance, staff);
+
+        let sig_a = TimeSignatureId::new(ReplicaId(1), 93);
+        // numerator 4 -> measure_duration = 4/4 = one whole note ("a full bar").
+        let set_sig_a = prim_env(
+            1,
+            2,
+            2,
+            CausalContext::new(),
+            OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region,
+                anchor: g3b_region_anchor(region, 0),
+                time_signature: Some(crate::valuegen::time_signature(sig_a, 4)),
+            }),
+        );
+        envs.push(set_sig_a.clone());
+
+        fn measure(id: u64, start: TimeAnchor, sig: Option<TimeSignatureId>) -> Measure {
+            Measure {
+                id: MeasureId::new(ReplicaId(1), id),
+                start,
+                time_signature: sig,
+                explicit_number: None,
+                number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+            }
+        }
+
+        // The pickup: first measure, `None` (pin 4's fixture constraint —
+        // `Some` of a disagreeing signature would be refused by clause 2
+        // instead, for a reason that has nothing to do with partiality).
+        let pickup = g3b_measure_env(
+            1,
+            3,
+            3,
+            instance,
+            measure(400, g3b_region_anchor(region, 0), None),
+        );
+
+        // The successor: also `None`, so ITS clause 2 is equally out of the
+        // way. Half a whole note after the pickup — not the full bar sig_a
+        // demands.
+        let successor = g3b_measure_env(
+            1,
+            4,
+            4,
+            instance,
+            measure(
+                401,
+                TimeAnchor::Region {
+                    id: region,
+                    edge: RegionEdge::Start,
+                    offset: AnchorOffset::Musical(MusicalDuration(
+                        RationalTime::new(1, 2).unwrap(),
+                    )),
+                },
+                None,
+            ),
+        );
+
+        envs.extend([pickup.clone(), successor.clone()]);
+        let mut set = OperationSet::new();
+        set.accept_all(envs);
+        let state = set.reduce();
+
+        assert_eq!(
+            g3b_effect_of(&state, set_sig_a.id),
+            Some(OperationEffect::Applied),
+            "the governing signature must itself be applied, or the refusal below proves nothing"
+        );
+        assert_eq!(
+            g3b_effect_of(&state, pickup.id),
+            Some(OperationEffect::Applied),
+            "pin 1: the pickup itself is neither refused nor flagged — clauses 1 and 3 are \
+             vacuous for a first measure, and clause 2 is avoided here by declaring `None`, \
+             not by any first-measure exemption"
+        );
+        assert_eq!(
+            g3b_effect_of(&state, successor.id),
+            Some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::MeasureMeterMismatch
+                }
+            }),
+            "pin 4: the pickup's successor is measured against the governing signature's FULL \
+             measure_duration (one whole note), not the pickup's own half-note actual length — \
+             clause 3 refuses it MeasureMeterMismatch, and (both sides declaring `None`) this \
+             refusal cannot be clause 2's"
+        );
+    }
+
+    /// Pin 2 (spec/CONTRACT_P13S19_PARTIAL.md): a mid-score partial measure
+    /// — index >= 1, so it has no first-measure exemption at all — enters
+    /// successfully, because the boundary check run when IT is created only
+    /// examines the distance from ITS predecessor (`m0`, a full measure),
+    /// never its own eventual length. The failure surfaces one measure
+    /// later, on `m1`'s own successor (`m2`), whose distance from `m1`
+    /// exposes `m1`'s actual (partial) length against the same governing
+    /// signature's full `measure_duration()`.
+    #[test]
+    fn g3b_create_measure_mid_score_partial_successor_refused_end_to_end() {
+        let region = RegionId::new(ReplicaId(1), 94);
+        let instance = StaffInstanceId::new(ReplicaId(1), 95);
+        let staff = StaffId::new(ReplicaId(1), 96);
+        let mut envs = g3b_region_and_instance_envs(1, region, instance, staff);
+
+        let sig_a = TimeSignatureId::new(ReplicaId(1), 97);
+        // numerator 4 -> measure_duration = 4/4 = one whole note.
+        let set_sig_a = prim_env(
+            1,
+            2,
+            2,
+            CausalContext::new(),
+            OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region,
+                anchor: g3b_region_anchor(region, 0),
+                time_signature: Some(crate::valuegen::time_signature(sig_a, 4)),
+            }),
+        );
+        envs.push(set_sig_a.clone());
+
+        fn measure(id: u64, start: TimeAnchor, sig: Option<TimeSignatureId>) -> Measure {
+            Measure {
+                id: MeasureId::new(ReplicaId(1), id),
+                start,
+                time_signature: sig,
+                explicit_number: None,
+                number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+            }
+        }
+
+        // m0: an ordinary, FULL first measure — not itself a pickup, so
+        // this scenario cannot be mistaken for pin 4's first-measure case.
+        let m0 = g3b_measure_env(
+            1,
+            3,
+            3,
+            instance,
+            measure(410, g3b_region_anchor(region, 0), None),
+        );
+
+        // m1: index 1, one full measure_duration after m0 — enters
+        // successfully. This validates m0's implied length (full), NOT
+        // m1's own eventual length; nothing examines that until m1 gets a
+        // successor of its own. m1 is the mid-score partial: it has no
+        // exemption from clauses 1/3 (it HAS a predecessor), it merely
+        // happens to satisfy them here because m0 was full.
+        let m1 = g3b_measure_env(
+            1,
+            4,
+            4,
+            instance,
+            measure(
+                411,
+                TimeAnchor::Region {
+                    id: region,
+                    edge: RegionEdge::Start,
+                    offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(1))),
+                },
+                None,
+            ),
+        );
+
+        // m2: m1's successor, only HALF a measure_duration after m1 — m1's
+        // own actual (partial) length, not sig_a's full bar. This is where
+        // the partial duration surfaces, on the measure AFTER the partial
+        // one, exactly as pin 2 describes.
+        let m2 = g3b_measure_env(
+            1,
+            5,
+            5,
+            instance,
+            measure(
+                412,
+                TimeAnchor::Region {
+                    id: region,
+                    edge: RegionEdge::Start,
+                    offset: AnchorOffset::Musical(MusicalDuration(
+                        RationalTime::new(3, 2).unwrap(),
+                    )),
+                },
+                None,
+            ),
+        );
+
+        envs.extend([m0.clone(), m1.clone(), m2.clone()]);
+        let mut set = OperationSet::new();
+        set.accept_all(envs);
+        let state = set.reduce();
+
+        assert_eq!(
+            g3b_effect_of(&state, set_sig_a.id),
+            Some(OperationEffect::Applied),
+            "the governing signature must itself be applied, or nothing below proves anything"
+        );
+        assert_eq!(
+            g3b_effect_of(&state, m0.id),
+            Some(OperationEffect::Applied),
+            "m0: an ordinary full first measure"
+        );
+        assert_eq!(
+            g3b_effect_of(&state, m1.id),
+            Some(OperationEffect::Applied),
+            "pin 2: a mid-score partial measure enters successfully — its creation only checks \
+             the distance from ITS predecessor (m0, full), never its own eventual length"
+        );
+        assert_eq!(
+            g3b_effect_of(&state, m2.id),
+            Some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::MeasureMeterMismatch
+                }
+            }),
+            "pin 2: m1's successor is what exposes the partial duration — measured against the \
+             governing signature's full measure_duration, not m1's own half-note actual length. \
+             m1 has NO first-measure exemption (index 1, it HAS a predecessor); it simply \
+             satisfied clause 3 because m0 happened to be full"
+        );
+    }
+
     /// Repair 2 (spec/CONTRACT_GENESIS_G3B_MEASURE.md pin 6c case 1 / pin 7):
     /// creating a measure against a WHOLLY EMPTY effective grid — no
     /// `local_metric_grid`, no region `default_metric_grid`, and no

@@ -108,8 +108,12 @@ pub enum GraphInvariant {
     ///     comparable relation or pin 6b's musical delta cannot decide the
     ///     comparison (base-ingested data may predate the rule); this is
     ///     deliberate abstention, not a soundness gap (pin 7). A
-    ///     pickup/anacrusis first measure has no predecessor and is never
-    ///     flagged (P13-S19, deferred).
+    ///     pickup/anacrusis first measure has no predecessor for the
+    ///     boundary clause, which is vacuous for it; the agreement clause
+    ///     has no such exemption and still applies. Its successor is
+    ///     measured against the governing signature's full
+    ///     `measure_duration()` and can be refused and flagged (P13-S19,
+    ///     deferred).
     MeasureMeterConsistency,
 }
 
@@ -4756,15 +4760,34 @@ mod g3b_measure20_tests {
         );
     }
 
-    /// M35: removing the boundary clause must let this go undetected. Both
+    /// M35: this IS the pickup/anacrusis demonstration (spec/CONTRACT_P13S19_
+    /// PARTIAL.md pin 1). `m0` is a first measure occupying only half a bar
+    /// -- a pickup -- and by itself is flagged by neither clause: it has no
+    /// predecessor, so the boundary clause is vacuous, and it avoids the
+    /// agreement clause here by declaring `None` (not by any first-measure
+    /// exemption -- there is none). `m1` is its successor, comparable and
+    /// correctly ordered, but only HALF a `measure_duration` away -- the
+    /// pickup's own actual length, not the governing signature's full bar.
+    /// Removing the boundary clause must let THAT go undetected. Both
     /// measures avoid the agreement clause (`None`) so only boundary can
     /// fire.
     #[test]
-    fn m35_boundary_flags_wrong_distance() {
+    fn m35_pickup_successor_boundary_flags_wrong_distance() {
         let replica = ReplicaId(7);
         let (active, ts_active) = sig(replica, 1);
         let region = probe_region_id();
         let m0 = measure_at(MeasureId::new(replica, 10), region, 0, None);
+
+        // The pickup by itself: a first measure has no predecessor, so the
+        // boundary clause is vacuous for it, and `None` separately avoids
+        // the agreement clause -- neither is an exemption granted TO the
+        // agreement clause itself (pin 1).
+        let (lone, _) = score_with(Some(active), vec![ts_active.clone()], vec![m0.clone()]);
+        assert!(
+            !fires(&lone, GraphInvariant::MeasureMeterConsistency),
+            "the pickup by itself, first measure, no predecessor, must not be flagged"
+        );
+
         // Half a whole note later — not a full measure_duration away.
         let m1 = Measure {
             id: MeasureId::new(replica, 11),
@@ -4855,20 +4878,26 @@ mod g3b_measure20_tests {
         );
     }
 
-    /// M38: a pickup (partial) first measure must never be flagged -- it
-    /// has no predecessor, so the boundary clause is vacuous for it.
+    /// M38: a pickup (partial) first measure declaring no time signature
+    /// must never be flagged BY THE BOUNDARY CLAUSE -- it has no
+    /// predecessor, so that clause is vacuous for it. This is narrower than
+    /// "never flagged" in general: the agreement clause is not
+    /// predecessor-dependent and would apply to this same measure if it
+    /// declared a disagreeing signature instead of `None` (spec/CONTRACT_
+    /// P13S19_PARTIAL.md pin 1) -- this fixture's `None` avoids agreement
+    /// separately, not as a consequence of being a first measure.
     ///
     /// **On the mutation's failure mode:** the M38 mutation (removing the
     /// `if i == 0 { continue; }` guard in `check_measure_meter_consistency`)
     /// is observed as an `attempt to subtract with overflow` PANIC, not a
     /// wrong-flag assertion failure. This is expected and still a valid red
     /// signal, not a weak one: that `i == 0` guard is simultaneously the
-    /// pickup-measure exemption AND the only thing standing between `i - 1`
-    /// and a `usize` underflow, so any mutation that removes or weakens it
-    /// crashes before it could ever produce a wrong (but well-formed)
-    /// verdict to assert against.
+    /// pickup-measure boundary-clause exemption AND the only thing standing
+    /// between `i - 1` and a `usize` underflow, so any mutation that removes
+    /// or weakens it crashes before it could ever produce a wrong (but
+    /// well-formed) verdict to assert against.
     #[test]
-    fn m38_pickup_first_measure_not_flagged() {
+    fn m38_pickup_first_measure_boundary_clause_not_flagged() {
         let replica = ReplicaId(7);
         let (active, ts_active) = sig(replica, 1);
         let region = probe_region_id();
@@ -4888,7 +4917,9 @@ mod g3b_measure20_tests {
         let (score, _) = score_with(Some(active), vec![ts_active], vec![m0]);
         assert!(
             !fires(&score, GraphInvariant::MeasureMeterConsistency),
-            "a lone first (pickup) measure must never be flagged by invariant 20"
+            "a lone first (pickup) measure declaring no time signature must not be flagged \
+             by invariant 20's boundary clause -- vacuous, no predecessor (its agreement \
+             clause is separately avoided by `None`, not exempted by being first)"
         );
     }
 
@@ -4919,10 +4950,11 @@ mod g3b_measure20_tests {
     // clauses = 18 cells) plus the four non-shape-driven paths (A1, A3, B2,
     // B3) that pin 4's shapes do not themselves exercise. A2 and B1 reuse
     // `m39_unresolvable_reference_is_invariant_10_only` and
-    // `m38_pickup_first_measure_not_flagged` above respectively; S3 reuses
-    // `m34_agreement_flags_disagreement` and `m35_boundary_flags_wrong_
-    // distance` above (Region same id, same edge, Musical offsets is
-    // exactly their shape). Every other cell gets a dedicated fixture below.
+    // `m38_pickup_first_measure_boundary_clause_not_flagged` above
+    // respectively; S3 reuses `m34_agreement_flags_disagreement` and
+    // `m35_pickup_successor_boundary_flags_wrong_distance` above (Region
+    // same id, same edge, Musical offsets is exactly their shape). Every
+    // other cell gets a dedicated fixture below.
     // -------------------------------------------------------------------
 
     /// Matrix cell A1: `m.time_signature` is `None` -- inapplicable, not

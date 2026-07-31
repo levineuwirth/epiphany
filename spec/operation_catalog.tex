@@ -231,7 +231,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.13.0 --- The genesis operation tranche closes: \texttt{CreateMeasure} and graph invariant 20 (G3b)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.14.0 --- Pickup/anacrusis: what a partial measure actually costs (P13-S19)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -516,6 +516,31 @@ hand-written codec with no version branching of its own --- so
 G2b left it. This closes the genesis ladder
 (\texttt{spec/PLAN\_GENESIS\_OPS.md} \S4): G1 $\rightarrow$ G2a $\rightarrow$
 G-minor $\rightarrow$ G2b $\rightarrow$ G3a $\rightarrow$ G3b.
+
+\medskip
+
+\noindent\textbf{Version 0.14.0 (P13-S19, correction and observation,
+\texttt{spec/CONTRACT\_P13S19\_PARTIAL.md}).} No payload byte changes, no
+behaviour change: \texttt{create\_measure} and graph invariant 20 are
+byte-identical to 0.13.0. Corrects this section's ordering and
+boundary-distance description above, which read as though a pickup/anacrusis
+first measure --- and everything downstream of it --- were simply exempt. A
+first measure skips only the \emph{predecessor-dependent} clauses (ordering
+and boundary distance) for lack of a predecessor, and the agreement clause
+only when it declares \texttt{None} or a signature that agrees with the
+governing grid; a disagreeing declared signature is refused
+(\texttt{MeasureMeterMismatch}) even on a first measure, since agreement is
+not predecessor-dependent. Independently of what the pickup itself declares,
+its \textbf{successor} is measured against the governing signature's full
+\texttt{measure\_duration()} regardless, and is refused
+(\texttt{MeasureMeterMismatch}) and flagged by invariant 20 whenever the
+pickup's actual length is shorter than a full bar --- which, for an authored
+pickup, it always is. The same gap applies to any partial measure at any
+position, not only a first one: a mid-score partial measure is itself
+unexamined at creation (nothing checks its own length), while \emph{its}
+successor is refused the identical way. Closing this needs a per-measure
+duration concept this rung does not introduce
+(\texttt{spec/PASS13\_CANDIDATES.md}, P13-S19, still open).
 
 % ===========================================================================
 \chapter{The Catalog Framework}
@@ -1675,19 +1700,25 @@ every non-\texttt{WallClock} referent of \texttt{measure.start} (an
 \textbf{Ordering and boundary-distance preconditions (core specification
 \sectionsc{Graph Invariants}, invariant 20).} Graph-aware, against the current
 last live measure of the same instance (vacuous for an instance's first
-measure --- a pickup/anacrusis is never refused or flagged on this account):
-the carried \texttt{start} must be \textbf{comparable} to the predecessor's
-start and \textbf{strictly after} it (else \texttt{MeasureOutOfOrder}), and,
-when a governing time signature is determinable, the \textbf{musical delta}
-between the two starts must equal that signature's
-\texttt{measure\_duration()} (else \texttt{MeasureMeterMismatch}). Either
-comparison being \textbf{unverifiable} --- the two starts are not comparable,
-or the delta is not computable --- refuses with
-\texttt{MeasureOrderUnverifiable} rather than silently permitting an
-unverifiable mint. A resolving \texttt{time\_signature} that \textbf{disagrees}
-with the effective grid's active signature at the measure's start also refuses
-with \texttt{MeasureMeterMismatch}; \texttt{time\_signature: None} skips only
-this agreement check, not the boundary-distance check above.
+measure's own ordering and boundary-distance clauses, for lack of a
+predecessor to compare against --- but \textbf{not} for that same pickup's own
+successor, which is checked against this same governing signature's full
+\texttt{measure\_duration()} from the pickup's start, and refuses with
+\texttt{MeasureMeterMismatch} when the pickup's actual, shorter length
+disagrees with it): the carried \texttt{start} must be \textbf{comparable} to
+the predecessor's start and \textbf{strictly after} it (else
+\texttt{MeasureOutOfOrder}), and, when a governing time signature is
+determinable, the \textbf{musical delta} between the two starts must equal
+that signature's \texttt{measure\_duration()} (else
+\texttt{MeasureMeterMismatch}). Either comparison being \textbf{unverifiable}
+--- the two starts are not comparable, or the delta is not computable ---
+refuses with \texttt{MeasureOrderUnverifiable} rather than silently permitting
+an unverifiable mint. A resolving \texttt{time\_signature} that
+\textbf{disagrees} with the effective grid's active signature at the
+measure's start also refuses with \texttt{MeasureMeterMismatch} --- this
+agreement check is \textbf{not} predecessor-dependent and applies to a first
+measure like any other; \texttt{time\_signature: None} skips only this
+agreement check, not the boundary-distance check above.
 
 \textbf{The effective grid} is \texttt{StaffInstance.local\_metric\_grid} when
 present, else the enclosing region's default metric grid, reconstructed from

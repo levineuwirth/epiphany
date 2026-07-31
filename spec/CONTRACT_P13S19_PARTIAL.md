@@ -1,6 +1,6 @@
 # Contract — P13-S19: what a partial measure actually costs
 
-**Status:** DRAFT.
+**Status:** RATIFIED.
 
 **Rung type:** correction and observation. **No behaviour change.** Not one
 graph's invariant-20 verdict may move, and not one operation's effect may
@@ -13,7 +13,8 @@ change. The rung makes the tree say what it already does.
 Read out of the working tree at `339269b`, not recalled.
 
 1. **An existing test is already the pickup demonstration.**
-   `m35_boundary_flags_wrong_distance` (`invariants.rs`) places `m0` at region
+   `m35_boundary_flags_wrong_distance` (`invariants.rs`, renamed by this rung
+   to `m35_pickup_successor_boundary_flags_wrong_distance`) places `m0` at region
    start offset `0` and `m1` at offset `Musical(1/2)`, under a signature whose
    `measure_duration()` is a **whole** (`sig()`, `:4597`), and asserts invariant
    20 **fires**. That is a first measure occupying half a bar followed by its
@@ -41,7 +42,7 @@ Read out of the working tree at `339269b`, not recalled.
    | c | `spec/operation_catalog.tex:1678` | "never refused or flagged on this account" |
    | d | `spec/core_spec.tex:6632`–`:6633` | "has no predecessor and is never flagged" |
    | e | `crates/epiphany-core/src/invariants.rs:111`–`:112` | the **public doc comment** on `GraphInvariant::MeasureMeterConsistency`, same form |
-   | f | `m38_pickup_first_measure_not_flagged` | its **name**, its comment, and its assertion message ("must never be flagged by invariant 20") |
+   | f | `m38_pickup_first_measure_not_flagged` (renamed by this rung to `m38_pickup_first_measure_boundary_clause_not_flagged`) | its **name**, its comment, and its assertion message ("must never be flagged by invariant 20") |
    | g | `crates/epiphany-ops/DECISIONS.md:2161` | **"All three clauses are vacuous for an instance's first measure — no predecessor to compare against."** This is not understatement, it is **false**: clause 2 has no predecessor dependency and runs |
 
    Rows **d, e, f** were **absent from the ratified scope**, which named the

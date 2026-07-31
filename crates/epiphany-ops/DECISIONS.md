@@ -2157,11 +2157,19 @@ and strictly after it (`MeasureOutOfOrder`, or `MeasureOrderUnverifiable` if
 incomparable); agreement against the effective grid's active signature
 (`MeasureMeterMismatch`); and the boundary distance from the predecessor
 equals the governing `measure_duration()` (`MeasureMeterMismatch`, or
-`MeasureOrderUnverifiable` if the delta is not computable). All three
-clauses are vacuous for an instance's first measure — no predecessor to
-compare against — which is the pickup/anacrusis deferral filed as
-**P13-S19**, open by design (core `DECISIONS.md` files the invariant-side
-mirror). `CreateMeasure` fails **closed** on every incomputable case; graph
+`MeasureOrderUnverifiable` if the delta is not computable). Clauses 1
+(ordering) and 3 (boundary distance) are vacuous for an instance's first
+measure — no predecessor to compare against. Clause 2 (agreement) has **no**
+predecessor dependency and runs on a first measure exactly as on any other:
+a pickup declaring a signature that disagrees with the governing grid is
+refused by clause 2 alone, first measure or not. And clause 3's exemption is
+narrower than "vacuous" suggests: the pickup's *own successor* is measured
+against the governing signature's full `measure_duration()`, not the
+pickup's own (shorter) length, so `create_measure` refuses that successor
+too. This is the pickup/anacrusis deferral filed as **P13-S19**, open by
+design (core `DECISIONS.md` files the invariant-side mirror, correctly
+scoped to "never flagged **by the boundary clause**" — not never flagged at
+all). `CreateMeasure` fails **closed** on every incomputable case; graph
 invariant 20 (core `DECISIONS.md`) **abstains** on the identical cases —
 deliberately opposite postures, not an inconsistency.
 

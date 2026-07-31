@@ -596,7 +596,15 @@ impl Voice {
 /// comparison or delta they need is not computable (contract pin 7): this is
 /// deliberate, not a safety property, because base-ingested data may predate
 /// the rule. Pickup/anacrusis (a partial first measure) is deferred
-/// (P13-S19) and is never refused or flagged by this rung.
+/// (P13-S19): a first measure skips only the predecessor-dependent checks
+/// — invariant 20's boundary clause and `create_measure`'s clauses 1 and 3
+/// — plus the agreement check when it declares `None` or a matching
+/// signature; it can still be refused for other reasons (a dead parent, an
+/// unresolving referent). Its own successor is unaffected by any of this:
+/// the successor is measured against the governing signature's full
+/// `measure_duration()` regardless, and is refused (`MeasureMeterMismatch`)
+/// and flagged by invariant 20 when the pickup's actual length is shorter
+/// than a full bar.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Measure {
     pub id: MeasureId,

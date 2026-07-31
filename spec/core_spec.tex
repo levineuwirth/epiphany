@@ -6629,8 +6629,16 @@ The score graph maintains a set of structural invariants. Implementations
       raises no violation --- wherever the comparison or the
       distance cannot be decided (base-ingested data may predate
       this rule); this is deliberate abstention, not a soundness
-      gap. A pickup/anacrusis first measure has no predecessor and
-      is never flagged.
+      gap. A pickup/anacrusis first measure has no predecessor, so
+      only the BOUNDARY clause is vacuous for it; the AGREEMENT
+      clause is not predecessor-dependent and still applies (unless
+      \texttt{time\_signature} is \texttt{None} or agrees with the
+      governing grid). Regardless of what the pickup itself
+      declares, its successor's boundary distance is measured
+      against this same governing signature's full
+      \texttt{measure\_duration()}, and IS flagged when that
+      distance is the pickup's own shorter length rather than a
+      full bar.
   \end{enumerate}
 
   Implementations \MUST{} reject graph configurations that violate any
