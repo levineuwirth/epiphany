@@ -30,7 +30,7 @@ through base ingest (`reduce.rs:1449`–`:1563`). No operation mints any of them
 Two consequences hold in the tree today:
 
 * `CreateStaff` validates `Staff.group` against a live `StaffGroup`
-  (`reduce.rs:4119`). Under **from-empty** reduction — the path G1 created and
+  (`reduce.rs:4372`). Under **from-empty** reduction — the path G1 created and
   T1b depends on — that precondition is **unsatisfiable**. A document built
   only from operations can never author a grouped staff.
 * `TimeAnchor::Measure` (`reduce.rs:1280`) can never resolve from empty. That
@@ -50,7 +50,7 @@ user — the shape G2b's `accidental_extensions` pin took.
 ### The cycle
 
 `CreateStaff` requires its `group` to be a live `StaffGroup`
-(`reduce.rs:4117`). `CreateStaffGroup` (pin 4) requires each of its `members`
+(`reduce.rs:4372`). `CreateStaffGroup` (pin 4) requires each of its `members`
 to be a live `Staff`. Neither can name the other first, so **with mints only,
 no authoring order produces a bidirectionally consistent group**:
 
@@ -67,10 +67,10 @@ within this packet.**
 ### Why nothing in the tree decides it
 
 Invariant 10 checks resolution in **both** directions independently — a staff's
-group is declared (`invariants.rs:1126`), a group's members are declared
-(`:1135`) — and **agreement in neither**. No agreement check exists anywhere in
+group is declared (`invariants.rs:1188`), a group's members are declared
+(`:1196`) — and **agreement in neither**. No agreement check exists anywhere in
 the crate. The specification declares `StaffGroup.members`
-(`core_spec.tex:4231`) and `Staff.group` (`:5578`, "Visual grouping: which
+(`core_spec.tex:4231`) and `Staff.group` (`:5585`, "Visual grouping: which
 staff group (if any) this staff belongs to") without stating which is
 authoritative or requiring them to agree. **This is genuinely unspecified, not
 merely unimplemented.**
@@ -260,9 +260,9 @@ Required, all four:
 
 | Site | What it must say |
 |---|---|
-| `core/src/graph.rs:819` — `Staff.group` | **Currently has no doc comment at all.** Write one: this field is the **sole authority** for group membership. |
-| `core/src/graph.rs:1614` — `StaffGroup.members` | **Currently has no doc comment at all.** Write one: a **non-authoritative denormalized projection**; MUST NOT be read to decide membership; may be stale in **both** directions. |
-| `core_spec.tex` — the `Staff`/`StaffGroup` declarations (`:5578`, `:4231`) | The same authority rule, normatively. This is the document that declared both fields without ranking them, so this is where the ambiguity actually lives. |
+| `core/src/graph.rs:848` — `Staff.group` | **Currently has no doc comment at all.** Write one: this field is the **sole authority** for group membership. |
+| `core/src/graph.rs:1650` — `StaffGroup.members` | **Currently has no doc comment at all.** Write one: a **non-authoritative denormalized projection**; MUST NOT be read to decide membership; may be stale in **both** directions. |
+| `core_spec.tex` — the `Staff`/`StaffGroup` declarations (`:5564`, `:4231`) | The same authority rule, normatively. This is the document that declared both fields without ranking them, so this is where the ambiguity actually lives. |
 | `operation_catalog.tex` — the **new** `CreateStaffGroup` section **and** the **existing** `CreateStaff` section (`:1104`) | Explicit stale-form semantics: both the missing and the spurious form are **permitted outcomes**, named as such, with the authoring orders that produce them. `CreateStaff` needs it too — it is the operation that *creates* the missing form, and its section currently promises nothing about the projection. |
 
 Cross-reference **P13-S16** from each, so a reader who meets the disagreement
@@ -368,7 +368,7 @@ Every line number below re-verified against the working tree 2026-07-29.
 |---|---|
 | `crates/epiphany-core/src/codec.rs` | four `canonical_value!` entries (`:3518` list) |
 | `crates/epiphany-core/src/invariants.rs` | pin 6: invariant-10 doc comment (`:59`–`:62`) |
-| `crates/epiphany-core/src/graph.rs` | **pin 4b**: write the authority doc comment on `Staff.group` (`:819`) and the projection doc comment on `StaffGroup.members` (`:1614`) — **neither field is documented today** |
+| `crates/epiphany-core/src/graph.rs` | **pin 4b**: write the authority doc comment on `Staff.group` (`:848`) and the projection doc comment on `StaffGroup.members` (`:1650`) — **neither field is documented today** |
 | `crates/epiphany-core/DECISIONS.md` | the rung's record |
 
 **Not touched:** `textvalue_graph.rs` (pin 3), `lib.rs` (already exported). No
