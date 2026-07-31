@@ -227,33 +227,74 @@ pub enum IntegrationOwnership {
     /// on top of it: a candidate that inherits a bridge still writes the
     /// accessible nodes for anything it painted itself, and that work shows
     /// up in [`ReportPart::AccessibilityTreeConstruction`], not here.
-    Inherited { provider: String },
+    Inherited { provider: Provider },
     /// The candidate wrote the integration itself — the bridge wiring, the
     /// event plumbing, the adapter lifecycle.
     CandidateOwned,
 }
 
-impl IntegrationOwnership {
-    /// Checked constructor: rejects an empty-or-whitespace-only provider.
-    ///
-    /// The amendment that introduced [`IntegrationOwnership::Inherited`]
-    /// justified it as a claim "a reader can check against the dependency
-    /// graph rather than take on trust" — and then let the field be `""`,
-    /// which is checkable against nothing. An unnamed provider is not a
-    /// weaker claim of inheritance; it is the same claim with its evidence
-    /// removed, and it reads as `Inherited` in every table it appears in.
-    pub fn inherited(provider: impl Into<String>) -> Result<Self, String> {
+/// A non-empty provider name, carrying its own invariant.
+///
+/// The previous amendment put the check in a constructor and in
+/// `Deserialize`, and left `Inherited { provider: String }` public — so the
+/// struct-literal path bypassed both, and the very first caller (C1's
+/// adapter rows) took it. A checked constructor beside a public field is a
+/// suggestion; the field is the API.
+///
+/// The inner `String` is private and every route in — `new`, `TryFrom`,
+/// `Deserialize` — runs the same check, so an empty provider cannot be
+/// constructed *or* serialized, on any path, without editing this module.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct Provider(String);
+
+impl Provider {
+    /// The only way to build a [`Provider`]. Rejects empty and
+    /// whitespace-only names.
+    pub fn new(provider: impl Into<String>) -> Result<Self, String> {
         let provider = provider.into();
         if provider.trim().is_empty() {
             return Err(
-                "IntegrationOwnership::inherited: provider must not be empty or \
-                 whitespace-only — an inherited integration whose provider is unnamed cannot be \
-                 checked against the dependency graph, which is the only reason this variant \
-                 carries a provider at all"
+                "Provider::new: provider must not be empty or whitespace-only — an inherited \
+                 integration whose provider is unnamed cannot be checked against the dependency \
+                 graph, which is the only reason this variant carries a provider at all"
                     .to_string(),
             );
         }
-        Ok(IntegrationOwnership::Inherited { provider })
+        Ok(Provider(provider))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for Provider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Provider {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Provider::new(raw).map_err(serde::de::Error::custom)
+    }
+}
+
+impl IntegrationOwnership {
+    /// Checked constructor: rejects an empty-or-whitespace-only provider.
+    ///
+    /// Retained as the ergonomic route, but it is no longer the *only*
+    /// guard — [`Provider`] carries the invariant now, so the struct-literal
+    /// path is closed too.
+    pub fn inherited(provider: impl Into<String>) -> Result<Self, String> {
+        Ok(IntegrationOwnership::Inherited {
+            provider: Provider::new(provider)?,
+        })
     }
 }
 
@@ -266,7 +307,7 @@ impl IntegrationOwnership {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 enum IntegrationOwnershipWire {
-    Inherited { provider: String },
+    Inherited { provider: Provider },
     CandidateOwned,
 }
 
@@ -276,7 +317,7 @@ impl TryFrom<IntegrationOwnershipWire> for IntegrationOwnership {
     fn try_from(wire: IntegrationOwnershipWire) -> Result<Self, String> {
         match wire {
             IntegrationOwnershipWire::Inherited { provider } => {
-                IntegrationOwnership::inherited(provider)
+                Ok(IntegrationOwnership::Inherited { provider })
             }
             IntegrationOwnershipWire::CandidateOwned => Ok(IntegrationOwnership::CandidateOwned),
         }
@@ -548,7 +589,7 @@ mod tests {
         let c1 = implemented(
             "accesskit-0.24",
             IntegrationOwnership::Inherited {
-                provider: "eframe 0.35".to_string(),
+                provider: Provider::new("eframe 0.35").unwrap(),
             },
         );
         let c2 = implemented("accesskit-0.24", IntegrationOwnership::CandidateOwned);
@@ -570,11 +611,11 @@ mod tests {
     #[test]
     fn inherited_carries_its_provider_and_is_not_conflated_with_owned() {
         let inherited = IntegrationOwnership::Inherited {
-            provider: "eframe 0.35 (bundled AccessKit integration)".to_string(),
+            provider: Provider::new("eframe 0.35 (bundled AccessKit integration)").unwrap(),
         };
         match &inherited {
             IntegrationOwnership::Inherited { provider } => {
-                assert!(provider.contains("eframe"), "{provider}")
+                assert!(provider.as_str().contains("eframe"), "{provider}")
             }
             IntegrationOwnership::CandidateOwned => panic!("wrong variant"),
         }
@@ -636,7 +677,7 @@ mod tests {
         assert_eq!(
             own,
             IntegrationOwnership::Inherited {
-                provider: "eframe 0.35".to_string()
+                provider: Provider::new("eframe 0.35").unwrap()
             }
         );
     }
@@ -676,6 +717,51 @@ mod tests {
         assert!(err.contains("provider"), "{err}");
     }
 
+    /// Mutation, and the reason this amendment exists: the *struct-literal*
+    /// path must be closed, not just the constructor. `Provider`'s inner
+    /// field is private, so outside this module
+    /// `IntegrationOwnership::Inherited { provider: "".to_string() }` does
+    /// not compile at all — which is the only kind of guard a caller cannot
+    /// forget to call. The previous amendment guarded the constructor and
+    /// `Deserialize` and left the literal open, and the first real caller
+    /// (C1's adapter rows) took exactly that path.
+    ///
+    /// This test pins the *serialization* consequence, the half a type
+    /// error cannot express: every `Provider` that exists has been checked,
+    /// so no serialized row can carry an empty provider.
+    #[test]
+    fn no_constructible_provider_serializes_as_empty() {
+        for bad in ["", " ", "\t", "\n  \t"] {
+            assert!(
+                Provider::new(bad).is_err(),
+                "Provider::new({bad:?}) must not construct"
+            );
+        }
+        let good = Provider::new("eframe 0.35").unwrap();
+        let json = serde_json::to_string(&good).unwrap();
+        assert_eq!(
+            json, "\"eframe 0.35\"",
+            "provider must serialize transparently"
+        );
+        assert!(!json.trim_matches('"').trim().is_empty());
+    }
+
+    /// The newtype must not smuggle its invariant past the wire either: a
+    /// whole adapter row carrying an empty provider string is refused on
+    /// the way in, and a row that round-trips keeps its provider intact.
+    #[test]
+    fn an_adapter_row_provider_survives_a_round_trip_unchanged() {
+        let row = AdapterStatus::Implemented {
+            platform: "at-spi2".to_string(),
+            notes: "n".to_string(),
+            integration_ownership: IntegrationOwnership::inherited("eframe 0.35").unwrap(),
+        };
+        let json = serde_json::to_string(&row).unwrap();
+        let back: AdapterStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+        assert!(json.contains("eframe 0.35"), "{json}");
+    }
+
     #[test]
     fn deserializing_candidate_owned_still_works() {
         let ok = serde_json::json!("CandidateOwned");
@@ -692,7 +778,7 @@ mod tests {
             implemented(
                 "accesskit-0.24",
                 IntegrationOwnership::Inherited {
-                    provider: "eframe 0.35".to_string(),
+                    provider: Provider::new("eframe 0.35").unwrap(),
                 },
             ),
             AdapterStatus::NotBuilt {
