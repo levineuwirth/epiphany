@@ -2198,12 +2198,14 @@ mod tests {
         // that class of stale hand-maintained table. Extended to 40 entries and
         // closed 2026-07-30. `OperationKind::discriminant()` is a hand-written
         // match, so a discriminant can be edited there without touching the
-        // enum; the table below is what makes that edit fail. The sibling tag
-        // half needs no such extension: `the_tag_vocabulary_is_complete` is
-        // derived from `OperationKindTag::PAYLOAD_FREE` with a computed bound
-        // rather than a spelled one, so it already covers every tag including
-        // 30..=39. Adding a kind here is not optional bookkeeping — a kind
-        // appended without a row rediscovers P13-S15.
+        // enum; the table below is what makes that edit fail. The tag half is
+        // not exempt from an equivalent guard: its derived tests (among them
+        // `the_tag_vocabulary_is_complete`) prove the vocabulary's
+        // completeness, density and round-trip — never which byte a tag
+        // holds — and `tag_wire_discriminants_are_golden` (this file) is what
+        // pins that mapping (`spec/CONTRACT_P13S22_TAGLOCK.md`). Adding a kind
+        // here is not optional bookkeeping — a kind appended without a row
+        // rediscovers P13-S15.
         use crate::valuegen;
         use epiphany_core::{MusicalDuration, MusicalPosition, TimeSignatureId};
 
@@ -2725,20 +2727,168 @@ mod tests {
     }
 
     #[test]
-    fn phase3_tag_discriminants_are_golden() {
-        // GOLDEN LOCK (Phase-3 first tranche): appended past the ratified
-        // 0..=23; the values below never change.
-        for (tag, expected) in [
-            (OperationKindTag::InsertStaff, 24u8),
+    fn tag_wire_discriminants_are_golden() {
+        // GOLDEN LOCK, tag side (`spec/CONTRACT_P13S22_TAGLOCK.md`,
+        // disposition A). `operation_kind_tag_vocabulary!` (`:695`ff)
+        // generates `discriminant()`, `from_discriminant()`, `PAYLOAD_FREE`
+        // and friends from ONE list, so every existing derived test that
+        // pairs a tag with its byte via
+        // `PAYLOAD_FREE.iter().map(|t| (t, t.discriminant()))` asserts
+        // `$disc == $disc` — it IS the macro, and cannot disagree with it.
+        // The table below is hand-typed, transcribed independently by
+        // reading the macro invocation (`:754`–`:793`) and
+        // `REGISTERED_TAG_DISCRIMINANT` (`:679`), so it is the tag side's
+        // first genuinely second statement of the mapping.
+        //
+        // FORBIDDEN ABSOLUTELY: deriving any row, the length, or the
+        // ordering from `PAYLOAD_FREE`, `discriminant()`,
+        // `from_discriminant()`, or any other macro output — the same
+        // warning appears at `:2638`–`:2639`,
+        // `testkit/tests/text_projection_grammar.rs:312`–`:314`, and
+        // `layout-ir/src/barrier.rs:1171`–`:1172`. A table so derived is
+        // born green.
+        //
+        // Coverage vs. association, and why the split below is not
+        // circular: the block asserting the table's tag set and byte set
+        // match the vocabulary is legitimately COMPUTED — a 40-long array
+        // does not by itself prove forty distinct tags, since duplicate
+        // rows would satisfy the length. That block proves the table is
+        // TOTAL over the vocabulary; it says NOTHING about which tag holds
+        // which byte, which only the literal rows below state.
+        //
+        // Redundancy is intended: this table duplicates the tag→byte
+        // subclaim already made by `payload.rs:3086`, `reduce.rs:12744` and
+        // `reduce.rs:15941`. Those three stay — each is the byte-half of a
+        // paired kind-and-tag statement in one place
+        // (`…kind_and_tag_discriminant_are_39`, `…kind_and_tag_are_both_34`,
+        // `…in_both_spaces`) — do not "consolidate" them into this table and
+        // break that locality. This table replaces only
+        // `phase3_tag_discriminants_are_golden` (retired), whose entire
+        // subject was tag→byte for 24–29 and nothing else.
+        let table: [(OperationKindTag, u8); 40] = [
+            (OperationKindTag::InsertEvent, 0),
+            (OperationKindTag::DeleteEvent, 1),
+            (OperationKindTag::ModifyEvent, 2),
+            (OperationKindTag::RespellPitch, 3),
+            (OperationKindTag::Transpose, 4),
+            (OperationKindTag::CreateCrossCutting, 5),
+            (OperationKindTag::DeleteCrossCutting, 6),
+            (OperationKindTag::ModifyCrossCutting, 7),
+            (OperationKindTag::ChangeRegionTimeModel, 8),
+            (OperationKindTag::InsertRegion, 9),
+            (OperationKindTag::DeleteRegion, 10),
+            (OperationKindTag::InsertStaffInstance, 11),
+            (OperationKindTag::DeleteStaffInstance, 12),
+            (OperationKindTag::SetUserSystemBreak, 13),
+            (OperationKindTag::SetUserPageBreak, 14),
+            (OperationKindTag::DeclareTransaction, 15),
+            (
+                OperationKindTag::Registered(OperationKindRegistryId(
+                    0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10,
+                )),
+                16,
+            ),
+            (OperationKindTag::InsertIdentifiedPitch, 17),
+            (OperationKindTag::DeleteIdentifiedPitch, 18),
+            (OperationKindTag::ModifyIdentifiedPitch, 19),
+            (OperationKindTag::CreateVoice, 20),
+            (OperationKindTag::DeleteVoice, 21),
+            (OperationKindTag::SetMetadata, 22),
+            (OperationKindTag::SetMetricGrid, 23),
+            (OperationKindTag::InsertStaff, 24),
             (OperationKindTag::SetTimeSignature, 25),
             (OperationKindTag::SetTempoSegment, 26),
             (OperationKindTag::SetStaffLayout, 27),
-            // Schema-major-2 revision (repeat authoring).
             (OperationKindTag::CreateRepeatStructure, 28),
             (OperationKindTag::DeleteRepeatStructure, 29),
-        ] {
-            assert_eq!(tag.discriminant(), expected);
-            assert_eq!(tag.to_canonical_bytes(), vec![expected]);
+            (OperationKindTag::TransposeInterval, 30),
+            (OperationKindTag::CreateInstrument, 31),
+            (OperationKindTag::SetCanvasLayoutDefaults, 32),
+            (OperationKindTag::SetSpellingPrecedence, 33),
+            (OperationKindTag::SetTuningContext, 34),
+            (OperationKindTag::CreateStaffGroup, 35),
+            (OperationKindTag::CreatePartDefinition, 36),
+            (OperationKindTag::CreateAnalysisLayer, 37),
+            (OperationKindTag::CreateView, 38),
+            (OperationKindTag::CreateMeasure, 39),
+        ];
+
+        // --- Coverage (derived; see the header comment above) ---
+        {
+            let mut expected: Vec<OperationKindTag> = OperationKindTag::PAYLOAD_FREE.to_vec();
+            expected.push(OperationKindTag::Registered(OperationKindRegistryId(0)));
+            assert_eq!(
+                expected.len(),
+                40,
+                "sanity: the vocabulary itself is 40 wide"
+            );
+
+            // Tag-set equality with `Registered`'s payload id normalized
+            // away: only its *presence* is a vocabulary fact, the id is
+            // per-message data the table's own row (above) does not pin.
+            let normalize = |t: &OperationKindTag| match t {
+                OperationKindTag::Registered(_) => {
+                    OperationKindTag::Registered(OperationKindRegistryId(0))
+                }
+                other => *other,
+            };
+            let table_tags: std::collections::BTreeSet<OperationKindTag> =
+                table.iter().map(|(t, _)| normalize(t)).collect();
+            let expected_tags: std::collections::BTreeSet<OperationKindTag> =
+                expected.iter().map(normalize).collect();
+            assert_eq!(
+                table_tags, expected_tags,
+                "the table's tag set must equal PAYLOAD_FREE union {{Registered}}, each exactly once"
+            );
+            assert_eq!(
+                table_tags.len(),
+                40,
+                "duplicate rows would satisfy the length without covering the vocabulary"
+            );
+
+            let byte_set: std::collections::BTreeSet<u8> = table.iter().map(|(_, b)| *b).collect();
+            assert_eq!(
+                byte_set,
+                (0u8..40).collect::<std::collections::BTreeSet<u8>>(),
+                "the table's byte set must be exactly 0..=39, no gaps, no repeats"
+            );
+        }
+
+        // --- Association: the payload-free / `Registered` asymmetry ---
+        // `Registered` (byte 16) carries a 16-byte registry id, so its
+        // canonical encoding is 17 bytes; asserting the WHOLE vector against
+        // `vec![16]` would fail on encoding length, not on the mapping this
+        // test exists to pin, so it is checked by `[0]` only. Every other
+        // (payload-free) tag's encoding is exactly one byte, and asserting
+        // the whole vector — not just `[0]` — is what also proves that
+        // length-1 property: the property `phase3_tag_discriminants_are_golden`
+        // had and the kind-side idiom (`[0]` only) does not. `Registered` is
+        // the sole non-payload-free tag in this table.
+        for (tag, expected) in &table {
+            assert_eq!(
+                tag.discriminant(),
+                *expected,
+                "wire discriminant for {:?} moved — canonical encodings are append-only",
+                tag,
+            );
+            match tag {
+                OperationKindTag::Registered(_) => {
+                    assert_eq!(
+                        tag.to_canonical_bytes()[0],
+                        *expected,
+                        "wire discriminant for {:?} moved — canonical encodings are append-only",
+                        tag,
+                    );
+                }
+                _ => {
+                    assert_eq!(
+                        tag.to_canonical_bytes(),
+                        vec![*expected],
+                        "wire discriminant for {:?} moved — canonical encodings are append-only",
+                        tag,
+                    );
+                }
+            }
         }
     }
 
