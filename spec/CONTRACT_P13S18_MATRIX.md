@@ -1,6 +1,6 @@
 # Contract — P13-S18: the invariant-20 outcome matrix
 
-**Status:** DRAFT.
+**Status:** RATIFIED.
 
 **Rung type:** diagnostic and bookkeeping. **No behaviour change.** No graph that
 violates invariant 20 today may stop violating it, and no graph that passes today
@@ -30,7 +30,7 @@ and re-confirmed unaffected at `f33673d` (see §4).
    - **Same id, same position — `End`↔`End` is comparable *when its offsets
      compare*.** c2 requires `ia == ib && pa == pb` and then delegates to
      `measure20_offset_order`, which returns `None` for `Musical`↔`WallClock`
-     (`:2427`–`:2428`). So "any `Measure` end anchor" is false as written, but
+     (`:2428`–`:2429`). So "any `Measure` end anchor" is false as written, but
      the counter-example is conditional and must be stated that way.
    - **Distinct ids — `End` anchors remain incomparable**, because c3 returns
      `None` unless `*pa == MeasurePosition::Start` with both offsets `Zero`. A

@@ -203,7 +203,7 @@ and core says so.** With a nonzero offset the selector does not bound the
 point: `Region{edge: Start, off: Musical(100)}` is **not** provably before
 `Region{edge: End, off: Zero}` without knowing the region's length. The same
 holds for `Measure` Start vs End — and
-`crates/epiphany-core/src/invariants.rs:400`ff records exactly this: the
+`crates/epiphany-core/src/invariants.rs:466`ff records exactly this: the
 prototype anchor resolver places `Measure` **start** anchors and `Region`
 edges but returns `None` for a `Measure` **end**, because a coordinate
 "cannot be placed without the deferred tempo/measure-length machinery."
@@ -344,7 +344,8 @@ is deliberate:
   **not** a safety property.
 
 File the residue as **P13-S18**: invariant 20's agreement and boundary checks
-are partial, and P11-C5 resolved positions are what would close them.
+are partial, and **P13-S23** — the general common-timeline/musical-distance
+capability, filed against this residue — is what would close them.
 **Status: open, deliberately.**
 
 **Pin 8 — referential preconditions.**

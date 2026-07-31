@@ -2633,6 +2633,34 @@ impl<'a> GraphIndex<'a> {
     ///     ALREADY-RESOLVING signatures are compared (pin 9b, "a resolving
     ///     `Some(id)`"), whether that is the measure's own declared
     ///     signature or a grid entry's.
+    ///
+    ///     **The nine non-success paths** below the body's two `match`
+    ///     ladders, enumerated and classified by
+    ///     `spec/CONTRACT_P13S18_MATRIX.md` pins 1–2 (a diagnostic listing:
+    ///     descriptive of existing behaviour, not normative, and it moves no
+    ///     line of the executable body below). Exactly three are genuine
+    ///     abstentions; the rest are inapplicable, vacuous, delegated
+    ///     elsewhere, or a separately-filed deferral:
+    ///
+    ///     | Id | Clause | Path | Class |
+    ///     |---|---|---|---|
+    ///     | A1 | agreement | `m.time_signature` is `None` | inapplicable — no declared signature can disagree with anything |
+    ///     | A2 | agreement | declared signature does not resolve | delegated to invariant 10's per-measure arm |
+    ///     | A3 | agreement | `Governing20::None` | vacuous — no governing signature exists to disagree with |
+    ///     | A4 | agreement | `Governing20::Indeterminate` | genuine abstention — the relation cannot place a candidate |
+    ///     | B1 | boundary | first measure (`i == 0`) | the pickup/anacrusis deferral, filed as `P13-S19` |
+    ///     | B2 | boundary | governing signature does not resolve | delegated to invariant 10's grid-level arms |
+    ///     | B3 | boundary | `Governing20::None` | vacuous, same as A3 |
+    ///     | B4 | boundary | `Governing20::Indeterminate` | genuine abstention, same as A4 |
+    ///     | B5 | boundary | musical delta not computable | genuine abstention — order without distance |
+    ///
+    ///     A2 and B2 are `delegated`, not merely unenforced, only because
+    ///     invariant 10 actually reports the same unresolving reference on
+    ///     the same graph (`spec/CONTRACT_P13S18_MATRIX.md` pin 3) — see
+    ///     `g3b_measure20_tests::m39_unresolvable_reference_is_invariant_
+    ///     10_only` (A2) and `matrix_b2_governing_signature_unresolving_
+    ///     delegated` (B2) below, and M7/M8 in the contract's mutation
+    ///     plan.
     fn check_measure_meter_consistency(&self, out: &mut Vec<InvariantViolation>) {
         let time_sigs: HashMap<TimeSignatureId, &TimeSignature> = self
             .score
@@ -4546,6 +4574,7 @@ mod g3a_tests {
 #[cfg(test)]
 mod g3b_measure20_tests {
     use super::*;
+    use crate::event::Rest;
     use crate::graph::{
         BeatGroup, Measure, MeterChange, MetricGrid, MetricTimeModel, PowerOfTwo, Region,
         RegionContent, RegionTimeModel, StaffBasedContent, StaffExtent, StaffInstance, TimeExtent,
@@ -4670,6 +4699,31 @@ mod g3b_measure20_tests {
     fn probe_region_id() -> RegionId {
         let (_, region) = score_with(None, vec![], vec![]);
         region
+    }
+
+    /// Inserts a minimal LIVE `Rest` event into `score` and returns its id
+    /// (`spec/CONTRACT_P13S18_MATRIX.md` pin 4, S6/S7): `Measure.start` and
+    /// `MeterChange.anchor` are unrestricted `TimeAnchor`s, so an
+    /// `Event`-anchored measure is a legal graph, not a hypothetical one --
+    /// the event this mints and inserts is genuinely live in `score.events`,
+    /// not a dangling/ghost id (contrast `inv10_flags_dangling_spanner_
+    /// anchor`'s `ghost_event`, in `review_fix_tests` above, which is the
+    /// deliberately-NOT-live case).
+    fn insert_live_event(score: &mut Score) -> crate::ids::EventId {
+        let event_id: crate::ids::EventId = score.identity.mint();
+        let voice_id: crate::ids::VoiceId = score.identity.mint();
+        score
+            .events
+            .insert(Event::Rest(Rest {
+                id: event_id,
+                voice: voice_id,
+                position: EventPosition::Musical(MusicalPosition(RationalTime::from_int(0))),
+                duration: EventDuration::Musical(MusicalDuration::whole()),
+                vertical_position: None,
+                visible: true,
+            }))
+            .unwrap();
+        event_id
     }
 
     #[test]
@@ -4857,6 +4911,1101 @@ mod g3b_measure20_tests {
             !fires(&score, GraphInvariant::MeasureMeterConsistency),
             "invariant 20 must NOT duplicate invariant 10's resolution check -- an \
              unresolving reference is only invariant 10's violation"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // spec/CONTRACT_P13S18_MATRIX.md: the outcome matrix (9 shapes x 2
+    // clauses = 18 cells) plus the four non-shape-driven paths (A1, A3, B2,
+    // B3) that pin 4's shapes do not themselves exercise. A2 and B1 reuse
+    // `m39_unresolvable_reference_is_invariant_10_only` and
+    // `m38_pickup_first_measure_not_flagged` above respectively; S3 reuses
+    // `m34_agreement_flags_disagreement` and `m35_boundary_flags_wrong_
+    // distance` above (Region same id, same edge, Musical offsets is
+    // exactly their shape). Every other cell gets a dedicated fixture below.
+    // -------------------------------------------------------------------
+
+    /// Matrix cell A1: `m.time_signature` is `None` -- inapplicable, not
+    /// concealed disagreement. A single (first) measure keeps the boundary
+    /// clause vacuous (B1) so only A1 is live here. M4 flips this measure to
+    /// a resolving, DISAGREEING `Some(id)` and must turn this from silent to
+    /// a violation.
+    #[test]
+    fn matrix_a1_none_time_signature_inapplicable() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let region = probe_region_id();
+        let m0 = measure_at(MeasureId::new(replica, 10), region, 0, None);
+        let (score, _) = score_with(Some(active), vec![ts_active], vec![m0]);
+        assert!(
+            !fires(&score, GraphInvariant::MeasureMeterConsistency),
+            "A1: a measure with no declared time signature must not be \
+             flagged by the agreement clause"
+        );
+    }
+
+    /// Matrix cell A3: `Governing20::None` -- vacuous, not a violation,
+    /// because the region-default grid is empty (pin 6c case 1) so there is
+    /// no candidate at all. A single (first) measure keeps the boundary
+    /// clause vacuous (B1) so only A3 is live here. A bare `fires` boolean
+    /// cannot distinguish "vacuous" from any of the other eight paths, so
+    /// this uses a paired positive control: fixture 1 is the claimed
+    /// abstention (`m0` declares a DISAGREEING, resolving signature against
+    /// an EMPTY grid); fixture 2 changes ONLY the grid -- from empty to a
+    /// real entry naming the very signature `m0` disagrees with -- and must
+    /// decide and flag. The flip from fixture 1 to fixture 2 is exactly
+    /// M10's edit, now inside the test.
+    #[test]
+    fn matrix_a3_vacuous_agreement() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let (wrong, ts_wrong) = sig(replica, 2);
+        let region = probe_region_id();
+        let m0 = measure_at(MeasureId::new(replica, 10), region, 0, Some(wrong));
+        // Fixture 1: no grid at all, so there is no candidate for the
+        // governing search to find regardless of what m0 declares.
+        let (empty_score, _) = score_with(
+            None,
+            vec![ts_active.clone(), ts_wrong.clone()],
+            vec![m0.clone()],
+        );
+        let empty_violations =
+            check_invariant(&empty_score, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            empty_violations.len(),
+            0,
+            "A3: with no grid entries at all, the agreement clause must \
+             abstain as vacuous -- got {empty_violations:?}"
+        );
+        // Fixture 2 (positive control): ONLY the grid changes, from empty
+        // to a real, disagreeing entry.
+        let (populated_score, _) = score_with(Some(active), vec![ts_active, ts_wrong], vec![m0]);
+        let populated_violations =
+            check_invariant(&populated_score, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            populated_violations.len(),
+            1,
+            "A3 positive control: a non-empty, disagreeing grid must decide \
+             and flag -- got {populated_violations:?}"
+        );
+        assert!(
+            populated_violations[0]
+                .witness
+                .contains("declares time signature"),
+            "A3 positive control: the violation must be the agreement \
+             clause's -- witness was {:?}",
+            populated_violations[0].witness
+        );
+    }
+
+    /// Matrix cell B2 (delegated -- verified, not asserted, pin 3): the
+    /// SAME graph that makes invariant 20's boundary clause abstain (B2,
+    /// the grid's OWN governing signature does not resolve) must
+    /// independently violate invariant 10's grid-level resolution arm.
+    /// `m39_unresolvable_reference_is_invariant_10_only` (above) is the twin
+    /// observation for A2 (the MEASURE's own declared signature failing to
+    /// resolve); this is the grid-entry case, and M8 shows the SAME
+    /// condition go unreported by the whole suite once invariant 10's
+    /// grid-level arm is deleted.
+    #[test]
+    fn matrix_b2_governing_signature_unresolving_delegated() {
+        let replica = ReplicaId(7);
+        let undeclared = TimeSignatureId::new(replica, 999);
+        let region = probe_region_id();
+        let m0 = measure_at(MeasureId::new(replica, 10), region, 0, None);
+        let m1 = measure_at(MeasureId::new(replica, 11), region, 1, None);
+        // The INSTANCE-LOCAL grid's own entry (not the region default --
+        // M8 targets invariant 10's instance-local-grid arm specifically)
+        // names a signature that is never declared -- unresolvable by
+        // either invariant's own logic, but reported ONLY by invariant 10.
+        let (mut score, _) = score_with(None, vec![], vec![m0, m1]);
+        if let RegionContent::StaffBased(content) = &mut score.canvas.regions[0].content {
+            content.staff_instances[0].local_metric_grid = Some(MetricGrid {
+                meter_sequence: vec![MeterChange {
+                    anchor: TimeAnchor::Region {
+                        id: region,
+                        edge: RegionEdge::Start,
+                        offset: AnchorOffset::Zero,
+                    },
+                    time_signature: undeclared,
+                }],
+            });
+        }
+        assert!(
+            fires(&score, GraphInvariant::CrossCuttingRefsResolve),
+            "the instance-local grid's undeclared time-signature reference \
+             must violate invariant 10's instance-local-grid arm"
+        );
+        assert!(
+            !fires(&score, GraphInvariant::MeasureMeterConsistency),
+            "B2: invariant 20's boundary clause must abstain rather than \
+             duplicate invariant 10's resolution check -- the grid's own \
+             governing signature does not resolve"
+        );
+    }
+
+    /// Matrix cell B3: `Governing20::None` at the boundary clause -- vacuous,
+    /// same as A3, because the region-default grid is empty (pin 6c case
+    /// 1). A wrong boundary distance (2 whole notes, not 1) is baked in
+    /// deliberately so the abstention is load-bearing. As with A3, a bare
+    /// boolean cannot distinguish "vacuous" from the other eight paths, so
+    /// this uses a paired positive control: fixture 1 is the claimed
+    /// abstention (empty grid, wrong distance already staged); fixture 2
+    /// changes ONLY the grid -- from empty to a real, comparable entry --
+    /// and the SAME wrong distance must now be flagged. The flip from
+    /// fixture 1 to fixture 2 is M10's edit, now inside the test.
+    #[test]
+    fn matrix_b3_vacuous_boundary() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let region = probe_region_id();
+        let m0 = measure_at(MeasureId::new(replica, 10), region, 0, None);
+        let m1 = measure_at(MeasureId::new(replica, 11), region, 2, None);
+        // Fixture 1: no grid at all.
+        let (empty_score, _) =
+            score_with(None, vec![ts_active.clone()], vec![m0.clone(), m1.clone()]);
+        let empty_violations =
+            check_invariant(&empty_score, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            empty_violations.len(),
+            0,
+            "B3: with no grid entries at all, the boundary clause must \
+             abstain as vacuous -- got {empty_violations:?}"
+        );
+        // Fixture 2 (positive control): ONLY the grid changes, from empty
+        // to a real, comparable entry -- the SAME wrong distance (2 whole
+        // notes, not 1) is untouched.
+        let (populated_score, _) = score_with(Some(active), vec![ts_active], vec![m0, m1]);
+        let populated_violations =
+            check_invariant(&populated_score, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            populated_violations.len(),
+            1,
+            "B3 positive control: a non-empty, comparable grid must decide \
+             and flag the wrong distance -- got {populated_violations:?}"
+        );
+        assert!(
+            populated_violations[0]
+                .witness
+                .contains("is not exactly one"),
+            "B3 positive control: the violation must be the boundary \
+             clause's -- witness was {:?}",
+            populated_violations[0].witness
+        );
+    }
+
+    /// Matrix row S1 (`WallClock` measures, `WallClock`-anchored meter
+    /// changes): agreement DECIDES (`D`) and boundary abstains as B5 --
+    /// pin 5's split. `m0`'s agreement clause and `m1`'s boundary clause
+    /// share the EXACT SAME governing search
+    /// (`measure20_governing_time_signature(sequence, &m0.start)`), so
+    /// `m0`'s violation firing is itself the proof that search decided
+    /// `Unique`, not `Indeterminate` -- ruling out B4 and pinning the
+    /// boundary abstention to B5 (the `WallClock` delta, structurally never
+    /// computable) rather than an incomparable governing search. `m1` sits
+    /// at a deliberately wrong `WallClock` distance from `m0`, so a live
+    /// boundary clause would flag it; only ONE violation (agreement, on
+    /// `m0`) is observed.
+    #[test]
+    fn matrix_s1_wallclock_measures_wallclock_meter_changes() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let (wrong, ts_wrong) = sig(replica, 2);
+        let m0 = Measure {
+            id: MeasureId::new(replica, 10),
+            start: TimeAnchor::WallClock {
+                time: WallClockTime(0),
+            },
+            time_signature: Some(wrong),
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let m1 = Measure {
+            id: MeasureId::new(replica, 11),
+            start: TimeAnchor::WallClock {
+                time: WallClockTime(999_999_999),
+            },
+            time_signature: None,
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let (mut score, _) = score_with(None, vec![ts_active, ts_wrong], vec![]);
+        if let RegionContent::StaffBased(content) = &mut score.canvas.regions[0].content {
+            content.default_metric_grid = Some(MetricGrid {
+                meter_sequence: vec![MeterChange {
+                    anchor: TimeAnchor::WallClock {
+                        time: WallClockTime(0),
+                    },
+                    time_signature: active,
+                }],
+            });
+            content.staff_instances[0].measures = vec![m0, m1];
+        }
+        let violations = check_invariant(&score, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            violations.len(),
+            1,
+            "S1: expected exactly one violation (m0's agreement) -- got {violations:?}"
+        );
+        assert!(
+            violations[0].witness.contains("declares time signature"),
+            "S1: the sole violation must be the agreement clause's, not the \
+             boundary clause's -- witness was {:?}",
+            violations[0].witness
+        );
+    }
+
+    /// Matrix row S2, agreement cell (`WallClock` measures, `Region`-
+    /// anchored meter changes): `comparable_order` has no arm for
+    /// `WallClock`<->`Region` at all (falls to the catch-all `_ => None`)
+    /// -- structurally incomparable regardless of any offset or timestamp.
+    /// `x` (a single, `WallClock`-anchored measure) declares a resolving,
+    /// disagreeing signature and is not flagged: A4. Paired positive
+    /// control: fixture 2 changes ONLY `x.start`, from `WallClock` to the
+    /// grid's own `Region` shape, and the SAME disagreement must decide and
+    /// flag -- M1 is fixture 1's `x.start` edit.
+    #[test]
+    fn matrix_s2_agreement_a4() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let (wrong, ts_wrong) = sig(replica, 2);
+        let x_wallclock = Measure {
+            id: MeasureId::new(replica, 10),
+            start: TimeAnchor::WallClock {
+                time: WallClockTime(0),
+            },
+            time_signature: Some(wrong),
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        // Fixture 1: `x` is WallClock-anchored -- incomparable to the
+        // Region-anchored grid.
+        let (mut score, region) = score_with(
+            Some(active),
+            vec![ts_active.clone(), ts_wrong.clone()],
+            vec![],
+        );
+        if let RegionContent::StaffBased(content) = &mut score.canvas.regions[0].content {
+            content.staff_instances[0].measures = vec![x_wallclock];
+        }
+        let wallclock_violations = check_invariant(&score, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            wallclock_violations.len(),
+            0,
+            "S2 agreement: a WallClock-anchored measure against a \
+             Region-anchored grid must abstain (A4) -- got \
+             {wallclock_violations:?}"
+        );
+        // Fixture 2 (positive control): ONLY `x.start` changes, to the
+        // grid's own Region{Start, Zero} shape.
+        let x_region = Measure {
+            id: MeasureId::new(replica, 10),
+            start: TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Zero,
+            },
+            time_signature: Some(wrong),
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let (mut score2, _) = score_with(Some(active), vec![ts_active, ts_wrong], vec![]);
+        if let RegionContent::StaffBased(content) = &mut score2.canvas.regions[0].content {
+            content.staff_instances[0].measures = vec![x_region];
+        }
+        let region_violations = check_invariant(&score2, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            region_violations.len(),
+            1,
+            "S2 agreement positive control: a Region-anchored measure \
+             matching the grid must decide and flag -- got \
+             {region_violations:?}"
+        );
+        assert!(
+            region_violations[0]
+                .witness
+                .contains("declares time signature"),
+            "S2 agreement positive control: the violation must be the \
+             agreement clause's -- witness was {:?}",
+            region_violations[0].witness
+        );
+    }
+
+    /// Matrix row S2, boundary cell: `x` (index 1, `WallClock`-anchored,
+    /// carrying a resolving disagreeing signature so it is structurally
+    /// eligible for A4 too -- see `matrix_s2_agreement_a4`) is preceded by
+    /// `prev` (index 0, also `WallClock`-anchored): B4. A `WallClock`
+    /// measure's boundary clause can NEVER decide-and-flag (`measure20_
+    /// musical_delta` has no `WallClock` arm at all, pin 5/S1), so the
+    /// positive control cannot be "x's boundary now flags" -- instead it
+    /// changes ONLY `prev.start` to the grid's `Region` shape and observes
+    /// `prev`'s OWN agreement clause, which reuses the IDENTICAL governing
+    /// search `x`'s boundary clause performs on `prev.start`. That the
+    /// identical search decides once `prev.start` alone is comparable is
+    /// the proof that the silence in fixture 1 was genuine indeterminacy
+    /// (B4), not vacuity (B3) or non-resolution (B2) -- and `x`'s own
+    /// boundary clause is asserted silent in BOTH fixtures, confirming the
+    /// change didn't leak into a delta becoming computable. M2 is fixture
+    /// 1's `prev.start` edit.
+    #[test]
+    fn matrix_s2_boundary_b4() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let (wrong, ts_wrong) = sig(replica, 2);
+        let prev_wallclock = Measure {
+            id: MeasureId::new(replica, 9),
+            start: TimeAnchor::WallClock {
+                time: WallClockTime(0),
+            },
+            time_signature: Some(wrong),
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let x = Measure {
+            id: MeasureId::new(replica, 10),
+            start: TimeAnchor::WallClock {
+                time: WallClockTime(500),
+            },
+            time_signature: Some(wrong),
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        // Fixture 1: `prev` is WallClock-anchored -- incomparable to the
+        // Region-anchored grid.
+        let (mut score, region) = score_with(
+            Some(active),
+            vec![ts_active.clone(), ts_wrong.clone()],
+            vec![],
+        );
+        if let RegionContent::StaffBased(content) = &mut score.canvas.regions[0].content {
+            content.staff_instances[0].measures = vec![prev_wallclock, x.clone()];
+        }
+        let wallclock_violations = check_invariant(&score, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            wallclock_violations.len(),
+            0,
+            "S2 boundary: with `prev` WallClock-anchored against a \
+             Region-anchored grid, both `prev`'s agreement and `x`'s \
+             boundary must abstain (A4/B4) -- got {wallclock_violations:?}"
+        );
+        // Fixture 2 (positive control): ONLY `prev.start` changes, to the
+        // grid's own Region{Start, Zero} shape. `x` is untouched.
+        let prev_region = Measure {
+            id: MeasureId::new(replica, 9),
+            start: TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Zero,
+            },
+            time_signature: Some(wrong),
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let (mut score2, _) = score_with(Some(active), vec![ts_active, ts_wrong], vec![]);
+        if let RegionContent::StaffBased(content) = &mut score2.canvas.regions[0].content {
+            content.staff_instances[0].measures = vec![prev_region, x];
+        }
+        let region_violations = check_invariant(&score2, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            region_violations.len(),
+            1,
+            "S2 boundary positive control: with `prev` now comparable to \
+             the grid, `prev`'s OWN agreement clause (the identical \
+             governing search `x`'s boundary performs) must decide and \
+             flag -- got {region_violations:?}"
+        );
+        assert!(
+            region_violations[0]
+                .witness
+                .contains("declares time signature"),
+            "S2 boundary positive control: the violation must be `prev`'s \
+             agreement clause's, not a new boundary violation on `x` -- a \
+             WallClock delta is structurally never computable (pin 5), so \
+             `x`'s boundary stays silent even though `prev`'s governing \
+             search now decides -- witness was {:?}",
+            region_violations[0].witness
+        );
+    }
+
+    /// Matrix row S4: `Measure` **same id**, `pos: End` on both sides,
+    /// `Musical` offsets (c2) -- the shape that falsifies "any `Measure`
+    /// end anchor is incomparable": same id AND same `pos` decides via c2's
+    /// offset comparison, exactly like same-id `Start`. Both clauses DECIDE
+    /// (`D`/`D`), deliberately wrong so the decision is observed as a
+    /// violation rather than a pass that could have come from anywhere.
+    #[test]
+    fn matrix_s4_measure_same_id_end_end_decides() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let (wrong, ts_wrong) = sig(replica, 2);
+        let shared_end = MeasureId::new(replica, 500);
+        let m0 = Measure {
+            id: MeasureId::new(replica, 10),
+            start: TimeAnchor::Measure {
+                id: shared_end,
+                position: MeasurePosition::End,
+                offset: AnchorOffset::Musical(MusicalDuration::zero()),
+            },
+            time_signature: Some(wrong),
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let m1 = Measure {
+            id: MeasureId::new(replica, 11),
+            start: TimeAnchor::Measure {
+                id: shared_end,
+                position: MeasurePosition::End,
+                offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(2))),
+            },
+            time_signature: None,
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let (mut score, _) = score_with(None, vec![ts_active, ts_wrong], vec![]);
+        if let RegionContent::StaffBased(content) = &mut score.canvas.regions[0].content {
+            content.default_metric_grid = Some(MetricGrid {
+                meter_sequence: vec![MeterChange {
+                    anchor: TimeAnchor::Measure {
+                        id: shared_end,
+                        position: MeasurePosition::End,
+                        offset: AnchorOffset::Musical(MusicalDuration::zero()),
+                    },
+                    time_signature: active,
+                }],
+            });
+            content.staff_instances[0].measures = vec![m0, m1];
+        }
+        let violations = check_invariant(&score, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            violations.len(),
+            2,
+            "S4: same-id End<->End must decide BOTH clauses (D/D) -- got \
+             {violations:?}"
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.witness.contains("declares time signature")),
+            "S4: expected an agreement violation on m0 -- got {violations:?}"
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.witness.contains("is not exactly one")),
+            "S4: expected a boundary violation on m1 -- got {violations:?}"
+        );
+    }
+
+    /// Matrix row S5 (`Measure` **distinct** ids, `Start`, `Zero` -- c3):
+    /// the contrast to S4. c3's vector-index ordering DOES decide
+    /// (agreement: `D`) but supplies no distance at all (boundary: B5) --
+    /// pin 10's second deficiency. Three measures in one instance:
+    /// `filler` (index 0, purely an anchor target), `prev` (index 1) and
+    /// `m` (index 2, under test). The grid's sole entry is anchored to
+    /// `filler`'s id -- DISTINCT from both `prev`'s and `m`'s own
+    /// self-referencing ids -- so every governing search below goes
+    /// through c3's vector order, never c2. `m` declares a disagreeing
+    /// signature (agreement fires); the boundary delta between `prev` and
+    /// `m` is structurally impossible (distinct ids), so it must abstain
+    /// regardless of distance -- no wrong distance is even staged here.
+    #[test]
+    fn matrix_s5_measure_distinct_ids_start_zero() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let (wrong, ts_wrong) = sig(replica, 2);
+        let filler_id = MeasureId::new(replica, 20);
+        let prev_id = MeasureId::new(replica, 21);
+        let m_id = MeasureId::new(replica, 22);
+        let filler = Measure {
+            id: filler_id,
+            start: TimeAnchor::WallClock {
+                time: WallClockTime(0),
+            },
+            time_signature: None,
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let prev = Measure {
+            id: prev_id,
+            start: TimeAnchor::Measure {
+                id: prev_id,
+                position: MeasurePosition::Start,
+                offset: AnchorOffset::Zero,
+            },
+            time_signature: None,
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let m = Measure {
+            id: m_id,
+            start: TimeAnchor::Measure {
+                id: m_id,
+                position: MeasurePosition::Start,
+                offset: AnchorOffset::Zero,
+            },
+            time_signature: Some(wrong),
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let (mut score, _) = score_with(None, vec![ts_active, ts_wrong], vec![]);
+        if let RegionContent::StaffBased(content) = &mut score.canvas.regions[0].content {
+            content.default_metric_grid = Some(MetricGrid {
+                meter_sequence: vec![MeterChange {
+                    anchor: TimeAnchor::Measure {
+                        id: filler_id,
+                        position: MeasurePosition::Start,
+                        offset: AnchorOffset::Zero,
+                    },
+                    time_signature: active,
+                }],
+            });
+            content.staff_instances[0].measures = vec![filler, prev, m];
+        }
+        let violations = check_invariant(&score, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            violations.len(),
+            1,
+            "S5: expected exactly one violation (m's agreement, decided via \
+             c3's vector order) -- got {violations:?}"
+        );
+        assert!(
+            violations[0].witness.contains("declares time signature"),
+            "S5: the sole violation must be the agreement clause's -- \
+             boundary (B5) has no distance to report even though its \
+             governing search also decided via c3 -- witness was {:?}",
+            violations[0].witness
+        );
+    }
+
+    /// Matrix row S6 (`Event` **same id**, a LIVE event, `Musical` offsets
+    /// -- c1): `Measure.start` and `MeterChange.anchor` are unrestricted
+    /// `TimeAnchor`s, so an `Event`-anchored measure is a legal (if
+    /// unusual) graph, not a hypothetical one -- the event inserted here is
+    /// genuinely live in `score.events`. Both clauses DECIDE (`D`/`D`),
+    /// deliberately wrong.
+    #[test]
+    fn matrix_s6_event_same_id_live_event_decides() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let (wrong, ts_wrong) = sig(replica, 2);
+        let (mut score, _) = score_with(None, vec![ts_active, ts_wrong], vec![]);
+        let live = insert_live_event(&mut score);
+        let m0 = Measure {
+            id: MeasureId::new(replica, 10),
+            start: TimeAnchor::Event {
+                id: live,
+                offset: AnchorOffset::Musical(MusicalDuration::zero()),
+            },
+            time_signature: Some(wrong),
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let m1 = Measure {
+            id: MeasureId::new(replica, 11),
+            start: TimeAnchor::Event {
+                id: live,
+                offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(2))),
+            },
+            time_signature: None,
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        if let RegionContent::StaffBased(content) = &mut score.canvas.regions[0].content {
+            content.default_metric_grid = Some(MetricGrid {
+                meter_sequence: vec![MeterChange {
+                    anchor: TimeAnchor::Event {
+                        id: live,
+                        offset: AnchorOffset::Musical(MusicalDuration::zero()),
+                    },
+                    time_signature: active,
+                }],
+            });
+            content.staff_instances[0].measures = vec![m0, m1];
+        }
+        let violations = check_invariant(&score, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            violations.len(),
+            2,
+            "S6: same-id live-Event anchors must decide BOTH clauses (D/D) \
+             -- got {violations:?}"
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.witness.contains("declares time signature")),
+            "S6: expected an agreement violation on m0 -- got {violations:?}"
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.witness.contains("is not exactly one")),
+            "S6: expected a boundary violation on m1 -- got {violations:?}"
+        );
+    }
+
+    /// Matrix row S7, agreement cell (`Event`, DISTINCT ids, otherwise
+    /// identical to S6): isolates the distinct-`Event` fall-through --
+    /// unlike `Measure`'s c3, there is no vector-index fallback for
+    /// `Event`s, so distinct ids are UNCONDITIONALLY incomparable. `x` (a
+    /// single, live-`Event`-anchored measure referencing `event_a`)
+    /// declares a resolving, disagreeing signature against a grid entry
+    /// referencing the DISTINCT `event_b`: A4. Paired positive control:
+    /// fixture 2 changes ONLY the grid's referent, from `event_b` to
+    /// `event_a` (matching `x`), and the SAME disagreement must decide and
+    /// flag -- exactly the case the retained P11-C5 citation at
+    /// `CONTRACT_GENESIS_G3B_MEASURE.md:223` exists for. (M1/M2, the
+    /// contract's ratified A4/B4 mutation pair, target S8 below; this cell
+    /// has no separately-numbered mutation, matching A3/A2's ratified
+    /// scope.)
+    #[test]
+    fn matrix_s7_agreement_a4() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let (wrong, ts_wrong) = sig(replica, 2);
+        let (mut score, _) = score_with(None, vec![ts_active.clone(), ts_wrong.clone()], vec![]);
+        let event_a = insert_live_event(&mut score);
+        let event_b = insert_live_event(&mut score);
+        let x = Measure {
+            id: MeasureId::new(replica, 10),
+            start: TimeAnchor::Event {
+                id: event_a,
+                offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(2))),
+            },
+            time_signature: Some(wrong),
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        // Fixture 1: the grid references `event_b`, distinct from `x`'s
+        // own `event_a`.
+        if let RegionContent::StaffBased(content) = &mut score.canvas.regions[0].content {
+            content.default_metric_grid = Some(MetricGrid {
+                meter_sequence: vec![MeterChange {
+                    anchor: TimeAnchor::Event {
+                        id: event_b,
+                        offset: AnchorOffset::Musical(MusicalDuration::zero()),
+                    },
+                    time_signature: active,
+                }],
+            });
+            content.staff_instances[0].measures = vec![x];
+        }
+        let distinct_violations = check_invariant(&score, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            distinct_violations.len(),
+            0,
+            "S7 agreement: a distinct-Event-id grid entry must abstain \
+             (A4) -- got {distinct_violations:?}"
+        );
+        // Fixture 2 (positive control): ONLY the grid's referent changes,
+        // from `event_b` to `event_a`, matching `x`.
+        if let RegionContent::StaffBased(content) = &mut score.canvas.regions[0].content {
+            content.default_metric_grid = Some(MetricGrid {
+                meter_sequence: vec![MeterChange {
+                    anchor: TimeAnchor::Event {
+                        id: event_a,
+                        offset: AnchorOffset::Musical(MusicalDuration::zero()),
+                    },
+                    time_signature: active,
+                }],
+            });
+        }
+        let matching_violations = check_invariant(&score, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            matching_violations.len(),
+            1,
+            "S7 agreement positive control: a matching-Event-id grid entry \
+             must decide and flag -- got {matching_violations:?}"
+        );
+        assert!(
+            matching_violations[0]
+                .witness
+                .contains("declares time signature"),
+            "S7 agreement positive control: the violation must be the \
+             agreement clause's -- witness was {:?}",
+            matching_violations[0].witness
+        );
+    }
+
+    /// Matrix row S7, boundary cell: `x` (index 1, `Event`-anchored to
+    /// `event_a`, carrying a resolving disagreeing signature so it is
+    /// structurally eligible for A4 too -- see `matrix_s7_agreement_a4`) is
+    /// preceded by `prev` (index 0, ALSO `Event`-anchored to `event_a` --
+    /// `prev` and `x` already share a referent; only the grid's `event_b`
+    /// is the outlier): B4. Unlike S2's structurally-forced `WallClock`
+    /// delta (never computable, pin 5), `measure20_musical_delta`'s
+    /// `Event` arm decides fine once ids match, so the paired positive
+    /// control here changes ONLY the grid's referent (`event_b` ->
+    /// `event_a`, matching what `prev`, and `x`, already share) and THREE
+    /// clauses decide and flag together: `prev`'s own agreement, `x`'s own
+    /// agreement (it too references `event_a` and disagrees), and `x`'s
+    /// boundary -- a stronger, triply-confirmed observation than S2's
+    /// single witness, for the same underlying governing-search reason.
+    #[test]
+    fn matrix_s7_boundary_b4() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let (wrong, ts_wrong) = sig(replica, 2);
+        let (mut score, _) = score_with(None, vec![ts_active.clone(), ts_wrong.clone()], vec![]);
+        let event_a = insert_live_event(&mut score);
+        let event_b = insert_live_event(&mut score);
+        let prev = Measure {
+            id: MeasureId::new(replica, 9),
+            start: TimeAnchor::Event {
+                id: event_a,
+                offset: AnchorOffset::Musical(MusicalDuration::zero()),
+            },
+            time_signature: Some(wrong),
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let x = Measure {
+            id: MeasureId::new(replica, 10),
+            start: TimeAnchor::Event {
+                id: event_a,
+                offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(2))),
+            },
+            time_signature: Some(wrong),
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        // Fixture 1: the grid references `event_b`, distinct from `prev`'s
+        // own `event_a`.
+        if let RegionContent::StaffBased(content) = &mut score.canvas.regions[0].content {
+            content.default_metric_grid = Some(MetricGrid {
+                meter_sequence: vec![MeterChange {
+                    anchor: TimeAnchor::Event {
+                        id: event_b,
+                        offset: AnchorOffset::Musical(MusicalDuration::zero()),
+                    },
+                    time_signature: active,
+                }],
+            });
+            content.staff_instances[0].measures = vec![prev.clone(), x.clone()];
+        }
+        let distinct_violations = check_invariant(&score, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            distinct_violations.len(),
+            0,
+            "S7 boundary: with `prev` referencing a distinct Event id from \
+             the grid, both `prev`'s agreement and `x`'s boundary must \
+             abstain (A4/B4) -- got {distinct_violations:?}"
+        );
+        // Fixture 2 (positive control): ONLY the grid's referent changes,
+        // from `event_b` to `event_a`, matching `prev` (and `x`, since both
+        // still reference `event_a`).
+        if let RegionContent::StaffBased(content) = &mut score.canvas.regions[0].content {
+            content.default_metric_grid = Some(MetricGrid {
+                meter_sequence: vec![MeterChange {
+                    anchor: TimeAnchor::Event {
+                        id: event_a,
+                        offset: AnchorOffset::Musical(MusicalDuration::zero()),
+                    },
+                    time_signature: active,
+                }],
+            });
+        }
+        let matching_violations = check_invariant(&score, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            matching_violations.len(),
+            3,
+            "S7 boundary positive control: with the grid now matching \
+             `prev`, and `x` (same event id), THREE clauses all newly \
+             comparable at once decide and flag: `prev`'s own agreement, \
+             `x`'s own agreement (it too shares `event_a` and disagrees), \
+             and `x`'s boundary (now a computable Event delta, unlike S2's \
+             structurally-impossible WallClock case) -- got \
+             {matching_violations:?}"
+        );
+        assert_eq!(
+            matching_violations
+                .iter()
+                .filter(|v| v.witness.contains("declares time signature"))
+                .count(),
+            2,
+            "S7 boundary positive control: expected agreement violations \
+             on BOTH prev and x -- got {matching_violations:?}"
+        );
+        assert!(
+            matching_violations
+                .iter()
+                .any(|v| v.witness.contains("is not exactly one")),
+            "S7 boundary positive control: expected x's boundary violation \
+             -- got {matching_violations:?}"
+        );
+    }
+
+    /// Matrix row S8, agreement cell (matching referent, DIFFERING
+    /// `pos`/`edge` selector): the `ia == ib && ea == eb` conjunction
+    /// (Region) requires an IDENTICAL selector, never merely an identical
+    /// id. `x` (a single, `Region`-anchored measure at `End`) declares a
+    /// resolving, disagreeing signature against a grid entry at `Start`,
+    /// same `Region` id: A4. Paired positive control: fixture 2 changes
+    /// ONLY `x`'s own edge, from `End` to `Start` (matching the grid), and
+    /// the SAME disagreement must decide and flag. M1 is fixture 1's
+    /// `x`-edge edit.
+    #[test]
+    fn matrix_s8_agreement_a4() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let (wrong, ts_wrong) = sig(replica, 2);
+        let (mut score, region) =
+            score_with(None, vec![ts_active.clone(), ts_wrong.clone()], vec![]);
+        let x_end = Measure {
+            id: MeasureId::new(replica, 10),
+            start: TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::End,
+                offset: AnchorOffset::Zero,
+            },
+            time_signature: Some(wrong),
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        if let RegionContent::StaffBased(content) = &mut score.canvas.regions[0].content {
+            content.default_metric_grid = Some(MetricGrid {
+                meter_sequence: vec![MeterChange {
+                    anchor: TimeAnchor::Region {
+                        id: region,
+                        edge: RegionEdge::Start,
+                        offset: AnchorOffset::Zero,
+                    },
+                    time_signature: active,
+                }],
+            });
+            content.staff_instances[0].measures = vec![x_end];
+        }
+        let end_violations = check_invariant(&score, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            end_violations.len(),
+            0,
+            "S8 agreement: an End-anchored measure against a Start-anchored \
+             grid entry (same Region id) must abstain (A4) -- got \
+             {end_violations:?}"
+        );
+        // Fixture 2 (positive control): ONLY `x`'s own edge changes, from
+        // `End` to `Start`, matching the grid.
+        if let RegionContent::StaffBased(content) = &mut score.canvas.regions[0].content {
+            content.staff_instances[0].measures[0].start = TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Zero,
+            };
+        }
+        let start_violations = check_invariant(&score, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            start_violations.len(),
+            1,
+            "S8 agreement positive control: a Start-anchored measure \
+             matching the grid must decide and flag -- got \
+             {start_violations:?}"
+        );
+        assert!(
+            start_violations[0]
+                .witness
+                .contains("declares time signature"),
+            "S8 agreement positive control: the violation must be the \
+             agreement clause's -- witness was {:?}",
+            start_violations[0].witness
+        );
+    }
+
+    /// Matrix row S8, boundary cell: `x` (index 1, `Region`-anchored at
+    /// `End`, carrying a resolving disagreeing signature so it is
+    /// structurally eligible for A4 too -- see `matrix_s8_agreement_a4`) is
+    /// preceded by `prev` (index 0, also `Region`-anchored at `End`): B4.
+    /// The positive control moves the GRID entry's edge to `End`, not
+    /// `prev`'s. Both levers restore the governing search, but only this one
+    /// leaves `prev` and `x` c4-comparable to each other, so
+    /// `measure20_musical_delta`'s Region arm (`ia == ib && ea == eb`) still
+    /// yields a delta and **`x`'s own boundary clause fires**. Moving `prev`
+    /// instead would break that match and leave the boundary silent for a
+    /// second reason, signing this cell by inference from a shared call
+    /// rather than by observing it. **S2 has no such lever** -- a `WallClock`
+    /// delta is never computable (pin 5) -- so its control legitimately
+    /// observes `prev`'s agreement, and that exception is S2's alone.
+    /// M2 is fixture 1's grid-edge edit.
+    #[test]
+    fn matrix_s8_boundary_b4() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let (wrong, ts_wrong) = sig(replica, 2);
+        let (mut score, region) =
+            score_with(None, vec![ts_active.clone(), ts_wrong.clone()], vec![]);
+        let prev_end = Measure {
+            id: MeasureId::new(replica, 9),
+            start: TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::End,
+                offset: AnchorOffset::Zero,
+            },
+            time_signature: Some(wrong),
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let x = Measure {
+            id: MeasureId::new(replica, 10),
+            start: TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::End,
+                offset: AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(2))),
+            },
+            time_signature: Some(wrong),
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        if let RegionContent::StaffBased(content) = &mut score.canvas.regions[0].content {
+            content.default_metric_grid = Some(MetricGrid {
+                meter_sequence: vec![MeterChange {
+                    anchor: TimeAnchor::Region {
+                        id: region,
+                        edge: RegionEdge::Start,
+                        offset: AnchorOffset::Zero,
+                    },
+                    time_signature: active,
+                }],
+            });
+            content.staff_instances[0].measures = vec![prev_end, x];
+        }
+        let end_violations = check_invariant(&score, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            end_violations.len(),
+            0,
+            "S8 boundary: with `prev` End-anchored against a Start-anchored \
+             grid entry, both `prev`'s agreement and `x`'s boundary must \
+             abstain (A4/B4) -- got {end_violations:?}"
+        );
+        // Fixture 2 (positive control): ONLY the grid entry's edge changes,
+        // from `Start` to `End`, matching both measures. Neither measure
+        // moves -- which is the point: `prev` and `x` stay Region{End} and
+        // therefore stay c4-comparable to EACH OTHER, so the delta survives
+        // and `x`'s boundary clause itself decides. Moving `prev` instead
+        // would restore the governing search while breaking `prev`<->`x`,
+        // leaving the boundary silent for a second reason and signing this
+        // cell by inference rather than observation. (S2 has no such option:
+        // a WallClock delta is structurally never computable, pin 5, so its
+        // control legitimately observes `prev`'s agreement instead. That
+        // exception is S2's alone.)
+        if let RegionContent::StaffBased(content) = &mut score.canvas.regions[0].content {
+            content
+                .default_metric_grid
+                .as_mut()
+                .expect("the grid was just installed")
+                .meter_sequence[0]
+                .anchor = TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::End,
+                offset: AnchorOffset::Zero,
+            };
+        }
+        let matching_violations = check_invariant(&score, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            matching_violations.len(),
+            3,
+            "S8 boundary positive control: with the grid now End-anchored, \
+             three clauses newly decide at once -- `prev`'s agreement, \
+             `x`'s agreement, and `x`'s BOUNDARY (a computable c4 delta, \
+             since both measures are still Region{{End}}) -- got \
+             {matching_violations:?}"
+        );
+        assert_eq!(
+            matching_violations
+                .iter()
+                .filter(|v| v.witness.contains("declares time signature"))
+                .count(),
+            2,
+            "S8 boundary positive control: expected agreement violations on \
+             BOTH prev and x -- got {matching_violations:?}"
+        );
+        assert!(
+            matching_violations
+                .iter()
+                .any(|v| v.witness.contains("is not exactly one")),
+            "S8 boundary positive control: expected `x`'s OWN boundary \
+             violation, which is what attributes fixture 1's silence to B4 \
+             rather than to a downstream delta failure -- got \
+             {matching_violations:?}"
+        );
+    }
+
+    /// Matrix row S9 (pin 7's behavioural lock): one instance, heterogeneous
+    /// measure anchors. THREE measures, deliberately distinct roles so the
+    /// pin-7 contrast and the row's own A4/B4 cell pair don't get
+    /// conflated into one false "same measure" claim (the mistake defect 2
+    /// found in this row's first draft):
+    ///
+    /// - `q` (index 0, `Region`-anchored, matching the grid) is pin 7's
+    ///   REQUIRED contrast -- "another measure ... reaches a decision" --
+    ///   and decides (deliberately wrong, so it flags).
+    /// - `r` (index 1, `WallClock`-anchored, `None` declared) is purely
+    ///   `p`'s predecessor; it carries no claim of its own.
+    /// - `p` (index 2, `WallClock`-anchored like `r`, resolving disagreeing
+    ///   signature) is the row's A4/B4 EXHIBIT: its own agreement clause
+    ///   abstains (A4, `p.start` incomparable to the grid) AND its own
+    ///   boundary clause abstains (B4, `r.start` -- `p`'s predecessor --
+    ///   ALSO incomparable to the grid), on ONE measure, per defect 2.
+    ///
+    /// `q` cannot double as `p`'s predecessor: if it did, `p`'s boundary
+    /// governing search would use `q.start`, which IS comparable to the
+    /// grid (that's why `q` decides) -- and `p`'s boundary would then
+    /// decide too, not abstain. Splitting the roles across THREE measures
+    /// is what makes both claims true at once. Exactly ONE violation --
+    /// naming `q`, never `p` or `r` -- is pin 7's behavioural proof; a
+    /// prose claim that "one incomparable change disables the whole
+    /// instance" would predict zero. M6 gives `q` the SAME `WallClock`
+    /// shape as `r`/`p` and only then does its agreement clause stop
+    /// deciding.
+    #[test]
+    fn matrix_s9_heterogeneous_measure_anchors() {
+        let replica = ReplicaId(7);
+        let (active, ts_active) = sig(replica, 1);
+        let (wrong, ts_wrong) = sig(replica, 2);
+        let (mut score, region) = score_with(Some(active), vec![ts_active, ts_wrong], vec![]);
+        let q = Measure {
+            id: MeasureId::new(replica, 9),
+            start: TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(MusicalDuration::zero()),
+            },
+            time_signature: Some(wrong),
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let q_id = q.id;
+        let r = Measure {
+            id: MeasureId::new(replica, 10),
+            start: TimeAnchor::WallClock {
+                time: WallClockTime(0),
+            },
+            time_signature: None,
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        let p = Measure {
+            id: MeasureId::new(replica, 11),
+            start: TimeAnchor::WallClock {
+                time: WallClockTime(500),
+            },
+            time_signature: Some(wrong),
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
+        if let RegionContent::StaffBased(content) = &mut score.canvas.regions[0].content {
+            content.staff_instances[0].measures = vec![q, r, p];
+        }
+        let violations = check_invariant(&score, GraphInvariant::MeasureMeterConsistency);
+        assert_eq!(
+            violations.len(),
+            1,
+            "S9: exactly one measure's agreement clause (q's) must decide \
+             in this instance -- got {violations:?}"
+        );
+        assert!(
+            violations[0].witness.contains(&format!("{q_id:?}")),
+            "S9: the sole violation must name q, proving p's abstention \
+             (A4) and r's presence did not disable the whole instance -- \
+             witness was {:?}",
+            violations[0].witness
         );
     }
 }
