@@ -305,11 +305,21 @@ fail signs nothing.
 variant does not satisfy pin 4 and does not sign this rung.
 
 **M2 — the paired control, which is what makes M1 mean anything.** With M1's
-mutation **still applied**, delete the new table's row loop (or the whole new
-test) and run `cargo test --workspace`. **Must pass 1558/0** — reproducing
-P13-S22 itself in the tree rather than arguing for it, exactly as P13-S15's
-`&table[..30]` control did. Then restore the test, leaving M1 applied, confirm
-the failure returns, and restore M1.
+mutation **still applied**, delete the new test's **row/assertion loop only**,
+**retaining the test function itself** (and its coverage block), then run
+`cargo test --workspace`. **Must pass 1558/0** — reproducing P13-S22 itself in
+the tree rather than arguing for it, exactly as P13-S15's `&table[..30]`
+control did. Then restore the loop, leaving M1 applied, confirm the failure
+returns, and restore M1.
+
+> **Deleting the whole test is NOT an equivalent alternative, and an earlier
+> draft of this contract wrongly offered it as one.** The suite would then
+> report **1557**, contradicting the 1558/0 requirement stated in the same
+> breath — the two forms are not interchangeable, and only loop-deletion
+> satisfies both conditions at once. The point of M2 is to remove *the
+> association assertion* while leaving the test count fixed, so that the
+> passing 1558 is comparable to the baseline 1558 rather than to a different
+> number.
 
 > Without M2, M1 shows only that some test fails under some mutation. The whole
 > claim of this rung is that **nothing else** sees it.
