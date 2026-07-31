@@ -1,0 +1,15 @@
+{
+  "fixture_id": "F-C",
+  "verdict": "PASS",
+  "reason": "a node with an accepted role ('label') carries the accessible name byte-for-byte",
+  "observed_role": "label",
+  "observed_name": "Coro \u0627",
+  "observed_name_hex": "436f726f20d8a7",
+  "prohibited_outcome": null,
+  "walked_tree": [
+    "desktop / application:'c1_round2_a11y'",
+    "desktop / application:'c1_round2_a11y' / frame:''",
+    "desktop / application:'c1_round2_a11y' / frame:'' / label:'Round 2 check 5 \u2014 fixture F-C'",
+    "desktop / application:'c1_round2_a11y' / frame:'' / label:'Coro \u0627'"
+  ]
+}

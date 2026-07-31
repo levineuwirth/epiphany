@@ -1,0 +1,1748 @@
+{
+  "candidate_id": "C1 egui 0.35 + lyon 1.0 (egui_wgpu::Renderer)",
+  "check1_faithful_consumption": "Pass",
+  "check2_fallback": "Pass",
+  "check3_bidi": {
+    "NotRun": "ROUND2_TEXT_RECIPE.md §1.2 (2026-07-29 ruling): check 3 is NOT RUN for every candidate, on both adapters — no Arabic-capable face is installed, and pin 9 makes an absent required face environmental NOT RUN. F-D's supplementary Hebrew/Latin bidi evidence is recorded separately and must never upgrade check 3 to PASS."
+  },
+  "check4_hit_testing": "Pass",
+  "check5_accessibility": "Pass",
+  "check5_bus_unreachable_evidence": null,
+  "supplementary_f_d_bidi": "Pass",
+  "per_fixture_diffs": {
+    "F-A": {
+      "width": 1920,
+      "height": 1080,
+      "band_pixel_count": 52244,
+      "d1_pixels_outside_band_differing": 0,
+      "d1_pass": true,
+      "reference_ink_mass": 31933.196078430126,
+      "candidate_ink_mass": 31911.352941176752,
+      "d2_relative_delta": 0.0006840260273267325,
+      "d2_pass": true,
+      "reference_centroid": [
+        890.8902938917568,
+        507.18029108563553
+      ],
+      "candidate_centroid": [
+        891.1530317749048,
+        507.20871028135434
+      ],
+      "d3_delta": [
+        0.26273788314802005,
+        0.028419195718811352
+      ],
+      "d3_pass": true,
+      "in_band_max_abs_delta_luma": 65,
+      "in_band_count_delta_gt_report_threshold": 2953,
+      "d4_regions": [
+        {
+          "label": "F-A seg0.glyph0 (face 0, gid 34)",
+          "reference_mass": 1962.933333333338,
+          "candidate_mass": 1957.9490196078427,
+          "relative_delta": 0.0025392170181506592,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph1 (face 0, gid 77)",
+          "reference_mass": 1126.7843137254906,
+          "candidate_mass": 1123.6549019607862,
+          "relative_delta": 0.002777294400165739,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph2 (face 0, gid 77)",
+          "reference_mass": 1123.1372549019607,
+          "candidate_mass": 1124.0470588235312,
+          "relative_delta": 0.0008100558659234804,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph3 (face 0, gid 70)",
+          "reference_mass": 1347.9568627450994,
+          "candidate_mass": 1346.0039215686281,
+          "relative_delta": 0.001448815782201049,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph4 (face 0, gid 72)",
+          "reference_mass": 2228.1019607843186,
+          "candidate_mass": 2223.4941176470616,
+          "relative_delta": 0.002068057574723852,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph5 (face 0, gid 83)",
+          "reference_mass": 1012.6588235294114,
+          "candidate_mass": 1013.9098039215687,
+          "relative_delta": 0.0012353424105833444,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph6 (face 0, gid 80)",
+          "reference_mass": 1436.8078431372576,
+          "candidate_mass": 1435.1529411764718,
+          "relative_delta": 0.0011517907343631284,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph8 (face 0, gid 66)",
+          "reference_mass": 1406.149019607845,
+          "candidate_mass": 1406.2078431372556,
+          "relative_delta": 0.000041833069319338136,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph9 (face 0, gid 234)",
+          "reference_mass": 2515.3490196078515,
+          "candidate_mass": 2514.1294117647076,
+          "relative_delta": 0.00048486624863455964,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph10 (face 0, gid 70)",
+          "reference_mass": 1349.2196078431382,
+          "candidate_mass": 1344.7411764705887,
+          "relative_delta": 0.003319275339993548,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph11 (face 0, gid 85)",
+          "reference_mass": 1090.1529411764707,
+          "candidate_mass": 1092.3176470588246,
+          "relative_delta": 0.0019856900812631135,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph12 (face 0, gid 85)",
+          "reference_mass": 1090.2745098039222,
+          "candidate_mass": 1092.66274509804,
+          "relative_delta": 0.0021904898928135587,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph13 (face 0, gid 86)",
+          "reference_mass": 1597.7372549019626,
+          "candidate_mass": 1599.1215686274522,
+          "relative_delta": 0.0008664213851448065,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph14 (face 0, gid 80)",
+          "reference_mass": 1438.9960784313753,
+          "candidate_mass": 1431.9215686274504,
+          "relative_delta": 0.004916281503446981,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph15 (face 0, gid 84)",
+          "reference_mass": 1181.8352941176502,
+          "candidate_mass": 1180.5529411764714,
+          "relative_delta": 0.0010850521621425348,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph16 (face 0, gid 80)",
+          "reference_mass": 1437.9294117647094,
+          "candidate_mass": 1434.7725490196074,
+          "relative_delta": 0.0021954226120374756,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph18 (face 0, gid 119)",
+          "reference_mass": 959.780392156863,
+          "candidate_mass": 959.7529411764707,
+          "relative_delta": 0.00002860131402617683,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph20 (face 0, gid 66)",
+          "reference_mass": 1401.8509803921577,
+          "candidate_mass": 1406.5764705882366,
+          "relative_delta": 0.0033708933846570387,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph21 (face 0, gid 77)",
+          "reference_mass": 1125.5294117647059,
+          "candidate_mass": 1123.419607843139,
+          "relative_delta": 0.0018744991463697039,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph23 (face 0, gid 97)",
+          "reference_mass": 2139.2784313725547,
+          "candidate_mass": 2139.8549019607913,
+          "relative_delta": 0.00026946963975452555,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph24 (face 0, gid 79)",
+          "reference_mass": 1628.7137254901959,
+          "candidate_mass": 1632.3764705882386,
+          "relative_delta": 0.0022488575129679866,
+          "pass": true
+        },
+        {
+          "label": "F-A seg0.glyph25 (face 0, gid 70)",
+          "reference_mass": 1347.239215686276,
+          "candidate_mass": 1343.86274509804,
+          "relative_delta": 0.0025062145971724357,
+          "pass": true
+        }
+      ],
+      "d4_pass": true,
+      "d4_worst": {
+        "label": "F-A seg0.glyph14 (face 0, gid 80)",
+        "reference_mass": 1438.9960784313753,
+        "candidate_mass": 1431.9215686274504,
+        "relative_delta": 0.004916281503446981,
+        "pass": true
+      },
+      "pass": true
+    },
+    "F-B": {
+      "width": 1920,
+      "height": 1080,
+      "band_pixel_count": 16456,
+      "d1_pixels_outside_band_differing": 0,
+      "d1_pass": true,
+      "reference_ink_mass": 9836.71764705878,
+      "candidate_ink_mass": 9843.047058823493,
+      "d2_relative_delta": 0.0006434475392922739,
+      "d2_pass": true,
+      "reference_centroid": [
+        407.43842537942237,
+        504.8943554023082
+      ],
+      "candidate_centroid": [
+        407.6547103818109,
+        504.90202460022675
+      ],
+      "d3_delta": [
+        0.2162850023885312,
+        0.0076691979185739
+      ],
+      "d3_pass": true,
+      "in_band_max_abs_delta_luma": 64,
+      "in_band_count_delta_gt_report_threshold": 869,
+      "d4_regions": [
+        {
+          "label": "F-B seg0.glyph0 (face 0, gid 36)",
+          "reference_mass": 1867.0078431372583,
+          "candidate_mass": 1868.686274509805,
+          "relative_delta": 0.0008989953516886158,
+          "pass": true
+        },
+        {
+          "label": "F-B seg0.glyph1 (face 0, gid 80)",
+          "reference_mass": 1438.5607843137286,
+          "candidate_mass": 1434.1529411764707,
+          "relative_delta": 0.0030640645743452,
+          "pass": true
+        },
+        {
+          "label": "F-B seg0.glyph2 (face 0, gid 83)",
+          "reference_mass": 1013.2980392156862,
+          "candidate_mass": 1013.3058823529412,
+          "relative_delta": 7.740207669876935e-6,
+          "pass": true
+        },
+        {
+          "label": "F-B seg0.glyph3 (face 0, gid 80)",
+          "reference_mass": 1438.847058823533,
+          "candidate_mass": 1433.5215686274512,
+          "relative_delta": 0.003701220476091557,
+          "pass": true
+        },
+        {
+          "label": "F-B seg1.glyph0 (face 1, gid 1282)",
+          "reference_mass": 849.0705882352955,
+          "candidate_mass": 851.4274509803922,
+          "relative_delta": 0.0027758148471438452,
+          "pass": true
+        },
+        {
+          "label": "F-B seg1.glyph1 (face 1, gid 1281)",
+          "reference_mass": 1425.415686274511,
+          "candidate_mass": 1436.7019607843135,
+          "relative_delta": 0.00791788291547465,
+          "pass": true
+        },
+        {
+          "label": "F-B seg1.glyph2 (face 1, gid 1280)",
+          "reference_mass": 1804.5176470588276,
+          "candidate_mass": 1805.2509803921562,
+          "relative_delta": 0.0004063874545775871,
+          "pass": true
+        }
+      ],
+      "d4_pass": true,
+      "d4_worst": {
+        "label": "F-B seg1.glyph1 (face 1, gid 1281)",
+        "reference_mass": 1425.415686274511,
+        "candidate_mass": 1436.7019607843135,
+        "relative_delta": 0.00791788291547465,
+        "pass": true
+      },
+      "pass": true
+    },
+    "F-C": {
+      "width": 1920,
+      "height": 1080,
+      "band_pixel_count": 9595,
+      "d1_pixels_outside_band_differing": 0,
+      "d1_pass": true,
+      "reference_ink_mass": 5757.713725490225,
+      "candidate_ink_mass": 5749.666666666617,
+      "d2_relative_delta": 0.0013976135680353488,
+      "d2_pass": true,
+      "reference_centroid": [
+        295.4923870245324,
+        505.39794798725103
+      ],
+      "candidate_centroid": [
+        295.38524313430213,
+        505.42091647256933
+      ],
+      "d3_delta": [
+        0.10714389023024751,
+        0.022968485318301646
+      ],
+      "d3_pass": true,
+      "in_band_max_abs_delta_luma": 64,
+      "in_band_count_delta_gt_report_threshold": 509,
+      "d4_regions": [
+        {
+          "label": "F-C seg0.glyph0 (face 0, gid 36)",
+          "reference_mass": 1867.0078431372583,
+          "candidate_mass": 1868.686274509805,
+          "relative_delta": 0.0008989953516886158,
+          "pass": true
+        },
+        {
+          "label": "F-C seg0.glyph1 (face 0, gid 80)",
+          "reference_mass": 1438.5607843137286,
+          "candidate_mass": 1434.1529411764707,
+          "relative_delta": 0.0030640645743452,
+          "pass": true
+        },
+        {
+          "label": "F-C seg0.glyph2 (face 0, gid 83)",
+          "reference_mass": 1013.2980392156862,
+          "candidate_mass": 1013.3058823529412,
+          "relative_delta": 7.740207669876935e-6,
+          "pass": true
+        },
+        {
+          "label": "F-C seg0.glyph3 (face 0, gid 80)",
+          "reference_mass": 1438.847058823533,
+          "candidate_mass": 1433.5215686274512,
+          "relative_delta": 0.003701220476091557,
+          "pass": true
+        }
+      ],
+      "d4_pass": true,
+      "d4_worst": {
+        "label": "F-C seg0.glyph3 (face 0, gid 80)",
+        "reference_mass": 1438.847058823533,
+        "candidate_mass": 1433.5215686274512,
+        "relative_delta": 0.003701220476091557,
+        "pass": true
+      },
+      "pass": true
+    },
+    "F-D": {
+      "width": 1920,
+      "height": 1080,
+      "band_pixel_count": 38964,
+      "d1_pixels_outside_band_differing": 0,
+      "d1_pass": true,
+      "reference_ink_mass": 23733.22352941099,
+      "candidate_ink_mass": 23721.407843137342,
+      "d2_relative_delta": 0.0004978542530897446,
+      "d2_pass": true,
+      "reference_centroid": [
+        707.2675298233589,
+        507.4185305219683
+      ],
+      "candidate_centroid": [
+        707.385752325313,
+        507.4383441845064
+      ],
+      "d3_delta": [
+        0.11822250195405104,
+        0.01981366253806982
+      ],
+      "d3_pass": true,
+      "in_band_max_abs_delta_luma": 81,
+      "in_band_count_delta_gt_report_threshold": 2346,
+      "d4_regions": [
+        {
+          "label": "F-D seg0.glyph0 (face 0, gid 34)",
+          "reference_mass": 1962.933333333338,
+          "candidate_mass": 1957.9490196078427,
+          "relative_delta": 0.0025392170181506592,
+          "pass": true
+        },
+        {
+          "label": "F-D seg0.glyph1 (face 0, gid 77)",
+          "reference_mass": 1126.7843137254906,
+          "candidate_mass": 1123.6549019607862,
+          "relative_delta": 0.002777294400165739,
+          "pass": true
+        },
+        {
+          "label": "F-D seg0.glyph2 (face 0, gid 77)",
+          "reference_mass": 1123.1372549019607,
+          "candidate_mass": 1124.0470588235312,
+          "relative_delta": 0.0008100558659234804,
+          "pass": true
+        },
+        {
+          "label": "F-D seg0.glyph3 (face 0, gid 70)",
+          "reference_mass": 1347.9568627450994,
+          "candidate_mass": 1346.0039215686281,
+          "relative_delta": 0.001448815782201049,
+          "pass": true
+        },
+        {
+          "label": "F-D seg0.glyph4 (face 0, gid 72)",
+          "reference_mass": 2228.1019607843186,
+          "candidate_mass": 2223.4941176470616,
+          "relative_delta": 0.002068057574723852,
+          "pass": true
+        },
+        {
+          "label": "F-D seg0.glyph5 (face 0, gid 83)",
+          "reference_mass": 1012.6588235294114,
+          "candidate_mass": 1013.9098039215687,
+          "relative_delta": 0.0012353424105833444,
+          "pass": true
+        },
+        {
+          "label": "F-D seg0.glyph6 (face 0, gid 80)",
+          "reference_mass": 1436.8078431372576,
+          "candidate_mass": 1435.1529411764718,
+          "relative_delta": 0.0011517907343631284,
+          "pass": true
+        },
+        {
+          "label": "F-D seg2.glyph1 (face 0, gid 68)",
+          "reference_mass": 1028.6627450980407,
+          "candidate_mass": 1026.4196078431376,
+          "relative_delta": 0.00218063429009409,
+          "pass": true
+        },
+        {
+          "label": "F-D seg2.glyph2 (face 0, gid 80)",
+          "reference_mass": 1438.725490196082,
+          "candidate_mass": 1434.8039215686283,
+          "relative_delta": 0.0027257240204448694,
+          "pass": true
+        },
+        {
+          "label": "F-D seg2.glyph3 (face 0, gid 79)",
+          "reference_mass": 1629.4039215686275,
+          "candidate_mass": 1631.6431372549055,
+          "relative_delta": 0.001374254509049074,
+          "pass": true
+        },
+        {
+          "label": "F-D seg2.glyph5 (face 0, gid 67)",
+          "reference_mass": 1962.7607843137268,
+          "candidate_mass": 1960.8431372549023,
+          "relative_delta": 0.0009770151687104411,
+          "pass": true
+        },
+        {
+          "label": "F-D seg2.glyph6 (face 0, gid 83)",
+          "reference_mass": 1013.5490196078433,
+          "candidate_mass": 1013.8039215686275,
+          "relative_delta": 0.0002514944574489558,
+          "pass": true
+        },
+        {
+          "label": "F-D seg2.glyph7 (face 0, gid 74)",
+          "reference_mass": 901.1450980392156,
+          "candidate_mass": 902.0745098039216,
+          "relative_delta": 0.0010313674975632112,
+          "pass": true
+        },
+        {
+          "label": "F-D seg2.glyph8 (face 0, gid 80)",
+          "reference_mass": 1438.1529411764725,
+          "candidate_mass": 1434.5411764705889,
+          "relative_delta": 0.0025113912453073543,
+          "pass": true
+        },
+        {
+          "label": "F-D seg1.glyph0 (face 1, gid 1282)",
+          "reference_mass": 851.0117647058834,
+          "candidate_mass": 850.8196078431373,
+          "relative_delta": 0.00022579812725911154,
+          "pass": true
+        },
+        {
+          "label": "F-D seg1.glyph1 (face 1, gid 1281)",
+          "reference_mass": 1426.3529411764723,
+          "candidate_mass": 1436.858823529412,
+          "relative_delta": 0.0073655559221367795,
+          "pass": true
+        },
+        {
+          "label": "F-D seg1.glyph2 (face 1, gid 1280)",
+          "reference_mass": 1805.0784313725549,
+          "candidate_mass": 1805.388235294118,
+          "relative_delta": 0.00017162906396679163,
+          "pass": true
+        }
+      ],
+      "d4_pass": true,
+      "d4_worst": {
+        "label": "F-D seg1.glyph1 (face 1, gid 1281)",
+        "reference_mass": 1426.3529411764723,
+        "candidate_mass": 1436.858823529412,
+        "relative_delta": 0.0073655559221367795,
+        "pass": true
+      },
+      "pass": true
+    },
+    "F-E": {
+      "width": 1920,
+      "height": 1080,
+      "band_pixel_count": 27495,
+      "d1_pixels_outside_band_differing": 0,
+      "d1_pass": true,
+      "reference_ink_mass": 16241.003921568197,
+      "candidate_ink_mass": 16239.494117647086,
+      "d2_relative_delta": 0.00009296247500479724,
+      "d2_pass": true,
+      "reference_centroid": [
+        606.0381566289889,
+        506.37877838133613
+      ],
+      "candidate_centroid": [
+        605.8534678589202,
+        506.39771522874446
+      ],
+      "d3_delta": [
+        0.1846887700686466,
+        0.018936847408326685
+      ],
+      "d3_pass": true,
+      "in_band_max_abs_delta_luma": 65,
+      "in_band_count_delta_gt_report_threshold": 1456,
+      "d4_regions": [
+        {
+          "label": "F-E seg0.glyph0 (face 0, gid 36)",
+          "reference_mass": 1867.0078431372583,
+          "candidate_mass": 1868.686274509805,
+          "relative_delta": 0.0008989953516886158,
+          "pass": true
+        },
+        {
+          "label": "F-E seg0.glyph1 (face 0, gid 66)",
+          "reference_mass": 1406.5058823529423,
+          "candidate_mass": 1404.9647058823539,
+          "relative_delta": 0.0010957483291930445,
+          "pass": true
+        },
+        {
+          "label": "F-E seg0.glyph2 (face 0, gid 71)",
+          "reference_mass": 1293.4627450980406,
+          "candidate_mass": 1298.0549019607865,
+          "relative_delta": 0.0035502815060961435,
+          "pass": true
+        },
+        {
+          "label": "F-E seg0.glyph3 (face 0, gid 198)",
+          "reference_mass": 1576.113725490198,
+          "candidate_mass": 1573.3725490196093,
+          "relative_delta": 0.0017391996695772355,
+          "pass": true
+        },
+        {
+          "label": "F-E seg0.glyph5 (face 0, gid 119)",
+          "reference_mass": 959.780392156863,
+          "candidate_mass": 959.7529411764707,
+          "relative_delta": 0.00002860131402617683,
+          "pass": true
+        },
+        {
+          "label": "F-E seg0.glyph7 (face 0, gid 83)",
+          "reference_mass": 1013.5764705882351,
+          "candidate_mass": 1014.1686274509804,
+          "relative_delta": 0.0005842251472171408,
+          "pass": true
+        },
+        {
+          "label": "F-E seg0.glyph8 (face 0, gid 70)",
+          "reference_mass": 1347.929411764708,
+          "candidate_mass": 1346.4823529411774,
+          "relative_delta": 0.0010735419903302715,
+          "pass": true
+        },
+        {
+          "label": "F-E seg0.glyph9 (face 0, gid 84)",
+          "reference_mass": 1183.2627450980413,
+          "candidate_mass": 1180.0549019607845,
+          "relative_delta": 0.002711015072980235,
+          "pass": true
+        },
+        {
+          "label": "F-E seg0.glyph10 (face 0, gid 86)",
+          "reference_mass": 1597.6784313725498,
+          "candidate_mass": 1599.3764705882356,
+          "relative_delta": 0.0010628166359028194,
+          "pass": true
+        },
+        {
+          "label": "F-E seg0.glyph11 (face 0, gid 78)",
+          "reference_mass": 2515.4901960784387,
+          "candidate_mass": 2517.082352941179,
+          "relative_delta": 0.0006329409930607496,
+          "pass": true
+        },
+        {
+          "label": "F-E seg0.glyph12 (face 0, gid 198)",
+          "reference_mass": 1554.384313725492,
+          "candidate_mass": 1549.6235294117657,
+          "relative_delta": 0.003062810317685005,
+          "pass": true
+        }
+      ],
+      "d4_pass": true,
+      "d4_worst": {
+        "label": "F-E seg0.glyph2 (face 0, gid 71)",
+        "reference_mass": 1293.4627450980406,
+        "candidate_mass": 1298.0549019607865,
+        "relative_delta": 0.0035502815060961435,
+        "pass": true
+      },
+      "pass": true
+    }
+  },
+  "hittest_probe_results": [
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 209.765625,
+        "y": 540.0
+      },
+      "expected_source_offset": 0,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 0,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 278.173828125,
+        "y": 540.0
+      },
+      "expected_source_offset": 1,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 1,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 315.4296875,
+        "y": 540.0
+      },
+      "expected_source_offset": 2,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 2,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 364.697265625,
+        "y": 540.0
+      },
+      "expected_source_offset": 3,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 3,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 431.884765625,
+        "y": 540.0
+      },
+      "expected_source_offset": 4,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 4,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 493.75,
+        "y": 540.0
+      },
+      "expected_source_offset": 5,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 5,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 553.955078125,
+        "y": 540.0
+      },
+      "expected_source_offset": 6,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 6,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 604.8828125,
+        "y": 540.0
+      },
+      "expected_source_offset": 7,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 7,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 652.880859375,
+        "y": 540.0
+      },
+      "expected_source_offset": 8,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 8,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 704.833984375,
+        "y": 540.0
+      },
+      "expected_source_offset": 9,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 9,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 744.7265625,
+        "y": 540.0
+      },
+      "expected_source_offset": 10,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 10,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 795.3125,
+        "y": 540.0
+      },
+      "expected_source_offset": 11,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 11,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 846.826171875,
+        "y": 540.0
+      },
+      "expected_source_offset": 12,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 12,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 888.525390625,
+        "y": 540.0
+      },
+      "expected_source_offset": 13,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 13,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 947.998046875,
+        "y": 540.0
+      },
+      "expected_source_offset": 14,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 14,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 1021.533203125,
+        "y": 540.0
+      },
+      "expected_source_offset": 15,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 15,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 1083.59375,
+        "y": 540.0
+      },
+      "expected_source_offset": 16,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 16,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 1145.703125,
+        "y": 540.0
+      },
+      "expected_source_offset": 17,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 17,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 1196.630859375,
+        "y": 540.0
+      },
+      "expected_source_offset": 18,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 18,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 1276.611328125,
+        "y": 540.0
+      },
+      "expected_source_offset": 19,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 19,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 1356.640625,
+        "y": 540.0
+      },
+      "expected_source_offset": 22,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 22,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 1404.638671875,
+        "y": 540.0
+      },
+      "expected_source_offset": 23,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 23,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 1455.2734375,
+        "y": 540.0
+      },
+      "expected_source_offset": 24,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 24,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 1489.892578125,
+        "y": 540.0
+      },
+      "expected_source_offset": 25,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 25,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 1525.244140625,
+        "y": 540.0
+      },
+      "expected_source_offset": 26,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 26,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 1563.96484375,
+        "y": 540.0
+      },
+      "expected_source_offset": 27,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 27,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 1620.556640625,
+        "y": 540.0
+      },
+      "expected_source_offset": 28,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 28,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 139.9609375,
+        "y": 540.0
+      },
+      "expected_source_offset": 0,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 0,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-A",
+      "point": {
+        "x": 1677.8125,
+        "y": 540.0
+      },
+      "expected_source_offset": 29,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 29,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-B",
+      "point": {
+        "x": 205.322265625,
+        "y": 540.0
+      },
+      "expected_source_offset": 0,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 0,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-B",
+      "point": {
+        "x": 285.64453125,
+        "y": 540.0
+      },
+      "expected_source_offset": 1,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 1,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-B",
+      "point": {
+        "x": 345.8984375,
+        "y": 540.0
+      },
+      "expected_source_offset": 2,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 2,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-B",
+      "point": {
+        "x": 406.103515625,
+        "y": 540.0
+      },
+      "expected_source_offset": 3,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 3,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-B",
+      "point": {
+        "x": 457.03125,
+        "y": 540.0
+      },
+      "expected_source_offset": 4,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 4,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-B",
+      "point": {
+        "x": 494.189453125,
+        "y": 540.0
+      },
+      "expected_source_offset": 9,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 9,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-B",
+      "point": {
+        "x": 546.142578125,
+        "y": 540.0
+      },
+      "expected_source_offset": 7,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 7,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-B",
+      "point": {
+        "x": 139.9609375,
+        "y": 540.0
+      },
+      "expected_source_offset": 0,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 0,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-B",
+      "point": {
+        "x": 596.953125,
+        "y": 540.0
+      },
+      "expected_source_offset": 5,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 5,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-C",
+      "point": {
+        "x": 205.322265625,
+        "y": 540.0
+      },
+      "expected_source_offset": 0,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 0,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-C",
+      "point": {
+        "x": 285.64453125,
+        "y": 540.0
+      },
+      "expected_source_offset": 1,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 1,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-C",
+      "point": {
+        "x": 345.8984375,
+        "y": 540.0
+      },
+      "expected_source_offset": 2,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 2,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-C",
+      "point": {
+        "x": 406.103515625,
+        "y": 540.0
+      },
+      "expected_source_offset": 3,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 3,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-C",
+      "point": {
+        "x": 457.03125,
+        "y": 540.0
+      },
+      "expected_source_offset": 4,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 4,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-C",
+      "point": {
+        "x": 139.9609375,
+        "y": 540.0
+      },
+      "expected_source_offset": 0,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 0,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-C",
+      "point": {
+        "x": 493.046875,
+        "y": 540.0
+      },
+      "expected_source_offset": 5,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 5,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 209.765625,
+        "y": 540.0
+      },
+      "expected_source_offset": 0,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 0,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 278.173828125,
+        "y": 540.0
+      },
+      "expected_source_offset": 1,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 1,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 315.4296875,
+        "y": 540.0
+      },
+      "expected_source_offset": 2,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 2,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 364.697265625,
+        "y": 540.0
+      },
+      "expected_source_offset": 3,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 3,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 431.884765625,
+        "y": 540.0
+      },
+      "expected_source_offset": 4,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 4,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 493.75,
+        "y": 540.0
+      },
+      "expected_source_offset": 5,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 5,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 553.955078125,
+        "y": 540.0
+      },
+      "expected_source_offset": 6,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 6,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 604.8828125,
+        "y": 540.0
+      },
+      "expected_source_offset": 7,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 7,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 642.041015625,
+        "y": 540.0
+      },
+      "expected_source_offset": 12,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 12,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 693.994140625,
+        "y": 540.0
+      },
+      "expected_source_offset": 10,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 10,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 763.232421875,
+        "y": 540.0
+      },
+      "expected_source_offset": 8,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 8,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 817.626953125,
+        "y": 540.0
+      },
+      "expected_source_offset": 14,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 14,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 862.01171875,
+        "y": 540.0
+      },
+      "expected_source_offset": 15,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 15,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 925.390625,
+        "y": 540.0
+      },
+      "expected_source_offset": 16,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 16,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 997.607421875,
+        "y": 540.0
+      },
+      "expected_source_offset": 17,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 17,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 1050.87890625,
+        "y": 540.0
+      },
+      "expected_source_offset": 18,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 18,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 1102.24609375,
+        "y": 540.0
+      },
+      "expected_source_offset": 19,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 19,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 1162.890625,
+        "y": 540.0
+      },
+      "expected_source_offset": 20,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 20,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 1206.54296875,
+        "y": 540.0
+      },
+      "expected_source_offset": 21,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 21,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 139.9609375,
+        "y": 540.0
+      },
+      "expected_source_offset": 0,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 0,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-D",
+      "point": {
+        "x": 1244.90234375,
+        "y": 540.0
+      },
+      "expected_source_offset": 22,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 22,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-E",
+      "point": {
+        "x": 205.322265625,
+        "y": 540.0
+      },
+      "expected_source_offset": 0,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 0,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-E",
+      "point": {
+        "x": 282.71484375,
+        "y": 540.0
+      },
+      "expected_source_offset": 1,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 1,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-E",
+      "point": {
+        "x": 335.400390625,
+        "y": 540.0
+      },
+      "expected_source_offset": 2,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 2,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-E",
+      "point": {
+        "x": 386.71875,
+        "y": 540.0
+      },
+      "expected_source_offset": 3,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 3,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-E",
+      "point": {
+        "x": 433.3984375,
+        "y": 540.0
+      },
+      "expected_source_offset": 6,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 6,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-E",
+      "point": {
+        "x": 513.37890625,
+        "y": 540.0
+      },
+      "expected_source_offset": 7,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 7,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-E",
+      "point": {
+        "x": 593.359375,
+        "y": 540.0
+      },
+      "expected_source_offset": 10,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 10,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-E",
+      "point": {
+        "x": 634.66796875,
+        "y": 540.0
+      },
+      "expected_source_offset": 11,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 11,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-E",
+      "point": {
+        "x": 690.625,
+        "y": 540.0
+      },
+      "expected_source_offset": 12,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 12,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-E",
+      "point": {
+        "x": 748.388671875,
+        "y": 540.0
+      },
+      "expected_source_offset": 13,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 13,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-E",
+      "point": {
+        "x": 814.111328125,
+        "y": 540.0
+      },
+      "expected_source_offset": 14,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 14,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-E",
+      "point": {
+        "x": 909.228515625,
+        "y": 540.0
+      },
+      "expected_source_offset": 15,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 15,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-E",
+      "point": {
+        "x": 139.9609375,
+        "y": 540.0
+      },
+      "expected_source_offset": 0,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 0,
+      "actual_affinity": "Downstream",
+      "pass": true
+    },
+    {
+      "fixture_id": "F-E",
+      "point": {
+        "x": 985.72265625,
+        "y": 540.0
+      },
+      "expected_source_offset": 16,
+      "expected_affinity": "Downstream",
+      "actual_source_offset": 16,
+      "actual_affinity": "Downstream",
+      "pass": true
+    }
+  ],
+  "a11y_evidence": [
+    {
+      "fixture_id": "F-A",
+      "platform": "at-spi2",
+      "observed_name": "Allegro affettuoso — al fine",
+      "observed_name_bytes_hex": "416c6c6567726f20616666657474756f736f20e2809420616c2066696e65",
+      "observed_role": "label",
+      "prohibited_outcome": null,
+      "pass": true,
+      "notes": "PASS"
+    },
+    {
+      "fixture_id": "F-B",
+      "platform": "at-spi2",
+      "observed_name": "Coro אבג",
+      "observed_name_bytes_hex": "436f726f20d790d791d792",
+      "observed_role": "label",
+      "prohibited_outcome": null,
+      "pass": true,
+      "notes": "PASS"
+    },
+    {
+      "fixture_id": "F-C",
+      "platform": "at-spi2",
+      "observed_name": "Coro ا",
+      "observed_name_bytes_hex": "436f726f20d8a7",
+      "observed_role": "label",
+      "prohibited_outcome": null,
+      "pass": true,
+      "notes": "PASS"
+    },
+    {
+      "fixture_id": "F-D",
+      "platform": "at-spi2",
+      "observed_name": "Allegro אבג con brio",
+      "observed_name_bytes_hex": "416c6c6567726f20d790d791d79220636f6e206272696f",
+      "observed_role": "label",
+      "prohibited_outcome": null,
+      "pass": true,
+      "notes": "PASS"
+    },
+    {
+      "fixture_id": "F-E",
+      "platform": "at-spi2",
+      "observed_name": "Café — resumé",
+      "observed_name_bytes_hex": "43616665cc8120e2809420726573756d65cc81",
+      "observed_role": "label",
+      "prohibited_outcome": null,
+      "pass": true,
+      "notes": "PASS"
+    }
+  ],
+  "cost": {
+    "baseline_commit": "c20bc93",
+    "dependencies_added": [
+      {
+        "name": "round2-candidatekit",
+        "version": "0.1.0 (path)",
+        "reason": "candidate-neutral fixture/oracle loading and the shared report shape / scoring rule Round 2 requires every candidate to consume rather than re-derive."
+      },
+      {
+        "name": "round2-diff",
+        "version": "0.1.0 (path)",
+        "reason": "the precommitted bounded visual differential (D1-D4) checks 1/2 score against."
+      },
+      {
+        "name": "round2-textkit",
+        "version": "0.1.0 (path)",
+        "reason": "SpikeResolvedText fixtures, the staff->device transform (hittest::to_device), the hit-test probe table, and face resolution."
+      },
+      {
+        "name": "ttf-parser",
+        "version": "=0.25.1",
+        "reason": "candidate-owned glyph outline extraction from the two declared host faces (not from Bravura's typed PathCommand data, which Round 1 used) — pinned to the exact version round2-textkit shapes fixtures against."
+      },
+      {
+        "name": "serde_json",
+        "version": "1",
+        "reason": "serializing CandidateReport to round2_report.json, and parsing verify.py's --json output."
+      },
+      {
+        "name": "eframe",
+        "version": "0.35",
+        "reason": "check 5 needs a real window on the live AT-SPI2 bus; Round 1's binary is headless (offscreen wgpu only, no winit/eframe at all). Same first-party AccessKit route probe-egui's Round 0 binary used."
+      }
+    ],
+    "adapters": [
+      {
+        "Implemented": {
+          "platform": "at-spi2",
+          "notes": "the round's own platform on this Linux/Wayland machine — verified via a11y-verifier/verify.py's live, out-of-process AT-SPI2 readback for all five fixtures (round2_a11y_evidence/*.json).",
+          "integration_ownership": {
+            "Inherited": {
+              "provider": "eframe 0.35 -> egui-winit -> accesskit_winit -> accesskit_unix (the AT-SPI2 adapter and its lifecycle ship with eframe; this candidate wrote none of that plumbing)"
+            }
+          }
+        }
+      },
+      {
+        "Implemented": {
+          "platform": "accesskit-0.24",
+          "notes": "reached and exercised — every check-5 readback below travelled this path. What this candidate does write on top of the inherited integration is the accessible node for its own canvas-painted run — counted under ReportPart::AccessibilityTreeConstruction (c1_egui_lyon::a11y_node), not here.",
+          "integration_ownership": {
+            "Inherited": {
+              "provider": "eframe 0.35 (bundled AccessKit integration; accesskit was already in this crate's Round 1 dependency graph at c20bc93 via egui 0.35)"
+            }
+          }
+        }
+      },
+      {
+        "NotBuilt": {
+          "platform": "aria",
+          "reason": "no web/ARIA target exists for this candidate — egui/eframe here is a native desktop app, not a web build."
+        }
+      },
+      {
+        "NotBuilt": {
+          "platform": "macos-nsaccessibility",
+          "reason": "no macOS runner available in this environment."
+        }
+      },
+      {
+        "NotBuilt": {
+          "platform": "windows-uia",
+          "reason": "no Windows runner available in this environment."
+        }
+      }
+    ],
+    "integration_wiring": [
+      "glyph_outline.rs: ttf_parser::OutlineBuilder callbacks converted directly to a lyon_path::Path in device space (no PathCommand/SVG intermediate), tessellated with lyon's NonZero fill rule as one compound path per glyph so bounded holes (e.g. 'o', 'e') survive.",
+      "render_target.rs: the offscreen egui_wgpu render target (device/adapter setup, MSAA/resolve texture pair, render pass, CPU readback) checks 1/2 draw into.",
+      "hit_test.rs: a hand-written floor-search resolver over the resolved text's own Downstream caret-stop partition, reusing only round2_textkit::hittest::to_device for the shared staff->device transform — no other apparatus from the probe generator is called.",
+      "check 2 evidence: F-C's U+0627 (byte range recorded per-fixture below) is explicitly detected via SpikeShapedSegment::face == None in render_target::draw_fixture(), which asserts its glyph list is empty and records the span in round2_report.json's console log rather than silently drawing nothing — this candidate's fixture-level trace is: F-C unresolved segments = [\"source 5..7 (\\\"ا\\\"): face resolved to None (no declared face covers this span) — 0 glyphs drawn, no substitution\"]",
+      "a11y_node.rs: a custom AccessKit node (Role::Label, value = the fixture's exact source string) built directly via egui::Context::accesskit_node_builder on an Id allocated with ui.interact(..., Sense::hover()) — bypassing egui's Label widget and its own text-layout/galley construction entirely, so the accessible name is never touched by anything that could re-shape, wrap, or normalize it.",
+      "a11y_app.rs (ReportPart::AccessibilityIntegrationWiring — this candidate's own integration, and the only file counted under this row): the eframe::App/window/ event-loop wiring the check-5 windowed probe runs under (no visual glyph rendering — dropped by the F3 fix, see that file's own doc comment).",
+      "a11y_subprocess.rs (ReportPart::FixtureAndReportPlumbing, reattributed by user ruling: a verifier-subprocess harness common to both Round 2 candidates, not part of either stack's own accessibility integration): subprocess orchestration spawning c1_round2_a11y once per fixture and invoking a11y-verifier/verify.py out-of-process for the live AT-SPI2 readback (never a same-process self-report). F1: every invocation writes to a fresh, unique path and requires the exit status and JSON verdict to agree, erroring hard on disagreement rather than trusting either. G1: admission of an exit-2 NOT RUN requires both the exact prefix and an approved environmental-cause marker (an allow-list, not a deny-list). F2: any FAIL across the fixture set wins over any NotRun in the final aggregate, regardless of which was observed first. G3: validation (in the system temp directory) and publishing (one canonical file per fixture, overwriting) are separate steps, so evidence never accumulates."
+    ],
+    "loc_by_part": [
+      {
+        "part": "TextRendering",
+        "lines": 651
+      },
+      {
+        "part": "HitTestResolution",
+        "lines": 228
+      },
+      {
+        "part": "AccessibilityTreeConstruction",
+        "lines": 64
+      },
+      {
+        "part": "AccessibilityIntegrationWiring",
+        "lines": 62
+      },
+      {
+        "part": "FixtureAndReportPlumbing",
+        "lines": 1845
+      }
+    ]
+  }
+}

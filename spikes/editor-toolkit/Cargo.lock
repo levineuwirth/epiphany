@@ -659,6 +659,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "eframe",
  "egui",
  "egui-wgpu",
  "epiphany-layout-ir",
@@ -667,18 +668,31 @@ dependencies = [
  "lyon_tessellation",
  "pollster",
  "round1-harness",
+ "round2-candidatekit",
+ "round2-diff",
+ "round2-textkit",
+ "serde_json",
+ "ttf-parser",
 ]
 
 [[package]]
 name = "c2-vello"
 version = "0.1.0"
 dependencies = [
+ "accesskit",
+ "accesskit_winit 0.33.2",
  "anyhow",
  "bytemuck",
  "epiphany-layout-ir",
  "pollster",
  "round1-harness",
+ "round2-candidatekit",
+ "round2-diff",
+ "round2-textkit",
+ "serde_json",
+ "ttf-parser",
  "vello",
+ "winit",
 ]
 
 [[package]]

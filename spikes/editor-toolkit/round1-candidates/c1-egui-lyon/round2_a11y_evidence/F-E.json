@@ -1,0 +1,15 @@
+{
+  "fixture_id": "F-E",
+  "verdict": "PASS",
+  "reason": "a node with an accepted role ('label') carries the accessible name byte-for-byte",
+  "observed_role": "label",
+  "observed_name": "Cafe\u0301 \u2014 resume\u0301",
+  "observed_name_hex": "43616665cc8120e2809420726573756d65cc81",
+  "prohibited_outcome": null,
+  "walked_tree": [
+    "desktop / application:'c1_round2_a11y'",
+    "desktop / application:'c1_round2_a11y' / frame:''",
+    "desktop / application:'c1_round2_a11y' / frame:'' / label:'Round 2 check 5 \u2014 fixture F-E'",
+    "desktop / application:'c1_round2_a11y' / frame:'' / label:'Cafe\u0301 \u2014 resume\u0301'"
+  ]
+}

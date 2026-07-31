@@ -25,3 +25,29 @@ lyon_tessellation = "1.0"
 pollster = "0.4"
 bytemuck = "1"
 anyhow = "1"
+
+# --- Packet 2B-C1 additions (Round 2, text) ---
+#
+# round2-candidatekit / round2-diff / round2-textkit: the candidate-neutral
+# apparatus (fixture loading, the bounded visual differential, the report
+# shape and scoring rule) Round 2 requires every candidate to consume rather
+# than re-derive. See src/bin/round2_text.rs.
+round2-candidatekit = { path = "../../round2-candidatekit" }
+round2-diff = { path = "../../round2-diff" }
+round2-textkit = { path = "../../round2-textkit" }
+# Glyph outline extraction from the two declared host faces (TeX Gyre
+# Pagella, Liberation Serif) is candidate-owned work (recipe: "Outline
+# extraction from the face and conversion to a lyon path IS yours to
+# write"). Pinned to the exact version round2-textkit shapes fixtures
+# against, so a `ttf-parser` behavioural difference cannot be mistaken for a
+# rendering bug in this candidate's own code.
+ttf-parser = "=0.25.1"
+# Writing round2_candidatekit::CandidateReport to disk.
+serde_json = "1"
+# eframe/winit windowed route for check 5 (accessibility): Round 1's binary
+# is headless (offscreen wgpu only, no winit/eframe at all), and check 5
+# requires a real window on the live AT-SPI2 bus (recipe: "your Round 1
+# binary is headless, so this is a separate mode"). See
+# src/bin/round2_a11y.rs, the same first-party AccessKit route
+# `probe-egui`'s Round 0 binary used.
+eframe = "0.35"
