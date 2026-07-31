@@ -36,6 +36,13 @@
 //! guard to its own Revision History row, closing the genesis ladder: the
 //! contract's own M71 deletes the G3b row, observes this guard fail, and
 //! restores it by hand.
+//!
+//! **P13-S21** extends the file past rung identity to one vocabulary gap of
+//! the same shape: `PreconditionFailureReason` 14 and 15 entered at Push 4a
+//! and reached this document at neither of the two places that owe them —
+//! not the bounded enumeration that assigns discriminants, and not Push 4a's
+//! own history row. See
+//! `precondition_failure_reasons_14_and_15_are_documented` below.
 
 use std::fs;
 use std::path::Path;
@@ -220,4 +227,88 @@ fn revision_history_g2b_row_states_what_g2b_did() {
         "G2b row segment does not record the OperationEnvelopeBlock accept-set raise \
          2 -> 3: {row_segment:?}"
     );
+}
+
+/// Slice one `longtable` row: from `marker` to the `\\` that terminates the
+/// row. Rows in this document carry no internal `\\`, so the first
+/// terminator after the marker ends that row and nothing else.
+fn row_segment<'a>(haystack: &'a str, marker: &str) -> &'a str {
+    let offsets = find_all(haystack, marker);
+    assert_eq!(
+        offsets.len(),
+        1,
+        "expected exactly one occurrence of the row marker {marker:?}, found {} \
+         (offsets {offsets:?})",
+        offsets.len()
+    );
+    let start = offsets[0];
+    let end = haystack[start..]
+        .find(r"\\")
+        .map(|relative| start + relative)
+        .unwrap_or(haystack.len());
+    &haystack[start..end]
+}
+
+/// `PreconditionFailureReason` 14 (`AcousticRealizationPinned`) and 15
+/// (`TranspositionOutOfRange`) entered the vocabulary at Push 4a — the
+/// Operation Catalog documented both at its own 0.8.0, and `effect.rs` has
+/// carried both ever since — but this document named neither anywhere, its
+/// bounded enumeration running 13 straight to G3b's 16. That is P13-S21, and
+/// it is why P13-S20's decoder could stop at 13 unchallenged: an implementer
+/// reading only the wire specification would have built exactly that decoder
+/// and been right.
+///
+/// **Both sites are checked, each bounded to its own row**, because either
+/// alone is satisfiable by the wrong thing. The G3b history row and the
+/// bounded enumeration both discuss `PreconditionFailureReason` at length, so
+/// an unbounded search for these names would go green the moment any row
+/// mentioned them — the same hole P13-S17 was filed over, one vocabulary
+/// down. No document version number appears here either; the Push 4a row is
+/// located by its version-free `--- Transpose algebra (Push~4a)` separator
+/// form, for the reason the module comment gives.
+///
+/// The enumeration is asserted as a **discriminant/name adjacency**, since it
+/// is the normative assignment and must be exact. The history row is asserted
+/// by name and discriminant presence within its own bounded segment: it is
+/// prose, its wording may legitimately be rewritten, and the bounding is what
+/// makes presence load-bearing there.
+#[test]
+fn precondition_failure_reasons_14_and_15_are_documented() {
+    let source = binary_format_source();
+    let normalized = normalize_whitespace(&source);
+
+    let enumeration = row_segment(
+        &normalized,
+        r"\texttt{Precondition\allowbreak FailureReason} &",
+    );
+    for pairing in [
+        r"\tablenums{14} AcousticRealizationPinned",
+        r"\tablenums{15} TranspositionOutOfRange",
+    ] {
+        assert!(
+            enumeration.contains(pairing),
+            "the bounded PreconditionFailureReason enumeration does not assign \
+             {pairing:?}; it is the normative discriminant assignment and the \
+             pairing must be exact: {enumeration:?}"
+        );
+    }
+
+    let push4a = row_segment(
+        revision_history_slice(&normalized),
+        "--- Transpose algebra (Push~4a)",
+    );
+    for owed in [
+        "AcousticRealizationPinned",
+        "TranspositionOutOfRange",
+        r"\tablenums{14}",
+        r"\tablenums{15}",
+    ] {
+        assert!(
+            push4a.contains(owed),
+            "Push 4a's own Revision History row does not record {owed:?}. Both \
+             reasons were appended in Push 4a's epoch alongside OperationKind 30, \
+             and a row that records only the kind leaves the append unattributable: \
+             {push4a:?}"
+        );
+    }
 }

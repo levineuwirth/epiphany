@@ -199,8 +199,14 @@ numbering spaces are unrelated and must not be cross-read.
 > the rung's one kind and its three `PreconditionFailureReason` appends
 > together, the Push 4a precedent (epoch 7 bundled kind 30 with reasons 14–15)
 > rather than a kind epoch and a reason epoch separately. The introducing
-> commit is this packet's own — the committing session owns `HEAD`, not this
-> packet, so the hash is recorded once committed rather than invented here.
+> commit is **`e64a4b7`** (2026-07-30), where kind/tag 39 enters
+> `ops/src/payload.rs` and reasons 16–18 enter `ops/src/effect.rs` — G3b landed
+> across six commits, and the four that follow packet 1 introduce no
+> discriminant, exactly the distinction the 2026-07-28 correction below draws
+> between `7df5ca1` and `55eff00`. The rung *completes* at **`d58eee8`**
+> (2026-07-30), the documentation half; the hash was filled in by the pre-push
+> repair that follows it, because a commit cannot cite itself and G3b closed
+> the ladder, leaving no later rung to do it.
 > The ladder stays monotonic (G3b follows G3a) and prefix-closed.
 
 **The ladder is complete against the audit** — every post-baseline variant in
@@ -215,8 +221,9 @@ introducing commits rather than assumed: M2c `a207077` (2026-06-25) → Push 3
 `92aaccf` (07-02) → Phase-3 `0316160` (07-02) → G-pass `e4edea6` (07-07) →
 repeat pair `9b5339f` (07-07) → Push 4a `2740a6c` (07-09) → G1 `3b09595`
 (07-24) → **G2a `7df5ca1`** (07-28) → **G2b `13c3d2f`** (07-29) → **G3a
-`6c5e69f`** (07-29) → **G3b** (this packet's own commit — the committing
-session owns `HEAD`, hash recorded there rather than invented here). The two
+`6c5e69f`** (07-29) → **G3b `e64a4b7`** (07-30, the packet-1 commit where
+kind/tag 39 and reasons 16–18 enter the vocabularies; the rung completes at
+`d58eee8`, which introduces no discriminant). The two
 events sharing 2026-07-07 are ordered correctly: the G-pass precedes the
 repeat revision. The two events sharing 2026-07-29 are ordered **by ancestry,
 not timestamp**: `13c3d2f` is an ancestor of `6c5e69f` (verified with

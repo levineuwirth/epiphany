@@ -623,7 +623,16 @@ events only**:
 |---|---|---|---|
 | 10 | G2b | `13c3d2f` | 2026-07-29 |
 | 11 | G3a | `6c5e69f` | 2026-07-29 |
-| 12 | G3b | this rung | — |
+| 12 | G3b | `e64a4b7` | 2026-07-30 |
+
+**Closed by the pre-push repair.** G3b landed across six commits, so its row
+needed the same distinction the 2026-07-28 correction draws for G2a: the
+introducing commit is **`e64a4b7`** (packet 1), where kind/tag 39 enters
+`ops/src/payload.rs` and reasons 16–18 enter `ops/src/effect.rs`. The four
+commits after it introduce no discriminant, and the rung *completes* at
+`d58eee8` (packet 3b, documentation). Recorded by the pre-push repair rather
+than by G3b itself, because a commit cannot cite its own hash and G3b closed
+the ladder — there was no later rung to fill it in.
 
 **G-minor and P13-S17 (`6170015`) do NOT belong in this chain** — G-minor
 built the epoch machinery and P13-S17 restored a document's history; neither

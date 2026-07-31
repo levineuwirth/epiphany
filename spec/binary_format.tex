@@ -1637,6 +1637,8 @@ trailing bytes are decode errors.
     \tablenums{11} TempoMapMalformed;
     \tablenums{12} SystemDerivedContentImmutable (Pass~12, P12-K3);
     \tablenums{13} RecreateContentMismatch (Pass~12, P12-K9);
+    \tablenums{14} AcousticRealizationPinned;
+    \tablenums{15} TranspositionOutOfRange (both Push~4a);
     \tablenums{16} MeasureMeterMismatch, \tablenums{17} MeasureOutOfOrder,
     \tablenums{18} MeasureOrderUnverifiable (genesis tranche G3b). \\
   \texttt{RepairRecord} &
@@ -3548,10 +3550,17 @@ only}: implementations need not agree on an error taxonomy.
   $\mathrm{seq}^{\Uparrow}$ notation (strictly increasing; a decoder
   \MUST{} reject a duplicate rather than normalize it) and marks
   \tablenums{9} (\texttt{Transpose}) frozen, its
-  $\mathrm{seq}^{\uparrow}$ being a multiset. No existing assignment
-  changed. Semantics: Operation Catalog \sectionsc{TransposeInterval},
-  0.8.0; algebra: core Chapter~2, \sectionsc{Transposition and the
-  Interval Type}. \\
+  $\mathrm{seq}^{\uparrow}$ being a multiset. Appends two
+  \texttt{PreconditionFailureReason} discriminants in the same epoch,
+  \tablenums{14} (\texttt{AcousticRealizationPinned}: a target whose
+  \texttt{AcousticRealization::AbsoluteHz} overrides the tuning system, so
+  moving its scale position would move the notehead without moving the
+  sound) and \tablenums{15} (\texttt{TranspositionOutOfRange}: an
+  \texttt{alteration} or \texttt{octave} driven past its \texttt{i8}
+  bound, where the frozen \tablenums{9} saturates and reports success).
+  No existing assignment changed. Semantics: Operation Catalog
+  \sectionsc{TransposeInterval}, 0.8.0; algebra: core Chapter~2,
+  \sectionsc{Transposition and the Interval Type}. \\
     \today & Chunk references & 0.8.0 --- Strict \texttt{CompressionAlgorithm}
   decode (Push~5, P3): \texttt{req:binfmt:compression-none-parameter} \MUST{}
   reject a non-zero parameter byte on the \texttt{None} discriminant. Ignoring
