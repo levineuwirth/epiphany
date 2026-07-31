@@ -2190,7 +2190,20 @@ mod tests {
         // GOLDEN LOCK: the discriminant byte leads every canonically-encoded
         // primitive payload (operation_catalog §"Value-Typed Payloads"), so the
         // literal values are normative wire facts. Encodings are append-only:
-        // new kinds append past 29; the values below never change.
+        // new kinds append past 39; the values below never change.
+        //
+        // P13-S15: this table stopped at 29 while ten kinds were appended past
+        // it (Push 4a through genesis G3b), so every one of 30..=39 sat with no
+        // byte-level lock — and this is the one guard meant to catch exactly
+        // that class of stale hand-maintained table. Extended to 40 entries and
+        // closed 2026-07-30. `OperationKind::discriminant()` is a hand-written
+        // match, so a discriminant can be edited there without touching the
+        // enum; the table below is what makes that edit fail. The sibling tag
+        // half needs no such extension: `the_tag_vocabulary_is_complete` is
+        // derived from `OperationKindTag::PAYLOAD_FREE` with a computed bound
+        // rather than a spelled one, so it already covers every tag including
+        // 30..=39. Adding a kind here is not optional bookkeeping — a kind
+        // appended without a row rediscovers P13-S15.
         use crate::valuegen;
         use epiphany_core::{MusicalDuration, MusicalPosition, TimeSignatureId};
 
@@ -2217,7 +2230,7 @@ mod tests {
         let anchor = || valuegen::region_start_anchor(region, MusicalPosition::origin());
 
         let repeat_id = RepeatStructureId::new(r, 12);
-        let table: [(OperationKind, u8); 30] = [
+        let table: [(OperationKind, u8); 40] = [
             (
                 OperationKind::InsertEvent(InsertEventOp {
                     staff_instance: instance,
@@ -2407,6 +2420,76 @@ mod tests {
             (
                 OperationKind::DeleteRepeatStructure(DeleteRepeatStructureOp { repeat: repeat_id }),
                 29,
+            ),
+            // P13-S15: the ten kinds the lock had never covered.
+            (
+                OperationKind::TransposeInterval(TransposeIntervalOp {
+                    targets: [pitch].into_iter().collect(),
+                    interval: TranspositionInterval {
+                        diatonic_steps: 1,
+                        chromatic_steps: 2,
+                    },
+                }),
+                30,
+            ),
+            (
+                OperationKind::CreateInstrument(CreateInstrumentOp {
+                    instrument: valuegen::instrument(instrument),
+                }),
+                31,
+            ),
+            (
+                OperationKind::SetCanvasLayoutDefaults(SetCanvasLayoutDefaultsOp {
+                    layout_defaults: valuegen::canvas_layout_defaults(1),
+                }),
+                32,
+            ),
+            (
+                OperationKind::SetSpellingPrecedence(SetSpellingPrecedenceOp {
+                    precedence: valuegen::spelling_precedence(1),
+                }),
+                33,
+            ),
+            (
+                OperationKind::SetTuningContext(SetTuningContextOp {
+                    settings: valuegen::tuning_context_settings(1),
+                }),
+                34,
+            ),
+            (
+                OperationKind::CreateStaffGroup(CreateStaffGroupOp {
+                    group: valuegen::staff_group(StaffGroupId::new(r, 13), vec![staff]),
+                }),
+                35,
+            ),
+            (
+                OperationKind::CreatePartDefinition(CreatePartDefinitionOp {
+                    part: valuegen::part_definition(PartDefinitionId::new(r, 14), vec![staff]),
+                }),
+                36,
+            ),
+            (
+                OperationKind::CreateAnalysisLayer(CreateAnalysisLayerOp {
+                    layer: valuegen::analysis_layer(AnalysisLayerId::new(r, 15)),
+                }),
+                37,
+            ),
+            (
+                OperationKind::CreateView(CreateViewOp {
+                    view: valuegen::view(ViewId::new(r, 16), vec![AnalysisLayerId::new(r, 15)]),
+                }),
+                38,
+            ),
+            (
+                OperationKind::CreateMeasure(CreateMeasureOp {
+                    instance,
+                    measure: valuegen::measure(
+                        MeasureId::new(r, 17),
+                        TimeSignatureId::new(r, 11),
+                        1,
+                    ),
+                }),
+                39,
             ),
         ];
         for (kind, expected) in &table {
