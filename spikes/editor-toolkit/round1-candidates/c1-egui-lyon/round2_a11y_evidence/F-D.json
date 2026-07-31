@@ -1,0 +1,15 @@
+{
+  "fixture_id": "F-D",
+  "verdict": "PASS",
+  "reason": "a node with an accepted role ('label') carries the accessible name byte-for-byte",
+  "observed_role": "label",
+  "observed_name": "Allegro \u05d0\u05d1\u05d2 con brio",
+  "observed_name_hex": "416c6c6567726f20d790d791d79220636f6e206272696f",
+  "prohibited_outcome": null,
+  "walked_tree": [
+    "desktop / application:'c1_round2_a11y'",
+    "desktop / application:'c1_round2_a11y' / frame:''",
+    "desktop / application:'c1_round2_a11y' / frame:'' / label:'Round 2 check 5 \u2014 fixture F-D'",
+    "desktop / application:'c1_round2_a11y' / frame:'' / label:'Allegro \u05d0\u05d1\u05d2 con brio'"
+  ]
+}

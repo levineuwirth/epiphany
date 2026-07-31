@@ -21,3 +21,27 @@ vello = "0.9"
 pollster = "0.4"
 bytemuck = "1"
 anyhow = "1"
+
+# --- Packet 2B-C2: Round 2 text (spec/CONTRACT_EDITOR_T4_SPIKE.md Round 2;
+# ROUND2_TEXT_RECIPE.md). Every dependency below is new over the Round 1
+# baseline (c20bc93) and is recorded, with its reason, in
+# CandidateReport::cost::dependencies_added by src/bin/round2_text.rs.
+round2-candidatekit = { path = "../../round2-candidatekit" }
+round2-diff = { path = "../../round2-diff" }
+round2-textkit = { path = "../../round2-textkit" }
+# Outline extraction from the resolved face, converted to a kurbo BezPath, is
+# the candidate-owned part of check 1 (task instructions) — round2-svgref's
+# emitter builds SVG path strings for the *reference*, not kurbo geometry for
+# a candidate, so it is deliberately not depended on here. Pinned to the same
+# version round2-textkit/round2-svgref use so "this face's cmap/outline table
+# says X" means the same thing everywhere in this packet.
+ttf-parser = "=0.25.1"
+serde_json = "1"
+# Check 5 (accessibility, disqualifying): vello ships no accessibility layer
+# of its own (contract, candidate set), so this is the same manual
+# accesskit_winit route probe-vello's Round 0 readback already proved —
+# reused here behind a real window rather than assumed. Versions match
+# probe-vello's own pins exactly.
+winit = "0.30"
+accesskit = "0.24"
+accesskit_winit = "0.33"

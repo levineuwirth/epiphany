@@ -12,6 +12,8 @@ members = [
     "round2-textkit",
     "round2-svgref",
     "round2-reference",
+    "round2-candidatekit",
+    "round2-a11y-oracle",
 ]
 
 # a11y-verifier is a standalone Python script (a11y-verifier/verify.py), not
