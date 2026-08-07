@@ -10868,6 +10868,65 @@ pub struct FixedHeader {
   \texttt{file\_uuid}.
 \end{requirement}
 
+\subsubsection{The Container Epoch}
+\label{sec:format:container-epoch}
+
+The \texttt{format\_major} field is not only a wire-layout
+discriminator. It is the container's \emph{epoch}: the statement of
+which guarantees held at the moment the file was created. Because the
+header never changes after creation, the epoch is a property of the
+file's creation and cannot drift as the document is committed to ---
+which is precisely what makes it able to carry a provenance guarantee
+that a later generation must not be able to inherit.
+
+Major \tablenums{1} is the first epoch to use that capacity. A major-1
+container is one whose every base-bearing commit was validated against
+a supplied reduction authority; a major-0 container carries no such
+guarantee, and no sequence of commits can promote one into the other.
+
+\begin{requirement}
+  \label{req:format:container-epoch}
+  A reader \MUST{} classify \texttt{format\_major} three ways rather
+  than testing it for equality with the version it writes:
+  \tablenums{0} is \emph{legacy} and \MUST{} be decoded deliberately as
+  such; \tablenums{1} is \emph{current}; any other value \MUST{} be
+  rejected as an unsupported format version. The classification
+  \MUST{} be carried as a value the reader can act on, not re-derived
+  by comparison at each use site.
+
+  Behaviour is then determined by the container's epoch together with
+  the presence of a canonical base:
+
+  \begin{itemize}
+    \item \emph{Legacy, no canonical base} --- the bundle \MAY{} be
+      opened. Nothing whose validity cannot be established is exposed.
+    \item \emph{Legacy, canonical base present} --- the bundle
+      \MUST{} be refused. A base predating any reduction authority is
+      not safe materialized state, and \MUSTNOT{} be served in a
+      read-only or otherwise restricted mode: a restricted view of
+      unverifiable canonical state is still unverifiable canonical
+      state, presented confidently.
+    \item \emph{Legacy, a commit attempts to add or replace a
+      canonical base} --- the commit \MUST{} be refused, and the
+      implementation \MUST{} direct the writer to repack into a fresh
+      major-1 container. This is the rule that makes the epoch
+      non-inheritable, and it is the reason a header field can carry
+      this guarantee where a superblock field could not.
+    \item \emph{Current, no canonical base} --- the bundle \MAY{} be
+      opened, and \MAY{} be committed to.
+    \item \emph{Current, canonical base present or introduced} ---
+      the base \MUST{} be validated against the reduction authority
+      the opening implementation supplies.
+  \end{itemize}
+
+  Where a container's canonical base disagrees with its active
+  superblock, that disagreement is \emph{corruption} and \MUST{} be
+  reported as a malformed bundle \emph{before} any epoch rule above is
+  applied, in either epoch. Ordering the epoch rules first would
+  collapse tampering into staleness and erase the distinction the
+  reduction authority depends on.
+\end{requirement}
+
 \subsection{The Superblock Slots}
 
 Each superblock slot is exactly 256 bytes. The bundle has two slots
@@ -12229,6 +12288,18 @@ pub struct SchemaVersion {
   Schema versioning rules:
 
   \begin{itemize}
+    \item These rules govern \emph{schema} versions --- the manifest's
+      \texttt{manifest\_schema\_version} and each chunk's
+      \texttt{schema\_version}. The container's
+      \texttt{format\_major} is a separate axis, and a change to it
+      now means more than a change of wire layout: it declares a new
+      container \emph{epoch}, with guarantees that a reader may rely
+      on and that no later commit can confer on a container created
+      before them (Section~\ref{sec:format:container-epoch}). A
+      container format major boundary is therefore not satisfied by
+      re-encoding bytes; a document produced under an older epoch
+      acquires the new epoch's guarantees only by being repacked into
+      a newly created container.
     \item Major version changes are non-backward-compatible.
       Readers that do not support the chunk's major schema
       version \MUST{} handle it according to the chunk's role:
@@ -16719,6 +16790,35 @@ layouts they own versus inherit:
   into its position). Band ownership is non-canonical attribution
   metadata: it enters no content hash and no canonical encoding, so no
   wire form and no companion version moves.
+  \\
+  \midrule
+  \today & The Fixed Header (container epoch) &
+  Chapter~8 gains \sectionsc{The Container Epoch} and
+  \ref{req:format:container-epoch}
+  (\texttt{spec/CONTRACT\_FORMAT\_EPOCH\_MAJOR1.md}).
+  \texttt{format\_major} becomes \tablenums{1} and \texttt{format\_minor}
+  restarts at \tablenums{0}. A reader classifies the major three ways ---
+  legacy \tablenums{0}, current \tablenums{1}, unsupported otherwise ---
+  and carries the classification as a value rather than re-deriving it by
+  comparison, so a legacy container is decoded deliberately instead of
+  refused.
+
+  The epoch exists because a canonical base is only meaningful when it has
+  been validated against a reduction authority, and nothing in a document
+  could previously attest that: the reduction-algorithm version is a bare
+  integer that a writer copies from the base's own self-report, so the one
+  check that would detect a stale base necessarily passes for a base that
+  was propagated conformingly. The header can attest it because the header
+  never changes after creation --- which makes the epoch a property of the
+  file's creation that no later commit can confer. A legacy container may
+  therefore open while it carries no base, \MUSTNOT{} acquire one, and is
+  refused outright if it already has one; a repack into a freshly created
+  major-1 container is the only path forward, and read-only degradation is
+  explicitly not offered, since a restricted view of unverifiable canonical
+  state is still unverifiable canonical state. Corruption keeps precedence
+  over every epoch rule in both epochs, so tampering is never reported as
+  staleness. \sectionsc{Schema Versioning} gains the corresponding
+  distinction between the schema axis and the container axis.
   \\
   \bottomrule
 \end{longtable}

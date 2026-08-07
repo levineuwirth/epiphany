@@ -1,14 +1,21 @@
 # Contract — P13-S27: the reduction version gets an outside witness
 
-**Status:** DRAFT — **BLOCKED on P13-S28** (the format-epoch rung). Pins 1 and
-3–10 are settled, internally consistent, and ratifiable as a plan. **Pin 2a is
-an open question this contract states rather than answers**, and it is not
-answerable inside this rung: the provenance carrier it needs is a format-epoch
-design, which P13-S28 owns.
+**Status:** DRAFT — **BLOCKED on the format-epoch rung**
+(`spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`), which is **ratified and in
+implementation** but has not yet landed. Pins 1 and 3–10 are settled, internally
+consistent, and ratifiable as a plan.
 
-**This is bounded analysis, not an abandoned implementation plan.** It may not be
-dispatched. Pin 2a MUST NOT be treated as a sub-pin that drifts into this rung's
-scope — see its own prohibition.
+**Pin 2a is RESOLVED as of 2026-08-07** — from outside this rung, by that
+contract's pin 8, exactly as its prohibition required. Legacy bases are refused
+by container epoch, never by version arithmetic; see the resolution block under
+pin 2a. This contract additionally **inherits three obligations** from that rung
+(the two interim refusals it must convert to validation, M8's deferred laundering
+demonstration, and pin 3c's two suspended conformance assertions) — recorded in
+the same place.
+
+**It becomes dispatchable when the format rung lands, not before.** Until then
+this remains bounded analysis. Pin 2a's original prohibition stands for the
+record: it was never amended into a disposition from inside this contract.
 
 **Rung type:** **capability + API change.** No wire bytes move and no schema
 major or minor changes — `BundleError` has no discriminant and no encoder
@@ -16,10 +23,10 @@ major or minor changes — `BundleError` has no discriminant and no encoder
 change is `Bundle::open`'s **and `Bundle::create`'s** signatures, at 57 and 32
 call sites.
 
-**Does NOT by itself unblock P13-S16.** This rung installs the authority and
-validates both read and write paths. S16 additionally requires the **legacy-base
-disposition of pin 2a**, which is an open question this contract states rather
-than answers.
+**Now DOES unblock P13-S16, once it lands.** This rung installs the authority and
+validates both read and write paths; S16's remaining precondition was pin 2a's
+legacy-base disposition, and that is resolved. The chain is therefore
+format-epoch rung → **P13-S27** → **P13-S16**, with no open question left in it.
 
 **Rulings already made (2026-07-31), not re-opened here:**
 
@@ -246,6 +253,74 @@ dispatchable merely because S27 lands.** This pin deliberately remains an open
 question. It is not to be amended into a disposition without its own ratification
 round.
 
+### Pin 2a — **RESOLVED 2026-08-07 by the format-epoch rung.**
+
+The ratification round this pin demanded is the one the format-epoch contract
+had: `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, ratified after four adversarial
+review rounds, whose **pin 8** exists to resolve this pin from outside it. The
+open analysis above is retained verbatim as the reasoning that produced the
+answer, not superseded prose.
+
+**The disposition is none of (i), (ii) or (iii): it is the container epoch.**
+
+> **Reduction-version authority is meaningful only in major-1 containers.
+> Legacy bases are refused by container epoch, never by version arithmetic.**
+
+That is why the collision this pin identified never has to be adjudicated. A
+pre-S27 base carrying `1` and a legitimately rebuilt S16 base carrying `1` are
+indeed indistinguishable **as numbers** — and they never meet, because the
+pre-S27 base can only exist in a major-0 container, which is refused at the
+epoch boundary before any version is compared. The `u32` never has to carry
+provenance, because the container already does.
+
+Each rejected option, and why the epoch beats it: **(i)** normalizing the corpus
+would have to find every artifact, and a missed one is silently wrong forever;
+**(ii)** a non-colliding epoch value is a convention a hand-authored document can
+simply declare — `parse.rs:591` accepts an unbounded `u32`; **(iii)** widening
+the type makes the wire meaning richer and buys nothing the container property
+does not already give. All three try to make a number carry provenance. The
+epoch makes the *file* carry it.
+
+**S27's own baseline stays `0`** (pin 2 is unchanged). What changes is that the
+question "what about a base older than the authority?" is no longer S27's to
+answer.
+
+### Inherited from the format-epoch rung — obligations S27 must discharge
+
+The format rung lands **before** this one and closes two things temporarily,
+naming S27 as what reopens them. Both are owed work here, not optional:
+
+1. **The interim refusals become real validation.** The format rung's pin 3a
+   temporarily refuses **both** major-1 base boundaries — opening a major-1
+   container that already carries a base, and committing a base into one —
+   through a third, temporary error (`ReductionAuthorityUnavailable`) that is
+   distinct from its two legacy/repack errors. S27 replaces **both** branches
+   with capability validation. Replacing only one leaves a hole exactly where
+   the format rung's own review found one.
+
+2. **The deferred laundering demonstration** (format-rung M8). That rung could
+   not demonstrate the text-import laundering path end to end, because pin 3a
+   refuses every major-1 base commit categorically, so the "a base-bearing text
+   document really does serialize into a major-1 container" observation is
+   unreachable there. Under S27 a base commit succeeds or fails **on its
+   version**, so the demonstration becomes performable and is owed: with pin 3b's
+   text refusal removed, show that a base-bearing document whose raw version
+   happens to match the current authority serializes into a major-1 container
+   indistinguishable from a validated one. That is the false provenance the text
+   refusal exists to prevent, and it has never been observed — only reasoned
+   about.
+
+3. **Two conformance assertions come back** (format-rung pin 3c). Criterion 4's
+   bookkeeping-projection counterpart, `assert_reduction_serialization_stable`
+   (`testkit/src/roundtrip.rs:241`), keeps its serialize → load → decode →
+   reserialize cycle through the interval but loses exactly two
+   canonical-base-specific assertions: `verify_canonical_chunks`'s base branch
+   (`bundle.rs:613`–`:621`, including the `base.hash != base.root.hash`
+   cross-check), and the reopened manifest actually carrying the base
+   (`roundtrip.rs:293`–`:297`). S27 restores both, since a base-bearing container
+   becomes constructible again the moment validation replaces refusal. The
+   harness carries a marker naming this contract at the suspension point.
+
 **Pin 3 — `BundleCapabilities`, required at both constructors, carried on the
 `Bundle`.**
 
@@ -404,9 +479,26 @@ Named, permanent, in `epiphany-bundle`:
    intact. A writer check that corrupts the document while refusing is worse than
    no check.
 
+**Added 2026-08-07 with pin 2a's resolution — the inherited obligations, stated
+as tests so they cannot be discharged by prose:**
+
+6. **`a_major_1_bundle_carrying_a_base_opens_when_the_authority_matches`** — the
+   read-side half of the format rung's pin 3a, converted from temporary refusal
+   to real validation. Its sibling is test 2, which is the same path when the
+   authority *disagrees*. Both branches must exist; the format rung's own review
+   found a draft that closed only one.
+7. **The two restored conformance assertions** (format-rung pin 3c), in
+   `assert_reduction_serialization_stable` (`testkit/src/roundtrip.rs:241`):
+   `verify_canonical_chunks` covering the base again, and the reopened manifest
+   carrying it. **Restoring them means deleting the suspension marker** that
+   names this contract — if the marker is still in the tree when this rung
+   reports, the restoration did not happen.
+
 Tests 2 and 3 must be **paired in review**: each asserts the other's error is
 *not* produced. A test that only checks its own variant cannot show the two
 paths are distinguishable, which is the whole point of pin 6.
+
+Tests 6 and 2 stand in the same relation to each other.
 
 ---
 

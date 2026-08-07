@@ -17,8 +17,11 @@
 //! deliberately not `std::env::temp_dir()`, which is commonly tmpfs on Linux,
 //! where fsync is a near-no-op and the commit budget would be measured against
 //! RAM. The corpus is moderate: 1,000 generated operation envelopes packed
-//! into operation blocks plus a canonical `MaterializedState` snapshot wired
-//! as the manifest's `canonical_base`. Both
+//! into operation blocks plus a canonical `MaterializedState` snapshot. That
+//! snapshot's manifest placement (`canonical_base`) is suspended for the S28
+//! -> P13-S27 interval (`CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 3c) — see
+//! `Fixture::base_root`'s doc comment — so it is staged and read back
+//! directly by `ChunkRef` instead. Both
 //! are expected to **Pass** today, so a regression fails `cargo bench` loudly.
 //! The read row's honesty note: the spec sizes its 200 ms against a 100-page
 //! orchestral score; no such corpus generator exists yet, so this row is the
@@ -34,9 +37,9 @@
 //!   envelope block, i.e. block append + manifest rewrite + superblock flip,
 //!   every write fsync'd. This mirrors `bundle_harness`'s commit driver.
 //! * **open_bootstrap_read** — `FileStore::open` + `Bundle::open` (superblock
-//!   selection + header + manifest decode) + reading the `canonical_base`
-//!   snapshot and every operation block — the bytes a first interactive frame
-//!   needs.
+//!   selection + header + manifest decode) + reading the cold-reduction
+//!   snapshot (by direct `ChunkRef`, see above) and every operation block —
+//!   the bytes a first interactive frame needs.
 //!
 //! Criterion measures; the budget gate in `main` asserts (see
 //! `epiphany_testkit::budget` for the Pass/Xfail semantics and the documented
@@ -50,9 +53,8 @@ use std::time::Duration;
 
 use criterion::{BatchSize, Criterion};
 use epiphany_bundle::{
-    pack_operation_blocks, Bundle, ChunkKind, CommitContext, DocumentId, FileStore, FileUuid,
-    FrontierBytes, Manifest, MemStore, ProfileId, ReductionAlgorithmVersion, SchemaVersion,
-    SnapshotId, SnapshotRef, StagedChunk,
+    pack_operation_blocks, Bundle, ChunkKind, ChunkRef, CommitContext, DocumentId, FileStore,
+    FileUuid, Manifest, MemStore, SchemaVersion, StagedChunk,
 };
 use epiphany_determinism::CanonicalEncode;
 use epiphany_ops::{OperationEnvelope, OperationSet};
@@ -71,8 +73,21 @@ const EDIT_ENVELOPES: usize = 4;
 
 /// Everything the two rows measure against, built once from a fixed seed.
 struct Fixture {
-    /// The committed base image (blocks + canonical-base snapshot).
+    /// The committed base image (blocks + the corpus's cold-reduction
+    /// snapshot).
     base_image: Vec<u8>,
+    /// The cold-reduction snapshot's `ChunkRef`.
+    ///
+    /// **Suspended manifest placement** (`CONTRACT_FORMAT_EPOCH_MAJOR1.md`
+    /// pin 3c, amended 2026-08-07): this used to be `manifest.canonical_base`
+    /// — its correct semantic home — but pin 3a's format-epoch matrix refuses
+    /// every base introduction and every base-bearing open during the S28 ->
+    /// P13-S27 interval. The ref is carried here instead and read back
+    /// directly via `Bundle::read_chunk`, exactly as
+    /// `epiphany_testkit::roundtrip::assert_reduction_serialization_stable`
+    /// now does. **Not** re-homed to `acceleration_snapshots` — nothing in
+    /// `epiphany-bundle` verifies that field.
+    base_root: ChunkRef,
     /// The typical edit, staged (one small operation block).
     edit: Vec<StagedChunk>,
     /// Temp-dir file paths: one per row so commit growth never skews reads.
@@ -99,8 +114,9 @@ fn staged_blocks(envelopes: &[OperationEnvelope]) -> Vec<StagedChunk> {
 }
 
 /// Builds the moderate base corpus: 1,000 envelopes committed as operation
-/// blocks, then their cold reduction committed as a `Snapshot` chunk wired to
-/// the manifest's `canonical_base` (the roundtrip harness's snapshot shape).
+/// blocks, then their cold reduction committed as a `Snapshot` chunk — staged
+/// but not wired into the manifest (pin 3c; see `Fixture::base_root`'s doc
+/// comment).
 fn build_fixture(dir: &Path) -> Fixture {
     let mut rng = Rng::new(0x00F1_B0DE_0001);
     let envelopes = generators::operation_envelopes(&mut rng, BASE_ENVELOPES, 3, 40, 40);
@@ -123,27 +139,18 @@ fn build_fixture(dir: &Path) -> Fixture {
         schema_version: SchemaVersion::V0,
         payload: canonical,
     };
-    let frontier = generators::frontier_bytes(&envelopes);
+    let mut base_root = None;
     bundle
         .commit(&[snapshot], |ctx| {
-            let mut manifest = ctx.previous_manifest.clone();
-            let root = ctx.new_chunks[0];
-            let mut sid = [0u8; 16];
-            sid.copy_from_slice(&root.hash.as_bytes()[..16]);
-            manifest.canonical_base = Some(SnapshotRef {
-                snapshot_id: SnapshotId(sid),
-                covers_causal_frontier: FrontierBytes::from_bytes(frontier.clone()),
-                reduction_algorithm_version: ReductionAlgorithmVersion(0),
-                profile_id: ProfileId::Full,
-                hash: root.hash,
-                root,
-            });
-            manifest
+            base_root = Some(ctx.new_chunks[0]);
+            ctx.previous_manifest.clone()
         })
-        .expect("commit canonical-base snapshot");
+        .expect("commit cold-reduction snapshot");
+    let base_root = base_root.expect("commit ran the build closure");
 
     Fixture {
         base_image: bundle.into_store().into_bytes(),
+        base_root,
         edit: staged_blocks(&edit_envelopes),
         commit_path: dir.join("commit.epb"),
         read_path: dir.join("read.epb"),
@@ -165,17 +172,15 @@ fn typical_edit_commit(mut bundle: Bundle<FileStore>, edit: &[StagedChunk]) -> u
 }
 
 /// The timed read: open (superblock selection + manifest decode) + the
-/// bootstrap chunks — canonical-base snapshot and every operation block.
-fn open_bootstrap_read(path: &Path) -> usize {
+/// bootstrap chunks — the cold-reduction snapshot (read directly by its
+/// `ChunkRef`; see `Fixture::base_root`'s doc comment for why it is not
+/// `manifest.canonical_base` right now) and every operation block.
+fn open_bootstrap_read(path: &Path, base_root: &ChunkRef) -> usize {
     let bundle = Bundle::open(FileStore::open(path).expect("open store")).expect("open bundle");
     let manifest = bundle.manifest();
     let mut bytes = 0usize;
-    let base = manifest
-        .canonical_base
-        .as_ref()
-        .expect("the fixture wires a canonical base");
     bytes += bundle
-        .read_chunk(&base.root)
+        .read_chunk(base_root)
         .expect("snapshot chunk reads")
         .len();
     for root in &manifest.operation_roots {
@@ -206,7 +211,7 @@ fn criterion_measurements(criterion: &mut Criterion, fixture: &Fixture, quick: b
 
     fs::write(&fixture.read_path, &fixture.base_image).expect("write read-row image");
     group.bench_function("open_bootstrap_read", |b| {
-        b.iter(|| open_bootstrap_read(&fixture.read_path))
+        b.iter(|| open_bootstrap_read(&fixture.read_path, &fixture.base_root))
     });
 
     group.finish();
@@ -223,7 +228,7 @@ fn budget_gate(fixture: &Fixture, quick: bool) -> Vec<budget::GateReport> {
     let read_median = budget::median_time(
         if quick { 8 } else { 25 },
         || (),
-        |()| open_bootstrap_read(&fixture.read_path),
+        |()| open_bootstrap_read(&fixture.read_path, &fixture.base_root),
     );
     vec![
         budget::latency_gate(

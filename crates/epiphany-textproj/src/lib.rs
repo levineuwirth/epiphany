@@ -56,7 +56,18 @@ use epiphany_ops::OperationEnvelope;
 /// and `create-view` to the `kind` production — the same reasoning as every
 /// prior kind append: extending the grammar without moving this constant
 /// would leave two incompatible grammars both claiming `(0 11 0)`.
-pub const COMPANION_VERSION: (u32, u32, u32) = (0, 13, 0);
+///
+/// Bumped again 0.12.0 → 0.13.0 by the genesis tranche G3b, which appended
+/// `create-measure` to the `kind` production.
+///
+/// Bumped again 0.13.0 → 0.14.0 by `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`
+/// pin 3b: a canonical base can no longer be projected, parsed, or
+/// serialized by this companion at all — refusing a document the companion
+/// previously serialized is a semantic change, so the bump is load-bearing,
+/// not cosmetic. The `canonical-base` grammar production is retained (it is
+/// what the refusal is defined against, and what a future rebuild/repack
+/// flow will emit), but no document containing it round-trips.
+pub const COMPANION_VERSION: (u32, u32, u32) = (0, 14, 0);
 
 /// A parsed canonical Text Projection document.
 ///

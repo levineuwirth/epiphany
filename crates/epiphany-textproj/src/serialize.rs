@@ -70,6 +70,21 @@ pub enum SerializeError {
     /// non-canonical root into the manifest or silently drop the caller's
     /// payload bytes. Neither is acceptable, so serialization refuses instead.
     NonEmptyBlobs,
+    /// The document carries a canonical base
+    /// (`spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 3b: "text projection cannot
+    /// mint a canonical base"). `TextDocument` has no container-major or epoch
+    /// field, and `parse` accepts an unbounded reduction-algorithm version, so
+    /// an old or hand-authored text document could otherwise be laundered
+    /// straight through the format-epoch boundary into a brand-new major-1
+    /// container. A dedicated variant, not a `SerializeError::Bundle`
+    /// passthrough: the container-layer refusal
+    /// (`epiphany_bundle::BundleError::ReductionAuthorityUnavailable`) is
+    /// temporary and interim-only, while this refusal is a permanent property
+    /// of what the text medium can prove — a text format cannot carry
+    /// unforgeable provenance, so refusal is the only rule it can actually
+    /// enforce. This is real capability loss: base-bearing documents stop
+    /// round-tripping through text until a repack flow exists.
+    CanonicalBaseUnsupported,
     /// The bundle itself rejected the manifest or a staged chunk — e.g. the
     /// document declares no profile this implementation understands, or a
     /// staged root fails `Bundle::commit`'s structural validation.
@@ -81,6 +96,10 @@ impl fmt::Display for SerializeError {
         match self {
             SerializeError::NonEmptyBlobs => f.write_str(
                 "the document carries a populated blobs vector, but no blob can be canonical today",
+            ),
+            SerializeError::CanonicalBaseUnsupported => f.write_str(
+                "the document carries a canonical base, which this companion cannot serialize: \
+                 text projection cannot mint a canonical base",
             ),
             SerializeError::Bundle(error) => {
                 write!(f, "the bundle rejected the serialized document: {error}")
@@ -94,6 +113,7 @@ impl std::error::Error for SerializeError {
         match self {
             SerializeError::Bundle(error) => Some(error),
             SerializeError::NonEmptyBlobs => None,
+            SerializeError::CanonicalBaseUnsupported => None,
         }
     }
 }
@@ -114,8 +134,12 @@ impl From<BundleError> for SerializeError {
 /// [`ChunkRef`](epiphany_bundle::ChunkRef)s that commit assigns.
 ///
 /// Returns [`SerializeError::NonEmptyBlobs`] if `document.blobs` is non-empty
-/// (see the module documentation), or [`SerializeError::Bundle`] if the bundle
-/// itself refuses the manifest or a staged root.
+/// (see the module documentation), [`SerializeError::CanonicalBaseUnsupported`]
+/// if `document.canonical_base` is present (pin 3b: text projection cannot
+/// mint a canonical base — checked as defence for a directly constructed
+/// `TextDocument`, since `parse` also refuses one on the way in), or
+/// [`SerializeError::Bundle`] if the bundle itself refuses the manifest or a
+/// staged root.
 pub fn serialize_document<S: BlockStore>(
     document: &TextDocument,
     store: S,
@@ -123,6 +147,9 @@ pub fn serialize_document<S: BlockStore>(
 ) -> Result<Bundle<S>, SerializeError> {
     if !document.blobs.is_empty() {
         return Err(SerializeError::NonEmptyBlobs);
+    }
+    if document.canonical_base.is_some() {
+        return Err(SerializeError::CanonicalBaseUnsupported);
     }
 
     let mut bundle = Bundle::create(store, file_uuid, empty_manifest(document))?;
@@ -335,11 +362,16 @@ mod tests {
         document
     }
 
-    /// Carries an extension, a canonical base, and many envelopes at once — the
-    /// document every round-trip law needs to be checked against together.
+    /// Carries an extension and many envelopes at once — the document every
+    /// round-trip law needs to be checked against together.
+    ///
+    /// Used to carry a canonical base too (hence the name); pin 3b's
+    /// base-bearing exclusion means that capability moved to
+    /// `document_with_canonical_base` alone, so this fixture keeps every
+    /// other feature and drops the base
+    /// (`CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 3b).
     fn rich_document(seed: u64) -> TextDocument {
         let mut document = document_with_extension(seed);
-        document.canonical_base = document_with_canonical_base(seed).canonical_base;
         document.envelopes = envelopes(seed, 60);
         document
     }
@@ -363,6 +395,18 @@ mod tests {
             SchemaVersion::new(0, 8),
             "the carried manifest SchemaVersion must round-trip exactly, never the baseline"
         );
+    }
+
+    #[test]
+    fn text_projection_serialize_produces_a_major_1_container() {
+        // Pin 6: every writer path stamps the epoch, including text
+        // projection. `serialize_document` (via `build_manifest`) is the one
+        // production writer that reaches a canonical base — `project.rs:936`
+        // is a `#[cfg(test)]` fixture writer, not production.
+        let document = minimal_document(11);
+        let bundle = serialize_document(&document, MemStore::new(), FileUuid([1; 16]))
+            .expect("a well-formed document serializes");
+        assert_eq!(bundle.header().format_major, epiphany_bundle::FORMAT_MAJOR);
     }
 
     #[test]
@@ -393,31 +437,23 @@ mod tests {
     }
 
     #[test]
-    fn canonical_base_round_trips_snapshot_id_and_payload() {
+    fn serializing_a_text_document_with_a_canonical_base_is_refused() {
+        // Pin 3b: text projection cannot mint a canonical base. Built from
+        // the existing base-bearing fixture (`document_with_canonical_base`),
+        // which used to round-trip through `serialize_document` /
+        // `document_from_bundle` before this rung — that capability is a
+        // real, intentional loss (base-bearing documents stop round-tripping
+        // through text until a repack flow exists).
         let document = document_with_canonical_base(4);
-        let reopened = serialize_and_reopen(&document);
-        let expected = document
-            .canonical_base
-            .as_ref()
-            .expect("fixture carries a canonical base");
-        let base = reopened
-            .manifest()
-            .canonical_base
-            .as_ref()
-            .expect("canonical base present after reopen");
-        assert_eq!(base.snapshot_id, expected.snapshot_id);
-        assert_eq!(base.covers_causal_frontier, expected.covers_causal_frontier);
-        assert_eq!(
-            base.reduction_algorithm_version,
-            expected.reduction_algorithm_version
-        );
-        assert_eq!(base.profile_id, expected.profile_id);
-        assert_eq!(base.root.kind, ChunkKind::Snapshot);
-        assert_eq!(base.root.schema_version, expected.root_schema_version);
-        let payload = reopened
-            .read_chunk(&base.root)
-            .expect("root chunk reads and verifies");
-        assert_eq!(payload, expected.root_payload);
+        let result = serialize_document(&document, MemStore::new(), FileUuid([1; 16]));
+        assert!(matches!(
+            result,
+            Err(SerializeError::CanonicalBaseUnsupported)
+        ));
+        // M8 depends on this distinction: the dedicated variant, never a
+        // `SerializeError::Bundle` passthrough from the container-layer
+        // refusal this would otherwise fall through to.
+        assert!(!matches!(result, Err(SerializeError::Bundle(_))));
     }
 
     #[test]
@@ -533,7 +569,9 @@ mod tests {
         let document = rich_document(10);
         let reopened = serialize_and_reopen(&document);
         assert_eq!(reopened.manifest().document_id, document.document_id);
-        assert!(reopened.manifest().canonical_base.is_some());
+        // `rich_document` no longer carries a base (pin 3b) — every other
+        // root it carries still round-trips together.
+        assert!(reopened.manifest().canonical_base.is_none());
         assert_eq!(reopened.manifest().extension_declarations.len(), 1);
         assert_eq!(reopened.manifest().operation_roots.len(), 1);
         reopened
@@ -579,6 +617,17 @@ mod tests {
         );
 
         for document in &documents {
+            if document.canonical_base.is_some() {
+                // Pin 3b: a base-bearing document is refused outright, not
+                // round-tripped — the one round-trip law this suite must now
+                // except.
+                let result = serialize_document(document, MemStore::new(), FileUuid([1; 16]));
+                assert!(matches!(
+                    result,
+                    Err(SerializeError::CanonicalBaseUnsupported)
+                ));
+                continue;
+            }
             let reopened = serialize_and_reopen(document);
             assert_eq!(reopened.manifest().document_id, document.document_id);
         }

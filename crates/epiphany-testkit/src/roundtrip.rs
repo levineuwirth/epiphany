@@ -225,14 +225,28 @@ fn canonical_score_bytes(envelopes: &[OperationEnvelope]) -> Vec<u8> {
 /// (acceptance criterion 4): the operation
 /// set reduces to canonical bytes; re-reducing the same set yields byte-identical
 /// bytes; and those bytes survive content-addressed storage in a real bundle —
-/// stored as a `Snapshot` chunk referenced by the manifest's `canonical_base`
-/// (its correct semantic home), hash-verified on reopen and read back
+/// stored as a `Snapshot` chunk, hash-verified on reopen and read back
 /// byte-identically.
 ///
-/// The snapshot's `covers_causal_frontier` is the frontier the snapshot actually
-/// materializes ([`crate::generators::frontier_bytes`] over the reduced
-/// envelopes), so it is semantically consistent — not a falsely-empty frontier
-/// that would invite a replay layer to reapply already-materialized effects.
+/// **Canonical-base wiring suspended** (`CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin
+/// 3c, amended 2026-08-07). The snapshot's correct semantic home is the
+/// manifest's `canonical_base` — that has not changed — but pin 3a's
+/// format-epoch matrix refuses every base introduction (`Bundle::commit`) and
+/// every base-bearing open (`Bundle::open`) during the S28 → P13-S27
+/// interval, in both format epochs. So this harness cannot wire the snapshot
+/// there right now: it stages the snapshot as an ordinary chunk instead and
+/// carries the resulting `ChunkRef` across the reopen out of band, reading it
+/// back directly via [`Bundle::read_chunk`] (which hash-verifies any
+/// `ChunkRef`, not only a canonical one). The
+/// serialize → load → decode → reserialize cycle below is unchanged; only the
+/// snapshot's manifest placement is suspended. **Not** re-homed to
+/// `acceleration_snapshots` — that field is verified nowhere in
+/// `epiphany-bundle` (not in `open`, not in `verify_canonical_chunks`), so a
+/// reference there would verify nothing while looking like preserved
+/// coverage. Two assertions lapse until P13-S27 restores the wiring:
+/// `verify_canonical_chunks`'s base branch (its `base.hash != base.root.hash`
+/// cross-check), and the reopened manifest actually carrying the base. Both
+/// are owed back in `spec/CONTRACT_P13S27_REDUCTION_AUTHORITY.md`.
 ///
 /// After reopen, the snapshot payload is decoded through
 /// [`MaterializedState::decode_canonical`], compared structurally with the
@@ -248,9 +262,13 @@ pub fn assert_reduction_serialization_stable(envelopes: &[OperationEnvelope], se
         "re-reduction changed the canonical score bytes"
     );
 
-    // serialize: stage the canonical state as a real **Snapshot** chunk and
-    // reference it from the manifest's `canonical_base` — its correct semantic
-    // home (a materialized snapshot), with the right chunk kind.
+    // serialize: stage the canonical state as a real **Snapshot** chunk.
+    // P13-S27 / CONTRACT_FORMAT_EPOCH_MAJOR1.md pin 3c: the manifest's
+    // `canonical_base` is the snapshot's correct semantic home, but that
+    // wiring is suspended for the S28 -> P13-S27 interval (see the doc
+    // comment above) — the chunk is staged but not referenced from any
+    // manifest root, and its `ChunkRef` is captured directly from the commit
+    // closure instead.
     let mut rng = Rng::new(seed);
     let uuid = FileUuid(rng.array16());
     let doc = DocumentId(rng.array16());
@@ -261,42 +279,26 @@ pub fn assert_reduction_serialization_stable(envelopes: &[OperationEnvelope], se
         schema_version: SchemaVersion::V0,
         payload: canonical.clone(),
     };
+    let mut snapshot_root = None;
     bundle
         .commit(&[snapshot], |ctx| {
-            let mut m = ctx.previous_manifest.clone();
-            let root = ctx.new_chunks[0];
-            let mut sid = [0u8; 16];
-            sid.copy_from_slice(&root.hash.as_bytes()[..16]);
-            m.canonical_base = Some(SnapshotRef {
-                snapshot_id: SnapshotId(sid),
-                // The frontier the snapshot actually materializes (covering every
-                // reduced envelope), not a falsely-empty one.
-                covers_causal_frontier: FrontierBytes::from_bytes(generators::frontier_bytes(
-                    envelopes,
-                )),
-                reduction_algorithm_version: ReductionAlgorithmVersion(0),
-                profile_id: ProfileId::Full,
-                hash: root.hash,
-                root,
-            });
-            m
+            snapshot_root = Some(ctx.new_chunks[0]);
+            ctx.previous_manifest.clone()
         })
         .expect("commit snapshot");
+    let snapshot_root = snapshot_root.expect("commit ran the build closure");
     let image = bundle.into_store().into_bytes();
 
-    // load: reopen from exactly those bytes; the snapshot chunk is hash-verified
-    // on open and read back byte-identically.
+    // load: reopen from exactly those bytes; the snapshot chunk is read back
+    // directly by its `ChunkRef` (not through `manifest.canonical_base`,
+    // suspended above) — `read_chunk` hash-verifies any `ChunkRef`, so the
+    // cycle's integrity guarantee is unchanged.
     let reopened = Bundle::open(MemStore::from_bytes(image)).expect("reopen bundle");
     reopened
         .verify_canonical_chunks()
         .expect("canonical chunks intact");
-    let base = reopened
-        .manifest()
-        .canonical_base
-        .as_ref()
-        .expect("a canonical base");
     let loaded = reopened
-        .read_chunk(&base.root)
+        .read_chunk(&snapshot_root)
         .expect("read snapshot chunk back");
     assert_eq!(
         loaded, canonical,

@@ -123,16 +123,26 @@ pub struct ReachCounts {
 
 /// The exact non-vacuity contract of this corpus: four accepted documents, two
 /// reaching each optional/rich feature, and one actually rejected vector for
-/// each of the nine distinct rejection classes implemented by this layer.
+/// each of the ten distinct rejection classes implemented by this layer.
+///
+/// `canonical_bases` is pinned at **0**, not two:
+/// `CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 3b refuses projecting, parsing, and
+/// serializing any base-bearing document, so a canonical base is no longer
+/// reachable through text at all. The two formerly base-bearing accepts
+/// (`extension_base_two_envelopes`, `rich_document`) keep every other feature
+/// they exercised but lose their base, and the base-bearing spelling survives
+/// only as the new `canonical_base_present` reject vector (class
+/// `canonical-base-unsupported`).
 pub fn expected_reach() -> ReachCounts {
     ReachCounts {
         extensions: 2,
-        canonical_bases: 2,
+        canonical_bases: 0,
         custom_profiles: 2,
         lineages: 2,
         multi_envelope: 2,
         reject_classes: [
             ("blob-line", 1),
+            ("canonical-base-unsupported", 1),
             ("extension-chunk-order", 1),
             ("extension-declaration-order", 1),
             ("missing-trailing-lf", 1),
@@ -341,7 +351,12 @@ fn accept_documents() -> Vec<(&'static str, String)> {
         blobs: Vec::new(),
         envelopes: vec![sample_envelope(1, 100)],
     };
-    let extension_base_multi = TextDocument {
+    // `CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 3b: text projection can no longer
+    // carry a canonical base at all, so this document (still named for the
+    // two envelopes it exercises, not for a base it no longer carries) keeps
+    // its extension and non-baseline schema version but drops the base that
+    // used to make it `extension_base_multi`.
+    let extension_two_envelopes = TextDocument {
         document_id: DocumentId([3; 16]),
         // A non-baseline carried version, so the corpus exercises the
         // `document` line's schema field at a value other than the
@@ -350,17 +365,19 @@ fn accept_documents() -> Vec<(&'static str, String)> {
         lineage_id: None,
         profiles: profiles(false),
         extensions: vec![extension(1, &[1, 2])],
-        canonical_base: Some(base(3)),
+        canonical_base: None,
         blobs: Vec::new(),
         envelopes: vec![sample_envelope(2, 200), sample_envelope(3, 300)],
     };
+    // Base removed (pin 3b); lineage, custom profile, two extensions, and
+    // multiple envelopes are all retained.
     let rich = TextDocument {
         document_id: DocumentId([4; 16]),
         manifest_schema_version: SchemaVersion::V0,
         lineage_id: Some(LineageId([0x14; 16])),
         profiles: profiles(true),
         extensions: vec![extension(1, &[1, 2]), extension(2, &[3])],
-        canonical_base: Some(base(4)),
+        canonical_base: None,
         blobs: Vec::new(),
         envelopes: vec![
             sample_envelope(4, 400),
@@ -459,7 +476,7 @@ fn accept_documents() -> Vec<(&'static str, String)> {
         ),
         (
             "extension_base_two_envelopes",
-            project_text_document(&extension_base_multi),
+            project_text_document(&extension_two_envelopes),
         ),
         ("rich_document", project_text_document(&rich)),
         ("create_staff_group", project_text_document(&staff_group)),
@@ -548,7 +565,7 @@ pub fn document_vectors() -> Vec<TextVector> {
     };
     let minimal = by_name("minimal");
     let lineage_custom = by_name("lineage_custom_profile");
-    let extension_base_multi = by_name("extension_base_two_envelopes");
+    let extension_two_envelopes = by_name("extension_base_two_envelopes");
     let rich = by_name("rich_document");
 
     let mut vectors: Vec<TextVector> = accepts
@@ -556,17 +573,16 @@ pub fn document_vectors() -> Vec<TextVector> {
         .map(|(name, text)| (SURFACE, "accept", "-", *name, text.as_bytes().to_vec()))
         .collect();
 
-    // The rejected version must be one this crate does NOT implement. Genesis
-    // tranche G3b moved `COMPANION_VERSION` to 0.13.0, which had been this
-    // vector's "future" version — leaving it would have made the negative
-    // vector assert that the *correct* header is rejected. It now names
-    // 0.12.0, the immediately superseded companion, which is the better test
-    // anyway: rejecting the version right behind you is exactly the deferred
+    // The rejected version must be one this crate does NOT implement.
+    // `CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 3b moved `COMPANION_VERSION` to
+    // 0.14.0; this vector now names 0.13.0, the immediately superseded
+    // companion (previously 0.12.0, when the committed version was 0.13.0) —
+    // rejecting the version right behind you is exactly the deferred
     // migrate-on-read posture (`req:textproj:header-version`).
     let wrong_version = replace_once(
         minimal,
+        "(text-projection (0 14 0))",
         "(text-projection (0 13 0))",
-        "(text-projection (0 12 0))",
     );
     vectors.push((
         SURFACE,
@@ -590,12 +606,18 @@ pub fn document_vectors() -> Vec<TextVector> {
         blob.into_bytes(),
     ));
 
+    // Re-expressed on a non-base section pair (pin 3b: neither accept carries
+    // a canonical base to invert against any more). `projection`'s order is
+    // `header document lineage? profile* extension* canonical-base? blob*
+    // envelope*`, so a profile/extension inversion reaches
+    // `out-of-order-sections` exactly as the old canonical-base/extension
+    // inversion did, without a base.
     vectors.push((
         SURFACE,
         "reject",
         "out-of-order-sections",
         "canonical_base_before_extension",
-        swap_first_lines(extension_base_multi, "(extension ", "(canonical-base ").into_bytes(),
+        swap_first_lines(extension_two_envelopes, "(profile ", "(extension ").into_bytes(),
     ));
 
     vectors.push((
@@ -611,7 +633,7 @@ pub fn document_vectors() -> Vec<TextVector> {
         "reject",
         "operation-envelope-order",
         "envelopes_reversed",
-        swap_first_two_lines(extension_base_multi, "(envelope ").into_bytes(),
+        swap_first_two_lines(extension_two_envelopes, "(envelope ").into_bytes(),
     ));
 
     vectors.push((
@@ -631,7 +653,7 @@ pub fn document_vectors() -> Vec<TextVector> {
     ));
 
     let chunks_reversed = replace_once(
-        extension_base_multi,
+        extension_two_envelopes,
         "((chunk extension-data (schema 0 1) #x01) (chunk extension-data (schema 0 1) #x02))",
         "((chunk extension-data (schema 0 1) #x02) (chunk extension-data (schema 0 1) #x01))",
     );
@@ -651,6 +673,28 @@ pub fn document_vectors() -> Vec<TextVector> {
         "missing-trailing-lf",
         "final_lf_missing",
         missing_lf,
+    ));
+
+    // NEW (pin 3b): a base-bearing text, refused by the parse-side check —
+    // built from the pre-change base-bearing spelling, so the corpus keeps a
+    // base-bearing text as a negative rather than losing the spelling
+    // entirely.
+    let canonical_base_present = TextDocument {
+        document_id: DocumentId([11; 16]),
+        manifest_schema_version: SchemaVersion::V0,
+        lineage_id: None,
+        profiles: profiles(false),
+        extensions: Vec::new(),
+        canonical_base: Some(base(11)),
+        blobs: Vec::new(),
+        envelopes: Vec::new(),
+    };
+    vectors.push((
+        SURFACE,
+        "reject",
+        "canonical-base-unsupported",
+        "canonical_base_present",
+        project_text_document(&canonical_base_present).into_bytes(),
     ));
 
     vectors
@@ -886,7 +930,7 @@ mod tests {
     #[test]
     fn the_reference_implementation_agrees_with_every_vector() {
         match verify(COMMITTED) {
-            Ok(count) => assert_eq!(count, 19, "the corpus has unexpectedly thinned"),
+            Ok(count) => assert_eq!(count, 20, "the corpus has unexpectedly thinned"),
             Err(failures) => panic!(
                 "{} disagreement(s):\n{}",
                 failures.len(),
@@ -957,20 +1001,21 @@ mod tests {
     }
 
     /// (t12) Genesis tranche G3b: text projection round-trips the new
-    /// `create-measure` kind, and the companion version is **0.13.0**, with
-    /// the negative vector rejecting **0.12.0** (the immediately superseded
+    /// `create-measure` kind, and the companion version is **0.14.0**
+    /// (`CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 3b bumped it from 0.13.0), with
+    /// the negative vector rejecting **0.13.0** (the immediately superseded
     /// companion).
     ///
     /// **Mutation:** drop `OperationKindTag::CreateMeasure` from
     /// `OperationKind::parse` in `textproj_kind.rs`; must fail. Separately,
-    /// leave `COMPANION_VERSION` at `(0, 12, 0)`; the negative vector must
+    /// leave `COMPANION_VERSION` at `(0, 13, 0)`; the negative vector must
     /// fail.
     #[test]
-    fn t12_g3b_kinds_round_trip_and_companion_is_0_13_0_rejecting_0_12_0() {
+    fn t12_g3b_kinds_round_trip_and_companion_is_0_14_0_rejecting_0_13_0() {
         assert_eq!(
             crate::COMPANION_VERSION,
-            (0, 13, 0),
-            "the companion version must be 0.13.0"
+            (0, 14, 0),
+            "the companion version must be 0.14.0"
         );
 
         let name = "create_measure";
@@ -988,7 +1033,7 @@ mod tests {
         );
 
         // The negative vector must reject exactly the immediately superseded
-        // companion, 0.12.0.
+        // companion, 0.13.0.
         let rows = parse(COMMITTED).expect("the committed corpus parses");
         let superseded = rows
             .iter()
@@ -997,8 +1042,8 @@ mod tests {
         assert_eq!(superseded.verdict, "reject");
         let text = String::from_utf8(superseded.text.clone()).expect("utf8");
         assert!(
-            text.contains("(text-projection (0 12 0))"),
-            "the negative vector must name the immediately superseded companion 0.12.0, got: {text}"
+            text.contains("(text-projection (0 13 0))"),
+            "the negative vector must name the immediately superseded companion 0.13.0, got: {text}"
         );
         assert!(
             parse_document(&text).is_err(),

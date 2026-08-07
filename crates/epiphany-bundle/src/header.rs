@@ -36,10 +36,39 @@ pub const SLOT_A_OFFSET: u64 = 64;
 pub const SLOT_B_OFFSET: u64 = 320;
 
 /// The format major version this crate writes and understands.
-pub const FORMAT_MAJOR: u16 = 0;
+///
+/// **Format epoch** (`spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`): a major-1
+/// container is one whose every base-bearing commit was validated against a
+/// supplied reduction authority. Major 0 is the pre-epoch **legacy** format —
+/// still decoded, deliberately, but never trusted to carry a canonical base
+/// (see [`FormatEpoch`]). A new major restarts minor numbering, which is why
+/// [`FORMAT_MINOR`] resets to `0` here rather than continuing from legacy's
+/// `1`.
+pub const FORMAT_MAJOR: u16 = 1;
 
 /// The format minor version this crate writes.
-pub const FORMAT_MINOR: u16 = 1;
+///
+/// Reset to `0` by the major-1 epoch bump (`spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`
+/// pin 1): a new major restarts minor numbering.
+pub const FORMAT_MINOR: u16 = 0;
+
+/// Which format-epoch a decoded header belongs to
+/// (`spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 2). A named enum rather than a
+/// boolean so the legacy case is a value the type system carries — every
+/// consumer of the epoch matches this, rather than re-deriving
+/// `format_major == 0` at each use site.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum FormatEpoch {
+    /// Format major 0: decoded deliberately, for backward compatibility, but
+    /// never trusted to carry a canonical base (the epoch is not retroactive
+    /// — `CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 3, row 2/3).
+    Legacy,
+    /// Format major 1: the current epoch. Every base-bearing commit is meant
+    /// to be validated against a supplied reduction authority — the
+    /// capability itself lands with P13-S27; until then this rung refuses
+    /// base introduction outright (pin 3a).
+    Current,
+}
 
 /// Byte range covered by the header CRC: everything before the CRC field.
 const HEADER_CRC_RANGE: usize = 60;
@@ -59,6 +88,9 @@ pub struct FixedHeader {
     pub superblock_b_offset: u64,
     /// Physical-bundle UUID, set at creation, changed on Save As.
     pub file_uuid: FileUuid,
+    /// The format epoch this header's major classifies to (pin 2). Carried
+    /// on the header rather than re-derived at each call site.
+    pub epoch: FormatEpoch,
 }
 
 impl FixedHeader {
@@ -71,6 +103,7 @@ impl FixedHeader {
             superblock_a_offset: SLOT_A_OFFSET,
             superblock_b_offset: SLOT_B_OFFSET,
             file_uuid,
+            epoch: FormatEpoch::Current,
         }
     }
 
@@ -116,12 +149,20 @@ impl FixedHeader {
         let _magic = r.take_array::<8>()?;
         let format_major = r.get_u16()?;
         let format_minor = r.get_u16()?;
-        if format_major != FORMAT_MAJOR {
-            return Err(BundleError::UnsupportedFormatVersion {
-                major: format_major,
-                minor: format_minor,
-            });
-        }
+        // Pin 2's explicit three-way classification: 0 is legacy (decoded
+        // deliberately, marked as such), FORMAT_MAJOR is current, anything
+        // else is unsupported — unchanged from the pre-epoch exact-major
+        // rejection for that third arm.
+        let epoch = match format_major {
+            0 => FormatEpoch::Legacy,
+            FORMAT_MAJOR => FormatEpoch::Current,
+            _ => {
+                return Err(BundleError::UnsupportedFormatVersion {
+                    major: format_major,
+                    minor: format_minor,
+                })
+            }
+        };
         let header_length = r.get_u32()?;
         if header_length != HEADER_LEN as u32 {
             return Err(BundleError::UnsupportedHeaderLength {
@@ -147,6 +188,7 @@ impl FixedHeader {
             superblock_a_offset,
             superblock_b_offset,
             file_uuid,
+            epoch,
         })
     }
 }
@@ -154,6 +196,14 @@ impl FixedHeader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_epoch_constants_are_major_1_minor_0() {
+        // Gate 7 (`CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 1): the epoch bump,
+        // asserted in a test rather than only by reading the constants.
+        assert_eq!(FORMAT_MAJOR, 1);
+        assert_eq!(FORMAT_MINOR, 0);
+    }
 
     #[test]
     fn header_round_trips() {
@@ -189,6 +239,21 @@ mod tests {
         assert!(matches!(
             FixedHeader::decode(&bytes),
             Err(BundleError::HeaderCrcMismatch)
+        ));
+    }
+
+    #[test]
+    fn an_unknown_major_is_still_unsupported_format_version() {
+        // Pin 2's third arm: neither 0 (legacy) nor FORMAT_MAJOR (current) —
+        // still hard-rejected, exactly as the pre-epoch exact-major check was
+        // (`CONTRACT_FORMAT_EPOCH_MAJOR1.md`).
+        let mut bytes = FixedHeader::new(FileUuid::ZERO).encode();
+        bytes[8..10].copy_from_slice(&2u16.to_le_bytes()); // format_major = 2
+        let crc = crc32c(&bytes[0..60]);
+        bytes[60..64].copy_from_slice(&crc.to_le_bytes());
+        assert!(matches!(
+            FixedHeader::decode(&bytes),
+            Err(BundleError::UnsupportedFormatVersion { major: 2, minor: 0 })
         ));
     }
 

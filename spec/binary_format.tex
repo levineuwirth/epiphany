@@ -240,7 +240,7 @@
   {\Large\scshape\color{epiphanyslate}Binary Format}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.16.0 --- The genesis operation tranche closes: \texttt{CreateMeasure} (G3b)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.17.0 --- The container format major becomes 1: the header carries an epoch}\\[4pt]
   {\small\color{epiphanyslate}Normative for the byte layouts it defines}
   \vfill
 \end{titlepage}
@@ -1805,10 +1805,18 @@ format major version. All integers little-endian.
   \endhead
   \tablenums{0..8} & magic & \texttt{MUSCBND\textbackslash0} (8 bytes, ASCII,
     trailing NUL) \\
-  \tablenums{8..10} & \texttt{format\_major} (\texttt{u16}) & \tablenums{0}
-    in this version; readers reject other values \\
-  \tablenums{10..12} & \texttt{format\_minor} (\texttt{u16}) & \tablenums{1}
-    written in this version \\
+  \tablenums{8..10} & \texttt{format\_major} (\texttt{u16}) & \tablenums{1}
+    written in this version. The container \emph{epoch}: a major-1
+    container is one whose every base-bearing commit was validated
+    against a supplied reduction authority. \tablenums{0} is
+    \emph{legacy} and \MUST{} be decoded deliberately as such, not
+    rejected; any other value is rejected. A legacy container \MAY{}
+    be opened only while it carries no canonical base, and \MUSTNOT{}
+    acquire one --- the epoch is fixed at creation and cannot be
+    inherited by a later commit (Core Specification,
+    \sectionsc{The Container Epoch}) \\
+  \tablenums{10..12} & \texttt{format\_minor} (\texttt{u16}) & \tablenums{0}
+    written in this version; minor numbering restarts at a new major \\
   \tablenums{12..16} & \texttt{header\_length} (\texttt{u32}) &
     \tablenums{64}; readers reject other values \\
   \tablenums{16..24} & \texttt{superblock\_a\_offset} (\texttt{u64}) &
@@ -3715,6 +3723,28 @@ only}: implementations need not agree on an error taxonomy.
   ladder: G1 $\rightarrow$ G2a $\rightarrow$ G-minor $\rightarrow$ G2b
   $\rightarrow$ G3a $\rightarrow$ G3b. Semantics: Operation Catalog
   \sectionsc{CreateMeasure}, 0.13.0. \\
+
+    \today & The Fixed Header & 0.17.0 --- The container format major becomes
+  \tablenums{1}, and \texttt{format\_minor} restarts at \tablenums{0}
+  (\texttt{spec/CONTRACT\_FORMAT\_EPOCH\_MAJOR1.md}). This is the first
+  \emph{container} major boundary, and it is not a change of wire layout: no
+  field moves, no offset changes, and every byte range in the header table is
+  what it was. What changes is what the major \emph{means}. A major-1 container
+  is one whose every base-bearing commit was validated against a supplied
+  reduction authority; major \tablenums{0} is legacy and \MUST{} be decoded
+  deliberately as such rather than rejected.
+
+  The major is the carrier precisely because the header never changes after
+  creation. A superblock field could not do this job: a legacy container that
+  later commits a validated base would keep carrying whatever its creation
+  stamped, so provenance would be inheritable by a document that never earned
+  it. A minor bump could not do it either --- readers ignore minor, and this
+  document's own rules limit a minor change to appending append-safe
+  discriminants, whereas making a previously-valid canonical base newly
+  rejectable is a semantic acceptance change. The full epoch matrix, including
+  the rule that a legacy container may open but \MUSTNOT{} acquire a canonical
+  base, is normative in the Core Specification,
+  \sectionsc{The Container Epoch}. \\
 \bottomrule
 \end{longtable}
 

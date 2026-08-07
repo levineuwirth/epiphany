@@ -116,6 +116,40 @@ pub enum BundleError {
     /// extension, or a recovery/anomaly open). Chapter 8 §"Behavior Under
     /// Unknown Extensions" / §"Superblock Selection".
     ReadOnly,
+
+    /// A legacy (format major 0) container's manifest already carries a
+    /// canonical base (`spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md` matrix row 2).
+    /// A pre-epoch base was never validated against a reduction authority, so
+    /// it is not safe materialized state — the document already contains
+    /// unverifiable canonical state. **Permanent**: legacy containers never
+    /// gain that validation retroactively. The fix is to repack into a fresh
+    /// major-1 bundle; that flow is not built by this rung (pin 5) and this
+    /// error MUST NOT degrade to a read-only open — a pre-authority base is
+    /// not a restricted-but-correct view.
+    LegacyBundleHasCanonicalBase,
+
+    /// A commit into a legacy (format major 0) container attempted to add or
+    /// replace the canonical base (matrix row 3). The document itself is
+    /// fine, but this operation cannot be performed in this container: a
+    /// bundle that opened clean under row 1 must not become base-bearing in
+    /// place, because its header can never say it was validated — the epoch
+    /// is not inheritable. **Permanent**, like
+    /// [`BundleError::LegacyBundleHasCanonicalBase`]. The fix is to repack
+    /// into a fresh major-1 bundle; not built by this rung (pin 5), and this
+    /// error MUST NOT degrade to a read-only open.
+    LegacyBaseIntroductionRejected,
+
+    /// A major-1 container's canonical base cannot yet be validated: matrix
+    /// rows 5i/6i, opening a container that already carries a base, or
+    /// committing one into it. The container is the **right** epoch — this is
+    /// not a request to repack — but no reduction-authority capability exists
+    /// yet to validate the base against. **Temporary**: `P13-S27` supplies
+    /// that capability and replaces both branches with real validation, not
+    /// this categorical refusal. Never mentions repack (repacking a
+    /// already-correct-epoch container would be wrong advice), and MUST NOT
+    /// degrade to a read-only open — a pre-authority base is not a
+    /// restricted-but-correct view.
+    ReductionAuthorityUnavailable,
 }
 
 impl core::fmt::Display for BundleError {
@@ -187,6 +221,18 @@ impl core::fmt::Display for BundleError {
             }
             BundleError::Decode(e) => write!(f, "decode error: {e}"),
             BundleError::ReadOnly => f.write_str("bundle is open read-only; edits are refused"),
+            BundleError::LegacyBundleHasCanonicalBase => f.write_str(
+                "legacy (format major 0) bundle carries a canonical base, which was never \
+                 validated against a reduction authority; repack into a fresh major-1 bundle",
+            ),
+            BundleError::LegacyBaseIntroductionRejected => f.write_str(
+                "cannot add or replace a canonical base in a legacy (format major 0) bundle; \
+                 repack into a fresh major-1 bundle",
+            ),
+            BundleError::ReductionAuthorityUnavailable => f.write_str(
+                "this major-1 container's canonical base cannot yet be validated: no \
+                 reduction-authority capability exists until P13-S27 lands",
+            ),
         }
     }
 }

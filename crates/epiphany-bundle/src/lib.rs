@@ -81,7 +81,7 @@ pub use crc::crc32c;
 pub use epiphany_determinism::{ChunkId, ContentHash};
 pub use error::{BundleError, IntegrityAnomaly};
 pub use header::{
-    FixedHeader, FORMAT_MAJOR, FORMAT_MINOR, HEADER_LEN, SLOT_A_OFFSET, SLOT_B_OFFSET,
+    FixedHeader, FormatEpoch, FORMAT_MAJOR, FORMAT_MINOR, HEADER_LEN, SLOT_A_OFFSET, SLOT_B_OFFSET,
 };
 pub use ids::{
     BlobId, DocumentId, ExtensionId, FileUuid, FrontierBytes, LineageId, ManifestId,

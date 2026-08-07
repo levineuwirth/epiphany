@@ -41,8 +41,8 @@
 use std::collections::BTreeSet;
 
 use epiphany_bundle::{
-    BlobId, BlockStore, Bundle, BundleError, ChunkKind, DocumentId, LineageId, ProfileConstraints,
-    ProfileDeclaration, ProfileId, RetentionPolicy, SchemaVersion, SemVer,
+    BlobId, BlockStore, Bundle, BundleError, ChunkKind, DocumentId, LineageId, Manifest,
+    ProfileConstraints, ProfileDeclaration, ProfileId, RetentionPolicy, SchemaVersion, SemVer,
 };
 use epiphany_core::textvalue::Sexp;
 use epiphany_ops::{
@@ -67,6 +67,15 @@ pub enum ProjectError {
     /// A stored operation-envelope block held bytes that do not decode to a
     /// canonical [`OperationEnvelope`].
     Envelope(EnvelopeDecodeError),
+    /// The bundle's manifest carries a canonical base
+    /// (`spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 3b: "text projection
+    /// cannot mint a canonical base"). Symmetric with
+    /// [`crate::serialize::SerializeError::CanonicalBaseUnsupported`] and
+    /// [`crate::parse`]'s own refusal — `req:textproj:roundtrip` quantifies
+    /// over every bundle and every valid text, so all three sides move
+    /// together: a document this companion cannot produce from text must
+    /// also never be produced *as* text.
+    CanonicalBaseUnsupported,
 }
 
 impl core::fmt::Display for ProjectError {
@@ -74,6 +83,10 @@ impl core::fmt::Display for ProjectError {
         match self {
             ProjectError::Bundle(e) => write!(f, "bundle read failed: {e}"),
             ProjectError::Envelope(e) => write!(f, "operation envelope failed to decode: {e}"),
+            ProjectError::CanonicalBaseUnsupported => f.write_str(
+                "the bundle's manifest carries a canonical base, which this companion cannot \
+                 project: text projection cannot mint a canonical base",
+            ),
         }
     }
 }
@@ -83,6 +96,7 @@ impl std::error::Error for ProjectError {
         match self {
             ProjectError::Bundle(e) => Some(e),
             ProjectError::Envelope(e) => Some(e),
+            ProjectError::CanonicalBaseUnsupported => None,
         }
     }
 }
@@ -425,6 +439,33 @@ fn canonical_blobs<S: BlockStore>(
 // Bundle<S> -> TextDocument.
 // ===========================================================================
 
+/// The check [`document_from_bundle`] and [`project_bundle`] apply before
+/// doing any work (pin 3b): a base-bearing bundle is refused, symmetric with
+/// [`crate::serialize::serialize_document`]'s and [`crate::parse::parse_document`]'s
+/// own refusals.
+///
+/// Exposed as its own function, over a bare [`Manifest`] rather than inlined
+/// into `document_from_bundle`, so it is independently unit-testable. That
+/// indirection is load-bearing, not stylistic: during the S28 → P13-S27
+/// interval, `CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 3a's bundle-layer
+/// refusals (rows 2/3/5i/6i of its epoch matrix) close *every* path —
+/// `create`, `open`, and `commit` alike — that could ever produce a live
+/// `Bundle` whose manifest carries a canonical base, in any crate, not only
+/// this one (pin 3c: "no bundle anywhere may carry a canonical base ... in
+/// production, in tests, or in the conformance suite"). So this predicate
+/// cannot be driven end-to-end through a real `Bundle::open`/`create`/`commit`
+/// call right now — there is no way to construct the `&Bundle<S>` argument
+/// `document_from_bundle` would need. `projecting_a_base_bearing_bundle_is_refused`
+/// (below) tests this function directly against a hand-built `Manifest`
+/// instead, and its own doc comment records this as a contract-execution
+/// finding, not something patched around.
+fn reject_canonical_base(manifest: &Manifest) -> Result<(), ProjectError> {
+    if manifest.canonical_base.is_some() {
+        return Err(ProjectError::CanonicalBaseUnsupported);
+    }
+    Ok(())
+}
+
 /// Builds a [`TextDocument`] from a bundle's current manifest, reading every
 /// chunk and blob payload the projection carries inline: each extension's
 /// preserved chunks, the canonical base's root chunk, and (today, always
@@ -440,6 +481,7 @@ pub fn document_from_bundle<S: BlockStore>(
     bundle: &Bundle<S>,
 ) -> Result<TextDocument, ProjectError> {
     let manifest = bundle.manifest();
+    reject_canonical_base(manifest)?;
 
     let mut decoded = Vec::new();
     for root in &manifest.operation_roots {
@@ -563,9 +605,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use epiphany_bundle::{
-        encode_block, BlobRef, CompressionAlgorithm, ExtensionDeclaration, ExtensionId, FileUuid,
-        FrontierBytes, Manifest, MemStore, ProfileRegistryId, ReductionAlgorithmVersion,
-        SnapshotId, SnapshotRef, StagedChunk,
+        chunk_content_hash, encode_block, BlobRef, ChunkRef, CompressionAlgorithm,
+        ExtensionDeclaration, ExtensionId, FileUuid, FrontierBytes, Manifest, MemStore,
+        ProfileRegistryId, ReductionAlgorithmVersion, SnapshotId, SnapshotRef, StagedChunk,
     };
     use epiphany_core::textvalue::read_sexp;
     use epiphany_core::{OperationId, RegionId, ReplicaId, WallClockTime};
@@ -896,12 +938,12 @@ mod tests {
             payload: b"extension-chunk-payload".to_vec(),
         };
 
-        let base_chunk = StagedChunk {
-            kind: ChunkKind::Snapshot,
-            schema_version: SchemaVersion::V0,
-            payload: b"canonical-base-payload".to_vec(),
-        };
-
+        // `CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 3c: no bundle anywhere may
+        // carry a canonical base for the S28 -> P13-S27 interval — `commit`
+        // now refuses one outright, so this fixture used to stage a
+        // `base_chunk` and wire it into `manifest.canonical_base` here can no
+        // longer do so. The base-bearing scenario is exercised separately, at
+        // the `Manifest` level, by `projecting_a_base_bearing_bundle_is_refused`.
         let blob_chunk = StagedChunk {
             kind: ChunkKind::Blob,
             schema_version: SchemaVersion::V0,
@@ -915,13 +957,7 @@ mod tests {
 
         bundle
             .commit(
-                &[
-                    op_block_0,
-                    op_block_1,
-                    extension_chunk,
-                    base_chunk,
-                    blob_chunk,
-                ],
+                &[op_block_0, op_block_1, extension_chunk, blob_chunk],
                 |ctx| {
                     let mut manifest = ctx.previous_manifest.clone();
                     manifest.operation_roots = vec![ctx.new_chunks[0], ctx.new_chunks[1]];
@@ -933,22 +969,14 @@ mod tests {
                         affected_object_kinds: vec![0xAA],
                         edit_barriers: vec![0xBB, 0xCC],
                     }];
-                    manifest.canonical_base = Some(SnapshotRef {
-                        snapshot_id: SnapshotId([7; 16]),
-                        covers_causal_frontier: FrontierBytes::from_bytes(vec![1, 2, 3]),
-                        reduction_algorithm_version: ReductionAlgorithmVersion(1),
-                        profile_id: ProfileId::Full,
-                        root: ctx.new_chunks[3],
-                        hash: ctx.new_chunks[3].hash,
-                    });
                     manifest.blob_roots = vec![BlobRef {
-                        blob_id: BlobId(ctx.new_chunks[4].hash),
+                        blob_id: BlobId(ctx.new_chunks[3].hash),
                         media_type: "application/octet-stream".to_owned(),
-                        offset: ctx.new_chunks[4].offset,
-                        compressed_length: ctx.new_chunks[4].compressed_length,
-                        uncompressed_length: ctx.new_chunks[4].uncompressed_length,
+                        offset: ctx.new_chunks[3].offset,
+                        compressed_length: ctx.new_chunks[3].compressed_length,
+                        uncompressed_length: ctx.new_chunks[3].uncompressed_length,
                         compression: CompressionAlgorithm::None,
-                        hash: ctx.new_chunks[4].hash,
+                        hash: ctx.new_chunks[3].hash,
                         declared_max_uncompressed_length: None,
                     }];
                     manifest
@@ -995,9 +1023,9 @@ mod tests {
         assert_eq!(extension.chunks[0].kind, ChunkKind::ExtensionData);
         assert_eq!(extension.chunks[0].payload, b"extension-chunk-payload");
 
-        let base = document.canonical_base.as_ref().expect("base was staged");
-        assert_eq!(base.snapshot_id, SnapshotId([7; 16]));
-        assert_eq!(base.root_payload, b"canonical-base-payload");
+        // `build_sample_bundle` no longer stages a canonical base (pin 3c: no
+        // bundle anywhere may carry one during the S28 -> P13-S27 interval).
+        assert!(document.canonical_base.is_none());
 
         // The trap: a non-empty `blob_roots` still yields zero canonical
         // blobs, because nothing can reach one yet.
@@ -1041,7 +1069,6 @@ mod tests {
                 "(lineage",
                 "(profile",
                 "(extension",
-                "(canonical-base",
                 "(envelope",
                 "(envelope",
             ],
@@ -1095,6 +1122,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn projecting_a_base_bearing_bundle_is_refused() {
+        // Pin 3b's projection side: `document_from_bundle`/`project_bundle`
+        // refuse a bundle whose manifest carries a canonical base.
+        //
+        // This cannot be driven end-to-end through a live `Bundle<S>` right
+        // now: `CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 3a's refusals (this same
+        // rung, `epiphany-bundle`) close *every* path that could produce
+        // one — `Bundle::create` already rejected an initial base before this
+        // rung, and `Bundle::open`/`Bundle::commit` now refuse one
+        // categorically in both format epochs (matrix rows 2/3/5i/6i) — so no
+        // crate, including this one, can construct a `Bundle` whose manifest
+        // carries a canonical base during the S28 -> P13-S27 interval (pin
+        // 3c: "no bundle anywhere may carry a canonical base ... in
+        // production, in tests, or in the conformance suite"). That is
+        // reported as a contract-execution finding, not patched around here.
+        //
+        // What IS independently checkable, without a live `Bundle`, is the
+        // exact predicate `document_from_bundle` guards on
+        // (`reject_canonical_base`): a `Manifest` — a public, freestanding
+        // type — carrying `canonical_base = Some(...)`.
+        let mut manifest = Manifest::empty(DocumentId([1; 16]));
+        let payload = b"snapshot".to_vec();
+        let hash = chunk_content_hash(ChunkKind::Snapshot, SchemaVersion::V0, &payload);
+        let root = ChunkRef {
+            id: epiphany_bundle::ChunkId(hash),
+            kind: ChunkKind::Snapshot,
+            schema_version: SchemaVersion::V0,
+            offset: epiphany_bundle::BODY_START,
+            compressed_length: payload.len() as u64,
+            uncompressed_length: payload.len() as u64,
+            compression: CompressionAlgorithm::None,
+            hash,
+        };
+        manifest.canonical_base = Some(SnapshotRef {
+            snapshot_id: SnapshotId([1; 16]),
+            covers_causal_frontier: FrontierBytes::empty(),
+            reduction_algorithm_version: ReductionAlgorithmVersion(0),
+            profile_id: ProfileId::Full,
+            hash: root.hash,
+            root,
+        });
+        assert!(matches!(
+            reject_canonical_base(&manifest),
+            Err(ProjectError::CanonicalBaseUnsupported)
+        ));
+    }
+
     // -----------------------------------------------------------------
     // Suite reach: count, don't just claim, coverage of an extension, a
     // canonical base, and a multi-envelope document.
@@ -1103,13 +1178,27 @@ mod tests {
     #[test]
     fn test_suite_reach_covers_extension_base_and_multi_envelope_documents() {
         let rich = document_from_bundle(&build_sample_bundle()).expect("bundle reads cleanly");
+        // `build_sample_bundle` no longer carries a canonical base (pin 3c),
+        // so `with_canonical_base` reach is exercised here instead, directly
+        // on a `TextDocument` value — no live `Bundle` is involved, so pin
+        // 3a's bundle-layer refusal does not apply (this is not projection,
+        // parsing, or serialization; see
+        // `projecting_a_base_bearing_bundle_is_refused`, which covers the
+        // refusal itself).
         let minimal = TextDocument {
             document_id: DocumentId([6; 16]),
             manifest_schema_version: SchemaVersion::V0,
             lineage_id: None,
             profiles: vec![ProfileDeclaration::full()],
             extensions: Vec::new(),
-            canonical_base: None,
+            canonical_base: Some(TextCanonicalBase {
+                snapshot_id: SnapshotId([6; 16]),
+                covers_causal_frontier: FrontierBytes::empty(),
+                reduction_algorithm_version: ReductionAlgorithmVersion(1),
+                profile_id: ProfileId::Full,
+                root_schema_version: SchemaVersion::V0,
+                root_payload: b"reach-only-canonical-base".to_vec(),
+            }),
             blobs: Vec::new(),
             envelopes: vec![sample_envelope(1, 1)],
         };

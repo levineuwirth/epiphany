@@ -234,7 +234,7 @@
   {\Large\scshape\color{epiphanyslate}Text Projection}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.13.0 --- The genesis ladder closes: \texttt{create-measure} reaches the grammar}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.14.0 --- Canonical bases leave the companion: the container epoch carries what text cannot}\\[4pt]
   {\small\color{epiphanyslate}Normative for the text form it defines}
   \vfill
 \end{titlepage}
@@ -483,7 +483,7 @@ A projection is, in order:
 \begin{requirement}
   \label{req:textproj:header-version}
   A parser implementing this companion \MUST{} accept exactly one header
-  version: \texttt{(0 13 0)}, the version of the companion it implements. It
+  version: \texttt{(0 14 0)}, the version of the companion it implements. It
   \MUST{} reject any other version at line one.
 
   Multi-version acceptance and text migrate-on-read are deferred in the same
@@ -534,7 +534,7 @@ projection introduces no ordering of its own.
   A parser \MUST{} reject every \texttt{(blob ...)} line whose blob is
   unreferenced by canonical state
   (Requirement~\ref{req:textproj:canonical-blobs}). At companion
-  version~0.13.0, neither a canonical operation nor canonical reduced state can
+  version~0.14.0, neither a canonical operation nor canonical reduced state can
   carry a \texttt{BlobId}; canonical state therefore cannot reference a blob,
   and a parser \MUST{} reject every \texttt{(blob ...)} line.
 \end{requirement}
@@ -906,6 +906,31 @@ are ratified.
   whose canonical document semantics are identical to the original's. The
   bundle's physical layout, chunking, and compression \MAY{} differ.
 
+  \textbf{Documents carrying a canonical base are outside this requirement's
+  domain, and are refused rather than round-tripped.} The exclusion is stated
+  here, in the requirement's own terms, because the equations below quantify
+  universally and a reader checking them against an implementation would
+  otherwise find a conforming implementation failing them. The companion
+  \MUST{} refuse a base-bearing document at every one of its three boundaries:
+  projecting a base-bearing bundle to text, parsing text that declares a
+  canonical base, and serializing a directly constructed document that carries
+  one.
+
+  The reason is that this format cannot carry the guarantee the base needs. A
+  canonical base is only meaningful when it has been validated against a
+  reduction authority, and that validation is attested by the \emph{container}
+  epoch (Core Specification, \sectionsc{The Container Epoch}), which a text
+  document has no way to hold: every field a text format defines can be typed
+  by hand, so any provenance marker it carried would reduce to trusting its
+  author. Serializing a base-bearing text document into a freshly created
+  container would therefore mint a container asserting a validation that never
+  occurred. A canonical base enters a container only through an explicit
+  rebuild or repack flow, never through text import.
+
+  This is a real loss of capability and is stated as one: a base-bearing bundle
+  does not round-trip through text. The quantifiers below range over documents
+  that carry no canonical base.
+
   Equivalently, and more usefully to an implementer: for every bundle $B$,
   \[
     \textrm{semantics}(\textrm{parse}(\textrm{project}(B))) =
@@ -1140,13 +1165,12 @@ an example that cannot be parsed teaches the wrong lesson. The conformance vecto
 that pin \emph{real} bytes are a deliverable of the implementation.
 
 A document of one operation --- a transposition of two pitches up a perfect
-fifth, over a compacted base --- projects to five lines:
+fifth --- projects to four lines:
 
 \begin{lstlisting}
-(text-projection (0 13 0))
+(text-projection (0 14 0))
 (document #x05050505050505050505050505050505 (schema 0 1))
 (profile full (0 1 0) (constraints 67108864 (retention 1 () true)))
-(canonical-base #x1f8b0000000000000000000000000000 #x 1 full (schema 0 1) #x0000)
 (envelope #x00000000000000070000000000000001 #x00000000000000000000000011223344 (stamp 42 7 #x00000000000000070000000000000001) (causal ((#x0000000000000001 3)) (#x00000000000000020000000000000009)) (some #x00000000000000070000000000000005) (primitive (transpose-interval (#x00000000000000070000000000000001 #x00000000000000070000000000000002) (transposition-interval 4 7))))
 \end{lstlisting}
 
@@ -1154,6 +1178,19 @@ The envelope's targets are a \emph{set}: strictly increasing, no duplicates
 (Operation Catalog, \texttt{req:opcat:transpose-interval-targets}; Binary Format
 $\mathrm{seq}^{\Uparrow}$). A parser \MUST{} reject a duplicate rather than
 absorb it, exactly as the binary decoder does.
+
+Earlier revisions of this companion showed the same document over a compacted
+base, as five lines. The fifth line is retained here as the spelling a parser
+now \emph{refuses}:
+
+\begin{lstlisting}
+(canonical-base #x1f8b0000000000000000000000000000 #x 1 full (schema 0 1) #x0000)
+\end{lstlisting}
+
+The grammar still defines the section --- it is what a refusal is defined
+against, and what a future rebuild or repack flow will emit --- but no document
+containing it parses, projects, or serializes
+(\texttt{req:textproj:roundtrip}).
 
 % ===========================================================================
 \chapter{Revision History}
@@ -1417,6 +1454,27 @@ absorb it, exactly as the binary decoder does.
   grammars both claiming \texttt{(0 12 0)}. Cached projections at
   \texttt{(0 12 0)} do not migrate; a stale \texttt{TextProjection} chunk is
   regenerated, not converted. \\
+
+    \today & Chapters 4, 5 & 0.14.0 --- Canonical bases leave the companion
+  (\texttt{spec/CONTRACT\_FORMAT\_EPOCH\_MAJOR1.md}, pin 3b). The container
+  format major becomes an \emph{epoch} attesting that every base-bearing commit
+  was validated against a reduction authority (Core Specification,
+  \sectionsc{The Container Epoch}); a text document cannot hold that attestation,
+  because every field this format defines can be typed by hand. Serializing a
+  base-bearing document into a freshly created container would therefore mint a
+  container asserting a validation that never happened.
+  \texttt{req:textproj:roundtrip} accordingly excludes base-bearing documents in
+  its own terms, and all three boundaries refuse them: projection, parsing, and
+  serialization.
+
+  The first two of those refusals are \emph{new}; serialization had none to
+  retain. This is a real capability loss and is recorded as one --- a
+  base-bearing bundle does not round-trip through text until a rebuild or repack
+  flow exists. The forcing reason for the version bump is the usual one in
+  reverse: refusing a document the companion previously serialized is a semantic
+  change, and holding the version would leave two mutually incompatible readings
+  of \texttt{(0 13 0)}. The \texttt{canonical-base} production is retained in the
+  grammar --- a refusal is defined against it, and a repack flow will emit it. \\
 \bottomrule
 \end{longtable}
 

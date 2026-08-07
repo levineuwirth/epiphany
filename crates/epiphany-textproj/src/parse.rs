@@ -136,6 +136,18 @@ pub fn parse_document(text: &str) -> Result<TextDocument, TextError> {
 
     // canonical-base?
     let canonical_base = take_line(&mut lines, "canonical-base", parse_canonical_base)?;
+    // `CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 3b: text projection cannot mint a
+    // canonical base. The grammar still defines the production — it is what
+    // this refusal is defined against, and what a future rebuild/repack flow
+    // will emit — but no document containing it parses. `NotCanonical`
+    // matches the existing `(blob ...)` rejection just below: syntactically
+    // well-formed, but never a text this companion can accept.
+    if canonical_base.is_some() {
+        return Err(TextError::NotCanonical(
+            "a (canonical-base ...) line cannot be canonical text: no reduction-authority \
+             validation exists for text projection to have produced it",
+        ));
+    }
 
     // blob*: collected only so the rejection below can fire; see the module
     // documentation and `req:textproj:reject-unreferenced-blobs`.
@@ -650,12 +662,13 @@ mod tests {
 
     // Bumped with `COMPANION_VERSION` (0.7.0 → 0.8.0, genesis G1; 0.8.0 →
     // 0.9.0, genesis G2a; 0.9.0 → 0.10.0, G-minor; 0.10.0 → 0.11.0, genesis
-    // G2b; 0.11.0 → 0.12.0, genesis G3a; 0.12.0 → 0.13.0, genesis G3b). Kept
+    // G2b; 0.11.0 → 0.12.0, genesis G3a; 0.12.0 → 0.13.0, genesis G3b;
+    // 0.13.0 → 0.14.0, `CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 3b). Kept
     // a literal because `projection` takes `&[&str]` and a formatted String
     // would ripple through every call site;
     // `the_test_header_tracks_the_implemented_version` below fails loudly if
     // the two ever drift.
-    const HEADER: &str = "(text-projection (0 13 0))";
+    const HEADER: &str = "(text-projection (0 14 0))";
     const DOCUMENT: &str = "(document #x00000000000000000000000000000001 (schema 0 1))";
 
     /// A minimal but complete valid projection: just the two mandatory lines.
@@ -757,26 +770,35 @@ mod tests {
                 .retain_named_checkpoints
         );
         assert!(document.extensions.is_empty());
-
-        let base = document
-            .canonical_base
-            .as_ref()
-            .expect("the worked example carries a canonical base");
-        assert_eq!(
-            base.snapshot_id,
-            SnapshotId([0x1f, 0x8b, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
-        );
-        assert_eq!(base.covers_causal_frontier, FrontierBytes::empty());
-        assert_eq!(
-            base.reduction_algorithm_version,
-            ReductionAlgorithmVersion(1)
-        );
-        assert_eq!(base.profile_id, ProfileId::Full);
-        assert_eq!(base.root_schema_version, SchemaVersion::V0);
-        assert_eq!(base.root_payload, vec![0u8, 0u8]);
+        // Pin 3b (`CONTRACT_FORMAT_EPOCH_MAJOR1.md`): the worked example no
+        // longer carries a canonical base — the companion's own chapter
+        // retired that spelling to a second, explicitly-refused listing
+        // (`spec/text_projection.tex`, "A Worked Example").
+        assert!(document.canonical_base.is_none());
 
         assert!(document.blobs.is_empty());
         assert_eq!(document.envelopes.len(), 1);
+    }
+
+    /// The base-bearing spelling `the_worked_example_parses_to_its_documented_fields`
+    /// used to exercise, before pin 3b retired it from the worked example
+    /// itself: still grammar-valid, no longer canonical text. Pinned as a
+    /// literal here (rather than re-reading the spec's second listing) so
+    /// this test does not depend on the exact prose the orchestrator chose to
+    /// wrap it in.
+    #[test]
+    fn parsing_base_bearing_text_is_refused() {
+        let base =
+            "(canonical-base #x1f8b0000000000000000000000000000 #x 1 full (schema 0 1) #x0000)";
+        let text = projection(&[HEADER, DOCUMENT, base]);
+        let err = parse_document(&text).expect_err("base-bearing text must be refused");
+        assert_eq!(
+            err,
+            TextError::NotCanonical(
+                "a (canonical-base ...) line cannot be canonical text: no reduction-authority \
+                 validation exists for text projection to have produced it",
+            )
+        );
     }
 
     // -----------------------------------------------------------------
@@ -794,8 +816,11 @@ mod tests {
         let extension = "(extension #x00000000000000000000000000000003 (1 0 0) true \
              ((chunk operation-envelope-block (schema 0 1) #xaa) (chunk snapshot (schema 0 1) #xbb)) \
              #xaabb #xccdd)";
-        let base =
-            "(canonical-base #x00000000000000000000000000000004 #x 1 full (schema 0 1) #x0102)";
+        // Pin 3b (`CONTRACT_FORMAT_EPOCH_MAJOR1.md`): this document used to
+        // also carry a `(canonical-base ...)` line here, exercising every
+        // section at once. Base-bearing text is refused outright now — see
+        // `parsing_base_bearing_text_is_refused` — so this fixture drops it
+        // and keeps every other feature it was written to exercise together.
 
         let e1 = sample_envelope(1, 1, 10);
         let e2 = sample_envelope(2, 1, 20);
@@ -809,7 +834,6 @@ mod tests {
             profile_full,
             profile_read_only,
             extension,
-            base,
             &e1_line,
             &e2_line,
         ]);
@@ -832,7 +856,7 @@ mod tests {
             vec![0xaa, 0xbb]
         );
         assert_eq!(document.extensions[0].edit_barriers, vec![0xcc, 0xdd]);
-        assert!(document.canonical_base.is_some());
+        assert!(document.canonical_base.is_none());
         assert_eq!(document.envelopes, vec![e1, e2]);
     }
 
