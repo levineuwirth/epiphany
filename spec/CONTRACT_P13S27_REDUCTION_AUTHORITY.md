@@ -1,9 +1,9 @@
 # Contract — P13-S27: the reduction version gets an outside witness
 
-**Status:** **NOT RATIFIED. NOT DISPATCHABLE.** Independent **review round 3
-closed** against `b842975` — six findings, four blocking, all now carried.
-**Awaiting review round 4**; the pins remain open and no execution work may
-begin.
+**Status:** **NOT RATIFIED. NOT DISPATCHABLE.** Independent **review rounds 3 and
+4 closed** — six findings then five, eight blocking between them, all now
+carried. **Awaiting review round 5**; the pins remain open and no execution work
+may begin.
 
 **Round 1's ratification is WITHDRAWN.** It was claimed on 2026-08-07 after a
 single round; round 2 then found four more blocking defects against the
@@ -12,8 +12,10 @@ ratification that a subsequent round falsifies that quickly was not a
 ratification, and leaving the claim standing would make the status field mean
 nothing.
 
-**The pins are therefore NOT frozen.** They are open to round 3's findings.
-Freezing follows ratification; it does not precede it, and it does not survive a
+**The pins are therefore NOT frozen.** They are open to **the current round's**
+findings — rounds 3 and 4 are closed, and this sentence named a specific round
+until round 4 caught it going stale the moment that round closed. Freezing
+follows ratification; it does not precede it, and it does not survive a
 withdrawal. **No execution work may begin** — not implementation, not staging,
 not partial work against "the settled pins."
 
@@ -44,14 +46,38 @@ mutation is easy; establishing that it *can run* requires deriving its
 observation, its failure condition, and the test it breaks, and none of the three
 was done. §7 item 4a now demands all three.
 
-**What round 4 should weigh, stated against interest:** the defect rate is **not
-converging** — nine, six, six — and every blocking finding in round 3 was in text
-written to fix round 2's findings. **The amendment process has produced defects
-at a steady rate for three rounds.** The newest text — pin 3's accessor, M5a,
-M5b, test 9, row 7a — has had **zero** adversarial passes and was written by the
-same agent whose previous two attempts round 3 just falsified. **Treat
-"dispatchable" as a claim requiring evidence of convergence, not a status reached
-by running out of findings.**
+**Review round 4 — 2026-08-07, independent, against `53292f6`.** Five findings,
+four blocking. It judged pin 3's accessor **bounded** — the first piece of new
+text any round has accepted — and the M5 pair defective again.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | **M5b cited the wrong value.** `roundtrip.rs:367` is in `assert_score_serialization_stable` (`:332`) and versions an **acceleration snapshot**, not the canonical base. `assert_reduction_serialization_stable` has **no base at all** — pin 3c suspended it | Evidence corrected. **The tautology diagnosis stands; only its evidence was wrong** |
+| 2 | **M5b left the instrument unchosen** — it said "the rung picks one" and named two, one of which does not exist for the nominated crate: `craft_image_with_base` is private to `epiphany-bundle`'s test module (`:1648`) | **Chosen**: commit-then-reopen through public API only |
+| 3 | **M5b had no test that could assert the error fields.** `assert_reduction_serialization_stable` returns `()` and reopens with `.expect` (`:292`) — a mismatch panics and cannot match `CanonicalBaseRequiresRebuild { base, current }` | **Test 10b** added, named and returning a matchable `Result` |
+| 4 | **M5a violated §7 item 4a — the rule round 3 added in the same edit.** It named no test, and its natural assertion (`capabilities() == CURRENT_REDUCTION_ALGORITHM_VERSION`) compares the constant with itself and cannot fail | **Test 10a** added; the comparison is now against a deliberate **literal** |
+| — | Status prose said the pins were open to *round 3's* findings after round 3 closed | Now "the current round's" |
+
+**Round 3's error is the one to carry.** It grepped `ReductionAlgorithmVersion`
+across `testkit/src/`, saw a `roundtrip.rs` hit, and attributed it to the function
+it was already thinking about **without resolving the enclosing item** — the same
+shape as §0.4's `.commit(` miscount, which round 1 recorded as a lesson and round
+3 then repeated. **Recording a defect is not the same as not committing it.**
+
+**And both M5 halves failed the same way twice.** Round 3 diagnosed M5b's
+tautology and wrote M5a with an identical tautology *in the same edit*, then
+added §7 item 4a and immediately violated it. A rule written and broken in one
+sitting is evidence the author is pattern-matching the finding rather than
+applying it.
+
+**What round 5 should weigh, stated against interest:** the defect rate is **nine,
+six, six, five** — still not converging after four rounds, though round 4 accepted
+its first piece of new text. **Every blocking finding in rounds 3 and 4 was in
+text written to fix the previous round.** The newest material — tests 10a/10b,
+M5b's chosen instrument, §7 item 4b — has had **zero** adversarial passes, and the
+M5 pair has now been rewritten **three times** and found defective each time.
+**Treat "dispatchable" as a claim requiring evidence of convergence, not a status
+reached by running out of findings.**
 
 (Was: DRAFT, BLOCKED on the format-epoch rung,
 `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, which at the time was ratified and in
@@ -852,6 +878,35 @@ the ruling recorded beside it.)*
    asserting the behaviour it breaks. **A mutation is only as good as the test it
    breaks**, and §4 must name that test for every entry.
 
+**Added in review round 4 — the two tests M5a and M5b break. Round 3 wrote both
+mutations without them, in the same edit that added §7 item 4a requiring them.**
+
+10a. **`serialize_document_supplies_the_real_reduction_authority`** — in
+   `epiphany-textproj`. Serialize a base-free document and assert
+   `bundle.capabilities().current_reduction_version == ReductionAlgorithmVersion(0)`.
+
+   **The `0` MUST be a literal, and the test MUST carry a comment saying why.**
+   Comparing against `CURRENT_REDUCTION_ALGORITHM_VERSION` would compare the
+   constant with itself and hold for every value — the assertion would be
+   unfalsifiable and M5a could not break it. **This test is expected to fail when
+   S16 bumps the authority**, and that is correct: the literal is a tripwire on
+   the production wiring, and S16 updating it is S16 stating that it moved.
+
+10b. **`a_base_bearing_bundle_reopened_under_the_real_authority_validates`** — in
+   `epiphany-testkit`, which may use the real constant. Build the fixture with
+   `synthetic_for_fixture(0)`, commit a base carrying the literal
+   `ReductionAlgorithmVersion(0)`, take the bytes, and reopen them with `caps`
+   built from `CURRENT_REDUCTION_ALGORITHM_VERSION`. Assert it opens.
+
+   **This is the only place in the rung where the real authority meets a
+   canonical base**, which is why M5b needs it and why no existing test could
+   serve. It must be a named test returning a matchable `Result`, **not** an
+   assertion inside a void conformance helper.
+
+**Both literals are load-bearing as literals.** A later reader "tidying" either
+into `CURRENT_REDUCTION_ALGORITHM_VERSION` makes the corresponding mutation
+vacuous while leaving every test green. Say so in both doc comments.
+
 Tests 2 and 3 must be **paired in review**: each asserts the other's error is
 *not* produced. A test that only checks its own variant cannot show the two
 paths are distinguishable, which is the whole point of pin 6.
@@ -926,9 +981,21 @@ REVIEW ROUND 3.**
 > observation depends on scaffolding that is not in the shipped tree observes the
 > scaffolding, not the tree.
 
-Change `CURRENT_REDUCTION_ALGORITHM_VERSION`. In a test over
-`serialize_document`, assert via **`bundle.capabilities().current_reduction_version`**
-that the value the production path supplied moved with the constant.
+**The test it breaks is test 10a** (§3), and the comparison **MUST be against a
+literal, not against the constant. CORRECTED IN ROUND 4.**
+
+> **Round 3 wrote "assert that the value moved with the constant", which is
+> unfalsifiable.** Asserting `capabilities() == CURRENT_REDUCTION_ALGORITHM_VERSION`
+> compares the constant with itself laundered through one function call: mutate
+> the constant and **both sides move**, so the assertion holds for every value.
+> That is the same tautology round 3 caught in M5b, in the mutation *next to it*,
+> written in the same edit. Round 3 also violated its own new §7 item 4a by
+> naming no test at all.
+
+Change `CURRENT_REDUCTION_ALGORITHM_VERSION` from `0` to any other value. Test
+10a must **fail**, because it asserts
+`bundle.capabilities().current_reduction_version == ReductionAlgorithmVersion(0)`
+with `0` written as a **deliberate literal** — the independent operand.
 
 Assert on the capability **only** — not on an open or commit outcome. There is no
 base, so no check fires and none should. **If an open or commit outcome moves
@@ -938,38 +1005,70 @@ and that is a finding.**
 **M5b — the authority is load-bearing where a base exists. REWRITTEN IN REVIEW
 ROUND 3; as written it could not fail.**
 
-> **This is the rung's own defect, reproduced inside the mutation built to detect
-> it.** Round 2 named `assert_reduction_serialization_stable`
-> (`testkit/src/roundtrip.rs:255`) as the failing test. But that harness stamps
-> its base version at `roundtrip.rs:367`, today a literal
-> `ReductionAlgorithmVersion(0)`, and the natural S27 implementation replaces that
-> literal with `CURRENT_REDUCTION_ALGORITHM_VERSION` **while also sourcing the
-> supplied capability from it**. Both operands then move together and the
-> comparison passes for every value of the constant — **precisely §0.1's
-> tautology**: *"both operands descend from the same source, so for any
-> conformingly-written document the comparison is a tautology."* A mutation that
-> cannot fail is not a mutation.
+> **Round 3's diagnosis was right and its evidence was wrong. CORRECTED IN ROUND
+> 4.** Round 3 said the base version was stamped at `roundtrip.rs:367`. **It is
+> not.** `:367` sits inside `assert_score_serialization_stable` (`:332`) and
+> pushes to **`acceleration_snapshots`** — a different harness and a different
+> field. `assert_reduction_serialization_stable` (`:255`) has **no canonical base
+> at all** today; pin 3c suspended it, and the harness reads its snapshot chunk
+> directly by `ChunkRef`. So the value round 3 told the implementer not to touch
+> has nothing to do with the authority check, and mutating it could not have
+> failed anything.
+>
+> **How the error was made, since it is this rung's own subject:** round 3 grepped
+> `ReductionAlgorithmVersion` across `testkit/src/`, saw a `roundtrip.rs` hit, and
+> attributed it to the function it was already thinking about **without resolving
+> the enclosing item**. That is the fourth instrument failure in this contract and
+> the second of exactly this shape — §0.4's `.commit(` miscount was the first.
+>
+> **The underlying tautology finding stands.** If the supplied capability and the
+> base version both descend from `CURRENT_REDUCTION_ALGORITHM_VERSION`, both
+> operands move together and the comparison passes for every value — §0.1's
+> defect inside the mutation built to detect it. Only the cited evidence was
+> wrong.
 
-**The base version MUST come from a source that does not move with the
-constant.** Two acceptable instruments, and the rung picks one and says which:
+**The instrument is CHOSEN, not offered. ROUND 4.** Round 3 said "the rung picks
+one" and named two routes, which is not a decision — and one of them does not
+exist: **`craft_image_with_base` is a private `fn` inside `epiphany-bundle`'s
+`#[cfg(test)]` module (`bundle.rs:1648`, module opens at `:1407`)**, so
+`epiphany-testkit` cannot call it. The routes also carry different fixture and
+touch-table consequences, so leaving the choice to execution would have put a
+design decision in the implementer's hands.
 
-- **a persisted artifact** — a committed fixture image whose base version is
-  fixed on disk, built via `craft_image_with_base`; or
-- **an explicit literal** in the test, written as a literal *because* it must not
-  track the authority, with a comment saying so.
+**The chosen instrument — commit-then-reopen, entirely through public API:**
 
-**What must be observed:** with the constant mutated, the capability and the base
-version now disagree, and the test fails with **`CanonicalBaseRequiresRebuild`**,
-both fields asserted. **Record the two operands' provenance in the report** —
-naming where each came from is the only way to show they are independent, and
-that independence is the whole content of this mutation.
+1. Build a bundle with `caps = synthetic_for_fixture(0)` and commit a canonical
+   base whose version is the **deliberate literal** `ReductionAlgorithmVersion(0)`.
+   This succeeds by test 8's path.
+2. Take the bytes.
+3. **Reopen them with `caps` built from the real
+   `CURRENT_REDUCTION_ALGORITHM_VERSION`.**
+
+Unmutated, the real constant is `0`, the operands agree, and the bundle opens.
+Mutated, the constant is not `0`, and the reopen fails with
+**`CanonicalBaseRequiresRebuild { base: 0, current: <mutated> }`**.
+
+**Why this shape and not another:** the two operands are provably independent —
+one is a synthetic literal written into a fixture, the other is the real constant
+read at the reopen — and **neither can be "tidied" into the other** without
+deleting the synthetic capability the fixture is built on. It needs no private
+helper, no new fixture file, and no touch-table row. It isolates the real
+constant on the **read** side only, so pin 3a's writer check cannot fire first
+and mask the result.
+
+**The test it breaks is test 10b** (§3) — a **named** test, not the void
+conformance helper. **ROUND 4:** round 3 nominated
+`assert_reduction_serialization_stable`, which returns `()` and whose reopen is
+`.expect("reopen bundle")` (`roundtrip.rs:292`). A mismatch there **panics**; it
+cannot match on `CanonicalBaseRequiresRebuild { base, current }`, so the required
+two-field assertion was impossible in the nominated site.
+
+**Report the provenance of both operands.** Naming where each came from is the
+only way to show they are independent, and that independence is the whole content
+of this mutation.
 
 **Preserved from the original M5:** if only `synthetic_for_fixture` tests move,
 pin 3b has been applied backwards, and that is a finding.
-
-> **Note for whoever implements the restoration.** `roundtrip.rs:367`'s literal
-> `0` must **not** be mechanically swapped for the constant. It is load-bearing
-> as a literal. Doing the "obvious tidy-up" there is what makes M5b vacuous.
 
 **Both halves are required.** M5a alone shows the constant is read but never that
 it matters; M5b alone shows it matters but never that production reads it. The
@@ -1125,9 +1224,13 @@ in §N" to a number.*
 2. **Every gate item in §5** — currently **eight** (1, 2, 3, 4, 5, 6, 6a, 7),
    each with the command that produced it.
 3. The staged file list, and the test-count delta in gate 1's three buckets.
-4. **Every required test in §3** — currently **nine** *(test 9 added in round 3)*
-   — by name, each passing, with tests 2 and 3 shown to produce *different*
-   errors, and the same for tests 6/2 and 8/5.
+4. **Every required test in §3** — currently **eleven** (1–9 plus **10a** and
+   **10b**, added in round 4) — by name, each passing, with tests 2 and 3 shown
+   to produce *different* errors, and the same for tests 6/2 and 8/5.
+4b. **Confirmation that the literal `0` in tests 10a and 10b is still a literal**,
+   and that neither was rewritten as `CURRENT_REDUCTION_ALGORITHM_VERSION`.
+   Tidying either makes M5a or M5b vacuous while every test stays green — the
+   failure mode is invisible to the suite and visible only here.
 4a. **For every mutation in §4, the named test it breaks**, and for M5a/M5b the
    **provenance of each operand** — where the capability came from and where the
    base version came from. Three mutations were found unrunnable across rounds 2
