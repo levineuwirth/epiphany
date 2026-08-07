@@ -1,7 +1,9 @@
 # Contract — P13-S27: the reduction version gets an outside witness
 
-**Status:** **NOT RATIFIED. NOT DISPATCHABLE. Awaiting independent review round 3
-against `b842975`.**
+**Status:** **NOT RATIFIED. NOT DISPATCHABLE.** Independent **review round 3
+closed** against `b842975` — six findings, four blocking, all now carried.
+**Awaiting review round 4**; the pins remain open and no execution work may
+begin.
 
 **Round 1's ratification is WITHDRAWN.** It was claimed on 2026-08-07 after a
 single round; round 2 then found four more blocking defects against the
@@ -21,12 +23,35 @@ Fifteen findings so far, eight of them blocking. Both prior rounds were run by
 the same agent that authored the amendments under review; **round 3 is
 independent, and is the first that will not be.**
 
-**What round 3 should weigh, stated against interest:** the defect rate has not
-fallen — nine, then six — and the format-epoch rung took four rounds to
-converge. Two of round 2's four blocking findings were *caused* by round 1, which
-means the amendment process itself is a defect source and not only a defect sink.
-**Treat "dispatchable" as a claim requiring evidence of convergence, not a status
-reached by running out of findings.**
+**Review round 3 — 2026-08-07, independent, against `b842975`.** Confirmed
+`b741e48` as status prose only, then returned **six findings, four blocking**.
+**Every blocking finding was a defect in text rounds 1 and 2 wrote.**
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | **Pin 3a still carried the rationale round 2 retracted** — §0.4 says there is no in-tree production base writer, pin 3a said "§0.4 shows production code minting a stale document." The contract asserted a claim and its negation | Pin 3a's rationale rewritten onto the public-API footing. **Third occurrence of fix-one-site-leave-the-others** |
+| 2 | **M5a had no observation mechanism.** Pin 3 required the capability be *stored*, nothing exposed it; `Bundle` has 17 public accessors and none for capabilities | **`Bundle::capabilities()` pinned** — new scope, flagged for round 4 |
+| 3 | **M5b could not fail.** If the supplied capability and the base version both derive from the constant — the natural implementation — both operands move together. **This is §0.1's tautology reproduced inside the mutation built to detect it** | Base version must come from a source that does not track the authority: persisted artifact or deliberate literal, with both operands' provenance reported |
+| 4 | **M6's replacement named a scenario with no test.** Test 6 stops at opening; nothing asserted that an unrelated commit succeeds, so an implementation rejecting every post-base commit passed tests 2/5/6/8 and the broadening had nothing to break | **Test 9 added** |
+| 5 | Touch row 7 listed `generators.rs` as "call sites, real authority" — it has **zero** `Bundle::open`/`create` calls, and its `rng.range(0, 8)` versions are exactly the arbitrary wire values pin 3b assigns to *synthetic* capabilities | Split to **row 7a**, with its actual (conditional) change stated |
+| 6 | §7 credited the call-site correction to round 1; rounds 1 **and** 2 are both load-bearing | Attribution fixed |
+
+**The pattern across three rounds is now legible, and it is not about counts.**
+Round 1 found stale text. Round 2 found unexecutable mutations. Round 3 found
+that **three separate mutations were unrunnable in three different ways** — M5a
+could not observe, M5b could not fail, M6 had nothing to break. Writing a
+mutation is easy; establishing that it *can run* requires deriving its
+observation, its failure condition, and the test it breaks, and none of the three
+was done. §7 item 4a now demands all three.
+
+**What round 4 should weigh, stated against interest:** the defect rate is **not
+converging** — nine, six, six — and every blocking finding in round 3 was in text
+written to fix round 2's findings. **The amendment process has produced defects
+at a steady rate for three rounds.** The newest text — pin 3's accessor, M5a,
+M5b, test 9, row 7a — has had **zero** adversarial passes and was written by the
+same agent whose previous two attempts round 3 just falsified. **Treat
+"dispatchable" as a claim requiring evidence of convergence, not a status reached
+by running out of findings.**
 
 (Was: DRAFT, BLOCKED on the format-epoch rung,
 `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, which at the time was ratified and in
@@ -544,10 +569,51 @@ The struct is a struct rather than a bare parameter so later capabilities append
 without another signature break — say so in its doc, and do not add speculative
 fields now.
 
-**Pin 3a — the writer is validated, not only the reader.** §0.4 shows production
-code minting a stale document without ever calling `open`. Therefore
-`commit`/`commit_versioned` MUST reject a manifest whose **newly emitted or
-replaced** canonical base carries a version differing from
+**The stored capability MUST be readable. ADDED IN REVIEW ROUND 3 — this is new
+scope, and round 4 should scrutinise it as such.**
+
+```rust
+pub fn capabilities(&self) -> &BundleCapabilities
+```
+
+Round 3 found that M5a asked for an observation the API cannot make: this pin
+said the `Bundle` *stores* the capability and never said anything could *see* it.
+`Bundle`'s public surface is `manifest`, `generation`, `header`, `superblock`,
+`active_slot`, `file_uuid`, `is_read_only`, `anomalies`, `store`, `into_store`
+and the readers — **seventeen accessors, none for capabilities** — so a
+`epiphany-textproj` test cannot inspect a private field of a bundle another crate
+constructed.
+
+The accessor is justified on its own merits, not only to make a mutation runnable:
+the capability **governs rejection behaviour**, and a value that decides whether
+`open` and `commit` fail should be inspectable by the caller diagnosing that
+failure. It joins the same family as `header()` and `superblock()`.
+
+**Read-only, borrowing, no setter.** A setter would let a caller change the
+semantics it claims to implement *after* `open` validated against them, which
+reintroduces exactly what pin 3 removes.
+
+**Pin 3a — the writer is validated, not only the reader. RATIONALE CORRECTED IN
+REVIEW ROUND 3.**
+
+> **This pin previously read "§0.4 shows production code minting a stale document
+> without ever calling `open`" — a sentence §0.4 itself retracts.** Round 2
+> restated the justification in §0.4 and left the pin's own copy of it standing,
+> so the contract asserted a claim and its negation in two places. **Third
+> occurrence of the same meta-defect**: round 1 corrected one spelling of a count
+> and left two, round 2 corrected §0.4's table and left the "Rung type"
+> paragraph and touch row 2, and round 3 found this. A restatement that does not
+> sweep every site restating it has not been made.
+
+**The justification, as it actually stands:** `commit` and `commit_versioned` are
+**public API**. An out-of-tree caller can stage a canonical base directly, never
+touching `epiphany-textproj` and never calling `open`. There is **no in-tree
+production path** that does so — §0.4 verifies zero — so this pin guards an
+external surface, not an internal one. That is a narrower claim than the original
+and it is the one that survives scrutiny.
+
+Therefore `commit`/`commit_versioned` MUST reject a manifest whose **newly
+emitted or replaced** canonical base carries a version differing from
 `self.caps.current_reduction_version`, with the same error as pin 4.
 
 "Newly emitted or replaced" is the operative scope: a commit that does not touch
@@ -688,7 +754,8 @@ row may not record S16 as open until those land with this rung**; ratification o
 | 4 | `crates/epiphany-bundle/src/ids.rs` | pin 8 |
 | 5 | `crates/epiphany-bundle/src/fuzz.rs` | **15** `open` sites + **1** `create` site. *(Figures stated in review round 2; row 2's old "35" silently included these, so the two rows together could not be reconciled against §0.4.)* |
 | 6 | `crates/epiphany-bundle/tests/{crash_recovery,manifest_selection}.rs` | call sites |
-| 7 | `crates/epiphany-testkit/src/{bundle_harness,roundtrip,generators}.rs` | call sites, real authority |
+| 7 | `crates/epiphany-testkit/src/{bundle_harness,roundtrip}.rs` | call sites (11 + 4 `open`, 6 + 6 `create`), real authority |
+| 7a | `crates/epiphany-testkit/src/generators.rs` | **NOT a call site — corrected in review round 3.** It has **zero** `Bundle::open`/`Bundle::create` calls; row 7 previously swept it in as "call sites, real authority" and was wrong on both counts. Its actual role is `:1628`/`:1651`, which mint manifests carrying `ReductionAlgorithmVersion(rng.range(0, 8))` — **arbitrary wire values, so per pin 3b their consumers take `synthetic_for_fixture`, never the real authority.** It changes **only** if the generated version must be surfaced so a caller can build a matching synthetic capability. **State in the report whether it changed and why; if it did not, it must not be staged.** |
 | 8 | `crates/epiphany-testkit/tests/bundle_reopen.rs`, `benches/bundle.rs` | call sites |
 | 9 | `crates/epiphany-textproj/src/{serialize,project}.rs` | call sites, real authority |
 | 10 | `spec/core_spec.tex` (+ `.pdf`) | pin 9 |
@@ -765,6 +832,26 @@ the ruling recorded beside it.)*
    Without this test, an implementation that converts the read side and leaves
    `commit` refusing categorically passes every other test in this section.
 
+9. **`an_unrelated_commit_on_a_base_bearing_bundle_succeeds`** — **ADDED IN
+   REVIEW ROUND 3.** Open a bundle carrying a base whose version matches `caps`
+   (the state test 6 establishes), then commit something that **does not touch
+   `canonical_base`**, and assert it **succeeds** and the bundle reopens with
+   both the new content and the untouched base.
+
+   **Why it is required, and why M6 alone was not enough.** M6's replacement
+   broadens pin 3a and says an unrelated commit "starts failing" — but a mutation
+   only demonstrates; it does not *pin*. Test 6 stops at opening. So with tests
+   2, 5, 6 and 8 alone, **an implementation that rejects every post-base
+   unrelated commit passes all of them**, and M6's broadening would have nothing
+   to break because the unbroadened behaviour was never asserted. This test is
+   the permanent statement of pin 3a's "newly emitted or replaced" scope; M6 is
+   only its mutation.
+
+   **This is the third distinct way a §4 mutation has been found unrunnable** —
+   M5a had no observation mechanism, M5b could not fail, and M6 had nothing
+   asserting the behaviour it breaks. **A mutation is only as good as the test it
+   breaks**, and §4 must name that test for every entry.
+
 Tests 2 and 3 must be **paired in review**: each asserts the other's error is
 *not* produced. A test that only checks its own variant cannot show the two
 paths are distinguishable, which is the whole point of pin 6.
@@ -828,22 +915,61 @@ callers then use. Report it as a *prohibition recorded*, not a guard.
 The original intent had two halves. They are now separate mutations, because no
 single path carries both any more.
 
-**M5a — the constant is wired into production.** Change
-`CURRENT_REDUCTION_ALGORITHM_VERSION`. Observe that the `BundleCapabilities`
-`serialize_document` constructs changes with it — the production path really does
-source the authority rather than a literal. Assert on the constructed capability,
-**not** on an open or commit outcome; there is no base, so no check fires and
-none should. **A test that fails here would mean the production path is doing
-something the contract does not authorize.**
+**M5a — the constant is wired into production. OBSERVATION MECHANISM PINNED IN
+REVIEW ROUND 3.**
 
-**M5b — the authority is load-bearing where a base exists.** Same mutation, but
-the failing test MUST be one combining the **real** authority with a
-**base-bearing** bundle. After obligation 3, that is
-`assert_reduction_serialization_stable` (`testkit/src/roundtrip.rs:255`), whose
-base coverage this rung restores and which touch row 7 gives the real authority.
-Report which test failed. **If only `synthetic_for_fixture` tests move, pin 3b
-has been applied backwards** — that was the original M5's finding condition and
-it is preserved here.
+> **As written in round 2 this could not be run.** It said "observe that the
+> `BundleCapabilities` `serialize_document` constructs changes with it" without
+> specifying *how* anything observes a capability stored on a bundle and exposed
+> by nothing. **Pin 3 now requires `Bundle::capabilities()`**, and that accessor —
+> not a temporary instrument — is the observation mechanism. A mutation whose
+> observation depends on scaffolding that is not in the shipped tree observes the
+> scaffolding, not the tree.
+
+Change `CURRENT_REDUCTION_ALGORITHM_VERSION`. In a test over
+`serialize_document`, assert via **`bundle.capabilities().current_reduction_version`**
+that the value the production path supplied moved with the constant.
+
+Assert on the capability **only** — not on an open or commit outcome. There is no
+base, so no check fires and none should. **If an open or commit outcome moves
+here, the production path is doing something this contract does not authorize,
+and that is a finding.**
+
+**M5b — the authority is load-bearing where a base exists. REWRITTEN IN REVIEW
+ROUND 3; as written it could not fail.**
+
+> **This is the rung's own defect, reproduced inside the mutation built to detect
+> it.** Round 2 named `assert_reduction_serialization_stable`
+> (`testkit/src/roundtrip.rs:255`) as the failing test. But that harness stamps
+> its base version at `roundtrip.rs:367`, today a literal
+> `ReductionAlgorithmVersion(0)`, and the natural S27 implementation replaces that
+> literal with `CURRENT_REDUCTION_ALGORITHM_VERSION` **while also sourcing the
+> supplied capability from it**. Both operands then move together and the
+> comparison passes for every value of the constant — **precisely §0.1's
+> tautology**: *"both operands descend from the same source, so for any
+> conformingly-written document the comparison is a tautology."* A mutation that
+> cannot fail is not a mutation.
+
+**The base version MUST come from a source that does not move with the
+constant.** Two acceptable instruments, and the rung picks one and says which:
+
+- **a persisted artifact** — a committed fixture image whose base version is
+  fixed on disk, built via `craft_image_with_base`; or
+- **an explicit literal** in the test, written as a literal *because* it must not
+  track the authority, with a comment saying so.
+
+**What must be observed:** with the constant mutated, the capability and the base
+version now disagree, and the test fails with **`CanonicalBaseRequiresRebuild`**,
+both fields asserted. **Record the two operands' provenance in the report** —
+naming where each came from is the only way to show they are independent, and
+that independence is the whole content of this mutation.
+
+**Preserved from the original M5:** if only `synthetic_for_fixture` tests move,
+pin 3b has been applied backwards, and that is a finding.
+
+> **Note for whoever implements the restoration.** `roundtrip.rs:367`'s literal
+> `0` must **not** be mechanically swapped for the constant. It is load-bearing
+> as a literal. Doing the "obvious tidy-up" there is what makes M5b vacuous.
 
 **Both halves are required.** M5a alone shows the constant is read but never that
 it matters; M5b alone shows it matters but never that production reads it. The
@@ -865,11 +991,15 @@ must fail.
 
 **As replaced — broaden rather than narrow.** Widen pin 3a to refuse a commit on
 a **base-bearing bundle regardless of whether the version matches**, then confirm
-that an unrelated commit — one that does not touch `canonical_base` — starts
-failing on a bundle opened with a matching base. That state **is** reachable
-(test 6 opens exactly it), so the mutation runs, and it signs the same thing the
-original was reaching for: that *"newly emitted or replaced"* is a deliberate
-scope and not an accident of where the check was placed.
+that **test 9** — `an_unrelated_commit_on_a_base_bearing_bundle_succeeds` — starts
+failing. That state **is** reachable (test 6 establishes it), so the mutation
+runs, and it signs the same thing the original was reaching for: that *"newly
+emitted or replaced"* is a deliberate scope and not an accident of where the
+check was placed.
+
+> **Test 9 was added in round 3 for exactly this reason.** Round 2 wrote this
+> replacement naming a *scenario* and no *test*, so nothing asserted the
+> unbroadened behaviour and the broadening had nothing to break.
 
 **Record alongside it** that the original formulation was unreachable. That pin
 3a's scope is *forced* rather than *chosen* is a stronger result than the
@@ -995,12 +1125,21 @@ in §N" to a number.*
 2. **Every gate item in §5** — currently **eight** (1, 2, 3, 4, 5, 6, 6a, 7),
    each with the command that produced it.
 3. The staged file list, and the test-count delta in gate 1's three buckets.
-4. **Every required test in §3** — currently **eight** — by name, each passing,
-   with tests 2 and 3 shown to produce *different* errors, and the same for
-   tests 6/2 and 8/5.
+4. **Every required test in §3** — currently **nine** *(test 9 added in round 3)*
+   — by name, each passing, with tests 2 and 3 shown to produce *different*
+   errors, and the same for tests 6/2 and 8/5.
+4a. **For every mutation in §4, the named test it breaks**, and for M5a/M5b the
+   **provenance of each operand** — where the capability came from and where the
+   base version came from. Three mutations were found unrunnable across rounds 2
+   and 3 (no observation mechanism, cannot fail, nothing asserting the broken
+   behaviour); this item exists so a fourth is caught here rather than in review.
 5. A count of call sites updated per crate, against §0.4's table **as corrected
-   in review round 1** (open **60**, create **32**) — any discrepancy is a
+   in review rounds 1 and 2** (open **60**, create **32**) — any discrepancy is a
    finding. Count `Bundle`-typed receivers, not the token `.commit(`.
+   *(Attribution fixed in round 3: round 1 moved §0.4's table 57 → 60; round 2
+   fixed the "Rung type" paragraph, touch rows 2 and 5, and struck the
+   `project.rs` production claim that made the table's textproj entries
+   misleading. Both rounds are load-bearing here.)*
 6. **Confirmation that M7's three text refusals were restored**, and that none of
    `text_projection.tex`, `textproj/src/parse.rs`, `textproj/src/vectors.rs` or
    `textproj/src/lib.rs` appears in the staged diff.
