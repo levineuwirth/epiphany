@@ -1,9 +1,8 @@
 # Contract — P13-S27: the reduction version gets an outside witness
 
-**Status:** **NOT RATIFIED. NOT DISPATCHABLE.** Independent **review rounds 3 and
-4 closed** — six findings then five, eight blocking between them, all now
-carried. **Awaiting review round 5**; the pins remain open and no execution work
-may begin.
+**Status:** **NOT RATIFIED. NOT DISPATCHABLE.** Independent **review rounds 3, 4
+and 5 closed** — see the history table below for the running tally. **Awaiting
+review round 6**; the pins remain open and no execution work may begin.
 
 **Round 1's ratification is WITHDRAWN.** It was claimed on 2026-08-07 after a
 single round; round 2 then found four more blocking defects against the
@@ -19,11 +18,29 @@ follows ratification; it does not precede it, and it does not survive a
 withdrawal. **No execution work may begin** — not implementation, not staging,
 not partial work against "the settled pins."
 
-**History:** amended three times on 2026-08-07, all before dispatch — **pin 10**
-(the unsatisfiable escape clause), **round 1's nine findings**, **round 2's six**.
-Fifteen findings so far, eight of them blocking. Both prior rounds were run by
-the same agent that authored the amendments under review; **round 3 is
-independent, and is the first that will not be.**
+**History — the running tally, which itself went stale twice and was corrected in
+round 5.** Amended **five** times, all before dispatch: **pin 10** (the
+unsatisfiable escape clause), then **rounds 1–4**.
+
+| Round | Findings | Blocking | Independent? |
+|---|---|---|---|
+| 1 | 9 | 4 | no — same agent as the author |
+| 2 | 6 | 4 | no — same agent as the author |
+| 3 | 6 | 4 | **yes** |
+| 4 | 5 | 4 | **yes** |
+| 5 | 4 | 2 | **yes** |
+| **Total** | **30** | **18** | |
+
+**This block previously read "amended three times … fifteen findings so far,
+eight of them blocking"** — the round-2 figures, left standing through rounds 3
+and 4 while the very tables recording those rounds sat below it. **That is the
+count-staleness defect for the fifth time**, and this time in the status block
+the author edited in every single round. It is now a table, so a new round adds
+a row rather than requiring a number to be found and re-derived.
+
+**Rounds 1 and 2 were run by the same agent that authored the text under review.
+Rounds 3, 4 and 5 were independent, and each found blocking defects in the
+amendments written to fix its predecessor.**
 
 **Review round 3 — 2026-08-07, independent, against `b842975`.** Confirmed
 `b741e48` as status prose only, then returned **six findings, four blocking**.
@@ -70,14 +87,31 @@ added §7 item 4a and immediately violated it. A rule written and broken in one
 sitting is evidence the author is pattern-matching the finding rather than
 applying it.
 
-**What round 5 should weigh, stated against interest:** the defect rate is **nine,
-six, six, five** — still not converging after four rounds, though round 4 accepted
-its first piece of new text. **Every blocking finding in rounds 3 and 4 was in
-text written to fix the previous round.** The newest material — tests 10a/10b,
-M5b's chosen instrument, §7 item 4b — has had **zero** adversarial passes, and the
-M5 pair has now been rewritten **three times** and found defective each time.
-**Treat "dispatchable" as a claim requiring evidence of convergence, not a status
-reached by running out of findings.**
+**Review round 5 — 2026-08-08, independent, against `df9e528`.** Four findings,
+**two** blocking — the first round where blocking findings fell below four.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | **The status history was numerically stale again** — "amended three times … fifteen findings so far, eight blocking" were round-2 figures, left standing through rounds 3 and 4 while the tables recording those rounds sat directly below | Replaced with a **table**, so a round adds a row instead of requiring a number to be re-derived. **Fifth occurrence of count-staleness**, this time in the block edited every round |
+| 2 | **Test 10b could not make M5b's two-field assertion.** §3 said only "assert it opens"; under mutation that yields a bare `Err` or a panic, and a `#[test] -> Result` returning `Err` asserts nothing about that error's fields | Both `Result` arms pinned, plus a third for the wrong-error case |
+| 3 | **M5b's "cannot be tidied" claim was false.** Keeping `synthetic_for_fixture` while passing the constant as both its argument and the base version preserves the fixture and fully restores the tautology | Retracted. The protection is **§7 item 4b**, not the structure |
+| 4 | §3's preamble still said the tests were "in `epiphany-bundle`" after round 4 added two that cannot be | Corrected, with each test's touch-table home named |
+
+**Finding 3 is the one to carry.** Round 4 asserted a *structural* guarantee that
+did not hold, and in doing so undercut the *procedural* check actually doing the
+work. That is the same error as reasoning that a mutation would fail instead of
+running it: **a guarantee that has not been tested against the edit it is supposed
+to prevent is a hope.**
+
+**What round 6 should weigh, stated against interest:** the defect rate is **9, 6,
+6, 5, 4**, and blocking findings went **4, 4, 4, 4, 2** — the first movement in
+four rounds, and the first weak evidence of convergence. Set against that: **every
+round since the third has found blocking defects in text written to fix the
+previous round**, five separate count-staleness defects have now been found in
+five rounds, and the newest material — test 10b's match arms, the retraction in
+M5b, §3's crate correction — has had **zero** adversarial passes. **Treat
+"dispatchable" as a claim requiring evidence of convergence, not a status reached
+by running out of findings.**
 
 (Was: DRAFT, BLOCKED on the format-epoch rung,
 `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, which at the time was ratified and in
@@ -808,7 +842,18 @@ in `git diff --cached`, M7 was not restored** and gate 4 must fail.
 > found, then tests 6 and 7 with pin 2a's resolution — and gate 1 inherited the
 > stale figure. **Do not reconcile against a fixed number**; see gate 1.
 
-Named, permanent, in `epiphany-bundle`:
+Named and permanent. **Tests 1–9 live in `epiphany-bundle`; 10a is in
+`epiphany-textproj` and 10b in `epiphany-testkit`** — corrected in round 5, which
+found this preamble still saying all of them were in `epiphany-bundle` after
+round 4 added two that necessarily are not. **They cannot be**: `epiphany-bundle`
+must not depend on `epiphany-ops` (pin 1, §0.3), so no test in that crate can
+reach `CURRENT_REDUCTION_ALGORITHM_VERSION`, and reaching the real authority is
+the entire purpose of 10a and 10b.
+
+**Touch-table homes:** 10a lands in row 9's `textproj/src/serialize.rs`; 10b in
+row 7's `testkit/src/roundtrip.rs`. Both rows already exist and neither needs
+widening — **state in the report which file each landed in**, since a test placed
+outside its row silently drops out of the commit.
 
 1. **`open_succeeds_when_base_and_current_reduction_versions_match`**
 2. **`open_rejects_a_valid_stale_canonical_base`** — base and superblock agree
@@ -896,7 +941,34 @@ mutations without them, in the same edit that added §7 item 4a requiring them.*
    `epiphany-testkit`, which may use the real constant. Build the fixture with
    `synthetic_for_fixture(0)`, commit a base carrying the literal
    `ReductionAlgorithmVersion(0)`, take the bytes, and reopen them with `caps`
-   built from `CURRENT_REDUCTION_ALGORITHM_VERSION`. Assert it opens.
+   built from `CURRENT_REDUCTION_ALGORITHM_VERSION`.
+
+   **It MUST match on the reopen's `Result` explicitly, with both arms written.
+   PINNED IN ROUND 5 — "assert it opens" was not enough.**
+
+   ```text
+   match reopen {
+       Ok(bundle)  => // the unmutated path: assert the base survived
+       Err(BundleError::CanonicalBaseRequiresRebuild { base, current }) =>
+           // assert base == ReductionAlgorithmVersion(0)
+           // assert current == the mutated authority
+           // THEN fail, quoting both fields
+       Err(other) => // fail: the wrong error, quoting it
+   }
+   ```
+
+   > **Why the `Err` arm is required even though the test asserts success.**
+   > M5b must observe `CanonicalBaseRequiresRebuild { base, current }` **with both
+   > fields asserted**. Round 4 specified only "assert it opens", which under
+   > mutation yields a bare `Err` or a panic — **a `#[test] -> Result` that
+   > returns `Err` is not an assertion about that error's fields.** The two-field
+   > observation M5b demands had no home in the test M5b names. The `Err` arm is
+   > that home: it runs only under mutation, and it is what makes M5b's required
+   > output a *verified* observation rather than a stack trace.
+   >
+   > The third arm is not padding. Without it, an implementation returning a
+   > *different* error under mutation still fails the test, and the mutation
+   > report would read as success while observing nothing.
 
    **This is the only place in the rung where the real authority meets a
    canonical base**, which is why M5b needs it and why no existing test could
@@ -1048,13 +1120,26 @@ Unmutated, the real constant is `0`, the operands agree, and the bundle opens.
 Mutated, the constant is not `0`, and the reopen fails with
 **`CanonicalBaseRequiresRebuild { base: 0, current: <mutated> }`**.
 
-**Why this shape and not another:** the two operands are provably independent —
-one is a synthetic literal written into a fixture, the other is the real constant
-read at the reopen — and **neither can be "tidied" into the other** without
-deleting the synthetic capability the fixture is built on. It needs no private
-helper, no new fixture file, and no touch-table row. It isolates the real
-constant on the **read** side only, so pin 3a's writer check cannot fire first
-and mask the result.
+**Why this shape and not another:** the two operands are independent **by
+construction at the time of writing** — one is a synthetic literal written into a
+fixture, the other is the real constant read at the reopen. It needs no private
+helper, no new fixture file, and no touch-table row. It isolates the real constant
+on the **read** side only, so pin 3a's writer check cannot fire first and mask
+the result.
+
+> **What this does NOT give you, corrected in round 5.** Round 4 claimed the
+> literals "cannot be tidied into the other without deleting the synthetic
+> capability the fixture is built on." **That is false.** A later edit can keep
+> `synthetic_for_fixture` exactly where it is and pass
+> `CURRENT_REDUCTION_ALGORITHM_VERSION` as *both* its argument and the base
+> version — the fixture still looks synthetic, every test still passes, and the
+> tautology is fully restored. **The structure does not protect itself.**
+>
+> The only real protection is **§7 item 4b**, which requires positively
+> confirming the literals are still literals. Round 4 overstated a structural
+> guarantee and thereby weakened the case for the procedural check that is
+> actually doing the work — the same error as trusting a mutation because it
+> looks like it should fail.
 
 **The test it breaks is test 10b** (§3) — a **named** test, not the void
 conformance helper. **ROUND 4:** round 3 nominated
