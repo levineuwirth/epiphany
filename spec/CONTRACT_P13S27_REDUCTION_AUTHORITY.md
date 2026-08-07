@@ -1,11 +1,37 @@
 # Contract — P13-S27: the reduction version gets an outside witness
 
-**Status:** DRAFT — **UNBLOCKED and dispatchable as of 2026-08-07**; **AMENDED
-2026-08-07 (pin 10)**, before dispatch and before ratification. (Was: BLOCKED on
-the format-epoch rung, `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, which at the time
-was ratified and in implementation but had not yet landed.) **That rung landed at
-`bc06706`**, with its pin-3b follow-up at `be244df`. Pins 1 and 3–10 are settled,
-internally consistent, and ratifiable as a plan.
+**Status:** **RATIFIED 2026-08-07** after **review round 1**, which returned nine
+findings — four of them blocking — all now carried in the document; **AMENDED
+2026-08-07** twice, both before dispatch: **pin 10** (the unsatisfiable escape
+clause) and **round 1's nine**. **Not yet implemented. The pins are now frozen —
+they may be executed, not edited.** A defect found during execution is
+**reported, not patched in place**.
+
+(Was: DRAFT, BLOCKED on the format-epoch rung,
+`spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, which at the time was ratified and in
+implementation but had not yet landed. **That rung landed at `bc06706`**, with
+its pin-3b follow-up at `be244df`.)
+
+**Review round 1 — 2026-08-07, at `96b40b2`.** Run because this contract had
+reached "dispatchable" with **zero** ratification rounds on record, against a
+standing rule that contracts go through adversarial review *before* dispatch —
+the format-epoch rung had four, and its fourth is what produced pin 3c. What
+round 1 returned:
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | Inherited obligation 2 was in **neither** §3 nor §4, though §3's preamble claimed all obligations were stated as tests | **M7** added; ruled a mutation, not a capability restoration |
+| 2 | §0.4's *"`commit` has 57 sites (including 2 in `epiphany-editor-core`)"* — that crate has no `epiphany-bundle` dependency and the word `Bundle` appears in its `lib.rs` **zero** times | Corrected; recorded as the **third** instrument failure in §0.4 |
+| 3 | §3's header, gate 1 and §7 items 1/2/4 each carried a stale count of the same lists | All replaced with "every item in §N"; gate 1 now reports three buckets |
+| 4 | `requirement_labels.rs` absent from §2 while pin 9 may move `CORE_REQUIREMENT_COUNT` | Pin 9 must decide explicitly; **touch row 12** added, conditional |
+| 5 | Locators verified at `381c498`; `bc06706` grew `bundle.rs` by 338 lines | Correction table in §0; pin 5's own `:396`–`:399` confirmed **unmoved** |
+| 6 | Pin 2a cites `vectors.rs:353`/`:363`; the corpus was rebuilt to `canonical_bases` 2 → 0 | Evidence updated; disposition unchanged |
+| 7 | `Bundle::open(` is **60**, not 57 | §0.4 table corrected; `create` confirmed still 32 |
+| 8 | Gate 6a checked `textproj` only, while touch row 7 gives `testkit` the real authority | Scope widened to both |
+| 9 | No **commit-side positive** test, though obligation 1 warns that converting one branch leaves a hole | **Test 8** added |
+
+**Pins 1 and 3–10 are settled and internally consistent.** Pin 2a is resolved
+from outside (below); pin 2 is unchanged.
 
 **The pin 10 amendment**, recorded here so it is not read as the original: pin 10
 made P13-S16's opening conditional on pin 2a being *"ratified and tested **within
@@ -55,6 +81,30 @@ format-epoch rung → **P13-S27** → **P13-S16**, with no open question left in
 
 Read out of the working tree at `381c498`. Every line number confirmed by
 reading the line.
+
+> **Locators re-verified 2026-08-07 in review round 1, at `96b40b2`.** The
+> format-epoch rung (`bc06706`) landed *after* `381c498` and grew `bundle.rs` by
+> **338 lines**, so the inline citations throughout this contract are as-of
+> `381c498`. **This table is authoritative where the two disagree.**
+>
+> | Cited | Actual at `96b40b2` | Symbol |
+> |---|---|---|
+> | `bundle.rs:989` | **`:1024`** | `fn reduction_version_for` |
+> | `bundle.rs:798` | **`:833`** | `commit_versioned`'s superblock stamp |
+> | `bundle.rs:613`–`:621` | **`:622`ff** | `fn verify_canonical_chunks` |
+> | `bundle.rs:939` | **`:974`** | `fn profile_is_understood` |
+> | `bundle.rs:233`–`:240` | **`:205`ff** | `fn create` (base-bearing refusal) |
+> | `error.rs:253` | **`:306`** | `UnsupportedCanonicalChunkMajor` |
+> | `serialize.rs:119` | **`:143`** | `fn serialize_document` |
+> | `serialize.rs:212`, `:219`–`:222` | **`:239`ff** | `fn build_manifest` |
+> | `serialize.rs:347` | **`:379`** | `fn serialize_and_reopen` |
+> | `roundtrip.rs:241` | **`:255`** | `assert_reduction_serialization_stable` |
+> | `parse.rs:591` | **`:603`** | unbounded `u32` parse |
+>
+> **Confirmed still exact, and not to be "corrected":** `bundle.rs:396`–`:399`
+> (**pin 5's own insertion point**), `:301` (`open`), `:87`
+> (`SUPPORTED_PROFILE_MAJOR`), `:389` (`UnsupportedProfile`), `ids.rs:289`,
+> `generators.rs:1628`/`:1651`.
 
 ### 0.1 The defect is a tautology, not an absence
 
@@ -125,11 +175,13 @@ open, which is the gap this revision closes (pin 3a, pin 4a).
 > exists to fix, committed while scoping it: **an observation that cannot
 > support the claim drawn from it.**
 
-**Reader surface — 57 `Bundle::open(` sites across 10 files:**
+**Reader surface — 60 `Bundle::open(` sites across 10 files.** *(Was 57 at
+`381c498`; the format-epoch rung added 3 in `bundle.rs`. Re-counted 2026-08-07 at
+`96b40b2`.)*
 
 | Crate | Sites |
 |---|---|
-| `epiphany-bundle` (`bundle.rs` 20, `fuzz.rs` 15) | 35 |
+| `epiphany-bundle` (`bundle.rs` **23**, `fuzz.rs` 15) | **38** |
 | `epiphany-testkit` (`bundle_harness.rs` 11, `roundtrip.rs` 4, `benches/bundle.rs` 2, `tests/bundle_reopen.rs` 1) | 18 |
 | `epiphany-textproj` (`serialize.rs`, `project.rs`) | 2 |
 | `epiphany-bundle/tests/` | 2 |
@@ -139,9 +191,28 @@ open, which is the gap this revision closes (pin 3a, pin 4a).
 `bundle/tests/crash_recovery.rs` 2, `textproj/serialize.rs` 1,
 `testkit/tests/bundle_reopen.rs` 1, `testkit/benches/bundle.rs` 1,
 `bundle/tests/manifest_selection.rs` 1, `bundle/fuzz.rs` 1.
+*Re-counted 2026-08-07 at `96b40b2`: still 32, and every per-file figure above
+still holds.*
 
-**`commit` has 57 sites** (including 2 in `epiphany-editor-core`) — pin 3's
-design keeps every one of them unchanged.
+**`commit` sites** — pin 3's design keeps every one of them unchanged.
+
+> **CORRECTED 2026-08-07 in review round 1. The claim this paragraph made was
+> *"`commit` has 57 sites (including 2 in `epiphany-editor-core`)"*, and the
+> parenthetical is false.** `epiphany-editor-core` depends on `epiphany-core`,
+> `epiphany-ops` and `epiphany-layout-ir` — **not** on `epiphany-bundle` — and
+> the string `Bundle` does not appear in its `lib.rs` at all. Its two hits are
+> `self.commit(...)` (`editor-core/src/lib.rs:1593`, `:1709`), resolving to its
+> own `fn commit(&mut self, new: Vec<OperationEnvelope>) -> Result<EditOutcome,
+> EditorError>` (`:1404`). A textual `.commit(` grep counted a same-named method
+> in a crate that cannot reach `Bundle`.
+>
+> **This is the third instrument failure recorded in this section, and it was
+> committed in the same paragraph as the method note above.** The first could not
+> see a propagating path; the second asserted a universal negative from `head`-
+> truncated output; this one resolved a method name without resolving the type it
+> belongs to. Same defect, three shapes: **an observation that cannot support the
+> claim drawn from it.** The executing agent MUST count `Bundle`-typed receivers,
+> not the token `.commit(`.
 
 **Which capability each site supplies is NOT decided by crate dependency.**
 `epiphany-testkit` and `epiphany-textproj` depend on `epiphany-ops`, but that
@@ -193,6 +264,17 @@ builds a canonical base stamped `ReductionAlgorithmVersion(1)` and
 committed text-projection vectors carrying the same; `generators.rs:1628`/`:1651`
 emit `rng.range(0, 8)`. Injecting the real authority `0` at every site would
 reject part of the present corpus.
+
+> **Evidence updated 2026-08-07 in review round 1 — the disposition is unchanged,
+> the corpus is not.** `vectors.rs:353`/`:363` no longer exist. The format-epoch
+> rung rebuilt the text-projection corpus to 20 vectors with `canonical_bases`
+> reach **2 → 0**, so the two base-carrying vectors this pin cites are gone; the
+> single surviving occurrence is `vectors.rs:326`, inside the
+> `canonical_base_present` **reject** vector. Pin 2a's conclusion stands (it was
+> settled from outside by the container epoch), but **pin 3b's fixture-surface
+> reasoning must be re-derived against the current corpus** rather than against
+> the two vectors named here. `generators.rs:1628`/`:1651` are unaffected and
+> still emit `rng.range(0, 8)`.
 
 Pin 3b handles the *fixtures* — they take named synthetic capabilities. It does
 **not** handle the real problem:
@@ -321,6 +403,25 @@ naming S27 as what reopens them. Both are owed work here, not optional:
    refusal exists to prevent, and it has never been observed — only reasoned
    about.
 
+   > **RULED 2026-08-07 in review round 1: the removal is a MUTATION, not a
+   > capability restoration.** As written, *"with pin 3b's text refusal removed"*
+   > was ambiguous between temporarily lifting the refusal to observe what it
+   > prevents, and permanently restoring base-bearing text round-trip. The
+   > sentence's own next clause settles it — *"that is the false provenance the
+   > text refusal exists to prevent"* — and a guard is not permanently deleted in
+   > order to demonstrate why it is needed. **The format rung's text refusal is
+   > permanent and S27 does not lift it.** The demonstration is therefore
+   > **M7** in §4, removed and restored by hand-editing, and this obligation is
+   > discharged there rather than by a test.
+   >
+   > **Consequences of the ruling, stated so they are not re-litigated:**
+   > `COMPANION_VERSION` stays **0.14.0**; `parse.rs`, `vectors.rs`,
+   > `textproj/src/lib.rs` and `spec/text_projection.tex` are **NOT** touched by
+   > this rung and are deliberately absent from §2; and the corpus keeps
+   > `canonical_bases` reach **0**. A future rung may restore the capability —
+   > that is its own contract, with the four touch rows and the companion-version
+   > bump this one declines.
+
 3. **Two conformance assertions come back** (format-rung pin 3c). Criterion 4's
    bookkeeping-projection counterpart, `assert_reduction_serialization_stable`
    (`testkit/src/roundtrip.rs:241`), keeps its serialize → load → decode →
@@ -437,6 +538,23 @@ behaviour normatively, and a Revision History row. There is **no** existing
 "requires rebuild" error language in either document — verified — so this is new
 prose, not an amendment.
 
+**Whether this mints a new `\label{req:...}` MUST be decided explicitly, and
+stated in the report. AMENDED 2026-08-07 in review round 1.** The pin said "add
+the rejection behaviour normatively" without saying whether the behaviour gets
+its own requirement label, and the two readings have different touch tables:
+
+- **If it mints a label**, `core_spec.tex`'s requirement count moves 213 → 214
+  and `crates/epiphany-testkit/tests/requirement_labels.rs` **must** change —
+  `CORE_REQUIREMENT_COUNT = 213` (`:15`) is hardcoded and currently matches the
+  tree exactly. **Touch row 12 carries it.**
+- **If it does not** — the prose lands under an existing requirement — row 12 is
+  unused and the report says so.
+
+**This is the escapee `CLAUDE.md` names by name**, and it escaped the
+format-epoch rung's touch table too. A file that must change but is not listed
+**silently drops out of the commit**, and the resulting failure surfaces on
+someone else's branch.
+
 **Pin 10 — the ledger. AMENDED 2026-08-07, before dispatch, on a finding from
 the machine-move review.**
 `spec/PASS13_CANDIDATES.md`: P13-S27 → RESOLVED, recording both rulings, the
@@ -488,10 +606,27 @@ row may not record S16 as open until those land with this rung**; ratification o
 | 9 | `crates/epiphany-textproj/src/{serialize,project}.rs` | call sites, real authority |
 | 10 | `spec/core_spec.tex` (+ `.pdf`) | pin 9 |
 | 11 | `spec/PASS13_CANDIDATES.md` | pin 10 |
+| 12 | `crates/epiphany-testkit/tests/requirement_labels.rs` | **conditional** — pin 9, *only if* it mints a new `\label{req:...}`; `CORE_REQUIREMENT_COUNT` (`:15`) then moves 213 → 214. Added in review round 1. If pin 9 mints no label, leave unmodified and say so in the report |
+
+**Row 12 is conditional, and that is deliberate.** `CLAUDE.md` names this file as
+a recurring escapee, and it escaped the format-epoch rung's table. Carrying it
+conditionally costs nothing if unused; omitting it costs a silent drop-out.
+
+**`spec/text_projection.tex`, `crates/epiphany-textproj/src/{parse,vectors}.rs`
+and `crates/epiphany-textproj/src/lib.rs` are deliberately ABSENT** — see the
+ruling under inherited obligation 2. M7 edits the refusals temporarily and
+restores them by hand; nothing there is staged. **If any of those files shows up
+in `git diff --cached`, M7 was not restored** and gate 4 must fail.
 
 ---
 
-## §3. Required tests (pin 4's ruling names all four)
+## §3. Required tests
+
+> **Header corrected 2026-08-07 in review round 1.** It read *"(pin 4's ruling
+> names all four)"* while the list below carried seven items. The count went
+> stale twice — test 5 was added when the first draft's writer-path omission was
+> found, then tests 6 and 7 with pin 2a's resolution — and gate 1 inherited the
+> stale figure. **Do not reconcile against a fixed number**; see gate 1.
 
 Named, permanent, in `epiphany-bundle`:
 
@@ -514,8 +649,11 @@ Named, permanent, in `epiphany-bundle`:
    intact. A writer check that corrupts the document while refusing is worse than
    no check.
 
-**Added 2026-08-07 with pin 2a's resolution — the inherited obligations, stated
-as tests so they cannot be discharged by prose:**
+**Added 2026-08-07 with pin 2a's resolution — inherited obligations 1 and 3,
+stated as tests so they cannot be discharged by prose.** *(Corrected in review
+round 1: this preamble previously claimed **all** the inherited obligations were
+stated as tests. Obligation 2 was in neither §3 nor §4 — it is now **M7**, by
+the ruling recorded beside it.)*
 
 6. **`a_major_1_bundle_carrying_a_base_opens_when_the_authority_matches`** — the
    read-side half of the format rung's pin 3a, converted from temporary refusal
@@ -529,11 +667,43 @@ as tests so they cannot be discharged by prose:**
    names this contract — if the marker is still in the tree when this rung
    reports, the restoration did not happen.
 
+8. **`committing_a_canonical_base_succeeds_when_the_authority_matches`** —
+   **ADDED 2026-08-07 in review round 1.** Obligation 1 warns that converting
+   only one branch "leaves a hole exactly where the format rung's own review
+   found one", and the write-side **positive** branch had no test: test 1 is
+   read-positive, test 2 read-negative, test 5 write-negative. The missing branch
+   is precisely where the format rung's temporary refusal sits
+   (`bundle.rs:795` → `ReductionAuthorityUnavailable`, asserted by
+   `a_major_1_bundle_round_trips_and_refuses_to_introduce_a_base` at `:1787`).
+   Without this test, an implementation that converts the read side and leaves
+   `commit` refusing categorically passes every other test in this section.
+
 Tests 2 and 3 must be **paired in review**: each asserts the other's error is
 *not* produced. A test that only checks its own variant cannot show the two
 paths are distinguishable, which is the whole point of pin 6.
 
-Tests 6 and 2 stand in the same relation to each other.
+Tests 6 and 2 stand in the same relation to each other. **So do tests 8 and 5**,
+on the write side.
+
+**Several of these CONVERT existing tests rather than adding new ones — found in
+review round 1, and the reason gate 1 no longer names a number.** The format rung
+left two tests asserting the interim refusal, and S27 turns each into a matched
+pair:
+
+| Existing test | Becomes |
+|---|---|
+| `opening_a_major_1_bundle_that_already_carries_a_base_is_refused` (`bundle.rs:1866`) | tests **6** and **2** |
+| `a_major_1_bundle_round_trips_and_refuses_to_introduce_a_base` (`:1787`) | tests **8** and **5** |
+| `a_corrupt_base_fails_as_malformed_before_any_epoch_error` (`:1840`) | extended into test **3** (adds the "*not* `CanonicalBaseRequiresRebuild`" assertion) |
+
+**And `ReductionAuthorityUnavailable` is deleted by this rung**, so every site
+naming it must move or the crate will not compile: `error.rs:152` (variant),
+`:232` (Display arm), `bundle.rs:422` and `:795` (construction), the doc comments
+at `:1538` and `:1844`, and **five test assertions** at `:1740`, `:1774`,
+`:1834`, `:1861`, `:1879`. The three negative assertions (`:1740`, `:1774`,
+`:1861`) exist to prove the legacy and corrupt paths do **not** produce it — they
+must be re-pointed at the error that replaces it, **not** deleted, or the
+distinction they were written to hold is lost.
 
 ---
 
@@ -569,12 +739,50 @@ must fail. Then narrow it to refuse *any* stale inherited base rather than only 
 newly emitted or replaced one, and confirm an unrelated commit on an
 already-open bundle starts failing — signing that pin 3a's scope is deliberate.
 
+**M7 — the laundering the text refusal prevents, finally observed. ADDED
+2026-08-07 in review round 1; this discharges inherited obligation 2.**
+
+The format rung reasoned about this path and could never run it: its own pin 3a
+refused every major-1 base commit categorically, so the observation was
+unreachable. Under S27 a base commit succeeds or fails on its version, so it
+becomes reachable for the first time.
+
+Temporarily remove the format rung's pin-3b text refusal — **all three sides**,
+since removing one leaves the others refusing and the document never reaches the
+writer: `serialize.rs:152` (`SerializeError::CanonicalBaseUnsupported`),
+`project.rs`'s `project_text_document` refusal (`:579`), and the parser's
+(`parse.rs:138`–`:147`). Then construct a base-bearing `TextDocument` whose raw
+`reduction_algorithm_version` **happens to equal**
+`CURRENT_REDUCTION_ALGORITHM_VERSION`, serialize it, and **observe** that the
+resulting major-1 container is byte-indistinguishable from one whose base was
+genuinely validated.
+
+**What the observation must show, or it has not been made:** that the capability
+check does **not** fire — the document launders precisely *because* its number
+matches, and no check can tell a coincidence from a rebuild. That is the whole
+argument for the refusal, and it has never been run.
+
+**Restore all three refusals by hand-editing back**, never with git. Record the
+result as a **demonstration**, not a guard: nothing in the shipped tree changes,
+and the refusal is permanent (see the ruling under inherited obligation 2).
+
+**This is a mutation whose expected outcome is SUCCESS, not failure.** Every
+other mutation here breaks a test; this one makes a refused path succeed, and
+the finding is that it succeeds *silently*. Do not report it as a passing gate.
+
 ---
 
 ## §5. Gate
 
-1. `cargo test --workspace` — full pass; report the new total and the delta with
-   its cause (four tests added).
+1. `cargo test --workspace` — full pass. **Report the new total and account for
+   the delta by category — do NOT reconcile against a fixed number.** *(Corrected
+   in review round 1: this item read "(four tests added)", a figure already stale
+   twice over, and §3's own header carried the same wrong count. The delta is not
+   a simple addition: three of §3's tests **convert or extend** existing
+   format-rung tests, which nets zero, while others are new.)* The baseline is
+   **1570**. Give the count in three buckets — net-new, converted-from-existing,
+   restored-assertions — and if they do not sum to the observed delta, **that is
+   a finding, not an arithmetic error to be papered over**.
 2. `cargo clippy --workspace --all-targets -- -D warnings` → clean.
 3. `cargo fmt -p epiphany-ops -p epiphany-bundle -p epiphany-testkit -p
    epiphany-textproj --check` → clean. **`cargo fmt --all` is forbidden.**
@@ -586,10 +794,17 @@ already-open bundle starts failing — signing that pin 3a's scope is deliberate
    `grep -rnE "impl +Default +for +BundleCapabilities|derive\\([^)]*\\bDefault\\b[^)]*\\)[[:space:]]*(pub )?struct BundleCapabilities" crates/epiphany-bundle/src/`
    → **0 matches.** Run it against production source only; report the count, not
    a verdict.
-6a. **No production composition path uses the fixture constructor:**
-   `grep -rn "synthetic_for_fixture" crates/epiphany-textproj/src/` shows matches
-   **only** inside `#[cfg(test)]` modules. Report each match with its enclosing
-   item.
+6a. **No production composition path uses the fixture constructor.** *(Scope
+   widened in review round 1: this checked `epiphany-textproj` only, while touch
+   row 7 gives **`epiphany-testkit`** the real authority too — so a
+   `synthetic_for_fixture` leak there was ungated.)* Run over **both**:
+   `grep -rn "synthetic_for_fixture" crates/epiphany-textproj/src/ crates/epiphany-testkit/src/`
+   Report each match with its enclosing item. In `epiphany-textproj` every match
+   must be inside a `#[cfg(test)]` module. In `epiphany-testkit`, which is a
+   fixture crate whose non-test code legitimately builds fixtures, each match
+   must instead be justified against §0.4's rule: **only production composition
+   paths wrap the real constant**, and `roundtrip.rs` / `bundle_harness.rs` carry
+   both kinds. Name which kind each site is; an unclassified site is a finding.
 7. `spec/vectors/decode_vectors.txt` unmodified; no schema major/minor moved.
 
 ---
@@ -622,11 +837,30 @@ to 1 belongs to S16.
 
 ## §7. Report requirements
 
-1. The five mutations, each with verbatim output (M4 as a recorded prohibition).
-2. The seven gate results, each with its command.
-3. The staged file list and the test-count delta with its cause.
-4. The four required tests by name, each passing, with tests 2 and 3 shown to
-   produce *different* errors.
-5. A count of call sites updated per crate, against §0.4's table — any
-   discrepancy is a finding.
-6. Anything contradicting this contract.
+*Counts corrected 2026-08-07 in review round 1 — items 1, 2 and 4 each named a
+figure the document had outgrown. This is the same drift as §3's header and gate
+1: **three independent stale counts of the same three lists.** Prefer "every item
+in §N" to a number.*
+
+1. **Every mutation in §4** — currently **seven** (M1–M7), each with verbatim
+   output. **M4 is a recorded prohibition** (observed to compile, then reverted)
+   and **M7 is a demonstration whose expected outcome is success**. Neither is a
+   passing guard; do not report them as one.
+2. **Every gate item in §5** — currently **eight** (1, 2, 3, 4, 5, 6, 6a, 7),
+   each with the command that produced it.
+3. The staged file list, and the test-count delta in gate 1's three buckets.
+4. **Every required test in §3** — currently **eight** — by name, each passing,
+   with tests 2 and 3 shown to produce *different* errors, and the same for
+   tests 6/2 and 8/5.
+5. A count of call sites updated per crate, against §0.4's table **as corrected
+   in review round 1** (open **60**, create **32**) — any discrepancy is a
+   finding. Count `Bundle`-typed receivers, not the token `.commit(`.
+6. **Confirmation that M7's three text refusals were restored**, and that none of
+   `text_projection.tex`, `textproj/src/parse.rs`, `textproj/src/vectors.rs` or
+   `textproj/src/lib.rs` appears in the staged diff.
+7. **Whether pin 9 minted a new requirement label**, and therefore whether touch
+   row 12 was used.
+8. **Confirmation that the pin-3c suspension marker naming this contract is gone
+   from `testkit/src/roundtrip.rs`.** If it is still in the tree, obligation 3's
+   restoration did not happen, whatever the prose says.
+9. Anything contradicting this contract.
