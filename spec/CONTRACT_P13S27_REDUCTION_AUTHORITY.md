@@ -1,11 +1,19 @@
 # Contract — P13-S27: the reduction version gets an outside witness
 
-**Status:** **RATIFIED 2026-08-07** after **review round 1**, which returned nine
-findings — four of them blocking — all now carried in the document; **AMENDED
-2026-08-07** twice, both before dispatch: **pin 10** (the unsatisfiable escape
-clause) and **round 1's nine**. **Not yet implemented. The pins are now frozen —
-they may be executed, not edited.** A defect found during execution is
-**reported, not patched in place**.
+**Status:** **RATIFIED 2026-08-07** after **two adversarial review rounds**
+(nine findings then six, eight blocking in total), all now carried in the
+document; **AMENDED 2026-08-07** three times, all before dispatch: **pin 10** (the
+unsatisfiable escape clause), **round 1's nine**, and **round 2's six**. **Not yet
+implemented. The pins are frozen — they may be executed, not edited.** A defect
+found during execution is **reported, not patched in place**.
+
+> **Round 2 was run against the frozen contract and found four more blocking
+> defects, two of them created by round 1's own amendments.** Ratifying after a
+> single round was premature. A third round is warranted before dispatch by the
+> same reasoning that justified the second — the format-epoch rung took four, and
+> **the defect rate here has not yet fallen**: round 1 found nine, round 2 found
+> six. Treat "dispatchable" as a claim requiring evidence of convergence, not a
+> status reached by running out of findings.
 
 (Was: DRAFT, BLOCKED on the format-epoch rung,
 `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, which at the time was ratified and in
@@ -29,6 +37,29 @@ round 1 returned:
 | 7 | `Bundle::open(` is **60**, not 57 | §0.4 table corrected; `create` confirmed still 32 |
 | 8 | Gate 6a checked `textproj` only, while touch row 7 gives `testkit` the real authority | Scope widened to both |
 | 9 | No **commit-side positive** test, though obligation 1 warns that converting one branch leaves a hole | **Test 8** added |
+
+**Review round 2 — 2026-08-07, at `39287f8`.** Run against the *ratified and
+frozen* contract, and it returned **six more findings, four of them blocking**.
+Round 1's ratification was premature; this is the round that should have followed
+it before dispatch.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | The call-site count was corrected in §0.4 only. The "Rung type" paragraph still said **57**, and touch row 2 still said `bundle.rs` has **35** opens — a figure that was never `bundle.rs` alone (it was `bundle.rs` + `fuzz.rs`, which has its own row) and is now stale on top of that. Reconciliation was impossible | Both corrected to **60** / **23**; row 5 now states `fuzz.rs`'s 15 + 1 explicitly |
+| 2 | §0.4 called `project.rs:936` a **production** bundle writer. `#[cfg(test)]` starts at `:630`; every `Bundle` call in the file is below it | Struck. §0.4's correction stands on `serialize.rs` alone. Recorded as the **fourth** instrument failure in that section |
+| 3 | **M5 unexecutable.** `serialize_document` refuses bases at `serialize.rs:151`, so its output is base-free, and pin 5 + test 4 require base-free bundles to open at *any* authority — the mutation cannot fail | Split into **M5a** (production wires the constant) and **M5b** (the authority is load-bearing where a base exists) |
+| 4 | **M6's second half unexecutable.** `open` rejects a stale base, `create` rejects a base-bearing manifest (`bundle.rs:234`), `commit` validates what it emits — no caller can hold an open `Bundle` with a stale *inherited* base | Replaced: **broaden** pin 3a rather than narrow it. The unreachability is itself reported |
+| 5 | Pin 3a's justification — *"production code mints a self-consistent stale document"* — is false in-tree. **Zero** production paths stage a base | Restated: pin 3a guards the **public `commit_versioned` API**, not an in-tree path |
+| 6 | `serialize.rs:157` is dead code, orphaned by the `:151` guard | Recorded as a finding; explicitly **not** this rung's to repair |
+
+**Two of round 2's findings were introduced by round 1, and that is the lesson
+worth carrying.** Ruling M7's refusal permanent is what made M5 unexecutable, and
+adding test 8 on the write side did not come with a re-derivation of M6 against
+the same reachability. **An amendment is a change to the system, not a patch to a
+line**; the next round must re-derive every mutation against every ruling the
+previous round made, not only inspect the text it edited. Round 1's own §0.4
+correction has the same shape: it verified one claim in a list and inherited its
+neighbours.
 
 **Pins 1 and 3–10 are settled and internally consistent.** Pin 2a is resolved
 from outside (below); pin 2 is unchanged.
@@ -57,8 +88,10 @@ prohibition required.
 **Rung type:** **capability + API change.** No wire bytes move and no schema
 major or minor changes — `BundleError` has no discriminant and no encoder
 (`bundle/src/error.rs`), so a new variant is a pure Rust API change. What does
-change is `Bundle::open`'s **and `Bundle::create`'s** signatures, at 57 and 32
-call sites.
+change is `Bundle::open`'s **and `Bundle::create`'s** signatures, at **60** and 32
+call sites. *(Was "57 and 32". Corrected in review round 2 — round 1 corrected
+§0.4's table and left this spelling and touch row 2's untouched, which is the
+same one-path-of-several defect §1.7 of the handoff names.)*
 
 **Now DOES unblock P13-S16, once it lands.** This rung installs the authority and
 validates both read and write paths; S16's remaining precondition was pin 2a's
@@ -158,12 +191,46 @@ code: `serialize_document` (`serialize.rs:119`) creates a bundle and commits a
 manifest built by `build_manifest` (`serialize.rs:212`), which **copies
 `base.reduction_algorithm_version` verbatim** into a fresh `SnapshotRef`
 (`:219`–`:222`). `commit_versioned` then stamps the superblock from that same
-carried value via `reduction_version_for` (`bundle.rs:798`). `project.rs:936` is
-a **second** production write path of the same shape.
+carried value via `reduction_version_for` (`bundle.rs:798`). ~~`project.rs:936` is
+a **second** production write path of the same shape.~~
 
-**So production code mints a self-consistent stale document without ever calling
-`open`.** An authority enforced only at read time would leave that entirely
-open, which is the gap this revision closes (pin 3a, pin 4a).
+> **CORRECTED 2026-08-07 in review round 2 — `project.rs` is NOT a production
+> write path, and never was.** `#[cfg(test)]` begins at `project.rs:630`. Every
+> `Bundle` call in the file sits below it: `Bundle::create` at `:983` and
+> `:1122`, `Bundle::open` at `:1147`. `:936` is an assertion inside a test. The
+> `serialize.rs` half of this paragraph **is** correct — its `Bundle::create`
+> (`:155`) and `commit_versioned` (`:183`) are above that file's `#[cfg(test)]`
+> at `:284` — so §0.4's correction stands on **one** example, not two.
+>
+> **The same slip reaches the open table below:** both textproj entries there
+> (`serialize.rs:383`, `project.rs:1147`) are also below their files'
+> `#[cfg(test)]`, so **`epiphany-textproj` has zero production `Bundle::open`
+> sites.** The crate still counts 2 for signature-change purposes; it counts 0
+> for any argument about what production does.
+>
+> **Fourth instrument failure in this section.** Round 1 checked the
+> `epiphany-editor-core` claim in this paragraph and did not check its
+> neighbours — verifying one claim in a list and inheriting the rest.
+
+**Pin 3a's justification, restated in review round 2.** This paragraph used to
+conclude *"production code mints a self-consistent stale document without ever
+calling `open`."* **That is no longer true in-tree.** Checking every
+`canonical_base:` assignment above the `#[cfg(test)]` boundary in `serialize.rs`,
+`project.rs` and `bundle.rs` returns **zero**: the format rung's pin 3b closed
+the only in-tree path when it made `serialize_document` refuse a base-bearing
+document (`serialize.rs:151`), and `create` already rejected a base-bearing
+manifest (`bundle.rs:234`).
+
+**Pin 3a survives on a different and narrower footing, which it must now state:**
+`commit`/`commit_versioned` are **public API**, and an out-of-tree caller can
+stage a canonical base directly without going through `epiphany-textproj` at all.
+The writer check guards that surface. It is no longer guarding an in-tree
+production path, because there is not one.
+
+> **Consequence for M5, which round 1 did not follow through.** If no production
+> path stages a base, no production path is authority-load-bearing, and a
+> mutation of the authority cannot break a production round trip. M5 was written
+> against the old reading and is corrected in §4.
 
 > **Method note, recorded because it is this rung's own subject matter.** The
 > false claim came from `grep … canonical_base | head -14`. The `textproj` hits
@@ -596,10 +663,10 @@ row may not record S16 as open until those land with this rung**; ratification o
 | # | File | Change |
 |---|---|---|
 | 1 | `crates/epiphany-ops/src/lib.rs` (or a new `reduction.rs`) | pins 1, 2 |
-| 2 | `crates/epiphany-bundle/src/bundle.rs` | pins 3, 3a, 3b, 5, 6, 7 + 35 in-crate `open` sites + 11 in-crate `create` sites |
+| 2 | `crates/epiphany-bundle/src/bundle.rs` | pins 3, 3a, 3b, 5, 6, 7 + **23** in-crate `open` sites + 11 in-crate `create` sites. *(Was "35 opens" — corrected in review round 2. The 35 was never `bundle.rs` alone: it was `bundle.rs` 20 + `fuzz.rs` 15 at `381c498`, and `fuzz.rs` has its own row 5. Now 23 after the format rung added 3.)* |
 | 3 | `crates/epiphany-bundle/src/error.rs` | pin 4 |
 | 4 | `crates/epiphany-bundle/src/ids.rs` | pin 8 |
-| 5 | `crates/epiphany-bundle/src/fuzz.rs` | call sites |
+| 5 | `crates/epiphany-bundle/src/fuzz.rs` | **15** `open` sites + **1** `create` site. *(Figures stated in review round 2; row 2's old "35" silently included these, so the two rows together could not be reconciled against §0.4.)* |
 | 6 | `crates/epiphany-bundle/tests/{crash_recovery,manifest_selection}.rs` | call sites |
 | 7 | `crates/epiphany-testkit/src/{bundle_harness,roundtrip,generators}.rs` | call sites, real authority |
 | 8 | `crates/epiphany-testkit/tests/bundle_reopen.rs`, `benches/bundle.rs` | call sites |
@@ -726,18 +793,67 @@ compile**, then reverted — it demonstrates what pin 3 forbids and why the
 prohibition needs to be a review rule, since no test can catch a `Default` that
 callers then use. Report it as a *prohibition recorded*, not a guard.
 
-**M5 — the authority is the one consulted, and by a production path.** Change
-`CURRENT_REDUCTION_ALGORITHM_VERSION` to a different value. The failing test
-MUST be one exercising a **production composition path** — `textproj`'s
-`serialize_document` / `project` round trip — **not** a fixture using
-`synthetic_for_fixture`, which by design would not move. Report which test
-failed; if only fixture tests fail, pin 3b has been applied backwards and that
-is a finding.
+**M5 — SPLIT IN REVIEW ROUND 2. It was unexecutable as written.**
+
+> **Why.** It required changing `CURRENT_REDUCTION_ALGORITHM_VERSION` and
+> observing a **production composition path** test fail — naming `textproj`'s
+> round trip. But `serialize_document` refuses base-bearing documents at
+> `serialize.rs:151`, *before* `Bundle::create`, so its output is **necessarily
+> base-free**; and pin 5 with test 4 require a base-free bundle to open at **any**
+> authority. The mutation therefore cannot make that test fail — not because the
+> wiring is absent, but because the path carries nothing for the authority to
+> check. Round 1 introduced this by ruling M7's refusal permanent and not
+> re-deriving M5 against it.
+
+The original intent had two halves. They are now separate mutations, because no
+single path carries both any more.
+
+**M5a — the constant is wired into production.** Change
+`CURRENT_REDUCTION_ALGORITHM_VERSION`. Observe that the `BundleCapabilities`
+`serialize_document` constructs changes with it — the production path really does
+source the authority rather than a literal. Assert on the constructed capability,
+**not** on an open or commit outcome; there is no base, so no check fires and
+none should. **A test that fails here would mean the production path is doing
+something the contract does not authorize.**
+
+**M5b — the authority is load-bearing where a base exists.** Same mutation, but
+the failing test MUST be one combining the **real** authority with a
+**base-bearing** bundle. After obligation 3, that is
+`assert_reduction_serialization_stable` (`testkit/src/roundtrip.rs:255`), whose
+base coverage this rung restores and which touch row 7 gives the real authority.
+Report which test failed. **If only `synthetic_for_fixture` tests move, pin 3b
+has been applied backwards** — that was the original M5's finding condition and
+it is preserved here.
+
+**Both halves are required.** M5a alone shows the constant is read but never that
+it matters; M5b alone shows it matters but never that production reads it. The
+original mutation conflated the two because, at `381c498`, one path did both.
 
 **M6 — the writer check fires.** Remove pin 3a's commit-side validation; test 5
-must fail. Then narrow it to refuse *any* stale inherited base rather than only a
-newly emitted or replaced one, and confirm an unrelated commit on an
-already-open bundle starts failing — signing that pin 3a's scope is deliberate.
+must fail.
+
+**Second half REPLACED IN REVIEW ROUND 2. It was unexecutable as written.**
+
+> **Why.** It asked for pin 3a to be narrowed to refuse *any* stale **inherited**
+> base, then for an unrelated commit on an already-open bundle to start failing.
+> That state cannot be constructed: `open` rejects a stale base (pin 5, test 2),
+> `create` rejects a base-bearing manifest outright (`bundle.rs:234`), and a
+> successful `commit` validates the base it emits. **No caller can hold an open
+> `Bundle` whose inherited base is stale**, so the mutation has nothing to
+> observe. Round 1 added test 8 on the write side without re-deriving M6 against
+> the same reachability.
+
+**As replaced — broaden rather than narrow.** Widen pin 3a to refuse a commit on
+a **base-bearing bundle regardless of whether the version matches**, then confirm
+that an unrelated commit — one that does not touch `canonical_base` — starts
+failing on a bundle opened with a matching base. That state **is** reachable
+(test 6 opens exactly it), so the mutation runs, and it signs the same thing the
+original was reaching for: that *"newly emitted or replaced"* is a deliberate
+scope and not an accident of where the check was placed.
+
+**Record alongside it** that the original formulation was unreachable. That pin
+3a's scope is *forced* rather than *chosen* is a stronger result than the
+mutation was written to obtain, and it belongs in the report.
 
 **M7 — the laundering the text refusal prevents, finally observed. ADDED
 2026-08-07 in review round 1; this discharges inherited obligation 2.**
@@ -765,6 +881,15 @@ argument for the refusal, and it has never been run.
 **Restore all three refusals by hand-editing back**, never with git. Record the
 result as a **demonstration**, not a guard: nothing in the shipped tree changes,
 and the refusal is permanent (see the ruling under inherited obligation 2).
+
+> **You will meet dead code here. Do NOT fix it — report it.** Found in review
+> round 2: `serialize.rs:157`'s `if let Some(base) = &document.canonical_base`
+> is **unreachable**, orphaned by the `:151` guard that returns
+> `CanonicalBaseUnsupported` before it. Removing the guard for M7 makes it live
+> again, which is what lets the demonstration run at all — and restoring the
+> guard makes it dead again. It is a pre-existing defect from the format-epoch
+> rung, **not this rung's to repair**, and touching it would put an unpinned
+> change in a staged file. Record it in the report; it is a Pass-13 candidate.
 
 **This is a mutation whose expected outcome is SUCCESS, not failure.** Every
 other mutation here breaks a test; this one makes a refused path succeed, and
@@ -842,9 +967,10 @@ figure the document had outgrown. This is the same drift as §3's header and gat
 1: **three independent stale counts of the same three lists.** Prefer "every item
 in §N" to a number.*
 
-1. **Every mutation in §4** — currently **seven** (M1–M7), each with verbatim
-   output. **M4 is a recorded prohibition** (observed to compile, then reverted)
-   and **M7 is a demonstration whose expected outcome is success**. Neither is a
+1. **Every mutation in §4** — currently **eight** (M1, M2, M3, M4, **M5a**,
+   **M5b**, M6, M7), each with verbatim output. *(M5 split in review round 2.)*
+   **M4 is a recorded prohibition** (observed to compile, then reverted) and
+   **M7 is a demonstration whose expected outcome is success**. Neither is a
    passing guard; do not report them as one.
 2. **Every gate item in §5** — currently **eight** (1, 2, 3, 4, 5, 6, 6a, 7),
    each with the command that produced it.
@@ -863,4 +989,9 @@ in §N" to a number.*
 8. **Confirmation that the pin-3c suspension marker naming this contract is gone
    from `testkit/src/roundtrip.rs`.** If it is still in the tree, obligation 3's
    restoration did not happen, whatever the prose says.
-9. Anything contradicting this contract.
+9. **The `serialize.rs:157` dead branch**, recorded as a finding and **not
+   repaired** — see the note under M7.
+10. **M6's replaced second half**, with the reachability result stated: that no
+   caller can hold an open `Bundle` with a stale *inherited* base, so pin 3a's
+   scope is forced rather than chosen.
+11. Anything contradicting this contract.
