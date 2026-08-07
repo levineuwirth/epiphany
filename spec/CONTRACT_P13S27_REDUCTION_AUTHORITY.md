@@ -1,19 +1,32 @@
 # Contract — P13-S27: the reduction version gets an outside witness
 
-**Status:** **RATIFIED 2026-08-07** after **two adversarial review rounds**
-(nine findings then six, eight blocking in total), all now carried in the
-document; **AMENDED 2026-08-07** three times, all before dispatch: **pin 10** (the
-unsatisfiable escape clause), **round 1's nine**, and **round 2's six**. **Not yet
-implemented. The pins are frozen — they may be executed, not edited.** A defect
-found during execution is **reported, not patched in place**.
+**Status:** **NOT RATIFIED. NOT DISPATCHABLE. Awaiting independent review round 3
+against `b842975`.**
 
-> **Round 2 was run against the frozen contract and found four more blocking
-> defects, two of them created by round 1's own amendments.** Ratifying after a
-> single round was premature. A third round is warranted before dispatch by the
-> same reasoning that justified the second — the format-epoch rung took four, and
-> **the defect rate here has not yet fallen**: round 1 found nine, round 2 found
-> six. Treat "dispatchable" as a claim requiring evidence of convergence, not a
-> status reached by running out of findings.
+**Round 1's ratification is WITHDRAWN.** It was claimed on 2026-08-07 after a
+single round; round 2 then found four more blocking defects against the
+supposedly frozen text, two of them introduced by round 1's own amendments. A
+ratification that a subsequent round falsifies that quickly was not a
+ratification, and leaving the claim standing would make the status field mean
+nothing.
+
+**The pins are therefore NOT frozen.** They are open to round 3's findings.
+Freezing follows ratification; it does not precede it, and it does not survive a
+withdrawal. **No execution work may begin** — not implementation, not staging,
+not partial work against "the settled pins."
+
+**History:** amended three times on 2026-08-07, all before dispatch — **pin 10**
+(the unsatisfiable escape clause), **round 1's nine findings**, **round 2's six**.
+Fifteen findings so far, eight of them blocking. Both prior rounds were run by
+the same agent that authored the amendments under review; **round 3 is
+independent, and is the first that will not be.**
+
+**What round 3 should weigh, stated against interest:** the defect rate has not
+fallen — nine, then six — and the format-epoch rung took four rounds to
+converge. Two of round 2's four blocking findings were *caused* by round 1, which
+means the amendment process itself is a defect source and not only a defect sink.
+**Treat "dispatchable" as a claim requiring evidence of convergence, not a status
+reached by running out of findings.**
 
 (Was: DRAFT, BLOCKED on the format-epoch rung,
 `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, which at the time was ratified and in
@@ -79,11 +92,18 @@ pin 2a. This contract additionally **inherits three obligations** from that rung
 demonstration, and pin 3c's two suspended conformance assertions) — recorded in
 the same place.
 
-**It became dispatchable when the format rung landed, not before — and that has
+**Its dependency cleared when the format rung landed, not before — and that has
 now happened.** This is no longer bounded analysis. Pin 2a's original prohibition
 stands for the record: it was never amended into a disposition from inside this
 contract, and the resolution above came from outside, which is exactly what the
 prohibition required.
+
+> **Two senses of "dispatchable", disambiguated 2026-08-07 — this sentence
+> previously used the wrong one.** *Unblocked* means the dependency chain has
+> cleared: true since `bc06706`. *Dispatchable* means ratified and frozen and
+> therefore ready to execute: **false**, and see the status block. This rung is
+> **unblocked but not dispatchable**. Round 1 read the first as the second, which
+> is how it came to be ratified after a single round.
 
 **Rung type:** **capability + API change.** No wire bytes move and no schema
 major or minor changes — `BundleError` has no discriminant and no encoder
