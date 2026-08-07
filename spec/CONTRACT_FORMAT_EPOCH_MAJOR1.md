@@ -1,9 +1,13 @@
 # Contract — Format epoch: container major 1
 
-**Status:** **RATIFIED 2026-07-31**, after four adversarial review rounds. Not
-yet implemented; not yet dispatched. **The pins below are frozen** — they may
-not be edited, only executed. A defect found during execution is reported, not
-patched in place.
+**Status:** **RATIFIED** after four adversarial review rounds; **AMENDED
+2026-08-07** in a ratified forward amendment of its own — pin 3c, touch rows 10
+and 11, gate 8 — closing a gap found by reconnaissance before dispatch: pin 3a's
+refusals reach a conformance-suite criterion through a file the touch table did
+not carry. Not yet implemented. **The pins are otherwise frozen** — they may be
+executed, not edited. A defect found during execution is **reported, not patched
+in place**; that is how pin 3c came to exist rather than being absorbed silently
+into the work.
 
 **Track:** format epoch. **Not a Pass 13 rung.** `P13-S28` is its dependency
 record in `spec/PASS13_CANDIDATES.md` and points here; this contract is where
@@ -335,6 +339,67 @@ reject** after pin 3b while their declared class is *informative only*
 (`vectors.rs:67`), so `reject_classes` would keep counting them long after the
 predicate each names went untested.
 
+**Pin 3c — the interval's conformance cost is bounded, marked, and owed back.
+AMENDED 2026-08-07, after ratification, on a finding from execution
+reconnaissance.**
+
+Pin 3a's refusals close **every** path to a base-bearing container, which the
+pins did not say out loud: `create` already rejects a base-bearing manifest
+(`bundle.rs:233`–`:240`), row 3 refuses committing one into major 0 and row 6i
+into major 1, and rows 2 and 5i refuse *opening* one in either epoch. So for the
+S28 → P13-S27 interval **no bundle anywhere may carry a canonical base** — in
+production, in tests, or in the conformance suite.
+
+That reaches one file outside the original touch table and one criterion:
+`roundtrip::assert_reduction_serialization_stable` (`roundtrip.rs:241`, base
+declared at `:270`) is criterion 4's bookkeeping-projection counterpart
+(`testkit/src/lib.rs:86`), driven from `tests/acceptance.rs:135` and
+`examples/conformance_suite.rs:60`. It commits the canonical state **as the
+canonical base** and reopens the image; pin 3a refuses both halves. Gate 1 could
+not have passed, and §6 would have forbidden staging the fix.
+
+**Only the canonical-base wiring is suspended. Criterion 4's cycle keeps
+running.** The finding was first reported as "the assertion can only be
+suspended" — **too strong, and verified false before this pin was written.** The
+serialize → load → decode → reserialize cycle does not depend on the snapshot
+being the *canonical base*: `read_chunk` (`bundle.rs:509`–`:511`) hash-verifies
+any `ChunkRef` through `read_and_verify_chunk` (`:1002`). The harness therefore
+keeps committing the snapshot chunk and reads it back by its ref; the criterion
+survives intact.
+
+**Exactly two assertions lapse, both canonical-base-specific:**
+
+1. `verify_canonical_chunks`'s base branch (`bundle.rs:613`–`:621`), including
+   the `base.hash != base.root.hash` cross-check;
+2. the reopened manifest actually carrying the base (`roundtrip.rs:293`–`:297`).
+
+**Do NOT re-home the snapshot to `acceleration_snapshots`.** That field appears
+**nowhere** in `bundle.rs` — not in `open`, not in `verify_canonical_chunks` —
+so the reference would verify nothing while looking like preserved coverage.
+This is the single most tempting wrong repair here, and it is forbidden.
+
+**The lapse is marked, never absorbed:**
+
+- at the point the base declaration is removed, a comment naming **P13-S27** and
+  this pin;
+- the harness's doc paragraph (`roundtrip.rs:228`–`:240`) describing the
+  canonical base as the snapshot's "correct semantic home" is **amended to state
+  the suspension, not deleted** — a deleted paragraph leaves S27 nothing to
+  restore against;
+- both lapsed assertions are recorded as **owed** in S27's contract (touch
+  row 9), beside pin 8 and M8's deferred demonstration.
+
+`testkit/benches/bundle.rs:104` (`build_fixture`, base at `:133`) takes the same
+treatment. It is the `[[bench]] name = "bundle"` target and **not** the
+out-of-bounds `editor_pipeline.rs`.
+
+**One trap, named because it will be met.** `bundle.rs:1487`
+(`a_canonical_base_stamped_above_major_0_opens_read_only`) both commits a base —
+so it breaks — and asserts **read-only + anomaly** for a base fault. It is on a
+different axis (data-model schema major, not container format major) and does
+**not** contradict pin 4. Do not "harmonize" pin 4's errors toward it; pin 4
+forbids read-only for all three of its errors.
+
 **Pin 4 — THREE distinct errors, and none is read-only.**
 An earlier draft specified two, then pin 3a introduced a third without amending
 this pin — leaving the error inventory, gate 6 and M11 all describing a
@@ -432,7 +497,9 @@ until this contract lands.
 | 6 | `spec/binary_format.tex` (+ `.pdf`) | pin 7 |
 | 7 | `spec/core_spec.tex` (+ `.pdf`) | pin 7 |
 | 8 | `spec/PASS13_CANDIDATES.md` | pin 9 |
-| 9 | `spec/CONTRACT_P13S27_REDUCTION_AUTHORITY.md` | **mandatory** — pin 8's major-1 precondition (resolving S27's open pin 2a) **and** M8's deferred laundering demonstration. Still a DRAFT, so editable; **not** one of the ratified contracts that may not be touched |
+| 9 | `spec/CONTRACT_P13S27_REDUCTION_AUTHORITY.md` | **mandatory** — pin 8's major-1 precondition (resolving S27's open pin 2a), M8's deferred laundering demonstration, **and pin 3c's two owed-back conformance assertions**. Still a DRAFT, so editable; **not** one of the ratified contracts that may not be touched |
+| 10 | `crates/epiphany-testkit/src/roundtrip.rs` | **pin 3c** — criterion 4's canonical-base wiring suspended and marked; the cycle itself preserved via a direct `ChunkRef` read |
+| 11 | `crates/epiphany-testkit/benches/bundle.rs` | **pin 3c** — `build_fixture` (`:104`) stops declaring a canonical base at `:133`. **Not** `benches/editor_pipeline.rs`, which is out of bounds |
 
 **`spec/vectors/decode_vectors.txt` is NOT touched** (§0.3). If a change appears
 to require regenerating *that* file, stop and report — it would mean something
@@ -595,6 +662,12 @@ third error rather than any repack error.
    three new errors shown not to appear in any branch that sets it.
 7. `FORMAT_MAJOR == 1` and `FORMAT_MINOR == 0`, asserted in a test, not only by
    reading the constants.
+8. **No surviving base-declaring site outside a crafted-image fixture or a
+   refusal test** (pin 3c): `grep -rn "canonical_base = Some\|canonical_base:
+   Some" crates/ --include='*.rs'` reviewed hit by hit, each remaining one
+   classified as (a) a hand-built image fixture, (b) a test asserting a refusal,
+   or (c) the text corpus under pin 3b. **Any hit that is a live `commit` path
+   is a failure** — it means a base-bearing container is still being minted.
 
 ---
 
@@ -642,7 +715,8 @@ any of pin 4's three errors.
    failures** (major-0 and major-1 halves) reported separately; and **M8's
    fall-through error named**, confirming it reached pin 3a's interim guard
    rather than a successful serialization.
-2. The seven gate results, each with its command.
+2. The **eight** gate results, each with its command — gate 8's hits classified
+   one by one, not summarized.
 3. The staged file list and the test-count delta with its cause.
 4. The **eleven** tests by name, with 2/3, 2/7, and 4/11-vs-both-legacy-errors
    each shown to produce **different** errors.
@@ -654,7 +728,11 @@ any of pin 4's three errors.
    questions.
 6. Confirmation that **no repack flow and no read-only path** were added, and
    that pin 3a's refusal is marked temporary in code with P13-S27 named.
-6b. The two additions to `spec/CONTRACT_P13S27_REDUCTION_AUTHORITY.md` (touch
-   row 9), quoted: pin 8's major-1 precondition and M8's deferred laundering
-   demonstration.
+6b. The **three** additions to `spec/CONTRACT_P13S27_REDUCTION_AUTHORITY.md`
+   (touch row 9), quoted: pin 8's major-1 precondition, M8's deferred laundering
+   demonstration, and pin 3c's two owed-back conformance assertions.
+6c. Pin 3c's suspension, shown in the diff: the marker naming P13-S27, the
+   **amended** (not deleted) doc paragraph, and confirmation that criterion 4's
+   serialize → load → decode → reserialize cycle still runs via a direct
+   `ChunkRef` read — **and that `acceleration_snapshots` was not used**.
 7. Anything contradicting this contract.
