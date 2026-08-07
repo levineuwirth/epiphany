@@ -557,14 +557,42 @@ pub fn document_from_bundle<S: BlockStore>(
 // TextDocument -> text.
 // ===========================================================================
 
-/// Projects a whole [`TextDocument`] to its canonical text: the header, then
-/// every present section in the normative `projection` sequence (header,
+/// Projects a whole [`TextDocument`] to its canonical text, refusing a
+/// base-bearing document (`CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 3b).
+///
+/// This is the **document-level** half of pin 3b's projection refusal.
+/// [`document_from_bundle`] guards the bundle-level half, but guarding only
+/// that one left the refusal asymmetric in a way the pin forbids: this
+/// function is public and takes a directly constructed [`TextDocument`], so a
+/// caller that never touches a [`Bundle`] could mint text carrying a
+/// `(canonical-base ...)` line — text that [`crate::parse::parse_document`]
+/// then rejects. A projector able to emit what the parser refuses is exactly
+/// the asymmetry pin 3b exists to close, and `req:textproj:roundtrip`'s second
+/// equation quantifies over every valid text.
+///
+/// Sections are written in the normative `projection` sequence (header,
 /// document, lineage?, profile*, extension*, canonical-base?, blob*,
 /// envelope*), one line per element, each terminated by a single LF
 /// (`req:textproj:envelope-per-line`). Section order is normative and is
-/// simply the order this function writes in; it introduces no ordering of its
-/// own beyond `req:textproj:derived-ordering`'s blob sort.
-pub fn project_text_document(document: &TextDocument) -> String {
+/// simply the order [`render_text_document`] writes in; it introduces no
+/// ordering of its own beyond `req:textproj:derived-ordering`'s blob sort.
+pub fn project_text_document(document: &TextDocument) -> Result<String, ProjectError> {
+    if document.canonical_base.is_some() {
+        return Err(ProjectError::CanonicalBaseUnsupported);
+    }
+    Ok(render_text_document(document))
+}
+
+/// Renders a [`TextDocument`] to text **without** pin 3b's refusal, so it will
+/// emit a `(canonical-base ...)` line when the document carries one.
+///
+/// Deliberately **not public**. Its only legitimate caller is the corpus's
+/// `canonical_base_present` negative vector, which must contain the base
+/// spelling in order to assert that a parser refuses it — the spelling has to
+/// be produced by something, and producing it is not the same as permitting
+/// it. Every other caller goes through [`project_text_document`], which
+/// refuses first.
+pub(crate) fn render_text_document(document: &TextDocument) -> String {
     let mut lines: Vec<Sexp> = Vec::new();
     lines.push(project_header());
     lines.push(project_document(
@@ -596,7 +624,7 @@ pub fn project_text_document(document: &TextDocument) -> String {
 /// Composes both stages: reads `bundle` into a [`TextDocument`], then projects
 /// it to its canonical text.
 pub fn project_bundle<S: BlockStore>(bundle: &Bundle<S>) -> Result<String, ProjectError> {
-    Ok(project_text_document(&document_from_bundle(bundle)?))
+    project_text_document(&document_from_bundle(bundle)?)
 }
 
 #[cfg(test)]
@@ -1045,7 +1073,8 @@ mod tests {
     fn projected_text_never_emits_a_blob_line_and_orders_sections_correctly() {
         let bundle = build_sample_bundle();
         let document = document_from_bundle(&bundle).expect("bundle reads cleanly");
-        let text = project_text_document(&document);
+        let text =
+            project_text_document(&document).expect("this fixture carries no canonical base");
 
         assert!(
             !text.lines().any(|line| line.starts_with("(blob ")),
@@ -1080,7 +1109,8 @@ mod tests {
     fn project_bundle_composes_both_stages() {
         let bundle = build_sample_bundle();
         let via_two_stages =
-            project_text_document(&document_from_bundle(&bundle).expect("bundle reads cleanly"));
+            project_text_document(&document_from_bundle(&bundle).expect("bundle reads cleanly"))
+                .expect("the sample bundle carries no canonical base");
         let via_one_call = project_bundle(&bundle).expect("bundle reads cleanly");
         assert_eq!(via_one_call, via_two_stages);
     }
@@ -1168,6 +1198,49 @@ mod tests {
             reject_canonical_base(&manifest),
             Err(ProjectError::CanonicalBaseUnsupported)
         ));
+    }
+
+    #[test]
+    fn projecting_a_base_bearing_text_document_is_refused() {
+        // Pin 3b's projection side, on the half that a caller can actually
+        // reach today. `project_text_document` is public and takes a directly
+        // constructed `TextDocument`, so guarding only `document_from_bundle`
+        // left the refusal asymmetric: this path could emit a
+        // `(canonical-base ...)` line that `parse_document` then rejects, and
+        // a projector able to produce what the parser refuses is exactly what
+        // pin 3b forbids. Unlike the bundle-level guard above, this one needs
+        // no live `Bundle` and is therefore reachable by any caller of this
+        // crate.
+        let document = TextDocument {
+            document_id: DocumentId([7; 16]),
+            manifest_schema_version: SchemaVersion::V0,
+            lineage_id: None,
+            profiles: vec![ProfileDeclaration::full()],
+            extensions: Vec::new(),
+            canonical_base: Some(TextCanonicalBase {
+                snapshot_id: SnapshotId([7; 16]),
+                covers_causal_frontier: FrontierBytes::empty(),
+                reduction_algorithm_version: ReductionAlgorithmVersion(0),
+                profile_id: ProfileId::Full,
+                root_schema_version: SchemaVersion::V0,
+                root_payload: b"snapshot-root".to_vec(),
+            }),
+            blobs: Vec::new(),
+            envelopes: Vec::new(),
+        };
+        assert!(matches!(
+            project_text_document(&document),
+            Err(ProjectError::CanonicalBaseUnsupported)
+        ));
+
+        // And the crate-private formatter still emits the base line — the
+        // corpus's negative vector depends on it. The refusal is a property of
+        // the public projector, not of the renderer: if this ever stops
+        // emitting the section, the `canonical_base_present` reject vector
+        // silently stops carrying the spelling it exists to reject.
+        assert!(render_text_document(&document)
+            .lines()
+            .any(|line| line.starts_with("(canonical-base ")));
     }
 
     // -----------------------------------------------------------------

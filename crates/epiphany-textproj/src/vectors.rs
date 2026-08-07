@@ -32,7 +32,7 @@ use epiphany_ops::{
 };
 
 use crate::parse::parse_document;
-use crate::project::{project_bundle, project_text_document};
+use crate::project::{project_bundle, project_text_document, render_text_document};
 use crate::serialize::serialize_document;
 use crate::{TextCanonicalBase, TextChunk, TextDocument, TextExtension};
 
@@ -468,28 +468,52 @@ fn accept_documents() -> Vec<(&'static str, String)> {
     };
 
     vec![
-        ("minimal", project_text_document(&minimal)),
-        ("set_tuning_context", project_text_document(&tuning_context)),
+        (
+            "minimal",
+            project_text_document(&minimal).expect("an accept document carries no canonical base"),
+        ),
+        (
+            "set_tuning_context",
+            project_text_document(&tuning_context)
+                .expect("an accept document carries no canonical base"),
+        ),
         (
             "lineage_custom_profile",
-            project_text_document(&lineage_custom),
+            project_text_document(&lineage_custom)
+                .expect("an accept document carries no canonical base"),
         ),
         (
             "extension_base_two_envelopes",
-            project_text_document(&extension_two_envelopes),
+            project_text_document(&extension_two_envelopes)
+                .expect("an accept document carries no canonical base"),
         ),
-        ("rich_document", project_text_document(&rich)),
-        ("create_staff_group", project_text_document(&staff_group)),
+        (
+            "rich_document",
+            project_text_document(&rich).expect("an accept document carries no canonical base"),
+        ),
+        (
+            "create_staff_group",
+            project_text_document(&staff_group)
+                .expect("an accept document carries no canonical base"),
+        ),
         (
             "create_part_definition",
-            project_text_document(&part_definition),
+            project_text_document(&part_definition)
+                .expect("an accept document carries no canonical base"),
         ),
         (
             "create_analysis_layer",
-            project_text_document(&analysis_layer),
+            project_text_document(&analysis_layer)
+                .expect("an accept document carries no canonical base"),
         ),
-        ("create_view", project_text_document(&view)),
-        ("create_measure", project_text_document(&measure)),
+        (
+            "create_view",
+            project_text_document(&view).expect("an accept document carries no canonical base"),
+        ),
+        (
+            "create_measure",
+            project_text_document(&measure).expect("an accept document carries no canonical base"),
+        ),
     ]
 }
 
@@ -679,6 +703,13 @@ pub fn document_vectors() -> Vec<TextVector> {
     // built from the pre-change base-bearing spelling, so the corpus keeps a
     // base-bearing text as a negative rather than losing the spelling
     // entirely.
+    //
+    // This is the one legitimate caller of `render_text_document`, the
+    // crate-private formatter that skips pin 3b's projection refusal:
+    // `project_text_document` now refuses a base-bearing document, and a
+    // negative vector still has to *contain* the spelling it asserts is
+    // refused. Producing the bytes is not the same as permitting them — every
+    // other vector above goes through the checked projector.
     let canonical_base_present = TextDocument {
         document_id: DocumentId([11; 16]),
         manifest_schema_version: SchemaVersion::V0,
@@ -694,7 +725,7 @@ pub fn document_vectors() -> Vec<TextVector> {
         "reject",
         "canonical-base-unsupported",
         "canonical_base_present",
-        project_text_document(&canonical_base_present).into_bytes(),
+        render_text_document(&canonical_base_present).into_bytes(),
     ));
 
     vectors
@@ -992,7 +1023,8 @@ mod tests {
             let document =
                 parse_document(&text).unwrap_or_else(|e| panic!("{name} must parse: {e}"));
             assert_eq!(document.envelopes.len(), 1, "{name} carries one envelope");
-            let reprojected = project_text_document(&document);
+            let reprojected = project_text_document(&document)
+                .expect("an accept document carries no canonical base");
             assert_eq!(
                 reprojected, text,
                 "{name}: project(serialize(parse(T))) == T must hold"
@@ -1026,7 +1058,8 @@ mod tests {
             .1;
         let document = parse_document(&text).unwrap_or_else(|e| panic!("{name} must parse: {e}"));
         assert_eq!(document.envelopes.len(), 1, "{name} carries one envelope");
-        let reprojected = project_text_document(&document);
+        let reprojected =
+            project_text_document(&document).expect("an accept document carries no canonical base");
         assert_eq!(
             reprojected, text,
             "{name}: project(serialize(parse(T))) == T must hold"
