@@ -1,9 +1,18 @@
 # Contract — P13-S27: the reduction version gets an outside witness
 
-**Status:** DRAFT — **BLOCKED on the format-epoch rung**
-(`spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`), which is **ratified and in
-implementation** but has not yet landed. Pins 1 and 3–10 are settled, internally
-consistent, and ratifiable as a plan.
+**Status:** DRAFT — **UNBLOCKED and dispatchable as of 2026-08-07**; **AMENDED
+2026-08-07 (pin 10)**, before dispatch and before ratification. (Was: BLOCKED on
+the format-epoch rung, `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, which at the time
+was ratified and in implementation but had not yet landed.) **That rung landed at
+`bc06706`**, with its pin-3b follow-up at `be244df`. Pins 1 and 3–10 are settled,
+internally consistent, and ratifiable as a plan.
+
+**The pin 10 amendment**, recorded here so it is not read as the original: pin 10
+made P13-S16's opening conditional on pin 2a being *"ratified and tested **within
+this rung**"* — a condition that the only route pin 2a permitted, resolution from
+outside, could never satisfy. Ratification is now sourced correctly. The
+*tested* half is **not** waived: it is carried by this rung's inherited
+obligations rather than dropped. See pin 10.
 
 **Pin 2a is RESOLVED as of 2026-08-07** — from outside this rung, by that
 contract's pin 8, exactly as its prohibition required. Legacy bases are refused
@@ -13,9 +22,11 @@ pin 2a. This contract additionally **inherits three obligations** from that rung
 demonstration, and pin 3c's two suspended conformance assertions) — recorded in
 the same place.
 
-**It becomes dispatchable when the format rung lands, not before.** Until then
-this remains bounded analysis. Pin 2a's original prohibition stands for the
-record: it was never amended into a disposition from inside this contract.
+**It became dispatchable when the format rung landed, not before — and that has
+now happened.** This is no longer bounded analysis. Pin 2a's original prohibition
+stands for the record: it was never amended into a disposition from inside this
+contract, and the resolution above came from outside, which is exactly what the
+prohibition required.
 
 **Rung type:** **capability + API change.** No wire bytes move and no schema
 major or minor changes — `BundleError` has no discriminant and no encoder
@@ -426,15 +437,39 @@ behaviour normatively, and a Revision History row. There is **no** existing
 "requires rebuild" error language in either document — verified — so this is new
 prose, not an amendment.
 
-**Pin 10 — the ledger.**
+**Pin 10 — the ledger. AMENDED 2026-08-07, before dispatch, on a finding from
+the machine-move review.**
 `spec/PASS13_CANDIDATES.md`: P13-S27 → RESOLVED, recording both rulings, the
 baseline-0 decision, the writer-path correction of §0.4, and **whichever
-legacy-base disposition pin 2a settles on**.
+legacy-base disposition pin 2a settles on** — which, as of 2026-08-07, is the
+container epoch, settled from outside this rung.
 
-**P13-S16's row does NOT become dispatchable on this rung alone.** It moves from
-"blocked on P13-S27" to "blocked on the pin-2a legacy disposition" unless 2a is
-ratified and tested within this rung, in which case it opens and its row records
-that its first act is bumping the authority past the baseline.
+**The original clause, retained for the record:** *"P13-S16's row does NOT become
+dispatchable on this rung alone. It moves from 'blocked on P13-S27' to 'blocked
+on the pin-2a legacy disposition' unless 2a is ratified and tested within this
+rung, in which case it opens and its row records that its first act is bumping
+the authority past the baseline."*
+
+**Why it is amended.** Pin 2a *was* ratified — through the format-epoch
+contract's four adversarial rounds — but **outside** this rung, which is exactly
+what pin 2a's own prohibition demanded: it forbade being amended into a
+disposition from inside this contract. So the clause's literal condition
+("within this rung") could never be satisfied by the only route pin 2a permitted,
+and read literally pin 10 would have the ledger record S16 as still blocked on a
+disposition that is settled. The condition was written when an inside resolution
+still looked possible.
+
+**As amended:** P13-S16's row becomes **dispatchable when this rung lands**. Pin
+2a's disposition is settled, so the row moves from "blocked on P13-S27" straight
+to open, and records that its first act is bumping the authority past the
+baseline.
+
+**The "tested" half is not waived by this amendment.** Ratification came from
+outside; testing did not, and cannot — no other rung exercises this authority.
+It is discharged by this rung's own inherited obligations, in particular
+converting **both** interim refusals to real capability validation. **The ledger
+row may not record S16 as open until those land with this rung**; ratification of
+2a alone does not open it.
 
 ---
 
