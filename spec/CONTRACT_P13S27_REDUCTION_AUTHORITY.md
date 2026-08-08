@@ -59,7 +59,62 @@ cannot leave one unrestored.
 byte-identical, M7's whole-image comparison is unsound **regardless of bases**,
 and round 10's fix is wrong too. If it **is**, the comparison design survives its
 first contact with the code and only the base leg remains unverified — pending
-S27. **No execution work may begin** — not implementation, not staging,
+S27.
+
+### Probe RESULT — run 2026-08-08 on a discarded branch. It falsified round 10.
+
+**Verdict: the round trip is byte-preserving, but ONLY from a fixed point — and
+round 10's comparison did not compare from one.**
+
+| Case | `original` already a fixed point? | Round 10's comparison | From the fixed point |
+|---|---|---|---|
+| minimal, seed 42 | **yes** | **equal** (1641 B) | equal |
+| minimal, seed 99 | no | *not run* | equal (1800 B) |
+| with one extension | no | **295 differing bytes from offset 352** | equal (1894 B) |
+
+**Round 10's design compared `A` against a `B` built from the *input* document,
+which is only valid when that document is already a fixed point of
+`document_from_bundle ∘ serialize_document`.** `minimal_document(42)` happens to
+be one — which is why the first probe passed and would have been reported as
+success. **Two of three documents were not, and the extension case diverged by
+295 bytes.**
+
+**The non-idempotent field is `envelopes`, not extensions.** Diagnosed
+field-by-field: `document_id`, `manifest_schema_version`, `lineage_id`,
+`profiles`, `canonical_base`, `blobs` and **`extensions` — including every
+`TextChunk` payload — all survive exactly.** `document_from_bundle` applies a
+**canonical envelope ordering** (its own test is named
+`document_from_bundle_reads_every_section_and_orders_envelopes_canonically`), so a
+document whose envelopes arrive in any other order is not a fixed point, and its
+operation-block bytes differ.
+
+**`project_text_document` → `parse_document` is LOSSLESS**: `b_doc == d` held in
+every case. The text leg was never the problem. **The defect was entirely in which
+artifact round 10 chose as the reference.**
+
+**What M7 must therefore add — for round 11 to ratify, not for this probe to
+assume:** an explicit **fixed-point normalisation and assertion** before any byte
+comparison — build `B` from `document_from_bundle(serialize_document(doc))`, and
+**assert that document is a fixed point** — because otherwise a mismatch is round
+10's own "third category", a deterministic setup difference, and unclassifiable.
+
+**Probe hygiene, recorded because the discipline demands it:** the comparison was
+**mutation-verified** — giving `A` a different `FileUuid` produced **20 differing
+bytes at offsets 32–47 and 60–63**, observed, then restored by hand-editing.
+(Incidentally confirming round 9's finding: `FixedHeader.file_uuid` is
+byte-visible at offset 32, and round 8's enumeration had omitted it.) The probe
+touched **one file, 142 insertions, all inside `#[cfg(test)]`**; removed **no**
+refusal (`CanonicalBaseUnsupported` occurrences unchanged at 7 and 8); carried
+**no** canonical base, so §1.2 was never engaged; and the branch was deleted. **The
+diff was captured before deletion.**
+
+> **The methodological point, stated plainly.** Four paper rounds refined this
+> comparison and none found that it silently depended on an unstated
+> precondition. **One execution found it in minutes, and found it via the case a
+> reviewer would least likely hand-pick — a document with an extension.** M7's
+> first probe *passed*; had the probe stopped at the case round 10 implied, the
+> contract would have been ratified on a comparison that fails for most
+> documents. **No execution work may begin** — not implementation, not staging,
 not partial work against "the settled pins."
 
 **History — the running tally, which has now gone stale three times and been
