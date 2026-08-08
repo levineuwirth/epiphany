@@ -35,7 +35,8 @@ rows — read it off, do not restate it.
 | round 6 | 3 | 3 | **yes** |
 | round 7 | 3 | 3 | **yes** |
 | round 8 | 2 | 2 | **yes** |
-| **Total** | **38** | **26** | one amendment per row |
+| round 9 | 2 | 2 | **yes** |
+| **Total** | **40** | **28** | one amendment per row |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -176,7 +177,7 @@ its bookkeeping.**
 
 | # | Finding | Disposition |
 |---|---|---|
-| 1 | **M7 did not describe a runnable observation.** It said to *construct* a `TextDocument`, which **bypasses `parse_document` entirely** — so the parser refusal it ordered removed was irrelevant, and the demonstration was not the *import* laundering it is named for. `project_text_document` is the **export** direction (`&TextDocument -> Result<String,_>`) and is not on the path at all, so "all three sides, since removing one leaves the others refusing" was false for it. And "byte-indistinguishable from one whose base was genuinely validated" named **no comparison artifact and no comparison method** | Input must now be **text, parsed**; only the parser and serializer refusals are removed; the comparison artifact is test 10b's construction with matching `FileUuid` and base bytes; and the comparison is a **field-by-field enumeration**, reported rather than concluded |
+| 1 | **M7 did not describe a runnable observation.** It said to *construct* a `TextDocument`, which **bypasses `parse_document` entirely** — so the parser refusal it ordered removed was irrelevant, and the demonstration was not the *import* laundering it is named for. `project_text_document` is the **export** direction (`&TextDocument -> Result<String,_>`) and is not on the path at all, so "all three sides, since removing one leaves the others refusing" was false for it. And "byte-indistinguishable from one whose base was genuinely validated" named **no comparison artifact and no comparison method** | Input must now be **text, parsed**; only the parser and serializer refusals are removed. *(The comparison artifact and method round 8 specified were both **superseded by round 9** — see its row. Read M7 for the current ones.)* |
 | 2 | **The round-7 deduplication was incomplete** — the status block still carried "rounds 3 and 4 are closed" while declaring the history table the sole authority | Deleted |
 
 **Finding 1 is the most substantive of any round**, because every earlier one was
@@ -190,16 +191,43 @@ in the right register can look complete for a long time.**
 mode this rung exists to eliminate, sitting inside its own demonstration since
 round 1.
 
-**What round 9 should weigh, stated against interest:** findings by round are
-**9, 6, 6, 5, 4, 3, 3, 2**; blocking **4, 4, 4, 4, 2, 3, 3, 2**. Eight rounds, no
-clean round yet. Round 8 also **found a defect in round 7's own remedy** — and
-while amending, the author found a *third* instance unaided (§7 item 4a's M7 row
-still said "all three refusals"), which is weak evidence the deduplication rule is
-starting to be applied rather than merely stated. **The M7 rewrite is the newest
-and least-reviewed material in the contract, and its predecessor survived seven
-rounds while being unrunnable.** Assume the same is possible of this one. **Treat
-"dispatchable" as a claim requiring evidence of convergence, not a status reached
-by running out of findings.**
+**Review round 9 — 2026-08-08, independent, against `01e76d1`.** Two findings,
+both blocking, **both in M7's comparator — the text round 8 had just rewritten.**
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | **Test 10b is not a "genuinely validated" reference.** Its write-side capability is `synthetic_for_fixture(0)`; only its *reopen* uses the real authority. M7 would have compared one synthetic fixture against another, with the validated half of the claim simply absent | M7 now **builds its own reference** in `epiphany-testkit`: commit a base under `caps` derived from the real constant, so pin 3a validates it on the way in |
+| 2 | **The field enumeration could not support its conclusion.** It claimed "everything that could carry provenance" while omitting `FixedHeader.file_uuid` — **the field it required to match** — plus the superblock's `generation`, `manifest_offset`, `manifest_length`, `manifest_hash`, and the manifest outside `canonical_base` | Replaced with **whole-`image()` byte comparison**, with any difference enumerated and classified rather than assumed |
+
+**Finding 1 is a collision between two of this contract's own designs, not a
+typo.** Round 4 made test 10b synthetic-on-write **deliberately**, so M5b's two
+operands would be provably independent — and that is precisely what disqualifies
+it as a validated reference. **One artifact cannot be both independent of the real
+authority and committed under it.** Round 8 reused a fixture by name without
+re-reading what it had been built to be, which is a failure mode no amount of
+care about *wording* would have caught.
+
+**Finding 2 retires a technique, not just an instance.** A hand-written list of
+"every field" is a claim about a struct's contents that is wrong the moment the
+struct changes — and this one was wrong the day it was written, omitting the very
+field it depended on. **Comparing the whole artifact cannot be incomplete.** That
+is the tables-over-numbers lesson applied to the experiment rather than the prose:
+*let the artifact defend itself instead of enumerating it correctly.*
+
+**Three further sites were found by the author while amending** — §7 item 6 still
+said "M7's three text refusals" (surviving round 8's correction of that exact
+count in two other places), §7 item 4a's M7 row still named the superseded method,
+and round 8's own disposition cell stated it as current. All now point at M7
+rather than restating it.
+
+**What round 10 should weigh, stated against interest:** findings by round are
+**9, 6, 6, 5, 4, 3, 3, 2, 2**; blocking **4, 4, 4, 4, 2, 3, 3, 2, 2**. Nine
+rounds, none clean. **Rounds 8 and 9 both found defects in the immediately
+preceding round's rewrite of the same paragraph**, so M7 has now been wrong in
+three distinct ways across three consecutive rounds — unrunnable, then
+wrong-artifact, then wrong-method. The comparator is now on its third design and
+has never been executed. **Treat "dispatchable" as a claim requiring evidence of
+convergence, not a status reached by running out of findings.**
 
 (Was: DRAFT, BLOCKED on the format-epoch rung,
 `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, which at the time was ratified and in
@@ -1333,24 +1361,63 @@ an external document can do is the entire threat. Write a `(canonical-base ...)`
 document as **text**, whose raw `reduction_algorithm_version` **happens to equal**
 `CURRENT_REDUCTION_ALGORITHM_VERSION`, and parse it.
 
-**The comparison artifact, which round 1 never named.** "Indistinguishable from
-one whose base was genuinely validated" requires a *second* bundle to be
-indistinguishable *from*. Build it by **test 10b's construction** — a base
-committed under a capability that validated it — with the **same `FileUuid` and
-the same base bytes** as the laundered one, so nothing legitimately differs.
+**The comparison artifact — built by M7 itself. CORRECTED IN ROUND 9.**
 
-**The comparison method, which round 1 also never named.** Enumerate and assert
-field-by-field equality of everything that could carry provenance:
+> **Round 8 nominated test 10b's construction, and 10b cannot serve.** Its
+> write-side capability is `synthetic_for_fixture(0)`; **only its reopen uses the
+> real authority.** So its base was never committed under the real constant, and
+> comparing against it compares one synthetic fixture with another — the
+> "genuinely validated" half of the claim would simply be absent.
+>
+> **This is a collision between two of this contract's own designs.** Round 4
+> made 10b synthetic-on-write *deliberately*, so that M5b's two operands would be
+> provably independent. That is exactly what disqualifies it here. **One artifact
+> cannot be both "independent of the real authority" and "committed under the
+> real authority."** Round 8 reused a fixture by name without re-reading what it
+> was built to be.
 
-- the manifest's `canonical_base` `SnapshotRef` — **every** field, not the struct
-  as a whole (`snapshot_id`, `covers_causal_frontier`,
-  `reduction_algorithm_version`, `profile_id`, `hash`, `root`);
-- the superblock's `reduction_algorithm_version`;
-- the `FixedHeader`'s major and epoch.
+M7 therefore builds its **own** reference, in `epiphany-testkit`: create a bundle
+with `caps` derived from **`CURRENT_REDUCTION_ALGORITHM_VERSION`** and commit a
+canonical base carrying that same version, so pin 3a's writer check **validates
+it on the way in**. That — and only that — is a genuinely validated base.
 
-**Report the enumeration, not a verdict.** "Byte-indistinguishable" asserted as a
+Align every input between the two bundles: **same `FileUuid`, same base payload
+bytes, same schema versions, same generation.** Anything left differing is the
+subject of the observation.
+
+**The comparison method — whole artifacts, not a field list. CORRECTED IN ROUND
+9.**
+
+**Compare the complete `image()` bytes of both bundles.** If they are equal, the
+observation is made and nothing further is required.
+
+> **Round 8 specified a field enumeration and got it wrong**, which is why this
+> is no longer a list. It claimed to cover "everything that could carry
+> provenance" while omitting `FixedHeader.file_uuid` — **the very field it
+> required to match** — along with the superblock's `generation`,
+> `manifest_offset`, `manifest_length` and `manifest_hash`, and the whole of the
+> manifest outside `canonical_base`. **A hand-written list of "every field" is a
+> claim about a struct's contents that goes stale when the struct changes**, and
+> this one was wrong on the day it was written.
+>
+> **Comparing the whole artifact cannot be incomplete.** Same lesson as tables
+> over numbers, applied to the experiment instead of the prose: **let the artifact
+> defend itself rather than enumerating it correctly.**
+
+**If the images differ, do not stop and do not conclude.** Enumerate every
+differing byte range, resolve each to its field, and classify it:
+
+- **justified nondeterminism** — state the cause and why it cannot carry
+  provenance, then normalize it and re-compare; or
+- **a provenance signal** — a field that does distinguish a laundered base from a
+  validated one. **That is a finding, and a significant one**: the text refusal
+  may be stronger than it needs to be, and a future rung could use that field
+  instead. Report it; do not normalize it away.
+
+**Report the comparison, not a verdict.** "Byte-indistinguishable" asserted as a
 conclusion is precisely the reasoning-instead-of-observing this rung exists to
-stamp out — round 1 wrote the conclusion and specified no way to reach it.
+stamp out — round 1 wrote the conclusion and specified no way to reach it, and
+round 8 specified a way that could not support it.
 
 **What the observation must show, or it has not been made:** that the capability
 check does **not** fire, and that **no enumerated field differs** — the document
@@ -1479,7 +1546,7 @@ in §N" to a number.*
    | M5a | test **10a** fails, **plus** the provenance of the asserted operand |
    | M5b | test **10b** fails with both error fields asserted, **plus** the provenance of *both* operands |
    | M6 | test **5** fails (first half); test **9** fails (second half) |
-   | **M7** | **no test — its expected outcome is success.** It owes the field-by-field enumeration M7 specifies, and confirmation that the refusals M7 names as removed were restored. **Counts and file names live in M7, not here** — this cell said "all three refusals" and survived round 8's correction of that very claim by one grep |
+   | **M7** | **no test — its expected outcome is success.** It owes the comparison M7 specifies, and confirmation that the refusals M7 names as removed were restored. **Counts, methods and file names live in M7, not here** — this cell said "all three refusals" until round 8 and "field-by-field enumeration" until round 9, each time describing a method M7 no longer used |
 
    **M4 and M7 were unsatisfiable under the previous wording.** Item 1 already
    said both are "not a passing guard", yet this item demanded a test each
@@ -1525,7 +1592,10 @@ in §N" to a number.*
    fixed the "Rung type" paragraph, touch rows 2 and 5, and struck the
    `project.rs` production claim that made the table's textproj entries
    misleading. Both rounds are load-bearing here.)*
-6. **Confirmation that M7's three text refusals were restored**, and that none of
+6. **Confirmation that every refusal M7 removed was restored** — M7 names which,
+   and the count is not repeated here; it said "three" from round 1 until round 9
+   caught it, having survived round 8's correction of that same number in two
+   other places — and that none of
    `text_projection.tex`, `textproj/src/parse.rs`, `textproj/src/vectors.rs` or
    `textproj/src/lib.rs` appears in the staged diff.
 7. **Whether pin 9 minted a new requirement label**, and therefore whether touch
