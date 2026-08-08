@@ -114,7 +114,26 @@ diff was captured before deletion.**
 > reviewer would least likely hand-pick — a document with an extension.** M7's
 > first probe *passed*; had the probe stopped at the case round 10 implied, the
 > contract would have been ratified on a comparison that fails for most
-> documents. **No execution work may begin** — not implementation, not staging,
+> documents.
+
+**What the probe settled, and what it structurally cannot — the division stands
+as a standing prerequisite, not a to-do.**
+
+| Leg of M7 | Status |
+|---|---|
+| **Round-trip machinery** — is the text path byte-preserving, and under what precondition? | **SETTLED by the probe.** Byte-preserving from a fixed point; the precondition is now steps 1a–1c |
+| **Authority/base leg** — does a base validated under the real authority produce a container indistinguishable from a laundered one? | **NOT settled, and NOT pre-verifiable.** It requires `BundleCapabilities`, `capabilities()` and pin 3a's validation — **S27's own deliverables** |
+
+**No review round and no further probe can close the second row.** M7 is a
+mutation *of this rung's implementation*; mutations run after the rung. **It is
+therefore an execution requirement, to be discharged after S27 is implemented and
+before the rung reports** — carried in §7 as the observation M7 owes.
+
+**The probe's standing is evidence for the prerequisite, not partial completion of
+it.** It establishes that when the authority leg becomes runnable, the comparison
+it runs will be sound — *provided* steps 1a–1c hold. **Do not cite the probe as
+having demonstrated laundering. It demonstrated nothing about bases; it carried
+none.** **No execution work may begin** — not implementation, not staging,
 not partial work against "the settled pins."
 
 **History — the running tally, which has now gone stale three times and been
@@ -137,7 +156,9 @@ rows — read it off, do not restate it.
 | round 8 | 2 | 2 | **yes** |
 | round 9 | 2 | 2 | **yes** |
 | round 10 | 1 | 1 | **yes** |
-| **Total** | **41** | **29** | one amendment per row |
+| *scratch probe* | *1 falsification* | — | *execution, not review* |
+| round 11 | 3 | 2 | **yes** |
+| **Total** | **44** | **31** | one amendment per row |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -348,19 +369,36 @@ two removed refusals" instruction, whose count round 10's restructure invalidate
 for the third time (hence no count is stated now), and round 8's disposition cell
 still reading as current.
 
-**What round 11 should weigh, stated against interest:** findings by round are
-**9, 6, 6, 5, 4, 3, 3, 2, 2, 1**; blocking **4, 4, 4, 4, 2, 3, 3, 2, 2, 1**. Ten
-rounds, **none clean**, and **three consecutive rounds have found exactly one
-paragraph — M7 — defective in a new way each time**: unrunnable, wrong artifact,
-wrong method, incomplete alignment. Findings are now falling steadily and every
-one of the last three has been narrower than the last, which is the first
-sustained convergence signal in the contract's history. **Against that: M7 has
-never been executed, and each of its four designs looked correct when written.**
-The honest question for round 11 is whether the next defect is findable by reading
-at all, or whether M7 now needs to be *run* — against a scratch branch, reporting
-what the code actually does — before another round of paper review can add
-anything. **Treat "dispatchable" as a claim requiring evidence of convergence, not
-a status reached by running out of findings.**
+**Review round 11 — 2026-08-08, independent, against `39f2617` (post-probe).**
+Three findings, **two blocking**. It confirmed the probe contained and its
+fixed-point result decisive, and **kept M7 blocked.**
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | **M7 still lacked a distinct normalised reference.** Round 10 named one artifact; the comparison needs `B_raw` **and** `B_fixed`, with an explicit convergence loop and a hard fixed-point assertion, and the comparand must never be `B_raw` — otherwise an envelope-order normalisation difference stays **indistinguishable from a provenance result** | Steps **1a–1c** added; step 5 forbids `B_raw` as a comparand |
+| 2 | **The claim was stated more broadly than any observation supports.** M7 read as though every direct bundle is byte-identical to its re-imported form; it is not, and the probe measured 295 differing bytes proving so | New scope section: it proves the text path carries **no provenance marker after normalisation**, and explicitly not the pre-normalisation claim. **Both sentences must appear in the report** |
+| 3 | *(clarification, not a defect)* The probe cannot pre-verify M7's authority/base leg; that stays an execution requirement after S27, with the probe as evidence for the prerequisite | Recorded as a **standing prerequisite table**, with the explicit instruction not to cite the probe as having demonstrated laundering |
+
+**Finding 2 is the one with consequences beyond M7.** M7's conclusion is the sole
+evidence for a **permanent** capability loss — the text refusal that moved
+`COMPANION_VERSION` to 0.14.0 and took the corpus's `canonical_bases` from 2 to 0.
+**Justifying a permanent refusal from a claim broader than the result obtained is
+the same error as concluding instead of observing**, one level up: not a false
+observation, but a true one asked to carry more than it can.
+
+**What round 12 should weigh, stated against interest:** findings by round are
+**9, 6, 6, 5, 4, 3, 3, 2, 2, 1, 3**; blocking **4, 4, 4, 4, 2, 3, 3, 2, 2, 1, 2**.
+Eleven rounds, **none clean**. Round 11 broke the falling trend, and it did so
+**because the probe supplied evidence that made a previously invisible defect
+findable** — which is a reason to expect the *next* round to find more, not less,
+now that M7's comparison has measured ground truth to be checked against.
+
+**The M7 comparator is now on its fifth design.** Four were falsified by reading;
+the fifth was falsified by execution and then rebuilt on that evidence. **It is
+the first design with a measured result behind it and the first whose precondition
+is asserted rather than assumed** — and it still cannot be executed end to end
+until S27 is implemented. **Treat "dispatchable" as a claim requiring evidence of
+convergence, not a status reached by running out of findings.**
 
 (Was: DRAFT, BLOCKED on the format-epoch rung,
 `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, which at the time was ratified and in
@@ -1503,17 +1541,47 @@ an external document can do is the entire threat.
 RESTRUCTURED IN ROUND 10 — see the alignment note below.** The demonstration is a
 **round trip**, which is also the realistic form of the threat:
 
-1. **Build `B`, the validated reference**, in a crate that can reach the real
+**Steps 1a–1c added in round 11, on the probe's evidence.** Round 10's version
+compared against the artifact built in step 1, and the probe proved that only
+works when its input document happens already to be a fixed point.
+
+1. **Build `B_raw`, the validated reference**, in a crate that can reach the real
    constant: create a bundle with `caps` derived from
    **`CURRENT_REDUCTION_ALGORITHM_VERSION`** and commit a canonical base carrying
    that same version, so **pin 3a's writer check validates it on the way in**.
    That — and only that — is a genuinely validated base.
-2. **Export `B` to text.** `document_from_bundle` to a `TextDocument`, then the
-   crate-private `render_text_document` — which **does not refuse**, and exists
-   precisely so the base spelling can be produced for a negative vector.
+
+1a. **Normalise to a byte-level fixed point.** Iterate
+   `doc = document_from_bundle(B_n)` → `B_{n+1} = serialize_document(doc, uuid)`
+   **until `B_{n+1}.image() == B_n.image()`.** Call the result **`B_fixed`**.
+   **Bound the loop and fail if it does not converge**; the probe observed one
+   pass sufficing for three documents, which is **not** a proof that one pass
+   always suffices.
+
+1b. **Assert the fixed-point property explicitly** — that
+   `serialize_document(document_from_bundle(B_fixed), uuid).image()` equals
+   `B_fixed.image()`. **This assertion is the precondition of the whole
+   comparison and must be a hard failure, not a comment.**
+
+1c. **Report the iteration count** step 1a needed, and **whether `B_raw` was
+   already fixed.** If it was, say so — that is the coincidence that made the
+   probe's first case pass, and a reader must be able to tell the lucky case from
+   the general one.
+
+2. **Export `B_fixed` to text.** `document_from_bundle` to a `TextDocument`, then
+   the crate-private `render_text_document` — which **does not refuse**, and
+   exists precisely so the base spelling can be produced for a negative vector.
 3. **Parse that text back** with `parse_document`, giving `D`.
-4. **`A = serialize_document(D)`**, with **`B`'s `FileUuid`**.
-5. **Compare `A.image()` with `B.image()`.**
+4. **`A = serialize_document(D)`**, with **`B_fixed`'s `FileUuid`**.
+5. **Compare `A.image()` with `B_fixed.image()` — and NEVER with `B_raw`.**
+
+> **Why `B_raw` is not a permitted comparand.** `document_from_bundle` applies a
+> **canonical envelope ordering**, so if `B_raw`'s envelopes arrived in any other
+> order, `A` and `B_raw` differ **by that normalisation alone**. The probe measured
+> it: **295 differing bytes from offset 352** on a one-extension document. That
+> difference is **indistinguishable from a provenance result** — and a comparison
+> whose failure mode cannot be told apart from its success condition decides
+> nothing. `B_raw` exists only to be normalised; it is never compared.
 
 **The comparison artifact — built by M7 itself. CORRECTED IN ROUND 9.**
 
@@ -1606,9 +1674,35 @@ stamp out — round 1 wrote the conclusion and specified no way to reach it, and
 round 8 specified a way that could not support it.
 
 **What the observation must show, or it has not been made:** that the capability
-check does **not** fire, and that **no enumerated field differs** — the document
-launders precisely *because* its number matches, and no check can tell a
+check does **not** fire, and that `A.image()` equals `B_fixed.image()` — the
+document launders precisely *because* its number matches, and no check can tell a
 coincidence from a rebuild.
+
+### The claim M7 establishes, and the one it does NOT. SCOPED IN ROUND 11.
+
+**What it proves:** **the text path carries no provenance marker — after
+normalisation.** A document exported to text and re-imported yields a container
+byte-identical to the normalised validated one, so nothing in the container
+records *how* the base arrived.
+
+**What it does NOT prove, and must not be written as though it does:** that
+**every** direct bundle is byte-identical to its re-imported form **before**
+normalisation. **It is not** — the probe measured 295 differing bytes on a
+one-extension document, and two of three documents tested were not fixed points.
+Those differences are `document_from_bundle`'s canonical envelope ordering, and
+they have **nothing to do with provenance**.
+
+**Why the distinction is load-bearing rather than pedantic.** M7's conclusion is
+the sole evidence for a **permanent capability loss** — the text refusal that cost
+`COMPANION_VERSION` 0.14.0 and took the corpus's `canonical_bases` from 2 to 0. A
+justification stated more broadly than the observation supports would be arguing
+for a permanent refusal from a result that was never obtained. **State the
+normalised claim, and state the exclusion beside it.**
+
+**Report both sentences in the rung's report**, not just the first. An
+unqualified "the text path is indistinguishable from the validated path" is
+**false as written**, and it is the sentence a reader will otherwise carry
+forward.
 
 > **This mutation is informative in both directions, which is why it is worth
 > running.** If every field matches, the refusal is justified and the format
