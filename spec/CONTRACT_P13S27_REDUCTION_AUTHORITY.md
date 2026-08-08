@@ -1,22 +1,43 @@
 # Contract — P13-S27: the reduction version gets an outside witness
 
-**Status:** **NOT RATIFIED. NOT DISPATCHABLE.** **Awaiting the next review round;
-the pins remain open and no execution work may begin.** Which rounds have closed,
-what each found, and the running tally are **the history table below** — this line
-does not restate them, having gone stale in two consecutive rounds by doing so.
+**Status:** **RATIFIED 2026-08-08, on the authority of the repository owner,
+after nineteen adversarial review rounds — the last of which returned zero
+findings.** **DISPATCHED for execution.** Which rounds closed, what each found,
+and the running tally are **the history table below**; this line does not restate
+them, having gone stale in two consecutive rounds by doing so.
 
-**Round 1's ratification is WITHDRAWN.** It was claimed on 2026-08-07 after a
-single round; round 2 then found four more blocking defects against the
-supposedly frozen text, two of them introduced by round 1's own amendments. A
-ratification that a subsequent round falsifies that quickly was not a
-ratification, and leaving the claim standing would make the status field mean
-nothing.
+**THE PINS ARE NOW FROZEN. They may be executed, not edited.** A defect found
+during execution is **reported, not patched in place** — if it needs a pin
+change, that is its own amendment with its own review round.
 
-**The pins are therefore NOT frozen.** They are open to **the current round's**
-findings. Freezing follows ratification; it does not precede it, and it does not
-survive a withdrawal.
+**Round 1's ratification was WITHDRAWN**, and the distinction matters. It was
+claimed on 2026-08-07 after a single round; round 2 then found four more blocking
+defects against the supposedly frozen text, two introduced by round 1's own
+amendments. **A ratification that a subsequent round falsifies that quickly was
+not a ratification.** This one rests on a different footing: **19 rounds, 65
+findings, 47 blocking, and a clean independent round at the end.**
+
+**What ratification does NOT settle, stated at the top so it is not missed:**
+
+- **M7's authority/base leg is unverifiable until this rung is implemented** —
+  `BundleCapabilities` and `CURRENT_REDUCTION_ALGORITHM_VERSION` are its own
+  deliverables. It is an **execution requirement**.
+- **Every gate, test and mutation is specified and none has been run.** Nineteen
+  rounds went into the claim that they *can* be run and that their results *would*
+  be evidential. **Execution is what tests that claim.**
+- **The execution report is subject to independent review before completion is
+  accepted** — required by the owner at dispatch, and specifically covering
+  **M7's three observations and its control**. The document's quality came from
+  the independent rounds; the report gets the same treatment.
 
 ### One narrow, explicit exception to "no execution work" — granted 2026-08-08
+
+> **SUPERSEDED BY RATIFICATION.** This exception was granted while execution was
+> prohibited outright; full execution is now authorised under §6. It is retained
+> as the record of what the scratch probe was permitted to do and what it
+> produced — **its result falsified round 10 and is cited throughout M7** — not as
+> a live constraint. **The probe's standing is unchanged: evidence for M7's
+> prerequisite, and not a demonstration of laundering, because it carried no base.**
 
 **Granted before use, because the prohibition below is otherwise absolute.**
 Authorised: **a bounded mechanical probe of M7's experiment**, on a **disposable
@@ -2347,10 +2368,15 @@ to 1 belongs to S16.
 
 **The executing agent MUST NOT commit.** Leave the work staged.
 
-**No execution work may begin at all** until this contract is ratified — **with the
-single exception granted in the status block above**, which authorises a
-base-free, discard-only mechanical probe of M7's round-trip machinery on a
-disposable branch, and nothing else.
+**Execution is AUTHORISED as of ratification, 2026-08-08.** *(This read "no
+execution work may begin at all until this contract is ratified"; ratification has
+happened.)* The boundaries above are unchanged and remain binding — **stage only
+§2's files by explicit path, never `git add -A`, re-check `HEAD` before staging
+and before committing, and never `git reset`/`restore`/`checkout`/`stash`.**
+
+**Leave the work STAGED. Do not commit.** The execution report is then subject to
+**independent review before completion is accepted**, covering in particular
+**M7's three observations and its control**.
 
 ---
 
