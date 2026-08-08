@@ -13,10 +13,8 @@ ratification, and leaving the claim standing would make the status field mean
 nothing.
 
 **The pins are therefore NOT frozen.** They are open to **the current round's**
-findings — rounds 3 and 4 are closed, and this sentence named a specific round
-until round 4 caught it going stale the moment that round closed. Freezing
-follows ratification; it does not precede it, and it does not survive a
-withdrawal. **No execution work may begin** — not implementation, not staging,
+findings. Freezing follows ratification; it does not precede it, and it does not
+survive a withdrawal. **No execution work may begin** — not implementation, not staging,
 not partial work against "the settled pins."
 
 **History — the running tally, which has now gone stale three times and been
@@ -36,7 +34,8 @@ rows — read it off, do not restate it.
 | round 5 | 4 | 2 | **yes** |
 | round 6 | 3 | 3 | **yes** |
 | round 7 | 3 | 3 | **yes** |
-| **Total** | **36** | **24** | one amendment per row |
+| round 8 | 2 | 2 | **yes** |
+| **Total** | **38** | **26** | one amendment per row |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -171,15 +170,36 @@ homes, one is removed and replaced with a pointer. §3 no longer counts the
 literals; the history block no longer classifies the rounds. **A copy that cannot
 drift is one that does not exist.**
 
-**What round 8 should weigh, stated against interest:** findings by round are
-**9, 6, 6, 5, 4, 3, 3**; blocking **4, 4, 4, 4, 2, 3, 3**. Findings have
-flattened rather than continued falling, and **rounds 6 and 7 were both 100%
-blocking and 100% in the previous round's text**. Seven consecutive rounds, no
-clean round yet. The deduplication above is a **structural** change and therefore
-the first remedy with a reason to work — but it is also **untested**, and the
-newest material has had zero adversarial passes. **Treat "dispatchable" as a claim
-requiring evidence of convergence, not a status reached by running out of
-findings.**
+**Review round 8 — 2026-08-08, independent, against `9829ae3`.** Two findings,
+both blocking. **The first round to reach into a mutation's mechanics rather than
+its bookkeeping.**
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | **M7 did not describe a runnable observation.** It said to *construct* a `TextDocument`, which **bypasses `parse_document` entirely** — so the parser refusal it ordered removed was irrelevant, and the demonstration was not the *import* laundering it is named for. `project_text_document` is the **export** direction (`&TextDocument -> Result<String,_>`) and is not on the path at all, so "all three sides, since removing one leaves the others refusing" was false for it. And "byte-indistinguishable from one whose base was genuinely validated" named **no comparison artifact and no comparison method** | Input must now be **text, parsed**; only the parser and serializer refusals are removed; the comparison artifact is test 10b's construction with matching `FileUuid` and base bytes; and the comparison is a **field-by-field enumeration**, reported rather than concluded |
+| 2 | **The round-7 deduplication was incomplete** — the status block still carried "rounds 3 and 4 are closed" while declaring the history table the sole authority | Deleted |
+
+**Finding 1 is the most substantive of any round**, because every earlier one was
+about text agreeing with other text. This one is about whether the *experiment*
+runs at all — and it did not. M7 has been in the contract since round 1 and
+survived seven reviews, including three that specifically re-derived mutations,
+because reading it never required tracing what calls what. **An observation stated
+in the right register can look complete for a long time.**
+
+**"Indistinguishable" was a conclusion, not an observation** — the exact failure
+mode this rung exists to eliminate, sitting inside its own demonstration since
+round 1.
+
+**What round 9 should weigh, stated against interest:** findings by round are
+**9, 6, 6, 5, 4, 3, 3, 2**; blocking **4, 4, 4, 4, 2, 3, 3, 2**. Eight rounds, no
+clean round yet. Round 8 also **found a defect in round 7's own remedy** — and
+while amending, the author found a *third* instance unaided (§7 item 4a's M7 row
+still said "all three refusals"), which is weak evidence the deduplication rule is
+starting to be applied rather than merely stated. **The M7 rewrite is the newest
+and least-reviewed material in the contract, and its predecessor survived seven
+rounds while being unrunnable.** Assume the same is possible of this one. **Treat
+"dispatchable" as a claim requiring evidence of convergence, not a status reached
+by running out of findings.**
 
 (Was: DRAFT, BLOCKED on the format-epoch rung,
 `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, which at the time was ratified and in
@@ -1290,22 +1310,63 @@ refused every major-1 base commit categorically, so the observation was
 unreachable. Under S27 a base commit succeeds or fails on its version, so it
 becomes reachable for the first time.
 
-Temporarily remove the format rung's pin-3b text refusal — **all three sides**,
-since removing one leaves the others refusing and the document never reaches the
-writer: `serialize.rs:152` (`SerializeError::CanonicalBaseUnsupported`),
-`project.rs`'s `project_text_document` refusal (`:579`), and the parser's
-(`parse.rs:138`–`:147`). Then construct a base-bearing `TextDocument` whose raw
-`reduction_algorithm_version` **happens to equal**
-`CURRENT_REDUCTION_ALGORITHM_VERSION`, serialize it, and **observe** that the
-resulting major-1 container is byte-indistinguishable from one whose base was
-genuinely validated.
+**The path, corrected in review round 8. Two of the three refusals matter, and
+they are not the two the previous wording implied.**
+
+The import path is `text` → **`parse_document`** (`parse.rs:83`) → `TextDocument`
+→ **`serialize_document`** (`serialize.rs:143`) → `Bundle`. Remove the refusals on
+**those two** — `parse.rs:138`–`:147` and `serialize.rs:151`.
+
+**Do NOT remove `project_text_document`'s refusal (`project.rs:579`), and do not
+count it.** It has the signature `&TextDocument -> Result<String, _>` — it is the
+**export** direction, and **nothing on the import path calls it**. The previous
+wording said "all three sides, since removing one leaves the others refusing and
+the document never reaches the writer", which is false for this one: it is not
+between the document and the writer, it points the other way.
+
+**The input MUST be text, and MUST be parsed.** Round 1 wrote "construct a
+base-bearing `TextDocument`", which **bypasses `parse_document` entirely** — so
+the parser refusal was irrelevant to what was being demonstrated, and the
+demonstration was not the *import* laundering it is named for. **An in-memory
+`TextDocument` proves nothing about what an external document can do**, and what
+an external document can do is the entire threat. Write a `(canonical-base ...)`
+document as **text**, whose raw `reduction_algorithm_version` **happens to equal**
+`CURRENT_REDUCTION_ALGORITHM_VERSION`, and parse it.
+
+**The comparison artifact, which round 1 never named.** "Indistinguishable from
+one whose base was genuinely validated" requires a *second* bundle to be
+indistinguishable *from*. Build it by **test 10b's construction** — a base
+committed under a capability that validated it — with the **same `FileUuid` and
+the same base bytes** as the laundered one, so nothing legitimately differs.
+
+**The comparison method, which round 1 also never named.** Enumerate and assert
+field-by-field equality of everything that could carry provenance:
+
+- the manifest's `canonical_base` `SnapshotRef` — **every** field, not the struct
+  as a whole (`snapshot_id`, `covers_causal_frontier`,
+  `reduction_algorithm_version`, `profile_id`, `hash`, `root`);
+- the superblock's `reduction_algorithm_version`;
+- the `FixedHeader`'s major and epoch.
+
+**Report the enumeration, not a verdict.** "Byte-indistinguishable" asserted as a
+conclusion is precisely the reasoning-instead-of-observing this rung exists to
+stamp out — round 1 wrote the conclusion and specified no way to reach it.
 
 **What the observation must show, or it has not been made:** that the capability
-check does **not** fire — the document launders precisely *because* its number
-matches, and no check can tell a coincidence from a rebuild. That is the whole
-argument for the refusal, and it has never been run.
+check does **not** fire, and that **no enumerated field differs** — the document
+launders precisely *because* its number matches, and no check can tell a
+coincidence from a rebuild.
 
-**Restore all three refusals by hand-editing back**, never with git. Record the
+> **This mutation is informative in both directions, which is why it is worth
+> running.** If every field matches, the refusal is justified and the format
+> rung's reasoning is confirmed by observation for the first time. **If any field
+> differs, that field is a provenance signal nobody knew existed** — the text
+> refusal may be stronger than it needs to be, and that is a finding for a future
+> rung, not something to suppress because it contradicts the expected result.
+
+**Restore the two removed refusals by hand-editing back**, never with git —
+`parse.rs` and `serialize.rs`. *(Said "all three" until round 8; the projector's
+refusal is never removed, so there is nothing there to restore.)* Record the
 result as a **demonstration**, not a guard: nothing in the shipped tree changes,
 and the refusal is permanent (see the ruling under inherited obligation 2).
 
@@ -1418,7 +1479,7 @@ in §N" to a number.*
    | M5a | test **10a** fails, **plus** the provenance of the asserted operand |
    | M5b | test **10b** fails with both error fields asserted, **plus** the provenance of *both* operands |
    | M6 | test **5** fails (first half); test **9** fails (second half) |
-   | **M7** | **no test — its expected outcome is success.** It owes the observation that the laundered document is indistinguishable from a validated one, and confirmation that all three refusals were restored |
+   | **M7** | **no test — its expected outcome is success.** It owes the field-by-field enumeration M7 specifies, and confirmation that the refusals M7 names as removed were restored. **Counts and file names live in M7, not here** — this cell said "all three refusals" and survived round 8's correction of that very claim by one grep |
 
    **M4 and M7 were unsatisfiable under the previous wording.** Item 1 already
    said both are "not a passing guard", yet this item demanded a test each
