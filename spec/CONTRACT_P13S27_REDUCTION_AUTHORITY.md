@@ -163,7 +163,10 @@ rows — read it off, do not restate it.
 | round 14 | 1 | 1 | **yes** |
 | round 15 | 1 | 1 | **yes** |
 | round 16 | 4 | 4 | **yes** |
-| **Total** | **53** | **40** | one amendment per row |
+| round 17 | 10 | 5 | authored-side scan |
+| round 18 | 2 | 2 | **yes** |
+| **round 19** | **0** | **0** | **yes — first clean round** |
+| **Total** | **65** | **47** | one amendment per row |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -505,11 +508,100 @@ authority for the sequence and totals. **No review round has returned zero.**
 Round 16 also falsified round 15's claim that its scan was complete, so no
 ratification inference may be drawn from the recent smaller rounds alone.
 
-**The known unexamined surfaces are now enumerable, but not closed:** M4 and M5b
-survive the outcome scan; M7's authority/base leg **remains unverifiable until S27
-is implemented**, by construction, and is carried as an execution requirement
-rather than a gap in the document. **Treat "dispatchable" as a claim requiring
-evidence of convergence, not a status reached by running out of findings.**
+**Round 17 — 2026-08-08, the §3/§5 sweep. Ten findings, five blocking.** Round
+13's question had been asked of §4 only. This applied it to the two sections that
+had never had it, and **both yielded on first contact.**
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **Gate 6's derive alternative can never match.** Verified by running the exact regex: `grep` is line-oriented, so `[[:space:]]*` cannot cross the newline rustfmt puts between `#[derive(…, Default)]` and `pub struct BundleCapabilities`. **The likelier violation returns 0 matches and the gate passes** — and gate 6 is the *sole* mechanical guard on pin 3's prohibition | Replaced with three checks, one of which (**quote the definition verbatim**) cannot pass vacuously |
+| **2** | **Gate 6a is vacuous under a rename.** Pin 3b offered `synthetic_for_fixture` as an example ("e.g."); the gate greps for that exact literal | **Name pinned** in pin 3b; gate 6a must confirm the actual name before trusting its zero |
+| **3** | **Gates 2 and 3 named no toolchain**, in a repo whose CI comment records 1.95/1.97 lint divergence and whose default `stable` is 1.97.1 | Both pinned to `cargo +1.95.0`; toolchain reported with the result |
+| **4** | **Gate 4's "staged list exactly §2" is unsatisfiable** — row 12 is conditional and 7a may not change | Subset both ways: every staged path in §2, every §2 row staged **or** named unused with its reason |
+| **5** | **Tests 1, 6, 7, 8, 9 can all pass on a base-free bundle.** Pin 5 makes base-free the permissive case, so a fixture that silently loses its base makes each pass trivially — **test 1 degenerates into test 4** | One rule stated once: each MUST assert `canonical_base.is_some()` on the bundle under test |
+| 6 | Tests 1 and 6 asserted the same outcome with no stated distinction | Kept distinct, with construction routes pinned — hand-built vs commit-path. **The probe showed construction changes bytes**, so two routes is coverage, not redundancy. If they collapse in practice, that is a finding |
+| 7 | Test 4's "two different `caps` values" never asserted distinct | Inequality asserted, and the base-free precondition made explicit |
+| 8 | Gate 1 required "full pass" but not **0 ignored** — an `#[ignore]`d test satisfies it while never running | Ignored count reported, must be 0 against the measured 1570/0/0 baseline |
+| 9 | Gate 7 gave **no method** for "no schema major/minor moved" | Method pinned: quote the constants and show the diff empty |
+| 10 | Gate 5 named no dependency tables | All three quoted — a dev-dependency would create the cycle pin 1 forbids |
+
+**The unifying defect is that a gate proving *absence* is only as strong as the
+string it searches for.** Findings 1, 2 and 9 are three faces of it: a regex that
+cannot match, a name that was an example, and a clause with no method at all.
+**Every one reported success while checking nothing.** The remedy applied
+throughout is the same as §4's: **require an artifact to be quoted and read, not
+a pattern to be matched** — a definition, a table, a command's output.
+
+**Findings 5–7 are §3's version of the same thing:** a test asserting a
+*permissive* outcome passes when its fixture degenerates into the permissive
+case. That is not hypothetical — base-bearing fixtures have been the awkward ones
+to build for this whole interval, so degenerating is the path of least resistance.
+
+**This round was authored-side, not independent**, and it is recorded as such in
+the table. **It found more than any round since the first**, in the two sections
+nobody had scanned. **There is now no unscanned section: §0 through §7 have all
+been swept or amended.** That is the first time that has been true — and it is a
+statement about coverage, **not** a claim that the sections are clean. **Treat
+"dispatchable" as a claim requiring evidence of convergence, not a status reached
+by running out of findings.**
+
+**Review round 18 — 2026-08-08, independent, against the uncommitted round-17
+sweep.** **Two findings, both blocking, both in round 17's new §3 text.**
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | **The base-presence rule demanded the opposite of what test 8 is for.** It required `is_some()` before the commit for tests 8 and 9 alike — but **test 8 introduces the base**, so it must start `is_none()`. Requiring otherwise makes it unsatisfiable, or satisfiable by a fixture that already has a base, in which case the commit introduces nothing and the test asserts nothing | Rule split into a per-test table: 1/6/7 `is_some()` before; **8 `is_none()` before, `is_some()` after**; 9 `is_some()` both, base unchanged |
+| 2 | **Test 6's construction was self-contradictory.** Round 17 assigned it the **commit** path while also requiring its fixture to "arrive the way" its ancestor's did — and that ancestor, `opening_a_major_1_bundle_that_already_carries_a_base_is_refused` (`bundle.rs:1866`), **hand-builds** via `craft_image_with_base` at `:1869` | **Routes swapped**: test 6 hand-built, test 1 commit-path. That makes the attribution **true** instead of deleting it |
+
+**Finding 1 came from grouping by mechanism instead of by purpose.** Tests 8 and
+9 were bracketed together as "the ones that commit" — which is true and
+irrelevant. **Test 8 commits a base into a bundle that has none; test 9 commits
+something unrelated to a base already there.** They are opposites that share a
+verb, and a rule written from the verb inverted one of them.
+
+**Finding 2 is the round-17 sweep's own version of the citation defect this
+contract keeps producing:** an attribution asserted without opening the file it
+attributes to. Reading `:1866` takes one command, and it says
+`craft_image_with_base` in plain sight.
+
+**Both were introduced by round 17 and neither pre-existed it** — the authored-side
+sweep bought coverage of two unscanned sections at the cost of two new defects in
+what it wrote. That is the trade the history table now shows for every large
+amendment.
+
+**Review round 19 — 2026-08-08, independent, against the round-17/18 working
+tree. ZERO FINDINGS. The first clean round in nineteen.**
+
+It confirmed the per-test state table distinguishes test 8's base *introduction*
+from test 9's unrelated commit, that the route swap is consistent with
+`craft_image_with_base`'s actual use in test 6's ancestor, and that the revised
+gate mechanics are internally consistent.
+
+**What a clean round does and does not establish.** It is the criterion named at
+round 11 — *"treat dispatchable as a claim requiring evidence of convergence, not
+a status reached by running out of findings"* — and it is the first evidence of
+that kind this contract has produced. **It is not proof of correctness.** Round 19
+reviewed the amendment rounds 17 and 18 produced; it did not re-derive the whole
+document, and no round has.
+
+**What remains open after ratification, and is not closed by it:**
+
+- **M7's authority/base leg is unverifiable until S27 is implemented**, by
+  construction — `BundleCapabilities` and `CURRENT_REDUCTION_ALGORITHM_VERSION`
+  are S27's own deliverables. It is an **execution requirement**, not a document
+  gap, and the scratch probe is evidence for its prerequisite only. **Do not cite
+  the probe as having demonstrated laundering; it carried no base.**
+- **Every gate, test and mutation is specified but none has been run.** The
+  contract's claim is that they *can* be run and that their results *would* be
+  evidential — nineteen rounds went into that claim, and execution is what tests
+  it.
+
+**The defect record, stated plainly so ratification is not read as vindication:**
+65 findings across 19 rounds, 47 blocking. Rounds 1 and 2 were authored-side and
+their ratification was withdrawn. Round 17 was authored-side and cost two defects
+round 18 caught. **The document's quality comes from the rounds that were
+independent, and that is the argument for the execution report being reviewed the
+same way.**
 
 (Was: DRAFT, BLOCKED on the format-epoch rung,
 `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, which at the time was ratified and in
@@ -1080,8 +1172,21 @@ that document could not have been opened in the first place, and refusing here
 would make an unrelated commit the site of the diagnosis.
 
 **Pin 3b — synthetic capabilities are named, so the choice is not a judgement
-call.** Provide a clearly-named constructor for fixture use, e.g.
-`BundleCapabilities::synthetic_for_fixture(v: u32)`, whose doc states it is for
+call.** Provide a constructor for fixture use named **exactly**
+
+```rust
+BundleCapabilities::synthetic_for_fixture(v: u32)
+```
+
+> **The name is PINNED, not illustrative. ROUND 17.** This read *"a clearly-named
+> constructor … **e.g.** `synthetic_for_fixture`"*, leaving the name to
+> execution — while **gate 6a greps for that exact literal**. Any other name and
+> the gate returns **0 matches and reports a pass**, having checked nothing.
+> **A gate that proves absence is only as good as the name it searches for**, so
+> the name it searches for cannot be an example. Renaming it requires amending
+> this pin and gate 6a together.
+
+whose doc states it is for
 format and container fixtures deliberately exercising arbitrary wire values and
 **must never appear in a production composition path**. Production paths wrap
 `epiphany_ops::CURRENT_REDUCTION_ALGORITHM_VERSION`.
@@ -1268,7 +1373,51 @@ widening — **state in the report which file each landed in**, since a test pla
 outside its row silently drops out of the commit.
 
 
-1. **`open_succeeds_when_base_and_current_reduction_versions_match`**
+### Every base-bearing test MUST assert the base is present. ADDED IN ROUND 17
+
+**Tests 1, 6, 7, 8 and 9 all describe base-bearing scenarios, and none of them
+required checking that a base was there.** Pin 5 makes base-free the **permissive**
+case — a bundle with no canonical base **opens at any authority** — so a fixture
+that silently ends up base-free makes every one of those tests pass **trivially**,
+asserting nothing. **Test 1 degenerates into test 4.**
+
+**That is not a hypothetical fixture slip.** `create` rejects a base-bearing
+manifest outright (`bundle.rs:234`), and for the whole S28 → S27 interval a
+base-bearing `Bundle` has been **unconstructible** through the public API (§1.2).
+Base-bearing fixtures are the awkward ones to build, so **the failure mode is the
+path of least resistance**.
+
+**Each of tests 1, 6, 7, 8 and 9 MUST assert the base's presence explicitly, on
+the bundle under test.** The required assertion is **not the same for all of
+them** — **CORRECTED IN ROUND 18**, which caught this rule demanding the opposite
+of what test 8 exists to do:
+
+| Test | Before | After |
+|---|---|---|
+| 1, 6, 7 | `canonical_base.is_some()` | — (no commit) |
+| **8** | **`is_none()`** — it **introduces** the base; that is the whole test | `is_some()` |
+| 9 | `is_some()` — it opens a base-bearing bundle | `is_some()`, and the base **unchanged** |
+
+> **Round 17 wrote "before *and* after for tests 8 and 9, which commit",
+> collapsing two opposite fixtures because both happen to commit.** Test 8
+> commits a base **into a bundle that has none**; test 9 commits something
+> **unrelated to a base that is already there**. Requiring `is_some()` before test
+> 8's commit would make it **unsatisfiable** — or, worse, satisfiable by a fixture
+> that already had a base, in which case the commit introduces nothing and the
+> test asserts nothing. **Grouping by mechanism (both commit) rather than by
+> what each is for is what produced the error.**
+
+**A test that cannot state which bundle it asserted this on has not made the
+assertion.**
+
+*(Stated once here rather than repeated per test — round 7's rule. The tests below
+do not restate it.)*
+
+1. **`open_succeeds_when_base_and_current_reduction_versions_match`** — **the
+   commit construction route. ROUTES SWAPPED IN ROUND 18.** Create a bundle with
+   synthetic `caps(N)`, commit a canonical base carrying `N`, take the bytes, and
+   reopen under `caps(N)`. It shares test 8's setup and asserts a different thing:
+   test 8 asserts the **commit** succeeds, test 1 asserts the **reopen** does.
 2. **`open_rejects_a_valid_stale_canonical_base`** — base and superblock agree
    with each other, `caps.current` differs. Must return
    `CanonicalBaseRequiresRebuild { base, current }` with **both fields
@@ -1277,7 +1426,11 @@ outside its row silently drops out of the commit.
    pin-6 path, asserted to be the *existing* malformed error and **not**
    `CanonicalBaseRequiresRebuild`.
 4. **`a_bundle_with_no_canonical_base_opens_at_any_reduction_version`** — run at
-   two different `caps` values.
+   two `caps` values that the test **asserts are unequal**. **ROUND 17:** it
+   previously said only "two different values"; if they coincide the test proves
+   nothing about *any*, and nothing would say so. Assert the inequality, and
+   assert the fixture is base-free — this is the one test whose scenario requires
+   `canonical_base.is_none()`, the mirror of the rule above.
 5. **`committing_a_stale_canonical_base_fails_and_leaves_the_prior_generation_reopenable`**
    — the pin-3a writer test, and the one this contract's first draft omitted
    entirely. Create a bundle, commit a good generation, then attempt a commit
@@ -1298,6 +1451,38 @@ the ruling recorded beside it.)*
    to real validation. Its sibling is test 2, which is the same path when the
    authority *disagrees*. Both branches must exist; the format rung's own review
    found a draft that closed only one.
+
+   **How this differs from test 1, which asserts the same outcome. ROUND 17
+   flagged them as possible duplicates; they are kept distinct, and here is the
+   distinction they must actually carry. ROUTES SWAPPED IN ROUND 18.**
+
+   **Test 6 builds its image by hand**, with
+   `craft_image_with_base(1, 0, ReductionAlgorithmVersion(N), ReductionAlgorithmVersion(N))`,
+   and exercises `open` in isolation from any commit path. **Test 1 reaches the
+   same state by the commit path.**
+
+   > **Why this way round, and not the way round 17 had it.** Test 6 is the
+   > *conversion* of `opening_a_major_1_bundle_that_already_carries_a_base_is_refused`
+   > (`bundle.rs:1866`), and **that test hand-builds its image** — it calls
+   > `craft_image_with_base(1, 0, ReductionAlgorithmVersion(0), ReductionAlgorithmVersion(0))`
+   > at `:1869`. Round 17 assigned test 6 the **commit** path while also requiring
+   > its fixture to "arrive the way that test's did", **which are contradictory**:
+   > the test it converts is hand-built.
+   >
+   > Swapping the routes makes the attribution **true** rather than deleting it.
+   > Test 6 keeps its ancestor's construction and changes only its *assertion* —
+   > refusal becomes validation, which is exactly what "conversion" should mean.
+   > `craft_image_with_base` takes `format_major` as its first argument, so it
+   > builds the major-1 image test 6's name requires.
+
+   **The two construction routes are the point, and the probe is why.** The
+   scratch probe established that **how an artifact is constructed changes its
+   bytes** — a hand-built and a committed bundle are not interchangeable, and one
+   can be a fixed point where the other is not. Two routes into the same
+   guarantee is real coverage, not redundancy.
+
+   **If execution finds the routes collapsing into the same construction, that is
+   a finding**: say so rather than quietly writing one test twice.
 7. **The two restored conformance assertions** (format-rung pin 3c), in
    `assert_reduction_serialization_stable` (`testkit/src/roundtrip.rs:241`):
    `verify_canonical_chunks` covering the base again, and the reopened manifest
@@ -2030,17 +2215,68 @@ the finding is that it succeeds *silently*. Do not report it as a passing gate.
    **1570**. Give the count in three buckets — net-new, converted-from-existing,
    restored-assertions — and if they do not sum to the observed delta, **that is
    a finding, not an arithmetic error to be papered over**.
-2. `cargo clippy --workspace --all-targets -- -D warnings` → clean.
-3. `cargo fmt -p epiphany-ops -p epiphany-bundle -p epiphany-testkit -p
-   epiphany-textproj --check` → clean. **`cargo fmt --all` is forbidden.**
-4. `git diff --cached --check` clean after staging; staged list exactly §2.
-5. **`epiphany-ops` has NOT gained an `epiphany-bundle` dependency** — check
-   `crates/epiphany-ops/Cargo.toml` directly.
-6. **`BundleCapabilities` implements no `Default`**, by exact query with an
-   expected count of **zero**:
-   `grep -rnE "impl +Default +for +BundleCapabilities|derive\\([^)]*\\bDefault\\b[^)]*\\)[[:space:]]*(pub )?struct BundleCapabilities" crates/epiphany-bundle/src/`
-   → **0 matches.** Run it against production source only; report the count, not
-   a verdict.
+   **Also report the ignored count, which MUST be 0. ROUND 17:** this required a
+   "full pass" and said nothing about ignored tests, so an `#[ignore]`d new test
+   satisfies it **while never running** — and could still be counted as net-new.
+   The measured baseline is **1570 passed / 0 failed / 0 ignored across 42
+   suites**; any nonzero ignored count is a finding.
+2. `cargo +1.95.0 clippy --workspace --all-targets -- -D warnings` → clean.
+   **The toolchain is part of the gate. ROUND 17.** This named none, in a repo
+   whose CI comment records that *"1.97 rejects a bare `2.0` that 1.95 accepts"*
+   — and whose default `stable` is **1.97.1**, not the pinned **1.95.0** that CI
+   gates on. **A clippy result that does not say which toolchain produced it says
+   nothing.** Report the toolchain with the result.
+3. `cargo +1.95.0 fmt -p epiphany-ops -p epiphany-bundle -p epiphany-testkit -p
+   epiphany-textproj --check` → clean, **on the same pinned toolchain and for the
+   same reason**. **`cargo fmt --all` is forbidden** (it crosses into `spikes/`
+   through path dependencies).
+4. `git diff --cached --check` clean after staging. **The staged list is a SUBSET
+   of §2, not an equality. ROUND 17.** It read "staged list exactly §2", which is
+   **unsatisfiable**: row 12 is explicitly conditional and row 7a may legitimately
+   not change. Read literally it fails whenever a conditional row is correctly
+   unused — or invites staging an unchanged file to satisfy it. **Instead:**
+   every staged path must appear in §2, **and** every §2 row must be either
+   staged or **named in the report as unused, with its reason.** Neither
+   direction may be silent.
+5. **`epiphany-ops` has NOT gained an `epiphany-bundle` dependency** — read
+   `crates/epiphany-ops/Cargo.toml` directly and **quote all three dependency
+   tables** (`[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`).
+   **ROUND 17:** it said only "check directly", naming no tables — and a
+   dev-dependency would satisfy a reader checking only the first while still
+   creating the cycle pin 1 exists to prevent.
+6. **`BundleCapabilities` implements no `Default`. REWRITTEN IN ROUND 17 — the
+   previous query could not detect the likelier violation.**
+
+   > **What was wrong, verified by running it.** The old regex was
+   > `impl +Default +for +BundleCapabilities|derive\([^)]*\bDefault\b[^)]*\)[[:space:]]*(pub )?struct BundleCapabilities`.
+   > `grep` is **line-oriented**, and `[[:space:]]*` cannot cross the newline
+   > rustfmt puts between an attribute and its item. Run against a real
+   > `#[derive(Debug, Clone, Default)]` above `pub struct BundleCapabilities`, it
+   > returns **0 matches** — **the gate passes.** Only the explicit `impl` form
+   > was ever caught. **`#[derive(Default)]` is the likelier way someone adds it**,
+   > and gate 6 is the *sole* mechanical guard on pin 3's prohibition — M4 exists
+   > precisely because **no test can catch a `Default` that callers then use.**
+
+   **Three checks, all required. Report all three outputs, not a verdict.**
+
+   a. `grep -rn "impl Default for BundleCapabilities" crates/epiphany-bundle/src/`
+      → **0 matches.**
+   b. `grep -rn -B4 "struct BundleCapabilities" crates/epiphany-bundle/src/ | grep -i derive`
+      → **report every line**, and confirm none names `Default`. The `-B4` is what
+      crosses the newline the old regex could not.
+   c. **Quote the complete definition of `BundleCapabilities` verbatim in the
+      report** — the struct, its attributes, and every `impl` block on it.
+
+   **(c) is the one that cannot pass vacuously.** (a) and (b) are greps for
+   absence, and **a grep for absence is defeated by a rename** — the same defect
+   that made gate 6a vacuous (see pin 3b). A quoted definition is read, not
+   matched, so it cannot be satisfied by searching for the wrong string.
+
+   **If (c) cannot be produced because the type does not exist under that name,
+   that is a pin 3 violation and a finding — not a gate that passed.** Zero
+   output from (a) or (b) means "no `Default`" **only when (c) shows the type is
+   there to have one.** Report (c) first, so (a) and (b) are read against a type
+   known to exist.
 6a. **No production composition path uses the fixture constructor.** *(Scope
    widened in review round 1: this checked `epiphany-textproj` only, while touch
    row 7 gives **`epiphany-testkit`** the real authority too — so a
@@ -2052,7 +2288,38 @@ the finding is that it succeeds *silently*. Do not report it as a passing gate.
    must instead be justified against §0.4's rule: **only production composition
    paths wrap the real constant**, and `roundtrip.rs` / `bundle_harness.rs` carry
    both kinds. Name which kind each site is; an unclassified site is a finding.
-7. `spec/vectors/decode_vectors.txt` unmodified; no schema major/minor moved.
+
+   **This gate is vacuous if the constructor is not named `synthetic_for_fixture`.
+   ROUND 17.** It greps for that exact literal, and pin 3b offered the name as an
+   example until round 17 pinned it. **Any other name returns 0 matches and this
+   gate reports a pass having checked nothing.** Before trusting the count,
+   **confirm the constructor's actual name against pin 3b and quote its
+   signature** — a zero here means "no leaks" only if the string searched for is
+   the string that exists.
+7. `spec/vectors/decode_vectors.txt` unmodified — `git diff --cached --stat --
+   spec/vectors/decode_vectors.txt` is **empty**; and **no schema major or minor
+   moved**, by the method below. **ROUND 17: the second clause named no method,
+   so it could be satisfied by not being checked.**
+
+   **Compare values, not diffs.** Quote the working-tree value of each of
+   `FORMAT_MAJOR` (`header.rs:47`), `FORMAT_MINOR` (`header.rs:53`) and
+   `Manifest::SCHEMA` (`manifest.rs:601`) beside its value at `HEAD`:
+
+   ```
+   grep -n "pub const FORMAT_MAJOR\|pub const FORMAT_MINOR" crates/epiphany-bundle/src/header.rs
+   grep -n "const SCHEMA" crates/epiphany-bundle/src/manifest.rs
+   git show HEAD:crates/epiphany-bundle/src/header.rs   | grep -n "pub const FORMAT_M"
+   git show HEAD:crates/epiphany-bundle/src/manifest.rs | grep -n "const SCHEMA"
+   ```
+
+   → the two sides **identical**. Report all four outputs, not the conclusion.
+
+   > **A diff-based check was written here first and withdrawn in the same round.**
+   > Grepping `git diff` for the constant names goes non-empty when the constants
+   > merely *move* — a comment added above them is enough — so it **fails on a
+   > change that did not happen**. A value comparison cannot. **Pin 3's rung type
+   > asserts no schema major or minor changes; this is the only item that checks
+   > that assertion, and until round 17 it named no method at all.**
 
 ---
 
