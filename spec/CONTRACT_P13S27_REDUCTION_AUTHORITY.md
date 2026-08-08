@@ -158,7 +158,8 @@ rows — read it off, do not restate it.
 | round 10 | 1 | 1 | **yes** |
 | *scratch probe* | *1 falsification* | — | *execution, not review* |
 | round 11 | 3 | 2 | **yes** |
-| **Total** | **44** | **31** | one amendment per row |
+| round 12 | 2 | 2 | **yes** |
+| **Total** | **46** | **33** | one amendment per row |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -386,19 +387,40 @@ evidence for a **permanent** capability loss — the text refusal that moved
 the same error as concluding instead of observing**, one level up: not a false
 observation, but a true one asked to carry more than it can.
 
-**What round 12 should weigh, stated against interest:** findings by round are
-**9, 6, 6, 5, 4, 3, 3, 2, 2, 1, 3**; blocking **4, 4, 4, 4, 2, 3, 3, 2, 2, 1, 2**.
-Eleven rounds, **none clean**. Round 11 broke the falling trend, and it did so
-**because the probe supplied evidence that made a previously invisible defect
-findable** — which is a reason to expect the *next* round to find more, not less,
-now that M7's comparison has measured ground truth to be checked against.
+**Review round 12 — 2026-08-08, independent, against `74dc994`.** Two findings,
+both blocking. **Both are the same defect: a requirement stated without the
+decision it requires**, leaving execution to make a design choice silently.
 
-**The M7 comparator is now on its fifth design.** Four were falsified by reading;
-the fifth was falsified by execution and then rebuilt on that evidence. **It is
-the first design with a measured result behind it and the first whose precondition
-is asserted rather than assumed** — and it still cannot be executed end to end
-until S27 is implemented. **Treat "dispatchable" as a claim requiring evidence of
-convergence, not a status reached by running out of findings.**
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | **The convergence loop was not actually bounded.** It said "bound the loop and fail if it does not converge" and named **no limit**, so execution would choose when non-convergence becomes failure — changing what the experiment means | Bound **pinned at one normalising step** (`n = 1`, computing at most `B₁` and `B₂`), with an outcome table and hard failure on `B₂ != B₁` |
+| 2 | **M7's location was unchosen.** "In a crate that can reach the real constant" is true of two crates and decisive for neither — and `render_text_document` is `pub(crate)` to `epiphany-textproj`, so `epiphany-testkit` could only host M7 via **an unpinned visibility change to another crate's public API** | Harness **pinned to `epiphany-textproj`**, under existing touch row 9. `render_text_document` stays `pub(crate)` |
+
+**The bound is one step because that is a property, not a tolerance.**
+`document_from_bundle` canonicalises, so `serialize_document ∘
+document_from_bundle` must reach its canonical form in one application. **If it
+does not, there is no canonical form and M7 is invalid as a whole** — so `B₂ !=
+B₁` is a reportable finding about the projection, not a signal to iterate again.
+A loop that runs until it happens to settle tests nothing; it reports how long it
+took.
+
+**Finding 2 would have been discovered by execution as a wall, not a decision** —
+and the natural improvisation is to widen `render_text_document`. Handoff §1.3
+records that function as *the one intentional hole* in the text refusal, existing
+solely so a negative vector can carry the spelling it asserts is refused.
+**Widening it to host a mutation that gets reverted would leave a permanently
+widened public surface behind**, which is how a temporary harness becomes an API
+change nobody ratified.
+
+**What round 13 should weigh, stated against interest:** findings by round are
+**9, 6, 6, 5, 4, 3, 3, 2, 2, 1, 3, 2**; blocking **4, 4, 4, 4, 2, 3, 3, 2, 2, 1,
+2, 2**. Twelve rounds, **none clean**. The last two rounds found the same *kind*
+of defect — a requirement that reads as a decision but isn't one — which suggests
+scanning M7 for remaining instructions that name a constraint without naming its
+value. **Everything M7 now specifies is pinned to a number, a crate or a named
+artifact**, which is a checkable property a round can test directly. **Treat
+"dispatchable" as a claim requiring evidence of convergence, not a status reached
+by running out of findings.**
 
 (Was: DRAFT, BLOCKED on the format-epoch rung,
 `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, which at the time was ratified and in
@@ -1545,18 +1567,69 @@ RESTRUCTURED IN ROUND 10 — see the alignment note below.** The demonstration i
 compared against the artifact built in step 1, and the probe proved that only
 works when its input document happens already to be a fixed point.
 
-1. **Build `B_raw`, the validated reference**, in a crate that can reach the real
-   constant: create a bundle with `caps` derived from
+**M7's harness lives in `epiphany-textproj`. PINNED IN ROUND 12 — it was
+previously unchosen, and only one crate can host it.**
+
+M7 needs two things at once: the **real constant** (`epiphany-ops`) and
+**`render_text_document`**, which is **`pub(crate)` to `epiphany-textproj`**
+(`project.rs:595`). `epiphany-textproj` depends on `epiphany-ops`, so it has
+both. **`epiphany-testkit` has the constant but cannot call the renderer**, and
+making it able to would be a **visibility change to `epiphany-textproj`'s public
+API that no pin authorises** — an unpinned API change smuggled in as test
+scaffolding.
+
+**So M7's temporary harness is written in `epiphany-textproj`, under touch row 9,
+which already carries `textproj/src/{serialize,project}.rs`. No new touch row.**
+*(Round 11 said "in a crate that can reach the real constant", which is true of
+two crates and decisive for neither — leaving execution to discover the
+visibility wall and improvise past it.)*
+
+> **`render_text_document` stays `pub(crate)`.** Handoff §1.3 records it as *the
+> one intentional hole* in the text refusal, existing solely so a negative vector
+> can carry the spelling it asserts is refused. **Widening it to host M7 would
+> turn a deliberately narrow exemption into public API** — and M7 is a mutation
+> that gets reverted, so it must not leave a widened surface behind.
+
+1. **Build `B_raw`, the validated reference** — in `epiphany-textproj`, per the
+   pin above: create a bundle with `caps` derived from
    **`CURRENT_REDUCTION_ALGORITHM_VERSION`** and commit a canonical base carrying
    that same version, so **pin 3a's writer check validates it on the way in**.
    That — and only that — is a genuinely validated base.
 
-1a. **Normalise to a byte-level fixed point.** Iterate
-   `doc = document_from_bundle(B_n)` → `B_{n+1} = serialize_document(doc, uuid)`
-   **until `B_{n+1}.image() == B_n.image()`.** Call the result **`B_fixed`**.
-   **Bound the loop and fail if it does not converge**; the probe observed one
-   pass sufficing for three documents, which is **not** a proof that one pass
-   always suffices.
+1a. **Normalise to a byte-level fixed point. The bound is PINNED AT ONE
+   NORMALISING STEP — round 12.**
+
+   Define, with `uuid` fixed throughout:
+
+   - `B₀ = B_raw`
+   - `B₍ₙ₊₁₎ = serialize_document(document_from_bundle(Bₙ), uuid)`
+   - **`B_fixed = Bₙ` for the smallest `n` with `B₍ₙ₊₁₎.image() == Bₙ.image()`.**
+
+   **Compute at most `B₁` and `B₂`. The permitted maximum is `n = 1`.** So:
+
+   | Outcome | Meaning | Required action |
+   |---|---|---|
+   | `B₁ == B₀` | `B_raw` was already a fixed point | `B_fixed = B₀`; **report "already fixed"** |
+   | `B₁ != B₀` and `B₂ == B₁` | one normalising step, the expected case | `B_fixed = B₁`; **report `n = 1`** |
+   | `B₂ != B₁` | **the normalisation is not idempotent** | **HARD FAILURE.** Report all three image lengths and the first differing offset between `B₁` and `B₂` |
+
+   **The bound is one step because that is a property, not a tolerance.**
+   `document_from_bundle` **canonicalises**, so `serialize_document ∘
+   document_from_bundle` must reach its canonical form in a single application.
+   **If `B₂ != B₁`, there is no canonical form** — and then no choice of reference
+   artifact is principled and **M7 is invalid as a whole**, not merely failing on
+   this input. That outcome is a finding about the projection, and it must be
+   reported as one rather than worked around by iterating further.
+
+   **Raising the bound requires an amendment with its own review round.** It was
+   left unstated until round 12, which meant **execution would have chosen when
+   non-convergence becomes failure — silently changing what the experiment
+   means.** A loop that iterates until it happens to settle tests nothing; it
+   merely reports how long it took.
+
+   *(The probe observed one step sufficing for three documents. That motivated
+   this bound; it does not prove it, which is exactly why `B₂ != B₁` is a
+   reportable finding rather than an assertion nobody expects to fire.)*
 
 1b. **Assert the fixed-point property explicitly** — that
    `serialize_document(document_from_bundle(B_fixed), uuid).image()` equals
