@@ -14,7 +14,52 @@ nothing.
 
 **The pins are therefore NOT frozen.** They are open to **the current round's**
 findings. Freezing follows ratification; it does not precede it, and it does not
-survive a withdrawal. **No execution work may begin** — not implementation, not staging,
+survive a withdrawal.
+
+### One narrow, explicit exception to "no execution work" — granted 2026-08-08
+
+**Granted before use, because the prohibition below is otherwise absolute.**
+Authorised: **a bounded mechanical probe of M7's experiment**, on a **disposable
+branch or worktree**, for the sole purpose of producing evidence for the next
+review round.
+
+**Scope — what is authorised:**
+
+- **Only M7's mechanics**, and only the part runnable against the tree as it
+  stands: **whether a base-free `Bundle` → text → `Bundle` round trip reproduces
+  the original `image()` bytes.** That is M7's load-bearing assumption after
+  round 10, and it is the thing four paper designs never established.
+- The exact result and the **complete diff** are recorded, then the branch is
+  **discarded**. Nothing merges.
+
+**Scope — what is NOT authorised, and is not a judgement call:**
+
+- **No S27 implementation.** No `BundleCapabilities`, no `capabilities()`, no pin
+  3a validation, no `CanonicalBaseRequiresRebuild`, none of tests 1–10b.
+- **No staging or commit on `main`** beyond this contract's own amendment rows.
+- **No pin, test, gate, mutation or touch-table change** arising from the probe
+  without its own review round. **The probe produces evidence, not amendments.**
+- **No canonical base anywhere** — the live constraint (§1.2) is untouched, which
+  is exactly why the probe is base-free.
+
+**Why the probe cannot cover M7 in full, which is itself evidence for round 11.**
+`BundleCapabilities` and `CURRENT_REDUCTION_ALGORITHM_VERSION` **do not exist in
+the tree** — they are S27's own deliverables. M7 step 1 requires a base committed
+**under the real authority**, so **M7 as written cannot be executed until S27 has
+landed.** M7 is a mutation *of this rung's own implementation*, and mutations run
+after the rung, not before it. **The probe therefore tests the round-trip
+machinery M7 depends on, not M7.**
+
+**A base-free probe removes no refusals at all** — both `project_text_document`
+(`project.rs:580`) and `serialize_document` (`serialize.rs:151`) gate on
+`canonical_base.is_some()`. So the probe touches none of pin 3b's guards and
+cannot leave one unrestored.
+
+**What the probe decides.** If base-free round-tripping is **not**
+byte-identical, M7's whole-image comparison is unsound **regardless of bases**,
+and round 10's fix is wrong too. If it **is**, the comparison design survives its
+first contact with the code and only the base leg remains unverified — pending
+S27. **No execution work may begin** — not implementation, not staging,
 not partial work against "the settled pins."
 
 **History — the running tally, which has now gone stale three times and been
@@ -1601,6 +1646,11 @@ begin it. No `create_staff`, `create_staff_group`, or invariant change.
 to 1 belongs to S16.
 
 **The executing agent MUST NOT commit.** Leave the work staged.
+
+**No execution work may begin at all** until this contract is ratified — **with the
+single exception granted in the status block above**, which authorises a
+base-free, discard-only mechanical probe of M7's round-trip machinery on a
+disposable branch, and nothing else.
 
 ---
 
