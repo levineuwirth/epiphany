@@ -1,9 +1,9 @@
 # Contract — P13-S27: the reduction version gets an outside witness
 
-**Status:** **NOT RATIFIED. NOT DISPATCHABLE.** Independent **review rounds 3
-through 6 closed** — see the history table below for the running tally, which is
-the only place counts are kept. **Awaiting review round 7**; the pins remain open
-and no execution work may begin.
+**Status:** **NOT RATIFIED. NOT DISPATCHABLE.** **Awaiting the next review round;
+the pins remain open and no execution work may begin.** Which rounds have closed,
+what each found, and the running tally are **the history table below** — this line
+does not restate them, having gone stale in two consecutive rounds by doing so.
 
 **Round 1's ratification is WITHDRAWN.** It was claimed on 2026-08-07 after a
 single round; round 2 then found four more blocking defects against the
@@ -35,7 +35,8 @@ rows — read it off, do not restate it.
 | round 4 | 5 | 4 | **yes** |
 | round 5 | 4 | 2 | **yes** |
 | round 6 | 3 | 3 | **yes** |
-| **Total** | **33** | **21** | one amendment per row |
+| round 7 | 3 | 3 | **yes** |
+| **Total** | **36** | **24** | one amendment per row |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -44,9 +45,13 @@ count-staleness defect for the fifth time**, and this time in the status block
 the author edited in every single round. It is now a table, so a new round adds
 a row rather than requiring a number to be found and re-derived.
 
-**Rounds 1 and 2 were run by the same agent that authored the text under review.
-Rounds 3, 4 and 5 were independent, and each found blocking defects in the
-amendments written to fix its predecessor.**
+**Which rounds were independent is the table's "Independent review?" column, and
+is not restated in prose.** A sentence here read "rounds 3, 4 and 5 were
+independent" from round 5 until round 7, going stale the moment round 6 closed —
+**the third consecutive round to find a claim duplicated in prose beside the table
+that owns it.** Every independent round so far has found blocking defects in the
+amendments written to fix its predecessor; that fact is read off the table, not
+maintained separately.
 
 **Review round 3 — 2026-08-07, independent, against `b842975`.** Confirmed
 `b741e48` as status prose only, then returned **six findings, four blocking**.
@@ -145,14 +150,36 @@ should write a table instead** — that has now been demonstrated three times.
 > **prose invites a number and a table does not** — so the defence has to be the
 > shape of the artifact, never the attention of whoever is editing it.
 
-**What round 7 should weigh, stated against interest:** findings by round are
-**9, 6, 6, 5, 4, 3** and blocking **4, 4, 4, 4, 2, 3**. Findings are falling
-monotonically; blocking is not, and round 6's were **100% blocking** and **100%
-in round 5's text**. Six consecutive rounds have found defects in the amendments
-written to fix their predecessor, with no round yet clean. The newest material —
-the amendment table, §3's crate table, item 4b's operand table — has had **zero**
-adversarial passes. **Treat "dispatchable" as a claim requiring evidence of
-convergence, not a status reached by running out of findings.**
+**Review round 7 — 2026-08-08, independent, against `c0d896c`.** Three findings,
+all blocking. **All three were the same defect: a claim living in two places and
+fixed in one.**
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | **§7 item 4a was unsatisfiable.** It required every mutation to name "the test it breaks", while item 1 four paragraphs above says M4 is observed to *compile* and M7's expected outcome is *success*. **A report obeying 4a literally could not be written** | 4a is now a table of what each mutation owes, with M4 and M7 carved out explicitly |
+| 2 | **Round 6's three-literal correction reached §7 and not §3.** §3 still said "**both** literals … tidying **either**", so the contract carried the fixed and the broken version of the same claim | §3 no longer states the count. It points at item 4b, the single home |
+| 3 | **"Rounds 3, 4 and 5 were independent"** went stale the moment round 6 closed, sitting in prose beside the table whose column already records it | Deleted. Read the table's column |
+
+**Three rounds, one lesson, finally applied.** Round 5 fixed the review totals and
+not the amendment tally beside them. Round 6 fixed item 4b and not §3's copy of
+the same rule. Round 7 found the classification sentence duplicating the table's
+own column. **The defect is duplication, and every previous remedy was vigilance —
+"check the other sites too" — which has now failed three rounds running.**
+
+**The remedy adopted here is deletion, not diligence:** where a claim had two
+homes, one is removed and replaced with a pointer. §3 no longer counts the
+literals; the history block no longer classifies the rounds. **A copy that cannot
+drift is one that does not exist.**
+
+**What round 8 should weigh, stated against interest:** findings by round are
+**9, 6, 6, 5, 4, 3, 3**; blocking **4, 4, 4, 4, 2, 3, 3**. Findings have
+flattened rather than continued falling, and **rounds 6 and 7 were both 100%
+blocking and 100% in the previous round's text**. Seven consecutive rounds, no
+clean round yet. The deduplication above is a **structural** change and therefore
+the first remedy with a reason to work — but it is also **untested**, and the
+newest material has had zero adversarial passes. **Treat "dispatchable" as a claim
+requiring evidence of convergence, not a status reached by running out of
+findings.**
 
 (Was: DRAFT, BLOCKED on the format-epoch rung,
 `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, which at the time was ratified and in
@@ -1031,9 +1058,19 @@ mutations without them, in the same edit that added §7 item 4a requiring them.*
    serve. It must be a named test returning a matchable `Result`, **not** an
    assertion inside a void conformance helper.
 
-**Both literals are load-bearing as literals.** A later reader "tidying" either
-into `CURRENT_REDUCTION_ALGORITHM_VERSION` makes the corresponding mutation
-vacuous while leaving every test green. Say so in both doc comments.
+**Every fixture literal in 10a and 10b is load-bearing as a literal.** A later
+reader "tidying" any of them into `CURRENT_REDUCTION_ALGORITHM_VERSION` makes the
+corresponding mutation vacuous while leaving every test green. **Give each one a
+doc comment saying so.**
+
+> **How many there are, and where that is recorded: §7 item 4b — which
+> enumerates them, and is the only place they are counted.** This paragraph said
+> "**both** literals … tidying **either**" from round 4 until round 7, a
+> two-literal framing that round 6 corrected **in §7 and not here**, leaving the
+> contract carrying both the fixed and the broken version of the same claim.
+> **It is not restated here on purpose.** The recurring defect across rounds 5, 6
+> and 7 is a claim living in two places and being fixed in one; the remedy is a
+> single home and a pointer, not a second copy kept in step by vigilance.
 
 Tests 2 and 3 must be **paired in review**: each asserts the other's error is
 *not* produced. A test that only checks its own variant cannot show the two
@@ -1368,11 +1405,31 @@ in §N" to a number.*
 4. **Every required test in §3** — currently **eleven** (1–9 plus **10a** and
    **10b**, added in round 4) — by name, each passing, with tests 2 and 3 shown
    to produce *different* errors, and the same for tests 6/2 and 8/5.
-4a. **For every mutation in §4, the named test it breaks**, and for M5a/M5b the
-   **provenance of each operand** — where the capability came from and where the
-   base version came from. Three mutations were found unrunnable across rounds 2
-   and 3 (no observation mechanism, cannot fail, nothing asserting the broken
-   behaviour); this item exists so a fourth is caught here rather than in review.
+4a. **For every mutation in §4, the observation it owes.** For most that is the
+   named test it breaks; **for two it cannot be, and this item said otherwise
+   until round 7.**
+
+   | Mutation | Owes |
+   |---|---|
+   | M1 | test **2** fails |
+   | M2 | test **3** fails |
+   | M3 | test **4** fails |
+   | **M4** | **no test — none is possible.** It owes the observation that the `Default` impl **compiles**, and the explicit statement that no test can catch it. That is why pin 3's prohibition is a review rule |
+   | M5a | test **10a** fails, **plus** the provenance of the asserted operand |
+   | M5b | test **10b** fails with both error fields asserted, **plus** the provenance of *both* operands |
+   | M6 | test **5** fails (first half); test **9** fails (second half) |
+   | **M7** | **no test — its expected outcome is success.** It owes the observation that the laundered document is indistinguishable from a validated one, and confirmation that all three refusals were restored |
+
+   **M4 and M7 were unsatisfiable under the previous wording.** Item 1 already
+   said both are "not a passing guard", yet this item demanded a test each
+   breaks — M4 is observed to *compile* and M7 is expected to *succeed*. **A
+   report obeying 4a literally could not be written**, and the honest response
+   would have been to invent a test for one of them.
+
+   Three mutations were found unrunnable across rounds 2 and 3 (no observation
+   mechanism, cannot fail, nothing asserting the broken behaviour). This item
+   exists so a fourth is caught here rather than in review — **which required
+   admitting that "breaks a test" is not the only shape an observation takes.**
 
 4b. **Quote, verbatim, every fixture-construction operand in tests 10a and 10b,
    and confirm each is still a literal.** Not "the literal `0`" — **there are
