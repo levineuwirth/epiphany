@@ -161,7 +161,8 @@ rows — read it off, do not restate it.
 | round 12 | 2 | 2 | **yes** |
 | round 13 | 1 | 1 | **yes** |
 | round 14 | 1 | 1 | **yes** |
-| **Total** | **48** | **35** | one amendment per row |
+| round 15 | 1 | 1 | **yes** |
+| **Total** | **49** | **36** | one amendment per row |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -459,16 +460,39 @@ order stops at the first sentence that says "done".** Where a later round narrow
 what suffices, the earlier summary is the site most likely to contradict it and
 least likely to be searched.
 
-**What round 15 should weigh, stated against interest:** findings by round are
-**9, 6, 6, 5, 4, 3, 3, 2, 2, 1, 3, 2, 1, 1**; blocking identical but for round 1's
-tail — **…, 1, 2, 2, 1, 1**. Fourteen rounds, **none clean**, but the last two are
-single-finding rounds and **round 14's was created by round 13**, not pre-existing.
-That is the narrowest the defect stream has been. **Against it:** round 13's
-question — *what else, besides the intended defect, would make this pass?* — has
-still **not** been asked of M1–M6, M5a or M5b, and round 14 did not ask it either.
-**That scan remains outstanding and is the largest known unexamined surface.**
-**Treat "dispatchable" as a claim requiring evidence of convergence, not a status
-reached by running out of findings.**
+**Review round 15 — 2026-08-08, independent, against `fa483cf`.** **One finding,
+blocking** — and it ran the scan rounds 13 and 14 left outstanding.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | **M6 accepted "test 5 fails" and "test 9 fails" as its observations.** A test fails for **every** reason, not only the one under test — an unrelated writer rejection satisfies both exactly as well as the intended cause, so M6 could report success while demonstrating nothing about pin 3a's scope | Both halves now require the **mutated outcome itself**: test 5's stale commit observed to **succeed** and reopen at the new generation; test 9's unchanged inherited-base commit observed **rejected specifically by the broadened rule** |
+
+**The scan is now complete: M1–M5b survive it; M6 did not.** Round 13 found this
+shape in M7, round 14 did not run the implied scan, and round 15 did. **That the
+one remaining instance was in M6 — the mutation twice rewritten for
+unexecutability — is worth noting: a mutation can be made runnable and still not
+be evidential.**
+
+**The principle, stated once so it need not be rediscovered:** *the evidence a
+mutation owes is the behaviour it changed, not the assertion it broke.* A broken
+assertion is a symptom with many possible causes; the changed behaviour has one.
+**Every mutation in §4 now names an outcome, not a failure.**
+
+**Convergence assessment, stated against interest.** Findings by round: **9, 6, 6,
+5, 4, 3, 3, 2, 2, 1, 3, 2, 1, 1, 1**. Blocking: **4, 4, 4, 4, 2, 3, 3, 2, 2, 1, 2,
+2, 1, 1, 1**. Fifteen rounds, none returning zero. **What has changed in the last
+three is the character of the findings, not only the count:** round 13 found a
+defect of a kind never looked for, round 14 found a contradiction round 13
+created, and round 15 found the **last** instance of round 13's kind — with the
+scan reported complete across every mutation.
+
+**The known unexamined surfaces are now enumerable, which they were not before:**
+§4 has been scanned for could-this-pass-for-the-wrong-reason and is clean;
+M7's authority/base leg **remains unverifiable until S27 is implemented**, by
+construction, and is carried as an execution requirement rather than a gap in the
+document. **Treat "dispatchable" as a claim requiring evidence of convergence, not
+a status reached by running out of findings** — and note that the evidence now
+exists in a form it did not at round 11.
 
 (Was: DRAFT, BLOCKED on the format-epoch rung,
 `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, which at the time was ratified and in
@@ -1541,8 +1565,17 @@ pin 3b has been applied backwards, and that is a finding.
 it matters; M5b alone shows it matters but never that production reads it. The
 original mutation conflated the two because, at `381c498`, one path did both.
 
-**M6 — the writer check fires.** Remove pin 3a's commit-side validation; test 5
-must fail.
+**M6 — the writer check fires. OBSERVATIONS TIGHTENED IN ROUND 15: a failing test
+is not the evidence; the changed behaviour is.**
+
+Remove pin 3a's commit-side validation. **Test 5 failing is necessary and NOT
+sufficient** — it fails for any error at all, including an unrelated writer
+rejection that has nothing to do with pin 3a.
+
+**Observe the mutated outcome itself:** test 5's stale commit must be seen to
+**SUCCEED**, and the bundle must **reopen at the new generation with the stale
+base present**. That — not the absence of the old error — is what shows the check
+was the only thing refusing it.
 
 **Second half REPLACED IN REVIEW ROUND 2. It was unexecutable as written.**
 
@@ -1556,12 +1589,31 @@ must fail.
 > the same reachability.
 
 **As replaced — broaden rather than narrow.** Widen pin 3a to refuse a commit on
-a **base-bearing bundle regardless of whether the version matches**, then confirm
-that **test 9** — `an_unrelated_commit_on_a_base_bearing_bundle_succeeds` — starts
-failing. That state **is** reachable (test 6 establishes it), so the mutation
-runs, and it signs the same thing the original was reaching for: that *"newly
-emitted or replaced"* is a deliberate scope and not an accident of where the
-check was placed.
+a **base-bearing bundle regardless of whether the version matches**, then observe
+**test 9** — `an_unrelated_commit_on_a_base_bearing_bundle_succeeds`. That state
+**is** reachable (test 6 establishes it), so the mutation runs, and it signs the
+same thing the original was reaching for: that *"newly emitted or replaced"* is a
+deliberate scope and not an accident of where the check was placed.
+
+**Test 9 failing is necessary and NOT sufficient — ROUND 15.** Observe the
+mutated outcome itself: test 9's commit, **otherwise unchanged and not touching
+`canonical_base`**, must be seen **rejected specifically by the broadened writer
+rule** — the error the broadening introduces, on the inherited-base path, named in
+the report. **Not merely "test 9 now errors."**
+
+> **Why both halves needed this. ROUND 15 applied round 13's question to M6 —
+> "what else, besides the intended defect, would make this pass?"** Both halves
+> accepted *a failing test* as the observation, and **a test fails for every
+> reason, not only the one under test.** An unrelated writer rejection satisfies
+> "test 5 must fail" and "test 9 starts failing" exactly as well as the intended
+> cause does, so the mutation could report success while demonstrating nothing
+> about pin 3a's scope. **The evidence a mutation owes is the behaviour it
+> changed, not the assertion it broke.**
+>
+> This is the same shape as round 13's M7 finding — *an observation satisfiable
+> by something other than the thing observed* — and it was found by the scan
+> round 13's finding implied and round 14 did not run. **M1–M5b survive the same
+> scan.**
 
 > **Test 9 was added in round 3 for exactly this reason.** Round 2 wrote this
 > replacement naming a *scenario* and no *test*, so nothing asserted the
@@ -2021,7 +2073,7 @@ in §N" to a number.*
    | **M4** | **no test — none is possible.** It owes the observation that the `Default` impl **compiles**, and the explicit statement that no test can catch it. That is why pin 3's prohibition is a review rule |
    | M5a | test **10a** fails, **plus** the provenance of the asserted operand |
    | M5b | test **10b** fails with both error fields asserted, **plus** the provenance of *both* operands |
-   | M6 | test **5** fails (first half); test **9** fails (second half) |
+   | M6 | **the mutated outcomes M6 specifies for both halves** — test 5's stale commit observed to *succeed* and reopen at the new generation, and test 9's unchanged inherited-base commit observed *rejected by the broadened rule*. **A failing test is necessary and not sufficient**; counts and conditions live in M6, not here |
    | **M7** | **no test — its expected outcome is success.** It owes **every observation M7 specifies, including its control**, and confirmation that the refusals M7 names as removed were restored. **Counts, methods and file names live in M7, not here** — this cell said "all three refusals" until round 8 and "field-by-field enumeration" until round 9, each time describing a method M7 no longer used |
 
    **M4 and M7 were unsatisfiable under the previous wording.** Item 1 already
