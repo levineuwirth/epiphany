@@ -162,7 +162,8 @@ rows — read it off, do not restate it.
 | round 13 | 1 | 1 | **yes** |
 | round 14 | 1 | 1 | **yes** |
 | round 15 | 1 | 1 | **yes** |
-| **Total** | **49** | **36** | one amendment per row |
+| round 16 | 4 | 4 | **yes** |
+| **Total** | **53** | **40** | one amendment per row |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -467,32 +468,48 @@ blocking** — and it ran the scan rounds 13 and 14 left outstanding.
 |---|---|---|
 | 1 | **M6 accepted "test 5 fails" and "test 9 fails" as its observations.** A test fails for **every** reason, not only the one under test — an unrelated writer rejection satisfies both exactly as well as the intended cause, so M6 could report success while demonstrating nothing about pin 3a's scope | Both halves now require the **mutated outcome itself**: test 5's stale commit observed to **succeed** and reopen at the new generation; test 9's unchanged inherited-base commit observed **rejected specifically by the broadened rule** |
 
-**The scan is now complete: M1–M5b survive it; M6 did not.** Round 13 found this
-shape in M7, round 14 did not run the implied scan, and round 15 did. **That the
-one remaining instance was in M6 — the mutation twice rewritten for
-unexecutability — is worth noting: a mutation can be made runnable and still not
-be evidential.**
+**Historical disposition — FALSIFIED IN ROUND 16.** Round 15 reported that the
+scan was complete and that M1–M5b survived it while M6 did not. Round 16
+re-derived those entries and found M1–M3 and M5a still accepting a broken
+assertion as evidence. The text is retained as the round-15 disposition, not as a
+current conclusion.
 
 **The principle, stated once so it need not be rediscovered:** *the evidence a
 mutation owes is the behaviour it changed, not the assertion it broke.* A broken
 assertion is a symptom with many possible causes; the changed behaviour has one.
 **Every mutation in §4 now names an outcome, not a failure.**
 
-**Convergence assessment, stated against interest.** Findings by round: **9, 6, 6,
-5, 4, 3, 3, 2, 2, 1, 3, 2, 1, 1, 1**. Blocking: **4, 4, 4, 4, 2, 3, 3, 2, 2, 1, 2,
-2, 1, 1, 1**. Fifteen rounds, none returning zero. **What has changed in the last
-three is the character of the findings, not only the count:** round 13 found a
-defect of a kind never looked for, round 14 found a contradiction round 13
-created, and round 15 found the **last** instance of round 13's kind — with the
-scan reported complete across every mutation.
+**Review round 16 — 2026-08-08, independent, against `a230c6f`.** **Four
+findings, all blocking.** Round 15 applied its rule to M6 only, while its own
+new rule claimed to cover every mutation.
 
-**The known unexamined surfaces are now enumerable, which they were not before:**
-§4 has been scanned for could-this-pass-for-the-wrong-reason and is clean;
-M7's authority/base leg **remains unverifiable until S27 is implemented**, by
-construction, and is carried as an execution requirement rather than a gap in the
-document. **Treat "dispatchable" as a claim requiring evidence of convergence, not
-a status reached by running out of findings** — and note that the evidence now
-exists in a form it did not at round 11.
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | **M1 still accepted test 2 failing.** An unrelated open error could break the assertion after the pin-5 comparison was removed | Require the stale, self-consistent base to be observed **opening successfully** under the mismatching capability |
+| 2 | **M2 still accepted test 3 failing.** Any non-malformed result could do that, without showing that corruption was reclassified as staleness | Require the corrupt fixture to be observed returning `CanonicalBaseRequiresRebuild`, with both fields reported |
+| 3 | **M3 still accepted test 4 failing.** Any error on either no-base open could satisfy it | Require the base-free fixture to be observed rejected by the wrongly widened check under the deliberately mismatching capability, with the error fields reported |
+| 4 | **M5a still accepted test 10a failing.** A serialization failure would satisfy it without showing the production path read the changed authority | Require the returned bundle's stored capability to be observed equal to the deliberately changed authority |
+
+**M4 and M5b survive this correction.** M4's changed behaviour is compilation;
+M5b already requires its specific error and both fields. M6 and M7 already name
+their changed outcomes. The round-15 claim that the scan was complete is retained
+above as the review's historical disposition, not silently rewritten.
+
+**The rule now has its actual scope:** for each mutation, report the intended
+changed behaviour itself; the named test's broken assertion is supporting
+evidence, never sufficient evidence. **The contract remains NOT RATIFIED, NOT
+DISPATCHABLE, pins open, and no execution work is authorised.**
+
+**Convergence assessment, stated against interest.** The history table is the
+authority for the sequence and totals. **No review round has returned zero.**
+Round 16 also falsified round 15's claim that its scan was complete, so no
+ratification inference may be drawn from the recent smaller rounds alone.
+
+**The known unexamined surfaces are now enumerable, but not closed:** M4 and M5b
+survive the outcome scan; M7's authority/base leg **remains unverifiable until S27
+is implemented**, by construction, and is carried as an execution requirement
+rather than a gap in the document. **Treat "dispatchable" as a claim requiring
+evidence of convergence, not a status reached by running out of findings.**
 
 (Was: DRAFT, BLOCKED on the format-epoch rung,
 `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, which at the time was ratified and in
@@ -1418,14 +1435,41 @@ distinction they were written to hold is lost.
 
 Applied, **run**, output recorded verbatim, restored **by hand-editing back**.
 
-**M1 — the new check fires.** Delete pin 5's comparison; test 2 must fail.
+**M1 — the new check fires. OBSERVATION TIGHTENED IN ROUND 16.** Delete pin
+5's comparison. **Test 2 failing is necessary and NOT sufficient**: an unrelated
+open error can break its assertion without showing the capability check was the
+thing removed.
 
-**M2 — the paths are distinguishable.** Make pin 4's error subsume pin 6's
-(return `CanonicalBaseRequiresRebuild` for the corrupt case too); test 3 must
-fail. Signs that §0.1's distinction is real in the code, not only in prose.
+**Observe the mutated outcome itself:** the structurally valid, self-consistent
+base whose version differs from `caps.current_reduction_version` must be seen to
+**OPEN SUCCESSFULLY**. Report that open result and the deliberately mismatching
+base/current values.
 
-**M3 — the no-base exemption is deliberate.** Make the check run when
-`canonical_base` is `None`; test 4 must fail.
+**M2 — the paths are distinguishable. OBSERVATION TIGHTENED IN ROUND 16.** Make
+pin 4's error subsume pin 6's (return `CanonicalBaseRequiresRebuild` for the
+corrupt case too). **Test 3 failing is necessary and NOT sufficient**: any result
+other than the expected malformed error breaks it, without proving corruption was
+misclassified as staleness.
+
+**Observe the mutated outcome itself:** the corrupt base/superblock-disagreement
+fixture must be seen returning **`CanonicalBaseRequiresRebuild { base, current }`**.
+Report both fields. That is the reclassification this mutation is meant to make,
+not merely a broken test assertion.
+
+**M3 — the no-base exemption is deliberate. OBSERVATION TIGHTENED IN ROUND 16.**
+Make the check run when `canonical_base` is `None`. **Test 4 failing is necessary
+and NOT sufficient**: an error on either attempt can break it without showing the
+no-base exemption was removed.
+
+**Observe the mutated outcome itself:** the base-free fixture, opened under the
+deliberately mismatching capability from test 4, must be seen **rejected by the
+wrongly widened check with `CanonicalBaseRequiresRebuild { base, current }`**.
+For this mutation only, the `base` field is the base-free superblock's
+`reduction_algorithm_version` — **`ReductionAlgorithmVersion(0)`**, obtained from
+`reduction_version_for`'s no-base default. The `current` field is the deliberately
+mismatching capability. Report both values and the otherwise successful
+matching-capability open. **This synthetic source exists only to make the wrong
+mutation observable; it MUST NOT enter shipped no-base validation.**
 
 **M4 — the capability is genuinely required.** Add `impl Default for
 BundleCapabilities` and a call site using it. **This must be observed to
@@ -1470,10 +1514,14 @@ literal, not against the constant. CORRECTED IN ROUND 4.**
 > written in the same edit. Round 3 also violated its own new §7 item 4a by
 > naming no test at all.
 
-Change `CURRENT_REDUCTION_ALGORITHM_VERSION` from `0` to any other value. Test
-10a must **fail**, because it asserts
-`bundle.capabilities().current_reduction_version == ReductionAlgorithmVersion(0)`
-with `0` written as a **deliberate literal** — the independent operand.
+Change `CURRENT_REDUCTION_ALGORITHM_VERSION` from `0` to any other value. **Test
+10a failing is necessary and NOT sufficient**: a serialization failure would
+break its assertion without showing the production path reads the authority.
+
+**Observe the mutated outcome itself:** `serialize_document` must return a bundle
+whose stored `capabilities().current_reduction_version` equals the deliberately
+changed authority. Report that value beside the test's deliberate literal
+`ReductionAlgorithmVersion(0)`; test 10a then fails for that specific mismatch.
 
 Assert on the capability **only** — not on an open or commit outcome. There is no
 base, so no check fires and none should. **If an open or commit outcome moves
@@ -2067,11 +2115,11 @@ in §N" to a number.*
 
    | Mutation | Owes |
    |---|---|
-   | M1 | test **2** fails |
-   | M2 | test **3** fails |
-   | M3 | test **4** fails |
+   | M1 | its stale, self-consistent fixture observed to **open successfully** under mismatching `caps`, plus test **2** failing |
+   | M2 | its corrupt fixture observed returning **`CanonicalBaseRequiresRebuild`** with both fields, plus test **3** failing |
+   | M3 | its base-free fixture observed rejected by the wrongly widened check with **`CanonicalBaseRequiresRebuild`** and both fields, plus test **4** failing |
    | **M4** | **no test — none is possible.** It owes the observation that the `Default` impl **compiles**, and the explicit statement that no test can catch it. That is why pin 3's prohibition is a review rule |
-   | M5a | test **10a** fails, **plus** the provenance of the asserted operand |
+   | M5a | `serialize_document` observed supplying the deliberately changed authority, plus test **10a** failing and the provenance of the asserted operand |
    | M5b | test **10b** fails with both error fields asserted, **plus** the provenance of *both* operands |
    | M6 | **the mutated outcomes M6 specifies for both halves** — test 5's stale commit observed to *succeed* and reopen at the new generation, and test 9's unchanged inherited-base commit observed *rejected by the broadened rule*. **A failing test is necessary and not sufficient**; counts and conditions live in M6, not here |
    | **M7** | **no test — its expected outcome is success.** It owes **every observation M7 specifies, including its control**, and confirmation that the refusals M7 names as removed were restored. **Counts, methods and file names live in M7, not here** — this cell said "all three refusals" until round 8 and "field-by-field enumeration" until round 9, each time describing a method M7 no longer used |
