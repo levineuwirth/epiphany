@@ -160,7 +160,8 @@ rows — read it off, do not restate it.
 | round 11 | 3 | 2 | **yes** |
 | round 12 | 2 | 2 | **yes** |
 | round 13 | 1 | 1 | **yes** |
-| **Total** | **47** | **34** | one amendment per row |
+| round 14 | 1 | 1 | **yes** |
+| **Total** | **48** | **35** | one amendment per row |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -433,16 +434,41 @@ path, in the same run, under the same removals. **M7's removals are now explicit
 limited to the text refusals** — pin 3a is not among them and may not be weakened,
 because it is the thing under observation rather than an obstacle to it.
 
-**What round 14 should weigh, stated against interest:** findings by round are
-**9, 6, 6, 5, 4, 3, 3, 2, 2, 1, 3, 2, 1**; blocking **4, 4, 4, 4, 2, 3, 3, 2, 2,
-1, 2, 2, 1**. Thirteen rounds, **none clean**. Round 13 is the second single-finding
-round and the narrowest since the probe. **But it found a defect of a kind no
-earlier round had looked for** — not "can this run?" or "does this compare the
-right things?" but **"could this pass for the wrong reason?"** — and that question
-has **not** been asked of M1–M6, M5a or M5b. **Every mutation in §4 deserves the
-same check**: what else, besides the intended defect, would make it pass? **Treat
-"dispatchable" as a claim requiring evidence of convergence, not a status reached
-by running out of findings.**
+**Review round 14 — 2026-08-08, independent, against `f579172`.** **One finding,
+blocking** — a contradiction round 13 created.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | **The comparison method still said equal images "complete the observation and require nothing further"** — written in round 9 when byte equality *was* all of M7, and not swept when round 13 added the control. The contract simultaneously **required** the control and **licensed omitting it**, with the permissive sentence sitting **earlier**, reading as the summary | Equality is now **necessary but not sufficient** — observation 1 of three, with the control still required. The paragraph specifies *how to compare*, never *what suffices* |
+
+**A second instance was found while amending, and round 14 reported none.** The
+"informative in both directions" note read *"if **every field matches**, the
+refusal is justified"* — the **same sufficiency claim in different words**, and
+still carrying round 8's *"every field"* vocabulary that round 9 had replaced with
+whole-image comparison. **A search for "nothing further" or "sufficient" cannot
+reach a sentence that says "matches".** That is exactly the defect `CLAUDE.md`
+names — *searching one spelling and concluding about all sites* — encountered
+inside the fix for a sweep failure. **Neither the reviewer's search nor the
+author's first search found it; a third pass on different terms did.**
+
+**The round-13 lesson generalises further than round 13 stated.** It is not only
+that a requirement must be swept to every site — it is that **the permissive
+statement usually reads earlier than the restrictive one**, because requirements
+accumulate downward as a document is amended. **A reader following the document in
+order stops at the first sentence that says "done".** Where a later round narrows
+what suffices, the earlier summary is the site most likely to contradict it and
+least likely to be searched.
+
+**What round 15 should weigh, stated against interest:** findings by round are
+**9, 6, 6, 5, 4, 3, 3, 2, 2, 1, 3, 2, 1, 1**; blocking identical but for round 1's
+tail — **…, 1, 2, 2, 1, 1**. Fourteen rounds, **none clean**, but the last two are
+single-finding rounds and **round 14's was created by round 13**, not pre-existing.
+That is the narrowest the defect stream has been. **Against it:** round 13's
+question — *what else, besides the intended defect, would make this pass?* — has
+still **not** been asked of M1–M6, M5a or M5b, and round 14 did not ask it either.
+**That scan remains outstanding and is the largest known unexamined surface.**
+**Treat "dispatchable" as a claim requiring evidence of convergence, not a status
+reached by running out of findings.**
 
 (Was: DRAFT, BLOCKED on the format-epoch rung,
 `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, which at the time was ratified and in
@@ -1737,8 +1763,19 @@ and round 9 each corrected one), which is why none is stated now.
 **The comparison method — whole artifacts, not a field list. CORRECTED IN ROUND
 9.**
 
-**Compare the complete `image()` bytes of both bundles.** If they are equal, the
-observation is made and nothing further is required.
+**Compare the complete `image()` bytes of both bundles.** Equality is
+**necessary but NOT sufficient** — it is observation 1 of three, and **the control
+must still run and reject the mismatched base.** See the observation requirements
+below; they are the authority on what M7 owes, and this paragraph specifies only
+*how to compare*, never *what suffices*.
+
+> **CORRECTED IN ROUND 14.** This read *"if they are equal, the observation is
+> made and nothing further is required"* — written in round 9, when byte equality
+> **was** the whole of M7. Round 13 added the writer-check control and did not
+> sweep back to this sentence, so the contract simultaneously **required** the
+> control and **licensed omitting it**, with the permissive sentence sitting
+> earlier and reading as the summary. **A reader following the document in order
+> would have stopped here.**
 
 > **Round 8 specified a field enumeration and got it wrong**, which is why this
 > is no longer a list. It claimed to cover "everything that could carry
@@ -1841,11 +1878,22 @@ unqualified "the text path is indistinguishable from the validated path" is
 forward.
 
 > **This mutation is informative in both directions, which is why it is worth
-> running.** If every field matches, the refusal is justified and the format
-> rung's reasoning is confirmed by observation for the first time. **If any field
-> differs, that field is a provenance signal nobody knew existed** — the text
-> refusal may be stronger than it needs to be, and that is a finding for a future
-> rung, not something to suppress because it contradicts the expected result.
+> running.** If the images are equal **and the other two observations hold**, the
+> refusal is justified and the format rung's reasoning is confirmed by
+> observation for the first time. **If the images differ, resolve the difference
+> to a field**: it is either justified nondeterminism, or **a provenance signal
+> nobody knew existed** — in which case the text refusal may be stronger than it
+> needs to be, and that is a finding for a future rung, not something to suppress
+> because it contradicts the expected result.
+>
+> **CORRECTED IN ROUND 14, as a second instance of that round's finding.** This
+> read *"if every field matches, the refusal is justified"* — the same sufficiency
+> claim as the sentence above, in different words, and still carrying round 8's
+> **"every field"** vocabulary that round 9 replaced with whole-image comparison.
+> **Round 14 reported no second instance, and there was one**: a search for
+> "nothing further" or "sufficient" could not reach a sentence that says
+> "matches" instead. **Same defect, different spelling** — the failure mode
+> `CLAUDE.md` names, met inside the fix for it.
 
 **Restore every refusal you removed by hand-editing back**, never with git —
 working from the enumeration the path requirement above demands, **not from a
