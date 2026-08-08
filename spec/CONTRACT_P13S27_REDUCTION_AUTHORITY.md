@@ -159,7 +159,8 @@ rows — read it off, do not restate it.
 | *scratch probe* | *1 falsification* | — | *execution, not review* |
 | round 11 | 3 | 2 | **yes** |
 | round 12 | 2 | 2 | **yes** |
-| **Total** | **46** | **33** | one amendment per row |
+| round 13 | 1 | 1 | **yes** |
+| **Total** | **47** | **34** | one amendment per row |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -412,13 +413,34 @@ solely so a negative vector can carry the spelling it asserts is refused.
 widened public surface behind**, which is how a temporary harness becomes an API
 change nobody ratified.
 
-**What round 13 should weigh, stated against interest:** findings by round are
-**9, 6, 6, 5, 4, 3, 3, 2, 2, 1, 3, 2**; blocking **4, 4, 4, 4, 2, 3, 3, 2, 2, 1,
-2, 2**. Twelve rounds, **none clean**. The last two rounds found the same *kind*
-of defect — a requirement that reads as a decision but isn't one — which suggests
-scanning M7 for remaining instructions that name a constraint without naming its
-value. **Everything M7 now specifies is pinned to a number, a crate or a named
-artifact**, which is a checkable property a round can test directly. **Treat
+**Review round 13 — 2026-08-08, independent, against `bff9c9a`.** **One finding,
+blocking** — and it inverted M7's result.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | **M7 claimed the capability check "does not fire".** Pin 3a validates a **newly emitted** canonical base, which is exactly what **both** `B_raw` and `A` commit. The check fires on both paths and **accepts**, because the raw version equals the real authority. **As written, M7 was satisfiable by deleting pin 3a's writer check entirely** — a passing M7 demonstrating the opposite of its purpose | Claim corrected to *fires and accepts*; **three required observations**; and a **control** added — the same path with a mismatched version must be **rejected** with `CanonicalBaseRequiresRebuild` |
+
+**This is a new failure shape, and worth naming: an observation satisfiable by the
+absence of the thing it observes.** M7's earlier defects were about being
+unrunnable, or comparing the wrong artifacts. This one would have *run*, *passed*,
+and *reported success* — on a tree where the writer check had been removed.
+**"The check does not fire" cannot distinguish a check that accepts from a check
+that is not there**, and only one of those is the finding.
+
+**The control is what makes the positive result mean anything.** The matching case
+succeeding is evidence only once the mismatching case is seen to fail on the same
+path, in the same run, under the same removals. **M7's removals are now explicitly
+limited to the text refusals** — pin 3a is not among them and may not be weakened,
+because it is the thing under observation rather than an obstacle to it.
+
+**What round 14 should weigh, stated against interest:** findings by round are
+**9, 6, 6, 5, 4, 3, 3, 2, 2, 1, 3, 2, 1**; blocking **4, 4, 4, 4, 2, 3, 3, 2, 2,
+1, 2, 2, 1**. Thirteen rounds, **none clean**. Round 13 is the second single-finding
+round and the narrowest since the probe. **But it found a defect of a kind no
+earlier round had looked for** — not "can this run?" or "does this compare the
+right things?" but **"could this pass for the wrong reason?"** — and that question
+has **not** been asked of M1–M6, M5a or M5b. **Every mutation in §4 deserves the
+same check**: what else, besides the intended defect, would make it pass? **Treat
 "dispatchable" as a claim requiring evidence of convergence, not a status reached
 by running out of findings.**
 
@@ -1746,10 +1768,51 @@ conclusion is precisely the reasoning-instead-of-observing this rung exists to
 stamp out — round 1 wrote the conclusion and specified no way to reach it, and
 round 8 specified a way that could not support it.
 
-**What the observation must show, or it has not been made:** that the capability
-check does **not** fire, and that `A.image()` equals `B_fixed.image()` — the
-document launders precisely *because* its number matches, and no check can tell a
-coincidence from a rebuild.
+**What the observation must show, or it has not been made. CORRECTED IN ROUND 13
+— the previous wording inverted the result.**
+
+It read *"the capability check does **not** fire."* **That is backwards.** Pin 3a
+requires `commit`/`commit_versioned` to validate a **newly emitted** canonical
+base — and **both** `B_raw` and `A` commit exactly that. **The check fires on both
+paths. It fires and it ACCEPTS**, because the raw version equals the real
+authority.
+
+**That acceptance is the whole laundering result:** the base is not slipped past
+an absent check, it is **admitted by a check that is working correctly and cannot
+tell a coincidence from a rebuild.**
+
+Therefore M7 must show **all three** of:
+
+1. **`A.image()` equals `B_fixed.image()`** — the container records nothing about
+   how the base arrived.
+2. **Pin 3a's writer validation ran and accepted** on both commits.
+3. **The control below.**
+
+### The control — REQUIRED, added in round 13
+
+**In the same run, with the same harness, repeat the import with a base version
+deliberately NOT equal to the real authority, and observe that the commit is
+REJECTED with `CanonicalBaseRequiresRebuild`.**
+
+**Without this control, M7 is satisfiable by deleting pin 3a's writer check
+entirely** — which would produce a *passing* M7 while demonstrating the exact
+opposite of what M7 exists to show. An observation that the check "does not fire"
+cannot distinguish **a check that accepts** from **a check that is not there**,
+and only one of those is the finding.
+
+**The control is what proves the check was live.** The matching case succeeding
+means something only once the mismatching case is seen to fail on the same path,
+in the same run, under the same removals.
+
+> **M7's removals are limited to the text refusals — pin 3a is NOT among them,
+> and MUST NOT be removed or weakened.** M7 mutates the *text* boundary to make a
+> path reachable; it does not mutate the *authority* boundary, which is the thing
+> under observation. Removing both would not be a stronger mutation, it would be
+> a different and empty experiment.
+
+**Report all three observations, and the control's error variant by name.** A
+report giving only observation 1 has not made the demonstration — it has measured
+two byte strings.
 
 ### The claim M7 establishes, and the one it does NOT. SCOPED IN ROUND 11.
 
@@ -1886,7 +1949,11 @@ in §N" to a number.*
 1. **Every mutation in §4** — currently **eight** (M1, M2, M3, M4, **M5a**,
    **M5b**, M6, M7), each with verbatim output. *(M5 split in review round 2.)*
    **M4 is a recorded prohibition** (observed to compile, then reverted) and
-   **M7 is a demonstration whose expected outcome is success**. Neither is a
+   **M7 is a demonstration whose expected outcome is success — except its
+   control (round 13), whose expected outcome is a REJECTION.** A report that
+   treats the control's rejection as a problem has misread it: that rejection is
+   the evidence pin 3a's writer check was live, without which M7's success proves
+   nothing. Neither M4 nor M7 is a
    passing guard; do not report them as one.
 2. **Every gate item in §5** — currently **eight** (1, 2, 3, 4, 5, 6, 6a, 7),
    each with the command that produced it.
@@ -1907,7 +1974,7 @@ in §N" to a number.*
    | M5a | test **10a** fails, **plus** the provenance of the asserted operand |
    | M5b | test **10b** fails with both error fields asserted, **plus** the provenance of *both* operands |
    | M6 | test **5** fails (first half); test **9** fails (second half) |
-   | **M7** | **no test — its expected outcome is success.** It owes the comparison M7 specifies, and confirmation that the refusals M7 names as removed were restored. **Counts, methods and file names live in M7, not here** — this cell said "all three refusals" until round 8 and "field-by-field enumeration" until round 9, each time describing a method M7 no longer used |
+   | **M7** | **no test — its expected outcome is success.** It owes **every observation M7 specifies, including its control**, and confirmation that the refusals M7 names as removed were restored. **Counts, methods and file names live in M7, not here** — this cell said "all three refusals" until round 8 and "field-by-field enumeration" until round 9, each time describing a method M7 no longer used |
 
    **M4 and M7 were unsatisfiable under the previous wording.** Item 1 already
    said both are "not a passing guard", yet this item demanded a test each
