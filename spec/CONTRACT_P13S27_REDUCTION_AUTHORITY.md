@@ -1,8 +1,9 @@
 # Contract — P13-S27: the reduction version gets an outside witness
 
-**Status:** **NOT RATIFIED. NOT DISPATCHABLE.** Independent **review rounds 3, 4
-and 5 closed** — see the history table below for the running tally. **Awaiting
-review round 6**; the pins remain open and no execution work may begin.
+**Status:** **NOT RATIFIED. NOT DISPATCHABLE.** Independent **review rounds 3
+through 6 closed** — see the history table below for the running tally, which is
+the only place counts are kept. **Awaiting review round 7**; the pins remain open
+and no execution work may begin.
 
 **Round 1's ratification is WITHDRAWN.** It was claimed on 2026-08-07 after a
 single round; round 2 then found four more blocking defects against the
@@ -18,18 +19,23 @@ follows ratification; it does not precede it, and it does not survive a
 withdrawal. **No execution work may begin** — not implementation, not staging,
 not partial work against "the settled pins."
 
-**History — the running tally, which itself went stale twice and was corrected in
-round 5.** Amended **five** times, all before dispatch: **pin 10** (the
-unsatisfiable escape clause), then **rounds 1–4**.
+**History — the running tally, which has now gone stale three times and been
+restructured twice to stop it.** Every amendment is a row. **There is no separate
+amendment count, deliberately**: round 5 turned the review totals into a table
+and left the amendment tally as prose immediately above it, which went stale in
+the same edit that fixed its neighbour. The amendment count **is** the number of
+rows — read it off, do not restate it.
 
-| Round | Findings | Blocking | Independent? |
+| Amendment | Findings | Blocking | Independent review? |
 |---|---|---|---|
-| 1 | 9 | 4 | no — same agent as the author |
-| 2 | 6 | 4 | no — same agent as the author |
-| 3 | 6 | 4 | **yes** |
-| 4 | 5 | 4 | **yes** |
-| 5 | 4 | 2 | **yes** |
-| **Total** | **30** | **18** | |
+| pin 10 — the unsatisfiable escape clause | — | — | no |
+| round 1 | 9 | 4 | no — same agent as the author |
+| round 2 | 6 | 4 | no — same agent as the author |
+| round 3 | 6 | 4 | **yes** |
+| round 4 | 5 | 4 | **yes** |
+| round 5 | 4 | 2 | **yes** |
+| round 6 | 3 | 3 | **yes** |
+| **Total** | **33** | **21** | one amendment per row |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -103,15 +109,50 @@ work. That is the same error as reasoning that a mutation would fail instead of
 running it: **a guarantee that has not been tested against the edit it is supposed
 to prevent is a hope.**
 
-**What round 6 should weigh, stated against interest:** the defect rate is **9, 6,
-6, 5, 4**, and blocking findings went **4, 4, 4, 4, 2** — the first movement in
-four rounds, and the first weak evidence of convergence. Set against that: **every
-round since the third has found blocking defects in text written to fix the
-previous round**, five separate count-staleness defects have now been found in
-five rounds, and the newest material — test 10b's match arms, the retraction in
-M5b, §3's crate correction — has had **zero** adversarial passes. **Treat
-"dispatchable" as a claim requiring evidence of convergence, not a status reached
-by running out of findings.**
+**Review round 6 — 2026-08-08, independent, against `03c85dd`.** Three findings,
+**all three blocking**, and **all three were in text round 5 wrote**.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | **The amendment tally went stale in the block round 5 restructured to stop exactly that.** Round 5 turned the review totals into a table and left "amended five times … rounds 1–4" as prose immediately above it | The amendment count is now **the number of rows**. There is no separate figure to go stale |
+| 2 | **§3's test-home correction was itself false.** Round 5 wrote "tests 1–9 in `epiphany-bundle`"; test 7 *is* `assert_reduction_serialization_stable`, which the same section names as `testkit/src/roundtrip.rs` | Replaced with a per-crate table. Two wrong versions of this sentence, both written while fixing it |
+| 3 | **§7 item 4b protected one operand where test 10b has two.** Replacing **both** `synthetic_for_fixture(0)` and the base's `ReductionAlgorithmVersion(0)` with the constant preserves the synthetic call and restores the tautology — and **the `Err` arm never runs in the unmutated case, so its literal cannot detect it** | Item 4b now enumerates all **three** operands individually and requires each quoted verbatim |
+
+**All three are the same defect wearing different clothes: a fix applied to the
+site named rather than to every site the claim covers.** Round 5 fixed the review
+tally and not the amendment tally beside it; corrected a test-home range without
+checking each member; and retracted a structural guarantee while writing its
+procedural replacement too narrowly to deliver what the retraction promised.
+**This is now the sixth count-staleness defect in six rounds and the third
+range-correction that did not check its own range.**
+
+**The mechanism that keeps working is structural, not vigilant.** The review
+totals stopped going stale when they became a table; the amendment count did not,
+because it stayed prose. Item 4b stopped being under-specified when it became an
+enumerated table. **Where a round is tempted to write a number or a range, it
+should write a table instead** — that has now been demonstrated three times.
+
+> **Demonstrated a fourth time, inside this very amendment.** Round 6's first
+> draft of the table above ended its Total row with "**6 amendments**" — a
+> free-standing count, written **three paragraphs after** the sentence declaring
+> that the count is the number of rows and that no separate figure exists to go
+> stale. It was already wrong: seven rows, not six. It was caught before commit
+> and replaced with "one amendment per row", which is not a number at all.
+>
+> **This is the seventh instance, and it is the most instructive**, because the
+> author had just written the rule, in the same file, in the same edit, and
+> broke it anyway. The lesson is not "be careful with counts." It is that
+> **prose invites a number and a table does not** — so the defence has to be the
+> shape of the artifact, never the attention of whoever is editing it.
+
+**What round 7 should weigh, stated against interest:** findings by round are
+**9, 6, 6, 5, 4, 3** and blocking **4, 4, 4, 4, 2, 3**. Findings are falling
+monotonically; blocking is not, and round 6's were **100% blocking** and **100%
+in round 5's text**. Six consecutive rounds have found defects in the amendments
+written to fix their predecessor, with no round yet clean. The newest material —
+the amendment table, §3's crate table, item 4b's operand table — has had **zero**
+adversarial passes. **Treat "dispatchable" as a claim requiring evidence of
+convergence, not a status reached by running out of findings.**
 
 (Was: DRAFT, BLOCKED on the format-epoch rung,
 `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, which at the time was ratified and in
@@ -842,18 +883,33 @@ in `git diff --cached`, M7 was not restored** and gate 4 must fail.
 > found, then tests 6 and 7 with pin 2a's resolution — and gate 1 inherited the
 > stale figure. **Do not reconcile against a fixed number**; see gate 1.
 
-Named and permanent. **Tests 1–9 live in `epiphany-bundle`; 10a is in
-`epiphany-textproj` and 10b in `epiphany-testkit`** — corrected in round 5, which
-found this preamble still saying all of them were in `epiphany-bundle` after
-round 4 added two that necessarily are not. **They cannot be**: `epiphany-bundle`
-must not depend on `epiphany-ops` (pin 1, §0.3), so no test in that crate can
-reach `CURRENT_REDUCTION_ALGORITHM_VERSION`, and reaching the real authority is
-the entire purpose of 10a and 10b.
+Named and permanent. **Where each test lives — corrected twice, in rounds 5 and
+6:**
 
-**Touch-table homes:** 10a lands in row 9's `textproj/src/serialize.rs`; 10b in
-row 7's `testkit/src/roundtrip.rs`. Both rows already exist and neither needs
+| Tests | Crate | Why there |
+|---|---|---|
+| 1–6, 8, 9 | `epiphany-bundle` | they exercise `open`/`commit` with synthetic capabilities and need no real authority |
+| **7**, 10b | `epiphany-testkit` | 7 *is* `assert_reduction_serialization_stable`; 10b needs the real constant |
+| 10a | `epiphany-textproj` | it asserts what the production writer supplied |
+
+> **Two wrong versions of this sentence, both introduced while fixing it.** It
+> originally read "in `epiphany-bundle`" for everything. Round 5 corrected it to
+> "tests 1–9 in `epiphany-bundle`" — **still false, because test 7 is
+> `assert_reduction_serialization_stable`, which the same round's own §3 entry
+> names as `testkit/src/roundtrip.rs`.** Round 6 caught it. A correction that
+> restates a range without checking each member of it is a guess with a citation
+> attached.
+
+**Why 10a and 10b cannot live in `epiphany-bundle`:** that crate must not depend
+on `epiphany-ops` (pin 1, §0.3), so no test in it can reach
+`CURRENT_REDUCTION_ALGORITHM_VERSION` — and reaching the real authority is their
+entire purpose.
+
+**Touch-table homes:** 10a lands in row 9's `textproj/src/serialize.rs`; 7 and
+10b in row 7's `testkit/src/roundtrip.rs`. All rows already exist and none needs
 widening — **state in the report which file each landed in**, since a test placed
 outside its row silently drops out of the commit.
+
 
 1. **`open_succeeds_when_base_and_current_reduction_versions_match`**
 2. **`open_rejects_a_valid_stale_canonical_base`** — base and superblock agree
@@ -1312,15 +1368,38 @@ in §N" to a number.*
 4. **Every required test in §3** — currently **eleven** (1–9 plus **10a** and
    **10b**, added in round 4) — by name, each passing, with tests 2 and 3 shown
    to produce *different* errors, and the same for tests 6/2 and 8/5.
-4b. **Confirmation that the literal `0` in tests 10a and 10b is still a literal**,
-   and that neither was rewritten as `CURRENT_REDUCTION_ALGORITHM_VERSION`.
-   Tidying either makes M5a or M5b vacuous while every test stays green — the
-   failure mode is invisible to the suite and visible only here.
 4a. **For every mutation in §4, the named test it breaks**, and for M5a/M5b the
    **provenance of each operand** — where the capability came from and where the
    base version came from. Three mutations were found unrunnable across rounds 2
    and 3 (no observation mechanism, cannot fail, nothing asserting the broken
    behaviour); this item exists so a fourth is caught here rather than in review.
+
+4b. **Quote, verbatim, every fixture-construction operand in tests 10a and 10b,
+   and confirm each is still a literal.** Not "the literal `0`" — **there are
+   three**, and they must be listed individually:
+
+   | # | Test | Operand | Must be |
+   |---|---|---|---|
+   | i | 10a | the value asserted against `capabilities()` | literal `0` |
+   | ii | 10b | the argument to `synthetic_for_fixture(_)` | literal `0` |
+   | iii | 10b | the committed base's `ReductionAlgorithmVersion(_)` | literal `0` |
+
+   **Widened in round 6, which found the previous wording protected one operand
+   where test 10b has two.** Item 4b said "the literal `0` in tests 10a and 10b"
+   and "both literals", counting one per test. But 10b constructs its fixture
+   from **two independent literals**, and replacing **both** (ii) and (iii) with
+   `CURRENT_REDUCTION_ALGORITHM_VERSION` **keeps the `synthetic_for_fixture` call
+   exactly where it is**, restores the tautology in full, and leaves every test
+   green.
+
+   > **And the error arm cannot catch it.** Test 10b's `Err` branch asserts
+   > `base == 0`, but in the unmutated run the reopen returns `Ok` and that branch
+   > never executes. The literal guarding the tautology sits on a path taken only
+   > under mutation — so a tidy-up of (ii) and (iii) is invisible to the suite,
+   > invisible to the error arm, and visible **only here**. This item is the sole
+   > protection, which is exactly what round 5 concluded when it retracted M5b's
+   > claim of a structural guarantee — and round 5 then wrote the check too
+   > narrowly to deliver it.
 5. A count of call sites updated per crate, against §0.4's table **as corrected
    in review rounds 1 and 2** (open **60**, create **32**) — any discrepancy is a
    finding. Count `Bundle`-typed receivers, not the token `.commit(`.
