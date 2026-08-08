@@ -36,7 +36,8 @@ rows — read it off, do not restate it.
 | round 7 | 3 | 3 | **yes** |
 | round 8 | 2 | 2 | **yes** |
 | round 9 | 2 | 2 | **yes** |
-| **Total** | **40** | **28** | one amendment per row |
+| round 10 | 1 | 1 | **yes** |
+| **Total** | **41** | **29** | one amendment per row |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -177,7 +178,7 @@ its bookkeeping.**
 
 | # | Finding | Disposition |
 |---|---|---|
-| 1 | **M7 did not describe a runnable observation.** It said to *construct* a `TextDocument`, which **bypasses `parse_document` entirely** — so the parser refusal it ordered removed was irrelevant, and the demonstration was not the *import* laundering it is named for. `project_text_document` is the **export** direction (`&TextDocument -> Result<String,_>`) and is not on the path at all, so "all three sides, since removing one leaves the others refusing" was false for it. And "byte-indistinguishable from one whose base was genuinely validated" named **no comparison artifact and no comparison method** | Input must now be **text, parsed**; only the parser and serializer refusals are removed. *(The comparison artifact and method round 8 specified were both **superseded by round 9** — see its row. Read M7 for the current ones.)* |
+| 1 | **M7 did not describe a runnable observation.** It said to *construct* a `TextDocument`, which **bypasses `parse_document` entirely** — so the parser refusal it ordered removed was irrelevant, and the demonstration was not the *import* laundering it is named for. `project_text_document` is the **export** direction (`&TextDocument -> Result<String,_>`) and is not on the path at all, so "all three sides, since removing one leaves the others refusing" was false for it. And "byte-indistinguishable from one whose base was genuinely validated" named **no comparison artifact and no comparison method** | Input must be **text, parsed**. *(Everything else round 8 specified here — which refusals are removed, the comparison artifact, the comparison method — was **superseded by rounds 9 and 10**. Read M7; this cell records what round 8 decided, not what the contract now says.)* |
 | 2 | **The round-7 deduplication was incomplete** — the status block still carried "rounds 3 and 4 are closed" while declaring the history table the sole authority | Deleted |
 
 **Finding 1 is the most substantive of any round**, because every earlier one was
@@ -220,14 +221,46 @@ count in two other places), §7 item 4a's M7 row still named the superseded meth
 and round 8's own disposition cell stated it as current. All now point at M7
 rather than restating it.
 
-**What round 10 should weigh, stated against interest:** findings by round are
-**9, 6, 6, 5, 4, 3, 3, 2, 2**; blocking **4, 4, 4, 4, 2, 3, 3, 2, 2**. Nine
-rounds, none clean. **Rounds 8 and 9 both found defects in the immediately
-preceding round's rewrite of the same paragraph**, so M7 has now been wrong in
-three distinct ways across three consecutive rounds — unrunnable, then
-wrong-artifact, then wrong-method. The comparator is now on its third design and
-has never been executed. **Treat "dispatchable" as a claim requiring evidence of
-convergence, not a status reached by running out of findings.**
+**Review round 10 — 2026-08-08, independent, against `0efd543`.** **One finding,
+blocking** — the smallest round yet, and again in M7.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | **The whole-image comparison had no complete construction alignment.** Round 9 listed four things to align; `serialize_document` also fixes `document_id`, `lineage_id`, `profile_declarations`, every extension field and preserved chunk, envelope payloads, **staging order**, manifest `major` and `epoch_max`, and every chunk ref/hash/offset derived from them. **A byte difference would therefore have had a third possible cause — "the reference was built differently" — which is neither permitted classification, making the result unclassifiable and the comparison meaningless** | M7 is now a **round trip**: `B` validated under the real authority → exported to text → parsed → re-serialized as `A` → images compared. **Alignment is inherited, not enumerated** |
+
+**This is the third hand-enumerated "complete set" in this contract, and the
+third to be wrong on the day it was written** — "every field that could carry
+provenance" (round 8), "every field to align" (round 9), and now round 9's
+alignment list again. **The rule earned across rounds 5–10 is one rule:** where a
+claim requires completeness, **do not enumerate — derive.** Tables instead of
+counts, whole artifacts instead of field lists, and now a single shared origin
+instead of an alignment list.
+
+**Deriving `A` from `B` eliminates the setup-mismatch category by construction
+rather than by care**, which is the only reason whole-image equality can mean
+anything. It also makes M7 the *realistic* threat: export a validated document to
+text, re-import it, and observe that the re-imported container is
+indistinguishable from the original — having validated only the base's number,
+never its provenance.
+
+**Two further sites were caught by the author while amending:** the "restore the
+two removed refusals" instruction, whose count round 10's restructure invalidated
+for the third time (hence no count is stated now), and round 8's disposition cell
+still reading as current.
+
+**What round 11 should weigh, stated against interest:** findings by round are
+**9, 6, 6, 5, 4, 3, 3, 2, 2, 1**; blocking **4, 4, 4, 4, 2, 3, 3, 2, 2, 1**. Ten
+rounds, **none clean**, and **three consecutive rounds have found exactly one
+paragraph — M7 — defective in a new way each time**: unrunnable, wrong artifact,
+wrong method, incomplete alignment. Findings are now falling steadily and every
+one of the last three has been narrower than the last, which is the first
+sustained convergence signal in the contract's history. **Against that: M7 has
+never been executed, and each of its four designs looked correct when written.**
+The honest question for round 11 is whether the next defect is findable by reading
+at all, or whether M7 now needs to be *run* — against a scratch branch, reporting
+what the code actually does — before another round of paper review can add
+anything. **Treat "dispatchable" as a claim requiring evidence of convergence, not
+a status reached by running out of findings.**
 
 (Was: DRAFT, BLOCKED on the format-epoch rung,
 `spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md`, which at the time was ratified and in
@@ -1338,12 +1371,19 @@ refused every major-1 base commit categorically, so the observation was
 unreachable. Under S27 a base commit succeeds or fails on its version, so it
 becomes reachable for the first time.
 
-**The path, corrected in review round 8. Two of the three refusals matter, and
-they are not the two the previous wording implied.**
+**The path, corrected in round 8 and restructured in round 10.**
 
-The import path is `text` → **`parse_document`** (`parse.rs:83`) → `TextDocument`
-→ **`serialize_document`** (`serialize.rs:143`) → `Bundle`. Remove the refusals on
-**those two** — `parse.rs:138`–`:147` and `serialize.rs:151`.
+The **import leg** is `text` → **`parse_document`** (`parse.rs:83`) →
+`TextDocument` → **`serialize_document`** (`serialize.rs:143`) → `Bundle`; round 10
+prepends an **export leg** to derive the text from `B` (steps 1–2 below). **Remove
+whatever refusals your actual path crosses** — the import leg's are
+`parse.rs:138`–`:147` and `serialize.rs:151`; the export leg's depend on how you
+reach text, and `document_from_bundle` carries one from `be244df`.
+
+> **No count is given, and that is deliberate.** This heading read "two of the
+> three refusals matter" until round 10, when adding the export leg changed which
+> are crossed. Every stated count here has been falsified by the next round —
+> "all three" (round 1, wrong at round 8), "the two" (round 8, wrong at round 10).
 
 **Do NOT remove `project_text_document`'s refusal (`project.rs:579`), and do not
 count it.** It has the signature `&TextDocument -> Result<String, _>` — it is the
@@ -1357,9 +1397,23 @@ base-bearing `TextDocument`", which **bypasses `parse_document` entirely** — s
 the parser refusal was irrelevant to what was being demonstrated, and the
 demonstration was not the *import* laundering it is named for. **An in-memory
 `TextDocument` proves nothing about what an external document can do**, and what
-an external document can do is the entire threat. Write a `(canonical-base ...)`
-document as **text**, whose raw `reduction_algorithm_version` **happens to equal**
-`CURRENT_REDUCTION_ALGORITHM_VERSION`, and parse it.
+an external document can do is the entire threat.
+
+**And the text MUST be derived from the reference bundle, not hand-written.
+RESTRUCTURED IN ROUND 10 — see the alignment note below.** The demonstration is a
+**round trip**, which is also the realistic form of the threat:
+
+1. **Build `B`, the validated reference**, in a crate that can reach the real
+   constant: create a bundle with `caps` derived from
+   **`CURRENT_REDUCTION_ALGORITHM_VERSION`** and commit a canonical base carrying
+   that same version, so **pin 3a's writer check validates it on the way in**.
+   That — and only that — is a genuinely validated base.
+2. **Export `B` to text.** `document_from_bundle` to a `TextDocument`, then the
+   crate-private `render_text_document` — which **does not refuse**, and exists
+   precisely so the base spelling can be produced for a negative vector.
+3. **Parse that text back** with `parse_document`, giving `D`.
+4. **`A = serialize_document(D)`**, with **`B`'s `FileUuid`**.
+5. **Compare `A.image()` with `B.image()`.**
 
 **The comparison artifact — built by M7 itself. CORRECTED IN ROUND 9.**
 
@@ -1376,14 +1430,46 @@ document as **text**, whose raw `reduction_algorithm_version` **happens to equal
 > real authority."** Round 8 reused a fixture by name without re-reading what it
 > was built to be.
 
-M7 therefore builds its **own** reference, in `epiphany-testkit`: create a bundle
-with `caps` derived from **`CURRENT_REDUCTION_ALGORITHM_VERSION`** and commit a
-canonical base carrying that same version, so pin 3a's writer check **validates
-it on the way in**. That — and only that — is a genuinely validated base.
+M7 therefore builds its **own** reference — step 1 above.
 
-Align every input between the two bundles: **same `FileUuid`, same base payload
-bytes, same schema versions, same generation.** Anything left differing is the
-subject of the observation.
+**Alignment is INHERITED, not enumerated. ROUND 10.**
+
+> **Round 9 listed four things to align — `FileUuid`, base payload, schema
+> versions, generation — and the list was nowhere near complete.**
+> `serialize_document` additionally fixes `document_id`, `lineage_id`,
+> `profile_declarations`, every extension's `extension_id` / `version` /
+> `required` / `affected_object_kinds` / `edit_barriers` and preserved chunks,
+> the envelope payloads, the **staging order** (base root → extension chunks →
+> operation-envelope block), the manifest schema `major`, and `epoch_max` — and
+> from those, every chunk ref, hash and offset in the result.
+>
+> **So a byte difference would have had a third possible cause: "the reference was
+> built differently."** That is neither permitted classification — not
+> nondeterminism, not a provenance signal — and its existence makes the whole
+> comparison uninterpretable. **A result that cannot be classified is not an
+> observation.**
+>
+> **This is the same defect round 9 fixed one level up**, and it is the third time
+> this contract has tried to enumerate a complete set by hand and failed: "every
+> field that could carry provenance" (round 8), "every field to align" (round 9),
+> both wrong on the day they were written. **Stop enumerating.**
+
+Because `D` is *derived from* `B` by steps 2–3, **every input
+`serialize_document` reads is already `B`'s own.** Nothing is aligned by hand and
+no list can be incomplete. The only free variable is `FileUuid`, which is an
+explicit argument, set to `B`'s in step 4.
+
+**The setup-mismatch category is therefore eliminated by construction, not by
+care** — there is no independent second construction to mismatch. That is the only
+reason whole-image equality means anything here.
+
+**Which refusals the path crosses: name them from the path, do not take a count
+from this contract.** Steps 2–4 cross the projector-side, parser and serializer
+refusals in whatever combination the code actually presents — `render_text_document`
+is expected not to refuse, and `document_from_bundle` carries a refusal of its own
+from `be244df`. **Enumerate what you actually had to remove, and restore each by
+hand-editing back.** Every previously stated count here has been wrong (round 8
+and round 9 each corrected one), which is why none is stated now.
 
 **The comparison method — whole artifacts, not a field list. CORRECTED IN ROUND
 9.**
@@ -1431,11 +1517,14 @@ coincidence from a rebuild.
 > refusal may be stronger than it needs to be, and that is a finding for a future
 > rung, not something to suppress because it contradicts the expected result.
 
-**Restore the two removed refusals by hand-editing back**, never with git —
-`parse.rs` and `serialize.rs`. *(Said "all three" until round 8; the projector's
-refusal is never removed, so there is nothing there to restore.)* Record the
-result as a **demonstration**, not a guard: nothing in the shipped tree changes,
-and the refusal is permanent (see the ruling under inherited obligation 2).
+**Restore every refusal you removed by hand-editing back**, never with git —
+working from the enumeration the path requirement above demands, **not from a
+count stated here.** *(This said "all three" until round 8, then "the two … `parse.rs`
+and `serialize.rs`" until round 10, when the round-trip path changed which
+refusals are crossed. Three wordings, three wrong counts; there is now no count
+to be wrong.)* Record the result as a **demonstration**, not a guard: nothing in
+the shipped tree changes, and the refusal is permanent (see the ruling under
+inherited obligation 2).
 
 > **You will meet dead code here. Do NOT fix it — report it.** Found in review
 > round 2: `serialize.rs:157`'s `if let Some(base) = &document.canonical_base`
