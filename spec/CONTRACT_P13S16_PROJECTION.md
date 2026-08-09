@@ -109,18 +109,47 @@ restated away from its origin. Removed, pin 8's table named instead.
 | **2** | **"One named direction" delegated a design decision to execution.** Either choice changes the generated witness and the shrink evidence, so reporting it afterward is not specifying it | **Pinned to S→G** in touch row 8, with the reason: smallest corruption of `valid_score`, matching every other arm's doctrine, **and the exact shape pin 2's append failing produces** — what M2 observes |
 | 3 | **§6's revision-B history said §4 has "twelve entries — 1–11 plus 4a"**, a false identity: `4a.` was a gate-numbered **scope note** with no command and no output, colliding with **§4a**, the landing-obligation section | The note is **demoted out of the gate numbering** into gate 4's body. §4 now has **eleven gates, 1–11**; `§4a` is unambiguous |
 
-**Finding 1 is the strongest evidence yet for a rule this contract already states and
-did not apply to itself.** Pin 3a says *"a mutation demonstrates the hazard once; only a
-test keeps it demonstrated."* M6 was carrying both directions on mutation alone, three
-sections below that sentence. **Every branch a contract mandates needs a permanent test,
-and a mutation is that test's signature — never its substitute.**
+**Revision C's finding 1 is the strongest evidence for a rule this contract already
+states and did not apply to itself.** Pin 3a says *"a mutation demonstrates the hazard
+once; only a test keeps it demonstrated."* M6 was carrying both directions on mutation
+alone, three sections below that sentence. **Every branch a contract mandates needs a
+permanent test, and a mutation is that test's signature — never its substitute.**
 
-**The pattern across revisions A, B and C is sharper than any individual finding: a
-correction propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the
-sweep caught row 11 and the fix stopped before §6's consumer. Rev A removed item 1's
-mutation tally and left item 2's gate tally on the next line. **The fix-every-site rule is
-not satisfied by fixing the site *and* its obvious neighbour** — it requires asking who
-*reads* the corrected rule, and correcting them too.
+### Draft amendment 1, revision D — independent review of `25473a1`
+
+**Two blocking findings, plus one the sweep escalated.** Both reported findings are the
+same failure in different clothes: **a requirement stated with nothing able to fail it.**
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **Pin 10a still deferred the label decision to execution** — twice reworded, never decided. The facts were readable the whole time: `core_spec.tex:6529`–`:6648` is **one `requirement` box** carrying the single label `req:graph:score-graph-invariants`, with exactly **20 `\item`s**; invariant 21 is a 21st `\item` **inside** it. Pin 10 rewrites prose plus a Revision History row | **DECIDED: neither document mints a label. Row 11 is UNUSED and MUST NOT be staged. No counter moves.** If execution finds otherwise, that is a **finding against this contract**, not a decision to take at the keyboard. The counter table is retained for that case |
+| **2** | **Pin 6a required each fixture to violate its direction only, and nothing could observe it.** The prescribed shape, `m40`, asserts `check_invariants(&s).iter().any(...)` — **`any()` cannot see a second unrelated defect** — and gate 6 checked the target verdict and the opposite direction, but never the absence of invariants 1–20 | Each `m41`/`m41b` must assert the **EXACT violation set**: one violation, `StaffGroupMembershipAgreement`, witness naming the direction's staff and group ids, opposite direction asserted satisfied. **Gate 6 reports the full return of `check_invariants` for both** |
+| **3** | *(sweep)* **The same blind spot covers touch row 8's generator, and worse.** `negative_generators_are_reasonably_targeted` bounds `kinds: BTreeSet<GraphInvariant>` at `<= 3`, but **both directions of invariant 21 are the same variant** — they collapse to one element, so **no existing test can observe direction at all**; the other three `all()` loops assert only `!is_empty()` | Row 8 now requires a **dedicated permanent test** that the generator violates S→G and not G→S |
+
+**Finding 2 names the failure mode precisely: a requirement no assertion can fail is not
+a requirement.** Pin 6a demanded isolation and, in the same breath, pointed at a model
+test that cannot check isolation. **Borrowing a test's shape imports its blind spots
+along with its virtue** — `m40` was cited for its dispatch property, which is real and
+still applies, and nothing about invariant 20 ever turned on exactness.
+
+**Finding 1 closes the last conditional in the contract.** *"Decide and report"* reads
+like rigour and is its opposite: it makes the staged set and the counter expectations
+depend on a choice made at the keyboard, so **the touch table can be wrong in either
+direction and the report will agree with whatever happened.** Where the facts are
+readable — and these were, in the `.tex` source — the contract decides.
+
+**The pattern across revisions A–D is sharper than any individual finding: a correction
+propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the sweep
+caught row 11 and stopped before §6's consumer; rev D found pin 10a's *decision* still
+deferred after two reworders. Rev A removed item 1's mutation tally and left item 2's
+gate tally on the next line. **The fix-every-site rule is not satisfied by fixing the
+site *and* its obvious neighbour** — it requires asking who *reads* the corrected rule,
+and correcting them too.
+
+**And rev D adds its converse:** ask what *observes* each requirement. Findings 2 and 3
+were both requirements with no assertion able to fail them — invisible to every sweep
+that looks for restated text, because nothing was restated. **A rule with no consumer
+goes stale; a rule with no observer was never enforced at all.**
 
 > **The original status, retained:** *DRAFT — BLOCKED on P13-S27. Not executable as
 > written. Pin 0 exposes that no authority defines the implementation's current
@@ -558,6 +587,31 @@ reported after either arm is deleted, so it signs neither — the same isolation
 requires, made permanent. **Each test must state in its doc which direction it holds
 and which it breaks**, so a later reader cannot "simplify" the two into one.
 
+**Each test MUST assert the EXACT violation set, not membership. ADDED IN REVISION D.**
+
+`m40_check_invariants_dispatches_invariant_20` — the shape this pin points at — asserts
+only that the target **appears**:
+`check_invariants(&s).iter().any(|v| v.invariant == …)`. **`any()` cannot detect a
+second, unrelated defect**, so a fixture carrying one satisfies m40's shape, satisfies
+gate 6, and satisfies M6's deletion outcome — while violating pin 6a's own
+"only its own direction" requirement, which nothing then observes. **A requirement no
+assertion can fail is not a requirement.**
+
+So each of `m41` / `m41b` MUST assert:
+
+1. **`check_invariants(&s)` returns EXACTLY one violation**, and its `invariant` is
+   `StaffGroupMembershipAgreement` — an exact-set assertion, not `any()`. This is what
+   proves invariants 1–20 are satisfied, which `any()` never touches.
+2. **The witness names the specific staff and group ids** for that direction, so the two
+   tests cannot pass on each other's fixture.
+3. **The opposite direction is satisfied** on the same score, asserted directly.
+
+> **Pin 6a required isolation and then prescribed a test shape that cannot check it.**
+> The model test was cited for its *dispatch* property — that `all().len()` alone passes
+> with the arm deleted — which is real and still applies. **Borrowing a test's shape
+> imports its blind spots along with its virtue**, and m40 never needed exactness because
+> nothing about invariant 20 turned on it.
+
 **Pin 6 is coupled to pin 5 and they split only together.** M5 signs the undo
 hole by requiring invariant 21 to *observe* the residue. If invariant 21 is
 deferred to a later rung, then either pin 5 and M5 defer with it, or M5 must be
@@ -639,27 +693,46 @@ This rung edits **`core_spec.tex`** (row 5, invariant 21's enumeration) and
 **`operation_catalog.tex`** (row 4), and `crates/epiphany-testkit/tests/requirement_labels.rs`
 counts requirements and labels in **both**. The two readings have different touch tables:
 
-**Which counters move depends on WHICH document mints the label — corrected on review.**
-An earlier draft of this pin said *"all three counters move if either document mints a
-label"*, which is false: `CORE_REQUIREMENT_COUNT` is asserted **only against
-`core_spec.tex`** (`requirement_labels.rs:259`), while the two suite counters sum every
-scanned document.
+### DECIDED IN REVISION D: NEITHER document mints a label. Row 11 is UNUSED. No counter moves.
+
+**This pin twice said "decide and report", which is not a decision.** It left the staged
+set and the counter expectations conditional on a choice execution would make
+arbitrarily — and a conditional touch row is a row that can be wrong in either
+direction. **The facts settle it, and they were readable while the pin was being
+written:**
+
+- **Pin 6 adds invariant 21 to an enumeration that already sits inside ONE requirement
+  box.** `core_spec.tex:6529` opens `\begin{requirement}`, `:6530` carries the single
+  label **`req:graph:score-graph-invariants`**, `:6533` opens the `enumerate`, and the
+  box closes at **`:6648`** — with exactly **20 `\item`s** inside. Item 21 is an `\item`
+  **within** that box. **It mints no requirement and no label.**
+- **Pin 10 rewrites existing prose** in `operation_catalog.tex` §CreateStaff and
+  §CreateStaffGroup, plus a Revision History row and a version bump. **No new
+  requirement box, no new label.**
+
+**Therefore:** `CORE_REQUIREMENT_COUNT`, `SUITE_REQUIREMENT_COUNT` and
+`SUITE_LABEL_COUNT` all stay **unchanged**; **touch row 11 is unused and MUST NOT be
+staged**; and the report states that it was unused for this reason rather than
+re-deriving the question.
+
+**If execution finds this wrong** — if either edit turns out to require a new
+`\begin{requirement}` — **that is a finding and a contract defect**, reported under §6
+item 5, not a decision to be made at the keyboard. The counters would then move per the
+table below, which is retained for that case and for the next rung.
 
 | Label minted in | `CORE_REQUIREMENT_COUNT` | `SUITE_REQUIREMENT_COUNT` | `SUITE_LABEL_COUNT` |
 |---|---|---|---|
-| `core_spec.tex` (pin 6) | **moves** | **moves** | **moves** |
-| `operation_catalog.tex` (pin 10) | **unchanged** | **moves** | **moves** |
-| both | **moves by 1** | moves by 2 | moves by 2 |
-| neither | — | — | — |
-
-- **If any label is minted**, touch row 11 is used and the report names **which document,
-  which counters, and their new values.**
-- **If none is**, row 11 is unused and **the report says so.**
+| `core_spec.tex` | **moves** | **moves** | **moves** |
+| `operation_catalog.tex` | **unchanged** | **moves** | **moves** |
+| both | moves by 1 | moves by 2 | moves by 2 |
+| **neither — THIS RUNG** | **—** | **—** | **—** |
 
 > **S27's lesson was "name all three, not one" — for a rung that touched only
 > `core_spec.tex`.** Carrying that conclusion across to a rung touching two documents
-> turned a correction into a different error. **A fix imported from another contract
-> must be re-derived against this one's facts**, not pattern-matched.
+> turned a correction into a different error, and then into a deferred decision. **A fix
+> imported from another contract must be re-derived against this one's facts** — and
+> where the facts are readable, re-derived *now*, not delegated to execution as a
+> "decide and report".
 
 > **`CLAUDE.md` names this file by name as a recurring escapee**, it escaped the
 > format-epoch rung's table, and S27 had to add it mid-execution. **A file that must
@@ -778,7 +851,7 @@ unblocked, dispatchable and resolved are three different states.
 | **8** | `crates/epiphany-core/src/generators.rs` | **ADDED by draft amendment 1 — the root cause below.** `violating_score` (`:498`) matches `GraphInvariant` **exhaustively**, so invariant 21 **does not compile** without a new arm. Four `all()`-driven tests (`:991`, `:1004`, `:1025`, `:1042`) then consume it, so the arm must be a **real generator**, not a stub |
 | **9** | `crates/epiphany-testkit/src/roundtrip.rs` | **ADDED by draft amendment 1.** S27 test 10b (`:894`) reopens a literal-`0` base under `production_caps()`; pin 12's bump makes that path return `Err` and hit an arm that **`panic!`s by design** |
 | **10** | `crates/epiphany-textproj/src/serialize.rs` | **ADDED by draft amendment 1.** S27 test 10a (`:659`) asserts the production writer supplies `ReductionAlgorithmVersion(0)`. Its own doc (`:655`) says it **is expected to fail when S16 bumps** and that updating it *is* S16 stating the authority moved |
-| **11** | `crates/epiphany-testkit/tests/requirement_labels.rs` | **ADDED by draft amendment 1 — CONDITIONAL**, exactly as S27's row 12. Only if pin 6 or pin 10 mints a `\label{req:...}`. **That decision MUST be made explicitly and stated in the report** — see pin 10a. **Which counters move depends on WHICH document mints it — pin 10a owns that table and this row deliberately does not restate it.** *(This row read "all three counters move" until revision A; pin 10a was corrected and this copy was left standing in the same edit — the fix-one-site defect, committed while fixing the other site.)* This file counts **both** `core_spec.tex` and `operation_catalog.tex`, and this rung touches both, which is exactly why "all three" is wrong here. If no label is minted, leave unmodified and say so |
+| **11** | `crates/epiphany-testkit/tests/requirement_labels.rs` | **UNUSED — DECIDED in revision D, no longer conditional.** Pin 10a establishes that **neither** pin 6 nor pin 10 mints a `\label{req:...}`: invariant 21 becomes an `\item` inside the existing `req:graph:score-graph-invariants` box (`core_spec.tex:6529`–`:6648`), and pin 10 rewrites prose. **No counter moves; this file MUST NOT be staged**, and the report says so citing pin 10a. **The row is retained rather than deleted** because `CLAUDE.md` names this file as a recurring escapee — a row reading *"deliberately unused, and why"* survives review, while an absent row looks like an oversight. *(Read as "CONDITIONAL — decide and report" until revision D, and as "all three counters move" until revision A.)* |
 
 Regenerate the two PDFs **only after** their sources reach final form.
 
@@ -807,6 +880,14 @@ mechanism can detect a semantics change. They must be **updated, not deleted or
   that violates the **S→G direction — a staff whose `group` names a group whose
   `members` omit it — and NOT the G→S direction**, and survives shrinking.
   **The direction is PINNED here, in revision C.**
+- **The direction needs its own permanent assertion — REVISION D.** **No existing
+  `all()`-driven test can observe it.** `negative_generators_are_reasonably_targeted`
+  (`:1037`) collects `kinds: BTreeSet<GraphInvariant>` and allows `kinds.len() <= 3`, but
+  **both directions of invariant 21 are the same `GraphInvariant` variant**, so they
+  collapse to one element and the bound is blind to the distinction; the other three
+  loops assert only `!is_empty()`. Add a dedicated test in `generators.rs`'s test module
+  asserting `violating_score(StaffGroupMembershipAgreement, seed)` violates **S→G and
+  not G→S**, with the witness ids quoted in the report.
 
   > **"Both directions" was wrong here and incompatible with M6 — corrected in revision
   > B.** `violating_score` returns **one** `Score` per variant, so it cannot carry two
@@ -992,6 +1073,11 @@ weakening is invisible.
    both verdicts reported, and each confirmed to satisfy the direction it does not
    break.** *(Revision C: this asked for one score, which left one branch with no durable
    coverage once M6 was reverted.)*
+   **Report the EXACT violation set each fixture produces — revision D.** Quote
+   `check_invariants`' full return for both, showing **one** violation each and its
+   witness ids. *(This gate asked for the target verdict and the opposite direction's
+   absence, but **not the absence of invariants 1–20**, so a fixture carrying an
+   unrelated second defect passed every stated check.)*
    `all().len() == 21` and the `core_spec.tex` enumeration ending at 21 are checked
    **in addition**, never instead.
 7. **Every test named in pin 8** runs, each verdict reported. *(Read "the four pin-8
@@ -1107,14 +1193,14 @@ its evidence at `invariants.rs:69`–`:71` must stay intact.
 2b. **Pin 12's bump and its `Bumps` entry**, with gate 10's two outputs; **and rows 9
    and 10's tripwire updates**, each quoted before and after, with gate 11's confirmation
    that neither was silenced. **ADDED BY DRAFT AMENDMENT 1.**
-2c. **Whether pin 6 or pin 10 minted a `\label{req:...}`**, and therefore whether touch
-   row 11 was used. **If used: WHICH document minted it, and which counters moved with
-   their new values — per pin 10a's table, which this item does not restate.** If not,
-   say so explicitly.
-   *(This item said "all three counters and their new values" — the rule pin 10a had
-   just corrected, surviving in its own report consumer. **Third site of one false
-   claim**: pin 10a, touch row 11, and here. A correction reaches the statement, then
-   the table, then the thing that reads the table — and stops one short each time.)*
+2c. **Confirmation that neither pin 6 nor pin 10 minted a `\label{req:...}`** — as pin
+   10a decided in revision D — that **touch row 11 was not staged**, and that all three
+   counters are **unchanged**. **If either edit did mint one, that is a FINDING against
+   this contract** (§6 item 5), reported with pin 10a's table applied; it is not a
+   decision to be taken during execution.
+   *(This item read "decide and report" and, before that, "all three counters and their
+   new values" — the rule pin 10a had just corrected, surviving in its own report
+   consumer. **Third site of one false claim**: the pin, touch row 11, and here.)*
 2d. **Invariant 21's negative fixture survives `shrink`** — quote the shrunk witness and
    confirm it still violates 21. **REWRITTEN on review:** this item asked whether
    `shrink` matches `GraphInvariant` exhaustively, which is a **static fact the draft
