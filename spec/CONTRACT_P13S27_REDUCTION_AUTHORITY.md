@@ -6,9 +6,17 @@ findings.** **DISPATCHED for execution.** Which rounds closed, what each found,
 and the running tally are **the history table below**; this line does not restate
 them, having gone stale in two consecutive rounds by doing so.
 
-**THE PINS ARE NOW FROZEN. They may be executed, not edited.** A defect found
-during execution is **reported, not patched in place** — if it needs a pin
-change, that is its own amendment with its own review round.
+**THE PINS ARE FROZEN. They may be executed, not edited.** A defect found during
+execution is **reported, not patched in place** — if it needs a pin change, that
+is its own amendment with its own review round.
+
+**IMPLEMENTED 2026-08-09, STAGED, and NOT YET ACCEPTED.** The first independent
+review of the staged execution returned **five findings, three blocking**, all
+carried by **post-ratification amendment 1** (below). That amendment took the pin
+changes the findings required — §0.4's missing constructor surface, four touch
+rows, and a ruling on `production_caps`'s visibility — and therefore **needs
+another independent pass before completion is accepted.** The work remains staged;
+nothing is committed.
 
 **Round 1's ratification was WITHDRAWN**, and the distinction matters. It was
 claimed on 2026-08-07 after a single round; round 2 then found four more blocking
@@ -187,7 +195,8 @@ rows — read it off, do not restate it.
 | round 17 | 10 | 5 | authored-side scan |
 | round 18 | 2 | 2 | **yes** |
 | **round 19** | **0** | **0** | **yes — first clean round** |
-| **Total** | **65** | **47** | one amendment per row |
+| execution review 1 | 5 | 3 | **yes — against the staged tree** |
+| **Total** | **70** | **50** | one amendment per row |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -590,6 +599,42 @@ sweep bought coverage of two unscanned sections at the cost of two new defects i
 what it wrote. That is the trade the history table now shows for every large
 amendment.
 
+**Post-ratification amendment 1 — 2026-08-09, on the first independent review of
+the STAGED EXECUTION.** Five findings, **three blocking**. The pins were frozen at
+ratification, so these are an amendment with its own review round rather than
+patches — which is the discipline working as designed: **execution reported, and
+review of the report found what nineteen paper rounds had not.**
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **§0.4 never counted `Bundle::create_versioned`** — a third public constructor whose signature this rung changes, 3 sites, **zero mentions across nineteen rounds**. §0.4 searched `open(` and `create(` and concluded about "the writer surface" | Surface added to §0.4 and recorded as its **fourth instrument failure** — a count taken from one spelling, the same shape as the first three |
+| **2** | **Gate 4 correctly failed: four required files were in no touch row**, and the staged patch alone cannot build. `bundle/src/lib.rs` (the re-export pin 3 makes unavoidable), `gminor.rs`, and the two crate-root helpers | **Touch rows 13–16** added |
+| **3** | **`production_caps()` was unpinned design scope**, not merely a missed path — and in `epiphany-testkit` it landed as new **public** API | **Ruled** under pin 3b: sanctioned, name pinned, visibility pinned per crate — `pub(crate)` in the production crate, `pub` in the test-support crate whose tests and benches are external consumers. The direct-construction alternative is recorded as considered and rejected |
+| 4 | **Row 12 named one counter; a label addition necessarily moves three** — core requirements, suite requirements, suite labels | Row 12 amended to name all three, with the line numbers |
+| 5 | **The new writer comment was false.** It said `self.manifest.canonical_base` "is always `None` here", but **test 9 deliberately performs an unrelated second commit on an inherited `Some` base** | Corrected in code. The contract itself never made this claim — §7 item 10 says "stale *inherited* base", which is exactly right |
+
+**Finding 5 is the one to carry, because it is a false rationale attached to
+correct behaviour.** The check does the right thing; the comment justified it with
+a reachability claim that a test in the same rung disproves. **What actually holds
+is narrower:** an inherited base *can* be present, but never *stale* — `open`
+refuses a stale one and `create` refuses a base-bearing manifest. So **narrowing**
+pin 3a to "any stale inherited base" is unobservable, while **broadening** it to
+"any base-bearing commit" is very observable and wrong. The scope is forced on one
+axis and a real choice on the other, and the comment collapsed the two.
+
+**Finding 1 is the fourth instrument failure in one section**, and its cost was
+finding 2: `gminor.rs` calls *only* `create_versioned`, so no surface count ever
+reached it, so no touch row existed, so gate 4 failed. **The allowlist caught what
+the count missed** — which is what an allowlist is for.
+
+**Review confirmed M7 internally coherent against the final tree**: `B_raw`
+requiring one normalisation step matches the probe history, and the mismatched-base
+control reaches the staged writer check and produces the required error. **No
+additional M7 contradiction found.**
+
+**Status: the staged implementation is NOT accepted.** This amendment needs
+**another independent pass** before it can be.
+
 **Review round 19 — 2026-08-08, independent, against the round-17/18 working
 tree. ZERO FINDINGS. The first clean round in nineteen.**
 
@@ -876,6 +921,28 @@ production path, because there is not one.
 `bundle/tests/manifest_selection.rs` 1, `bundle/fuzz.rs` 1.
 *Re-counted 2026-08-07 at `96b40b2`: still 32, and every per-file figure above
 still holds.*
+
+**Writer surface, part two — 3 `Bundle::create_versioned(` sites. ADDED BY THE
+POST-RATIFICATION AMENDMENT, 2026-08-09, on a finding from execution.**
+
+`bundle.rs` **2** (`:2326`, `:2367`), `testkit/gminor.rs` **1** (`:85`).
+
+> **This surface was missing from the contract entirely — zero mentions across
+> nineteen review rounds.** `create_versioned` is a **third public constructor**
+> whose signature this rung changes, distinct from `create` (which delegates to
+> it). §0.4 searched `Bundle::open(` and `Bundle::create(` and concluded about
+> "the writer surface".
+>
+> **This is the fourth instrument failure recorded in this section, and the same
+> shape as the first three:** a count taken from one spelling and generalised. The
+> first could not see a propagating path; the second asserted a universal negative
+> from `head`-truncated output; the third resolved a method name without resolving
+> its type; **this one enumerated two of three constructors.**
+>
+> **It is also the root cause of a touch-table gap.** `testkit/gminor.rs` calls
+> *only* `create_versioned`, so it never appeared in any surface count and
+> therefore never got a touch row — found by gate 4 failing during execution,
+> exactly as an allowlist should.
 
 **`commit` sites** — pin 3's design keeps every one of them unchanged.
 
@@ -1215,6 +1282,40 @@ format and container fixtures deliberately exercising arbitrary wire values and
 Every call site converted by this rung uses one or the other **explicitly**;
 none may take a value that merely happens to be in scope.
 
+### The real-authority side gets a named constructor. RULED BY THE POST-RATIFICATION AMENDMENT, 2026-08-09.
+
+**The question this settles**, raised by execution and pressed by review: pin 3b
+named the *synthetic* constructor and left the **real-authority** side as "wrap
+`epiphany_ops::CURRENT_REDUCTION_ALGORITHM_VERSION`", which is a value, not a
+name. Execution introduced a `production_caps()` helper per crate to satisfy
+"explicitly" without repeating the wrap 23 times — **unpinned scope**, and in
+`epiphany-testkit` it landed as new **public** API.
+
+**Ruled: the helpers are SANCTIONED, with visibility pinned per crate.**
+
+| Crate | Visibility | Why |
+|---|---|---|
+| `epiphany-textproj` | **`pub(crate)`** | A **production** crate. Its five uses are all in-crate, so this rung adds **no public API** to it. `pub` here would be unpinned surface on a shipping crate |
+| `epiphany-testkit` | **`pub`** | A test-support crate that exists to be consumed. Its **integration tests and benches are external consumers** (`tests/bundle_reopen.rs` 2 uses, `benches/bundle.rs` 3) and **cannot reach `pub(crate)`**. A capability constructor is precisely what this crate exists to provide |
+
+**Rejected alternative — direct construction at all 23 sites.** It adds no API,
+but repeats the same wrap 23 times, and "explicit" was never the same thing as
+"repeated". The named helper *is* explicit: it says which side of pin 3b's split
+the site is on, and gate 6a can distinguish the two by name.
+
+**Consequences, listed rather than left implicit:**
+
+- The helper is named **`production_caps`** in both crates. Like
+  `synthetic_for_fixture`, the name is **pinned**, because it is the token that
+  distinguishes a real-authority site from a fixture one under review.
+- **`epiphany-testkit`'s external consumers use it by path**
+  (`epiphany_testkit::production_caps()`); the crate-internal ones use
+  `crate::production_caps()`.
+- **Touch rows 13 and 14** carry the two crate roots.
+- **A `pub(crate)` helper in a production crate is not public API**, so gate 5's
+  spirit — this rung adds no dependency and no surface `epiphany-ops` must
+  honour — is preserved for `epiphany-textproj`.
+
 **Pin 4 — the mismatch is a hard error.**
 
 ```rust
@@ -1344,7 +1445,11 @@ row may not record S16 as open until those land with this rung**; ratification o
 | 9 | `crates/epiphany-textproj/src/{serialize,project}.rs` | call sites, real authority |
 | 10 | `spec/core_spec.tex` (+ `.pdf`) | pin 9 |
 | 11 | `spec/PASS13_CANDIDATES.md` | pin 10 |
-| 12 | `crates/epiphany-testkit/tests/requirement_labels.rs` | **conditional** — pin 9, *only if* it mints a new `\label{req:...}`; `CORE_REQUIREMENT_COUNT` (`:15`) then moves 213 → 214. Added in review round 1. If pin 9 mints no label, leave unmodified and say so in the report |
+| 12 | `crates/epiphany-testkit/tests/requirement_labels.rs` | **conditional** — pin 9, *only if* it mints a new `\label{req:...}`. **ALL THREE counters move, not one** (amended 2026-08-09): `CORE_REQUIREMENT_COUNT` (`:15`) 213 → 214, **and** `SUITE_REQUIREMENT_COUNT` (`:18`) and `SUITE_LABEL_COUNT` (`:19`) 284 → 285, because the suite totals include `core_spec`'s requirements and its labels. The original instruction named only the first; execution found the other two through **four** failing tests in this file. If pin 9 mints no label, leave unmodified and say so in the report |
+| 13 | `crates/epiphany-bundle/src/lib.rs` | **ADDED 2026-08-09.** Pin 3's `BundleCapabilities` is required at `open`/`create`, so **callers in other crates need it re-exported** — 92 converted sites across three crates cannot name a type this crate does not export. Unavoidable, and carried by no row through nineteen rounds |
+| 14 | `crates/epiphany-testkit/src/lib.rs` | **ADDED 2026-08-09.** `pub fn production_caps()` — pin 3b's real-authority constructor, `pub` because this crate's integration tests and benches are external consumers |
+| 15 | `crates/epiphany-textproj/src/lib.rs` | **ADDED 2026-08-09.** `pub(crate) fn production_caps()` — same constructor, **crate-private** because this is a production crate and all its uses are in-crate |
+| 16 | `crates/epiphany-testkit/src/gminor.rs` | **ADDED 2026-08-09.** One `Bundle::create_versioned` site (`:85`). Missing because §0.4 never counted that constructor — see the amendment note there. This file calls **only** `create_versioned`, so no surface count reached it |
 
 **Row 12 is conditional, and that is deliberate.** `CLAUDE.md` names this file as
 a recurring escapee, and it escaped the format-epoch rung's table. Carrying it
