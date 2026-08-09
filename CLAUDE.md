@@ -17,12 +17,14 @@ model with a LaTeX specification suite as its source of truth.
 
 | Track | Lives in | Current head |
 |---|---|---|
-| **Spec / Pass 13** — wire format, bundle, ops, text projection, the `.tex` suite | `spec/`, `crates/epiphany-{core,ops,bundle,textproj,testkit}` | P13-S27 unblocked and dispatchable |
+| **Spec / Pass 13** — wire format, bundle, ops, text projection, the `.tex` suite | `spec/`, `crates/epiphany-{core,ops,bundle,textproj,testkit}` | **P13-S27 LANDED** (`4df8e25`); **P13-S16 unblocked, contract still DRAFT** |
 | **Editor / T4** — the editing seam, engraving, the toolkit spike | `spec/PLAN_EDITOR_APP.md`, `spec/CONTRACT_EDITOR_*`, `spikes/`, `crates/epiphany-{editor-core,editor-gui,engrave,layout-ir,glyphs,render-svg}` | T4 spike, round 2 built but not run |
 
-They are currently independent. **They collide when T1b opens**, because T1b
-and P13-S27 both land in `epiphany-bundle/src/bundle.rs`. Do not fly those two
-together.
+They are currently independent. The T1b/P13-S27 collision in
+`epiphany-bundle/src/bundle.rs` is **resolved — S27 landed 2026-08-09.** **This does
+not make T1b free:** it stays blocked on Ruling B blocker (ii), versioned decode
+(handoff §2.3). Any future `epiphany-bundle` rung re-creates a collision with T1b on
+its own terms — that is a property of the crate, not of S27.
 
 ## How work is done here
 
@@ -83,16 +85,35 @@ reach today.
 ## Green baseline
 
 ```
-cargo test --workspace                                 # expect 1570 passing, 0 failed
+cargo test --workspace                                 # expect 1577 passing, 0 failed, 0 ignored
 cargo clippy --workspace --all-targets -- -D warnings   # clean
 ```
+
+**This is the single origin for the count** — `spec/HANDOFF_2026-08-07.md` used to
+repeat it in three places and now points here. It moved 1570 → 1577 when P13-S27 landed.
 
 If the count differs on arrival, reconcile that **before** starting new work —
 the mutation discipline above depends on a known-green baseline.
 
-## One live constraint
+## The canonical-base rule — the "one live constraint" is LIFTED
 
-Until **P13-S27** lands, **no bundle anywhere may carry a canonical base** — not
-in production, tests, or the conformance suite. Base-bearing fixtures must be
-hand-built images (see `craft_image` in `epiphany-bundle/src/bundle.rs`).
-Refusals you hit there are the design, not a bug. See handoff §1.2.
+**P13-S27 landed 2026-08-09 (`4df8e25`), so the blanket prohibition is gone.** It read:
+*until P13-S27 lands, no bundle anywhere may carry a canonical base.* It no longer
+applies, and base-bearing bundles are constructible again through the ordinary API.
+
+**What replaced it, and it is not "anything goes":** a canonical base is accepted only
+when its `reduction_algorithm_version` equals the running authority,
+`epiphany_ops::CURRENT_REDUCTION_ALGORITHM_VERSION` — **currently `0`**. A mismatch is
+`CanonicalBaseRequiresRebuild { base, current }`, refused on **both** the read side
+(`open`) and the write side (`commit`/`commit_versioned`). Legacy-epoch bundles still
+refuse a base outright.
+
+**The bump discipline is the whole guarantee.** Any change to a canonical reduction
+verdict MUST bump that constant — **no mechanism can detect a semantics change**, so
+nothing will catch a missed bump. P13-S16 is the first rung that must move it to `1`.
+
+Fixtures deliberately exercising arbitrary wire versions take
+`BundleCapabilities::synthetic_for_fixture(v)`; production paths take the crate-local
+`production_caps()`. Never the former on a production path. `craft_image` /
+`craft_image_with_base` still exist for hand-built images, but are no longer the *only*
+way to get a base. See handoff §1.2, marked as a dated record.

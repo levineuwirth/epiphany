@@ -1,12 +1,29 @@
 # Contract — P13-S16: the projection gets maintained
 
-**Status:** DRAFT — **BLOCKED on P13-S27.** Not executable as written. Pin 0
-exposes that no authority defines the implementation's current reduction
-semantics, and prose saying old canonical bases "must be rebuilt" does not make
-them unusable. `core_spec.tex:11614`'s requirement stays **unmet** until S27
-supplies a version authority and a rejection-or-rebuild path. This contract is
-complete and ratifiable as a *plan*; it may not be dispatched until S27 has a
-disposition.
+**Status:** **DRAFT — UNBLOCKED 2026-08-09. NOT RATIFIED, and therefore NOT
+dispatchable.**
+
+**P13-S27 landed and was accepted at `4df8e25`**, so pin 0's blocker is discharged: an
+authority now defines the implementation's current reduction semantics
+(`epiphany_ops::CURRENT_REDUCTION_ALGORITHM_VERSION`, currently **`0`**), and
+`core_spec.tex:11614`'s requirement is **met** — a stale canonical base is refused with
+`CanonicalBaseRequiresRebuild` on both the read and write paths.
+
+**What remains before dispatch is this contract's own ratification.** It is complete and
+ratifiable as a *plan* and has **not been through adversarial review rounds**.
+*Unblocked* and *dispatchable* are different states, and conflating them is how the S27
+contract came to be ratified after a single round and then have that ratification
+withdrawn — see its status block.
+
+**This rung's first act is bumping the authority to `1`**, because it changes
+`CreateStaffGroup`'s reduction verdict. That bump is the discipline S27 installed: no
+mechanism can detect a semantics change, so the bump is the entire guarantee.
+
+> **The original status, retained:** *DRAFT — BLOCKED on P13-S27. Not executable as
+> written. Pin 0 exposes that no authority defines the implementation's current
+> reduction semantics, and prose saying old canonical bases "must be rebuilt" does not
+> make them unusable. `core_spec.tex:11614`'s requirement stays unmet until S27 supplies
+> a version authority and a rejection-or-rebuild path.*
 
 **Rung type:** **canonical reduction-semantics change.** This is stronger than
 "behaviour change" and the first draft of this contract understated it. The same
@@ -368,8 +385,22 @@ under B — for example **"maintained from `Staff.group`"** and **"must agree"**
 so that reverting either comment to its B wording fails the guard. M7 signs
 exactly this.
 
-**Pin 11 — the ledger.**
-`spec/PASS13_CANDIDATES.md`'s P13-S16 row → **blocked on P13-S27**, recording the
+**Pin 11 — the ledger. AMENDED 2026-08-09: the mandated state changed when S27 landed.**
+
+> **This pin required the P13-S16 row to read "blocked on P13-S27".** S27 landed and was
+> accepted at `4df8e25`, so that state is now **false**, and a pin mandating a false
+> ledger state would put this contract in contradiction with the ledger it governs.
+> **As amended, the row must read: UNBLOCKED — S27 landed; this contract is DRAFT and
+> needs ratification before dispatch.** Everything else the pin requires recorded is
+> unchanged.
+>
+> The second paragraph's instruction to **file P13-S27 in the same edit** is
+> **discharged** — S27 has its own row, its own ratified contract, and its own
+> `RESOLVED — IMPLEMENTED 2026-08-09 (pin 10)` marker. It is no longer this rung's to
+> file.
+
+`spec/PASS13_CANDIDATES.md`'s P13-S16 row → **UNBLOCKED, S27 landed** *(was: blocked on
+P13-S27)*, recording the
 `ContainerNotEmpty` reuse (and that a new reason was considered and proved
 unnecessary), the base-ingest hazard, the `t8b` inversion, the `t6`/`t7`/`t9`
 revisions, and — per pin 0 — that canonical bases materialized before this rung
