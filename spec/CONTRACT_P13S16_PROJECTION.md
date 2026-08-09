@@ -277,6 +277,34 @@ three revised tests, pin 8's four G3a tests — is read off, not restated, and a
 the set edits the table and the adjacent word together. **The defect is a count living
 away from the set it counts.**
 
+### RATIFICATION ROUND 1 — independent, against `253249e`. One blocking finding.
+
+**This is the first round against the draft as a whole rather than against the previous
+revision's edits**, and it found a gap ten revisions of amendment review had not: **pin
+5's repair had no permanent regression test.**
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **Pin 5 was signed by M5 alone.** No named test performed `CreateStaffGroup(g, [])` → `CreateStaff(s, group: Some(g))` → **undo the staff** → assert the still-live `g.members` no longer holds `s`. **Pin 8's four are group-undo guards** — `u2tomb_a` undoes a staff but asserts *"the group leaves `Score.staff_groups`"*, so **no live group's members is ever inspected**; and gate 6's `m41`/`m41b` build **materialized fixtures**, never running the reducer's undo path | **Pin 5a** adds `u5_undoing_a_staff_strips_it_from_the_live_groups_members` with three assertions — group still live, `members` lacks `s`, no invariant-21 violation. **Gate 13** runs it; **§6 item 2f** reports it; **M5 now breaks it by name and reports the changed `g.members` state** rather than a condition |
+
+**The finding is revision C's, on the sibling pin.** Revision C established that *a
+mutation demonstrates the hazard once; only a test keeps it demonstrated* — pin 3a's own
+words — and applied it to **pin 6 and M6**. Pin 5 and M5 have the identical shape and were
+left alone, **two paragraphs from the sentence "pin 6 is coupled to pin 5 and they split
+only together."**
+
+**So the lesson is not "check mutations for permanent tests" — that was already learned.
+It is that a coupling stated in prose does not propagate a fix.** When two pins are
+declared to stand or fall together, a correction to one is a correction owed to the
+other, and nothing in this document made that automatic. **Every fix-propagation failure
+recorded in revisions A–J was a correction reaching a *consumer* one hop late; this one
+failed to reach a declared *peer*.**
+
+**Why ten revisions missed it:** each reviewed the previous revision's edits, so the
+question asked was always *"is this change right?"* — never *"is anything else the same
+shape?"* A first whole-artifact round asks the second question, which is the argument for
+running one before ratification rather than after.
+
 **The pattern across revisions A–J is sharper than any individual finding: a correction
 propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the sweep
 caught row 11 and stopped before §6's consumer; rev D found pin 10a's *decision* still
@@ -682,6 +710,41 @@ from every group's `members`, in both `self.graph` and — if any derived copy i
 held — wherever else the projection lives. The `StaffGroup` arm (`:2977`) needs
 no change: `:6736`'s reference guard already blocks undoing a group a live staff
 names.
+
+**Pin 5a — a permanent named regression test for the staff-undo strip. ADDED IN
+RATIFICATION ROUND 1.**
+
+Pin 5's repair was signed by **M5 alone**, and a mutation is reverted. Add to
+`crates/epiphany-ops/src/reduce.rs`, named **exactly**:
+
+```
+u5_undoing_a_staff_strips_it_from_the_live_groups_members
+```
+
+**Sequence — the one the pin repairs, end to end:** `CreateStaffGroup(g, [])` →
+`CreateStaff(s, group: Some(g))` → **undo the `CreateStaff`** → then assert, on the
+materialized graph:
+
+1. **`g` is still live** in `Score.staff_groups` — if the group is gone there is no
+   projection left to be wrong, and the test asserts nothing;
+2. **`g.members` does not contain `s`**, quoted by id;
+3. **`check_invariants` reports no `StaffGroupMembershipAgreement` violation** — the
+   exactness form pin 6a uses, so the test fails on a residue whichever direction it
+   leaves.
+
+> **Why the existing tests do not supply this, checked rather than assumed.** Pin 8's
+> four are **group-undo guards**: `u2tomb_a` (`:17125`) undoes a staff, but its
+> assertions are that the undo tombstones the referencer, that T1's undo then proceeds,
+> and that *"the group leaves `Score.staff_groups`"* (`:17187`) — **it undoes the group
+> too, so no live group's `members` is ever inspected.** Gate 6's `m41`/`m41b` build
+> **materialized fixtures** and never run the reducer's undo path. **So nothing
+> permanent exercised the sequence pin 5 exists for.**
+>
+> **This is pin 3a's rule — *a mutation demonstrates the hazard once; only a test keeps
+> it demonstrated* — and revision C applied it to pin 6/M6 and not to pin 5/M5.** The
+> contract states two paragraphs below that **"pin 6 is coupled to pin 5 and they split
+> only together"**; their evidence models were nonetheless fixed one at a time. **A
+> coupling stated in prose is not a coupling applied.**
 
 **Pin 6 — graph invariant 21, `StaffGroupMembershipAgreement`.**
 Flags both directions: a staff whose `group` names a group whose `members` omit
@@ -1193,8 +1256,19 @@ pin 1's refusal behind `self.graph.is_some()` and confirm that arm reverts to
 applying. Signs that the empty-container precondition is deliberately
 universe-independent.
 
-**M5 — the undo hole is closed.** Remove pin 5's strip; undoing a `CreateStaff`
-must leave a disagreeing pair that invariant 21 flags.
+**M5 — the undo hole is closed. BOUND TO A NAMED TEST IN RATIFICATION ROUND 1.**
+Remove pin 5's strip. **Required:**
+
+- **`u5_undoing_a_staff_strips_it_from_the_live_groups_members` (pin 5a) must fail**, and
+- **the changed state must be reported, not the failure**: quote `g.members` after the
+  undo — showing it still contains `s` — and quote the
+  `StaffGroupMembershipAgreement` violation `check_invariants` then returns, with its
+  witness ids.
+
+*(M5 previously required only that undoing a `CreateStaff` "leave a disagreeing pair that
+invariant 21 flags" — an observation with **no permanent test to break**, and phrased as
+a condition rather than a named artifact. Both halves are fixed: pin 5a supplies the
+test, and the observation now names the state.)*
 
 **M6 — invariant 21 sees both directions. FIXTURES MUST ISOLATE, tightened on review.**
 Delete each arm in turn; each deletion must leave a distinct disagreeing fixture
@@ -1440,6 +1514,13 @@ weakening is invisible.
     > and this gate and M6 both use them. If the implementation chose other names, **that
     > is the finding** — the gate has not "passed with zero matches", it has failed.
 
+13. **Pin 5a's undo regression test runs and passes — ADDED IN RATIFICATION ROUND 1.**
+    `u5_undoing_a_staff_strips_it_from_the_live_groups_members`, by name, with its three
+    assertions **quoted from source** and its pass verdict — gate 6's evidence model.
+    **Confirm assertion 1 is present**: without the still-live check the test can pass
+    vacuously on a score where the group was undone too, which is exactly how the
+    existing `u2tomb_a` fails to cover this path.
+
 ---
 
 ## §4a. Landing obligation — files that must NOT be staged, and must be fixed after
@@ -1534,6 +1615,11 @@ its evidence at `invariants.rs:69`–`:71` must stay intact.
    *(Earlier still, this item asked whether `shrink` matches `GraphInvariant`
    exhaustively — a **static fact the draft could read**: it does not, it calls
    `check_invariant(score, inv)`.)*
+2f. **Pin 5a's `u5_undoing_a_staff_strips_it_from_the_live_groups_members`** — its three
+   assertions quoted from source and its pass verdict, **and M5's observed state**: the
+   post-undo `g.members` still containing `s`, with the invariant-21 witness. **ADDED IN
+   RATIFICATION ROUND 1**, which found pin 5 signed by a mutation and by no permanent
+   test.
 2e. **The three invariant-21 tests' verdicts** — `m41`, `m41b`, and
    `invariant_21_negative_generator_breaks_staff_to_group_only` — **each with its
    exact-set and direction assertions quoted from source**, per gate 6's evidence model,
