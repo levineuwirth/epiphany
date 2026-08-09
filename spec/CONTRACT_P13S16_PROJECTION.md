@@ -342,6 +342,32 @@ itself still true?"* Round 1 found a missing test that way; round 2 found a fals
 claim. **Both were invisible to every incremental pass**, and neither was in the content
 those passes were correcting.
 
+### RATIFICATION ROUND 3 — independent, whole-artifact, against `e43cd34`. One blocking finding.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **Three mutations required runtime state no prescribed artifact emits.** M1 wants the applied `OperationEffect` and minted members; M2 the still-empty members and invariant-21 verdict; M5 the post-undo members plus the witness. But **pin 7 says only that `t8b` inverts**, and gate 13 / §6 2f prescribe **source assertions plus a pass verdict** — a *passing*-test model. **A mutated test stops at its first failed assertion**, so state carried elsewhere is never printed, and **M5's witness assertion may not execute at all** | **Pins 7a and 5a add pinned observation harnesses**: bind the values **before** the assertions and format them into **every** relevant failure message. **Gates 13 and 14** quote those diagnostics from source; **M1, M2 and M5 quote the resulting failure output verbatim.** A general channel rule now heads §3 |
+
+**The finding is revision E's, one case over.** Revision E chose *"quote the source
+assertion plus the pass verdict"* — correct for a **passing** test, which emits nothing
+else. **Mutations need the failing case, and the failing case has exactly one channel:
+the diagnostic of the assertion that fired.** Settling the first did not settle the
+second, and the contract carried a passing-test evidence model into requirements that
+only failing tests can satisfy.
+
+**The ordering half is the part that would have survived a careless fix.** Putting each
+observation in "its own" assertion reads as tidy and is precisely wrong: **M1 trips
+`t8b`'s spurious-order assertion and M2 the missing-order one**, so a message carrying
+only its own value disarms whichever mutation trips the other. In `u5` it is worse —
+**M5 trips assertion 2, so assertion 3's witness is unreachable by construction.** The
+state a mutation owes must be bound **before the assertion that mutation trips**.
+
+**The general rule now heads §3 rather than being pinned three times:** where the
+observation is a single value under `assert_eq!`, the default diagnostic carries it —
+**M3, M4 and M9 qualify**, provided they compare the verdict rather than
+`assert!(matches!(…))`, which prints nothing, and the report must say which form each
+uses. Where it is composite or behind an unreachable assertion, a harness is required.
+
 **The pattern across revisions A–J is sharper than any individual finding: a correction
 propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the sweep
 caught row 11 and stopped before §6's consumer; rev D found pin 10a's *decision* still
@@ -769,6 +795,17 @@ materialized graph:
    exactness form pin 6a uses, so the test fails on a residue whichever direction it
    leaves.
 
+**OBSERVATION HARNESS — ADDED IN RATIFICATION ROUND 3, same rule as pin 7a.** Bind
+**both** the post-undo `g.members` **and** the `check_invariants` violations (with their
+witness ids) to locals **before assertion 2**, and **format both into assertion 2's and
+assertion 3's failure messages.**
+
+> **Under M5 assertion 2 is the one that fires** — `members` still contains `s` — **so
+> assertion 3 never executes and its witness is never printed.** M5 nevertheless owes
+> that witness. Computing the violations only where assertion 3 needs them puts the
+> required observation behind an assertion the mutation guarantees is unreachable.
+> **The state a mutation owes must be bound before the assertion that mutation trips.**
+
 > **Why the existing tests do not supply this, checked rather than assumed.** Pin 8's
 > four are **group-undo guards**: `u2tomb_a` (`:17125`) undoes a staff, but its
 > assertions are that the undo tombstones the referencer, that T1's undo then proceeds,
@@ -899,6 +936,30 @@ authoring orders, verdicts inverted. Its doc block must record that it
 previously pinned the opposite, and why the change is the ratified disposition
 rather than a regression. **Deleting it is forbidden** — the pairing of the two
 orders is the coverage.
+
+**Pin 7a — `t8b` carries an OBSERVATION HARNESS. ADDED IN RATIFICATION ROUND 3.**
+
+M1 and M2 require `t8b` to *report state* — the applied `OperationEffect` and minted
+members for M1, the still-empty members and invariant-21 verdict for M2. **A `#[test]`
+emits nothing but its assertion diagnostics**, so unless the state is in those
+diagnostics it is unobtainable, and revision E already ruled out adding print
+instrumentation for a report.
+
+So `t8b` MUST:
+
+1. **Bind all three observations to locals BEFORE the first assertion** — the
+   `OperationEffect` for the spurious-order `CreateStaffGroup`, the resulting
+   `StaffGroup.members`, and `check_invariants` filtered to
+   `StaffGroupMembershipAgreement`;
+2. **format all three into EVERY assertion's failure message**, not just the assertion
+   they most obviously belong to.
+
+> **Requirement 2 is the load-bearing half, and ordering is why.** A failing test stops
+> at its **first** failed assertion, so state carried only in a later assertion's message
+> is never printed. Under M1 the spurious-order assertion fires; under M2 the
+> missing-order one does — **different assertions, and each must carry the whole state**,
+> or the mutation that trips the other one observes nothing. **Putting each value in
+> "its own" assertion is exactly the arrangement that fails.**
 
 **Pin 8 — the four G3a undo-repair tests are re-verified, not assumed. NAMED by draft
 amendment 1.** All four are in `crates/epiphany-ops/src/reduce.rs`:
@@ -1250,18 +1311,45 @@ Applied, **run**, output recorded verbatim, restored **by hand-editing back**.
 > mutated build produces, and the report must quote it. *(This is S27's round-15/16
 > lesson, which cost four defects there; M3, M5, M6 and M9 in this contract already
 > met the standard, so the fix is uneven-by-design rather than uniform.)*
+>
+> ### AND THE OBSERVATION NEEDS A CHANNEL — ratification round 3
+>
+> **Naming the state a mutation must report does not make it obtainable.** A `#[test]`
+> emits **only the diagnostic of the assertion it fails on**, and it stops there — so
+> the rule for every mutation in this section is:
+>
+> **The state a mutation owes MUST be carried by the failure diagnostic of the
+> assertion that mutation trips.**
+>
+> - Where the observation is a **single value under `assert_eq!`**, the default
+>   `left`/`right` diagnostic already carries it — **M3, M4 and M9 are satisfied this
+>   way**, provided their assertions compare the verdict itself rather than
+>   `assert!(matches!(…))`, which prints nothing. **State in the report which form each
+>   uses.**
+> - Where the observation is **composite**, or lives behind an assertion the mutation
+>   makes unreachable, the test needs a **pinned observation harness** — bind the values
+>   before the assertions and format them into every relevant message. **That is pins 7a
+>   (`t8b`, for M1/M2) and 5a (`u5`, for M5).**
+>
+> **Revision E chose "quote the source assertion plus the pass verdict" for gates, which
+> is right for a PASSING test. Mutations need the failing case, and the failing case has
+> exactly one channel.** Getting the first right does not settle the second.
 
-**M1 — the refusal fires. OBSERVATION TIGHTENED, draft amendment 1.** Remove pin 1's
-emptiness check. **Required observation:** a `CreateStaffGroup` carrying a **non-empty
-`members`** is now **applied instead of refused** — report the resulting
-`OperationEffect` and the minted `StaffGroup.members` value, showing the spurious
-membership that reached the graph. The rewritten `t8b` spurious-order assertion failing
-is the *symptom*; the applied mint is the observation.
+**M1 — the refusal fires. OBSERVATION TIGHTENED, draft amendment 1; CHANNEL PINNED IN
+RATIFICATION ROUND 3.** Remove pin 1's emptiness check. **Required observation:** a
+`CreateStaffGroup` carrying a **non-empty `members`** is now **applied instead of
+refused** — the resulting `OperationEffect` and the minted `StaffGroup.members`, showing
+the spurious membership that reached the graph. **Obtain them by quoting `t8b`'s
+spurious-order assertion failure verbatim**, which pin 7a's harness requires to carry
+all three observations. The assertion failing is the *symptom*; the applied mint is the
+observation.
 
-**M2 — the maintenance fires. OBSERVATION TIGHTENED, draft amendment 1.** Remove pin 2's
-append. **Required observation:** after a `CreateStaff` naming a live group,
-`StaffGroup.members` is **still empty** — quote it, and quote invariant 21's verdict on
-that state. The rewritten `t8b` missing-order assertion failing is the symptom.
+**M2 — the maintenance fires. OBSERVATION TIGHTENED, draft amendment 1; CHANNEL PINNED
+IN RATIFICATION ROUND 3.** Remove pin 2's append. **Required observation:** after a
+`CreateStaff` naming a live group, `StaffGroup.members` is **still empty**, and invariant
+21's verdict on that state. **Obtain both by quoting `t8b`'s missing-order assertion
+failure verbatim** — the same harness, a different assertion, which is why pin 7a
+requires every assertion to carry the whole state.
 
 **M3 — the re-carry stays idempotent.** Make pin 3 write maintained members into
 `staff_group_values`; a byte-identical re-carry must degrade from
@@ -1297,10 +1385,10 @@ universe-independent.
 Remove pin 5's strip. **Required:**
 
 - **`u5_undoing_a_staff_strips_it_from_the_live_groups_members` (pin 5a) must fail**, and
-- **the changed state must be reported, not the failure**: quote `g.members` after the
-  undo — showing it still contains `s` — and quote the
-  `StaffGroupMembershipAgreement` violation `check_invariants` then returns, with its
-  witness ids.
+- **the changed state must be reported, not the failure — by quoting the test's own
+  failure output**, which pin 5a's harness requires to carry both values: `g.members`
+  after the undo, still containing `s`, **and** the `StaffGroupMembershipAgreement`
+  violation with its witness ids. **Quote the panic verbatim.**
 
 *(M5 previously required only that undoing a `CreateStaff` "leave a disagreeing pair that
 invariant 21 flags" — an observation with **no permanent test to break**, and phrased as
@@ -1557,6 +1645,17 @@ weakening is invisible.
     **Confirm assertion 1 is present**: without the still-live check the test can pass
     vacuously on a score where the group was undone too, which is exactly how the
     existing `u2tomb_a` fails to cover this path.
+    **And quote pin 5a's OBSERVATION HARNESS from source — ratification round 3:** the
+    bindings of `g.members` and of the `check_invariants` violations **above assertion
+    2**, and the failure messages of assertions 2 and 3 showing **both** values
+    formatted in. **M5 can only report what these messages print**, so a harness this
+    gate does not check is a mutation that observes nothing.
+
+14. **Pin 7a's observation harness in `t8b` — ADDED IN RATIFICATION ROUND 3.** Quote from
+    source: the three bindings above `t8b`'s first assertion, and **every** assertion's
+    failure message showing all three formatted in. **Both M1 and M2 draw their required
+    observations from these messages, via different assertions** — so a message carrying
+    only "its own" value silently disarms whichever mutation trips the other one.
 
 ---
 
