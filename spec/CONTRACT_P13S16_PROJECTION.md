@@ -203,7 +203,28 @@ method per invariant is the crate's existing shape. And a shared helper the two 
 both call is explicitly permitted — **the deletable call site is what M6 needs, not a
 duplicated walk.**
 
-**The pattern across revisions A–G is sharper than any individual finding: a correction
+### Draft amendment 1, revision H — independent review of `09d8439`
+
+**One blocking finding, and one of the same family found by sweeping.**
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **Gate 12's four-line aggregate could pass with one surface missing.** Both definitions can exist (2 lines) while `check_invariants` calls `check_staff_names_absent_group` **twice** and `check_group_lists_unowned_staff` **never** (2 lines) — **four lines, gate passes, and M6b has no call site to delete.** The count proved a population, never a pairing | Replaced by **four independent `grep -c` checks, each required to be exactly `1`** — a count **above** 1 now also fails — plus **quoted context**: each definition with its enclosing `impl GraphIndex<'_>` header, each dispatch with the `pub fn check_invariants` header |
+| 2 | *(sweep)* **Gate 8 asserted an absence with no method.** *"contains the empty-members refusal and no member-liveness/`TargetMissing` path"* named no command, and a `TargetMissing` path can be spelled without either literal | **Method pinned: quote the production body in full and read it**, explicitly not a grep. S27's gate-6a lesson; **M8 signs exactly this**, so a vacuous gate 8 leaves M8's deletion unobserved |
+
+**Finding 1 is the count-versus-mapping failure, and it is this contract's oldest defect
+class wearing new clothes.** Revisions A–C removed counts that had gone *stale*; this one
+was **never right** — an aggregate can be satisfied by the wrong distribution of the
+same total. **Where a gate must establish a mapping, it cannot count.** It has to check
+each element on its own, which is the structural sibling of the rule this document
+already carries: *where a claim requires completeness, do not enumerate — derive.*
+
+**Both findings are gates that report success without observing what they claim.** One
+counted instead of pairing; the other asserted an absence with nothing able to establish
+it. **A structural gate needs a method, and the method must distinguish the passing case
+from every failing one** — not merely from the most obvious failing one.
+
+**The pattern across revisions A–H is sharper than any individual finding: a correction
 propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the sweep
 caught row 11 and stopped before §6's consumer; rev D found pin 10a's *decision* still
 deferred after two reworders. Rev A removed item 1's mutation tally and left item 2's
@@ -1263,6 +1284,14 @@ weakening is invisible.
    gate tallies beside it were removed. Pin 8's table is the origin.)*
 8. The pin-1 structural gate: `create_staff_group`'s production body contains
    the empty-members refusal and no member-liveness/`TargetMissing` path.
+   **METHOD PINNED IN REVISION H — it named none.** **Quote `create_staff_group`'s
+   production body in full** (to the `#[cfg(test)]` boundary) and read it; report the
+   refusal's lines and state that no member-liveness or `TargetMissing` path remains.
+   **Do not establish the absence by grep**: a `TargetMissing` path can be spelled
+   without either literal, so **a grep for absence proves only that a chosen string is
+   gone** — S27's gate-6a lesson, and the reason its gate 6c quotes a definition rather
+   than searching for it. **This is also what M8 signs**, so a vacuous gate 8 makes M8's
+   deletion unobserved.
 9. `t8c` (pin 3a) and `t8d` (pin 4a) both present and passing, by name.
 10. **Pin 12's bump landed, by value comparison — ADDED BY DRAFT AMENDMENT 1.**
     ```
@@ -1300,17 +1329,39 @@ weakening is invisible.
     mutation surface exists **before** M6 is attempted rather than discovering its
     absence mid-run.
 
+    **FOUR INDEPENDENT CHECKS, each required to be EXACTLY ONE. REWRITTEN IN REVISION H
+    — the aggregate count it replaced could pass with one surface missing.**
+
     ```
-    grep -n "fn check_staff_names_absent_group\|fn check_group_lists_unowned_staff" crates/epiphany-core/src/invariants.rs
-    grep -n "idx.check_staff_names_absent_group\|idx.check_group_lists_unowned_staff" crates/epiphany-core/src/invariants.rs
+    grep -c "fn check_staff_names_absent_group"          crates/epiphany-core/src/invariants.rs   # a → 1
+    grep -c "fn check_group_lists_unowned_staff"         crates/epiphany-core/src/invariants.rs   # b → 1
+    grep -c "idx.check_staff_names_absent_group(&mut v)" crates/epiphany-core/src/invariants.rs   # c → 1
+    grep -c "idx.check_group_lists_unowned_staff(&mut v)" crates/epiphany-core/src/invariants.rs  # d → 1
     ```
 
-    → **two definitions and two call sites, four lines total.** **Quote all four**, per
-    gate 6's evidence model. **Fewer than four is a pin 6b violation and a finding**, not
-    a gate to be worked around: one definition with a direction parameter, or one call
-    site handling both, means M6 has no independently deletable surface.
+    **Report all four counts separately. Any count other than exactly `1` is a pin 6b
+    violation and a finding** — including a count **greater** than 1, which means a
+    duplicated definition or a doubled dispatch.
 
-    > **A grep for presence is defeated by a rename**, so the names in pin 6b are pinned
+    **And quote the context, because a count is not a mapping:**
+
+    - **each definition with its enclosing `impl GraphIndex<'_>` header**, proving the
+      method belongs to the type `check_invariants` builds — not a free function, not a
+      method on some other type that merely shares the name;
+    - **each dispatch with the `pub fn check_invariants` header above it**, proving the
+      call is in the dispatcher M6 will edit — not in a test, a helper, or a second
+      dispatcher.
+
+    > **What the previous version permitted, stated so it is not reintroduced.** It ran
+    > two alternation greps and required *"four lines total"*. **Both definitions can
+    > exist (2 lines) while `check_invariants` calls `check_staff_names_absent_group`
+    > **twice** and `check_group_lists_unowned_staff` **never** (2 lines) — four lines,
+    > gate passes, and M6b has no call site to delete.** The aggregate proved a
+    > population, never a pairing. **Where a gate must establish a MAPPING, it cannot
+    > count** — it has to check each element on its own, which is the same shape as this
+    > contract's rule against enumerating where completeness is required.
+    >
+    > **A grep for presence is also defeated by a rename**, so pin 6b's names are pinned
     > and this gate and M6 both use them. If the implementation chose other names, **that
     > is the finding** — the gate has not "passed with zero matches", it has failed.
 
