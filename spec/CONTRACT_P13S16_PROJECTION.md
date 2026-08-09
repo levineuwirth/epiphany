@@ -83,6 +83,28 @@ S27*. Two of them are false or incomplete here, and one was dropped exactly wher
 needed. **A ratified contract is reusable as a source of questions, not as a source of
 answers** — which sharpens the note above about starting from S27's §5.
 
+### Draft amendment 1, revision B — independent review of `3096c54`
+
+**Three findings, all blocking, all in revision A's text — and each is a rule revision A
+had just corrected, surviving one step downstream of where it was fixed.**
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **§6 item 2c still said "all three counters and their new values"** — the rule pin 10a corrected in the same revision. **Third site of one false claim**: the pin, then touch row 11, then the report item that *reads* the pin | Points at pin 10a's table; names which document minted the label and which counters moved |
+| **2** | **§6 still demanded "the nine gate results"** while §4 carries **twelve** entries (1–11 plus 4a). Revision A removed the identical tally from item 1 for mutations and **left its neighbour standing** | Count removed, §4 named as origin, with 11a–e identified as subchecks of one gate rather than five results |
+| **3** | **Touch row 8 still required the generator's fixture to violate "both directions"** while M6 requires direction-**isolated** fixtures — **incompatible evidence models in one contract.** A both-direction generator stays reported after either M6 arm is deleted | Row 8 now specifies **one named direction** plus shrink survival; pin 6/M6 own two separate isolated fixtures. `violating_score` returns one `Score` per variant and could not have carried both anyway |
+
+**A third tally was found by sweeping and fixed with them:** gate 7 and §6 item 4 both
+said *"the four pin-8 tests"*. Correct today, and the same construction — a count
+restated away from its origin. Removed, pin 8's table named instead.
+
+**The pattern across revisions A and B is sharper than any individual finding: a
+correction propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the
+sweep caught row 11 and the fix stopped before §6's consumer. Rev A removed item 1's
+mutation tally and left item 2's gate tally on the next line. **The fix-every-site rule is
+not satisfied by fixing the site *and* its obvious neighbour** — it requires asking who
+*reads* the corrected rule, and correcting them too.
+
 > **The original status, retained:** *DRAFT — BLOCKED on P13-S27. Not executable as
 > written. Pin 0 exposes that no authority defines the implementation's current
 > reduction semantics, and prose saying old canonical bases "must be rebuilt" does not
@@ -744,7 +766,19 @@ mechanism can detect a semantics change. They must be **updated, not deleted or
   compile error until its arm exists.**
 - Four `all()`-driven tests then call it and `shrink` (`:991`, `:1004`, `:1025`,
   `:1042`), so **a `todo!()` or trivial arm fails them.** Invariant 21 needs a fixture
-  that genuinely violates it in both directions and survives shrinking.
+  that violates **ONE named direction** — not both — and survives shrinking.
+
+  > **"Both directions" was wrong here and incompatible with M6 — corrected on review.**
+  > `violating_score` returns **one** `Score` per variant, so it cannot carry two
+  > fixtures; and a fixture disagreeing in both directions is **still reported after
+  > either M6 arm is deleted**, which is precisely the evidence failure M6's own
+  > isolation rule forbids. The generator and the mutation would then hold **incompatible
+  > evidence models** in the same contract.
+  >
+  > **The division of labour, stated once:** touch row 8's generator covers **one named
+  > direction** and must survive `shrink`; **pin 6 / M6 own two separate,
+  > direction-isolated fixtures**, and M6 says so. The report must name which direction
+  > the generator uses, so the M6 fixtures can be checked as genuinely distinct from it.
 - **`shrink` (`:932`) takes `GraphInvariant` but does NOT match on it** — it calls
   `check_invariant(score, inv)` and `shrink_candidates`, so it is **generic over the
   invariant and needs no new arm.** *(Draft amendment 1 first said this "MUST be checked
@@ -895,7 +929,9 @@ weakening is invisible.
    only it, in the shape of `m40_check_invariants_dispatches_invariant_20`
    (`invariants.rs:6045`). `all().len() == 21` and the `core_spec.tex`
    enumeration ending at 21 are checked **in addition**, never instead.
-7. The four pin-8 tests each run, each verdict reported.
+7. **Every test named in pin 8** runs, each verdict reported. *(Read "the four pin-8
+   tests" until revision B — a third live tally, left standing while the mutation and
+   gate tallies beside it were removed. Pin 8's table is the origin.)*
 8. The pin-1 structural gate: `create_staff_group`'s production body contains
    the empty-members refusal and no member-liveness/`TargetMissing` path.
 9. `t8c` (pin 3a) and `t8d` (pin 4a) both present and passing, by name.
@@ -996,13 +1032,24 @@ its evidence at `invariants.rs:69`–`:71` must stay intact.
    (M1–M9)"*, and M7's split into **M7a and M7b** makes ten executions, so a report could
    not both enumerate them and obey the tally. **§3 is the single origin**; a count here
    goes stale the next time a mutation splits, exactly as this one did.
-2. The nine gate results, each with its command.
+2. **Every gate listed in §4**, each with its command and output. **No count is stated
+   here — §4 is the single origin.** *(It read "the nine gate results" while §4 carries
+   **twelve** entries — 1–11 plus 4a — because draft amendment 1 added gates 10 and 11
+   and revision A expanded 11 into 11a–e. The 11a–e items are **subchecks of one gate**
+   and are reported under it; gates 10 and 11 are new results. This is the same
+   count-staleness the amendment had just removed from item 1 for mutations — removed in
+   one place, left standing in its neighbour.)*
 2b. **Pin 12's bump and its `Bumps` entry**, with gate 10's two outputs; **and rows 9
    and 10's tripwire updates**, each quoted before and after, with gate 11's confirmation
    that neither was silenced. **ADDED BY DRAFT AMENDMENT 1.**
-2c. **Whether pin 6 or pin 10 minted a `\label{req:...}`** (pin 10a), and therefore
-   whether touch row 11 was used. **If used, all three counters and their new values;
-   if not, say so explicitly.** **ADDED BY DRAFT AMENDMENT 1.**
+2c. **Whether pin 6 or pin 10 minted a `\label{req:...}`**, and therefore whether touch
+   row 11 was used. **If used: WHICH document minted it, and which counters moved with
+   their new values — per pin 10a's table, which this item does not restate.** If not,
+   say so explicitly.
+   *(This item said "all three counters and their new values" — the rule pin 10a had
+   just corrected, surviving in its own report consumer. **Third site of one false
+   claim**: pin 10a, touch row 11, and here. A correction reaches the statement, then
+   the table, then the thing that reads the table — and stops one short each time.)*
 2d. **Invariant 21's negative fixture survives `shrink`** — quote the shrunk witness and
    confirm it still violates 21. **REWRITTEN on review:** this item asked whether
    `shrink` matches `GraphInvariant` exhaustively, which is a **static fact the draft
@@ -1024,7 +1071,8 @@ its evidence at `invariants.rs:69`–`:71` must stay intact.
    - that the rebuild break is recorded in `operation_catalog.tex`'s Revision History,
      **which is unchanged from the original requirement.**
 3. The staged file list, and the test-count delta with its cause.
-4. The four pin-8 verdicts, and the `t6`/`t7`/`t9` revisions with what each
+4. **The pin-8 verdicts** — one per test named there, count not restated — and the
+   `t6`/`t7`/`t9` revisions with what each
    asserted before and after.
 5. Anything contradicting this contract. A contract defect reported is worth
    more than a contract satisfied.
