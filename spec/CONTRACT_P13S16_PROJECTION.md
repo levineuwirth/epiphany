@@ -419,6 +419,37 @@ cannot classify. **M6b leaving the generator green is now positive evidence** th
 row 8's pinned direction holds. **A mutation must state every test it is expected to
 break** — otherwise its blast radius is discovered instead of specified.
 
+### RATIFICATION ROUND 6 — independent, whole-artifact, against `85429d6`. One blocking finding.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **M6a's blast radius was understated.** `check_invariant` is `check_invariants(…).filter(…)` (`invariants.rs:313`–`:318`), so deleting the S→G dispatcher call silences that violation for **every** consumer. Beyond `m41` and the generator test, it breaks the **four `all()`-driven tests** on their invariant-21 iteration — `every_invariant_has_a_negative_generator`, `negative_generators_are_reasonably_targeted`, and, **inside `shrink`'s entry assertion**, `every_invariant_shrinks_to_a_small_witness` and `shrink_is_idempotent` | M6a now lists **six** expected failures in a table, each with **where it fails and why**, flagging that the last two panic in `shrink` (`:933`) rather than in any test body. **M6b's single failure is recorded as positive evidence** of row 8's pinned direction. And **§3 now requires every mutation to derive its complete radius** from the recorded consumer surfaces |
+
+**Round 5 added the blast-radius rule and then enumerated the radius from memory.** Touch
+row 8 **already lists those four consumers with these exact line numbers** — draft
+amendment 1 put them there as the two-crate root cause — and M6a's outcome was written
+without consulting the row that owns them. **The document knew; the mutation did not ask.**
+
+**That is a new variety of the propagation failure.** Revisions A–J recorded corrections
+failing to reach a *consumer*; round 1, a declared *peer*; round 4, a *gate written later*.
+This one is a **fact recorded in one section not reaching a requirement written in
+another** — nothing was stale, nothing was contradicted, and no sweep for restated text
+would find it. **It needed the question "what does this section already know that this one
+should be using?"**
+
+**The `shrink`-entry detail is the part most likely to be mishandled.** Two of the six
+panic with *"shrink starting point must violate the target invariant"*, raised in a
+function the mutation never edited. **Four unannounced failures, two of them pointing at
+untouched code, is the shape an executor resolves by concluding the contract is wrong** —
+and then improvising. **A radius discovered rather than specified invites exactly what the
+gates exist to prevent.**
+
+**The rule is now an obligation on every mutation, not a list for M6.** M1's, M2's and M5's
+radii are deliberately *not* enumerated here — enumerating from memory is what produced
+this finding — so execution derives each from the recorded surfaces, reports the
+derivation, and treats any unlisted failure as a finding in the contract or the
+implementation.
+
 **The pattern across revisions A–J is sharper than any individual finding: a correction
 propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the sweep
 caught row 11 and stopped before §6's consumer; rev D found pin 10a's *decision* still
@@ -1427,6 +1458,26 @@ Applied, **run**, output recorded verbatim, restored **by hand-editing back**.
 >   *is* the compared value, the pin must require `assert_eq!`** — otherwise the same
 >   requirement is satisfiable with and without evidence.
 >
+> ### EVERY MUTATION OWES ITS COMPLETE EXPECTED-FAILURE SET — ratification round 6
+>
+> **Each mutation below MUST state every test it is expected to break, and the report
+> MUST account for every test that actually broke.** An **unlisted failure is a
+> finding** — either the contract's stated radius is wrong, or the implementation is.
+>
+> **Derive the radius from the recorded consumer surfaces, do not recall it.** Touch row
+> 8 lists `GraphInvariant`'s four `all()`-driven consumers with line numbers; pin 1a
+> lists the three tests pin 1's change invalidates; pin 8 lists the four undo-repair
+> tests. **A mutation that removes a shared dispatcher, helper or field reaches every
+> consumer of it**, and `check_invariant` being `check_invariants(…).filter(…)`
+> (`invariants.rs:313`) is the worked example: **M6a breaks six tests, two of them inside
+> `shrink` rather than in any test body.**
+>
+> **This applies to M1, M2 and M5 as much as to M6.** Their radii are not enumerated here
+> — enumerating from memory is what produced round 6's finding — so **execution derives
+> each one from the surfaces above before running the mutation, and reports the derivation
+> alongside the outcome.** A radius that matches is evidence; a radius that does not is a
+> finding either way.
+>
 > **Revision E chose "quote the source assertion plus the pass verdict" for gates, which
 > is right for a PASSING test. Mutations need the failing case, and the failing case has
 > exactly one channel.** Getting the first right does not settle the second.
@@ -1515,17 +1566,43 @@ bound in revision C, surface pinned in REVISION G:**
    the cardinality it got against `1`, with the violations vector, so the observation is
    *"the mutated fixture went unreported"* rather than *"a test failed"*;
 2. **the sibling test's pass verdict**, which is what shows the two arms independent;
-3. **the generator test's outcome**, which differs between the halves and is itself
-   evidence: **M6a must also fail `invariant_21_negative_generator_breaks_staff_to_group_only`**
-   — its fixture is S→G, so deleting that arm silences it too — **while M6b must leave it
-   passing**, because the generator violates S→G only. **M6b leaving it green is
-   independent confirmation of the direction pinned in touch row 8**, and M6a's extra
-   failure is **expected, not a finding**.
+3. **M6a's FULL blast radius — SIX expected failures, corrected in ratification round 6**,
+   each classified. `check_invariant` is `check_invariants(…).filter(…)`
+   (`invariants.rs:313`–`:318`), so deleting the S→G dispatcher call silences that
+   violation for **every** consumer, not just the two tests M6a names:
 
-> **Point 3 exists because an unannounced third failure reads as a finding.** M6a breaks
-> two tests by design; without saying so, an executor either reports a defect that is not
-> one or quietly ignores a failure it cannot classify. **A mutation must state every test
-> it is expected to break**, or its blast radius is discovered instead of specified.
+   | Test | Where it fails | Why |
+   |---|---|---|
+   | `m41…staff_names_absent_group` | its own `assert_eq!` cardinality check | `check_invariants` returns empty for an S→G fixture |
+   | `invariant_21_negative_generator_breaks_staff_to_group_only` | same | the generator's fixture is S→G |
+   | `every_invariant_has_a_negative_generator` (`generators.rs:991`) | its own `assert!(!violations.is_empty())` (`:994`) | `check_invariant` is empty on the **invariant-21 iteration** |
+   | `negative_generators_are_reasonably_targeted` (`:1042`) | its own `assert!(kinds.contains(&inv))` (`:1046`) | invariant 21 absent from `kinds` |
+   | `every_invariant_shrinks_to_a_small_witness` (`:1004`) | **inside `shrink`**, at its entry assertion (`generators.rs:933`–`:936`) | `shrink` refuses a starting point that does not violate its target |
+   | `shrink_is_idempotent` (`:1025`) | **inside `shrink`**, same entry assertion | same |
+
+   **All six have one cause** — the S→G violation is no longer reported — and **all six
+   are expected, not findings.** **The last two fail with `"shrink starting point must
+   violate the target invariant"`, raised in `shrink` rather than in the test**, so their
+   panic names a location the mutation never touched; report them as `shrink`-entry
+   failures so they are not misread as a defect in the shrink logic.
+
+4. **M6b's contrast, which is positive evidence.** Deleting the G→S arm leaves S→G
+   detection intact, so **`m41b` is the ONLY expected failure** — the four `all()`
+   consumers and the generator test all stay green, because every one of their invariant-21
+   fixtures is S→G. **That asymmetry confirms touch row 8's pinned direction** more
+   directly than any assertion about the generator does.
+
+> **Round 5 added this rule and enumerated the radius from memory instead of deriving it
+> from the document.** Touch row 8 **already records the four `all()` consumers, with these
+> exact line numbers**, because draft amendment 1 added them as the two-crate root cause —
+> and M6a's outcome was written without consulting the row that owns them. **A mutation's
+> blast radius must be DERIVED from the recorded consumer surface, not listed**; the
+> surface is in the touch table precisely so it does not have to be remembered.
+>
+> **Why it matters beyond bookkeeping:** four unannounced failures, two of them raised
+> inside a function the mutation did not edit, is the shape an executor resolves by
+> deciding the contract is wrong about something. **A mutation whose radius is discovered
+> rather than specified invites exactly the improvisation the gates exist to prevent.**
 
 **Each deletion is a single named call site**, which is what makes the two independently
 removable. *(M6 previously said "delete each arm in turn" while pin 6 required only
