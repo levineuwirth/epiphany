@@ -162,7 +162,27 @@ applied to a unit test that emits nothing on success. **A gate must name evidenc
 prescribed artifact actually produces** — otherwise execution improvises, and improvised
 instrumentation is unpinned scope arriving through the report.
 
-**The pattern across revisions A–E is sharper than any individual finding: a correction
+### Draft amendment 1, revision F — independent review of `abe2c35`
+
+**One blocking finding, and it is both prior lessons at once.**
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **The shrink leg had no observable direction or exactness guarantee.** Row 8 requires the S→G fixture to *survive* shrinking, but the named test asserted only on the **raw** `violating_score(...)`; the shrunk score was checked solely by `every_invariant_shrinks_to_a_small_witness` (`:1003`), whose `!check_invariant(&small, inv).is_empty()` is **membership in one variant** — and **both directions are the same variant**, so a shrunk witness that flipped to **G→S-only** passes it. Because it calls `check_invariant` (singular), a shrunk witness that **gained an unrelated second defect** passes too. And §6 item 2d still said *"quote the shrunk witness"* — the unproduced-runtime-evidence defect revision E fixed in gate 6 **and did not carry one hop to item 2d** | The named test now asserts **the same three properties twice — raw and shrunk**. Gate 6 requires **both legs**; item 2d rewritten to revision E's source-assertion-plus-verdict model; §6 item 2e extended to both legs |
+
+**This finding is the two prior lessons colliding.** Revision E established that *a gate
+must name evidence its artifact produces* and fixed gate 6 — **stopping one hop short of
+item 2d**, which is the fix-propagation failure revisions A–D kept recording. And the
+underlying gap is revision D's: **a requirement — "survives shrinking" — with nothing
+able to fail it.**
+
+**The generalisable rule: `shrink` is a TRANSFORMATION, and a transformation's output
+needs the same guarantees asserted of its input.** Requiring a fixture to "survive" a
+transformation establishes only that *something* survived. Every property the input was
+pinned for must be re-asserted on the output, or the transformation is free to change
+what the fixture proves.
+
+**The pattern across revisions A–F is sharper than any individual finding: a correction
 propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the sweep
 caught row 11 and stopped before §6's consumer; rev D found pin 10a's *decision* still
 deferred after two reworders. Rev A removed item 1's mutation tally and left item 2's
@@ -920,10 +940,26 @@ mechanism can detect a semantics change. They must be **updated, not deleted or
   invariant_21_negative_generator_breaks_staff_to_group_only
   ```
 
-  It MUST assert, on `violating_score(StaffGroupMembershipAgreement, seed)`:
+  It MUST assert **the same three properties twice — before and after shrinking. THE
+  SHRUNK LEG IS ADDED IN REVISION F.** On `violating_score(StaffGroupMembershipAgreement,
+  seed)` **and again on `shrink(&that, StaffGroupMembershipAgreement)`**:
+
   **(i)** `check_invariants` returns **exactly one** violation and it is
   `StaffGroupMembershipAgreement`; **(ii)** that violation's witness names the **S→G**
   staff and group ids; **(iii)** the **G→S** direction is satisfied, asserted directly.
+
+  > **The shrink leg was required by row 8 and observed by nothing.** The raw fixture was
+  > checked by this test; the shrunk one only by
+  > `every_invariant_shrinks_to_a_small_witness` (`:1003`), which asserts
+  > `!check_invariant(&small, inv).is_empty()`. **That is membership in a single
+  > `GraphInvariant` variant**, so a shrunk witness that flipped to **G→S-only** passes
+  > it — both directions are the same variant — and because it calls `check_invariant`
+  > (singular) rather than `check_invariants`, **a shrunk witness that gained an
+  > unrelated second defect passes too.**
+  >
+  > **`shrink` is a transformation, so its output needs the same guarantees as its
+  > input.** Requiring a fixture to "survive shrinking" without asserting *what survives*
+  > only establishes that something still fires.
 
   > **Revision D required this test and gave it no name — so nothing consumed it.**
   > Gate 6 named only `m41`/`m41b`, and §6 item 2d asks for shrink evidence. **Omitting
@@ -955,12 +991,15 @@ mechanism can detect a semantics change. They must be **updated, not deleted or
   at execution", deferring a **static fact readable from the function body**. Corrected
   on review: a draft that can decide something must decide it, or it exports its own
   unfinished reading as execution work.)*
-- **What `shrink` does impose is a fixture obligation**: `generators.rs:1025`–`:1026`
-  runs `shrink(&violating_score(inv, 7), inv)` for **every** variant, and `shrink`
-  asserts on entry that its input violates the target. **So invariant 21's fixture must
-  still violate 21 after greedy shrinking** — a fixture whose violation depends on
-  incidental structure that `shrink_candidates` removes will fail there, not in the
-  generator.
+- **What the EXISTING `shrink` tests impose is weak, and revision F is why the named test
+  carries a shrunk leg.** `generators.rs:1025`–`:1026` runs
+  `shrink(&violating_score(inv, 7), inv)` for every variant, and `shrink` asserts on
+  entry that its input violates the target; `:1003` then checks the shrunk score with
+  `!check_invariant(&small, inv).is_empty()`. **Together these establish only that
+  *something* still fires** — a fixture whose violation depends on incidental structure
+  `shrink_candidates` removes fails there, which is real but is the *weakest* of the
+  three properties. **Direction and exactness after shrinking are guaranteed only by the
+  named test's shrunk leg.**
 
 **Consequence for the mutation plan and gate 6:** invariant 21's generator is itself
 load-bearing, so M6 (deleting each arm) now has a second signature — the negative
@@ -1122,6 +1161,10 @@ weakening is invisible.
    which is the only consumer of the generator's pinned direction. **Three tests, all
    run, all verdicts reported — revision E**; revision D named two and left the third
    with no gate.
+   **The generator test's evidence covers BOTH its legs — revision F:** the raw fixture
+   **and the shrunk one**, each with the exact-set, witness-direction and
+   opposite-direction assertions. **A gate that accepts only the raw leg leaves `shrink`
+   free to change what the fixture proves.**
 
    **EVIDENCE MODEL — CHOSEN EXPLICITLY IN REVISION E. Quote the SOURCE assertions plus
    the pass verdict; do NOT claim a runtime return.**
@@ -1270,15 +1313,21 @@ its evidence at `invariants.rs:69`–`:71` must stay intact.
    *(This item read "decide and report" and, before that, "all three counters and their
    new values" — the rule pin 10a had just corrected, surviving in its own report
    consumer. **Third site of one false claim**: the pin, touch row 11, and here.)*
-2d. **Invariant 21's negative fixture survives `shrink`** — quote the shrunk witness and
-   confirm it still violates 21. **REWRITTEN on review:** this item asked whether
-   `shrink` matches `GraphInvariant` exhaustively, which is a **static fact the draft
-   could read** (it does not — it calls `check_invariant(score, inv)`). Deferring a
-   readable fact to execution is not caution; it is unfinished drafting handed downstream
-   as an obligation.
+2d. **Invariant 21's negative fixture survives `shrink` with its properties intact** —
+   evidenced by `invariant_21_negative_generator_breaks_staff_to_group_only`'s **shrunk
+   leg**, per gate 6's model: **the shrunk-leg assertions quoted from source, plus the
+   test's pass verdict.**
+   **REWRITTEN IN REVISION F — it said "quote the shrunk witness", which the test cannot
+   emit.** That is the same unproduced-runtime-evidence defect revision E fixed in gate 6
+   **and did not carry one hop to this item**; and "still violates 21" was the weak
+   membership check that let a shrunk witness flip direction or gain a second defect.
+   *(Earlier still, this item asked whether `shrink` matches `GraphInvariant`
+   exhaustively — a **static fact the draft could read**: it does not, it calls
+   `check_invariant(score, inv)`.)*
 2e. **The three invariant-21 tests' verdicts** — `m41`, `m41b`, and
    `invariant_21_negative_generator_breaks_staff_to_group_only` — **each with its
-   exact-set and direction assertions quoted from source**, per gate 6's evidence model.
+   exact-set and direction assertions quoted from source**, per gate 6's evidence model,
+   **and for the generator test BOTH legs, raw and shrunk (revision F).**
    **No runtime return or witness dump is claimed**; a passing exact-set assertion is the
    observation. **ADDED IN REVISION E**, which found the generator test required by
    revision D but consumed by nothing.
