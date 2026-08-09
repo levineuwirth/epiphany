@@ -444,11 +444,35 @@ untouched code, is the shape an executor resolves by concluding the contract is 
 and then improvising. **A radius discovered rather than specified invites exactly what the
 gates exist to prevent.**
 
-**The rule is now an obligation on every mutation, not a list for M6.** M1's, M2's and M5's
-radii are deliberately *not* enumerated here — enumerating from memory is what produced
-this finding — so execution derives each from the recorded surfaces, reports the
-derivation, and treats any unlisted failure as a finding in the contract or the
-implementation.
+**The rule became an obligation on every mutation rather than a list for M6** — and
+**ratification round 7 found that insufficient**: an obligation to derive is still the
+discover-the-radius model. §3 now carries the contract's own **expected-outcome table**.
+
+### RATIFICATION ROUND 7 — independent, whole-artifact, against `80be47c`. One blocking finding.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **Round 6's blast-radius rule contradicted itself.** It required every mutation to state every expected failing test, then **left M1, M2 and M5 for execution to derive** — the discover-the-radius model it claimed to eliminate, with the expected set depending on the executor's reading. **And the cited surfaces were insufficient:** M2 removing the append breaks **`t8c`**, which asserts `g.members == [s]`, and **pin 3a was not among the named surfaces** | §3 now carries the **contract's own per-mutation expected-outcome table** — failing tests, notable required survivors, structural-gate outcomes — with the dependency surfaces cited, now including **pins 3a, 4a, 5a, 6a and 7**. **Execution re-derives it against the staged tree and reports any mismatch, in either direction, as a finding** |
+
+**"Execution derives it" was the defect, not the remedy.** A mutation's expected outcome
+is a **claim about the contract's own design**, so the contract has to make it — and
+**execution cannot author the table and then certify its own result against it.** Round 6
+correctly diagnosed that a discovered radius invites improvisation, then prescribed
+discovery for three of the nine mutations. **The obligation to derive is the same model
+with the responsibility moved.**
+
+**`t8c` is the proof the surfaces were wrong, not just incomplete.** Round 6 listed touch
+row 8, pin 1a and pin 8 — three surfaces, none of which owns `t8c` — while pin 3a, four
+sections away, defines a test asserting the exact value pin 2 maintains. **Any derivation
+from the stated surfaces would have missed it**, so the instruction was unfollowable as
+well as misassigned.
+
+**What the table does and does not claim.** Cells carrying a reason — `t8d` under M2,
+`t9` under M1 — are **derivations from pins not yet executed**, and are stated **so they
+can be falsified**. That is the division of labour the finding asks for: **the contract
+predicts, execution measures, and a mismatch is a finding against whichever is wrong.**
+It also avoids the stale-count class entirely — **the table has no totals**, only named
+tests.
 
 **The pattern across revisions A–J is sharper than any individual finding: a correction
 propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the sweep
@@ -1458,25 +1482,40 @@ Applied, **run**, output recorded verbatim, restored **by hand-editing back**.
 >   *is* the compared value, the pin must require `assert_eq!`** — otherwise the same
 >   requirement is satisfiable with and without evidence.
 >
-> ### EVERY MUTATION OWES ITS COMPLETE EXPECTED-FAILURE SET — ratification round 6
+> ### THE EXPECTED-OUTCOME TABLE — the CONTRACT owns it. RATIFICATION ROUND 7.
 >
-> **Each mutation below MUST state every test it is expected to break, and the report
-> MUST account for every test that actually broke.** An **unlisted failure is a
-> finding** — either the contract's stated radius is wrong, or the implementation is.
+> **Round 6 required every mutation to state its full radius and then left M1, M2 and M5
+> for execution to derive. That is the discover-the-radius model it claimed to
+> eliminate**, and it makes the expected set depend on the executor's reading. **Execution
+> cannot both author the table and certify its own result.**
 >
-> **Derive the radius from the recorded consumer surfaces, do not recall it.** Touch row
-> 8 lists `GraphInvariant`'s four `all()`-driven consumers with line numbers; pin 1a
-> lists the three tests pin 1's change invalidates; pin 8 lists the four undo-repair
-> tests. **A mutation that removes a shared dispatcher, helper or field reaches every
-> consumer of it**, and `check_invariant` being `check_invariants(…).filter(…)`
-> (`invariants.rs:313`) is the worked example: **M6a breaks six tests, two of them inside
-> `shrink` rather than in any test body.**
+> **So the table below is this contract's CLAIM.** Execution **re-derives it against the
+> staged tree** and reports **any mismatch — in either direction — as a finding**, against
+> the contract or the implementation. **No cell is a licence to ignore an outcome.**
 >
-> **This applies to M1, M2 and M5 as much as to M6.** Their radii are not enumerated here
-> — enumerating from memory is what produced round 6's finding — so **execution derives
-> each one from the surfaces above before running the mutation, and reports the derivation
-> alongside the outcome.** A radius that matches is evidence; a radius that does not is a
-> finding either way.
+> **Dependency surfaces, cited so the derivation is checkable:** pin 1a (`t6`/`t7`/`t9`),
+> pin 3a (`t8c`, which asserts `g.members == [s]`), pin 4a (`t8d`), pin 5a (`u5`), pin 6a
+> (`m41`/`m41b`), pin 7 (`t8b`'s two orders), pin 8 (the four undo-repair tests), touch row
+> 8 (`GraphInvariant`'s four `all()` consumers, `generators.rs:991`/`:1004`/`:1025`/`:1042`),
+> and `check_invariant = check_invariants(…).filter(…)` (`invariants.rs:313`).
+> **Round 6's list omitted pins 3a and 4a**, which is how `t8c` went missing from M2.
+>
+> | Mutation | MUST fail | Notable required survivors | Structural gates |
+> |---|---|---|---|
+> | **M1** remove pin 1's refusal | `t8b` spurious-order; `t6`'s `CreateStaffGroup` arm; `t7`'s inverted arm | `t8c`, `t8d`, `u5` and pin 8's four — **all carry `members: []`**, so the refusal never fires for them; `m41`/`m41b`/generator and the four `all()` consumers — **no reducer path**; `t9` — pin 1a changes its fixture so it no longer attempts a dangling member through this op | **gate 8 FAILS** — the refusal is what it reads for |
+> | **M2** remove pin 2's append | `t8b` missing-order; **`t8c`** — it asserts `g.members == [s]` (pin 3a) | `u5` — after the undo there is no staff, so members-lacks-`s` and no-violation both still hold; `t8d` — pin 4 seeds from the carried value with `members` emptied, so its re-carry still matches; `m41`/`m41b`/generator; the four `all()` consumers | gate 8 passes (pin 1 untouched) |
+> | **M3** pin 3 writes derived members | `t8c` — `AlreadyApplied` → `RecreateContentMismatch` | `t8b`, `u5`, `m41`/`m41b` | — |
+> | **M4** restore `group.clone()` at `:1619` | `t8d` — the base-seed path is the only one that reaches it | `t8c` — non-base path | — |
+> | **M5** remove pin 5's strip | **`u5`** — assertion 2, `members` still contains `s` | `t8b`, `t8c`, `t8d`; pin 8's four — they undo the **group**, never inspecting a live group's members; `m41`/`m41b` — constructed fixtures | — |
+> | **M6a** delete S→G dispatch | **six** — see M6's own table | `m41b`; `u5` (no violation either way after the undo) | **gate 12 FAILS** — a call site is gone |
+> | **M6b** delete G→S dispatch | `m41b` **only** | `m41`, the generator test, all four `all()` consumers — every invariant-21 fixture is S→G | **gate 12 FAILS** |
+> | **M7a / M7b** revert a doc block | its own grep guard | the other guard | pin 10's guards are the gate |
+> | **M8** reinstate the dead loop | **nothing behavioural** | **every** behavioural assertion | **gate 8 FAILS** — its only signature |
+> | **M9** graph-gate pin 1's refusal | `t7`'s inverted arm | `t8b` spurious-order — not base-free | — |
+>
+> **Cells marked with a reason are derivations, not observations** — `t8d` under M2 and
+> `t9` under M1 in particular depend on how pins 4 and 1a are executed. **They are stated
+> so they can be falsified.** A mismatch is the finding this table exists to produce.
 >
 > **Revision E chose "quote the source assertion plus the pass verdict" for gates, which
 > is right for a PASSING test. Mutations need the failing case, and the failing case has
