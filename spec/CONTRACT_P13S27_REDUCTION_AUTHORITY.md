@@ -21,10 +21,18 @@ and the rung-type paragraph, so it **needs its own independent pass before
 completion is accepted.** The implementation remains staged and uncommitted; only
 the amendments are committed.
 
-**The implementation has survived all three reviews unchanged.** Every defect found
-since execution has been in this contract, not in the 21 staged files — worth
-stating plainly, because three rounds of amendment traffic can read as instability
-in the work when it is instability in the document describing it.
+**The implementation has changed ONCE since execution, and only once: amendment 1
+corrected a false comment in `bundle.rs`.** *(Amendment 3 claimed it had "survived
+all three reviews unchanged"; that was false, and amendment 4 corrects it.)* Every
+other defect found since execution has been in this contract rather than in the 21
+staged files — worth stating, because four rounds of amendment traffic can read as
+instability in the work when it is instability in the document describing it. But
+**"only a comment" is not a licence to infer a gate result**, which is what amendment
+3 did.
+
+**Gates 1–3 were therefore RE-RUN against the final staged tree, cold, on
+2026-08-09** — `cargo clean -p` on all four touched crates first, so the result is
+the artifact and not a cache. See amendment 4.
 
 **Gate 4's earlier "clean" result is WITHDRAWN**, and the reason belongs at the
 top: it was measured against §2's touch table alone, while §2 also carried an
@@ -214,7 +222,8 @@ rows — read it off, do not restate it.
 | execution review 1 | 5 | 3 | **yes — against the staged tree** |
 | execution review 2 | 5 | 4 | **yes — 4 of 5; the fifth from the fix-every-site sweep** |
 | execution review 3 | 6 | 5 | **yes — 3 of 6; three from the sweep, two of those in a pin** |
-| **Total** | **81** | **59** | one amendment per row |
+| execution review 4 | 3 | 3 | **yes — 2 of 3; the third from sweeping the adjacent row** |
+| **Total** | **84** | **62** | one amendment per row |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -374,8 +383,17 @@ both blocking, **both in M7's comparator — the text round 8 had just rewritten
 
 | # | Finding | Disposition |
 |---|---|---|
-| 1 | **Test 10b is not a "genuinely validated" reference.** Its write-side capability is `synthetic_for_fixture(0)`; only its *reopen* uses the real authority. M7 would have compared one synthetic fixture against another, with the validated half of the claim simply absent | M7 now **builds its own reference** in `epiphany-testkit`: commit a base under `caps` derived from the real constant, so pin 3a validates it on the way in |
-| 2 | **The field enumeration could not support its conclusion.** It claimed "everything that could carry provenance" while omitting `FixedHeader.file_uuid` — **the field it required to match** — plus the superblock's `generation`, `manifest_offset`, `manifest_length`, `manifest_hash`, and the manifest outside `canonical_base` | Replaced with **whole-`image()` byte comparison**, with any difference enumerated and classified rather than assumed |
+| 1 | **Test 10b is not a "genuinely validated" reference.** Its write-side capability is `synthetic_for_fixture(0)`; only its *reopen* uses the real authority. M7 would have compared one synthetic fixture against another, with the validated half of the claim simply absent | M7 now **builds its own reference**: commit a base under `caps` derived from the real constant, so pin 3a validates it on the way in. **The crate this cell named — `epiphany-testkit` — was SUPERSEDED IN ROUND 12**, which found `render_text_document` is `pub(crate)` to `epiphany-textproj` and pinned the harness **there**. Read M7 |
+| 2 | **The field enumeration could not support its conclusion.** It claimed "everything that could carry provenance" while omitting `FixedHeader.file_uuid` — **the field it required to match** — plus the superblock's `generation`, `manifest_offset`, `manifest_length`, `manifest_hash`, and the manifest outside `canonical_base` | Replaced with **whole-`image()` byte comparison**. **The clause "with any difference enumerated and classified rather than assumed" was SUPERSEDED IN ROUND 10**, which found a byte difference would have a *third* possible cause outside both permitted classifications — making the classification unsound and the comparison meaningless. Round 10 replaced it with an inherited-alignment round trip; rounds 11, 13 and 14 then added `B_fixed`, the control, and necessary-but-insufficient equality. Read M7 |
+
+> **Both cells above carried superseded dispositions with no marker — found by
+> amendment 4, one from the review and one from sweeping the adjacent row.** The
+> convention exists: round 8's cell says outright that it *"records what round 8
+> decided, not what the contract now says."* Round 9's two cells never got it, and
+> read as current for ten rounds. **A disposition column is a history, and history
+> without supersession markers reads as instruction** — which is how a reader arrives
+> at M7 expecting a `epiphany-testkit` harness that two rounds ruled cannot exist
+> there.
 
 **Finding 1 is a collision between two of this contract's own designs, not a
 typo.** Round 4 made test 10b synthetic-on-write **deliberately**, so M5b's two
@@ -744,10 +762,62 @@ consecutive reviews have now left those untouched.**
 
 **Status: the staged implementation is still NOT accepted.** Amendment 3 changed
 **pin 3**, which is a stronger claim than amendment 2's changes and needs its own
-independent pass. **No gate needs re-running for amendment 3** — it changed no
-staging rule, no gate mechanic and no touch row; gates 1–3 stand on an unchanged
-staged tree, and gates 4, 4a and §2's rules A/B were re-run under amendment 2 and
-are unaffected.
+independent pass. Amendment 3 changed no staging rule, no gate mechanic and no touch
+row, so gates 4, 4a and §2's rules A/B were re-run under amendment 2 and are
+unaffected.
+
+> **This paragraph also said "gates 1–3 stand on an unchanged staged tree", and that
+> was FALSE — corrected by amendment 4.** The staged tree was **not** unchanged:
+> amendment 1's finding 5 was *"corrected in code"* in `bundle.rs`, after the original
+> gate run. **Gates 1–3 have been re-run cold; see amendment 4 for the results.**
+
+**Post-ratification amendment 4 — 2026-08-09, on the independent review of
+amendment 3.** Three findings, **all three blocking**. Two from the review, the third
+from sweeping the row adjacent to the second.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **Gates 1–3 were no longer evidenced against the final staged tree, and two claims asserted otherwise.** Amendment 1 corrected the false writer comment **in code**, after the gates had run; amendment 3 then wrote both *"the implementation has survived all three reviews unchanged"* and *"gates 1–3 stand on an unchanged staged tree"*. **Both false.** A comment cannot change behaviour, but the gate is specified over the staged artifact, not over an artifact a reader is invited to infer is equivalent | Both claims corrected, and **gates 1–3 re-run cold** with `cargo clean -p` on all four touched crates first. Results below |
+| **2** | **Round 9's finding-1 disposition still gave M7's reference home as `epiphany-testkit`** — superseded in round 12, which found `render_text_document` is `pub(crate)` to `epiphany-textproj` and pinned the harness there. The cell read as current | Supersession pointer added at the round-9 site, following the convention round 8's cell already uses |
+| **3** | **Round 9's finding-2 disposition had the same defect.** *(Sweep.)* Its clause *"with any difference enumerated and classified rather than assumed"* was superseded in **round 10**, which found a byte difference would have a third possible cause outside both permitted classifications — making the classification unsound | Supersession pointer added, naming rounds 10, 11, 13 and 14 as the chain that replaced it |
+
+**Finding 1 is the one that matters, and it is an instance of this repository's
+central rule.** `CLAUDE.md` requires that a mutation be *observed* to fail, because
+**"reasoning that a mutation would fail signs nothing."** Amendment 3 reasoned that a
+comment-only change could not move a gate result and reported the gate as standing.
+**That is the same substitution — an inference where a measurement is specified** —
+committed in the document whose subject is a check that was a tautology because
+nobody had measured it. The gates are cheap; the inference cost four rounds of
+credibility.
+
+**Gates 1–3, re-run cold against the final staged tree, 2026-08-09:**
+
+| Gate | Toolchain | Result |
+|---|---|---|
+| 1 `cargo test --workspace` | default (1.97.1) | **1577 passed / 0 failed / 0 ignored, 42 suites**; `cargo` exit 0 |
+| 2 `clippy --workspace --all-targets -- -D warnings` | **1.95.0** | exit 0, **0** warning/error lines; all four touched crates observed re-`Checking`ed after `clean -p`, so the result is not a cache replay |
+| 3 `fmt -p …×4 --check` | **1.95.0** | exit 0 |
+
+The 1577 figure is unchanged from execution, which is the *expected* outcome for a
+comment correction — **but it is now measured rather than predicted**, and that
+distinction is the whole of finding 1.
+
+> **Method note, recorded because gate evidence is what this amendment is about.**
+> Both gate re-runs were first captured through `tail`, which **truncated the
+> aggregate test counts and the `Checking` lines** — the same
+> truncated-evidence failure §0.4 records as its second instrument failure, and one
+> `CLAUDE.md` names by name. Caught and re-run with full capture before anything was
+> reported. **A gate result read through `tail` is not a gate result.**
+
+**Findings 2 and 3 share the shape amendments 2 and 3 kept finding:** a statement that
+was true when written, left standing without a marker once a later round overruled it.
+The disposition column is a *history*; unmarked, it reads as *instruction*.
+
+**Status: the staged implementation is still NOT accepted.** Amendment 4 changed no
+pin, no gate mechanic, no touch row and no staging rule — it corrected two false
+status claims, re-ran gates 1–3, and marked two superseded dispositions. It still
+needs an independent pass, but it is the first amendment whose changes are confined to
+the historical record and the gate evidence.
 
 **Review round 19 — 2026-08-08, independent, against the round-17/18 working
 tree. ZERO FINDINGS. The first clean round in nineteen.**
