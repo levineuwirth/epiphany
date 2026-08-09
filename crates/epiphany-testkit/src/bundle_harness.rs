@@ -81,8 +81,13 @@ fn staged(payloads: &[Vec<u8>]) -> Vec<StagedChunk> {
 pub fn build_base(rng: &mut Rng, commits: u64) -> (Vec<u8>, u64) {
     let uuid = FileUuid(rng.array16());
     let doc = DocumentId(rng.array16());
-    let mut bundle =
-        Bundle::create(MemStore::new(), uuid, Manifest::empty(doc)).expect("create bundle");
+    let mut bundle = Bundle::create(
+        MemStore::new(),
+        uuid,
+        Manifest::empty(doc),
+        crate::production_caps(),
+    )
+    .expect("create bundle");
     for _ in 0..commits {
         let n = rng.range_usize(0, 2);
         let payloads: Vec<Vec<u8>> = (0..n).map(|_| rng.byte_vec(1, 40)).collect();
@@ -104,16 +109,20 @@ pub fn assert_recovers(
     crash: CrashPoint,
 ) {
     let blocks = staged(envelope_payloads);
-    let mut bundle = Bundle::open(FaultStore::new(base_image.to_vec(), crash))
-        .expect("the base image must open before the commit");
+    let mut bundle = Bundle::open(
+        FaultStore::new(base_image.to_vec(), crash),
+        crate::production_caps(),
+    )
+    .expect("the base image must open before the commit");
     let committed = bundle.commit(&blocks, append_roots).is_ok();
     let store = bundle.into_store();
 
     // Recover from exactly the bytes that survived the crash.
     let durable = store.durable_image();
-    let recovered = Bundle::open(MemStore::from_bytes(durable)).unwrap_or_else(|e| {
-        panic!("crash at {crash:?} left an UNOPENABLE bundle (base gen {base_gen}): {e}")
-    });
+    let recovered = Bundle::open(MemStore::from_bytes(durable), crate::production_caps())
+        .unwrap_or_else(|e| {
+            panic!("crash at {crash:?} left an UNOPENABLE bundle (base gen {base_gen}): {e}")
+        });
 
     let g = recovered.generation();
     assert!(
@@ -159,10 +168,14 @@ pub fn exhaustive_crash_sweep(base_image: &[u8], base_gen: u64, envelope_payload
     // Learn the commit's total syscall count via a no-fault run (and confirm the
     // clean commit reaches G+1).
     let total = {
-        let mut bundle = Bundle::open(FaultStore::no_fault(base_image.to_vec())).unwrap();
+        let mut bundle = Bundle::open(
+            FaultStore::no_fault(base_image.to_vec()),
+            crate::production_caps(),
+        )
+        .unwrap();
         bundle.commit(&blocks, append_roots).unwrap();
         let store = bundle.into_store();
-        let recovered = Bundle::open(store.recover()).unwrap();
+        let recovered = Bundle::open(store.recover(), crate::production_caps()).unwrap();
         assert_eq!(recovered.generation(), base_gen + 1);
         store.syscalls_issued()
     };
@@ -232,8 +245,13 @@ pub fn assert_selection_through_commits(seed: u64) {
     let mut rng = Rng::new(seed);
     let uuid = FileUuid(rng.array16());
     let doc = DocumentId(rng.array16());
-    let mut bundle =
-        Bundle::create(MemStore::new(), uuid, Manifest::empty(doc)).expect("create bundle");
+    let mut bundle = Bundle::create(
+        MemStore::new(),
+        uuid,
+        Manifest::empty(doc),
+        crate::production_caps(),
+    )
+    .expect("create bundle");
     // Generation 0 lives in slot A; each commit flips the active slot.
     assert_eq!(bundle.active_slot(), Slot::A);
     let commits = 5u64;
@@ -249,7 +267,8 @@ pub fn assert_selection_through_commits(seed: u64) {
     let image = bundle.into_store().into_bytes();
 
     // Reopen: selection picks the highest committed generation, no anomaly.
-    let reopened = Bundle::open(MemStore::from_bytes(image)).expect("reopen");
+    let reopened =
+        Bundle::open(MemStore::from_bytes(image), crate::production_caps()).expect("reopen");
     assert_eq!(reopened.generation(), commits);
     assert!(reopened.anomalies().is_empty());
     assert!(!reopened.is_read_only());
@@ -373,8 +392,13 @@ pub fn assert_operation_index_end_to_end(seed: u64) {
     let envelopes = generators::operation_envelopes(&mut rng, 36, 3, 8, 8);
     let uuid = FileUuid(rng.array16());
     let doc = DocumentId(rng.array16());
-    let mut bundle =
-        Bundle::create(MemStore::new(), uuid, Manifest::empty(doc)).expect("create bundle");
+    let mut bundle = Bundle::create(
+        MemStore::new(),
+        uuid,
+        Manifest::empty(doc),
+        crate::production_caps(),
+    )
+    .expect("create bundle");
     bundle
         .commit(&staged_envelope_blocks(&envelopes, 12), append_roots)
         .expect("commit operation blocks");
@@ -392,7 +416,8 @@ pub fn assert_operation_index_end_to_end(seed: u64) {
     // Reader side: reopen from the durable image; the fresh index is usable
     // and locates every operation.
     let image = bundle.into_store().into_bytes();
-    let reopened = Bundle::open(MemStore::from_bytes(image)).expect("reopen");
+    let reopened =
+        Bundle::open(MemStore::from_bytes(image), crate::production_caps()).expect("reopen");
     let usable = reopened
         .usable_operation_index()
         .expect("a fresh, covering index is usable");
@@ -413,8 +438,13 @@ pub fn assert_stale_operation_index_rejected_and_rebuilt(seed: u64) {
 
     let uuid = FileUuid(rng.array16());
     let doc = DocumentId(rng.array16());
-    let mut bundle =
-        Bundle::create(MemStore::new(), uuid, Manifest::empty(doc)).expect("create bundle");
+    let mut bundle = Bundle::create(
+        MemStore::new(),
+        uuid,
+        Manifest::empty(doc),
+        crate::production_caps(),
+    )
+    .expect("create bundle");
     bundle
         .commit(&staged_envelope_blocks(first, 12), append_roots)
         .expect("commit first blocks");
@@ -444,7 +474,8 @@ pub fn assert_stale_operation_index_rejected_and_rebuilt(seed: u64) {
 
     // The same verdict from a cold reopen; then rebuild from blocks.
     let image = bundle.into_store().into_bytes();
-    let mut reopened = Bundle::open(MemStore::from_bytes(image)).expect("reopen");
+    let mut reopened =
+        Bundle::open(MemStore::from_bytes(image), crate::production_caps()).expect("reopen");
     assert!(reopened.usable_operation_index().is_none());
     let rebuilt = scan_rebuild_operation_index(&reopened);
     commit_index(&mut reopened, &rebuilt);
@@ -466,8 +497,13 @@ pub fn assert_corrupt_operation_index_is_not_bundle_corruption(seed: u64) {
     let envelopes = generators::operation_envelopes(&mut rng, 24, 3, 8, 8);
     let uuid = FileUuid(rng.array16());
     let doc = DocumentId(rng.array16());
-    let mut bundle =
-        Bundle::create(MemStore::new(), uuid, Manifest::empty(doc)).expect("create bundle");
+    let mut bundle = Bundle::create(
+        MemStore::new(),
+        uuid,
+        Manifest::empty(doc),
+        crate::production_caps(),
+    )
+    .expect("create bundle");
     bundle
         .commit(&staged_envelope_blocks(&envelopes, 8), append_roots)
         .expect("commit operation blocks");
@@ -486,7 +522,7 @@ pub fn assert_corrupt_operation_index_is_not_bundle_corruption(seed: u64) {
         )
         .expect("commit garbage index chunk");
     let image = bundle.into_store().into_bytes();
-    let mut reopened = Bundle::open(MemStore::from_bytes(image))
+    let mut reopened = Bundle::open(MemStore::from_bytes(image), crate::production_caps())
         .expect("a defective index must not prevent opening");
     assert!(reopened.anomalies().is_empty());
     assert!(!reopened.is_read_only());
@@ -512,14 +548,18 @@ pub fn assert_corrupt_operation_index_is_not_bundle_corruption(seed: u64) {
 
     // (b) On-disk corruption of the now-valid index chunk's payload region.
     let valid_image = reopened.into_store().into_bytes();
-    let probe = Bundle::open(MemStore::from_bytes(valid_image.clone())).expect("reopen");
+    let probe = Bundle::open(
+        MemStore::from_bytes(valid_image.clone()),
+        crate::production_caps(),
+    )
+    .expect("reopen");
     let root = probe
         .manifest()
         .operation_index_root
         .expect("the index is referenced");
     let mut corrupt = valid_image;
     corrupt[(root.offset + 3) as usize] ^= 0xFF;
-    let reopened = Bundle::open(MemStore::from_bytes(corrupt))
+    let reopened = Bundle::open(MemStore::from_bytes(corrupt), crate::production_caps())
         .expect("index-region corruption must not prevent opening");
     assert!(reopened.anomalies().is_empty());
     reopened
@@ -595,8 +635,13 @@ pub fn run_barrier_declaration_roundtrip(seed: u64) {
     // Commit a manifest carrying the declaration; reopen from the raw image.
     let uuid = FileUuid(rng.array16());
     let doc = DocumentId(rng.array16());
-    let mut bundle =
-        Bundle::create(MemStore::new(), uuid, Manifest::empty(doc)).expect("create bundle");
+    let mut bundle = Bundle::create(
+        MemStore::new(),
+        uuid,
+        Manifest::empty(doc),
+        crate::production_caps(),
+    )
+    .expect("create bundle");
     bundle
         .commit(&staged(&[rng.byte_vec(1, 40)]), |ctx| {
             let mut m = append_roots(ctx);
@@ -605,7 +650,8 @@ pub fn run_barrier_declaration_roundtrip(seed: u64) {
         })
         .expect("commit the declaration");
     let image = bundle.into_store().into_bytes();
-    let reopened = Bundle::open(MemStore::from_bytes(image)).expect("reopen");
+    let reopened =
+        Bundle::open(MemStore::from_bytes(image), crate::production_caps()).expect("reopen");
 
     // The bundle preserved the opaque blobs verbatim ...
     let decl = reopened

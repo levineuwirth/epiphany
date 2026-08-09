@@ -130,4 +130,24 @@ pub mod layout_stub;
 // re-layout → re-render → re-resolve selection, across the ops/layout/render seams.
 pub mod editloop;
 
+use epiphany_bundle::{BundleCapabilities, ReductionAlgorithmVersion};
+
 pub use rng::Rng;
+
+/// The capabilities a **production composition path** supplies: the reduction
+/// semantics this build actually implements, wrapped at the composition
+/// boundary.
+///
+/// This is the "real authority" side of pin 3b's split. Fixtures deliberately
+/// exercising arbitrary wire values use
+/// [`BundleCapabilities::synthetic_for_fixture`] instead, so that a fixture
+/// asserting behaviour at version `7` keeps asserting it when the authority
+/// moves. **Never use `synthetic_for_fixture` on a production path.**
+#[must_use]
+pub fn production_caps() -> BundleCapabilities {
+    BundleCapabilities {
+        current_reduction_version: ReductionAlgorithmVersion(
+            epiphany_ops::CURRENT_REDUCTION_ALGORITHM_VERSION,
+        ),
+    }
+}

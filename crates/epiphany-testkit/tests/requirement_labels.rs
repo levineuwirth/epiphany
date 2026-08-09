@@ -12,11 +12,11 @@ use std::path::{Path, PathBuf};
 // +1 for req:format:container-epoch (the format-epoch rung, pin 7:
 // spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md) — the container major becomes an epoch,
 // and Chapter 8 states the classification and the epoch matrix normatively.
-const CORE_REQUIREMENT_COUNT: usize = 213;
+const CORE_REQUIREMENT_COUNT: usize = 214;
 // +1 for req:textproj:manifest-schema-carried (G-minor, pins 8/11:
 // spec/PLAN_GMINOR_SCHEMA_MINOR.md); +1 for req:format:container-epoch (above).
-const SUITE_REQUIREMENT_COUNT: usize = 284;
-const SUITE_LABEL_COUNT: usize = 284;
+const SUITE_REQUIREMENT_COUNT: usize = 285;
+const SUITE_LABEL_COUNT: usize = 285;
 
 /// The normative chapter-to-area assignment. Keeping this as data makes adding a
 /// requirement under the wrong chapter fail without encoding chapter names in

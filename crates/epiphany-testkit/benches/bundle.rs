@@ -124,8 +124,13 @@ fn build_fixture(dir: &Path) -> Fixture {
 
     let uuid = FileUuid(rng.array16());
     let doc = DocumentId(rng.array16());
-    let mut bundle =
-        Bundle::create(MemStore::new(), uuid, Manifest::empty(doc)).expect("create base bundle");
+    let mut bundle = Bundle::create(
+        MemStore::new(),
+        uuid,
+        Manifest::empty(doc),
+        epiphany_testkit::production_caps(),
+    )
+    .expect("create base bundle");
     bundle
         .commit(&staged_blocks(&envelopes), append_roots)
         .expect("commit base operation blocks");
@@ -160,7 +165,11 @@ fn build_fixture(dir: &Path) -> Fixture {
 /// Un-timed setup for the commit row: restore the base image and open it.
 fn restore_and_open(path: &Path, image: &[u8]) -> Bundle<FileStore> {
     fs::write(path, image).expect("restore base image");
-    Bundle::open(FileStore::open(path).expect("open store")).expect("open bundle")
+    Bundle::open(
+        FileStore::open(path).expect("open store"),
+        epiphany_testkit::production_caps(),
+    )
+    .expect("open bundle")
 }
 
 /// The timed commit: block append + manifest rewrite + superblock flip, fsync'd.
@@ -176,7 +185,11 @@ fn typical_edit_commit(mut bundle: Bundle<FileStore>, edit: &[StagedChunk]) -> u
 /// `ChunkRef`; see `Fixture::base_root`'s doc comment for why it is not
 /// `manifest.canonical_base` right now) and every operation block.
 fn open_bootstrap_read(path: &Path, base_root: &ChunkRef) -> usize {
-    let bundle = Bundle::open(FileStore::open(path).expect("open store")).expect("open bundle");
+    let bundle = Bundle::open(
+        FileStore::open(path).expect("open store"),
+        epiphany_testkit::production_caps(),
+    )
+    .expect("open bundle");
     let manifest = bundle.manifest();
     let mut bytes = 0usize;
     bytes += bundle

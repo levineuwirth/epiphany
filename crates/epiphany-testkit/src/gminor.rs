@@ -87,6 +87,7 @@ fn build_bundle(
         FileUuid([seed; 16]),
         manifest,
         stamped_version,
+        crate::production_caps(),
     )
     .expect("fixture manifest is emittable")
 }

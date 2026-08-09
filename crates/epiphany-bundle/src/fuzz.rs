@@ -35,7 +35,7 @@
 //! bundle images by hand and asserts the Chapter 8 §"Superblock Selection" rule
 //! across every corruption scenario the QUICKSTART enumerates.
 
-use crate::bundle::{Bundle, CommitContext, StagedChunk, BODY_START};
+use crate::bundle::{Bundle, BundleCapabilities, CommitContext, StagedChunk, BODY_START};
 use crate::chunk::{ChunkKind, ChunkRef, CompressionAlgorithm};
 use crate::error::IntegrityAnomaly;
 use crate::header::FixedHeader;
@@ -101,14 +101,21 @@ fn staged_blocks(envelope_payloads: &[Vec<u8>]) -> Vec<StagedChunk> {
 fn check_recovery(base_image: &[u8], base_gen: u64, chunks: &[StagedChunk], crash: CrashPoint) {
     // Open the bundle over a fault store; `open` only reads, so it never
     // consumes crash budget and always succeeds on a valid base image.
-    let mut bundle = Bundle::open(FaultStore::new(base_image.to_vec(), crash))
-        .expect("base image must open before the commit");
+    let mut bundle = Bundle::open(
+        FaultStore::new(base_image.to_vec(), crash),
+        BundleCapabilities::synthetic_for_fixture(0),
+    )
+    .expect("base image must open before the commit");
     let committed = bundle.commit(chunks, append_roots).is_ok();
     let store = bundle.into_store();
 
     // Recover: reopen from exactly the bytes that survived the crash.
     let durable = store.durable_image();
-    let recovered = Bundle::open(MemStore::from_bytes(durable.clone())).unwrap_or_else(|e| {
+    let recovered = Bundle::open(
+        MemStore::from_bytes(durable.clone()),
+        BundleCapabilities::synthetic_for_fixture(0),
+    )
+    .unwrap_or_else(|e| {
         panic!(
             "crash at {crash:?} left an UNOPENABLE bundle (base gen {base_gen}): {e}\n\
              durable image length {}",
@@ -164,7 +171,13 @@ fn check_recovery(base_image: &[u8], base_gen: u64, chunks: &[StagedChunk], cras
 fn build_base(rng: &mut SplitMix64, commits: u64) -> (Vec<u8>, u64) {
     let doc = DocumentId([(rng.next_u64() & 0xff) as u8; 16]);
     let uuid = FileUuid([(rng.next_u64() & 0xff) as u8; 16]);
-    let mut bundle = Bundle::create(MemStore::new(), uuid, Manifest::empty(doc)).unwrap();
+    let mut bundle = Bundle::create(
+        MemStore::new(),
+        uuid,
+        Manifest::empty(doc),
+        BundleCapabilities::synthetic_for_fixture(0),
+    )
+    .unwrap();
     for _ in 0..commits {
         let n = rng.below(3) as usize; // 0..2 envelopes
         let envelopes: Vec<Vec<u8>> = (0..n)
@@ -289,7 +302,11 @@ pub fn run_wire_decode_fuzz(iters: u64, seed: u64) -> WireFuzzCoverage {
     let mut manifests: Vec<Vec<u8>> = Vec::new();
     for commits in 0..4u64 {
         let (image, _) = build_base(&mut rng, commits);
-        let bundle = Bundle::open(MemStore::from_bytes(image.clone())).expect("valid image opens");
+        let bundle = Bundle::open(
+            MemStore::from_bytes(image.clone()),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .expect("valid image opens");
         manifests.push(bundle.manifest().encode());
         images.push(image);
     }
@@ -347,7 +364,10 @@ pub fn run_wire_decode_fuzz(iters: u64, seed: u64) -> WireFuzzCoverage {
         // 1. Whole-image open. Must never panic; an Ok manifest must re-encode.
         let pick = (rng.next_u64() as usize) % images.len();
         let image = mutate_image(&mut rng, &images[pick]);
-        match Bundle::open(MemStore::from_bytes(image)) {
+        match Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(0),
+        ) {
             Ok(bundle) => {
                 cov.opens_ok += 1;
                 let encoded = bundle.manifest().encode();
@@ -532,10 +552,18 @@ pub fn exhaustive_crash_check(base_image: &[u8], base_gen: u64, envelope_payload
     // Learn the commit's total syscall count (and confirm the clean commit
     // recovers to G+1) via a no-fault run.
     let total = {
-        let mut bundle = Bundle::open(FaultStore::no_fault(base_image.to_vec())).unwrap();
+        let mut bundle = Bundle::open(
+            FaultStore::no_fault(base_image.to_vec()),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         bundle.commit(&chunks, append_roots).unwrap();
         let store = bundle.into_store();
-        let recovered = Bundle::open(store.recover()).unwrap();
+        let recovered = Bundle::open(
+            store.recover(),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         assert_eq!(recovered.generation(), base_gen + 1);
         store.syscalls_issued()
     };
@@ -646,7 +674,8 @@ pub fn run_manifest_selection_harness() {
         b.set_slot(Slot::A, &sb_a);
         b.set_slot(Slot::B, &sb_b);
         b.corrupt_slot(Slot::A);
-        let bundle = Bundle::open(b.store()).expect("slot B is valid; bundle must open");
+        let bundle = Bundle::open(b.store(), BundleCapabilities::synthetic_for_fixture(0))
+            .expect("slot B is valid; bundle must open");
         assert_eq!(bundle.active_slot(), Slot::B);
         assert_eq!(bundle.generation(), 1);
         assert!(bundle.anomalies().is_empty());
@@ -661,7 +690,8 @@ pub fn run_manifest_selection_harness() {
         b.set_slot(Slot::A, &sb_a);
         b.set_slot(Slot::B, &sb_b);
         b.corrupt_slot(Slot::B);
-        let bundle = Bundle::open(b.store()).expect("slot A is valid; bundle must open");
+        let bundle = Bundle::open(b.store(), BundleCapabilities::synthetic_for_fixture(0))
+            .expect("slot A is valid; bundle must open");
         assert_eq!(bundle.active_slot(), Slot::A);
         assert_eq!(bundle.generation(), 7);
         assert!(bundle.anomalies().is_empty());
@@ -675,7 +705,7 @@ pub fn run_manifest_selection_harness() {
         let sb_b = b.add_manifest(5, &m);
         b.set_slot(Slot::A, &sb_a);
         b.set_slot(Slot::B, &sb_b);
-        let bundle = Bundle::open(b.store()).unwrap();
+        let bundle = Bundle::open(b.store(), BundleCapabilities::synthetic_for_fixture(0)).unwrap();
         assert_eq!(bundle.generation(), 5);
         assert_eq!(bundle.active_slot(), Slot::B);
         assert!(bundle.anomalies().is_empty());
@@ -688,7 +718,7 @@ pub fn run_manifest_selection_harness() {
         let sb = b.add_manifest(9, &m);
         b.set_slot(Slot::A, &sb);
         b.set_slot(Slot::B, &sb);
-        let bundle = Bundle::open(b.store()).unwrap();
+        let bundle = Bundle::open(b.store(), BundleCapabilities::synthetic_for_fixture(0)).unwrap();
         assert_eq!(bundle.active_slot(), Slot::A);
         assert_eq!(bundle.generation(), 9);
         assert!(bundle.anomalies().is_empty());
@@ -707,7 +737,7 @@ pub fn run_manifest_selection_harness() {
         sb_b.generation = 9;
         b.set_slot(Slot::A, &sb_a);
         b.set_slot(Slot::B, &sb_b);
-        let bundle = Bundle::open(b.store()).unwrap();
+        let bundle = Bundle::open(b.store(), BundleCapabilities::synthetic_for_fixture(0)).unwrap();
         assert_eq!(
             bundle.anomalies(),
             &[IntegrityAnomaly::DivergentSameGeneration { generation: 9 }]
@@ -726,7 +756,7 @@ pub fn run_manifest_selection_harness() {
         sb_b.generation = 9;
         b.set_slot(Slot::A, &sb_a);
         b.set_slot(Slot::B, &sb_b);
-        let bundle = Bundle::open(b.store()).unwrap();
+        let bundle = Bundle::open(b.store(), BundleCapabilities::synthetic_for_fixture(0)).unwrap();
         assert_eq!(bundle.generation(), 9);
         assert_eq!(
             bundle.anomalies(),
@@ -749,7 +779,7 @@ pub fn run_manifest_selection_harness() {
         b.corrupt_slot(Slot::A);
         b.corrupt_slot(Slot::B);
         assert!(matches!(
-            Bundle::open(b.store()),
+            Bundle::open(b.store(), BundleCapabilities::synthetic_for_fixture(0)),
             Err(crate::BundleError::NoValidSuperblock)
         ));
     }
@@ -764,7 +794,7 @@ pub fn run_manifest_selection_harness() {
         sb_b.commit_state = CommitState::Reserved(1);
         b.set_slot(Slot::A, &sb_a);
         b.set_slot(Slot::B, &sb_b);
-        let bundle = Bundle::open(b.store()).unwrap();
+        let bundle = Bundle::open(b.store(), BundleCapabilities::synthetic_for_fixture(0)).unwrap();
         // Slot B is not committed -> excluded; A (gen 3) is selected. The
         // non-committed slot is surfaced as an anomaly, but this is ordinary
         // fallback (the next commit overwrites the bad slot), so the bundle is
@@ -787,7 +817,8 @@ pub fn run_manifest_selection_harness() {
         sb_b.manifest_hash = manifest_chunk_hash(b"not the manifest");
         b.set_slot(Slot::A, &sb_a);
         b.set_slot(Slot::B, &sb_b);
-        let bundle = Bundle::open(b.store()).expect("slot A is valid");
+        let bundle = Bundle::open(b.store(), BundleCapabilities::synthetic_for_fixture(0))
+            .expect("slot A is valid");
         assert_eq!(bundle.active_slot(), Slot::A);
         assert_eq!(bundle.generation(), 5);
     }

@@ -9,6 +9,8 @@ pub mod project;
 pub mod serialize;
 pub mod vectors;
 
+use epiphany_bundle::BundleCapabilities;
+
 use epiphany_bundle::{
     ChunkKind, DocumentId, ExtensionId, FrontierBytes, LineageId, ProfileDeclaration, ProfileId,
     ReductionAlgorithmVersion, SchemaVersion, SemVer, SnapshotId,
@@ -171,4 +173,22 @@ pub struct TextBlob {
     pub declared_max_uncompressed_length: Option<u64>,
     /// Uncompressed blob payload carried inline.
     pub payload: Vec<u8>,
+}
+
+/// The capabilities a **production composition path** supplies: the reduction
+/// semantics this build actually implements, wrapped at the composition
+/// boundary.
+///
+/// This is the "real authority" side of pin 3b's split. Fixtures deliberately
+/// exercising arbitrary wire values use
+/// [`BundleCapabilities::synthetic_for_fixture`] instead, so that a fixture
+/// asserting behaviour at version `7` keeps asserting it when the authority
+/// moves. **Never use `synthetic_for_fixture` on a production path.**
+#[must_use]
+pub(crate) fn production_caps() -> BundleCapabilities {
+    BundleCapabilities {
+        current_reduction_version: ReductionAlgorithmVersion(
+            epiphany_ops::CURRENT_REDUCTION_ALGORITHM_VERSION,
+        ),
+    }
 }

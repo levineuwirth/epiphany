@@ -11733,6 +11733,61 @@ pub struct SnapshotRef {
   ignored or rebuilt if they disagree with the canonical document.
 \end{requirement}
 
+\begin{requirement}
+  \label{req:format:reduction-authority}
+  An implementation \MUST{} name the reduction semantics it
+  implements, and \MUST{} validate a canonical base against that
+  value rather than against a value the base itself supplied.
+
+  Comparing a base's \texttt{reduction\_algorithm\_version} only
+  against the active superblock's, as
+  Requirement~\ref{req:format:canonical-document-reduction}
+  requires, is necessary but \emph{not} sufficient: a writer that
+  seeds the superblock from the base's own self-report makes that
+  comparison an identity, so it holds for every conformingly
+  written document and detects only tampering. The semantics the
+  running implementation actually implements is a third value, and
+  it \MUST{} participate.
+
+  Accordingly:
+
+  \begin{itemize}
+    \item An implementation \MUST{} expose the reduction-algorithm
+      version it implements, and every reader and writer of a
+      canonical base \MUST{} state which semantics it implements
+      rather than infer it from the document.
+    \item A reader \MUST{} refuse to open a document whose
+      canonical base's \texttt{reduction\_algorithm\_version}
+      differs from the semantics the reader implements. A document
+      with no canonical base \MUST{} open regardless, since it
+      carries no reduced state that could be stale.
+    \item A writer \MUST{} refuse to emit or replace a canonical
+      base whose \texttt{reduction\_algorithm\_version} differs
+      from the semantics the writer implements. A commit that does
+      not emit or replace the base \MUSTNOT{} be refused on this
+      ground.
+    \item The refusal \MUSTNOT{} degrade to a read-only open and
+      \MUSTNOT{} be reported as an integrity anomaly. A stale base
+      is not a restricted-but-correct view of the document; it is
+      state computed under different rules, and serving it
+      read-only would present incorrect canonical state as
+      authoritative.
+    \item A refusal on this ground \MUST{} remain distinguishable
+      from a malformed-document failure. A base whose version
+      disagrees with its own superblock is corrupt, and corruption
+      \MUST{} be reported as such: the two conditions detect
+      different faults, and collapsing them loses the distinction
+      this requirement rests on.
+  \end{itemize}
+
+  Rebuilding is out of scope for opening. An implementation
+  \MUSTNOT{} silently rebuild a stale base during open, because
+  the envelopes required to rebuild may have been pruned
+  (Requirement~\ref{req:format:pruning-state-preservation}); a rebuild
+  path is sound only
+  where the full pre-base history is demonstrably present.
+\end{requirement}
+
 \subsection{Pruning}
 
 \begin{requirement}
@@ -16819,6 +16874,28 @@ layouts they own versus inherit:
   over every epoch rule in both epochs, so tampering is never reported as
   staleness. \sectionsc{Schema Versioning} gains the corresponding
   distinction between the schema axis and the container axis.
+  \\
+  \today & Ch.~\ref{ch:format} & \sectionsc{The Canonical Document Identity}
+  gains Requirement~\ref{req:format:reduction-authority}: an implementation
+  \MUST{} name the reduction semantics it implements and validate a canonical
+  base against \emph{that}, not against a value the base itself supplied.
+  Comparing the base's \texttt{reduction\_algorithm\_version} only against
+  the active superblock's is necessary but not sufficient, because a writer
+  that seeds the superblock from the base's own self-report makes the
+  comparison an identity --- so it holds for every conformingly written
+  document and detects only tampering. The requirement therefore introduces
+  the implementation's own semantics as a third participant, required at both
+  boundaries: a reader refuses a base that disagrees with the semantics it
+  implements, and a writer refuses to emit or replace one. A document with no
+  canonical base opens regardless, carrying no reduced state that could be
+  stale, and a commit that does not touch the base is not refused on this
+  ground. The refusal may not degrade to a read-only open nor be reported as
+  an integrity anomaly --- a stale base is not a restricted-but-correct view
+  but state computed under different rules --- and it stays distinguishable
+  from the malformed-document failure a base disagreeing with its own
+  superblock produces, since the two detect different faults. Rebuilding
+  during open is prohibited outright, because the envelopes a rebuild would
+  need may have been pruned.
   \\
   \bottomrule
 \end{longtable}

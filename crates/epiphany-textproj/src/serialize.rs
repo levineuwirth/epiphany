@@ -152,7 +152,12 @@ pub fn serialize_document<S: BlockStore>(
         return Err(SerializeError::CanonicalBaseUnsupported);
     }
 
-    let mut bundle = Bundle::create(store, file_uuid, empty_manifest(document))?;
+    let mut bundle = Bundle::create(
+        store,
+        file_uuid,
+        empty_manifest(document),
+        crate::production_caps(),
+    )?;
 
     let mut staged = Vec::new();
     if let Some(base) = &document.canonical_base {
@@ -380,7 +385,8 @@ mod tests {
         let bundle = serialize_document(document, MemStore::new(), FileUuid([1; 16]))
             .expect("a well-formed document serializes");
         let image = bundle.into_store().into_bytes();
-        Bundle::open(MemStore::from_bytes(image)).expect("the serialized bundle reopens")
+        Bundle::open(MemStore::from_bytes(image), crate::production_caps())
+            .expect("the serialized bundle reopens")
     }
 
     #[test]
@@ -631,5 +637,33 @@ mod tests {
             let reopened = serialize_and_reopen(document);
             assert_eq!(reopened.manifest().document_id, document.document_id);
         }
+    }
+
+    /// P13-S27 test 10a — the test M5a breaks. **In `epiphany-textproj`**,
+    /// because `epiphany-bundle` must not depend on `epiphany-ops` (pin 1, §0.3)
+    /// and so no test there can reach the real authority.
+    ///
+    /// # The `0` is a deliberate LITERAL, and that is load-bearing
+    ///
+    /// Comparing against `CURRENT_REDUCTION_ALGORITHM_VERSION` would compare the
+    /// constant with itself laundered through one function call: mutate the
+    /// constant and **both sides move**, so the assertion would hold for every
+    /// value and M5a could not break it. **Do not "tidy" this into the
+    /// constant** — doing so makes M5a vacuous while leaving every test green,
+    /// a failure invisible to the suite (contract §7 item 4b exists to catch it).
+    ///
+    /// **This test is expected to fail when P13-S16 bumps the authority**, and
+    /// that is correct: the literal is a tripwire on the production wiring, and
+    /// S16 updating it is S16 stating that the authority moved.
+    #[test]
+    fn serialize_document_supplies_the_real_reduction_authority() {
+        let document = minimal_document(42);
+        let bundle = serialize_document(&document, MemStore::new(), FileUuid([1; 16]))
+            .expect("a base-free document serializes");
+        assert_eq!(
+            bundle.capabilities().current_reduction_version,
+            ReductionAlgorithmVersion(0),
+            "the production writer must supply the real authority, not a literal of its own"
+        );
     }
 }

@@ -172,6 +172,65 @@ pub struct CommitContext<'a> {
     pub previous_manifest_version: SchemaVersion,
 }
 
+/// What semantics a caller states this build implements.
+///
+/// Required at [`Bundle::open`] **and** [`Bundle::create`], and carried on the
+/// [`Bundle`] so `commit` and `commit_versioned` validate against it without
+/// their 57 call sites changing — the capability is a property of the session,
+/// not of each call.
+///
+/// # No `Default`, and no bundle-local constant
+///
+/// This type **MUST NOT** implement [`Default`], and this crate **MUST NOT**
+/// define a constant to fill it in. Either would let a caller open or create a
+/// bundle without stating what semantics it implements, which is precisely the
+/// defect P13-S27 exists to remove: before it, `reduction_version_for` sourced
+/// a new superblock's version from the canonical base's own self-report, and
+/// `open` compared that against the superblock the same value had seeded — both
+/// operands descending from one source, so the comparison was a tautology for
+/// every conformingly-written document.
+///
+/// **No test can catch a `Default` that callers then use**, because a defaulted
+/// value is indistinguishable from a correct one at every call site. The
+/// prohibition is therefore a **review rule**, and gate 6 of the contract is its
+/// only mechanical guard.
+///
+/// # A struct, not a bare parameter
+///
+/// Later capabilities append as fields without another signature break across
+/// 92 call sites. **Do not add speculative fields**; add them when a rung needs
+/// them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BundleCapabilities {
+    /// The reduction semantics this build implements. Production composition
+    /// paths wrap `epiphany_ops::CURRENT_REDUCTION_ALGORITHM_VERSION`; fixtures
+    /// deliberately exercising arbitrary wire values use
+    /// [`BundleCapabilities::synthetic_for_fixture`].
+    pub current_reduction_version: ReductionAlgorithmVersion,
+}
+
+impl BundleCapabilities {
+    /// Capabilities for a **format or container fixture** that deliberately
+    /// exercises an arbitrary wire value.
+    ///
+    /// **MUST NEVER appear in a production composition path.** Production paths
+    /// wrap `epiphany_ops::CURRENT_REDUCTION_ALGORITHM_VERSION`; this
+    /// constructor exists so a fixture asserting behaviour at version `7` can
+    /// say so explicitly instead of silently inheriting whatever the real
+    /// authority happens to be, which would make the fixture stop testing what
+    /// it was written to test the moment the authority moved.
+    ///
+    /// The name is **pinned** by contract pin 3b, because gate 6a greps for it
+    /// by that exact literal; renaming it requires amending pin 3b and gate 6a
+    /// together.
+    #[must_use]
+    pub fn synthetic_for_fixture(v: u32) -> Self {
+        BundleCapabilities {
+            current_reduction_version: ReductionAlgorithmVersion(v),
+        }
+    }
+}
+
 /// An open bundle over a block store.
 pub struct Bundle<S: BlockStore> {
     store: S,
@@ -184,6 +243,8 @@ pub struct Bundle<S: BlockStore> {
     write_cursor: u64,
     read_only: bool,
     anomalies: Vec<IntegrityAnomaly>,
+    /// The semantics the opener/creator stated this build implements (pin 3).
+    caps: BundleCapabilities,
 }
 
 impl<S: BlockStore> Bundle<S> {
@@ -202,8 +263,13 @@ impl<S: BlockStore> Bundle<S> {
     /// tag requires a higher epoch — see [`Bundle::create_versioned`] for a
     /// caller (e.g. a repack seeding a non-empty initial manifest through a
     /// different path) that must supply the version explicitly.
-    pub fn create(store: S, file_uuid: FileUuid, manifest: Manifest) -> Result<Self, BundleError> {
-        Self::create_versioned(store, file_uuid, manifest, Manifest::SCHEMA)
+    pub fn create(
+        store: S,
+        file_uuid: FileUuid,
+        manifest: Manifest,
+        caps: BundleCapabilities,
+    ) -> Result<Self, BundleError> {
+        Self::create_versioned(store, file_uuid, manifest, Manifest::SCHEMA, caps)
     }
 
     /// As [`Bundle::create`], but the manifest chunk is stamped at the given
@@ -218,6 +284,7 @@ impl<S: BlockStore> Bundle<S> {
         file_uuid: FileUuid,
         mut manifest: Manifest,
         manifest_schema_version: SchemaVersion,
+        caps: BundleCapabilities,
     ) -> Result<Self, BundleError> {
         manifest.generation = 0;
         manifest.manifest_id = manifest.derive_id();
@@ -289,6 +356,7 @@ impl<S: BlockStore> Bundle<S> {
             write_cursor,
             read_only,
             anomalies: Vec::new(),
+            caps,
         })
     }
 
@@ -298,7 +366,7 @@ impl<S: BlockStore> Bundle<S> {
     /// manifest hash), and reads + verifies the manifest. A structural anomaly
     /// (generation gap, divergent same-generation slots, a non-committed slot)
     /// opens the bundle **read-only** and is recorded in [`Bundle::anomalies`].
-    pub fn open(store: S) -> Result<Self, BundleError> {
+    pub fn open(store: S, caps: BundleCapabilities) -> Result<Self, BundleError> {
         // 1. Header.
         let header_bytes = read_vec(&store, 0, crate::header::HEADER_LEN)?;
         let header = FixedHeader::decode(&header_bytes)?;
@@ -413,14 +481,24 @@ impl<S: BlockStore> Bundle<S> {
             // above): only once the base is structurally sound do we ask
             // whether this epoch may open it at all. A legacy (major-0)
             // container can never open with a base — the epoch is not
-            // retroactive (row 2, permanent). A major-1 container is the
-            // right epoch, but until P13-S27 lands there is no
-            // reduction-authority capability to validate it against (row 5i,
-            // interim — TEMPORARY, removed by P13-S27, pin 3a).
-            return Err(match header.epoch {
-                FormatEpoch::Legacy => BundleError::LegacyBundleHasCanonicalBase,
-                FormatEpoch::Current => BundleError::ReductionAuthorityUnavailable,
-            });
+            // retroactive (row 2, permanent).
+            //
+            // Row 5i is no longer a categorical refusal. P13-S27 pin 5
+            // replaces the interim `ReductionAuthorityUnavailable` with real
+            // validation: a major-1 container is the right epoch, and its base
+            // is now compared against the semantics the *caller* states this
+            // build implements. A disagreement is
+            // `CanonicalBaseRequiresRebuild` — not read-only, not an integrity
+            // anomaly (pin 4).
+            if header.epoch == FormatEpoch::Legacy {
+                return Err(BundleError::LegacyBundleHasCanonicalBase);
+            }
+            if base.reduction_algorithm_version != caps.current_reduction_version {
+                return Err(BundleError::CanonicalBaseRequiresRebuild {
+                    base: base.reduction_algorithm_version,
+                    current: caps.current_reduction_version,
+                });
+            }
         }
         // An unknown *required* extension forces read-only (Chapter 8 §"Behavior
         // Under Unknown Extensions").
@@ -460,7 +538,21 @@ impl<S: BlockStore> Bundle<S> {
             write_cursor,
             read_only,
             anomalies,
+            caps,
         })
+    }
+
+    /// The semantics this bundle's opener or creator stated the build
+    /// implements (pin 3).
+    ///
+    /// Read-only and borrowing, with **no setter**: a setter would let a caller
+    /// change the semantics it claims *after* `open` validated against them,
+    /// reintroducing exactly what pin 3 removes. Exposed because the value
+    /// **governs rejection behaviour** — a caller diagnosing a
+    /// [`BundleError::CanonicalBaseRequiresRebuild`] needs to see which
+    /// authority was in force.
+    pub fn capabilities(&self) -> &BundleCapabilities {
+        &self.caps
     }
 
     /// The active manifest.
@@ -775,25 +867,49 @@ impl<S: BlockStore> Bundle<S> {
         let active_profile = validate_emittable_manifest(&manifest)?;
 
         // Format-epoch matrix (`CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 3, rows 3
-        // and 6i): a commit may never introduce (or replace) a canonical
-        // base. `self.manifest.canonical_base` is always `None` here — `open`
-        // and `create` both already refuse ever producing a live bundle whose
-        // base is `Some`, so any `Some` reaching this point is necessarily a
-        // fresh introduction. Row 3 — a legacy (major-0) container can never
-        // become base-bearing in place, because its header can never say the
-        // base was validated (permanent; the epoch is not inheritable). Row
-        // 6i — a major-1 container is the right epoch, but until P13-S27
-        // lands there is no reduction-authority capability to validate a
-        // newly introduced base against (interim — TEMPORARY, removed by
-        // P13-S27, pin 3a). Placed after `validate_emittable_manifest` (which
-        // already rejects a base whose profile is undeclared) so that a
-        // structurally malformed base is still reported as malformed, not
-        // masked by this categorical epoch refusal.
-        if manifest.canonical_base.is_some() {
-            return Err(match self.header.epoch {
-                FormatEpoch::Legacy => BundleError::LegacyBaseIntroductionRejected,
-                FormatEpoch::Current => BundleError::ReductionAuthorityUnavailable,
-            });
+        // and 6i), as amended by P13-S27 pin 3a.
+        //
+        // Row 3 is permanent: a legacy (major-0) container can never become
+        // base-bearing in place, because its header can never say the base was
+        // validated — the epoch is not inheritable.
+        //
+        // Row 6i is no longer categorical. `commit`/`commit_versioned` are
+        // **public API**, so an out-of-tree caller can stage a canonical base
+        // without going through `epiphany-textproj` and without ever calling
+        // `open`. This is the writer half of the authority, and it validates
+        // rather than refuses.
+        //
+        // **Scope: newly emitted or replaced only.** A commit that does not
+        // touch `canonical_base` must NOT be refused merely because an
+        // inherited base is stale, and refusing here would make an unrelated
+        // commit the site of the diagnosis.
+        //
+        // What holds is narrower than "there is never an inherited base".
+        // `self.manifest.canonical_base` **can** be `Some` here — an unrelated
+        // second commit on a base-bearing bundle is exactly that, and it is
+        // required to succeed. What cannot happen is an inherited base that is
+        // **stale**: `open` refuses one (pin 5) and `create` refuses a
+        // base-bearing manifest outright, so any base already on `self` matched
+        // the session's authority when it arrived.
+        //
+        // That is why *narrowing* this check to "any stale inherited base" is
+        // unobservable — the state it would catch is unreachable — while
+        // *broadening* it to "any base-bearing commit" is very observable, and
+        // wrong. The scope is a real choice on one axis and forced on the other.
+        //
+        // Placed after `validate_emittable_manifest` (which already rejects a
+        // base whose profile is undeclared) so a structurally malformed base is
+        // still reported as malformed, not masked by an authority verdict.
+        if let Some(base) = &manifest.canonical_base {
+            if self.header.epoch == FormatEpoch::Legacy {
+                return Err(BundleError::LegacyBaseIntroductionRejected);
+            }
+            if base.reduction_algorithm_version != self.caps.current_reduction_version {
+                return Err(BundleError::CanonicalBaseRequiresRebuild {
+                    base: base.reduction_algorithm_version,
+                    current: self.caps.current_reduction_version,
+                });
+            }
         }
 
         // Before publishing, validate that every canonical root the new manifest
@@ -1021,6 +1137,30 @@ fn active_profile_for_emit(manifest: &Manifest) -> Option<ProfileDeclaration> {
 /// The reduction-algorithm version a superblock should carry: the canonical
 /// base's, if a base is present (only a base records a reduction); otherwise the
 /// default (no base means no reduced base state at this generation).
+/// The reduction version a new superblock carries: the canonical base's own
+/// self-report, or the default when there is no base.
+///
+/// # Why sourcing from the base is sound — and why it takes BOTH pins
+///
+/// This looks like the tautology §0.1 of `CONTRACT_P13S27_REDUCTION_AUTHORITY.md`
+/// describes, and before P13-S27 it was one. It is sound now only because the
+/// value can no longer be unvalidated by the time it reaches here:
+///
+/// * **read-time — pin 5.** An opened bundle has proved
+///   `base.reduction_algorithm_version == caps.current_reduction_version`, or
+///   it did not open.
+/// * **write-time — pin 3a.** A newly emitted or replaced base has proved the
+///   same at `commit`/`commit_versioned`.
+///
+/// **Only together** do these make propagating the base's self-report equal to
+/// propagating the current version. Neither alone suffices: read-time validation
+/// leaves a production writer free to mint a stale document without ever calling
+/// `open`, and write-time validation leaves an already-stale file readable.
+///
+/// **Do not "fix" this to read a constant, and do not trust it in a context
+/// where neither check has run.** An earlier draft of this rung reasoned
+/// one-sidedly about exactly this function and concluded the writer path was
+/// test-only; it was not.
 fn reduction_version_for(manifest: &Manifest) -> ReductionAlgorithmVersion {
     manifest
         .canonical_base
@@ -1572,10 +1712,22 @@ mod tests {
     }
 
     fn fresh_bundle() -> Bundle<MemStore> {
+        fresh_bundle_at(0)
+    }
+
+    /// A fresh bundle whose session states reduction authority `v`.
+    ///
+    /// `synthetic_for_fixture` and not the real constant: these are container
+    /// fixtures exercising chosen wire values, and pin 3b requires them to say
+    /// so explicitly rather than inherit whatever the authority happens to be —
+    /// otherwise a fixture asserting behaviour at `4` silently stops asserting
+    /// it the moment P13-S16 moves the authority.
+    fn fresh_bundle_at(v: u32) -> Bundle<MemStore> {
         Bundle::create(
             MemStore::new(),
             FileUuid([1; 16]),
             Manifest::empty(DocumentId([2; 16])),
+            BundleCapabilities::synthetic_for_fixture(v),
         )
         .unwrap()
     }
@@ -1705,7 +1857,10 @@ mod tests {
     /// cannot be used directly on `Bundle::open`'s result; this extracts the
     /// error by hand.
     fn open_err(image: Vec<u8>, context: &str) -> BundleError {
-        match Bundle::open(MemStore::from_bytes(image)) {
+        match Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(0),
+        ) {
             Err(e) => e,
             Ok(_) => panic!("{context}"),
         }
@@ -1716,8 +1871,11 @@ mod tests {
         // Matrix row 1: a legacy container with no base opens cleanly —
         // nothing unverifiable is exposed.
         let image = craft_image_epoch(0);
-        let bundle = Bundle::open(MemStore::from_bytes(image))
-            .expect("a legacy bundle without a base opens");
+        let bundle = Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .expect("a legacy bundle without a base opens");
         assert!(!bundle.is_read_only());
         assert!(bundle.anomalies().is_empty());
         assert_eq!(bundle.header().epoch, FormatEpoch::Legacy);
@@ -1737,7 +1895,10 @@ mod tests {
         let err = open_err(image, "a legacy base-bearing bundle must not open");
         assert!(matches!(err, BundleError::LegacyBundleHasCanonicalBase));
         assert!(!matches!(err, BundleError::LegacyBaseIntroductionRejected));
-        assert!(!matches!(err, BundleError::ReductionAuthorityUnavailable));
+        assert!(!matches!(
+            err,
+            BundleError::CanonicalBaseRequiresRebuild { .. }
+        ));
     }
 
     #[test]
@@ -1747,8 +1908,11 @@ mod tests {
         // inheritable, because its header can never say the base was
         // validated.
         let image = craft_image_epoch(0);
-        let mut bundle = Bundle::open(MemStore::from_bytes(image))
-            .expect("a legacy bundle without a base opens");
+        let mut bundle = Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .expect("a legacy bundle without a base opens");
         let staged = StagedChunk {
             kind: ChunkKind::Snapshot,
             schema_version: SchemaVersion::V0,
@@ -1771,7 +1935,10 @@ mod tests {
             .expect_err("committing a base into a legacy bundle must be refused");
         assert!(matches!(err, BundleError::LegacyBaseIntroductionRejected));
         assert!(!matches!(err, BundleError::LegacyBundleHasCanonicalBase));
-        assert!(!matches!(err, BundleError::ReductionAuthorityUnavailable));
+        assert!(!matches!(
+            err,
+            BundleError::CanonicalBaseRequiresRebuild { .. }
+        ));
         assert!(
             err.to_string().to_lowercase().contains("repack"),
             "row-3 error must name repack: {err}"
@@ -1783,16 +1950,64 @@ mod tests {
         );
     }
 
+    /// P13-S27 test 8 — the **write-side positive** branch, converted from the
+    /// format rung's interim refusal (matrix row 6i). Obligation 1 warns that
+    /// converting only one branch "leaves a hole exactly where the format
+    /// rung's own review found one"; without this, an implementation that
+    /// converts the read side and leaves `commit` refusing categorically passes
+    /// every other test in this section.
+    ///
+    /// Per §3's state table this test **starts base-free and introduces** the
+    /// base — that is the whole point — so its pre-commit assertion is
+    /// `is_none()`, not `is_some()`.
     #[test]
-    fn a_major_1_bundle_round_trips_and_refuses_to_introduce_a_base() {
-        // Matrix row 4 (round-trip half) + row 6i (refusal half). Renamed
-        // from "..._validates_its_base", which pin 3a forbids claiming until
-        // P13-S27 lands: this rung does not validate a base, it refuses one
-        // outright.
-        let mut bundle = fresh_bundle();
+    fn committing_a_canonical_base_succeeds_when_the_authority_matches() {
+        let mut bundle = fresh_bundle_at(4);
         assert_eq!(bundle.header().epoch, FormatEpoch::Current);
+        assert!(
+            bundle.manifest().canonical_base.is_none(),
+            "test 8 must start base-free: it introduces the base"
+        );
 
-        // Round trip: ordinary non-base-bearing history commits and reopens.
+        let staged = StagedChunk {
+            kind: ChunkKind::Snapshot,
+            schema_version: SchemaVersion::V0,
+            payload: vec![9u8, 9, 9],
+        };
+        bundle
+            .commit(&[staged], |ctx| {
+                let mut m = ctx.previous_manifest.clone();
+                let root = ctx.new_chunks[0];
+                m.canonical_base = Some(SnapshotRef {
+                    snapshot_id: SnapshotId([2; 16]),
+                    covers_causal_frontier: FrontierBytes::empty(),
+                    reduction_algorithm_version: ReductionAlgorithmVersion(4),
+                    profile_id: ProfileId::Full,
+                    hash: root.hash,
+                    root,
+                });
+                m
+            })
+            .expect("committing a base whose version matches the authority succeeds");
+
+        assert!(
+            bundle.manifest().canonical_base.is_some(),
+            "the base must be present after the commit that introduced it"
+        );
+    }
+
+    /// P13-S27 test 5 — the pin-3a writer test, and the one this contract's
+    /// first draft omitted entirely.
+    ///
+    /// Asserts **both** halves: the commit fails with the authority error, and
+    /// the bundle still reopens at the prior active generation with its earlier
+    /// content intact. **A writer check that corrupts the document while
+    /// refusing is worse than no check.**
+    #[test]
+    fn committing_a_stale_canonical_base_fails_and_leaves_the_prior_generation_reopenable() {
+        let mut bundle = fresh_bundle_at(4);
+
+        // A good generation first, so there is a prior state to preserve.
         let block = StagedChunk::operation_block(block::encode_block(&[vec![1u8, 2, 3]]));
         bundle
             .commit(&[block], |ctx| {
@@ -1800,51 +2015,67 @@ mod tests {
                 m.operation_roots.push(ctx.new_chunks[0]);
                 m
             })
-            .expect("a major-1 bundle commits ordinary non-base-bearing history");
-        let image = bundle.into_store().into_bytes();
-        let mut reopened =
-            Bundle::open(MemStore::from_bytes(image)).expect("a major-1 bundle round trips");
-        assert!(!reopened.is_read_only());
-        assert_eq!(reopened.manifest().operation_roots.len(), 1);
+            .expect("an ordinary commit succeeds");
+        let good_generation = bundle.generation();
 
-        // Refusal: introducing a base is refused (row 6i), distinctly from
-        // both legacy errors.
         let staged = StagedChunk {
             kind: ChunkKind::Snapshot,
             schema_version: SchemaVersion::V0,
             payload: vec![9u8, 9, 9],
         };
-        let err = reopened
+        let err = bundle
             .commit(&[staged], |ctx| {
                 let mut m = ctx.previous_manifest.clone();
                 let root = ctx.new_chunks[0];
                 m.canonical_base = Some(SnapshotRef {
                     snapshot_id: SnapshotId([2; 16]),
                     covers_causal_frontier: FrontierBytes::empty(),
-                    reduction_algorithm_version: ReductionAlgorithmVersion(0),
+                    // Differs from caps(4) — a newly emitted stale base.
+                    reduction_algorithm_version: ReductionAlgorithmVersion(9),
                     profile_id: ProfileId::Full,
                     hash: root.hash,
                     root,
                 });
                 m
             })
-            .expect_err(
-                "a major-1 bundle must refuse to introduce a base during the S28 -> P13-S27 interval",
-            );
-        assert!(matches!(err, BundleError::ReductionAuthorityUnavailable));
-        assert!(!matches!(err, BundleError::LegacyBundleHasCanonicalBase));
-        assert!(!matches!(err, BundleError::LegacyBaseIntroductionRejected));
+            .expect_err("a newly emitted base under a different authority must be refused");
+        match err {
+            BundleError::CanonicalBaseRequiresRebuild { base, current } => {
+                assert_eq!(base, ReductionAlgorithmVersion(9));
+                assert_eq!(current, ReductionAlgorithmVersion(4));
+            }
+            other => panic!("expected CanonicalBaseRequiresRebuild, got {other:?}"),
+        }
+
+        // The refused commit did not corrupt or advance the document.
+        let image = bundle.into_store().into_bytes();
+        let reopened = Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(4),
+        )
+        .expect("the bundle still reopens after a refused commit");
+        assert_eq!(reopened.generation(), good_generation);
+        assert_eq!(reopened.manifest().operation_roots.len(), 1);
+        assert!(reopened.manifest().canonical_base.is_none());
     }
 
+    /// P13-S27 test 3 — the pin-6 path. Extended in this rung from
+    /// `a_corrupt_base_fails_as_malformed_before_any_epoch_error`: the malformed
+    /// assertion is inherited, and what P13-S27 adds is that the result is
+    /// **not** `CanonicalBaseRequiresRebuild`.
+    ///
+    /// **Paired with test 2 in review**: each asserts the other's error is not
+    /// produced. Pin 6 keeps tampering and valid staleness distinct — they
+    /// detect different things, and collapsing them would lose the distinction
+    /// §0.1 rests on.
+    ///
+    /// **The fixture deliberately satisfies BOTH conditions**, which is what
+    /// makes this a precedence test rather than a coincidence: the base reports
+    /// `1` while its superblock says `2` (corrupt), *and* `1` differs from the
+    /// session's authority `0` (stale). Malformed must win. If the fixture only
+    /// tripped one condition, the ordering would never be exercised.
     #[test]
-    fn a_corrupt_base_fails_as_malformed_before_any_epoch_error() {
-        // Pin 3's precedence rule, in BOTH epochs: a base whose version
-        // disagrees with its superblock's is corrupt and must fail with the
-        // existing malformed-bundle error — never row 2's legacy error, and
-        // never row 5i's `ReductionAuthorityUnavailable`. Collapsing
-        // tampering into staleness would erase the distinction P13-S27's
-        // authority check rests on. Renamed from `..._corrupt_legacy_base...`:
-        // the major-1 half is the one an earlier draft missed.
+    fn a_corrupt_base_superblock_disagreement_still_fails_as_malformed() {
         for format_major in [0u16, 1u16] {
             let image = craft_image_with_base(
                 format_major,
@@ -1852,33 +2083,240 @@ mod tests {
                 ReductionAlgorithmVersion(1),
                 ReductionAlgorithmVersion(2), // disagrees with the base's own version
             );
+            // `open_err` opens under `synthetic_for_fixture(0)`, so the
+            // authority condition is live too — and must lose.
             let err = open_err(image, "a corrupt base must not open");
             assert!(
                 matches!(err, BundleError::Decode(DecodeError::Malformed(_))),
                 "format_major {format_major}: expected the malformed-bundle error, got {err:?}"
             );
             assert!(!matches!(err, BundleError::LegacyBundleHasCanonicalBase));
-            assert!(!matches!(err, BundleError::ReductionAuthorityUnavailable));
+            assert!(
+                !matches!(err, BundleError::CanonicalBaseRequiresRebuild { .. }),
+                "format_major {format_major}: corruption must not be reported as staleness"
+            );
         }
     }
 
+    /// P13-S27 test 1 — the **commit construction route** (routes swapped in
+    /// review round 18). Test 6 asserts the same outcome from a hand-built
+    /// image; this one reaches the state by committing, so both construction
+    /// paths into the guarantee are covered.
+    ///
+    /// The scratch probe is why that is coverage rather than redundancy: **how
+    /// an artifact is constructed changes its bytes**, and a hand-built and a
+    /// committed bundle are not interchangeable.
+    ///
+    /// Shares test 8's setup and asserts a different thing — test 8 asserts the
+    /// **commit** succeeds, this asserts the **reopen** does.
     #[test]
-    fn opening_a_major_1_bundle_that_already_carries_a_base_is_refused() {
-        // Matrix row 5i, the read-side branch pin 3a adds — an earlier draft
-        // omitted it entirely.
+    fn open_succeeds_when_base_and_current_reduction_versions_match() {
+        let mut bundle = fresh_bundle_at(4);
+        let staged = StagedChunk {
+            kind: ChunkKind::Snapshot,
+            schema_version: SchemaVersion::V0,
+            payload: vec![9u8, 9, 9],
+        };
+        bundle
+            .commit(&[staged], |ctx| {
+                let mut m = ctx.previous_manifest.clone();
+                let root = ctx.new_chunks[0];
+                m.canonical_base = Some(SnapshotRef {
+                    snapshot_id: SnapshotId([2; 16]),
+                    covers_causal_frontier: FrontierBytes::empty(),
+                    reduction_algorithm_version: ReductionAlgorithmVersion(4),
+                    profile_id: ProfileId::Full,
+                    hash: root.hash,
+                    root,
+                });
+                m
+            })
+            .expect("committing a matching base succeeds");
+        let image = bundle.into_store().into_bytes();
+
+        let reopened = Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(4),
+        )
+        .expect("a committed base-bearing bundle reopens when the authority matches");
+
+        assert!(
+            reopened.manifest().canonical_base.is_some(),
+            "test 1 must exercise a base-bearing bundle, or it is test 4"
+        );
+        assert_eq!(
+            reopened
+                .manifest()
+                .canonical_base
+                .as_ref()
+                .unwrap()
+                .reduction_algorithm_version,
+            ReductionAlgorithmVersion(4)
+        );
+    }
+
+    /// P13-S27 test 4 — the no-base exemption. Pin 5: a bundle with **no**
+    /// canonical base is openable regardless of the session's authority, because
+    /// there is no reduced state to be stale.
+    ///
+    /// The two capability values are **asserted unequal** (round 17): if they
+    /// coincided this would prove nothing about *any* authority, and nothing
+    /// would say so.
+    #[test]
+    fn a_bundle_with_no_canonical_base_opens_at_any_reduction_version() {
+        let bundle = fresh_bundle_at(0);
+        assert!(
+            bundle.manifest().canonical_base.is_none(),
+            "this test's fixture must be base-free — the mirror of §3's rule"
+        );
+        let image = bundle.into_store().into_bytes();
+
+        let (a, b) = (3u32, 11u32);
+        assert_ne!(
+            a, b,
+            "the two authorities must differ, or 'any' is untested"
+        );
+        for v in [a, b] {
+            let opened = Bundle::open(
+                MemStore::from_bytes(image.clone()),
+                BundleCapabilities::synthetic_for_fixture(v),
+            )
+            .unwrap_or_else(|e| panic!("a base-free bundle must open at authority {v}: {e:?}"));
+            assert!(opened.manifest().canonical_base.is_none());
+            assert_eq!(
+                opened.capabilities().current_reduction_version,
+                ReductionAlgorithmVersion(v)
+            );
+        }
+    }
+
+    /// P13-S27 test 9 — the permanent statement of pin 3a's "newly emitted or
+    /// replaced" scope. **Added in review round 3**, because M6 only
+    /// *demonstrates* that scope and a mutation does not pin behaviour: with
+    /// tests 2, 5, 6 and 8 alone, an implementation rejecting every post-base
+    /// unrelated commit passed all of them, and M6's broadening would have had
+    /// nothing to break.
+    #[test]
+    fn an_unrelated_commit_on_a_base_bearing_bundle_succeeds() {
+        // Reach the state test 6 establishes, by the commit route.
+        let mut bundle = fresh_bundle_at(4);
+        let staged = StagedChunk {
+            kind: ChunkKind::Snapshot,
+            schema_version: SchemaVersion::V0,
+            payload: vec![9u8, 9, 9],
+        };
+        bundle
+            .commit(&[staged], |ctx| {
+                let mut m = ctx.previous_manifest.clone();
+                let root = ctx.new_chunks[0];
+                m.canonical_base = Some(SnapshotRef {
+                    snapshot_id: SnapshotId([2; 16]),
+                    covers_causal_frontier: FrontierBytes::empty(),
+                    reduction_algorithm_version: ReductionAlgorithmVersion(4),
+                    profile_id: ProfileId::Full,
+                    hash: root.hash,
+                    root,
+                });
+                m
+            })
+            .expect("introducing a matching base succeeds");
+        let base_before = bundle.manifest().canonical_base.clone();
+        assert!(base_before.is_some(), "test 9 must start base-bearing");
+
+        // An unrelated commit: it does NOT touch `canonical_base`.
+        let block = StagedChunk::operation_block(block::encode_block(&[vec![1u8, 2, 3]]));
+        bundle
+            .commit(&[block], |ctx| {
+                let mut m = ctx.previous_manifest.clone();
+                m.operation_roots.push(ctx.new_chunks[0]);
+                m
+            })
+            .expect("an unrelated commit on a base-bearing bundle must succeed");
+
+        let image = bundle.into_store().into_bytes();
+        let reopened = Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(4),
+        )
+        .expect("reopens with both the new content and the untouched base");
+        assert_eq!(reopened.manifest().operation_roots.len(), 1);
+        assert!(reopened.manifest().canonical_base.is_some());
+        assert_eq!(
+            reopened.manifest().canonical_base,
+            base_before,
+            "the inherited base must be untouched by an unrelated commit"
+        );
+    }
+
+    /// P13-S27 test 6 — the read-side half of the authority, converted from the
+    /// format rung's interim refusal (`opening_a_major_1_bundle_that_already_
+    /// carries_a_base_is_refused`, matrix row 5i) into real validation. Its
+    /// **construction is inherited from that test**: hand-built via
+    /// `craft_image_with_base`, so `open` is exercised in isolation from any
+    /// commit path. Test 1 reaches the same state by the commit route.
+    ///
+    /// Sibling of test 2, which is this same path when the authority
+    /// *disagrees*. Both branches must exist — the format rung's own review
+    /// found a draft that closed only one.
+    #[test]
+    fn a_major_1_bundle_carrying_a_base_opens_when_the_authority_matches() {
         let image = craft_image_with_base(
             1,
             0,
-            ReductionAlgorithmVersion(0),
-            ReductionAlgorithmVersion(0),
+            ReductionAlgorithmVersion(4),
+            ReductionAlgorithmVersion(4),
         );
-        let err = open_err(
-            image,
-            "a major-1 bundle already carrying a base must not open during the interval",
+        let bundle = Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(4),
+        )
+        .expect("a major-1 base-bearing bundle opens when the authority matches");
+
+        // The base-presence assertion §3 requires: without it this test passes
+        // on a base-free bundle, which opens at *any* authority (pin 5), and so
+        // asserts nothing about the authority at all.
+        assert!(
+            bundle.manifest().canonical_base.is_some(),
+            "test 6 must exercise a base-bearing bundle, or it is test 4"
         );
-        assert!(matches!(err, BundleError::ReductionAuthorityUnavailable));
-        assert!(!matches!(err, BundleError::LegacyBundleHasCanonicalBase));
-        assert!(!matches!(err, BundleError::LegacyBaseIntroductionRejected));
+        assert_eq!(
+            bundle.capabilities().current_reduction_version,
+            ReductionAlgorithmVersion(4)
+        );
+    }
+
+    /// P13-S27 test 2 — the same path as test 6 when the authority disagrees.
+    /// The base and superblock agree with **each other** (so this is not the
+    /// corrupt case, which test 3 covers); only `caps.current` differs.
+    #[test]
+    fn open_rejects_a_valid_stale_canonical_base() {
+        let image = craft_image_with_base(
+            1,
+            0,
+            ReductionAlgorithmVersion(4),
+            ReductionAlgorithmVersion(4),
+        );
+        let err = match Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(9),
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("a base under a different authority must not open"),
+        };
+        // Both fields asserted, not merely the variant.
+        match err {
+            BundleError::CanonicalBaseRequiresRebuild { base, current } => {
+                assert_eq!(base, ReductionAlgorithmVersion(4));
+                assert_eq!(current, ReductionAlgorithmVersion(9));
+            }
+            other => panic!("expected CanonicalBaseRequiresRebuild, got {other:?}"),
+        }
+        // Paired with test 3 in review: each asserts the other's error is *not*
+        // produced, which is the whole point of pin 6.
+        assert!(!matches!(
+            err,
+            BundleError::Decode(DecodeError::Malformed(_))
+        ));
     }
 
     // -----------------------------------------------------------------
@@ -1897,6 +2335,7 @@ mod tests {
             FileUuid([9; 16]),
             Manifest::empty(DocumentId([9; 16])),
             SchemaVersion::new(0, 8),
+            BundleCapabilities::synthetic_for_fixture(0),
         )
         .unwrap();
         assert_eq!(
@@ -1937,14 +2376,18 @@ mod tests {
             FileUuid([10; 16]),
             Manifest::empty(DocumentId([10; 16])),
             SchemaVersion::new(0, 8), // differs from Manifest::SCHEMA's minor (1)
+            BundleCapabilities::synthetic_for_fixture(0),
         )
         .unwrap();
         assert_ne!(SchemaVersion::new(0, 8), Manifest::SCHEMA);
         assert_eq!(SchemaVersion::new(0, 8).major, Manifest::SCHEMA.major);
 
         let image = bundle.into_store().into_bytes();
-        let reopened = Bundle::open(MemStore::from_bytes(image))
-            .expect("a major-matching minor mismatch opens");
+        let reopened = Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .expect("a major-matching minor mismatch opens");
         assert!(!reopened.is_read_only());
         assert_eq!(
             reopened.superblock().manifest_schema_version,
@@ -2002,7 +2445,11 @@ mod tests {
     fn create_then_open_round_trips() {
         let bundle = fresh_bundle();
         let image = bundle.into_store().into_bytes();
-        let reopened = Bundle::open(MemStore::from_bytes(image)).unwrap();
+        let reopened = Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         assert_eq!(reopened.generation(), 0);
         assert_eq!(reopened.active_slot(), Slot::A);
         assert_eq!(reopened.file_uuid(), FileUuid([1; 16]));
@@ -2026,7 +2473,11 @@ mod tests {
 
         // Reopen from the image; the committed state is visible and verifies.
         let image = bundle.into_store().into_bytes();
-        let reopened = Bundle::open(MemStore::from_bytes(image)).unwrap();
+        let reopened = Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         assert_eq!(reopened.generation(), 1);
         assert_eq!(reopened.manifest().operation_roots.len(), 1);
         reopened.verify_canonical_chunks().unwrap();
@@ -2072,7 +2523,11 @@ mod tests {
         let mut image = bundle.into_store().into_bytes();
         image[op_offset as usize] ^= 0xFF; // corrupt the operation block payload
 
-        let reopened = Bundle::open(MemStore::from_bytes(image)).unwrap();
+        let reopened = Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         // Opening still works (the manifest/superblock are intact)...
         assert_eq!(reopened.generation(), 1);
         // ...but verifying the canonical chunk surfaces hard corruption.
@@ -2157,7 +2612,13 @@ mod tests {
             compression: CompressionAlgorithm::None,
             hash: ContentHash([1; 32]),
         }];
-        assert!(Bundle::create(MemStore::new(), FileUuid([1; 16]), m).is_err());
+        assert!(Bundle::create(
+            MemStore::new(),
+            FileUuid([1; 16]),
+            m,
+            BundleCapabilities::synthetic_for_fixture(0)
+        )
+        .is_err());
     }
 
     #[test]
@@ -2246,7 +2707,11 @@ mod tests {
 
         // And a reopen agrees with the in-memory (already normalized) manifest.
         let image = bundle.into_store().into_bytes();
-        let reopened = Bundle::open(MemStore::from_bytes(image)).unwrap();
+        let reopened = Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         assert_eq!(reopened.manifest().operation_roots.len(), 1);
     }
 
@@ -2271,7 +2736,11 @@ mod tests {
             })
             .unwrap();
         let image = bundle.into_store().into_bytes();
-        let reopened = Bundle::open(MemStore::from_bytes(image)).unwrap();
+        let reopened = Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         assert!(reopened.is_read_only());
         assert!(reopened
             .anomalies()
@@ -2343,7 +2812,11 @@ mod tests {
 
         // 3) And it survives a reopen (durably preserved).
         let image = bundle.into_store().into_bytes();
-        let reopened = Bundle::open(MemStore::from_bytes(image)).unwrap();
+        let reopened = Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         assert!(survives(reopened.manifest()));
     }
 
@@ -2365,10 +2838,20 @@ mod tests {
                 constraints: ProfileConstraints::DEFAULT_FULL,
             },
         ];
-        let bundle = Bundle::create(MemStore::new(), FileUuid([1; 16]), m).unwrap();
+        let bundle = Bundle::create(
+            MemStore::new(),
+            FileUuid([1; 16]),
+            m,
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         let in_memory_profile = bundle.superblock().profile_id;
         let image = bundle.into_store().into_bytes();
-        let reopened = Bundle::open(MemStore::from_bytes(image)).unwrap();
+        let reopened = Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         assert_eq!(in_memory_profile, reopened.superblock().profile_id);
     }
 
@@ -2382,7 +2865,11 @@ mod tests {
         bundle.verify_canonical_chunks().unwrap(); // intact
         let mut image = bundle.into_store().into_bytes();
         image[blob_offset as usize] ^= 0xFF;
-        let reopened = Bundle::open(MemStore::from_bytes(image)).unwrap();
+        let reopened = Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         assert!(matches!(
             reopened.verify_canonical_chunks(),
             Err(BundleError::ChunkHashMismatch { .. })
@@ -2394,7 +2881,13 @@ mod tests {
         // Finding 1: a writer must not emit a manifest its own open would reject.
         let mut m = Manifest::empty(DocumentId([8; 16]));
         m.profile_declarations.clear();
-        assert!(Bundle::create(MemStore::new(), FileUuid([1; 16]), m).is_err());
+        assert!(Bundle::create(
+            MemStore::new(),
+            FileUuid([1; 16]),
+            m,
+            BundleCapabilities::synthetic_for_fixture(0)
+        )
+        .is_err());
 
         let mut bundle = fresh_bundle();
         let err = bundle.commit(&[], |ctx| {
@@ -2481,7 +2974,11 @@ mod tests {
         // Discover the commit's final-flush syscall index via a no-fault run.
         let base = fresh_bundle().into_store().into_bytes();
         let total = {
-            let mut b = Bundle::open(FaultStore::no_fault(base.clone())).unwrap();
+            let mut b = Bundle::open(
+                FaultStore::no_fault(base.clone()),
+                BundleCapabilities::synthetic_for_fixture(0),
+            )
+            .unwrap();
             b.commit(
                 &[StagedChunk::operation_block(block::encode_block(&[
                     b"e".to_vec()
@@ -2502,7 +2999,11 @@ mod tests {
             after_syscalls: total - 1,
             tear: Tear::TornLastWrite { prefix: 256 },
         };
-        let mut bundle = Bundle::open(FaultStore::new(base, crash)).unwrap();
+        let mut bundle = Bundle::open(
+            FaultStore::new(base, crash),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         let result = bundle.commit(
             &[StagedChunk::operation_block(block::encode_block(&[
                 b"e".to_vec()
@@ -2533,7 +3034,13 @@ mod tests {
                 affected_object_kinds: Vec::new(),
                 edit_barriers: Vec::new(),
             });
-        let bundle = Bundle::create(MemStore::new(), FileUuid([1; 16]), m).unwrap();
+        let bundle = Bundle::create(
+            MemStore::new(),
+            FileUuid([1; 16]),
+            m,
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         assert!(bundle.is_read_only());
     }
 
@@ -2580,7 +3087,12 @@ mod tests {
                 edit_barriers: Vec::new(),
             });
         assert!(matches!(
-            Bundle::create(MemStore::new(), FileUuid([1; 16]), m),
+            Bundle::create(
+                MemStore::new(),
+                FileUuid([1; 16]),
+                m,
+                BundleCapabilities::synthetic_for_fixture(0)
+            ),
             Err(BundleError::ResourceLimitExceeded { .. })
         ));
     }
@@ -2611,7 +3123,13 @@ mod tests {
                 constraints: small,
             },
         ];
-        let mut bundle = Bundle::create(MemStore::new(), FileUuid([1; 16]), m).unwrap();
+        let mut bundle = Bundle::create(
+            MemStore::new(),
+            FileUuid([1; 16]),
+            m,
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         // Canonical-first profile is Full (discriminant 0): active = Full limit.
         assert_eq!(bundle.superblock().profile_id, ProfileId::Full);
         assert_eq!(bundle.max_block_size(), 64 << 20);
@@ -2667,7 +3185,12 @@ mod tests {
         let make = |decls: Vec<ProfileDeclaration>| {
             let mut m = Manifest::empty(DocumentId([1; 16]));
             m.profile_declarations = decls;
-            Bundle::create(MemStore::new(), FileUuid([1; 16]), m)
+            Bundle::create(
+                MemStore::new(),
+                FileUuid([1; 16]),
+                m,
+                BundleCapabilities::synthetic_for_fixture(0),
+            )
         };
         // Custom-only (no understood profile to operate under).
         assert!(make(vec![profile(
@@ -2695,14 +3218,23 @@ mod tests {
         let v0 = crate::ids::SemVer::new(0, 1, 0);
         let mut m = Manifest::empty(DocumentId([1; 16]));
         m.profile_declarations = vec![profile(ProfileId::ReadOnly, v0, 1 << 20)];
-        let bundle = Bundle::create(MemStore::new(), FileUuid([1; 16]), m).unwrap();
+        let bundle = Bundle::create(
+            MemStore::new(),
+            FileUuid([1; 16]),
+            m,
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         assert_eq!(bundle.superblock().profile_id, ProfileId::ReadOnly);
         assert!(bundle.is_read_only());
         // Round-trips: a reopen agrees it is read-only.
         let image = bundle.into_store().into_bytes();
-        assert!(Bundle::open(MemStore::from_bytes(image))
-            .unwrap()
-            .is_read_only());
+        assert!(Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(0)
+        )
+        .unwrap()
+        .is_read_only());
     }
 
     #[test]
@@ -2715,7 +3247,13 @@ mod tests {
             profile(ProfileId::ReadOnly, v0, 1 << 20),
             profile(ProfileId::Lite, v0, 1 << 20),
         ];
-        let bundle = Bundle::create(MemStore::new(), FileUuid([1; 16]), m).unwrap();
+        let bundle = Bundle::create(
+            MemStore::new(),
+            FileUuid([1; 16]),
+            m,
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         assert_eq!(bundle.superblock().profile_id, ProfileId::Lite);
         assert!(!bundle.is_read_only());
     }
@@ -2729,7 +3267,13 @@ mod tests {
                 profile(ProfileId::ReadOnly, v0, read_only_max),
                 profile(ProfileId::Lite, v0, lite_max),
             ];
-            Bundle::create(MemStore::new(), FileUuid([1; 16]), m).unwrap()
+            Bundle::create(
+                MemStore::new(),
+                FileUuid([1; 16]),
+                m,
+                BundleCapabilities::synthetic_for_fixture(0),
+            )
+            .unwrap()
         };
         let staged = || StagedChunk::operation_block(block::encode_block(&[vec![7; 16]]));
         let append_root = |ctx: &CommitContext| {
@@ -2751,9 +3295,10 @@ mod tests {
         permissive_lite.commit(&[staged()], append_root).unwrap();
         let root = permissive_lite.manifest().operation_roots[0];
         assert!(permissive_lite.read_operation_block(&root).is_ok());
-        let reopened = Bundle::open(MemStore::from_bytes(
-            permissive_lite.into_store().into_bytes(),
-        ))
+        let reopened = Bundle::open(
+            MemStore::from_bytes(permissive_lite.into_store().into_bytes()),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
         .unwrap();
         assert!(reopened.read_operation_block(&root).is_ok());
     }
@@ -2800,7 +3345,11 @@ mod tests {
         // Finding 6: a bundle whose active profile is ReadOnly opens read-only
         // (v0 does not auto-upgrade it).
         let image = craft_image(0, ProfileId::ReadOnly);
-        let bundle = Bundle::open(MemStore::from_bytes(image)).unwrap();
+        let bundle = Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         assert!(bundle.is_read_only());
         assert!(bundle.anomalies().is_empty()); // a normal read-only bundle
     }
@@ -2810,7 +3359,11 @@ mod tests {
         // Finding 2: a Custom (registry-defined) active profile is unsupported in
         // v0 — open read-only and surface it.
         let image = craft_image(0, ProfileId::Custom(crate::ids::ProfileRegistryId([9; 16])));
-        let bundle = Bundle::open(MemStore::from_bytes(image)).unwrap();
+        let bundle = Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         assert!(bundle.is_read_only());
         assert!(bundle
             .anomalies()
@@ -2821,7 +3374,11 @@ mod tests {
     fn generation_exhaustion_is_an_error_not_a_panic() {
         // Finding 5: committing a generation-u64::MAX bundle returns an error.
         let image = craft_image(u64::MAX, ProfileId::Full);
-        let mut bundle = Bundle::open(MemStore::from_bytes(image)).unwrap();
+        let mut bundle = Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         assert_eq!(bundle.generation(), u64::MAX);
         assert!(matches!(
             bundle.commit(&[], |ctx| ctx.previous_manifest.clone()),
@@ -2934,7 +3491,11 @@ mod tests {
             .unwrap();
 
         let image = bundle.into_store().into_bytes();
-        let reopened = Bundle::open(MemStore::from_bytes(image)).unwrap();
+        let reopened = Bundle::open(
+            MemStore::from_bytes(image),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .unwrap();
         reopened.verify_canonical_chunks().unwrap();
         let stored_root = reopened.manifest().operation_roots[0];
         assert_eq!(
@@ -3134,7 +3695,10 @@ mod tests {
         //     the stored bytes fail hash verification → no valid superblock.
         let image = craft_image_with_manifest_bytes(&compressed, manifest_chunk_hash(&payload));
         assert!(matches!(
-            Bundle::open(MemStore::from_bytes(image)),
+            Bundle::open(
+                MemStore::from_bytes(image),
+                BundleCapabilities::synthetic_for_fixture(0)
+            ),
             Err(BundleError::NoValidSuperblock)
         ));
 
@@ -3143,7 +3707,10 @@ mod tests {
         //     malformed.
         let image = craft_image_with_manifest_bytes(&compressed, manifest_chunk_hash(&compressed));
         assert!(matches!(
-            Bundle::open(MemStore::from_bytes(image)),
+            Bundle::open(
+                MemStore::from_bytes(image),
+                BundleCapabilities::synthetic_for_fixture(0)
+            ),
             Err(BundleError::Decode(_))
         ));
     }

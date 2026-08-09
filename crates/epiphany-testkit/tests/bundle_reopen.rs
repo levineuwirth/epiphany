@@ -48,13 +48,18 @@ fn a_bundle_round_trips_through_bytes_back_into_a_reduced_score() {
         MemStore::new(),
         FileUuid([3; 16]),
         Manifest::empty(DocumentId([9; 16])),
+        epiphany_testkit::production_caps(),
     )
     .expect("create");
     bundle.commit(&staged, append_roots).expect("commit");
     let image = bundle.into_store().into_bytes();
 
     // Close it, reopen it from nothing but the bytes.
-    let reopened = Bundle::open(MemStore::from_bytes(image)).expect("reopen");
+    let reopened = Bundle::open(
+        MemStore::from_bytes(image),
+        epiphany_testkit::production_caps(),
+    )
+    .expect("reopen");
 
     let mut recovered = Vec::new();
     for chunk in reopened.manifest().operation_roots.clone() {

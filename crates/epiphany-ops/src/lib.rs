@@ -104,6 +104,53 @@ pub mod valuegen;
 pub mod fuzz;
 pub mod vectors;
 
+/// The reduction semantics **this build implements**, as a bare number.
+///
+/// `core_spec.tex` §"Canonical Document Identity" is normative: *snapshots
+/// produced under an earlier algorithm version cannot be used as canonical
+/// bases under a later one without rebuilding*. Enforcing that needs a value
+/// naming what the running implementation actually does — and before P13-S27
+/// no such value existed anywhere. `ReductionAlgorithmVersion`
+/// (`epiphany-bundle`) was a wire field whose reader compared it only against
+/// the superblock that same value had seeded, so the check was a tautology for
+/// every conformingly-written document.
+///
+/// # The bump discipline — this is the whole guarantee
+///
+/// **Any change to a canonical reduction verdict, or to canonical reduced
+/// state, MUST bump this constant and record the change in the list below.**
+///
+/// **No mechanism can detect a semantics change.** A golden test over reduction
+/// outputs can *prompt* the question — outputs moved, did semantics? — but it
+/// can never answer it: a deliberate semantics change and an accidental
+/// regression look identical from outside. **The discipline is the guarantee;
+/// there is no backstop.**
+///
+/// # Why `0`, and why that is a decision
+///
+/// Bundles written to date carry `0` when they have no canonical base, and
+/// bases self-report whatever they were stamped with. Starting anywhere but `0`
+/// would make every existing base-bearing document fail to open **without any
+/// semantics having changed** — the check would manufacture the breakage it
+/// exists to detect. `0` is therefore a decision, **not "unset"**.
+///
+/// # Bumps
+///
+/// * `0` — the baseline. The semantics `canonical_reduction_order` and
+///   `reduce_onto` implement as of P13-S27 (2026-08-08). No earlier version
+///   exists; nothing predates this constant.
+///
+/// The first real bump belongs to **P13-S16**, which changes
+/// `CreateStaffGroup`'s reduction verdict and must move this to `1`.
+///
+/// # Layering
+///
+/// This is a plain `u32`, and `epiphany-ops` **MUST NOT** gain a dependency on
+/// `epiphany-bundle` in order to use that crate's `ReductionAlgorithmVersion`
+/// wrapper. The wrapper is constructed at the composition boundary by whoever
+/// depends on both (P13-S27 pin 1, §0.3).
+pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 0;
+
 pub use anomaly::{
     AnomalousReplicaSegment, IntegrityAnomaly, IntegrityAnomalyKind, ReplicaAnomalyReason,
 };

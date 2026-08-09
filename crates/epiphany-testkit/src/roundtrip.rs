@@ -195,8 +195,13 @@ pub fn committed_manifest(seed: u64) -> Manifest {
     let mut rng = Rng::new(seed);
     let uuid = FileUuid(rng.array16());
     let doc = DocumentId(rng.array16());
-    let mut bundle =
-        Bundle::create(MemStore::new(), uuid, Manifest::empty(doc)).expect("create bundle");
+    let mut bundle = Bundle::create(
+        MemStore::new(),
+        uuid,
+        Manifest::empty(doc),
+        crate::production_caps(),
+    )
+    .expect("create bundle");
     for _ in 0..3 {
         let n = rng.range_usize(1, 3);
         let payloads: Vec<Vec<u8>> = (0..n).map(|_| rng.byte_vec(1, 80)).collect();
@@ -228,25 +233,21 @@ fn canonical_score_bytes(envelopes: &[OperationEnvelope]) -> Vec<u8> {
 /// stored as a `Snapshot` chunk, hash-verified on reopen and read back
 /// byte-identically.
 ///
-/// **Canonical-base wiring suspended** (`CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin
-/// 3c, amended 2026-08-07). The snapshot's correct semantic home is the
-/// manifest's `canonical_base` — that has not changed — but pin 3a's
-/// format-epoch matrix refuses every base introduction (`Bundle::commit`) and
-/// every base-bearing open (`Bundle::open`) during the S28 → P13-S27
-/// interval, in both format epochs. So this harness cannot wire the snapshot
-/// there right now: it stages the snapshot as an ordinary chunk instead and
-/// carries the resulting `ChunkRef` across the reopen out of band, reading it
-/// back directly via [`Bundle::read_chunk`] (which hash-verifies any
-/// `ChunkRef`, not only a canonical one). The
-/// serialize → load → decode → reserialize cycle below is unchanged; only the
-/// snapshot's manifest placement is suspended. **Not** re-homed to
+/// **Canonical-base wiring RESTORED by P13-S27** (test 7 / inherited obligation
+/// 3). The format rung's pin 3c suspended it for the S28 → P13-S27 interval,
+/// because pin 3a refused every base introduction and every base-bearing open
+/// while no reduction authority existed to validate against. P13-S27 supplies
+/// that authority, so a base-bearing container is constructible again and the
+/// snapshot is wired to its correct semantic home: the manifest's
+/// `canonical_base`.
+///
+/// The two assertions that lapsed are back, and they are the point of the
+/// restoration: **`verify_canonical_chunks` covers the base branch again**
+/// (including its `base.hash != base.root.hash` cross-check), and **the
+/// reopened manifest actually carries the base**. It was never re-homed to
 /// `acceleration_snapshots` — that field is verified nowhere in
-/// `epiphany-bundle` (not in `open`, not in `verify_canonical_chunks`), so a
-/// reference there would verify nothing while looking like preserved
-/// coverage. Two assertions lapse until P13-S27 restores the wiring:
-/// `verify_canonical_chunks`'s base branch (its `base.hash != base.root.hash`
-/// cross-check), and the reopened manifest actually carrying the base. Both
-/// are owed back in `spec/CONTRACT_P13S27_REDUCTION_AUTHORITY.md`.
+/// `epiphany-bundle`, so a reference there would have verified nothing while
+/// looking like preserved coverage.
 ///
 /// After reopen, the snapshot payload is decoded through
 /// [`MaterializedState::decode_canonical`], compared structurally with the
@@ -262,18 +263,21 @@ pub fn assert_reduction_serialization_stable(envelopes: &[OperationEnvelope], se
         "re-reduction changed the canonical score bytes"
     );
 
-    // serialize: stage the canonical state as a real **Snapshot** chunk.
-    // P13-S27 / CONTRACT_FORMAT_EPOCH_MAJOR1.md pin 3c: the manifest's
-    // `canonical_base` is the snapshot's correct semantic home, but that
-    // wiring is suspended for the S28 -> P13-S27 interval (see the doc
-    // comment above) — the chunk is staged but not referenced from any
-    // manifest root, and its `ChunkRef` is captured directly from the commit
-    // closure instead.
+    // serialize: stage the canonical state as a real **Snapshot** chunk and
+    // wire it to its correct semantic home, the manifest's `canonical_base`.
+    // Restored by P13-S27 (test 7): the base's version is the authority this
+    // session states, so pin 3a validates the introduction rather than
+    // refusing it.
     let mut rng = Rng::new(seed);
     let uuid = FileUuid(rng.array16());
     let doc = DocumentId(rng.array16());
-    let mut bundle =
-        Bundle::create(MemStore::new(), uuid, Manifest::empty(doc)).expect("create bundle");
+    let mut bundle = Bundle::create(
+        MemStore::new(),
+        uuid,
+        Manifest::empty(doc),
+        crate::production_caps(),
+    )
+    .expect("create bundle");
     let snapshot = StagedChunk {
         kind: ChunkKind::Snapshot,
         schema_version: SchemaVersion::V0,
@@ -282,21 +286,45 @@ pub fn assert_reduction_serialization_stable(envelopes: &[OperationEnvelope], se
     let mut snapshot_root = None;
     bundle
         .commit(&[snapshot], |ctx| {
-            snapshot_root = Some(ctx.new_chunks[0]);
-            ctx.previous_manifest.clone()
+            let root = ctx.new_chunks[0];
+            snapshot_root = Some(root);
+            let mut m = ctx.previous_manifest.clone();
+            m.canonical_base = Some(SnapshotRef {
+                snapshot_id: SnapshotId(rng.array16()),
+                covers_causal_frontier: FrontierBytes::empty(),
+                reduction_algorithm_version: ReductionAlgorithmVersion(
+                    epiphany_ops::CURRENT_REDUCTION_ALGORITHM_VERSION,
+                ),
+                profile_id: ProfileId::Full,
+                hash: root.hash,
+                root,
+            });
+            m
         })
-        .expect("commit snapshot");
+        .expect("commit snapshot as the canonical base");
     let snapshot_root = snapshot_root.expect("commit ran the build closure");
     let image = bundle.into_store().into_bytes();
 
-    // load: reopen from exactly those bytes; the snapshot chunk is read back
-    // directly by its `ChunkRef` (not through `manifest.canonical_base`,
-    // suspended above) — `read_chunk` hash-verifies any `ChunkRef`, so the
-    // cycle's integrity guarantee is unchanged.
-    let reopened = Bundle::open(MemStore::from_bytes(image)).expect("reopen bundle");
+    // load: reopen from exactly those bytes. `verify_canonical_chunks` now
+    // covers the **base branch** again — RESTORED ASSERTION 1 of 2 — including
+    // its `base.hash != base.root.hash` cross-check.
+    let reopened =
+        Bundle::open(MemStore::from_bytes(image), crate::production_caps()).expect("reopen bundle");
     reopened
         .verify_canonical_chunks()
         .expect("canonical chunks intact");
+    // RESTORED ASSERTION 2 of 2: the reopened manifest actually carries the
+    // base. Without this the harness passes on a base-free bundle and the
+    // restoration would be cosmetic.
+    let reopened_base = reopened
+        .manifest()
+        .canonical_base
+        .as_ref()
+        .expect("the reopened manifest must carry the canonical base");
+    assert_eq!(
+        reopened_base.root, snapshot_root,
+        "the reopened base must point at the snapshot chunk that was staged"
+    );
     let loaded = reopened
         .read_chunk(&snapshot_root)
         .expect("read snapshot chunk back");
@@ -347,8 +375,13 @@ pub fn assert_score_serialization_stable(score: &Score, frontier: &[u8], seed: u
     let mut rng = Rng::new(seed);
     let uuid = FileUuid(rng.array16());
     let doc = DocumentId(rng.array16());
-    let mut bundle =
-        Bundle::create(MemStore::new(), uuid, Manifest::empty(doc)).expect("create bundle");
+    let mut bundle = Bundle::create(
+        MemStore::new(),
+        uuid,
+        Manifest::empty(doc),
+        crate::production_caps(),
+    )
+    .expect("create bundle");
     let snapshot = StagedChunk {
         kind: ChunkKind::Snapshot,
         schema_version: SchemaVersion::for_major(3),
@@ -377,7 +410,8 @@ pub fn assert_score_serialization_stable(score: &Score, frontier: &[u8], seed: u
     // load: reopen (read-write — an acceleration snapshot at the current
     // major is within the snapshot role's accept-set), hash-verify, read the
     // referenced chunk back byte-identically.
-    let reopened = Bundle::open(MemStore::from_bytes(image)).expect("reopen bundle");
+    let reopened =
+        Bundle::open(MemStore::from_bytes(image), crate::production_caps()).expect("reopen bundle");
     assert!(
         !reopened.is_read_only(),
         "a current-major acceleration snapshot must not force read-only"
@@ -525,8 +559,13 @@ pub fn assert_operation_block_summary_survives_storage(envelopes: &[OperationEnv
     let mut rng = Rng::new(seed);
     let uuid = FileUuid(rng.array16());
     let doc = DocumentId(rng.array16());
-    let mut bundle =
-        Bundle::create(MemStore::new(), uuid, Manifest::empty(doc)).expect("create bundle");
+    let mut bundle = Bundle::create(
+        MemStore::new(),
+        uuid,
+        Manifest::empty(doc),
+        crate::production_caps(),
+    )
+    .expect("create bundle");
     // A real operation block (opaque payload bytes) carrying the summary.
     let blocks: Vec<StagedChunk> = pack_operation_blocks(&[rng.byte_vec(4, 64)])
         .into_iter()
@@ -544,7 +583,8 @@ pub fn assert_operation_block_summary_survives_storage(envelopes: &[OperationEnv
 
     // Reopen and select the summary by block id — no block payload is decoded.
     let image = bundle.into_store().into_bytes();
-    let reopened = Bundle::open(MemStore::from_bytes(image)).expect("reopen bundle");
+    let reopened =
+        Bundle::open(MemStore::from_bytes(image), crate::production_caps()).expect("reopen bundle");
     let root_id = reopened.manifest().operation_roots[0].id;
     assert_eq!(
         reopened.manifest().operation_block_summary(root_id),
@@ -599,6 +639,7 @@ mod tests {
             MemStore::new(),
             FileUuid(rng.array16()),
             Manifest::empty(DocumentId(rng.array16())),
+            crate::production_caps(),
         )
         .expect("create bundle");
         bundle
@@ -609,7 +650,7 @@ mod tests {
             })
             .expect("commit op block");
         let image = bundle.into_store().into_bytes();
-        Bundle::open(MemStore::from_bytes(image)).expect("reopen bundle")
+        Bundle::open(MemStore::from_bytes(image), crate::production_caps()).expect("reopen bundle")
     }
 
     #[test]
@@ -788,8 +829,13 @@ mod tests {
         // A real committed superblock from a live bundle.
         let uuid = FileUuid(rng.array16());
         let doc = DocumentId(rng.array16());
-        let mut bundle =
-            Bundle::create(MemStore::new(), uuid, Manifest::empty(doc)).expect("create");
+        let mut bundle = Bundle::create(
+            MemStore::new(),
+            uuid,
+            Manifest::empty(doc),
+            crate::production_caps(),
+        )
+        .expect("create");
         bundle
             .commit(
                 &[StagedChunk::operation_block(encode_block(&[vec![1u8; 8]]))],
@@ -815,5 +861,96 @@ mod tests {
         }
         // Strong sensitivity: same identities, changed content → different bytes.
         assert_content_mutation_changes_serialization();
+    }
+
+    /// P13-S27 test 10b — the test M5b breaks, and **the only place in the rung
+    /// where the real authority meets a canonical base**. In `epiphany-testkit`,
+    /// which may reach the real constant.
+    ///
+    /// # Two provably independent operands
+    ///
+    /// The fixture is built with `synthetic_for_fixture(0)` and commits a base
+    /// carrying the **literal** `ReductionAlgorithmVersion(0)`; the reopen then
+    /// supplies `production_caps()`, which wraps the real constant. One operand
+    /// is a literal written into a fixture, the other is the authority read at
+    /// the reopen — neither derived from the other.
+    ///
+    /// **Round 3 caught the alternative**: if both the supplied capability and
+    /// the base version descended from `CURRENT_REDUCTION_ALGORITHM_VERSION`,
+    /// both would move together under M5b's mutation and the comparison would
+    /// pass for every value — §0.1's own tautology, reproduced inside the
+    /// mutation built to detect it. **Do not tidy either literal into the
+    /// constant** (§7 item 4b).
+    ///
+    /// # Both `Result` arms are written deliberately
+    ///
+    /// Round 5 pinned this: "assert it opens" was not enough, because under M5b
+    /// the reopen returns `Err` and **a `#[test]` returning `Err` asserts
+    /// nothing about that error's fields**. The `Err` arm below runs only under
+    /// mutation, and it is what makes M5b's required two-field observation a
+    /// *verified* one rather than a stack trace. The third arm exists so a
+    /// *different* error under mutation is reported rather than read as success.
+    #[test]
+    fn a_base_bearing_bundle_reopened_under_the_real_authority_validates() {
+        use epiphany_bundle::{BundleCapabilities, BundleError};
+
+        let mut bundle = Bundle::create(
+            MemStore::new(),
+            FileUuid([0x5E; 16]),
+            Manifest::empty(DocumentId([0x5E; 16])),
+            BundleCapabilities::synthetic_for_fixture(0),
+        )
+        .expect("fixture bundle creates");
+
+        let staged = StagedChunk {
+            kind: ChunkKind::Snapshot,
+            schema_version: SchemaVersion::V0,
+            payload: vec![5u8, 5, 5],
+        };
+        bundle
+            .commit(&[staged], |ctx| {
+                let mut m = ctx.previous_manifest.clone();
+                let root = ctx.new_chunks[0];
+                m.canonical_base = Some(SnapshotRef {
+                    snapshot_id: SnapshotId([0x5E; 16]),
+                    covers_causal_frontier: FrontierBytes::empty(),
+                    // A deliberate LITERAL — not the constant. See above.
+                    reduction_algorithm_version: ReductionAlgorithmVersion(0),
+                    profile_id: ProfileId::Full,
+                    hash: root.hash,
+                    root,
+                });
+                m
+            })
+            .expect("committing the base under the matching synthetic capability succeeds");
+        let image = bundle.into_store().into_bytes();
+
+        match Bundle::open(MemStore::from_bytes(image), crate::production_caps()) {
+            Ok(reopened) => {
+                assert!(
+                    reopened.manifest().canonical_base.is_some(),
+                    "the base must survive the reopen, or this asserts nothing"
+                );
+                assert_eq!(
+                    reopened
+                        .manifest()
+                        .canonical_base
+                        .as_ref()
+                        .unwrap()
+                        .reduction_algorithm_version,
+                    ReductionAlgorithmVersion(0)
+                );
+            }
+            Err(BundleError::CanonicalBaseRequiresRebuild { base, current }) => {
+                // Reached only under M5b. Assert both fields, then fail loudly
+                // quoting them — that is the mutation's required observation.
+                assert_eq!(base, ReductionAlgorithmVersion(0));
+                panic!(
+                    "M5b observation: base={} current={} — the authority is load-bearing here",
+                    base.0, current.0
+                );
+            }
+            Err(other) => panic!("unexpected error, not the authority verdict: {other:?}"),
+        }
     }
 }

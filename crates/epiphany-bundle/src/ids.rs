@@ -285,8 +285,22 @@ impl SchemaVersion {
 
 /// The reduction-algorithm version that produced a canonical-base snapshot
 /// (Chapter 8): a snapshot may serve as a canonical base only if this matches
-/// the active superblock's value. Modeled as an opaque monotonically-versioned
-/// `u32` (the algorithm catalog itself lives in `epiphany-ops`).
+/// **the semantics the running build implements**, which the caller states via
+/// `BundleCapabilities` at `open` and `create`.
+///
+/// Modeled as an opaque monotonically-versioned `u32`. **The authoritative
+/// number lives in `epiphany-ops` as
+/// `epiphany_ops::CURRENT_REDUCTION_ALGORITHM_VERSION`, a plain `u32`; this
+/// wrapper type is constructed at the composition boundary** by whichever crate
+/// depends on both. `epiphany-bundle` deliberately does **not** depend on
+/// `epiphany-ops` — its only workspace dependency is `epiphany-determinism` —
+/// so it cannot read that constant itself, which is exactly why the capability
+/// is injected rather than looked up.
+///
+/// This doc comment previously claimed "the algorithm catalog itself lives in
+/// `epiphany-ops`" while nothing of the kind existed there — a doc asserting a
+/// false fact about another module, and as written **unimplementable from where
+/// the check must run**. P13-S27 pin 8 is the rung that made it true.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct ReductionAlgorithmVersion(pub u32);
 

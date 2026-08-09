@@ -67,8 +67,9 @@ pub use block::{
     MAX_BLOCK_DEFAULT,
 };
 pub use bundle::{
-    manifest_chunk_hash, manifest_chunk_hash_versioned, Bundle, CommitContext, StagedChunk,
-    BODY_START, MAX_BLOB_BYTES, MAX_CHUNK_BYTES, MAX_MANIFEST_BYTES, SUPPORTED_SCHEMA_MAJOR,
+    manifest_chunk_hash, manifest_chunk_hash_versioned, Bundle, BundleCapabilities, CommitContext,
+    StagedChunk, BODY_START, MAX_BLOB_BYTES, MAX_CHUNK_BYTES, MAX_MANIFEST_BYTES,
+    SUPPORTED_SCHEMA_MAJOR,
 };
 pub use chunk::{
     chunk_content_hash, chunk_id, content_hash_for, ChunkKind, ChunkRef, CompressionAlgorithm,

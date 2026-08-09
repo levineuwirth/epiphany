@@ -9,6 +9,7 @@
 //! real commit path.
 
 use epiphany_bundle::fuzz::run_manifest_selection_harness;
+use epiphany_bundle::BundleCapabilities;
 use epiphany_bundle::{Bundle, DocumentId, FileUuid, Manifest, MemStore, Slot, StagedChunk};
 
 #[test]
@@ -25,6 +26,7 @@ fn commit_then_corrupt_active_slot_falls_back() {
         MemStore::new(),
         FileUuid([3; 16]),
         Manifest::empty(DocumentId([4; 16])),
+        BundleCapabilities::synthetic_for_fixture(0),
     )
     .unwrap();
     // Commit once: slot A holds gen 0, slot B holds gen 1 (active).
@@ -44,7 +46,11 @@ fn commit_then_corrupt_active_slot_falls_back() {
     image[320 + 80] ^= 0xFF;
 
     // Recovery falls back to slot A (the previous generation), cleanly.
-    let recovered = Bundle::open(MemStore::from_bytes(image)).unwrap();
+    let recovered = Bundle::open(
+        MemStore::from_bytes(image),
+        BundleCapabilities::synthetic_for_fixture(0),
+    )
+    .unwrap();
     assert_eq!(recovered.active_slot(), Slot::A);
     assert_eq!(recovered.generation(), 0);
     assert!(recovered.anomalies().is_empty());

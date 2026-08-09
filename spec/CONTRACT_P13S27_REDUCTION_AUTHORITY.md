@@ -10,8 +10,9 @@ them, having gone stale in two consecutive rounds by doing so.
 execution is **reported, not patched in place** — if it needs a pin change, that
 is its own amendment with its own review round.
 
-**IMPLEMENTED 2026-08-09, STAGED, and NOT YET ACCEPTED.** The implementation remains
-staged and uncommitted; only the amendments are committed.
+**IMPLEMENTED AND ACCEPTED 2026-08-09, by the repository owner after execution review
+8.** The implementation was staged for the required independent review and is committed
+with this acceptance record.
 
 **How many post-ratification reviews have closed, which amendment each produced, and
 what each found are THE HISTORY TABLE'S ROWS. This block does not restate them —
@@ -1046,9 +1047,10 @@ history table, and it shows that every independent round before this one found s
 - **Every finding since execution has been in this contract, not in the 21 staged
   files** — across all eight reviews.
 
-**What remains is the owner's acceptance decision.** This document does not make it.
-Round 1's ratification was claimed by the author after a single round and withdrawn;
-**that precedent is why this block records the evidence and stops.**
+**The repository owner accepted the implementation on 2026-08-09, after execution
+review 8.** That decision is recorded here; it does not recast the evidence as proof of
+correctness. Round 1's author-claimed ratification was withdrawn, which is why the
+evidence and the owner's decision remain distinct.
 
 **Review round 19 — 2026-08-08, independent, against the round-17/18 working
 tree. ZERO FINDINGS. The first clean round in nineteen.**
@@ -3059,7 +3061,8 @@ begin it. No `create_staff`, `create_staff_group`, or invariant change.
 **Do not bump `CURRENT_REDUCTION_ALGORITHM_VERSION` past 0** — pin 2. The bump
 to 1 belongs to S16.
 
-**The executing agent MUST NOT commit.** Leave the work staged.
+**Execution boundary (SATISFIED):** the executing agent MUST NOT commit and left the
+work staged for independent review.
 
 **Execution is AUTHORISED as of ratification, 2026-08-08.** *(This read "no
 execution work may begin at all until this contract is ratified"; ratification has
@@ -3067,9 +3070,10 @@ happened.)* The boundaries above are unchanged and remain binding — **stage on
 §2's files by explicit path, never `git add -A`, re-check `HEAD` before staging
 and before committing, and never `git reset`/`restore`/`checkout`/`stash`.**
 
-**Leave the work STAGED. Do not commit.** The execution report is then subject to
-**independent review before completion is accepted**, covering in particular
-**M7's three observations and its control**.
+**The executing agent left the work STAGED and did not commit.** The execution report
+was then subject to **independent review before completion was accepted**, covering in
+particular **M7's three observations and its control**. The repository owner accepted
+the reviewed staged implementation on 2026-08-09.
 
 ---
 

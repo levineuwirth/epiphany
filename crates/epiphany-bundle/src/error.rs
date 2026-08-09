@@ -15,7 +15,7 @@
 //!   bundle, not as errors.
 
 use crate::codec::DecodeError;
-use crate::ids::SchemaVersion;
+use crate::ids::{ReductionAlgorithmVersion, SchemaVersion};
 use epiphany_determinism::ContentHash;
 
 /// A hard bundle failure: the file is unopenable, or a canonical chunk is
@@ -139,17 +139,42 @@ pub enum BundleError {
     /// error MUST NOT degrade to a read-only open.
     LegacyBaseIntroductionRejected,
 
-    /// A major-1 container's canonical base cannot yet be validated: matrix
-    /// rows 5i/6i, opening a container that already carries a base, or
-    /// committing one into it. The container is the **right** epoch — this is
-    /// not a request to repack — but no reduction-authority capability exists
-    /// yet to validate the base against. **Temporary**: `P13-S27` supplies
-    /// that capability and replaces both branches with real validation, not
-    /// this categorical refusal. Never mentions repack (repacking a
-    /// already-correct-epoch container would be wrong advice), and MUST NOT
-    /// degrade to a read-only open — a pre-authority base is not a
-    /// restricted-but-correct view.
-    ReductionAuthorityUnavailable,
+    /// A canonical base was produced under reduction semantics this build does
+    /// not implement, so the materialized state it carries is **the wrong
+    /// materialization** and must be rebuilt before use.
+    ///
+    /// Raised on both boundaries a base can cross: `Bundle::open`, when a
+    /// container's base disagrees with the caller's
+    /// [`BundleCapabilities::current_reduction_version`], and
+    /// `commit`/`commit_versioned`, when a **newly emitted or replaced** base
+    /// does. Replaces the format rung's temporary
+    /// `ReductionAuthorityUnavailable`, which refused both boundaries
+    /// categorically because no authority existed to validate against; P13-S27
+    /// supplies that authority, so refusal becomes validation.
+    ///
+    /// # Not read-only, and not an integrity anomaly
+    ///
+    /// A stale base is **not a restricted-but-correct view** — it is state
+    /// computed under different rules. Exposing it read-only would serve
+    /// incorrect canonical state confidently, which is worse than refusing.
+    ///
+    /// # Why `open` cannot recover
+    ///
+    /// **`open` cannot rebuild.** Drop-and-replay is unsound once pruning
+    /// exists (`core_spec.tex:12207`, `:14701` — specified, **not
+    /// implemented**; no `prune` appears anywhere in this crate), because the
+    /// operations needed to rebuild may no longer be present. A higher-level
+    /// rebuild path may be authorized later **only where full pre-base history
+    /// is demonstrably available**; this rung authorizes none.
+    ///
+    /// [`BundleCapabilities::current_reduction_version`]:
+    ///     crate::bundle::BundleCapabilities::current_reduction_version
+    CanonicalBaseRequiresRebuild {
+        /// The version the canonical base reports for itself.
+        base: ReductionAlgorithmVersion,
+        /// The version the caller stated this build implements.
+        current: ReductionAlgorithmVersion,
+    },
 }
 
 impl core::fmt::Display for BundleError {
@@ -229,9 +254,11 @@ impl core::fmt::Display for BundleError {
                 "cannot add or replace a canonical base in a legacy (format major 0) bundle; \
                  repack into a fresh major-1 bundle",
             ),
-            BundleError::ReductionAuthorityUnavailable => f.write_str(
-                "this major-1 container's canonical base cannot yet be validated: no \
-                 reduction-authority capability exists until P13-S27 lands",
+            BundleError::CanonicalBaseRequiresRebuild { base, current } => write!(
+                f,
+                "canonical base was produced under reduction algorithm version {} but this \
+                 build implements {}; the base must be rebuilt before use",
+                base.0, current.0
             ),
         }
     }

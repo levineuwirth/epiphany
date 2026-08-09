@@ -980,8 +980,13 @@ mod tests {
 
         let mut initial = Manifest::empty(DocumentId([3; 16]));
         initial.lineage_id = Some(LineageId([4; 16]));
-        let mut bundle = Bundle::create(MemStore::new(), FileUuid([1; 16]), initial)
-            .expect("a freshly created bundle with no canonical roots is valid");
+        let mut bundle = Bundle::create(
+            MemStore::new(),
+            FileUuid([1; 16]),
+            initial,
+            crate::production_caps(),
+        )
+        .expect("a freshly created bundle with no canonical roots is valid");
 
         bundle
             .commit(
@@ -1119,7 +1124,13 @@ mod tests {
     fn a_corrupt_operation_envelope_is_a_typed_error_not_a_panic() {
         let mut initial = Manifest::empty(DocumentId([5; 16]));
         initial.lineage_id = None;
-        let mut bundle = Bundle::create(MemStore::new(), FileUuid([2; 16]), initial).unwrap();
+        let mut bundle = Bundle::create(
+            MemStore::new(),
+            FileUuid([2; 16]),
+            initial,
+            crate::production_caps(),
+        )
+        .unwrap();
         let garbage_block = StagedChunk::operation_block(encode_block(&[vec![0xFF; 4]]));
         bundle
             .commit(&[garbage_block], |ctx| {
@@ -1144,7 +1155,7 @@ mod tests {
         let corrupt_at = extension_root.offset as usize;
         image[corrupt_at] ^= 0xFF;
 
-        let corrupted = Bundle::open(MemStore::from_bytes(image))
+        let corrupted = Bundle::open(MemStore::from_bytes(image), crate::production_caps())
             .expect("corrupting a non-canonical chunk's payload does not stop the bundle opening");
         match document_from_bundle(&corrupted) {
             Err(ProjectError::Bundle(_)) => {}

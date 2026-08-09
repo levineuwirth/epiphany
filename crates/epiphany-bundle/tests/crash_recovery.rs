@@ -10,6 +10,7 @@
 //! against an actual durable-flush primitive, not only the simulator.
 
 use epiphany_bundle::fuzz::{exhaustive_crash_check, run_crash_recovery_fuzz, SplitMix64};
+use epiphany_bundle::BundleCapabilities;
 use epiphany_bundle::{Bundle, DocumentId, FileUuid, Manifest, MemStore, StagedChunk};
 
 /// The headline gate: 10,000 randomized crash scenarios. Every one must recover
@@ -51,8 +52,13 @@ fn exhaustive_sweep_across_base_states_and_commit_shapes() {
 /// its image and generation. (Mirrors the fuzzer's own base builder.)
 fn build_base(rng: &mut SplitMix64, commits: u64) -> (Vec<u8>, u64) {
     let doc = DocumentId([(rng.next_u64() & 0xff) as u8; 16]);
-    let mut bundle =
-        Bundle::create(MemStore::new(), FileUuid([7; 16]), Manifest::empty(doc)).unwrap();
+    let mut bundle = Bundle::create(
+        MemStore::new(),
+        FileUuid([7; 16]),
+        Manifest::empty(doc),
+        BundleCapabilities::synthetic_for_fixture(0),
+    )
+    .unwrap();
     for i in 0..commits {
         let payload = epiphany_bundle::encode_block(&[vec![i as u8; 16]]);
         bundle
@@ -83,6 +89,7 @@ fn file_store_real_fsync_round_trip() {
             store,
             FileUuid([0xAB; 16]),
             Manifest::empty(DocumentId([1; 16])),
+            BundleCapabilities::synthetic_for_fixture(0),
         )
         .unwrap();
         for i in 1..=2u64 {
@@ -99,7 +106,11 @@ fn file_store_real_fsync_round_trip() {
     }
 
     // Reopen from disk in a fresh handle: the committed state is durable.
-    let reopened = Bundle::open(FileStore::open(&path).unwrap()).unwrap();
+    let reopened = Bundle::open(
+        FileStore::open(&path).unwrap(),
+        BundleCapabilities::synthetic_for_fixture(0),
+    )
+    .unwrap();
     assert_eq!(reopened.generation(), 2);
     assert_eq!(reopened.manifest().operation_roots.len(), 2);
     reopened.verify_canonical_chunks().unwrap();
