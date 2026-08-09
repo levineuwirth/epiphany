@@ -148,6 +148,16 @@ There are 20 invariants (`invariants.rs:149`, count guard `:6064`). 21 is free.
 
 ## §1. Pins
 
+> ### PIN 0 IS DISCHARGED — read this before the pin. P13-S27 landed 2026-08-09.
+>
+> **Everything in pin 0 below is a dated record of the pre-S27 tree.** Its central
+> claims — that no constant names the current reduction semantics, that no mechanism
+> detects a stale base, that `ids.rs:288`'s catalog claim is false, and that **this rung
+> therefore cannot execute** — are **all now false**, and its three numbered
+> requirements are superseded. **The discharge, with each claim answered individually
+> and the replacement requirements, is at the end of this pin.** Read the pin as history;
+> do not execute it.
+
 **Pin 0 — declare the reduction-semantics break; do not pretend it is
 containable.**
 
@@ -225,6 +235,55 @@ S27's disposition. What pin 0 still requires of the eventual rung:
 3. **Assert nothing it cannot enforce.** No test may claim stale bases are
    rejected; nothing rejects them. The break is recorded, not guarded, and the
    contract says so plainly rather than implying coverage.
+
+---
+
+### PIN 0 IS DISCHARGED — P13-S27 LANDED 2026-08-09 (`4df8e25`)
+
+**Everything above in pin 0 is a dated record of the pre-S27 tree and MUST NOT be
+executed as written.** S27 built the machinery whose absence pin 0 documented, so the
+pin's premises, its conclusion, and all three of its numbered requirements are
+superseded. They are retained because the *reasoning* is what motivated S27, and because
+`operation_catalog.tex`'s rebuild note still has to be written.
+
+**Which of pin 0's factual claims are now FALSE**, stated individually so none is left
+standing by implication:
+
+| Pin 0 said | Now |
+|---|---|
+| "no constant or accessor naming the implementation's current reduction semantics" | **`epiphany_ops::CURRENT_REDUCTION_ALGORITHM_VERSION`** (currently `0`), plus `Bundle::capabilities()` as the accessor |
+| "`ids.rs:288`–`:289` … asserts a false fact about another crate" | **Made true** by S27's pin 8 — the same doc comment now names the real location and mechanism |
+| "the current implementation has **no mechanism** to detect a reduction-semantics change" | A mismatch is refused with `CanonicalBaseRequiresRebuild { base, current }` on **both** the read path (`open`) and the write path (`commit`/`commit_versioned`) |
+| "**this rung cannot execute**" | **It can.** This contract is UNBLOCKED — see the status block. It is still a DRAFT and needs ratification, which is a different bar |
+
+**Pin 0's narrowing survives and still binds.** *This inspection does not establish that
+no reduction-semantics change in the project's history was ever detectable* — S27 did
+not perform that history audit either, and the stronger sentence still must not be
+written into the ledger.
+
+**What replaces the three requirements:**
+
+1. **State the break** in `operation_catalog.tex`'s Revision History exactly as written
+   above — canonical bases materialized before this rung must be **rebuilt**, not
+   reused. **Unchanged.** But the ledger half is superseded: the P13-S16 row is
+   **UNBLOCKED, not blocked on P13-S27** — see pin 11, amended the same day.
+2. ~~**File P13-S27**~~ — **DISCHARGED.** S27 has its own row, its own ratified
+   contract, and its own `RESOLVED — IMPLEMENTED 2026-08-09 (pin 10)` marker. Nothing
+   here is left to file.
+3. **Assert nothing it cannot enforce** — **the principle stands; its application
+   inverts.** Stale bases *are* now rejected, and S27 owns the tests that prove it. So
+   this rung must not re-assert S27's guarantee, and must not add a second detection
+   path. **What it MUST do instead is bump `CURRENT_REDUCTION_ALGORITHM_VERSION` to
+   `1`**, because it changes `CreateStaffGroup`'s reduction verdict. **No mechanism can
+   detect a missed bump** — S27's authority doc is explicit that the discipline is the
+   entire guarantee — so the bump is this rung's obligation and nothing will catch its
+   absence.
+
+> **Line-number citations in this contract predate S27 and have NOT been re-derived.**
+> S27 changed `bundle.rs` by 795 lines, so `bundle.rs:989`, `:396` and `ids.rs:288`
+> above — and every other `bundle.rs` reference in this document — are stale as
+> locators even where the claim about them is historical. **Re-deriving them is part of
+> ratification**, not something this supersession did.
 
 **Pin 1 — refuse a non-empty carried `members`, using the existing helper.**
 In `create_staff_group` (`reduce.rs:4458`), before the liveness loop, refuse a
@@ -406,24 +465,38 @@ unnecessary), the base-ingest hazard, the `t8b` inversion, the `t6`/`t7`/`t9`
 revisions, and — per pin 0 — that canonical bases materialized before this rung
 must be rebuilt rather than reused.
 
-**File P13-S27 in the same `spec/PASS13_CANDIDATES.md` edit** — it is a
-prerequisite discovered by this rung, not independent ledger cleanup, and the
-two rows must land together so the blocking relation is visible from either end.
-Its claim, at the scope §0's inspection supports: the reduction-version
-machinery is **self-referential** — `reduction_version_for` (`bundle.rs:989`)
-sources a new superblock's version from the canonical base's own self-report,
-and `open` (`bundle.rs:396`) checks only that the two agree — so **the current
-implementation has no mechanism comparing either against the semantics it
-actually implements**, and `core_spec.tex:11614`'s rebuild requirement is
-unenforced. Supporting: no constant or accessor names the current semantics, and
-`ids.rs:288`'s claim that the catalog lives in `epiphany-ops` is false — a
-second instance of **P13-S26**'s pattern.
+~~**File P13-S27 in the same `spec/PASS13_CANDIDATES.md` edit**~~ — **DISCHARGED
+2026-08-09; do not execute.** S27 was filed, contracted, ratified, implemented and
+landed at `4df8e25`, and its row carries `RESOLVED — IMPLEMENTED 2026-08-09 (pin 10)`.
+The blocking relation this instruction existed to make visible from both ends is now a
+*resolved* relation recorded at both ends. **The reasoning below is retained as the
+record of why S27 was filed, not as work to do.**
+
+> It is a
+> prerequisite discovered by this rung, not independent ledger cleanup, and the
+> two rows must land together so the blocking relation is visible from either end.
+> Its claim, at the scope §0's inspection supports: the reduction-version
+> machinery is **self-referential** — `reduction_version_for` (`bundle.rs:989`)
+> sources a new superblock's version from the canonical base's own self-report,
+> and `open` (`bundle.rs:396`) checks only that the two agree — so **the current
+> implementation has no mechanism comparing either against the semantics it
+> actually implements**, and `core_spec.tex:11614`'s rebuild requirement is
+> unenforced. Supporting: no constant or accessor names the current semantics, and
+> `ids.rs:288`'s claim that the catalog lives in `epiphany-ops` is false — a
+> second instance of **P13-S26**'s pattern.
+>
+> *(**Every claim in this quoted block is now false** — S27 built the machinery,
+> `ids.rs:288` was made true by its pin 8, and `core_spec.tex:11614` is enforced. It is
+> kept verbatim as the filing that produced S27, not as a description of the tree.)*
 
 **Do not write the stronger historical claim** ("no reduction-semantics change
 has ever been detectable"); §0 does not establish it.
 
 **The P13-S16 row does NOT move to RESOLVED in this edit.** It records the
-disposition-A plan, names this contract, and is marked **blocked on P13-S27**.
+disposition-A plan, names this contract, and is marked ~~**blocked on P13-S27**~~
+**UNBLOCKED — S27 landed `4df8e25`** *(corrected 2026-08-09)*. **"Not RESOLVED" still
+holds** and is the part that matters here: this rung has not been implemented, and
+unblocked, dispatchable and resolved are three different states.
 
 ---
 
@@ -543,8 +616,20 @@ its evidence at `invariants.rs:69`–`:71` must stay intact.
 
 1. The nine mutations (M1–M9), each with verbatim failure output.
 2. The nine gate results, each with its command.
-2a. For pin 0: confirmation that **nothing** was added claiming to reject or
-   detect stale canonical bases, and that the break is recorded only in prose.
+2a. **REWRITTEN 2026-08-09 — it required the opposite of what is now correct.** It read:
+   *"For pin 0: confirmation that **nothing** was added claiming to reject or detect
+   stale canonical bases, and that the break is recorded only in prose."* That was right
+   while nothing rejected them. **S27 now does**, on both the read and write paths, so a
+   report obeying the old text would confirm the absence of a guarantee that exists.
+   **As rewritten, the report must state:**
+   - that **`CURRENT_REDUCTION_ALGORITHM_VERSION` was bumped to `1`**, with the bump's
+     entry added to the constant's own "Bumps" list — this rung changes
+     `CreateStaffGroup`'s reduction verdict, and **nothing can detect a missed bump**;
+   - that **no second detection path was added.** S27 owns the check and its tests; a
+     rung that re-implements the guarantee it depends on has built a duplicate that can
+     disagree with the original;
+   - that the rebuild break is recorded in `operation_catalog.tex`'s Revision History,
+     **which is unchanged from the original requirement.**
 3. The staged file list, and the test-count delta with its cause.
 4. The four pin-8 verdicts, and the `t6`/`t7`/`t9` revisions with what each
    asserted before and after.
