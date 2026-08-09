@@ -10,10 +10,23 @@ authority now defines the implementation's current reduction semantics
 `CanonicalBaseRequiresRebuild` on both the read and write paths.
 
 **What remains before dispatch is this contract's own ratification.** It is complete and
-ratifiable as a *plan* and has **not been through adversarial review rounds**.
-*Unblocked* and *dispatchable* are different states, and conflating them is how the S27
-contract came to be ratified after a single round and then have that ratification
-withdrawn — see its status block.
+ratifiable as a *plan*.
+
+> **Which independent rounds have closed, and what each found, are the review records
+> below. This block does not restate them, and states no count and no ordinal — a status
+> line that describes the review is a status line that goes stale every time the review
+> advances.** The **last record below is the review state**; ratification is the
+> repository owner's decision taken on that evidence, and this block will say
+> **RATIFIED** when it is taken.
+>
+> *(It read "has **not been through adversarial review rounds**" — true when written and
+> false from the first independent pass onward, while sitting in the summary a top-down
+> reader meets first. **Corrected in ratification round 2**, which found it as a live
+> false signal rather than as stale history.)*
+
+*Unblocked*, *ratified* and *dispatchable* are three different states, and conflating the
+first two is how the S27 contract came to be ratified after a single round and then have
+that ratification withdrawn — see its status block.
 
 **This rung's first act is bumping the authority to `1`** (**pin 12**), because it
 changes `CreateStaffGroup`'s reduction verdict. That bump is the discipline S27
@@ -304,6 +317,30 @@ failed to reach a declared *peer*.**
 question asked was always *"is this change right?"* — never *"is anything else the same
 shape?"* A first whole-artifact round asks the second question, which is the argument for
 running one before ratification rather than after.
+
+### RATIFICATION ROUND 2 — independent, whole-artifact, against `5ec2ce0`. One blocking finding.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **The live status block still said this contract "has not been through adversarial review rounds"** — false from the first independent pass onward, and **sitting in the "what remains before dispatch" summary**, so a top-down reader received a false review-state signal before reaching any record that contradicts it | Replaced with a **non-rotating pointer**: the review records below are the review state, and the block states **no count and no ordinal** |
+
+**This is the status-block defect S27 spent four amendments removing, reproduced here in
+its purest form.** S27's amendments 4–7 established that a status line describing the
+review *must not describe the review* — it must point at the table that owns it, because
+**every such line goes stale exactly when the review advances**, which is the one moment
+nobody is reading the status block. The invariant S27 landed on is the model this
+correction follows.
+
+**What makes this one worse than the counts:** a stale count reads as an error; **"has
+not been through adversarial review rounds" reads as a *verdict on the artifact's
+maturity*.** A reader deciding whether to trust this draft would have taken it as the
+answer, with ten revisions of independent review recorded immediately below.
+
+**And it is the whole-artifact question again.** Rounds against edits ask *"is this
+change right?"*; only a whole-artifact read asks *"is anything the document says about
+itself still true?"* Round 1 found a missing test that way; round 2 found a false status
+claim. **Both were invisible to every incremental pass**, and neither was in the content
+those passes were correcting.
 
 **The pattern across revisions A–J is sharper than any individual finding: a correction
 propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the sweep
