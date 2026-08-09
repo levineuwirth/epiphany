@@ -474,6 +474,31 @@ predicts, execution measures, and a mismatch is a finding against whichever is w
 It also avoids the stale-count class entirely — **the table has no totals**, only named
 tests.
 
+### RATIFICATION ROUND 8 — independent, whole-artifact, against `2a445d1`. One blocking finding.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **The expected-outcome table named required survivors without requiring them to be run.** §6 consumed mutation output generally and **no cell** — `t8c`, `t8d`, `u5`, pin 8's four, the structural gates — and **only M6 required its sibling's verdict.** *"Report any mismatch"* cannot detect a survivor that was never run: **an unrun test yields no mismatch and no evidence**, so every survivor cell was an unobserved claim and the table was advisory while reading as evidential | **One uniform rule** now governs every mutation: full `cargo test --workspace` with the **complete observed failure set** reported, the named failing tests' output, **each named survivor's pass verdict by name**, and each named structural gate's output. **An omitted named artifact is itself a finding.** §6 item 1 consumes it; M6's per-half list is marked as the general rule applied rather than a special case |
+
+**This is revision D's class — a requirement nothing can fail — reproduced by the table
+written to end the discovery model.** Round 7 moved authorship of the expected outcome
+from execution to the contract, which was right, and **left the outcome unobserved**. A
+claim the contract owns is not thereby a claim anything checks.
+
+**The finding also forced a distinction I had left implicit.** The survivors column said
+*"notable"*, which quietly meant *not exhaustive* — so a uniform "run every named
+survivor" rule needed to say what **is** exhaustive. **Now stated: the MUST-fail column is
+exhaustive, verified by the full-suite run; the survivors column is illustrative, naming
+the ones a reader would doubt, and everything outside the failing column must survive
+whether named or not.** Without requirement 1's full-suite run, the failing column's
+completeness was unverified too — **so the fix closes a second hole the finding did not
+name.**
+
+**The recurring shape, now three rounds running:** round 6 wrote a rule and exempted three
+mutations; round 7 wrote a table and left it unrun; round 8 makes the table evidential.
+**Each fix was correct about *what* to specify and incomplete about *who observes it*** —
+which is the same axis revision D identified and the reason the channel rules exist at all.
+
 **The pattern across revisions A–J is sharper than any individual finding: a correction
 propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the sweep
 caught row 11 and stopped before §6's consumer; rev D found pin 10a's *decision* still
@@ -1517,6 +1542,36 @@ Applied, **run**, output recorded verbatim, restored **by hand-editing back**.
 > `t9` under M1 in particular depend on how pins 4 and 1a are executed. **They are stated
 > so they can be falsified.** A mismatch is the finding this table exists to produce.
 >
+> #### RUNNING THE TABLE IS PART OF EACH MUTATION — RATIFICATION ROUND 8
+>
+> **"Report any mismatch" cannot detect a survivor that was never run.** An unrun test
+> produces no mismatch and no evidence, so every survivor cell was an **unobserved
+> claim** — the table read as evidential and was advisory. **Only M6 required its
+> sibling's verdict**, and that is now the general rule rather than one mutation's
+> special case.
+>
+> **Under every mutation, without exception:**
+>
+> 1. **Run the full `cargo test --workspace`** and report **the complete set of tests that
+>    failed.** This is what makes the "MUST fail" column *exhaustive* rather than
+>    illustrative: **any failure not in that column is a finding**, and so is any listed
+>    failure that did not occur.
+> 2. **Report the named failing tests' output**, per the channel rules above — the
+>    behaviour, not the fact of failure.
+> 3. **Report each named required survivor's PASS VERDICT, by name.** A survivor cell is
+>    discharged by a quoted verdict, never by silence.
+> 4. **Evaluate each named structural gate and report its output** — gate 8 under M1 and
+>    M8, gate 12 under M6a and M6b, pin 10's guards under M7a/M7b.
+>
+> **An omitted named artifact is itself a finding**, on the same footing as a wrong
+> outcome.
+>
+> > **The two columns have different force, and round 8 settles it.** The **MUST fail**
+> > column is **exhaustive** — verified by requirement 1's full-suite run. The **survivors**
+> > column is **illustrative**: it names the ones a reader would doubt, and everything not
+> > in the failing column is required to survive whether or not it is named. **"Notable"
+> > was doing that work implicitly and left the failing column's completeness unverified.**
+>
 > **Revision E chose "quote the source assertion plus the pass verdict" for gates, which
 > is right for a PASSING test. Mutations need the failing case, and the failing case has
 > exactly one channel.** Getting the first right does not settle the second.
@@ -1599,7 +1654,9 @@ bound in revision C, surface pinned in REVISION G:**
   → `m41b_check_invariants_dispatches_invariant_21_group_lists_unowned_staff` must fail,
   **and `m41` must still pass.**
 
-**Each half reports, per ratification round 5:**
+**Each half reports the following — which is §3's uniform table rule (round 8) applied,
+not an exception to it. M6 was the only mutation that carried these requirements before
+round 8 made them general:**
 
 1. **The failing test's `assert_eq!` output verbatim** — pin 6a's harness makes it print
    the cardinality it got against `1`, with the violations vector, so the observation is
@@ -1968,6 +2025,12 @@ its evidence at `invariants.rs:69`–`:71` must stay intact.
 
 1. **Every mutation listed in §3**, each with its verbatim output and, where §3 names
    one, the **behaviour** it observed rather than the assertion it broke.
+   **And for each, §3's expected-outcome table discharged in full — ratification round
+   8:** the complete observed failure set from a full `cargo test --workspace` under that
+   mutation, the named failing tests' output, **each named required survivor's pass
+   verdict by name**, and each named structural gate's output. **An omitted named
+   artifact is a finding**, as is any failure outside the table's "MUST fail" column or
+   any listed failure that did not occur.
    **The count is NOT stated here — corrected on review.** It read *"the nine mutations
    (M1–M9)"*, and M7's split into **M7a and M7b** makes ten executions, so a report could
    not both enumerate them and obey the tally. **§3 is the single origin**; a count here
