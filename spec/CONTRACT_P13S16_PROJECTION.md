@@ -91,14 +91,31 @@ had just corrected, surviving one step downstream of where it was fixed.**
 | # | Finding | Disposition |
 |---|---|---|
 | **1** | **§6 item 2c still said "all three counters and their new values"** — the rule pin 10a corrected in the same revision. **Third site of one false claim**: the pin, then touch row 11, then the report item that *reads* the pin | Points at pin 10a's table; names which document minted the label and which counters moved |
-| **2** | **§6 still demanded "the nine gate results"** while §4 carries **twelve** entries (1–11 plus 4a). Revision A removed the identical tally from item 1 for mutations and **left its neighbour standing** | Count removed, §4 named as origin, with 11a–e identified as subchecks of one gate rather than five results |
+| **2** | **§6 still demanded "the nine gate results"** while §4 carries **eleven** gates. Revision A removed the identical tally from item 1 for mutations and **left its neighbour standing** | Count removed, §4 named as origin, with 11a–e identified as subchecks of one gate rather than five results |
 | **3** | **Touch row 8 still required the generator's fixture to violate "both directions"** while M6 requires direction-**isolated** fixtures — **incompatible evidence models in one contract.** A both-direction generator stays reported after either M6 arm is deleted | Row 8 now specifies **one named direction** plus shrink survival; pin 6/M6 own two separate isolated fixtures. `violating_score` returns one `Score` per variant and could not have carried both anyway |
 
 **A third tally was found by sweeping and fixed with them:** gate 7 and §6 item 4 both
 said *"the four pin-8 tests"*. Correct today, and the same construction — a count
 restated away from its origin. Removed, pin 8's table named instead.
 
-**The pattern across revisions A and B is sharper than any individual finding: a
+### Draft amendment 1, revision C — independent review of `0a5b936`
+
+**Two blocking findings and one factual error. The first two are one issue:** invariant
+21 mandates **two** directions, and only one — unspecified — had durable evidence.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **Neither direction had permanent named coverage.** Pin 6 asked for *"a score violating only invariant 21"* (singular), gate 6 asked for one, the generator carries one, and **M6 observed both only while mutated.** A mutation is reverted, so the restored suite could ship with one branch untested | **Pin 6a** added: two permanent direction-isolated tests, `m41_..._staff_names_absent_group` (S→G) and `m41b_..._group_lists_unowned_staff` (G→S), each required to *satisfy* the direction it does not break. **Gate 6 requires both**; **M6 now breaks those exact tests, one each, and requires the sibling to still pass** |
+| **2** | **"One named direction" delegated a design decision to execution.** Either choice changes the generated witness and the shrink evidence, so reporting it afterward is not specifying it | **Pinned to S→G** in touch row 8, with the reason: smallest corruption of `valid_score`, matching every other arm's doctrine, **and the exact shape pin 2's append failing produces** — what M2 observes |
+| 3 | **§6's revision-B history said §4 has "twelve entries — 1–11 plus 4a"**, a false identity: `4a.` was a gate-numbered **scope note** with no command and no output, colliding with **§4a**, the landing-obligation section | The note is **demoted out of the gate numbering** into gate 4's body. §4 now has **eleven gates, 1–11**; `§4a` is unambiguous |
+
+**Finding 1 is the strongest evidence yet for a rule this contract already states and
+did not apply to itself.** Pin 3a says *"a mutation demonstrates the hazard once; only a
+test keeps it demonstrated."* M6 was carrying both directions on mutation alone, three
+sections below that sentence. **Every branch a contract mandates needs a permanent test,
+and a mutation is that test's signature — never its substitute.**
+
+**The pattern across revisions A, B and C is sharper than any individual finding: a
 correction propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the
 sweep caught row 11 and the fix stopped before §6's consumer. Rev A removed item 1's
 mutation tally and left item 2's gate tally on the next line. **The fix-every-site rule is
@@ -520,6 +537,27 @@ a score violating *only* invariant 21, flagged through `check_invariants`, with
 the dispatch-arm deletion as its signing mutation. A count assertion may
 accompany it and may not replace it.
 
+**Pin 6a — TWO permanent, direction-isolated tests. ADDED IN REVISION C, which found
+both directions mandated and only one durably covered.**
+
+Pin 6 required *"a score violating only invariant 21"* — **singular** — and gate 6 asked
+for one score. The generator carries one direction. **M6 observes both directions, but
+only while mutated**, and a mutation is reverted: after restoration nothing in the
+permanent suite need exercise the second branch. **A mutation demonstrates once; only a
+test keeps it demonstrated** — this contract's own words under pin 3a, applied to itself.
+
+Add **both**, named, in the shape of `m40_check_invariants_dispatches_invariant_20`:
+
+| Test | Fixture violates | Must satisfy |
+|---|---|---|
+| `m41_check_invariants_dispatches_invariant_21_staff_names_absent_group` | **S→G**: a staff whose `group` names a group whose `members` omit it | the G→S direction, and every other invariant |
+| `m41b_check_invariants_dispatches_invariant_21_group_lists_unowned_staff` | **G→S**: a group listing a staff whose own `group` is not that group | the S→G direction, and every other invariant |
+
+**Each fixture MUST violate its own direction only.** A fixture disagreeing both ways is
+reported after either arm is deleted, so it signs neither — the same isolation M6
+requires, made permanent. **Each test must state in its doc which direction it holds
+and which it breaks**, so a later reader cannot "simplify" the two into one.
+
 **Pin 6 is coupled to pin 5 and they split only together.** M5 signs the undo
 hole by requiring invariant 21 to *observe* the residue. If invariant 21 is
 deferred to a later rung, then either pin 5 and M5 defer with it, or M5 must be
@@ -766,19 +804,28 @@ mechanism can detect a semantics change. They must be **updated, not deleted or
   compile error until its arm exists.**
 - Four `all()`-driven tests then call it and `shrink` (`:991`, `:1004`, `:1025`,
   `:1042`), so **a `todo!()` or trivial arm fails them.** Invariant 21 needs a fixture
-  that violates **ONE named direction** — not both — and survives shrinking.
+  that violates the **S→G direction — a staff whose `group` names a group whose
+  `members` omit it — and NOT the G→S direction**, and survives shrinking.
+  **The direction is PINNED here, in revision C.**
 
-  > **"Both directions" was wrong here and incompatible with M6 — corrected on review.**
-  > `violating_score` returns **one** `Score` per variant, so it cannot carry two
+  > **"Both directions" was wrong here and incompatible with M6 — corrected in revision
+  > B.** `violating_score` returns **one** `Score` per variant, so it cannot carry two
   > fixtures; and a fixture disagreeing in both directions is **still reported after
   > either M6 arm is deleted**, which is precisely the evidence failure M6's own
-  > isolation rule forbids. The generator and the mutation would then hold **incompatible
-  > evidence models** in the same contract.
+  > isolation rule forbids.
   >
-  > **The division of labour, stated once:** touch row 8's generator covers **one named
-  > direction** and must survive `shrink`; **pin 6 / M6 own two separate,
-  > direction-isolated fixtures**, and M6 says so. The report must name which direction
-  > the generator uses, so the M6 fixtures can be checked as genuinely distinct from it.
+  > **Revision B then said "one named direction" and left WHICH to execution — a design
+  > decision disguised as a reporting requirement.** Either choice changes the generated
+  > witness and the shrink evidence, so *reporting* it afterward does not substitute for
+  > *specifying* it. **Pinned above to S→G**, because that is the smallest corruption of
+  > `valid_score` (drop the staff id from `group.members`, leave `staff.group` intact),
+  > matching the doctrine every other arm follows, **and it is the exact shape this
+  > rung's own failure produces** — pin 2's append not firing, which is what M2 observes.
+  >
+  > **The division of labour, stated once:** row 8's generator covers **S→G** and must
+  > survive `shrink`; **pin 6a owns two permanent direction-isolated tests**, one per
+  > direction; **M6 breaks those two tests, one each.** Three fixtures, three purposes,
+  > none standing in for another.
 - **`shrink` (`:932`) takes `GraphInvariant` but does NOT match on it** — it calls
   `check_invariant(score, inv)` and `shrink_candidates`, so it is **generic over the
   invariant and needs no new arm.** *(Draft amendment 1 first said this "MUST be checked
@@ -862,16 +909,24 @@ must leave a disagreeing pair that invariant 21 flags.
 Delete each arm in turn; each deletion must leave a distinct disagreeing fixture
 **unreported**.
 
+**M6 breaks pin 6a's two named tests, one each — BOUND IN REVISION C:**
+
+- Delete the **S→G** arm → `m41_check_invariants_dispatches_invariant_21_staff_names_absent_group` must fail, **and `m41b` must still pass.**
+- Delete the **G→S** arm → `m41b_check_invariants_dispatches_invariant_21_group_lists_unowned_staff` must fail, **and `m41` must still pass.**
+
+**The surviving test passing is half the observation**, and the half that proves the
+arms are independent rather than one arm catching everything.
+
 > **Each fixture must violate ONE direction only**, and the report must show that it
 > satisfies the other. A fixture disagreeing in **both** directions still gets reported
 > after either arm is deleted — the surviving arm catches it — so the invariant looks
-> intact and **the deletion is signed by nothing.** This is M6's whole failure mode:
-> the mutation appears to fail correctly while observing the wrong arm.
+> intact and **the deletion is signed by nothing.**
 >
-> **The same isolation applies to touch row 8's generator.** `violating_score`'s
-> invariant-21 arm feeds `all()`-driven tests that only ask *"is 21 reported?"*, so a
-> both-directions fixture passes those too. **M6's two fixtures are therefore separate
-> from the generator's**, and the report must say which is which.
+> **Revision C made this permanent rather than mutation-only.** M6 previously named no
+> tests, so it demonstrated both directions *while mutated* and left the restored suite
+> free of durable coverage for either. Pin 6a's tests are the coverage; M6 is now their
+> signature. **The generator's fixture (row 8, S→G) is a third artifact and stands in
+> for neither** — its `all()`-driven consumers only ask *"is 21 reported?"*.
 
 **M7 — the doc guards discriminate. SPLIT IN TWO by draft amendment 1.** Pin 10 covers
 **two independently guarded doc blocks** — `Staff.group` and `StaffGroup.members`, each
@@ -920,15 +975,25 @@ weakening is invisible.
    either staged or **named in the report as unused, with its reason.** Neither
    direction may be silent. *(This is S27's round-17 correction; S16 carried the
    formulation S27 had already found unsatisfiable.)*
-4a. **§2 carries no prohibitions**, unlike S27's §2 — so gate 4 is the whole staging
-   check here. **If a later amendment adds an absence rule, this gate does not cover
-   it**: "appears in §2" and "is not forbidden by §2" are different questions.
+   > **Scope note, not a separate gate — demoted in revision C.** §2 carries no
+   > prohibitions, unlike S27's §2, so gate 4 is the whole staging check here. **If a
+   > later amendment adds an absence rule, gate 4 does not cover it**: "appears in §2"
+   > and "is not forbidden by §2" are different questions. *(This was numbered `4a.`,
+   > which produced no command and no output — so it could not be "a gate result" — and
+   > collided with **§4a**, the landing-obligation section. §4 now has **eleven gates,
+   > 1–11**, and `§4a` is unambiguous.)*
 5. `spec/vectors/decode_vectors.txt` **unmodified** (pin 9). Confirm by `git
    status`, not by inspection.
 6. Invariant 21 is reached **through `check_invariants`** on a score violating
    only it, in the shape of `m40_check_invariants_dispatches_invariant_20`
-   (`invariants.rs:6045`). `all().len() == 21` and the `core_spec.tex`
-   enumeration ending at 21 are checked **in addition**, never instead.
+   (`invariants.rs:6045`) — **for BOTH directions, by pin 6a's two named tests**:
+   `m41_check_invariants_dispatches_invariant_21_staff_names_absent_group` **and**
+   `m41b_check_invariants_dispatches_invariant_21_group_lists_unowned_staff`. **Both run,
+   both verdicts reported, and each confirmed to satisfy the direction it does not
+   break.** *(Revision C: this asked for one score, which left one branch with no durable
+   coverage once M6 was reverted.)*
+   `all().len() == 21` and the `core_spec.tex` enumeration ending at 21 are checked
+   **in addition**, never instead.
 7. **Every test named in pin 8** runs, each verdict reported. *(Read "the four pin-8
    tests" until revision B — a third live tally, left standing while the mutation and
    gate tallies beside it were removed. Pin 8's table is the origin.)*
@@ -1034,7 +1099,7 @@ its evidence at `invariants.rs:69`–`:71` must stay intact.
    goes stale the next time a mutation splits, exactly as this one did.
 2. **Every gate listed in §4**, each with its command and output. **No count is stated
    here — §4 is the single origin.** *(It read "the nine gate results" while §4 carries
-   **twelve** entries — 1–11 plus 4a — because draft amendment 1 added gates 10 and 11
+   **eleven** gates, 1–11 — because draft amendment 1 added gates 10 and 11
    and revision A expanded 11 into 11a–e. The 11a–e items are **subchecks of one gate**
    and are reported under it; gates 10 and 11 are new results. This is the same
    count-staleness the amendment had just removed from item 1 for mutations — removed in
