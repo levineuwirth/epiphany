@@ -499,6 +499,27 @@ mutations; round 7 wrote a table and left it unrun; round 8 makes the table evid
 **Each fix was correct about *what* to specify and incomplete about *who observes it*** —
 which is the same axis revision D identified and the reason the channel rules exist at all.
 
+### RATIFICATION ROUND 9 — independent, whole-artifact, against `942f261`. One blocking finding, and one the sweep escalated.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **The expected-outcome table recombined M7a and M7b** — *"its own grep guard; the other guard"*. **That recreates the exact ambiguity M7's split existed to remove**: a report can say "own guard failed" without establishing which guard failed or which survived, and the full-suite output round 8 now requires **identifies tests by name** | **Two rows**, with the exact names: M7a fails `t14_staff_group_field_doc_comment_states_sole_authority` (`graph.rs:2136`) while `t14_staff_group_members_…_projection` (`:2160`) must pass; M7b the reverse. Each must quote **its needle-miss message and the `doc_block` it dumps** |
+| 2 | *(sweep)* **M7b's required output was unobtainable.** Both guards locate their slice by **a phrase from the doc text**, and `:2163`'s anchor **is the disposition-B claim pin 10 rewrites.** Once updated to the A wording, M7b's revert makes `.find()` return `None` and `.expect` panics — **naming no needle and dumping no block** | Pin 10 now requires the slice to be located from the **field declaration** — `pub members: Vec<StaffId>,`, which no wording changes — extending **backwards** over the contiguous `///` lines |
+
+**Finding 1 is a split undone by a summary.** M7 was divided in draft amendment 1 precisely
+because one mutation covering two guards could pass with the other guard still weak. **The
+table then re-merged them for brevity**, and round 8's full-suite rule made the cost
+concrete: the observed failure set names tests, so a row naming none cannot be checked
+against it. **A summary row is a restatement, and a restatement of a distinction can drop
+it.**
+
+**Finding 2 is the absence-grep lesson one level down.** Pin 10 hardened the **needles**
+against wording both dispositions satisfy — and left the **anchors** matching wording only
+one disposition has. **A guard whose locator depends on the text it inspects fails before
+it can report**, and failing early looks like failing correctly: the test is red, the
+mutation "worked", and the required evidence never existed. **Harden the locator, not only
+the assertion.**
+
 **The pattern across revisions A–J is sharper than any individual finding: a correction
 propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the sweep
 caught row 11 and stopped before §6's consumer; rev D found pin 10a's *decision* still
@@ -1270,6 +1291,29 @@ the updated needles must assert the *new* rule — a guard left asserting the ol
 words would fail loudly, but a guard weakened to a substring both rules share
 would pass silently, which is the worse outcome.
 
+**The guards' SLICE ANCHORS must be made wording-independent. ADDED IN RATIFICATION
+ROUND 9 — without this, M7b cannot produce its required output.**
+
+Both guards locate the doc block by searching for **a phrase from the doc text**:
+`graph.rs:2139` finds `"/// Which staff group (if any) this staff belongs to."`, and
+**`:2163` finds `"/// A **non-authoritative denormalized projection** of group"` — which
+is the disposition-B claim this pin rewrites.** So the anchor must move with the rewrite;
+and once it names the new A wording, **M7b's revert to B makes `.find()` return `None`
+and `.expect("StaffGroup.members's doc comment is present")` panics** —
+**naming no needle and dumping no `doc_block`.** The mutation's required observation
+would be an anchor panic pointing at absent text, not a needle miss.
+
+**So locate the slice from the FIELD DECLARATION, which no wording changes** — `pub
+group: Option<StaffGroupId>,` and `pub members: Vec<StaffId>,` — and extend **backwards**
+over the contiguous `///` lines above it. The block then exists under **either**
+disposition, and the only way to fail is the needle assertion, with its message and block
+intact.
+
+> **This is the absence-grep lesson one level down.** The needles were hardened against
+> wording that both dispositions satisfy; **the anchors were left matching wording only
+> one disposition has.** A guard whose *locator* depends on the text it inspects fails
+> before it can report, and **failing early looks like failing correctly.**
+
 **Each new needle MUST be wording the disposition-B comments cannot satisfy.**
 Retaining only "sole authority" and "non-authoritative" is insufficient: both
 phrases are true under B and under A, so a guard built from them alone passes
@@ -1534,7 +1578,8 @@ Applied, **run**, output recorded verbatim, restored **by hand-editing back**.
 > | **M5** remove pin 5's strip | **`u5`** — assertion 2, `members` still contains `s` | `t8b`, `t8c`, `t8d`; pin 8's four — they undo the **group**, never inspecting a live group's members; `m41`/`m41b` — constructed fixtures | — |
 > | **M6a** delete S→G dispatch | **six** — see M6's own table | `m41b`; `u5` (no violation either way after the undo) | **gate 12 FAILS** — a call site is gone |
 > | **M6b** delete G→S dispatch | `m41b` **only** | `m41`, the generator test, all four `all()` consumers — every invariant-21 fixture is S→G | **gate 12 FAILS** |
-> | **M7a / M7b** revert a doc block | its own grep guard | the other guard | pin 10's guards are the gate |
+> | **M7a** revert `Staff.group`'s doc block to B wording | `t14_staff_group_field_doc_comment_states_sole_authority` (`graph.rs:2136`) | `t14_staff_group_members_field_doc_comment_states_non_authoritative_projection` (`:2160`) **must pass** | that guard's needle-miss is the gate: quote its message **and the `doc_block` it dumps** |
+> | **M7b** revert `StaffGroup.members`'s doc block to B wording | `t14_staff_group_members_field_doc_comment_states_non_authoritative_projection` (`:2160`) | `t14_staff_group_field_doc_comment_states_sole_authority` (`:2136`) **must pass** | same, for that guard |
 > | **M8** reinstate the dead loop | **nothing behavioural** | **every** behavioural assertion | **gate 8 FAILS** — its only signature |
 > | **M9** graph-gate pin 1's refusal | `t7`'s inverted arm | `t8b` spurious-order — not base-free | — |
 >
@@ -1727,9 +1772,20 @@ guard untested, and a run that reverts the stronger one **passes while the weake
 is still weak.** So:
 
 - **M7a — `Staff.group`.** Revert that block to its disposition-B wording. **Required
-  observation:** quote the guard's own output showing **its specific needle no longer
-  matches**, not merely that a test failed.
-- **M7b — `StaffGroup.members`.** The same, independently, with its own output.
+  observation:** quote **`t14_staff_group_field_doc_comment_states_sole_authority`**'s own
+  output showing **its specific needle no longer matches** — the message **and the
+  `doc_block` it dumps** — not merely that a test failed. **And report
+  `t14_staff_group_members_field_doc_comment_states_non_authoritative_projection`'s pass
+  verdict.**
+- **M7b — `StaffGroup.members`.** The same, independently: **`t14_staff_group_members_field_doc_comment_states_non_authoritative_projection`**
+  fails with its needle and block quoted, and **`t14_staff_group_field_doc_comment_states_sole_authority`
+  passes.**
+
+> **Named in full by ratification round 9.** The expected-outcome table read *"its own
+> grep guard; the other guard"*, which **recreates precisely the ambiguity M7's split
+> existed to remove**: a report can say "own guard failed" without establishing **which**
+> guard failed or **which** survived, and the full-suite output identifies tests by name.
+> **Two independent mutations need two named failing tests and two named survivors.**
 
 **Both must be run and both outputs reported.** A guard that passes against both
 wordings is weakened, not updated — and with one mutation covering two guards, that
