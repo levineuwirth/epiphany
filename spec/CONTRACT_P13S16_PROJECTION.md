@@ -224,7 +224,34 @@ counted instead of pairing; the other asserted an absence with nothing able to e
 it. **A structural gate needs a method, and the method must distinguish the passing case
 from every failing one** — not merely from the most obvious failing one.
 
-**The pattern across revisions A–H is sharper than any individual finding: a correction
+### Draft amendment 1, revision I — independent review of `5d2db93`
+
+**One blocking finding: gate 8's new method named a boundary that made the gate
+impossible to pass or honestly fail.**
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **Gate 8 said "quote the production body to the `#[cfg(test)]` boundary".** `create_staff_group` begins at `reduce.rs:4458`; **`create_part_definition` begins at `:4515`** with its own `PreconditionFailureReason::TargetMissing` at **`:4554`**; the next `#[cfg(test)]` is at **`:9576`**. **The literal read spans ~5,000 lines and always contains the path the gate says must be absent** — while any shorter read violates the stated boundary | Gate 8 now **quotes exactly pin 1's slice**: `create_staff_group`'s body, **brace-matched from its `fn` line to its closing brace**, production source only |
+
+**Pin 1 had the boundary right the whole time** — *"slice the `create_staff_group` body
+(brace-matched from its `fn` line to its closing brace, production source only)"*.
+**Revision H invented a second, looser boundary instead of citing the pin.** That is
+revision A's failure in a new place: importing a plausible-sounding rule rather than
+re-deriving from the source that owns it — there, an S27 conclusion; here, a boundary
+from a different kind of check entirely. *(The `#[cfg(test)]` boundary is the right
+instrument for "is this call site production or test?", which is what §0.4 used it for.
+It is the wrong instrument for "where does this function end.")*
+
+**The rule: where a pin already defines the artifact, the gate CITES the pin — it does
+not redescribe it.** A redescription is a second definition, and two definitions of one
+artifact are a contradiction waiting for someone to read the looser one.
+
+**And note what kind of failure this was:** not a gate that passes when it should fail —
+revision H's usual shape — but **a gate with no passing state at all.** It would have
+been discovered at execution, by an agent forced to choose between obeying the boundary
+and obeying the requirement, and whichever it chose would have been reported as a pass.
+
+**The pattern across revisions A–I is sharper than any individual finding: a correction
 propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the sweep
 caught row 11 and stopped before §6's consumer; rev D found pin 10a's *decision* still
 deferred after two reworders. Rev A removed item 1's mutation tally and left item 2's
@@ -1284,9 +1311,29 @@ weakening is invisible.
    gate tallies beside it were removed. Pin 8's table is the origin.)*
 8. The pin-1 structural gate: `create_staff_group`'s production body contains
    the empty-members refusal and no member-liveness/`TargetMissing` path.
-   **METHOD PINNED IN REVISION H — it named none.** **Quote `create_staff_group`'s
-   production body in full** (to the `#[cfg(test)]` boundary) and read it; report the
-   refusal's lines and state that no member-liveness or `TargetMissing` path remains.
+   **METHOD PINNED IN REVISION H, BOUNDARY CORRECTED IN REVISION I.**
+
+   **Quote exactly pin 1's slice: `create_staff_group`'s body, brace-matched from its
+   `fn` line to its closing brace, production source only** — and read it. Report the
+   refusal's lines and state that no `TypedObjectId::Staff` liveness check and no
+   `TargetMissing` construction remain **within that slice**.
+
+   > **Revision H said "to the `#[cfg(test)]` boundary", which made this gate
+   > self-defeating.** `create_staff_group` begins at `reduce.rs:4458`;
+   > **`create_part_definition` begins at `:4515`** and carries its own
+   > `PreconditionFailureReason::TargetMissing` at **`:4554`**; the next `#[cfg(test)]`
+   > is at **`:9576`**. So the literal read spans five thousand lines and **always
+   > contains the very path the gate says must be absent**, while any shorter read
+   > violates the stated boundary. **The gate could not be passed and could not be
+   > honestly failed.**
+   >
+   > **Pin 1 had the boundary right all along** (`slice the create_staff_group body,
+   > brace-matched from its fn line to its closing brace`). Revision H invented a second,
+   > looser one instead of citing it — **the same "imported a plausible-sounding rule
+   > rather than re-deriving from the pin" failure revision A recorded**, applied to a
+   > boundary instead of a conclusion. **Where a pin already defines the artifact, the
+   > gate cites the pin; it does not redescribe it.**
+
    **Do not establish the absence by grep**: a `TargetMissing` path can be spelled
    without either literal, so **a grep for absence proves only that a chosen string is
    gone** — S27's gate-6a lesson, and the reason its gate 6c quotes a definition rather
