@@ -393,6 +393,32 @@ one section over, three rounds later.** It now requires the mapping. *(A fix rea
 peer is what ratification round 1 recorded; this is a fix failing to reach a gate written
 after it.)*
 
+### RATIFICATION ROUND 5 — independent, whole-artifact, against `e48bb8d`. One blocking finding.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **M6 was not covered by round 3's own channel rule.** Pin 6a requires an *exact violation set* without saying **how**, so a conforming `assert!(violations.len() == 1 && …)` satisfies it and **prints nothing on failure** — and that assertion is precisely what M6 trips. Gate 6 and §6 2e use the **passing**-test model. **So M6 reverts to "the named test failed"**, the signature this contract rejects | **Pin 6a gains a harness** for `m41`, `m41b` **and** the generator test: bind `check_invariants` before any assertion; make the cardinality check an **`assert_eq!`** on that local **with the violations vector in its diagnostic**; make it the **first** assertion. **Gate 6 confirms the macro.** M6a/M6b quote the failing output, the sibling's pass verdict, **and the generator test's outcome** |
+
+**Round 3 wrote the channel rule and applied it to M1, M2 and M5 — the mutations named in
+that round's finding — and not to M6**, which has the identical need. Round 3's own text
+even carved M6 out, listing it among the mutations that *"already met the standard"*: true
+of its **behavioural** observation, which names the state, and false of its **channel**,
+which had none.
+
+**The macro is part of the channel.** `assert_eq!` prints `left`/`right`; `assert!` prints
+only its message. Under M6a the S→G arm is gone, `check_invariants` returns **empty** for
+`m41`'s fixture, and `assert_eq!` prints `0` against `1` with an empty vector — **that is
+"the violation went unreported", quoted rather than inferred.** With `assert!` the same
+requirement is met with no evidence. **Where a mutation's observation *is* the compared
+value, the pin must name the macro** — a rule now recorded at the head of §3 rather than
+left to each mutation.
+
+**A second gap closed with it: M6a breaks the generator test too**, since that fixture is
+S→G. Unstated, an executor either reports a defect that is not one or ignores a failure it
+cannot classify. **M6b leaving the generator green is now positive evidence** that touch
+row 8's pinned direction holds. **A mutation must state every test it is expected to
+break** — otherwise its blast radius is discovered instead of specified.
+
 **The pattern across revisions A–J is sharper than any individual finding: a correction
 propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the sweep
 caught row 11 and stopped before §6's consumer; rev D found pin 10a's *decision* still
@@ -913,6 +939,34 @@ So each of `m41` / `m41b` MUST assert:
 > imports its blind spots along with its virtue**, and m40 never needed exactness because
 > nothing about invariant 20 turned on it.
 
+**OBSERVATION HARNESS — ADDED IN RATIFICATION ROUND 5. M6 was not covered by the
+round-3 channel rule.**
+
+Requirement 1 says *exact set* and does not say **how**, so a conforming
+`assert!(violations.len() == 1 && violations[0].invariant == …)` satisfies it **and prints
+nothing on failure**. Under M6 that assertion is exactly what fails — and M6's required
+observation is that the mutated fixture went **unreported**, which the diagnostic would
+not show. **M6 would fall back to "the named test failed", the signature this contract
+rejects.**
+
+So in **each** of `m41`, `m41b` **and**
+`invariant_21_negative_generator_breaks_staff_to_group_only`:
+
+1. **Bind `check_invariants(&s)` to a local before any assertion.**
+2. **Requirement 1's cardinality check MUST be an `assert_eq!` on that local's length,
+   with the full violations vector formatted into its diagnostic**, e.g.
+   `assert_eq!(violations.len(), 1, "expected exactly the invariant-21 violation, got {violations:?}")`.
+3. **It MUST be the first assertion after the bindings** — it is the one M6 trips, and
+   the round-3 ordering rule applies: state behind a later assertion is unreachable.
+
+> **`assert_eq!` is required rather than suggested because its default `left`/`right`
+> diagnostic is the observation.** Under M6a the S→G arm is gone, `check_invariants`
+> returns an **empty** set for `m41`'s fixture, and the diagnostic prints `0` against `1`
+> with an empty vector — **that is "the violation went unreported", quoted rather than
+> inferred.** `assert!` on the same condition prints only the message, so the identical
+> requirement is met with and without evidence depending on a macro choice the pin had
+> left open.
+
 **Pin 6b — the MUTATION SURFACE is pinned, not just the behaviour. ADDED IN REVISION G.**
 
 Pin 6 and pin 6a specify **behaviour only**, and **a conforming implementation can
@@ -1366,7 +1420,12 @@ Applied, **run**, output recorded verbatim, restored **by hand-editing back**.
 > - Where the observation is **composite**, or lives behind an assertion the mutation
 >   makes unreachable, the test needs a **pinned observation harness** — bind the values
 >   before the assertions and format them into every relevant message. **That is pins 7a
->   (`t8b`, for M1/M2) and 5a (`u5`, for M5).**
+>   (`t8b`, for M1/M2), 5a (`u5`, for M5) and 6a (`m41`/`m41b` and the generator test, for
+>   M6 — added in ratification round 5).**
+> - **The macro is part of the channel, not a style choice.** `assert_eq!` prints
+>   `left`/`right`; `assert!` prints only its message. **Where a mutation's observation
+>   *is* the compared value, the pin must require `assert_eq!`** — otherwise the same
+>   requirement is satisfiable with and without evidence.
 >
 > **Revision E chose "quote the source assertion plus the pass verdict" for gates, which
 > is right for a PASSING test. Mutations need the failing case, and the failing case has
@@ -1449,6 +1508,24 @@ bound in revision C, surface pinned in REVISION G:**
 - **M6b** — delete `idx.check_group_lists_unowned_staff(&mut v);`
   → `m41b_check_invariants_dispatches_invariant_21_group_lists_unowned_staff` must fail,
   **and `m41` must still pass.**
+
+**Each half reports, per ratification round 5:**
+
+1. **The failing test's `assert_eq!` output verbatim** — pin 6a's harness makes it print
+   the cardinality it got against `1`, with the violations vector, so the observation is
+   *"the mutated fixture went unreported"* rather than *"a test failed"*;
+2. **the sibling test's pass verdict**, which is what shows the two arms independent;
+3. **the generator test's outcome**, which differs between the halves and is itself
+   evidence: **M6a must also fail `invariant_21_negative_generator_breaks_staff_to_group_only`**
+   — its fixture is S→G, so deleting that arm silences it too — **while M6b must leave it
+   passing**, because the generator violates S→G only. **M6b leaving it green is
+   independent confirmation of the direction pinned in touch row 8**, and M6a's extra
+   failure is **expected, not a finding**.
+
+> **Point 3 exists because an unannounced third failure reads as a finding.** M6a breaks
+> two tests by design; without saying so, an executor either reports a defect that is not
+> one or quietly ignores a failure it cannot classify. **A mutation must state every test
+> it is expected to break**, or its blast radius is discovered instead of specified.
 
 **Each deletion is a single named call site**, which is what makes the two independently
 removable. *(M6 previously said "delete each arm in turn" while pin 6 required only
@@ -1560,7 +1637,12 @@ weakening is invisible.
 
    So for each of the three tests, the report gives:
    1. **The exact-set assertion, quoted verbatim from source** — the `len() == 1` and
-      invariant-identity assertions, and the witness-id assertion.
+      invariant-identity assertions, and the witness-id assertion. **It MUST be an
+      `assert_eq!` on a `check_invariants` local bound above it, with the violations
+      vector in its diagnostic, and MUST be the first assertion after the bindings —
+      pin 6a's harness, ratification round 5. Confirm the macro is `assert_eq!` and not
+      `assert!`**: M6 draws its whole observation from that macro's `left`/`right` output,
+      so an `assert!` satisfies pin 6a and disarms M6.
    2. **The test's pass verdict** from `cargo test`.
 
    **A passing exact-set assertion IS the observation**; the assertion text says what was
