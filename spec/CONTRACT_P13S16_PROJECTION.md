@@ -15,9 +15,45 @@ ratifiable as a *plan* and has **not been through adversarial review rounds**.
 contract came to be ratified after a single round and then have that ratification
 withdrawn — see its status block.
 
-**This rung's first act is bumping the authority to `1`**, because it changes
-`CreateStaffGroup`'s reduction verdict. That bump is the discipline S27 installed: no
-mechanism can detect a semantics change, so the bump is the entire guarantee.
+**This rung's first act is bumping the authority to `1`** (**pin 12**), because it
+changes `CreateStaffGroup`'s reduction verdict. That bump is the discipline S27
+installed: no mechanism can detect a semantics change, so the bump is the entire
+guarantee.
+
+### Draft amendment 1 — 2026-08-09, on ratification reconnaissance. NOT a review round.
+
+**Fourteen findings, thirteen blocking**, against the draft **before** its first
+ratification round. Nine came from the reconnaissance pass, five from a second sweep of
+the same defect classes. **The contract is a DRAFT, so these are edits, not amendments to
+frozen pins** — the distinction S27's status block draws, applied here.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **§2 omitted `epiphany-ops/src/lib.rs`**, though the rung's defining act is bumping the authority there. The bump had **no pin, no touch row, no gate and no report item** — it lived only in pin 0's discharge note | **Pin 12** added, with **touch row 7**, **gate 10**, **report item 2b** |
+| **2** | **Invariant 21 is a TWO-crate change, not one.** `violating_score` (`generators.rs:498`) matches `GraphInvariant` **exhaustively** — invariant 21 does not compile without an arm — and four `all()`-driven tests then require a **real** generator | **Touch row 8** added, with the consumer surface enumerated. **This is the amendment's root cause**; everything else is bookkeeping by comparison |
+| **3** | **S27's two tripwires fail at gate 1 with no touch row.** `roundtrip.rs` test 10b `panic!`s by design once the authority moves; `serialize.rs` test 10a asserts the literal `0` and its own doc says it *is expected to fail when S16 bumps* | **Touch rows 9 and 10**, plus **gate 11** requiring they be updated and not silenced |
+| **4** | **`requirement_labels.rs` — the escapee `CLAUDE.md` names by name — was absent**, and the contract never decided whether pin 6 or pin 10 mints a label. It touches **both** counted documents | **Pin 10a** forces the decision; **touch row 11** conditional; **report item 2c**. All three counters named, per S27's finding |
+| **5** | **Gates 2–3 pinned no toolchain**, in a repo whose CI gates on **1.95.0** while this machine's default is **1.97.1** | Both pinned |
+| **6** | **Gate 3 formatted two crates of four** — and rows 9–10 added the other two, so it would have reported clean over unformatted code | Expanded to ops, core, textproj, testkit |
+| **7** | **Gate 1 had no baseline and no ignored requirement** | Baseline **1577 / 0 / 0**, three delta buckets, ignored MUST be 0 |
+| **8** | **Gate 4 said "exactly §2"** — the formulation S27's round 17 found **unsatisfiable** with a conditional row, and row 11 is now conditional | Subset both ways, with the unused row named in the report |
+| **9** | **M1, M2, M4 accepted "the test failed"** as their whole signature | Each now names the **behaviour** the mutation produces. M3, M5, M6, M9 already met the standard |
+| **10** | **M7 covered two independently guarded doc blocks but reverted "one doc comment"** — it could pass while the other guard stayed weak | Split into **M7a** and **M7b**, each quoting its own needle's non-match |
+| **11** | **Pin 8 identified four tests by INTERIOR line numbers** (`:16838` etc.), roughly a dozen lines into each body — anchored to nothing searchable | All four **named**, with `fn` lines given second |
+| **12** | **`t6`/`t7`/`t9` locators stale** | Re-derived to `:16158`, `:16231`, `:16461`, with the **two-`t6`-families trap** recorded |
+| **13** | **The bump falsifies live statements in `CLAUDE.md` and the handoff** | **§4a** added: explicitly **not staged** during execution — staging them would assert the rung had landed while it awaited acceptance — and required as a post-acceptance reconciliation the report must list as outstanding |
+| 14 | **`shrink` also takes `GraphInvariant`; whether it matches exhaustively was not established** | **Report item 2d** requires execution to determine it. **Deliberately not guessed** — guessing about an exhaustive match is what produced finding 2 |
+
+**Finding 2 is the one that changes the rung's shape.** The others make an existing plan
+checkable; this one says the plan was scoped to the wrong number of files. **An enum
+extension in a crate with a generated exhaustive consumer is never local**, and nothing
+in the contract's own §0 inspection would have surfaced it — it appears at compile time,
+after execution begins.
+
+**Findings 5–8 are all defects S27 had already found and fixed in its own gate set.**
+This contract predates those corrections and inherited none of them. **A ratified
+contract's gate section is reusable knowledge**, and the next contract drafted here
+should start from S27's §5 rather than from an older template.
 
 > **The original status, retained:** *DRAFT — BLOCKED on P13-S27. Not executable as
 > written. Pin 0 exposes that no authority defines the implementation's current
@@ -312,11 +348,21 @@ written into the ledger.
    entire guarantee — so the bump is this rung's obligation and nothing will catch its
    absence.
 
-> **Line-number citations in this contract predate S27 and have NOT been re-derived.**
-> S27 changed `bundle.rs` by 795 lines, so `bundle.rs:989`, `:396` and `ids.rs:288`
-> above — and every other `bundle.rs` reference in this document — are stale as
-> locators even where the claim about them is historical. **Re-deriving them is part of
-> ratification**, not something this supersession did.
+> **Line-number citations in this contract predate S27 and are only PARTLY
+> re-derived.** S27 changed `bundle.rs` by 795 lines, so `bundle.rs:989`, `:396` and
+> `ids.rs:288` above — and every other `bundle.rs` reference in this document — remain
+> stale as locators even where the claim about them is historical.
+>
+> **Draft amendment 1 re-derived the ones that name executable targets:** `t6`
+> `:16154`→**`:16158`**, `t7` `:16229`→**`:16231`**, `t9` `:16454`→**`:16461`**, and
+> pin 8's four interior line numbers replaced by test **names**. **The rest are not
+> done** and finishing them is ratification work.
+>
+> **A trap the re-derivation found, recorded so the next pass does not fall into it:**
+> `reduce.rs` contains **two `t6`/`t7` families** — `t6_undo_restores_the_chain_...`
+> (`:15577`) and `t6_g3a_referential_loops_...` (`:16158`). **A re-derivation that greps
+> `fn t6` and takes the first hit lands on the wrong test**, and both hits are plausible
+> in context. Match on the full `_g3a_` name, never the prefix.
 
 **Pin 1 — refuse a non-empty carried `members`, using the existing helper.**
 In `create_staff_group` (`reduce.rs:4458`), before the liveness loop, refuse a
@@ -343,9 +389,9 @@ revised.** Each currently *passes* by asserting the outgoing rule:
 
 | Test | Line | Currently asserts | Under pin 1 |
 |---|---|---|---|
-| `t6` | `reduce.rs:16154` | `CreateStaffGroup.members` naming a non-live target is `TargetMissing`, one of three referential loops asserted separately | that arm becomes `ContainerNotEmpty` and stops testing a *referential* loop at all; the `CreatePartDefinition.staves` and `CreateView.active_layers` arms are untouched and must stay |
-| `t7` | `reduce.rs:16229` | those same preconditions are **not** enforced base-free | pin 1's refusal is **not** graph-gated — it is a property of the carried value — so this arm now refuses base-free too, inverting the claim for that arm only |
-| `t9` | `reduce.rs:16454` | a from-empty score passes `check_invariants`, and **each skipped reducer check independently makes invariant 10 fire**, on a fixture that already attempts a dangling reference in each of the four ops | the dangling-member fixture can no longer enter the graph, so both the fixture and t9's own mutation set change |
+| `t6` | `reduce.rs:16158` | `CreateStaffGroup.members` naming a non-live target is `TargetMissing`, one of three referential loops asserted separately | that arm becomes `ContainerNotEmpty` and stops testing a *referential* loop at all; the `CreatePartDefinition.staves` and `CreateView.active_layers` arms are untouched and must stay |
+| `t7` | `reduce.rs:16231` | those same preconditions are **not** enforced base-free | pin 1's refusal is **not** graph-gated — it is a property of the carried value — so this arm now refuses base-free too, inverting the claim for that arm only |
+| `t9` | `reduce.rs:16461` | a from-empty score passes `check_invariants`, and **each skipped reducer check independently makes invariant 10 fire**, on a fixture that already attempts a dangling reference in each of the four ops | the dangling-member fixture can no longer enter the graph, so both the fixture and t9's own mutation set change |
 
 **`t7`'s inversion is the subtle one and must be stated in its doc block:** a
 graph-aware precondition asks about the *universe* and cannot run base-free; an
@@ -439,11 +485,66 @@ previously pinned the opposite, and why the change is the ratified disposition
 rather than a regression. **Deleting it is forbidden** — the pairing of the two
 orders is the coverage.
 
-**Pin 8 — the four G3a undo-repair tests are re-verified, not assumed.**
-`:16838`, `:16992`, `:17138`, `:17345` each construct the missing-member form,
+**Pin 8 — the four G3a undo-repair tests are re-verified, not assumed. NAMED by draft
+amendment 1.** All four are in `crates/epiphany-ops/src/reduce.rs`:
+
+| Test | `fn` at |
+|---|---|
+| `u2a_a_live_staff_naming_the_group_blocks_its_undo` | `:16826` |
+| `u2bf_a_the_staff_group_guard_holds_base_free` | `:16983` |
+| `u2tomb_a_a_tombstoned_referencing_staff_does_not_block_the_groups_undo` | `:17125` |
+| `u3a_minting_the_group_and_its_referencing_staff_in_one_transaction_undoes_whole` | `:17333` |
+
+> **This pin previously identified them ONLY as `:16838`, `:16992`, `:17138`,
+> `:17345`** — and those are **interior** line numbers, roughly a dozen lines into each
+> body, not the `fn` lines. An interior line number is worse than a stale one: it
+> anchors to nothing a reader can search for, and it silently drifts with every edit to
+> the function above it. **Names are stable; line numbers are a convenience.** The `fn`
+> line numbers above are given second and are already subject to the locator warning
+> under pin 0.
+
+They each construct the missing-member form,
 which pin 2 now makes an agreeing form. They assert on undo effects rather than
 on `members`, so they are expected to survive — **expected, not known.** Each
 must be run and its verdict reported; any that changes is a finding.
+
+**Pin 12 — the authority bump. ADDED BY DRAFT AMENDMENT 1; it had no pin, no touch row
+and no gate.**
+
+Bump `epiphany_ops::CURRENT_REDUCTION_ALGORITHM_VERSION` **`0` → `1`** (touch row 7),
+**and add this rung's entry to the constant's own `Bumps` list** in the same doc
+comment. The list is the only record of *why* a version exists; a bump without its
+entry leaves a number nobody can account for.
+
+**This is not optional and not a consequence — it is the obligation.** This rung changes
+`CreateStaffGroup`'s reduction verdict, and `core_spec.tex` §"Canonical Document
+Identity" makes such a change require a new version. **No mechanism can detect a missed
+bump** (see *Enforcement is not detection* under pin 0), so nothing in the gate set will
+catch its absence except the two tripwires in rows 9 and 10 — which is exactly why they
+must be updated rather than silenced.
+
+> **The bump is stated in pin 0's discharge as requirement 3, which is a discharge note
+> and not a pin.** So it had no numbered pin to execute, no touch row to stage, no gate
+> to check and no report item to confirm — **the four places this repo's discipline
+> requires a mandated change to appear.** It now has all four: pin 12, touch row 7,
+> gate 10, report item 2b.
+
+**Pin 10a — whether pin 6 or pin 10 mints a `\label{req:...}` MUST be decided
+explicitly, and stated in the report. ADDED BY DRAFT AMENDMENT 1.**
+
+This rung edits **`core_spec.tex`** (row 5, invariant 21's enumeration) and
+**`operation_catalog.tex`** (row 4), and `crates/epiphany-testkit/tests/requirement_labels.rs`
+counts requirements and labels in **both**. The two readings have different touch tables:
+
+- **If either mints a label**, touch row 11 is used and **all three counters move** —
+  `CORE_REQUIREMENT_COUNT`, `SUITE_REQUIREMENT_COUNT`, `SUITE_LABEL_COUNT`. S27 found the
+  hard way that naming only the first leaves two failing tests.
+- **If neither does**, row 11 is unused and **the report says so.**
+
+> **`CLAUDE.md` names this file by name as a recurring escapee**, it escaped the
+> format-epoch rung's table, and S27 had to add it mid-execution. **A file that must
+> change but is not listed silently drops out of the commit**, and the failure surfaces
+> on someone else's branch. Carrying it conditionally costs nothing if unused.
 
 **Pin 9 — no byte artifact moves.**
 `spec/vectors/decode_vectors.txt`, `ops/src/vectors.rs:829`'s literal-byte
@@ -553,8 +654,44 @@ unblocked, dispatchable and resolved are three different states.
 | 4 | `spec/operation_catalog.tex` (+ `.pdf`) | pin 10 |
 | 5 | `spec/core_spec.tex` (+ `.pdf`) | pins 6, 10 |
 | 6 | `spec/PASS13_CANDIDATES.md` | pin 11 |
+| **7** | `crates/epiphany-ops/src/lib.rs` | **ADDED by draft amendment 1.** **Pin 12** — bump `CURRENT_REDUCTION_ALGORITHM_VERSION` `0 → 1` **and add its entry to the constant's own `Bumps` list**, which is in the same doc comment. The rung mandated by pin 0's discharge had no touch row, no pin and no gate |
+| **8** | `crates/epiphany-core/src/generators.rs` | **ADDED by draft amendment 1 — the root cause below.** `violating_score` (`:498`) matches `GraphInvariant` **exhaustively**, so invariant 21 **does not compile** without a new arm. Four `all()`-driven tests (`:991`, `:1004`, `:1025`, `:1042`) then consume it, so the arm must be a **real generator**, not a stub |
+| **9** | `crates/epiphany-testkit/src/roundtrip.rs` | **ADDED by draft amendment 1.** S27 test 10b (`:894`) reopens a literal-`0` base under `production_caps()`; pin 12's bump makes that path return `Err` and hit an arm that **`panic!`s by design** |
+| **10** | `crates/epiphany-textproj/src/serialize.rs` | **ADDED by draft amendment 1.** S27 test 10a (`:659`) asserts the production writer supplies `ReductionAlgorithmVersion(0)`. Its own doc (`:655`) says it **is expected to fail when S16 bumps** and that updating it *is* S16 stating the authority moved |
+| **11** | `crates/epiphany-testkit/tests/requirement_labels.rs` | **ADDED by draft amendment 1 — CONDITIONAL**, exactly as S27's row 12. Only if pin 6 or pin 10 mints a `\label{req:...}`. **That decision MUST be made explicitly and stated in the report** — see pin 10a. If it mints one, **all three counters move**, not one: `CORE_REQUIREMENT_COUNT` (`:15`), `SUITE_REQUIREMENT_COUNT` (`:18`), `SUITE_LABEL_COUNT` (`:19`). This file counts **both** `core_spec.tex` and `operation_catalog.tex`, and this rung touches both. If no label is minted, leave unmodified and say so |
 
 Regenerate the two PDFs **only after** their sources reach final form.
+
+### Rows 9 and 10 are S27's tripwires firing as designed, not collateral damage
+
+S27 wrote two assertions against the **literal** `0` precisely so they would move when
+the authority moved, and `serialize.rs:655` says so in as many words. **Their failure is
+this rung's signal that the bump took effect** — the only signal it gets, since no
+mechanism can detect a semantics change. They must be **updated, not deleted or
+`#[ignore]`d**, and the report must quote both before and after.
+
+> **Neither file was in any touch row, and both fail at gate 1.** That is the exact
+> shape of S27's own `gminor.rs` failure: a file the rung must change that no surface
+> count reached, found by a gate rather than by the table. **The allowlist catching it
+> is the allowlist working** — but only if the row exists before execution starts.
+
+### Row 8 is the rung's real shape change: an enum extension is a TWO-crate change
+
+**This contract treated invariant 21 as local to `invariants.rs`.** It is not.
+`GraphInvariant` has an **exhaustive generated-consumer surface in `epiphany-core`**:
+
+- `violating_score` (`generators.rs:498`) matches every variant — **adding one is a
+  compile error until its arm exists.**
+- Four `all()`-driven tests then call it and `shrink` (`:991`, `:1004`, `:1025`,
+  `:1042`), so **a `todo!()` or trivial arm fails them.** Invariant 21 needs a fixture
+  that genuinely violates it in both directions and survives shrinking.
+- **`shrink` (`:932`) takes `GraphInvariant` too. Whether it also matches exhaustively
+  MUST be checked at execution and reported** — this amendment did not establish it
+  either way, and guessing is what produced this finding.
+
+**Consequence for the mutation plan and gate 6:** invariant 21's generator is itself
+load-bearing, so M6 (deleting each arm) now has a second signature — the negative
+generator must still produce a violating score for the arm under test.
 
 ---
 
@@ -562,20 +699,42 @@ Regenerate the two PDFs **only after** their sources reach final form.
 
 Applied, **run**, output recorded verbatim, restored **by hand-editing back**.
 
-**M1 — the refusal fires.** Remove pin 1's emptiness check; the rewritten `t8b`
-spurious-order assertion must fail.
+> ### A FAILING TEST IS NOT AN OBSERVATION — draft amendment 1
+>
+> **M1, M2 and M4 accepted "the named test fails" as their whole signature.** That
+> signs nothing: a test fails for the mutation, for a typo, for an unrelated panic, or
+> because the harness changed — and a **compile error is not a test failure at all.**
+> **The evidence a mutation owes is the BEHAVIOUR it changed, not the assertion it
+> broke.** Each mutation below must now name the wrong verdict, value or state the
+> mutated build produces, and the report must quote it. *(This is S27's round-15/16
+> lesson, which cost four defects there; M3, M5, M6 and M9 in this contract already
+> met the standard, so the fix is uneven-by-design rather than uniform.)*
 
-**M2 — the maintenance fires.** Remove pin 2's append; the rewritten `t8b`
-missing-order assertion must fail.
+**M1 — the refusal fires. OBSERVATION TIGHTENED, draft amendment 1.** Remove pin 1's
+emptiness check. **Required observation:** a `CreateStaffGroup` carrying a **non-empty
+`members`** is now **applied instead of refused** — report the resulting
+`OperationEffect` and the minted `StaffGroup.members` value, showing the spurious
+membership that reached the graph. The rewritten `t8b` spurious-order assertion failing
+is the *symptom*; the applied mint is the observation.
+
+**M2 — the maintenance fires. OBSERVATION TIGHTENED, draft amendment 1.** Remove pin 2's
+append. **Required observation:** after a `CreateStaff` naming a live group,
+`StaffGroup.members` is **still empty** — quote it, and quote invariant 21's verdict on
+that state. The rewritten `t8b` missing-order assertion failing is the symptom.
 
 **M3 — the re-carry stays idempotent.** Make pin 3 write maintained members into
 `staff_group_values`; a byte-identical re-carry must degrade from
 `AlreadyApplied` to `RecreateContentMismatch`. **This mutation must be observed,
 not reasoned about** — it is the sub-pin disposition A named.
 
-**M4 — the base-ingest hazard is real.** Restore `:1619` to `group.clone()`;
-pin 4a's test must fail. **If it does NOT fail, pin 4 is unmotivated and that is
-a finding** — report it rather than keeping a guard nothing needs.
+**M4 — the base-ingest hazard is real. OBSERVATION TIGHTENED, draft amendment 1.**
+Restore `:1619` to `group.clone()`. **Required observation: the re-carry misverdict
+itself** — name what an ingested base's `CreateStaffGroup` re-carry now returns and what
+it should have returned, in the shape M3 already uses (`AlreadyApplied` →
+`RecreateContentMismatch`). "Pin 4a's test must fail" was the entire signature and does
+not distinguish the hazard from any other breakage.
+**If the misverdict does NOT appear, pin 4 is unmotivated and that is a finding** —
+report it rather than keeping a guard nothing needs.
 
 **M3 and M4 are signed by pins 3a and 4a, not by manual demonstration.** Run each
 mutation against its named test so the guard, not the transcript, is what
@@ -599,21 +758,56 @@ must leave a disagreeing pair that invariant 21 flags.
 **M6 — invariant 21 sees both directions.** Delete each arm in turn; each
 deletion must leave a distinct disagreeing fixture unreported.
 
-**M7 — the doc guards discriminate.** With pin 10's needles updated, revert one
-doc comment to its disposition-B wording; the guard must fail. A guard that
-passes against both wordings is weakened, not updated.
+**M7 — the doc guards discriminate. SPLIT IN TWO by draft amendment 1.** Pin 10 covers
+**two independently guarded doc blocks** — `Staff.group` and `StaffGroup.members`, each
+with its own grep guard (touch row 3). Reverting *"one doc comment"* leaves the other
+guard untested, and a run that reverts the stronger one **passes while the weaker guard
+is still weak.** So:
+
+- **M7a — `Staff.group`.** Revert that block to its disposition-B wording. **Required
+  observation:** quote the guard's own output showing **its specific needle no longer
+  matches**, not merely that a test failed.
+- **M7b — `StaffGroup.members`.** The same, independently, with its own output.
+
+**Both must be run and both outputs reported.** A guard that passes against both
+wordings is weakened, not updated — and with one mutation covering two guards, that
+weakening is invisible.
 
 ---
 
 ## §4. Gate
 
-1. `cargo test --workspace` — full pass. **The count will move** (t8b renamed,
-   new invariant tests). Report the new total and the delta with its cause.
-2. `cargo clippy --workspace --all-targets -- -D warnings` → clean.
-3. `cargo fmt -p epiphany-ops -p epiphany-core --check` → clean.
-   **`cargo fmt --all` is forbidden.**
-4. `git diff --cached --check` → clean, after staging; confirm the staged list
-   is exactly §2.
+1. `cargo test --workspace` — full pass. **Baseline is 1577 passed / 0 failed / 0
+   ignored across 42 suites** *(the post-S27 figure; `CLAUDE.md`'s Green baseline is the
+   single origin — if it disagrees with this line, `CLAUDE.md` wins and that is a
+   finding)*. **The count will move** (t8b renamed, new invariant tests, and rows 9–10's
+   tripwire updates). Give the delta in buckets — net-new, converted-from-existing,
+   tripwire-updated — and **if they do not sum to the observed delta, that is a finding,
+   not an arithmetic error to be papered over.**
+   **Report the ignored count, which MUST be 0** — a "full pass" is satisfied by an
+   `#[ignore]`d test that never runs.
+2. `cargo +1.95.0 clippy --workspace --all-targets -- -D warnings` → clean.
+   **The toolchain is part of the gate**: CI pins **1.95.0**, this machine's default
+   `stable` is **1.97.1**, and the repo's CI comment records that *1.97 rejects a bare
+   `2.0` that 1.95 accepts*. **A clippy result that does not say which toolchain
+   produced it says nothing.** Report the toolchain with the result.
+3. `cargo +1.95.0 fmt -p epiphany-ops -p epiphany-core -p epiphany-textproj -p
+   epiphany-testkit --check` → clean, on the same pinned toolchain.
+   **All four changed crates — corrected by draft amendment 1**, which added rows 9 and
+   10 in `epiphany-testkit` and `epiphany-textproj`; the command named only two and
+   would have left both unformatted while reporting clean.
+   **`cargo fmt --all` is forbidden** — it reaches `spikes/` through path dependencies.
+4. `git diff --cached --check` → clean after staging. **The staged list is a SUBSET of
+   §2, not an equality — corrected by draft amendment 1.** "Exactly §2" is
+   **unsatisfiable** here because row 11 is conditional: read literally it fails whenever
+   a conditional row is correctly unused, or invites staging an unchanged file to satisfy
+   it. **Instead:** every staged path must appear in §2, **and** every §2 row must be
+   either staged or **named in the report as unused, with its reason.** Neither
+   direction may be silent. *(This is S27's round-17 correction; S16 carried the
+   formulation S27 had already found unsatisfiable.)*
+4a. **§2 carries no prohibitions**, unlike S27's §2 — so gate 4 is the whole staging
+   check here. **If a later amendment adds an absence rule, this gate does not cover
+   it**: "appears in §2" and "is not forbidden by §2" are different questions.
 5. `spec/vectors/decode_vectors.txt` **unmodified** (pin 9). Confirm by `git
    status`, not by inspection.
 6. Invariant 21 is reached **through `check_invariants`** on a score violating
@@ -624,6 +818,47 @@ passes against both wordings is weakened, not updated.
 8. The pin-1 structural gate: `create_staff_group`'s production body contains
    the empty-members refusal and no member-liveness/`TargetMissing` path.
 9. `t8c` (pin 3a) and `t8d` (pin 4a) both present and passing, by name.
+10. **Pin 12's bump landed, by value comparison — ADDED BY DRAFT AMENDMENT 1.**
+    ```
+    grep -n "pub const CURRENT_REDUCTION_ALGORITHM_VERSION" crates/epiphany-ops/src/lib.rs
+    git show HEAD:crates/epiphany-ops/src/lib.rs | grep -n "pub const CURRENT_REDUCTION_ALGORITHM_VERSION"
+    ```
+    → working tree **`= 1`**, `HEAD` **`= 0`**. **Report both outputs, not the
+    conclusion**, and **quote the new `Bumps` list entry verbatim.** A bump without its
+    entry fails this gate.
+11. **Rows 9 and 10's tripwires were UPDATED, not silenced.** Quote both assertions
+    before and after. **Neither may be deleted, `#[ignore]`d, or weakened to accept any
+    version** — a tripwire that accepts both values is the tautology S27 existed to
+    remove, rebuilt.
+
+---
+
+## §4a. Landing obligation — files that must NOT be staged, and must be fixed after
+
+**ADDED BY DRAFT AMENDMENT 1.** Pin 12's bump makes two live statements false, and both
+are in documents **outside this rung's touch table on purpose**:
+
+| File | Statement the bump falsifies |
+|---|---|
+| `CLAUDE.md:106` | *"`CURRENT_REDUCTION_ALGORITHM_VERSION` — **currently `0`**"*, and *"P13-S16 is the first rung that must move it to `1`"* |
+| `spec/HANDOFF_2026-08-07.md:25` | the POST-S27 block's *"currently `0`"* and the same "first rung" sentence |
+
+**DO NOT STAGE EITHER DURING EXECUTION.** Both describe the state of the repository
+**after a rung has landed**, and this rung is not landed while it is staged and awaiting
+acceptance. Staging them would have the contract assert S16 had landed at the moment it
+was submitted for review — **a claim about the future written as present fact**, which is
+the defect class S27's amendments 4 through 7 were spent removing.
+
+**They are a POST-ACCEPTANCE obligation.** Once the owner accepts and commits this rung,
+reconcile both in a separate commit, together with anything else the bump falsifies.
+**The report MUST list them as outstanding**, so acceptance is not mistaken for
+completion.
+
+> **Pin 11 already covers `spec/PASS13_CANDIDATES.md`, which is different** and *is*
+> staged: a ledger row records what a rung *did*, and is written by the rung. `CLAUDE.md`
+> and the handoff state what is *true now*, and only become true at acceptance. **The
+> distinction is whether the file's claim is dated or live** — the rule amendment 6
+> settled for S27, applied here to decide staging rather than wording.
 
 ---
 
@@ -657,6 +892,15 @@ its evidence at `invariants.rs:69`–`:71` must stay intact.
 
 1. The nine mutations (M1–M9), each with verbatim failure output.
 2. The nine gate results, each with its command.
+2b. **Pin 12's bump and its `Bumps` entry**, with gate 10's two outputs; **and rows 9
+   and 10's tripwire updates**, each quoted before and after, with gate 11's confirmation
+   that neither was silenced. **ADDED BY DRAFT AMENDMENT 1.**
+2c. **Whether pin 6 or pin 10 minted a `\label{req:...}`** (pin 10a), and therefore
+   whether touch row 11 was used. **If used, all three counters and their new values;
+   if not, say so explicitly.** **ADDED BY DRAFT AMENDMENT 1.**
+2d. **Whether `shrink` (`generators.rs:932`) matches `GraphInvariant` exhaustively**, and
+   if so what its invariant-21 arm does. **Draft amendment 1 did not establish this
+   either way and deliberately did not guess.** **ADDED BY DRAFT AMENDMENT 1.**
 2a. **REWRITTEN 2026-08-09 — it required the opposite of what is now correct.** It read:
    *"For pin 0: confirmation that **nothing** was added claiming to reject or detect
    stale canonical bases, and that the break is recorded only in prose."* That was right
