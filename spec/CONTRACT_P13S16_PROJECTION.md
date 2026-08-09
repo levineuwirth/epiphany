@@ -182,7 +182,28 @@ transformation establishes only that *something* survived. Every property the in
 pinned for must be re-asserted on the output, or the transformation is free to change
 what the fixture proves.
 
-**The pattern across revisions A–F is sharper than any individual finding: a correction
+### Draft amendment 1, revision G — independent review of `2818ced`
+
+**One blocking finding: M6 was unexecutable against a conforming implementation.**
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **M6 assumed two independently removable arms; pin 6 required only behaviour.** A single shared comparison — one walk emitting a violation whichever way `Staff.group` and `StaffGroup.members` disagree — satisfies `m41`, `m41b`, the generator test and gate 6, **and leaves nothing for M6 to delete one at a time.** Deleting the shared check disables both directions, so M6's *"one fails, the sibling passes"* observation **cannot be produced**. M6 was executable only against one implementation style | **Pin 6b** pins the mutation surface: two `GraphIndex` methods, `check_staff_names_absent_group` and `check_group_lists_unowned_staff`, both dispatched from `check_invariants`. **M6a/M6b delete them by name**, and **gate 12** proves both exist and are both called *before* M6 is attempted |
+
+**This is the unexecutable-mutation class, which S27 hit twice** — its M5 and M6 both had
+to be rewritten after review found no runnable observation behind them. **The tell is
+identical: a mutation phrased as an edit to a structure the pins never required.**
+Behaviour pins constrain outcomes; a mutation deletes *code*. **Where a mutation is the
+signature, the structure it deletes must itself be pinned** — otherwise the contract is
+satisfiable in a shape that makes its own evidence unobtainable.
+
+**Pin 6b is precedent, not invention:** `check_invariants` (`invariants.rs:257`–`:282`)
+already dispatches **23** `check_*` methods for **20** invariants, so more than one
+method per invariant is the crate's existing shape. And a shared helper the two methods
+both call is explicitly permitted — **the deletable call site is what M6 needs, not a
+duplicated walk.**
+
+**The pattern across revisions A–G is sharper than any individual finding: a correction
 propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the sweep
 caught row 11 and stopped before §6's consumer; rev D found pin 10a's *decision* still
 deferred after two reworders. Rev A removed item 1's mutation tally and left item 2's
@@ -656,6 +677,40 @@ So each of `m41` / `m41b` MUST assert:
 > imports its blind spots along with its virtue**, and m40 never needed exactness because
 > nothing about invariant 20 turned on it.
 
+**Pin 6b — the MUTATION SURFACE is pinned, not just the behaviour. ADDED IN REVISION G.**
+
+Pin 6 and pin 6a specify **behaviour only**, and **a conforming implementation can
+satisfy every one of them with a single shared comparison** — one walk that compares
+`Staff.group` against `StaffGroup.members` and emits a violation whichever way they
+disagree. That implementation passes `m41`, `m41b`, the generator test and gate 6, **and
+leaves M6 with no two arms to delete.** Deleting the shared check disables both
+directions at once, so M6's required *"one test fails, the sibling passes"* observation
+**cannot be produced at all** — M6 would be executable only against one implementation
+style, which pin 6 never required.
+
+**So the two directions MUST be two independently removable checks**, following this
+crate's existing idiom — `GraphIndex` methods writing into `out`:
+
+```rust
+fn check_staff_names_absent_group(&self, out: &mut Vec<InvariantViolation>)   // S→G
+fn check_group_lists_unowned_staff(&self, out: &mut Vec<InvariantViolation>)  // G→S
+```
+
+Both emit `GraphInvariant::StaffGroupMembershipAgreement` violations, and
+**`check_invariants` calls both**, in sequence with the existing `idx.check_*(&mut v)`
+calls.
+
+> **This is the crate's shape, not an invention for the mutation's convenience.**
+> `check_invariants` (`invariants.rs:257`–`:282`) already calls **23** `check_*` methods
+> for **20** invariants, so **more than one method per invariant is existing precedent**.
+> The names are **PINNED**, because gate 12 greps for them and M6 deletes them by name —
+> the same reason S27 had to pin `synthetic_for_fixture` after discovering its gate
+> searched for a name the contract had offered only as an example.
+>
+> **A shared helper the two methods both call is permitted** — deduplicating the walk is
+> fine. What is forbidden is a single call site for both directions, because the
+> *deletable unit* is what M6 needs.
+
 **Pin 6 is coupled to pin 5 and they split only together.** M5 signs the undo
 hole by requiring invariant 21 to *observe* the residue. If invariant 21 is
 deferred to a later rung, then either pin 5 and M5 defer with it, or M5 must be
@@ -1071,10 +1126,21 @@ must leave a disagreeing pair that invariant 21 flags.
 Delete each arm in turn; each deletion must leave a distinct disagreeing fixture
 **unreported**.
 
-**M6 breaks pin 6a's two named tests, one each — BOUND IN REVISION C:**
+**M6 deletes pin 6b's two NAMED surfaces and breaks pin 6a's two named tests, one each —
+bound in revision C, surface pinned in REVISION G:**
 
-- Delete the **S→G** arm → `m41_check_invariants_dispatches_invariant_21_staff_names_absent_group` must fail, **and `m41b` must still pass.**
-- Delete the **G→S** arm → `m41b_check_invariants_dispatches_invariant_21_group_lists_unowned_staff` must fail, **and `m41` must still pass.**
+- **M6a** — delete `idx.check_staff_names_absent_group(&mut v);` from `check_invariants`
+  → `m41_check_invariants_dispatches_invariant_21_staff_names_absent_group` must fail,
+  **and `m41b` must still pass.**
+- **M6b** — delete `idx.check_group_lists_unowned_staff(&mut v);`
+  → `m41b_check_invariants_dispatches_invariant_21_group_lists_unowned_staff` must fail,
+  **and `m41` must still pass.**
+
+**Each deletion is a single named call site**, which is what makes the two independently
+removable. *(M6 previously said "delete each arm in turn" while pin 6 required only
+behaviour — so against a single-shared-check implementation there were no two arms and
+**M6 was unexecutable**. Pin 6b fixes that at the source rather than restating the
+mutation.)*
 
 **The surviving test passing is half the observation**, and the half that proves the
 arms are independent rather than one arm catching everything.
@@ -1229,6 +1295,24 @@ weakening is invisible.
     **None of a–e may be deleted or `#[ignore]`d.** A tripwire that accepts both values,
     or that derives either operand from the authority, is not a weakened guard — it is no
     guard at all.
+12. **Pin 6b's two direction checks both exist and are both dispatched — STRUCTURAL,
+    ADDED IN REVISION G.** M6 is unexecutable without them, so this gate proves the
+    mutation surface exists **before** M6 is attempted rather than discovering its
+    absence mid-run.
+
+    ```
+    grep -n "fn check_staff_names_absent_group\|fn check_group_lists_unowned_staff" crates/epiphany-core/src/invariants.rs
+    grep -n "idx.check_staff_names_absent_group\|idx.check_group_lists_unowned_staff" crates/epiphany-core/src/invariants.rs
+    ```
+
+    → **two definitions and two call sites, four lines total.** **Quote all four**, per
+    gate 6's evidence model. **Fewer than four is a pin 6b violation and a finding**, not
+    a gate to be worked around: one definition with a direction parameter, or one call
+    site handling both, means M6 has no independently deletable surface.
+
+    > **A grep for presence is defeated by a rename**, so the names in pin 6b are pinned
+    > and this gate and M6 both use them. If the implementation chose other names, **that
+    > is the finding** — the gate has not "passed with zero matches", it has failed.
 
 ---
 
