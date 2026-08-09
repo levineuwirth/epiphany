@@ -40,6 +40,17 @@ deliberately: a tally of tally-staleness would be one more thing to keep current
 > five of them already false. They are now dated records of what closed. **This
 > paragraph is the only place in the document that says which pass is outstanding.**
 >
+> **TERMINATING CASE — added with the record of execution review 8.** The rule above
+> assumed every review produces an amendment. **A clean review produces none**, so if
+> the last `execution review` row shows **0 findings**, there is no amendment of that
+> number and **no pass is outstanding**: the chain this invariant tracks has closed.
+> **That is the state as of execution review 8.** What remains is not another pass — it
+> is the **owner's acceptance decision**, which this document does not make on their
+> behalf. *(Without this case the locator sends a reader looking for an "amendment 8"
+> that does not exist — the same class of defect as the `Total`-row locator amendment 7
+> fixed, and reachable only by a clean round, which is why neither earlier version
+> caught it.)*
+>
 > **And the rule for WHICH figures in this document are allowed to look stale, because
 > execution reviews 5 and 6 each had to rediscover it — amendment 6.** A figure recording
 > **what a given round found or did** is *historical*: correct as of its dated block,
@@ -116,12 +127,14 @@ thing a reader met was a claim that nothing had run.
   evidential. **They have now been run and reported.** Gates 1–3 were additionally
   **re-run cold** under amendment 4; gates 4, 4a and §2's rules A/B under amendments 2
   and 4.
-- **STILL OPEN — the only one of the three that is, and it has not weakened:** the
-  execution report **and every amendment to it** are **subject to independent review
-  before completion is accepted** — required by the owner at dispatch, and specifically
-  covering **M7's three observations and its control**. The document's quality came from
-  the independent rounds; the report gets the same treatment. **Which reviews of it have
-  closed is the history table below**, not a figure stated here.
+- **SATISFIED as of execution review 8** — the last of the three to close. The execution
+  report **and every amendment to it** were **subject to independent review before
+  completion is accepted**, required by the owner at dispatch and specifically covering
+  **M7's three observations and its control**. The document's quality came from the
+  independent rounds; the report got the same treatment. **Which reviews closed is the
+  history table below**, not a figure stated here, and whether any pass remains
+  outstanding is **the invariant above**. **Acceptance itself is the owner's decision
+  and is not recorded as satisfied by this bullet.**
 
 ### One narrow, explicit exception to "no execution work" — granted 2026-08-08
 
@@ -261,11 +274,20 @@ none.**
 > rule this contract has recorded since round 1, applied to markers instead of counts.
 
 **History — the running tally, which has now gone stale three times and been
-restructured twice to stop it.** Every amendment is a row. **There is no separate
-amendment count, deliberately**: round 5 turned the review totals into a table
-and left the amendment tally as prose immediately above it, which went stale in
-the same edit that fixed its neighbour. The amendment count **is** the number of
-rows — read it off, do not restate it.
+restructured twice to stop it.** **Each row is an EVENT** — an amendment, a review
+round, or the scratch probe. **There is no separate amendment count, deliberately**:
+round 5 turned the review totals into a table and left the amendment tally as prose
+immediately above it, which went stale in the same edit that fixed its neighbour. Read
+the rows; do not restate a count.
+
+> **"Every amendment is a row … the amendment count IS the number of rows" — CORRECTED
+> with the record of execution review 8, and it was already false when written.** The
+> converse does not hold: a row is not always an amendment. **Round 19 returned zero
+> findings and produced no amendment**, so the identity was broken from the moment that
+> row was added, and execution review 8 is the second such row. **A row showing 0
+> findings produced no amendment**; `pin 10`'s row is an amendment whose findings
+> predate the tally and shows `—`. Neither is an exception to be remembered — they are
+> why the count is not stated.
 
 | Amendment | Findings | Blocking | Independent review? |
 |---|---|---|---|
@@ -297,7 +319,8 @@ rows — read it off, do not restate it.
 | execution review 5 | 5 | 4 | **yes — 3 of 5; two from the sweep** |
 | execution review 6 | 3 | 1 | **yes — 2 of 3; the third from the sweep** |
 | execution review 7 | 3 | 3 | **yes — 2 of 3; the third from the sweep** |
-| **Total** | **95** | **70** | one amendment per row |
+| **execution review 8** | **0** | **0** | **yes — CLEAN; no amendment followed** |
+| **Total** | **95** | **70** | one **event** per row; `0`-finding rows produced no amendment |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -986,9 +1009,46 @@ correction that fixes every *currently false* instance of a claim, but leaves th
 instance that is *currently true*, has scheduled its own recurrence. The true one goes
 false on the next event. **Correct by class, not by current truth value.**
 
-**Status when written:** amendment 7 touched **no pin, gate, test, mutation, touch row
-or staged file** — a scope claim, not an inferred gate result. Which pass is now
-outstanding is the **invariant at the top**, and this block deliberately does not say.
+**Status when written (CLOSED):** amendment 7 touched **no pin, gate, test, mutation,
+touch row or staged file** — a scope claim, not an inferred gate result. **Its pass
+closed as execution review 8, CLEAN.**
+
+**Record of execution review 8 — 2026-08-09, independent, against `480a299`. ZERO
+FINDINGS.** It confirmed the top block is the sole live pass-status authority, that the
+historical blocks are explicitly closed, that the locator resolves execution review 7 to
+amendment 7, and that the totals reconcile at **95 findings / 70 blocking**.
+
+**This is a RECORD, not an amendment.** It appends a history row, marks the
+ratification-time bullet satisfied, and adds the invariant's **terminating case** — which
+no earlier version could have specified, because only a clean round reaches it. **It
+changes no pin, gate, test, mutation, touch row or staged file.** Its own text is
+unreviewed, and it is deliberately this short for that reason.
+
+**What the clean round establishes, and what it does not — the same distinction round 19
+drew, and it has not weakened.** It is the criterion named at round 11: *treat
+dispatchable as a claim requiring evidence of convergence, not a status reached by
+running out of findings.* Two clean rounds now exist in this document — round 19 before
+execution, and this one after — and **the second is the stronger of the two**, because
+what it reviewed had been executed, gated and measured rather than only argued.
+
+**It is still not proof of correctness.** Execution review 8 reviewed amendment 7; it did
+not re-derive the whole document, and **no round ever has**. The defect record is the
+history table, and it shows that every independent round before this one found something.
+
+**What is now established, stated plainly so acceptance is not read as inference:**
+
+- **The implementation is unchanged since amendment 1's comment correction**, and gates
+  1–3 were **re-run cold against that exact tree** under amendment 4 — 1577 passed / 0
+  failed / 0 ignored across 42 suites; clippy and fmt clean on pinned **1.95.0**.
+- **Gates 4, 4a and §2's rules A and B** were re-run under amendments 2 and 4.
+- **M7 ran**, returning its three observations and its control, and **three independent
+  reviews examined it and returned nothing against it.**
+- **Every finding since execution has been in this contract, not in the 21 staged
+  files** — across all eight reviews.
+
+**What remains is the owner's acceptance decision.** This document does not make it.
+Round 1's ratification was claimed by the author after a single round and withdrawn;
+**that precedent is why this block records the evidence and stops.**
 
 **Review round 19 — 2026-08-08, independent, against the round-17/18 working
 tree. ZERO FINDINGS. The first clean round in nineteen.**
