@@ -138,7 +138,31 @@ depend on a choice made at the keyboard, so **the touch table can be wrong in ei
 direction and the report will agree with whatever happened.** Where the facts are
 readable — and these were, in the `.tex` source — the contract decides.
 
-**The pattern across revisions A–D is sharper than any individual finding: a correction
+### Draft amendment 1, revision E — independent review of `cae1d32`
+
+**Two blocking findings and one stale rationale. Both blocking findings are in
+requirements revision D itself wrote**, and both are its own closing lesson turned back
+on it.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **Row 8's new generator test had no name, so nothing consumed it.** Gate 6 named only `m41`/`m41b`; §6 item 2d asks for shrink evidence. **Omitting the test entirely would still compile, satisfy all four `all()` loops, and pass every named gate** | Named **`invariant_21_negative_generator_breaks_staff_to_group_only`**, with its three required assertions spelled out; **added to gate 6** and to **§6 item 2e** |
+| **2** | **Gate 6 demanded runtime evidence the prescribed tests cannot emit.** It said to quote `check_invariants`' full return and witness ids — but these are `assert!` tests in `m40`'s shape, and `cargo test` prints `ok`, not local values. Satisfying it literally would need **unpinned `--nocapture` instrumentation** or source inference presented as observation | **Evidence model chosen explicitly: quote the SOURCE assertions plus the pass verdict.** A passing exact-set assertion *is* the observation. Follows S27's gate 6c — a quoted source construct is read, not inferred — and adds no code to `epiphany-core` written solely for a report |
+| 3 | **Gate 4's rationale still said row 11 is "conditional"**, which revision D changed to decided-unused. *(A fourth site under pin 10a said "carrying it conditionally costs nothing" — found by sweep)* | Both updated. **The subset rule itself is unaffected**; only its rationale needed the current term |
+
+**Finding 1 is revision D's own lesson, unapplied to revision D.** It closed by
+distinguishing a rule with no *consumer* from a rule with no *observer* — and then wrote
+a requirement with neither. **An unnamed artifact cannot be gated**, because every gate
+in this contract names what it checks.
+
+**Finding 2 is the more interesting failure: a gate that specified the right thing to
+know and the wrong way to know it.** Exactness is the correct requirement; *"quote the
+runtime return"* was a mechanism borrowed from gates that run commands and read stdout,
+applied to a unit test that emits nothing on success. **A gate must name evidence the
+prescribed artifact actually produces** — otherwise execution improvises, and improvised
+instrumentation is unpinned scope arriving through the report.
+
+**The pattern across revisions A–E is sharper than any individual finding: a correction
 propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the sweep
 caught row 11 and stopped before §6's consumer; rev D found pin 10a's *decision* still
 deferred after two reworders. Rev A removed item 1's mutation tally and left item 2's
@@ -737,7 +761,9 @@ table below, which is retained for that case and for the next rung.
 > **`CLAUDE.md` names this file by name as a recurring escapee**, it escaped the
 > format-epoch rung's table, and S27 had to add it mid-execution. **A file that must
 > change but is not listed silently drops out of the commit**, and the failure surfaces
-> on someone else's branch. Carrying it conditionally costs nothing if unused.
+> on someone else's branch. **Carrying it as a decided-unused row costs nothing and
+> documents the decision** — revision E; it read "carrying it conditionally costs nothing
+> if unused" until revision D removed the conditionality.
 
 **Pin 9 — no byte artifact moves.**
 `spec/vectors/decode_vectors.txt`, `ops/src/vectors.rs:829`'s literal-byte
@@ -880,14 +906,30 @@ mechanism can detect a semantics change. They must be **updated, not deleted or
   that violates the **S→G direction — a staff whose `group` names a group whose
   `members` omit it — and NOT the G→S direction**, and survives shrinking.
   **The direction is PINNED here, in revision C.**
-- **The direction needs its own permanent assertion — REVISION D.** **No existing
-  `all()`-driven test can observe it.** `negative_generators_are_reasonably_targeted`
-  (`:1037`) collects `kinds: BTreeSet<GraphInvariant>` and allows `kinds.len() <= 3`, but
-  **both directions of invariant 21 are the same `GraphInvariant` variant**, so they
-  collapse to one element and the bound is blind to the distinction; the other three
-  loops assert only `!is_empty()`. Add a dedicated test in `generators.rs`'s test module
-  asserting `violating_score(StaffGroupMembershipAgreement, seed)` violates **S→G and
-  not G→S**, with the witness ids quoted in the report.
+- **The direction needs its own permanent, NAMED test — REVISION D, name pinned in
+  REVISION E.** **No existing `all()`-driven test can observe direction.**
+  `negative_generators_are_reasonably_targeted` (`:1037`) collects
+  `kinds: BTreeSet<GraphInvariant>` and allows `kinds.len() <= 3`, but **both directions
+  of invariant 21 are the same `GraphInvariant` variant**, so they collapse to one
+  element and the bound is blind to the distinction; the other three loops assert only
+  `!is_empty()`.
+
+  Add to `generators.rs`'s test module, named **exactly**:
+
+  ```
+  invariant_21_negative_generator_breaks_staff_to_group_only
+  ```
+
+  It MUST assert, on `violating_score(StaffGroupMembershipAgreement, seed)`:
+  **(i)** `check_invariants` returns **exactly one** violation and it is
+  `StaffGroupMembershipAgreement`; **(ii)** that violation's witness names the **S→G**
+  staff and group ids; **(iii)** the **G→S** direction is satisfied, asserted directly.
+
+  > **Revision D required this test and gave it no name — so nothing consumed it.**
+  > Gate 6 named only `m41`/`m41b`, and §6 item 2d asks for shrink evidence. **Omitting
+  > the test entirely would still compile, satisfy all four `all()` loops, and pass every
+  > named gate.** An unnamed obligation has no consumer, which is revision D's own
+  > closing lesson applied to the requirement revision D wrote.
 
   > **"Both directions" was wrong here and incompatible with M6 — corrected in revision
   > B.** `violating_score` returns **one** `Score` per variant, so it cannot carry two
@@ -1050,9 +1092,12 @@ weakening is invisible.
    **`cargo fmt --all` is forbidden** — it reaches `spikes/` through path dependencies.
 4. `git diff --cached --check` → clean after staging. **The staged list is a SUBSET of
    §2, not an equality — corrected by draft amendment 1.** "Exactly §2" is
-   **unsatisfiable** here because row 11 is conditional: read literally it fails whenever
-   a conditional row is correctly unused, or invites staging an unchanged file to satisfy
-   it. **Instead:** every staged path must appear in §2, **and** every §2 row must be
+   **unsatisfiable** here because **row 11 is deliberately unused** (pin 10a decided in
+   revision D that no label is minted): read literally, "exactly §2" fails whenever a row
+   is correctly unstaged, or invites staging an unchanged file to satisfy it.
+   *(This said "row 11 is conditional" until revision E — true when written, and revision
+   D made the row **decided-unused** rather than conditional. **The subset rule is
+   unaffected**; only its rationale needed the current term.)* **Instead:** every staged path must appear in §2, **and** every §2 row must be
    either staged or **named in the report as unused, with its reason.** Neither
    direction may be silent. *(This is S27's round-17 correction; S16 carried the
    formulation S27 had already found unsatisfiable.)*
@@ -1073,11 +1118,35 @@ weakening is invisible.
    both verdicts reported, and each confirmed to satisfy the direction it does not
    break.** *(Revision C: this asked for one score, which left one branch with no durable
    coverage once M6 was reverted.)*
-   **Report the EXACT violation set each fixture produces — revision D.** Quote
-   `check_invariants`' full return for both, showing **one** violation each and its
-   witness ids. *(This gate asked for the target verdict and the opposite direction's
-   absence, but **not the absence of invariants 1–20**, so a fixture carrying an
-   unrelated second defect passed every stated check.)*
+   **And `invariant_21_negative_generator_breaks_staff_to_group_only`** (touch row 8),
+   which is the only consumer of the generator's pinned direction. **Three tests, all
+   run, all verdicts reported — revision E**; revision D named two and left the third
+   with no gate.
+
+   **EVIDENCE MODEL — CHOSEN EXPLICITLY IN REVISION E. Quote the SOURCE assertions plus
+   the pass verdict; do NOT claim a runtime return.**
+
+   Revision D said *"quote `check_invariants`' full return … and its witness ids"*, which
+   **the prescribed tests cannot emit**: they are `assert!`-style tests in `m40`'s shape,
+   and `cargo test` prints `ok` for a passing test, not local values. A report obeying
+   that literally would need either **unpinned `--nocapture` instrumentation added purely
+   to produce it**, or inference from source dressed up as observed output. **Neither is
+   evidence.**
+
+   So for each of the three tests, the report gives:
+   1. **The exact-set assertion, quoted verbatim from source** — the `len() == 1` and
+      invariant-identity assertions, and the witness-id assertion.
+   2. **The test's pass verdict** from `cargo test`.
+
+   **A passing exact-set assertion IS the observation**; the assertion text says what was
+   checked and the verdict says it held. *(This follows S27's gate 6c, which quotes a
+   struct definition rather than grepping for it: **a quoted source construct is read,
+   not inferred**. Adding print instrumentation to satisfy a report would be new,
+   unpinned code in `epiphany-core` written for no other purpose.)*
+
+   *(Revision D added the exactness requirement because this gate checked the target
+   verdict and the opposite direction but **not the absence of invariants 1–20**, so a
+   fixture carrying an unrelated second defect passed every stated check.)*
    `all().len() == 21` and the `core_spec.tex` enumeration ending at 21 are checked
    **in addition**, never instead.
 7. **Every test named in pin 8** runs, each verdict reported. *(Read "the four pin-8
@@ -1207,6 +1276,12 @@ its evidence at `invariants.rs:69`–`:71` must stay intact.
    could read** (it does not — it calls `check_invariant(score, inv)`). Deferring a
    readable fact to execution is not caution; it is unfinished drafting handed downstream
    as an obligation.
+2e. **The three invariant-21 tests' verdicts** — `m41`, `m41b`, and
+   `invariant_21_negative_generator_breaks_staff_to_group_only` — **each with its
+   exact-set and direction assertions quoted from source**, per gate 6's evidence model.
+   **No runtime return or witness dump is claimed**; a passing exact-set assertion is the
+   observation. **ADDED IN REVISION E**, which found the generator test required by
+   revision D but consumed by nothing.
 2a. **REWRITTEN 2026-08-09 — it required the opposite of what is now correct.** It read:
    *"For pin 0: confirmation that **nothing** was added claiming to reject or detect
    stale canonical bases, and that the break is recorded only in prose."* That was right
