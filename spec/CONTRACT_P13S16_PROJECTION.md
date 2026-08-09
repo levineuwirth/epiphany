@@ -2087,10 +2087,14 @@ its evidence at `invariants.rs:69`–`:71` must stay intact.
    verdict by name**, and each named structural gate's output. **An omitted named
    artifact is a finding**, as is any failure outside the table's "MUST fail" column or
    any listed failure that did not occur.
-   **The count is NOT stated here — corrected on review.** It read *"the nine mutations
-   (M1–M9)"*, and M7's split into **M7a and M7b** makes ten executions, so a report could
-   not both enumerate them and obey the tally. **§3 is the single origin**; a count here
-   goes stale the next time a mutation splits, exactly as this one did.
+   **No count is stated here. §3's table is the single origin — read its rows.**
+   *(This item read "the nine mutations (M1–M9)", a tally a report could not both
+   enumerate and obey once mutations began splitting. **The replacement then stated a
+   count of its own**, which went stale when M6 split as well as M7 — while the very
+   sentence carrying it warned that "a count here goes stale the next time a mutation
+   splits". **Removed in ratification round 10**: an explanation of a removed count must
+   not restate a count, which is revision J's rule applied to item 1 after J applied it
+   to item 2.)*
 2. **Every gate listed in §4**, each with its command and output. **No count is stated
    here — §4 is the single origin.** Where a gate has lettered subchecks, they are
    reported **under that gate**, not as separate results.
