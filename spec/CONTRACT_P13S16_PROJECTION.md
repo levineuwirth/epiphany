@@ -368,6 +368,31 @@ observation is a single value under `assert_eq!`, the default diagnostic carries
 `assert!(matches!(…))`, which prints nothing, and the report must say which form each
 uses. Where it is composite or behind an unreachable assertion, a harness is required.
 
+### RATIFICATION ROUND 4 — independent, whole-artifact, against `3e0a4d3`. One blocking finding.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **Pin 7a collapsed two fixtures into one binding.** `t8b` runs **two authoring orders** (§0.5) — two reductions over two different groups — but pin 7a bound *"the resulting `StaffGroup.members`"* and one filtered invariant result. **A single `members` local satisfies the harness while leaving either mutation's observation absent**, depending on which order it was taken from; the invariant result filtered from the wrong reduction is the *wrong verdict*, not a missing one | Pin 7a now binds **four**: spurious-order effect, spurious-order members, missing-order members, missing-order invariant-21 violations — **every** assertion formatting all four. **Gate 14** must establish **which order each binding came from**, not count bindings. **M1 and M2 name their own order** at every mention |
+
+**Round 3 fixed the channel and left the fixtures conflated.** It correctly established
+that a failing test has one output channel and that state must be bound before the
+assertion a mutation trips — then described the state as though `t8b` had one reduction.
+**The ordering rule was right and the inventory was wrong**, which is why the harness
+looked complete: three plausible bindings, none of them wrong on its face, and no way to
+tell from the pin that two of them are per-order.
+
+**"The resulting value" is not a value when there are two reductions.** That is the
+generalisable form, and it is the singular-noun cousin of the count defects: *a
+definite article asserts uniqueness exactly as silently as a number asserts a total.*
+Both read as precise and both hide the question of which one.
+
+**And gate 14 inherited gate 12's defect before gate 12's fix could reach it.** Gate 12
+was rewritten in revision H because a four-line aggregate proved a population and not a
+pairing; gate 14 was written in round 3 requiring *"three bindings"* — **the same shape,
+one section over, three rounds later.** It now requires the mapping. *(A fix reaching a
+peer is what ratification round 1 recorded; this is a fix failing to reach a gate written
+after it.)*
+
 **The pattern across revisions A–J is sharper than any individual finding: a correction
 propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the sweep
 caught row 11 and stopped before §6's consumer; rev D found pin 10a's *decision* still
@@ -945,21 +970,33 @@ emits nothing but its assertion diagnostics**, so unless the state is in those
 diagnostics it is unobtainable, and revision E already ruled out adding print
 instrumentation for a report.
 
-So `t8b` MUST:
+**`t8b` exercises TWO authoring orders (§0.5), which are two reductions over two
+different groups — so there are FOUR observations, not three. CORRECTED IN RATIFICATION
+ROUND 4.** Bind all four to locals **before any assertion**:
 
-1. **Bind all three observations to locals BEFORE the first assertion** — the
-   `OperationEffect` for the spurious-order `CreateStaffGroup`, the resulting
-   `StaffGroup.members`, and `check_invariants` filtered to
-   `StaffGroupMembershipAgreement`;
-2. **format all three into EVERY assertion's failure message**, not just the assertion
-   they most obviously belong to.
+| # | Binding | The mutation that needs it |
+|---|---|---|
+| 1 | **spurious-order `OperationEffect`** — `ContainerNotEmpty` when pin 1 holds | **M1**: becomes an applied effect |
+| 2 | **spurious-order `StaffGroup.members`** | **M1**: carries the spurious membership that reached the graph |
+| 3 | **missing-order `StaffGroup.members`** — `[s]` when pin 2 holds | **M2**: stays empty |
+| 4 | **missing-order `check_invariants`, filtered to `StaffGroupMembershipAgreement`** | **M2**: the disagreement the empty projection leaves |
 
-> **Requirement 2 is the load-bearing half, and ordering is why.** A failing test stops
-> at its **first** failed assertion, so state carried only in a later assertion's message
-> is never printed. Under M1 the spurious-order assertion fires; under M2 the
-> missing-order one does — **different assertions, and each must carry the whole state**,
-> or the mutation that trips the other one observes nothing. **Putting each value in
-> "its own" assertion is exactly the arrangement that fails.**
+**Then format ALL FOUR into EVERY assertion's failure message.**
+
+> **Bindings 2 and 3 are different groups in different reductions, and an earlier draft
+> of this pin collapsed them into one "resulting `StaffGroup.members`".** A single
+> `members` local satisfies the harness as written **while leaving either mutation's
+> required observation absent** — whichever order it was taken from. The invariant result
+> has the same problem: filtered from the wrong reduction it is the wrong verdict, not a
+> missing one. **A harness for two fixtures needs two sets of bindings; "the resulting
+> value" is not a value when there are two reductions.**
+>
+> **The ordering rule is unchanged and still load-bearing.** A failing test stops at its
+> **first** failed assertion, so state carried only in a later assertion's message is
+> never printed. **Under M1 the spurious-order assertion fires; under M2 the
+> missing-order one does** — different assertions, so each must carry the **whole** set.
+> **Putting each value in "its own" assertion is exactly the arrangement that fails**,
+> and splitting the set per order would reintroduce it one level down.
 
 **Pin 8 — the four G3a undo-repair tests are re-verified, not assumed. NAMED by draft
 amendment 1.** All four are in `crates/epiphany-ops/src/reduce.rs`:
@@ -1338,18 +1375,22 @@ Applied, **run**, output recorded verbatim, restored **by hand-editing back**.
 **M1 — the refusal fires. OBSERVATION TIGHTENED, draft amendment 1; CHANNEL PINNED IN
 RATIFICATION ROUND 3.** Remove pin 1's emptiness check. **Required observation:** a
 `CreateStaffGroup` carrying a **non-empty `members`** is now **applied instead of
-refused** — the resulting `OperationEffect` and the minted `StaffGroup.members`, showing
-the spurious membership that reached the graph. **Obtain them by quoting `t8b`'s
-spurious-order assertion failure verbatim**, which pin 7a's harness requires to carry
-all three observations. The assertion failing is the *symptom*; the applied mint is the
-observation.
+refused** — the **spurious-order** `OperationEffect` and the **spurious-order**
+`StaffGroup.members`, showing the spurious membership that reached the graph. **Obtain
+them by quoting `t8b`'s spurious-order assertion failure verbatim**, which pin 7a's
+harness requires to carry **all four** of its bindings — so this mutation's two are
+present whichever assertion fires. *(Read "all three observations" until round 4, when
+pin 7a's collapsed `members` binding was split per authoring order.)* The assertion
+failing is the *symptom*; the applied mint is the observation.
 
 **M2 — the maintenance fires. OBSERVATION TIGHTENED, draft amendment 1; CHANNEL PINNED
 IN RATIFICATION ROUND 3.** Remove pin 2's append. **Required observation:** after a
-`CreateStaff` naming a live group, `StaffGroup.members` is **still empty**, and invariant
-21's verdict on that state. **Obtain both by quoting `t8b`'s missing-order assertion
-failure verbatim** — the same harness, a different assertion, which is why pin 7a
-requires every assertion to carry the whole state.
+`CreateStaff` naming a live group, the **missing-order** `StaffGroup.members` is **still
+empty**, and the **missing-order** invariant-21 verdict on that state. **Obtain both by
+quoting `t8b`'s missing-order assertion failure verbatim** — the same harness, a
+different assertion and **a different reduction from M1's**, which is why pin 7a binds
+`members` and the invariant result **per authoring order** and requires every assertion
+to carry all four.
 
 **M3 — the re-carry stays idempotent.** Make pin 3 write maintained members into
 `staff_group_values`; a byte-identical re-carry must degrade from
@@ -1651,11 +1692,22 @@ weakening is invisible.
     formatted in. **M5 can only report what these messages print**, so a harness this
     gate does not check is a mutation that observes nothing.
 
-14. **Pin 7a's observation harness in `t8b` — ADDED IN RATIFICATION ROUND 3.** Quote from
-    source: the three bindings above `t8b`'s first assertion, and **every** assertion's
-    failure message showing all three formatted in. **Both M1 and M2 draw their required
-    observations from these messages, via different assertions** — so a message carrying
-    only "its own" value silently disarms whichever mutation trips the other one.
+14. **Pin 7a's observation harness in `t8b` — ADDED IN RATIFICATION ROUND 3, CORRECTED IN
+    ROUND 4.** Quote from source, above `t8b`'s first assertion, **all four** bindings —
+    **spurious-order effect, spurious-order members, missing-order members, missing-order
+    invariant-21 violations** — and **every** assertion's failure message showing **all
+    four** formatted in.
+
+    **Confirm bindings 2 and 3 come from the two different reductions**, not one value
+    reused: they are different groups, and a single `members` local satisfies a
+    four-line-shaped check while leaving one mutation's observation absent. **Name which
+    order each binding was taken from.**
+
+    > **Both M1 and M2 draw their observations from these messages, via different
+    > assertions** — so a message carrying only "its own" values silently disarms
+    > whichever mutation trips the other one. **This gate must establish a mapping from
+    > each binding to its order, not a count of bindings** — gate 12's lesson, one
+    > section over.
 
 ---
 
