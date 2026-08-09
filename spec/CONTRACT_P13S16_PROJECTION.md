@@ -986,7 +986,7 @@ here; that is S26's rung).
 **The count is not the test.** `all().len() == 21` passes with the dispatch arm
 deleted — the project already knows this, which is why
 `m40_check_invariants_dispatches_invariant_20` exists
-(`invariants.rs:6045`–`:6066`, whose own doc says *"`all().len() == 20` passes
+(`invariants.rs:6060`–`:6135`, whose own doc says *"`all().len() == 20` passes
 even with the dispatch arm deleted, so this row must instead show a score
 violating ONLY invariant 20 is actually flagged by the top-level
 `check_invariants` entry point"*). Pin 6 requires the **same behavioural shape**:
@@ -1839,7 +1839,7 @@ weakening is invisible.
    status`, not by inspection.
 6. Invariant 21 is reached **through `check_invariants`** on a score violating
    only it, in the shape of `m40_check_invariants_dispatches_invariant_20`
-   (`invariants.rs:6045`) — **for BOTH directions, by pin 6a's two named tests**:
+   (`invariants.rs:6063`) — **for BOTH directions, by pin 6a's two named tests**:
    `m41_check_invariants_dispatches_invariant_21_staff_names_absent_group` **and**
    `m41b_check_invariants_dispatches_invariant_21_group_lists_unowned_staff`. **Both run,
    both verdicts reported, and each confirmed to satisfy the direction it does not
