@@ -26,8 +26,19 @@ deliberately: a tally of tally-staleness would be one more thing to keep current
 
 > **The invariant, stated so this block cannot go stale again: the MOST RECENT
 > amendment always needs the next independent pass before completion is accepted.**
-> Which one that is, is the **last row** of the history table. No amendment number
-> appears in this paragraph, deliberately.
+> **Which one that is, mechanically — LOCATOR FIXED BY AMENDMENT 7.** Read the **last
+> `execution review` row** of the history table: the row **immediately above `Total`**.
+> The amendment it produced carries the **same number** — review *N* produced amendment
+> *N*, one per row, by construction. *(It read "the last row", and the literal last row
+> is `Total`; the last review row names a **review**, not an amendment. The rule could
+> not be followed to an answer.)* No amendment number appears in this paragraph,
+> deliberately.
+>
+> **The amendment blocks below carry NO live status, and none may be added — amendment
+> 7.** Each once ended with its own *"this amendment needs another independent pass"*,
+> which made **six** standing instructions for a question that has exactly one answer,
+> five of them already false. They are now dated records of what closed. **This
+> paragraph is the only place in the document that says which pass is outstanding.**
 >
 > **And the rule for WHICH figures in this document are allowed to look stale, because
 > execution reviews 5 and 6 each had to rediscover it — amendment 6.** A figure recording
@@ -285,7 +296,8 @@ rows — read it off, do not restate it.
 | execution review 4 | 3 | 3 | **yes — 2 of 3; the third from sweeping the adjacent row** |
 | execution review 5 | 5 | 4 | **yes — 3 of 5; two from the sweep** |
 | execution review 6 | 3 | 1 | **yes — 2 of 3; the third from the sweep** |
-| **Total** | **92** | **67** | one amendment per row |
+| execution review 7 | 3 | 3 | **yes — 2 of 3; the third from the sweep** |
+| **Total** | **95** | **70** | one amendment per row |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -730,8 +742,8 @@ requiring one normalisation step matches the probe history, and the mismatched-b
 control reaches the staged writer check and produces the required error. **No
 additional M7 contradiction found.**
 
-**Status: the staged implementation is NOT accepted.** This amendment needs
-**another independent pass** before it can be.
+**Status when written (CLOSED):** the staged implementation was not accepted, and this
+amendment needed another independent pass. **That pass closed as execution review 2.**
 
 **Post-ratification amendment 2 — 2026-08-09, on the independent review of
 amendment 1.** Five findings, **four blocking**. **Four came from the review; the
@@ -780,9 +792,10 @@ staging clean across all 21 modified paths. **It returned nothing against M7, no
 against any test or mutation observation.** Two consecutive independent reviews have
 now examined M7 and found it internally coherent.
 
-**Status: the staged implementation is still NOT accepted.** Amendment 2 changed
-pins, so it needs its own independent pass; **gates 4 and 4a MUST be re-run and
-re-reported**, the prior gate-4 result having been withdrawn.
+**Status when written (CLOSED):** amendment 2 changed pins, so it needed its own
+independent pass — **that pass closed as execution review 3** — and it ordered gates 4
+and 4a re-run and re-reported, the prior gate-4 result having been withdrawn. **Those
+re-runs were carried out**, under this amendment and again under amendment 4.
 
 **Post-ratification amendment 3 — 2026-08-09, on the independent review of
 amendment 2.** Six findings, **five blocking**. **Three came from the review, three
@@ -822,11 +835,10 @@ amendment-1 findings closed and the staged implementation **structurally clean**
 returned nothing against M7, any test, or any mutation observation; **three
 consecutive reviews have now left those untouched.**
 
-**Status: the staged implementation is still NOT accepted.** Amendment 3 changed
-**pin 3**, which is a stronger claim than amendment 2's changes and needs its own
-independent pass. Amendment 3 changed no staging rule, no gate mechanic and no touch
-row, so gates 4, 4a and §2's rules A/B were re-run under amendment 2 and are
-unaffected.
+**Status when written (CLOSED):** amendment 3 changed **pin 3**, a stronger claim than
+amendment 2's changes, and needed its own independent pass — **that pass closed as
+execution review 4.** It changed no staging rule, no gate mechanic and no touch row, so
+gates 4, 4a and §2's rules A/B stood on their amendment-2 runs.
 
 > **This paragraph also said "gates 1–3 stand on an unchanged staged tree", and that
 > was FALSE — corrected by amendment 4.** The staged tree was **not** unchanged:
@@ -875,11 +887,11 @@ distinction is the whole of finding 1.
 was true when written, left standing without a marker once a later round overruled it.
 The disposition column is a *history*; unmarked, it reads as *instruction*.
 
-**Status: the staged implementation is still NOT accepted.** Amendment 4 changed no
-pin, no gate mechanic, no touch row and no staging rule — it corrected two false
-status claims, re-ran gates 1–3, and marked two superseded dispositions. It still
-needs an independent pass, but it is the first amendment whose changes are confined to
-the historical record and the gate evidence.
+**Status when written (CLOSED):** amendment 4 changed no pin, no gate mechanic, no
+touch row and no staging rule — it corrected two false status claims, re-ran gates 1–3,
+and marked two superseded dispositions. It was the first amendment whose changes were
+confined to the historical record and the gate evidence. **Its pass closed as execution
+review 5.**
 
 **Post-ratification amendment 5 — 2026-08-09, on the independent review of amendment
 4.** Five findings, **four blocking**. Three from the review, two from sweeping.
@@ -908,12 +920,11 @@ deletion**: the history table replacing prose tallies, row 13's count removed, p
 57 removed, the rung-type figures removed, and now the status block's count and
 amendment number removed. **Every fix that was a more careful restatement has failed.**
 
-**Status: the staged implementation is still NOT accepted**, and amendment 5 needs the
-next independent pass. It touches **no pin, no gate, no test, no mutation, no touch row
-and no staged file** — so gates 1–3 (re-run cold under amendment 4) and gates 4, 4a and
-§2's rules A/B (re-run under amendments 2 and 4) all stand on evidence that amendment 5
-does not disturb. **This is stated as a scope claim, not as an inferred gate result** —
-the distinction amendment 4 exists to enforce.
+**Status when written (CLOSED):** amendment 5 touched **no pin, no gate, no test, no
+mutation, no touch row and no staged file** — so gates 1–3 (re-run cold under amendment
+4) and gates 4, 4a and §2's rules A/B (re-run under amendments 2 and 4) stood on
+evidence it did not disturb. **A scope claim, not an inferred gate result** — the
+distinction amendment 4 exists to enforce. **Its pass closed as execution review 6.**
 
 **Post-ratification amendment 6 — 2026-08-09, on the independent review of amendment
 5.** Three findings, **one blocking**. Two from the review, one from the sweep. **All
@@ -946,9 +957,38 @@ be written at all — wherever it sits.** Location does not decide it; tense and
 do. That rule is now in the invariant block, because both reviews found the defect by
 applying it implicitly and no statement of it existed to apply.
 
-**Status: the staged implementation is still NOT accepted**, and amendment 6 needs the
-next independent pass. Like amendment 5 it touches **no pin, gate, test, mutation,
-touch row or staged file** — a scope claim, not an inferred gate result.
+**Status when written (CLOSED):** amendment 6 touched **no pin, gate, test, mutation,
+touch row or staged file** — a scope claim, not an inferred gate result. **Its pass
+closed as execution review 7.**
+
+**Post-ratification amendment 7 — 2026-08-09, on the independent review of amendment
+6.** Three findings, **all three blocking**. Two from the review, one from the sweep.
+**All three are failures of the invariant amendment 5 introduced and amendment 6
+refined** — the single-source rule did not survive contact with the text it was meant
+to govern.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **The invariant contradicted five older standing instructions.** It says only the most recent amendment needs a pass, while amendments 1–5 each still ended *"this amendment needs another independent pass"* — **five live commands, all false**, plus amendment 2's order to re-run gates 4 and 4a, already carried out twice. **Creating a single source did not remove the other five** | All six closers rewritten as **dated records** — *"Status when written (CLOSED) … its pass closed as execution review N."* The invariant now states outright that the amendment blocks carry no live status and none may be added |
+| **2** | **The invariant's locator could not identify the pending amendment.** It said read *"the last row"* of the history table — but the literal last row is **`Total`**, and the last review row names *"execution review 6"*, an event, not an amendment. **The rule could not be followed to an answer** | Locator fixed: the **last `execution review` row, immediately above `Total`**, and the amendment it produced carries the **same number** — review *N* → amendment *N*, one per row, by construction |
+| **3** | **Amendment 6's own closer had the same defect.** *(Sweep.)* The review named amendments 1–5; amendment 6's said *"amendment 6 needs the next independent pass"* — **true when written, false the moment amendment 7 existed.** Fixing only the five would have rebuilt the contradiction on the next commit | Included in finding 1's treatment. **Six closers, not five** |
+
+**Finding 1 is the failure mode this document has now demonstrated at every scale.**
+Amendment 5 removed a count and wrote an invariant to own it; amendment 6 refined the
+invariant; **neither swept the five places already answering the question the invariant
+claimed to own.** *A single source of truth is not created by declaring one — it is
+created by deleting the others.* That sentence is the whole of the last three
+amendments, and it had to be learned three times: for counts (amendment 2), for figures
+in general claims (amendment 6), and now for **instructions**.
+
+**Finding 3 is why the review's own scope was insufficient**, and it generalises: a
+correction that fixes every *currently false* instance of a claim, but leaves the one
+instance that is *currently true*, has scheduled its own recurrence. The true one goes
+false on the next event. **Correct by class, not by current truth value.**
+
+**Status when written:** amendment 7 touched **no pin, gate, test, mutation, touch row
+or staged file** — a scope claim, not an inferred gate result. Which pass is now
+outstanding is the **invariant at the top**, and this block deliberately does not say.
 
 **Review round 19 — 2026-08-08, independent, against the round-17/18 working
 tree. ZERO FINDINGS. The first clean round in nineteen.**
