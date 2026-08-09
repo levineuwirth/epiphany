@@ -10,16 +10,32 @@ them, having gone stale in two consecutive rounds by doing so.
 execution is **reported, not patched in place** — if it needs a pin change, that
 is its own amendment with its own review round.
 
-**IMPLEMENTED 2026-08-09, STAGED, and NOT YET ACCEPTED.** **Three** independent
-reviews of the staged execution have closed, carried by **post-ratification
-amendments 1, 2 and 3** below. **Every finding in amendments 2 and 3 was a defect
-in the previous amendment's own text; none was in the implementation.** That is the
-pattern this contract's history table has shown since round 3 — *the amendment
-written to fix a round is where the next round's defects are* — and it has now held
-across three consecutive post-ratification amendments. Amendment 3 changed **pin 3**
-and the rung-type paragraph, so it **needs its own independent pass before
-completion is accepted.** The implementation remains staged and uncommitted; only
-the amendments are committed.
+**IMPLEMENTED 2026-08-09, STAGED, and NOT YET ACCEPTED.** The implementation remains
+staged and uncommitted; only the amendments are committed.
+
+**How many post-ratification reviews have closed, which amendment each produced, and
+what each found are THE HISTORY TABLE'S ROWS. This block does not restate them —
+amendment 5.** It said *"**Three** independent reviews … amendments 1, 2 and 3 …
+Amendment 3 changed **pin 3** … needs its own independent pass"* — written while
+amendment 4 was being added three screens below, and stale before the commit landed.
+**That is count-staleness by restatement again — the exact defect the history table was
+built to end** — and the second occurrence inside the status block the author edits
+every round. The history table's own preamble already states the rule: *read it off,
+do not restate it.* No ordinal is given for how many times this has now happened,
+deliberately: a tally of tally-staleness would be one more thing to keep current.
+
+> **The invariant, stated so this block cannot go stale again: the MOST RECENT
+> amendment always needs the next independent pass before completion is accepted.**
+> Which one that is, is the **last row** of the history table. No amendment number
+> appears in this paragraph, deliberately.
+
+**Every post-ratification amendment after the first was prompted by findings in the
+PREVIOUS amendment's own text, not in the implementation** — the pattern this
+contract's history table has shown since round 3: *the amendment written to fix a round
+is where the next round's defects are.* Stated without enumerating which amendments, so
+that adding a row cannot falsify it — the paragraph that stood here listed them, and
+would have gone stale on the next one, three lines below the invariant forbidding
+exactly that.
 
 **The implementation has changed ONCE since execution, and only once: amendment 1
 corrected a false comment in `bundle.rs`.** *(Amendment 3 claimed it had "survived
@@ -40,7 +56,12 @@ top: it was measured against §2's touch table alone, while §2 also carried an
 contradicted without noticing. **A file can satisfy the touch table and violate
 the contract in the same commit**, because a touch table and an absence rule are
 the same allowlist read from two directions and only one direction was checked.
-Gates 4 and **4a** must be re-run and re-reported against the contract as amended.
+
+**Gates 4 and 4a WERE re-run and re-reported against the contract as amended** —
+under amendment 2 when 4a was created, and again under amendment 4. *(This read
+"**must** be re-run" until amendment 5: an instruction left standing after it had been
+carried out, so the top of the document demanded work the record below showed was
+done. Instructions go stale the same way counts do.)*
 
 **Round 1's ratification was WITHDRAWN**, and the distinction matters. It was
 claimed on 2026-08-07 after a single round; round 2 then found four more blocking
@@ -49,18 +70,28 @@ amendments. **A ratification that a subsequent round falsifies that quickly was
 not a ratification.** This one rests on a different footing: **19 rounds, 65
 findings, 47 blocking, and a clean independent round at the end.**
 
-**What ratification does NOT settle, stated at the top so it is not missed:**
+**What ratification did NOT settle — the RATIFICATION-TIME record of 2026-08-08.
+SUPERSEDED BY EXECUTION; marked, not deleted, by amendment 5.** Every bullet below was
+true when written and **two of the three are now false**. They read as current until
+amendment 5, in the block placed *"at the top so it is not missed"* — so the first
+thing a reader met was a claim that nothing had run.
 
-- **M7's authority/base leg is unverifiable until this rung is implemented** —
+- ~~**M7's authority/base leg is unverifiable until this rung is implemented**~~ —
   `BundleCapabilities` and `CURRENT_REDUCTION_ALGORITHM_VERSION` are its own
-  deliverables. It is an **execution requirement**.
-- **Every gate, test and mutation is specified and none has been run.** Nineteen
-  rounds went into the claim that they *can* be run and that their results *would*
-  be evidential. **Execution is what tests that claim.**
-- **The execution report is subject to independent review before completion is
-  accepted** — required by the owner at dispatch, and specifically covering
-  **M7's three observations and its control**. The document's quality came from
-  the independent rounds; the report gets the same treatment.
+  deliverables, so this was an **execution requirement**. **DISCHARGED at execution:**
+  M7 ran, returning byte-equal images with the mismatched-version control rejected;
+  three independent reviews have since examined it and returned nothing against it.
+- ~~**Every gate, test and mutation is specified and none has been run**~~ — nineteen
+  rounds went into the claim that they *can* be run and their results *would* be
+  evidential. **They have now been run and reported.** Gates 1–3 were additionally
+  **re-run cold** under amendment 4; gates 4, 4a and §2's rules A/B under amendments 2
+  and 4.
+- **STILL OPEN — the only one of the three that is, and it has not weakened:** the
+  execution report **and every amendment to it** are **subject to independent review
+  before completion is accepted** — required by the owner at dispatch, and specifically
+  covering **M7's three observations and its control**. The document's quality came from
+  the independent rounds; the report gets the same treatment, and five reviews of it
+  have now closed.
 
 ### One narrow, explicit exception to "no execution work" — granted 2026-08-08
 
@@ -186,8 +217,18 @@ before the rung reports** — carried in §7 as the observation M7 owes.
 it.** It establishes that when the authority leg becomes runnable, the comparison
 it runs will be sound — *provided* steps 1a–1c hold. **Do not cite the probe as
 having demonstrated laundering. It demonstrated nothing about bases; it carried
-none.** **No execution work may begin** — not implementation, not staging,
-not partial work against "the settled pins."
+none.**
+
+> **The sentence that stood here — *"No execution work may begin — not
+> implementation, not staging, not partial work against 'the settled pins'"* — was
+> LIFTED at ratification and dispatch on 2026-08-08, and is retained as the record of
+> the probe's authorisation boundary. Marked by amendment 5.** It sat in the *Probe
+> RESULT* subsection, **three subsections past** the `SUPERSEDED BY RATIFICATION`
+> marker that covers the exception itself, and was therefore the last thing a reader
+> met before the history table: an absolute prohibition on the work the rest of the
+> document reports as done. **A supersession marker governs the section it heads, not
+> every later restatement of what it superseded** — which is the same fix-every-site
+> rule this contract has recorded since round 1, applied to markers instead of counts.
 
 **History — the running tally, which has now gone stale three times and been
 restructured twice to stop it.** Every amendment is a row. **There is no separate
@@ -223,7 +264,8 @@ rows — read it off, do not restate it.
 | execution review 2 | 5 | 4 | **yes — 4 of 5; the fifth from the fix-every-site sweep** |
 | execution review 3 | 6 | 5 | **yes — 3 of 6; three from the sweep, two of those in a pin** |
 | execution review 4 | 3 | 3 | **yes — 2 of 3; the third from sweeping the adjacent row** |
-| **Total** | **84** | **62** | one amendment per row |
+| execution review 5 | 5 | 4 | **yes — 3 of 5; two from the sweep** |
+| **Total** | **89** | **66** | one amendment per row |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -818,6 +860,40 @@ pin, no gate mechanic, no touch row and no staging rule — it corrected two fal
 status claims, re-ran gates 1–3, and marked two superseded dispositions. It still
 needs an independent pass, but it is the first amendment whose changes are confined to
 the historical record and the gate evidence.
+
+**Post-ratification amendment 5 — 2026-08-09, on the independent review of amendment
+4.** Five findings, **four blocking**. Three from the review, two from sweeping.
+**Every one is stale current-status prose** — no pin, gate, test, mutation or staged
+file is touched.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **The top status block said "Three independent reviews … amendments 1, 2 and 3 … Amendment 3 … needs its own independent pass"** — written while amendment 4 was being added three screens below, and stale before that commit landed. **Sixth count-staleness in this document, second inside the status block itself** | **The count and the amendment number are REMOVED from the block**, replaced by an invariant that cannot go stale — *the most recent amendment always needs the next pass; read the last table row for which one that is.* No amendment number appears there now |
+| **2** | **"Gates 4 and 4a must be re-run and re-reported"** stood at the top after both had been re-run — twice. **An instruction outliving its execution**, so the document's opening demanded work its own record showed complete | Changed to past tense with the two runs named. *Instructions go stale the same way counts do* — recorded, because every prior staleness finding in this document was about a count or a claim, never an imperative |
+| **3** | **"What remains open after ratification" was still pre-execution text**, asserting M7 unverifiable and that no gate, test or mutation had run. Both false | Marked as the **ratification-time record**, bullets struck through with their execution outcomes, and the one bullet that *is* still open identified as the only one |
+| **4** | **A SECOND copy of that block sat higher in the document** — *"What ratification does NOT settle, stated at the top so it is not missed"* — with the identical staleness. *(Sweep.)* Being higher, it was read **first**: the opening of the contract told a reader nothing had run | Same treatment; and the duplicate third bullet the two blocks shared is now **merged into one** rather than corrected twice |
+| 5 | **"No execution work may begin — not implementation, not staging"** read as live. *(Sweep.)* It sits in the *Probe RESULT* subsection, **three subsections past** the `SUPERSEDED BY RATIFICATION` marker covering the exception, so it was the last thing before the history table | Marked lifted-at-dispatch and retained as the probe's authorisation boundary |
+
+**Findings 4 and 5 give the rule this document had not yet stated: a supersession
+marker governs the section it heads, not every later restatement of what it
+superseded.** Both blocks and the prohibition were *downstream* of markers that
+already existed, and each still read as current. This is the fix-every-site rule —
+recorded here since round 1 for counts — applied to **markers**.
+
+**The five amendments now have one diagnosis, and it is not carelessness about
+wording.** Amendment 1 fixed a missing surface; 2, 3, 4 and 5 each fixed **duplicated
+state** — a count, a figure, a disposition, a status claim, an instruction — restated
+in a second place and updated in only one. **Every structural fix that has held was a
+deletion**: the history table replacing prose tallies, row 13's count removed, pin 3's
+57 removed, the rung-type figures removed, and now the status block's count and
+amendment number removed. **Every fix that was a more careful restatement has failed.**
+
+**Status: the staged implementation is still NOT accepted**, and amendment 5 needs the
+next independent pass. It touches **no pin, no gate, no test, no mutation, no touch row
+and no staged file** — so gates 1–3 (re-run cold under amendment 4) and gates 4, 4a and
+§2's rules A/B (re-run under amendments 2 and 4) all stand on evidence that amendment 5
+does not disturb. **This is stated as a scope claim, not as an inferred gate result** —
+the distinction amendment 4 exists to enforce.
 
 **Review round 19 — 2026-08-08, independent, against the round-17/18 working
 tree. ZERO FINDINGS. The first clean round in nineteen.**
