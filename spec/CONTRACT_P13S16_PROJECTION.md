@@ -107,7 +107,7 @@ restated away from its origin. Removed, pin 8's table named instead.
 |---|---|---|
 | **1** | **Neither direction had permanent named coverage.** Pin 6 asked for *"a score violating only invariant 21"* (singular), gate 6 asked for one, the generator carries one, and **M6 observed both only while mutated.** A mutation is reverted, so the restored suite could ship with one branch untested | **Pin 6a** added: two permanent direction-isolated tests, `m41_..._staff_names_absent_group` (S→G) and `m41b_..._group_lists_unowned_staff` (G→S), each required to *satisfy* the direction it does not break. **Gate 6 requires both**; **M6 now breaks those exact tests, one each, and requires the sibling to still pass** |
 | **2** | **"One named direction" delegated a design decision to execution.** Either choice changes the generated witness and the shrink evidence, so reporting it afterward is not specifying it | **Pinned to S→G** in touch row 8, with the reason: smallest corruption of `valid_score`, matching every other arm's doctrine, **and the exact shape pin 2's append failing produces** — what M2 observes |
-| 3 | **§6's revision-B history said §4 has "twelve entries — 1–11 plus 4a"**, a false identity: `4a.` was a gate-numbered **scope note** with no command and no output, colliding with **§4a**, the landing-obligation section | The note is **demoted out of the gate numbering** into gate 4's body. §4 now has **eleven gates, 1–11**; `§4a` is unambiguous |
+| 3 | **§6's revision-B history said §4 has "twelve entries — 1–11 plus 4a"**, a false identity: `4a.` was a gate-numbered **scope note** with no command and no output, colliding with **§4a**, the landing-obligation section | The note is **demoted out of the gate numbering** into gate 4's body, so no gate carries an `a` suffix and `§4a` is unambiguous. *(This cell stated a gate count until revision J; **§4 is the origin and no count is restated anywhere**.)* |
 
 **Revision C's finding 1 is the strongest evidence for a rule this contract already
 states and did not apply to itself.** Pin 3a says *"a mutation demonstrates the hazard
@@ -251,7 +251,33 @@ revision H's usual shape — but **a gate with no passing state at all.** It wou
 been discovered at execution, by an agent forced to choose between obeying the boundary
 and obeying the requirement, and whichever it chose would have been reported as a pass.
 
-**The pattern across revisions A–I is sharper than any individual finding: a correction
+### Draft amendment 1, revision J — independent review of `9e43994`
+
+**One blocking finding in three live consumers: adding gate 12 restored the tally defect
+this contract had already removed twice.**
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **Three sites still said §4 has "eleven gates, 1–11"** after revision G added gate 12: revision C's disposition for its finding 3, gate 4's scope note, and **§6 item 2 — immediately after the words "No count is stated here — §4 is the single origin."** | **All three counts REMOVED, not updated.** The revision-C record now says only that the `4a.` scope note was demoted; gate 4's note identifies `§4a` without counting gates; §6 item 2 keeps the pointer to §4 and adds only that lettered subchecks report under their gate |
+
+**§6 item 2 is the one that indicts the method.** It declared §4 the single origin and
+restated a count in the same breath — **the defect naming itself.** Revision B removed
+*"the nine gate results"* from that very item; revision C's correction then wrote the
+then-current number into the explanation, and revision G's new gate made it false again.
+
+**The rule this makes explicit: a correction that EXPLAINS a removed count must not
+restate the corrected value.** Say what changed, not what the number now is — otherwise
+the record becomes a new instance of the defect it records, and the next addition to the
+set falsifies the explanation instead of the original. **Every count this contract has
+removed was re-created by the prose written to remove it.**
+
+**What the sweep confirms is still sound**, so the rule is not "no numbers anywhere": a
+count **at its origin, immediately above the table that enumerates the set** — pin 1a's
+three revised tests, pin 8's four G3a tests — is read off, not restated, and a change to
+the set edits the table and the adjacent word together. **The defect is a count living
+away from the set it counts.**
+
+**The pattern across revisions A–J is sharper than any individual finding: a correction
 propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the sweep
 caught row 11 and stopped before §6's consumer; rev D found pin 10a's *decision* still
 deferred after two reworders. Rev A removed item 1's mutation tally and left item 2's
@@ -1259,8 +1285,10 @@ weakening is invisible.
    > later amendment adds an absence rule, gate 4 does not cover it**: "appears in §2"
    > and "is not forbidden by §2" are different questions. *(This was numbered `4a.`,
    > which produced no command and no output — so it could not be "a gate result" — and
-   > collided with **§4a**, the landing-obligation section. §4 now has **eleven gates,
-   > 1–11**, and `§4a` is unambiguous.)*
+   > collided with **§4a**, the landing-obligation section. Demoted here in revision C,
+   > so **no gate carries an `a` suffix** and `§4a` names only the landing obligation.
+   > **The gate count that stood in this note until revision J is gone, not
+   > corrected.**)*
 5. `spec/vectors/decode_vectors.txt` **unmodified** (pin 9). Confirm by `git
    status`, not by inspection.
 6. Invariant 21 is reached **through `check_invariants`** on a score violating
@@ -1478,12 +1506,12 @@ its evidence at `invariants.rs:69`–`:71` must stay intact.
    not both enumerate them and obey the tally. **§3 is the single origin**; a count here
    goes stale the next time a mutation splits, exactly as this one did.
 2. **Every gate listed in §4**, each with its command and output. **No count is stated
-   here — §4 is the single origin.** *(It read "the nine gate results" while §4 carries
-   **eleven** gates, 1–11 — because draft amendment 1 added gates 10 and 11
-   and revision A expanded 11 into 11a–e. The 11a–e items are **subchecks of one gate**
-   and are reported under it; gates 10 and 11 are new results. This is the same
-   count-staleness the amendment had just removed from item 1 for mutations — removed in
-   one place, left standing in its neighbour.)*
+   here — §4 is the single origin.** Where a gate has lettered subchecks, they are
+   reported **under that gate**, not as separate results.
+   *(This item read "the nine gate results", then carried a corrected count, and the
+   corrected count went stale the moment a gate was added. **Revision J removed it rather
+   than updating it again** — restating a count beside the words "no count is stated
+   here" is the defect naming itself.)*
 2b. **Pin 12's bump and its `Bumps` entry**, with gate 10's two outputs; **and rows 9
    and 10's tripwire updates**, each quoted before and after, with gate 11's confirmation
    that neither was silenced. **ADDED BY DRAFT AMENDMENT 1.**
