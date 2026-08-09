@@ -28,20 +28,39 @@ deliberately: a tally of tally-staleness would be one more thing to keep current
 > amendment always needs the next independent pass before completion is accepted.**
 > Which one that is, is the **last row** of the history table. No amendment number
 > appears in this paragraph, deliberately.
+>
+> **And the rule for WHICH figures in this document are allowed to look stale, because
+> execution reviews 5 and 6 each had to rediscover it — amendment 6.** A figure recording
+> **what a given round found or did** is *historical*: correct as of its dated block,
+> and **never updated**. A figure inside a **general claim about the document's present
+> state** is *live*, and must not be written at all — **wherever it sits, including
+> inside an amendment block.** *"Amendment 3 returned six findings"* is historical and
+> stays. *"The five amendments share one diagnosis"* is live, and was the defect
+> execution review 6 found three lines below this invariant. **Location does not decide
+> it; tense and scope do.**
 
 **Every post-ratification amendment after the first was prompted by findings in the
-PREVIOUS amendment's own text, not in the implementation** — the pattern this
-contract's history table has shown since round 3: *the amendment written to fix a round
-is where the next round's defects are.* Stated without enumerating which amendments, so
-that adding a row cannot falsify it — the paragraph that stood here listed them, and
-would have gone stale on the next one, three lines below the invariant forbidding
-exactly that.
+previous amendment's text, OR in earlier text that a previous correction failed to
+sweep** — never in the implementation. The pattern this contract's history table has
+shown since round 3: *the amendment written to fix a round is where the next round's
+defects are.*
+
+> **The narrower claim — "in the PREVIOUS amendment's own text" — was FALSE, and the
+> amendment that wrote it disproved it in the same breath. Corrected by amendment 6.**
+> Amendment 5's own findings were a status block **amendment 3** left, a gate
+> instruction **amendment 2** wrote, and three pieces of ratification-time text
+> predating execution entirely — **not one of them written by the amendment
+> immediately before.** The corrected form covers both routes, and they are the same
+> failure either way: *state duplicated in a second place, updated in one.* Stated
+> without enumerating which amendments, so that adding a row cannot falsify it — the
+> paragraph that stood here listed them, and would have gone stale on the next one,
+> three lines below the invariant forbidding exactly that.
 
 **The implementation has changed ONCE since execution, and only once: amendment 1
 corrected a false comment in `bundle.rs`.** *(Amendment 3 claimed it had "survived
 all three reviews unchanged"; that was false, and amendment 4 corrects it.)* Every
 other defect found since execution has been in this contract rather than in the 21
-staged files — worth stating, because four rounds of amendment traffic can read as
+staged files — worth stating, because sustained amendment traffic can read as
 instability in the work when it is instability in the document describing it. But
 **"only a comment" is not a licence to infer a gate result**, which is what amendment
 3 did.
@@ -90,8 +109,8 @@ thing a reader met was a claim that nothing had run.
   execution report **and every amendment to it** are **subject to independent review
   before completion is accepted** — required by the owner at dispatch, and specifically
   covering **M7's three observations and its control**. The document's quality came from
-  the independent rounds; the report gets the same treatment, and five reviews of it
-  have now closed.
+  the independent rounds; the report gets the same treatment. **Which reviews of it have
+  closed is the history table below**, not a figure stated here.
 
 ### One narrow, explicit exception to "no execution work" — granted 2026-08-08
 
@@ -265,7 +284,8 @@ rows — read it off, do not restate it.
 | execution review 3 | 6 | 5 | **yes — 3 of 6; three from the sweep, two of those in a pin** |
 | execution review 4 | 3 | 3 | **yes — 2 of 3; the third from sweeping the adjacent row** |
 | execution review 5 | 5 | 4 | **yes — 3 of 5; two from the sweep** |
-| **Total** | **89** | **66** | one amendment per row |
+| execution review 6 | 3 | 1 | **yes — 2 of 3; the third from the sweep** |
+| **Total** | **92** | **67** | one amendment per row |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -880,8 +900,8 @@ superseded.** Both blocks and the prohibition were *downstream* of markers that
 already existed, and each still read as current. This is the fix-every-site rule —
 recorded here since round 1 for counts — applied to **markers**.
 
-**The five amendments now have one diagnosis, and it is not carelessness about
-wording.** Amendment 1 fixed a missing surface; 2, 3, 4 and 5 each fixed **duplicated
+**The amendments share one diagnosis, and it is not carelessness about
+wording.** The first fixed a missing surface; **every one since has fixed duplicated
 state** — a count, a figure, a disposition, a status claim, an instruction — restated
 in a second place and updated in only one. **Every structural fix that has held was a
 deletion**: the history table replacing prose tallies, row 13's count removed, pin 3's
@@ -894,6 +914,41 @@ and no staged file** — so gates 1–3 (re-run cold under amendment 4) and gate
 §2's rules A/B (re-run under amendments 2 and 4) all stand on evidence that amendment 5
 does not disturb. **This is stated as a scope claim, not as an inferred gate result** —
 the distinction amendment 4 exists to enforce.
+
+**Post-ratification amendment 6 — 2026-08-09, on the independent review of amendment
+5.** Three findings, **one blocking**. Two from the review, one from the sweep. **All
+three are defects amendment 5 introduced while fixing staleness**, which is the finding
+that matters more than any of them individually.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **Amendment 5's new meta-claim was false, and its own findings disproved it.** It said every post-ratification amendment after the first was prompted by defects in **the previous amendment's** text. Amendment 5's findings were a status block **amendment 3** left, a gate instruction **amendment 2** wrote, and three pieces of **ratification-time** text — none written by amendment 4 | Widened to *"the previous amendment's text, **or earlier text a previous correction failed to sweep**"*, which covers both routes. They are the same failure either way |
+| 2 | **Live tallies reintroduced immediately below the no-restatement invariant** — *"five reviews … have now closed"* and *"The five amendments now have one diagnosis"*, both stale at the next pass, three lines under the rule forbidding them | Replaced with a table pointer and non-numeric phrasing |
+| 3 | **A third live tally in the same block.** *(Sweep.)* *"four rounds of amendment traffic can read as instability"* — same class, same paragraph group, missed by the review | Made non-numeric |
+
+**Finding 1 is the sharper one, because the false claim was load-bearing.** It was the
+document's own account of *why* it keeps needing amendments, and the narrow version
+pointed the next reader at the wrong place to look — at the last amendment, rather than
+at every prior correction that stopped short of a full sweep. **Amendment 5 fixed five
+staleness defects and, in the same edit, three of them were in text that no recent
+amendment had touched.** The corrected claim is the one that would have predicted that.
+
+**Finding 2 is the pattern arriving at its limit case: a rule violated three lines
+below its own statement.** Amendment 5 removed a count from the status block, wrote the
+invariant forbidding counts there, and then wrote three more counts underneath it. That
+is not inattention — it is that *"the amendments now share one diagnosis"* does not
+**feel** like a count while being one.
+
+**So amendment 6 states the rule execution reviews 5 and 6 each had to rediscover:**
+**a figure recording what a round found or did is historical and never updated; a
+figure inside a general claim about the document's present state is live and must not
+be written at all — wherever it sits.** Location does not decide it; tense and scope
+do. That rule is now in the invariant block, because both reviews found the defect by
+applying it implicitly and no statement of it existed to apply.
+
+**Status: the staged implementation is still NOT accepted**, and amendment 6 needs the
+next independent pass. Like amendment 5 it touches **no pin, gate, test, mutation,
+touch row or staged file** — a scope claim, not an inferred gate result.
 
 **Review round 19 — 2026-08-08, independent, against the round-17/18 working
 tree. ZERO FINDINGS. The first clean round in nineteen.**
