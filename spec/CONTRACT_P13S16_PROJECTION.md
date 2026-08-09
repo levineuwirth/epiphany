@@ -150,13 +150,20 @@ There are 20 invariants (`invariants.rs:149`, count guard `:6064`). 21 is free.
 
 > ### PIN 0 IS DISCHARGED — read this before the pin. P13-S27 landed 2026-08-09.
 >
-> **Everything in pin 0 below is a dated record of the pre-S27 tree.** Its central
-> claims — that no constant names the current reduction semantics, that no mechanism
-> detects a stale base, that `ids.rs:288`'s catalog claim is false, and that **this rung
-> therefore cannot execute** — are **all now false**, and its three numbered
-> requirements are superseded. **The discharge, with each claim answered individually
-> and the replacement requirements, is at the end of this pin.** Read the pin as history;
-> do not execute it.
+> **Everything in pin 0 below is a dated record of the pre-S27 tree**, and its three
+> numbered requirements are superseded. Its claims that no constant names the current
+> reduction semantics, that a conformingly-propagated stale base is accepted, that
+> `ids.rs:288`'s catalog claim is false, and that **this rung therefore cannot execute**
+> are **now false**.
+>
+> **But one of pin 0's claims is STILL TRUE and S27 did not touch it: there is no
+> mechanism to detect a reduction-semantics change.** S27 enforces *declared-version*
+> mismatches; it cannot tell that the semantics behind a version number changed. **Do
+> not read the discharge as closing that gap** — see *Enforcement is not detection* at
+> the end of this pin, which is why this rung's bump to `1` is mandatory.
+>
+> **The discharge, with each claim answered individually and the replacement
+> requirements, is at the end of this pin.** Read the pin as history; do not execute it.
 
 **Pin 0 — declare the reduction-semantics break; do not pretend it is
 containable.**
@@ -253,8 +260,34 @@ standing by implication:
 |---|---|
 | "no constant or accessor naming the implementation's current reduction semantics" | **`epiphany_ops::CURRENT_REDUCTION_ALGORITHM_VERSION`** (currently `0`), plus `Bundle::capabilities()` as the accessor |
 | "`ids.rs:288`–`:289` … asserts a false fact about another crate" | **Made true** by S27's pin 8 — the same doc comment now names the real location and mechanism |
-| "the current implementation has **no mechanism** to detect a reduction-semantics change" | A mismatch is refused with `CanonicalBaseRequiresRebuild { base, current }` on **both** the read path (`open`) and the write path (`commit`/`commit_versioned`) |
+| "a *valid* stale base is accepted — one whose version was conformingly propagated" | **False now.** A base whose **declared** version differs from the authority is refused with `CanonicalBaseRequiresRebuild { base, current }` on **both** the read path (`open`) and the write path (`commit`/`commit_versioned`) |
+| "the current implementation has **no mechanism** to detect a reduction-semantics change" | **STILL TRUE, and S27 did not change it.** See the split immediately below — this row is the one an earlier draft of this supersession got wrong |
 | "**this rung cannot execute**" | **It can.** This contract is UNBLOCKED — see the status block. It is still a DRAFT and needs ratification, which is a different bar |
+
+### ENFORCEMENT IS NOT DETECTION — the split S27 did not close
+
+**An earlier draft of this supersession declared pin 0's "no mechanism to detect a
+reduction-semantics change" false because mismatches are now rejected. That was wrong,
+and it contradicted requirement 3 thirty lines below it.** The two are different claims
+and only one of them moved:
+
+| | Declared-version mismatch | Semantics change |
+|---|---|---|
+| **What it is** | a base whose recorded `reduction_algorithm_version` differs from the running authority | the implementation's canonical reduction verdicts changing, with or without a bump |
+| **After S27** | **ENFORCED** — refused with `CanonicalBaseRequiresRebuild` on read (`open`) and write (`commit`/`commit_versioned`) | **STILL UNDETECTABLE.** Nothing compares the semantics the code implements against the number it declares |
+| **What guarantees it** | the check, mechanically | **a human remembering to bump.** There is no backstop |
+
+**So S27's enforcement is conditional on the discipline, not a substitute for it.** If
+this rung changes `CreateStaffGroup`'s verdict and the bump is missed, every base it
+produces declares `0`, matches an authority still reading `0`, and **passes every check
+S27 installed** — the enforcement fires correctly on a number that is itself wrong.
+`epiphany-ops`'s authority doc states this outright: *no mechanism can detect a
+semantics change; the discipline is the guarantee; there is no backstop.*
+
+**This is precisely why pin 0's requirement 3 inverts into a mandatory bump rather than
+dissolving.** S16 is the first rung to change a canonical reduction verdict, so **S16's
+bump to `1` is the human-enforced half of the guarantee**, and the only half that
+applies to itself.
 
 **Pin 0's narrowing survives and still binds.** *This inspection does not establish that
 no reduction-semantics change in the project's history was ever detectable* — S27 did
@@ -485,9 +518,17 @@ record of why S27 was filed, not as work to do.**
 > `ids.rs:288`'s claim that the catalog lives in `epiphany-ops` is false — a
 > second instance of **P13-S26**'s pattern.
 >
-> *(**Every claim in this quoted block is now false** — S27 built the machinery,
-> `ids.rs:288` was made true by its pin 8, and `core_spec.tex:11614` is enforced. It is
-> kept verbatim as the filing that produced S27, not as a description of the tree.)*
+> *(**Kept verbatim as the filing that produced S27, not as a description of the tree.
+> MOST of it is now false — but NOT all, and an earlier draft of this annotation said
+> "every claim" and was itself wrong in the way this contract keeps having to correct.**
+> **False now:** the machinery is no longer self-referential — `open` compares the base's
+> version against the injected authority, not only against the superblock it seeded;
+> `ids.rs:288` was made true by S27's pin 8; and `core_spec.tex:11614` is enforced for
+> declared-version mismatches. **STILL TRUE:** *"no mechanism comparing either against
+> the semantics it actually implements"* — S27 compares a **declared number** against a
+> **declared number**. Nothing anywhere compares either against the semantics the code
+> actually implements, and nothing can. See* **Enforcement is not detection** *under pin
+> 0.)*
 
 **Do not write the stronger historical claim** ("no reduction-semantics change
 has ever been detectable"); §0 does not establish it.
