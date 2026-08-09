@@ -55,6 +55,34 @@ This contract predates those corrections and inherited none of them. **A ratifie
 contract's gate section is reusable knowledge**, and the next contract drafted here
 should start from S27's §5 rather than from an older template.
 
+### Draft amendment 1, revision A — independent review of `d06e2f7`
+
+**Six findings, five blocking. All six are in draft amendment 1's own text**, and four
+of them are the same mistake: **importing an S27 conclusion instead of re-deriving it
+against this rung's facts.**
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **Report item 2d asked execution to decide a static fact the draft could read.** `shrink` (`generators.rs:932`) does **not** match `GraphInvariant` — it calls `check_invariant(score, inv)`. The claim was made twice, in item 2d **and** touch row 8 | Both corrected to state `shrink` is generic. Item 2d replaced with the **real** obligation: invariant 21's fixture must **survive shrinking** (`:1025`), since `shrink` asserts its input still violates the target |
+| **2** | **Pin 10a's "all three counters move if either document mints a label" is FALSE.** `CORE_REQUIREMENT_COUNT` is asserted only against `core_spec.tex` (`:259`); a label in `operation_catalog.tex` moves the two suite counters only | Replaced with a per-document table. **S27's "name all three" was derived for a rung touching one document**; importing it here made a correction into a new error |
+| **3** | **Gate 11 permitted the exact tautology it exists to prevent.** "Updated, not silenced" does not forbid replacing the literals with `CURRENT_REDUCTION_ALGORITHM_VERSION` — the tidiest-looking update, after which both operands move together and **M5a/M5b are vacuous** | Rewritten as **11a–e**: independent literal `1`, **never the constant**, each quoted. S27's round 3 caught this substitution and `roundtrip.rs:882` forbids it by name |
+| **4** | **Gate 11 omitted `roundtrip.rs:947`**, test 10b's mutation-only `Err` arm. Left at `0`, **M5b aborts on the base comparison before reaching its two-field `panic!`** — failing at the wrong assertion and observing nothing | **11d** added, plus **11e** for the literal-preservation comments, whose reasoning is what stops the next rung making substitution 3 |
+| **5** | **§6 demanded "the nine mutations (M1–M9)"** while M7's split makes ten executions — a report could not both enumerate them and obey the tally | Count removed; **§3 is the single origin** |
+| 6 | **Pin 12 said no gate catches a missed bump except the tripwires** — written in the same amendment that added **gate 10**, which compares the value against `HEAD` directly | Split: gate 10 guards *this* bump, 11a–e guard the wiring, and only the **general future case** stays undetectable |
+
+**The tightening that came with finding 1 is the sharpest of the set.** M6's two fixtures
+must each violate **one** direction only. A fixture disagreeing in both is still reported
+after either arm is deleted, so the mutation appears to fail correctly **while signing
+nothing** — and the same trap applies to touch row 8's generator, whose `all()`-driven
+consumers only ask whether 21 is reported.
+
+**Findings 1, 2, 3 and 6 share one root cause: an S27 conclusion applied without
+re-derivation.** S27's "name all three counters", its "no mechanism can detect a
+semantics change", and its literal-independence rule are all *true statements about
+S27*. Two of them are false or incomplete here, and one was dropped exactly where it was
+needed. **A ratified contract is reusable as a source of questions, not as a source of
+answers** — which sharpens the note above about starting from S27's §5.
+
 > **The original status, retained:** *DRAFT — BLOCKED on P13-S27. Not executable as
 > written. Pin 0 exposes that no authority defines the implementation's current
 > reduction semantics, and prose saying old canonical bases "must be rebuilt" does not
@@ -518,10 +546,25 @@ entry leaves a number nobody can account for.
 
 **This is not optional and not a consequence — it is the obligation.** This rung changes
 `CreateStaffGroup`'s reduction verdict, and `core_spec.tex` §"Canonical Document
-Identity" makes such a change require a new version. **No mechanism can detect a missed
-bump** (see *Enforcement is not detection* under pin 0), so nothing in the gate set will
-catch its absence except the two tripwires in rows 9 and 10 — which is exactly why they
-must be updated rather than silenced.
+Identity" makes such a change require a new version.
+
+**What guards it, stated precisely — corrected on review, which found this paragraph
+contradicting the gate added beside it:**
+
+- **Gate 10 is the direct guard on THIS rung's bump.** It compares the constant's value
+  against `HEAD` and requires the `Bumps` entry. A bump omitted *here* is caught.
+- **Gates 11a–e are the independent wiring guards.** They confirm the production path
+  actually reads the moved authority, using operands that do not descend from it.
+- **What remains undetectable is the general case: a FUTURE semantics change whose bump
+  is forgotten.** No gate in any contract can catch that — see *Enforcement is not
+  detection* under pin 0. The discipline is the guarantee.
+
+> **The sentence that stood here said "nothing in the gate set will catch its absence
+> except the two tripwires" — written in the same amendment that added gate 10, which
+> catches exactly that.** It imported S27's true statement about *semantics changes in
+> general* and applied it to *this rung's bump in particular*, where it is false. **The
+> same over-generalisation the enforcement/detection split under pin 0 exists to
+> prevent**, committed one section away from it.
 
 > **The bump is stated in pin 0's discharge as requirement 3, which is a discharge note
 > and not a pin.** So it had no numbered pin to execute, no touch row to stage, no gate
@@ -536,10 +579,27 @@ This rung edits **`core_spec.tex`** (row 5, invariant 21's enumeration) and
 **`operation_catalog.tex`** (row 4), and `crates/epiphany-testkit/tests/requirement_labels.rs`
 counts requirements and labels in **both**. The two readings have different touch tables:
 
-- **If either mints a label**, touch row 11 is used and **all three counters move** —
-  `CORE_REQUIREMENT_COUNT`, `SUITE_REQUIREMENT_COUNT`, `SUITE_LABEL_COUNT`. S27 found the
-  hard way that naming only the first leaves two failing tests.
-- **If neither does**, row 11 is unused and **the report says so.**
+**Which counters move depends on WHICH document mints the label — corrected on review.**
+An earlier draft of this pin said *"all three counters move if either document mints a
+label"*, which is false: `CORE_REQUIREMENT_COUNT` is asserted **only against
+`core_spec.tex`** (`requirement_labels.rs:259`), while the two suite counters sum every
+scanned document.
+
+| Label minted in | `CORE_REQUIREMENT_COUNT` | `SUITE_REQUIREMENT_COUNT` | `SUITE_LABEL_COUNT` |
+|---|---|---|---|
+| `core_spec.tex` (pin 6) | **moves** | **moves** | **moves** |
+| `operation_catalog.tex` (pin 10) | **unchanged** | **moves** | **moves** |
+| both | **moves by 1** | moves by 2 | moves by 2 |
+| neither | — | — | — |
+
+- **If any label is minted**, touch row 11 is used and the report names **which document,
+  which counters, and their new values.**
+- **If none is**, row 11 is unused and **the report says so.**
+
+> **S27's lesson was "name all three, not one" — for a rung that touched only
+> `core_spec.tex`.** Carrying that conclusion across to a rung touching two documents
+> turned a correction into a different error. **A fix imported from another contract
+> must be re-derived against this one's facts**, not pattern-matched.
 
 > **`CLAUDE.md` names this file by name as a recurring escapee**, it escaped the
 > format-epoch rung's table, and S27 had to add it mid-execution. **A file that must
@@ -658,7 +718,7 @@ unblocked, dispatchable and resolved are three different states.
 | **8** | `crates/epiphany-core/src/generators.rs` | **ADDED by draft amendment 1 — the root cause below.** `violating_score` (`:498`) matches `GraphInvariant` **exhaustively**, so invariant 21 **does not compile** without a new arm. Four `all()`-driven tests (`:991`, `:1004`, `:1025`, `:1042`) then consume it, so the arm must be a **real generator**, not a stub |
 | **9** | `crates/epiphany-testkit/src/roundtrip.rs` | **ADDED by draft amendment 1.** S27 test 10b (`:894`) reopens a literal-`0` base under `production_caps()`; pin 12's bump makes that path return `Err` and hit an arm that **`panic!`s by design** |
 | **10** | `crates/epiphany-textproj/src/serialize.rs` | **ADDED by draft amendment 1.** S27 test 10a (`:659`) asserts the production writer supplies `ReductionAlgorithmVersion(0)`. Its own doc (`:655`) says it **is expected to fail when S16 bumps** and that updating it *is* S16 stating the authority moved |
-| **11** | `crates/epiphany-testkit/tests/requirement_labels.rs` | **ADDED by draft amendment 1 — CONDITIONAL**, exactly as S27's row 12. Only if pin 6 or pin 10 mints a `\label{req:...}`. **That decision MUST be made explicitly and stated in the report** — see pin 10a. If it mints one, **all three counters move**, not one: `CORE_REQUIREMENT_COUNT` (`:15`), `SUITE_REQUIREMENT_COUNT` (`:18`), `SUITE_LABEL_COUNT` (`:19`). This file counts **both** `core_spec.tex` and `operation_catalog.tex`, and this rung touches both. If no label is minted, leave unmodified and say so |
+| **11** | `crates/epiphany-testkit/tests/requirement_labels.rs` | **ADDED by draft amendment 1 — CONDITIONAL**, exactly as S27's row 12. Only if pin 6 or pin 10 mints a `\label{req:...}`. **That decision MUST be made explicitly and stated in the report** — see pin 10a. **Which counters move depends on WHICH document mints it — pin 10a owns that table and this row deliberately does not restate it.** *(This row read "all three counters move" until revision A; pin 10a was corrected and this copy was left standing in the same edit — the fix-one-site defect, committed while fixing the other site.)* This file counts **both** `core_spec.tex` and `operation_catalog.tex`, and this rung touches both, which is exactly why "all three" is wrong here. If no label is minted, leave unmodified and say so |
 
 Regenerate the two PDFs **only after** their sources reach final form.
 
@@ -685,9 +745,18 @@ mechanism can detect a semantics change. They must be **updated, not deleted or
 - Four `all()`-driven tests then call it and `shrink` (`:991`, `:1004`, `:1025`,
   `:1042`), so **a `todo!()` or trivial arm fails them.** Invariant 21 needs a fixture
   that genuinely violates it in both directions and survives shrinking.
-- **`shrink` (`:932`) takes `GraphInvariant` too. Whether it also matches exhaustively
-  MUST be checked at execution and reported** — this amendment did not establish it
-  either way, and guessing is what produced this finding.
+- **`shrink` (`:932`) takes `GraphInvariant` but does NOT match on it** — it calls
+  `check_invariant(score, inv)` and `shrink_candidates`, so it is **generic over the
+  invariant and needs no new arm.** *(Draft amendment 1 first said this "MUST be checked
+  at execution", deferring a **static fact readable from the function body**. Corrected
+  on review: a draft that can decide something must decide it, or it exports its own
+  unfinished reading as execution work.)*
+- **What `shrink` does impose is a fixture obligation**: `generators.rs:1025`–`:1026`
+  runs `shrink(&violating_score(inv, 7), inv)` for **every** variant, and `shrink`
+  asserts on entry that its input violates the target. **So invariant 21's fixture must
+  still violate 21 after greedy shrinking** — a fixture whose violation depends on
+  incidental structure that `shrink_candidates` removes will fail there, not in the
+  generator.
 
 **Consequence for the mutation plan and gate 6:** invariant 21's generator is itself
 load-bearing, so M6 (deleting each arm) now has a second signature — the negative
@@ -755,8 +824,20 @@ universe-independent.
 **M5 — the undo hole is closed.** Remove pin 5's strip; undoing a `CreateStaff`
 must leave a disagreeing pair that invariant 21 flags.
 
-**M6 — invariant 21 sees both directions.** Delete each arm in turn; each
-deletion must leave a distinct disagreeing fixture unreported.
+**M6 — invariant 21 sees both directions. FIXTURES MUST ISOLATE, tightened on review.**
+Delete each arm in turn; each deletion must leave a distinct disagreeing fixture
+**unreported**.
+
+> **Each fixture must violate ONE direction only**, and the report must show that it
+> satisfies the other. A fixture disagreeing in **both** directions still gets reported
+> after either arm is deleted — the surviving arm catches it — so the invariant looks
+> intact and **the deletion is signed by nothing.** This is M6's whole failure mode:
+> the mutation appears to fail correctly while observing the wrong arm.
+>
+> **The same isolation applies to touch row 8's generator.** `violating_score`'s
+> invariant-21 arm feeds `all()`-driven tests that only ask *"is 21 reported?"*, so a
+> both-directions fixture passes those too. **M6's two fixtures are therefore separate
+> from the generator's**, and the report must say which is which.
 
 **M7 — the doc guards discriminate. SPLIT IN TWO by draft amendment 1.** Pin 10 covers
 **two independently guarded doc blocks** — `Staff.group` and `StaffGroup.members`, each
@@ -826,10 +907,29 @@ weakening is invisible.
     → working tree **`= 1`**, `HEAD` **`= 0`**. **Report both outputs, not the
     conclusion**, and **quote the new `Bumps` list entry verbatim.** A bump without its
     entry fails this gate.
-11. **Rows 9 and 10's tripwires were UPDATED, not silenced.** Quote both assertions
-    before and after. **Neither may be deleted, `#[ignore]`d, or weakened to accept any
-    version** — a tripwire that accepts both values is the tautology S27 existed to
-    remove, rebuilt.
+11. **Rows 9 and 10's tripwires were UPDATED, not silenced, and remain INDEPENDENT of the
+    authority. STRENGTHENED ON REVIEW — the first version permitted the exact tautology
+    it exists to prevent.**
+
+    It said only *"updated, not silenced … not weakened to accept any version"*, which
+    **does not forbid replacing the literals with `CURRENT_REDUCTION_ALGORITHM_VERSION`.**
+    That reads as the tidiest possible update and is the one thing that must not happen:
+    both operands would then move together with every future bump, the comparison would
+    pass for all values, and **M5a and M5b become vacuous — §0.1's tautology rebuilt
+    inside the tests written to detect it.** S27's round 3 caught this exact substitution
+    and `roundtrip.rs:882` says *"do not tidy either literal into the constant"*.
+
+    **Required, and each quoted verbatim in the report:**
+
+    a. `serialize.rs:663` asserts against an **independent literal `ReductionAlgorithmVersion(1)`** — never the constant, never a value derived from it.
+    b. `roundtrip.rs:901` fixture capability → `synthetic_for_fixture(1)`, and `:918`'s staged base → **literal `ReductionAlgorithmVersion(1)`**, so the reopen under `production_caps()` matches and the `Ok` arm still runs.
+    c. `roundtrip.rs:941`'s success-arm assertion → **literal `1`**.
+    d. **`roundtrip.rs:947`'s mutation-only `Err` arm — `assert_eq!(base, ReductionAlgorithmVersion(0))` → literal `1`.** *Omitted from the first version of this gate.* Left at `0`, **M5b fails at the wrong assertion**: the arm is reached only under mutation, and it would abort on the base comparison before reaching the two-field `panic!` that is M5b's required observation. The mutation would appear to fail correctly while observing nothing.
+    e. The **literal-preservation doc comments** (`roundtrip.rs:872`–`:883`, `serialize.rs:648`–`:657`) updated to name `1`, **with their "do not tidy into the constant" reasoning intact.** The reasoning is what stops the next rung making the substitution this gate forbids.
+
+    **None of a–e may be deleted or `#[ignore]`d.** A tripwire that accepts both values,
+    or that derives either operand from the authority, is not a weakened guard — it is no
+    guard at all.
 
 ---
 
@@ -890,7 +990,12 @@ its evidence at `invariants.rs:69`–`:71` must stay intact.
 
 ## §6. Report requirements
 
-1. The nine mutations (M1–M9), each with verbatim failure output.
+1. **Every mutation listed in §3**, each with its verbatim output and, where §3 names
+   one, the **behaviour** it observed rather than the assertion it broke.
+   **The count is NOT stated here — corrected on review.** It read *"the nine mutations
+   (M1–M9)"*, and M7's split into **M7a and M7b** makes ten executions, so a report could
+   not both enumerate them and obey the tally. **§3 is the single origin**; a count here
+   goes stale the next time a mutation splits, exactly as this one did.
 2. The nine gate results, each with its command.
 2b. **Pin 12's bump and its `Bumps` entry**, with gate 10's two outputs; **and rows 9
    and 10's tripwire updates**, each quoted before and after, with gate 11's confirmation
@@ -898,9 +1003,12 @@ its evidence at `invariants.rs:69`–`:71` must stay intact.
 2c. **Whether pin 6 or pin 10 minted a `\label{req:...}`** (pin 10a), and therefore
    whether touch row 11 was used. **If used, all three counters and their new values;
    if not, say so explicitly.** **ADDED BY DRAFT AMENDMENT 1.**
-2d. **Whether `shrink` (`generators.rs:932`) matches `GraphInvariant` exhaustively**, and
-   if so what its invariant-21 arm does. **Draft amendment 1 did not establish this
-   either way and deliberately did not guess.** **ADDED BY DRAFT AMENDMENT 1.**
+2d. **Invariant 21's negative fixture survives `shrink`** — quote the shrunk witness and
+   confirm it still violates 21. **REWRITTEN on review:** this item asked whether
+   `shrink` matches `GraphInvariant` exhaustively, which is a **static fact the draft
+   could read** (it does not — it calls `check_invariant(score, inv)`). Deferring a
+   readable fact to execution is not caution; it is unfinished drafting handed downstream
+   as an obligation.
 2a. **REWRITTEN 2026-08-09 — it required the opposite of what is now correct.** It read:
    *"For pin 0: confirmation that **nothing** was added claiming to reject or detect
    stale canonical bases, and that the break is recorded only in prose."* That was right
