@@ -10,13 +10,23 @@ them, having gone stale in two consecutive rounds by doing so.
 execution is **reported, not patched in place** — if it needs a pin change, that
 is its own amendment with its own review round.
 
-**IMPLEMENTED 2026-08-09, STAGED, and NOT YET ACCEPTED.** The first independent
-review of the staged execution returned **five findings, three blocking**, all
-carried by **post-ratification amendment 1** (below). That amendment took the pin
-changes the findings required — §0.4's missing constructor surface, four touch
-rows, and a ruling on `production_caps`'s visibility — and therefore **needs
-another independent pass before completion is accepted.** The work remains staged;
-nothing is committed.
+**IMPLEMENTED 2026-08-09, STAGED, and NOT YET ACCEPTED.** **Two** independent
+reviews of the staged execution have closed, carried by **post-ratification
+amendments 1 and 2** below. Amendment 2's findings were **every one of them in
+amendment 1's own text**, none in the implementation it ruled on — the pattern this
+contract's history table has shown since round 3: *the amendment written to fix a
+round is where the next round's defects are.* Amendment 2 changed an absence rule,
+a gate, two touch rows and a report item, so it **needs its own independent pass
+before completion is accepted.** The implementation remains staged and
+uncommitted; only the amendments are committed.
+
+**Gate 4's earlier "clean" result is WITHDRAWN**, and the reason belongs at the
+top: it was measured against §2's touch table alone, while §2 also carried an
+**absence rule** that the same staged tree violated — a rule amendment 1
+contradicted without noticing. **A file can satisfy the touch table and violate
+the contract in the same commit**, because a touch table and an absence rule are
+the same allowlist read from two directions and only one direction was checked.
+Gates 4 and **4a** must be re-run and re-reported against the contract as amended.
 
 **Round 1's ratification was WITHDRAWN**, and the distinction matters. It was
 claimed on 2026-08-07 after a single round; round 2 then found four more blocking
@@ -196,7 +206,8 @@ rows — read it off, do not restate it.
 | round 18 | 2 | 2 | **yes** |
 | **round 19** | **0** | **0** | **yes — first clean round** |
 | execution review 1 | 5 | 3 | **yes — against the staged tree** |
-| **Total** | **70** | **50** | one amendment per row |
+| execution review 2 | 5 | 4 | **yes — 4 of 5; the fifth from the fix-every-site sweep** |
+| **Total** | **75** | **54** | one amendment per row |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -634,6 +645,57 @@ additional M7 contradiction found.**
 
 **Status: the staged implementation is NOT accepted.** This amendment needs
 **another independent pass** before it can be.
+
+**Post-ratification amendment 2 — 2026-08-09, on the independent review of
+amendment 1.** Five findings, **four blocking**. **Four came from the review; the
+fifth from sweeping every site that restated the first finding** — and every one of
+the five is a defect in *amendment 1's own text*, not in the implementation
+amendment 1 ruled on.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **Touch row 15 contradicted the inherited-obligation boundary.** Row 15 stages `textproj/src/lib.rs`; the ruling under inherited obligation 2 and §2's absence sentence both say that exact file is deliberately absent and that staging it **makes gate 4 fail**. So the staged tree failed the contract as amended — while the execution report called gate 4 clean, having checked staging against §2's **table** and not against the absence rule four lines below it | The absence sentence **split into the two distinct rules it conflated**; `lib.rs` removed from the list with the reason it was on it preserved; and **gate 4a added** to replace what its absence was actually guarding |
+| **2** | **The rejected alternative's site count was false** — "23 sites" where there are **39** production-authority invocations. The figure is load-bearing: it *is* the argument that direct construction repeats itself intolerably | Corrected to 39, and restated as a **derivation from §0.4's surface** rather than an independent count, with the likeliest origin of "23" recorded |
+| **3** | **Touch row 13 reproduced the omission amendment 1 was written to close.** Its "92 converted sites" is 60 `open` + 32 `create` — the two-constructor count, missing `create_versioned`'s 3. The complete pre-S27 surface is **95** | The count **removed from the row's rationale entirely**, which needs only "the two crates outside `epiphany-bundle`"; 95 recorded with §0.4 as its single origin |
+| **4** | **§7 item 5 still had the report reconcile against `open` 60 + `create` 32.** *(Found by the sweep, not by the review.)* Amendment 1 added the third constructor to §0.4 and to touch rows 13–16 and left this item behind, so **a report obeying item 5 literally would re-derive the incomplete surface the amendment existed to complete, and call it a match** | `create_versioned` **3** and the total **95** added; and the figures marked **pre-S27**, since S27's own new tests move the tree to 66 / 33 |
+| 5 | **The helper touch-row reference was off by one** — "rows 13 and 14", where row 13 is the bundle re-export and the two helper roots are **14 and 15** | Corrected, with the superseded reading noted |
+
+**Finding 1 has a lesson past its own fix, and it is a gate-design lesson.** Gate 4
+already requires the staged list to be a subset of §2 **in both directions** — every
+staged path in §2, every §2 row staged or named unused. But *"appears in §2"* and
+*"is not forbidden by §2"* are different questions, and only the first was ever
+asked. §2 carries prohibitions as well as permissions, and nothing checked the
+prohibitions. **The allowlist was read as a whitelist and §2 is not only a
+whitelist.**
+
+**Finding 1's third site is the one worth carrying.** The review cited two of the
+three places the contradiction lived; the third — §7 item 6, which required the
+report to *confirm* that file's absence — surfaced only by grepping every mention of
+the filename. **This contract has recorded "a correction that does not sweep every
+site restating the thing corrected has not been made" since round 1** (see pin 3a's
+note, which counted three occurrences before round 7 added another). Amendment 2 is
+the first time that discipline caught something an *independent* round missed, which
+is the argument for keeping it even after a clean round.
+
+**Findings 2, 3 and 4 are count defects inside an amendment whose own subject was a
+count defect**, and 3 and 4 reproduce the *exact* omission it was written to close —
+twice, in two different sections. That is this document's strongest evidence for its
+own doctrine: **where a claim requires completeness, do not enumerate — derive.**
+Amendment 2 therefore **deletes** one count outright and converts the others into
+derivations with their inputs named, rather than restating them more carefully.
+Restating carefully is what rounds 1 through 7 tried.
+
+**What this review did NOT find, recorded so the next pass knows what remains
+untested by it:** it confirmed the **code-side** corrections sound — `production_caps`
+`pub(crate)` in `epiphany-textproj` and `pub` in `epiphany-testkit`, the writer
+comment now distinguishing an inherited base from an inherited *stale* base — and
+staging clean across all 21 modified paths. **It returned nothing against M7, nor
+against any test or mutation observation.** Two consecutive independent reviews have
+now examined M7 and found it internally coherent.
+
+**Status: the staged implementation is still NOT accepted.** Amendment 2 changed
+pins, so it needs its own independent pass; **gates 4 and 4a MUST be re-run and
+re-reported**, the prior gate-4 result having been withdrawn.
 
 **Review round 19 — 2026-08-08, independent, against the round-17/18 working
 tree. ZERO FINDINGS. The first clean round in nineteen.**
@@ -1165,12 +1227,27 @@ naming S27 as what reopens them. Both are owed work here, not optional:
    > discharged there rather than by a test.
    >
    > **Consequences of the ruling, stated so they are not re-litigated:**
-   > `COMPANION_VERSION` stays **0.14.0**; `parse.rs`, `vectors.rs`,
-   > `textproj/src/lib.rs` and `spec/text_projection.tex` are **NOT** touched by
-   > this rung and are deliberately absent from §2; and the corpus keeps
-   > `canonical_bases` reach **0**. A future rung may restore the capability —
-   > that is its own contract, with the four touch rows and the companion-version
-   > bump this one declines.
+   > `COMPANION_VERSION` stays **0.14.0**; `parse.rs`, `vectors.rs` and
+   > `spec/text_projection.tex` are **NOT** touched by this rung and are
+   > deliberately absent from §2; and the corpus keeps `canonical_bases` reach
+   > **0**. A future rung may restore the capability — that is its own contract,
+   > with the four touch rows and the companion-version bump this one declines.
+   >
+   > **`crates/epiphany-textproj/src/lib.rs` was struck from that absent list by
+   > amendment 2, and the reason it was ON it must not be lost.** That file is
+   > where `COMPANION_VERSION` lives (`:72`) — so its absence from staging *was*
+   > the mechanical guard on this ruling's first clause. Touch row 15 stages it for
+   > `production_caps`, an unrelated and separately pinned reason, which
+   > **silently removed that guard**. The guard is replaced by **gate 4a**, which
+   > compares the constant's **value** instead of relying on the file's absence.
+   >
+   > **"The four touch rows" above still counts `lib.rs`, and that remains
+   > correct.** A future restoration rung must touch it *in order to bump*
+   > `COMPANION_VERSION`. **A file may be absent from one rung's table and required
+   > by another's for an entirely different reason: why a file appears in a table is
+   > part of the claim, not incidental to it.** Collapsing this rung's
+   > `production_caps` reason into the restoration reason is what produced the
+   > contradiction amendment 2 fixes, and re-merging them would reproduce it.
 
 3. **Two conformance assertions come back** (format-rung pin 3c). Criterion 4's
    bookkeeping-projection counterpart, `assert_reduction_serialization_stable`
@@ -1288,8 +1365,8 @@ none may take a value that merely happens to be in scope.
 named the *synthetic* constructor and left the **real-authority** side as "wrap
 `epiphany_ops::CURRENT_REDUCTION_ALGORITHM_VERSION`", which is a value, not a
 name. Execution introduced a `production_caps()` helper per crate to satisfy
-"explicitly" without repeating the wrap 23 times — **unpinned scope**, and in
-`epiphany-testkit` it landed as new **public** API.
+"explicitly" without repeating the wrap at every production-authority site —
+**unpinned scope**, and in `epiphany-testkit` it landed as new **public** API.
 
 **Ruled: the helpers are SANCTIONED, with visibility pinned per crate.**
 
@@ -1298,10 +1375,27 @@ name. Execution introduced a `production_caps()` helper per crate to satisfy
 | `epiphany-textproj` | **`pub(crate)`** | A **production** crate. Its five uses are all in-crate, so this rung adds **no public API** to it. `pub` here would be unpinned surface on a shipping crate |
 | `epiphany-testkit` | **`pub`** | A test-support crate that exists to be consumed. Its **integration tests and benches are external consumers** (`tests/bundle_reopen.rs` 2 uses, `benches/bundle.rs` 3) and **cannot reach `pub(crate)`**. A capability constructor is precisely what this crate exists to provide |
 
-**Rejected alternative — direct construction at all 23 sites.** It adds no API,
-but repeats the same wrap 23 times, and "explicit" was never the same thing as
+**Rejected alternative — direct construction at every production-authority site,
+of which there are 39. COUNT CORRECTED FROM "23" BY AMENDMENT 2.** It adds no API,
+but repeats the same wrap 39 times, and "explicit" was never the same thing as
 "repeated". The named helper *is* explicit: it says which side of pin 3b's split
 the site is on, and gate 6a can distinguish the two by name.
+
+> **The 39 is DERIVED, not counted independently, so it can be re-checked without
+> hand-enumerating call sites.** Take §0.4's constructor surface restricted to
+> `epiphany-testkit` and `epiphany-textproj` — `open` 19 + 2, `create` 15 + 3,
+> `create_versioned` 1 + 0 = **40** — and subtract the **one** site that
+> deliberately takes a synthetic capability (`testkit/roundtrip.rs:901`, M7's own
+> fixture): **39**. It agrees with a direct count of `production_caps()`
+> invocations — 42 textual occurrences, less the two definitions and one
+> doc-comment mention.
+>
+> **The likeliest origin of "23", recorded because the shape recurs:** it is
+> exactly touch row 2's count of in-crate `open` sites **in `bundle.rs`** — a
+> figure about one file and one constructor, restated as a cross-crate total over
+> three constructors. **Same shape as §0.4's four instrument failures, and the
+> first recorded outside that section:** those are counts taken from one *spelling*
+> and generalised; this is a count taken from one *scope* and generalised.
 
 **Consequences, listed rather than left implicit:**
 
@@ -1311,7 +1405,8 @@ the site is on, and gate 6a can distinguish the two by name.
 - **`epiphany-testkit`'s external consumers use it by path**
   (`epiphany_testkit::production_caps()`); the crate-internal ones use
   `crate::production_caps()`.
-- **Touch rows 13 and 14** carry the two crate roots.
+- **Touch rows 14 and 15** carry the two crate roots. *(Read "13 and 14" until
+  amendment 2 — row 13 is `epiphany-bundle`'s re-export, not a helper root.)*
 - **A `pub(crate)` helper in a production crate is not public API**, so gate 5's
   spirit — this rung adds no dependency and no surface `epiphany-ops` must
   honour — is preserved for `epiphany-textproj`.
@@ -1446,7 +1541,7 @@ row may not record S16 as open until those land with this rung**; ratification o
 | 10 | `spec/core_spec.tex` (+ `.pdf`) | pin 9 |
 | 11 | `spec/PASS13_CANDIDATES.md` | pin 10 |
 | 12 | `crates/epiphany-testkit/tests/requirement_labels.rs` | **conditional** — pin 9, *only if* it mints a new `\label{req:...}`. **ALL THREE counters move, not one** (amended 2026-08-09): `CORE_REQUIREMENT_COUNT` (`:15`) 213 → 214, **and** `SUITE_REQUIREMENT_COUNT` (`:18`) and `SUITE_LABEL_COUNT` (`:19`) 284 → 285, because the suite totals include `core_spec`'s requirements and its labels. The original instruction named only the first; execution found the other two through **four** failing tests in this file. If pin 9 mints no label, leave unmodified and say so in the report |
-| 13 | `crates/epiphany-bundle/src/lib.rs` | **ADDED 2026-08-09.** Pin 3's `BundleCapabilities` is required at `open`/`create`, so **callers in other crates need it re-exported** — 92 converted sites across three crates cannot name a type this crate does not export. Unavoidable, and carried by no row through nineteen rounds |
+| 13 | `crates/epiphany-bundle/src/lib.rs` | **ADDED 2026-08-09.** Pin 3's `BundleCapabilities` is required at `open`, `create` **and `create_versioned`**, so **the two crates outside `epiphany-bundle` that call them need it re-exported** — `epiphany-testkit` and `epiphany-textproj` cannot name a type this crate does not export, and each needs it for its `production_caps` signature alone. Unavoidable, and carried by no row through nineteen rounds. **This row carries NO site count, deliberately — amendment 2.** It read *"92 converted sites across three crates"*, which is 60 `open` + 32 `create`: **the two-constructor figure, missing `create_versioned`'s 3, inside the very amendment added to close that omission.** The complete pre-S27 surface is **95**, and §0.4 is its single origin. The quantity this row actually needs is **two crates**; any figure ≥ 1 makes the re-export unavoidable, so a count here could only rot |
 | 14 | `crates/epiphany-testkit/src/lib.rs` | **ADDED 2026-08-09.** `pub fn production_caps()` — pin 3b's real-authority constructor, `pub` because this crate's integration tests and benches are external consumers |
 | 15 | `crates/epiphany-textproj/src/lib.rs` | **ADDED 2026-08-09.** `pub(crate) fn production_caps()` — same constructor, **crate-private** because this is a production crate and all its uses are in-crate |
 | 16 | `crates/epiphany-testkit/src/gminor.rs` | **ADDED 2026-08-09.** One `Bundle::create_versioned` site (`:85`). Missing because §0.4 never counted that constructor — see the amendment note there. This file calls **only** `create_versioned`, so no surface count reached it |
@@ -1455,11 +1550,39 @@ row may not record S16 as open until those land with this rung**; ratification o
 a recurring escapee, and it escaped the format-epoch rung's table. Carrying it
 conditionally costs nothing if unused; omitting it costs a silent drop-out.
 
-**`spec/text_projection.tex`, `crates/epiphany-textproj/src/{parse,vectors}.rs`
-and `crates/epiphany-textproj/src/lib.rs` are deliberately ABSENT** — see the
-ruling under inherited obligation 2. M7 edits the refusals temporarily and
-restores them by hand; nothing there is staged. **If any of those files shows up
-in `git diff --cached`, M7 was not restored** and gate 4 must fail.
+### Deliberately ABSENT — TWO DISTINCT RULES. SEPARATED BY AMENDMENT 2.
+
+This was **one sentence conflating two unrelated rules**, and it listed
+`crates/epiphany-textproj/src/lib.rs` under both — putting it in direct
+contradiction with **touch row 15, added by amendment 1 seven lines above.** The
+staged tree satisfied the table and violated the sentence, and the execution report
+checked only the table.
+
+**Rule A — the M7 restoration tripwire.** M7 removes refusals temporarily and
+restores them by hand-editing. Of the files it edits, `parse.rs` (`:138`–`:147`) is
+in **no** touch row, so **if `crates/epiphany-textproj/src/parse.rs` appears in
+`git diff --cached`, M7 was not restored** and gate 4 must fail.
+
+> **This tripwire covers ONE of M7's three edit sites, and saying so is the whole
+> point of stating it separately.** M7 also edits `serialize.rs:151` and the
+> export-leg refusal in `document_from_bundle` (`project.rs:480`) — and **both those
+> files are legitimately staged under touch row 9.** *Absence cannot test a file that
+> is supposed to be present.* For those two, restoration is confirmed by **reading
+> the staged diff** (§7 item 6), never by absence. A tripwire that covers one site in
+> three while reading as though it covers all three is the `head`-truncated universal
+> negative in another costume: it returns a clean result for the two cases it cannot
+> see.
+
+**Rule B — the declined capability restoration.** This rung does **not** restore
+base-bearing text round-trip. So `spec/text_projection.tex` and
+`crates/epiphany-textproj/src/vectors.rs` are absent from §2, and `COMPANION_VERSION`
+does not move.
+
+> **`crates/epiphany-textproj/src/lib.rs` is NOT in rule B's list, though it was
+> until amendment 2** — row 15 stages it for `production_caps`. But
+> `COMPANION_VERSION` **lives in that file** (`:72`), so its absence *was* rule B's
+> only mechanical guard. **Gate 4a replaces that guard by value comparison**, and
+> rule B is unenforced without it.
 
 ---
 
@@ -2364,6 +2487,48 @@ the finding is that it succeeds *silently*. Do not report it as a passing gate.
    every staged path must appear in §2, **and** every §2 row must be either
    staged or **named in the report as unused, with its reason.** Neither
    direction may be silent.
+
+   > **BOTH DIRECTIONS ARE ABOUT §2's ROWS, AND §2 ALSO CARRIES PROHIBITIONS.
+   > AMENDMENT 2.** *"Appears in §2"* and *"is not forbidden by §2"* are different
+   > questions; this item asks only the first, in both of its directions. §2's
+   > rules A and B forbid paths, and **a staged file can satisfy this gate and
+   > violate §2 in the same commit** — which is exactly what happened at execution
+   > and was reported as clean. **This gate MUST therefore be run together with §2's
+   > rule A and rule B**, and the report must state all three results, not a single
+   > staged-list verdict.
+
+4a. **The declined capability restoration is still declined — `COMPANION_VERSION`
+   has not moved. ADDED BY AMENDMENT 2, replacing a guard amendment 1 removed
+   without noticing it was a guard.**
+
+   Until amendment 1, `crates/epiphany-textproj/src/lib.rs` was absent from §2, and
+   that absence was the only thing standing between this rung and a silent
+   companion-version bump. Touch row 15 now stages the file, so **the absence check
+   is gone and this replaces it. Compare values, not diffs** — gate 7's ruling, for
+   gate 7's reason:
+
+   ```
+   grep -n "pub const COMPANION_VERSION" crates/epiphany-textproj/src/lib.rs
+   git show HEAD:crates/epiphany-textproj/src/lib.rs | grep -n "pub const COMPANION_VERSION"
+   ```
+
+   → the two values **identical**, and both **`(0, 14, 0)`**. Report both outputs,
+   not the conclusion.
+
+   > **A diff-based check fails here for a reason this rung can demonstrate rather
+   > than predict:** `production_caps` is appended to that file, which **moves
+   > `COMPANION_VERSION` from line 70 to line 72.** Any check keyed to the diff
+   > touching those lines, or to the constant's line number, reports a change that
+   > did not happen. The value comparison is unaffected.
+
+   **And the staged diff of that file MUST be quoted in full in the report, and
+   read.** It is permitted to contain `production_caps`, its doc comment, and the
+   imports that function needs — **and nothing else.** Anything further is unpinned
+   scope in a production crate's root, which is the precise thing row 15's
+   `pub(crate)` ruling was narrowed to prevent. **A quoted diff is read, not
+   matched**, for the same reason gate 6c quotes the struct: this file is now
+   reachable by staging, so the only remaining guard on it is a human reading what
+   went in.
 5. **`epiphany-ops` has NOT gained an `epiphany-bundle` dependency** — read
    `crates/epiphany-ops/Cargo.toml` directly and **quote all three dependency
    tables** (`[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`).
@@ -2559,9 +2724,28 @@ in §N" to a number.*
    > protection, which is exactly what round 5 concluded when it retracted M5b's
    > claim of a structural guarantee — and round 5 then wrote the check too
    > narrowly to deliver it.
-5. A count of call sites updated per crate, against §0.4's table **as corrected
-   in review rounds 1 and 2** (open **60**, create **32**) — any discrepancy is a
-   finding. Count `Bundle`-typed receivers, not the token `.commit(`.
+5. A count of call sites updated per crate, against §0.4's table **as corrected in
+   review rounds 1 and 2 and extended by amendment 1** — `open` **60**, `create`
+   **32**, `create_versioned` **3**, total **95** — any discrepancy is a finding.
+   Count `Bundle`-typed receivers, not the token `.commit(`.
+
+   > **`create_versioned` ADDED HERE BY AMENDMENT 2 — the third site of that
+   > omission, and the second one amendment 1 left behind.** Amendment 1 added the
+   > third constructor to §0.4 and to touch rows 13–16, and left **this item** and
+   > **touch row 13** still reconciling against `open` + `create` only. **A report
+   > obeying this item literally would have re-derived the incomplete surface the
+   > amendment existed to complete — and reported it as a match.** *A correction that
+   > does not sweep every site restating the thing corrected has not been made*: the
+   > meta-defect pin 3a's note counts, recurring now inside a post-ratification
+   > amendment.
+   >
+   > **These figures are PRE-S27 and must be read as such — amendment 2.** S27's own
+   > new tests add constructor call sites, so the tree at execution reads `open`
+   > **66** and `create` **33**. That delta is a **deliverable, not a discrepancy**;
+   > report it as one, with the added sites attributed to the tests that introduced
+   > them. Reconciling the post-implementation tree against a pre-implementation
+   > surface and calling the difference a finding would be its own error.
+
    *(Attribution fixed in round 3: round 1 moved §0.4's table 57 → 60; round 2
    fixed the "Rung type" paragraph, touch rows 2 and 5, and struck the
    `project.rs` production claim that made the table's textproj entries
@@ -2570,8 +2754,27 @@ in §N" to a number.*
    and the count is not repeated here; it said "three" from round 1 until round 9
    caught it, having survived round 8's correction of that same number in two
    other places — and that none of
-   `text_projection.tex`, `textproj/src/parse.rs`, `textproj/src/vectors.rs` or
-   `textproj/src/lib.rs` appears in the staged diff.
+   `text_projection.tex`, `textproj/src/parse.rs` or `textproj/src/vectors.rs`
+   appears in the staged diff.
+
+   > **`textproj/src/lib.rs` STRUCK from that list by amendment 2 — the third site
+   > of the same contradiction, and the one the independent review did not cite.**
+   > Touch row 15 stages that file for `production_caps`, so requiring its absence
+   > here made this item's confirmation **unobtainable**: the report could not both
+   > obey row 15 and satisfy item 6. Its guard is now **gate 4a**, which compares
+   > `COMPANION_VERSION`'s value rather than the file's absence. **The review that
+   > found this defect cited two of its three sites** — the ruling under inherited
+   > obligation 2 and §2's absence sentence; the third surfaced only by grepping
+   > every mention of the filename, which is the fix-every-site discipline earning
+   > its keep against an independent round rather than against the author.
+   >
+   > **`serialize.rs` and `project.rs` are not in that list and MUST NOT be added.**
+   > M7 also edits `serialize.rs:151` and `document_from_bundle`
+   > (`project.rs:480`), but both are legitimately staged under touch row 9, so
+   > **their restoration is confirmed by reading the staged diff, not by absence** —
+   > see §2's rule A, which states outright that the absence tripwire covers one of
+   > M7's three edit sites. **This item is where the other two are discharged**, so
+   > quote the relevant hunks; a bare "M7 restored" here confirms nothing for them.
 7. **Whether pin 9 minted a new requirement label**, and therefore whether touch
    row 12 was used.
 8. **Confirmation that the pin-3c suspension marker naming this contract is gone
