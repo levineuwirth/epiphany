@@ -1,7 +1,16 @@
 # Contract — P13-S16: the projection gets maintained
 
-**Status:** **DRAFT — UNBLOCKED 2026-08-09. NOT RATIFIED, and therefore NOT
-dispatchable.**
+**Status:** **RATIFIED 2026-08-09, on the authority of the repository owner, on the
+evidence of the review records below — the last of which returned zero findings.
+DISPATCHABLE.**
+
+**THE PINS ARE FROZEN. They may be executed, not edited.** A defect found during execution
+is **reported, not patched in place** — if it needs a pin change, that is its own amendment
+with its own review round. *(S27's discipline, and the reason its post-execution findings
+became amendments 1–7 rather than silent edits to frozen text.)*
+
+**NOT YET DISPATCHED.** Ratification and dispatch are separate acts; no execution
+instruction has been given, and **no implementation work has begun.**
 
 **P13-S27 landed and was accepted at `4df8e25`**, so pin 0's blocker is discharged: an
 authority now defines the implementation's current reduction semantics
@@ -9,24 +18,39 @@ authority now defines the implementation's current reduction semantics
 `core_spec.tex:11614`'s requirement is **met** — a stale canonical base is refused with
 `CanonicalBaseRequiresRebuild` on both the read and write paths.
 
-**What remains before dispatch is this contract's own ratification.** It is complete and
-ratifiable as a *plan*.
-
-> **Which independent rounds have closed, and what each found, are the review records
-> below. This block does not restate them, and states no count and no ordinal — a status
-> line that describes the review is a status line that goes stale every time the review
-> advances.** The **last record below is the review state**; ratification is the
-> repository owner's decision taken on that evidence, and this block will say
-> **RATIFIED** when it is taken.
+> **Which independent rounds closed, and what each found, are the review records below.
+> This block does not restate them, and states no count and no ordinal** — a status line
+> that describes the review goes stale every time the review advances. **The records are
+> the review state.**
 >
-> *(It read "has **not been through adversarial review rounds**" — true when written and
-> false from the first independent pass onward, while sitting in the summary a top-down
-> reader meets first. **Corrected in ratification round 2**, which found it as a live
-> false signal rather than as stale history.)*
+> *(This block read "has **not been through adversarial review rounds**" — true when
+> written and false from the first independent pass onward, while sitting in the summary a
+> top-down reader meets first. **Corrected in ratification round 2**, which found it as a
+> live false signal rather than as stale history. It then promised to say **RATIFIED** when
+> the decision was taken; that promise is discharged above.)*
 
-*Unblocked*, *ratified* and *dispatchable* are three different states, and conflating the
-first two is how the S27 contract came to be ratified after a single round and then have
-that ratification withdrawn — see its status block.
+*Unblocked*, *ratified*, *dispatchable* and *resolved* are four different states. This
+contract is now the first three and **not the fourth** — nothing is implemented. Conflating
+the first two is how the S27 contract came to be ratified after a single round and then
+have that ratification withdrawn; **this ratification rests on a different footing: every
+round was independent, every round but the last returned a blocking finding, and the last
+returned none.**
+
+### What ratification does NOT settle, stated at the top so it is not missed
+
+- **Two cells of §3's expected-outcome table are PREDICTIONS, not observations** — `t8d`
+  under M2 and `t9` under M1 depend on how pins 4 and 1a are executed. They are stated so
+  they can be falsified; **a mismatch is a finding, in the contract or the
+  implementation.**
+- **Every gate, test and mutation is specified and none has been run.** Twelve rounds went
+  into the claim that they *can* be run and that their results *would* be evidential.
+  **Execution is what tests that claim.**
+- **§4a's landing obligation is outstanding by construction** — `CLAUDE.md` and the
+  handoff carry statements pin 12's bump falsifies, and they **must not** be staged during
+  execution.
+- **The execution report is subject to independent review before completion is accepted**,
+  as S27's was. That is what turned S27's twelve-round paper record into seven
+  post-execution amendments, and there is no reason to expect this rung to differ in kind.
 
 **This rung's first act is bumping the authority to `1`** (**pin 12**), because it
 changes `CreateStaffGroup`'s reduction verdict. That bump is the discipline S27
@@ -519,6 +543,48 @@ one disposition has. **A guard whose locator depends on the text it inspects fai
 it can report**, and failing early looks like failing correctly: the test is red, the
 mutation "worked", and the required evidence never existed. **Harden the locator, not only
 the assertion.**
+
+### RATIFICATION ROUND 11 — independent, against `63a2dc8`. One blocking finding, fixed by the owner.
+
+**Pin 6's `m40` locators had drifted**: the doc/body span cited `invariants.rs:6045`, which
+is the enclosing **module's** doc comment, not `m40`'s. Corrected at `25b4925` to
+**`:6060`–`:6135`** — `m40`'s own doc plus body — and gate 6's citation to **`:6063`**, the
+`fn` line. **Verified against the tree:** all three resolve, the span is `m40`'s and not the
+module's, no `:6045` reference remains, and the commit touched one file with no
+implementation change.
+
+**A locator-only finding is a different kind from rounds 1–10**, every one of which found a
+defect in what the contract *required*. This one found a defect in how it *points* — the
+class the execution-time re-derivation obligations exist to absorb.
+
+### RATIFICATION ROUND 12 — independent, whole-artifact, against `25b4925`. ZERO FINDINGS.
+
+Rechecked the live mutation-site locators, M7's field anchors, M6's structural mapping,
+touch-table coverage, the gate and report consumers, and the expected-outcome table. **The
+revised `m40` citations resolve and the remaining named mutation sites resolve against the
+tree.**
+
+**What a clean round does and does not establish.** It is the criterion S27's round 11
+named and this contract inherited: *treat dispatchable as a claim requiring evidence of
+convergence, not a status reached by running out of findings.* **Twelve independent rounds,
+eleven of them blocking, and the twelfth clean** is that evidence — and it is the argument
+for having run whole-artifact rounds *before* ratification rather than treating ratification
+as the first whole-artifact read.
+
+**It is not proof of correctness.** Round 12 reviewed the artifact as a whole; **it did not
+run anything.** Every gate, test and mutation here remains specified and unexecuted, and
+S27's history is the relevant precedent: a clean paper round, then **seven post-execution
+amendments** once the gates were actually run. **The value of the clean round is that the
+document no longer contradicts itself — not that its predictions are right.**
+
+**The defect record, stated plainly so ratification is not read as vindication:** draft
+amendment 1 and revisions A–J closed **19 findings** before the first ratification round;
+rounds 1–11 closed **13 more**. Not one was in the pins' *substance* — the maintenance rule,
+the refusal, invariant 21, the undo strip and the authority bump have been stable since
+draft amendment 1. **Every finding was in the evidence apparatus**: what observes a
+requirement, what channel carries an observation, who owns a claim, and whether a locator
+resolves. That is where this contract was weak, and it is where execution should be read
+hardest.
 
 **The pattern across revisions A–J is sharper than any individual finding: a correction
 propagates one hop and stops.** Rev A fixed pin 10a and left touch row 11; the sweep
