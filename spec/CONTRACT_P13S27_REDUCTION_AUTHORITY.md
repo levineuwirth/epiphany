@@ -10,15 +10,21 @@ them, having gone stale in two consecutive rounds by doing so.
 execution is **reported, not patched in place** — if it needs a pin change, that
 is its own amendment with its own review round.
 
-**IMPLEMENTED 2026-08-09, STAGED, and NOT YET ACCEPTED.** **Two** independent
+**IMPLEMENTED 2026-08-09, STAGED, and NOT YET ACCEPTED.** **Three** independent
 reviews of the staged execution have closed, carried by **post-ratification
-amendments 1 and 2** below. Amendment 2's findings were **every one of them in
-amendment 1's own text**, none in the implementation it ruled on — the pattern this
-contract's history table has shown since round 3: *the amendment written to fix a
-round is where the next round's defects are.* Amendment 2 changed an absence rule,
-a gate, two touch rows and a report item, so it **needs its own independent pass
-before completion is accepted.** The implementation remains staged and
-uncommitted; only the amendments are committed.
+amendments 1, 2 and 3** below. **Every finding in amendments 2 and 3 was a defect
+in the previous amendment's own text; none was in the implementation.** That is the
+pattern this contract's history table has shown since round 3 — *the amendment
+written to fix a round is where the next round's defects are* — and it has now held
+across three consecutive post-ratification amendments. Amendment 3 changed **pin 3**
+and the rung-type paragraph, so it **needs its own independent pass before
+completion is accepted.** The implementation remains staged and uncommitted; only
+the amendments are committed.
+
+**The implementation has survived all three reviews unchanged.** Every defect found
+since execution has been in this contract, not in the 21 staged files — worth
+stating plainly, because three rounds of amendment traffic can read as instability
+in the work when it is instability in the document describing it.
 
 **Gate 4's earlier "clean" result is WITHDRAWN**, and the reason belongs at the
 top: it was measured against §2's touch table alone, while §2 also carried an
@@ -207,7 +213,8 @@ rows — read it off, do not restate it.
 | **round 19** | **0** | **0** | **yes — first clean round** |
 | execution review 1 | 5 | 3 | **yes — against the staged tree** |
 | execution review 2 | 5 | 4 | **yes — 4 of 5; the fifth from the fix-every-site sweep** |
-| **Total** | **75** | **54** | one amendment per row |
+| execution review 3 | 6 | 5 | **yes — 3 of 6; three from the sweep, two of those in a pin** |
+| **Total** | **81** | **59** | one amendment per row |
 
 **This block previously read "amended three times … fifteen findings so far,
 eight of them blocking"** — the round-2 figures, left standing through rounds 3
@@ -697,6 +704,51 @@ now examined M7 and found it internally coherent.
 pins, so it needs its own independent pass; **gates 4 and 4a MUST be re-run and
 re-reported**, the prior gate-4 result having been withdrawn.
 
+**Post-ratification amendment 3 — 2026-08-09, on the independent review of
+amendment 2.** Six findings, **five blocking**. **Three came from the review, three
+from sweeping each finding's other sites — and two of the three sweep findings were
+in a PIN.** Again every finding is a defect in the previous amendment's text or in
+text it should have swept, and none is in the implementation.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **1** | **The 39-site derivation did not derive from its cited source.** It claimed §0.4's surface and used `open` 19 + 2 / `create` 15 + 3 — the **post-S27 staged** counts. §0.4's table gives 18 + 2 and 14 + 3, and **§0.4 alone cannot yield 39**, because two of the sites are S27's own | Rewritten as a three-leg table naming the **pre/post-S27 transition** and attributing both added sites to **test 10b** (`roundtrip.rs:897`, `:928`). The result 39 was already correct; the derivation was not |
+| **2** | **The "Rung type" paragraph still named two constructors at 60 and 32 sites** — the **fourth** live site of the third-constructor omission, outside the three amendments 1 and 2 corrected | `create_versioned` named, and **the figures removed from that paragraph rather than corrected** — §0.4 is their single origin. The paragraph has now been left behind by a §0.4 correction **twice** |
+| **3** | **Pin 3 said the capability is "required at both constructors"** and named only `open` and `create`. *(Sweep.)* **Fifth site of the same omission, and the first inside a pin** — pins are what execution reads | Corrected to **all three**, with the five recorded sites listed so the next amendment cannot declare the omission closed a third time |
+| **4** | **Pin 3 carried "their 57 call sites are unchanged"** — a figure **review round 1 withdrew from §0.4** on finding its basis was a `.commit(` token grep counting `epiphany-editor-core`'s same-named method. §0.4 states no number; this pin kept the withdrawn one through nineteen rounds and two amendments. *(Sweep.)* It is also unreconstructable: Bundle-typed commit sites are **58** at `381c498`, **60** at `96b40b2`, **60** pre-S27, **65** staged — **57 is none of them** | The number **removed, not replaced**, matching what round 1 did to §0.4 |
+| **5** | **The synthetic site was attributed to M7.** It is **test 10b's** fixture, and round 9's finding is precisely that test 10b is *not* a validated reference M7 can use — which is why round 12 pinned M7's harness to `epiphany-textproj`. *(Sweep.)* **No M7 artifact exists in the staged tree at all** | Re-attributed, with both rulings named at the site |
+| 6 | **Status said amendment 2 changed "two touch rows"**; its diff changes **one** table row — row 13. Rows 14–15 were amendment 1's and appear only as context | Corrected |
+
+**Findings 3 and 4 are the ones that change how this contract should be read.** Both
+are in **pin 3** — the pin execution reads to build the type — and both were found
+by sweeping, not by any of three independent reviews. **Findings 2, 3 and 4 also
+share one property: each was a site that a *previous* correction should have swept
+and did not.** Round 1 corrected §0.4's commit figure and left pin 3's copy; round 1
+and round 2 corrected the rung-type paragraph's count and amendment 1 left it naming
+two constructors; amendment 1 added the third constructor to §0.4 and left it out of
+pin 3, the rung-type paragraph, row 13 and §7 item 5.
+
+**So the count is now the record: one omission, five sites, three amendments, and
+two amendments that each declared it closed while it was live in three more
+places.** No amount of care applied to a restatement fixes this; only removing the
+restatement does. Amendment 3 therefore **deletes** two figures and one whole
+count-bearing clause rather than correcting them, continuing what amendment 2 began.
+
+**What the review confirmed, and what it did not reach.** It independently
+reproduced **gate 4a's value comparison** — both sides `(0, 14, 0)` despite the
+constant moving from line 70 to 72 — which is the first time a gate this document
+added has been verified by someone other than its author. It confirmed the five
+amendment-1 findings closed and the staged implementation **structurally clean**. It
+returned nothing against M7, any test, or any mutation observation; **three
+consecutive reviews have now left those untouched.**
+
+**Status: the staged implementation is still NOT accepted.** Amendment 3 changed
+**pin 3**, which is a stronger claim than amendment 2's changes and needs its own
+independent pass. **No gate needs re-running for amendment 3** — it changed no
+staging rule, no gate mechanic and no touch row; gates 1–3 stand on an unchanged
+staged tree, and gates 4, 4a and §2's rules A/B were re-run under amendment 2 and
+are unaffected.
+
 **Review round 19 — 2026-08-08, independent, against the round-17/18 working
 tree. ZERO FINDINGS. The first clean round in nineteen.**
 
@@ -811,8 +863,25 @@ prohibition required.
 **Rung type:** **capability + API change.** No wire bytes move and no schema
 major or minor changes — `BundleError` has no discriminant and no encoder
 (`bundle/src/error.rs`), so a new variant is a pure Rust API change. What does
-change is `Bundle::open`'s **and `Bundle::create`'s** signatures, at **60** and 32
-call sites. *(Was "57 and 32". Corrected in review round 2 — round 1 corrected
+change is the signature of **all three** public constructors — `Bundle::open`,
+`Bundle::create` **and `Bundle::create_versioned`**.
+
+> **`create_versioned` ADDED HERE BY AMENDMENT 3, and the call-site figures are
+> REMOVED from this paragraph rather than corrected.** It read *"`Bundle::open`'s
+> and `Bundle::create`'s signatures, at **60** and 32 call sites"*. §0.4 owns the
+> surface and is its single origin; this paragraph only needs to say *which*
+> constructors change to characterise the rung type, and every figure it has ever
+> carried went stale.
+>
+> **This paragraph has now been left behind by a §0.4 correction TWICE, and the
+> parenthetical below records the first time.** Round 1 fixed §0.4's table and left
+> this sentence saying "57"; round 2 fixed it to "60". Amendment 1 then added the
+> third constructor to §0.4 and left this sentence naming two, where the independent
+> review of amendment 2 found it. **Same paragraph, same failure mode, two different
+> counts, two different rounds** — so the fix is to stop restating the surface here,
+> not to restate it more accurately a third time.
+
+*(Was "57 and 32". Corrected in review round 2 — round 1 corrected
 §0.4's table and left this spelling and touch row 2's untouched, which is the
 same one-path-of-several defect §1.7 of the handoff names.)*
 
@@ -1260,8 +1329,8 @@ naming S27 as what reopens them. Both are owed work here, not optional:
    becomes constructible again the moment validation replaces refusal. The
    harness carries a marker naming this contract at the suspension point.
 
-**Pin 3 — `BundleCapabilities`, required at both constructors, carried on the
-`Bundle`.**
+**Pin 3 — `BundleCapabilities`, required at all three constructors, carried on the
+`Bundle`. "BOTH" CORRECTED TO "ALL THREE" BY AMENDMENT 3.**
 
 ```rust
 pub struct BundleCapabilities {
@@ -1273,12 +1342,38 @@ pub struct BundleCapabilities {
 constant.** Both would let a caller use a bundle without stating what semantics
 it implements, which is the defect this rung exists to remove.
 
-`Bundle::open(store, caps)` **and `Bundle::create(store, …, caps)`** both take
-it; the `Bundle` **stores it**. `commit` and `commit_versioned` then validate
-against `self`'s copy and **their 57 call sites are unchanged** — the capability
-is a property of the session, not of each call. Naming it
-`BundleCapabilities` rather than `OpenCapabilities` follows from its now
-governing creation and commit.
+`Bundle::open(store, caps)`, `Bundle::create(store, …, caps)` **and
+`Bundle::create_versioned(store, …, caps)`** all take it; the `Bundle` **stores
+it**. `commit` and `commit_versioned` then validate against `self`'s copy and
+**every one of their call sites is unchanged** — the capability is a property of the
+session, not of each call. Naming it `BundleCapabilities` rather than
+`OpenCapabilities` follows from its now governing creation and commit.
+
+> **TWO CORRECTIONS TO THIS PIN BY AMENDMENT 3, both found by sweeping rather than
+> by the round that prompted the amendment. This is the first time the
+> third-constructor omission has been found inside a PIN** rather than in prose,
+> a gate or a report item — pins are what execution reads, so this one had the
+> shortest path to a wrong implementation.
+>
+> **1. It named two constructors and said "both".** `create_versioned` is a third
+> public constructor whose signature this rung changes; `create` delegates to it.
+> Five sites of this one omission are now recorded: §0.4 (amendment 1), touch row 13
+> and §7 item 5 (amendment 2), the "Rung type" paragraph and **this pin**
+> (amendment 3). **Two amendments each declared the omission closed while it was
+> live in three more places**, which is the strongest case this document makes for
+> its own single-origin rule.
+>
+> **2. It carried "their 57 call sites are unchanged".** That figure was withdrawn
+> from §0.4 by **review round 1** — which found its basis was a `.commit(` token
+> grep counting a same-named method in `epiphany-editor-core` — and §0.4 now
+> deliberately states **no number at all**, saying only that pin 3's design keeps
+> every one of them unchanged. **This pin kept the withdrawn figure for nineteen
+> rounds and two amendments.** It is also unreconstructable: the only non-`Bundle`
+> `commit` receiver in the workspace is `epiphany-editor-core`'s own method
+> (`lib.rs:1404`, 2 sites), so the Bundle-typed count is exact at every tree this
+> contract cites — **58** at `381c498`, **60** at `96b40b2`, **60** pre-S27 at
+> `HEAD`, **65** in the staged tree. **57 is not any of them.** Amendment 3 removes
+> the number rather than replacing it, matching what round 1 did to §0.4.
 
 The struct is a struct rather than a bare parameter so later capabilities append
 without another signature break — say so in its doc, and do not add speculative
@@ -1381,14 +1476,41 @@ but repeats the same wrap 39 times, and "explicit" was never the same thing as
 "repeated". The named helper *is* explicit: it says which side of pin 3b's split
 the site is on, and gate 6a can distinguish the two by name.
 
-> **The 39 is DERIVED, not counted independently, so it can be re-checked without
-> hand-enumerating call sites.** Take §0.4's constructor surface restricted to
-> `epiphany-testkit` and `epiphany-textproj` — `open` 19 + 2, `create` 15 + 3,
-> `create_versioned` 1 + 0 = **40** — and subtract the **one** site that
-> deliberately takes a synthetic capability (`testkit/roundtrip.rs:901`, M7's own
-> fixture): **39**. It agrees with a direct count of `production_caps()`
-> invocations — 42 textual occurrences, less the two definitions and one
-> doc-comment mention.
+> **The 39 is DERIVED — and amendment 2's stated derivation was FALSE. CORRECTED
+> BY AMENDMENT 3.** It read *"Take §0.4's constructor surface restricted to
+> `epiphany-testkit` and `epiphany-textproj` — `open` 19 + 2, `create` 15 + 3"*.
+> Those are the **post-S27 staged** counts, presented under §0.4's name: **§0.4's
+> table gives `open` 18 + 2 and `create` 14 + 3.** The derivation therefore did not
+> reproduce from its cited source, and **§0.4 alone cannot yield 39 at all**,
+> because two of the sites are S27's own deliverables. The *result* was right and
+> the *derivation* was false, which is the worse of the two failures: a wrong number
+> gets caught by recounting, a wrong derivation teaches the next reader to recount
+> wrongly.
+>
+> **The derivation, with the pre/post-S27 transition named and attributed:**
+>
+> | Leg | `open` | `create` | `create_versioned` | running |
+> |---|---|---|---|---|
+> | §0.4's **pre-S27** table, `epiphany-testkit` + `epiphany-textproj` | 18 + 2 | 14 + 3 | 1 + 0 | **38** |
+> | added by **S27 itself** — both sites in **test 10b**, `roundtrip.rs` | +1 (`:928`) | +1 (`:897`) | — | **40** |
+> | less the one site deliberately taking a synthetic capability (`:901`) | — | −1 | — | **39** |
+>
+> All 38 pre-existing sites convert to `production_caps()`. Of test 10b's two new
+> sites, the `create` takes `synthetic_for_fixture(0)` and the `open` takes
+> `production_caps()` — so the rung's single synthetic site and one of its two new
+> sites are the same site. **Cross-check, independent of §0.4's table:** 42 textual
+> `production_caps()` occurrences, less the two definitions and one doc-comment
+> mention = **39**.
+>
+> **The synthetic site is TEST 10b's fixture, not M7's — amendment 2 said "M7's own
+> fixture" and that reverses two rulings.** Round 9's finding is *precisely* that
+> test 10b is **not** a genuinely validated reference M7 could compare against —
+> its write side is synthetic and only its reopen is real — which is why M7 builds
+> its own reference, and why round 12 pinned M7's harness to **`epiphany-textproj`**
+> rather than letting it reach into `epiphany-testkit`. **No M7 artifact survives in
+> the staged tree at all**; M7 is removed and restored by hand. Attributing a
+> testkit fixture to M7 would have a reader looking for M7's reference in the crate
+> two rounds ruled it cannot live in.
 >
 > **The likeliest origin of "23", recorded because the shape recurs:** it is
 > exactly touch row 2's count of in-crate `open` sites **in `bundle.rs`** — a
