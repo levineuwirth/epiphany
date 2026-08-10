@@ -17,7 +17,7 @@ model with a LaTeX specification suite as its source of truth.
 
 | Track | Lives in | Current head |
 |---|---|---|
-| **Spec / Pass 13** — wire format, bundle, ops, text projection, the `.tex` suite | `spec/`, `crates/epiphany-{core,ops,bundle,textproj,testkit}` | **P13-S27 LANDED** (`4df8e25`); **P13-S16 RATIFIED and dispatchable, pins frozen, not dispatched** |
+| **Spec / Pass 13** — wire format, bundle, ops, text projection, the `.tex` suite | `spec/`, `crates/epiphany-{core,ops,bundle,textproj,testkit}` | **P13-S27 LANDED** (`4df8e25`); **P13-S16 LANDED** (`aee4ff9`) — six findings against its own contract are unamended, see its `PASS13_CANDIDATES.md` row |
 | **Editor / T4** — the editing seam, engraving, the toolkit spike | `spec/PLAN_EDITOR_APP.md`, `spec/CONTRACT_EDITOR_*`, `spikes/`, `crates/epiphany-{editor-core,editor-gui,engrave,layout-ir,glyphs,render-svg}` | T4 spike, round 2 built but not run |
 
 They are currently independent. The T1b/P13-S27 collision in
@@ -85,12 +85,17 @@ reach today.
 ## Green baseline
 
 ```
-cargo test --workspace                                 # expect 1577 passing, 0 failed, 0 ignored
+cargo test --workspace                                 # expect 1583 passing, 0 failed, 0 ignored
 cargo clippy --workspace --all-targets -- -D warnings   # clean
 ```
 
 **This is the single origin for the count** — `spec/HANDOFF_2026-08-07.md` used to
-repeat it in three places and now points here. It moved 1570 → 1577 when P13-S27 landed.
+repeat it in three places and now points here. It moved 1570 → 1577 when P13-S27 landed,
+and 1577 → 1583 when P13-S16 landed (six net-new tests).
+
+**Use `--no-fail-fast` whenever anything is failing.** The bare command stops at the
+first failing suite, so a partial failure set reads as the whole one — P13-S16's M6a
+reported six failures over four suites bare, and seven over all forty-two with the flag.
 
 If the count differs on arrival, reconcile that **before** starting new work —
 the mutation discipline above depends on a known-green baseline.
@@ -103,14 +108,25 @@ applies, and base-bearing bundles are constructible again through the ordinary A
 
 **What replaced it, and it is not "anything goes":** a canonical base is accepted only
 when its `reduction_algorithm_version` equals the running authority,
-`epiphany_ops::CURRENT_REDUCTION_ALGORITHM_VERSION` — **currently `0`**. A mismatch is
+`epiphany_ops::CURRENT_REDUCTION_ALGORITHM_VERSION` — **currently `1`**. A mismatch is
 `CanonicalBaseRequiresRebuild { base, current }`, refused on **both** the read side
 (`open`) and the write side (`commit`/`commit_versioned`). Legacy-epoch bundles still
 refuse a base outright.
 
+**Any base materialized before P13-S16 must be rebuilt, not reused** — it declares `0`
+and holds state the current semantics would not have computed.
+
 **The bump discipline is the whole guarantee.** Any change to a canonical reduction
-verdict MUST bump that constant — **no mechanism can detect a semantics change**, so
-nothing will catch a missed bump. P13-S16 is the first rung that must move it to `1`.
+verdict **or to canonical reduced state** MUST bump that constant — **no mechanism can
+detect a semantics change**, so nothing will catch a missed bump. Both classes are named
+because a change leaving every verdict intact while altering the reduced graph is the
+easier one to overlook, and it invalidates a base just as completely.
+
+P13-S16 made the first bump, `0` → `1`, and carried one change of each kind:
+`CreateStaffGroup`'s verdict (applied → `ContainerNotEmpty` no-op) and `CreateStaff`'s
+reduced state (it still applies, but now maintains `StaffGroup.members`). The constant's
+own `Bumps` list is the record of why each version exists; a bump without its entry
+leaves a number nobody can account for.
 
 Fixtures deliberately exercising arbitrary wire versions take
 `BundleCapabilities::synthetic_for_fixture(v)`; production paths take the crate-local
