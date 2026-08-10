@@ -17,7 +17,7 @@ model with a LaTeX specification suite as its source of truth.
 
 | Track | Lives in | Current head |
 |---|---|---|
-| **Spec / Pass 13** — wire format, bundle, ops, text projection, the `.tex` suite | `spec/`, `crates/epiphany-{core,ops,bundle,textproj,testkit}` | **P13-S27 LANDED** (`4df8e25`); **P13-S16 LANDED** (`aee4ff9`) — six findings against its own contract are unamended, see its `PASS13_CANDIDATES.md` row |
+| **Spec / Pass 13** — wire format, bundle, ops, text projection, the `.tex` suite | `spec/`, `crates/epiphany-{core,ops,bundle,textproj,testkit}` | **P13-S27 LANDED** (`4df8e25`); **P13-S16 LANDED** (`aee4ff9`), its post-landing corrections amended in at `CONTRACT_P13S16_PROJECTION.md` §7 |
 | **Editor / T4** — the editing seam, engraving, the toolkit spike | `spec/PLAN_EDITOR_APP.md`, `spec/CONTRACT_EDITOR_*`, `spikes/`, `crates/epiphany-{editor-core,editor-gui,engrave,layout-ir,glyphs,render-svg}` | T4 spike, round 2 built but not run |
 
 They are currently independent. The T1b/P13-S27 collision in

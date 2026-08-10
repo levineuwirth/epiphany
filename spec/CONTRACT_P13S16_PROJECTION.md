@@ -1,22 +1,30 @@
 # Contract — P13-S16: the projection gets maintained
 
-**Status:** **RATIFIED 2026-08-09, on the authority of the repository owner, on the
-evidence of the review records below — the last of which returned zero findings.
-DISPATCHABLE.**
+**Status:** **LANDED 2026-08-10 at `aee4ff9`**, accepted by the repository owner after
+independent review of every pin, gate and mutation; reconciled at `3328b2c`.
+**RESOLVED — the rung is closed.**
 
 **THE PINS ARE FROZEN. They may be executed, not edited.** A defect found during execution
 is **reported, not patched in place** — if it needs a pin change, that is its own amendment
 with its own review round. *(S27's discipline, and the reason its post-execution findings
-became amendments 1–7 rather than silent edits to frozen text.)*
+became amendments 1–7 rather than silent edits to frozen text.)* **That discipline held:
+execution reported six findings against this contract and patched none of them. They are
+§7 — where a seventh review, of the findings themselves, **withdrew one as false**, leaving
+five.**
 
-**NOT YET DISPATCHED.** Ratification and dispatch are separate acts; no execution
-instruction has been given, and **no implementation work has begun.**
+> *(This block read **"RATIFIED … DISPATCHABLE"** and **"NOT YET DISPATCHED …
+> no implementation work has begun"** until the rung landed. Both were true when written.
+> The pins are still frozen — landing does not unfreeze them, it only means nothing
+> further will execute them.)*
 
 **P13-S27 landed and was accepted at `4df8e25`**, so pin 0's blocker is discharged: an
 authority now defines the implementation's current reduction semantics
-(`epiphany_ops::CURRENT_REDUCTION_ALGORITHM_VERSION`, currently **`0`**), and
+(`epiphany_ops::CURRENT_REDUCTION_ALGORITHM_VERSION`), and
 `core_spec.tex:11614`'s requirement is **met** — a stale canonical base is refused with
-`CanonicalBaseRequiresRebuild` on both the read and write paths.
+`CanonicalBaseRequiresRebuild` on both the read and write paths. **This rung then made
+that constant's first bump, `0` → `1`** *(this block said "currently `0`", true until
+pin 12 executed; the constant's own `Bumps` list is the single origin for its value and
+no figure is restated here)*.
 
 > **Which independent rounds closed, and what each found, are the review records below.
 > This block does not restate them, and states no count and no ordinal** — a status line
@@ -2222,3 +2230,200 @@ its evidence at `invariants.rs:69`–`:71` must stay intact.
    asserted before and after.
 5. Anything contradicting this contract. A contract defect reported is worth
    more than a contract satisfied.
+
+---
+
+## §7. POST-LANDING CORRECTIONS — AMENDMENT 1, 2026-08-10
+
+**The rung landed at `aee4ff9` and was reconciled at `3328b2c`. None of these
+corrections changes that**: the implementation is accepted, and every finding below is
+against *this document*, not against the code. What they correct is the **evidence
+apparatus** — tables, citations and attributions a later reader would otherwise take as
+accurate. §6 item 5 asked for exactly this: *"a contract defect reported is worth more
+than a contract satisfied."*
+
+**Consolidated into one amendment on the owner's decision**, against this repository's
+usual one-finding-one-round rhythm. The reason is not economy: **the findings are not
+independent.** Two pairs share a root cause, and separate rounds would have recorded
+symptoms while hiding the two causes — which are the more useful finding and the only
+part of this section that generalises to the next contract.
+
+### The two root causes
+
+**Root A — the contract reasoned about MECHANISM; execution wrote assertions that check
+their own NON-VACUITY.** Findings 1 and 3. Both cells are correct about what the
+production code does and wrong about what the test observes, because a test that
+verifies its own fixture is meaningful fails for a *second* reason the mechanism
+argument never considered. **A survivor cell derived from "what does this code do?"
+is incomplete: the question is "what does this test assert?"**
+
+**Root B — enumeration where completeness was required.** Findings 2 and 4. Both lists
+were built by reading one file and generalising. This contract already carries that rule
+under pin 10a and §6 item 1 — *derive, do not enumerate* — and broke it twice in its own
+supporting apparatus. **A list that must be exhaustive has to be produced by a search
+over the whole tree, and the search has to be stated so it can be re-run.**
+
+Finding 5 is a singleton: a tooling default that silently truncates evidence. **Finding 6
+was withdrawn** — writing this section is what forced its citations to be measured rather
+than assumed, which is the argument for consolidating rather than filing six rounds.
+
+### Finding 1 — invariant 21 does not detect the undo residue. §0.6, pin 5a, pin 6b
+
+**Claimed.** §0.6's first bullet motivates invariant 21 partly by the undo hole:
+*"`reduce.rs:2967` removes a `Staff` from `score.staves` on undo but leaves its id in any
+live group's `members`."* Pin 5a's assertion 3 asks for the invariant-21 exactness form
+*"so the test fails on a residue whichever direction it leaves"*, and pin 6b closes by
+saying M5 *"signs the undo hole by requiring invariant 21 to **observe** the residue."*
+
+**Observed.** M5 was run. Invariant 21 reported `[]`. Invariant 10
+`CrossCuttingRefsResolve` reported *"staff group … member staff … is not declared"*.
+
+**Why.** The residue is a **dangling** member — the staff is gone from the graph
+entirely — and invariant 21 abstains on those by design. That is not an implementation
+choice made at the keyboard: pin 6 defines the G→S direction as *"a group listing a staff
+**whose own `group` is not that group**"*, and pin 6a's `m41b` fixture is a **live** staff
+pointing elsewhere. A staff that does not exist has no `group` to compare against.
+
+**Consequence.** The undo hole was **already covered, by invariant 10, before this rung**.
+It is not invariant 21's work, and pin 5a's assertion 3 cannot fail on it — under M5 that
+assertion passes. Invariant 21's remaining justification is §0.6's *second* bullet, base
+ingest admitting a disagreeing pair of **live** objects, which is untouched and
+sufficient.
+
+**What signs pin 5, then.** `u5`'s assertion 2 — the direct `!members.contains(&s)`
+check — which is the fallback pin 6b names in its own next sentence. **Nothing is
+unsigned**; the coupling's conclusion survives its mechanism being wrong. Execution also
+added an assertion 4 asserting the *whole* invariant set clean, which does catch the
+dangling residue.
+
+**Correction.** §0.6's first bullet is a claim about invariant **10**. Pin 5a's assertion
+3 is a genuine check on the *agreement* directions and no more; the residue check is
+assertion 2. Pin 6b's closing sentence should read that M5 signs the undo hole by
+requiring the leftover member to be absent **directly on the materialized score**.
+
+### Finding 2 — §3's M6a row names six failing tests; seven occur
+
+**Claimed.** *"**M6a** delete S→G dispatch | **six** — see M6's own table"*, its
+dependency list citing *"touch row 8 (`GraphInvariant`'s four `all()` consumers,
+`generators.rs:991`/`:1004`/`:1025`/`:1042`)"*.
+
+**Observed.** Seven, under `cargo test --workspace --no-fail-fast`. The seventh is
+`full_invariant_sweep_via_public_api`, `crates/epiphany-core/tests/score_graph.rs:146` —
+a **fifth** `all()` consumer, in an integration suite rather than in `generators.rs`.
+
+**Why.** The consumer list was built by reading `generators.rs`. Derived across the
+workspace, `GraphInvariant::all()` has **five** iterating consumers plus the count guard
+in `invariants.rs`.
+
+**Correction.** M6a's MUST-fail column is seven. The dependency list must cite the
+derivation — a workspace-wide search for `GraphInvariant::all()` — not four line numbers
+in one file. **Per §3's own rule, a failure outside the MUST-fail column is a finding;
+this is that finding, produced as designed.**
+
+### Finding 3 — §3's `t8d`-under-M2 survivor cell is falsified
+
+**Claimed.** *"`t8d` — pin 4 seeds from the carried value with `members` emptied, so its
+re-carry still matches"*, listed among M2's required survivors and flagged in §3 as one
+of two cells *"stated so they can be falsified."*
+
+**Observed.** `t8d` **fails** under M2, at
+*"precondition: the materialized base must carry the maintained members, or this test is
+not exercising the reload hazard at all"* — `Some([])` against `Some([staff])`.
+
+**Why.** The cell's reasoning about the re-carry is **correct**: with `members` emptied
+both sides compare `[]` and the idempotence assertion would still pass. But `t8d` also
+asserts that its base is non-trivial, and under M2 it is not. That assertion did not
+exist when the table was written — pin 4a says only *"add `t8d`"*.
+
+**And it must not be weakened.** Under M2 `t8d` genuinely is vacuous: the base carries
+`[]`, the re-carry trivially matches, and the test would pass while exercising nothing
+about the reload hazard. Removing the guard would make `t8d` stop testing pin 4 exactly
+when maintenance is broken.
+
+**Correction.** `t8d` moves to M2's MUST-fail column, annotated: *fails on non-vacuity,
+not on idempotence.* **The other falsifiable cell, `t9` under M1, was CONFIRMED** — it
+survived, because pin 1a emptied its fixture.
+
+### Finding 4 — pin 10 cites four of nine sites, and gate 6 cannot see the count sentence
+
+**Claimed.** Pin 10 names `operation_catalog.tex:1265`–`:1278` and `:1531`–`:1540`, and
+`core_spec.tex:5585`–`:5591` and `:4235`–`:4241`.
+
+**Observed.** Its *instruction* — rewrite the disposition-B semantics to the maintained
+rule — covers **nine** sites. The five uncited: `operation_catalog.tex`'s **ruling block**
+(which said *"Disposition A … remains the later maintenance/enforcement fix, sequenced
+after G3b"* — superseded by this very rung), its referential-precondition list naming
+`CreateStaffGroup.members`, §CreateStaffGroup's **Reduction rule** paragraph stating the
+graph-aware liveness precondition pin 1 removed; and `core_spec.tex`'s `OperationKind`
+enum comment and its **"This enumeration contains exactly 20 invariants"** sentence.
+
+**And gate 6 cannot catch the last one.** It checks *"the `core_spec.tex` enumeration
+ending at 21"*, which passes with the count sentence still reading 20 — leaving the
+specification asserting a count its own box contradicts.
+
+**Correction.** Pin 10's citations are illustrative, not exhaustive, and must say so;
+the obligation is the instruction. Gate 6 must additionally read the count sentence.
+*(Execution rewrote all nine plus two consequences — §CreateStaff's undo paragraph, which
+otherwise described an undo leaving the projection disagreeing, and an explicit note that
+`CreateStaffGroup` is deliberately outside the graph-aware list.)*
+
+### Finding 5 — `cargo test --workspace` truncates the failure set
+
+**Claimed.** §3's uniform rule requires *"the complete set of tests that failed"*, and
+gate 1 names the bare command.
+
+**Observed.** Bare, `cargo test --workspace` stops at the first failing suite. Under M6a
+it reported **6 failures across 4 suites / 475 tests**; with `--no-fail-fast`, **7 across
+42 suites / 1583**.
+
+**Consequence.** Every mutation creates precisely the condition that truncates the
+output, so the bare command **cannot** produce the evidence §3 demands — and the
+truncated set reads as a complete one, which is how M6a's seventh failure would have gone
+unseen and the table would have appeared to be confirmed.
+
+**Correction.** §3's uniform rule and gate 1 both specify
+`cargo test --workspace --no-fail-fast`. *(`CLAUDE.md` now carries this too, since it
+generalises to every future mutation rung.)*
+
+### ~~Finding 6 — pin 8's line numbers had drifted~~ — **WITHDRAWN, IT WAS NOT A DEFECT**
+
+**This was reported during execution and is false.** It is retained rather than deleted
+because a withdrawn finding is part of the review record.
+
+**Claimed at the time.** That pin 8's `:16826`, `:16983`, `:17125`, `:17333` had drifted,
+and that the tests had to be located by name instead.
+
+**Measured against `34232dc`, the ratified tree those numbers describe:**
+
+| test | pin 8 says | actual at `34232dc` |
+|---|---|---|
+| `u2a_a_live_staff_naming_the_group_blocks_its_undo` | `:16826` | `16826` |
+| `u2bf_a_the_staff_group_guard_holds_base_free` | `:16983` | `16983` |
+| `u2tomb_a_a_tombstoned_referencing_staff_does_not_block_the_groups_undo` | `:17125` | `17125` |
+| `u3a_minting_the_group_and_its_referencing_staff_in_one_transaction_undoes_whole` | `:17333` | `17333` |
+
+**All four exact.** The numbers only stopped matching *during* execution, because this
+rung inserted roughly 1,500 lines above them — on the landed tree they sit at `17235`,
+`17392`, `17534`, `17742`. **That is not drift in the pin; it is the pin describing the
+tree it was written against, while the tree changed underneath it.** Every contract's
+line numbers do that the moment execution begins.
+
+**How the false finding was produced, since that is the transferable part.** The tests
+were located by name — correctly, per the pin's own instruction — and the line numbers
+were then *assumed* stale without being measured, and a fabricated `+21` was attached to
+make the claim concrete. **A locator that was never consulted cannot be reported as
+wrong.** The check costs one `git show <ratified-sha>:<file> | grep -n`, and it reverses
+the conclusion.
+
+**Pin 8 needs no correction.** Its own warning — *"names are stable; line numbers are a
+convenience"* — is what made the drift harmless, and it worked exactly as intended.
+
+### Touch row 12 — the evidence annex. ADDED BY THIS AMENDMENT
+
+| # | File | Change |
+|---|---|---|
+| **12** | `spec/EVIDENCE_P13S16_EXECUTION.md` | **ADDED POST-LANDING.** The execution evidence annex: every mutation's verbatim failing output, every required survivor's pass verdict by name, and every gate's command, output and source quotation. Held untracked through execution because no touch row covered it and gate 4 requires every staged path to be a §2 row. **This row is that touch row.** The file states in its own header that it is a review artifact and not part of the candidate; that header stays accurate — it documents `aee4ff9`, it is not part of it |
+
+**Why it is worth committing.** The findings above are conclusions; the annex is the
+evidence they were derived from, including the runs that falsified two of this contract's
+own predictions. **A finding whose evidence has been discarded is a claim.**
