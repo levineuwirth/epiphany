@@ -37,6 +37,19 @@ no figure is restated here)*.
 > live false signal rather than as stale history. It then promised to say **RATIFIED** when
 > the decision was taken; that promise is discharged above.)*
 
+> ## EVERYTHING FROM HERE TO §7 IS A DATED RECORD OF THE PRE-EXECUTION CONTRACT
+>
+> **The rung LANDED at `aee4ff9` and is RESOLVED.** The ratification-time framing below —
+> *"not the fourth"*, *"nothing is implemented"*, *"none has been run"*, *"§4a is
+> outstanding"* — was true when written and is **now false**. It is retained, not
+> rewritten, because the pins are frozen and because the review records are the review
+> state. **A reader wanting the current state reads the status block above and §7.**
+>
+> *(Marked in amendment 1, which found this block still asserting the pre-execution state
+> two screens under a status line saying the opposite — the correction had reached the top
+> of the file and stopped. That is the one-hop failure this contract's own findings 1–4
+> are made of.)*
+
 *Unblocked*, *ratified*, *dispatchable* and *resolved* are four different states. This
 contract is now the first three and **not the fourth** — nothing is implemented. Conflating
 the first two is how the S27 contract came to be ratified after a single round and then
@@ -45,6 +58,21 @@ round was independent, every round but the last returned a blocking finding, and
 returned none.**
 
 ### What ratification does NOT settle, stated at the top so it is not missed
+
+> **ALL FOUR ARE NOW DISCHARGED — added by amendment 1. The bullets are the record; these
+> are their outcomes:**
+>
+> 1. **Both predictions were tested.** `t9` under M1 **CONFIRMED** — it survived. `t8d`
+>    under M2 **FALSIFIED** — it fails, on non-vacuity rather than idempotence. §7
+>    finding 3.
+> 2. **Every gate, test and mutation was run** — fourteen gates, eleven mutation
+>    executions. The claim that they *could* be run held; §7's five corrections are what
+>    running them found.
+> 3. **§4a was honoured during execution** (neither file staged) **and discharged after**,
+>    at `3328b2c`.
+> 4. **The execution report was independently reviewed**, across nineteen rounds, and did
+>    produce post-execution amendments — this one. The expectation stated here was
+>    correct.
 
 - **Two cells of §3's expected-outcome table are PREDICTIONS, not observations** — `t8d`
   under M2 and `t9` under M1 depend on how pins 4 and 1a are executed. They are stated so
@@ -63,7 +91,7 @@ returned none.**
 **This rung's first act is bumping the authority to `1`** (**pin 12**), because it
 changes `CreateStaffGroup`'s reduction verdict. That bump is the discipline S27
 installed: no mechanism can detect a semantics change, so the bump is the entire
-guarantee.
+guarantee. *(Executed; the constant's `Bumps` list is the record.)*
 
 ### Draft amendment 1 — 2026-08-09, on ratification reconnaissance. NOT a review round.
 

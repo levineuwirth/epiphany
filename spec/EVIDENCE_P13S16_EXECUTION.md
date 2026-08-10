@@ -2,11 +2,14 @@
 
 Companion to the §6 report for `spec/CONTRACT_P13S16_PROJECTION.md`.
 
-**Status: review artifact, NOT part of the candidate.** This file is deliberately
-**not staged**: it does not appear in the contract's §2 touch table, and gate 4
-requires every staged path to be a §2 row. Including it in the commit would need
-its own amendment adding a touch row. It is written here rather than kept in a
-temporary directory so the evidence survives the review.
+**Status: review artifact. Tracked under `CONTRACT_P13S16_PROJECTION.md` §7's touch
+row 12, and NOT part of the rung's candidate.** It documents `aee4ff9`; it is not in it.
+
+This file was held **untracked** throughout execution and review, because it did not
+appear in the contract's §2 touch table and gate 4 requires every staged path to be a §2
+row — so committing it needed an amendment adding one. Amendment 1 added that row, and
+the file landed with it. **The distinction survives the change:** the fourteen paths in
+`aee4ff9` are the rung; this is the evidence the rung was reviewed against.
 
 **Whitespace.** Trailing whitespace has been stripped throughout, so that
 `git diff --cached --check` passes. It carried no information: it appears only where a
