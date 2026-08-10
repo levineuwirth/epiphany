@@ -369,10 +369,15 @@ pub fn instrument(id: epiphany_core::InstrumentId) -> epiphany_core::Instrument 
     epiphany_core::Instrument::new(id, format!("instrument-{}", id.counter()))
 }
 
-/// A minimal [`StaffGroup`](epiphany_core::StaffGroup) (genesis tranche G3a) —
-/// the value a `CreateStaffGroup` mints: named for its counter, a grand-staff
-/// kind, and the given `members` list carried exactly as given (contract
-/// §1.1, disposition B — this helper never normalizes `members`).
+/// A minimal [`StaffGroup`](epiphany_core::StaffGroup) (genesis tranche G3a):
+/// named for its counter, a grand-staff kind, and the given `members` list
+/// carried exactly as given — **this helper never normalizes `members`**, which
+/// is what lets a test hand a non-empty list to a refusal path.
+///
+/// **A non-empty result is no longer something `CreateStaffGroup` can mint**
+/// (P13-S16 §1.1, disposition A): reduction refuses such a value with
+/// `ContainerNotEmpty`. The helper is unchanged and deliberately so — it builds
+/// values, including ones the reducer will reject.
 pub fn staff_group(id: StaffGroupId, members: Vec<StaffId>) -> epiphany_core::StaffGroup {
     epiphany_core::StaffGroup {
         id,

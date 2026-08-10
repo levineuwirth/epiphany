@@ -126,22 +126,51 @@ pub mod vectors;
 /// regression look identical from outside. **The discipline is the guarantee;
 /// there is no backstop.**
 ///
-/// # Why `0`, and why that is a decision
+/// # Why the series *started* at `0`, and why that was a decision
 ///
-/// Bundles written to date carry `0` when they have no canonical base, and
-/// bases self-report whatever they were stamped with. Starting anywhere but `0`
-/// would make every existing base-bearing document fail to open **without any
-/// semantics having changed** — the check would manufacture the breakage it
-/// exists to detect. `0` is therefore a decision, **not "unset"**.
+/// Bundles written before the authority check carry `0` when they have no
+/// canonical base, and bases self-report whatever they were stamped with.
+/// Starting the series anywhere but `0` would have made every existing
+/// base-bearing document fail to open **without any semantics having changed** —
+/// the check would have manufactured the breakage it exists to detect. `0` was
+/// therefore a decision, **not "unset"**.
+///
+/// This is a fact about the *baseline*, not about the current value: read the
+/// declaration below for that, and the `Bumps` list for how the series got
+/// there.
 ///
 /// # Bumps
 ///
 /// * `0` — the baseline. The semantics `canonical_reduction_order` and
 ///   `reduce_onto` implement as of P13-S27 (2026-08-08). No earlier version
 ///   exists; nothing predates this constant.
+/// * `1` — **P13-S16** (2026-08-09, `spec/CONTRACT_P13S16_PROJECTION.md`), the
+///   first real bump. It carries **one change of each kind**, and the two are
+///   not interchangeable:
+///   - a **reduction verdict** change — `CreateStaffGroup` carrying a non-empty
+///     `members` now reduces to a `ContainerNotEmpty` no-op where version `0`
+///     applied it. The effect recorded for that operation differs.
+///   - a **canonical reduced state** change — `CreateStaff` carrying
+///     `group: Some(g)` now appends the staff to `g`'s `members`. Its verdict is
+///     unchanged (it still applies); the graph the reduction produces is what
+///     differs.
 ///
-/// The first real bump belongs to **P13-S16**, which changes
-/// `CreateStaffGroup`'s reduction verdict and must move this to `1`.
+///   Either alone would require this bump. A base materialized under `0` holds
+///   state this version would not have computed, so it must be rebuilt rather
+///   than reused.
+///
+/// A bump without its entry above leaves a number nobody can account for: this
+/// list is the only record of *why* each version exists.
+///
+/// **No mechanism detects a missed bump.** The authority check compares
+/// *declared* versions, so it catches a base stamped with a version other than
+/// this one — it cannot notice that the semantics changed while the constant
+/// stood still. Every future change to a canonical reduction verdict **or to
+/// canonical reduced state** must move this constant and add its entry here.
+/// Both classes are named because a change that leaves every verdict intact
+/// while altering the reduced graph is the easier one to overlook, and it
+/// invalidates a base just as completely. That discipline is the whole
+/// guarantee.
 ///
 /// # Layering
 ///
@@ -149,7 +178,7 @@ pub mod vectors;
 /// `epiphany-bundle` in order to use that crate's `ReductionAlgorithmVersion`
 /// wrapper. The wrapper is constructed at the composition boundary by whoever
 /// depends on both (P13-S27 pin 1, §0.3).
-pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 0;
+pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 1;
 
 pub use anomaly::{
     AnomalousReplicaSegment, IntegrityAnomaly, IntegrityAnomalyKind, ReplicaAnomalyReason,

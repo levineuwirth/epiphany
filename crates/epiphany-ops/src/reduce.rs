@@ -1616,7 +1616,29 @@ impl<'a> Reducer<'a> {
             // retained value and misclassifies (the G1 `instrument_values`
             // hazard, `reduce.rs:13264`–`:13268`, copied here for all four
             // families).
-            self.staff_group_values.insert(group.id, group.clone());
+            //
+            // P13-S16 pin 4: seed the **carried** value, so `members` is
+            // emptied here rather than cloned from the graph. This map answers
+            // "what was authored?", and pin 1 refuses any non-empty carried
+            // `members` — so empty is the *only* authorable value and emptying
+            // is an exact reconstruction, not a lossy approximation. The
+            // graph's `members` is derived, maintained from `Staff.group` by
+            // pin 2, and must never reach `create_staff_group`'s re-carry
+            // comparator.
+            //
+            // DO NOT "fix" this back to `group.clone()`. That is the base-ingest
+            // half of §0.4's re-carry hazard, and it is invisible to any test
+            // that does not reload: within one session nothing has been
+            // maintained into the carried slot, so a re-carry of
+            // `CreateStaffGroup(g, [])` still compares `[]` against `[]` and
+            // correctly yields `AlreadyApplied`. A snapshot round trip then
+            // launders the *derived* value into the carried slot, and the same
+            // re-carry compares `[]` against `[s]` and misverdicts
+            // `RecreateContentMismatch`. `t8d` is the only test that crosses
+            // that boundary; pin 4 is unguarded without it.
+            let mut carried = group.clone();
+            carried.members.clear();
+            self.staff_group_values.insert(group.id, carried);
         }
         for part in &score.parts {
             self.objects
@@ -2966,6 +2988,37 @@ impl<'a> Reducer<'a> {
                 // graph (the undo path preconditions no live reference remains).
                 TypedObjectId::Staff(id) => {
                     score.staves.retain(|value| value.id != *id);
+                    // P13-S16 pin 5: `StaffGroup.members` is a projection of
+                    // `Staff.group`, so a staff leaving the graph must also
+                    // leave every group that lists it — otherwise the undo
+                    // strands a group naming a staff that no longer exists.
+                    //
+                    // **That residue is NOT invariant 21, checked rather than
+                    // assumed.** A stranded id has no staff left to disagree
+                    // with, and invariant 21 abstains on dangling members —
+                    // agreement is a claim about *live* pairs. Run M5 and
+                    // invariant 21 reports nothing, while invariant 10
+                    // `CrossCuttingRefsResolve` reports "staff group ... member
+                    // staff ... is not declared". What pin 5 closes is the
+                    // unguarded **projection-maintenance** direction; the
+                    // detector for the dangling reference it would otherwise
+                    // leave is invariant 10.
+                    //
+                    // The maintenance pair is guarded asymmetrically, which is
+                    // why the repair belongs here: `undo_strand_block`'s
+                    // `TypedObjectId::StaffGroup` arm already refuses to undo a
+                    // group a live staff still names, but nothing blocks undoing
+                    // the staff itself. This walk's own `StaffGroup` arm needs no
+                    // change.
+                    //
+                    // Only the graph needs stripping. The one other place a
+                    // `StaffGroup` value is held, `staff_group_values`, carries
+                    // the authored value whose `members` pin 1 keeps empty and
+                    // pin 4 re-empties in `seed_from_graph` — so there is no
+                    // derived copy anywhere else for this id to survive in.
+                    for group in &mut score.staff_groups {
+                        group.members.retain(|member| member != id);
+                    }
                 }
                 TypedObjectId::TimeSignature(id) => {
                     score.time_signatures.retain(|value| value.id != *id);
@@ -4327,6 +4380,13 @@ impl<'a> Reducer<'a> {
     /// precondition no-op. Graph-aware reduction additionally preconditions
     /// that the referenced instrument is live and, when `group` is present,
     /// that the staff group resolves.
+    ///
+    /// **P13-S16 pin 2:** when `group` is present this also **maintains that
+    /// group's `members`** in the graph, appending this staff's id. `Staff.group`
+    /// is the sole authority; `StaffGroup.members` is the projection maintained
+    /// from it, and the two must agree in both directions (graph invariant 21).
+    /// The maintained value is written **only** to `self.graph` — never to
+    /// `staff_group_values`, which holds the group as authored (pin 3).
     fn create_staff(&mut self, env: &OperationEnvelope, op: &CreateStaffOp) -> OperationEffect {
         let sobj = TypedObjectId::Staff(op.staff_id());
         match self.objects.get(&sobj) {
@@ -4384,6 +4444,27 @@ impl<'a> Reducer<'a> {
         }
         if let Some(score) = self.graph.as_mut() {
             score.staves.push(op.staff.clone());
+            // P13-S16 pin 2: maintain `StaffGroup.members` from `Staff.group`,
+            // which is the sole authority. Only in the graph — `staff_group_values`
+            // keeps the value as authored (pin 3), so the re-carry comparator at
+            // `create_staff_group` still compares carried against carried.
+            // Base-free reduction has no graph to maintain, which the enclosing
+            // `if let` already guards.
+            //
+            // Set-union and order-independent per staff id, and idempotent:
+            // convergence replays operations, so an id already present is never
+            // appended twice.
+            if let Some(group_id) = op.staff.group {
+                if let Some(group) = score
+                    .staff_groups
+                    .iter_mut()
+                    .find(|group| group.id == group_id)
+                {
+                    if !group.members.contains(&op.staff_id()) {
+                        group.members.push(op.staff_id());
+                    }
+                }
+            }
         }
         self.mint_container(env, sobj);
         self.staff_values.insert(op.staff_id(), op.staff.clone());
@@ -4450,11 +4531,23 @@ impl<'a> Reducer<'a> {
     // has no universe to check against. -------------------------------------
 
     /// Set-union creation of a global `StaffGroup` on the score root
-    /// (operation_catalog §CreateStaffGroup). Graph-aware reduction
-    /// preconditions every carried member resolves to a live `Staff`. Per
-    /// §1.1 (disposition B), `members` is stored exactly as carried and
-    /// neither maintained nor trusted thereafter — `Staff.group` is the sole
-    /// authority for membership.
+    /// (operation_catalog §CreateStaffGroup). A carried non-empty `members` is
+    /// **refused**: this operation authors the group, not its membership, which
+    /// is **maintained from `Staff.group`** under reduction (`create_staff`,
+    /// P13-S16 pin 2). `Staff.group` remains the sole authority and
+    /// `StaffGroup.members` its maintained projection; the two **must agree**
+    /// in both directions (graph invariant 21).
+    ///
+    /// **P13-S16 inverted the previous rule, and the inversion is deliberate.**
+    /// Before this rung, per §1.1 disposition B, `members` was stored exactly as
+    /// carried and neither maintained nor trusted — a non-empty carried value
+    /// was accepted and left permanently stale. It is now unauthorable.
+    ///
+    /// The refusal is an **empty-container precondition on the carried value**,
+    /// not a referential one, so unlike the sibling mints' member-liveness
+    /// checks it is **not graph-gated**: it holds base-free too. Conflating the
+    /// two classes is how a later reader would wrongly restore a graph gate here
+    /// (see `t7`'s inversion).
     fn create_staff_group(
         &mut self,
         env: &OperationEnvelope,
@@ -4486,19 +4579,13 @@ impl<'a> Reducer<'a> {
             }
             None => {}
         }
-        if self.graph.is_some() {
-            for member in &op.group.members {
-                if !matches!(
-                    self.objects.get(&TypedObjectId::Staff(*member)),
-                    Some(ObjectState::Live)
-                ) {
-                    return OperationEffect::NoOp {
-                        reason: NoOpReason::PreconditionFailedUnderReduction {
-                            reason: PreconditionFailureReason::TargetMissing,
-                        },
-                    };
-                }
-            }
+        // Reject a carried non-empty `members`: the mint authors the group, and
+        // membership is maintained from `Staff.group` (P13-S16 pin 2). Unlike the
+        // sibling mints' referential preconditions this is NOT graph-gated — an
+        // empty-container precondition asks only about the carried value, so it
+        // holds base-free as well (pin 1; `t7` asserts the inversion).
+        if !op.group.members.is_empty() {
+            return container_not_empty();
         }
         if let Some(score) = self.graph.as_mut() {
             score.staff_groups.push(op.group.clone());
@@ -16145,15 +16232,27 @@ mod tests {
         assert_eq!(out.score.views.len(), 1, "no duplicate view minted");
     }
 
-    /// (t6) Genesis tranche G3a: all three referential loops refuse under a
-    /// graph, each asserted separately: `CreateStaffGroup.members`,
-    /// `CreatePartDefinition.staves`, and `CreateView.active_layers` naming a
-    /// non-live target are each `TargetMissing`.
+    /// (t6) Genesis tranche G3a: the referential loops refuse under a graph —
+    /// `CreatePartDefinition.staves` and `CreateView.active_layers` naming a
+    /// non-live target are each `TargetMissing` — while `CreateStaffGroup`
+    /// refuses any non-empty carried `members` outright.
     ///
-    /// **Mutation (three separate sub-mutations, each run alone):** drop the
-    /// members loop from `create_staff_group`; drop the staves loop from
-    /// `create_part_definition`; drop the active-layers loop from
-    /// `create_view`. Each must fail on its own row.
+    /// **P13-S16 pin 1a inverted the first arm.** Before this rung all three
+    /// arms asserted `TargetMissing`, and the first was a genuine *referential*
+    /// precondition: a liveness loop checking `members` against the graph. Pin 1
+    /// replaced that loop with an **empty-container** precondition — the mint
+    /// authors the group and membership is maintained from `Staff.group`, so a
+    /// carried `members` is refused `ContainerNotEmpty` whether or not its ids
+    /// are live. The arm below keeps its non-live id **only to show liveness has
+    /// stopped mattering**: the identical refusal fires for a live one. It no
+    /// longer tests a referential loop at all. The other two arms are untouched
+    /// and must stay — they are the reason this test still has a referential
+    /// claim to make.
+    ///
+    /// **Mutation:** the `CreateStaffGroup` arm is signed by **M1** (remove pin
+    /// 1's refusal). The other two keep their own sub-mutations, each run alone:
+    /// drop the staves loop from `create_part_definition`; drop the
+    /// active-layers loop from `create_view`. Each must fail on its own row.
     #[test]
     fn t6_g3a_referential_loops_refuse_a_dangling_target_under_a_graph() {
         let target_missing = Some(OperationEffect::NoOp {
@@ -16162,7 +16261,9 @@ mod tests {
             },
         });
 
-        // CreateStaffGroup.members naming a non-live staff.
+        // CreateStaffGroup carrying a non-empty `members` — refused as an
+        // empty-container precondition (pin 1), so the id's non-liveness is
+        // incidental rather than the reason.
         let dangling_staff = StaffId::new(ReplicaId(1), 99);
         let group =
             crate::valuegen::staff_group(StaffGroupId::new(ReplicaId(1), 1), vec![dangling_staff]);
@@ -16177,8 +16278,9 @@ mod tests {
                 .iter()
                 .find(|(e, _)| *e == group_env.id)
                 .map(|(_, eff)| eff.clone()),
-            target_missing,
-            "CreateStaffGroup.members naming a non-live staff must refuse TargetMissing"
+            Some(container_not_empty()),
+            "CreateStaffGroup carrying a non-empty members must refuse \
+             ContainerNotEmpty (P13-S16 pin 1), not TargetMissing"
         );
 
         // CreatePartDefinition.staves naming a non-live staff.
@@ -16220,13 +16322,32 @@ mod tests {
         );
     }
 
-    /// (t7) Genesis tranche G3a: those same referential preconditions are
-    /// **not** enforced base-free — base-free reduction has no universe to
-    /// check against.
-    ///
-    /// **Mutation:** remove the `if self.graph.is_some()` guard from
-    /// `create_staff_group`; must fail — the dangling member now refuses even
+    /// (t7) Genesis tranche G3a, **inverted by P13-S16 pin 1a**:
+    /// `CreateStaffGroup`'s non-empty-`members` refusal **is** enforced
     /// base-free.
+    ///
+    /// **Before this rung this arm asserted `Applied`**, on the sound reasoning
+    /// that base-free reduction has no staff universe to check a member's
+    /// liveness against. Pin 1 changed the *class* of the precondition, and that
+    /// is the whole reason the assertion inverts:
+    ///
+    /// - A **graph-aware** precondition asks about the *universe* — "is this id
+    ///   live?" — and genuinely cannot run base-free. There is nothing to ask.
+    /// - An **empty-container** precondition asks only about the *carried value*
+    ///   — "is `members` empty?" — which is answerable with no graph at all, so
+    ///   it holds everywhere.
+    ///
+    /// **These are different classes, and conflating them is how a later reader
+    /// would wrongly "restore" the graph gate** — reinstating an
+    /// `if self.graph.is_some()` around a check that never needed one. M9 is
+    /// exactly that mutation, and this arm is its only signature.
+    ///
+    /// The sibling referential preconditions (`CreatePartDefinition.staves`,
+    /// `CreateView.active_layers`) are unchanged and still are not enforced
+    /// base-free; see `t6`.
+    ///
+    /// **Mutation (M9):** graph-gate pin 1's refusal in `create_staff_group`;
+    /// must fail — the carried `members` would then be accepted base-free.
     #[test]
     fn t7_g3a_referential_preconditions_are_not_enforced_base_free() {
         let dangling_staff = StaffId::new(ReplicaId(1), 99);
@@ -16242,8 +16363,10 @@ mod tests {
                 .iter()
                 .find(|(e, _)| *e == group_env.id)
                 .map(|(_, eff)| eff.clone()),
-            Some(OperationEffect::Applied),
-            "base-free reduction has no staff universe to check the dangling member against"
+            Some(container_not_empty()),
+            "an empty-container precondition asks only about the carried value, \
+             so it refuses base-free too (P13-S16 pin 1a); a graph gate here \
+             would wrongly accept"
         );
     }
 
@@ -16314,29 +16437,47 @@ mod tests {
         );
     }
 
-    /// (t8b) Both permitted stale forms (§1.1, disposition B) are pinned:
-    /// the **missing** form (`CreateStaffGroup(g, [])` ->
-    /// `CreateStaff(s, Some(g))` ⟹ `s.group == Some(g)`, `g.members == []`)
-    /// and the **spurious** form (`CreateStaff(s, None)` ->
-    /// `CreateStaffGroup(g, [s])` ⟹ `g.members == [s]`, `s.group == None`).
-    /// Both asserted to **hold**, as states the ruling permits.
+    /// (t8b) **P13-S16 pin 7 inverted this test.** The projection is
+    /// **maintained** in the missing order, and the spurious form is
+    /// **refused** — the same two authoring orders as before (§0.5), with the
+    /// verdicts the ratified disposition A requires.
     ///
-    /// **Mutation 1 (missing form; mutate `create_staff`, which runs SECOND
-    /// in this order):** when `group` is `Some(g)`, append the newly minted
-    /// staff to `g.members` (disposition A's maintenance rule); the
-    /// missing-form assertion must fail.
+    /// **It previously pinned the exact opposite**, as
+    /// `t8b_both_permitted_stale_forms_hold`: under disposition B both stale
+    /// forms were *permitted states*, so the missing form left `g.members == []`
+    /// and the spurious form let `g.members == [s]` reach the graph alongside
+    /// `s.group == None`. **That is not a regression being fixed here** — it was
+    /// the correct assertion under the ruling in force at the time. P13-S16
+    /// ratified disposition A, under which `Staff.group` is the sole authority
+    /// and `StaffGroup.members` is maintained from it (pins 1 and 2), so neither
+    /// disagreeing state is reachable any more and the assertions invert with the
+    /// ruling.
     ///
-    /// **Mutation 2 (spurious form; mutate `create_staff_group`, which runs
-    /// SECOND in this order):** reject or normalize away a non-empty carried
-    /// `members`; the spurious-form assertion must fail.
+    /// **Deleting this test is forbidden** — the *pairing* of the two orders is
+    /// the coverage, because each order signs a different production change.
     ///
-    /// An earlier draft assigned these the other way round, which is
-    /// impossible in both directions: `create_staff_group` runs first in the
-    /// missing order and cannot append a staff that does not exist yet, and
-    /// `create_staff` runs first in the spurious order and has no later group
-    /// to repair.
+    /// **Mutation 1 (M1; spurious order, where `create_staff_group` runs
+    /// SECOND):** remove pin 1's refusal; the group mints carrying `[s]` while
+    /// `s.group` is `None`.
+    ///
+    /// **Mutation 2 (M2; missing order, where `create_staff` runs SECOND):**
+    /// remove pin 2's append; `g.members` stays empty and invariant 21 fires.
+    ///
+    /// An earlier draft assigned these the other way round, which is impossible
+    /// in both directions: `create_staff_group` runs first in the missing order
+    /// and cannot append a staff that does not exist yet, and `create_staff`
+    /// runs first in the spurious order and has no later group to repair.
+    ///
+    /// **Observation harness (pin 7a).** The two orders are two reductions over
+    /// two *different* groups, so there are **four** observations, not three —
+    /// and a `#[test]` emits nothing but its assertion diagnostics, so state not
+    /// in those diagnostics is unobtainable. All four are bound **before any
+    /// assertion** and formatted into **every** assertion's message: a failing
+    /// test stops at its *first* failed assertion, and M1 and M2 trip
+    /// *different* assertions, so each one must carry the whole set. Splitting
+    /// the set per order would reintroduce the same gap one level down.
     #[test]
-    fn t8b_both_permitted_stale_forms_hold() {
+    fn t8b_the_projection_is_maintained_and_the_spurious_form_is_refused() {
         let instrument_id = InstrumentId::new(ReplicaId(1), 1);
 
         // Missing form: CreateStaffGroup(g, []) -> CreateStaff(s, Some(g)).
@@ -16371,28 +16512,6 @@ mod tests {
         set.accept_all(vec![create_instrument, create_group, create_staff]);
         let out =
             reduce_operation_set_onto(&set, &Score::empty(IdentityContext::new(ReplicaId(1))));
-        let staff = out
-            .score
-            .staves
-            .iter()
-            .find(|s| s.id == staff_id)
-            .expect("staff minted");
-        assert_eq!(
-            staff.group,
-            Some(group_id),
-            "missing form: s.group == Some(g)"
-        );
-        let group = out
-            .score
-            .staff_groups
-            .iter()
-            .find(|g| g.id == group_id)
-            .expect("group minted");
-        assert_eq!(
-            group.members,
-            Vec::<StaffId>::new(),
-            "missing form: g.members stays empty (stored, not maintained)"
-        );
 
         // Spurious form: CreateStaff(s, None) -> CreateStaffGroup(g, [s]).
         let group_id2 = StaffGroupId::new(ReplicaId(2), 3);
@@ -16421,45 +16540,335 @@ mod tests {
             CausalContext::new(),
             crate::valuegen::staff_group(group_id2, vec![staff_id2]),
         );
+        let spurious_group_env_id = create_group2.id;
         let mut set2 = OperationSet::new();
         set2.accept_all(vec![create_instrument2, create_staff2, create_group2]);
         let out2 =
             reduce_operation_set_onto(&set2, &Score::empty(IdentityContext::new(ReplicaId(2))));
-        let group2 = out2
+
+        // ---------------------------------------------------------------------
+        // Pin 7a's four bindings. ALL taken BEFORE ANY assertion, and read
+        // through `find`/`map` rather than `expect` — an `expect` panic here
+        // would preempt the harness and emit nothing.
+        // ---------------------------------------------------------------------
+
+        // [1] Spurious-order effect for the `CreateStaffGroup` op. M1 turns this
+        //     into an applied effect.
+        let spurious_effect = out2
+            .state
+            .effects
+            .iter()
+            .find(|(e, _)| *e == spurious_group_env_id)
+            .map(|(_, eff)| eff.clone());
+        // [2] Spurious-order `StaffGroup.members` — `None` while pin 1 refuses
+        //     the mint outright. M1 makes it `Some([s])`: the spurious
+        //     membership that reached the graph.
+        let spurious_members: Option<Vec<StaffId>> = out2
             .score
             .staff_groups
             .iter()
             .find(|g| g.id == group_id2)
-            .expect("group minted");
-        assert_eq!(
-            group2.members,
-            vec![staff_id2],
-            "spurious form: g.members == [s]"
+            .map(|g| g.members.clone());
+        // [3] Missing-order `StaffGroup.members` — `[s]` while pin 2 maintains
+        //     it. M2 leaves it empty. A DIFFERENT group in a DIFFERENT
+        //     reduction from [2]; one shared `members` local would satisfy this
+        //     harness while leaving one mutation's observation absent.
+        let missing_members: Option<Vec<StaffId>> = out
+            .score
+            .staff_groups
+            .iter()
+            .find(|g| g.id == group_id)
+            .map(|g| g.members.clone());
+        // [4] Missing-order invariant-21 verdict — the disagreement an
+        //     unmaintained projection leaves. Filtered from the missing-order
+        //     score; from the other reduction it would be the wrong verdict
+        //     rather than a missing one.
+        let missing_agreement = epiphany_core::check_invariant(
+            &out.score,
+            epiphany_core::GraphInvariant::StaffGroupMembershipAgreement,
         );
-        let staff2 = out2
+
+        let harness = format!(
+            "\n  [1] spurious-order CreateStaffGroup effect: {spurious_effect:?}\
+             \n  [2] spurious-order g.members:               {spurious_members:?}\
+             \n  [3] missing-order  g.members:               {missing_members:?}\
+             \n  [4] missing-order  invariant-21 violations: {missing_agreement:?}"
+        );
+
+        // ---- Missing order: the projection is maintained. --------------------
+        let missing_staff_group = out
+            .score
+            .staves
+            .iter()
+            .find(|s| s.id == staff_id)
+            .map(|s| s.group);
+        assert_eq!(
+            missing_staff_group,
+            Some(Some(group_id)),
+            "missing order: s.group == Some(g) — the staff carries the sole \
+             authority{harness}"
+        );
+        assert_eq!(
+            missing_members.as_deref(),
+            Some(&[staff_id][..]),
+            "missing order: g.members is MAINTAINED to [s] (P13-S16 pin 2), not \
+             left empty as disposition B permitted{harness}"
+        );
+        assert!(
+            missing_agreement.is_empty(),
+            "missing order: a maintained projection must leave invariant 21 \
+             clean{harness}"
+        );
+
+        // ---- Spurious order: the mint is refused. ---------------------------
+        assert_eq!(
+            spurious_effect,
+            Some(container_not_empty()),
+            "spurious order: CreateStaffGroup carrying [s] must refuse \
+             ContainerNotEmpty (P13-S16 pin 1){harness}"
+        );
+        assert_eq!(
+            spurious_members, None,
+            "spurious order: the refused mint must leave no group in the \
+             graph{harness}"
+        );
+        let spurious_staff_group = out2
             .score
             .staves
             .iter()
             .find(|s| s.id == staff_id2)
-            .expect("staff minted");
-        assert_eq!(staff2.group, None, "spurious form: s.group == None");
+            .map(|s| s.group);
+        assert_eq!(
+            spurious_staff_group,
+            Some(None),
+            "spurious order: s.group stays None — CreateStaffGroup never writes \
+             Staff.group{harness}"
+        );
+    }
+
+    /// (t8c) **P13-S16 pin 3a.** The re-carry comparator reads the **carried**
+    /// `members`, never the derived one: after maintenance has put `[s]` into the
+    /// graph, a byte-identical re-carry of `CreateStaffGroup(g, [])` is still
+    /// `AlreadyApplied`.
+    ///
+    /// This is the hazard of §0.4. `create_staff_group`'s idempotence check
+    /// compares `op.group` against `self.staff_group_values` as a **whole
+    /// value**, `members` included. If pin 2's maintenance wrote the
+    /// appended members into that map, the re-carry would compare `[]` against
+    /// `[s]` and return `RecreateContentMismatch` — a spurious conflict on an
+    /// operation that genuinely is a duplicate. Pin 2 therefore writes the
+    /// maintained members **only** into `self.graph`, and pin 3 leaves the
+    /// comparator untouched.
+    ///
+    /// The second assertion is what makes the first one mean something: without
+    /// it, `AlreadyApplied` would also pass on a build where maintenance never
+    /// ran at all, and the test would be pinning the absence of a feature rather
+    /// than the separation of two values.
+    ///
+    /// **Mutation (M3):** make pin 3 write the derived members into
+    /// `staff_group_values`; the re-carry becomes `RecreateContentMismatch`.
+    ///
+    /// A mutation demonstrates the hazard once; only a test keeps it
+    /// demonstrated.
+    #[test]
+    fn t8c_recarry_compares_against_the_carried_members_not_the_derived() {
+        let instrument_id = InstrumentId::new(ReplicaId(1), 1);
+        let group_id = StaffGroupId::new(ReplicaId(1), 3);
+        let staff_id = StaffId::new(ReplicaId(1), 5);
+
+        let create_instrument = prim_env(
+            1,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::CreateInstrument(CreateInstrumentOp {
+                instrument: crate::valuegen::instrument(instrument_id),
+            }),
+        );
+        let create_group = staff_group_env(
+            1,
+            2,
+            20,
+            CausalContext::new(),
+            crate::valuegen::staff_group(group_id, vec![]),
+        );
+        let mut staff = crate::valuegen::staff(staff_id, instrument_id);
+        staff.group = Some(group_id);
+        let create_staff = prim_env(
+            1,
+            4,
+            30,
+            CausalContext::new(),
+            OperationKind::CreateStaff(CreateStaffOp { staff }),
+        );
+        // The re-carry: byte-identical to `create_group`, authored after
+        // maintenance has run.
+        let recarry = staff_group_env(
+            1,
+            6,
+            40,
+            CausalContext::new(),
+            crate::valuegen::staff_group(group_id, vec![]),
+        );
+        let recarry_env_id = recarry.id;
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![create_instrument, create_group, create_staff, recarry]);
+        let out =
+            reduce_operation_set_onto(&set, &Score::empty(IdentityContext::new(ReplicaId(1))));
+
+        let recarry_effect = out
+            .state
+            .effects
+            .iter()
+            .find(|(e, _)| *e == recarry_env_id)
+            .map(|(_, eff)| eff.clone());
+        let members: Option<Vec<StaffId>> = out
+            .score
+            .staff_groups
+            .iter()
+            .find(|g| g.id == group_id)
+            .map(|g| g.members.clone());
+
+        assert_eq!(
+            recarry_effect,
+            Some(OperationEffect::NoOp {
+                reason: NoOpReason::AlreadyApplied,
+            }),
+            "a byte-identical re-carry must compare against the CARRIED members \
+             and read AlreadyApplied; graph members at this moment: {members:?}"
+        );
+        assert_eq!(
+            members.as_deref(),
+            Some(&[staff_id][..]),
+            "and the graph's derived members must genuinely hold [s] at that \
+             moment — otherwise AlreadyApplied proves nothing about separation"
+        );
+    }
+
+    /// (t8d) **P13-S16 pin 4a.** The same idempotence holds **across a reload**:
+    /// reduce, materialize the score, re-reduce onto it as a *base*, and a
+    /// re-carry of `CreateStaffGroup(g, [])` is still `AlreadyApplied`.
+    ///
+    /// **This is the only test that crosses the snapshot boundary, and pin 4 is
+    /// unguarded without it.** `t8c` cannot see the defect pin 4 fixes: within
+    /// one session nothing has been maintained into `staff_group_values`, so the
+    /// comparison is `[]` against `[]` whichever way base ingest is written. Base
+    /// ingest (`seed_from_graph`) reseeds that map from `score.staff_groups` — the
+    /// **maintained** value — so a `group.clone()` there launders the derived
+    /// members into the carried slot, and the misverdict appears only *after* a
+    /// reload. Pin 4 empties `members` on the seed, which is exact rather than
+    /// lossy because pin 1 makes empty the only authorable carried value.
+    ///
+    /// **Mutation (M4):** restore `group.clone()` at the base-ingest seed; this
+    /// test fails with `RecreateContentMismatch` while `t8c`, which never
+    /// reloads, still passes.
+    #[test]
+    fn t8d_recarry_after_reduction_onto_a_materialized_base_stays_idempotent() {
+        let instrument_id = InstrumentId::new(ReplicaId(1), 1);
+        let group_id = StaffGroupId::new(ReplicaId(1), 3);
+        let staff_id = StaffId::new(ReplicaId(1), 5);
+
+        // Session 1: the pin-3a sequence, reduced from empty.
+        let create_instrument = prim_env(
+            1,
+            0,
+            10,
+            CausalContext::new(),
+            OperationKind::CreateInstrument(CreateInstrumentOp {
+                instrument: crate::valuegen::instrument(instrument_id),
+            }),
+        );
+        let create_group = staff_group_env(
+            1,
+            2,
+            20,
+            CausalContext::new(),
+            crate::valuegen::staff_group(group_id, vec![]),
+        );
+        let mut staff = crate::valuegen::staff(staff_id, instrument_id);
+        staff.group = Some(group_id);
+        let create_staff = prim_env(
+            1,
+            4,
+            30,
+            CausalContext::new(),
+            OperationKind::CreateStaff(CreateStaffOp { staff }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![create_instrument, create_group, create_staff]);
+        let first =
+            reduce_operation_set_onto(&set, &Score::empty(IdentityContext::new(ReplicaId(1))));
+
+        // The materialized score becomes the base — the reload boundary. It
+        // carries the MAINTAINED members, which is what makes the seed lossy if
+        // pin 4 is undone.
+        let base = first.score.clone();
+        let base_members: Option<Vec<StaffId>> = base
+            .staff_groups
+            .iter()
+            .find(|g| g.id == group_id)
+            .map(|g| g.members.clone());
+
+        // Session 2: re-carry against that base.
+        let recarry = staff_group_env(
+            1,
+            8,
+            50,
+            CausalContext::new(),
+            crate::valuegen::staff_group(group_id, vec![]),
+        );
+        let recarry_env_id = recarry.id;
+        let mut set2 = OperationSet::new();
+        set2.accept_all(vec![recarry]);
+        let out = reduce_operation_set_onto(&set2, &base);
+
+        let recarry_effect = out
+            .state
+            .effects
+            .iter()
+            .find(|(e, _)| *e == recarry_env_id)
+            .map(|(_, eff)| eff.clone());
+
+        assert_eq!(
+            base_members.as_deref(),
+            Some(&[staff_id][..]),
+            "precondition: the materialized base must carry the maintained \
+             members, or this test is not exercising the reload hazard at all"
+        );
+        assert_eq!(
+            recarry_effect,
+            Some(OperationEffect::NoOp {
+                reason: NoOpReason::AlreadyApplied,
+            }),
+            "across a reload the re-carry must still compare against the CARRIED \
+             members (P13-S16 pin 4); base members were {base_members:?}"
+        );
     }
 
     /// (t9) A score reduced from empty through all four G3a ops **passes
     /// `check_invariants`**, and each skipped reducer check **independently**
-    /// makes invariant 10 fire (pin 5). The fixture is constant across all
-    /// mutations: it already attempts a dangling reference in each of the
-    /// three referential loops, and passes only because the reducer refuses
+    /// makes invariant 10 fire (pin 5). The fixture is constant across the
+    /// mutations that remain: it attempts a dangling reference in each of the
+    /// **two** referential loops, and passes only because the reducer refuses
     /// them.
     ///
-    /// **Mutation (three separate sub-mutations, each run alone; mutate
-    /// production only):** drop the members loop from `create_staff_group` /
-    /// the staves loop from `create_part_definition` / the active-layers loop
-    /// from `create_view`. Each must let its dangling reference through and
-    /// make invariant 10 fire.
+    /// **P13-S16 pin 1a changed the fixture and shrank the mutation set.**
+    /// `CreateStaffGroup` previously carried a dangling member here, making a
+    /// third referential row. Pin 1 refuses *any* non-empty carried `members`,
+    /// so that op can no longer smuggle a dangling reference into the graph at
+    /// all — the refusal happens before liveness is ever consulted, and no
+    /// mutation of it can make invariant 10 fire from this op. The group
+    /// therefore carries `[]` and **applies**, which is also what keeps this
+    /// test a required survivor of **M1**: with nothing dangling attempted
+    /// through this op, removing pin 1's refusal changes nothing here.
+    ///
+    /// **Mutation (two separate sub-mutations, each run alone; mutate
+    /// production only):** drop the staves loop from `create_part_definition` /
+    /// the active-layers loop from `create_view`. Each must let its dangling
+    /// reference through and make invariant 10 fire.
     #[test]
     fn t9_from_empty_through_all_four_g3a_ops_passes_check_invariants() {
-        let dangling_staff_a = StaffId::new(ReplicaId(1), 90);
         let dangling_staff_b = StaffId::new(ReplicaId(1), 91);
         let dangling_layer = AnalysisLayerId::new(ReplicaId(1), 92);
 
@@ -16468,10 +16877,9 @@ mod tests {
             0,
             10,
             CausalContext::new(),
-            crate::valuegen::staff_group(
-                StaffGroupId::new(ReplicaId(1), 1),
-                vec![dangling_staff_a],
-            ),
+            // Empty: pin 1 refuses any carried `members`, so this op cannot
+            // contribute a dangling reference and applies instead.
+            crate::valuegen::staff_group(StaffGroupId::new(ReplicaId(1), 1), vec![]),
         );
         let create_part = part_definition_env(
             1,
@@ -16517,8 +16925,9 @@ mod tests {
         });
         assert_eq!(
             effect_at(&out.state, 0),
-            target_missing,
-            "CreateStaffGroup with a dangling member must refuse"
+            Some(&OperationEffect::Applied),
+            "CreateStaffGroup carrying an empty members has nothing to refuse \
+             and applies (P13-S16 pin 1a)"
         );
         assert_eq!(
             effect_at(&out.state, 2),
@@ -17742,6 +18151,143 @@ mod tests {
             },
             "objects' Tombstoned state must outrank the retained instrument_values \
              entry, got {recreate_effect:?}"
+        );
+    }
+
+    /// (u5) **P13-S16 pin 5a.** Undoing a `CreateStaff` strips the staff's id
+    /// from every live group's `members`.
+    ///
+    /// **This is the unguarded direction of projection maintenance** — *not* of
+    /// invariant 21; see assertion 4 for why the distinction is load-bearing. The
+    /// reverse direction is blocked: `undo_strand_block`'s
+    /// `TypedObjectId::StaffGroup` arm refuses to undo a group a live staff still
+    /// names (see `u2a`). Nothing blocks undoing the *staff*, so before pin 5 the
+    /// undo removed it from `Score.staves` and left its id sitting in
+    /// `g.members`: a group naming a staff that no longer exists.
+    ///
+    /// **Nothing permanent exercised this sequence before, checked rather than
+    /// assumed.** Pin 8's four are group-undo guards; `u2tomb_a` undoes a staff
+    /// but undoes the group along with it — it asserts *"the group leaves
+    /// `Score.staff_groups`"* — so no *live* group's `members` is ever inspected.
+    /// `m41`/`m41b` build materialized fixtures and never run the reducer's undo
+    /// path at all. A mutation demonstrates the hazard once; only a test keeps it
+    /// demonstrated.
+    ///
+    /// **Mutation (M5):** remove pin 5's strip from the `Staff` arm of
+    /// `materialize_graph_tombstones`; assertion 2 fails with `s` still in
+    /// `members`.
+    ///
+    /// **Observation harness (same rule as pin 7a).** Both the post-undo
+    /// `members` and the invariant-21 violations are bound **before assertion
+    /// 2**, and both appear in every assertion's message. Under M5 it is
+    /// assertion 2 that fires, so assertion 3 never executes — computing the
+    /// violations only where assertion 3 needs them would put M5's required
+    /// witness behind an assertion M5 guarantees is unreachable. **The state a
+    /// mutation owes must be bound before the assertion that mutation trips.**
+    #[test]
+    fn u5_undoing_a_staff_strips_it_from_the_live_groups_members() {
+        let identity = IdentityContext::new(ReplicaId(1));
+        let instrument_id = InstrumentId::new(ReplicaId(9), 1);
+        let mut base = Score::empty(identity);
+        base.instruments
+            .push(crate::valuegen::instrument(instrument_id));
+
+        let group_id = StaffGroupId::new(ReplicaId(1), 1);
+        let staff_id = StaffId::new(ReplicaId(1), 5);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+
+        let mut staff_value = crate::valuegen::staff(staff_id, instrument_id);
+        staff_value.group = Some(group_id);
+
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            // The group is authored OUTSIDE the transaction, so undoing the
+            // transaction takes the staff and leaves the group live — which is
+            // what gives assertion 1 something to hold.
+            staff_group_env(
+                1,
+                0,
+                10,
+                CausalContext::new(),
+                crate::valuegen::staff_group(group_id, vec![]),
+            ),
+            declare_transaction(1, 1, 20, seen_r1(0), tx),
+            tx_member(
+                1,
+                2,
+                21,
+                seen_r1(1),
+                tx,
+                OperationKind::CreateStaff(CreateStaffOp { staff: staff_value }),
+            ),
+            undo_env(1, 3, 30, seen_r1(2), tx, UndoPolicy::StrictInverse),
+        ]);
+        let out = reduce_operation_set_onto(&set, &base);
+
+        // Bound BEFORE assertion 2 — see the harness note above.
+        let members: Option<Vec<StaffId>> = out
+            .score
+            .staff_groups
+            .iter()
+            .find(|g| g.id == group_id)
+            .map(|g| g.members.clone());
+        let agreement = epiphany_core::check_invariant(
+            &out.score,
+            epiphany_core::GraphInvariant::StaffGroupMembershipAgreement,
+        );
+        let staff_present = out.score.staves.iter().any(|s| s.id == staff_id);
+        let all_violations = epiphany_core::check_invariants(&out.score);
+        let harness = format!(
+            "\n  post-undo g.members:            {members:?}\
+             \n  invariant-21 violations:        {agreement:?}\
+             \n  staff {staff_id:?} still in graph: {staff_present}\
+             \n  ALL violations:                 {all_violations:?}"
+        );
+
+        // 1. The group must still be live, or there is no projection left to be
+        //    wrong and this test asserts nothing.
+        assert!(
+            out.score.staff_groups.iter().any(|g| g.id == group_id),
+            "the group must survive the staff's undo for this test to mean \
+             anything{harness}"
+        );
+        // 1b. Not in pin 5a's list, added so a BLOCKED undo cannot be mistaken
+        //     for a failed strip: both leave `s` in `members`, and only this
+        //     tells them apart.
+        assert!(
+            !staff_present,
+            "precondition: the staff's undo must actually have removed it from \
+             the graph — if it was blocked instead, assertion 2 below would fail \
+             for an unrelated reason{harness}"
+        );
+        // 2. The strip itself.
+        assert!(
+            !members.as_deref().unwrap_or_default().contains(&staff_id),
+            "P13-S16 pin 5: undoing the staff must strip {staff_id:?} from the \
+             live group's members{harness}"
+        );
+        // 3. Pin 5a's third assertion: no invariant-21 residue in either
+        //    direction.
+        assert!(
+            agreement.is_empty(),
+            "the post-undo graph must leave invariant 21 clean in both \
+             directions{harness}"
+        );
+        // 4. Added during execution, because assertion 3 CANNOT see the residue
+        //    this test exists to catch — observed, not reasoned. Under M5 the
+        //    strip is gone and `members` keeps an id whose staff has left the
+        //    graph: that is a **dangling** reference, and invariant 21
+        //    deliberately abstains on those (agreement is a claim about live
+        //    pairs; dangling resolution belongs to the referential invariants).
+        //    M5 was run and invariant 21 reported `[]`, while invariant 10
+        //    `CrossCuttingRefsResolve` reported "staff group ... member staff
+        //    ... is not declared". Pin 5a expects assertion 3 to fail "on a
+        //    residue whichever direction it leaves"; on its own it does not, so
+        //    the whole set is asserted here.
+        assert!(
+            all_violations.is_empty(),
+            "the post-undo graph must be invariant-clean overall — a stripped \
+             member must not be left dangling either{harness}"
         );
     }
 

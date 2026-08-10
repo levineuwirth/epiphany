@@ -7,14 +7,18 @@
 //! enumerated invariant has exactly one check returning a typed
 //! [`InvariantViolation`] witness identifying the smallest offending objects.
 //!
-//! **Count.** The QUICKSTART says "the 18 graph invariants enumerated in
-//! Chapter 5"; the spec body (pre-G3b) enumerates **19** items (1–19 in
-//! §"Graph Invariants"). We implement all 19 of those and record the
-//! discrepancy as a Pass 11 candidate in `DECISIONS.md` (the spec is the
-//! contract). Genesis tranche G3b
-//! (`spec/CONTRACT_GENESIS_G3B_MEASURE.md`) adds a 20th, measure-meter
-//! consistency, ahead of `core_spec.tex`'s own update (a later packet in the
-//! same tranche) — see [`GraphInvariant::MeasureMeterConsistency`].
+//! **Count.** [`GraphInvariant::all`] is the single origin: its length *is* the
+//! count, and no prose here restates it — a restated count goes stale silently
+//! the next time the enumeration grows, which it has twice.
+//!
+//! The QUICKSTART's summary count disagrees with `core_spec.tex`'s own Chapter 5
+//! enumeration; that discrepancy is recorded as a Pass 11 candidate in
+//! `DECISIONS.md` (the spec is the contract) and is not reconciled here. Beyond
+//! the spec body's original set, two rungs have appended: Genesis tranche G3b
+//! (`spec/CONTRACT_GENESIS_G3B_MEASURE.md`) added measure-meter consistency
+//! (see [`GraphInvariant::MeasureMeterConsistency`]), and P13-S16
+//! (`spec/CONTRACT_P13S16_PROJECTION.md`) added staff-group membership
+//! agreement (see [`GraphInvariant::StaffGroupMembershipAgreement`]).
 //!
 //! **Scope of structural decidability.** A few invariants depend on resolving
 //! [`crate::TimeAnchor`]s to absolute time (region time-overlap, anchor-offset
@@ -32,8 +36,8 @@ use crate::graph::{
     TieClass, TimeSignature, VoiceOrigin,
 };
 use crate::ids::{
-    EventId, MeasureId, PitchId, RegionId, ReplicaId, StaffId, StaffInstanceId, TimeSignatureId,
-    VoiceId,
+    EventId, MeasureId, PitchId, RegionId, ReplicaId, StaffGroupId, StaffId, StaffInstanceId,
+    TimeSignatureId, VoiceId,
 };
 use crate::pitch::{PitchSpaceId, SpellingDirective, SpellingScope};
 use crate::time::{
@@ -115,10 +119,24 @@ pub enum GraphInvariant {
     ///     `measure_duration()` and can be refused and flagged (P13-S19,
     ///     deferred).
     MeasureMeterConsistency,
+    /// 21. `Staff.group` and `StaffGroup.members` **agree in both directions**:
+    ///     every live staff naming a group appears in that group's `members`,
+    ///     and every staff a group lists names that group in its own `group`
+    ///     field. `Staff.group` is the sole authority; `members` is the
+    ///     projection maintained from it under reduction (P13-S16 pins 1, 2, 5).
+    ///
+    ///     Witnesses name **both ids and the direction**, because the two
+    ///     directions fail for different reasons and are checked by two
+    ///     separately dispatched methods (P13-S16 pin 6b) — a maintenance gap
+    ///     leaves a staff absent from `members`, while a stale projection lists
+    ///     a staff that no longer names the group.
+    StaffGroupMembershipAgreement,
 }
 
 impl GraphInvariant {
-    /// The spec enumeration number (1–19).
+    /// This invariant's position in `core_spec.tex` §"Graph Invariants",
+    /// numbered from 1. Deliberately count-free: the highest number is whatever
+    /// the last arm below returns, not a figure restated in prose.
     pub fn number(self) -> u8 {
         use GraphInvariant::*;
         match self {
@@ -142,11 +160,13 @@ impl GraphInvariant {
             VoiceOriginConsistent => 18,
             BarlineGroupSameRegion => 19,
             MeasureMeterConsistency => 20,
+            StaffGroupMembershipAgreement => 21,
         }
     }
 
-    /// All 20 invariants in enumeration order.
-    pub fn all() -> [GraphInvariant; 20] {
+    /// Every invariant, in enumeration order. The array's own length is the
+    /// authoritative count — see the module header's **Count** note.
+    pub fn all() -> [GraphInvariant; 21] {
         use GraphInvariant::*;
         [
             EventVoiceBacklink,
@@ -169,6 +189,7 @@ impl GraphInvariant {
             VoiceOriginConsistent,
             BarlineGroupSameRegion,
             MeasureMeterConsistency,
+            StaffGroupMembershipAgreement,
         ]
     }
 }
@@ -280,6 +301,12 @@ pub fn check_invariants(score: &Score) -> Vec<InvariantViolation> {
     idx.check_voice_origin_consistent(&mut v);
     idx.check_barline_group_same_region(&mut v);
     idx.check_measure_meter_consistency(&mut v);
+    // Invariant 21's two directions, dispatched separately (P13-S16 pin 6b).
+    // Each call site is independently deletable, which is what M6a and M6b
+    // delete; a single call handling both would leave the mutation with no way
+    // to fail one direction while the other still reports.
+    idx.check_staff_names_absent_group(&mut v);
+    idx.check_group_lists_unowned_staff(&mut v);
     v
 }
 
@@ -1481,11 +1508,11 @@ impl<'a> GraphIndex<'a> {
     // --- Accidental modification / pitch-space compatibility (Chapter 4
     // §"Accidental Registries", `req:tuning:accidental-modification-compatibility`,
     // `core_spec.tex:3120`; Push 4b tranche 3a,
-    // `spec/CONTRACT_PUSH4B_ACCIDENTALS.md`). Not one of the 19
-    // spec-enumerated Chapter 5 graph invariants (this is a Chapter 4
+    // `spec/CONTRACT_PUSH4B_ACCIDENTALS.md`). Not one of the spec-enumerated
+    // Chapter 5 graph invariants (this is a Chapter 4
     // requirement), so — like the tempo-map and aleatoric-model checks above
     // — it is surfaced under an existing `GraphInvariant` tag rather than
-    // inventing a 20th. `CrossCuttingRefsResolve` is the closest fit: like
+    // minting a new one. `CrossCuttingRefsResolve` is the closest fit: like
     // those checks, this is "does this cross-cutting structure's content
     // hold against the rest of the score", not a per-event/per-voice
     // structural rule.
@@ -2751,6 +2778,78 @@ impl<'a> GraphIndex<'a> {
                         // Indeterminate selection: abstain (pin 7).
                         Governing20::Indeterminate => {}
                     }
+                }
+            }
+        }
+    }
+
+    // --- Invariant 21, `StaffGroupMembershipAgreement` (P13-S16 pins 6, 6b).
+    // TWO separately dispatched methods, one per direction. The split is
+    // required, not stylistic: each direction must have an independently
+    // deletable call site so that deleting one leaves the other reporting
+    // (M6a/M6b). A single shared comparison would satisfy every behavioural
+    // assertion while making that observation impossible. Both emit the same
+    // `GraphInvariant`, so both directions collapse to one variant in any
+    // `kinds`-style set — which is why direction is asserted by name, never by
+    // counting. -----------------------------------------------------------
+    /// Direction **S→G**: every live staff naming a group appears in that
+    /// group's `members`. A maintenance gap — pin 2 failing to append — shows up
+    /// here.
+    ///
+    /// A staff naming a group that does not exist is **not** flagged here:
+    /// dangling reference resolution belongs to the referential invariants, and
+    /// abstaining keeps this invariant's witnesses about *agreement* only.
+    fn check_staff_names_absent_group(&self, out: &mut Vec<InvariantViolation>) {
+        let members: HashMap<StaffGroupId, BTreeSet<StaffId>> = self
+            .score
+            .staff_groups
+            .iter()
+            .map(|group| (group.id, group.members.iter().copied().collect()))
+            .collect();
+        for staff in &self.score.staves {
+            let Some(group_id) = staff.group else {
+                continue;
+            };
+            if let Some(ids) = members.get(&group_id) {
+                if !ids.contains(&staff.id) {
+                    out.push(InvariantViolation::new(
+                        GraphInvariant::StaffGroupMembershipAgreement,
+                        format!(
+                            "S->G: staff {:?} names group {:?}, but that group's members omit it",
+                            staff.id, group_id
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Direction **G→S**: every staff a group lists names that group in its own
+    /// `group` field. A stale projection — a member left behind, or one pointing
+    /// at a different group — shows up here.
+    ///
+    /// A member id with no live staff is **not** flagged here, for the same
+    /// reason as the S→G direction.
+    fn check_group_lists_unowned_staff(&self, out: &mut Vec<InvariantViolation>) {
+        let owner: HashMap<StaffId, Option<StaffGroupId>> = self
+            .score
+            .staves
+            .iter()
+            .map(|staff| (staff.id, staff.group))
+            .collect();
+        for group in &self.score.staff_groups {
+            for member in &group.members {
+                let Some(named) = owner.get(member) else {
+                    continue;
+                };
+                if *named != Some(group.id) {
+                    out.push(InvariantViolation::new(
+                        GraphInvariant::StaffGroupMembershipAgreement,
+                        format!(
+                            "G->S: group {:?} lists staff {:?}, but that staff names {:?}",
+                            group.id, member, named
+                        ),
+                    ));
                 }
             }
         }
@@ -6044,7 +6143,7 @@ mod g3b_measure20_tests {
 
 /// Genesis tranche G3b packet 2: M40, asserted BEHAVIOURALLY against
 /// `check_invariants`' dispatch (`spec/CONTRACT_GENESIS_G3B_MEASURE.md` pin
-/// 11) -- `all().len() == 20` passes even with the dispatch arm deleted, so
+/// 11) -- an `all().len()` count passes even with the dispatch arm deleted, so
 /// this row must instead show a score violating ONLY invariant 20 is
 /// actually flagged by the top-level `check_invariants` entry point.
 #[cfg(test)]
@@ -6058,10 +6157,10 @@ mod g3b_dispatch_tests {
     use crate::time::{AnchorOffset, MusicalDuration, RationalTime, RegionEdge};
 
     /// M40: deleting invariant 20's arm from `check_invariants`' dispatch
-    /// must be observed here -- `all().len() == 20` alone would not notice.
+    /// must be observed here -- an `all().len()` count alone would not notice.
     #[test]
     fn m40_check_invariants_dispatches_invariant_20() {
-        assert_eq!(GraphInvariant::all().len(), 20);
+        assert_eq!(GraphInvariant::all().len(), 21);
         let mut s = crate::generators::valid_score(4242);
         let replica = s.identity.replica_id;
         // Corrupt ONLY invariant 20: two measures, both `None` (so
@@ -6130,7 +6229,170 @@ mod g3b_dispatch_tests {
                 .any(|v| v.invariant == GraphInvariant::MeasureMeterConsistency),
             "check_invariants (the top-level dispatch) must surface the invariant-20 \
              violation -- this is the behavioural assertion M40 needs, since \
-             all().len() == 20 alone passes even with the dispatch arm deleted"
+             an all().len() count alone passes even with the dispatch arm deleted"
+        );
+    }
+}
+
+/// P13-S16 pins 6/6a/6b: invariant 21's **two directions**, each surfaced
+/// through `check_invariants`' dispatch and each isolated to its own direction.
+///
+/// Both directions carry the same `GraphInvariant`, so **no `all()`-driven test
+/// can tell them apart** — every such test is satisfied by either one. These two
+/// are the only permanent guarantee that both are dispatched, which is what pin
+/// 6b's two independently removable methods exist for.
+///
+/// **Each fixture violates its own direction ONLY**, asserted as an exact set.
+/// A fixture disagreeing both ways would be reported after either arm was
+/// deleted, so it would sign neither.
+#[cfg(test)]
+mod s16_agreement_dispatch_tests {
+    use super::*;
+    use crate::graph::{StaffGroup, StaffGroupKind};
+    use crate::ids::StaffGroupId;
+
+    /// (m41) **Breaks S→G**: a staff whose `group` names a group whose `members`
+    /// omit it — the shape a pin-2 maintenance gap produces.
+    ///
+    /// **Holds G→S**: `members` is empty, so that direction has nothing to
+    /// disagree about. **Holds every other invariant**, which is what the exact
+    /// cardinality assertion proves and what `any()` could never touch.
+    ///
+    /// **Mutation (M6a):** delete the `check_staff_names_absent_group` call from
+    /// `check_invariants`. This fixture then goes **unreported** — the assertion
+    /// prints `0` against `1` with an empty vector, which is the observation M6a
+    /// owes, quoted rather than inferred. `m41b` must still pass.
+    #[test]
+    fn m41_check_invariants_dispatches_invariant_21_staff_names_absent_group() {
+        let mut s = crate::generators::valid_score(4243);
+        let replica = s.identity.replica_id;
+        let group_id = StaffGroupId::new(replica, 21_001);
+        s.staff_groups.push(StaffGroup {
+            id: group_id,
+            name: None,
+            kind: StaffGroupKind::Bracket,
+            members: Vec::new(),
+        });
+        let staff_id = s.staves[0].id;
+        s.staves[0].group = Some(group_id);
+
+        // Bound before ANY assertion: the opposite-direction fact this fixture
+        // depends on, then the violations. Nothing is asserted until the
+        // cardinality check, which is the one M6a trips.
+        let group_members: Option<Vec<StaffId>> = s
+            .staff_groups
+            .iter()
+            .find(|group| group.id == group_id)
+            .map(|group| group.members.clone());
+        let violations = check_invariants(&s);
+
+        assert_eq!(
+            violations.len(),
+            1,
+            "expected exactly the invariant-21 S->G violation and nothing else, \
+             got {violations:?}"
+        );
+        assert_eq!(
+            violations[0].invariant,
+            GraphInvariant::StaffGroupMembershipAgreement,
+            "the single violation must be invariant 21, got {violations:?}"
+        );
+        assert!(
+            violations[0].witness.starts_with("S->G:"),
+            "the witness must name the S->G direction so this test cannot pass \
+             on m41b's fixture, got {violations:?}"
+        );
+        assert!(
+            violations[0].witness.contains(&format!("{staff_id:?}"))
+                && violations[0].witness.contains(&format!("{group_id:?}")),
+            "the witness must name both the staff and the group id, got \
+             {violations:?}"
+        );
+        // The G->S direction holds, asserted directly rather than left to follow
+        // from the cardinality above: the group must genuinely list nobody, and
+        // no G->S witness may be present.
+        assert_eq!(
+            group_members.as_deref(),
+            Some(&[][..]),
+            "fixture: the group must list nobody, so only S->G disagrees"
+        );
+        assert!(
+            !violations.iter().any(|v| v.witness.starts_with("G->S:")),
+            "the G->S direction must hold on this fixture, got {violations:?}"
+        );
+    }
+
+    /// (m41b) **Breaks G→S**: a group listing a staff whose own `group` is not
+    /// that group — the shape a stale projection produces.
+    ///
+    /// **Holds S→G**: the listed staff's `group` is `None`, so it names no group
+    /// and that direction abstains. **Holds every other invariant** — note the
+    /// listed staff is genuinely declared, so this is a *disagreement*, not a
+    /// dangling reference (invariant 21 abstains on those; invariant 10 owns
+    /// them).
+    ///
+    /// **Mutation (M6b):** delete the `check_group_lists_unowned_staff` call from
+    /// `check_invariants`. This fixture then goes unreported, printing `0`
+    /// against `1`. **`m41b` is the ONLY test M6b breaks** — `m41`, the generator
+    /// direction test and all four `all()` consumers use S→G fixtures, so
+    /// without this test the G→S arm could be deleted and the suite would stay
+    /// green.
+    #[test]
+    fn m41b_check_invariants_dispatches_invariant_21_group_lists_unowned_staff() {
+        let mut s = crate::generators::valid_score(4244);
+        let replica = s.identity.replica_id;
+        let group_id = StaffGroupId::new(replica, 21_002);
+        let staff_id = s.staves[0].id;
+        s.staff_groups.push(StaffGroup {
+            id: group_id,
+            name: None,
+            kind: StaffGroupKind::Bracket,
+            members: vec![staff_id],
+        });
+
+        // Bound before ANY assertion: the opposite-direction fact (`valid_score`
+        // leaves every staff's `group` as `None`, which is what keeps S->G
+        // abstaining), then the violations. This was asserted *before* the
+        // binding in the first draft, which put a check ahead of the cardinality
+        // assertion M6b trips — if the precondition ever broke, M6b's evidence
+        // would be replaced by a fixture complaint.
+        let listed_staff_group = s.staves[0].group;
+        let violations = check_invariants(&s);
+
+        assert_eq!(
+            violations.len(),
+            1,
+            "expected exactly the invariant-21 G->S violation and nothing else, \
+             got {violations:?}"
+        );
+        assert_eq!(
+            violations[0].invariant,
+            GraphInvariant::StaffGroupMembershipAgreement,
+            "the single violation must be invariant 21, got {violations:?}"
+        );
+        assert!(
+            violations[0].witness.starts_with("G->S:"),
+            "the witness must name the G->S direction so this test cannot pass \
+             on m41's fixture, got {violations:?}"
+        );
+        assert!(
+            violations[0].witness.contains(&format!("{staff_id:?}"))
+                && violations[0].witness.contains(&format!("{group_id:?}")),
+            "the witness must name both the staff and the group id, got \
+             {violations:?}"
+        );
+        // The S->G direction holds, asserted directly: the listed staff must name
+        // no group at all, and no S->G witness may be present. Without the first
+        // of these the fixture could silently become a both-directions one, which
+        // would be reported after EITHER arm was deleted and so would sign
+        // neither.
+        assert_eq!(
+            listed_staff_group, None,
+            "fixture: the listed staff must name no group, so only G->S disagrees"
+        );
+        assert!(
+            !violations.iter().any(|v| v.witness.starts_with("S->G:")),
+            "the S->G direction must hold on this fixture, got {violations:?}"
         );
     }
 }

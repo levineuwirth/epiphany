@@ -278,10 +278,13 @@ pub enum OperationKind {
     // --- Genesis tranche G3a (`spec/CONTRACT_GENESIS_G3A_ENTITIES.md`): the
     // four remaining root-level `Score` entity mints. Discriminant extends
     // additively past 34. ---
-    /// Mint a staff group on the score root (set-union creation). Graph-aware
-    /// reduction preconditions every carried member resolves to a live
-    /// `Staff`; the mint stores `members` as given and neither maintains nor
-    /// trusts it thereafter (contract §1.1, disposition B).
+    /// Mint a staff group on the score root (set-union creation). Reduction
+    /// **refuses a non-empty carried `members`** (`ContainerNotEmpty`): the
+    /// operation authors the group, not its membership, which is maintained
+    /// from `Staff.group` (P13-S16 §1.1, disposition A). The refusal is an
+    /// empty-container precondition on the carried value, so it is **not**
+    /// graph-gated and holds base-free — unlike the sibling mints' liveness
+    /// checks below.
     CreateStaffGroup(CreateStaffGroupOp),
     /// Mint a part-extraction view definition on the score root (set-union
     /// creation). Graph-aware reduction preconditions every carried staff
@@ -1788,11 +1791,19 @@ impl CanonicalEncode for SetTuningContextOp {
 
 /// Mint a global [`StaffGroup`] on the score root (operation_catalog
 /// §CreateStaffGroup). Carries the full staff-group value: identity, optional
-/// name, kind, and the carried `members` list. Graph-aware reduction
-/// preconditions every carried member resolves to a live `Staff`; per §1.1
-/// (disposition B), the mint stores `members` exactly as given and neither
-/// maintains nor trusts it thereafter — `Staff.group` is the sole authority
-/// for membership.
+/// name, kind, and a `members` list that **must be empty**.
+///
+/// Reduction refuses a non-empty carried `members` with `ContainerNotEmpty`
+/// (P13-S16 §1.1, disposition A): this operation authors the group, not its
+/// membership. `Staff.group` is the sole authority for membership and
+/// `StaffGroup.members` is the projection maintained from it, so the only way
+/// to put a staff in a group is to write `Staff.group`.
+///
+/// The refusal is an **empty-container** precondition on the carried value, not
+/// a referential one, so it is not graph-gated and holds base-free too.
+/// **The payload bytes are unchanged** — `members` is still encoded, and a blob
+/// authored under disposition B still decodes; only what reduction will accept
+/// has narrowed.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CreateStaffGroupOp {
     pub group: StaffGroup,

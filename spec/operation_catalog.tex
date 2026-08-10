@@ -442,27 +442,38 @@ staff group authorable: with mints only, and no modify or delete operation
 for either side, no authoring order can bring \texttt{Staff.group} and
 \texttt{StaffGroup.members} into agreement once they disagree.
 
-\textbf{Ruled (disposition B, filed as P13-S16): \texttt{Staff.group} is the
-sole authority for group membership; \texttt{StaffGroup.members} is a
-non-authoritative denormalized projection.} \texttt{CreateStaffGroup} stores
-\texttt{members} exactly as carried and neither maintains nor trusts it
-thereafter. Both stale forms are permitted outcomes, not defects: a
-\textbf{missing} member (\texttt{Staff.group} names a group whose
-\texttt{members} omits that staff) and a \textbf{spurious} member
-(\texttt{StaffGroup.members} names a staff whose own \texttt{Staff.group} is
-absent or names a different group). Every consumer \MUST{} read group
-membership from \texttt{Staff.group} only; core specification Chapter~5's
-\texttt{Staff}/\texttt{StaffGroup} declarations (\sectionsc{Top-Level Score
-Structure}) now state this normatively, and Section~\ref{sec:k0:create-staff}
-above states the corresponding authoring-order consequence for
-\texttt{CreateStaff}. Disposition A (maintaining \texttt{members} by
-reduction, making it a derived field) remains the later
-maintenance/enforcement fix, sequenced after G3b.
+\textbf{Ruled (disposition A, P13-S16; supersedes disposition B):
+\texttt{Staff.group} is the sole authority for group membership, and
+\texttt{StaffGroup.members} is a projection maintained from it by reduction.}
+\texttt{CreateStaffGroup} \textbf{refuses} a non-empty carried \texttt{members}
+(\texttt{ContainerNotEmpty}) --- the operation authors the group, not its
+membership --- and \texttt{CreateStaff} carrying \texttt{group: Some(g)}
+appends the new staff to \texttt{g}'s \texttt{members} in the graph. The two
+\MUST{} agree in both directions, and graph invariant~21 (core specification
+\sectionsc{Graph Invariants}) flags any disagreement between live objects.
+Every consumer \MUST{} read group membership from \texttt{Staff.group}; core
+specification Chapter~5's \texttt{Staff}/\texttt{StaffGroup} declarations
+(\sectionsc{Top-Level Score Structure}) state this normatively, and
+Section~\ref{sec:k0:create-staff} above states the corresponding
+authoring-order consequence for \texttt{CreateStaff}.
+
+\textbf{What disposition B ruled, and why it no longer holds.} Genesis tranche
+G3a ratified disposition B: \texttt{members} was stored exactly as carried and
+\textbf{neither maintained nor trusted}, and \textbf{both} stale forms were
+permitted outcomes rather than defects --- a \textbf{missing} member
+(\texttt{Staff.group} naming a group whose \texttt{members} omits that staff)
+and a \textbf{spurious} member (\texttt{StaffGroup.members} naming a staff
+whose own \texttt{Staff.group} is absent or names a different group). That
+ruling was sound while the tranche minted only: with no modify or delete
+operation for either side, no authoring order could bring the two into
+agreement once they disagreed. Disposition A was recorded there as the later
+maintenance/enforcement fix, sequenced after G3b; \textbf{P13-S16 is that
+fix}, and neither stale form is authorable any more.
 
 \textbf{Referential preconditions, graph-aware only, mirroring
-\texttt{CreateStaff} exactly.} \texttt{CreateStaffGroup.members} and
-\texttt{CreatePartDefinition.staves} each precondition every named id
-resolves to a live \texttt{Staff}; \texttt{CreateView.active\_layers}
+\texttt{CreateStaff} exactly.} \texttt{CreatePartDefinition.staves}
+preconditions every named id resolves to a live \texttt{Staff};
+\texttt{CreateView.active\_layers}
 preconditions every named id resolves to a live analysis layer;
 \texttt{CreateAnalysisLayer} carries no outbound reference and needs no
 referential precondition at all, the \texttt{CreateInstrument} shape rather
@@ -470,6 +481,16 @@ than the \texttt{CreateStaff} shape. Base-free reduction enforces none of
 these, exactly as for \texttt{CreateStaff}: there is no universe to check
 against. No new \texttt{PreconditionFailureReason} --- every referential
 refusal reuses \texttt{TargetMissing} (discriminant 0).
+
+\textbf{\texttt{CreateStaffGroup} is deliberately not in that list (P13-S16).}
+Its \texttt{members} check is an \textbf{empty-container} precondition on the
+carried value, not a referential one, and the distinction is normative: a
+graph-aware precondition asks about the \emph{universe} (``is this id live?'')
+and therefore cannot run base-free, whereas an empty-container precondition asks
+only about the \emph{carried value} (``is \texttt{members} empty?'') and
+therefore \MUST{} be enforced everywhere, base-free included. It refuses with
+\texttt{ContainerNotEmpty}, and the sentence above about base-free reduction
+enforcing none of these does \textbf{not} extend to it.
 
 No accept-set change: all four carried types have exactly one wire layout
 (core specification's \sectionsc{Binary Format Companion} confirms no
@@ -541,6 +562,63 @@ unexamined at creation (nothing checks its own length), while \emph{its}
 successor is refused the identical way. Closing this needs a per-measure
 duration concept this rung does not introduce
 (\texttt{spec/PASS13\_CANDIDATES.md}, P13-S19, still open).
+
+\medskip
+
+\noindent\textbf{Version 0.15.0 (P13-S16, the maintained projection,
+\texttt{spec/CONTRACT\_P13S16\_PROJECTION.md}).} No payload byte changes ---
+\texttt{CreateStaffGroupOp} and \texttt{CreateStaffOp} encode exactly as in
+0.12.0 --- but a \textbf{behaviour change on two operations}, replacing genesis
+tranche G3a's ratified \textbf{disposition~B} with \textbf{disposition~A}.
+\texttt{StaffGroup.members} stops being a non-authoritative field stored as
+carried and becomes a projection \emph{maintained} from \texttt{Staff.group}:
+
+\begin{itemize}[leftmargin=1.2em]
+  \item \texttt{CreateStaffGroup} (Section~\ref{sec:k0:create-staff-group})
+    now \textbf{refuses} a non-empty carried \texttt{members} with
+    \texttt{ContainerNotEmpty} (discriminant~10, no new
+    \texttt{PreconditionFailureReason}). This \textbf{replaces} the
+    graph-aware precondition that every id in \texttt{members} resolve to a
+    live \texttt{Staff} (\texttt{TargetMissing}). The new check is an
+    \emph{empty-container} precondition on the carried value, so unlike the
+    check it replaces it is \textbf{not graph-gated and is enforced base-free}
+    --- the one place where the sibling mints' ``referential preconditions are
+    graph-aware only'' rule does not extend.
+  \item \texttt{CreateStaff} (Section~\ref{sec:k0:create-staff}) carrying
+    \texttt{group: Some(g)} now appends the minted staff to \texttt{g}'s
+    \texttt{members} in the graph, idempotently per staff id. Undo of a staff
+    strips the id back out.
+\end{itemize}
+
+\noindent Both formerly \textbf{permitted} stale forms --- the missing member
+and the spurious member --- are therefore \textbf{unauthorable}, and the core
+specification gains graph invariant~21
+(\texttt{StaffGroupMembershipAgreement}) requiring the two to agree in both
+directions between live objects, abstaining on dangling membership because an
+undeclared member is invariant~10's concern.
+
+\textbf{This breaks documents authored under 0.12.0--0.14.0 only in what they
+may newly assert}, not in what they may read: an existing blob carrying a
+disagreeing pair still decodes, and no stored bytes are reinterpreted.
+
+\textbf{A canonical base materialized before this rung \MUST{} be rebuilt rather
+than reused}, and the two operations oblige that for \emph{different} reasons,
+either of which alone would suffice:
+
+\begin{itemize}[leftmargin=1.2em]
+  \item \texttt{CreateStaffGroup} changes its \textbf{reduction verdict} --- a
+    non-empty carried \texttt{members} now reduces to a no-op where it
+    previously applied, so the recorded effect differs.
+  \item \texttt{CreateStaff} changes \textbf{canonical reduced state} --- its
+    verdict is unchanged (it still applies), but the graph the reduction
+    produces now carries the maintained \texttt{members}.
+\end{itemize}
+
+\noindent Accordingly
+\texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION} moves
+\texttt{0}~$\rightarrow$~\texttt{1}, and P13-S27's authority check refuses a
+base declaring the older version. Core specification \sectionsc{Canonical
+Document Identity} requires the bump for either class of change.
 
 % ===========================================================================
 \chapter{The Catalog Framework}
@@ -1262,20 +1340,29 @@ With staves mintable, \texttt{CreateStaffInstance}
 instance's referenced \texttt{Staff} is live (previously the reference was
 satisfiable only from the seeded base, so the check was vacuous).
 
-\textbf{Stale-form semantics (genesis tranche G3a, disposition B, filed as
-P13-S16).} \texttt{Staff.group} is the \textbf{sole authority} for group
-membership; \texttt{StaffGroup.members}
-(Section~\ref{sec:k0:create-staff-group}) is a non-authoritative denormalized
-projection no consumer may read to decide membership. \texttt{CreateStaff}
-is the operation that authors the \textbf{missing-member} stale form: a
+\textbf{Membership maintenance (P13-S16, disposition A; supersedes genesis
+tranche G3a's disposition B).} \texttt{Staff.group} is the \textbf{sole
+authority} for group membership, and \texttt{StaffGroup.members}
+(Section~\ref{sec:k0:create-staff-group}) is a projection \textbf{maintained
+from it} under graph-aware reduction. \texttt{CreateStaff} carrying
+\texttt{group: Some(g)} therefore appends the newly minted staff to \texttt{g}'s
+\texttt{members} in the graph. The append is set-union and idempotent per staff
+id --- convergence replays operations, so appending an id already present
+\MUSTNOT{} duplicate it --- and base-free reduction has no graph to maintain and
+writes nothing. The two \MUST{} agree in both directions, and graph
+invariant~21 (core specification \sectionsc{Graph Invariants}) flags any
+disagreement between live objects.
+
+\textbf{What this replaced.} Under disposition B, \texttt{CreateStaff} authored
+a \textbf{permitted} \textbf{missing-member} stale form: a
 \texttt{CreateStaffGroup(g, members: [])} followed by a
-\texttt{CreateStaff(s, group: Some(g))} leaves \texttt{s.group == Some(g)}
-while \texttt{g.members} omits \texttt{s} --- a \textbf{permitted} outcome,
-not a defect, since G3a mints only and no operation maintains
-\texttt{StaffGroup.members} by reduction. The mirror-image \textbf{spurious}
-form (a staff named in \texttt{members} whose own \texttt{group} is absent or
-different) is authored by \texttt{CreateStaffGroup} instead; see
-Section~\ref{sec:k0:create-staff-group}'s own stale-form paragraph.
+\texttt{CreateStaff(s, group: Some(g))} left \texttt{s.group == Some(g)} while
+\texttt{g.members} omitted \texttt{s}, because that tranche minted only and no
+operation maintained the projection. \textbf{That outcome is no longer
+reachable}: the identical sequence now yields agreement. The mirror-image
+\textbf{spurious} form is likewise unauthorable --- \texttt{CreateStaffGroup}
+refuses a non-empty carried \texttt{members} outright; see
+Section~\ref{sec:k0:create-staff-group}.
 
 \textbf{Conflict cases.} None at reduction time (set-union; the differing-value
 re-create is a precondition gate, not a conflict).
@@ -1283,6 +1370,14 @@ re-create is a precondition gate, not a conflict).
 \textbf{Undo semantics.} Undo of a create tombstones the minted staff
 (Section~\ref{sec:k0:undo}); \texttt{StrictInverse} conflicts if a live staff
 instance references it (tombstoning it would strand the instance).
+\textbf{Undo also strips the removed staff's id from every live group's
+\texttt{members} (P13-S16)}: the projection is maintained from
+\texttt{Staff.group}, so a staff leaving the graph \MUST{} leave the projection
+with it. Without that strip the undo would leave a group naming a staff that no
+longer exists. Note this is the \emph{unguarded} direction of the pair --- undo
+of a \texttt{CreateStaffGroup} is refused while a live staff still names the
+group (Section~\ref{sec:k0:create-staff-group}), but nothing refuses undoing the
+staff itself.
 
 \textbf{Re-anchoring.} Not applicable (a staff mint references no tombstonable
 anchor; there is no \texttt{DeleteStaff} in this catalogue revision --- an
@@ -1519,23 +1614,43 @@ carrying a byte-identical value reduces idempotently
 (\texttt{NoOpReason::AlreadyApplied}); a create whose id is already live with
 a differing value is a precondition no-op with \texttt{RecreateContentMismatch};
 a create naming a tombstoned id is a precondition no-op with
-\texttt{TargetTombstoned}. Graph-aware reduction additionally preconditions
-that every id in \texttt{members} resolves to a live \texttt{Staff} ---
-reusing \texttt{TargetMissing} (discriminant 0), no new
-\texttt{PreconditionFailureReason} --- and is skipped entirely base-free,
-which has no staff universe to check against.
+\texttt{TargetTombstoned}.
 
-\textbf{Stale-form semantics (disposition B, filed as P13-S16).}
-\texttt{Staff.group} (Section~\ref{sec:k0:create-staff}) is the \textbf{sole
-authority} for group membership; \texttt{members} here is a
-\textbf{non-authoritative denormalized projection}, stored exactly as carried
-and \textbf{neither maintained nor trusted} by any subsequent reduction. This
-operation authors the \textbf{spurious-member} stale form: a
+\textbf{A non-empty carried \texttt{members} is refused (P13-S16).} This
+operation authors the group, not its membership, so reduction preconditions that
+the carried \texttt{members} is \textbf{empty}, refusing with
+\texttt{ContainerNotEmpty} (discriminant 10) --- no new
+\texttt{PreconditionFailureReason}. \textbf{This precondition is not
+graph-gated}: it asks only about the carried value, so unlike the sibling mints'
+member-liveness checks it holds \textbf{base-free as well}. Membership is
+maintained from \texttt{Staff.group} instead
+(Section~\ref{sec:k0:create-staff}).
+
+\textbf{This replaced a graph-aware liveness precondition.} Under disposition B
+this operation accepted a carried \texttt{members} and graph-aware reduction
+additionally preconditioned that every id in it resolved to a live
+\texttt{Staff}, reusing \texttt{TargetMissing} (discriminant 0) and skipped
+entirely base-free. Both halves are gone: liveness is never consulted, because
+the container must be empty before the question could arise.
+
+\textbf{Membership maintenance (P13-S16, disposition A; supersedes disposition
+B).} \texttt{Staff.group} (Section~\ref{sec:k0:create-staff}) is the
+\textbf{sole authority} for group membership, and \texttt{members} here is a
+projection \textbf{maintained from it} by reduction. The two \MUST{} agree in
+both directions; graph invariant~21 (core specification \sectionsc{Graph
+Invariants}) flags any disagreement between live objects, and no consumer may
+read \texttt{members} to decide membership in preference to
+\texttt{Staff.group}.
+
+\textbf{What this replaced.} Under disposition B, \texttt{members} was stored
+exactly as carried and \textbf{neither maintained nor trusted}, and this
+operation authored a \textbf{permitted spurious-member} stale form: a
 \texttt{CreateStaff(s, group: None)} followed by
-\texttt{CreateStaffGroup(g, members: [s])} leaves \texttt{g.members == [s]}
-while \texttt{s.group} stays \texttt{None} (or names a different group) ---
-a \textbf{permitted} outcome, not a defect. No consumer may read
-\texttt{members} to decide whether a staff belongs to a group.
+\texttt{CreateStaffGroup(g, members: [s])} left \texttt{g.members == [s]} while
+\texttt{s.group} stayed \texttt{None} (or named a different group).
+\textbf{That sequence now refuses} the second operation with
+\texttt{ContainerNotEmpty}, minting no group at all, so the form is
+unauthorable rather than merely discouraged.
 
 \textbf{Conflict cases.} None at reduction time (set-union; the differing-value
 re-create is a precondition gate, not a conflict).

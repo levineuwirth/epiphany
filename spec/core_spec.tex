@@ -4232,13 +4232,16 @@ pub struct StaffGroup {
     pub id: StaffGroupId,
     pub name: Option<String>,
     pub kind: StaffGroupKind,
-    /// A non-authoritative denormalized projection of group membership
-    /// (genesis tranche G3a, ratified disposition B, filed as P13-S16).
-    /// \texttt{Staff.group} below is the sole authority: this field
-    /// \MUSTNOT{} be read to decide whether a staff is in a group, and MAY
-    /// be stale in both directions --- a member missing here while
-    /// \texttt{Staff.group} names this group, or a staff listed here while
-    /// its own \texttt{Staff.group} is absent or names a different group.
+    /// A denormalized projection of group membership, maintained from
+    /// \texttt{Staff.group} by reduction (P13-S16, ratified disposition A;
+    /// supersedes genesis tranche G3a's disposition B).
+    /// \texttt{Staff.group} below is the sole authority; this field is
+    /// derived from it and the two \MUST{} agree in both directions, which
+    /// graph invariant~21 enforces. \texttt{CreateStaffGroup} refuses a
+    /// non-empty carried \texttt{members}: membership changes only by
+    /// writing \texttt{Staff.group}. Under disposition B this field was
+    /// authored directly and MAY have been stale in both directions;
+    /// neither state is reachable now.
     pub members: Vec<StaffId>,
 }
 
@@ -5584,11 +5587,14 @@ pub struct Staff {
 
     /// Visual grouping: which staff group (if any) this staff
     /// belongs to (e.g., piano grand staff, choral group). The sole
-    /// authority for group membership (genesis tranche G3a, ratified
-    /// disposition B, filed as P13-S16): every consumer \MUST{} read
-    /// membership from this field, not from \texttt{StaffGroup.members}
-    /// above, which is a non-authoritative denormalized projection that MAY
-    /// disagree with this field in either direction.
+    /// authority for group membership (P13-S16, ratified disposition A;
+    /// supersedes genesis tranche G3a's disposition B): every consumer
+    /// \MUST{} read membership from this field, and writing it is the only
+    /// way membership changes. \texttt{StaffGroup.members} above is a
+    /// projection maintained from this field by reduction; the two \MUST{}
+    /// agree in both directions, which graph invariant~21 enforces. Under
+    /// disposition B that projection was authored directly and MAY have
+    /// disagreed with this field in either direction.
     pub group: Option<StaffGroupId>,
 }
 
@@ -6639,6 +6645,23 @@ The score graph maintains a set of structural invariants. Implementations
       \texttt{measure\_duration()}, and IS flagged when that
       distance is the pickup's own shorter length rather than a
       full bar.
+    \item (P13-S16.) \texttt{Staff.group} and
+      \texttt{StaffGroup.members} AGREE in both directions:
+      whenever a \texttt{Staff} names a \texttt{StaffGroup}, that
+      group's \texttt{members} contains the staff; and whenever a
+      group's \texttt{members} lists a staff, that staff's own
+      \texttt{group} names that group. \texttt{Staff.group} is the
+      sole authority and \texttt{members} is the projection
+      maintained from it, so a violation means the projection has
+      drifted --- a maintenance gap leaving a staff absent from
+      \texttt{members}, or a stale entry listing a staff that no
+      longer names the group. The two directions fail for different
+      reasons and are checked independently. This invariant
+      ABSTAINS on \emph{dangling} membership: a \texttt{members}
+      entry naming a staff that is not declared at all is
+      invariant~10's reference-resolution concern, not a
+      disagreement, since an absent staff has no \texttt{group} to
+      compare against.
   \end{enumerate}
 
   Implementations \MUST{} reject graph configurations that violate any
@@ -6647,14 +6670,16 @@ The score graph maintains a set of structural invariants. Implementations
   changes that restore them within the same operation.
 \end{requirement}
 
-This enumeration contains exactly \textbf{20} invariants. (Earlier
+This enumeration contains exactly \textbf{21} invariants. (Earlier
 summary material, including the QUICKSTART, referred to ``18 graph
 invariants''; a subsequent revision of this document corrected that
 to 19; genesis tranche G3b
 (\texttt{spec/CONTRACT\_GENESIS\_G3B\_MEASURE.md}) then appended a
-20th, measure-meter consistency, above --- the authoritative count is
-20, matching this enumeration and the reference implementation.)
-These 20 are
+20th, measure-meter consistency, and P13-S16
+(\texttt{spec/CONTRACT\_P13S16\_PROJECTION.md}) a 21st, staff-group
+membership agreement --- the authoritative count is 21, matching this
+enumeration and the reference implementation.)
+These 21 are
 \emph{runtime} invariants: they hold over every well-formed graph and
 are restored by compensating changes when an edit would break them.
 
@@ -7012,8 +7037,9 @@ pub enum OperationKind {
     // Genesis tranche G3a: the four remaining root-level Score entity
     // mints, on the InsertStaff set-union mint pattern. Staff.group is the
     // sole authority for group membership (see the Staff/StaffGroup
-    // declarations below); CreateStaffGroup stores members as carried and
-    // neither maintains nor trusts it.
+    // declarations below); CreateStaffGroup refuses a non-empty carried
+    // members, and the projection is maintained from Staff.group by
+    // reduction (P13-S16, disposition A).
     CreateStaffGroup(CreateStaffGroupOp),
     CreatePartDefinition(CreatePartDefinitionOp),
     CreateAnalysisLayer(CreateAnalysisLayerOp),
@@ -16896,6 +16922,27 @@ layouts they own versus inherit:
   superblock produces, since the two detect different faults. Rebuilding
   during open is prohibited outright, because the envelopes a rebuild would
   need may have been pruned.
+  \\
+  \today & \sectionsc{Top-Level Score Structure},
+  \sectionsc{Graph Invariants} & \textbf{P13-S16: \texttt{StaffGroup.members}
+  becomes a maintained projection (disposition A), superseding genesis tranche
+  G3a's disposition B, and graph invariant~21 is appended.}
+  \texttt{Staff.group} was already the sole authority for group membership, but
+  \texttt{members} was stored exactly as carried and neither maintained nor
+  trusted, so \emph{both} disagreeing states were permitted outcomes rather
+  than defects --- a sound ruling while the tranche minted only, since no
+  authoring order could repair a disagreement once made. This revision makes
+  \texttt{members} derived: \texttt{CreateStaffGroup} refuses a non-empty
+  carried \texttt{members} (\texttt{ContainerNotEmpty}, an
+  \emph{empty-container} precondition on the carried value and therefore
+  enforced base-free, unlike the sibling mints' graph-aware liveness checks),
+  \texttt{CreateStaff} carrying a group appends the staff to that group's
+  \texttt{members}, and undo of a staff strips it back out. The two \MUST{}
+  now agree in both directions, which new graph invariant~21
+  (\texttt{StaffGroupMembershipAgreement}) enforces between live objects while
+  abstaining on dangling membership --- an undeclared member is
+  invariant~10's reference-resolution concern, not a disagreement. The
+  enumeration count moves from 20 to 21 accordingly.
   \\
   \bottomrule
 \end{longtable}

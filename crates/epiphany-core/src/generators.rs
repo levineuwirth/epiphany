@@ -500,6 +500,27 @@ pub fn violating_score(inv: GraphInvariant, seed: u64) -> Score {
     let mut s = valid_score(seed);
     let replica = s.identity.replica_id;
     match inv {
+        StaffGroupMembershipAgreement => {
+            // P13-S16 touch row 8. Direction is PINNED to S->G: mint a group with
+            // an EMPTY `members` and point staff 0 at it. The staff names the
+            // group and the group omits the staff — the exact shape a pin-2
+            // maintenance gap produces, and the smallest corruption of
+            // `valid_score` (one field set, one empty group added).
+            //
+            // This must NOT violate G->S: `members` is empty, so that direction
+            // has nothing to disagree about. Both directions are the same
+            // `GraphInvariant`, so no `all()`-driven test can tell them apart —
+            // `invariant_21_negative_generator_breaks_staff_to_group_only` is the
+            // only guard on the direction, and it checks the shrunk fixture too.
+            let group_id = crate::ids::StaffGroupId::new(replica, 21_000);
+            s.staff_groups.push(crate::graph::StaffGroup {
+                id: group_id,
+                name: None,
+                kind: crate::graph::StaffGroupKind::Bracket,
+                members: Vec::new(),
+            });
+            s.staves[0].group = Some(group_id);
+        }
         EventVoiceBacklink => {
             // Arena event whose voice no longer lists it: drop it from the list.
             let (e0, _) = first_two_event_ids(&s);
@@ -997,6 +1018,114 @@ mod tests {
                 check_invariants(&s)
             );
         }
+    }
+
+    /// **P13-S16 touch row 8.** `violating_score`'s invariant-21 arm breaks the
+    /// **S→G** direction ONLY — in the raw fixture **and after shrinking**.
+    ///
+    /// Invariant 21's two directions carry the same `GraphInvariant`, so every
+    /// `all()`-driven test in this module is satisfied by either one and **none
+    /// can observe which**. This is the only guard on the generator's direction,
+    /// and `m41b` is the only permanent guard on the other direction being
+    /// dispatched at all.
+    ///
+    /// **The shrunk leg is not redundant.** `shrink` rebuilds the witness, and
+    /// nothing in its contract preserves *which way* the pair disagrees: a shrink
+    /// that cleared the staff's `group` while leaving it listed in `members`
+    /// would flip the direction, still violate invariant 21, and satisfy
+    /// `every_invariant_shrinks_to_a_small_witness` and `shrink_is_idempotent`
+    /// alike.
+    ///
+    /// **Mutation (M6a):** delete the `check_staff_names_absent_group` call from
+    /// `check_invariants`; both legs report nothing and the cardinality
+    /// assertions print `0` against `1`. Under **M6b** — deleting the G→S arm —
+    /// this test must **pass**, and that asymmetry is the direction claim.
+    #[test]
+    fn invariant_21_negative_generator_breaks_staff_to_group_only() {
+        let inv = GraphInvariant::StaffGroupMembershipAgreement;
+
+        // The two legs are built and checked SEQUENTIALLY, and the raw leg is
+        // fully validated before `shrink` is ever called.
+        //
+        // Building both in one array would evaluate `shrink` first — Rust
+        // constructs every element before the loop body runs — and `shrink`
+        // opens with `assert!(!check_invariant(score, inv).is_empty())`. Under
+        // M6a that check returns empty, so shrink PANICS on its own entry
+        // assertion before the raw leg's cardinality assertion executes, and M6a
+        // would report "shrink starting point must violate the target invariant"
+        // instead of the pinned `0` against `1`. **A panic upstream of the
+        // pinned assertion destroys the evidence the mutation owes.**
+        let raw = violating_score(inv, 0x2121_2121);
+        assert_breaks_staff_to_group_only("raw", &raw, inv);
+
+        let shrunk = shrink(&raw, inv);
+        assert_breaks_staff_to_group_only("shrunk", &shrunk, inv);
+    }
+
+    /// Pin 6a's three properties for one leg of
+    /// `invariant_21_negative_generator_breaks_staff_to_group_only`: exact
+    /// cardinality, the S→G witness naming both ids, and the G→S direction
+    /// holding — each asserted rather than implied.
+    fn assert_breaks_staff_to_group_only(leg: &str, s: &Score, inv: GraphInvariant) {
+        // Bound before any assertion, and read from the score so both legs
+        // survive shrinking rather than hardcoding the generator's counter. The
+        // ids are formatted here so this helper needs no extra id imports; the
+        // named group's `members` is carried as a value because the G->S claim
+        // must be checked against the FIXTURE, not against the checker's output.
+        let named = s.staves.iter().find_map(|staff| {
+            staff.group.map(|group| {
+                let members = s
+                    .staff_groups
+                    .iter()
+                    .find(|candidate| candidate.id == group)
+                    .map(|candidate| candidate.members.clone());
+                (format!("{:?}", staff.id), format!("{group:?}"), members)
+            })
+        });
+        let violations = check_invariants(s);
+
+        // First, because it is the assertion M6a trips.
+        assert_eq!(
+            violations.len(),
+            1,
+            "{leg}: expected exactly the invariant-21 S->G violation and nothing \
+             else, got {violations:?}"
+        );
+        assert_eq!(
+            violations[0].invariant, inv,
+            "{leg}: the single violation must be invariant 21, got {violations:?}"
+        );
+        assert!(
+            violations[0].witness.starts_with("S->G:"),
+            "{leg}: the generator must break the S->G direction only — a flipped \
+             direction still violates invariant 21 and no other test would \
+             notice; got {violations:?}"
+        );
+        let (staff_id, group_id, group_members) = named.unwrap_or_else(|| {
+            panic!("{leg}: the fixture must have a staff naming a group; got {violations:?}")
+        });
+        assert!(
+            violations[0].witness.contains(&staff_id) && violations[0].witness.contains(&group_id),
+            "{leg}: the witness must name both {staff_id} and {group_id}, got \
+             {violations:?}"
+        );
+        // The opposite direction holds, asserted against the FIXTURE. Checking
+        // only that no `G->S:` witness was emitted would pass **vacuously under
+        // M6b**: with the G->S arm deleted no such witness can appear whatever the
+        // fixture holds, so a flipped or both-directions fixture would slip
+        // through the leg that is supposed to guarantee the direction. The empty
+        // `members` is the checker-independent fact, and `m41` asserts it the
+        // same way.
+        assert_eq!(
+            group_members.as_deref(),
+            Some(&[][..]),
+            "{leg}: fixture — group {group_id} must list nobody, so nothing can \
+             disagree G->S; got {group_members:?}"
+        );
+        assert!(
+            !violations.iter().any(|v| v.witness.starts_with("G->S:")),
+            "{leg}: the G->S direction must hold, got {violations:?}"
+        );
     }
 
     #[test]

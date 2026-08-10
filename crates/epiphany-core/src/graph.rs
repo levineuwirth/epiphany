@@ -840,11 +840,20 @@ pub struct Staff {
     pub instrument: InstrumentId,
     pub default_staff_lines: StaffLineConfiguration,
     /// Which staff group (if any) this staff belongs to. **The sole authority
-    /// for group membership** (genesis tranche G3a,
-    /// `spec/CONTRACT_GENESIS_G3A_ENTITIES.md` §1.1, disposition B, filed as
-    /// P13-S16): every consumer MUST read membership from this field, not
-    /// from [`StaffGroup::members`], which is a non-authoritative denormalized
-    /// projection that may disagree with this field in either direction.
+    /// for group membership** (`spec/CONTRACT_P13S16_PROJECTION.md`, §1.1
+    /// disposition A): writing this field is the only way membership changes.
+    ///
+    /// [`StaffGroup::members`] is a projection **maintained from** this field
+    /// under reduction, never an independent input. The two **must agree** in
+    /// both directions, and graph invariant 21
+    /// (`StaffGroupMembershipAgreement`) flags any disagreement between live
+    /// objects.
+    ///
+    /// **P13-S16 replaced genesis tranche G3a's disposition B**
+    /// (`spec/CONTRACT_GENESIS_G3A_ENTITIES.md` §1.1), under which `members`
+    /// was stored exactly as carried and permitted to disagree with this field
+    /// in either direction. `CreateStaffGroup` now refuses a non-empty carried
+    /// `members` outright, so neither disagreeing state is authorable.
     pub group: Option<StaffGroupId>,
     /// Default clef for new instances of this staff (schema major 2,
     /// appended last per the wire rule; migration default treble).
@@ -1640,13 +1649,23 @@ pub struct StaffGroup {
     pub id: StaffGroupId,
     pub name: Option<String>,
     pub kind: StaffGroupKind,
-    /// A **non-authoritative denormalized projection** of group membership
-    /// (genesis tranche G3a, `spec/CONTRACT_GENESIS_G3A_ENTITIES.md` §1.1,
-    /// disposition B, filed as P13-S16). [`Staff::group`] is the sole
-    /// authority: this field MUST NOT be read to decide whether a staff is in
-    /// a group, and MAY be stale in **both** directions — a member missing
-    /// here while `Staff.group` names this group, or a staff listed here
-    /// while its own `Staff.group` is `None` or names a different group.
+    /// A denormalized projection of group membership, **maintained from**
+    /// [`Staff::group`] under reduction (`spec/CONTRACT_P13S16_PROJECTION.md`,
+    /// §1.1 disposition A). [`Staff::group`] is the **sole authority**; this
+    /// field is derived from it, and the two **must agree** in both directions.
+    ///
+    /// `CreateStaffGroup` **refuses** a non-empty carried `members`
+    /// (`ContainerNotEmpty`): the operation authors the group, not its
+    /// membership. Membership changes only by writing [`Staff::group`], which
+    /// reduction mirrors here. Graph invariant 21
+    /// (`StaffGroupMembershipAgreement`) flags a disagreement in either
+    /// direction between live objects.
+    ///
+    /// **P13-S16 replaced genesis tranche G3a's disposition B**
+    /// (`spec/CONTRACT_GENESIS_G3A_ENTITIES.md` §1.1), under which this field
+    /// was authored directly, was not to be trusted, and could disagree with
+    /// [`Staff::group`] either way. Both of those states are now unreachable
+    /// through the ordinary API.
     pub members: Vec<StaffId>,
 }
 
@@ -2125,59 +2144,107 @@ mod g3a_tests {
             .expect("this file contains at least one #[cfg(test)] module")
     }
 
-    /// (t14) `Staff.group`'s doc comment states it is authoritative for
-    /// group membership. Grep-assert, **sliced to that field's doc block
-    /// only** — `graph.rs` mentions `group` throughout, so a file-wide
-    /// search cannot fail.
+    /// The doc block directly above `field_decl`, located **from the
+    /// declaration** and extended backwards over the contiguous `///` lines.
     ///
-    /// **Mutation:** delete the doc comment (revert to no doc comment on
-    /// this field, its pre-G3a state); must fail.
+    /// **Neither end of this slice depends on the doc text** (P13-S16 pin 10,
+    /// ratification round 9). Both `t14` guards previously anchored the *start*
+    /// on a phrase from the comment, and for `StaffGroup.members` that phrase was
+    /// the disposition-B claim pin 10 rewrites. Once rewritten, `.find()`
+    /// returned `None` and the `.expect` panicked on absent text — **naming no
+    /// needle and dumping no block**, so the mutation's required observation
+    /// became an anchor failure instead of a needle miss.
+    ///
+    /// A guard whose *locator* depends on the text it inspects fails before it
+    /// can report, and **failing early looks like failing correctly.** Anchored
+    /// on the declaration, the block exists under either disposition and the only
+    /// way to fail is the needle assertion, with its message and block intact.
+    fn doc_block_above<'a>(source: &'a str, field_decl: &str) -> &'a str {
+        let decl = source
+            .find(field_decl)
+            .unwrap_or_else(|| panic!("the field declaration `{field_decl}` is present"));
+        // Start of the declaration's own line, then walk back over `///` lines.
+        let mut start = source[..decl].rfind('\n').map_or(0, |i| i + 1);
+        while let Some(prev_end) = start.checked_sub(1) {
+            let prev_start = source[..prev_end].rfind('\n').map_or(0, |i| i + 1);
+            if source[prev_start..prev_end].trim_start().starts_with("///") {
+                start = prev_start;
+            } else {
+                break;
+            }
+        }
+        &source[start..decl]
+    }
+
+    /// (t14) `Staff.group`'s doc comment states it is the sole authority and that
+    /// the projection is **maintained from** it and **must agree**. Grep-assert,
+    /// **sliced to that field's doc block only** — `graph.rs` mentions `group`
+    /// throughout, so a file-wide search cannot fail.
+    ///
+    /// **The needles must be wording disposition B cannot satisfy.** "sole
+    /// authority" alone is insufficient: it was true under B as well, so a guard
+    /// built from it passes against the very text it is meant to have replaced.
+    /// "maintained from" and "must agree" are false under B, which is what makes
+    /// this guard able to fail.
+    ///
+    /// **Mutation (M7a):** revert this doc block to its disposition-B wording;
+    /// must fail here while the `StaffGroup.members` guard below still passes.
     #[test]
     fn t14_staff_group_field_doc_comment_states_sole_authority() {
-        let source = production_source();
-        let start = source
-            .find("    /// Which staff group (if any) this staff belongs to.")
-            .expect("Staff.group's doc comment is present");
-        let end = source[start..]
-            .find("pub group: Option<StaffGroupId>,")
-            .map(|offset| start + offset)
-            .expect("the `group` field declaration follows its doc comment");
-        let doc_block = &source[start..end];
+        let doc_block = doc_block_above(production_source(), "pub group: Option<StaffGroupId>,");
         assert!(
             doc_block.contains("sole authority"),
             "Staff.group's doc comment must state it is the sole authority; block was:\n{doc_block}"
         );
+        assert!(
+            doc_block.contains("maintained from"),
+            "Staff.group's doc comment must state the projection is maintained from it \
+             (P13-S16 disposition A); block was:\n{doc_block}"
+        );
+        assert!(
+            doc_block.contains("must agree"),
+            "Staff.group's doc comment must state the two must agree — a needle \
+             disposition B cannot satisfy; block was:\n{doc_block}"
+        );
     }
 
-    /// (t14) `StaffGroup.members`'s doc comment states it is a
-    /// non-authoritative projection that may be stale in **both**
-    /// directions. Grep-assert, **sliced to that field's doc block only** —
-    /// same discipline as the `Staff.group` guard above.
+    /// (t14) `StaffGroup.members`'s doc comment states it is **maintained from**
+    /// [`Staff::group`], that the two **must agree**, and that a non-empty
+    /// carried value is refused. Sliced to that field's doc block only — same
+    /// discipline as the `Staff.group` guard above.
     ///
-    /// **Mutation:** delete the doc comment (revert to no doc comment on
-    /// this field, its pre-G3a state); must fail.
+    /// **The name is retained deliberately.** P13-S16's §3 and §6 name this test
+    /// exactly for M7a/M7b evidence, so renaming it would break the contract's
+    /// own citations. It also stays accurate: under disposition A `members` is a
+    /// **non-authoritative projection** — `Staff.group` is still the sole
+    /// authority — and what changed is that the projection is now *maintained*
+    /// rather than merely stored. The assertions below test maintenance; the name
+    /// records what the field is.
+    ///
+    /// **Mutation (M7b):** revert this doc block to its disposition-B wording;
+    /// must fail here while the `Staff.group` guard above still passes.
     #[test]
     fn t14_staff_group_members_field_doc_comment_states_non_authoritative_projection() {
-        let source = production_source();
-        let start = source
-            .find("    /// A **non-authoritative denormalized projection** of group")
-            .expect("StaffGroup.members's doc comment is present");
-        let end = source[start..]
-            .find("pub members: Vec<StaffId>,")
-            .map(|offset| start + offset)
-            .expect("the `members` field declaration follows its doc comment");
-        let doc_block = &source[start..end];
+        let doc_block = doc_block_above(production_source(), "pub members: Vec<StaffId>,");
         assert!(
-            doc_block.contains("non-authoritative"),
-            "StaffGroup.members's doc comment must state it is non-authoritative; block was:\n{doc_block}"
+            doc_block.contains("maintained from"),
+            "StaffGroup.members's doc comment must state it is maintained from \
+             Staff.group; block was:\n{doc_block}"
         );
         assert!(
-            doc_block.contains("MUST NOT be read"),
-            "StaffGroup.members's doc comment must forbid reading it to decide membership; block was:\n{doc_block}"
+            doc_block.contains("must agree"),
+            "StaffGroup.members's doc comment must state the two must agree; block \
+             was:\n{doc_block}"
         );
         assert!(
-            doc_block.contains("both** directions"),
-            "StaffGroup.members's doc comment must permit staleness in both directions; block was:\n{doc_block}"
+            doc_block.contains("sole authority"),
+            "StaffGroup.members's doc comment must name Staff.group as the sole \
+             authority; block was:\n{doc_block}"
+        );
+        assert!(
+            doc_block.contains("refuses"),
+            "StaffGroup.members's doc comment must record that a non-empty carried \
+             members is refused; block was:\n{doc_block}"
         );
     }
 }

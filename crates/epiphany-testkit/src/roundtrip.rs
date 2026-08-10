@@ -869,11 +869,19 @@ mod tests {
     ///
     /// # Two provably independent operands
     ///
-    /// The fixture is built with `synthetic_for_fixture(0)` and commits a base
-    /// carrying the **literal** `ReductionAlgorithmVersion(0)`; the reopen then
+    /// The fixture is built with `synthetic_for_fixture(1)` and commits a base
+    /// carrying the **literal** `ReductionAlgorithmVersion(1)`; the reopen then
     /// supplies `production_caps()`, which wraps the real constant. One operand
     /// is a literal written into a fixture, the other is the authority read at
     /// the reopen — neither derived from the other.
+    ///
+    /// **The literals track the constant's value by hand.** P13-S16 moved the
+    /// authority `0` → `1`, so every literal below moved with it — by editing,
+    /// never by referencing `CURRENT_REDUCTION_ALGORITHM_VERSION`. That this
+    /// test must be edited whenever the authority moves is the **point**, not
+    /// friction to be engineered away: it is the tripwire. A future rung that
+    /// bumps the constant will see this test fail, and updating these literals
+    /// is how it acknowledges the bump.
     ///
     /// **Round 3 caught the alternative**: if both the supplied capability and
     /// the base version descended from `CURRENT_REDUCTION_ALGORITHM_VERSION`,
@@ -898,7 +906,7 @@ mod tests {
             MemStore::new(),
             FileUuid([0x5E; 16]),
             Manifest::empty(DocumentId([0x5E; 16])),
-            BundleCapabilities::synthetic_for_fixture(0),
+            BundleCapabilities::synthetic_for_fixture(1),
         )
         .expect("fixture bundle creates");
 
@@ -915,7 +923,7 @@ mod tests {
                     snapshot_id: SnapshotId([0x5E; 16]),
                     covers_causal_frontier: FrontierBytes::empty(),
                     // A deliberate LITERAL — not the constant. See above.
-                    reduction_algorithm_version: ReductionAlgorithmVersion(0),
+                    reduction_algorithm_version: ReductionAlgorithmVersion(1),
                     profile_id: ProfileId::Full,
                     hash: root.hash,
                     root,
@@ -938,13 +946,13 @@ mod tests {
                         .as_ref()
                         .unwrap()
                         .reduction_algorithm_version,
-                    ReductionAlgorithmVersion(0)
+                    ReductionAlgorithmVersion(1)
                 );
             }
             Err(BundleError::CanonicalBaseRequiresRebuild { base, current }) => {
                 // Reached only under M5b. Assert both fields, then fail loudly
                 // quoting them — that is the mutation's required observation.
-                assert_eq!(base, ReductionAlgorithmVersion(0));
+                assert_eq!(base, ReductionAlgorithmVersion(1));
                 panic!(
                     "M5b observation: base={} current={} — the authority is load-bearing here",
                     base.0, current.0

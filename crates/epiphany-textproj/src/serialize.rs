@@ -643,7 +643,7 @@ mod tests {
     /// because `epiphany-bundle` must not depend on `epiphany-ops` (pin 1, §0.3)
     /// and so no test there can reach the real authority.
     ///
-    /// # The `0` is a deliberate LITERAL, and that is load-bearing
+    /// # The `1` is a deliberate LITERAL, and that is load-bearing
     ///
     /// Comparing against `CURRENT_REDUCTION_ALGORITHM_VERSION` would compare the
     /// constant with itself laundered through one function call: mutate the
@@ -652,9 +652,11 @@ mod tests {
     /// constant** — doing so makes M5a vacuous while leaving every test green,
     /// a failure invisible to the suite (contract §7 item 4b exists to catch it).
     ///
-    /// **This test is expected to fail when P13-S16 bumps the authority**, and
-    /// that is correct: the literal is a tripwire on the production wiring, and
-    /// S16 updating it is S16 stating that the authority moved.
+    /// **This test failed when P13-S16 bumped the authority `0` → `1`, exactly as
+    /// S27 predicted it would**, and the literal below was updated by hand. That
+    /// is the tripwire working, not friction: editing this literal is how a rung
+    /// *states* that the authority moved. A future bump must break this test
+    /// again.
     #[test]
     fn serialize_document_supplies_the_real_reduction_authority() {
         let document = minimal_document(42);
@@ -662,7 +664,7 @@ mod tests {
             .expect("a base-free document serializes");
         assert_eq!(
             bundle.capabilities().current_reduction_version,
-            ReductionAlgorithmVersion(0),
+            ReductionAlgorithmVersion(1),
             "the production writer must supply the real authority, not a literal of its own"
         );
     }
