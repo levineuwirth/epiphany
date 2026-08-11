@@ -2474,9 +2474,9 @@ implementation asserts exactly one `\MUST{}` in the block, finds two, and
 **fails** before clause selection begins. An implementation that silently takes
 the **first** occurrence selects the original normative sentence as its clause —
 which still contains `ordering`, `bounds`, `same region` and `\MUST{}` — and
-**passes every clause assertion**. Nothing in M22–M26 separates those two: they
-all vary the *contents* of the clause, and this one varies which clause is
-chosen.
+**passes every clause assertion**. Nothing in M22–M26 separates those two: each
+of them presupposes that selection succeeded, and this one attacks whether
+selection is permitted at all.
 
 *Must fail:* test 3, **alone**.
 
@@ -2537,11 +2537,15 @@ step 1 and, until this round, the only step no mutation reached.
 
 ## §9. AMENDMENT 4 — §8'S CHARACTERIZATION OF M27
 
-STATUS: RATIFIED; DISPATCHED to correct §8's M27 characterization.
+STATUS: LANDED by this commit.
 
-**Ratified 2026-08-11 on the authority of the repository owner**, the last
-review pass returning zero findings. Amendment 3 is ratified at `7c8a30d` and
-executed at `bff7be0`; **this amendment does not reopen it**, changes no
+> **DATED HISTORICAL RECORD — amendment 4 is ratified and executed. §9's
+> findings, its taxonomy and §9.5's dispositions are an account of what was
+> found and decided on 2026-08-11, and state no current condition.**
+
+**Ratified 2026-08-11 at `a347a03` on the authority of the repository owner**,
+the last review pass returning zero findings. Amendment 3 is ratified at
+`7c8a30d` and executed at `bff7be0`; **this amendment does not reopen it**, changes no
 selector rule, no mutation, no radius and no lifecycle transition. It corrects
 **one explanatory sentence**, and nothing else. The replacement is executed, not
 edited; a further defect is its own amendment with its own review round.
