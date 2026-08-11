@@ -1647,16 +1647,18 @@ Ratified 2026-08-11 on the authority of the repository owner, review round 5
 returning zero findings. The amended pins are executed, not edited; a further
 defect is its own amendment with its own review round.
 
-**DISPATCHED 2026-08-11; HELD at pin 3 before the first execution edit.** The
-contract was dispatched for implementation, execution began, and it stopped on
-reaching pin 3 — so "NOT YET DISPATCHED" is no longer accurate, and 6.7
-prescribes its replacement.
+**DATED RECORD — the hold this amendment describes ENDED at `f9170b0`.** What
+follows is an account of 2026-08-11, not a statement of current state.
 
-**No pin 3 or pin 6 implementation target has been modified.** `core_spec.tex`,
-`invariants.rs`, the ledger and the guard file are untouched at `01c621d`. The
-only change is this amendment draft to the future pin-11 target, and **it is not
-an execution edit** — pin 11's edits belong to landing, and this one belongs to
-the amendment.
+On that date the contract was dispatched for implementation, execution began,
+and it stopped on reaching pin 3; the top status paragraph still read NOT YET
+DISPATCHED, and 6.7 prescribed its replacement. Throughout the hold no pin 3 or
+pin 6 implementation target was modified — `core_spec.tex`, `invariants.rs`, the
+ledger and the guard file were untouched at `01c621d`, and the only change was
+this amendment's own draft.
+
+**Both of 6.7's ratification-act edits were applied at `f9170b0` and the hold was
+lifted.** Execution resumes at pin 3.
 
 ### REVISION E — review round 5. One exactness correction. ACCEPTED.
 
@@ -1789,7 +1791,7 @@ Pin 3 permits group headings "rendered as prose lead-ins outside the nested
 `itemize`". A scope-broadening opening is not a group heading, so executing it
 that way would be editing a frozen pin by interpretation.
 
-### 6.3 Proposed replacement for pin 3's item-10 shape
+### 6.3 Replacement for pin 3's item-10 shape — RATIFIED at `f9170b0`
 
 Item 10 becomes, in this order:
 
@@ -1901,7 +1903,7 @@ That is the discrimination M19 is for: the two anchor kinds are driven to
 opposite verdicts by one mutation. **M21 remains the duplicate-count
 signature**, and the two no longer overlap.
 
-### 6.7 Consequential change to pin 11, touch row 7 and gate 13
+### 6.7 Consequential change to pin 11, touch row 7 and gate 13 — RATIFIED at `f9170b0`; the ratification-act edits are DISCHARGED
 
 Pin 11 and gate 13 speak only of "review-round blocks above §0", so **this
 amendment and its review record could land still reading DRAFT and HELD** —
@@ -1914,10 +1916,11 @@ document than pin 11 looks.
 different acts.** With one literal, §6 sits at `DRAFT` through the whole of
 execution.
 
-**Two edits belong to this amendment's own ratification act — not to pin 11**,
-because the contract is *already dispatched* and its top status is *already*
-untrue; waiting for landing would leave the document lying about its lifecycle
-for the entire execution:
+**Two edits belonged to this amendment's own ratification act — not to pin 11**,
+because the contract was *already dispatched* and its top status *already*
+untrue; waiting for landing would have left the document lying about its
+lifecycle for the entire execution. **Both were applied at `f9170b0` and are
+DISCHARGED:**
 
 - **§6's status line** becomes exactly:
   `STATUS: RATIFIED. Pins 3, 6 and 11 amended. Execution resumes.`
@@ -1963,46 +1966,108 @@ for the entire execution:
   The ratification date, the owner's authority and the no-count rule all
   survive, which is the point of replacing a clause rather than the paragraph.
 
-**Pin 11 continues to own only the later landed forms**, and gains one:
+**Pin 11 continues to own only the later landed forms**, and gains one — this
+part remains a change to pin 11, executed at landing, not at ratification:
 
 - **On landing**, §6's status line becomes exactly
   `STATUS: LANDED by this commit.` — the same no-hash rule as pin 11's own
   STATUS, for the same reason.
 
-**Proposed:**
+**Amended into pin 11, touch row 7 and gate 13:**
 
 - **Pin 11** gains a third landing edit: **§6's status line** takes its landed
-  literal, and **§6's revision records are marked a dated historical record**,
-  on the same rule as the review-round blocks.
+  literal, and **§6's revision records, preamble and lifecycle records are
+  marked a dated historical record**, on the same rule as the review-round
+  blocks. *Widened by amendment 2 from "revision records" alone, which left the
+  preamble and the section's own lifecycle statements unowned — the defect
+  amendment 2 exists to close.*
 - **Touch row 7** names that third edit alongside the other two.
 - **Gate 13** asserts **the status line specifically** — that §6's status line
-  reads exactly `STATUS: LANDED by this commit.`, and that §6's revision records
-  are marked historical. **It must not search §6 for the word `DRAFT`**: the
+  reads exactly `STATUS: LANDED by this commit.`, and that §6's revision
+  records, **its preamble and its lifecycle records** are marked historical. **It must not search §6 for the word `DRAFT`**: the
   revision records explain what the drafts said and legitimately contain it, so
   a section-wide search would be unsatisfiable by a correct execution.
 
 **Why the top status is reconciled at ratification rather than at landing.**
-It reads **NOT YET DISPATCHED** while §6 records **DISPATCHED; HELD** — the
+It read **NOT YET DISPATCHED** while §6 recorded **DISPATCHED; HELD** — the
 document contradicting itself about its own lifecycle, the class this rung has
-caught repeatedly. Deferring the fix to pin 11 would keep that contradiction
-live for the whole of execution, which is precisely the interval in which a
-reader most needs the status to be true. It is therefore an **amendment-
-ratification** edit, above, and is **not edited here**: the STATUS block is
-ratified text and this amendment is not yet ratified.
+caught repeatedly. Deferring the fix to pin 11 would have kept that
+contradiction live for the whole of execution, which is precisely the interval
+in which a reader most needs the status to be true. It was therefore an
+**amendment-ratification** edit, and it was **applied at `f9170b0`**.
 
-### 6.8 What the next review must decide
+### 6.8 Review disposition — CLOSED at `f9170b0`
 
-1. Whether 6.3's *explicit-permission* subordination is the right instrument,
-   now that the cross-cutting form stands **unproved** and revision A's bare
-   form **ambiguous** — and whether it reads as normative English rather than as
-   a hedge.
-2. ~~Whether M19's two-part construction holds against a backward-searching
-   slice.~~ **Settled by review round 4:** pin 6 already requires the nested
-   list to follow the anchor, so a backward search would violate the pin. Not an
-   open question.
-3. Whether anything else in §6 asserts a property of the re-anchoring rules that
-   was read off their coverage rather than their text — 6.4 was one such, and
-   the class has now recurred twice.
-4. Whether the two ratification-act edits in 6.7 are correctly scoped — they
-   are the only edits this amendment prescribes for a moment other than landing,
-   and they touch the ratified STATUS block.
+Every question this section put to review was answered before ratification.
+None is open.
+
+1. **The explicit-permission subordination is the right instrument.** Review
+   round 5 accepted it, the cross-cutting form standing **unproved** and
+   revision A's bare form **ambiguous**. Closed.
+2. **M19's two-part construction holds.** Review round 4: pin 6 already requires
+   the nested list to follow the anchor, so a backward-searching slice would
+   violate the pin rather than expose an unresolved choice. Closed.
+3. **No further coverage-for-text substitution remains in §6.** Review rounds 3
+   and 4 found the class twice more — in 6.4's claim, then in its own rejection
+   reasoning — and round 5 returned zero findings against the whole section.
+   Closed.
+4. **The two ratification-act edits were correctly scoped**, and are
+   **discharged** at `f9170b0`: §6's status literal, and the clause-level
+   replacement in the top status paragraph. Closed.
+
+---
+
+## §7. AMENDMENT 2 — AMENDMENT 1'S LIFECYCLE STATEMENTS
+
+**STATUS: RATIFIED 2026-08-11 on the owner's instruction. Applied by the same
+commit that records it.** Amendment 1 stands as ratified at `f9170b0`; **this
+amendment does not rewrite that commit**, and changes no pin 3, pin 4, pin 5,
+pin 6, pin 7 or pin 10 content.
+
+### 7.1 The defect
+
+Ratifying amendment 1 discharged its *prescriptions* and left its *prose*
+describing the state it was written in. §6 went on calling itself a draft, its
+replacement "proposed", its ratification act pending, and its review questions
+open — while §6's own status line read RATIFIED and the hold had been lifted.
+
+**Pin 11 did not cover this.** Its landing edit reached §6's *revision records*
+only, so the preamble, the section and subsection lead-ins, and the review
+disposition were owned by nothing. That is the same shape as the defect pin 11
+was written to prevent, one layer further in: **a document describing a state it
+is not in**, this time about its own amendment rather than about the rung.
+
+Recorded plainly because the pattern is the rung's whole subject: **ratification
+is not self-applying.** A frozen prescription discharges; the prose around it
+does not, unless something owns it.
+
+### 7.2 What this amendment applied
+
+1. **§6's preamble** becomes a **dated record** ending the hold at `f9170b0`,
+   in past tense throughout, stating that execution resumes.
+2. **§6.3** is marked **RATIFIED at `f9170b0`** rather than "Proposed
+   replacement".
+3. **§6.7** is marked **RATIFIED**, its two ratification-act edits
+   **DISCHARGED**, and its closing paragraph put in past tense — it previously
+   asserted that "this amendment is not yet ratified".
+4. **§6.8** becomes a **closed review disposition**, each question answered and
+   attributed to the round that answered it, replacing "What the next review
+   must decide".
+
+### 7.3 Pin 11 and gate 13 are widened
+
+**Pin 11's third landing edit** now covers **§6's revision records, preamble and
+lifecycle records**, not revision records alone. **Gate 13** asserts the same
+widened set, still reading §6's **status line** specifically and never searching
+the section for `DRAFT` — the revision records legitimately contain it.
+
+**Why widening rather than another enumeration:** listing the sites that were
+stale would leave the next lifecycle sentence unowned in exactly the way this
+amendment is repairing. The category — §6's lifecycle statements — is what pin
+11 must own.
+
+### 7.4 Scope
+
+No implementation target is touched. `core_spec.tex`, `invariants.rs`, the
+ledger and the guard file remain untouched at `01c621d`. Execution resumes at
+pin 3 with amendment 1's shape unchanged.
