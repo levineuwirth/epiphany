@@ -2,10 +2,10 @@
 
 **Status:** **RATIFIED 2026-08-11, on the authority of the repository owner**,
 after the independent whole-artifact passes recorded above §0 — the last
-returning zero findings. **NOT YET DISPATCHED**; ratification and dispatch are
-separate acts and no execution has begun. Which passes closed and what each
-found are those records; this line does not restate them, and states no count of
-them, per the rule this contract adopted after its own tallies went stale twice.
+returning zero findings. **DISPATCHED 2026-08-11.** Amendment 1 ratified;
+execution resumes. Which passes closed and what each found are those records;
+this line does not restate them, and states no count of them, per the rule
+this contract adopted after its own tallies went stale twice.
 
 **THE PINS ARE FROZEN. They may be executed, not edited.** A defect found during
 execution is **reported, not patched in place** — if it needs a pin change, that
@@ -1636,3 +1636,373 @@ that does not exist.
   guards are whitespace-tolerant and therefore unaffected, and M18's surrogate
   status depends on the non-`req:` branch of the defect (a spaced `tmp:` label
   reaches no other assertion, leaving test 1 the sole discriminator).
+
+---
+
+## §6. AMENDMENT 1 — PIN 3, PIN 6 AND PIN 11, PRE-FIRST-EDIT
+
+STATUS: RATIFIED. Pins 3, 6 and 11 amended. Execution resumes.
+
+Ratified 2026-08-11 on the authority of the repository owner, review round 5
+returning zero findings. The amended pins are executed, not edited; a further
+defect is its own amendment with its own review round.
+
+**DISPATCHED 2026-08-11; HELD at pin 3 before the first execution edit.** The
+contract was dispatched for implementation, execution began, and it stopped on
+reaching pin 3 — so "NOT YET DISPATCHED" is no longer accurate, and 6.7
+prescribes its replacement.
+
+**No pin 3 or pin 6 implementation target has been modified.** `core_spec.tex`,
+`invariants.rs`, the ledger and the guard file are untouched at `01c621d`. The
+only change is this amendment draft to the future pin-11 target, and **it is not
+an execution edit** — pin 11's edits belong to landing, and this one belongs to
+the amendment.
+
+### REVISION E — review round 5. One exactness correction. ACCEPTED.
+
+1. **[P2] The prescribed clause replacement was not verbatim.** 6.7 quoted the
+   text to remove as rendered prose — *"NOT YET DISPATCHED; ratification and…"* —
+   while the source carries `**` emphasis markers and an internal line break.
+   Applied literally it would have matched nothing, or left unbalanced emphasis.
+   **Fixed** — the remove and insert texts are now pinned as **Markdown source
+   blocks**, and because a clause replacement inside a wrapped paragraph
+   necessarily moves line breaks, the **whole resulting paragraph** is pinned
+   too. *A prescription meant to be applied literally must be quoted in the
+   register it will be applied to; this one was quoted in the register it is
+   read in.*
+
+### REVISION D — review round 4. Two blocking findings, one smaller. ALL ACCEPTED.
+
+1. **[P1] Two residual phrases overstated what was established.** 6.4 said
+   *"both halves were wrong"* of revision A's rationale — but only the checker
+   argument is demonstrably a category error; the **no-permission** half is
+   **unproved**, and nothing here shows it false either. And 6.8 still called
+   revision A the *"bare coverage form"* after revision C had reclassified it as
+   **ambiguous**. **Fixed** — the two halves are now distinguished by *how* they
+   fail, and 6.8 uses the settled classifications. *The correction that
+   distinguishes unproved from wrong had itself not reached two sentences that
+   depend on it — the same one-hop shape, now inside the subsection whose
+   subject is that distinction.*
+2. **[P1] The prescribed top-status edit would have erased the ratification
+   state.** The status is a multi-line paragraph carrying the ratification date,
+   the owner's authority and the no-count rule; replacing "the top status line"
+   wholesale discards all three to repair one false clause. **Fixed** — 6.7 now
+   prescribes an exact **clause** replacement, quoting the text to remove and
+   the text to insert, with everything around it standing.
+3. **[P2] The execution-target statement contradicted itself**, claiming no
+   execution target had changed and then naming this contract as pin 11's.
+   **Fixed** — scoped to *pin 3 and pin 6 implementation targets*, with the
+   amendment draft named as a change to the future pin-11 target that is not an
+   execution edit.
+
+**Also settled by the round, and recorded so it is not re-litigated:** M19's
+forward-slice assumption (revision B's open question) **holds** — pin 6 already
+requires the nested list to follow the anchor, so a backward search would
+violate the pin rather than expose an unresolved choice.
+
+### REVISION C — review round 3. Two blocking findings, two smaller. ALL ACCEPTED.
+
+1. **[P1] Coverage still implied permission in the *rejection* reasoning.** 6.4's
+   claim was fixed in revision B; the two sentences explaining *why* the
+   cross-cutting form was rejected still argued from reach. **Fixed** — the
+   cross-cutting form is now recorded as **unproved, not wrong**: proving it
+   either way needs the surface derivation 6.4 declines. Revision A's bare form
+   is recorded as **ambiguous**, not demonstrably coverage-based. *The
+   conflation survived one round inside the paragraph that corrects it.*
+2. **[P1] The dispatch reconciliation belonged to this amendment's ratification
+   act, not to pin 11.** The contract is already dispatched and its top status
+   is already untrue; routing the fix through pin 11 would leave the document
+   lying about its lifecycle for the whole of execution. **Fixed** — 6.7 now
+   prescribes **two ratification-act edits** with exact literals (§6's status,
+   and the top status), and pin 11 keeps only the landed forms.
+3. **[P2] "Filed" claimed an authority that does not exist.** This contract
+   establishes that filing means a ledger row, and none is added for the surface
+   question. **Fixed** — *presented*, not filed.
+4. **[P2] The live review heading was stale**, naming round 2 while introducing
+   round 3. **Fixed** — *What the next review must decide*, which cannot stale.
+
+Also adopted: the section heading reads **PRE-FIRST-EDIT** rather than
+PRE-EXECUTION, since execution began and made no edit.
+
+### REVISION B — review round 2. Three blocking findings. ALL ACCEPTED.
+
+1. **[P1] Rule coverage was still being mistaken for permission.** The Cue and
+   Trajectory rows prescribe **cascade deletion** and **immediate replacement**;
+   neither leaves a reference dangling. They prove re-anchoring **reaches**
+   group E — they do not prove dangling is **permitted** there. **Fixed** — 6.4
+   now says exactly that, and 6.3's universal defers to *explicit permission*
+   without claiming where it exists.
+2. **[P1] The uniqueness assertion masked M19.** Truncating the real opening
+   drops the complete-anchor count to zero, so uniqueness fails **before** the
+   slice's complete-versus-prefix behaviour is reached — leaving M19 and M21
+   both signing uniqueness and nothing signing the anchor's completeness.
+   **Fixed** in 6.6 by the construction review round 2 supplied.
+3. **[P1] The lifecycle gate was underspecified and unsatisfiable.** Ratification
+   and landing needed **separate exact status literals**, or §6 sits at DRAFT
+   between them; and gate 13 could not demand that §6 contain no `DRAFT`, since
+   §6 uses the word historically. **Fixed** in 6.7 — two literals, and the gate
+   reads the **status line**, not the section.
+
+### REVISION A — review round 1. Five findings, four blocking. ALL ACCEPTED.
+
+1. **[P1] The proposed universal contradicted the retained exception.** *"Every
+   graph reference resolves…"* covers group A too, so it forbade exactly the
+   transient states the next sentence permits. **Fixed** — the universal is
+   explicitly subordinated (6.3), and ordering alone is no longer relied on.
+2. **[P1] The exception-scope rationale was not derived and rested on a false
+   premise. Withdrawn in full** — see 6.4, which replaces it.
+3. **[P1] M19 no longer signed its property**, and the short anchor was
+   unguarded against duplication. **Fixed** in 6.6.
+4. **[P1] The amendment's own lifecycle reached no pin.** **Fixed** in 6.7.
+5. **[P2] Totals appeared in the amendment**, against pin 1's rule that no total
+   is stated anywhere in this contract. **Fixed throughout** — the surface is
+   referred to as *every pin-1 row*, and the out-of-scope portion as *every row
+   in groups B–F*.
+
+### 6.1 The defect
+
+Pin 3 requires item 10 to **keep its opening sentence** and to gain a nested
+`itemize` carrying **every pin-1 row**. Those are not jointly satisfiable.
+
+The retained sentence is:
+
+> Every **cross-cutting structure's** references resolve to extant objects in
+> the graph, except where explicit re-anchoring rules permit transient dangling
+> states during edits (see `Chapter~\ref{ch:semops}`).
+
+**"Cross-cutting structure" is a defined term in the same chapter** (the
+Hybrid-topology principle): *"The graph is a tree of containment overlaid with
+cross-cutting structures that hold references."* It denotes pin 1 **group A**.
+**Every row in groups B–F falls outside it**, and the checker says so at the
+group-E loop: *"These are **not** cross-cutting structures but they bear graph
+references that can dangle."*
+
+So the sentence scopes to one group while the list beneath it spans all of them.
+
+**Why the contract did not catch this.** §0.2 measured that the `.tex` names *no
+individual reference class* and stopped; it never asked whether the sentence's
+**scope** was also wrong.
+
+### 6.2 Why this is a pin change, not an execution judgment
+
+Pin 3 permits group headings "rendered as prose lead-ins outside the nested
+`itemize`". A scope-broadening opening is not a group heading, so executing it
+that way would be editing a frozen pin by interpretation.
+
+### 6.3 Proposed replacement for pin 3's item-10 shape
+
+Item 10 becomes, in this order:
+
+1. **A subordinated universal, deferring to explicit permission only:**
+   *"Except where the re-anchoring rules of `Chapter~\ref{ch:semops}` explicitly
+   permit transient dangling states during edits, every graph reference resolves
+   to an extant object."*
+2. **The ratified sentence, retained verbatim**, including its exception clause
+   and its `Chapter~\ref{ch:semops}` cross-reference.
+3. The `req:time:tempo-segment-order` cross-reference pin 3 already requires.
+4. **Exactly one** nested `itemize`, carrying **every pin-1 row** in pin 3's
+   pinned form.
+
+**On the form of the subordination.** Two candidate forms were rejected before
+this one, and **neither was rejected as demonstrably wrong** — that distinction
+is the point of 6.4. A **cross-cutting-scoped** exception (review round 1's
+example) may well be complete; **its completeness is unproved**, and proving it
+means deriving the permission surface, which 6.4 declines to do. A bare *"except
+as the re-anchoring rules permit"* (revision A) is **ambiguous**: it can be read
+as deferring to whatever those rules cover, and coverage is not permission. The
+adopted form defers only to where those rules **explicitly permit transient
+dangling states** — it names the normative source, matches the retained
+sentence's own phrasing, and asserts nothing about which references enjoy that
+permission, so it needs no surface derivation to be sound.
+
+### 6.4 The exception's surface is NOT determined here — the earlier rationale is withdrawn
+
+Revision A's §6.3 argued that the exception clause must stay bound to
+cross-cutting references because broadening it *"would licence transient
+dangling for structural, meter, event-internal and tempo references, which no
+rule permits and the checker does not tolerate."* **Neither half stands, but
+they fail differently, and the difference is the whole lesson of this
+subsection:** the *"no rule permits"* half is **unproved** — nothing here shows
+it false either — while the *"checker does not tolerate"* half is
+**demonstrably a category error**.
+
+- **Re-anchoring reaches beyond group A.**
+  `req:semops:tombstoned-reference-resolution` says it governs *"cross-cutting
+  structures **and attachments**"*, and its table carries **Cue event / Source
+  event** and **Trajectory event / Endpoint pitch** — `CueEvent.source` and
+  `TrajectoryEvent.start`/`.end`, **group E**.
+
+  **Reach is not permission, and revision A conflated them.** Those two rows
+  prescribe **cascade deletion** and **immediate replacement** of the reference;
+  neither leaves anything dangling, transiently or otherwise. They establish
+  that the re-anchoring rules *govern* group-E references, and **nothing** about
+  whether a group-E reference may transiently dangle.
+
+  **So this does not show a cross-cutting-scoped exception to be wrong** — only
+  that it is **unproved**. Deciding it either way requires the surface
+  derivation 6.4 declines. **No claim either way is made here**, which is why
+  6.3's universal defers to explicit permission rather than to coverage.
+- **The checker cannot settle it.** `check_invariants` observes a *final* state
+  and says nothing about which transitional states the operation rules permit.
+  Citing it was a category error.
+
+**What this amendment therefore claims:** the retained sentence keeps its own
+grammatical scope, unchanged, and the universal is subordinated to the
+re-anchoring rules **as a whole** rather than to any surface this amendment
+asserts. **The exception's true surface is left open**, because deriving it
+means reading the whole re-anchoring table against pin 1's inventory — work with
+its own evidence obligations, which is a rung, not a clause.
+
+**Presented for the owner's disposition, not filed:** whether that derivation
+should be a candidate in its own right. *"Filed" would be false — this contract
+establishes that filing means a ledger row, and no row is added for it;* S26
+needs no derivation, so the question is left, not lodged. It is adjacent to P13-S26 but not owned
+by it, and P13-S30's precedent is that a live gap belongs in the ledger rather
+than in a contract section that becomes historical.
+
+### 6.5 Consequential change to pin 6 — the anchor
+
+Test 1's outer anchor is pinned as "the complete opening sentence, matched as an
+exact literal". Under 6.3 that sentence changes, so the anchor becomes the
+sentence in 6.3 item 1.
+
+### 6.6 Consequential change to pin 6 — anchor uniqueness, and M19
+
+**Uniqueness, newly required.** The anchor is short, so pin 6 additionally
+requires it to occur **exactly once within the graph-invariants requirement** —
+the `requirement` environment labelled `req:graph:score-graph-invariants` — and
+test 1 asserts that count. A second occurrence inside that block makes the outer
+slice ambiguous, and no other assertion would notice.
+
+**New mutation M21** — duplicate the anchor sentence elsewhere inside
+`req:graph:score-graph-invariants`; test 1's **uniqueness assertion** must fail,
+and it alone.
+
+**M19 is rewritten, in two parts, and the second part is what makes it work.**
+The ratified M19 deletes "one clause from item 10's opening sentence"; revision
+A truncated the trailing portion. **Both fail against the uniqueness assertion
+first** — truncating the real opening drops the complete-anchor count to zero,
+so uniqueness fires before the slice's complete-versus-prefix behaviour is ever
+exercised, and M19 degenerates into a second signature for M21.
+
+**New M19, per review round 2's construction:** truncate the real opening
+sentence **and** place one **complete** anchor sentence *after* item 10's nested
+list. Then:
+
+- the complete-anchor count is **one**, so the uniqueness assertion passes and
+  does not mask anything;
+- a **prefix**-matching slice finds the real, truncated item, brackets the
+  nested list correctly, and **passes**;
+- the **pinned complete-literal** slice starts at the anchor *after* the list,
+  so the nested `itemize` falls outside it, extraction comes back empty and it
+  **fails**.
+
+That is the discrimination M19 is for: the two anchor kinds are driven to
+opposite verdicts by one mutation. **M21 remains the duplicate-count
+signature**, and the two no longer overlap.
+
+### 6.7 Consequential change to pin 11, touch row 7 and gate 13
+
+Pin 11 and gate 13 speak only of "review-round blocks above §0", so **this
+amendment and its review record could land still reading DRAFT and HELD** —
+the exact defect pin 11 exists to prevent, one section further down the
+document than pin 11 looks.
+
+**Proposed:**
+
+**Ratification and landing are different moments, and they are owned by
+different acts.** With one literal, §6 sits at `DRAFT` through the whole of
+execution.
+
+**Two edits belong to this amendment's own ratification act — not to pin 11**,
+because the contract is *already dispatched* and its top status is *already*
+untrue; waiting for landing would leave the document lying about its lifecycle
+for the entire execution:
+
+- **§6's status line** becomes exactly:
+  `STATUS: RATIFIED. Pins 3, 6 and 11 amended. Execution resumes.`
+- **The contract's top status paragraph** has exactly one **clause** replaced.
+  It is **not** rewritten: the paragraph carries the ratification date, the
+  owner's authority and the no-count rule, and replacing it wholesale would
+  discard all three to fix one false clause.
+
+  **These are Markdown *source* strings, not rendered text.** An earlier
+  revision quoted the clause without its `**` emphasis markers and without its
+  internal line break; applied literally it would have matched nothing, or left
+  unbalanced emphasis behind.
+
+  **Remove — exactly these two source lines, emphasis markers and line break
+  included:**
+
+  ```
+  **NOT YET DISPATCHED**; ratification and dispatch are
+  separate acts and no execution has begun.
+  ```
+
+  **Insert — exactly this source text:**
+
+  ```
+  **DISPATCHED 2026-08-11.** Amendment 1 ratified;
+  execution resumes.
+  ```
+
+  **The paragraph is then re-wrapped**, which is presentational only. Since a
+  clause replacement inside a wrapped paragraph necessarily moves line breaks,
+  the **whole resulting paragraph** is pinned here so application is
+  unambiguous:
+
+  ```
+  **Status:** **RATIFIED 2026-08-11, on the authority of the repository owner**,
+  after the independent whole-artifact passes recorded above §0 — the last
+  returning zero findings. **DISPATCHED 2026-08-11.** Amendment 1 ratified;
+  execution resumes. Which passes closed and what each found are those records;
+  this line does not restate them, and states no count of them, per the rule
+  this contract adopted after its own tallies went stale twice.
+  ```
+
+  The ratification date, the owner's authority and the no-count rule all
+  survive, which is the point of replacing a clause rather than the paragraph.
+
+**Pin 11 continues to own only the later landed forms**, and gains one:
+
+- **On landing**, §6's status line becomes exactly
+  `STATUS: LANDED by this commit.` — the same no-hash rule as pin 11's own
+  STATUS, for the same reason.
+
+**Proposed:**
+
+- **Pin 11** gains a third landing edit: **§6's status line** takes its landed
+  literal, and **§6's revision records are marked a dated historical record**,
+  on the same rule as the review-round blocks.
+- **Touch row 7** names that third edit alongside the other two.
+- **Gate 13** asserts **the status line specifically** — that §6's status line
+  reads exactly `STATUS: LANDED by this commit.`, and that §6's revision records
+  are marked historical. **It must not search §6 for the word `DRAFT`**: the
+  revision records explain what the drafts said and legitimately contain it, so
+  a section-wide search would be unsatisfiable by a correct execution.
+
+**Why the top status is reconciled at ratification rather than at landing.**
+It reads **NOT YET DISPATCHED** while §6 records **DISPATCHED; HELD** — the
+document contradicting itself about its own lifecycle, the class this rung has
+caught repeatedly. Deferring the fix to pin 11 would keep that contradiction
+live for the whole of execution, which is precisely the interval in which a
+reader most needs the status to be true. It is therefore an **amendment-
+ratification** edit, above, and is **not edited here**: the STATUS block is
+ratified text and this amendment is not yet ratified.
+
+### 6.8 What the next review must decide
+
+1. Whether 6.3's *explicit-permission* subordination is the right instrument,
+   now that the cross-cutting form stands **unproved** and revision A's bare
+   form **ambiguous** — and whether it reads as normative English rather than as
+   a hedge.
+2. ~~Whether M19's two-part construction holds against a backward-searching
+   slice.~~ **Settled by review round 4:** pin 6 already requires the nested
+   list to follow the anchor, so a backward search would violate the pin. Not an
+   open question.
+3. Whether anything else in §6 asserts a property of the re-anchoring rules that
+   was read off their coverage rather than their text — 6.4 was one such, and
+   the class has now recurred twice.
+4. Whether the two ratification-act edits in 6.7 are correctly scoped — they
+   are the only edits this amendment prescribes for a moment other than landing,
+   and they touch the ratified STATUS block.
