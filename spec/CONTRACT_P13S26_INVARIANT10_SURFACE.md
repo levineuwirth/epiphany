@@ -2532,3 +2532,131 @@ M26 the fallback anchor, and M27 the exactly-one-`\MUST{}` assertion — which w
 step 1 and, until this round, the only step no mutation reached.
 
 **Open: none.**
+
+---
+
+## §9. AMENDMENT 4 — §8'S CHARACTERIZATION OF M27
+
+STATUS: RATIFIED; DISPATCHED to correct §8's M27 characterization.
+
+**Ratified 2026-08-11 on the authority of the repository owner**, the last
+review pass returning zero findings. Amendment 3 is ratified at `7c8a30d` and
+executed at `bff7be0`; **this amendment does not reopen it**, changes no
+selector rule, no mutation, no radius and no lifecycle transition. It corrects
+**one explanatory sentence**, and nothing else. The replacement is executed, not
+edited; a further defect is its own amendment with its own review round.
+
+**§8 is untouched by this draft.** Its text is frozen and was executed.
+Ratification **authorizes and freezes** this amendment; **execution applies the
+replacement, and landing carries it.** The evidence annex already carries the
+corrected characterization — that annex is amendment 3's own execution product
+rather than ratified text — and needs no further edit, because its statement
+that the correction was *open as of that commit* remains historically true.
+
+### 9.1 The defect
+
+§8.4's M27 entry closes:
+
+> Nothing in M22–M26 separates those two: they all vary the *contents* of the
+> clause, and this one varies which clause is chosen.
+
+**That single sentence is false in both directions.**
+
+**§8.6 is NOT affected and must not be touched.** It says only that M27 was
+*"the only step no mutation reached"*, which is **true**. An earlier draft of
+this amendment proposed rewriting it — that would have damaged an accurate
+historical statement in frozen text to repair a different sentence's error.
+
+- **M25 already varies which clause is chosen.** §8.4's own M25 entry says so:
+  *"moving `\MUST{}` moves the clause onto the recap"*. That is exactly how M25
+  discriminates the last-period rule from an unconditional fallback.
+- **M27 varies no clause at all.** A correct implementation rejects the block on
+  the exactly-one assertion **before selection begins**; there is no selected
+  clause to differ about. The faulty implementation it catches is the one that
+  proceeds to select anyway.
+
+### 9.2 The correct characterization
+
+M27 uniquely varies **whether clause selection is unambiguous, and therefore
+permitted at all.** The full taxonomy, ruled at review:
+
+| Mutation | What it varies |
+|---|---|
+| M22, M23, M24 | what the selected clause **contains** |
+| M25 | **which sentence** is selected |
+| M26 | the **fallback boundary** — starting after the label versus incorrectly widening before it |
+| M27 | whether selection is **unambiguous, and therefore permitted at all** |
+
+That distinction is the reason M27 exists: an assertion guarding the
+*precondition* of selection cannot be exercised by any mutation that presupposes
+selection succeeded.
+
+### 9.3 The proposed replacement
+
+In §8.4's M27 entry, replace the closing sentence with:
+
+> Nothing in M22–M26 separates those two: each of them presupposes that
+> selection succeeded, and this one attacks whether selection is permitted at
+> all.
+
+### 9.4 Execution surface
+
+**Touch row 7 only — this contract. Amendment 4 is contract-only.**
+
+No test, no `.tex`, no ledger row, and **no annex edit**: the annex's record
+that the correction was open as of `bff7be0` **remains true**, and an append
+would only add redundant lifecycle prose. *Rewriting* it would be the worse
+error — replacing an accurate historical statement with a newer one — but that
+is not what is being declined here; appending simply buys nothing.
+
+**No behaviour, test, or normative semantics changes** — not "nothing
+observable": the prose diff is itself observable, and 9.6 is what observes it.
+This is P2 for that reason, and an amendment rather than a silent edit because
+the sentence is frozen, and freezing is not conditional on a claim mattering.
+
+**Status transitions**, on the pattern amendment 3 established:
+
+- **On ratification:** `STATUS: RATIFIED; DISPATCHED to correct §8's M27 characterization.`
+- **On landing:** `STATUS: LANDED by this commit.`, with §9's records marked a
+  dated historical record **naming amendment 4**, so gate 9.6 item 4 can
+  distinguish it from the contract's, §6's and §8's markers.
+
+### 9.5 Settled
+
+- **Completeness:** the single §8.4 replacement in 9.3 is the whole of it.
+  **§8.6 must remain untouched** — it is accurate, and an earlier draft of this
+  amendment proposed rewriting it, which would have damaged a true historical
+  statement in frozen text to repair a different sentence's error.
+- **Severity:** a P2 prose defect in ratified text **does** warrant an
+  amendment. Frozen text is frozen regardless of the defect's severity.
+- **Taxonomy:** 9.2's table is the ruled one, M26 signing the fallback
+  *boundary* rather than an anchor.
+
+**Open: none.**
+
+### 9.6 Landing gate
+
+A prose-only replacement has no test to sign it, so the observer is a gate. On
+the staged tree, **all of the following**:
+
+1. **Exactly one path staged**, `spec/CONTRACT_P13S26_INVARIANT10_SURFACE.md`.
+2. **Within §8.4's M27 entry** — the slice from `**M27 — the exactly-one
+   assertion's own signature.**` to the next `**M` at that level — the old
+   sentence is **absent** and the replacement is present **exactly once**.
+   **Both assertions are scoped to that slice, and must not be run file-wide:**
+   §9.1 quotes the old sentence and §9.3 quotes the replacement, so file-wide
+   the old text still occurs once and the replacement occurs twice. A file-wide
+   gate here is not merely loose — it is unsatisfiable by a correct execution.
+3. **§8.6's sentence is unchanged**, verified with a **zero-context** diff —
+   `git diff --cached -U0` must show it as neither an addition nor a deletion.
+   *Zero context is required for the same reason pin 11's frozen-line check
+   needs it: §8.4's replacement is close enough that at default context the
+   untouched §8.6 line appears as ordinary context and a naive check would read
+   it as touched.*
+4. **Within §9's slice** — from `## §9. AMENDMENT 4` to end of file — the landed
+   status literal `STATUS: LANDED by this commit.` is present, **and** a marker
+   naming **amendment 4** specifically. **Scoping and specificity are both
+   required:** the file already carries that same status literal for the
+   contract itself, for §6 and for §8, and carries historical markers for each,
+   so an unscoped check passes on lifecycle text §9 never wrote.
+5. `git diff --cached --check` clean.
