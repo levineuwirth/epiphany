@@ -2084,3 +2084,446 @@ amendment is repairing. The category — §6's lifecycle statements — is what 
 No implementation target is touched. `core_spec.tex`, `invariants.rs`, the
 ledger and the guard file remain untouched at `01c621d`. Execution resumes at
 pin 3 with amendment 1's shape unchanged.
+
+---
+
+## §8. AMENDMENT 3 — TEST 3'S CLAUSE SCOPE, POST-EXECUTION
+
+STATUS: RATIFIED; DISPATCHED to clause-scope test 3.
+
+**Ratified 2026-08-11 on the authority of the repository owner**, review round 4
+returning zero findings. The rung landed at `eddf6e9`; **this amendment does not
+reopen it.** The amended surface is executed, not edited; a further defect is its
+own amendment with its own review round.
+
+**§8 is an ADDITIVE OVERRIDE.** Pin 4a and §3 are **not rewritten in place** —
+they are frozen and were executed. Where §8 conflicts with pin 4a's claim about
+what test 3 buys, **§8 governs from its ratification**; where it adds mutations,
+they are §8's, listed here, not inserted into §3's table.
+`spec/EVIDENCE_P13S26_EXECUTION.md`'s 38/38 matrix is a historical record of
+what execution measured and **is preserved unchanged**; M22–M27 evidence is
+*appended* as its own section.
+
+### REVISION D — review round 4. One blocking finding. ACCEPTED.
+
+1. **[P1] The exactly-one-`\MUST{}` assertion had no signature.** It is step 1
+   of 8.3 and every earlier mutation varies the clause's *contents*, so none of
+   them reaches it. **Fixed** — **M27** leaves the normative sentence unchanged
+   and adds a second `\MUST{}` to the recap: a correct implementation fails the
+   count before selection begins, while one that silently takes the *first*
+   occurrence selects the original sentence and passes every clause assertion.
+   *This closes the last item §8.6 carried open, and it was an open item because
+   I had specified an assertion without asking what would exercise it.*
+
+### REVISION C — review round 3. Four blocking findings, one smaller. ALL ACCEPTED.
+
+1. **[P1] §8.3 and M25 contradicted each other.** Revision B made the clause
+   start *always* fall after the label; under M25 that produces one slice
+   running from the label through the recap, containing all four needles, so
+   **M25 would have passed**. **Fixed** — the selector is restored to *last
+   `". "` before the occurrence, falling back after the label only when there is
+   none*, which is what makes M25 discriminate. *Revision B fixed the fallback
+   and broke the rule it was a fallback for.*
+2. **[P1] The fallback had no signature.** Nothing failed if an implementation
+   anchored the start at the block instead of after the label. **Fixed** —
+   **M26**, the only mutation in the set that can tell those two
+   implementations apart.
+3. **[P1] M24 and M25 were not verbatim**, using prose and ellipses for their
+   recap edits while §8.4 claimed source blocks. **Fixed** — every mutation now
+   carries complete fenced before/after blocks for the whole requirement.
+4. **[P1] Revision A's fourth finding fell below revision B's heading**, leaving
+   revision A reading as three findings and a stray second item 4. **Fixed** —
+   both historical records are accurate again.
+5. **[P2] M24 and M25 did not propagate into the live summaries.** The preamble
+   said "M22/M23 evidence", 8.4 opened with "Both", and its closing credited
+   only M22/M23. **Swept to M22–M26**, with no numeric total stated; row 8 and
+   gate 7 likewise.
+
+### REVISION B — review round 2. Three blocking findings, one smaller. ALL ACCEPTED.
+
+1. **[P1] The clause start did not select a sentence.** The normative sentence
+   is *first* in the requirement, so no preceding `". "` exists and the fallback
+   silently started the slice at `\begin{requirement}`, swallowing the label.
+   **Fixed** — the fallback is anchored **after the `\label{…}` argument**.
+   *(Revision B over-applied this to every case; revision C item 1 corrects it.)*
+2. **[P1] Locality and normative force lacked symmetric scope mutations.** A
+   faulty implementation could clause-scope `ordering` and `bounds` while
+   searching the whole block for `same region` and `\MUST{}`, and M11, M16, M22
+   and M23 would all behave as pinned. **Fixed** — **M24** and **M25**.
+3. **[P1] The ratification literal claimed implementation too early.**
+   `RATIFIED. Test 3 clause-scoped; DISPATCHED.` is false for the whole interval
+   between ratification and execution. **Fixed** — prospective wording.
+4. **[P2] M22 was described as the exact mutation previously run.** The annex
+   records a *partial referent deletion*, not this sentence replacement.
+   **Fixed** — M22 *reproduces* the measured escape.
+
+### REVISION A — review round 1. Four blocking findings. ALL ACCEPTED.
+
+1. **[P1] M22 was not literally executable** — it wrote `\n` as two Markdown
+   characters where a LaTeX source line break was meant. **Fixed**: fenced
+   source blocks and grammatical sentence replacements.
+2. **[P1] M22 alone did not sign both referents' clause scope.** An
+   implementation could scope `ordering` to the normative sentence and keep
+   checking `bounds` over the whole block: M13 would still fail, M22 would still
+   pass, and the asymmetry would ship. **Fixed** — **M23**.
+3. **[P1] The execution and lifecycle surface was incomplete.** **Fixed** in
+   8.5: rows 4, 6, 7 and 8, with §8's own status transitions pinned.
+4. **[P1] "Sentence containing `\MUST{}`" was under-specified**, leaving an
+   implementation free to take the first match or widen back to the block.
+   **Fixed** in 8.3 with an exactly-one assertion and explicit boundary rules.
+
+**Rulings adopted:** the same-sentence rule stands and is deliberate — it guards
+the *current* normative construction, and a semantically valid multi-sentence
+rewrite **should** fail and force deliberate guard review. M23 added.
+
+**Round 1 also corrected a false premise of mine:** §8.6 asked whether all three
+tests should share normalisation by construction. **Test 2 does not normalise at
+all** — it parses raw Rust lines with `strip_prefix("/// ")`. Only **tests 1 and
+3** share `normalise`.
+
+### 8.1 The finding — measured, not reasoned
+
+Pin 4a says test 3 buys that *"neither referent, nor the locality claim, nor the
+requirement's normative force can silently leave"*.
+
+**M12's first application disproved the first clause.** The `ordering` referent
+was deleted from the requirement's **normative clause** — the sentence carrying
+the `\MUST{}` — and left standing in the closing recap. **Test 3 stayed green.**
+Transcript: `spec/EVIDENCE_P13S26_EXECUTION.md` §6(b).
+
+The cause is structural: test 3 asserts phrase presence over the **whole
+requirement block**, so a referent that leaves the sentence where it does
+normative work survives anywhere else in the block.
+
+### 8.2 Disposition: strengthen the guard, do not soften the claim
+
+Softening pin 4a to promise only what block-scoped presence delivers would make
+the contract honest and the guard no better, leaving a measured escape
+undetected in a rung whose subject is documentation drifting because nothing
+watches it. **§8 strengthens test 3 instead**, so pin 4a's claim becomes true
+rather than smaller.
+
+### 8.3 The strengthened test 3 — clause selection, specified
+
+Test 3 slices the requirement block as now, in text normalised by the existing
+`normalise` helper (whitespace runs collapsed to one space), then:
+
+1. **Assert exactly one `\MUST{}`** occurs in the normalised block. More than
+   one and the clause is ambiguous; none and the requirement has no normative
+   force. *This assertion exists so no implementation may silently take the
+   first match.*
+2. **Select the clause** around that single occurrence, at position `p`:
+   - **start** — the character after the **last occurrence of `". "` at or
+     before `p`**; **only if there is none**, the character after the block's
+     `\label{…}` argument. Both halves are load-bearing. The fallback is needed
+     because the normative sentence is *first* in this requirement, so no
+     preceding `". "` exists and a block-start default would swallow the label,
+     which is not a sentence. The last-period rule is needed because M25 moves
+     `\MUST{}` into a later sentence, and an unconditional fallback-after-label
+     would then return one slice spanning label to recap — containing every
+     needle, and passing.
+   - **end** — the character after the first `". "` at or after `p`, taking the
+     period; if there is none, the block end.
+3. **Run all four assertions on that slice, and on nothing else:** it names
+   `ordering`, names `bounds`, states `same region`, and carries `\MUST{}`.
+
+The recap sentence is out of scope, which is the whole of the measured gap.
+
+**Test 3 remains phrase presence**, and weaker than tests 1 and 2, which compare
+exact sets. What changes is *where* the phrases must appear.
+
+**Normalisation is shared with test 1 only.** Test 2 reads raw Rust source line
+by line and never normalises; the `.tex` side needs it because that source is
+hard-wrapped and a clause spans lines.
+
+### 8.4 The signing mutations
+
+Each is a replacement of the **whole requirement block**, given verbatim so it
+can be applied literally. `spec/core_spec.tex` is otherwise untouched.
+
+**M22 — the `ordering` escape, made into a signature.** `ordering` leaves the normative clause and survives in the recap.
+
+*Before* — the requirement as landed at `eddf6e9`:
+
+```latex
+\begin{requirement}
+  \label{req:time:aleatoric-reference-locality}
+  Every event referenced by an aleatoric region's \texttt{ordering}
+  DAG, and every event used as a key in its \texttt{bounds} map,
+  \MUST{} be an event of that same region. Naming an event that does
+  not exist is a dangling reference, governed by graph
+  invariant~10; naming an event that exists in a \emph{different}
+  region is a distinct defect, and this requirement is what forbids
+  it. Neither the ordering DAG nor the bounds map may reach outside
+  the region whose time model declares them.
+\end{requirement}
+```
+
+*After:*
+
+```latex
+\begin{requirement}
+  \label{req:time:aleatoric-reference-locality}
+  Every event used as a key in an aleatoric region's \texttt{bounds}
+  map \MUST{} be an event of that same region. Naming an event that does
+  not exist is a dangling reference, governed by graph
+  invariant~10; naming an event that exists in a \emph{different}
+  region is a distinct defect, and this requirement is what forbids
+  it. Neither the ordering DAG nor the bounds map may reach outside
+  the region whose time model declares them.
+\end{requirement}
+```
+
+**This reproduces the measured escape** — the annex records a *partial referent deletion* that left the recap intact and passed, not this sentence replacement, so M22 is that escape's faithful reconstruction rather than a re-run of it. Its exact verdict is established during amendment 3's execution, not claimed here.
+
+*Must fail:* test 3, **alone**.
+
+**M23 — the symmetric `bounds` escape.** `bounds` leaves the clause and survives in the recap.
+
+*Before* — the requirement as landed at `eddf6e9`:
+
+```latex
+\begin{requirement}
+  \label{req:time:aleatoric-reference-locality}
+  Every event referenced by an aleatoric region's \texttt{ordering}
+  DAG, and every event used as a key in its \texttt{bounds} map,
+  \MUST{} be an event of that same region. Naming an event that does
+  not exist is a dangling reference, governed by graph
+  invariant~10; naming an event that exists in a \emph{different}
+  region is a distinct defect, and this requirement is what forbids
+  it. Neither the ordering DAG nor the bounds map may reach outside
+  the region whose time model declares them.
+\end{requirement}
+```
+
+*After:*
+
+```latex
+\begin{requirement}
+  \label{req:time:aleatoric-reference-locality}
+  Every event referenced by an aleatoric region's \texttt{ordering}
+  DAG \MUST{} be an event of that same region. Naming an event that does
+  not exist is a dangling reference, governed by graph
+  invariant~10; naming an event that exists in a \emph{different}
+  region is a distinct defect, and this requirement is what forbids
+  it. Neither the ordering DAG nor the bounds map may reach outside
+  the region whose time model declares them.
+\end{requirement}
+```
+
+**Without M23 the narrowing is only half signed:** an implementation could scope `ordering` to the clause and keep `bounds` checked over the block, and M13 plus M22 would both still behave as pinned.
+
+*Must fail:* test 3, **alone**.
+
+**M24 — the `same region` escape.** the locality phrase leaves the clause and appears in the recap instead.
+
+*Before* — the requirement as landed at `eddf6e9`:
+
+```latex
+\begin{requirement}
+  \label{req:time:aleatoric-reference-locality}
+  Every event referenced by an aleatoric region's \texttt{ordering}
+  DAG, and every event used as a key in its \texttt{bounds} map,
+  \MUST{} be an event of that same region. Naming an event that does
+  not exist is a dangling reference, governed by graph
+  invariant~10; naming an event that exists in a \emph{different}
+  region is a distinct defect, and this requirement is what forbids
+  it. Neither the ordering DAG nor the bounds map may reach outside
+  the region whose time model declares them.
+\end{requirement}
+```
+
+*After:*
+
+```latex
+\begin{requirement}
+  \label{req:time:aleatoric-reference-locality}
+  Every event referenced by an aleatoric region's \texttt{ordering}
+  DAG, and every event used as a key in its \texttt{bounds} map,
+  \MUST{} be an event of that region. Naming an event that does
+  not exist is a dangling reference, governed by graph
+  invariant~10; naming an event that exists in a \emph{different}
+  region is a distinct defect, and this requirement is what forbids
+  it. Neither the ordering DAG nor the bounds map may reach outside
+  the same region whose time model declares them.
+\end{requirement}
+```
+
+Catches an implementation that clause-scopes the referents while still searching the whole block for the locality phrase.
+
+*Must fail:* test 3, **alone**.
+
+**M25 — the `\MUST{}` escape.** the normative force moves to the recap.
+
+*Before* — the requirement as landed at `eddf6e9`:
+
+```latex
+\begin{requirement}
+  \label{req:time:aleatoric-reference-locality}
+  Every event referenced by an aleatoric region's \texttt{ordering}
+  DAG, and every event used as a key in its \texttt{bounds} map,
+  \MUST{} be an event of that same region. Naming an event that does
+  not exist is a dangling reference, governed by graph
+  invariant~10; naming an event that exists in a \emph{different}
+  region is a distinct defect, and this requirement is what forbids
+  it. Neither the ordering DAG nor the bounds map may reach outside
+  the region whose time model declares them.
+\end{requirement}
+```
+
+*After:*
+
+```latex
+\begin{requirement}
+  \label{req:time:aleatoric-reference-locality}
+  Every event referenced by an aleatoric region's \texttt{ordering}
+  DAG, and every event used as a key in its \texttt{bounds} map,
+  is an event of that same region. Naming an event that does
+  not exist is a dangling reference, governed by graph
+  invariant~10; naming an event that exists in a \emph{different}
+  region is a distinct defect, and this requirement is what forbids
+  it. Neither the ordering DAG nor the bounds map \MUST{} reach outside
+  the region whose time model declares them.
+\end{requirement}
+```
+
+**Its discrimination is not M24's, and the mechanism is worth stating.** The clause is *selected by* the `\MUST{}` position, so moving `\MUST{}` moves the clause onto the recap — which is exactly why 8.3's start rule takes the **last `". "` before** the occurrence, falling back after the label only when there is none. A correct implementation reads the recap alone as its clause, finds `ordering` and `bounds` there, and **fails on `same region`**, which the recap does not contain. An implementation that always started after the label would produce one slice running from label to recap, containing all four needles, and would pass.
+
+*Must fail:* test 3, **alone**.
+
+**M26 — the fallback anchor's own signature.** M22's clause replacement **plus** a period-free `ordering` decoy inserted before the unchanged label.
+
+*Before* — the requirement as landed at `eddf6e9`:
+
+```latex
+\begin{requirement}
+  \label{req:time:aleatoric-reference-locality}
+  Every event referenced by an aleatoric region's \texttt{ordering}
+  DAG, and every event used as a key in its \texttt{bounds} map,
+  \MUST{} be an event of that same region. Naming an event that does
+  not exist is a dangling reference, governed by graph
+  invariant~10; naming an event that exists in a \emph{different}
+  region is a distinct defect, and this requirement is what forbids
+  it. Neither the ordering DAG nor the bounds map may reach outside
+  the region whose time model declares them.
+\end{requirement}
+```
+
+*After:*
+
+```latex
+\begin{requirement}
+  The ordering DAG is discussed below
+  \label{req:time:aleatoric-reference-locality}
+  Every event used as a key in an aleatoric region's \texttt{bounds}
+  map \MUST{} be an event of that same region. Naming an event that does
+  not exist is a dangling reference, governed by graph
+  invariant~10; naming an event that exists in a \emph{different}
+  region is a distinct defect, and this requirement is what forbids
+  it. Neither the ordering DAG nor the bounds map may reach outside
+  the region whose time model declares them.
+\end{requirement}
+```
+
+**This is the only mutation that tests the fallback itself.** The decoy carries no period, so it creates no `". "` boundary and the selector still falls back. A **correct** fallback starts after the label, excludes the decoy, finds no `ordering` in the clause and **fails**. A fallback anchored at the block start includes the decoy and **passes**. Nothing else in this set can tell those two implementations apart.
+
+*Must fail:* test 3, **alone**.
+
+**M27 — the exactly-one assertion's own signature.** The normative sentence is
+left **unchanged**; the recap gains a second `\MUST{}`.
+
+*Before* — the requirement as landed at `eddf6e9`:
+
+```latex
+\begin{requirement}
+  \label{req:time:aleatoric-reference-locality}
+  Every event referenced by an aleatoric region's \texttt{ordering}
+  DAG, and every event used as a key in its \texttt{bounds} map,
+  \MUST{} be an event of that same region. Naming an event that does
+  not exist is a dangling reference, governed by graph
+  invariant~10; naming an event that exists in a \emph{different}
+  region is a distinct defect, and this requirement is what forbids
+  it. Neither the ordering DAG nor the bounds map may reach outside
+  the region whose time model declares them.
+\end{requirement}
+```
+
+*After:*
+
+```latex
+\begin{requirement}
+  \label{req:time:aleatoric-reference-locality}
+  Every event referenced by an aleatoric region's \texttt{ordering}
+  DAG, and every event used as a key in its \texttt{bounds} map,
+  \MUST{} be an event of that same region. Naming an event that does
+  not exist is a dangling reference, governed by graph
+  invariant~10; naming an event that exists in a \emph{different}
+  region is a distinct defect, and this requirement is what forbids
+  it. Neither the ordering DAG nor the bounds map \MUST{} reach outside
+  the region whose time model declares them.
+\end{requirement}
+```
+
+**This is the only mutation that reaches step 1 of 8.3.** A **correct**
+implementation asserts exactly one `\MUST{}` in the block, finds two, and
+**fails** before clause selection begins. An implementation that silently takes
+the **first** occurrence selects the original normative sentence as its clause —
+which still contains `ordering`, `bounds`, `same region` and `\MUST{}` — and
+**passes every clause assertion**. Nothing in M22–M26 separates those two: they
+all vary the *contents* of the clause, and this one varies which clause is
+chosen.
+
+*Must fail:* test 3, **alone**.
+
+**M11, M12, M13 and M16 are unchanged** and remain §3's. They delete or weaken
+across the whole block; M22–M27 cover the narrower escapes they cannot see.
+
+### 8.5 Execution surface and lifecycle
+
+| Row | Path | Why |
+|---|---|---|
+| 4 | `crates/epiphany-testkit/tests/invariant_ten_surface.rs` | test 3's clause selection and four assertions |
+| 6 | `spec/PASS13_CANDIDATES.md` | **append closes the finding recorded as open by `eddf6e9`** |
+| 7 | `spec/CONTRACT_P13S26_INVARIANT10_SURFACE.md` | §8's status transitions and historical marking |
+| 8 | `spec/EVIDENCE_P13S26_EXECUTION.md` | M22–M27 transcripts, **appended**; the 38/38 matrix is preserved |
+
+`spec/core_spec.tex` is **not** touched: the requirement's text is already
+correct, and only the guard was weak.
+
+**§8's status transitions, pinned** — otherwise this amendment lands still
+calling itself a draft, and the ledger finding stays open, which is the defect
+amendment 2 was written to close:
+
+- **On ratification:** `STATUS: RATIFIED; DISPATCHED to clause-scope test 3.`
+  *Prospective, because between ratification and execution the test is not yet
+  clause-scoped and a perfect-tense literal would be false for that whole
+  interval.*
+- **On landing:** `STATUS: LANDED by this commit.` — no hash, same rule as pin 11.
+- **On landing**, §8's revision records and this finding statement are marked a
+  **dated historical record**, and the S26 ledger row is appended to record the
+  finding **closed**.
+
+**Gate 7 covers M22–M27** like any failing-evidence mutation: full workspace with
+`--no-fail-fast`, radius compared against 8.4, transcripts appended to the annex.
+
+### 8.6 Settled, and what the next review must decide
+
+**Settled by review round 1 — the delimiter.** `". "` is sufficient for the
+current pinned prose once the start is anchored as 8.3 requires. A future
+abbreviation inside the clause would be a deliberate prose change; if it affects
+a guarded phrase the test fails and forces guard review, which is the intended
+behaviour. **No general TeX sentence parser is warranted here**, and building
+one would add a component with its own failure modes to guard against a change
+that announces itself.
+
+**Settled by review round 1 — the same-sentence rule stands.** It deliberately
+guards the *current* normative construction. A semantically valid multi-sentence
+rewrite **should** fail and force deliberate guard review rather than pass
+silently.
+
+**Settled by review round 4 — every step of 8.3 is signed.** M22 and M23 sign
+the referents' clause scope, M24 the locality phrase, M25 the last-period rule,
+M26 the fallback anchor, and M27 the exactly-one-`\MUST{}` assertion — which was
+step 1 and, until this round, the only step no mutation reached.
+
+**Open: none.**
