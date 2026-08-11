@@ -2089,10 +2089,15 @@ pin 3 with amendment 1's shape unchanged.
 
 ## §8. AMENDMENT 3 — TEST 3'S CLAUSE SCOPE, POST-EXECUTION
 
-STATUS: RATIFIED; DISPATCHED to clause-scope test 3.
+STATUS: LANDED by this commit.
 
-**Ratified 2026-08-11 on the authority of the repository owner**, review round 4
-returning zero findings. The rung landed at `eddf6e9`; **this amendment does not
+> **DATED HISTORICAL RECORD — amendment 3 is ratified and executed. Its
+> revision records, its finding statement and §8.6's disposition are an
+> account of what was found and decided on 2026-08-11. None of it states
+> current state.**
+
+**Ratified 2026-08-11 at `7c8a30d` on the authority of the repository owner**,
+review round 4 returning zero findings. The rung landed at `eddf6e9`; **this amendment does not
 reopen it.** The amended surface is executed, not edited; a further defect is its
 own amendment with its own review round.
 

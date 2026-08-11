@@ -382,12 +382,49 @@ fn implementation_doc_names_exactly_the_derived_surface() {
     assert_eq!(actual, expected);
 }
 
+/// Select the requirement's **normative clause** -- the sentence carrying its
+/// sole `\MUST{}` -- from a normalised requirement block.
+///
+/// Both halves of the start rule are load-bearing (P13-S26 amendment 3, 8.3).
+/// The last-period rule is what makes the clause follow `\MUST{}` when the
+/// normative force moves to a later sentence; without it, a slice anchored
+/// unconditionally after the label would span label to recap and contain every
+/// needle. The fallback is needed because the normative sentence is *first* in
+/// this requirement, so no preceding ". " exists and a block-start default
+/// would swallow the label, which is not a sentence.
+fn normative_clause<'a>(block: &'a str, label: &str) -> &'a str {
+    let occurrences = block.matches("\\MUST{}").count();
+    assert_eq!(
+        occurrences, 1,
+        "the requirement must carry exactly one \\MUST{{}}; found {occurrences}. \
+         More than one leaves the normative clause ambiguous, and an \
+         implementation that silently took the first would scope every other \
+         assertion to whichever sentence happened to come first.\nBlock was:\n{block}"
+    );
+    let p = block.find("\\MUST{}").expect("checked above");
+
+    let start = match block[..p].rfind(". ") {
+        Some(period) => period + ". ".len(),
+        None => {
+            let at = block.find(label).expect("the block declares its label");
+            at + label.len()
+        }
+    };
+    let end = match block[p..].find(". ") {
+        Some(period) => p + period + 1,
+        None => block.len(),
+    };
+    block[start..end].trim()
+}
+
 #[test]
 fn aleatoric_reference_locality_states_both_referents_and_locality() {
-    // Phrase presence, not exact comparison -- weaker than the two tests above,
-    // and stated as such rather than presented as equivalent coverage. What it
-    // buys: neither referent, nor the locality claim, nor the requirement's
-    // normative force can silently leave.
+    // Phrase presence, not exact comparison -- weaker than tests 1 and 2, and
+    // stated as such. What it buys, since P13-S26 amendment 3: the phrases must
+    // appear in the NORMATIVE CLAUSE, not merely somewhere in the block.
+    // Execution measured the escape that motivated this: a referent deleted
+    // from the clause but left standing in the closing recap passed the
+    // block-scoped form.
     let spec = normalise(&read("spec/core_spec.tex"));
     let label = r"\label{req:time:aleatoric-reference-locality}";
     let at = spec
@@ -402,11 +439,15 @@ fn aleatoric_reference_locality_states_both_referents_and_locality() {
         .expect("that requirement block is closed");
     let block = &spec[start..end];
 
+    let clause = normative_clause(block, label);
+
     for needle in ["ordering", "bounds", "same region", "\\MUST{}"] {
         assert!(
-            block.contains(needle),
-            "req:time:aleatoric-reference-locality must state {needle:?}; \
-             block was:\n{block}"
+            clause.contains(needle),
+            "req:time:aleatoric-reference-locality's normative clause must state \
+             {needle:?}; the clause is the sentence carrying \\MUST{{}}, and a \
+             phrase surviving elsewhere in the block does not count.\n\
+             Clause was:\n{clause}"
         );
     }
 }

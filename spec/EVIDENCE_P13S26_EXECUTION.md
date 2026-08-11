@@ -1110,3 +1110,217 @@ cargo +1.95.0 fmt -p epiphany-core -p epiphany-testkit --check: clean
 Exactly the structural baseline of §1. Every restoration was a hand write-back
 of captured bytes; `git checkout`, `git restore` and `git stash` were never used
 against the working tree.
+
+
+---
+
+# Amendment 3 evidence — test 3's clause scope
+
+**Appended, not merged.** Everything above is the historical record of the
+rung's own execution and is unchanged, including its 38/38 matrix. This section
+records amendment 3 (`7c8a30d`), whose execution touches touch rows 4, 6, 7 and
+8 only. `spec/core_spec.tex` is not modified: the requirement's text was always
+correct, and only the guard was weak.
+
+## A3.§1 What changed
+
+Test 3 previously asserted phrase presence over the **whole requirement block**.
+It now selects the **normative clause** — the sentence carrying the sole
+`\MUST{}` — and runs all four assertions on that slice alone.
+
+The selector, per amendment 3 §8.3: assert exactly one `\MUST{}` in the
+normalised block; start the clause after the **last `". "` at or before** that
+occurrence, falling back to just after the `\label{…}` **only when there is
+none**; end after the first `". "` at or after it.
+
+## A3.§2 Expected-versus-observed
+
+| M | # | Expected | Observed | Verdict |
+|---|---|---|---|---|
+| M22 | 1 | `aleatoric_reference_locality_states_both_referents_and_locality` | same | **MATCH** |
+| M23 | 1 | `aleatoric_reference_locality_states_both_referents_and_locality` | same | **MATCH** |
+| M24 | 1 | `aleatoric_reference_locality_states_both_referents_and_locality` | same | **MATCH** |
+| M25 | 1 | `aleatoric_reference_locality_states_both_referents_and_locality` | same | **MATCH** |
+| M26 | 1 | `aleatoric_reference_locality_states_both_referents_and_locality` | same | **MATCH** |
+| M27 | 1 | `aleatoric_reference_locality_states_both_referents_and_locality` | same | **MATCH** |
+
+**Six mutations, six matches**, each with test 3 as its sole radius. No listed
+test passed unexpectedly; no unlisted test failed.
+
+**Each signs a different step, which is the point of there being six.** M22 and
+M23 sign the referents' clause scope; M24 the locality phrase; M25 the
+last-period rule — it moves `\MUST{}` into a later sentence, and an
+implementation anchoring unconditionally after the label would return one slice
+from label to recap containing every needle, and pass; M26 the fallback anchor,
+via a period-free decoy that a correct fallback excludes and a block-start
+fallback includes; M27 the exactly-one assertion.
+
+**Each attacks a different layer, and this is the taxonomy the annex uses:**
+
+| Mutation | What it varies |
+|---|---|
+| M22, M23, M24 | what the selected clause **contains** |
+| M25 | **which sentence** is selected |
+| M26 | the **fallback boundary** — starting after the label versus widening before it |
+| M27 | whether selection is **unambiguous, and therefore permitted at all** |
+
+**One sentence in ratified §8 is inconsistent with that, and this annex does not
+repeat it.** §8.4's M27 entry closes by saying M27 *"varies which clause is
+chosen"*. It does not: **M25** varies which clause is chosen, and a correct
+implementation rejects M27 **before selecting any clause**, on the exactly-one
+assertion. *(§8.6 is unaffected — it says only that M27 was the step no mutation
+had reached, which is true.)*
+
+The sentence is frozen in a ratified section, so it is **corrected through the
+amendment lifecycle, not silently rewritten**. That correction is **open** as of
+this commit and is not part of it.
+
+## A3.§3 Mutation transcripts
+
+### M22
+
+*Mutation.* `ordering` leaves the normative clause, survives in the recap
+
+*Complete `--no-fail-fast` failure set* (full workspace, 1585 passed / 1 failed):
+
+```
+  aleatoric_reference_locality_states_both_referents_and_locality
+```
+
+*Failing assertion, verbatim:*
+
+```
+---- aleatoric_reference_locality_states_both_referents_and_locality stdout ----
+
+thread 'aleatoric_reference_locality_states_both_referents_and_locality' (2099485) panicked at crates/epiphany-testkit/tests/invariant_ten_surface.rs:445:9:
+req:time:aleatoric-reference-locality's normative clause must state "ordering"; the clause is the sentence carrying \MUST{}, and a phrase surviving elsewhere in the block does not count.
+Clause was:
+Every event used as a key in an aleatoric region's \texttt{bounds} map \MUST{} be an event of that same region.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+### M23
+
+*Mutation.* `bounds` leaves the clause, survives in the recap
+
+*Complete `--no-fail-fast` failure set* (full workspace, 1585 passed / 1 failed):
+
+```
+  aleatoric_reference_locality_states_both_referents_and_locality
+```
+
+*Failing assertion, verbatim:*
+
+```
+---- aleatoric_reference_locality_states_both_referents_and_locality stdout ----
+
+thread 'aleatoric_reference_locality_states_both_referents_and_locality' (2101173) panicked at crates/epiphany-testkit/tests/invariant_ten_surface.rs:445:9:
+req:time:aleatoric-reference-locality's normative clause must state "bounds"; the clause is the sentence carrying \MUST{}, and a phrase surviving elsewhere in the block does not count.
+Clause was:
+Every event referenced by an aleatoric region's \texttt{ordering} DAG \MUST{} be an event of that same region.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+### M24
+
+*Mutation.* the locality phrase leaves the clause, appears in the recap
+
+*Complete `--no-fail-fast` failure set* (full workspace, 1585 passed / 1 failed):
+
+```
+  aleatoric_reference_locality_states_both_referents_and_locality
+```
+
+*Failing assertion, verbatim:*
+
+```
+---- aleatoric_reference_locality_states_both_referents_and_locality stdout ----
+
+thread 'aleatoric_reference_locality_states_both_referents_and_locality' (2102882) panicked at crates/epiphany-testkit/tests/invariant_ten_surface.rs:445:9:
+req:time:aleatoric-reference-locality's normative clause must state "same region"; the clause is the sentence carrying \MUST{}, and a phrase surviving elsewhere in the block does not count.
+Clause was:
+Every event referenced by an aleatoric region's \texttt{ordering} DAG, and every event used as a key in its \texttt{bounds} map, \MUST{} be an event of that region.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+### M25
+
+*Mutation.* `\MUST{}` moves to the recap, taking the clause with it
+
+*Complete `--no-fail-fast` failure set* (full workspace, 1585 passed / 1 failed):
+
+```
+  aleatoric_reference_locality_states_both_referents_and_locality
+```
+
+*Failing assertion, verbatim:*
+
+```
+---- aleatoric_reference_locality_states_both_referents_and_locality stdout ----
+
+thread 'aleatoric_reference_locality_states_both_referents_and_locality' (2104554) panicked at crates/epiphany-testkit/tests/invariant_ten_surface.rs:445:9:
+req:time:aleatoric-reference-locality's normative clause must state "same region"; the clause is the sentence carrying \MUST{}, and a phrase surviving elsewhere in the block does not count.
+Clause was:
+Neither the ordering DAG nor the bounds map \MUST{} reach outside the region whose time model declares them.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+### M26
+
+*Mutation.* M22's replacement **plus** a period-free `ordering` decoy before the label
+
+*Complete `--no-fail-fast` failure set* (full workspace, 1585 passed / 1 failed):
+
+```
+  aleatoric_reference_locality_states_both_referents_and_locality
+```
+
+*Failing assertion, verbatim:*
+
+```
+---- aleatoric_reference_locality_states_both_referents_and_locality stdout ----
+
+thread 'aleatoric_reference_locality_states_both_referents_and_locality' (2106230) panicked at crates/epiphany-testkit/tests/invariant_ten_surface.rs:445:9:
+req:time:aleatoric-reference-locality's normative clause must state "ordering"; the clause is the sentence carrying \MUST{}, and a phrase surviving elsewhere in the block does not count.
+Clause was:
+Every event used as a key in an aleatoric region's \texttt{bounds} map \MUST{} be an event of that same region.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+### M27
+
+*Mutation.* the normative sentence unchanged; the recap gains a **second** `\MUST{}`
+
+*Complete `--no-fail-fast` failure set* (full workspace, 1585 passed / 1 failed):
+
+```
+  aleatoric_reference_locality_states_both_referents_and_locality
+```
+
+*Failing assertion, verbatim:*
+
+```
+---- aleatoric_reference_locality_states_both_referents_and_locality stdout ----
+
+thread 'aleatoric_reference_locality_states_both_referents_and_locality' (2107954) panicked at crates/epiphany-testkit/tests/invariant_ten_surface.rs:397:5:
+assertion `left == right` failed: the requirement must carry exactly one \MUST{}; found 2. More than one leaves the normative clause ambiguous, and an implementation that silently took the first would scope every other assertion to whichever sentence happened to come first.
+Block was:
+\begin{requirement} \label{req:time:aleatoric-reference-locality} Every event referenced by an aleatoric region's \texttt{ordering} DAG, and every event used as a key in its \texttt{bounds} map, \MUST{} be an event of that same region. Naming an event that does not exist is a dangling reference, governed by graph invariant~10; naming an event that exists in a \emph{different} region is a distinct defect, and this requirement is what forbids it. Neither the ordering DAG nor the bounds map \MUST{} reach outside the region whose time model declares them.
+  left: 2
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+## A3.§4 Restoration
+
+```
+suites=43 passed=1586 failed=0 ignored=0
+```
+
+Unchanged from the rung's own structural baseline: amendment 3 alters an
+existing test's scope and adds none. Every restoration was a hand write-back of
+captured bytes.
+
+## A3.§5 The finding this closes
+
+`eddf6e9` recorded, in §6(b) above, that pin 4a claimed test 3 buys that
+*"neither referent … can silently leave"*, and that measurement showed
+otherwise. **That finding is now closed by strengthening the guard rather than
+softening the claim** — pin 4a's sentence is true of the clause-scoped test.
+Pin 4a itself is frozen and unedited; amendment 3 is an additive override and
+governs from its ratification.
