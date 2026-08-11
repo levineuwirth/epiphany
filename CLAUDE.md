@@ -17,7 +17,7 @@ model with a LaTeX specification suite as its source of truth.
 
 | Track | Lives in | Current head |
 |---|---|---|
-| **Spec / Pass 13** — wire format, bundle, ops, text projection, the `.tex` suite | `spec/`, `crates/epiphany-{core,ops,bundle,textproj,testkit}` | **P13-S27 LANDED** (`4df8e25`); **P13-S16 LANDED** (`aee4ff9`), its post-landing corrections amended in at `CONTRACT_P13S16_PROJECTION.md` §7 |
+| **Spec / Pass 13** — wire format, bundle, ops, text projection, the `.tex` suite | `spec/`, `crates/epiphany-{core,ops,bundle,textproj,testkit}` | **P13-S26 LANDED** (`eddf6e9`), amendments 1–2 at `f9170b0`/`86bf7c6`, **amendment 3 open**; **P13-S27 LANDED** (`4df8e25`); **P13-S16 LANDED** (`aee4ff9`), its post-landing corrections amended in at `CONTRACT_P13S16_PROJECTION.md` §7 |
 | **Editor / T4** — the editing seam, engraving, the toolkit spike | `spec/PLAN_EDITOR_APP.md`, `spec/CONTRACT_EDITOR_*`, `spikes/`, `crates/epiphany-{editor-core,editor-gui,engrave,layout-ir,glyphs,render-svg}` | T4 spike, round 2 built but not run |
 
 They are currently independent. The T1b/P13-S27 collision in
@@ -85,13 +85,16 @@ reach today.
 ## Green baseline
 
 ```
-cargo test --workspace                                 # expect 1583 passing, 0 failed, 0 ignored
+cargo test --workspace                                 # expect 43 suites, 1586 passing, 0 failed, 0 ignored
 cargo clippy --workspace --all-targets -- -D warnings   # clean
 ```
 
-**This is the single origin for the count** — `spec/HANDOFF_2026-08-07.md` used to
-repeat it in three places and now points here. It moved 1570 → 1577 when P13-S27 landed,
-and 1577 → 1583 when P13-S16 landed (six net-new tests).
+**This is the single origin for both numbers** — `spec/HANDOFF_2026-08-07.md` used to
+repeat the count in three places and now points here. It moved 1570 → 1577 when P13-S27
+landed, 1577 → 1583 when P13-S16 landed (six net-new tests), and 1583 → 1586 when P13-S26
+landed (three net-new tests in one new suite, `epiphany-testkit/tests/invariant_ten_surface.rs`,
+which is why the **suite** count moved 42 → 43 with it). A rung that adds a test file moves
+both figures; a rung that only adds tests moves one.
 
 **Use `--no-fail-fast` whenever anything is failing.** The bare command stops at the
 first failing suite, so a partial failure set reads as the whole one — P13-S16's M6a
