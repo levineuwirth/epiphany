@@ -2758,6 +2758,18 @@ encoding admits both as cases.
   unordered.
 \end{requirement}
 
+\begin{requirement}
+  \label{req:time:aleatoric-reference-locality}
+  Every event referenced by an aleatoric region's \texttt{ordering}
+  DAG, and every event used as a key in its \texttt{bounds} map,
+  \MUST{} be an event of that same region. Naming an event that does
+  not exist is a dangling reference, governed by graph
+  invariant~10; naming an event that exists in a \emph{different}
+  region is a distinct defect, and this requirement is what forbids
+  it. Neither the ordering DAG nor the bounds map may reach outside
+  the region whose time model declares them.
+\end{requirement}
+
 \begin{rationale}
   A DAG with optional interval bounds expresses every aleatoric form
   the project intends to support: unordered collections (empty DAG),
@@ -6572,10 +6584,59 @@ The score graph maintains a set of structural invariants. Implementations
     \item Every \texttt{TimeAnchor}'s \texttt{AnchorOffset} variant
       agrees with the time model of the target object's enclosing
       region (Section~\ref{sec:time:anchors}).
-    \item Every cross-cutting structure's references resolve to extant
+    \item Except where the re-anchoring rules of
+      Chapter~\ref{ch:semops} explicitly permit transient dangling
+      states during edits, every graph reference resolves to an extant
+      object. Every cross-cutting structure's references resolve to extant
       objects in the graph, except where explicit re-anchoring rules
       permit transient dangling states during edits (see
-      Chapter~\ref{ch:semops}).
+      Chapter~\ref{ch:semops}). Tempo-map conditions that are not
+      reference resolution --- segment ordering and non-overlap --- are
+      governed by Requirement~\ref{req:time:tempo-segment-order}, not by
+      this invariant. The complete reference surface is:
+      \begin{itemize}
+        \item \texttt{Slur.start\_event} --- live event.
+        \item \texttt{Slur.end\_event} --- live event.
+        \item \texttt{Tie.start\_event} --- live event.
+        \item \texttt{Tie.end\_event} --- live event.
+        \item \texttt{Beam.events} --- live event.
+        \item \texttt{SubBeam.events} --- live event.
+        \item \texttt{Tuplet.members} --- live event.
+        \item \texttt{Tuplet.parent} --- extant tuplet.
+        \item \texttt{Spanner.staves} --- declared staff.
+        \item \texttt{Spanner.start} --- anchor target.
+        \item \texttt{Spanner.end} --- anchor target.
+        \item \texttt{Marker.anchor} --- anchor target.
+        \item \texttt{RepeatStructure.start} --- anchor target.
+        \item \texttt{RepeatStructure.end} --- anchor target.
+        \item \texttt{RepeatStructure.kind} --- anchor target.
+        \item \texttt{RepeatStructure.voltas} --- anchor target.
+        \item \texttt{ChordSymbol.anchor} --- anchor target.
+        \item \texttt{AnalyticalAnnotation.anchor} --- anchor target, extant region, live event.
+        \item \texttt{AnalyticalAnnotation.layer} --- declared analysis layer.
+        \item \texttt{Comment.anchor} --- anchor target, extant region, live event.
+        \item \texttt{GraphicGesture.objects} --- stored graphic object.
+        \item \texttt{GraphicGesture.anchoring} --- anchor target, declared staff, live event.
+        \item \texttt{LyricLine.events} --- live event.
+        \item \texttt{Staff.instrument} --- declared instrument.
+        \item \texttt{StaffInstance.instrument\_override} --- declared instrument.
+        \item \texttt{Staff.group} --- declared staff group.
+        \item \texttt{StaffGroup.members} --- declared staff.
+        \item \texttt{PartDefinition.staves} --- declared staff.
+        \item \texttt{ViewDefinition.active\_layers} --- declared analysis layer.
+        \item \texttt{MetricTimeModel.meters} --- declared time signature.
+        \item \texttt{StaffBasedContent.default\_metric\_grid} --- declared time signature.
+        \item \texttt{Measure.time\_signature} --- declared time signature.
+        \item \texttt{StaffInstance.local\_metric\_grid} --- declared time signature.
+        \item \texttt{NotatedComponent.tuplet} --- extant tuplet.
+        \item \texttt{IndeterminacyHints.alternatives} --- live event.
+        \item \texttt{TrajectoryEvent.start} --- live pitch.
+        \item \texttt{TrajectoryEvent.end} --- live pitch.
+        \item \texttt{GraphicEvent.graphics} --- stored graphic object.
+        \item \texttt{CueEvent.source} --- live event.
+        \item \texttt{TempoSegment.start} --- anchor target.
+        \item \texttt{TempoSegment.end} --- anchor target.
+      \end{itemize}
     \item Every identifier in the graph is unique within its kind.
       Identifiers reserved for system-derived objects (notably
       \texttt{VoiceId}s of system-promoted voices) \MUST{} be derived
@@ -16943,6 +17004,30 @@ layouts they own versus inherit:
   abstaining on dangling membership --- an undeclared member is
   invariant~10's reference-resolution concern, not a disagreement. The
   enumeration count moves from 20 to 21 accordingly.
+  \\
+  \today & \sectionsc{Graph Invariants}, \sectionsc{Aleatoric Time} &
+  \textbf{P13-S26: graph invariant~10 names its complete reference surface,
+  and aleatoric reference locality becomes a labelled requirement.} Invariant~10
+  previously read only that ``every cross-cutting structure's references resolve
+  to extant objects'', naming no individual class --- while the checker enforces
+  a surface spanning cross-cutting structures, structural top-level references,
+  meter and time-signature references at every level a \texttt{MeterChange}
+  appears, an attachment-internal reference, event-internal references and the
+  tempo map's segment anchors. That sentence is also scoped to cross-cutting
+  structures alone, a defined term narrower than the surface beneath it, so the
+  item now opens with a universal subordinated to the re-anchoring rules that
+  explicitly permit transient dangling, and retains the original sentence
+  unchanged beneath it. The surface is enumerated, derived from the checker
+  rather than copied from either prior summary, since the normative enumeration
+  and the implementation's own doc comment were incomplete in different places
+  and neither could be repaired from the other. Tempo-map ordering and
+  non-overlap are named as \emph{not} this invariant's, being governed by
+  Requirement~\ref{req:time:tempo-segment-order}. Separately,
+  \sectionsc{Aleatoric Time} gains
+  Requirement~\ref{req:time:aleatoric-reference-locality}: an aleatoric
+  region's ordering and bounds references \MUST{} name events of that same
+  region --- a locality rule the checker has always enforced and no requirement
+  stated.
   \\
   \bottomrule
 \end{longtable}

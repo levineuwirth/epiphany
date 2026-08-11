@@ -1,11 +1,15 @@
 # Contract — P13-S26: invariant 10's reference surface, derived
 
-**Status:** **RATIFIED 2026-08-11, on the authority of the repository owner**,
-after the independent whole-artifact passes recorded above §0 — the last
-returning zero findings. **DISPATCHED 2026-08-11.** Amendment 1 ratified;
-execution resumes. Which passes closed and what each found are those records;
-this line does not restate them, and states no count of them, per the rule
-this contract adopted after its own tallies went stale twice.
+STATUS: LANDED by this commit.
+
+**Lifecycle record.** RATIFIED 2026-08-11 on the authority of the repository
+owner, after the independent whole-artifact passes recorded below — the last
+returning zero findings. DISPATCHED 2026-08-11; amendment 1 ratified at
+`f9170b0`, amendment 2 at `86bf7c6`. Which passes closed and what each found
+are those records; this does not restate them, and states no count of them, per
+the rule this contract adopted after its own tallies went stale twice. **No hash
+of the landing commit appears above**: a commit cannot carry its own id, so if
+one is wanted it arrives by a later administrative amendment.
 
 **THE PINS ARE FROZEN. They may be executed, not edited.** A defect found during
 execution is **reported, not patched in place** — if it needs a pin change, that
@@ -33,6 +37,12 @@ identify its changed artifact, touch row, machine test or explicit read-check,
 and signing mutation/evidence where one is claimed. A cell is either populated
 or marked **N/A with a reason**; an unexplained empty cell is a finding in the
 same round. This is a review method, not another execution gate for S26.
+
+---
+
+> **DATED HISTORICAL RECORD — every review block below, through to §0, is an
+> account of what a pass found on the date it ran. None of it states current
+> state. The rung landed; the pins were executed, not edited.**
 
 ---
 
@@ -1641,14 +1651,17 @@ that does not exist.
 
 ## §6. AMENDMENT 1 — PIN 3, PIN 6 AND PIN 11, PRE-FIRST-EDIT
 
-STATUS: RATIFIED. Pins 3, 6 and 11 amended. Execution resumes.
+STATUS: LANDED by this commit.
 
 Ratified 2026-08-11 on the authority of the repository owner, review round 5
 returning zero findings. The amended pins are executed, not edited; a further
 defect is its own amendment with its own review round.
 
-**DATED RECORD — the hold this amendment describes ENDED at `f9170b0`.** What
-follows is an account of 2026-08-11, not a statement of current state.
+**DATED HISTORICAL RECORD — this amendment is ratified, its pin changes are
+executed, and the hold it describes ENDED at `f9170b0`.** Everything in §6,
+including its revision records, its lifecycle statements and §6.8's disposition,
+is an account of what was found and decided on 2026-08-11. None of it states
+current state.
 
 On that date the contract was dispatched for implementation, execution began,
 and it stopped on reaching pin 3; the top status paragraph still read NOT YET

@@ -66,18 +66,67 @@ pub enum GraphInvariant {
     MeasureSingleInstance,
     /// 9. Each anchor's offset variant agrees with its target's time model.
     AnchorOffsetModel,
-    /// 10. Every graph reference resolves to an extant object: cross-cutting
-    ///     structures (incl. anchor targets, annotation layers, tuplet parents,
-    ///     graphic objects) and event-internal references (indeterminate
-    ///     alternatives, trajectory event-pitches, graphic objects, cue sources);
-    ///     structural top-level references (a staff's declared instrument, a
-    ///     staff's group, a staff group's members, a part's staves, a view's
-    ///     active layers — genesis tranche G3a repairs this prose to name what
-    ///     the check body already enforced); and meter/time-signature
-    ///     references at every level a `MeterChange` can appear (a region's
-    ///     time-model meter changes, a region's default metric grid, a
-    ///     measure's declared time signature, a staff instance's local metric
-    ///     grid).
+    /// 10. Every graph reference resolves to an extant object, except where
+    ///     the re-anchoring rules explicitly permit transient dangling states
+    ///     during edits. This surface is **derived from the check bodies**, not
+    ///     copied from prose: `spec/CONTRACT_P13S26_INVARIANT10_SURFACE.md`
+    ///     pin 1 is the sole origin for both this list and `core_spec.tex`'s
+    ///     item 10, because the two were incomplete in different places and
+    ///     neither could be repaired from the other (P13-S26).
+    ///
+    ///   - Slur.start_event — live event.
+    ///   - Slur.end_event — live event.
+    ///   - Tie.start_event — live event.
+    ///   - Tie.end_event — live event.
+    ///   - Beam.events — live event.
+    ///   - SubBeam.events — live event.
+    ///   - Tuplet.members — live event.
+    ///   - Tuplet.parent — extant tuplet.
+    ///   - Spanner.staves — declared staff.
+    ///   - Spanner.start — anchor target.
+    ///   - Spanner.end — anchor target.
+    ///   - Marker.anchor — anchor target.
+    ///   - RepeatStructure.start — anchor target.
+    ///   - RepeatStructure.end — anchor target.
+    ///   - RepeatStructure.kind — anchor target.
+    ///   - RepeatStructure.voltas — anchor target.
+    ///   - ChordSymbol.anchor — anchor target.
+    ///   - AnalyticalAnnotation.anchor — anchor target, extant region, live event.
+    ///   - AnalyticalAnnotation.layer — declared analysis layer.
+    ///   - Comment.anchor — anchor target, extant region, live event.
+    ///   - GraphicGesture.objects — stored graphic object.
+    ///   - GraphicGesture.anchoring — anchor target, declared staff, live event.
+    ///   - LyricLine.events — live event.
+    ///   - Staff.instrument — declared instrument.
+    ///   - StaffInstance.instrument_override — declared instrument.
+    ///   - Staff.group — declared staff group.
+    ///   - StaffGroup.members — declared staff.
+    ///   - PartDefinition.staves — declared staff.
+    ///   - ViewDefinition.active_layers — declared analysis layer.
+    ///   - MetricTimeModel.meters — declared time signature.
+    ///   - StaffBasedContent.default_metric_grid — declared time signature.
+    ///   - Measure.time_signature — declared time signature.
+    ///   - StaffInstance.local_metric_grid — declared time signature.
+    ///   - NotatedComponent.tuplet — extant tuplet.
+    ///   - IndeterminacyHints.alternatives — live event.
+    ///   - TrajectoryEvent.start — live pitch.
+    ///   - TrajectoryEvent.end — live pitch.
+    ///   - GraphicEvent.graphics — stored graphic object.
+    ///   - CueEvent.source — live event.
+    ///   - TempoSegment.start — anchor target.
+    ///   - TempoSegment.end — anchor target.
+    ///
+    ///     Beyond that surface, further checks are reported under this same tag
+    ///     and are NOT part of the normative invariant 10: tempo-map segment
+    ///     shape, ordering and non-overlap (Chapter 3,
+    ///     `req:time:tempo-segment-order`); aleatoric ordering and bounds
+    ///     region locality (Chapter 3,
+    ///     `req:time:aleatoric-reference-locality`); and accidental
+    ///     modification expressibility (Chapter 4,
+    ///     `req:tuning:accidental-modification-compatibility`). That
+    ///     multiplexing is filed as P13-S29 — the public `check_invariant`
+    ///     filter and this violation's `Display` attribute those failures to
+    ///     invariant 10. Repairing it is a behaviour change, out of scope here.
     CrossCuttingRefsResolve,
     /// 11. Identifiers are unique within their kind (every id kind), with
     ///     reserved-namespace (`SYSTEM_DERIVED`) misuse, tombstone/live
@@ -4645,7 +4694,12 @@ mod g3a_tests {
     /// **Mutation:** revert the doc comment to its pre-G3a text (naming only
     /// cross-cutting structures and event-internal references); must fail.
     #[test]
-    fn t12_invariant_10_doc_comment_names_the_four_reference_classes() {
+    fn t12_invariant_10_doc_block_slices_and_is_non_empty() {
+        // Narrowed by P13-S26 pin 8. The exact (token, target) comparison lives
+        // in epiphany-testkit's `invariant_ten_surface` guard, which reads both
+        // this block and `core_spec.tex`. This one stays because
+        // `cargo test -p epiphany-core` must still fail when the block is
+        // destroyed, and testkit is a different crate.
         let source = production_source();
         let start = source
             .find("    /// 10. Every graph reference resolves")
@@ -4656,17 +4710,18 @@ mod g3a_tests {
             .expect("the CrossCuttingRefsResolve variant follows its doc comment");
         let doc_block = &source[start..end];
 
-        for needle in [
-            "staff's group",
-            "group's members",
-            "part's staves",
-            "active layers",
-        ] {
-            assert!(
-                doc_block.contains(needle),
-                "invariant 10's doc comment must name `{needle}`; block was:\n{doc_block}"
-            );
-        }
+        let tokens: Vec<&str> = doc_block
+            .lines()
+            .filter_map(|line| line.trim_start().strip_prefix("/// "))
+            .filter_map(|rest| rest.trim_start().strip_prefix("- "))
+            .filter_map(|rest| rest.split_whitespace().next())
+            .collect();
+
+        assert!(
+            !tokens.is_empty(),
+            "invariant 10's doc block must list its reference surface, one \
+             `- Token — target.` line per class; block was:\n{doc_block}"
+        );
     }
 }
 

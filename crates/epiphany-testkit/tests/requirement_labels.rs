@@ -12,11 +12,16 @@ use std::path::{Path, PathBuf};
 // +1 for req:format:container-epoch (the format-epoch rung, pin 7:
 // spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md) — the container major becomes an epoch,
 // and Chapter 8 states the classification and the epoch matrix normatively.
-const CORE_REQUIREMENT_COUNT: usize = 214;
+// +1 for req:time:aleatoric-reference-locality (P13-S26, pin 4:
+// spec/CONTRACT_P13S26_INVARIANT10_SURFACE.md) — an aleatoric region's ordering
+// and bounds references must name events of that same region. Measured at
+// execution, never predicted.
+const CORE_REQUIREMENT_COUNT: usize = 215;
 // +1 for req:textproj:manifest-schema-carried (G-minor, pins 8/11:
-// spec/PLAN_GMINOR_SCHEMA_MINOR.md); +1 for req:format:container-epoch (above).
-const SUITE_REQUIREMENT_COUNT: usize = 285;
-const SUITE_LABEL_COUNT: usize = 285;
+// spec/PLAN_GMINOR_SCHEMA_MINOR.md); +1 for req:format:container-epoch (above);
+// +1 for req:time:aleatoric-reference-locality (above).
+const SUITE_REQUIREMENT_COUNT: usize = 286;
+const SUITE_LABEL_COUNT: usize = 286;
 
 /// The normative chapter-to-area assignment. Keeping this as data makes adding a
 /// requirement under the wrong chapter fail without encoding chapter names in
@@ -385,37 +390,12 @@ const DISCUSSED_NOT_CITED: &[(&str, &str)] = &[
          governs. Named in spec/PLAN_P13S1_LABELS.md as the finding that motivated \
          this checker.",
     ),
-    // --- P13-S26 REVIEW SCAFFOLDING (pre-execution) -------------------------
-    //
-    // The citation scan reads the filesystem, not git, so the contract at
-    // spec/CONTRACT_P13S26_INVARIANT10_SURFACE.md is scanned like any other
-    // repository text — tracked or not, staged or not. It names both labels
-    // below, neither of which exists yet, which broke the mandated green
-    // baseline for three review rounds before it was measured. Euphemism is not
-    // the remedy — see this const's own doc comment. Authorized as prerequisite
-    // review scaffolding, NOT as dispatch of P13-S26; no other pin work is
-    // licensed by it.
-    //
-    // Deliberately says nothing about its own staging or tracking state: both
-    // change at ratification, while pin 10 of that contract deletes this banner
-    // only at execution, so any such claim would spend that interval false.
-    //
-    // If S26 is abandoned, or either label changes before the rung lands,
-    // remove the corresponding row by hand.
     (
         "req:graph:aleatoric-reference-locality",
         "not defined in the restored tree; P13-S26's M6 mutation defines it only \
          while that mutation is applied. Named by \
          spec/CONTRACT_P13S26_INVARIANT10_SURFACE.md and recorded in \
          spec/EVIDENCE_P13S26_EXECUTION.md as M6's verbatim diagnostic. PERMANENT.",
-    ),
-    (
-        "req:time:aleatoric-reference-locality",
-        "proposed by spec/CONTRACT_P13S26_INVARIANT10_SURFACE.md; the requirement \
-         does not exist until that contract's pin 4 lands. TEMPORARY — pin 4 \
-         REMOVES this row when it creates the requirement, because this row's own \
-         claim (discussed, never cited) becomes false at that moment. A stale row \
-         is inert, so nothing else will catch it; that contract's gate 12 does.",
     ),
 ];
 
