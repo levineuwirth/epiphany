@@ -397,6 +397,16 @@ const DISCUSSED_NOT_CITED: &[(&str, &str)] = &[
          spec/CONTRACT_P13S26_INVARIANT10_SURFACE.md and recorded in \
          spec/EVIDENCE_P13S26_EXECUTION.md as M6's verbatim diagnostic. PERMANENT.",
     ),
+    (
+        "req:time:tempo-segment-shape",
+        "proposed by spec/CONTRACT_P13S29_VIOLATION_KIND.md; the requirement does not \
+         exist until that contract's pin 3 lands. TEMPORARY -- pin 3 REMOVES this row \
+         when it mints the requirement, because this row's own claim (discussed, never \
+         cited) becomes false at that moment. A stale row is inert, so nothing else \
+         will catch it; that contract's landing gate does. Remove by hand if S29 is \
+         abandoned or the label changes. Prerequisite review scaffolding, NOT dispatch: \
+         it licenses no other pin work.",
+    ),
 ];
 
 fn requirement_strings(text: &str) -> BTreeSet<String> {
