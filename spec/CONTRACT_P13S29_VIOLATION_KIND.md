@@ -2113,11 +2113,15 @@ amendment or a later one.
 
 ## §7. AMENDMENT 2 — PIN 13'S APPEND DATE, POST-LANDING AND ADMINISTRATIVE
 
-STATUS: RATIFIED; FROZEN.
+STATUS: LANDED by this commit.
 
 Ratified 2026-08-12 on the authority of the repository owner. The correction is
 appended, not edited; a further defect is its own amendment with its own review
 round.
+
+> **DATED HISTORICAL RECORD — amendment 2 is ratified and executed. §7's
+> correction, its rationale and its gate are an account of what was found and
+> decided on 2026-08-12, and state no current condition.**
 
 ### 7.0 Scope — the complete write surface, in two commits
 
