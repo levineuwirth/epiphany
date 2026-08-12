@@ -17,7 +17,7 @@ model with a LaTeX specification suite as its source of truth.
 
 | Track | Lives in | Current head |
 |---|---|---|
-| **Spec / Pass 13** — wire format, bundle, ops, text projection, the `.tex` suite | `spec/`, `crates/epiphany-{core,ops,bundle,textproj,testkit}` | **P13-S26 LANDED** (`eddf6e9`), amendments 1–2 at `f9170b0`/`86bf7c6`, **amendment 3 open**; **P13-S27 LANDED** (`4df8e25`); **P13-S16 LANDED** (`aee4ff9`), its post-landing corrections amended in at `CONTRACT_P13S16_PROJECTION.md` §7; **P13-S29 LANDED** (`52fcf37`), its amendment 1 ratified at `29ef3af` and executed at `e7bd12c` |
+| **Spec / Pass 13** — wire format, bundle, ops, text projection, the `.tex` suite | `spec/`, `crates/epiphany-{core,ops,bundle,textproj,testkit}` | **P13-S26 LANDED** (`eddf6e9`), amendments 1–4 all landed (`f9170b0`, `86bf7c6`, `bff7be0`, `3fda93b`); **P13-S27 LANDED** (`4df8e25`); **P13-S16 LANDED** (`aee4ff9`), its post-landing corrections amended in at `CONTRACT_P13S16_PROJECTION.md` §7; **P13-S29 LANDED** (`52fcf37`), its amendment 1 ratified at `29ef3af` and executed at `e7bd12c` |
 | **Editor / T4** — the editing seam, engraving, the toolkit spike | `spec/PLAN_EDITOR_APP.md`, `spec/CONTRACT_EDITOR_*`, `spikes/`, `crates/epiphany-{editor-core,editor-gui,engrave,layout-ir,glyphs,render-svg}` | T4 spike, round 2 built but not run |
 
 They are currently independent. The T1b/P13-S27 collision in
