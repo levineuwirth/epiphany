@@ -1675,3 +1675,425 @@ execution confirms it and any difference is a finding.*
 - **The recurring citation-gate collision** — a contract proposing a label breaks
   the gate the moment it is written, now four times. That belongs in `CLAUDE.md`
   as a standing note, on its own terms, not here.
+
+---
+
+## §6. AMENDMENT 1 — §3's M1·C6 AND M1·C7 RADII, MID-EXECUTION
+
+STATUS: RATIFIED; FROZEN. Execution of P13-S29 resumes at M2.
+
+Ratified 2026-08-12 on the authority of the repository owner, the final review
+round returning zero findings. The replacements are executed, not edited; a
+further defect is its own amendment with its own review round.
+
+**§3 was frozen and dispatched at `cea21cd`.** Ratification **authorizes and
+freezes** this amendment; execution applies the replacements. §6.9 pins the
+landed form and the order of the remaining steps.
+
+**Scope — the complete write surface, all four parts.** A description of the
+normative correction is not a description of what gets written, and an earlier
+draft of this head said *"two radius cells and nothing else"* while prescribing
+three further edits below it:
+
+| | Edit | Where | Touch row |
+|---|---|---|---|
+| 1 | M1 row replacement | §3 (this file) | 9 |
+| 2 | Preamble append | §3 (this file) | 9 |
+| 3 | This amendment's own lifecycle transitions | §6 (this file) | 9 |
+| 4 | Resolution/resumption append | `spec/EVIDENCE_P13S29_EXECUTION.md` | 10 |
+
+**"Two edits, both in §3" describes edits 1 and 2 — the normative §3 correction
+— and nothing else.** Edits 3 and 4 are lifecycle and record.
+
+**One further act belongs to ratification rather than to execution:** the
+ratification commit stages `spec/EVIDENCE_P13S29_EXECUTION.md` in its
+**pre-amendment** state, under the same touch row 10, to serve as §6.5c-bis's
+oracle. *It is listed here and not in the table because it is not an edit this
+amendment makes — it is the act that gives the amendment something durable to be
+checked against, and it must happen before edit 4.*
+
+**What does not move:** no pin, no test, no fixture, no behaviour, no other §3
+cell. It does not create, retire or renumber a mutation, and it **rewrites no
+existing evidence** — §6.5d is the standing prohibition.
+
+### 6.1 The defect
+
+§3's M1 row closes:
+
+> **C6 and C7 fail their pin-10 test alone**: the legacy `f4` assertion is one
+> fixture tripping *both*, so re-tagging one leaves the other still reporting the
+> same label and the legacy assertion still passes
+
+**Measured, the radius of each is two, not one.** Transcripts: annex §5.3, §5.4.
+
+| M | §3's cell | Measured |
+|---|---|---|
+| M1·C6 | `tempo_out_of_order_reports_order` | that test **and** `tempo_overlap_reports_order` |
+| M1·C7 | `tempo_overlap_reports_order` | that test **and** `tempo_out_of_order_reports_order` |
+
+### 6.2 Why — and what in the quoted sentence survives
+
+**The sentence's claim about `f4` is correct and is retained.** `f4` is in
+neither radius, for exactly the reason given: it holds one fixture tripping both
+conditions and asserts on the label, which the surviving sibling keeps supplying.
+Measurement confirms it.
+
+**What the sentence omits is that pin 10's own C6 and C7 tests stand in the same
+relation to each other.** Pin 10 pins four assertions per row; the fourth is
+*the aggregate's invariant arm is empty*. Pin 10 also states, in terms:
+
+> C6's natural fixture — `seg(2,3)` then `seg(1,2)` — is *also* overlapping, so
+> it emits C6 **and** C7 under the same label.
+
+Both tests are built by `two_segments(seed, (2, 3), (1, 2))`, differing only in
+the seed. Re-tagging **either** condition therefore places an `Invariant`
+violation in **both** fixtures, and the sibling's fourth assertion fails on it.
+
+**The cell reasoned about the legacy observer and stopped there.** Having
+established the shared-fixture property one clause earlier, it did not ask the
+same question of the tests this contract itself writes.
+
+### 6.3 What must NOT change in response
+
+- **Not the fixtures.** The only shape isolating C6 is an end-before-start
+  segment, which pin 10 **rejects** as *"unnatural and tests a shape the checker
+  should never see."*
+- **Not pin 10's fourth assertion.** §3's M2a derivation depends on it: it is
+  what keeps the seven C4–C10 tests out of M2a's radius *structurally rather than
+  by assumption*.
+- **Not any other M1 cell.** C4, C5, C8, C9 and C10 were measured in the same
+  pass and **matched exactly** — 2, 3, 4, 2 and 3 respectively.
+
+### 6.4 The correction is a strengthening, not a relaxation
+
+**The amendment adds no observer.** Pin 10's tests already supplied both — its
+own `(kind, witness)` pair assertion and the sibling's invariant-arm assertion
+have detected each re-tagging since the moment those tests were written. What
+changes is the **accounted and required** radius: §3 credited the mutation with
+one observer and would have read the second as a mismatch, so the amendment
+**recognizes** an observation the contract was under-counting.
+
+That is a strengthening because the required radius is now two: a future
+implementation that silenced the sibling assertion would fail this gate, where
+under the dispatched cell it would have passed.
+
+### 6.5 The replacements — edits 1, 2 and 4 of the scope table
+
+**Touch rows 9 and 10 already cover both files this amendment writes to**
+(`CONTRACT_P13S29_VIOLATION_KIND.md`, `EVIDENCE_P13S29_EXECUTION.md`). No touch
+row is added.
+
+#### 6.5a — §3's M1 row
+
+Replace the sentence quoted in §6.1 with:
+
+> **C6 and C7 each fail *both* pin-10 order tests, and the legacy `f4` assertion
+> fails for neither.** `f4` holds one fixture tripping both conditions and
+> asserts on the label, so the surviving sibling keeps supplying it — but pin
+> 10's C6 and C7 tests stand in that same relation to *each other*: both are
+> `two_segments(seed, (2, 3), (1, 2))`, which pin 10 establishes emits C6 **and**
+> C7. Re-tagging either puts an `Invariant` violation into both fixtures, so the
+> sibling's **fourth** assertion — *the aggregate's invariant arm is empty* —
+> fails alongside the mutated condition's own pair assertion. **Measured, not
+> derived; the fixtures are shared by pin 10's deliberate choice and cannot be
+> separated without the end-before-start segment pin 10 rejects.**
+
+#### 6.5b — §3's preamble count
+
+§3's preamble opens a paragraph with:
+
+> **Four cells were measured, not derived, and the difference matters.**
+
+**Six are now measured**, and a count left standing beside what it counts is
+itself one of the ledger's recurring defects. **Do not edit that sentence** — it
+is an accurate statement about what was measured *before ratification*, and
+rewriting it would destroy a true historical claim to fix a staleness. Instead
+**append to the end of that same paragraph**:
+
+> **Execution measured a fifth and sixth cell, M1·C6 and M1·C7; amendment 1
+> records them and authorizes their corrected radii.** They are not among the
+> four because they reach only tests this contract writes — the criterion that
+> sent the other four to measurement was *reaching tests the contract did not
+> write*, and that criterion was wrong. **The operative property is whether a
+> fixture is shared, not who authored the test.**
+
+*This is deliberately an append, not a rewrite: the paragraph's subject is the
+pre-ratification derivation and its failures, and the amendment is a later event
+in the same record.*
+
+#### 6.5c — the annex append, pinned as a source template
+
+`spec/EVIDENCE_P13S29_EXECUTION.md` gains a new final section **§8**. **It is
+pinned as source, not described by its contents** — a content description admits
+a truncated or differently scoped record that still satisfies every "carries X"
+clause, which is what an earlier draft of this subsection did. **Exactly one
+slot, `{RATIFICATION_HASH}`**; everything else verbatim.
+
+~~~
+## §8. Amendment 1: resolution and resumption
+
+Amendment 1 is ratified at `{RATIFICATION_HASH}` and landed by this commit. It
+corrects two radius cells in the contract's §3 and changes no pin, test, fixture
+or behaviour.
+
+**§5 and §7 above are the dated execution record and are not edited.** They
+state what was expected, what was observed, and why execution stopped. The
+mismatch they record is the reason this amendment exists; reconciling them would
+remove it.
+
+### 8.1 The corrected radii
+
+| M | Dispatched cell (§5) | Corrected cell, measured |
+|---|---|---|
+| M1·C6 | `tempo_out_of_order_reports_order` | that test **and** `tempo_overlap_reports_order` |
+| M1·C7 | `tempo_overlap_reports_order` | that test **and** `tempo_out_of_order_reports_order` |
+
+Both were observed before the halt. The transcripts in §5.3 and §5.4 stand as
+the observation and **were not re-run**: the amendment corrects the expectation
+they were compared against, not the observation.
+
+### 8.2 Resumption
+
+The mutation sequence resumes at **M2**. M1 is complete — C4, C5, C8, C9 and C10
+matched their dispatched cells, and C6 and C7 match the corrected cells above.
+~~~
+
+**Extraction endpoint — the same boundary rule as §6.5c-bis.** §8 runs from its
+`## §8.` heading to the **last line before the next `## §` heading, or EOF if
+none**. Normalize with §6.5c-bis's canonical serialization, then compare for
+**equality**. Not "contains", not "mentions".
+
+**Later evidence sections are expressly permitted and do not disturb A4.** M2
+onward still needs its transcripts, and they land as **§9 and beyond**. *Had §8
+been defined as "heading to EOF", the very next evidence section would have
+invalidated A4 — a gate that the work it gates is guaranteed to break.*
+
+**§5 is closed at M1 and must not be extended.** It is digest-frozen by
+§6.5c-bis, so appending M2's rows to the expected-versus-observed matrix — the
+obvious place for them — **would break A4(b).** §9 continues the matrix under
+its own heading and carries M2 onward. *This is a consequence of freezing an
+open section, and it is stated here because nothing else would warn the
+executor before the gate failed.*
+
+**`landed by this commit`, never a landing hash** — the annex lands *in* that
+commit, and pin 12 already states why: *a commit cannot carry its own id.*
+
+**§5 and §7 are NOT edited.** §5's table keeps its dispatched cells, its two ❌
+marks and its *"the phase is halted at M1"* opening; §7 keeps the finding in the
+tense it was found in. §6.5c-bis pins the oracle.
+
+#### 6.5c-bis — the oracle for §5 and §7
+
+**"Byte-identical to their pre-amendment state" needs something durable to
+compare against, and the annex is untracked.** Once §8 is appended there is
+nothing left to diff. Two measures, both required:
+
+**1. The ratification act commits the pre-amendment annex.** Ratification stages
+`spec/EVIDENCE_P13S29_EXECUTION.md` exactly as it stands at the halt — §1–§7,
+**no §8** — under touch row 10. **That commit's blob is the named oracle**, and
+A4 is checked with `git show <ratification-commit>:spec/EVIDENCE_P13S29_EXECUTION.md`.
+*This is also what makes the amendment reviewable at all: an untracked evidence
+file cannot be cited by a frozen document.*
+
+**2. Digests, pinned here, as the oracle's oracle.**
+
+**The canonical byte serialization, pinned exactly — a digest with an inferred
+serialization is a digest nobody else can reproduce.** In order:
+
+1. Read the file as bytes and **decode UTF-8**. The annex is **LF-only**; a CRLF
+   copy is out of scope and will not reproduce these hashes.
+2. Find section starts by `^## §\d+\.` (multiline). A slice runs from its own
+   heading — **the heading line is included** — to the byte before the next such
+   heading, or to EOF for the last.
+3. Split the slice into lines and **right-strip each line** (trailing spaces and
+   tabs).
+4. **Repeat while the last retained line is empty *or* is exactly `---`: drop
+   it.** *One loop, not three passes — a `---` and the blank lines around it are
+   removed together however they interleave.*
+5. **Join the retained lines with `\n`, and emit NO terminal newline.**
+6. **SHA-256 over the UTF-8 bytes of that string.**
+
+**Step 5 is the one that actually needs pinning.** An ordinary
+`"\n".join(lines) + "\n"` — the natural way to write a file back out — yields
+`53b32278…` for §5 and `eb704854…` for §7 instead of the pinned values. *The
+digests reproduce only because there is no terminal newline, and nothing in an
+earlier draft said so.*
+
+*Steps 2–3 use `^## §\d+\.` and any line splitter that agrees with LF splitting;
+verified that `str.splitlines()` and `split("\n")` produce identical digests for
+both slices, the annex containing no form feed, vertical tab or U+2028.*
+
+| Slice | SHA-256 | Lines |
+|---|---|---|
+| annex §5 | `40ce82a70339159024c69dd5e280d8bd6846efbeb1eecd5b7971a2737826f74b` | 134 |
+| annex §7 | `cdd9bfd91da5091174201b1bc16aea6a5f162cc5f6d8553f6d58d7c56aacccd8` | 76 |
+
+**The slice rule is what makes the §7 digest stable across the append.** §7
+currently ends at EOF and will end at §8's heading; the rule ends it at the last
+non-blank line either way, so **appending §8 must not move either digest.**
+*A rule defined as "to EOF" would have made §7's digest change by construction
+and the gate unfalsifiable.*
+
+#### 6.5d — the prohibition on rewriting evidence
+
+**An earlier draft's gate A4 would have rewritten §5's cells and removed the
+halt notice. That is prohibited, and the prohibition is the reason this
+subsection exists.**
+
+§5 and §7 are the **dated record of what was expected, what was observed, and
+why execution stopped.** Overwriting the expectation with the corrected one
+would leave an annex in which the observed radius matches the recorded cell
+everywhere — **an annex that no longer contains the reason this amendment
+exists.** The mismatch *is* the evidence.
+
+**The rule, stated generally:** an execution record is appended to, never
+reconciled. A correction is a later event in the record, not a revision of an
+earlier one. *This is the same discipline `PASS13_CANDIDATES.md` status cells
+already carry — appended to, not rewritten — and the same reason §6.5b appends
+to §3's preamble rather than editing its count.*
+
+### 6.6 The generalization this amendment explicitly declines to make
+
+**It would be wrong to conclude that same-label conditions always cross-talk.**
+The same pass measured the other two shared-label pairs and found no cross-talk
+in either:
+
+- **C4/C5**, sharing `req:time:tempo-segment-shape`: `Constant`-with-mismatch and
+  non-constant-missing-`end_tempo` are mutually exclusive shapes.
+- **C8/C9**, sharing `req:time:aleatoric-reference-locality`: distinct fixtures,
+  each aggregate carrying exactly one violation.
+
+**The property that matters is fixture identity, not label identity**, and only
+C6/C7 share a fixture shape.
+
+### 6.7 The defect class, for the ledger
+
+**The one-hop correction**, the recurring shape: a fact established in one pin
+is not carried into the section that depends on it — here within a single table
+cell, which cites the shared-fixture property about `f4` in one clause and
+overlooks it about pin 10's own tests in the next.
+
+§3's preamble already records that **all four** of its measured cells differed
+from static reading, and measured them because they reached tests the contract
+did not write. **C6 and C7 reach tests the contract *did* write — which is why
+they were derived rather than measured.** Authorship of a test is not knowledge
+of its fixture's reach.
+
+### 6.8 Gate
+
+- **A1.** §3's M1 row carries §6.5a's replacement text, and §3's preamble
+  paragraph carries §6.5b's appended sentences with its opening
+  *"Four cells were measured"* sentence **unedited**. The superseded sentence
+  survives in the file **exactly once**, inside §6.1's blockquote, where it is a
+  dated quotation of what was corrected — **not "absent from the file", which
+  this amendment makes permanently unsatisfiable by quoting it.** Checked by
+  stripping blockquote markers and counting: **one** occurrence, and it is
+  §6.1's.
+- **A2.** M1·C6 and M1·C7 each observed, each failing **exactly**
+  `tempo_out_of_order_reports_order` and `tempo_overlap_reports_order`, with the
+  failing assertions verbatim in the annex — and each restoring to
+  `44 / 1604 / 0 / 0`.
+- **A3.** **Measured against the halt checkpoint, not against `cea21cd`.** The
+  ratification commit predates every pin-10 test, so "no test differs from
+  `cea21cd`" is unsatisfiable by construction — the tests P13-S29 exists to add
+  necessarily differ from it. The checkpoint is the working tree at the M1 halt:
+  `44 suites / 1604 passed / 0 failed / 0 ignored`, annex §4. Against it:
+  **no implementation, test or fixture change is attributable to amendment 1**,
+  and **no staged hunk in `crates/` belongs to it.** Amendment 1's diff touches
+  exactly two files, `spec/CONTRACT_P13S29_VIOLATION_KIND.md` and
+  `spec/EVIDENCE_P13S29_EXECUTION.md`.
+- **A4.** Two checks, both mechanical:
+
+  **(a) The append.** The annex's §8, normalized per §6.5c, **equals** §6.5c's
+  template with `{RATIFICATION_HASH}` filled — including the literal
+  `landed by this commit`. Whole-section equality, not presence of topics.
+
+  **(b) The preserved record.** Annex §5 and §7, sliced and normalized per
+  §6.5c-bis, hash to `40ce82a7…f74b` and `cdd9bfd9…ccd8`, and are byte-identical
+  to the same slices in `git show <ratification-commit>:spec/EVIDENCE_P13S29_EXECUTION.md`.
+  Halt notice and ❌ marks intact. **This check is also what observes the
+  ratification act**: if the ratification commit does not contain the
+  pre-amendment annex, the `git show` does not resolve and A4(b) cannot pass.
+
+  *A4 observes an append; it must never observe a reconciliation (§6.5d).*
+- **A5.** §6's status block carries §6.9's exact ratified form, and — at landing
+  — its exact landed form and the historical marking.
+
+  **The contract's own top status has two permitted values, and A5 accepts
+  whichever the landing commit makes true:**
+
+  | Landing | Contract's top status must read |
+  |---|---|
+  | Amendment 1 lands **alone**, contract still mid-flight | `STATUS: RATIFIED; DISPATCHED.` — unchanged |
+  | Amendment 1 lands **in the same commit as P13-S29** | pin 12's exact landed transition, `STATUS: LANDED by this commit.` |
+
+  *An earlier draft required the first unconditionally, which **rejected
+  compliance with pin 12** in the same-commit case §6.9 explicitly permits — a
+  gate contradicting a lifecycle the same amendment allows.* **What A5 forbids
+  in both branches is unchanged: no pin-12 transition attributable to amendment
+  1 itself.** *Without A5 the scope table's edit 3 would be a prescribed edit no
+  gate observes.*
+
+### 6.9 This amendment's own lifecycle
+
+**Mirrors pin 12's form for the contract, with the transitions an amendment
+needs and a contract does not.**
+
+- **On ratification:** §6's status block reads exactly
+
+  `STATUS: RATIFIED; FROZEN. Execution of P13-S29 resumes at M2.`
+
+  and the **frozen-amendment statement** is added:
+
+  > The replacements are executed, not edited; a further defect is its own
+  > amendment with its own review round.
+
+  **This adapts P13-S26's formula and does not reproduce it word for word.**
+  The precedent reads *"The amended pins are executed, not edited; a further
+  defect is its own amendment with its own review round."*
+  (`CONTRACT_P13S26_INVARIANT10_SURFACE.md:1656`). **Amendment 1 amends no pin**
+  — it replaces two radius cells — so quoting the precedent exactly would assert
+  something false about this amendment. The second clause is verbatim; the first
+  substitutes *replacements* for *amended pins*. *An earlier draft claimed exact
+  reuse while paraphrasing; the claim, not the wording, was the defect.*
+
+- **Ratification resumes execution, and Amendment 1's own execution comes
+  first.** The order is pinned:
+
+  1. **Ratify** — §6's status block takes the form above; the pre-amendment
+     annex is committed as §6.5c-bis's oracle.
+  2. **Apply edits 1, 2 and 4** — the M1 row replacement, the §3 preamble
+     append, and the annex §8 append.
+  3. **Pass A1–A5.**
+  4. **Resume the mutation sequence at M2.**
+
+  *"Ratification resumes execution at M2" must not be read as skipping steps 2
+  and 3: the amendment has its own execution, and M2 follows it.*
+
+  The resumption point is **M2** — not M1.
+  M1·C6 and M1·C7 were **already observed** (annex §5.3, §5.4); the amendment
+  corrects the expectation they were compared against, not the observation. The
+  tree is unchanged between those runs and this amendment — A3's checkpoint is
+  what establishes that — so **A2 is discharged by the existing dated
+  transcripts and requires no re-run.** *Re-running would produce a second,
+  identical transcript and a record implying the first was doubted.*
+
+- **On landing:** exactly
+
+  `STATUS: LANDED by this commit.`
+
+  — **no hash**; a commit cannot carry its own id.
+
+- **On landing**, §6's review-round record is marked a **dated historical
+  record**, in the form P13-S26 §9 uses: *§6's findings and dispositions are an
+  account of what was found and decided, and state no current condition.*
+
+- **P13-S29's own §0-and-above review blocks are NOT marked historical by this
+  amendment.** Pin 12 marks them **on the contract's landing**, which has not
+  happened — execution is mid-flight. *Marking them here would date a record
+  whose subject is still live.*
+
+**This amendment does not alter pin 12.** The contract's own status block still
+reads `STATUS: RATIFIED; DISPATCHED.` and transitions to `LANDED` on the
+contract's landing commit, which may be the same commit that lands this
+amendment or a later one.
