@@ -45,8 +45,11 @@ version literals in `.tex` prose.
 is written.** `requirement_labels.rs` scans `spec/` **as files, not as git
 objects**, so an *untracked draft* is already in scope: the instant a draft cites
 a label the `.tex` does not define, `every_requirement_citation_is_defined` goes
-red. Nothing is wrong with the tree, and the baseline the mutation discipline
-depends on is gone. This has now happened four times.
+red. **Nothing tracked has regressed** — no committed file is wrong, and the
+tracked tree at `HEAD` is still green — **but the baseline you can actually
+observe is red**, because the suite reads the working directory and the draft is
+in it. That is the baseline the mutation discipline depends on, so the effect is
+the same as a real regression. This has recurred across multiple contracts.
 
 The standing procedure:
 
