@@ -2108,3 +2108,210 @@ needs and a contract does not.**
 reads `STATUS: RATIFIED; DISPATCHED.` and transitions to `LANDED` on the
 contract's landing commit, which may be the same commit that lands this
 amendment or a later one.
+
+---
+
+## §7. AMENDMENT 2 — PIN 13'S APPEND DATE, POST-LANDING AND ADMINISTRATIVE
+
+STATUS: RATIFIED; FROZEN.
+
+Ratified 2026-08-12 on the authority of the repository owner. The correction is
+appended, not edited; a further defect is its own amendment with its own review
+round.
+
+### 7.0 Scope — the complete write surface, in two commits
+
+**The normative correction is one appended sentence in the ledger. The write
+surface is larger than the correction, and an earlier draft of this section said
+*"one appended sentence … nothing else"* while §7.6 below prescribed three
+further edits.** Both statements cannot hold; the surface is pinned here.
+
+| | Commit | Files | Contents |
+|---|---|---|---|
+| 1 | **Ratification** | `spec/CONTRACT_P13S29_VIOLATION_KIND.md` **only** | §7's status takes its ratified form and gains the frozen statement (§7.6). **The ledger correction stays UNSTAGED.** |
+| 2 | **Execution / landing** | that file **and** `spec/PASS13_CANDIDATES.md` | the ledger append (§7.3); §7's landed status; §7's historical marker |
+
+**Then B1–B5.**
+
+**What does not move, in either commit:** no pin, no test, no fixture, no
+mutation, no radius, no behaviour, no `.tex`, no `.pdf`, nothing under `crates/`.
+It does not reopen amendment 1, and it changes no lifecycle transition belonging
+to P13-S29 or to amendment 1 — both are landed at `52fcf37`.
+
+### 7.1 The defect
+
+Pin 13's `APPEND` opens:
+
+> **RESOLVED 2026-08-11 by `spec/CONTRACT_P13S29_VIOLATION_KIND.md`, disposition (b) type-neutral.**
+
+**Actual resolution and landing were both 2026-08-12.** The contract's own
+ratification line says so (`§0`: *"Ratified 2026-08-12"*), as does amendment 1's.
+The pinned date is the date the append text was **drafted**, and pin 13 froze it
+before the dates diverged.
+
+**This is not a new discovery.** Gate 10 rejected the artifact over exactly this
+character at landing, and annex §11.1 recorded it and flagged it for the owner
+rather than settling it. *That is the gate working: a one-character deviation
+from a pinned source was made visible instead of absorbed.*
+
+### 7.2 What is preserved, and why — append-only, not "history would change"
+
+**Pin 13 is NOT edited.** Its `APPEND` keeps `2026-08-11`.
+
+**Annex §11.1 is NOT edited.** It records the deviation in the tense it was found.
+
+**The original ledger sentence is NOT edited**, and the reason is the ledger's own
+convention: **a status cell is appended to, never rewritten.** It records what was
+said when it was said, and a correction is a later entry rather than a revision of
+an earlier one. **`CLAUDE.md:12` states the rule** — *"Status cells are appended
+to, not rewritten, so an opener can lag the truth by several rungs"* — and this row
+is a status cell. *Attributed to `CLAUDE.md`, not to `PASS13_CANDIDATES.md`: an
+earlier draft said the ledger states the rule of itself, and it does not. The
+convention is imposed on the ledger by the standing rules, which is a stronger
+place for it to live and a different citation.*
+
+**An earlier draft of this subsection gave a false reason** — that rewriting the
+sentence *"would make a discharged gate's record false about the tree it
+examined."* **That is wrong. `52fcf37` is immutable.** Gate 10's observation was
+made against that commit's content and remains true of it no matter what any later
+commit says; nothing written now can reach backwards and falsify it. *Recorded
+rather than quietly replaced, because the false reason is the more persuasive one
+and would otherwise be re-derived.*
+
+### 7.3 The correction, pinned verbatim
+
+Appended **inside** the S29 row, immediately before its terminal `|`, after
+`**`GraphInvariant` did not move: 21 variants, unchanged.**`:
+
+```
+**CORRECTION, appended 2026-08-12:** the *resolved* date above reads 2026-08-11 because that is the date pin 13 pinned its append text during drafting. **Actual resolution and landing were both 2026-08-12** — ratified `cea21cd`, amendment 1 at `29ef3af`/`e7bd12c`, landed `52fcf37`. The original sentence stands because this ledger's status cells are appended to, never rewritten; pin 13 pins it verbatim and gate 10 verified the artifact against it at landing.
+```
+
+### 7.4 Gate 10 is discharged and is NOT re-run
+
+**After this append, gate 10's reconstruction no longer holds of the working tree,
+and that is correct rather than a regression.** Gate 10 is a **landing** gate: it
+observed the append at `52fcf37`, where
+`strip(added) == strip(removed) + " " + APPEND` was true **of that commit**, and it
+has no standing form and no CI observer.
+
+**Stated because the alternative is a trap:** an executor who re-ran gate 10 after
+this amendment would read its failure as a defect and "repair" it by deleting the
+correction — restoring a date everyone now knows is wrong. *A reconstruction gate
+is valid only against the commit that performed the append.*
+
+### 7.5 Gate
+
+**`RC` is the ratification commit and `LC` the landing commit.** Every oracle
+below is read from a **commit**, never from the working copy — *an oracle taken
+from the working copy is not an oracle: an executor who edits the template and
+the artifact together satisfies it, which is exactly the hole an earlier draft of
+B1 left open.*
+
+- **B1 — exact append-only reconstruction of the S29 row, both oracles from `RC`.**
+  - `ORACLE` = the single line beginning `| P13-S29 ` in
+    `git show RC:spec/PASS13_CANDIDATES.md`;
+  - `CORRECTION` = the fenced text of §7.3 in
+    `git show RC:spec/CONTRACT_P13S29_VIOLATION_KIND.md`.
+
+  Let `trim(x)` remove trailing whitespace, then one trailing `|`, then trailing
+  whitespace again. Require **all** of:
+  - `git diff RC LC -U0 -- spec/PASS13_CANDIDATES.md` yields **exactly one**
+    removed and **exactly one** added line, both beginning `| P13-S29 `;
+  - the added row **equals** `trim(ORACLE) + " " + CORRECTION + " |"`;
+  - `CORRECTION` occurs **exactly once in `spec/PASS13_CANDIDATES.md`** — *the
+    file is named because "the whole file" was ambiguous between the ledger and
+    the contract, and the contract necessarily contains it too, in §7.3.*
+
+  *A presence check admits a duplicated correction, a truncated one, an edit to a
+  neighbouring row, or a rewritten prefix. Equality against `RC`'s row admits
+  none of those.*
+
+- **B2 — the frozen bytes, in three parts, each with its command.**
+  - **The annex is untouched:** `git show 52fcf37:spec/EVIDENCE_P13S29_EXECUTION.md`
+    **equals** the working file, byte for byte. *This observes annex §11.1 without
+    slicing it.*
+  - **Everything before §7 is untouched:** let
+    `BLOB = git show 52fcf37:spec/CONTRACT_P13S29_VIOLATION_KIND.md`. The working
+    file's **first `len(BLOB)` bytes equal `BLOB`**, and the remainder begins
+    `\n---\n\n## §7.`. *This observes **pin 13's `APPEND`, the contract's top
+    status, §6's status and historical marker, and §3 as amendment 1 left it** in
+    one comparison, so §7.6 needs no separate "not touched" clause that could
+    drift out of step with it.*
+  - **§7's ratified body is untouched by landing.**
+    `git diff RC LC -U0 -- spec/CONTRACT_P13S29_VIOLATION_KIND.md` contains
+    **exactly**: one removed line `STATUS: RATIFIED; FROZEN.`; one added line
+    `STATUS: LANDED by this commit.`; and **four** added lines for the marker —
+    **one empty line** followed by §7.6's historical marker block, equal to it
+    line for line. **No other added or removed line.**
+
+    *The empty line is counted, not overlooked: a markdown blockquote needs a
+    blank line before it, so the insertion is four lines and a gate demanding
+    three would be unsatisfiable by the edit it prescribes.*
+
+    *Without this, B2's prefix protects only what precedes §7 and B5 checks
+    selected lines inside it — leaving the ratified §7 body, including §7.3's
+    template and the whole gate, editable during landing.*
+
+- **B3 — write surface, read from the commits rather than the index.** *"The
+  staged set" is not durable once the commit exists; a path set relative to the
+  commit's parent is.*
+  - `git show --name-only --format= RC` is exactly
+    `spec/CONTRACT_P13S29_VIOLATION_KIND.md`;
+  - `git show --name-only --format= LC` is exactly that file **and**
+    `spec/PASS13_CANDIDATES.md`;
+  - neither names any path under `crates/`, any `.pdf`, or any `.tex`.
+
+- **B4 — baseline unchanged:** `44 suites / 1606 passed / 0 failed / 0 ignored`.
+  *Asserted rather than assumed: the ledger is not compiled, but
+  `requirement_labels.rs` scans `spec/`, so a ledger edit is not automatically
+  inert.*
+
+- **B5 — §7's lifecycle, complete rather than sampled.**
+  - **At `RC`:** §7's status line is exactly `STATUS: RATIFIED; FROZEN.`, and
+    §7.6's **frozen statement block** is present, equal to its pinned source line
+    for line.
+  - **At `LC`:** §7's status line is exactly `STATUS: LANDED by this commit.` —
+    **no hash** — the **complete** historical marker block of §7.6 is present and
+    equal to its pinned source **line for line, not by its first line**, and
+    **the frozen statement is byte-identical to its form at `RC`.** *A landing
+    that swapped the status and dropped the frozen statement would pass a
+    first-line check; ratification freezes that statement, and landing must carry
+    it.*
+  - **The contract's top status and §6's status are unchanged** — **B2's prefix
+    equality establishes this**; B5 names where the check lives rather than
+    restating it.
+
+### 7.6 This amendment's own lifecycle
+
+**On ratification**, §7's status block reads exactly `STATUS: RATIFIED; FROZEN.`
+followed by a blank line and this **frozen statement block**, pinned as source:
+
+```
+Ratified 2026-08-12 on the authority of the repository owner. The correction is
+appended, not edited; a further defect is its own amendment with its own review
+round.
+```
+
+**"Appended, not edited" — not "the replacement is executed, not edited".** This
+amendment *appends* a correction; it replaces nothing, and the standing formula's
+noun would name an act it does not perform. *Amendment 1 did replace two radius
+cells and used the replacement wording correctly; the formula is per-amendment,
+not boilerplate.*
+
+**On landing**, §7's status line becomes exactly `STATUS: LANDED by this commit.`
+— no hash — **the frozen statement block above is left in place**, and this
+**historical marker block** is inserted after it, **separated by one empty line**,
+pinned as source:
+
+```
+> **DATED HISTORICAL RECORD — amendment 2 is ratified and executed. §7's
+> correction, its rationale and its gate are an account of what was found and
+> decided on 2026-08-12, and state no current condition.**
+```
+
+**Nothing else in §7 changes between `RC` and `LC`**, and **B2's third part is
+what observes that** — a status swap and this marker's lines, and no other line.
+
+**P13-S29's and amendment 1's status blocks are NOT touched**, and **B2's prefix
+equality is what observes that** — both lie before §7.
