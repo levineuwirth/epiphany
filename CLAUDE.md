@@ -41,6 +41,30 @@ contract's table: `crates/epiphany-testkit/tests/requirement_labels.rs` (its
 hardcoded requirement counts move whenever a `.tex` gains a requirement), and
 version literals in `.tex` prose.
 
+**A contract that proposes a `req:` label breaks the citation gate the moment it
+is written.** `requirement_labels.rs` scans `spec/` **as files, not as git
+objects**, so an *untracked draft* is already in scope: the instant a draft cites
+a label the `.tex` does not define, `every_requirement_citation_is_defined` goes
+red. Nothing is wrong with the tree, and the baseline the mutation discipline
+depends on is gone. This has now happened four times.
+
+The standing procedure:
+
+- **Proposing a new `req:` label requires a temporary `DISCUSSED_NOT_CITED` row**
+  in `requirement_labels.rs`, added as **review scaffolding** so the baseline
+  stays green while the contract is still under review.
+- **That scaffolding authorizes no dispatch work.** It is not ratification, not
+  dispatch, and licenses no pin execution — only the drafting and review of the
+  contract that named the label.
+- **The minting pin owns the row's removal.** Whichever pin adds the requirement
+  to the `.tex` deletes the row in the same pin, because the row's claim
+  (*discussed, never cited*) becomes false at that moment. Removed by hand if the
+  contract is abandoned or the label changes.
+- **A landing gate must prove the citation test passes because the label exists**,
+  not because it is still allowlisted: assert the temporary row is **absent** and
+  the `\label{…}` is **present**. *Those two states are indistinguishable from a
+  green test alone, and a stale row is inert — nothing else would ever catch it.*
+
 **Mutation-first.** Every regression test is verified by re-introducing the bug
 and **observing** the failure. Reasoning that a mutation *would* fail signs
 nothing. A **compile error is not a test failure** — a mutation that does not
