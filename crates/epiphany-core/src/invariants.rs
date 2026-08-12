@@ -1,11 +1,16 @@
 //! The Chapter 5 graph invariants (Chapter 5 §"Graph Invariants").
 //!
+//! Violations carry a two-armed [`ViolationKind`]: `Invariant` for the Chapter 5
+//! graph invariants, `Requirement` for a normative requirement named by its
+//! label. A requirement failure is not an invariant failure, and neither arm is
+//! a fallback for the other.
+//!
 //! The spec enumerates a set of structural invariants every well-formed score
 //! graph must satisfy. They are *property tests in CI, not runtime assertions
 //! in release builds* (QUICKSTART, Agent B): this module is the checker the
 //! property tests and generators (see [`crate::generators`]) drive. Each
 //! enumerated invariant has exactly one check returning a typed
-//! [`InvariantViolation`] witness identifying the smallest offending objects.
+//! [`WellFormednessViolation`] witness identifying the smallest offending objects.
 //!
 //! **Count.** [`GraphInvariant::all`] is the single origin: its length *is* the
 //! count, and no prose here restates it — a restated count goes stale silently
@@ -116,17 +121,19 @@ pub enum GraphInvariant {
     ///   - TempoSegment.start — anchor target.
     ///   - TempoSegment.end — anchor target.
     ///
-    ///     Beyond that surface, further checks are reported under this same tag
-    ///     and are NOT part of the normative invariant 10: tempo-map segment
-    ///     shape, ordering and non-overlap (Chapter 3,
-    ///     `req:time:tempo-segment-order`); aleatoric ordering and bounds
-    ///     region locality (Chapter 3,
+    ///     Beyond that surface, the checker reaches four rules that are NOT
+    ///     part of the normative invariant 10 and **no longer report under this
+    ///     tag**. Since P13-S29 each carries its own `req:` label in the
+    ///     `Requirement` arm of [`ViolationKind`]: tempo segment shape
+    ///     (Chapter 3, `req:time:tempo-segment-shape`); tempo segment ordering
+    ///     and non-overlap (Chapter 3, `req:time:tempo-segment-order`);
+    ///     aleatoric ordering and bounds region locality (Chapter 3,
     ///     `req:time:aleatoric-reference-locality`); and accidental
     ///     modification expressibility (Chapter 4,
-    ///     `req:tuning:accidental-modification-compatibility`). That
-    ///     multiplexing is filed as P13-S29 — the public `check_invariant`
-    ///     filter and this violation's `Display` attribute those failures to
-    ///     invariant 10. Repairing it is a behaviour change, out of scope here.
+    ///     `req:tuning:accidental-modification-compatibility`). Neither
+    ///     `check_invariant` nor this violation's `Display` attributes them to
+    ///     invariant 10 any more. [`check_invariants`] still returns them, so a
+    ///     caller asking "is this graph well-formed" keeps its coverage.
     CrossCuttingRefsResolve,
     /// 11. Identifiers are unique within their kind (every id kind), with
     ///     reserved-namespace (`SYSTEM_DERIVED`) misuse, tombstone/live
@@ -243,49 +250,65 @@ impl GraphInvariant {
     }
 }
 
-/// A violation of a graph invariant: which invariant, and a short witness
-/// naming the smallest offending objects (Chapter 5; QUICKSTART: "minimizes
-/// invariant violations to a small witness for debugging").
+/// What a [`WellFormednessViolation`] failed. `Invariant` names a numbered
+/// Chapter 5 graph invariant; `Requirement` names a normative requirement by its
+/// label. A requirement failure is not an invariant failure, and there is no
+/// third arm and no unclassified fallback.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum ViolationKind {
+    Invariant(GraphInvariant),
+    Requirement(&'static str),
+}
+
+/// A well-formedness failure: one [`ViolationKind`] — `Invariant` or
+/// `Requirement` — and the witness identifying the smallest offending objects.
+/// A requirement failure is not an invariant failure.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct InvariantViolation {
-    pub invariant: GraphInvariant,
+pub struct WellFormednessViolation {
+    pub kind: ViolationKind,
     pub witness: String,
 }
 
-impl InvariantViolation {
-    fn new(invariant: GraphInvariant, witness: impl Into<String>) -> Self {
-        InvariantViolation {
-            invariant,
+impl WellFormednessViolation {
+    fn invariant(which: GraphInvariant, witness: impl Into<String>) -> Self {
+        WellFormednessViolation {
+            kind: ViolationKind::Invariant(which),
+            witness: witness.into(),
+        }
+    }
+
+    fn requirement(label: &'static str, witness: impl Into<String>) -> Self {
+        WellFormednessViolation {
+            kind: ViolationKind::Requirement(label),
             witness: witness.into(),
         }
     }
 }
 
-impl core::fmt::Display for InvariantViolation {
+impl core::fmt::Display for WellFormednessViolation {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "invariant {} ({:?}) violated: {}",
-            self.invariant.number(),
-            self.invariant,
-            self.witness
-        )
+        match self.kind {
+            ViolationKind::Invariant(which) => write!(
+                f,
+                "invariant {} ({:?}) violated: {}",
+                which.number(),
+                which,
+                self.witness
+            ),
+            ViolationKind::Requirement(label) => {
+                write!(f, "requirement {label} violated: {}", self.witness)
+            }
+        }
     }
 }
 
-/// A Chapter 5 well-formedness check this crate could not *decide* for a given
-/// score — e.g., a region-overlap test whose extents use symbolic
-/// [`crate::TimeAnchor`]s that need the full tempo/measure machinery (out of this
-/// crate's scope) to place on a common timeline.
-///
-/// [`check_invariants`] stays *sound* — it never raises a false positive on an
-/// undecidable check — but a sound-and-silent checker would treat "couldn't
-/// decide" identically to "clean". [`deferred_checks`] makes the undecided cases
-/// explicit and testable instead, so a stricter conformance profile can choose
-/// to reject them rather than have them pass unseen.
+/// A check the graph could not decide, reported instead of silently passed.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct DeferredCheck {
     /// The invariant whose decision was deferred.
+    ///
+    /// **Not affected by P13-S29's two-arm split**: every deferred check today is
+    /// a genuine graph invariant, correctly attributed.
     pub invariant: GraphInvariant,
     /// A human-readable witness explaining why it could not be decided.
     pub reason: String,
@@ -320,11 +343,18 @@ pub fn deferred_checks(score: &Score) -> Vec<DeferredCheck> {
 /// Checks every Chapter 5 graph invariant over `score`, returning all
 /// violations found (empty iff the graph is well-formed).
 ///
+/// **Comprehensive across both arms of [`ViolationKind`].** It returns graph
+/// invariant failures *and* the Chapter 3/4 requirement failures the checker
+/// reaches, so a caller that wants "is this score well-formed" keeps exactly the
+/// coverage it had before P13-S29 split the tag. The two selectors,
+/// [`check_invariant`] and [`check_requirement`], are projections of this
+/// result; neither is a substitute for it.
+///
 /// This is *sound but incomplete* for the few invariants that need absolute-time
 /// resolution: it never raises a false positive, and the cases it could not
 /// decide are reported separately by [`deferred_checks`] rather than silently
 /// passed.
-pub fn check_invariants(score: &Score) -> Vec<InvariantViolation> {
+pub fn check_invariants(score: &Score) -> Vec<WellFormednessViolation> {
     let idx = GraphIndex::build(score);
     let mut v = Vec::new();
     idx.check_event_voice_backlink(&mut v);
@@ -386,10 +416,26 @@ pub fn measure_anchor_relation(
 }
 
 /// Checks a single invariant (useful for targeted negative property tests).
-pub fn check_invariant(score: &Score, which: GraphInvariant) -> Vec<InvariantViolation> {
+/// Every violation of one graph invariant.
+///
+/// **Projection of [`check_invariants`], filtered to the `Invariant` arm.** A
+/// Chapter 3 or Chapter 4 requirement failure is *not* returned here, however
+/// the checker happens to reach it — use [`check_requirement`] for those.
+pub fn check_invariant(score: &Score, which: GraphInvariant) -> Vec<WellFormednessViolation> {
     check_invariants(score)
         .into_iter()
-        .filter(|v| v.invariant == which)
+        .filter(|v| v.kind == ViolationKind::Invariant(which))
+        .collect()
+}
+
+/// Every violation of one normative requirement, by its label.
+///
+/// **Projection of [`check_invariants`], filtered to the `Requirement` arm** —
+/// the symmetric counterpart of [`check_invariant`].
+pub fn check_requirement(score: &Score, label: &str) -> Vec<WellFormednessViolation> {
+    check_invariants(score)
+        .into_iter()
+        .filter(|v| matches!(v.kind, ViolationKind::Requirement(l) if l == label))
         .collect()
 }
 
@@ -619,11 +665,11 @@ impl<'a> GraphIndex<'a> {
     }
 
     // --- 1. Event -> voice backlink. ----------------------------------------
-    fn check_event_voice_backlink(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_event_voice_backlink(&self, out: &mut Vec<WellFormednessViolation>) {
         for e in self.score.events.iter() {
             let vid = e.voice();
             match self.voice.get(&vid) {
-                None => out.push(InvariantViolation::new(
+                None => out.push(WellFormednessViolation::invariant(
                     GraphInvariant::EventVoiceBacklink,
                     format!(
                         "event {:?} names voice {:?}, which is not in the graph",
@@ -631,32 +677,34 @@ impl<'a> GraphIndex<'a> {
                         vid
                     ),
                 )),
-                Some(v) if !v.events.contains(&e.id()) => out.push(InvariantViolation::new(
-                    GraphInvariant::EventVoiceBacklink,
-                    format!(
-                        "event {:?} names voice {:?}, which does not list it",
-                        e.id(),
-                        vid
-                    ),
-                )),
+                Some(v) if !v.events.contains(&e.id()) => {
+                    out.push(WellFormednessViolation::invariant(
+                        GraphInvariant::EventVoiceBacklink,
+                        format!(
+                            "event {:?} names voice {:?}, which does not list it",
+                            e.id(),
+                            vid
+                        ),
+                    ))
+                }
                 _ => {}
             }
         }
     }
 
     // --- 2. Voice -> event backlink. ----------------------------------------
-    fn check_voice_event_backlink(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_voice_event_backlink(&self, out: &mut Vec<WellFormednessViolation>) {
         for (_r, _si, v) in self.score.voices() {
             for e in &v.events {
                 match self.score.events.get(*e) {
-                    None => out.push(InvariantViolation::new(
+                    None => out.push(WellFormednessViolation::invariant(
                         GraphInvariant::VoiceEventBacklink,
                         format!(
                             "voice {:?} lists event {:?}, absent from the arena",
                             v.id, e
                         ),
                     )),
-                    Some(ev) if ev.voice() != v.id => out.push(InvariantViolation::new(
+                    Some(ev) if ev.voice() != v.id => out.push(WellFormednessViolation::invariant(
                         GraphInvariant::VoiceEventBacklink,
                         format!(
                             "voice {:?} lists event {:?} whose voice is {:?}",
@@ -672,7 +720,7 @@ impl<'a> GraphIndex<'a> {
     }
 
     // --- 3. Events sorted and non-overlapping within a voice. ---------------
-    fn check_voice_events_sorted_non_overlap(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_voice_events_sorted_non_overlap(&self, out: &mut Vec<WellFormednessViolation>) {
         for (_r, _si, v) in self.score.voices() {
             let mut prev: Option<(EventId, Endpoints)> = None;
             for e in &v.events {
@@ -685,7 +733,7 @@ impl<'a> GraphIndex<'a> {
                         if !p_end.le_same_clock(&c_start) {
                             // Either out of order (start < prev start) or
                             // overlapping (prev end > cur start).
-                            out.push(InvariantViolation::new(
+                            out.push(WellFormednessViolation::invariant(
                                 GraphInvariant::VoiceEventsSortedNonOverlap,
                                 format!(
                                     "in voice {:?}, event {:?} starts before event {:?} ends",
@@ -701,7 +749,7 @@ impl<'a> GraphIndex<'a> {
     }
 
     // --- 4. Coordinate variants agree with the region's time model. ---------
-    fn check_event_coordinate_model(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_event_coordinate_model(&self, out: &mut Vec<WellFormednessViolation>) {
         for e in self.score.events.iter() {
             let Some((region, _)) = self.voice_parent.get(&e.voice()) else {
                 continue; // unparented voice: invariant 1/5 reports it
@@ -710,7 +758,7 @@ impl<'a> GraphIndex<'a> {
                 continue;
             };
             if !coordinate_ok(e, *disc) {
-                out.push(InvariantViolation::new(
+                out.push(WellFormednessViolation::invariant(
                     GraphInvariant::EventCoordinateModel,
                     format!(
                         "event {:?} coordinates {:?}/{:?} contradict region {:?} discipline {:?}",
@@ -726,13 +774,13 @@ impl<'a> GraphIndex<'a> {
     }
 
     // --- 5. Containment is a tree. ------------------------------------------
-    fn check_containment_tree(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_containment_tree(&self, out: &mut Vec<WellFormednessViolation>) {
         // Voice id appearing under more than one instance.
         let mut voice_seen: HashMap<VoiceId, StaffInstanceId> = HashMap::new();
         for (_r, si, v) in self.score.voices() {
             if let Some(prev) = voice_seen.insert(v.id, si) {
                 if prev != si {
-                    out.push(InvariantViolation::new(
+                    out.push(WellFormednessViolation::invariant(
                         GraphInvariant::ContainmentTree,
                         format!(
                             "voice {:?} appears in instances {:?} and {:?}",
@@ -748,7 +796,7 @@ impl<'a> GraphIndex<'a> {
             for si in r.staff_instances() {
                 if let Some(prev) = inst_seen.insert(si.id, r.id) {
                     if prev != r.id {
-                        out.push(InvariantViolation::new(
+                        out.push(WellFormednessViolation::invariant(
                             GraphInvariant::ContainmentTree,
                             format!(
                                 "staff instance {:?} appears in regions {:?} and {:?}",
@@ -762,12 +810,12 @@ impl<'a> GraphIndex<'a> {
     }
 
     // --- 6. Instance.staff resolves; no StaffId twice in one region. --------
-    fn check_staff_instance_resolves(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_staff_instance_resolves(&self, out: &mut Vec<WellFormednessViolation>) {
         for r in &self.score.canvas.regions {
             let mut staff_in_region: HashSet<StaffId> = HashSet::new();
             for si in r.staff_instances() {
                 if !self.declared_staves.contains(&si.staff) {
-                    out.push(InvariantViolation::new(
+                    out.push(WellFormednessViolation::invariant(
                         GraphInvariant::StaffInstanceResolves,
                         format!(
                             "staff instance {:?} references undeclared staff {:?}",
@@ -776,7 +824,7 @@ impl<'a> GraphIndex<'a> {
                     ));
                 }
                 if !staff_in_region.insert(si.staff) {
-                    out.push(InvariantViolation::new(
+                    out.push(WellFormednessViolation::invariant(
                         GraphInvariant::StaffInstanceResolves,
                         format!(
                             "staff {:?} is manifested by two instances in region {:?}",
@@ -789,7 +837,7 @@ impl<'a> GraphIndex<'a> {
     }
 
     // --- 7. Region extents: staff_extent matches; no double overlap. --------
-    fn check_region_extents(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_region_extents(&self, out: &mut Vec<WellFormednessViolation>) {
         for r in &self.score.canvas.regions {
             // staff_extent must list exactly the manifested staves, no dups.
             let manifested: BTreeSet<StaffId> =
@@ -797,14 +845,14 @@ impl<'a> GraphIndex<'a> {
             let mut listed = BTreeSet::new();
             for s in &r.staff_extent.staves {
                 if !listed.insert(*s) {
-                    out.push(InvariantViolation::new(
+                    out.push(WellFormednessViolation::invariant(
                         GraphInvariant::RegionExtents,
                         format!("region {:?} staff_extent lists staff {:?} twice", r.id, s),
                     ));
                 }
             }
             if listed != manifested {
-                out.push(InvariantViolation::new(
+                out.push(WellFormednessViolation::invariant(
                     GraphInvariant::RegionExtents,
                     format!(
                         "region {:?} staff_extent {:?} != manifested staves {:?}",
@@ -828,7 +876,7 @@ impl<'a> GraphIndex<'a> {
                     continue;
                 }
                 if self.regions_overlap_in_time(a, b) == Some(true) {
-                    out.push(InvariantViolation::new(
+                    out.push(WellFormednessViolation::invariant(
                         GraphInvariant::RegionExtents,
                         format!(
                             "regions {:?} and {:?} overlap in both time and staff extent",
@@ -881,11 +929,11 @@ impl<'a> GraphIndex<'a> {
     }
 
     // --- 8. Each measure belongs to exactly one instance. -------------------
-    fn check_measure_single_instance(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_measure_single_instance(&self, out: &mut Vec<WellFormednessViolation>) {
         for (mid, owners) in &self.measure_instances {
             let distinct: BTreeSet<_> = owners.iter().copied().collect();
             if distinct.len() > 1 {
-                out.push(InvariantViolation::new(
+                out.push(WellFormednessViolation::invariant(
                     GraphInvariant::MeasureSingleInstance,
                     format!("measure {:?} belongs to instances {:?}", mid, distinct),
                 ));
@@ -894,10 +942,10 @@ impl<'a> GraphIndex<'a> {
     }
 
     // --- 9. Anchor offset variant agrees with target's time model. ----------
-    fn check_anchor_offset_model(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_anchor_offset_model(&self, out: &mut Vec<WellFormednessViolation>) {
         for a in self.collect_anchors() {
             if let Some(false) = self.offset_ok(a) {
-                out.push(InvariantViolation::new(
+                out.push(WellFormednessViolation::invariant(
                     GraphInvariant::AnchorOffsetModel,
                     format!(
                         "anchor {:?} offset contradicts its target region's time model",
@@ -1035,11 +1083,11 @@ impl<'a> GraphIndex<'a> {
     }
 
     // --- 10. Cross-cutting references resolve. ------------------------------
-    fn check_cross_cutting_refs(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_cross_cutting_refs(&self, out: &mut Vec<WellFormednessViolation>) {
         let live_event = |e: &EventId| self.score.events.contains(*e);
         let mut flag = |cond: bool, what: String| {
             if !cond {
-                out.push(InvariantViolation::new(
+                out.push(WellFormednessViolation::invariant(
                     GraphInvariant::CrossCuttingRefsResolve,
                     what,
                 ));
@@ -1420,17 +1468,21 @@ impl<'a> GraphIndex<'a> {
     //
     // The spec enumerates no dedicated tempo graph invariant, but the tempo
     // map's segment anchors are graph references and its segments carry
-    // structural requirements; both are surfaced here under invariant 10
-    // (reference resolution + graph integrity). Segment-anchor *offset*
+    // structural requirements. **Since P13-S29 these report under two different
+    // arms**: the anchors stay invariant 10, while shape/`end_tempo`
+    // compatibility reports `req:time:tempo-segment-shape` and ordering and
+    // non-overlap report `req:time:tempo-segment-order`. Segment-anchor *offset*
     // agreement is invariant 9's (the anchors are in `collect_anchors`).
-    fn check_tempo_maps(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_tempo_maps(&self, out: &mut Vec<WellFormednessViolation>) {
         use crate::tempo::TempoShape;
-        let mut flag = |cond: bool, what: String| {
+        // P13-S29: anchor existence is invariant 10; shape, order and overlap
+        // are Chapter 3 requirements and say so.
+        let mut flag = |kind: ViolationKind, cond: bool, what: String| {
             if !cond {
-                out.push(InvariantViolation::new(
-                    GraphInvariant::CrossCuttingRefsResolve,
-                    what,
-                ));
+                out.push(WellFormednessViolation {
+                    kind,
+                    witness: what,
+                });
             }
         };
         // Self-contained musical position of a segment boundary: a region-start
@@ -1458,11 +1510,13 @@ impl<'a> GraphIndex<'a> {
             for seg in &tm.segments {
                 // Segment boundary anchor targets must resolve (invariant 10).
                 flag(
+                    ViolationKind::Invariant(GraphInvariant::CrossCuttingRefsResolve),
                     self.anchor_target_exists(&seg.start),
                     format!("tempo segment start anchor target {:?} dangling", seg.start),
                 );
                 if let Some(end) = &seg.end {
                     flag(
+                        ViolationKind::Invariant(GraphInvariant::CrossCuttingRefsResolve),
                         self.anchor_target_exists(end),
                         format!("tempo segment end anchor target {end:?} dangling"),
                     );
@@ -1470,12 +1524,14 @@ impl<'a> GraphIndex<'a> {
                 // Missing end_tempo / shape consistency (Chapter 3).
                 match seg.shape {
                     TempoShape::Constant => flag(
+                        ViolationKind::Requirement("req:time:tempo-segment-shape"),
                         seg.end_tempo
                             .as_ref()
                             .is_none_or(|et| et == &seg.start_tempo),
                         "constant tempo segment has end_tempo != start_tempo".to_string(),
                     ),
                     TempoShape::Linear | TempoShape::Exponential | TempoShape::Curve => flag(
+                        ViolationKind::Requirement("req:time:tempo-segment-shape"),
                         seg.end_tempo.is_some(),
                         "non-constant tempo segment is missing its end_tempo".to_string(),
                     ),
@@ -1483,10 +1539,15 @@ impl<'a> GraphIndex<'a> {
                 // Ordering and non-overlap, where resolvable.
                 let start = seg_pos(&seg.start);
                 if let (Some(ps), Some(s)) = (&prev_start, &start) {
-                    flag(s >= ps, "tempo segments are out of start order".to_string());
+                    flag(
+                        ViolationKind::Requirement("req:time:tempo-segment-order"),
+                        s >= ps,
+                        "tempo segments are out of start order".to_string(),
+                    );
                 }
                 if let (Some(pe), Some(s)) = (&prev_end, &start) {
                     flag(
+                        ViolationKind::Requirement("req:time:tempo-segment-order"),
                         s >= pe,
                         "tempo segments overlap in musical time".to_string(),
                     );
@@ -1500,10 +1561,11 @@ impl<'a> GraphIndex<'a> {
     // --- Aleatoric ordering / bounds well-formedness (Chapter 3 §"Aleatoric
     // Time"). The ordering DAG and the per-event bounds map are graph
     // references: they must name events that exist *in the region*, and each
-    // bound window must be ordered (`min <= max`). Dangling references go under
-    // invariant 10; a reversed window is a region-time-model defect (invariant
-    // 4). (The DAG's acyclicity is enforced at construction in `graph`.)
-    fn check_aleatoric_models(&self, out: &mut Vec<InvariantViolation>) {
+    // bound window must be ordered (`min <= max`). **Since P13-S29 the locality
+    // rule reports `req:time:aleatoric-reference-locality`**, not invariant 10 —
+    // it asks about region membership, which is stronger than existence. A
+    // reversed window remains a region-time-model defect (invariant 4). (The DAG's acyclicity is enforced at construction in `graph`.)
+    fn check_aleatoric_models(&self, out: &mut Vec<WellFormednessViolation>) {
         for r in &self.score.canvas.regions {
             let RegionTimeModel::Aleatoric(model) = &r.time_model else {
                 continue;
@@ -1517,8 +1579,8 @@ impl<'a> GraphIndex<'a> {
             };
             for e in model.ordering.referenced_events() {
                 if !in_region(e) {
-                    out.push(InvariantViolation::new(
-                        GraphInvariant::CrossCuttingRefsResolve,
+                    out.push(WellFormednessViolation::requirement(
+                        "req:time:aleatoric-reference-locality",
                         format!(
                             "aleatoric region {:?} ordering references event {:?}, absent from the region",
                             r.id, e
@@ -1528,8 +1590,8 @@ impl<'a> GraphIndex<'a> {
             }
             for (e, bounds) in &model.bounds {
                 if !in_region(*e) {
-                    out.push(InvariantViolation::new(
-                        GraphInvariant::CrossCuttingRefsResolve,
+                    out.push(WellFormednessViolation::requirement(
+                        "req:time:aleatoric-reference-locality",
                         format!(
                             "aleatoric region {:?} bounds key event {:?} is absent from the region",
                             r.id, e
@@ -1541,7 +1603,7 @@ impl<'a> GraphIndex<'a> {
                     .flatten()
                 {
                     if time_bounds_ordered(tb) == Some(false) {
-                        out.push(InvariantViolation::new(
+                        out.push(WellFormednessViolation::invariant(
                             GraphInvariant::EventCoordinateModel,
                             format!(
                                 "aleatoric region {:?} has a reversed (min > max) bound for event {:?}",
@@ -1555,17 +1617,13 @@ impl<'a> GraphIndex<'a> {
     }
 
     // --- Accidental modification / pitch-space compatibility (Chapter 4
-    // §"Accidental Registries", `req:tuning:accidental-modification-compatibility`,
-    // `core_spec.tex:3120`; Push 4b tranche 3a,
-    // `spec/CONTRACT_PUSH4B_ACCIDENTALS.md`). Not one of the spec-enumerated
-    // Chapter 5 graph invariants (this is a Chapter 4
-    // requirement), so — like the tempo-map and aleatoric-model checks above
-    // — it is surfaced under an existing `GraphInvariant` tag rather than
-    // minting a new one. `CrossCuttingRefsResolve` is the closest fit: like
-    // those checks, this is "does this cross-cutting structure's content
-    // hold against the rest of the score", not a per-event/per-voice
-    // structural rule.
-    fn check_accidental_modification_compatibility(&self, out: &mut Vec<InvariantViolation>) {
+    // §"Accidental Registries", `req:tuning:accidental-modification-compatibility`;
+    // Push 4b tranche 3a, `spec/CONTRACT_PUSH4B_ACCIDENTALS.md`). Not one of the
+    // spec-enumerated Chapter 5 graph invariants, and **since P13-S29 it no
+    // longer borrows one**: it reports under its own requirement label, which is
+    // what it always meant. The witness does not restate that label — `Display`
+    // renders it as the prefix.
+    fn check_accidental_modification_compatibility(&self, out: &mut Vec<WellFormednessViolation>) {
         // Every pitch space the score's tuning context concretely
         // references: the default, plus any per-scope override's pitch
         // space (`crate::tuning::TuningOverride::pitch_space`). This
@@ -1591,12 +1649,11 @@ impl<'a> GraphIndex<'a> {
                         &def.modification,
                         space,
                     ) {
-                        out.push(InvariantViolation::new(
-                            GraphInvariant::CrossCuttingRefsResolve,
+                        out.push(WellFormednessViolation::requirement(
+                            "req:tuning:accidental-modification-compatibility",
                             format!(
                                 "accidental {:?} (registry {:?}) modification {:?} is not \
-                                 expressible in pitch space {:?}'s interval algebra \
-                                 (req:tuning:accidental-modification-compatibility)",
+                                 expressible in pitch space {:?}'s interval algebra",
                                 def.id, ext.base, def.modification, space
                             ),
                         ));
@@ -1607,11 +1664,11 @@ impl<'a> GraphIndex<'a> {
     }
 
     // --- 11. Identifiers unique within their kind. --------------------------
-    fn check_unique_identifiers(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_unique_identifiers(&self, out: &mut Vec<WellFormednessViolation>) {
         let mut regions = BTreeSet::new();
         for r in &self.score.canvas.regions {
             if !regions.insert(r.id) {
-                out.push(InvariantViolation::new(
+                out.push(WellFormednessViolation::invariant(
                     GraphInvariant::UniqueIdentifiers,
                     format!("region id {:?} is used twice", r.id),
                 ));
@@ -1623,14 +1680,14 @@ impl<'a> GraphIndex<'a> {
         for r in &self.score.canvas.regions {
             for si in r.staff_instances() {
                 if !instances.insert(si.id) {
-                    out.push(InvariantViolation::new(
+                    out.push(WellFormednessViolation::invariant(
                         GraphInvariant::UniqueIdentifiers,
                         format!("staff-instance id {:?} is used twice", si.id),
                     ));
                 }
                 for v in &si.voices {
                     if !voices.insert(v.id) {
-                        out.push(InvariantViolation::new(
+                        out.push(WellFormednessViolation::invariant(
                             GraphInvariant::UniqueIdentifiers,
                             format!("voice id {:?} is used twice", v.id),
                         ));
@@ -1638,7 +1695,7 @@ impl<'a> GraphIndex<'a> {
                 }
                 for m in &si.measures {
                     if !measures.insert(m.id) {
-                        out.push(InvariantViolation::new(
+                        out.push(WellFormednessViolation::invariant(
                             GraphInvariant::UniqueIdentifiers,
                             format!("measure id {:?} is used twice", m.id),
                         ));
@@ -1649,7 +1706,7 @@ impl<'a> GraphIndex<'a> {
         let mut staves = BTreeSet::new();
         for s in &self.score.staves {
             if !staves.insert(s.id) {
-                out.push(InvariantViolation::new(
+                out.push(WellFormednessViolation::invariant(
                     GraphInvariant::UniqueIdentifiers,
                     format!("staff id {:?} is used twice", s.id),
                 ));
@@ -1660,7 +1717,7 @@ impl<'a> GraphIndex<'a> {
         let cc = &self.score.cross_cutting;
         let mut dup = |used: bool, what: String| {
             if used {
-                out.push(InvariantViolation::new(
+                out.push(WellFormednessViolation::invariant(
                     GraphInvariant::UniqueIdentifiers,
                     what,
                 ));
@@ -1818,7 +1875,7 @@ impl<'a> GraphIndex<'a> {
         // Stability" forbids — "never reassigned, even after deletion").
         for e in self.score.events.ids_canonical() {
             if self.score.tombstoned_events.contains(&e) {
-                out.push(InvariantViolation::new(
+                out.push(WellFormednessViolation::invariant(
                     GraphInvariant::UniqueIdentifiers,
                     format!("event id {:?} is both live and tombstoned", e),
                 ));
@@ -1826,7 +1883,7 @@ impl<'a> GraphIndex<'a> {
         }
         for p in &self.live_pitches {
             if self.score.tombstoned_pitches.contains(p) {
-                out.push(InvariantViolation::new(
+                out.push(WellFormednessViolation::invariant(
                     GraphInvariant::UniqueIdentifiers,
                     format!("pitch id {:?} is both live and tombstoned", p),
                 ));
@@ -1840,7 +1897,7 @@ impl<'a> GraphIndex<'a> {
         // *other* kind in that namespace is misuse.
         let mut sysmisuse = |used: bool, what: String| {
             if used {
-                out.push(InvariantViolation::new(
+                out.push(WellFormednessViolation::invariant(
                     GraphInvariant::UniqueIdentifiers,
                     what,
                 ));
@@ -2021,13 +2078,13 @@ impl<'a> GraphIndex<'a> {
         // but `get_mut` exposes the fields, so re-check here (catches an id or
         // pitch-list mutated after insertion).
         for id in self.score.events.index_inconsistencies() {
-            out.push(InvariantViolation::new(
+            out.push(WellFormednessViolation::invariant(
                 GraphInvariant::UniqueIdentifiers,
                 format!("arena index entry {id:?} disagrees with the stored event's id"),
             ));
         }
         for id in self.score.events.malformed_pitched_events() {
-            out.push(InvariantViolation::new(
+            out.push(WellFormednessViolation::invariant(
                 GraphInvariant::UniqueIdentifiers,
                 format!("pitched event {id:?} has no pitches (malformed; Chapter 5)"),
             ));
@@ -2035,7 +2092,7 @@ impl<'a> GraphIndex<'a> {
     }
 
     // --- 12. Embedded PitchId uniqueness. -----------------------------------
-    fn check_pitch_id_unique(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_pitch_id_unique(&self, out: &mut Vec<WellFormednessViolation>) {
         let mut seen: BTreeSet<PitchId> = BTreeSet::new();
         let mut buf = Vec::new();
         for e in self.score.events.iter() {
@@ -2043,7 +2100,7 @@ impl<'a> GraphIndex<'a> {
             e.collect_identified_pitches(&mut buf);
             for ip in &buf {
                 if !seen.insert(ip.id) {
-                    out.push(InvariantViolation::new(
+                    out.push(WellFormednessViolation::invariant(
                         GraphInvariant::PitchIdUnique,
                         format!("pitch id {:?} appears more than once", ip.id),
                     ));
@@ -2053,13 +2110,13 @@ impl<'a> GraphIndex<'a> {
     }
 
     // --- 13. SpellingScope::Pitch resolves to live or tombstoned. -----------
-    fn check_spelling_scope_resolves(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_spelling_scope_resolves(&self, out: &mut Vec<WellFormednessViolation>) {
         for a in &self.score.spelling_attachments {
             if let SpellingScope::Pitch(pid) = &a.scope {
                 let live = self.live_pitches.contains(pid);
                 let tomb = self.score.tombstoned_pitches.contains(pid);
                 if !live && !tomb {
-                    out.push(InvariantViolation::new(
+                    out.push(WellFormednessViolation::invariant(
                         GraphInvariant::SpellingScopeResolves,
                         format!(
                             "spelling attachment targets pitch {:?}, neither live nor tombstoned",
@@ -2074,7 +2131,7 @@ impl<'a> GraphIndex<'a> {
                 (&a.scope, &a.directive),
                 (SpellingScope::Range { .. }, SpellingDirective::Explicit(_))
             ) {
-                out.push(InvariantViolation::new(
+                out.push(WellFormednessViolation::invariant(
                     GraphInvariant::SpellingScopeResolves,
                     "explicit spelling on a range scope (only valid with a pitch scope)"
                         .to_string(),
@@ -2086,7 +2143,7 @@ impl<'a> GraphIndex<'a> {
             // validation rather than leaving it advisory.
             if let SpellingDirective::Explicit(sp) = &a.directive {
                 if !sp.accidental_stack_is_well_formed() {
-                    out.push(InvariantViolation::new(
+                    out.push(WellFormednessViolation::invariant(
                         GraphInvariant::SpellingScopeResolves,
                         format!(
                             "spelling attachment has a repeated accidental in its stack: {:?}",
@@ -2099,7 +2156,7 @@ impl<'a> GraphIndex<'a> {
             // `AnalysisLayer` (Chapter 5 §"Analysis Layers and Views").
             if let Some(layer) = a.layer {
                 if !self.analysis_layers.contains(&layer) {
-                    out.push(InvariantViolation::new(
+                    out.push(WellFormednessViolation::invariant(
                         GraphInvariant::SpellingScopeResolves,
                         format!(
                             "spelling attachment layer {layer:?} is not a declared analysis layer"
@@ -2111,12 +2168,12 @@ impl<'a> GraphIndex<'a> {
     }
 
     // --- 14. Decomposition target resolves to live or tombstoned. -----------
-    fn check_decomposition_target_resolves(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_decomposition_target_resolves(&self, out: &mut Vec<WellFormednessViolation>) {
         for d in &self.score.decomposition_attachments {
             let live = self.score.events.contains(d.target);
             let tomb = self.score.tombstoned_events.contains(&d.target);
             if !live && !tomb {
-                out.push(InvariantViolation::new(
+                out.push(WellFormednessViolation::invariant(
                     GraphInvariant::DecompositionTargetResolves,
                     format!(
                         "decomposition targets event {:?}, neither live nor tombstoned",
@@ -2128,7 +2185,7 @@ impl<'a> GraphIndex<'a> {
     }
 
     // --- 15. Live decomposition component sum == event duration. ------------
-    fn check_decomposition_sum(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_decomposition_sum(&self, out: &mut Vec<WellFormednessViolation>) {
         for d in &self.score.decomposition_attachments {
             let Some(ev) = self.score.events.get(d.target) else {
                 continue; // tombstoned target: invariant 14 territory
@@ -2144,7 +2201,7 @@ impl<'a> GraphIndex<'a> {
                 sum = sum + c.sounding_duration(ratio);
             }
             if &sum != dur {
-                out.push(InvariantViolation::new(
+                out.push(WellFormednessViolation::invariant(
                     GraphInvariant::DecompositionSum,
                     format!(
                         "decomposition of event {:?} sums to {:?}, event duration is {:?}",
@@ -2156,7 +2213,7 @@ impl<'a> GraphIndex<'a> {
     }
 
     // --- 16. Tuplet member durations sum to required total. -----------------
-    fn check_tuplet_sum(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_tuplet_sum(&self, out: &mut Vec<WellFormednessViolation>) {
         for t in &self.score.cross_cutting.tuplets {
             // Degenerate ratios (a zero term or actual == notated) are rejected
             // at construction by `TupletRatio::new` (Chapter 3 §"Tuplets",
@@ -2176,7 +2233,7 @@ impl<'a> GraphIndex<'a> {
                 }
             }
             if measurable && sum != t.required_total {
-                out.push(InvariantViolation::new(
+                out.push(WellFormednessViolation::invariant(
                     GraphInvariant::TupletSum,
                     format!(
                         "tuplet {:?} members sum to {:?}, required total is {:?}",
@@ -2222,7 +2279,7 @@ impl<'a> GraphIndex<'a> {
                     }
                     let sounding = notated.mul(&scale);
                     if &sounding != sd.rational() {
-                        out.push(InvariantViolation::new(
+                        out.push(WellFormednessViolation::invariant(
                             GraphInvariant::TupletSum,
                             format!(
                                 "tuplet {:?} ratio {}:{} is inconsistent with member {:?}'s notation \
@@ -2237,7 +2294,7 @@ impl<'a> GraphIndex<'a> {
     }
 
     // --- 17. Tie pairing references and class rules. ------------------------
-    fn check_tie_pairing(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_tie_pairing(&self, out: &mut Vec<WellFormednessViolation>) {
         for t in &self.score.cross_cutting.ties {
             let empty = BTreeSet::new();
             let start_pitches = self.event_pitches.get(&t.start_event).unwrap_or(&empty);
@@ -2254,13 +2311,13 @@ impl<'a> GraphIndex<'a> {
                     // require it.
                     for (sp, ep) in pairs {
                         if !start_pitches.contains(sp) {
-                            out.push(InvariantViolation::new(
+                            out.push(WellFormednessViolation::invariant(
                                 GraphInvariant::TiePairing,
                                 format!("tie {:?} pairs pitch {:?} not in start event", t.id, sp),
                             ));
                         }
                         if !end_pitches.contains(ep) {
-                            out.push(InvariantViolation::new(
+                            out.push(WellFormednessViolation::invariant(
                                 GraphInvariant::TiePairing,
                                 format!("tie {:?} pairs pitch {:?} not in end event", t.id, ep),
                             ));
@@ -2268,7 +2325,7 @@ impl<'a> GraphIndex<'a> {
                         if requires_enharmonic {
                             if let (Some(a), Some(b)) = (self.pitch.get(sp), self.pitch.get(ep)) {
                                 if !a.enharmonic_equivalent(b) {
-                                    out.push(InvariantViolation::new(
+                                    out.push(WellFormednessViolation::invariant(
                                         GraphInvariant::TiePairing,
                                         format!(
                                             "tie {:?} pairs non-enharmonic pitches {:?}/{:?}",
@@ -2288,7 +2345,7 @@ impl<'a> GraphIndex<'a> {
                     // — a deterministic matching that survives chord reordering,
                     // not a positional zip.
                     if start_pitches.len() != end_pitches.len() {
-                        out.push(InvariantViolation::new(
+                        out.push(WellFormednessViolation::invariant(
                             GraphInvariant::TiePairing,
                             format!(
                                 "tie {:?} (implicit pairing): {} start vs {} end pitches",
@@ -2314,7 +2371,7 @@ impl<'a> GraphIndex<'a> {
                             Some(ep) => {
                                 used.insert(*ep);
                             }
-                            None => out.push(InvariantViolation::new(
+                            None => out.push(WellFormednessViolation::invariant(
                                 GraphInvariant::TiePairing,
                                 format!(
                                     "tie {:?} (implicit pairing): start pitch {:?} has no enharmonic end-event counterpart",
@@ -2335,14 +2392,14 @@ impl<'a> GraphIndex<'a> {
         Endpoints::of(self.score.events.get(eid)?).start_key()
     }
 
-    fn check_tie_class_rules(&self, t: &crate::graph::Tie, out: &mut Vec<InvariantViolation>) {
+    fn check_tie_class_rules(&self, t: &crate::graph::Tie, out: &mut Vec<WellFormednessViolation>) {
         let start = self.event_voice_index.get(&t.start_event);
         let end = self.event_voice_index.get(&t.end_event);
         match t.class {
             TieClass::Standard => {
                 if let (Some((sv, si)), Some((ev, ei))) = (start, end) {
                     if sv != ev || *ei != si + 1 {
-                        out.push(InvariantViolation::new(
+                        out.push(WellFormednessViolation::invariant(
                             GraphInvariant::TiePairing,
                             format!(
                                 "standard tie {:?} is not same-voice immediately adjacent",
@@ -2355,7 +2412,7 @@ impl<'a> GraphIndex<'a> {
             TieClass::Editorial => {
                 if let (Some((sv, si)), Some((ev, ei))) = (start, end) {
                     if sv != ev || ei <= si {
-                        out.push(InvariantViolation::new(
+                        out.push(WellFormednessViolation::invariant(
                             GraphInvariant::TiePairing,
                             format!("editorial tie {:?} is not same-voice forward", t.id),
                         ));
@@ -2367,7 +2424,7 @@ impl<'a> GraphIndex<'a> {
                 let einst = self.event_instance.get(&t.end_event);
                 if let (Some(a), Some(b)) = (sinst, einst) {
                     if a != b {
-                        out.push(InvariantViolation::new(
+                        out.push(WellFormednessViolation::invariant(
                             GraphInvariant::TiePairing,
                             format!("cross-voice tie {:?} crosses staff instances", t.id),
                         ));
@@ -2381,7 +2438,7 @@ impl<'a> GraphIndex<'a> {
                     self.event_start_key(t.end_event),
                 ) {
                     if !s.le_same_clock(&e) {
-                        out.push(InvariantViolation::new(
+                        out.push(WellFormednessViolation::invariant(
                             GraphInvariant::TiePairing,
                             format!("cross-voice tie {:?} has start position after end", t.id),
                         ));
@@ -2393,7 +2450,7 @@ impl<'a> GraphIndex<'a> {
     }
 
     // --- 18. Voice origin consistency / promoted-id derivation. -------------
-    fn check_voice_origin_consistent(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_voice_origin_consistent(&self, out: &mut Vec<WellFormednessViolation>) {
         for (_r, si, v) in self.score.voices() {
             match &v.origin {
                 VoiceOrigin::SystemPromoted {
@@ -2411,7 +2468,7 @@ impl<'a> GraphIndex<'a> {
                         *losing_operation,
                     );
                     if v.id != expected {
-                        out.push(InvariantViolation::new(
+                        out.push(WellFormednessViolation::invariant(
                             GraphInvariant::VoiceOriginConsistent,
                             format!(
                                 "system-promoted voice {:?} != its derivation {:?}",
@@ -2422,7 +2479,7 @@ impl<'a> GraphIndex<'a> {
                 }
                 VoiceOrigin::UserDeclared | VoiceOrigin::Imported { .. } => {
                     if v.id.replica() == ReplicaId::SYSTEM_DERIVED {
-                        out.push(InvariantViolation::new(
+                        out.push(WellFormednessViolation::invariant(
                             GraphInvariant::VoiceOriginConsistent,
                             format!(
                                 "user/imported voice {:?} uses the reserved SYSTEM_DERIVED replica",
@@ -2436,7 +2493,7 @@ impl<'a> GraphIndex<'a> {
     }
 
     // --- 19. Barline group members stay within one region. ------------------
-    fn check_barline_group_same_region(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_barline_group_same_region(&self, out: &mut Vec<WellFormednessViolation>) {
         for r in &self.score.canvas.regions {
             let region_instances: BTreeSet<StaffInstanceId> =
                 r.staff_instances().iter().map(|si| si.id).collect();
@@ -2448,7 +2505,7 @@ impl<'a> GraphIndex<'a> {
             for g in r.content.barline_alignment_groups() {
                 for m in &g.members {
                     if !region_instances.contains(&m.staff_instance) {
-                        out.push(InvariantViolation::new(
+                        out.push(WellFormednessViolation::invariant(
                             GraphInvariant::BarlineGroupSameRegion,
                             format!(
                                 "barline group {:?} member instance {:?} is outside region {:?}",
@@ -2462,7 +2519,7 @@ impl<'a> GraphIndex<'a> {
                         .map(|ms| ms.contains(&m.measure))
                         .unwrap_or(false)
                     {
-                        out.push(InvariantViolation::new(
+                        out.push(WellFormednessViolation::invariant(
                             GraphInvariant::BarlineGroupSameRegion,
                             format!(
                                 "barline group {:?} measure {:?} is not in instance {:?}",
@@ -2741,7 +2798,7 @@ impl<'a> GraphIndex<'a> {
     ///     10_only` (A2) and `matrix_b2_governing_signature_unresolving_
     ///     delegated` (B2) below, and M7/M8 in the contract's mutation
     ///     plan.
-    fn check_measure_meter_consistency(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_measure_meter_consistency(&self, out: &mut Vec<WellFormednessViolation>) {
         let time_sigs: HashMap<TimeSignatureId, &TimeSignature> = self
             .score
             .time_signatures
@@ -2770,7 +2827,7 @@ impl<'a> GraphIndex<'a> {
                         if time_sigs.contains_key(&sig) {
                             match self.measure20_governing_time_signature(sequence, &m.start) {
                                 Governing20::Unique(active) if active != sig => {
-                                    out.push(InvariantViolation::new(
+                                    out.push(WellFormednessViolation::invariant(
                                         GraphInvariant::MeasureMeterConsistency,
                                         format!(
                                             "measure {:?} declares time signature {:?} but the \
@@ -2803,7 +2860,7 @@ impl<'a> GraphIndex<'a> {
                             match self.measure20_musical_delta(&prev.start, &m.start) {
                                 Some(delta) if &delta == ts.measure_duration() => {}
                                 Some(_) => {
-                                    out.push(InvariantViolation::new(
+                                    out.push(WellFormednessViolation::invariant(
                                         GraphInvariant::MeasureMeterConsistency,
                                         format!(
                                             "measure {:?} start is not exactly one \
@@ -2848,7 +2905,7 @@ impl<'a> GraphIndex<'a> {
     /// A staff naming a group that does not exist is **not** flagged here:
     /// dangling reference resolution belongs to the referential invariants, and
     /// abstaining keeps this invariant's witnesses about *agreement* only.
-    fn check_staff_names_absent_group(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_staff_names_absent_group(&self, out: &mut Vec<WellFormednessViolation>) {
         let members: HashMap<StaffGroupId, BTreeSet<StaffId>> = self
             .score
             .staff_groups
@@ -2861,7 +2918,7 @@ impl<'a> GraphIndex<'a> {
             };
             if let Some(ids) = members.get(&group_id) {
                 if !ids.contains(&staff.id) {
-                    out.push(InvariantViolation::new(
+                    out.push(WellFormednessViolation::invariant(
                         GraphInvariant::StaffGroupMembershipAgreement,
                         format!(
                             "S->G: staff {:?} names group {:?}, but that group's members omit it",
@@ -2879,7 +2936,7 @@ impl<'a> GraphIndex<'a> {
     ///
     /// A member id with no live staff is **not** flagged here, for the same
     /// reason as the S→G direction.
-    fn check_group_lists_unowned_staff(&self, out: &mut Vec<InvariantViolation>) {
+    fn check_group_lists_unowned_staff(&self, out: &mut Vec<WellFormednessViolation>) {
         let owner: HashMap<StaffId, Option<StaffGroupId>> = self
             .score
             .staves
@@ -2892,7 +2949,7 @@ impl<'a> GraphIndex<'a> {
                     continue;
                 };
                 if *named != Some(group.id) {
-                    out.push(InvariantViolation::new(
+                    out.push(WellFormednessViolation::invariant(
                         GraphInvariant::StaffGroupMembershipAgreement,
                         format!(
                             "G->S: group {:?} lists staff {:?}, but that staff names {:?}",
@@ -4216,7 +4273,8 @@ mod review_fix_tests_3 {
 #[cfg(test)]
 mod review_fix_tests_4 {
     //! Tests for this review pass: aleatoric ordering/bounds validation (F3),
-    //! tempo-map segment invariants (F4), metric overlap via tempo conversion
+    //! tempo-map segment conditions (F4) — **requirements, not invariants, since
+    //! P13-S29** — metric overlap via tempo conversion
     //! (F5), inv-11 time-signature/barline/graphic namespace + uniqueness (F6),
     //! inv-10 staff-group/part/view/meter reference resolution (F8), dangling
     //! decomposition tuplet refs (F9), and tuplet ratio consistency (F10).
@@ -4235,6 +4293,11 @@ mod review_fix_tests_4 {
 
     fn fires(s: &Score, inv: GraphInvariant) -> bool {
         !check_invariant(s, inv).is_empty()
+    }
+
+    /// P13-S29: the Chapter 3/4 riders no longer answer to `check_invariant`.
+    fn fires_req(s: &Score, label: &str) -> bool {
+        !check_requirement(s, label).is_empty()
     }
 
     fn aleatoric_region_events(s: &Score) -> (usize, Vec<EventId>) {
@@ -4261,7 +4324,7 @@ mod review_fix_tests_4 {
         if let RegionTimeModel::Aleatoric(m) = &mut s.canvas.regions[idx].time_model {
             m.ordering = EventOrderingDAG::try_new(edges).unwrap();
         }
-        assert!(fires(&s, GraphInvariant::CrossCuttingRefsResolve));
+        assert!(fires_req(&s, "req:time:aleatoric-reference-locality"));
     }
 
     #[test]
@@ -4273,7 +4336,7 @@ mod review_fix_tests_4 {
         if let RegionTimeModel::Aleatoric(m) = &mut s.canvas.regions[idx].time_model {
             m.bounds.insert(ghost, EventBounds::default());
         }
-        assert!(fires(&s, GraphInvariant::CrossCuttingRefsResolve));
+        assert!(fires_req(&s, "req:time:aleatoric-reference-locality"));
 
         // A reversed (min > max) window on a real region event.
         let mut s = valid_score_rich(202);
@@ -4318,7 +4381,7 @@ mod review_fix_tests_4 {
                 shape: TempoShape::Linear,
             }],
         };
-        assert!(fires(&s, GraphInvariant::CrossCuttingRefsResolve));
+        assert!(fires_req(&s, "req:time:tempo-segment-shape"));
 
         // Constant segment whose end_tempo disagrees with start_tempo.
         let mut s = base.clone();
@@ -4332,7 +4395,7 @@ mod review_fix_tests_4 {
                 shape: TempoShape::Constant,
             }],
         };
-        assert!(fires(&s, GraphInvariant::CrossCuttingRefsResolve));
+        assert!(fires_req(&s, "req:time:tempo-segment-shape"));
 
         // Out-of-order segments (start 2 then start 1).
         let mut s = base.clone();
@@ -4347,7 +4410,7 @@ mod review_fix_tests_4 {
             initial: None,
             segments: vec![seg(2, 3), seg(1, 2)],
         };
-        assert!(fires(&s, GraphInvariant::CrossCuttingRefsResolve));
+        assert!(fires_req(&s, "req:time:tempo-segment-order"));
 
         // Segment anchored to a non-existent region (dangling anchor target).
         let mut s = base.clone();
@@ -4602,8 +4665,12 @@ mod accidental_compatibility_tests {
     use crate::generators::valid_score;
     use crate::pitch::PitchSpaceId;
 
-    fn fires(s: &Score, inv: GraphInvariant) -> bool {
-        !check_invariant(s, inv).is_empty()
+    /// P13-S29 pin 11b. The label moved from the witness text to the selector,
+    /// so these observations select by label instead of grepping the witness —
+    /// a witness search would pass on *any* violation once pin 8a removed the
+    /// suffix, leaving both negatives green and vacuous.
+    fn compatibility_violations(s: &Score) -> Vec<WellFormednessViolation> {
+        check_requirement(s, "req:tuning:accidental-modification-compatibility")
     }
 
     #[test]
@@ -4616,13 +4683,11 @@ mod accidental_compatibility_tests {
                 "cmn-accidentals",
                 PitchSpaceModification::CmnChromatic(1),
             ));
-        let violations = check_invariant(&s, GraphInvariant::CrossCuttingRefsResolve);
         assert!(
-            violations
-                .iter()
-                .all(|v| !v.witness.contains("accidental-modification-compatibility")),
+            compatibility_violations(&s).is_empty(),
             "a CmnChromatic accidental in cmn-12 must not violate the compatibility \
-             invariant, got: {violations:?}"
+             requirement, got: {:?}",
+            compatibility_violations(&s)
         );
     }
 
@@ -4638,13 +4703,22 @@ mod accidental_compatibility_tests {
                 "cmn-accidentals",
                 PitchSpaceModification::CmnChromatic(1),
             ));
-        assert!(fires(&s, GraphInvariant::CrossCuttingRefsResolve));
-        let violations = check_invariant(&s, GraphInvariant::CrossCuttingRefsResolve);
+        let violations = compatibility_violations(&s);
         assert!(
-            violations
-                .iter()
-                .any(|v| v.witness.contains("accidental-modification-compatibility")),
-            "expected an accidental-modification-compatibility violation, got: {violations:?}"
+            !violations.is_empty(),
+            "expected an accidental-modification-compatibility violation"
+        );
+        // Pin 8a: the label is the Display prefix now, so the witness must not
+        // carry it. Label-free and exact in the two ways that matter.
+        assert!(
+            violations[0].witness.ends_with("interval algebra"),
+            "witness must end with the algebra clause, got: {:?}",
+            violations[0].witness
+        );
+        assert!(
+            !violations[0].witness.contains("req:"),
+            "witness must not restate its own label, got: {:?}",
+            violations[0].witness
         );
     }
 
@@ -4655,10 +4729,7 @@ mod accidental_compatibility_tests {
         // be silent across the existing test/property-test corpus.
         let s = valid_score(301);
         assert!(s.tuning_context.accidental_extensions.is_empty());
-        let violations = check_invariant(&s, GraphInvariant::CrossCuttingRefsResolve);
-        assert!(violations
-            .iter()
-            .all(|v| !v.witness.contains("accidental-modification-compatibility")));
+        assert!(compatibility_violations(&s).is_empty());
     }
 }
 
@@ -4693,6 +4764,112 @@ mod g3a_tests {
     ///
     /// **Mutation:** revert the doc comment to its pre-G3a text (naming only
     /// cross-cutting structures and event-internal references); must fail.
+    #[test]
+    fn violation_types_declare_their_pinned_derives() {
+        // P13-S29 pin 1b. Placed HERE, not beside pin 10's tests, because
+        // `production_source()` is private to this module.
+        //
+        // Six equalities, not needles: a guard that merely searches for `Eq`,
+        // `Hash` or one phrase passes every deletion mutation while failing
+        // every promise the pin makes.
+        let src = production_source();
+
+        let before = |decl: &str| -> Vec<String> {
+            let at = src
+                .find(decl)
+                .unwrap_or_else(|| panic!("{decl} is declared"));
+            src[..at]
+                .lines()
+                .rev()
+                .take_while(|l| {
+                    let t = l.trim();
+                    t.starts_with("///") || t.starts_with("#[derive")
+                })
+                .map(|l| l.trim().to_owned())
+                .collect()
+        };
+
+        let struct_lines = before("pub struct WellFormednessViolation {");
+        let enum_lines = before("pub enum ViolationKind {");
+
+        // 1 and 2: the derive line immediately preceding each declaration.
+        assert_eq!(
+            struct_lines.first().map(String::as_str),
+            Some("#[derive(Clone, PartialEq, Eq, Debug)]"),
+            "WellFormednessViolation's derives are pinned"
+        );
+        assert_eq!(
+            enum_lines.first().map(String::as_str),
+            Some("#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]"),
+            "ViolationKind's derives are pinned"
+        );
+
+        // 4 and 5: the /// block immediately preceding THAT derive.
+        let doc = |lines: &[String]| -> String {
+            lines
+                .iter()
+                .skip(1)
+                .rev()
+                .map(|l| l.trim_start_matches("///").trim())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert_eq!(
+            doc(&struct_lines),
+            "A well-formedness failure: one [`ViolationKind`] — `Invariant` or \
+             `Requirement` — and the witness identifying the smallest offending objects. \
+             A requirement failure is not an invariant failure.",
+            "WellFormednessViolation's rustdoc is pinned"
+        );
+        assert_eq!(
+            doc(&enum_lines),
+            "What a [`WellFormednessViolation`] failed. `Invariant` names a numbered \
+             Chapter 5 graph invariant; `Requirement` names a normative requirement by its \
+             label. A requirement failure is not an invariant failure, and there is no \
+             third arm and no unclassified fallback.",
+            "ViolationKind's rustdoc is pinned"
+        );
+
+        // 3: the module header's two-arm paragraph, first line to next blank //!.
+        let head = src
+            .find("//! Violations carry a two-armed")
+            .expect("the module header states the two-arm split");
+        let para_end = src[head..].find("\n//!\n").expect("the paragraph ends") + head;
+        let para = src[head..para_end]
+            .lines()
+            .map(|l| l.trim_start_matches("//!").trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(
+            para,
+            "Violations carry a two-armed [`ViolationKind`]: `Invariant` for the Chapter 5 \
+             graph invariants, `Requirement` for a normative requirement named by its \
+             label. A requirement failure is not an invariant failure, and neither arm is \
+             a fallback for the other.",
+            "the module header's two-arm paragraph is pinned"
+        );
+
+        // 6: the whole of the integration test, so its no-call constraint is
+        // observed rather than assumed.
+        assert_eq!(
+            include_str!("../../epiphany-core/tests/public_surface.rs"),
+            include_str!("../tests/public_surface.rs"),
+            "public_surface.rs is read from one path"
+        );
+        let surface = include_str!("../tests/public_surface.rs");
+        assert!(
+            surface.contains(
+                "use epiphany_core::{check_requirement, ViolationKind, WellFormednessViolation};"
+            ),
+            "the integration test must import all three names from the root"
+        );
+        assert!(
+            !surface.contains("check_requirement(&"),
+            "public_surface.rs must stay type-level: a call whose result is asserted \
+             would widen M3's and M9's radii"
+        );
+    }
+
     #[test]
     fn t12_invariant_10_doc_block_slices_and_is_non_empty() {
         // Narrowed by P13-S26 pin 8. The exact (token, target) comparison lives
@@ -6279,9 +6456,9 @@ mod g3b_dispatch_tests {
             "the score must violate invariant 20 directly"
         );
         assert!(
-            check_invariants(&s)
-                .iter()
-                .any(|v| v.invariant == GraphInvariant::MeasureMeterConsistency),
+            check_invariants(&s).iter().any(
+                |v| v.kind == ViolationKind::Invariant(GraphInvariant::MeasureMeterConsistency)
+            ),
             "check_invariants (the top-level dispatch) must surface the invariant-20 \
              violation -- this is the behavioural assertion M40 needs, since \
              an all().len() count alone passes even with the dispatch arm deleted"
@@ -6348,8 +6525,8 @@ mod s16_agreement_dispatch_tests {
              got {violations:?}"
         );
         assert_eq!(
-            violations[0].invariant,
-            GraphInvariant::StaffGroupMembershipAgreement,
+            violations[0].kind,
+            ViolationKind::Invariant(GraphInvariant::StaffGroupMembershipAgreement),
             "the single violation must be invariant 21, got {violations:?}"
         );
         assert!(
@@ -6421,8 +6598,8 @@ mod s16_agreement_dispatch_tests {
              got {violations:?}"
         );
         assert_eq!(
-            violations[0].invariant,
-            GraphInvariant::StaffGroupMembershipAgreement,
+            violations[0].kind,
+            ViolationKind::Invariant(GraphInvariant::StaffGroupMembershipAgreement),
             "the single violation must be invariant 21, got {violations:?}"
         );
         assert!(
@@ -6448,6 +6625,607 @@ mod s16_agreement_dispatch_tests {
         assert!(
             !violations.iter().any(|v| v.witness.starts_with("S->G:")),
             "the S->G direction must hold on this fixture, got {violations:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod s29_violation_kind_tests {
+    //! P13-S29 pin 10: the closed per-condition matrix, one fixture per emitted
+    //! condition, plus the whole-surface tests.
+    //!
+    //! Requirement-arm assertions are on `(kind, witness)` **pairs**, never on
+    //! the label alone: three labels are shared by two conditions each, and C6's
+    //! natural fixture emits C6 *and* C7, so a label-only assertion survives
+    //! mislabelling one of them.
+    use super::*;
+    use crate::accidental::{fixture_extensions, PitchSpaceModification};
+    use crate::generators::valid_score;
+    use crate::graph::{EventOrderingDAG, RegionTimeModel};
+    use crate::pitch::PitchSpaceId;
+    use crate::tempo::{Tempo, TempoMap, TempoSegment, TempoShape};
+    use crate::time::{AnchorOffset, RationalTime, RegionEdge, TimeAnchor};
+
+    const SHAPE: &str = "req:time:tempo-segment-shape";
+    const ORDER: &str = "req:time:tempo-segment-order";
+    const LOCALITY: &str = "req:time:aleatoric-reference-locality";
+    const TUNING: &str = "req:tuning:accidental-modification-compatibility";
+
+    fn anchor(id: crate::ids::RegionId, at: i32) -> TimeAnchor {
+        TimeAnchor::Region {
+            id,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Musical(crate::time::MusicalDuration(RationalTime::from_int(at))),
+        }
+    }
+
+    /// A region id no score declares.
+    fn ghost_region(s: &Score, n: u64) -> crate::ids::RegionId {
+        crate::ids::RegionId::new(s.identity.replica_id, n)
+    }
+
+    fn tempo(bpm: f64) -> Tempo {
+        Tempo::quarter(bpm).unwrap()
+    }
+
+    /// Pin 10's requirement-arm template: the aggregate carries the pair, the
+    /// invariant selector does **not** carry it, `check_requirement` does, and
+    /// the fixture's invariant arm is **empty** — the last being what keeps
+    /// these seven structurally out of M2a's radius.
+    fn assert_requirement_condition(s: &Score, label: &'static str, witness: &str) {
+        let all = check_invariants(s);
+        let expected = (ViolationKind::Requirement(label), witness.to_owned());
+        let pairs: Vec<_> = all.iter().map(|v| (v.kind, v.witness.clone())).collect();
+        assert!(
+            pairs.contains(&expected),
+            "aggregate must carry {expected:?}; got {pairs:?}"
+        );
+        assert!(
+            check_invariant(s, GraphInvariant::CrossCuttingRefsResolve).is_empty(),
+            "the rider must not answer to invariant 10; got {:?}",
+            check_invariant(s, GraphInvariant::CrossCuttingRefsResolve)
+        );
+        let via = check_requirement(s, label);
+        assert!(
+            via.iter().any(|v| v.witness == witness),
+            "check_requirement({label}) must return the pair; got {via:?}"
+        );
+        assert!(
+            !all.iter()
+                .any(|v| matches!(v.kind, ViolationKind::Invariant(_))),
+            "fixture must violate no invariant at all; got {all:?}"
+        );
+    }
+
+    fn assert_invariant_condition(s: &Score, witness_fragment: &str) {
+        let all = check_invariants(s);
+        assert!(
+            all.iter().any(|v| v.kind
+                == ViolationKind::Invariant(GraphInvariant::CrossCuttingRefsResolve)
+                && v.witness.contains(witness_fragment)),
+            "aggregate must carry invariant 10 for {witness_fragment:?}; got {all:?}"
+        );
+        assert!(
+            check_invariant(s, GraphInvariant::CrossCuttingRefsResolve)
+                .iter()
+                .any(|v| v.witness.contains(witness_fragment)),
+            "the invariant selector must return it"
+        );
+    }
+
+    /// The production half of this file — everything before the first test
+    /// module. `g3a_tests` has its own copy; that one is private to it, which
+    /// pin 1b records as the reason its derives guard lives there rather than
+    /// here.
+    fn production_source() -> &'static str {
+        include_str!("invariants.rs")
+            .split_once("#[cfg(test)]")
+            .map(|(before, _)| before)
+            .expect("this file contains at least one #[cfg(test)] module")
+    }
+
+    fn one_segment(seed: u64, seg: impl Fn(crate::ids::RegionId) -> TempoSegment) -> Score {
+        let mut s = valid_score(seed);
+        let rid = s.canvas.regions[0].id;
+        s.tempo_map = TempoMap {
+            initial: None,
+            segments: vec![seg(rid)],
+        };
+        s
+    }
+
+    // ---- C1-C3: the invariant arm -------------------------------------------
+
+    #[test]
+    fn cross_cutting_refs_stay_invariant_ten() {
+        // Any condition of `check_cross_cutting_refs` serves; a staff's
+        // declared instrument is the most stable across generator changes.
+        let mut s = valid_score(400);
+        let ghost = crate::ids::InstrumentId::new(s.identity.replica_id, 9_400_101);
+        s.staves[0].instrument = ghost;
+        assert_invariant_condition(&s, "is not declared");
+    }
+
+    #[test]
+    fn tempo_start_anchor_stays_invariant_ten() {
+        let base = valid_score(401);
+        let ghost = ghost_region(&base, 9_400_201);
+        let s = one_segment(401, |_| TempoSegment {
+            start: anchor(ghost, 0),
+            end: None,
+            start_tempo: tempo(60.0),
+            end_tempo: None,
+            shape: TempoShape::Constant,
+        });
+        assert_invariant_condition(&s, "start anchor target");
+    }
+
+    #[test]
+    fn tempo_end_anchor_stays_invariant_ten() {
+        let base = valid_score(402);
+        let ghost = ghost_region(&base, 9_400_202);
+        let s = one_segment(402, |rid| TempoSegment {
+            start: anchor(rid, 0),
+            end: Some(anchor(ghost, 1)),
+            start_tempo: tempo(60.0),
+            end_tempo: None,
+            shape: TempoShape::Constant,
+        });
+        assert_invariant_condition(&s, "end anchor target");
+    }
+
+    // ---- C4-C10: the requirement arm ----------------------------------------
+
+    #[test]
+    fn tempo_constant_mismatch_reports_shape() {
+        let s = one_segment(403, |rid| TempoSegment {
+            start: anchor(rid, 0),
+            end: None,
+            start_tempo: tempo(60.0),
+            end_tempo: Some(tempo(120.0)),
+            shape: TempoShape::Constant,
+        });
+        assert_requirement_condition(
+            &s,
+            SHAPE,
+            "constant tempo segment has end_tempo != start_tempo",
+        );
+    }
+
+    #[test]
+    fn tempo_nonconstant_missing_end_reports_shape() {
+        let s = one_segment(404, |rid| TempoSegment {
+            start: anchor(rid, 0),
+            end: Some(anchor(rid, 1)),
+            start_tempo: tempo(60.0),
+            end_tempo: None,
+            shape: TempoShape::Linear,
+        });
+        assert_requirement_condition(
+            &s,
+            SHAPE,
+            "non-constant tempo segment is missing its end_tempo",
+        );
+    }
+
+    fn two_segments(seed: u64, a: (i32, i32), b: (i32, i32)) -> Score {
+        let mut s = valid_score(seed);
+        let rid = s.canvas.regions[0].id;
+        let seg = |from: i32, to: i32| TempoSegment {
+            start: anchor(rid, from),
+            end: Some(anchor(rid, to)),
+            start_tempo: tempo(60.0),
+            end_tempo: None,
+            shape: TempoShape::Constant,
+        };
+        s.tempo_map = TempoMap {
+            initial: None,
+            segments: vec![seg(a.0, a.1), seg(b.0, b.1)],
+        };
+        s
+    }
+
+    #[test]
+    fn tempo_out_of_order_reports_order() {
+        let s = two_segments(405, (2, 3), (1, 2));
+        assert_requirement_condition(&s, ORDER, "tempo segments are out of start order");
+    }
+
+    #[test]
+    fn tempo_overlap_reports_order() {
+        let s = two_segments(406, (2, 3), (1, 2));
+        assert_requirement_condition(&s, ORDER, "tempo segments overlap in musical time");
+    }
+    // ---- C8-C10 need their fixtures from the existing corpus ----------------
+
+    fn aleatoric_idx_and_events(s: &Score) -> (usize, Vec<crate::ids::EventId>) {
+        let idx = s
+            .canvas
+            .regions
+            .iter()
+            .position(|r| matches!(r.time_model, RegionTimeModel::Aleatoric(_)))
+            .expect("valid_score_rich region C is aleatoric");
+        let evs = s.canvas.regions[idx].staff_instances()[0].voices[0]
+            .events
+            .clone();
+        (idx, evs)
+    }
+
+    #[test]
+    fn aleatoric_ordering_outside_region_reports_locality() {
+        let mut s = crate::generators::valid_score_rich(407);
+        let (idx, evs) = aleatoric_idx_and_events(&s);
+        let ghost = crate::ids::EventId::new(s.identity.replica_id, 9_400_401);
+        let mut edges = std::collections::BTreeMap::new();
+        edges.insert(evs[0], vec![ghost]);
+        if let RegionTimeModel::Aleatoric(m) = &mut s.canvas.regions[idx].time_model {
+            m.ordering = EventOrderingDAG::try_new(edges).unwrap();
+        }
+        assert_requirement_condition(
+            &s,
+            LOCALITY,
+            &format!(
+                "aleatoric region {:?} ordering references event {:?}, absent from the region",
+                s.canvas.regions[idx].id, ghost
+            ),
+        );
+    }
+
+    #[test]
+    fn aleatoric_bounds_outside_region_reports_locality() {
+        let mut s = crate::generators::valid_score_rich(408);
+        let (idx, _) = aleatoric_idx_and_events(&s);
+        let ghost = crate::ids::EventId::new(s.identity.replica_id, 9_400_402);
+        if let RegionTimeModel::Aleatoric(m) = &mut s.canvas.regions[idx].time_model {
+            m.bounds.insert(ghost, crate::time::EventBounds::default());
+        }
+        assert_requirement_condition(
+            &s,
+            LOCALITY,
+            &format!(
+                "aleatoric region {:?} bounds key event {:?} is absent from the region",
+                s.canvas.regions[idx].id, ghost
+            ),
+        );
+    }
+
+    #[test]
+    fn accidental_incompatible_reports_tuning_requirement() {
+        let mut s = valid_score(410);
+        s.tuning_context.default_pitch_space = PitchSpaceId::new("edo-31");
+        s.tuning_context
+            .accidental_extensions
+            .push(fixture_extensions(
+                "cmn-accidentals",
+                PitchSpaceModification::CmnChromatic(1),
+            ));
+        let via = check_requirement(&s, TUNING);
+        assert!(!via.is_empty(), "expected a compatibility violation");
+        assert!(
+            via[0].witness.ends_with("interval algebra") && !via[0].witness.contains("req:"),
+            "witness must be label-free and end with the algebra clause; got {:?}",
+            via[0].witness
+        );
+        assert!(
+            check_invariant(&s, GraphInvariant::CrossCuttingRefsResolve).is_empty(),
+            "the rider must not answer to invariant 10"
+        );
+    }
+
+    // ---- whole-surface -------------------------------------------------------
+
+    #[test]
+    fn graph_invariant_all_is_unchanged() {
+        let seq: Vec<(GraphInvariant, u8)> = GraphInvariant::all()
+            .into_iter()
+            .map(|i| (i, i.number()))
+            .collect();
+        let expected: Vec<(GraphInvariant, u8)> = vec![
+            (GraphInvariant::EventVoiceBacklink, 1),
+            (GraphInvariant::VoiceEventBacklink, 2),
+            (GraphInvariant::VoiceEventsSortedNonOverlap, 3),
+            (GraphInvariant::EventCoordinateModel, 4),
+            (GraphInvariant::ContainmentTree, 5),
+            (GraphInvariant::StaffInstanceResolves, 6),
+            (GraphInvariant::RegionExtents, 7),
+            (GraphInvariant::MeasureSingleInstance, 8),
+            (GraphInvariant::AnchorOffsetModel, 9),
+            (GraphInvariant::CrossCuttingRefsResolve, 10),
+            (GraphInvariant::UniqueIdentifiers, 11),
+            (GraphInvariant::PitchIdUnique, 12),
+            (GraphInvariant::SpellingScopeResolves, 13),
+            (GraphInvariant::DecompositionTargetResolves, 14),
+            (GraphInvariant::DecompositionSum, 15),
+            (GraphInvariant::TupletSum, 16),
+            (GraphInvariant::TiePairing, 17),
+            (GraphInvariant::VoiceOriginConsistent, 18),
+            (GraphInvariant::BarlineGroupSameRegion, 19),
+            (GraphInvariant::MeasureMeterConsistency, 20),
+            (GraphInvariant::StaffGroupMembershipAgreement, 21),
+        ];
+        assert_eq!(
+            seq, expected,
+            "GraphInvariant::all() is frozen by P13-S29 pin 8"
+        );
+
+        // `all()` is not the enum: a variant declared and omitted from `all()`
+        // leaves the sequence untouched. Independent declaration inventory.
+        let src = production_source();
+        let a = src.find("pub enum GraphInvariant {").expect("declaration");
+        let b = src[a..].find("\n}").expect("close") + a;
+        let declared: Vec<&str> = src[a..b]
+            .lines()
+            .filter_map(|l| l.trim().strip_suffix(','))
+            .filter(|l| !l.starts_with("///") && !l.starts_with("//"))
+            .collect();
+        let names: Vec<String> = expected.iter().map(|(i, _)| format!("{i:?}")).collect();
+        assert_eq!(
+            declared, names,
+            "the enum declares exactly all()'s variants, in order"
+        );
+    }
+
+    #[test]
+    fn display_renders_each_arm_exactly() {
+        // Invariant side: a reversed aleatoric bound (invariant 4), acquired
+        // from the aggregate -- pinned, because acquisition decides M3's radius.
+        let s = reversed_aleatoric_bound(411);
+        let inv = check_invariants(&s)
+            .into_iter()
+            .find(|v| v.kind == ViolationKind::Invariant(GraphInvariant::EventCoordinateModel))
+            .expect("an invariant-arm violation");
+        assert_eq!(
+            inv.to_string(),
+            format!(
+                "invariant 4 (EventCoordinateModel) violated: {}",
+                inv.witness
+            )
+        );
+
+        // Requirement side: a real accidental violation, from the aggregate.
+        let mut s = valid_score(412);
+        s.tuning_context.default_pitch_space = PitchSpaceId::new("edo-31");
+        s.tuning_context
+            .accidental_extensions
+            .push(fixture_extensions(
+                "cmn-accidentals",
+                PitchSpaceModification::CmnChromatic(1),
+            ));
+        let req = check_invariants(&s)
+            .into_iter()
+            .find(|v| v.kind == ViolationKind::Requirement(TUNING))
+            .expect("a requirement-arm violation");
+        assert!(
+            !req.witness.contains("req:"),
+            "independent oracle: the witness must not carry its own label"
+        );
+        assert_eq!(
+            req.to_string(),
+            format!("requirement {TUNING} violated: {}", req.witness)
+        );
+    }
+
+    #[test]
+    fn mixed_fixture_splits_by_arm() {
+        // Pinned fixture: a dangling tempo START anchor (C2, invariant arm) and
+        // an out-of-region aleatoric ORDERING event (C8, requirement arm).
+        let mut s = crate::generators::valid_score_rich(409);
+        let (idx, evs) = aleatoric_idx_and_events(&s);
+        let ghost_event = crate::ids::EventId::new(s.identity.replica_id, 9_400_501);
+        let mut edges = std::collections::BTreeMap::new();
+        edges.insert(evs[0], vec![ghost_event]);
+        if let RegionTimeModel::Aleatoric(m) = &mut s.canvas.regions[idx].time_model {
+            m.ordering = EventOrderingDAG::try_new(edges).unwrap();
+        }
+        let ghost_rid = ghost_region(&s, 9_400_502);
+        s.tempo_map = TempoMap {
+            initial: None,
+            segments: vec![TempoSegment {
+                start: anchor(ghost_rid, 0),
+                end: None,
+                start_tempo: tempo(60.0),
+                end_tempo: None,
+                shape: TempoShape::Constant,
+            }],
+        };
+
+        // All three surfaces, not the aggregate alone.
+        let all = check_invariants(&s);
+        assert!(
+            all.iter().any(
+                |v| v.kind == ViolationKind::Invariant(GraphInvariant::CrossCuttingRefsResolve)
+            ),
+            "aggregate must carry the anchor as invariant 10; got {all:?}"
+        );
+        assert!(
+            all.iter()
+                .any(|v| v.kind == ViolationKind::Requirement(LOCALITY)),
+            "aggregate must carry the rider as its requirement; got {all:?}"
+        );
+
+        let via_inv = check_invariant(&s, GraphInvariant::CrossCuttingRefsResolve);
+        assert!(
+            via_inv.iter().all(|v| v.witness.contains("anchor target")),
+            "the invariant selector must return the anchor only; got {via_inv:?}"
+        );
+        let via_req = check_requirement(&s, LOCALITY);
+        assert!(
+            !via_req.is_empty()
+                && via_req
+                    .iter()
+                    .all(|v| v.witness.contains("ordering references")),
+            "the requirement selector must return the rider only; got {via_req:?}"
+        );
+    }
+
+    #[test]
+    /// Pin 3a. The `.tex` requirement block equals pin 3's pinned source, by
+    /// whitespace-collapsed **equality** — not required phrases plus a
+    /// forbidden-stem list. A stem inventory cannot anticipate the sentence
+    /// someone will actually write, and M14e is exactly that sentence: it uses
+    /// no forbidden stem and settles P13-S8 inside a requirement minted not to.
+    fn tempo_segment_shape_requirement_states_its_clauses_and_stays_s8_neutral() {
+        const TEX: &str = include_str!("../../../spec/core_spec.tex");
+        const LABEL: &str = r"\label{req:time:tempo-segment-shape}";
+
+        let at = TEX.find(LABEL).expect("the requirement is minted");
+        let start = TEX[..at]
+            .rfind(r"\begin{requirement}")
+            .expect("its block opens");
+        let end_tag = r"\end{requirement}";
+        let end = TEX[at..].find(end_tag).expect("its block closes") + at + end_tag.len();
+        let collapse = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        assert_eq!(
+            collapse(&TEX[start..end]),
+            collapse(
+                r"\begin{requirement}
+  \label{req:time:tempo-segment-shape}
+  A tempo segment's \texttt{shape} and its \texttt{end\_tempo} \MUST{} be
+  compatible. If \texttt{shape} is \texttt{Constant} and \texttt{end\_tempo}
+  is present, it \MUST{} equal \texttt{start\_tempo}. If \texttt{shape} is
+  \texttt{Linear}, \texttt{Exponential} or \texttt{Curve}, \texttt{end\_tempo}
+  \MUST{} be present.
+
+  This requirement states the compatibility that is enforced. It does not
+  determine whether a constant segment records an \texttt{end\_tempo} at all.
+\end{requirement}"
+            ),
+            "pin 3's block is frozen; any edit must be deliberate"
+        );
+    }
+
+    /// A region-local aleatoric bound whose window is reversed (`min > max`).
+    /// The bounds key is **in** the region, so this trips invariant 4 and
+    /// **not** C9's locality requirement.
+    fn reversed_aleatoric_bound(seed: u64) -> Score {
+        let mut s = crate::generators::valid_score_rich(seed);
+        let (idx, evs) = aleatoric_idx_and_events(&s);
+        if let RegionTimeModel::Aleatoric(m) = &mut s.canvas.regions[idx].time_model {
+            m.bounds.insert(
+                evs[0],
+                crate::time::EventBounds {
+                    start: Some(crate::time::TimeBounds::MusicalRange {
+                        min: crate::time::MusicalPosition(RationalTime::new(1, 2).unwrap()),
+                        max: crate::time::MusicalPosition::origin(),
+                    }),
+                    end: None,
+                },
+            );
+        }
+        s
+    }
+
+    #[test]
+    /// Pin 10's eleventh row: the reversed-bounds condition is **unchanged** by
+    /// this rung and stays in the invariant arm as invariant 4.
+    fn reversed_aleatoric_bounds_stay_invariant_four() {
+        let s = reversed_aleatoric_bound(414);
+        let all = check_invariants(&s);
+        let pair = all
+            .iter()
+            .find(|v| v.witness.contains("reversed"))
+            .expect("the reversed bound must be reported");
+        assert_eq!(
+            pair.kind,
+            ViolationKind::Invariant(GraphInvariant::EventCoordinateModel),
+            "reversed bounds are invariant 4, not a requirement; got {pair:?}"
+        );
+        let four = check_invariant(&s, GraphInvariant::EventCoordinateModel);
+        assert!(
+            four.iter().any(|v| v.witness.contains("reversed")),
+            "invariant 4's selector must return it; got {four:?}"
+        );
+        // Two assertions, not three: pin 10's invariant-arm template is the
+        // aggregate and the selector. A `check_requirement` negative here would
+        // put this test in M3's radius, which §3 pinned without it.
+    }
+
+    #[test]
+    fn invariant_selector_discriminates_its_payload() {
+        // Two different invariant variants in one score: a dangling staff
+        // instrument (10) and a reversed aleatoric bound (4).
+        let mut s = crate::generators::valid_score_rich(413);
+        let ghost = crate::ids::InstrumentId::new(s.identity.replica_id, 9_400_601);
+        s.staves[0].instrument = ghost;
+        let (idx, evs) = aleatoric_idx_and_events(&s);
+        if let RegionTimeModel::Aleatoric(m) = &mut s.canvas.regions[idx].time_model {
+            m.bounds.insert(
+                evs[0],
+                crate::time::EventBounds {
+                    start: Some(crate::time::TimeBounds::MusicalRange {
+                        min: crate::time::MusicalPosition(RationalTime::new(1, 2).unwrap()),
+                        max: crate::time::MusicalPosition::origin(),
+                    }),
+                    end: None,
+                },
+            );
+        }
+
+        let ten = check_invariant(&s, GraphInvariant::CrossCuttingRefsResolve);
+        assert!(
+            !ten.is_empty() && ten.iter().all(|v| v.witness.contains("is not declared")),
+            "invariant 10's selector must return only its own; got {ten:?}"
+        );
+        let four = check_invariant(&s, GraphInvariant::EventCoordinateModel);
+        assert!(
+            !four.is_empty() && four.iter().all(|v| v.witness.contains("reversed")),
+            "invariant 4's selector must return only its own; got {four:?}"
+        );
+    }
+
+    #[test]
+    fn requirement_selector_discriminates_its_payload() {
+        // Two different requirement labels in one score: C5 (shape) and C8
+        // (locality).
+        let mut s = crate::generators::valid_score_rich(414);
+        let (idx, evs) = aleatoric_idx_and_events(&s);
+        let ghost_event = crate::ids::EventId::new(s.identity.replica_id, 9_400_701);
+        let mut edges = std::collections::BTreeMap::new();
+        edges.insert(evs[0], vec![ghost_event]);
+        if let RegionTimeModel::Aleatoric(m) = &mut s.canvas.regions[idx].time_model {
+            m.ordering = EventOrderingDAG::try_new(edges).unwrap();
+        }
+        let rid = s.canvas.regions[0].id;
+        s.tempo_map = TempoMap {
+            initial: None,
+            segments: vec![TempoSegment {
+                start: anchor(rid, 0),
+                end: Some(anchor(rid, 1)),
+                start_tempo: tempo(60.0),
+                end_tempo: None,
+                shape: TempoShape::Linear,
+            }],
+        };
+
+        let shape = check_requirement(&s, SHAPE);
+        assert!(
+            !shape.is_empty() && shape.iter().all(|v| v.witness.contains("end_tempo")),
+            "the shape label must return only its own; got {shape:?}"
+        );
+        let locality = check_requirement(&s, LOCALITY);
+        assert!(
+            !locality.is_empty()
+                && locality
+                    .iter()
+                    .all(|v| v.witness.contains("ordering references")),
+            "the locality label must return only its own; got {locality:?}"
+        );
+    }
+
+    #[test]
+    fn violation_kind_has_exactly_two_arms() {
+        let src = production_source();
+        let a = src.find("pub enum ViolationKind {").expect("declaration");
+        let b = src[a..].find("\n}").expect("close") + a;
+        let arms: Vec<&str> = src[a..b]
+            .lines()
+            .filter_map(|l| l.trim().strip_suffix(','))
+            .collect();
+        assert_eq!(
+            arms,
+            vec!["Invariant(GraphInvariant)", "Requirement(&'static str)"],
+            "ViolationKind has exactly two arms and no unclassified fallback"
         );
     }
 }

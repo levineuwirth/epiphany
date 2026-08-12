@@ -354,9 +354,42 @@ suites=44 passed=1604 failed=0 ignored=0
 
 ---
 
-## §6. Gate 6 — pin 9's boundary check, verbatim
+## §6. Gate 6 — the identifier and field migration, verbatim
 
-*(pending)*
+**6a. No `InvariantViolation` identifier in Rust code.** Gate 6 scopes this to
+`crates/**/*.rs`; the contract, the ledger and this annex quote the old name
+historically and are out of scope.
+
+```
+$ find crates -name '*.rs' -type f -exec grep -Hn 'InvariantViolation' {} +
+$ echo $?
+1
+```
+
+*Run with `find … -exec`, not a piped `grep | head`: a universal negative from a
+truncated pipe is the failure mode `CLAUDE.md` names, and this gate is a
+universal negative.*
+
+**6b. No `.invariant` field access on a `WellFormednessViolation`.** Three hits
+survive, and gate 6 requires each to be attributed rather than counted:
+
+```
+crates/epiphany-core/src/invariants.rs:320:            self.invariant.number(),
+crates/epiphany-core/src/invariants.rs:321:            self.invariant,
+crates/epiphany-core/src/invariants.rs:3326:        assert_eq!(deferred[0].invariant, GraphInvariant::RegionExtents);
+```
+
+**All three are `DeferredCheck`, not the violation type.** Lines 320–321 are
+inside `impl core::fmt::Display for DeferredCheck` (opened at `:315`); line 3326
+indexes the result of `deferred_checks(&s)`.
+
+**6c. `DeferredCheck.invariant` retained**, as §0.5 requires:
+
+```
+crates/epiphany-core/src/invariants.rs:305:pub struct DeferredCheck {
+crates/epiphany-core/src/invariants.rs-306-    /// The invariant whose decision was deferred.
+crates/epiphany-core/src/invariants.rs-310-    pub invariant: GraphInvariant,
+```
 
 ---
 
@@ -465,3 +498,299 @@ they were compared against, not the observation.
 
 The mutation sequence resumes at **M2**. M1 is complete — C4, C5, C8, C9 and C10
 matched their dispatched cells, and C6 and C7 match the corrected cells above.
+
+---
+
+## §9. The mutation phase, resumed at M2
+
+**§5 is closed at M1 by the digest gate (contract §6.5c-bis); this section
+continues the matrix.** Every row was run as
+`cargo test --workspace --no-fail-fast`, preceded by
+`cargo build --tests --workspace` checked for `error[` — **a mutation that does
+not compile observed nothing** — and restored by hand write-back.
+
+### 9.1 Five more execution faults, none a contract defect
+
+**They are recorded here rather than appended to §3** because §3 is the
+pre-amendment record committed at `29ef3af` as amendment 1's oracle. Its count of
+five is true as of that commit; these four are later events.
+
+#### 9.1.1 Pin 10's eleventh row was never built
+
+Pin 10's matrix has **eleven** rows. The eleventh is marked `—` rather than a
+C-number:
+
+| — | reversed aleatoric bounds | **invariant 4, unchanged** | `reversed_aleatoric_bounds_stay_invariant_four` |
+
+It was read as a note and no test was written. **M11's cell names that test**, so
+the omission surfaced as a radius mismatch — expected 4, observed 2 — and not
+before.
+
+*A row whose identifier is a dash reads as commentary. The other ten rows carry
+C-numbers; the eleventh carries the same three columns and a dash, and only the
+columns matter.*
+
+#### 9.1.2 `display_renders_each_arm_exactly`'s invariant side was the wrong fixture
+
+Its comment read:
+
+```rust
+// Invariant side: a reversed aleatoric bound (invariant 4), acquired
+// from the aggregate -- pinned, because acquisition decides M3's radius.
+```
+
+The code beneath it built a **dangling staff instrument** and searched for
+`CrossCuttingRefsResolve` — invariant 10, a C1 fixture. **The comment recorded
+the pin; the code did something else.**
+
+Pin 10 forecloses exactly this:
+
+> *The choice changes radii, so it cannot be the executor's: a C1 fixture would
+> put this test in M17·C1's cell, a tempo-anchor fixture in M17·C2/C3's, and
+> reversed bounds put it in **M11's**, which is where it now belongs and where
+> M11's cell names it.*
+
+Both halves of that prediction were then observed: with the fixture repaired,
+`display_renders_each_arm_exactly` **entered M11's radius** (§9.3) and is
+**absent from M17·C1's measured 20** (§9.4). Under the unrepaired fixture it
+would have failed M17·C1 too — a second mismatch the first one pre-empted.
+
+*This is the most dangerous of the five fault classes in this rung: a comment
+that states the pin correctly next to code that does not. Nothing reads the
+comment.*
+
+#### 9.1.3 Pin 3a's guard did not exist
+
+`tempo_segment_shape_requirement_states_its_clauses_and_stays_s8_neutral` was
+absent from the tree. **Thirteen mutations target it** — M12pre, M12, M13,
+M13post, M13neutral, M14a–e, M15a, M15b — so thirteen cells had no possible
+observer. Found when the `.tex` batch went to look for it.
+
+It is now implemented as pin 3a requires: the `.tex` slice from the
+`\begin{requirement}` preceding the label to the first `\end{requirement}` at or
+after it, whitespace-collapsed, **equal** to pin 3's pinned source.
+
+**M14e is the vindication of equality over a stem inventory.** It appends
+`A \texttt{Constant} segment's \texttt{end\_tempo} \MUST{} be absent.` — no
+`canonic`, no `normaliz`, no `prefer`, and it settles P13-S8 inside a requirement
+minted not to. Equality fails it; every phrase-and-stem form passes it.
+
+#### 9.1.4 An interrupted run left a mutation applied
+
+The mutation harness restores in a `finally`. A **killed** process runs no
+`finally`, so an interrupted batch leaves the tree mutated. One did: M2a's
+wildcard survived at `invariants.rs:425`.
+
+It was found by re-reading the file, and `invariant_selector_discriminates_its_payload`
+confirmed it:
+
+```
+invariant 10's selector must return only its own; got [
+  WellFormednessViolation { kind: Invariant(CrossCuttingRefsResolve), witness: "staff ...
+  WellFormednessViolation { kind: Invariant(EventCoordinateModel), witness: "aleatoric ...
+```
+
+**Restored by hand-editing**, never git, and the full suite returned to
+`44 / 1606 / 0 / 0`.
+
+*The lesson is not "be careful with interrupts": it is that a restore guaranteed
+only by process exit is not a guarantee. **Verify the baseline after any
+interrupted mutation run, before trusting the next measurement** — a stray
+mutation makes every subsequent radius wrong in a way that looks like a
+mismatch in the wrong place.*
+
+### 9.2 The surface moved twice, and what that obliges
+
+| Surface | Cause |
+|---|---|
+| 1604 | §4's surface — pin 10's 16 tests, pin 1b's two |
+| **1605** | §9.1.1's missing test added |
+| **1606** | §9.1.3's missing guard added |
+
+**Radii are measured against the final surface.** The 17 mutations first measured
+at 1604 were **re-run in full** at 1605 and all matched. The 38 measured at 1605
+were **not** re-run in full at 1606; the justification is bounded and stated:
+
+- **Pin 3a's guard has exactly two inputs** — `core_spec.tex` via `include_str!`
+  and a string literal. Verified mechanically: no `production_source`, no
+  `check_*` call, one `include_str!` target.
+- **None of those 38 modifies `core_spec.tex`.** They edit `invariants.rs`,
+  `generators.rs` or `public_surface.rs`.
+- **Two representatives were re-run at 1606 anyway**, one per interaction class:
+  **M2a** — the widest selector radius, 21 — and **M20b**, a prose edit inside
+  `invariants.rs`. Both matched unchanged.
+
+*This is an argument from a test's complete input set, not from reasoning about
+fixture reach — the thing this rung has repeatedly got wrong. It is recorded as
+an argument, not presented as a measurement.*
+
+### 9.3 Expected versus observed — all 54 mutations
+
+| M | Cell | Observed | |
+|---|---|---|---|
+| M1·C4 | 2 | 2 | ✅ |
+| M1·C5 | 3 | 3 | ✅ |
+| M1·C6 | 2 *(amendment 1)* | 2 | ✅ |
+| M1·C7 | 2 *(amendment 1)* | 2 | ✅ |
+| M1·C8 | 4 | 4 | ✅ |
+| M1·C9 | 2 | 2 | ✅ |
+| M1·C10 | 3 | 3 | ✅ |
+| M2 | 8 | 8 | ✅ |
+| M2a | 21 *(measured pre-ratification)* | 21 | ✅ |
+| M3 | 13 | 13 | ✅ |
+| M3a | 1 | 1 | ✅ |
+| M4 | 1 | 1 | ✅ |
+| M5 | 1 | 1 | ✅ |
+| M6 | 1 | 1 | ✅ |
+| M7 | 7 | 7 | ✅ |
+| M7a | 1 | 1 | ✅ |
+| M7b | 1 | 1 | ✅ |
+| M7c | 1 | 1 | ✅ |
+| M7d | 1 | 1 | ✅ |
+| M8 | 5 | 5 | ✅ |
+| M9 | 14 | 14 | ✅ |
+| M10 | 3 | 3 | ✅ |
+| M11 | 4 | 4 | ✅ |
+| M12pre | 1 | 1 | ✅ |
+| M12 | 1 | 1 | ✅ |
+| M13 | 1 | 1 | ✅ |
+| M13post | 1 | 1 | ✅ |
+| M13neutral | 1 | 1 | ✅ |
+| M14a–M14e | 1 each | 1 each | ✅ |
+| M15a | 1 | 1 | ✅ |
+| M15b | 1 | 1 | ✅ |
+| M16a | 1 | 1 | ✅ |
+| M16b | 1 | 1 | ✅ |
+| M17·C1 | 20 *(18 measured + 2 new)* | 20 | ✅ |
+| M17·C2 | 3 *(measured)* | 3 | ✅ |
+| M17·C3 | 1 *(measured)* | 1 | ✅ |
+| M18 | 1 | 1 | ✅ |
+| M20 | 1 | 1 | ✅ |
+| M20a–M20k | 1 each | 1 each | ✅ |
+
+**No compile-only result. No passing-outcome mutation** — §3 requires every row
+to fail, and every row did.
+
+### 9.4 Three cells worth their own note
+
+**M2a, 21, unchanged from its pre-ratification measurement.** §3 warned its proxy
+over-approximated for any test observing a rider through the selector, and that
+none of the 20 legacy tests was a rider test. Confirmed: the legacy 20 are exactly
+the `g3b_measure20_tests` set measured, plus the new discriminator.
+
+**M17·C1, 20, and `display_renders_each_arm_exactly` is not among them.** That
+absence is the receipt for §9.1.2: under the unrepaired C1 fixture it would have
+been.
+
+**M7b, 1.** §3 records that revision L wrongly named
+`every_invariant_has_a_negative_generator` here, since that test iterates `all()`
+and cannot detect an omission from `all()`. Observed: `graph_invariant_all_is_unchanged`
+alone.
+
+### 9.5 Restoration
+
+After every row, and after the interrupted-run repair:
+
+```
+suites=44 passed=1606 failed=0 ignored=0
+cargo +1.95.0 clippy --workspace --all-targets -- -D warnings: clean
+```
+
+**1586 → 1606, twenty net-new tests**, and 43 → 44 suites:
+
+| Count | Where |
+|---|---|
+| 17 | pin 10's eleven-row matrix and its whole-surface tests |
+| 1 | pin 3a's `.tex` prose guard |
+| 1 | pin 1b's derives guard, in `g3a_tests` |
+| 1 | pin 1b's integration test — the new suite |
+
+---
+
+## §10. A sixth fault, found by gate 16 at the last moment
+
+**Pin 9's `/// 10.` rider note was never migrated.** It is one row of pin 9's
+table, and it was the only row left undone — the other eight were verified
+individually rather than assumed, which is how this one surfaced.
+
+The note still read:
+
+```rust
+///     Beyond that surface, further checks are reported under this same tag
+///     and are NOT part of the normative invariant 10: tempo-map segment
+///     shape, ordering and non-overlap (Chapter 3,
+///     `req:time:tempo-segment-order`); ...
+///     multiplexing is filed as P13-S29 — the public `check_invariant`
+///     filter and this violation's `Display` attribute those failures to
+///     invariant 10. Repairing it is a behaviour change, out of scope here.
+```
+
+**Three statements, all false as of this rung**, and the gate names all three:
+the riders are no longer *"reported under this same tag"*; P13-S29 is no longer
+their *pending owner* — it is this commit; and the note listed **three** labels
+where pin 9 requires **four**, `req:time:tempo-segment-shape` being the one this
+rung minted.
+
+*The missing fourth label is the same defect shape as §9.1.1: a set that grew by
+one, and a list that did not.* It is now rewritten to name all four and to say
+that `check_invariants` still returns them, so a caller asking *"is this graph
+well-formed"* keeps its coverage.
+
+**Why no test caught it.** Pin 9's prose outcomes have **no machine observer** —
+gate 16 says so outright: *"Every one of these can be omitted with all other
+gates green."* Eight rows had landed; the ninth had not; nothing in 1606 tests
+could tell the difference.
+
+**Every other pin 9 row was re-verified by its own stale phrase**, not by
+assumption:
+
+| Stale phrase | Found in |
+|---|---|
+| `surfaced here under invariant 10` | clean |
+| `go under invariant 10` | clean |
+| `surfaced under an existing` | clean |
+| `the compatibility invariant` | clean |
+| `tempo-map segment invariants` | clean |
+| `all 19 enumerated graph invariants` | clean |
+| `reported under this same tag` | **`invariants.rs`** → repaired |
+| `filed as P13-S29` | **`invariants.rs`** → repaired |
+
+*`core_spec.tex:3120` still occurs in `DECISIONS.md` and `accidental.rs`.
+Neither is a pin 9 row: pin 9 pins that locator's replacement in the **accidental
+header comment** in `invariants.rs`, which is clean, and it explicitly does
+**not** rewrite `DECISIONS.md`, which gains a supersession note instead.*
+
+---
+
+## §11. Gate results, 1–16
+
+| # | Gate | Result |
+|---|---|---|
+| 1 | `cargo test --workspace` | **44 suites / 1606 passed / 0 failed / 0 ignored** |
+| 2 | clippy `-D warnings` | clean, 0 warnings and 0 errors |
+| 3 | `fmt -p epiphany-core -p epiphany-testkit --check` | clean (never `--all`) |
+| 4 | staged paths ⊆ §2 rows, all rows staged | 13 paths, 13 rows |
+| 5 | `git diff --cached --check` | clean |
+| 6 | identifier and field migration | §6 above, verbatim |
+| 7 | every §3 mutation observed | §9.3 — 54 rows, all matched |
+| 8 | `all()` re-derived at 21; `.tex` count claim unchanged | 21 entries, 21 unique, 21 `number()` arms 1..21, order identical; `core_spec.tex:6746` still reads *"exactly \textbf{21} invariants"* and is absent from the diff |
+| 9 | `latexmk -xelatex core_spec` | undefined references cleared on pass 1; `core_spec.pdf` rebuilt |
+| 10 | ledger append, removed-plus-added reconstruction | 1 removed / 1 added; `added` ends with `\|`; `strip(added) == strip(removed) + " " + APPEND` **true** |
+| 11 | temporary allowlist row absent, two survivors present | `req:time:tempo-segment-shape` absent; `req:layoutir:vertical-bands` and `req:graph:aleatoric-reference-locality` present |
+| 12 | `requirement_labels` passes with the row absent | 6 passed, 0 failed |
+| 13 | pin 11's inventory | **25 observations: 9 migrated (5 + 4), 16 unchanged**, none deleted, none softened; M16a and M16b prove both negatives non-vacuous |
+| 14 | pin 12's lifecycle | status block exactly `STATUS: LANDED by this commit.`, no hash; frozen-pins statement shows **0 hunks** in a zero-context staged diff; revisions A–R marked a dated historical record |
+| 15 | placement and Revision History row | shape follows order's `\end{requirement}` with only a `\begin{requirement}` between; the added run equals pin 13's block, whitespace-collapsed |
+| 16 | pin 9's prose outcomes | §10 — eight rows verified clean by their own stale phrase, one repaired |
+
+### 11.1 Gate 10's one-character finding
+
+The staged ledger append first read `RESOLVED 2026-08-12`; pin 13's `APPEND` is
+pinned verbatim as `2026-08-11`. The reconstruction failed on that character
+alone, and **the artifact was corrected to the pin, not the pin to the artifact.**
+
+*Flagged for the owner rather than silently reconciled: the contract's own
+ratification line reads 2026-08-12, so the pinned append carries the date the
+row was drafted rather than the date the rung resolved. Changing it is an
+administrative amendment to pin 13, not an execution decision — gate 10 exists
+to make exactly this deviation visible.*

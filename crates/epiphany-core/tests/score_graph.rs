@@ -11,7 +11,7 @@ use epiphany_core::{
     Pitch, PitchId, PitchSpaceId, PitchSpacePosition, PitchedEvent, RationalTime, Region,
     RegionContent, RegionTimeModel, ReplicaId, ScalePosition, Score, StaffBasedContent,
     StaffExtent, StaffInstance, StaffLineConfiguration, StemConfiguration, TimeAnchor, TimeExtent,
-    TuningReference, Voice, WallClockTime,
+    TuningReference, ViolationKind, Voice, WallClockTime,
 };
 use epiphany_core::{Staff, StaffId, StaffInstanceId, VoiceId};
 
@@ -136,7 +136,7 @@ fn deleting_an_event_from_its_voice_list_is_caught() {
     let v = check_invariants(&score);
     assert!(v
         .iter()
-        .any(|x| x.invariant == GraphInvariant::EventVoiceBacklink));
+        .any(|x| x.kind == ViolationKind::Invariant(GraphInvariant::EventVoiceBacklink)));
 }
 
 #[test]
@@ -146,7 +146,9 @@ fn full_invariant_sweep_via_public_api() {
     for inv in GraphInvariant::all() {
         let bad = generators::violating_score(inv, 0xBEEF);
         assert!(
-            check_invariants(&bad).iter().any(|v| v.invariant == inv),
+            check_invariants(&bad)
+                .iter()
+                .any(|v| v.kind == ViolationKind::Invariant(inv)),
             "{inv:?} not reported on its negative graph"
         );
         let shrunk = generators::shrink(&bad, inv);

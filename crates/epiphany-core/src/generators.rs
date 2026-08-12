@@ -976,6 +976,7 @@ pub fn shrink(score: &Score, inv: GraphInvariant) -> Score {
 mod tests {
     use super::*;
     use crate::check_invariants;
+    use crate::invariants::ViolationKind;
 
     #[test]
     fn positive_corpus_runs_clean() {
@@ -1092,7 +1093,8 @@ mod tests {
              else, got {violations:?}"
         );
         assert_eq!(
-            violations[0].invariant, inv,
+            violations[0].kind,
+            ViolationKind::Invariant(inv),
             "{leg}: the single violation must be invariant 21, got {violations:?}"
         );
         assert!(
@@ -1171,8 +1173,11 @@ mod tests {
         for inv in GraphInvariant::all() {
             let s = violating_score(inv, 99);
             let all = check_invariants(&s);
-            let kinds: std::collections::BTreeSet<_> = all.iter().map(|v| v.invariant).collect();
-            assert!(kinds.contains(&inv), "{inv:?} not among {kinds:?}");
+            let kinds: std::collections::BTreeSet<_> = all.iter().map(|v| v.kind).collect();
+            assert!(
+                kinds.contains(&ViolationKind::Invariant(inv)),
+                "{inv:?} not among {kinds:?}"
+            );
             assert!(
                 kinds.len() <= 3,
                 "{inv:?} corruption fired too many invariants: {kinds:?}"

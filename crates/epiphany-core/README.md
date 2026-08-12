@@ -22,7 +22,7 @@ of the core specification (`spec/core_spec.pdf`). This is Agent B's crate per
 | Events | the `Event` taxonomy (7 variants) and the `slotmap`-backed `EventArena` | Ch. 5 §"The Event Arena" |
 | Graph | `Canvas`, `Region`, `Staff` vs `StaffInstance`, `Voice`/`VoiceOrigin`, `Measure`, `BarlineAlignmentGroup`, aleatoric `EventOrderingDAG` (acyclic by construction), the full cross-cutting registry, the full top-level `Score` | Ch. 5 |
 | Indexes | `ScoreIndexes`: the four mandatory indexes (event-time, cross-cutting-reference, measure, spelling-attachment) | Ch. 5 §"Indexes" |
-| Invariants | `check_invariants` over all 19 enumerated graph invariants, with a typed `InvariantViolation` witness per check | Ch. 5 §"Graph Invariants" |
+| Invariants | `check_invariants` over all variants returned by `GraphInvariant::all()`, with a typed `WellFormednessViolation` witness per check | Ch. 5 §"Graph Invariants" |
 | Generators | `generators::valid_score`/`valid_score_rich` (positive), `violating_score` (negative, per invariant), `shrink` (witness minimizer) | QUICKSTART, Agent B hand-off |
 
 ## The identity discipline this crate enforces

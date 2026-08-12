@@ -1062,6 +1062,16 @@ underdetermined pitch spaces) — inventing one would itself be the
 wired into `check_invariants` as
 `GraphIndex::check_accidental_modification_compatibility` — the
 `req:tuning:accidental-modification-compatibility` invariant
+
+> **SUPERSEDED 2026-08-12 by P13-S29** (`spec/CONTRACT_P13S29_VIOLATION_KIND.md`).
+> Calling this an *invariant* was accurate about the tag it borrowed and wrong
+> about what it is: a Chapter 4 requirement reported under a Chapter 5 graph
+> invariant's number, through a public API. It now reports
+> `ViolationKind::Requirement("req:tuning:accidental-modification-compatibility")`
+> and is retrievable through `check_requirement`. **The decision above is left
+> as written** — it records why borrowing the tag was defensible when no other
+> arm existed, which is what a later reader needs in order to understand why it
+> was accepted and then reversed.
 (`core_spec.tex:3120`). `space` resolves structurally against
 `built_in_position_structure` (Push 4b tranche 1), the same catalog
 `Pitch::transposed` uses. The requirement's two named rules (`CmnChromatic`

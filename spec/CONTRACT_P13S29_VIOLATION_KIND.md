@@ -1,10 +1,15 @@
 # Contract — P13-S29: the violation tag stops multiplexing
 
-STATUS: RATIFIED; DISPATCHED.
+STATUS: LANDED by this commit.
 
 **Ratified 2026-08-12 on the authority of the repository owner**, the final
 whole-artifact review returning zero findings. Review-round records accumulate
 above §0.
+
+> **DATED HISTORICAL RECORD — the eighteen review-round blocks above §0 (revisions
+> A–R) are an account of what was found and decided between drafting and
+> ratification on 2026-08-12. They state no current condition.** The pins as
+> ratified are §1's; §6's amendment 1 corrects two of §3's radius cells.
 
 **THE PINS ARE FROZEN. They may be executed, not edited.** A defect found during
 execution is **reported, not patched in place** — if it needs a pin change, that
@@ -1682,7 +1687,11 @@ execution confirms it and any difference is a finding.*
 
 ## §6. AMENDMENT 1 — §3's M1·C6 AND M1·C7 RADII, MID-EXECUTION
 
-STATUS: RATIFIED; FROZEN. Execution of P13-S29 resumes at M2.
+STATUS: LANDED by this commit.
+
+> **DATED HISTORICAL RECORD — amendment 1 is ratified and executed. §6's finding,
+> its defect class and its dispositions are an account of what was found and
+> decided on 2026-08-12, and state no current condition.**
 
 Ratified 2026-08-12 on the authority of the repository owner, the final review
 round returning zero findings. The replacements are executed, not edited; a

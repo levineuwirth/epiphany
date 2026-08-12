@@ -181,6 +181,6 @@ pub use codec::{CanonicalValue, ScoreDecodeError};
 pub use indexes::ScoreIndexes;
 
 pub use invariants::{
-    check_invariant, check_invariants, deferred_checks, measure_anchor_relation, DeferredCheck,
-    GraphInvariant, InvariantViolation,
+    check_invariant, check_invariants, check_requirement, deferred_checks, measure_anchor_relation,
+    DeferredCheck, GraphInvariant, ViolationKind, WellFormednessViolation,
 };

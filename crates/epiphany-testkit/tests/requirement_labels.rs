@@ -16,12 +16,16 @@ use std::path::{Path, PathBuf};
 // spec/CONTRACT_P13S26_INVARIANT10_SURFACE.md) — an aleatoric region's ordering
 // and bounds references must name events of that same region. Measured at
 // execution, never predicted.
-const CORE_REQUIREMENT_COUNT: usize = 215;
+// +1 for req:time:tempo-segment-shape (P13-S29, pin 3:
+// spec/CONTRACT_P13S29_VIOLATION_KIND.md) — the tempo rider that had no label.
+// Measured at execution, never predicted.
+const CORE_REQUIREMENT_COUNT: usize = 216;
 // +1 for req:textproj:manifest-schema-carried (G-minor, pins 8/11:
 // spec/PLAN_GMINOR_SCHEMA_MINOR.md); +1 for req:format:container-epoch (above);
-// +1 for req:time:aleatoric-reference-locality (above).
-const SUITE_REQUIREMENT_COUNT: usize = 286;
-const SUITE_LABEL_COUNT: usize = 286;
+// +1 for req:time:aleatoric-reference-locality (above);
+// +1 for req:time:tempo-segment-shape (above).
+const SUITE_REQUIREMENT_COUNT: usize = 287;
+const SUITE_LABEL_COUNT: usize = 287;
 
 /// The normative chapter-to-area assignment. Keeping this as data makes adding a
 /// requirement under the wrong chapter fail without encoding chapter names in
@@ -396,16 +400,6 @@ const DISCUSSED_NOT_CITED: &[(&str, &str)] = &[
          while that mutation is applied. Named by \
          spec/CONTRACT_P13S26_INVARIANT10_SURFACE.md and recorded in \
          spec/EVIDENCE_P13S26_EXECUTION.md as M6's verbatim diagnostic. PERMANENT.",
-    ),
-    (
-        "req:time:tempo-segment-shape",
-        "proposed by spec/CONTRACT_P13S29_VIOLATION_KIND.md; the requirement does not \
-         exist until that contract's pin 3 lands. TEMPORARY -- pin 3 REMOVES this row \
-         when it mints the requirement, because this row's own claim (discussed, never \
-         cited) becomes false at that moment. A stale row is inert, so nothing else \
-         will catch it; that contract's landing gate does. Remove by hand if S29 is \
-         abandoned or the label changes. Prerequisite review scaffolding, NOT dispatch: \
-         it licenses no other pin work.",
     ),
 ];
 

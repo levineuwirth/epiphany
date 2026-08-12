@@ -2277,6 +2277,18 @@ pub struct Tempo {
   \texttt{start\_tempo} if no earlier segment exists.
 \end{requirement}
 
+\begin{requirement}
+  \label{req:time:tempo-segment-shape}
+  A tempo segment's \texttt{shape} and its \texttt{end\_tempo} \MUST{} be
+  compatible. If \texttt{shape} is \texttt{Constant} and \texttt{end\_tempo}
+  is present, it \MUST{} equal \texttt{start\_tempo}. If \texttt{shape} is
+  \texttt{Linear}, \texttt{Exponential} or \texttt{Curve}, \texttt{end\_tempo}
+  \MUST{} be present.
+
+  This requirement states the compatibility that is enforced. It does not
+  determine whether a constant segment records an \texttt{end\_tempo} at all.
+\end{requirement}
+
 \subsection{Conversion}
 
 Conversion between musical and wall-clock time integrates the tempo map.
@@ -17028,6 +17040,20 @@ layouts they own versus inherit:
   region's ordering and bounds references \MUST{} name events of that same
   region --- a locality rule the checker has always enforced and no requirement
   stated.
+  \\
+  \today & \sectionsc{Graph Invariants}, \sectionsc{Time and Duration} &
+  \textbf{P13-S29: the violation tag stops multiplexing.} Graph invariant~10
+  reported Chapter~3 and Chapter~4 failures under its own number, through a
+  public API. The violation type becomes \texttt{WellFormednessViolation}
+  carrying a two-armed \texttt{ViolationKind}: an invariant arm and a
+  requirement arm naming a \texttt{req:} label. Invariant~10 keeps only
+  reference resolution; tempo segment shape, tempo segment order, aleatoric
+  reference locality and accidental modification expressibility now report
+  under their own requirements. \sectionsc{Time and Duration} gains
+  Requirement~\ref{req:time:tempo-segment-shape}, stating the enforced
+  shape/\texttt{end\_tempo} compatibility without determining whether a
+  constant segment records an \texttt{end\_tempo} at all. The enumeration is
+  unchanged.
   \\
   \bottomrule
 \end{longtable}
