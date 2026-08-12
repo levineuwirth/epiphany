@@ -436,3 +436,32 @@ Measured, not derived; transcripts in §5.3 and §5.4.
 re-tagging that broke only the sibling would have read as a radius mismatch;
 under the corrected cell each of C6 and C7 is observed by two independent
 assertions — its own pair assertion and the sibling's invariant-arm assertion.
+
+---
+
+## §8. Amendment 1: resolution and resumption
+
+Amendment 1 is ratified at `29ef3af` and landed by this commit. It
+corrects two radius cells in the contract's §3 and changes no pin, test, fixture
+or behaviour.
+
+**§5 and §7 above are the dated execution record and are not edited.** They
+state what was expected, what was observed, and why execution stopped. The
+mismatch they record is the reason this amendment exists; reconciling them would
+remove it.
+
+### 8.1 The corrected radii
+
+| M | Dispatched cell (§5) | Corrected cell, measured |
+|---|---|---|
+| M1·C6 | `tempo_out_of_order_reports_order` | that test **and** `tempo_overlap_reports_order` |
+| M1·C7 | `tempo_overlap_reports_order` | that test **and** `tempo_out_of_order_reports_order` |
+
+Both were observed before the halt. The transcripts in §5.3 and §5.4 stand as
+the observation and **were not re-run**: the amendment corrects the expectation
+they were compared against, not the observation.
+
+### 8.2 Resumption
+
+The mutation sequence resumes at **M2**. M1 is complete — C4, C5, C8, C9 and C10
+matched their dispatched cells, and C6 and C7 match the corrected cells above.
