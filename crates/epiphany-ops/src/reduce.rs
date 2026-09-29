@@ -687,7 +687,7 @@ pub fn reduce_operation_set_onto(op_set: &OperationSet, base: &Score) -> GraphMa
 
 /// Genesis tranche G3b packet 2 (`spec/CONTRACT_GENESIS_G3B_MEASURE.md`):
 /// exposes this crate's pin 6/6b comparable relation and musical delta —
-/// [`Reducer::anchors_comparable_order`] / [`Reducer::anchor_musical_delta`],
+/// `Reducer::anchors_comparable_order` / `Reducer::anchor_musical_delta`,
 /// which stay private to this crate — so `epiphany-testkit`'s cross-crate
 /// agreement test can drive the SAME anchor pairs through this
 /// implementation and through `epiphany-core`'s independent invariant-20

@@ -438,7 +438,7 @@ impl OperationKind {
     /// `None` for a baseline (golden-locked 0..=23) variant — the distinct
     /// "no additive requirement" sentinel pin 3 requires, never `0`.
     ///
-    /// **Deliberately a separate match from [`Self::discriminant`]** (pin 2):
+    /// **Deliberately a separate match from `Self::discriminant`** (pin 2):
     /// that hand-written match is the site Push 4a's `TransposeInterval`
     /// append went wrong by being consulted for only one of the vocabulary's
     /// several responsibilities. Exhaustive here too, with no wildcard arm,
