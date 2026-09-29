@@ -42,7 +42,8 @@ The demo editor on Linux also needs the X11 and keyboard development
 libraries CI installs: `libxcb-render0-dev libxcb-shape0-dev
 libxcb-xfixes0-dev libxkbcommon-dev libssl-dev` or their equivalents.
 
-    scripts/gate                  # fmt, clippy, rustdoc, build, tests, diff check
+    scripts/gate                  # fmt, clippy, rustdoc, build, tests, diff check,
+                                  # requirement labels removed from origin/main
     scripts/gate --full           # plus the rest of what CI runs
     scripts/gate --spec           # plus the xelatex builds of the specification
     scripts/gate --print-plan     # list the stages

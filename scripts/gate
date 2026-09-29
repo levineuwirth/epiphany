@@ -14,6 +14,13 @@
 # stage's count of suites, passed, failed and ignored, parsed from its log: a
 # suite is one "test result:" line, so a doc-test run counts as a suite.
 #
+# The line before it names every requirement label defined in spec/*.tex on
+# origin/main and not in the working tree, or says "none". Deleting a
+# requirement fails no test, and most labels are cited nowhere but their own
+# definition, so this list is how a deletion is read rather than missed; a
+# handoff carries it. It names and never fails: there is no allowlist. The
+# stage fails only when it cannot compare, which is never reported as "none".
+#
 # The toolchain is pinned by `+1.95.0` on every stage rather than by a
 # rust-toolchain.toml, which would override CI's MSRV job (it installs 1.85 and
 # runs a bare `cargo`) and pin the nightly soak that floats on stable on
@@ -80,7 +87,47 @@ spec_document() {
         return 1
     fi
 }
-export -f diff_check spec_document
+
+# The requirement labels TeX reads in the tracked top-level spec/*.tex of a
+# revision, or of the working tree when the revision is empty, one per line,
+# sorted: `%` comments are stripped (`\%` is not one) and `\label {req:…}` is
+# read across whitespace as TeX reads it.
+requirement_labels() {
+    local rev=$1 file
+    if [ -n "$rev" ]; then
+        git ls-tree -z --name-only "$rev" spec/ | while IFS= read -r -d '' file; do
+            case $file in *.tex) git cat-file blob "$rev:$file" && echo ;; esac
+        done
+    else
+        git ls-files -z -- ':(glob)spec/*.tex' | while IFS= read -r -d '' file; do
+            [ -f "$file" ] && cat "$file" && echo
+        done
+    fi | perl -0777 -ne '
+        s/(?<!\\)((?:\\\\)*)%[^\n]*/$1/g;
+        print "$1\n" while /\\label\s*\{(req:[^{}]*)\}/g;
+    ' | LC_ALL=C sort -u
+}
+
+# Names every requirement label on origin/main that the working tree no longer
+# defines. Fails only when it cannot compare: no origin/main, or no label found
+# there, which would make an empty list vacuous.
+removed_requirement_labels() {
+    local main tree removed
+    if ! git rev-parse --verify -q origin/main >/dev/null; then
+        echo "gate: no origin/main to compare requirement labels against"
+        return 1
+    fi
+    main=$(requirement_labels origin/main)
+    tree=$(requirement_labels "")
+    if [ -z "$main" ]; then
+        echo "gate: read no requirement label on origin/main; the comparison would be vacuous"
+        return 1
+    fi
+    removed=$(LC_ALL=C comm -23 <(echo "$main") <(echo "$tree"))
+    echo "requirement labels: $(grep -c . <<<"$main") on origin/main, $(grep -c . <<<"$tree") here"
+    echo "absent here: ${removed:-none}" | paste -sd ' '
+}
+export -f diff_check spec_document requirement_labels removed_requirement_labels
 
 # name|command, in order. A command runs under `bash -c` from the repository root.
 stages=(
@@ -90,6 +137,7 @@ stages=(
     "build|cargo +$PINNED build --workspace"
     "test|cargo +$PINNED test --workspace --no-fail-fast"
     "diff-check|diff_check  # git diff --check: tree, index, origin/main...HEAD"
+    "req-labels|removed_requirement_labels  # labels in spec/*.tex on origin/main, absent here"
 )
 if [ "$full" = 1 ]; then
     stages+=(
@@ -175,10 +223,16 @@ for stage in "${stages[@]}"; do
     detail=""
     case "$name" in
         test | msrv-* | editor-gui | prepass | spikes-test) detail=" ($(count "$log"))" ;;
+        req-labels) detail=$(sed -n 's/^requirement labels: \(.*\)/ (\1)/p' "$log") ;;
     esac
     printf '%-28s %-4s %4ss%s\n' "$name" "$verdict" "$((SECONDS - start))" "$detail"
 done
 
+if removed=$(sed -n 's/^absent here: //p' "$logs/req-labels.log") && [ -n "$removed" ]; then
+    echo "gate: requirement labels on origin/main absent here: $removed"
+else
+    echo "gate: requirement labels on origin/main absent here: unknown (req-labels failed)"
+fi
 summary=$(count "$logs/test.log")
 if [ "${#failed_stages[@]}" -eq 0 ]; then
     echo "gate: PASS; workspace tests: $summary"

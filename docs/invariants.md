@@ -193,3 +193,8 @@ anywhere in the repository except Markdown under `spec/`, which is drafts and
 historical prose. `requirement_labels.rs` in `epiphany-testkit` enforces the
 grammar, uniqueness, chapter areas and citations, and checks its own scanner
 against TeX's reading of the suite rather than against a hand-typed total.
+
+Deleting a requirement fails no test, and most labels are cited nowhere but
+their own definition. `scripts/gate` therefore names every label defined on
+`origin/main` and absent from the tree, so a removed requirement is read in
+review rather than missed. It names and never fails; there is no allowlist.
