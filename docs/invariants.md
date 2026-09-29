@@ -175,12 +175,21 @@ A golden records what the program did, not whether it was right.
   engraver draws has been rendered before and after and accepted by reading the
   renders. A golden is never re-blessed to make a suite green.
 
+## Committed fixtures are hand-written or public domain
+
+Scores used to evaluate Epiphany that are neither hand-written for the
+repository nor in the public domain are private. They stay outside the
+repository, and so does everything derived from them: exports, renders,
+reports and fixtures. A figure measured on one enters a document as a dated
+measurement with the command that produced it, never as a committed file.
+
 ## Requirement labels are a public citation surface
 
 Requirements are labeled `req:<area>:<slug>` in the `.tex` suite, and the
 labels are cited from Rust as public identifiers (`ViolationKind::Requirement`,
 `check_requirement` in `crates/epiphany-core/src/invariants.rs`) and from crate
 documentation. A citation of a label the suite does not define is an error
-wherever it would be read as current; `requirement_labels.rs` in
-`epiphany-testkit` enforces the grammar, uniqueness, chapter areas and
-citations.
+anywhere in the repository except Markdown under `spec/`, which is drafts and
+historical prose. `requirement_labels.rs` in `epiphany-testkit` enforces the
+grammar, uniqueness, chapter areas and citations, and checks its own scanner
+against TeX's reading of the suite rather than against a hand-typed total.
