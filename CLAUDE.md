@@ -15,15 +15,13 @@ the history of a retired contract-and-ratification process, not instruction.
 
 ## Green
 
-Green means CI's checks on CI's toolchain, read to their result lines, and
-CI itself green on the PR head. Locally, from the repository root:
-
-    export RUSTFLAGS="-D warnings"
-    cargo +1.95.0 fmt --all -- --check
-    cargo +1.95.0 clippy --workspace --all-targets -- -D warnings
-    RUSTDOCFLAGS=-Dwarnings cargo +1.95.0 doc --workspace --no-deps
-    cargo +1.95.0 test --workspace --no-fail-fast
-    git diff --check
+Green is `scripts/gate`: fmt, clippy, rustdoc, build and the workspace tests
+on CI's pinned toolchain with CI's `-D warnings`, then `git diff --check`,
+with a log per stage and the counts on its closing line. `--full` adds the
+rest of CI, `--spec` the `xelatex` builds, `--spikes` the spike workspace,
+and `--print-plan` lists the stages. Before merge: the default gate locally
+and CI green on the PR head, or `--full` locally where CI cannot run. Local
+green is not CI green.
 
 ## Build traps
 
