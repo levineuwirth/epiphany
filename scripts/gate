@@ -2,9 +2,11 @@
 # The repository's gate: what "green" means, on CI's toolchain and flags.
 #
 #   scripts/gate               default stages (below)
-#   scripts/gate --full        + everything else CI runs
+#   scripts/gate --full        + the rest of what CI runs on a push or PR
 #   scripts/gate --spec        + xelatex builds of the six .tex documents
 #   scripts/gate --spikes      + the spike workspace (spikes/editor-toolkit)
+#   scripts/gate --soak        + CI's nightly soak: scale-10 conformance and the
+#                                full benches, on floating stable
 #   scripts/gate --print-plan  print the stages the given flags select, and exit
 #
 # Every stage runs even after one fails, each writes its own log, and the gate
@@ -18,7 +20,8 @@
 # purpose. Keep PINNED in step with PINNED_STABLE in .github/workflows/ci.yml.
 #
 # Required before merge: the default gate locally and CI green on the PR head,
-# or `--full` locally where CI cannot run.
+# or `--full` locally where CI cannot run. `--soak` is CI's nightly drift
+# detector and floats on stable on purpose; it is not required before merge.
 
 set -u
 
@@ -28,12 +31,13 @@ MSRV=1.85
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root" || exit 2
 
-full=0 spec=0 spikes=0 plan=0
+full=0 spec=0 spikes=0 soak=0 plan=0
 for arg in "$@"; do
     case "$arg" in
         --full) full=1 ;;
         --spec) spec=1 ;;
         --spikes) spikes=1 ;;
+        --soak) soak=1 ;;
         --print-plan) plan=1 ;;
         -h | --help)
             sed -n '2,/^$/s/^# \{0,1\}//p' "$0"
@@ -110,6 +114,13 @@ if [ "$spikes" = 1 ]; then
     )
 fi
 
+if [ "$soak" = 1 ]; then
+    stages+=(
+        "soak-conformance|cargo +stable run --release -p epiphany-testkit --example conformance_suite 10"
+        "soak-bench|cargo +stable bench -p epiphany-testkit"
+    )
+fi
+
 if [ "$plan" = 1 ]; then
     for stage in "${stages[@]}"; do
         printf '%-28s %s\n' "${stage%%|*}" "${stage#*|}"
@@ -119,6 +130,7 @@ fi
 
 needed=("$PINNED")
 [ "$full" = 1 ] && needed+=("$MSRV")
+[ "$soak" = 1 ] && needed+=(stable)
 installed=$(rustup toolchain list)
 for toolchain in "${needed[@]}"; do
     if ! grep -q "^${toolchain}[.-]" <<<"$installed"; then
