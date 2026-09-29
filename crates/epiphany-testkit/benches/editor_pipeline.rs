@@ -245,20 +245,25 @@ const SCALE_POINTS: &[ScalePoint] = &[
     //
     // 3,000 is now `Xfail` as well, and 1,000 is the last `Pass` row. The
     // written decision the closing paragraph of THE STAGE TABLE requires is
-    // roadmap decision D15: on CI hardware the row misses repeatably, 19.73 ms
-    // (2026-09-28) and 20.83 ms (2026-09-29) at the median with reduce nearly
-    // all of it, though it passes on the dev box. D15's conditions: the row
-    // still runs against `FRAME_BUDGET`, no other row is relaxed, an XPASS
-    // promotes it only when measured on comparable CI hardware, and phase X6
-    // must resolve the marking explicitly.
+    // roadmap decision D15, as corrected by D16. On CI hardware the row sits at
+    // the budget rather than past it: five CI measurements (2026-09-28/29) read
+    // 13.53 and 16.18 ms at the median on runners that were faster on every
+    // row, and 19.73, 19.87 and 20.83 ms on the failing nightlies, with reduce
+    // nearly all of it. It passes on the dev box. A `Pass` marking would make
+    // CI's color depend on the runner it drew. D15's conditions: the row still
+    // runs against `FRAME_BUDGET`, no other row is relaxed, an XPASS asks for
+    // reconsideration only when measured on comparable CI hardware, and phase
+    // X6 must resolve the marking explicitly.
     ScalePoint {
         depth: 3_000,
         expectation: Expectation::Xfail(
-            "roadmap D15: Fact 8, as at 5,000, on CI hardware (19.73 ms and \
-             20.83 ms at the median, 2026-09-28/29); a green run with this row \
-             declares a performance deficit, not conformance. An XPASS on a \
-             workstation promotes nothing; only comparable CI hardware does. \
-             Phase X6 owns the fix and must resolve the marking explicitly",
+            "roadmap D15 and D16: Fact 8, as at 5,000; on CI hardware the row \
+             sits at the budget (13.53 to 20.83 ms at the median by runner, \
+             2026-09-28/29), and a green run with this row declares a \
+             performance deficit, not conformance. An XPASS asks for \
+             reconsideration only on comparable CI hardware, and one on a \
+             workstation promotes nothing. Phase X6 owns the fix and must \
+             resolve the marking explicitly",
         ),
         gate_iters: (5, 3),
         criterion_time: Some(Duration::from_secs(12)),
