@@ -214,7 +214,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run conformance soak
         run: cargo run --release -p epiphany-testkit --example conformance_suite 10
-      # The full budget-gate run, including the minute-scale 50K reduction
-      # point (a documented xfail until the O(n²) reducer fix lands).
+      # The full budget-gate run, including the 50K reduction point, a `Pass`
+      # row since the subquadratic reducer.
       - name: Performance budget gates (full)
         run: cargo bench -p epiphany-testkit
