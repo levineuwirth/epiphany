@@ -1,0 +1,21 @@
+[package]
+name = "epiphany-cli"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Command-line entry points: `epiphany render` engraves a MusicXML file to SVG."
+
+[[bin]]
+name = "epiphany"
+path = "src/main.rs"
+
+[dependencies]
+epiphany-core.workspace = true
+epiphany-ops.workspace = true
+epiphany-musicxml.workspace = true
+# The engraving pipeline: projection, the real solver, and the SVG renderer.
+epiphany-layout-ir.workspace = true
+epiphany-engrave.workspace = true
+epiphany-render-svg.workspace = true

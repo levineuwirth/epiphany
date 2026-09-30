@@ -15,6 +15,7 @@ members = [
     "crates/epiphany-editor-gui",
     "crates/epiphany-testkit",
     "crates/epiphany-musicxml",
+    "crates/epiphany-cli",
 ]
 
 # Agent A shipped epiphany-determinism first; Agent B's epiphany-core and Agent
