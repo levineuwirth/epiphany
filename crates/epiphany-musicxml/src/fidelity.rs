@@ -231,6 +231,15 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
         })
     };
 
+    // A tie is emitted per end event, so a tied pitch's absence is explained
+    // by the refusal of any tie from its start event.
+    let refused_tie = |p: usize, i: usize| -> Option<String> {
+        let (low, high) = (Subject::Tie(p, i, 0), Subject::Tie(p, i, usize::MAX));
+        label_index
+            .range::<&Subject, _>(&low..=&high)
+            .find_map(|(subject, _)| refused(subject))
+    };
+
     // The reader against the raw element count.
     for (p, part) in source.parts.iter().enumerate() {
         let census = source.census[p];
@@ -555,7 +564,7 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                 if !ends {
                     continue; // recorded by the importer as a tie without an end
                 }
-                if let Some(why) = refused(&Subject::Tie(p, i)) {
+                if let Some(why) = refused_tie(p, i) {
                     tie_explained.push(format!("{name}: tie at {} ({why})", show(&event.onset)));
                     continue;
                 }

@@ -48,8 +48,8 @@ pub enum Subject {
     Measure(usize, usize, usize),
     /// An event: part and index into its events.
     Event(usize, usize),
-    /// A tie from an event to the next: part and the start event's index.
-    Tie(usize, usize),
+    /// A tie: part, and the indices of its start and end events.
+    Tie(usize, usize, usize),
     /// A slur: part and index into its slurs.
     Slur(usize, usize),
 }
@@ -505,8 +505,10 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
         ids.pitches.push(pitch_ids);
     }
 
-    // Ties: a tied pitch continues into the event that follows it on its
-    // staff, in its voice when it can.
+    // Ties: each tied pitch continues into an event that starts where it
+    // ends on its staff, holding the same pitch with a tie stop: in its own
+    // voice when one does, else in another, since a chord's notes may part
+    // into voices across a tie. One tie per end event.
     for (p, part) in source.parts.iter().enumerate() {
         let starts = event_starts(&part.events);
         for (i, event) in part.events.iter().enumerate() {
@@ -517,21 +519,40 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                 continue;
             }
             let end = event.onset.add(&event.duration);
-            let candidates = |same_voice: bool| {
-                let at_end = starts
-                    .get(&(event.staff, &end))
-                    .map_or(&[][..], Vec::as_slice);
-                at_end.iter().map(|&j| (j, &part.events[j])).find(|(_, next)| {
-                    (next.voice == event.voice) == same_voice
-                        && matches!(&next.content, Content::Pitched(next_pitches)
-                            if pitches.iter().any(|x| x.tie_start && next_pitches.iter()
-                                .any(|y| y.tie_stop && y.pitch.scale_position == x.pitch.scale_position)))
-                })
-            };
-            let (next_index, class) = match candidates(true) {
-                Some((j, _)) => (j, TieClass::Standard),
-                None => match candidates(false) {
-                    Some((j, _)) => (j, TieClass::CrossVoice),
+            let at_end = starts
+                .get(&(event.staff, &end))
+                .map_or(&[][..], Vec::as_slice);
+            let mut ends: BTreeMap<usize, Vec<(PitchId, PitchId)>> = BTreeMap::new();
+            let mut used: BTreeMap<usize, Vec<bool>> = BTreeMap::new();
+            for (a, x) in pitches.iter().enumerate().filter(|(_, x)| x.tie_start) {
+                let found = [true, false].iter().find_map(|&same_voice| {
+                    at_end.iter().find_map(|&j| {
+                        let next = &part.events[j];
+                        if (next.voice == event.voice) != same_voice {
+                            return None;
+                        }
+                        let Content::Pitched(next_pitches) = &next.content else {
+                            return None;
+                        };
+                        let taken = used.get(&j);
+                        next_pitches
+                            .iter()
+                            .enumerate()
+                            .position(|(b, y)| {
+                                !taken.is_some_and(|t| t[b])
+                                    && y.tie_stop
+                                    && y.pitch.scale_position == x.pitch.scale_position
+                            })
+                            .map(|b| (j, b, next_pitches.len()))
+                    })
+                });
+                match found {
+                    Some((j, b, len)) => {
+                        used.entry(j).or_insert_with(|| vec![false; len])[b] = true;
+                        ends.entry(j)
+                            .or_default()
+                            .push((ids.pitches[p][i][a], ids.pitches[p][j][b]));
+                    }
                     None => {
                         let measure = source.measures[event.measure].number.clone();
                         source.features.record(
@@ -542,51 +563,31 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                                 measure,
                             },
                         );
-                        continue;
                     }
-                },
-            };
-            let Content::Pitched(next_pitches) = &part.events[next_index].content else {
-                unreachable!("the candidate is pitched");
-            };
-            let mut pairing = Vec::new();
-            let mut used = vec![false; next_pitches.len()];
-            for (a, x) in pitches.iter().enumerate() {
-                if !x.tie_start {
-                    continue;
-                }
-                if let Some(b) = next_pitches.iter().enumerate().position(|(b, y)| {
-                    !used[b] && y.tie_stop && y.pitch.scale_position == x.pitch.scale_position
-                }) {
-                    used[b] = true;
-                    pairing.push((ids.pitches[p][i][a], ids.pitches[p][next_index][b]));
-                } else {
-                    let measure = source.measures[event.measure].number.clone();
-                    source.features.record(
-                        FeatureClass::Content,
-                        "tie without a matching end",
-                        Place {
-                            part: part.name.clone(),
-                            measure,
-                        },
-                    );
                 }
             }
-            let tie_id: TieId = e.identity.mint();
-            e.emit(
-                "CreateCrossCutting(Tie)",
-                Subject::Tie(p, i),
-                OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
-                    structure: CrossCuttingValue::Tie(Tie {
-                        id: tie_id,
-                        start_event: ids.events[p][i],
-                        end_event: ids.events[p][next_index],
-                        pitch_pairing: Some(pairing),
-                        class,
-                        style: Default::default(),
+            for (j, pairing) in ends {
+                let class = if part.events[j].voice == event.voice {
+                    TieClass::Standard
+                } else {
+                    TieClass::CrossVoice
+                };
+                let tie_id: TieId = e.identity.mint();
+                e.emit(
+                    "CreateCrossCutting(Tie)",
+                    Subject::Tie(p, i, j),
+                    OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                        structure: CrossCuttingValue::Tie(Tie {
+                            id: tie_id,
+                            start_event: ids.events[p][i],
+                            end_event: ids.events[p][j],
+                            pitch_pairing: Some(pairing),
+                            class,
+                            style: Default::default(),
+                        }),
                     }),
-                }),
-            );
+                );
+            }
         }
         for (k, slur) in part.slurs.iter().enumerate() {
             let slur_id: SlurId = e.identity.mint();

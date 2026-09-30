@@ -569,6 +569,36 @@ fn features_without_an_operation_are_recorded_by_kind_and_not_imported() {
 }
 
 #[test]
+fn a_chord_tied_into_two_voices_keeps_both_ties() {
+    let run = run("split_tie.musicxml");
+    all_applied(&run);
+    let score = &run.reduced.score;
+    assert_eq!(
+        events(score),
+        ["s0 v0 0 1 E4 C5", "s0 v0 1 1 C5", "s0 v1 1 1 E4"]
+    );
+    let mut ties: Vec<(TieClass, usize)> = score
+        .cross_cutting
+        .ties
+        .iter()
+        .map(|t| {
+            (
+                t.class.clone(),
+                t.pitch_pairing.as_ref().map_or(0, Vec::len),
+            )
+        })
+        .collect();
+    ties.sort_by_key(|(class, _)| format!("{class:?}"));
+    assert_eq!(ties, [(TieClass::CrossVoice, 1), (TieClass::Standard, 1)]);
+    assert!(!run
+        .import
+        .source
+        .features
+        .kinds
+        .contains_key("tie without a matching end"));
+}
+
+#[test]
 fn parts_sharing_a_name_keep_their_own_accounts() {
     let run = run("same_names.musicxml");
     all_applied(&run);
