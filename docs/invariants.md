@@ -24,10 +24,15 @@ crate-local semantics.
   epsilon is forbidden.
 - Content addresses are BLAKE3-256 over domain-separated preimages
   (`Preimage` and the `MUSC*` domain tags).
-- Every crate except `epiphany-editor-gui` carries `#![forbid(unsafe_code)]`.
+- Every crate carries `#![forbid(unsafe_code)]` at its root: `lib.rs`, or
+  `main.rs` for a crate with no library.
+- Reduced state is a function of the set of operations, never of the order in
+  which they arrive. Two replicas that accept the same envelopes in different
+  orders reduce to the same bytes; out-of-order delivery is normal and is not a
+  violation.
 
-The conformance suite's determinism gate and the two-replica convergence tests
-are the tripwires. They cannot see a nondeterminism their fixtures do not
+The conformance suite's determinism gate, the two-replica convergence tests and
+the reducer's permutation tests are the tripwires. They cannot see a nondeterminism their fixtures do not
 exercise.
 
 ## Layering
@@ -44,8 +49,9 @@ exercise.
 
 ## Wire discriminants are appended, and locked by hand
 
-- A wire discriminant is appended, never inserted, reordered or reused.
-  `OperationKind` holds 0 to 39; the next kind takes 40.
+- A wire discriminant is appended, never inserted, reordered or reused. The
+  next `OperationKind` takes one past the last row of
+  `operation_kind_wire_discriminants_are_golden`.
 - Each discriminant table has a golden test that states the mapping a second
   time, by hand: `operation_kind_wire_discriminants_are_golden`,
   `tag_wire_discriminants_are_golden`,
@@ -152,10 +158,16 @@ serialization (`SerializeError::CanonicalBaseUnsupported`), and parsing (a
 `(canonical-base …)` line is `TextError::NotCanonical`). The grammar keeps the
 production only as what the refusal is defined against.
 
-There is one intentional hole: the crate-private `render_text_document`, which
-renders without the refusal so the `canonical_base_present` reject vector can
-contain the spelling it asserts is refused. It stays private, and public
-documentation does not link it. Exposing it opens the hole to every caller.
+Two emitters render the base line without the refusal. The crate-private
+`render_text_document` does so on purpose, so the `canonical_base_present`
+reject vector can contain the spelling it asserts is refused; it stays private,
+and public documentation does not link it. The public
+`epiphany_textproj::project::project_canonical_base` renders the
+`(canonical-base …)` form of any `TextCanonicalBase` a caller builds. Neither
+breaks the invariant, because the parser refuses the line, so no base-bearing
+document round-trips; but a caller can emit the spelling through the public
+one. Exposing the private one, or building a document writer on the public one,
+opens the hole.
 
 ## Guard every reachable path
 
@@ -165,6 +177,16 @@ and ask which of them a caller can reach today; the named path may be the
 unreachable one, leaving the reachable one open. The same holds for tests: a
 regression test that drives a path production never takes guards nothing, and
 a test vector built through an unguarded entry point is built through the hole.
+
+## Budget rows keep their marking
+
+Each row of the Chapter 10 budget gate (the `epiphany-testkit` benches, through
+`budget.rs`) is marked `Pass` or `Xfail`. A `Pass` row that starts missing its
+budget is a regression: the pipeline is fixed, and the row is re-marked `Xfail`
+only by a written decision, which its comment cites. An `Xfail` row still runs
+and reports against its budget. An XPASS asks for reconsideration only when it
+was measured on comparable CI hardware; a pass on a faster machine promotes
+nothing.
 
 ## Goldens lock reviewed output
 
@@ -197,4 +219,5 @@ against TeX's reading of the suite rather than against a hand-typed total.
 Deleting a requirement fails no test, and most labels are cited nowhere but
 their own definition. `scripts/gate` therefore names every label defined on
 `origin/main` and absent from the tree, so a removed requirement is read in
-review rather than missed. It names and never fails; there is no allowlist.
+review rather than missed. It names a removal and never fails on one; there is
+no allowlist. It fails only when it cannot compare.
