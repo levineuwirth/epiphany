@@ -12,7 +12,10 @@
 # Every stage runs even after one fails, each writes its own log, and the gate
 # exits nonzero if any stage failed. The closing line is the workspace test
 # stage's count of suites, passed, failed and ignored, parsed from its log: a
-# suite is one "test result:" line, so a doc-test run counts as a suite.
+# suite is one "test result:" line, so a doc-test run counts as a suite. The
+# workspace has no doctests, so every crate's doc-test run is a suite of zero
+# tests: those suites in the closing count are empty, and `msrv-doctest`, like
+# CI's "Doc tests" step, passes on nothing until a doctest is written.
 #
 # The line before it names every requirement label defined in spec/*.tex on
 # origin/main and not in the working tree, or says "none". Deleting a
@@ -21,10 +24,13 @@
 # handoff carries it. It names and never fails: there is no allowlist. The
 # stage fails only when it cannot compare, which is never reported as "none".
 #
-# The toolchain is pinned by `+1.95.0` on every stage rather than by a
-# rust-toolchain.toml, which would override CI's MSRV job (it installs 1.85 and
-# runs a bare `cargo`) and pin the nightly soak that floats on stable on
-# purpose. Keep PINNED in step with PINNED_STABLE in .github/workflows/ci.yml.
+# The toolchain is pinned by `+<version>` on every stage rather than by a
+# rust-toolchain.toml, which would override CI's MSRV job (it installs its
+# toolchain and runs a bare `cargo`) and pin the nightly soak that floats on
+# stable on purpose. Both pins are read from .github/workflows/ci.yml, never
+# restated here: PINNED is its `PINNED_STABLE`, and MSRV is the toolchain of
+# its `check` job, which must also equal Cargo.toml's `rust-version`. A pin the
+# gate cannot read, or a floor the two files disagree on, stops the gate.
 #
 # Required before merge: the default gate locally and CI green on the PR head,
 # or `--full` locally where CI cannot run. `--soak` is CI's nightly drift
@@ -32,11 +38,30 @@
 
 set -u
 
-PINNED=1.95.0
-MSRV=1.85
-
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root" || exit 2
+
+ci=.github/workflows/ci.yml
+PINNED=$(sed -n 's/^  PINNED_STABLE: "\([^"]*\)"$/\1/p' "$ci")
+MSRV=$(awk '
+    /^  check:$/ { job = 1; next }
+    /^  [a-z-]+:$/ { job = 0 }
+    job && /^ +toolchain: "[^"]*"$/ { split($0, part, "\""); print part[2] }
+' "$ci")
+floor=$(sed -n 's/^rust-version = "\([^"]*\)"$/\1/p' Cargo.toml)
+version='^[0-9]+\.[0-9]+(\.[0-9]+)?$'
+if ! [[ $PINNED =~ $version ]]; then
+    echo "gate: cannot read one PINNED_STABLE from $ci (read: '$PINNED')" >&2
+    exit 2
+fi
+if ! [[ $MSRV =~ $version ]]; then
+    echo "gate: cannot read one toolchain from the check job in $ci (read: '$MSRV')" >&2
+    exit 2
+fi
+if [ "$MSRV" != "$floor" ]; then
+    echo "gate: $ci's MSRV job pins $MSRV but Cargo.toml's rust-version is '$floor'" >&2
+    exit 2
+fi
 
 full=0 spec=0 spikes=0 soak=0 plan=0
 for arg in "$@"; do
