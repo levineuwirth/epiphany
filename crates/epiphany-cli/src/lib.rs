@@ -66,6 +66,8 @@ pub fn load(path: &Path) -> Result<Loaded, LoadError> {
     })
 }
 
+pub mod omissions;
+
 /// A score engraved by the real solver.
 pub struct Engraved {
     pub layout: ResolvedLayoutIR,

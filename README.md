@@ -55,6 +55,19 @@ and the demo editor:
     cargo run -p epiphany-render-svg --example render_fixture -- ten_measure_single_staff --solver=real > out.svg
     cargo run -p epiphany-editor-gui
 
+To engrave a MusicXML file, or see what an import could not carry:
+
+    cargo run --release -p epiphany-cli --bin epiphany -- render score.musicxml --page 1 -o page-1.svg
+    cargo run --release -p epiphany-cli --bin epiphany -- import score.musicxml
+
+The corpus loop exports MuseScore scores headless (one at a time, under a
+memory cap) and reports on each import, rendering the chosen scores beside
+MuseScore's own pages; both write under `~/.cache/epiphany-corpus`, never
+into the repository:
+
+    scripts/corpus-export [SCORE_DIR...]
+    cargo run --release -p epiphany-cli --bin corpus-report
+
 The specification builds with `xelatex`, not `pdflatex`:
 `cd spec && latexmk -xelatex -interaction=nonstopmode core_spec.tex`.
 
