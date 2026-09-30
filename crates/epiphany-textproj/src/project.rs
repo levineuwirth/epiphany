@@ -574,7 +574,7 @@ pub fn document_from_bundle<S: BlockStore>(
 /// document, lineage?, profile*, extension*, canonical-base?, blob*,
 /// envelope*), one line per element, each terminated by a single LF
 /// (`req:textproj:envelope-per-line`). Section order is normative and is
-/// simply the order [`render_text_document`] writes in; it introduces no
+/// simply the order `render_text_document` writes in; it introduces no
 /// ordering of its own beyond `req:textproj:derived-ordering`'s blob sort.
 pub fn project_text_document(document: &TextDocument) -> Result<String, ProjectError> {
     if document.canonical_base.is_some() {

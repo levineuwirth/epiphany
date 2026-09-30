@@ -159,7 +159,7 @@ struct ScalePoint {
 /// |-------|-----------|--------|---------|----------|-------------|-------|---------|
 /// | 100    | 40 ns | 223 µs   | 268 µs | **491 µs**  | 133 µs | 2.21 ms | Pass, 34× margin |
 /// | 1,000  | 40 ns | 2.30 ms  | 314 µs | **2.61 ms** | 165 µs | 2.86 ms | Pass, 6.4× margin |
-/// | 3,000  | 40 ns | 8.79 ms  | 327 µs | **9.11 ms** | 152 µs | 2.80 ms | Pass, 55% of budget |
+/// | 3,000  | 40 ns | 8.79 ms  | 327 µs | **9.11 ms** | 152 µs | 2.80 ms | Pass here, 55%; **Xfail** on CI (D15) |
 /// | 5,000  | 40 ns | 17.53 ms | 317 µs | **17.84 ms** | 151 µs | 2.78 ms | **Xfail, 107%** |
 /// | 10,000 | 40 ns | 54.07 ms | 260 µs | **54.33 ms** | 123 µs | 1.36 ms | Xfail, 3.3× over |
 ///
@@ -235,16 +235,36 @@ const SCALE_POINTS: &[ScalePoint] = &[
     // sampled decades would have reported the wrong order of magnitude for the
     // trigger T4b is sequenced against.
     //
-    // The last `Pass` row is 3,000 rather than 4,000 deliberately. A clean run
-    // puts 4,000 at 12.99 ms — a real pass, but only 78% of budget, and a row
-    // that close flaps the moment the machine is doing anything else (a
-    // load-contaminated run measured it at 22.77 ms, *above* the 5,000 row,
-    // which is impossible clean). A `Pass` row that fails under load teaches
-    // people to ignore the gate. 4,000's clean number is kept as data in THE
-    // STAGE TABLE instead of as a gated row.
+    // 3,000 was gated rather than 4,000 deliberately. A clean run puts 4,000
+    // at 12.99 ms — a real pass, but only 78% of budget, and a row that close
+    // flaps the moment the machine is doing anything else (a load-contaminated
+    // run measured it at 22.77 ms, *above* the 5,000 row, which is impossible
+    // clean). A `Pass` row that fails under load teaches people to ignore the
+    // gate. 4,000's clean number is kept as data in THE STAGE TABLE instead of
+    // as a gated row.
+    //
+    // 3,000 is now `Xfail` as well, and 1,000 is the last `Pass` row. The
+    // written decision the closing paragraph of THE STAGE TABLE requires is
+    // roadmap decision D15, as corrected by D16. On CI hardware the row sits at
+    // the budget rather than past it: five CI measurements (2026-09-28/29) read
+    // 13.53 and 16.18 ms at the median on runners that were faster on every
+    // row, and 19.73, 19.87 and 20.83 ms on the failing nightlies, with reduce
+    // nearly all of it. It passes on the dev box. A `Pass` marking would make
+    // CI's color depend on the runner it drew. D15's conditions: the row still
+    // runs against `FRAME_BUDGET`, no other row is relaxed, an XPASS asks for
+    // reconsideration only when measured on comparable CI hardware, and phase
+    // X6 must resolve the marking explicitly.
     ScalePoint {
         depth: 3_000,
-        expectation: Expectation::Pass,
+        expectation: Expectation::Xfail(
+            "roadmap D15 and D16: Fact 8, as at 5,000; on CI hardware the row \
+             sits at the budget (13.53 to 20.83 ms at the median by runner, \
+             2026-09-28/29), and a green run with this row declares a \
+             performance deficit, not conformance. An XPASS asks for \
+             reconsideration only on comparable CI hardware, and one on a \
+             workstation promotes nothing. Phase X6 owns the fix and must \
+             resolve the marking explicitly",
+        ),
         gate_iters: (5, 3),
         criterion_time: Some(Duration::from_secs(12)),
     },

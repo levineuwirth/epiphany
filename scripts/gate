@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+# The repository's gate: what "green" means, on CI's toolchain and flags.
+#
+#   scripts/gate               default stages (below)
+#   scripts/gate --full        + the rest of what CI runs on a push or PR
+#   scripts/gate --spec        + xelatex builds of the six .tex documents
+#   scripts/gate --spikes      + the spike workspace (spikes/editor-toolkit)
+#   scripts/gate --soak        + CI's nightly soak: scale-10 conformance and the
+#                                full benches, on floating stable
+#   scripts/gate --print-plan  print the stages the given flags select, and exit
+#
+# Every stage runs even after one fails, each writes its own log, and the gate
+# exits nonzero if any stage failed. The closing line is the workspace test
+# stage's count of suites, passed, failed and ignored, parsed from its log: a
+# suite is one "test result:" line, so a doc-test run counts as a suite.
+#
+# The line before it names every requirement label defined in spec/*.tex on
+# origin/main and not in the working tree, or says "none". Deleting a
+# requirement fails no test, and most labels are cited nowhere but their own
+# definition, so this list is how a deletion is read rather than missed; a
+# handoff carries it. It names and never fails: there is no allowlist. The
+# stage fails only when it cannot compare, which is never reported as "none".
+#
+# The toolchain is pinned by `+1.95.0` on every stage rather than by a
+# rust-toolchain.toml, which would override CI's MSRV job (it installs 1.85 and
+# runs a bare `cargo`) and pin the nightly soak that floats on stable on
+# purpose. Keep PINNED in step with PINNED_STABLE in .github/workflows/ci.yml.
+#
+# Required before merge: the default gate locally and CI green on the PR head,
+# or `--full` locally where CI cannot run. `--soak` is CI's nightly drift
+# detector and floats on stable on purpose; it is not required before merge.
+
+set -u
+
+PINNED=1.95.0
+MSRV=1.85
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root" || exit 2
+
+full=0 spec=0 spikes=0 soak=0 plan=0
+for arg in "$@"; do
+    case "$arg" in
+        --full) full=1 ;;
+        --spec) spec=1 ;;
+        --spikes) spikes=1 ;;
+        --soak) soak=1 ;;
+        --print-plan) plan=1 ;;
+        -h | --help)
+            sed -n '2,/^$/s/^# \{0,1\}//p' "$0"
+            exit 0
+            ;;
+        *)
+            echo "gate: unknown argument: $arg (try --help)" >&2
+            exit 2
+            ;;
+    esac
+done
+
+# CI's environment: every job denies warnings; the doc step denies rustdoc's.
+export RUSTFLAGS="-D warnings"
+export CARGO_TERM_COLOR=never
+
+spec_documents=(core_spec binary_format operation_catalog quality_metric_catalog
+    reference_suite text_projection)
+
+# Whitespace and conflict-marker errors in the working tree, the index, and
+# every commit the branch adds to origin/main. Untracked files are not checked.
+diff_check() {
+    git diff --check || return 1
+    git diff --cached --check || return 1
+    if git rev-parse --verify -q origin/main >/dev/null; then
+        git diff --check origin/main...HEAD || return 1
+    fi
+}
+
+# Builds one .tex document into the log directory, never over the tracked PDF,
+# and fails on a LaTeX error or on any reference still undefined once latexmk
+# has rerun to a fixed point.
+spec_document() {
+    local doc=$1
+    (cd spec && latexmk -xelatex -interaction=nonstopmode -halt-on-error \
+        -outdir="$GATE_SPEC_OUT" "$doc.tex") || return 1
+    if grep -E "There were undefined references|(Reference|Citation) .* undefined" \
+        "$GATE_SPEC_OUT/$doc.log"; then
+        echo "gate: undefined references remain in $doc.tex"
+        return 1
+    fi
+}
+
+# The requirement labels TeX reads in the tracked top-level spec/*.tex of a
+# revision, or of the working tree when the revision is empty, one per line,
+# sorted: `%` comments are stripped (`\%` is not one) and `\label {req:…}` is
+# read across whitespace as TeX reads it.
+requirement_labels() {
+    local rev=$1 file
+    if [ -n "$rev" ]; then
+        git ls-tree -z --name-only "$rev" spec/ | while IFS= read -r -d '' file; do
+            case $file in *.tex) git cat-file blob "$rev:$file" && echo ;; esac
+        done
+    else
+        git ls-files -z -- ':(glob)spec/*.tex' | while IFS= read -r -d '' file; do
+            [ -f "$file" ] && cat "$file" && echo
+        done
+    fi | perl -0777 -ne '
+        s/(?<!\\)((?:\\\\)*)%[^\n]*/$1/g;
+        print "$1\n" while /\\label\s*\{(req:[^{}]*)\}/g;
+    ' | LC_ALL=C sort -u
+}
+
+# Names every requirement label on origin/main that the working tree no longer
+# defines. Fails only when it cannot compare: no origin/main, or no label found
+# there, which would make an empty list vacuous.
+removed_requirement_labels() {
+    local main tree removed
+    if ! git rev-parse --verify -q origin/main >/dev/null; then
+        echo "gate: no origin/main to compare requirement labels against"
+        return 1
+    fi
+    main=$(requirement_labels origin/main)
+    tree=$(requirement_labels "")
+    if [ -z "$main" ]; then
+        echo "gate: read no requirement label on origin/main; the comparison would be vacuous"
+        return 1
+    fi
+    removed=$(LC_ALL=C comm -23 <(echo "$main") <(echo "$tree"))
+    echo "requirement labels: $(grep -c . <<<"$main") on origin/main, $(grep -c . <<<"$tree") here"
+    echo "absent here: ${removed:-none}" | paste -sd ' '
+}
+export -f diff_check spec_document requirement_labels removed_requirement_labels
+
+# name|command, in order. A command runs under `bash -c` from the repository root.
+stages=(
+    "fmt|cargo +$PINNED fmt --all -- --check"
+    "clippy|cargo +$PINNED clippy --workspace --all-targets -- -D warnings"
+    "doc|RUSTDOCFLAGS='-D warnings' cargo +$PINNED doc --workspace --no-deps"
+    "build|cargo +$PINNED build --workspace"
+    "test|cargo +$PINNED test --workspace --no-fail-fast"
+    "diff-check|diff_check  # git diff --check: tree, index, origin/main...HEAD"
+    "req-labels|removed_requirement_labels  # labels in spec/*.tex on origin/main, absent here"
+)
+if [ "$full" = 1 ]; then
+    stages+=(
+        "msrv-test|cargo +$MSRV test --workspace --exclude epiphany-editor-gui --all-targets --no-fail-fast"
+        "msrv-doctest|cargo +$MSRV test --workspace --exclude epiphany-editor-gui --doc --no-fail-fast"
+        "editor-gui|cargo +$PINNED test -p epiphany-editor-gui --no-fail-fast"
+        "conformance|cargo +$PINNED run --release -p epiphany-testkit --example conformance_suite --features golden-gate 1"
+        "prepass|cargo +$PINNED test -p epiphany-testkit --test prepass"
+        "bench-quick|EPIPHANY_BENCH_QUICK=1 cargo +$PINNED bench -p epiphany-testkit"
+    )
+fi
+if [ "$spec" = 1 ]; then
+    for doc in "${spec_documents[@]}"; do
+        stages+=("spec-$doc|spec_document $doc  # latexmk -xelatex -outdir <logs>/spec; fails on undefined refs")
+    done
+fi
+if [ "$spikes" = 1 ]; then
+    stages+=(
+        "spikes-fmt|cd spikes/editor-toolkit && cargo +$PINNED fmt --all -- --check"
+        "spikes-clippy|cd spikes/editor-toolkit && cargo +$PINNED clippy --workspace --all-targets -- -D warnings"
+        "spikes-test|cd spikes/editor-toolkit && cargo +$PINNED test --workspace --no-fail-fast"
+    )
+fi
+
+if [ "$soak" = 1 ]; then
+    stages+=(
+        "soak-conformance|cargo +stable run --release -p epiphany-testkit --example conformance_suite 10"
+        "soak-bench|cargo +stable bench -p epiphany-testkit"
+    )
+fi
+
+if [ "$plan" = 1 ]; then
+    for stage in "${stages[@]}"; do
+        printf '%-28s %s\n' "${stage%%|*}" "${stage#*|}"
+    done
+    exit 0
+fi
+
+needed=("$PINNED")
+[ "$full" = 1 ] && needed+=("$MSRV")
+[ "$soak" = 1 ] && needed+=(stable)
+installed=$(rustup toolchain list)
+for toolchain in "${needed[@]}"; do
+    if ! grep -q "^${toolchain}[.-]" <<<"$installed"; then
+        echo "gate: toolchain $toolchain is not installed (rustup toolchain install $toolchain)" >&2
+        exit 2
+    fi
+done
+
+target_dir=${CARGO_TARGET_DIR:-$root/target}
+logs=$target_dir/gate/$(date +%Y%m%dT%H%M%S)
+export GATE_SPEC_OUT=$logs/spec
+mkdir -p "$logs" "$GATE_SPEC_OUT"
+echo "gate: logs in $logs"
+
+# Sums a cargo test log's "test result:" lines.
+count() {
+    awk '
+        /^test result:/ {
+            suites++
+            for (i = 1; i < NF; i++) {
+                if ($(i + 1) ~ /^passed/) passed += $i
+                if ($(i + 1) ~ /^failed/) failed += $i
+                if ($(i + 1) ~ /^ignored/) ignored += $i
+            }
+        }
+        END { printf "%d suites, %d passed, %d failed, %d ignored\n", suites, passed, failed, ignored }
+    ' "$1"
+}
+
+failed_stages=()
+for stage in "${stages[@]}"; do
+    name=${stage%%|*}
+    command=${stage#*|}
+    log=$logs/$name.log
+    start=$SECONDS
+    if bash -c "$command" >"$log" 2>&1; then
+        verdict=ok
+    else
+        verdict=FAIL
+        failed_stages+=("$name")
+    fi
+    detail=""
+    case "$name" in
+        test | msrv-* | editor-gui | prepass | spikes-test) detail=" ($(count "$log"))" ;;
+        req-labels) detail=$(sed -n 's/^requirement labels: \(.*\)/ (\1)/p' "$log") ;;
+    esac
+    printf '%-28s %-4s %4ss%s\n' "$name" "$verdict" "$((SECONDS - start))" "$detail"
+done
+
+if removed=$(sed -n 's/^absent here: //p' "$logs/req-labels.log") && [ -n "$removed" ]; then
+    echo "gate: requirement labels on origin/main absent here: $removed"
+else
+    echo "gate: requirement labels on origin/main absent here: unknown (req-labels failed)"
+fi
+summary=$(count "$logs/test.log")
+if [ "${#failed_stages[@]}" -eq 0 ]; then
+    echo "gate: PASS; workspace tests: $summary"
+else
+    echo "gate: FAIL (${failed_stages[*]}); workspace tests: $summary; logs in $logs"
+    exit 1
+fi

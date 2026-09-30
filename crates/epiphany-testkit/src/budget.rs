@@ -10,15 +10,18 @@
 //!   bench run with a nonzero exit (the CI tripwire).
 //! * [`Expectation::Xfail`] — a documented, known-pending miss whose reason
 //!   names the defect and its owner. A miss prints an expected-failure line
-//!   and does **not** fail the run; a *pass* prints a promotion notice,
-//!   because the marking is then stale and must be flipped to `Pass`.
+//!   and does **not** fail the run; a *pass* prints a notice asking for the
+//!   marking to be reconsidered. The pass counts only when measured on
+//!   hardware comparable to the CI runners the row was marked against; a pass
+//!   on a faster machine alone promotes nothing.
 //!
 //! This is the "F surfaces, K fixes" handshake (`spec/PHASE2_F_WEEK0_WORKLIST.md`
 //! F1): a known-pending scale point stays `Xfail` — budget written in the
 //! bench — until the named defect is fixed, at which point the gate itself
-//! reports that the row should be promoted. The inaugural round completed: the
-//! reducer's `O(n²)` `canonical_reduction_order` sank `reduction/50000` until
-//! Agent K's subquadratic rewrite, whose XPASS notice promoted the row.
+//! reports that the marking should be reconsidered. The inaugural round
+//! completed: the reducer's `O(n²)` `canonical_reduction_order` sank
+//! `reduction/50000` until Agent K's subquadratic rewrite, whose XPASS notice
+//! promoted the row.
 //!
 //! ## Methodology note (a deliberate deviation from Chapter 10)
 //!
@@ -41,7 +44,8 @@ pub enum Expectation {
     /// The budget must hold; a miss fails the bench run (nonzero exit).
     Pass,
     /// A documented known-pending miss; the string names the defect and who
-    /// fixes it. A miss is reported but tolerated; a pass demands promotion.
+    /// fixes it. A miss is reported but tolerated; a pass asks for the marking
+    /// to be reconsidered.
     Xfail(&'static str),
 }
 
@@ -65,8 +69,8 @@ impl GateReport {
         !self.met_budget && matches!(self.expectation, Expectation::Pass)
     }
 
-    /// An `Xfail`-marked row that met its budget: the marking is stale and the
-    /// row should be promoted to `Pass`.
+    /// An `Xfail`-marked row that met its budget: the marking may be stale,
+    /// and the pass counts only when measured on comparable CI hardware.
     pub fn unexpected_pass(&self) -> bool {
         self.met_budget && matches!(self.expectation, Expectation::Xfail(_))
     }
@@ -85,7 +89,8 @@ impl GateReport {
             ),
             (true, Expectation::Xfail(reason)) => format!(
                 "XPASS {}: {} — met the budget despite the xfail marking ({}); \
-                 PROMOTE this row to Pass",
+                 reconsider the marking only if this ran on comparable CI hardware; \
+                 a pass on a faster machine alone promotes nothing",
                 self.label, self.detail, reason
             ),
         }
@@ -155,8 +160,8 @@ pub fn latency_gate(
 
 /// Prints every row's verdict and returns whether the gate holds — i.e. no
 /// `Pass`-marked row missed its budget. The bench binary exits nonzero when
-/// this returns `false`; `Xfail` misses and `XPASS` promotions never fail the
-/// run (the latter print a loud promotion notice instead).
+/// this returns `false`; `Xfail` misses and `XPASS` rows never fail the run
+/// (the latter print a loud notice asking for reconsideration instead).
 pub fn verdict(reports: &[GateReport]) -> bool {
     println!("\n== Chapter 10 budget gate (worklist F1) ==");
     for report in reports {
@@ -166,8 +171,8 @@ pub fn verdict(reports: &[GateReport]) -> bool {
     let promotions = reports.iter().filter(|r| r.unexpected_pass()).count();
     if promotions > 0 {
         println!(
-            "note: {promotions} xfail row(s) met their budget — promote them to Pass \
-             (the marking is stale)."
+            "note: {promotions} xfail row(s) met their budget — reconsider their \
+             marking only if this ran on comparable CI hardware."
         );
     }
     if unexpected.is_empty() {
@@ -229,11 +234,13 @@ mod tests {
     }
 
     #[test]
-    fn xfail_row_meeting_budget_demands_promotion_but_holds() {
+    fn xfail_row_meeting_budget_asks_for_reconsideration_but_holds() {
         let r = row(true, Expectation::Xfail("documented defect"));
         assert!(r.unexpected_pass());
         assert!(r.line().starts_with("XPASS"));
-        assert!(r.line().contains("PROMOTE"));
+        assert!(r.line().contains("reconsider the marking"));
+        assert!(r.line().contains("comparable CI hardware"));
+        assert!(!r.line().contains("PROMOTE"));
         assert!(verdict(&[r]));
     }
 

@@ -155,7 +155,8 @@ call made). Criterion measures; the **budget gate** (`src/budget.rs`) asserts:
 each bench's `main()` ends by re-timing every budget row and exiting nonzero if
 a `Pass`-marked row misses its threshold. Known-pending rows are marked
 `Xfail(reason)` *in the bench source* next to the numeric budget — a miss is
-reported and tolerated, and a pass prints a loud promotion notice so stale
+reported and tolerated, and a pass prints a loud notice asking for the marking
+to be reconsidered (a pass counts only on comparable CI hardware), so stale
 markings cannot linger. This is the "F surfaces, K fixes" handshake, and its
 inaugural round has completed: the bench documented the reducer's O(n²)
 `canonical_reduction_order` failure at scale, and Agent K's subquadratic

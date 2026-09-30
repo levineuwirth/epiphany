@@ -393,8 +393,8 @@ pub fn check_invariants(score: &Score) -> Vec<WellFormednessViolation> {
 /// relation and musical delta (G3b packet 2 architecture note: exposed so
 /// `epiphany-testkit`'s cross-crate agreement test can drive the SAME
 /// anchor pairs through this crate's independent invariant-20
-/// implementation ([`GraphIndex::measure20_comparable_order`] /
-/// [`GraphIndex::measure20_musical_delta`]) and through `epiphany-ops`'s
+/// implementation (`GraphIndex::measure20_comparable_order` /
+/// `GraphIndex::measure20_musical_delta`) and through `epiphany-ops`'s
 /// `Reducer` (which computes the identical normative relation privately,
 /// over operational write chains rather than a materialized graph) and
 /// assert they agree. This is the guard against maintaining one normative
