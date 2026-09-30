@@ -569,6 +569,29 @@ fn features_without_an_operation_are_recorded_by_kind_and_not_imported() {
 }
 
 #[test]
+fn parts_sharing_a_name_keep_their_own_accounts() {
+    let run = run("same_names.musicxml");
+    all_applied(&run);
+    assert_eq!(
+        events(&run.reduced.score),
+        [
+            "s0 v0 0 1/4 x5 m0",
+            "s0 v0 1/4 3/4 rest",
+            "s1 v0 0 1/4 x9 m0",
+            "s1 v0 1/4 3/4 rest",
+        ]
+    );
+    let parts = &run.import.source.parts;
+    assert_eq!((parts[0].dropped_notes, parts[1].dropped_notes), (1, 0));
+    assert_eq!(
+        run.import.source.features.kinds["unpitched chord note"]
+            .places
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn a_timewise_score_is_refused_by_name() {
     match import(&xml("timewise.musicxml")) {
         Err(ReadError::NotPartwise(root)) => assert_eq!(root, "score-timewise"),

@@ -234,15 +234,7 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
     // The reader against the raw element count.
     for (p, part) in source.parts.iter().enumerate() {
         let census = source.census[p];
-        let dropped: usize = [
-            "cross-staff chord note",
-            "unpitched chord note",
-            "chord note joining a rest",
-        ]
-        .iter()
-        .filter_map(|k| source.features.kinds.get(*k))
-        .map(|f| f.places.iter().filter(|pl| pl.part == part.name).count())
-        .sum();
+        let dropped = part.dropped_notes;
         let (mut notes, mut rests, mut extra) = (0, 0, 0);
         for event in &part.events {
             match &event.content {

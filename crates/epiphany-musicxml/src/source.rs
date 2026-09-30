@@ -227,6 +227,9 @@ pub struct SourcePart {
     pub members: Vec<SourceMember>,
     pub events: Vec<SourceEvent>,
     pub slurs: Vec<SourceSlur>,
+    /// Chord notes recorded as unsupported and not imported: a cross-staff
+    /// chord note, an unpitched chord note, a chord note joining a rest.
+    pub dropped_notes: usize,
 }
 
 /// Raw counts taken straight from the `<note>` elements of a part, with no
@@ -677,6 +680,7 @@ impl<'d, 'i> Reader<'d, 'i> {
             members: Vec::new(),
             events: Vec::new(),
             slurs: Vec::new(),
+            dropped_notes: 0,
         };
         let mut read = PartRead {
             part: part.clone(),
@@ -1093,23 +1097,30 @@ impl<'d, 'i> Reader<'d, 'i> {
                         );
                     }
                 }
-                (Content::Pitched(_), Some(_)) => self.features.record(
-                    FeatureClass::Content,
-                    "cross-staff chord note",
-                    place.clone(),
-                ),
+                (Content::Pitched(_), Some(_)) => {
+                    part.dropped_notes += 1;
+                    self.features.record(
+                        FeatureClass::Content,
+                        "cross-staff chord note",
+                        place.clone(),
+                    );
+                }
                 (Content::Unpitched { .. }, _) if has_unpitched.is_some() => {
+                    part.dropped_notes += 1;
                     self.features.record(
                         FeatureClass::Content,
                         "unpitched chord note",
                         place.clone(),
                     );
                 }
-                _ => self.features.record(
-                    FeatureClass::Content,
-                    "chord note joining a rest",
-                    place.clone(),
-                ),
+                _ => {
+                    part.dropped_notes += 1;
+                    self.features.record(
+                        FeatureClass::Content,
+                        "chord note joining a rest",
+                        place.clone(),
+                    );
+                }
             }
             last
         } else {
