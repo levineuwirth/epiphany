@@ -304,9 +304,16 @@ pub fn omissions(
         }
     }
 
-    // Clefs and key signatures where systems start, and clef changes.
+    // Clefs and key signatures where systems start, and clef changes. A
+    // system starts where its earliest measure does; what it should show is
+    // the clef and key in effect there.
     let instance_of: BTreeMap<StaffId, &epiphany_core::StaffInstance> =
         instances.iter().map(|i| (i.staff, *i)).collect();
+    let measure_start: BTreeMap<epiphany_core::MeasureId, RationalTime> = instances
+        .iter()
+        .flat_map(|i| i.measures.iter())
+        .filter_map(|m| Some((m.id, offset(&m.start)?)))
+        .collect();
     let mut clefs_drawn: BTreeMap<StaffInstanceId, usize> = BTreeMap::new();
     let mut systems_with: BTreeMap<StaffInstanceId, usize> = BTreeMap::new();
     for system in layout.systems() {
@@ -316,6 +323,13 @@ pub fn omissions(
             .iter()
             .filter_map(|&i| layout.glyphs.get(i as usize))
             .collect();
+        let start = system
+            .measures
+            .iter()
+            .filter_map(|m| measure_start.get(&m.measure))
+            .min()
+            .cloned()
+            .unwrap_or_else(RationalTime::zero);
         for staff in &system.staves {
             let Some(instance) = instance_of.get(&staff.staff) else {
                 continue;
@@ -326,15 +340,57 @@ pub fn omissions(
                 .filter(|g| g.provenance.source == source)
                 .map(|g| g.glyph.as_str())
                 .collect();
-            let clefs = mine.iter().filter(|g| g.ends_with("Clef")).count();
-            *clefs_drawn.entry(instance.id).or_default() += clefs;
+            let clefs: Vec<&str> = mine
+                .iter()
+                .copied()
+                .filter(|g| g.contains("Clef"))
+                .collect();
+            *clefs_drawn.entry(instance.id).or_default() += clefs.len();
             *systems_with.entry(instance.id).or_default() += 1;
-            if clefs == 0 && !instance.clef_sequence.is_empty() {
-                out.add("clef at a system start");
+            let in_effect = |anchors: Vec<(RationalTime, usize)>| {
+                anchors
+                    .into_iter()
+                    .filter(|(o, _)| o <= &start)
+                    .max()
+                    .map(|(_, i)| i)
+            };
+            let clef = in_effect(
+                instance
+                    .clef_sequence
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, c)| Some((offset(&c.anchor)?, i)))
+                    .collect(),
+            )
+            .map(|i| instance.clef_sequence[i].clef);
+            if let Some(clef) = clef {
+                match clefs.first() {
+                    None => out.add("clef at a system start"),
+                    Some(drawn) => {
+                        let shape = match clef.shape {
+                            epiphany_core::ClefShape::G => "gClef",
+                            epiphany_core::ClefShape::F => "fClef",
+                            epiphany_core::ClefShape::C => "cClef",
+                            epiphany_core::ClefShape::Percussion => "ercussionClef",
+                        };
+                        if !drawn.contains(shape) {
+                            out.add("clef of another shape at a system start");
+                        } else if clef.octave_shift != 0 && !drawn.contains("8v") {
+                            out.add("clef octave mark");
+                        }
+                    }
+                }
             }
-            if !instance.key_sequence.iter().all(|k| k.key.fifths() == 0)
-                && !mine.iter().any(|g| g.starts_with("accidental"))
-            {
+            let fifths = in_effect(
+                instance
+                    .key_sequence
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, k)| Some((offset(&k.anchor)?, i)))
+                    .collect(),
+            )
+            .map_or(0, |i| instance.key_sequence[i].key.fifths());
+            if fifths != 0 && !mine.iter().any(|g| g.starts_with("accidental")) {
                 out.add("key signature at a system start");
             }
         }

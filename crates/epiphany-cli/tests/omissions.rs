@@ -120,3 +120,41 @@ fn a_notehead_removed_is_counted_and_a_dot_supplied_is_not() {
     assert!(dots >= 1, "the dotted quarter without a dot is counted");
     assert_eq!(after, dots - 1, "a drawn dot satisfies the check");
 }
+
+#[test]
+fn an_octave_clef_drawn_without_its_mark_is_counted() {
+    // The bass clarinet and the double bass read 8vb clefs.
+    let (loaded, mut engraved) = loaded("concert_transposing.musicxml");
+    let score = &loaded.reduced.score;
+    let octave: Vec<TypedObjectId> = score.canvas.regions[0]
+        .staff_instances()
+        .iter()
+        .filter(|i| i.clef_sequence.iter().any(|c| c.clef.octave_shift != 0))
+        .map(|i| TypedObjectId::StaffInstance(i.id))
+        .collect();
+    assert_eq!(octave.len(), 2);
+    let set = |engraved: &mut Engraved, suffix: &str| {
+        for g in &mut engraved.layout.glyphs {
+            if octave.contains(&g.provenance.source) && g.glyph.as_str().contains("Clef") {
+                let base = if g.glyph.as_str().starts_with('g') {
+                    "gClef"
+                } else {
+                    "fClef"
+                };
+                g.glyph = GlyphReference::owned(format!("{base}{suffix}"));
+            }
+        }
+    };
+    set(&mut engraved, "");
+    assert_eq!(count(&loaded, &engraved, "clef octave mark"), 2);
+    set(&mut engraved, "8vb");
+    assert_eq!(count(&loaded, &engraved, "clef octave mark"), 0);
+    assert_eq!(
+        count(
+            &loaded,
+            &engraved,
+            "clef of another shape at a system start"
+        ),
+        0
+    );
+}
