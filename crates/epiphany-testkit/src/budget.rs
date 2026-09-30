@@ -158,6 +158,19 @@ pub fn latency_gate(
     }
 }
 
+/// The note printed under the rows when any `Xfail` row met its budget, or
+/// `None` when none did. Like the XPASS line it asks for reconsideration only
+/// on comparable CI hardware, never for promotion.
+pub fn xpass_note(reports: &[GateReport]) -> Option<String> {
+    let unexpected_passes = reports.iter().filter(|r| r.unexpected_pass()).count();
+    (unexpected_passes > 0).then(|| {
+        format!(
+            "note: {unexpected_passes} xfail row(s) met their budget — reconsider their \
+             marking only if this ran on comparable CI hardware."
+        )
+    })
+}
+
 /// Prints every row's verdict and returns whether the gate holds — i.e. no
 /// `Pass`-marked row missed its budget. The bench binary exits nonzero when
 /// this returns `false`; `Xfail` misses and `XPASS` rows never fail the run
@@ -168,12 +181,8 @@ pub fn verdict(reports: &[GateReport]) -> bool {
         println!("{}", report.line());
     }
     let unexpected: Vec<&GateReport> = reports.iter().filter(|r| r.unexpected_failure()).collect();
-    let promotions = reports.iter().filter(|r| r.unexpected_pass()).count();
-    if promotions > 0 {
-        println!(
-            "note: {promotions} xfail row(s) met their budget — reconsider their \
-             marking only if this ran on comparable CI hardware."
-        );
+    if let Some(note) = xpass_note(reports) {
+        println!("{note}");
     }
     if unexpected.is_empty() {
         println!("budget gate: OK ({} row(s))", reports.len());
@@ -198,6 +207,22 @@ pub fn quick_mode() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Neither XPASS message may ask for promotion, in any case: an XPASS
+    /// triggers reconsideration on comparable CI hardware only (roadmap D15,
+    /// D16).
+    fn assert_asks_no_promotion(message: &str) {
+        let lower = message.to_lowercase();
+        assert!(!lower.contains("to pass"), "asks for promotion: {message}");
+        assert!(
+            !lower.contains("promote this"),
+            "asks for promotion: {message}"
+        );
+        assert!(
+            !lower.contains("promote them"),
+            "asks for promotion: {message}"
+        );
+    }
 
     fn row(met_budget: bool, expectation: Expectation) -> GateReport {
         GateReport {
@@ -240,8 +265,23 @@ mod tests {
         assert!(r.line().starts_with("XPASS"));
         assert!(r.line().contains("reconsider the marking"));
         assert!(r.line().contains("comparable CI hardware"));
-        assert!(!r.line().contains("PROMOTE"));
+        assert_asks_no_promotion(&r.line());
         assert!(verdict(&[r]));
+    }
+
+    #[test]
+    fn xpass_note_asks_for_reconsideration_but_not_promotion() {
+        let reports = [
+            row(true, Expectation::Xfail("documented defect")),
+            row(true, Expectation::Pass),
+            row(false, Expectation::Xfail("documented defect")),
+        ];
+        let note = xpass_note(&reports).expect("one xfail row met its budget");
+        assert!(note.starts_with("note: 1 xfail row(s) met their budget"));
+        assert!(note.contains("reconsider their marking"));
+        assert!(note.contains("comparable CI hardware"));
+        assert_asks_no_promotion(&note);
+        assert_eq!(xpass_note(&reports[1..]), None);
     }
 
     #[test]
