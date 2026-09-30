@@ -35,7 +35,7 @@ edition = "2021"
 # closure (`cargo metadata --filter-platform`), never to make a build pass.
 rust-version = "1.85"
 authors = ["Epiphany contributors"]
-repository = "https://github.com/epiphany-notation/epiphany"
+repository = "https://github.com/levineuwirth/epiphany"
 
 [workspace.dependencies]
 blake3 = "1"
@@ -109,10 +109,11 @@ unicode-normalization = "0.1"
 zstd = { version = "0.13", default-features = false }
 # Criterion drives the Chapter 10 performance benches (Phase 2 worklist F1) in
 # epiphany-testkit/benches (see that crate's DECISIONS.md, F0/F1). Pinned to
-# the 0.5 line: its MSRV (1.70) fits the workspace's pinned 1.77, while
-# criterion 0.6+ requires 1.80. Default features are off — the plotting stack
-# (plotters) and rayon are dead weight for budget gates — keeping only
-# `cargo_bench_support` so plain `cargo bench` remains the entry point.
+# the 0.5 line when the claimed floor was 1.77: its MSRV is 1.70, while
+# criterion 0.6+ requires 1.80, which the 1.85 floor now admits. Default
+# features are off — the plotting stack (plotters) and rayon are dead weight
+# for budget gates — keeping only `cargo_bench_support` so plain `cargo bench`
+# remains the entry point.
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 
 # Determinism-sensitive: never enable fast-math-style codegen on canonical
