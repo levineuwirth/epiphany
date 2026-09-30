@@ -8,7 +8,11 @@
 //!     corpus-report [--cache DIR] [--render NAME]...
 //!
 //! DIR defaults to `${XDG_CACHE_HOME:-~/.cache}/epiphany-corpus`. A score is
-//! `DIR/<group>/<name>/<name>.musicxml` with its `<name>.exported` stamp.
+//! `DIR/<group>/<name>/<name>.musicxml`. One without its `<name>.exported`
+//! stamp is an incomplete export (MuseScore's page rendering can exceed the
+//! export's memory cap after the MusicXML is written): it is read and marked
+//! so, and if it does not parse it is reported as an incomplete export, not as
+//! a refusal of the file.
 //! Every score in the `excerpts` group, `s7`, and each `--render NAME` is
 //! rendered in full, page by page, as SVG and (through `rsvg-convert`) PNG,
 //! with an `index.html` that sets each page beside MuseScore's own pages of
@@ -29,6 +33,8 @@ use epiphany_cli::{engrave, load, page, svg, Loaded};
 use epiphany_musicxml::source::FeatureClass;
 
 struct Score {
+    /// Whether `corpus-export` finished every export of this score.
+    complete: bool,
     group: String,
     name: String,
     musicxml: PathBuf,
@@ -50,8 +56,9 @@ fn scores(cache: &Path) -> std::io::Result<Vec<Score>> {
                 continue;
             };
             let musicxml = dir.join(format!("{name}.musicxml"));
-            if musicxml.is_file() && dir.join(format!("{name}.exported")).is_file() {
+            if musicxml.is_file() {
                 out.push(Score {
+                    complete: dir.join(format!("{name}.exported")).is_file(),
                     group: group_name.to_owned(),
                     name: name.to_owned(),
                     musicxml,
@@ -190,11 +197,22 @@ fn main() -> ExitCode {
     for score in &list {
         let title = format!("{}/{}", score.group, score.name);
         let _ = writeln!(text, "\n== {title}");
+        if !score.complete {
+            let _ = writeln!(
+                text,
+                "(an incomplete export: MuseScore's own pages are missing)"
+            );
+        }
         let loaded = match load(&score.musicxml) {
             Ok(loaded) => loaded,
             Err(e) => {
-                let _ = writeln!(text, "REFUSED: {e}");
-                summary.push(format!("{title:40} refused: {e}"));
+                let what = if score.complete {
+                    "refused"
+                } else {
+                    "incomplete export, not read"
+                };
+                let _ = writeln!(text, "{}: {e}", what.to_uppercase());
+                summary.push(format!("{title:40} {what}: {e}"));
                 print!("{text}");
                 text.clear();
                 continue;
