@@ -9,9 +9,13 @@ LaTeX suite in `spec/` is the model's normative source.
 Planning lives in `~/apocrypha`, not in this repository: start from
 `~/apocrypha/Negotia/Epiphany resume.md`, which says how work runs, which
 phase is open and what green means. Then read `docs/invariants.md`, the
-rules no change may break. `spec/CONTRACT_*`, `spec/EVIDENCE_*`, the Pass-13
-ledger (`spec/PASS13_CANDIDATES.md`) and `spec/HANDOFF_2026-08-07.md` are
-the history of a retired contract-and-ratification process, not instruction.
+rules no change may break. In `spec/`, besides the `.tex` suite, its PDFs and
+`vectors/`, the documents still in force are `QUICKSTART.md` (the crate
+layout and its early decisions), `RULING_GENESIS_PERSISTENCE.md`,
+`PLAN_EDITOR_APP.md` and the `ANALYSIS_*` files. Every other Markdown file
+there (the contracts, evidence, worklists, ratification logs, batch, plans,
+audits and drafts, the Pass-13 ledger and the August handoff) is the history
+of a retired contract-and-ratification process, not instruction.
 
 ## Green
 
