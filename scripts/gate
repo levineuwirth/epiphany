@@ -23,6 +23,11 @@
 # definition, so this list is how a deletion is read rather than missed; a
 # handoff carries it. It names and never fails: there is no allowlist. The
 # stage fails only when it cannot compare, which is never reported as "none".
+# That list reads labels as TeX's tokenizer does, so a requirement TeX never
+# typesets (under `\iffalse`, after `\end{document}`) still counts as present.
+# `--spec` therefore adds a second line, which compares origin/main's labels
+# with the `\newlabel{req:…}` entries TeX wrote to the built documents' .aux
+# files, under the same rules.
 #
 # The toolchain is pinned by `+<version>` on every stage rather than by a
 # rust-toolchain.toml, which would override CI's MSRV job (it installs its
@@ -152,7 +157,40 @@ removed_requirement_labels() {
     echo "requirement labels: $(grep -c . <<<"$main") on origin/main, $(grep -c . <<<"$tree") here"
     echo "absent here: ${removed:-none}" | paste -sd ' '
 }
-export -f diff_check spec_document requirement_labels removed_requirement_labels
+# Names every requirement label on origin/main that TeX did not define when it
+# built the given documents: the `\newlabel{req:…}` entries of their .aux files.
+# Names and never fails on a removal; fails only when it cannot compare: no
+# origin/main, a document with no .aux, or no label on either side.
+tex_removed_requirement_labels() {
+    local doc main tex removed
+    if ! git rev-parse --verify -q origin/main >/dev/null; then
+        echo "gate: no origin/main to compare requirement labels against"
+        return 1
+    fi
+    for doc in "$@"; do
+        if [ ! -s "$GATE_SPEC_OUT/$doc.aux" ]; then
+            echo "gate: no $doc.aux in $GATE_SPEC_OUT to read TeX's labels from"
+            return 1
+        fi
+    done
+    main=$(requirement_labels origin/main)
+    tex=$(for doc in "$@"; do
+        perl -ne 'print "$1\n" while /\\newlabel\{(req:[^{}]*)\}/g' "$GATE_SPEC_OUT/$doc.aux"
+    done | LC_ALL=C sort -u)
+    if [ -z "$main" ]; then
+        echo "gate: read no requirement label on origin/main; the comparison would be vacuous"
+        return 1
+    fi
+    if [ -z "$tex" ]; then
+        echo "gate: TeX defined no requirement label; the comparison would be vacuous"
+        return 1
+    fi
+    removed=$(LC_ALL=C comm -23 <(echo "$main") <(echo "$tex"))
+    echo "requirement labels: $(grep -c . <<<"$main") on origin/main, $(grep -c . <<<"$tex") defined by TeX here"
+    echo "absent from TeX here: ${removed:-none}" | paste -sd ' '
+}
+export -f diff_check spec_document requirement_labels removed_requirement_labels \
+    tex_removed_requirement_labels
 
 # name|command, in order. A command runs under `bash -c` from the repository root.
 stages=(
@@ -178,6 +216,7 @@ if [ "$spec" = 1 ]; then
     for doc in "${spec_documents[@]}"; do
         stages+=("spec-$doc|spec_document $doc  # latexmk -xelatex -outdir <logs>/spec; fails on undefined refs")
     done
+    stages+=("spec-req-labels|tex_removed_requirement_labels ${spec_documents[*]}  # labels on origin/main that TeX's .aux files lack")
 fi
 if [ "$spikes" = 1 ]; then
     stages+=(
@@ -248,7 +287,7 @@ for stage in "${stages[@]}"; do
     detail=""
     case "$name" in
         test | msrv-* | editor-gui | prepass | spikes-test) detail=" ($(count "$log"))" ;;
-        req-labels) detail=$(sed -n 's/^requirement labels: \(.*\)/ (\1)/p' "$log") ;;
+        req-labels | spec-req-labels) detail=$(sed -n 's/^requirement labels: \(.*\)/ (\1)/p' "$log") ;;
     esac
     printf '%-28s %-4s %4ss%s\n' "$name" "$verdict" "$((SECONDS - start))" "$detail"
 done
@@ -257,6 +296,14 @@ if removed=$(sed -n 's/^absent here: //p' "$logs/req-labels.log") && [ -n "$remo
     echo "gate: requirement labels on origin/main absent here: $removed"
 else
     echo "gate: requirement labels on origin/main absent here: unknown (req-labels failed)"
+fi
+if [ "$spec" = 1 ]; then
+    if removed=$(sed -n 's/^absent from TeX here: //p' "$logs/spec-req-labels.log") &&
+        [ -n "$removed" ]; then
+        echo "gate: requirement labels on origin/main that TeX does not define here: $removed"
+    else
+        echo "gate: requirement labels on origin/main that TeX does not define here: unknown (spec-req-labels failed)"
+    fi
 fi
 summary=$(count "$logs/test.log")
 if [ "${#failed_stages[@]}" -eq 0 ]; then

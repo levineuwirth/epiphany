@@ -18,7 +18,8 @@ the history of a retired contract-and-ratification process, not instruction.
 Green is `scripts/gate`: fmt, clippy, rustdoc, build and the workspace tests
 on CI's pinned toolchain with CI's `-D warnings`, then `git diff --check`,
 with a log per stage and the counts on its closing line. The line before it
-names the requirement labels `origin/main` defines and the tree does not;
+names the requirement labels `origin/main` defines and the tree does not
+(with `--spec`, a second line names those TeX does not define once built);
 a handoff carries that list, even when it is "none". `--full` adds the
 rest of CI's push checks, `--soak` its nightly soak, `--spec` the `xelatex`
 builds, `--spikes` the spike workspace, and `--print-plan` lists the

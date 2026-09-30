@@ -45,7 +45,8 @@ libxcb-xfixes0-dev libxkbcommon-dev libssl-dev` or their equivalents.
     scripts/gate                  # fmt, clippy, rustdoc, build, tests, diff check,
                                   # requirement labels removed from origin/main
     scripts/gate --full           # plus the rest of what CI runs
-    scripts/gate --spec           # plus the xelatex builds of the specification
+    scripts/gate --spec           # plus the xelatex builds of the specification,
+                                  # and the labels TeX no longer defines
     scripts/gate --print-plan     # list the stages
 
 The gate's closing line reports the test counts. To see the engraver's output

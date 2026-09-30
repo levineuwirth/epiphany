@@ -219,5 +219,9 @@ against TeX's reading of the suite rather than against a hand-typed total.
 Deleting a requirement fails no test, and most labels are cited nowhere but
 their own definition. `scripts/gate` therefore names every label defined on
 `origin/main` and absent from the tree, so a removed requirement is read in
-review rather than missed. It names a removal and never fails on one; there is
-no allowlist. It fails only when it cannot compare.
+review rather than missed. It reads labels as TeX's tokenizer does, so a
+requirement TeX never typesets (under `\iffalse`, or after `\end{document}`)
+still counts; `scripts/gate --spec`, which a change to a `.tex` runs, also names
+every label on `origin/main` that TeX did not define when it built the suite.
+Both name a removal and never fail on one; there is no allowlist. Each fails
+only when it cannot compare.
