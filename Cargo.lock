@@ -1261,6 +1261,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "epiphany-musicxml"
+version = "0.0.0"
+dependencies = [
+ "epiphany-core",
+ "epiphany-engrave",
+ "epiphany-layout-ir",
+ "epiphany-ops",
+ "roxmltree",
+]
+
+[[package]]
 name = "epiphany-ops"
 version = "0.0.0"
 dependencies = [

@@ -14,6 +14,7 @@ members = [
     "crates/epiphany-editor-core",
     "crates/epiphany-editor-gui",
     "crates/epiphany-testkit",
+    "crates/epiphany-musicxml",
 ]
 
 # Agent A shipped epiphany-determinism first; Agent B's epiphany-core and Agent
@@ -83,6 +84,9 @@ epiphany-editor-core = { path = "crates/epiphany-editor-core" }
 # fixtures (`ten_measure_single_staff`) as a dev-dependency for the demo binary
 # and acceptance tests.
 epiphany-testkit = { path = "crates/epiphany-testkit" }
+# MusicXML import through the operation API (roadmap X1): the corpus loop's
+# entry point, used by the command-line crate and the corpus report.
+epiphany-musicxml = { path = "crates/epiphany-musicxml" }
 # Event-arena storage backend (QUICKSTART decision 2): slotmap gives
 # generation-checked stale-handle detection, matching the spec's
 # identifier-stability requirement (Chapter 5).
