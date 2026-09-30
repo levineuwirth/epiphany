@@ -191,6 +191,20 @@ fn staff_lines(lines: Option<u8>) -> StaffLineConfiguration {
     }
 }
 
+/// The events of a part by staff and onset, each list in source order.
+pub(crate) fn event_starts(
+    events: &[crate::source::SourceEvent],
+) -> BTreeMap<(usize, &RationalTime), Vec<usize>> {
+    let mut starts: BTreeMap<(usize, &RationalTime), Vec<usize>> = BTreeMap::new();
+    for (i, event) in events.iter().enumerate() {
+        starts
+            .entry((event.staff, &event.onset))
+            .or_default()
+            .push(i);
+    }
+    starts
+}
+
 /// Emits the operations that build `source` from an empty score.
 pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
     let mut e = Emitter {
@@ -494,6 +508,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
     // Ties: a tied pitch continues into the event that follows it on its
     // staff, in its voice when it can.
     for (p, part) in source.parts.iter().enumerate() {
+        let starts = event_starts(&part.events);
         for (i, event) in part.events.iter().enumerate() {
             let Content::Pitched(pitches) = &event.content else {
                 continue;
@@ -503,10 +518,11 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
             }
             let end = event.onset.add(&event.duration);
             let candidates = |same_voice: bool| {
-                part.events.iter().enumerate().find(|(_, next)| {
-                    next.staff == event.staff
-                        && next.onset == end
-                        && (next.voice == event.voice) == same_voice
+                let at_end = starts
+                    .get(&(event.staff, &end))
+                    .map_or(&[][..], Vec::as_slice);
+                at_end.iter().map(|&j| (j, &part.events[j])).find(|(_, next)| {
+                    (next.voice == event.voice) == same_voice
                         && matches!(&next.content, Content::Pitched(next_pitches)
                             if pitches.iter().any(|x| x.tie_start && next_pitches.iter()
                                 .any(|y| y.tie_stop && y.pitch.scale_position == x.pitch.scale_position)))

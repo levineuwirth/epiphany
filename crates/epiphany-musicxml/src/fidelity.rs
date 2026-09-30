@@ -536,6 +536,7 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                 }
             }
         }
+        let starts = crate::emit::event_starts(&part.events);
         let mut source_ties = BTreeMap::new();
         let mut tie_explained = Vec::new();
         for (i, event) in part.events.iter().enumerate() {
@@ -544,10 +545,11 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             };
             let end = event.onset.add(&event.duration);
             for pitch in pitches.iter().filter(|x| x.tie_start) {
-                let ends = part.events.iter().any(|next| {
-                    next.staff == event.staff
-                        && next.onset == end
-                        && matches!(&next.content, Content::Pitched(ps)
+                let at_end = starts
+                    .get(&(event.staff, &end))
+                    .map_or(&[][..], Vec::as_slice);
+                let ends = at_end.iter().map(|&j| &part.events[j]).any(|next| {
+                    matches!(&next.content, Content::Pitched(ps)
                             if ps.iter().any(|y| y.tie_stop && y.pitch.scale_position == pitch.pitch.scale_position))
                 });
                 if !ends {

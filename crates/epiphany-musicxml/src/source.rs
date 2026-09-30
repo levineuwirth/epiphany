@@ -192,8 +192,9 @@ pub struct SourceEvent {
     pub onset: Time,
     pub duration: Time,
     pub content: Content,
-    /// The line of the event's first `<note>`.
-    pub line: u32,
+    /// The byte offset of the event's first `<note>` in the file (a line
+    /// number would cost a scan of the file per event).
+    pub offset: usize,
 }
 
 /// A slur between two events of a part, by index into [`SourcePart::events`].
@@ -1162,7 +1163,7 @@ impl<'d, 'i> Reader<'d, 'i> {
                 onset: zero(),
                 duration,
                 content,
-                line: self.line(note),
+                offset: note.range().start,
             });
             read.event_offsets.push(
                 RationalTime::new(onset_div, 4 * state.divisions)
