@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<!-- Hand-written for epiphany-musicxml's tests. A concert score: pitches
+     sound as written, and each transposing part states its interval in
+     part-transpose; the bass clarinet and the double bass transpose by an
+     octave and read 8vb clefs. -->
+<score-partwise version="4.0">
+  <defaults><concert-score/></defaults>
+  <part-list>
+    <score-part id="P1"><part-name>Clarinet in Bb</part-name></score-part>
+    <score-part id="P2"><part-name>Bass Clarinet</part-name></score-part>
+    <score-part id="P3"><part-name>Contrabass</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <key><fifths>0</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef>
+        <for-part number="1"><part-transpose><diatonic>-1</diatonic><chromatic>-2</chromatic></part-transpose></for-part>
+      </attributes>
+      <note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>whole</type></note>
+    </measure>
+  </part>
+  <part id="P2">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <key><fifths>0</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line><clef-octave-change>-1</clef-octave-change></clef>
+        <for-part number="1"><part-transpose><diatonic>-1</diatonic><chromatic>-2</chromatic><octave-change>-1</octave-change></part-transpose></for-part>
+      </attributes>
+      <note><pitch><step>G</step><octave>3</octave></pitch><duration>4</duration><voice>1</voice><type>whole</type></note>
+    </measure>
+  </part>
+  <part id="P3">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <key><fifths>0</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>F</sign><line>4</line><clef-octave-change>-1</clef-octave-change></clef>
+        <for-part number="1"><part-transpose><diatonic>0</diatonic><chromatic>0</chromatic><octave-change>-1</octave-change></part-transpose></for-part>
+      </attributes>
+      <note><pitch><step>E</step><octave>2</octave></pitch><duration>4</duration><voice>1</voice><type>whole</type></note>
+    </measure>
+  </part>
+</score-partwise>

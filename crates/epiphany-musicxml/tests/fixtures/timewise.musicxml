@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Hand-written for epiphany-musicxml's tests. A timewise score, which the
+     importer refuses by name. -->
+<score-timewise version="4.0">
+  <part-list><score-part id="P1"><part-name>Flute</part-name></score-part></part-list>
+  <measure number="1"><part id="P1"><note><rest/><duration>4</duration></note></part></measure>
+</score-timewise>
