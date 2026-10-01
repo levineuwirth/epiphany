@@ -248,9 +248,10 @@ pub struct SourcePart {
     pub dropped_tie_starts: usize,
 }
 
-/// Raw counts taken straight from the `<note>` elements of a part, with no
-/// timing logic, and the keys and clefs its `<attributes>` state, as an
-/// independent check on the reader.
+/// Counts taken straight from a part's elements, sharing none of the
+/// reader's code, as an independent check on it: the `<note>` elements, with
+/// no timing logic; the keys and clefs its `<attributes>` state; and the
+/// quarter-tones, timed by a reading of their own.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Census {
     /// `<note>` elements with a `<pitch>`, not grace or cue.

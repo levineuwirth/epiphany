@@ -21,9 +21,19 @@
 //!   every clef and key change the file makes on it, since no operation adds
 //!   one afterward; measures are created on every staff at the onsets the
 //!   parts' content reaches.
+//! - A quarter-tone is held in `cmn-24`, whose chromatic step is the
+//!   quarter-tone; every other pitch in `cmn-12`. It is stated by a
+//!   fractional `<alter>` or, as MuseScore writes its arrowed and Stein
+//!   accidentals, by an `<accidental>` name with no `<alter>`, carried through
+//!   the measure and over a tie as notation carries it. A pitch finer than a
+//!   quarter-tone refuses the file by name.
+//! - The core ties only pitches it can call enharmonic, which it answers in
+//!   twelve-chromatic spaces alone, so a tie between quarter-tones is
+//!   recorded, not made.
 //! - Voices are per staff: a MusicXML voice that crosses staves becomes a
 //!   voice on each. Unpitched notes keep their staff step (read against a
-//!   treble clef, bottom line 0) and their instrument member.
+//!   treble clef, bottom line 0) and their instrument member, and a tie
+//!   between two of the same member and step pairs no pitch.
 //! - Every operation comes from one replica in one causal chain, so the import
 //!   is deterministic and reduces as one author's history.
 //!
