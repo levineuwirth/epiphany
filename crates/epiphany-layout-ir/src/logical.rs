@@ -138,11 +138,15 @@ pub struct RestContent {
     pub staff_position: Option<StaffPosition>,
 }
 
-/// A measure's notated content: its resolved start position, which barline ends
-/// it, and the time signature it introduces, if any.
+/// A measure's notated content: its resolved start position, where it ends,
+/// which barline ends it, and the time signature it introduces, if any.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct MeasureContent {
     pub start: TimePoint,
+    /// The next measure's start in the same staff instance, where this
+    /// measure's barline stands; `None` for the instance's last measure, whose
+    /// barline closes the region.
+    pub end: Option<TimePoint>,
     pub barline: BarlineKind,
     pub time_signature: Option<TimeSignatureContent>,
 }
@@ -614,11 +618,19 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                 if let Some(anchor_dep) = time_anchor_dep(&measure.start) {
                     measure_deps.push(anchor_dep);
                 }
+                // The measure ends where the next one starts, so it depends on
+                // what that start resolves through as well.
+                let next = si.measures.get(index + 1);
+                if let Some(anchor_dep) = next.and_then(|m| time_anchor_dep(&m.start)) {
+                    if !measure_deps.contains(&anchor_dep) {
+                        measure_deps.push(anchor_dep);
+                    }
+                }
                 push(
                     TypedObjectId::Measure(measure.id),
                     measure_deps,
                     Some(si.staff),
-                    measure_content(score, measure, barline),
+                    measure_content(score, measure, next, barline),
                 );
             }
         }
@@ -1203,13 +1215,15 @@ fn components_of(annotations: &DerivedAnnotations, event: EventId) -> Vec<Notate
         .unwrap_or_default()
 }
 
-/// The notated content of a measure: its start anchor, its ending barline, and
-/// the time signature it introduces, resolved to numerator/denominator when
-/// standard or irrational (compound / mixed / symbolic meters are not engraved
-/// in I-1).
+/// The notated content of a measure: its start anchor, its end (the start of
+/// `next`, the following measure of its staff instance), its ending barline,
+/// and the time signature it introduces, resolved to numerator/denominator
+/// when standard or irrational (compound / mixed / symbolic meters are not
+/// engraved in I-1).
 fn measure_content(
     score: &Score,
     measure: &epiphany_core::Measure,
+    next: Option<&epiphany_core::Measure>,
     barline: BarlineKind,
 ) -> LayoutContent {
     let time_signature = measure
@@ -1217,6 +1231,7 @@ fn measure_content(
         .and_then(|id| time_signature_content(score, id));
     LayoutContent::Measure(MeasureContent {
         start: resolve_time_anchor(score, &measure.start),
+        end: next.map(|m| resolve_time_anchor(score, &m.start)),
         barline,
         time_signature,
     })

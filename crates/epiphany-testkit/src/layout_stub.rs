@@ -239,6 +239,7 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
         }),
         4 => LayoutContent::Measure(MeasureContent {
             start: time(rng),
+            end: rng.boolean().then(|| time(rng)),
             barline: barline(rng),
             time_signature: rng.boolean().then(|| TimeSignatureContent {
                 numerator: rng.range(1, 13) as u16,

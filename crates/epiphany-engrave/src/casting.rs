@@ -18,9 +18,10 @@
 //!    additive analog of the Quality Metric Catalog's break/imbalance
 //!    distribution cost; including the final system in the sum is what removes
 //!    the old separate widow rebalance. Breaks fall only at **measure
-//!    boundaries** — the barline columns (`to_constrained` draws each measure's
-//!    barline at its start column; the region-final barline closes the region
-//!    and is never a break candidate). A **hard** `SystemBreakAt`/`PageBreakAt`
+//!    boundaries** — after a barline column (`to_constrained` draws each
+//!    measure's barline where the measure ends, so a system ends on the
+//!    barline and the next begins with what follows it; the region-final
+//!    barline closes the region). A **hard** `SystemBreakAt`/`PageBreakAt`
 //!    is *always* honoured at its slot (and bounds the search's segments); a
 //!    **soft** one is honoured unless doing so would close a system with no
 //!    musical content (no notehead/rest column) — the documented exceptional
@@ -225,16 +226,15 @@ struct SlotInfo {
     hi: f32,
     /// Member glyph indices into the (parallel) input/spaced glyph vectors.
     members: Vec<usize>,
-    /// The column carries a barline glyph — a measure boundary.
+    /// The column carries a measure's barline — a measure boundary, after
+    /// which a system may break.
     barline: bool,
-    /// The column carries the region-final barline (never a break candidate).
+    /// The column carries the region-final barline (nothing follows it).
     final_barline: bool,
     /// The column carries musical content (a notehead or a rest).
     note: bool,
-    /// The directly-manifested barline glyph of a measure *start* (glyph
-    /// index), for the per-system measure records. `None` at the final
-    /// barline: that measure's start is not marked by any column in this
-    /// projection, so its record is omitted rather than fabricated.
+    /// The directly-manifested barline glyph that ends a measure (glyph
+    /// index), for the per-system measure records.
     measure_barline: Option<usize>,
 }
 
@@ -476,7 +476,8 @@ pub(crate) fn cast_off(
             entry.barline = true;
             if name == "barlineFinal" {
                 entry.final_barline = true;
-            } else if entry.measure_barline.is_none() {
+            }
+            if entry.measure_barline.is_none() {
                 entry.measure_barline = Some(i);
             }
         }
@@ -1312,14 +1313,14 @@ fn optimal_breaks(
     if !width_limit.is_finite() || width_limit <= 0.0 || slots.is_empty() {
         return automatic; // unbounded width: nothing wraps
     }
-    let breakable = |slot: &SlotInfo| slot.barline && !slot.final_barline;
-    // Measure-boundary positions in slot-index space: region start, each
-    // breakable barline, region end. `forced[k]` marks a boundary carrying a
-    // break requirement (the DP may not span it). The region end is a boundary.
+    // Measure-boundary positions in slot-index space: region start, each slot
+    // that follows a barline, region end. `forced[k]` marks a boundary
+    // carrying a break requirement (the DP may not span it). The region end is
+    // a boundary.
     let mut pts: Vec<usize> = vec![0];
     let mut forced: Vec<bool> = vec![false];
     for (i, slot) in slots.iter().enumerate() {
-        if i > 0 && breakable(slot) {
+        if opens_measure(slots, i) {
             pts.push(i);
             forced.push(reqs.contains_key(&slot.id));
         }
@@ -1383,6 +1384,13 @@ fn optimal_breaks(
     automatic
 }
 
+/// Whether slot `i` opens a measure a system may start with: it follows a
+/// barline that is not the region's final one. A barline ends its measure, so
+/// a system ends on a barline and the next begins after it.
+fn opens_measure(slots: &[SlotInfo], i: usize) -> bool {
+    i > 0 && slots[i - 1].barline && !slots[i - 1].final_barline
+}
+
 /// Walks one region's slots, opening a system at each break requirement and at
 /// each optimal automatic break (`optimal_breaks`).
 #[allow(clippy::too_many_arguments)]
@@ -1412,10 +1420,9 @@ fn walk_region(
     // that would overflow the content width, exactly as first-fit did. In the
     // common (content-full) case the DP's break fires first, so the net never
     // triggers and the geometry is the optimizer's.
-    let breakable = |slot: &SlotInfo| slot.barline && !slot.final_barline;
     let mut chunk_hi = vec![f32::NEG_INFINITY; slots.len()];
     for i in (0..slots.len()).rev() {
-        let next = if i + 1 < slots.len() && !breakable(&slots[i + 1]) {
+        let next = if i + 1 < slots.len() && !opens_measure(slots, i + 1) {
             chunk_hi[i + 1]
         } else {
             f32::NEG_INFINITY
@@ -1484,7 +1491,7 @@ fn walk_region(
         if !break_here
             && has_note
             && (automatic.contains(&slot.id)
-                || (breakable(slot) && chunk_hi[i] - current_lo > width_limit))
+                || (opens_measure(slots, i) && chunk_hi[i] - current_lo > width_limit))
         {
             break_here = true;
         }
@@ -1894,10 +1901,9 @@ fn mark_staff(
 
 /// Builds one populated [`ResolvedSystem`]: a real world-frame bounding box, a
 /// staff record per staff whose lines reach this system (top staff first), and
-/// a measure record per measure-start barline column the system carries. What
-/// the pipeline does not know is left empty, never fabricated: a staff with no
-/// engraved lines yields no staff record, and the final-barline measure (whose
-/// start no column marks) yields no measure record.
+/// a measure record per barline the system carries, each for the measure the
+/// barline ends. What the pipeline does not know is left empty, never
+/// fabricated: a staff with no engraved lines yields no staff record.
 #[allow(clippy::too_many_arguments)]
 fn build_system(
     system: usize,
@@ -1957,40 +1963,38 @@ fn build_system(
         top_b.total_cmp(&top_a)
     });
 
-    // Measures: each measure-start barline column opens a span that runs to the
-    // next such column in this system, or to the system's content edge.
+    // Measures: each barline column closes the measure its barline ends, which
+    // spans from the previous barline in this system (or the system's start)
+    // to it.
     let slots = &region_slots[plan.region];
-    let marks: Vec<(usize, usize)> = plan
+    let mut span_start = plan
         .slots
         .iter()
-        .filter_map(|&i| slots[i].measure_barline.map(|g| (i, g)))
-        .collect();
-    let measures: Vec<ResolvedMeasure> = marks
-        .iter()
-        .enumerate()
-        .filter_map(|(k, &(i, g))| {
-            let glyph = &input.glyphs[g];
-            let TypedObjectId::Measure(measure) = glyph.provenance.source else {
-                return None;
-            };
-            let start = slots[i].lo;
-            let end = marks
-                .get(k + 1)
-                .map(|&(next, _)| slots[next].lo)
-                .unwrap_or(ext.max_x);
-            Some(ResolvedMeasure {
-                provenance: glyph.provenance.clone(),
-                measure,
-                bounding_box: Rect {
-                    origin: Point::new(p.x(start), ext.min_y + p.dy),
-                    size: Size2D {
-                        width: StaffSpace(p.x(end) - p.x(start)),
-                        height: StaffSpace(ext.max_y - ext.min_y),
-                    },
+        .map(|&i| slots[i].lo)
+        .fold(f32::INFINITY, f32::min);
+    let mut measures: Vec<ResolvedMeasure> = Vec::new();
+    for &i in &plan.slots {
+        let Some(g) = slots[i].measure_barline else {
+            continue;
+        };
+        let glyph = &input.glyphs[g];
+        let TypedObjectId::Measure(measure) = glyph.provenance.source else {
+            continue;
+        };
+        let (start, end) = (span_start, slots[i].hi);
+        span_start = end;
+        measures.push(ResolvedMeasure {
+            provenance: glyph.provenance.clone(),
+            measure,
+            bounding_box: Rect {
+                origin: Point::new(p.x(start), ext.min_y + p.dy),
+                size: Size2D {
+                    width: StaffSpace(p.x(end) - p.x(start)),
+                    height: StaffSpace(ext.max_y - ext.min_y),
                 },
-            })
-        })
-        .collect();
+            },
+        });
+    }
 
     ResolvedSystem {
         provenance,
@@ -2196,8 +2200,7 @@ mod tests {
         // mint a phantom measure record (a standalone sign and the dot pair
         // are repeat-synthesized, not measure barlines) or lose one (a morphed
         // barline still marks its measure): both fixtures cast off to the same
-        // nine records — one per measure-*start* barline column; the final
-        // measure's barline closes the region and yields none, by convention.
+        // ten records, one per measure, each from the barline that ends it.
         let solve = |score| {
             Engraver::default().solve(
                 &to_constrained(&to_logical(&score)),
@@ -2219,8 +2222,8 @@ mod tests {
                 .map(|system| system.measures.len())
                 .sum()
         };
-        assert_eq!(measure_count(&plain), 9);
-        assert_eq!(measure_count(&repeats), 9);
+        assert_eq!(measure_count(&plain), 10);
+        assert_eq!(measure_count(&repeats), 10);
         // The volta brackets sit above the staff, so the system carrying them
         // is taller than any repeat-free system.
         let max_height = |report: &crate::SolveReport| -> f32 {

@@ -1,16 +1,16 @@
 fixture=ten_measure_with_repeats solver=stub
-glyph_count=56
-path_count=56
+glyph_count=55
+path_count=55
 fallback_rect_count=0
 stroke_count=100
 curve_count=0
-provenance_count=156
+provenance_count=155
 layer_count=1
-hard_constraint_count=95
+hard_constraint_count=94
 xml_well_formed=true
-view_box=[-3.065 -3.632 92.937454 12.212]
+view_box=[-3.065 -3.632 91.337456 12.212]
 class_counts:
-  barline=7
+  barline=6
   clef=1
   notehead=40
   repeat=5

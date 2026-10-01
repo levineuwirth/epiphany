@@ -860,6 +860,9 @@ pub fn try_to_constrained(
         // morphs its glyph) and stand alone elsewhere.
         let mut repeats: Vec<(RepeatStructureId, &RepeatContent)> = Vec::new();
         let mut measure_cols: BTreeSet<(ColumnKey, StaffId)> = BTreeSet::new();
+        // The staves whose region-closing barline is a final one (the rest
+        // close on a single barline, their run continuing in a later region).
+        let mut final_staves: BTreeSet<StaffId> = BTreeSet::new();
 
         for object in &region.objects {
             let staff = object.staff();
@@ -1002,7 +1005,13 @@ pub fn try_to_constrained(
                 (TypedObjectId::Measure(_), LayoutContent::Measure(measure)) => {
                     let key = measure_column(measure);
                     keys.insert(key.clone());
+                    if measure.time_signature.is_some() {
+                        keys.insert(signature_column(measure));
+                    }
                     if let Some(s) = staff {
+                        if key == ColumnKey::End && measure.barline == BarlineKind::Final {
+                            final_staves.insert(s);
+                        }
                         measure_cols.insert((key, s));
                     }
                 }
@@ -1012,6 +1021,7 @@ pub fn try_to_constrained(
                     // letting the fallible conversion panic.
                     keys.insert(ColumnKey::End);
                     if let Some(s) = staff {
+                        final_staves.insert(s);
                         measure_cols.insert((ColumnKey::End, s));
                     }
                 }
@@ -1097,6 +1107,29 @@ pub fn try_to_constrained(
             if left_reach > 0.0 {
                 let entry = column_overhang.entry(key.clone()).or_insert(0.0);
                 *entry = entry.max(left_reach);
+            }
+        }
+
+        // A time signature stands in its own column after the barline at its
+        // onset, so it clears the ink a repeat sign there reaches right of the
+        // plain barline.
+        let signature_times: Vec<TimePoint> = keys
+            .iter()
+            .filter_map(|key| match key {
+                ColumnKey::Timed(time, ColumnRole::Signature) => Some(time.clone()),
+                _ => None,
+            })
+            .collect();
+        for time in signature_times {
+            let barline = ColumnKey::Timed(time.clone(), ColumnRole::Barline);
+            let reach = marks.get(&barline).map_or(0.0, |mark| {
+                repeat_sign_right_extension(repeat_sign_name(mark.start, mark.end))
+            });
+            if reach > 0.0 {
+                let entry = column_overhang
+                    .entry(ColumnKey::Timed(time, ColumnRole::Signature))
+                    .or_insert(0.0);
+                *entry = entry.max(reach);
             }
         }
 
@@ -1453,12 +1486,13 @@ pub fn try_to_constrained(
                     }
                 },
                 TypedObjectId::Measure(_) => {
-                    let key = match content {
-                        Some(LayoutContent::Measure(measure)) => measure_column(measure),
-                        _ => ColumnKey::End,
+                    let measure = match content {
+                        Some(LayoutContent::Measure(measure)) => Some(measure),
+                        _ => None,
                     };
-                    // A repeat boundary on this measure's own barline column
-                    // morphs the barline into the composite repeat sign — the
+                    let key = measure.map_or(ColumnKey::End, measure_column);
+                    // A barline ends its measure. A repeat boundary on its
+                    // column morphs it into the composite repeat sign — the
                     // sign *replaces* the plain barline, keeping the measure's
                     // exact provenance verbatim (the round-trip provenance
                     // floor compares it exactly; repeat-edit invalidation is
@@ -1466,9 +1500,19 @@ pub fn try_to_constrained(
                     // The final barline never morphs — an end repeat there
                     // draws its dot pair beside it instead (emitted with the
                     // standalone signs below), so the casting-off solver's
-                    // final-barline classification stays truthful.
-                    let name = if key == ColumnKey::End {
+                    // final-barline classification stays truthful. A region
+                    // that closes on a single barline (its staff continuing in
+                    // a later region) morphs only for an end repeat, since a
+                    // start there opens nothing in this region.
+                    let closes_final = key == ColumnKey::End
+                        && measure.is_none_or(|m| m.barline == BarlineKind::Final);
+                    let name = if closes_final {
                         "barlineFinal"
+                    } else if key == ColumnKey::End {
+                        match marks.get(&key) {
+                            Some(mark) if mark.end => "repeatRight",
+                            _ => "barlineSingle",
+                        }
                     } else {
                         match marks.get(&key) {
                             Some(mark) => repeat_sign_name(mark.start, mark.end),
@@ -1483,15 +1527,15 @@ pub fn try_to_constrained(
                     let baseline = Point::new(repeat_sign_x(name, info.x), yo);
                     emit.glyph(provenance, name, baseline, band_of(staff), staff, info.slot);
                     // The time signature this measure introduces: numerator over
-                    // denominator, just right of the barline, each digit a
-                    // synthesized glyph sharing the barline's column slot. An
-                    // unbundled digit is surfaced (the bundled metrics carry only a
+                    // denominator in its own column at the measure's start, after
+                    // the barline ending the measure before, each digit a
+                    // synthesized glyph sharing that column's slot. An unbundled
+                    // digit is surfaced (the bundled metrics carry only a
                     // representative subset).
-                    if let Some(LayoutContent::Measure(measure)) = content {
+                    if let Some(measure) = measure {
                         if let Some(time_signature) = measure.time_signature {
-                            // A morphed repeat sign's ink extends right of the
-                            // plain barline span; the time signature clears it.
-                            let center_x = info.x + TIME_SIG_X + repeat_sign_right_extension(name);
+                            let info = column(&signature_column(measure));
+                            let center_x = info.x + TIME_SIG_X;
                             // The digit glyphs are centred on their baseline, so the
                             // numerator's baseline sits on the upper half of the
                             // staff (≈ y 3) and the denominator's on the lower (≈ y 1).
@@ -1673,6 +1717,11 @@ pub fn try_to_constrained(
             for (staff_index, staff) in staff_order.iter().enumerate() {
                 let covered = measure_cols.contains(&(key.clone(), *staff));
                 let (name, x) = if *key == ColumnKey::End {
+                    if covered && !final_staves.contains(staff) {
+                        // The region-closing single barline morphed into the
+                        // end sign.
+                        continue;
+                    }
                     if covered {
                         let dots_width = metrics("repeatDots")
                             .expect("repeatDots metrics are bundled")
@@ -1831,9 +1880,10 @@ pub fn try_to_constrained(
 
         // Projected break overrides (the logical stage's `SystemBreak` /
         // `PageBreak` engraving overrides, Chapter 7 §"Engraving Overrides")
-        // become break constraints on the spring slot that carries the break
-        // anchor's onset — the barline column at that time when one exists
-        // (a break belongs at the boundary), else the note column. An anchor
+        // become break constraints on the spring slot that opens the system at
+        // the break anchor's onset — the signature column at that time when one
+        // carries ink, else the note column; the barline before them ends the
+        // previous system. An anchor
         // no realized column represents — an event or measure outside this
         // region, a measure *end* (Minimal resolves measure starts only), a
         // region edge, or a column no glyph landed in — is skipped silently:
@@ -1868,7 +1918,9 @@ pub fn try_to_constrained(
             let Some(time) = break_anchor_time(anchor, &event_onsets, &measure_starts) else {
                 continue;
             };
-            let slot = [ColumnRole::Barline, ColumnRole::Note]
+            // A break opens a system after the barline at its onset, so it
+            // names the first column that follows the barline there.
+            let slot = [ColumnRole::Signature, ColumnRole::Note]
                 .iter()
                 .find_map(|role| {
                     let info = columns.get(&ColumnKey::Timed(time.clone(), *role))?;
@@ -2022,8 +2074,10 @@ struct RestSeg {
 }
 
 /// A horizontal column the spacing pass tiles left-to-right. The clef sits in the
-/// `Lead` column; notes and barlines occupy `Timed` columns (a barline before the
-/// notes at the same onset); the final barline closes the region in `End`.
+/// `Lead` column; barlines, time signatures and notes occupy `Timed` columns (at
+/// one onset, the barline ending the previous measure, then the signature of
+/// the measure starting there, then its notes); the barline of a staff
+/// instance's last measure closes the region in `End`.
 #[derive(Clone, PartialEq, Eq)]
 enum ColumnKey {
     Lead,
@@ -2031,10 +2085,13 @@ enum ColumnKey {
     End,
 }
 
-/// Within one musical time, a barline column precedes the note column.
+/// Within one musical time: the barline ending the measure before it, then
+/// the signatures the measure starting there introduces, then its notes. A
+/// system break falls between the barline and what follows it.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum ColumnRole {
     Barline,
+    Signature,
     Note,
 }
 
@@ -2237,14 +2294,21 @@ fn break_anchor_time(
     }
 }
 
-/// The column a measure's barline occupies: the final barline closes the region
-/// at the right; an interior/region-end barline sits before its measure's notes.
+/// The column a measure's barline occupies. A barline ends its measure: it
+/// stands where the next measure of its staff instance starts, before that
+/// measure's signatures and notes, and the instance's last measure (or one
+/// whose end is unknown) closes the region at the right.
 fn measure_column(measure: &crate::logical::MeasureContent) -> ColumnKey {
-    if measure.barline == BarlineKind::Final {
-        ColumnKey::End
-    } else {
-        ColumnKey::Timed(measure.start.clone(), ColumnRole::Barline)
+    match (&measure.end, measure.barline) {
+        (Some(end), BarlineKind::Interior) => ColumnKey::Timed(end.clone(), ColumnRole::Barline),
+        _ => ColumnKey::End,
     }
+}
+
+/// The column a measure's time signature occupies: at the measure's start,
+/// after the barline ending the measure before it.
+fn signature_column(measure: &crate::logical::MeasureContent) -> ColumnKey {
+    ColumnKey::Timed(measure.start.clone(), ColumnRole::Signature)
 }
 
 /// A repeat boundary landing on one spacing column: which way its sign faces
@@ -3495,11 +3559,12 @@ mod tests {
     }
 
     /// A measure that introduces a time signature draws a numerator-over-
-    /// denominator digit pair right of its barline, each digit synthesized from
-    /// the measure and sharing the barline's column slot. An unbundled digit is
-    /// surfaced as a diagnostic, not drawn at a guessed shape.
+    /// denominator digit pair at its start, in a column of its own before the
+    /// barline that ends it, each digit synthesized from the measure. An
+    /// unbundled digit is surfaced as a diagnostic, not drawn at a guessed
+    /// shape.
     #[test]
-    fn a_time_signature_draws_a_digit_pair_after_the_barline() {
+    fn a_time_signature_draws_a_digit_pair_at_its_measures_start() {
         use crate::logical::{
             BarlineKind, LayoutObject, LayoutRegion, LogicalLayoutIR, MeasureContent,
             TimeSignatureContent,
@@ -3513,6 +3578,10 @@ mod tests {
         let build = |numerator: u16, denominator: u16| {
             let content = LayoutContent::Measure(MeasureContent {
                 start: TimePoint::Musical(MusicalPosition::origin()),
+                end: Some(TimePoint::Musical(
+                    MusicalPosition::origin()
+                        + epiphany_core::MusicalDuration(epiphany_core::RationalTime::from_int(1)),
+                )),
                 barline: BarlineKind::Interior,
                 time_signature: Some(TimeSignatureContent {
                     numerator,
@@ -3558,10 +3627,14 @@ mod tests {
             .iter()
             .find(|g| g.glyph.as_str() == "barlineSingle")
             .expect("a barline is drawn");
-        assert!(fours.iter().all(|g| g.baseline.x.0 > barline.baseline.x.0));
+        assert!(
+            fours.iter().all(|g| g.baseline.x.0 < barline.baseline.x.0),
+            "the signature opens the measure its barline ends"
+        );
         assert!(fours
             .iter()
-            .all(|g| g.horizontal_slot == barline.horizontal_slot));
+            .all(|g| g.horizontal_slot == fours[0].horizontal_slot
+                && g.horizontal_slot != barline.horizontal_slot));
         // Numerator above the denominator (distinct vertical positions).
         let upper = fours
             .iter()

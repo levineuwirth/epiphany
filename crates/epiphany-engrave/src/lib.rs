@@ -212,8 +212,12 @@ pub struct Engraver {
 /// move — plain content settles near a pitch of 10.6 staff spaces — while a
 /// single-staff score is again unchanged. The same version repairs a cascade
 /// defect: a pair below the first was over-separated by exactly the shift above
-/// it, so 3+-staff scores tighten further).
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(12);
+/// it, so 3+-staff scores tighten further), and to `13` when a system break
+/// moved from before a barline to after it (the constrained stage now draws a
+/// barline where its measure ends, so a wrapping score's systems end on a
+/// barline and the next begins with what follows it; a score that does not
+/// wrap casts off as before, though its barlines stand elsewhere).
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(13);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -2080,6 +2084,54 @@ mod tests {
         ))
     }
 
+    /// A barline ends its measure: none stands between the opening clef and
+    /// the first note, each of the ten measures (four quarters each) is closed
+    /// by its own barline after its notes, and the last by the final barline
+    /// rather than sharing a bar with the one before.
+    #[test]
+    fn a_barline_ends_each_measure_and_none_follows_the_opening_clef() {
+        let input = ten_measure_constrained();
+        let layout = Engraver::default()
+            .solve(&input, &SolverConfig::default())
+            .layout;
+        for system in layout.systems() {
+            let mut glyphs: Vec<&ResolvedGlyph> = system
+                .primitives
+                .glyphs
+                .iter()
+                .map(|&i| &layout.glyphs[i as usize])
+                .collect();
+            glyphs.sort_by(|a, b| a.position.x.0.total_cmp(&b.position.x.0));
+            // Noteheads counted between barlines, in reading order: every run
+            // of four is closed by a barline, and the system ends on one.
+            let mut run = 0;
+            for glyph in &glyphs {
+                let name = glyph.glyph.as_str();
+                if name.starts_with("notehead") {
+                    run += 1;
+                } else if name.starts_with("barline") {
+                    assert_eq!(run, 4, "a barline closes a measure of four notes");
+                    run = 0;
+                }
+            }
+            assert_eq!(run, 0, "the system ends on a barline");
+        }
+        let barlines: Vec<&str> = layout
+            .glyphs
+            .iter()
+            .map(|g| g.glyph.as_str())
+            .filter(|name| name.starts_with("barline"))
+            .collect();
+        assert_eq!(barlines.len(), 10, "one barline per measure");
+        assert_eq!(
+            barlines
+                .iter()
+                .filter(|name| **name == "barlineFinal")
+                .count(),
+            1
+        );
+    }
+
     #[test]
     fn greedy_wrap_breaks_at_measure_boundaries() {
         let input = ten_measure_constrained();
@@ -2110,22 +2162,32 @@ mod tests {
                 "every system starts at the left content margin"
             );
         }
-        // The greedy pass breaks at measure boundaries only: each wrapped
-        // system after the first begins with a barline column.
-        for system in &systems[1..] {
-            let top = system.bounding_box.origin.y.0 + system.bounding_box.size.height.0;
-            let bottom = system.bounding_box.origin.y.0;
-            let first_glyph = layout
+        // Breaks fall at measure boundaries only, and a barline ends its
+        // measure: every system ends on a barline, and none after the first
+        // begins with one.
+        for (k, system) in systems.iter().enumerate() {
+            let glyphs: Vec<&ResolvedGlyph> = system
+                .primitives
                 .glyphs
                 .iter()
-                .filter(|g| g.position.y.0 >= bottom - 1e-3 && g.position.y.0 <= top + 1e-3)
-                .min_by(|a, b| a.position.x.0.total_cmp(&b.position.x.0))
-                .expect("a wrapped system has glyphs");
+                .map(|&i| &layout.glyphs[i as usize])
+                .collect();
+            let by_x = |a: &&&ResolvedGlyph, b: &&&ResolvedGlyph| {
+                a.position.x.0.total_cmp(&b.position.x.0)
+            };
+            let last = glyphs.iter().max_by(by_x).expect("a system has glyphs");
             assert!(
-                first_glyph.glyph.as_str().starts_with("barline"),
-                "a greedy system boundary sits at a measure boundary, got {}",
-                first_glyph.glyph.as_str()
+                last.glyph.as_str().starts_with("barline"),
+                "system {k} ends on a barline, got {}",
+                last.glyph.as_str()
             );
+            if k > 0 {
+                let first = glyphs.iter().min_by(by_x).expect("a system has glyphs");
+                assert!(
+                    !first.glyph.as_str().starts_with("barline"),
+                    "system {k} begins after the barline ending the previous one"
+                );
+            }
         }
         // One Automatic engraved decision per chosen boundary, *appended* to
         // the pipeline's own decisions (which are carried through unchanged).
@@ -2702,10 +2764,9 @@ mod tests {
                 );
             }
         }
-        // Nine of the fixture's ten measures are marked by a start barline
-        // column (the final-barline measure's start is not marked by any
-        // column in this projection, so its record is honestly omitted).
-        assert_eq!(measure_records, 9);
+        // Each of the fixture's ten measures is closed by its own barline, the
+        // last by the final barline, and so has a record.
+        assert_eq!(measure_records, 10);
     }
 
     #[test]

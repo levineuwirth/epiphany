@@ -1,16 +1,16 @@
 fixture=ten_measure_with_repeats solver=engrave
-glyph_count=56
-path_count=56
+glyph_count=55
+path_count=55
 fallback_rect_count=0
 stroke_count=105
 curve_count=0
-provenance_count=161
+provenance_count=160
 layer_count=1
-hard_constraint_count=95
+hard_constraint_count=94
 xml_well_formed=true
-view_box=[5.4999986 -28.60539 94 23.104813]
+view_box=[5.4999986 -28.60539 94.00001 23.104813]
 class_counts:
-  barline=7
+  barline=6
   clef=1
   notehead=40
   repeat=5

@@ -1084,3 +1084,16 @@ and `continuation_segments_are_owned_by_the_system_they_split_into`
 (`casting.rs`), each against the real engraver on real fixtures — the real
 per-system glyph/stroke counts are `[26, 25]` and `[51, 45]` for the
 `ten_measure_single_staff` two-system split, not asserted as `> 0`.
+
+## ENGRAVER_VERSION 12 → 13: a barline ends its measure (X2.1, 2026-10-01)
+
+The constrained stage drew each measure's barline at the measure's start
+column and the last measure's at the region end, so a barline followed the
+opening clef, the last two measures shared a bar, and casting-off, which broke
+*at* barline columns, opened every later system with one and closed none. A
+barline now stands where its measure ends (`MeasureContent::end`, the next
+measure's start), a time signature takes a column of its own after the
+barline at its measure's start, and casting-off breaks *after* a barline
+(`opens_measure`): a system ends on its last measure's barline. Each measure
+now has a measure record, the last included. Locked by
+`a_barline_ends_each_measure_and_none_follows_the_opening_clef`.
