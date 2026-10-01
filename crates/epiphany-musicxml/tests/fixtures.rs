@@ -16,7 +16,7 @@ use epiphany_layout_ir::{to_constrained, to_logical, ConstraintSolver, SolverCon
 use epiphany_musicxml::emit::Subject;
 use epiphany_musicxml::fidelity::{compare, show, Fidelity};
 use epiphany_musicxml::outcome::{reduce, Reduced, Verdict};
-use epiphany_musicxml::source::FeatureClass;
+use epiphany_musicxml::source::{FeatureClass, QuarterTone};
 use epiphany_musicxml::{import, Import, ReadError};
 
 struct Run {
@@ -274,6 +274,26 @@ fn slurs(score: &Score) -> Vec<String> {
         .iter()
         .map(|slur| format!("{} -> {}", onset(slur.start_event), onset(slur.end_event)))
         .collect()
+}
+
+/// A quarter-tone as the census holds it: its measure, its offset there as
+/// `(n, d)`, staff 0, and its sounding nominal (C is 0), alteration in
+/// quarter-tones and octave.
+fn quarter_tone(
+    measure: usize,
+    (n, d): (i64, i64),
+    nominal: u8,
+    quarter_tones: i16,
+    octave: i8,
+) -> QuarterTone {
+    QuarterTone {
+        measure,
+        offset: RationalTime::new(n, d).expect("an offset"),
+        staff: 0,
+        nominal,
+        quarter_tones,
+        octave,
+    }
 }
 
 fn interval(diatonic_steps: i32, chromatic_steps: i32) -> Option<TranspositionInterval> {
@@ -555,6 +575,18 @@ fn a_quarter_tone_imports_at_its_pitch_in_cmn_24() {
         ]
     );
     assert_eq!(score.instruments[1].transposition, interval(-1, -2));
+    // The census reads each quarter-tone and transposes it to sounding pitch
+    // apart from the reader.
+    let census = &run.import.source.census;
+    assert_eq!(
+        census[0].quarter_tones,
+        [
+            quarter_tone(0, (0, 1), 4, -1, 4),
+            quarter_tone(0, (1, 4), 4, -1, 4),
+            quarter_tone(0, (1, 2), 0, 3, 5),
+        ]
+    );
+    assert_eq!(census[1].quarter_tones, [quarter_tone(0, (0, 1), 0, 1, 5)]);
     // A tie's pitches must be enharmonically equivalent, which the core
     // answers only in a twelve-chromatic space: the quarter-tones' tie is
     // recorded, and the ordinary tie beside it is made.
@@ -608,6 +640,11 @@ fn a_quarter_tone_accidental_named_without_an_alter_gives_the_pitch_and_carries(
             "s0 v0 9 1 D5",
             "s0 v0 10 1/2 D5",
             "s0 v0 21/2 1/2 rest",
+            // The later of two accidentals governs.
+            "s0 v0 11 1/4 B-1q4",
+            "s0 v0 45/4 1/4 B+3q4",
+            "s0 v0 23/2 1/4 B+3q4",
+            "s0 v0 47/4 1/4 rest",
             // Not before the accidental, not at another octave, not past a
             // natural.
             "s0 v1 4 1/4 B4",
@@ -632,9 +669,20 @@ fn a_quarter_tone_accidental_named_without_an_alter_gives_the_pitch_and_carries(
             "s1 v0 8 1 rest",
             "s1 v0 9 1 rest",
             "s1 v0 10 1 rest",
+            "s1 v0 11 1 rest",
         ]
     );
-    assert_eq!(run.import.source.census[0].quarter_tones, 23);
+    // The census values each name and carry apart from the reader.
+    let census = &run.import.source.census[0].quarter_tones;
+    assert_eq!(census.len(), 26);
+    assert_eq!(
+        census[23..],
+        [
+            quarter_tone(11, (0, 1), 6, -1, 4),
+            quarter_tone(11, (1, 4), 6, 3, 4),
+            quarter_tone(11, (1, 2), 6, 3, 4),
+        ]
+    );
     assert_eq!(ties(score), ["9 D5 -> 10 D5"]);
     let kinds = &run.import.source.features.kinds;
     assert_eq!(kinds["tie on a quarter-tone pitch"].places.len(), 4);
@@ -974,6 +1022,24 @@ fn the_fidelity_comparison_catches_a_spoiled_score() {
     assert!(
         !compare(&import, &reduced).passed(),
         "a quarter-tone the reader lost was not caught"
+    );
+    // And at its value: a quarter-flat that the reader and the score both
+    // hold as a three-quarter-flat keeps the number of quarter-tones.
+    let mut import = arrows.import.clone();
+    let mut reduced = arrows.reduced.clone();
+    let lower = epiphany_musicxml::source::quarter_tone_pitch(epiphany_core::CmnNominal::G, -3, 4);
+    let id = reduced.score.canvas.regions[0].staff_instances()[0].voices[0].events[0];
+    if let Some(Event::Pitched(p)) = reduced.score.events.get_mut(id) {
+        p.pitches[0].pitch = lower.clone();
+    }
+    if let epiphany_musicxml::source::Content::Pitched(pitches) =
+        &mut import.source.parts[0].events[0].content
+    {
+        pitches[0].pitch = lower;
+    }
+    assert!(
+        !compare(&import, &reduced).passed(),
+        "a quarter-tone valued wrongly was not caught"
     );
     // And the ties to the file's count of tie starts: one the reader lost,
     // as it lost every tie on an unpitched note, is caught where the score

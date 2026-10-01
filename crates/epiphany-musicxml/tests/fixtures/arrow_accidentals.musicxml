@@ -9,7 +9,8 @@
      the barline, to the tied note alone, and along a chain of two ties. In
      measures 10 and 11 two voices tie the same written D over a barline, one
      natural and one a quarter-tone sharp, and each continuation keeps its
-     own. -->
+     own. In measure 12 a note that writes no accidental takes the later of
+     two quarter-tone accidentals of different value on its line. -->
 <score-partwise version="4.0">
   <part-list>
     <score-part id="P1"><part-name>Piano</part-name></score-part>
@@ -108,6 +109,14 @@
       <backup><duration>4</duration></backup>
       <note><pitch><step>D</step><octave>5</octave></pitch><duration>2</duration><tie type="stop"/><voice>2</voice><type>half</type><staff>1</staff><notations><tied type="stop"/></notations></note>
       <note><rest/><duration>2</duration><voice>2</voice><type>half</type><staff>1</staff></note>
+      <backup><duration>4</duration></backup>
+      <note><rest measure="yes"/><duration>4</duration><voice>5</voice><staff>2</staff></note>
+    </measure>
+    <measure number="12">
+      <note><pitch><step>B</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><accidental>flat-up</accidental><staff>1</staff></note>
+      <note><pitch><step>B</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><accidental>sharp-up</accidental><staff>1</staff></note>
+      <note><pitch><step>B</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><staff>1</staff></note>
+      <note><rest/><duration>1</duration><voice>1</voice><type>quarter</type><staff>1</staff></note>
       <backup><duration>4</duration></backup>
       <note><rest measure="yes"/><duration>4</duration><voice>5</voice><staff>2</staff></note>
     </measure>

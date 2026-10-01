@@ -21,7 +21,7 @@ use epiphany_core::{
 
 use crate::emit::{Import, Subject};
 use crate::outcome::Reduced;
-use crate::source::{Content, SourceEvent};
+use crate::source::{Content, QuarterTone, SourceEvent};
 
 /// Counts of one part in one measure.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -758,30 +758,65 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             counts[m].staves = staff_sets[m].len();
         }
 
-        // Quarter-tones, held to the file's `<alter>` and `<accidental>` as
-        // the census reads them, apart from the reader: those the score holds,
-        // those of refused events, and the dropped notes that were.
-        let quarter_tones = |content: &ContentKey| match content {
-            ContentKey::Pitched(pitches) => pitches.iter().filter(|k| k.1 % 2 != 0).count(),
-            _ => 0,
+        // Quarter-tones, each held at its onset, staff and sounding pitch to
+        // the census's reading of the file's `<alter>`, `<accidental>` and
+        // `<transpose>`, apart from the reader: those the score holds, those
+        // of refused events, and the dropped notes that were.
+        let in_file = |q: &QuarterTone| -> SoundingAt {
+            let onset = source
+                .measures
+                .get(q.measure)
+                .map_or_else(|| RationalTime::from_int(-1), |m| m.onset.add(&q.offset));
+            (onset, q.staff, (q.nominal, q.quarter_tones, q.octave))
         };
-        let held: usize = placed
-            .iter()
-            .filter(|pl| staves.contains(&pl.staff))
-            .map(|pl| quarter_tones(&pl.key.content))
-            .sum();
-        let refused_quarter_tones: usize = part
-            .events
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| refused(&Subject::Event(p, *i)).is_some())
-            .map(|(_, event)| quarter_tones(&source_key(event).content))
-            .sum();
-        if held + refused_quarter_tones + part.dropped_quarter_tones != census.quarter_tones {
+        let mut file_side: BTreeMap<SoundingAt, usize> = BTreeMap::new();
+        for q in &census.quarter_tones {
+            *file_side.entry(in_file(q)).or_default() += 1;
+        }
+        let mut score_side: BTreeMap<SoundingAt, usize> = BTreeMap::new();
+        let mut held = 0;
+        for pl in placed.iter().filter(|pl| staves.contains(&pl.staff)) {
+            let ContentKey::Pitched(pitches) = &pl.key.content else {
+                continue;
+            };
+            let staff = import.ids.staves[p].iter().position(|s| *s == pl.staff);
+            for pitch in pitches.iter().filter(|k| k.1 % 2 != 0) {
+                held += 1;
+                let at = (pl.key.onset.clone(), staff.unwrap_or(usize::MAX), *pitch);
+                *score_side.entry(at).or_default() += 1;
+            }
+        }
+        let mut refused_quarter_tones = 0;
+        for (i, event) in part.events.iter().enumerate() {
+            let ContentKey::Pitched(pitches) = source_key(event).content else {
+                continue;
+            };
+            if refused(&Subject::Event(p, i)).is_none() {
+                continue;
+            }
+            for pitch in pitches.into_iter().filter(|k| k.1 % 2 != 0) {
+                refused_quarter_tones += 1;
+                let at = (event.onset.clone(), event.staff, pitch);
+                *score_side.entry(at).or_default() += 1;
+            }
+        }
+        for q in &part.dropped_quarter_tones {
+            *score_side.entry(in_file(q)).or_default() += 1;
+        }
+        if score_side != file_side {
+            let alone = |a: &BTreeMap<SoundingAt, usize>, b: &BTreeMap<SoundingAt, usize>| {
+                a.iter()
+                    .find(|(at, n)| b.get(*at) != Some(n))
+                    .map_or_else(|| String::from("none"), |(at, _)| show_sounding(at))
+            };
             fidelity.failures.push(format!(
                 "{name}: {held} quarter-tones in the score ({refused_quarter_tones} more refused, \
-                 {} dropped and recorded), but the file makes {} notes quarter-tones",
-                part.dropped_quarter_tones, census.quarter_tones
+                 {} dropped and recorded) against the {} the file makes; first in the file \
+                 alone: {}; first in the score alone: {}",
+                part.dropped_quarter_tones.len(),
+                census.quarter_tones.len(),
+                alone(&file_side, &score_side),
+                alone(&score_side, &file_side),
             ));
         }
         let mut expected = vec![Counts::default(); source.measures.len()];
@@ -866,6 +901,23 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
         ));
     }
     fidelity
+}
+
+/// A quarter-tone as compared: its onset, its staff within the part, and its
+/// sounding pitch by [`pitch_key`].
+type SoundingAt = (RationalTime, usize, (u8, i16, i8));
+
+/// A quarter-tone as `G-1q4 at 5/4 on staff 1`, its alteration in signed
+/// quarter-tones.
+fn show_sounding((onset, staff, (nominal, quarter_tones, octave)): &SoundingAt) -> String {
+    let letter = b"CDEFGAB"
+        .get(usize::from(*nominal))
+        .map_or('?', |c| char::from(*c));
+    format!(
+        "{letter}{quarter_tones:+}q{octave} at {} on staff {}",
+        show(onset),
+        staff.wrapping_add(1)
+    )
 }
 
 fn count_into(counts: &mut Counts, content: &ContentKey) {

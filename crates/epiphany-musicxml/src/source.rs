@@ -242,17 +242,33 @@ pub struct SourcePart {
     /// Chord notes recorded as unsupported and not imported: a cross-staff
     /// chord note, an unpitched chord note, a chord note joining a rest.
     pub dropped_notes: usize,
-    /// Of the dropped notes, those the file makes quarter-tones.
-    pub dropped_quarter_tones: usize,
+    /// Of the dropped notes, those the reader makes quarter-tones.
+    pub dropped_quarter_tones: Vec<QuarterTone>,
     /// Of the dropped notes, those carrying a tie start.
     pub dropped_tie_starts: usize,
+}
+
+/// A quarter-tone: where it falls, and the pitch it sounds.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct QuarterTone {
+    /// The measure's index.
+    pub measure: usize,
+    /// The start within the measure, in whole notes.
+    pub offset: Time,
+    /// 0-based staff within the part.
+    pub staff: usize,
+    /// The sounding pitch's nominal, C to B as 0 to 6.
+    pub nominal: u8,
+    /// Its alteration, in quarter-tones (odd, being a quarter-tone).
+    pub quarter_tones: i16,
+    pub octave: i8,
 }
 
 /// Counts taken straight from a part's elements by walks the reader does not
 /// run, sharing none of its code, as an independent check on it: the
 /// `<note>` elements and their tie starts, with no timing logic; the keys and
-/// clefs its `<attributes>` state; and the quarter-tones, timed by a reading
-/// of their own.
+/// clefs its `<attributes>` state; and the quarter-tones, timed and valued by
+/// a reading of their own.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Census {
     /// `<note>` elements with a `<pitch>`, not grace or cue.
@@ -278,8 +294,9 @@ pub struct Census {
     /// Pitched notes, not grace or cue, that the file makes quarter-tones:
     /// by a fractional `<alter>`, by a quarter-tone `<accidental>` with no
     /// `<alter>`, or by such an accidental carried to a note that writes
-    /// neither. Read with its own timing and its own list of names.
-    pub quarter_tones: usize,
+    /// neither. Each is read with its own timing, its own value for each
+    /// name and its own transposition to the sounding pitch.
+    pub quarter_tones: Vec<QuarterTone>,
 }
 
 /// The counts of a part's `<note>` elements, read from each note's own
@@ -309,53 +326,74 @@ fn note_census(part: Node) -> Census {
 }
 
 /// The pitched notes of a part, not grace or cue, that its file makes
-/// quarter-tones: by a fractional `<alter>`, by a quarter-tone `<accidental>`
-/// with no `<alter>` (roadmap D20), or by such an accidental earlier in the
-/// measure on the same staff, step and octave, or tied over, when the note
-/// writes neither. It reads `<alter>` and `<accidental>` and times the notes
-/// itself, sharing none of the reader's code; and it knows only whether an
-/// alteration is a quarter-tone, so a wrong value in the reader's table of
-/// accidental names shows as a difference.
-fn quarter_tone_census(part: Node) -> usize {
-    const NAMES: [&str; 14] = [
-        "quarter-flat",
-        "quarter-sharp",
-        "three-quarters-flat",
-        "three-quarters-sharp",
-        "flat-up",
-        "flat-down",
-        "natural-up",
-        "natural-down",
-        "sharp-up",
-        "sharp-down",
-        "double-sharp-up",
-        "double-sharp-down",
-        "flat-flat-up",
-        "flat-flat-down",
-    ];
+/// quarter-tones, each where it falls and at the pitch it sounds: made so by
+/// a fractional `<alter>`, by a quarter-tone `<accidental>` with no `<alter>`
+/// (roadmap D20), or by such an accidental earlier in the measure on the same
+/// staff, step and octave, or tied over, when the note writes neither. It
+/// reads `<alter>`, `<accidental>`, `<divisions>` and `<transpose>` and times
+/// the notes itself, sharing none of the reader's code. A name's value comes
+/// from the accidental it alters and its arrow, not from the reader's table,
+/// and the sounding pitch from an arithmetic of its own, not from the core's
+/// transposition, so a quarter-tone the reader values or places wrongly shows
+/// as a difference, and not only one it misses.
+fn quarter_tone_census(part: Node) -> Vec<QuarterTone> {
+    /// Semitones above C of the naturals, C to B.
+    const NATURALS: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
+    /// The alteration in quarter-tones an accidental name states with no
+    /// `<alter>`: Stein's four by name, and an arrowed one as the accidental
+    /// it names, raised or lowered a quarter-tone by its arrow. Any other
+    /// name states no quarter-tone.
+    fn named(name: &str) -> Option<i32> {
+        match name {
+            "quarter-flat" => return Some(-1),
+            "quarter-sharp" => return Some(1),
+            "three-quarters-flat" => return Some(-3),
+            "three-quarters-sharp" => return Some(3),
+            _ => {}
+        }
+        let (accidental, arrow) = match name.rsplit_once('-')? {
+            (accidental, "up") => (accidental, 1),
+            (accidental, "down") => (accidental, -1),
+            _ => return None,
+        };
+        let semitones = match accidental {
+            "flat-flat" => -2,
+            "flat" => -1,
+            "natural" => 0,
+            "sharp" => 1,
+            "double-sharp" => 2,
+            _ => return None,
+        };
+        Some(2 * semitones + arrow)
+    }
     // Keyed by the written staff, step and octave, as the file spells them.
     type Spot<'a> = (&'a str, &'a str, &'a str);
     struct Marked<'a> {
         onset: i64,
         end: i64,
+        offset: Time,
         spot: Spot<'a>,
         voice: &'a str,
-        /// Whether its own `<alter>` or `<accidental>` makes it a quarter-tone.
-        own: Option<bool>,
+        /// The alteration in quarter-tones its own `<alter>` or
+        /// `<accidental>` states.
+        own: Option<i32>,
         accidental: bool,
         tie_start: bool,
         tie_stop: bool,
+        /// The diatonic and chromatic steps from written to sounding.
+        transpose: (i32, i32),
     }
-    let mut count = 0;
-    // Per spot, the voice and quarter-tone-ness of each tied pitch.
-    type Starts<'a> = Vec<(&'a str, bool)>;
+    let mut found = Vec::new();
+    // Per spot, the voice and alteration of each tied pitch.
+    type Starts<'a> = Vec<(&'a str, i32)>;
     let mut over: BTreeMap<Spot, Starts> = BTreeMap::new();
     let continued = |starts: Option<&Starts>, voice: &str| {
         let starts = starts?;
         let same = starts.iter().find(|(v, _)| *v == voice);
-        same.or(starts.first()).map(|&(_, quarter)| quarter)
+        same.or(starts.first()).map(|&(_, alteration)| alteration)
     };
-    for measure in children(part, "measure") {
+    let (mut divisions, mut transpose) = (1i64, (0i32, 0i32));
+    for (index, measure) in children(part, "measure").enumerate() {
         let mut notes: Vec<Marked> = Vec::new();
         let (mut cursor, mut last, mut furthest) = (0i64, 0i64, 0i64);
         for item in elements(measure) {
@@ -363,6 +401,26 @@ fn quarter_tone_census(part: Node) -> usize {
                 .and_then(|d| d.parse::<i64>().ok())
                 .unwrap_or(0);
             match name(item) {
+                "attributes" => {
+                    if let Some(d) = child_text(item, "divisions")
+                        .and_then(|d| d.parse::<i64>().ok())
+                        .filter(|d| *d > 0)
+                    {
+                        divisions = d;
+                    }
+                    for interval in children(item, "transpose") {
+                        let steps = |n: &str| {
+                            child_text(interval, n)
+                                .and_then(|v| v.parse::<i32>().ok())
+                                .unwrap_or(0)
+                        };
+                        let octaves = steps("octave-change");
+                        transpose = (
+                            steps("diatonic") + 7 * octaves,
+                            steps("chromatic") + 12 * octaves,
+                        );
+                    }
+                }
                 "backup" => cursor -= duration,
                 "forward" => cursor += duration,
                 "note" if child(item, "grace").is_none() => {
@@ -378,10 +436,15 @@ fn quarter_tone_census(part: Node) -> usize {
                     }
                     let accidental = child_text(item, "accidental");
                     let own = match (child_text(pitch, "alter"), accidental) {
-                        (Some(alter), _) => {
-                            Some(alter.parse::<f64>().is_ok_and(|a| a.fract() != 0.0))
-                        }
-                        (None, Some(name)) => Some(NAMES.contains(&name)),
+                        (Some(alter), _) => Some(
+                            alter
+                                .parse::<f64>()
+                                .ok()
+                                .map(|a| a * 2.0)
+                                .filter(|q| q.fract() == 0.0 && q.abs() <= 24.0)
+                                .map_or(0, |q| q as i32),
+                        ),
+                        (None, Some(name)) => Some(named(name).unwrap_or(0)),
                         (None, None) => None,
                     };
                     let ties = |kind: &str| {
@@ -395,12 +458,15 @@ fn quarter_tone_census(part: Node) -> usize {
                     notes.push(Marked {
                         onset: last,
                         end: last + duration,
+                        offset: RationalTime::new(last, 4 * divisions)
+                            .unwrap_or_else(RationalTime::zero),
                         spot,
                         voice: child_text(item, "voice").unwrap_or("1"),
                         own,
                         accidental: accidental.is_some(),
                         tie_start: ties("start"),
                         tie_stop: ties("stop"),
+                        transpose,
                     });
                 }
                 _ => {}
@@ -409,49 +475,62 @@ fn quarter_tone_census(part: Node) -> usize {
         }
         notes.sort_by_key(|n| n.onset);
         let incoming = std::mem::take(&mut over);
-        let mut set: BTreeMap<Spot, (i64, bool)> = BTreeMap::new();
+        let mut set: BTreeMap<Spot, (i64, i32)> = BTreeMap::new();
         let mut ending: BTreeMap<(Spot, i64), Starts> = BTreeMap::new();
-        for &Marked {
-            onset,
-            end,
-            spot,
-            voice,
-            own,
-            accidental,
-            tie_start,
-            tie_stop,
-        } in &notes
-        {
-            let quarter = own.unwrap_or_else(|| {
-                let tied = if !tie_stop || accidental {
+        for note in &notes {
+            let Marked { onset, spot, .. } = *note;
+            let alteration = note.own.unwrap_or_else(|| {
+                let tied = if !note.tie_stop {
                     None
                 } else if onset == 0 {
-                    continued(incoming.get(&spot), voice)
+                    continued(incoming.get(&spot), note.voice)
                 } else {
-                    continued(ending.get(&(spot, onset)), voice)
+                    continued(ending.get(&(spot, onset)), note.voice)
                 };
-                !accidental
-                    && tied.unwrap_or_else(|| {
-                        set.get(&spot)
-                            .is_some_and(|&(at, quarter)| at < onset && quarter)
-                    })
+                tied.or_else(|| {
+                    set.get(&spot)
+                        .filter(|&&(at, _)| at < onset)
+                        .map(|&(_, alteration)| alteration)
+                })
+                .filter(|alteration| alteration % 2 != 0)
+                .unwrap_or(0)
             });
-            count += usize::from(quarter);
-            if accidental {
-                set.insert(spot, (onset, quarter));
+            if note.accidental {
+                set.insert(spot, (onset, alteration));
             }
-            if tie_start {
-                ending
-                    .entry((spot, end))
-                    .or_default()
-                    .push((voice, quarter));
-                if end >= furthest {
-                    over.entry(spot).or_default().push((voice, quarter));
+            if note.tie_start {
+                let starts = ending.entry((spot, note.end)).or_default();
+                starts.push((note.voice, alteration));
+                if note.end >= furthest {
+                    over.entry(spot).or_default().push((note.voice, alteration));
                 }
             }
+            if alteration % 2 == 0 {
+                continue;
+            }
+            // The written pitch, counted in diatonic steps and in quarter-tones
+            // from C0, moved by the transposition to the sounding one.
+            let step = ["C", "D", "E", "F", "G", "A", "B"]
+                .iter()
+                .position(|s| *s == spot.1);
+            let (Some(step), Ok(octave)) = (step, spot.2.parse::<i32>()) else {
+                continue;
+            };
+            let (diatonic, chromatic) = note.transpose;
+            let degree = 7 * octave + step as i32 + diatonic;
+            let height = 24 * octave + 2 * NATURALS[step] + alteration + 2 * chromatic;
+            let (octave, nominal) = (degree.div_euclid(7), degree.rem_euclid(7));
+            found.push(QuarterTone {
+                measure: index,
+                offset: note.offset.clone(),
+                staff: spot.0.parse::<usize>().map_or(0, |s| s.saturating_sub(1)),
+                nominal: nominal as u8,
+                quarter_tones: (height - 24 * octave - 2 * NATURALS[nominal as usize]) as i16,
+                octave: octave as i8,
+            });
         }
     }
-    count
+    found
 }
 
 /// The keys and clefs of a part's `<attributes>`, per staff, read straight
@@ -1053,7 +1132,7 @@ impl<'d, 'i> Reader<'d, 'i> {
             events: Vec::new(),
             slurs: Vec::new(),
             dropped_notes: 0,
-            dropped_quarter_tones: 0,
+            dropped_quarter_tones: Vec::new(),
             dropped_tie_starts: 0,
         };
         let mut read = PartRead {
@@ -1170,7 +1249,7 @@ impl<'d, 'i> Reader<'d, 'i> {
             }
             let length = RationalTime::new(furthest, 4 * state.divisions)
                 .ok_or_else(|| self.malformed(measure, "a measure length out of range"))?;
-            self.carry(&mut state, &mut part, &length)?;
+            self.carry(&mut state, &mut part, index, &length)?;
             read.lengths.push(length);
         }
 
@@ -1220,6 +1299,7 @@ impl<'d, 'i> Reader<'d, 'i> {
         &self,
         state: &mut PartState,
         part: &mut SourcePart,
+        measure: usize,
         length: &Time,
     ) -> Result<(), ReadError> {
         let mut notes = std::mem::take(&mut state.written);
@@ -1262,23 +1342,42 @@ impl<'d, 'i> Reader<'d, 'i> {
                     .filter(|quarter_tones| quarter_tones % 2 != 0)
             };
             let quarter_tones = note.stated.or(carried).unwrap_or(0);
+            let pitch = || {
+                sounding(
+                    quarter_tone_pitch(note.nominal, quarter_tones, note.octave),
+                    note.transpose,
+                )
+                .map_err(|refusal| {
+                    ReadError::Malformed(
+                        self.doc.text_pos_at(note.offset).row,
+                        format!("cannot transpose to sounding: {refusal:?}"),
+                    )
+                })
+            };
             match (carried, note.at) {
                 (Some(_), Some((event, index))) => {
-                    let pitch = sounding(
-                        quarter_tone_pitch(note.nominal, quarter_tones, note.octave),
-                        note.transpose,
-                    )
-                    .map_err(|refusal| {
-                        ReadError::Malformed(
-                            self.doc.text_pos_at(note.offset).row,
-                            format!("cannot transpose to sounding: {refusal:?}"),
-                        )
-                    })?;
+                    let pitch = pitch()?;
                     if let Content::Pitched(pitches) = &mut part.events[event].content {
                         pitches[index].pitch = pitch;
                     }
                 }
-                (_, None) if quarter_tones % 2 != 0 => part.dropped_quarter_tones += 1,
+                (_, None) if quarter_tones % 2 != 0 => {
+                    if let PitchSpacePosition::Cmn {
+                        nominal,
+                        alteration,
+                        octave,
+                    } = pitch()?.scale_position.position
+                    {
+                        part.dropped_quarter_tones.push(QuarterTone {
+                            measure,
+                            offset: note.onset.clone(),
+                            staff: note.staff,
+                            nominal: nominal as u8,
+                            quarter_tones: i16::from(alteration),
+                            octave,
+                        });
+                    }
+                }
                 _ => {}
             }
             if note.accidental {
