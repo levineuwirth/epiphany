@@ -61,6 +61,7 @@
 //! * **`symbol_density_uniformity`** — per-region CV of glyphs-per-width
 //!   density over systems with positive width.
 
+use epiphany_core::TypedObjectId;
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_layout_ir::quality::{
@@ -125,6 +126,8 @@ const SLUR_APEX_SAMPLES: usize = 32;
 fn slur_shape_raw(spaced_curves: &[Curve]) -> f64 {
     let per_curve: Vec<f64> = spaced_curves
         .iter()
+        // The units are slurs; a tie's arc is not one.
+        .filter(|curve| matches!(curve.provenance.source, TypedObjectId::Slur(_)))
         .filter_map(|curve| {
             let cp = curve.control_points();
             let (a, b) = (point(cp[0]), point(cp[3]));
@@ -966,7 +969,10 @@ mod tests {
         // near-zero the catalog's rationale describes, *measured* from the
         // resolved page tree rather than assumed.
         let report = Engraver::default().solve(&ten_measure(), &SolverConfig::default());
-        assert_eq!(report.metric_vector.vertical_density_penalty.0, 0.0);
+        // Zero to the f32 precision the baked positions carry: the fixture's
+        // tie arcs below the first system, so its extent is no longer a whole
+        // number of staff spaces.
+        assert!(report.metric_vector.vertical_density_penalty.0.abs() < 1e-6);
     }
 
     #[test]

@@ -90,10 +90,10 @@
       <line x1="77.9" y1="-1" x2="79.6806" y2="-1" stroke="#000000" stroke-width="0.13" data-prov="75f41055f9e23911ca51158dab6488df" data-source-kind="1" data-kind="stroke"/>
       <line x1="80.9806" y1="-1" x2="80.9806" y2="2.5" stroke="#000000" stroke-width="0.12" data-prov="9e9ba65603d31963bdc6d55dfacc5eba" data-source-kind="0" data-kind="stroke"/>
       <line x1="79.5" y1="-1" x2="81.2806" y2="-1" stroke="#000000" stroke-width="0.13" data-prov="66a37f88caecfe799ec34469d2302afd" data-source-kind="1" data-kind="stroke"/>
-      <line x1="0" y1="0" x2="0" y2="0" stroke="#000000" stroke-width="0" data-prov="40a9a55985c8bf8b1eb66b6d8c8e7b7a" data-source-kind="12" data-kind="stroke"/>
       <line x1="0" y1="0" x2="0" y2="0" stroke="#000000" stroke-width="0" data-prov="10eb9773d25f0d7d64f92b36f88e5b38" data-source-kind="14" data-kind="stroke"/>
       <line x1="0" y1="0" x2="0" y2="0" stroke="#000000" stroke-width="0" data-prov="86a982398112115027c54222505dd143" data-source-kind="15" data-kind="stroke"/>
       <line x1="0" y1="0" x2="0" y2="0" stroke="#000000" stroke-width="0" data-prov="c183669ac91f35eb7a0040b48fde85ab" data-source-kind="25" data-kind="stroke"/>
+      <path d="M 4.3307 -1.4 C 4.3682 -1.8 4.4432 -1.8 4.4807 -1.4" fill="none" stroke="#000000" stroke-width="0.14" data-prov="40a9a55985c8bf8b1eb66b6d8c8e7b7a" data-source-kind="12" data-kind="curve"/>
       <path d="M 3.5903 -2.2 C 5.1903 -3.2667 6.7903 -3.2667 8.3903 -2.2" fill="none" stroke="#000000" stroke-width="0.12" data-prov="cf7d96019ed88156f3cc33bf116fbae3" data-source-kind="11" data-kind="curve"/>
       <path d="M 13.1903 -2.2 C 15.3237 -4.8667 17.457 -4.8667 19.5903 -2.2" fill="none" stroke="#000000" stroke-width="0.12" data-prov="c366aecd1ef6e40cb1b3ffd2100eb3d8" data-source-kind="11" data-kind="curve"/>
       <path d="M 22.7903 -2.2 C 24.3903 -3.2667 25.9903 -3.2667 27.5903 -2.2" fill="none" stroke="#000000" stroke-width="0.12" stroke-dasharray="0.5 0.35" data-prov="b6c086f751dd21ffa2520010201f057f" data-source-kind="11" data-kind="curve"/>

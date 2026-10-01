@@ -656,11 +656,31 @@ pub(crate) fn cast_off(
     // A curve rides one system whole when it fits within one, or splits into
     // per-system sub-cubics (de Casteljau) when it spans a break — the same
     // nearest-region / clip-overlap logic strokes use.
+    // An anchored curve whose ends land in two systems (a tie across a system
+    // break) becomes two half-arcs: one from its start to the first system's
+    // right edge, one from the second system's left edge to its end. Its
+    // ends at the notes keep riding their slots (`anchored_halves`).
+    let mut anchored_halves: BTreeSet<usize> = BTreeSet::new();
     let curve_fates: Vec<CurveFate> = spaced_curves
         .iter()
-        .map(|curve| match anchored_system(curve.id()) {
-            Some(s) => CurveFate::Rigid(Some(s)),
-            None => curve_fate(curve, &region_spans, &region_systems, &clips),
+        .enumerate()
+        .map(|(ci, curve)| {
+            if let Some(s) = anchored_system(curve.id()) {
+                return CurveFate::Rigid(Some(s));
+            }
+            let halves = anchors.get(&curve.id()).and_then(|(start, end)| {
+                let (a, b) = (*system_of_slot.get(start)?, *system_of_slot.get(end)?);
+                let (edge_a, edge_b) = (clips[a].1, clips[b].0);
+                (a < b && edge_a.is_finite() && edge_b.is_finite())
+                    .then(|| (a, b, half_arcs(curve.control_points(), edge_a, edge_b)))
+            });
+            match halves {
+                Some((a, b, (first, second))) => {
+                    anchored_halves.insert(ci);
+                    CurveFate::Split(vec![(a, first), (b, second)])
+                }
+                None => curve_fate(curve, &region_spans, &region_systems, &clips),
+            }
         })
         .collect();
 
@@ -1166,8 +1186,23 @@ pub(crate) fn cast_off(
             }
             CurveFate::Split(segments) => {
                 for (k, (s, cp)) in segments.iter().enumerate() {
-                    let [p0, p1, p2, p3] =
-                        shift(*cp, placements[*s].sunk(staff_dy(*s, curve_staff)));
+                    let p = placements[*s].sunk(staff_dy(*s, curve_staff));
+                    let [mut p0, p1, p2, mut p3] = shift(*cp, p);
+                    // A tie's half-arcs keep their note ends on their slots.
+                    if anchored_halves.contains(&ci) {
+                        if let Some((start, end)) = anchors.get(&curve.id()) {
+                            let slot_dx = |slot: &SpringSlotId| {
+                                slot_source_x.get(slot).map(|&sx| p.slot_dx(sx))
+                            };
+                            if k == 0 {
+                                if let Some(dx) = slot_dx(start) {
+                                    p0 = Point::new(cp[0].x.0 + dx, p0.y.0);
+                                }
+                            } else if let Some(dx) = slot_dx(end) {
+                                p3 = Point::new(cp[3].x.0 + dx, p3.y.0);
+                            }
+                        }
+                    }
                     let provenance = if k == 0 {
                         curve.provenance.clone()
                     } else {
@@ -1792,6 +1827,27 @@ fn interval_distance(lo: f32, hi: f32, clip: (f32, f32)) -> f32 {
     } else {
         0.0
     }
+}
+
+/// A curve cut at a system break into two half-arcs of the same lift: the
+/// first from its start to `edge_a`, the first system's right content edge,
+/// the second from `edge_b`, the second system's left content edge, to its
+/// end. Each half is a complete small arc ending level with its note's end.
+fn half_arcs(cp: [Point; 4], edge_a: f32, edge_b: f32) -> ([Point; 4], [Point; 4]) {
+    let lift = cp[1].y.0 - cp[0].y.0;
+    let arc = |x0: f32, y0: f32, x3: f32, y3: f32| {
+        let span = (x3 - x0).max(0.0);
+        [
+            Point::new(x0, y0),
+            Point::new(x0 + span * 0.25, y0 + lift),
+            Point::new(x3 - span * 0.25, y3 + lift),
+            Point::new(x3, y3),
+        ]
+    };
+    (
+        arc(cp[0].x.0, cp[0].y.0, edge_a.max(cp[0].x.0), cp[0].y.0),
+        arc(edge_b.min(cp[3].x.0), cp[3].y.0, cp[3].x.0, cp[3].y.0),
+    )
 }
 
 /// A stroke translated rigidly by `(dx, dy)`.
@@ -2536,8 +2592,9 @@ mod tests {
         );
         assert_eq!(
             stroke_counts,
-            vec![51, 45],
-            "the six/four widow-rebalanced measure split's real per-system stroke counts"
+            vec![50, 45],
+            "the six/four widow-rebalanced measure split's real per-system stroke counts \
+             (the tie in the first system is a curve)"
         );
         assert_eq!(
             glyph_counts[0] + glyph_counts[1],

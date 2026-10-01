@@ -67,6 +67,19 @@ pub enum LayoutContent {
     /// A slur: its two endpoint onsets (resolved to columns in the constrained
     /// pass), its arc direction, and any authored curvature/style overrides.
     Slur(SlurContent),
+    /// A tie: the two events it joins and the pitches it pairs.
+    Tie(TieContent),
+}
+
+/// A tie's content: the events it joins, and each `(start, end)` pitch pair
+/// it ties — the score's pairing, or, where it names none, the end event's
+/// pitch equal to each start pitch. An unpitched tie pairs no pitch and joins
+/// the two notes' heads.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TieContent {
+    pub start: EventId,
+    pub end: EventId,
+    pub pairs: Vec<(PitchId, PitchId)>,
 }
 
 /// The clef and key-signature sequences in force across a staff instance,
@@ -752,9 +765,9 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
         if !seen.insert(provenance.stable_id) {
             continue;
         }
-        // A repeat structure or slur carries its resolved engraving content
-        // (barline placements / endpoint onsets). Every other cross-cutting
-        // object is structural in this tier.
+        // A repeat structure, slur or tie carries its resolved engraving
+        // content (barline placements / endpoint onsets / the pitches it
+        // pairs). Every other cross-cutting object is structural in this tier.
         let content = match src {
             TypedObjectId::RepeatStructure(id) => score
                 .cross_cutting
@@ -769,6 +782,13 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                 .iter()
                 .find(|slur| slur.id == id)
                 .map(|slur| slur_content(score, slur))
+                .unwrap_or_default(),
+            TypedObjectId::Tie(id) => score
+                .cross_cutting
+                .ties
+                .iter()
+                .find(|tie| tie.id == id)
+                .map(|tie| tie_content(score, tie))
                 .unwrap_or_default(),
             _ => LayoutContent::Structural,
         };
@@ -1366,6 +1386,34 @@ fn slur_content(score: &Score, slur: &epiphany_core::Slur) -> LayoutContent {
         thickness: slur.style.thickness,
         kind: slur.kind,
         line: slur.style.line,
+    })
+}
+
+/// A tie's content (see [`TieContent`]).
+fn tie_content(score: &Score, tie: &epiphany_core::Tie) -> LayoutContent {
+    let pairs = match &tie.pitch_pairing {
+        Some(pairs) => pairs.clone(),
+        None => match (
+            score.events.get(tie.start_event),
+            score.events.get(tie.end_event),
+        ) {
+            (Some(Event::Pitched(start)), Some(Event::Pitched(end))) => start
+                .pitches
+                .iter()
+                .filter_map(|a| {
+                    end.pitches
+                        .iter()
+                        .find(|b| b.pitch.scale_position == a.pitch.scale_position)
+                        .map(|b| (a.id, b.id))
+                })
+                .collect(),
+            _ => Vec::new(),
+        },
+    };
+    LayoutContent::Tie(TieContent {
+        start: tie.start_event,
+        end: tie.end_event,
+        pairs,
     })
 }
 

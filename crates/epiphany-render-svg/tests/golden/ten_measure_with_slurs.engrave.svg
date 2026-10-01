@@ -90,7 +90,6 @@
       <line x1="49.817" y1="-26.8842" x2="51.5977" y2="-26.8842" stroke="#000000" stroke-width="0.13" data-prov="75f41055f9e23911ca51158dab6488df" data-source-kind="1" data-kind="stroke"/>
       <line x1="53.3783" y1="-26.8842" x2="53.3783" y2="-23.3842" stroke="#000000" stroke-width="0.12" data-prov="9e9ba65603d31963bdc6d55dfacc5eba" data-source-kind="0" data-kind="stroke"/>
       <line x1="51.8977" y1="-26.8842" x2="53.6783" y2="-26.8842" stroke="#000000" stroke-width="0.13" data-prov="66a37f88caecfe799ec34469d2302afd" data-source-kind="1" data-kind="stroke"/>
-      <line x1="8.6599" y1="-12.8926" x2="8.6599" y2="-12.8926" stroke="#000000" stroke-width="0" data-prov="40a9a55985c8bf8b1eb66b6d8c8e7b7a" data-source-kind="12" data-kind="stroke"/>
       <line x1="8.6599" y1="-12.8926" x2="8.6599" y2="-12.8926" stroke="#000000" stroke-width="0" data-prov="10eb9773d25f0d7d64f92b36f88e5b38" data-source-kind="14" data-kind="stroke"/>
       <line x1="8.6599" y1="-12.8926" x2="8.6599" y2="-12.8926" stroke="#000000" stroke-width="0" data-prov="86a982398112115027c54222505dd143" data-source-kind="15" data-kind="stroke"/>
       <line x1="8.6599" y1="-12.8926" x2="8.6599" y2="-12.8926" stroke="#000000" stroke-width="0" data-prov="c183669ac91f35eb7a0040b48fde85ab" data-source-kind="25" data-kind="stroke"/>
@@ -99,6 +98,7 @@
       <line x1="7.565" y1="-23.8842" x2="54.2655" y2="-23.8842" stroke="#000000" stroke-width="0.13" data-prov="c5feea54a17beefce1088337f84e39fc" data-source-kind="3" data-kind="stroke"/>
       <line x1="7.565" y1="-22.8842" x2="54.2655" y2="-22.8842" stroke="#000000" stroke-width="0.13" data-prov="688349b3e25cac395b2dcca6e297dcfe" data-source-kind="3" data-kind="stroke"/>
       <line x1="7.565" y1="-21.8842" x2="54.2655" y2="-21.8842" stroke="#000000" stroke-width="0.13" data-prov="c146782303bbe4c29c6228235090facf" data-source-kind="3" data-kind="stroke"/>
+      <path d="M 15.8838 -14.2926 C 16.4546 -14.6926 17.5961 -14.6926 18.1669 -14.2926" fill="none" stroke="#000000" stroke-width="0.14" data-prov="40a9a55985c8bf8b1eb66b6d8c8e7b7a" data-source-kind="12" data-kind="curve"/>
       <path d="M 15.9305 -15.0926 C 19.6637 -16.1592 23.3968 -16.1592 26.9314 -15.0926" fill="none" stroke="#000000" stroke-width="0.12" data-prov="cf7d96019ed88156f3cc33bf116fbae3" data-source-kind="11" data-kind="curve"/>
       <path d="M 36.7494 -15.0926 C 41.727 -17.7592 46.1291 -17.7592 50.102 -15.0926" fill="none" stroke="#000000" stroke-width="0.12" data-prov="c366aecd1ef6e40cb1b3ffd2100eb3d8" data-source-kind="11" data-kind="curve"/>
       <path d="M 57.5683 -15.0926 C 61.1029 -16.1592 64.112 -16.1592 67.1877 -15.0926" fill="none" stroke="#000000" stroke-width="0.12" stroke-dasharray="0.5 0.35" data-prov="b6c086f751dd21ffa2520010201f057f" data-source-kind="11" data-kind="curve"/>

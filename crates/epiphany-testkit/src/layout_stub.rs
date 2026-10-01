@@ -1615,7 +1615,7 @@ mod tests {
         assert!(report.glyphs > 0);
         assert_eq!(
             report.render_primitives,
-            report.glyphs + report.render_strokes
+            report.glyphs + report.render_strokes + report.render_curves
         );
 
         let measures = report

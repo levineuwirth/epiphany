@@ -2,13 +2,13 @@ fixture=ten_measure_single_staff solver=engrave
 glyph_count=51
 path_count=51
 fallback_rect_count=0
-stroke_count=96
-curve_count=0
+stroke_count=95
+curve_count=1
 provenance_count=147
 layer_count=1
 hard_constraint_count=90
 xml_well_formed=true
-view_box=[5.4999986 -26.090391 94.00001 20.589813]
+view_box=[5.4999986 -26.327578 94.00001 20.827]
 class_counts:
   barline=10
   clef=1

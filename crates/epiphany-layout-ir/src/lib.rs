@@ -122,9 +122,9 @@ pub use logical::{
     LogicalLayoutIR, MarkerLayout, MeasureContent, MultimeasureRestLayout, NoteContent, NoteLayout,
     NotePitch, PlacedClef, PlacedComponent, PlacedKeySignature, RepeatContent, RepeatPlacement,
     RestContent, RestLayout, ScoreVersion, SlurContent, SlurDirection, SlurEndpoint, SlurLayout,
-    SpannerLayout, StaffContent, StaffLayout, TextLayout, TieLayout, TimeSignatureContent,
-    TimeSignatureDisplayLayout, TrajectoryLayout, TupletDisplayLayout, UnpitchedContent,
-    VerticalExtent, VoltaContent,
+    SpannerLayout, StaffContent, StaffLayout, TextLayout, TieContent, TieLayout,
+    TimeSignatureContent, TimeSignatureDisplayLayout, TrajectoryLayout, TupletDisplayLayout,
+    UnpitchedContent, VerticalExtent, VoltaContent,
 };
 pub use provenance::{
     continuation_instance_key, manifestation_layout_id, stable_layout_id, synthesized_layout_id,

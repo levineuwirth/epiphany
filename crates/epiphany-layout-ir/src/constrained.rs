@@ -715,6 +715,14 @@ const STEM_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5354_454D_5354
 /// from the first note of a group the meter beams, and keyed by group, level
 /// and run.
 const BEAM_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4245_414D_5354_524B); // "BEAMSTRK"
+/// The registry id for a tie arc after a structure's first, or between the
+/// tied components of one note, synthesized from the tie or the pitch.
+const TIE_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5449_4541_5243_5321); // "TIEARCS!"
+const TIE_GAP: f32 = 0.15; // the gap between a tie's end and its notehead
+const TIE_OFFSET: f32 = 0.4; // how far off its heads' centres a tie's ends sit
+const TIE_MIN_HEIGHT: f32 = 0.3; // a tie's apex height, at least…
+const TIE_MAX_HEIGHT: f32 = 0.8; // …and at most, in staff spaces
+const TIE_THICKNESS: f32 = 0.14;
 const BEAM_THICKNESS: f32 = 0.5; // SMuFL's beamThickness
 const BEAM_STEP: f32 = 0.75; // centre to centre of stacked beams: a thickness and a 0.25 gap
 const MAX_BEAM_RISE: f32 = 1.0; // the most a beam rises or falls across its group, in staff spaces
@@ -929,7 +937,8 @@ pub fn try_to_constrained(
             match (object.provenance().source, object.content()) {
                 (TypedObjectId::Event(eid), LayoutContent::Note(note)) => {
                     let mut stems = Vec::new();
-                    for (comp, (offset, value, dots)) in components_of(&note.components).enumerate()
+                    for (comp, (offset, value, dots, tied)) in
+                        components_of(&note.components).enumerate()
                     {
                         let time = shift_time(&note.position, &offset);
                         let key = ColumnKey::Timed(time.clone(), ColumnRole::Note);
@@ -977,6 +986,8 @@ pub fn try_to_constrained(
                                 accidentals,
                                 dots,
                                 dot_y,
+                                event: eid,
+                                tied,
                             });
                         }
                         let fallback = step_to_y(yo, reference_step(&clef));
@@ -994,7 +1005,7 @@ pub fn try_to_constrained(
                     // its value; it has no accidental.
                     let mut stems = Vec::new();
                     let step = StaffStep::from(unpitched.staff_position.0);
-                    for (comp, (offset, value, dots)) in
+                    for (comp, (offset, value, dots, tied)) in
                         components_of(&unpitched.components).enumerate()
                     {
                         let time = shift_time(&unpitched.position, &offset);
@@ -1011,6 +1022,8 @@ pub fn try_to_constrained(
                             accidentals: Vec::new(),
                             dots,
                             dot_y,
+                            event: eid,
+                            tied,
                         });
                         let fallback = step_to_y(yo, step);
                         let (seg, ink) = note_stem(value, yo, &[step], fallback, name, key, comp);
@@ -1023,7 +1036,8 @@ pub fn try_to_constrained(
                 }
                 (TypedObjectId::Event(eid), LayoutContent::Rest(rest)) => {
                     let mut segs = Vec::new();
-                    for (comp, (offset, value, dots)) in components_of(&rest.components).enumerate()
+                    for (comp, (offset, value, dots, _)) in
+                        components_of(&rest.components).enumerate()
                     {
                         let time = shift_time(&rest.position, &offset);
                         // Every rest component occupies its musical onset column,
@@ -1574,8 +1588,8 @@ pub fn try_to_constrained(
                         // its stems are synthesized; a pitched note's first stem
                         // carries it.
                         if unpitched {
-                            for head in unpitched_heads.get(&eid).map(Vec::as_slice).unwrap_or(&[])
-                            {
+                            let heads = unpitched_heads.get(&eid).map(Vec::as_slice).unwrap_or(&[]);
+                            for head in heads {
                                 let head_provenance = component_provenance(provenance, head.comp);
                                 emit_head(
                                     &mut emit,
@@ -1586,6 +1600,21 @@ pub fn try_to_constrained(
                                     band_of(staff),
                                     staff,
                                 );
+                            }
+                            for (curve, start, end) in component_ties(
+                                provenance,
+                                heads,
+                                &event_stems,
+                                &columns,
+                                yo,
+                                band_of(staff),
+                            ) {
+                                span_anchors.push(SpanAnchor {
+                                    primitive: curve.id(),
+                                    start,
+                                    end,
+                                });
+                                emit.curve(curve);
                             }
                         }
                         for seg in segs {
@@ -1739,6 +1768,21 @@ pub fn try_to_constrained(
                                 band_of(staff),
                                 staff,
                             );
+                        }
+                        for (curve, start, end) in component_ties(
+                            provenance,
+                            heads,
+                            &event_stems,
+                            &columns,
+                            yo,
+                            band_of(staff),
+                        ) {
+                            span_anchors.push(SpanAnchor {
+                                primitive: curve.id(),
+                                start,
+                                end,
+                            });
+                            emit.curve(curve);
                         }
                     }
                     None => {
@@ -1910,6 +1954,71 @@ pub fn try_to_constrained(
                             }
                             cursor += VOLTA_ENDING_GAP;
                         }
+                    }
+                }
+                TypedObjectId::Tie(_) => {
+                    // A tie arcs from each start head to the head it continues
+                    // into, riding both heads' slots: in a chord the upper
+                    // ties arc above and the lower below, a middle or lone tie
+                    // away from its stem (by its staff position when it has
+                    // none). The structure's exact provenance rides its first
+                    // arc; a tie with no head to join keeps a traced anchor.
+                    let mut joins: Vec<(&Head, &Head)> = Vec::new();
+                    let mut start_event = None;
+                    if let Some(LayoutContent::Tie(tie)) = content {
+                        start_event = Some(tie.start);
+                        if tie.pairs.is_empty() {
+                            let a = unpitched_heads.get(&tie.start).and_then(|h| h.last());
+                            let b = unpitched_heads.get(&tie.end).and_then(|h| h.first());
+                            joins.extend(a.zip(b));
+                        }
+                        for (a, b) in &tie.pairs {
+                            let a = pitch_heads.get(a).and_then(|h| h.last());
+                            let b = pitch_heads.get(b).and_then(|h| h.first());
+                            joins.extend(a.zip(b));
+                        }
+                    }
+                    joins.sort_by(|x, y| y.0.y.total_cmp(&x.0.y));
+                    let stem_up = start_event
+                        .and_then(|e| event_stems.get(&e))
+                        .and_then(|segs| segs.last())
+                        .filter(|seg| seg.drawn)
+                        .map(|seg| seg.up);
+                    let n = joins.len();
+                    for (i, (a, b)) in joins.iter().enumerate() {
+                        let above = if n > 1 && 2 * i + 1 < n {
+                            true
+                        } else if n > 1 && 2 * i + 1 > n {
+                            false
+                        } else {
+                            stem_up.map_or(a.y >= yo + STAFF_HEIGHT * 0.5, |up| !up)
+                        };
+                        let tie_provenance = if i == 0 {
+                            provenance.clone()
+                        } else {
+                            Provenance::synthesized(
+                                provenance.source,
+                                SynthesisKind::Registered(TIE_SYNTHESIS),
+                                SynthesisInstanceKey(i as u128),
+                                provenance.dependencies.clone(),
+                            )
+                        };
+                        let (from, to) = (column(&a.key), column(&b.key));
+                        let curve =
+                            tie_curve(tie_provenance, a, from, b, to, above, band_of(staff));
+                        span_anchors.push(SpanAnchor {
+                            primitive: curve.id(),
+                            start: from.slot,
+                            end: to.slot,
+                        });
+                        emit.curve(curve);
+                    }
+                    if n == 0 {
+                        emit.stroke(anchor(
+                            provenance,
+                            Point::new(default_x, yo),
+                            band_of(staff),
+                        ));
                     }
                 }
                 TypedObjectId::Slur(_) => {
@@ -2313,6 +2422,10 @@ struct Head {
     /// The component's augmentation dots, and the `y` of the space they sit in.
     dots: u8,
     dot_y: f32,
+    /// The event the head belongs to, and whether its component is tied to
+    /// the event's next one.
+    event: EventId,
+    tied: bool,
 }
 
 /// One component's stem geometry, computed before column x is known (carried as
@@ -2913,17 +3026,22 @@ fn time_digit(digit: u8) -> &'static str {
     }
 }
 
-/// The `(offset, base value, dots)` of each notated component, or a single
-/// implicit undotted quarter at offset zero when the event carries no
-/// decomposition.
+/// The `(offset, base value, dots, tied to the next)` of each notated
+/// component, or a single implicit undotted quarter at offset zero when the
+/// event carries no decomposition.
 fn components_of(
     components: &[crate::logical::PlacedComponent],
-) -> impl Iterator<Item = (MusicalDuration, NoteValue, u8)> + '_ {
+) -> impl Iterator<Item = (MusicalDuration, NoteValue, u8, bool)> + '_ {
     let implicit = components.is_empty();
-    let mapped = components
-        .iter()
-        .map(|c| (c.offset.clone(), c.component.base_value, c.component.dots));
-    let fallback = std::iter::once((MusicalDuration::zero(), NoteValue::Quarter, 0));
+    let mapped = components.iter().map(|c| {
+        (
+            c.offset.clone(),
+            c.component.base_value,
+            c.component.dots,
+            c.component.tied_to_next,
+        )
+    });
+    let fallback = std::iter::once((MusicalDuration::zero(), NoteValue::Quarter, 0, false));
     mapped
         .chain(fallback.filter(move |_| implicit))
         .take(if implicit { 1 } else { usize::MAX })
@@ -3055,6 +3173,82 @@ fn dot_positions(yo: f32, steps: &[StaffStep]) -> Vec<f32> {
         ys[i] = step_to_y(yo, space);
     }
     ys
+}
+
+/// A tie's arc from head `a` (in column `from`) to head `b` (in column `to`):
+/// from just right of `a` to just left of `b`, a little off the heads on the
+/// side it arcs to, rising with its length to at most `TIE_MAX_HEIGHT`.
+fn tie_curve(
+    provenance: Provenance,
+    a: &Head,
+    from: &ColumnInfo,
+    b: &Head,
+    to: &ColumnInfo,
+    above: bool,
+    band: VerticalBandId,
+) -> Curve {
+    let right = metrics(a.name).map_or(NOTEHEAD_STEM_X, |m| m.bounding_box().right.0);
+    let left = metrics(b.name).map_or(0.0, |m| m.bounding_box().left.0);
+    let x0 = from.x + right + TIE_GAP;
+    let x3 = (to.x + left - TIE_GAP).max(x0 + TIE_GAP);
+    let sign = if above { 1.0 } else { -1.0 };
+    let y = a.y + sign * TIE_OFFSET;
+    let span = x3 - x0;
+    let height = (span * 0.15).clamp(TIE_MIN_HEIGHT, TIE_MAX_HEIGHT);
+    // A cubic's control points sit 4/3 of the apex height off the chord.
+    let lift = sign * height * 4.0 / 3.0;
+    Curve {
+        provenance,
+        p0: Point::new(x0, y),
+        p1: Point::new(x0 + span * 0.25, y + lift),
+        p2: Point::new(x3 - span * 0.25, y + lift),
+        p3: Point::new(x3, y),
+        thickness: StaffSpace(TIE_THICKNESS),
+        layer: 0,
+        style: ink(),
+        line: LineStyle::Solid,
+        vertical_band: band,
+    }
+}
+
+/// The ties between the successive components of one pitch (or unpitched
+/// note) that its decomposition ties, each arcing away from its component's
+/// stem, synthesized from `provenance`, with the slots its ends ride.
+fn component_ties(
+    provenance: &Provenance,
+    heads: &[Head],
+    event_stems: &BTreeMap<EventId, Vec<StemSeg>>,
+    columns: &BTreeMap<ColumnKey, ColumnInfo>,
+    yo: f32,
+    band: VerticalBandId,
+) -> Vec<(Curve, SpringSlotId, SpringSlotId)> {
+    let mut ties = Vec::new();
+    for pair in heads.windows(2) {
+        let (a, b) = (&pair[0], &pair[1]);
+        if !a.tied || b.comp != a.comp + 1 {
+            continue;
+        }
+        let (Some(from), Some(to)) = (columns.get(&a.key), columns.get(&b.key)) else {
+            continue;
+        };
+        let seg = event_stems
+            .get(&a.event)
+            .and_then(|segs| segs.iter().find(|seg| seg.comp == a.comp))
+            .filter(|seg| seg.drawn);
+        let above = seg.map_or(a.y >= yo + STAFF_HEIGHT * 0.5, |seg| !seg.up);
+        let tie_provenance = Provenance::synthesized(
+            provenance.source,
+            SynthesisKind::Registered(TIE_SYNTHESIS),
+            SynthesisInstanceKey(1 << 64 | a.comp as u128),
+            provenance.dependencies.clone(),
+        );
+        ties.push((
+            tie_curve(tie_provenance, a, from, b, to, above, band),
+            from.slot,
+            to.slot,
+        ));
+    }
+    ties
 }
 
 /// Draws a notehead with what rides with it: the ledger lines it needs, its
@@ -3989,6 +4183,161 @@ mod tests {
         assert_eq!(accidental.horizontal_slot, notehead.horizontal_slot);
         // The accidental is a proper slot/band member — the IR validates.
         assert!(c.validate().is_ok());
+    }
+
+    /// A tie arcs between the heads it joins, riding their slots: in a chord
+    /// the upper tie arcs above and the lower below, the middle one away from
+    /// the stem; the structure's provenance rides its first arc. A note whose
+    /// value splits into tied components draws a tie between its own heads.
+    #[test]
+    fn ties_arc_between_their_heads_by_the_chords_rule() {
+        use crate::logical::{
+            LayoutObject, LayoutRegion, LogicalLayoutIR, NoteContent, NotePitch, PlacedComponent,
+            TieContent,
+        };
+        use crate::time_axis::{MetricTimeAxis, TimeAxisModel};
+        use epiphany_core::{
+            CmnNominal, EventId, MusicalPosition, NotatedComponent, PitchId, PitchSpelling,
+            RationalTime, RegionId, StaffId, TieId,
+        };
+
+        let region = RegionId::from_raw(1);
+        let staff = StaffId::from_raw(10);
+        let manifested = |src, content| {
+            LayoutObject::from_projection_with_content(
+                Provenance::manifested(src, region, vec![]),
+                Some(staff),
+                content,
+            )
+        };
+        let at = |n: i64| {
+            TimePoint::Musical(
+                MusicalPosition::origin() + MusicalDuration(RationalTime::new(n, 4).expect("n/4")),
+            )
+        };
+        let component = |base_value, offset: i64, tied_to_next| PlacedComponent {
+            offset: MusicalDuration(RationalTime::new(offset, 8).expect("n/8")),
+            component: NotatedComponent {
+                base_value,
+                dots: 0,
+                tuplet: None,
+                tied_to_next,
+            },
+            tuplet: None,
+        };
+        // Two quarter chords, C5 E5 G5, each tied to the next.
+        let steps = [CmnNominal::C, CmnNominal::E, CmnNominal::G];
+        let mut objects = Vec::new();
+        for (e, start) in [(1u128, 0i64), (2, 1)] {
+            let pitches: Vec<NotePitch> = steps
+                .iter()
+                .enumerate()
+                .map(|(i, nominal)| NotePitch {
+                    pitch: PitchId::from_raw(e * 10 + i as u128),
+                    spelling: Some(PitchSpelling::cmn(*nominal, 5)),
+                })
+                .collect();
+            for pitch in &pitches {
+                objects.push(manifested(
+                    TypedObjectId::Pitch(pitch.pitch),
+                    LayoutContent::Structural,
+                ));
+            }
+            objects.push(manifested(
+                TypedObjectId::Event(EventId::from_raw(e)),
+                LayoutContent::Note(NoteContent {
+                    position: at(start),
+                    components: vec![component(NoteValue::Quarter, 0, false)],
+                    pitches,
+                }),
+            ));
+        }
+        let tie = TieId::from_raw(5);
+        objects.push(manifested(
+            TypedObjectId::Tie(tie),
+            LayoutContent::Tie(TieContent {
+                start: EventId::from_raw(1),
+                end: EventId::from_raw(2),
+                pairs: (0..3)
+                    .map(|i| (PitchId::from_raw(10 + i), PitchId::from_raw(20 + i)))
+                    .collect(),
+            }),
+        ));
+        // A note on A4 whose value splits into a half tied to an eighth.
+        let split = PitchId::from_raw(30);
+        objects.push(manifested(
+            TypedObjectId::Pitch(split),
+            LayoutContent::Structural,
+        ));
+        objects.push(manifested(
+            TypedObjectId::Event(EventId::from_raw(3)),
+            LayoutContent::Note(NoteContent {
+                position: at(2),
+                components: vec![
+                    component(NoteValue::Half, 0, true),
+                    component(NoteValue::Eighth, 4, false),
+                ],
+                pitches: vec![NotePitch {
+                    pitch: split,
+                    spelling: Some(PitchSpelling::cmn(CmnNominal::A, 4)),
+                }],
+            }),
+        ));
+        let c = to_constrained(&LogicalLayoutIR {
+            source: ScoreVersion::default(),
+            regions: vec![LayoutRegion {
+                provenance: Provenance::projected(TypedObjectId::Region(region), vec![]),
+                coordinate_system: crate::LocalCoordinateSystem::default(),
+                time_axis: TimeAxisModel::Metric(MetricTimeAxis::default()),
+                vertical_extent: crate::VerticalExtent {
+                    staves: vec![staff],
+                },
+                objects,
+            }],
+            engraving_decisions: vec![],
+            overrides: vec![],
+            cross_region: vec![],
+        });
+        assert!(c.validate().is_ok());
+        let mut arcs: Vec<&Curve> = c
+            .curves
+            .iter()
+            .filter(|curve| curve.provenance.source == TypedObjectId::Tie(tie))
+            .collect();
+        assert_eq!(arcs.len(), 3);
+        assert_eq!(
+            arcs.iter()
+                .filter(|a| a.provenance.synthesis.is_none())
+                .count(),
+            1,
+            "the tie's provenance rides one arc"
+        );
+        arcs.sort_by(|a, b| b.p0.y.0.total_cmp(&a.p0.y.0));
+        // The chord sits above the middle line, so it stems down: the top and
+        // middle ties arc above, the bottom one below.
+        let above: Vec<bool> = arcs.iter().map(|a| a.p1.y.0 > a.p0.y.0).collect();
+        assert_eq!(above, [true, true, false]);
+        for arc in &arcs {
+            assert!(arc.p3.x.0 > arc.p0.x.0);
+            assert!(c
+                .span_anchors
+                .iter()
+                .any(|anchor| anchor.primitive == arc.id()));
+        }
+        // The split note's tie, between its own two heads, under them (its
+        // half's stem points up from below the middle line).
+        let own: Vec<&Curve> = c
+            .curves
+            .iter()
+            .filter(|curve| curve.provenance.source == TypedObjectId::Pitch(split))
+            .collect();
+        assert_eq!(own.len(), 1);
+        assert!(own[0].provenance.synthesis.is_some());
+        assert!(own[0].p1.y.0 < own[0].p0.y.0, "it arcs below");
+        assert!(c
+            .span_anchors
+            .iter()
+            .any(|anchor| anchor.primitive == own[0].id()));
     }
 
     /// A note's value reaches the page: an eighth or shorter takes its flag at

@@ -2,8 +2,8 @@ fixture=ten_measure_with_slurs solver=stub
 glyph_count=51
 path_count=51
 fallback_rect_count=0
-stroke_count=91
-curve_count=3
+stroke_count=90
+curve_count=4
 provenance_count=145
 layer_count=1
 hard_constraint_count=90

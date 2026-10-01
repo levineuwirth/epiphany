@@ -285,3 +285,88 @@ fn beams_stay_on_their_stems_through_spacing_and_justification() {
         .iter()
         .all(|g| !g.glyph.as_str().starts_with("flag")));
 }
+
+/// Ties are drawn across every barline and across every system break: a long
+/// score of whole notes, each tied to the next, wraps onto many justified
+/// systems; each tie is one arc, or two half-arcs where a system breaks
+/// between its notes, and every arc's ends sit at a head it joins or at its
+/// system's edge.
+#[test]
+fn ties_cross_barlines_and_system_breaks() {
+    use epiphany_core::TypedObjectId;
+
+    let mut measures = String::new();
+    let count = 120;
+    for m in 1..=count {
+        measures.push_str(&format!("<measure number=\"{m}\">"));
+        if m == 1 {
+            measures.push_str(
+                "<attributes><divisions>1</divisions><time><beats>4</beats>\
+                 <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+                 </attributes>",
+            );
+        }
+        let ties = match m {
+            1 => "<tie type=\"start\"/>",
+            m if m == count => "<tie type=\"stop\"/>",
+            _ => "<tie type=\"stop\"/><tie type=\"start\"/>",
+        };
+        measures.push_str(&format!(
+            "<note><pitch><step>A</step><octave>4</octave></pitch><duration>4</duration>\
+             {ties}<voice>1</voice><type>whole</type></note></measure>"
+        ));
+    }
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\">\
+         <part-name>Oboe</part-name></score-part></part-list>\
+         <part id=\"P1\">{measures}</part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("long_ties.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    assert_eq!(loaded.reduced.score.cross_cutting.ties.len(), count - 1);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let systems: Vec<_> = layout.systems().collect();
+    assert!(systems.len() > 2, "the score wraps");
+    let arcs: Vec<_> = layout
+        .curves
+        .iter()
+        .filter(|c| matches!(c.provenance.source, TypedObjectId::Tie(_)))
+        .collect();
+    assert_eq!(arcs.len(), count - 1 + systems.len() - 1);
+    for system in &systems {
+        let heads: Vec<(f32, f32)> = system
+            .primitives
+            .glyphs
+            .iter()
+            .map(|&i| &layout.glyphs[i as usize])
+            .filter(|g| g.glyph.as_str().starts_with("notehead"))
+            .map(|g| {
+                let x = g.position.x.0;
+                (x + g.bounding_box.left.0, x + g.bounding_box.right.0)
+            })
+            .collect();
+        let (left, right) = (
+            system.bounding_box.origin.x.0,
+            system.bounding_box.origin.x.0 + system.bounding_box.size.width.0,
+        );
+        for &i in &system.primitives.curves {
+            let arc = &layout.curves[i as usize];
+            if !matches!(arc.provenance.source, TypedObjectId::Tie(_)) {
+                continue;
+            }
+            let (x0, x3) = (arc.p0.x.0, arc.p3.x.0);
+            let after_head = heads.iter().any(|(_, r)| (x0 - r - 0.15).abs() < 0.02);
+            let before_head = heads.iter().any(|(l, _)| (l - x3 - 0.15).abs() < 0.02);
+            assert!(
+                after_head || (x0 - left).abs() < 1.0,
+                "an arc starts just after a head, or at its system's start: {x0}"
+            );
+            assert!(
+                before_head || (right - x3).abs() < 1.0,
+                "an arc ends just before a head, or at its system's end: {x3}"
+            );
+            assert!(after_head || before_head, "an arc meets a head it joins");
+        }
+    }
+}

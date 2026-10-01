@@ -823,8 +823,8 @@ mod tests {
         );
         assert_eq!(
             out.stats.provenance_count,
-            glyph_count + base_strokes + 1,
-            "every glyph and stroke is traced"
+            glyph_count + base_strokes + 1 + layout.curves.len(),
+            "every glyph, stroke and curve is traced"
         );
     }
 
@@ -958,7 +958,7 @@ mod tests {
         assert!(out.diagnostics.is_empty());
         assert_eq!(
             out.stats.provenance_count,
-            layout.glyphs.len() + layout.strokes.len()
+            layout.glyphs.len() + layout.strokes.len() + layout.curves.len()
         );
         assert!(out.svg.contains("<svg"));
         assert!(out.svg.contains("data-prov="));
@@ -1009,7 +1009,7 @@ mod tests {
         assert!(out.svg.contains("set in the embedded font"));
         assert_eq!(
             out.stats.provenance_count,
-            layout.glyphs.len() + layout.strokes.len()
+            layout.glyphs.len() + layout.strokes.len() + layout.curves.len()
         );
         assert!(out.svg.contains("data-prov="));
     }

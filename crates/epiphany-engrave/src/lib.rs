@@ -218,9 +218,11 @@ pub struct Engraver {
 /// barline and the next begins with what follows it; a score that does not
 /// wrap casts off as before, though its barlines stand elsewhere), and to `14`
 /// when a stroke or curve the input anchors (`ConstrainedLayoutIR::span_anchors`,
-/// a beam) began riding the slots its anchor names at its two ends through
-/// spacing and justification, instead of mapping through the coordinate map
-/// whole; an input with no anchor is unchanged).
+/// a beam, a tie) began riding the slots its anchor names at its two ends
+/// through spacing and justification, instead of mapping through the
+/// coordinate map whole, and an anchored curve whose ends fall in two systems
+/// (a tie across a break) began drawing as two half-arcs to and from the
+/// systems' edges; an input with no anchor is unchanged).
 pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(14);
 
 impl Engraver {

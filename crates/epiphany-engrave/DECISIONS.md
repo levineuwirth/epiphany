@@ -1106,6 +1106,10 @@ justification affine move an off-source point by interpolation, which would
 pull a beam off its stems whenever the columns between re-space. The
 constrained IR now names, for such a primitive, the slots its two ends ride
 (`SpanAnchor`), and the engraver moves each end by its own slot's delta (a
-curve's inner control points keep their fractions of the span). Locked by
-`beams_stay_on_their_stems_through_spacing_and_justification`
-(`epiphany-cli`), which fails with the anchors ignored in either pass.
+curve's inner control points keep their fractions of the span). An anchored
+curve whose two ends land in different systems — a tie across a system break —
+draws as two half-arcs, from its start to the first system's right edge and
+from the second system's left edge to its end, each note end still on its
+slot. Locked by `beams_stay_on_their_stems_through_spacing_and_justification`
+and `ties_cross_barlines_and_system_breaks` (`epiphany-cli`), which fail with
+the anchors ignored, or the half-arcs replaced by a geometric split.
