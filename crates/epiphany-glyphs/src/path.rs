@@ -234,15 +234,15 @@ mod tests {
     use crate::outlines_generated::BRAVURA_OUTLINES;
 
     /// (g1) The packet's load-bearing test: every bundled glyph's `d` string
-    /// parses and re-emits byte-for-byte identical. If this holds for all 37
-    /// bundled glyphs, the typed form provably describes the same geometry —
+    /// parses and re-emits byte-for-byte identical. If this holds for every
+    /// bundled glyph, the typed form provably describes the same geometry —
     /// no geometric spot-checking is needed (pin 5, primary path, not the
     /// sanctioned coordinate-sequence fallback).
     #[test]
     fn every_bundled_glyph_round_trips_byte_for_byte() {
         assert_eq!(
             BRAVURA_OUTLINES.len(),
-            37,
+            57,
             "sanity: the bundled glyph count moved"
         );
         for o in BRAVURA_OUTLINES {

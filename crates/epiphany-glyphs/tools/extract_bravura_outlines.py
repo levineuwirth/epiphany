@@ -56,7 +56,13 @@ NAMES = ["noteheadBlack","noteheadHalf","noteheadWhole","noteheadDoubleWhole",
 "timeSig0","timeSig1","timeSig2","timeSig3","timeSig4","timeSig5","timeSig6",
 "timeSig7","timeSig8","timeSig9","timeSigCommon",
 "barlineSingle","barlineFinal","dynamicForte","dynamicPiano",
-"repeatLeft","repeatRight","repeatRightLeft","repeatDots"]
+"repeatLeft","repeatRight","repeatRightLeft","repeatDots",
+"restDoubleWhole","rest16th","rest32nd","rest64th",
+"flag16thUp","flag16thDown","flag32ndUp","flag32ndDown",
+"flag64thUp","flag64thDown",
+"accidentalDoubleFlat","unpitchedPercussionClef1",
+"gClef8vb","gClef8va","fClef8vb","fClef8va",
+"brace","bracket","bracketTop","bracketBottom"]
 
 def verify(data, expected, what):
     actual = hashlib.sha256(data).hexdigest()
