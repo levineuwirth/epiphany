@@ -1151,3 +1151,18 @@ their ink and the gap after it, 0.8 after a lead and 1.0 after a time
 signature. Every score's first system moves right of its lead; later systems,
 which casting opens with their own lead, are unchanged. Locked by
 `the_opening_time_signature_clears_the_lead_and_the_music` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 17 → 18: voices (X2.8, 2026-10-01)
+
+A note's stem turned by its pitches alone, and every rest sat at the middle
+of the staff, so two voices on a staff crossed stems and stacked rests. The
+logical IR now says where each event's voice stands among its staff's
+(`VoicePlace`): a voice's stated stem direction places it throughout;
+otherwise the staff's first voice is upper wherever another voice shows a
+note or a visible rest during the event, and each later voice is lower or
+upper by turns. Beside another voice, an upper voice's stems and beams turn
+up and its ties and unauthored slurs arc above, a lower voice's turn down and
+arc below, its dots on a line take the space below, and a rest moves a space
+off its place, up for an upper voice and down for a lower. A staff of one
+voice is unchanged. Locked by
+`voices_turn_their_stems_rests_ties_and_dots_apart` (`epiphany-cli`).

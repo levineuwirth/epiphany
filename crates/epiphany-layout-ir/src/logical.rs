@@ -138,12 +138,29 @@ pub struct PlacedKeySignature {
 
 /// A note or chord's notated content: its resolved start position, its placed
 /// notated components (one notehead/tie segment each, at successive offsets — a
-/// multi-component decomposition is *not* collapsed), and its spelled pitches.
+/// multi-component decomposition is *not* collapsed), its spelled pitches, and
+/// where its voice stands among its staff's.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct NoteContent {
     pub position: TimePoint,
     pub components: Vec<PlacedComponent>,
     pub pitches: Vec<NotePitch>,
+    pub voice: VoicePlace,
+}
+
+/// Where an event's voice stands among its staff's at the event's time. Alone,
+/// a note turns its stem by its pitches and a rest sits at the middle of the
+/// staff. Beside another voice, an upper voice's stems turn up and its ties,
+/// slurs and rests go above, a lower voice's down and below. A voice's own stem
+/// direction, where it has one, places it throughout; otherwise the staff's
+/// first voice is upper wherever another voice shows a note or a visible rest
+/// during the event, and alone elsewhere, and each later voice is lower or
+/// upper by turns (the second lower, the third upper) wherever it shows ink.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum VoicePlace {
+    Alone,
+    Upper,
+    Lower,
 }
 
 /// One notated component placed within a note or rest: its offset from the
@@ -179,6 +196,7 @@ pub struct RestContent {
     pub visible: bool,
     /// The rest starts its measure and lasts exactly as long.
     pub whole_measure: bool,
+    pub voice: VoicePlace,
 }
 
 /// An unpitched note's notated content: its resolved start position, its
@@ -189,6 +207,7 @@ pub struct UnpitchedContent {
     pub position: TimePoint,
     pub components: Vec<PlacedComponent>,
     pub staff_position: StaffPosition,
+    pub voice: VoicePlace,
 }
 
 /// A measure's notated content: its resolved start position, where it ends,
@@ -305,7 +324,9 @@ pub enum SlurEndpoint {
 }
 
 /// A slur's arc direction. `Auto` lets the engraver choose (Minimal: above the
-/// staff); `Above`/`Below` are authored via `curvature_override.direction`.
+/// staff); `Above`/`Below` are authored via `curvature_override.direction`, or,
+/// unauthored, given by the voice of the slur's first note when it stands
+/// beside another ([`VoicePlace`]).
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum SlurDirection {
     Auto,
@@ -580,6 +601,8 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
         }
     }
 
+    // Every event's place among its staff's voices, for the slurs below.
+    let mut all_places: BTreeMap<EventId, VoicePlace> = BTreeMap::new();
     for (region_index, region) in score.canvas.regions.iter().enumerate() {
         let region_id = region.id;
         let mut objects = Vec::new();
@@ -628,6 +651,8 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                 staff_content(score, si, &annotations),
             );
             let spans = measure_spans(score, si);
+            let places = voice_places(score, si);
+            all_places.extend(&places);
             for voice in &si.voices {
                 let v_src = TypedObjectId::Voice(voice.id);
                 push(v_src, vec![si_src], staff, LayoutContent::Structural);
@@ -643,7 +668,7 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                         e_src,
                         deps,
                         staff,
-                        event_content(score, *eid, &annotations, &spans),
+                        event_content(score, *eid, &annotations, &spans, &places),
                     );
                     for pid in pitches {
                         push(
@@ -814,7 +839,7 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                 .slurs
                 .iter()
                 .find(|slur| slur.id == id)
-                .map(|slur| slur_content(score, slur))
+                .map(|slur| slur_content(score, slur, &all_places))
                 .unwrap_or_default(),
             TypedObjectId::Tie(id) => score
                 .cross_cutting
@@ -1154,10 +1179,12 @@ fn event_content(
     event: EventId,
     annotations: &DerivedAnnotations,
     spans: &[(TimePoint, Option<TimePoint>)],
+    places: &BTreeMap<EventId, VoicePlace>,
 ) -> LayoutContent {
     let Some(graph_event) = score.events.get(event) else {
         return LayoutContent::Structural;
     };
+    let voice = places.get(&event).copied().unwrap_or(VoicePlace::Alone);
     let components = placed_components(score, components_of(annotations, event));
     match graph_event {
         Event::Pitched(pitched) => {
@@ -1176,6 +1203,7 @@ fn event_content(
                 position: event_time(&pitched.position),
                 components,
                 pitches,
+                voice,
             })
         }
         Event::Rest(rest) => {
@@ -1195,15 +1223,83 @@ fn event_content(
                 staff_position: rest.vertical_position,
                 visible: rest.visible,
                 whole_measure,
+                voice,
             })
         }
         Event::Unpitched(unpitched) => LayoutContent::Unpitched(UnpitchedContent {
             position: event_time(&unpitched.position),
             components,
             staff_position: unpitched.staff_position,
+            voice,
         }),
         _ => LayoutContent::Structural,
     }
+}
+
+/// Each event's [`VoicePlace`] among its staff instance's voices: the first
+/// voice (the primary, else the first listed) is upper during any other
+/// voice's ink and alone elsewhere; each later voice, by its order, is lower,
+/// upper, lower and so on; a voice stating its stem direction is upper or
+/// lower by it throughout. Only a note, an unpitched note or a visible rest at
+/// a musical position with a musical duration shows ink.
+fn voice_places(score: &Score, si: &epiphany_core::StaffInstance) -> BTreeMap<EventId, VoicePlace> {
+    let mut voices: Vec<&epiphany_core::Voice> = si.voices.iter().collect();
+    voices.sort_by_key(|v| !v.is_primary);
+    let span = |eid: &EventId| -> Option<(MusicalPosition, MusicalPosition)> {
+        let (position, duration, visible) = match score.events.get(*eid)? {
+            Event::Pitched(e) => (&e.position, &e.duration, true),
+            Event::Unpitched(e) => (&e.position, &e.duration, true),
+            Event::Rest(e) => (&e.position, &e.duration, e.visible),
+            _ => return None,
+        };
+        match (position, duration, visible) {
+            (EventPosition::Musical(start), EventDuration::Musical(length), true) => {
+                Some((start.clone(), start.clone() + length.clone()))
+            }
+            _ => None,
+        }
+    };
+    // Each later voice's inked spans in time order, each with the furthest
+    // end of those up to it.
+    let others: Vec<Vec<(MusicalPosition, MusicalPosition)>> = voices
+        .iter()
+        .skip(1)
+        .map(|v| {
+            let mut spans: Vec<_> = v.events.iter().filter_map(span).collect();
+            spans.sort();
+            let mut furthest: Option<MusicalPosition> = None;
+            for (_, end) in &mut spans {
+                if let Some(f) = furthest.as_ref().filter(|f| *f > end) {
+                    *end = f.clone();
+                }
+                furthest = Some(end.clone());
+            }
+            spans
+        })
+        .collect();
+    let overlaps = |start: &MusicalPosition, end: &MusicalPosition| {
+        others.iter().any(|spans| {
+            let before = spans.partition_point(|(s, _)| s < end);
+            before > 0 && spans[before - 1].1 > *start
+        })
+    };
+    let mut places = BTreeMap::new();
+    for (k, voice) in voices.iter().enumerate() {
+        for eid in &voice.events {
+            let place = match voice.default_stem_direction {
+                Some(epiphany_core::StemDirection::Up) => VoicePlace::Upper,
+                Some(epiphany_core::StemDirection::Down) => VoicePlace::Lower,
+                None if k % 2 == 1 => VoicePlace::Lower,
+                None if k > 0 => VoicePlace::Upper,
+                None => match span(eid) {
+                    Some((start, end)) if overlaps(&start, &end) => VoicePlace::Upper,
+                    _ => VoicePlace::Alone,
+                },
+            };
+            places.insert(*eid, place);
+        }
+    }
+    places
 }
 
 /// An event's concrete position as a layout [`TimePoint`] (the two share the
@@ -1403,13 +1499,23 @@ fn repeat_content(score: &Score, rp: &epiphany_core::RepeatStructure) -> LayoutC
 /// A slur's engraving content: each endpoint event resolved to its onset (or
 /// [`SlurEndpoint::Unresolved`] when the event is missing), plus the authored
 /// curvature/style overrides. Direction defaults to [`SlurDirection::Auto`]
-/// when the override leaves it unset.
-fn slur_content(score: &Score, slur: &epiphany_core::Slur) -> LayoutContent {
+/// when the override leaves it unset, unless the slur starts on a voice
+/// beside another, which puts it above for an upper voice and below for a
+/// lower.
+fn slur_content(
+    score: &Score,
+    slur: &epiphany_core::Slur,
+    places: &BTreeMap<EventId, VoicePlace>,
+) -> LayoutContent {
     use epiphany_core::CurveDirection;
     let direction = match slur.curvature_override.as_ref().and_then(|o| o.direction) {
         Some(CurveDirection::Above) => SlurDirection::Above,
         Some(CurveDirection::Below) => SlurDirection::Below,
-        None => SlurDirection::Auto,
+        None => match places.get(&slur.start_event) {
+            Some(VoicePlace::Upper) => SlurDirection::Above,
+            Some(VoicePlace::Lower) => SlurDirection::Below,
+            _ => SlurDirection::Auto,
+        },
     };
     LayoutContent::Slur(SlurContent {
         start: slur_endpoint(score, slur.start_event),

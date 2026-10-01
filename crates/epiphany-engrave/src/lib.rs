@@ -233,8 +233,12 @@ pub struct Engraver {
 /// and to `17` when the lead's slot and a time signature's began reserving
 /// their ink and the gap after it as their natural width (an opening time
 /// signature stood 0.3 staff spaces from the clef, and the first note as near
-/// it; every score's first system moves right of its lead).
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(17);
+/// it; every score's first system moves right of its lead), and to `18` when
+/// two voices on a staff began turning apart (`VoicePlace`): beside another
+/// voice an upper voice's stems, beams, ties and slurs go up and its rests
+/// above their place, a lower voice's down and below (a staff of one voice is
+/// unchanged).
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(18);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -933,6 +937,7 @@ mod tests {
                     manifested(
                         TypedObjectId::Event(EventId::from_raw(1)),
                         LayoutContent::Note(NoteContent {
+                            voice: epiphany_layout_ir::VoicePlace::Alone,
                             position: TimePoint::Musical(MusicalPosition::origin()),
                             components: vec![],
                             pitches: vec![NotePitch {
@@ -1351,6 +1356,7 @@ mod tests {
                 manifested(
                     TypedObjectId::Event(EventId::from_raw(eid)),
                     LayoutContent::Note(NoteContent {
+                        voice: epiphany_layout_ir::VoicePlace::Alone,
                         position: TimePoint::Musical(pos),
                         components: whole(),
                         // C6 is a step above the treble staff, so each head earns
@@ -1772,6 +1778,7 @@ mod tests {
                 spelling.accidentals.push(AccidentalId::new("sharp"));
             }
             LayoutContent::Note(NoteContent {
+                voice: epiphany_layout_ir::VoicePlace::Alone,
                 position: time,
                 components: vec![],
                 pitches: vec![NotePitch {
@@ -1884,6 +1891,7 @@ mod tests {
                     manifested(
                         TypedObjectId::Event(EventId::from_raw(1)),
                         LayoutContent::Note(NoteContent {
+                            voice: epiphany_layout_ir::VoicePlace::Alone,
                             position: TimePoint::Musical(MusicalPosition::origin()),
                             components: vec![],
                             pitches: vec![NotePitch {

@@ -29,7 +29,7 @@ use crate::glyph::{metrics, BravuraCatalog, GlyphCatalog, GlyphCatalogIdentity, 
 use crate::logical::{
     apply_offset, BarlineKind, LayoutContent, LogicalLayoutIR, PlacedClef, PlacedKeySignature,
     RepeatContent, RepeatPlacement, ScoreVersion, SlurContent, SlurDirection, SlurEndpoint,
-    StaffContent,
+    StaffContent, VoicePlace,
 };
 use crate::provenance::{
     manifestation_layout_id, LayoutObjectId, Provenance, SynthesisInstanceKey, SynthesisKind,
@@ -714,6 +714,7 @@ const LEAD_GAP: f32 = 0.8; // the gap between a lead's ink and the first column 
 const KEY_ACC_X: f32 = 0.9; // x advance per key-signature accidental
 const TIME_SIG_X: f32 = 0.5; // a time signature sits this far right of its barline
 const SIGNATURE_GAP: f32 = 1.0; // the gap between a time signature's ink and the music after it
+const REST_VOICE_SHIFT: f32 = 1.0; // how far a rest beside another voice moves off its place
 const TIME_DIGIT_X: f32 = 0.8; // x advance per time-signature digit
                                // Repeat/volta engraving defaults (Minimal tier; SMuFL engraving-default
                                // neighborhood, not solver-negotiated).
@@ -965,6 +966,8 @@ pub fn try_to_constrained(
         let mut pitch_heads: BTreeMap<PitchId, Vec<Head>> = BTreeMap::new();
         let mut unpitched_heads: BTreeMap<EventId, Vec<Head>> = BTreeMap::new();
         let mut event_stems: BTreeMap<EventId, Vec<StemSeg>> = BTreeMap::new();
+        // Each note's and unpitched note's place among its staff's voices.
+        let mut event_voices: BTreeMap<EventId, VoicePlace> = BTreeMap::new();
         // Per staff, the drawn extent of each note column — the obstacle field a
         // slur must arc clear of, and the stem direction it takes its side from.
         // Columns are shared between the staves of a system (they share an x), so
@@ -1043,7 +1046,7 @@ pub fn try_to_constrained(
                         }
                         let steps: Vec<StaffStep> =
                             placed.iter().map(|(_, step, _)| *step).collect();
-                        let dot_ys = dot_positions(yo, &steps);
+                        let dot_ys = dot_positions(yo, &steps, note.voice == VoicePlace::Lower);
                         for ((pitch, step, accidentals), dot_y) in placed.into_iter().zip(dot_ys) {
                             pitch_heads.entry(pitch).or_default().push(Head {
                                 name,
@@ -1059,13 +1062,23 @@ pub fn try_to_constrained(
                             });
                         }
                         let fallback = step_to_y(yo, reference_step(&clef));
-                        let (seg, ink) = note_stem(value, yo, &steps, fallback, name, key, comp);
+                        let (seg, ink) = note_stem(
+                            value,
+                            yo,
+                            &steps,
+                            fallback,
+                            name,
+                            key,
+                            comp,
+                            voiced_up(note.voice),
+                        );
                         if let Some(staff) = staff {
                             merge_ink(&mut column_ink, staff, &seg.key, ink);
                         }
                         stems.push(seg);
                     }
                     event_stems.insert(eid, stems);
+                    event_voices.insert(eid, note.voice);
                 }
                 (TypedObjectId::Event(eid), LayoutContent::Unpitched(unpitched)) => {
                     // An unpitched note: a notehead at its staff position, read
@@ -1080,7 +1093,8 @@ pub fn try_to_constrained(
                         let key = ColumnKey::Timed(time, ColumnRole::Note);
                         keys.insert(key.clone());
                         let name = notehead_glyph(value);
-                        let dot_y = dot_positions(yo, &[step])[0];
+                        let dot_y =
+                            dot_positions(yo, &[step], unpitched.voice == VoicePlace::Lower)[0];
                         unpitched_heads.entry(eid).or_default().push(Head {
                             name,
                             key: key.clone(),
@@ -1094,13 +1108,23 @@ pub fn try_to_constrained(
                             tied,
                         });
                         let fallback = step_to_y(yo, step);
-                        let (seg, ink) = note_stem(value, yo, &[step], fallback, name, key, comp);
+                        let (seg, ink) = note_stem(
+                            value,
+                            yo,
+                            &[step],
+                            fallback,
+                            name,
+                            key,
+                            comp,
+                            voiced_up(unpitched.voice),
+                        );
                         if let Some(staff) = staff {
                             merge_ink(&mut column_ink, staff, &seg.key, ink);
                         }
                         stems.push(seg);
                     }
                     event_stems.insert(eid, stems);
+                    event_voices.insert(eid, unpitched.voice);
                 }
                 (TypedObjectId::Event(eid), LayoutContent::Rest(rest)) => {
                     let mut segs = Vec::new();
@@ -1117,7 +1141,8 @@ pub fn try_to_constrained(
                         keys.insert(key.clone());
                         // A rest filling its measure is a whole rest in any meter,
                         // hanging from the fourth line; every other rest sits on
-                        // the middle line.
+                        // the middle line. Beside another voice, an upper voice's
+                        // rest moves up a space and a lower voice's down one.
                         let (name, dots) = if rest.whole_measure {
                             (Some("restWhole"), 0)
                         } else {
@@ -1127,6 +1152,11 @@ pub fn try_to_constrained(
                             yo + STAFF_HEIGHT * 0.75
                         } else {
                             yo + STAFF_HEIGHT / 2.0
+                        };
+                        let y = match rest.voice {
+                            VoicePlace::Alone => y,
+                            VoicePlace::Upper => y + REST_VOICE_SHIFT,
+                            VoicePlace::Lower => y - REST_VOICE_SHIFT,
                         };
                         segs.push(RestSeg {
                             name,
@@ -1384,6 +1414,7 @@ pub fn try_to_constrained(
                     continue;
                 }
                 let n = members.len();
+                let voiced = members.iter().find_map(|e| event_stems[e][0].voiced);
                 let (his, los, counts, keys_of): (Vec<f32>, Vec<f32>, Vec<u8>, Vec<ColumnKey>) = {
                     let segs: Vec<&StemSeg> = members.iter().map(|e| &event_stems[e][0]).collect();
                     (
@@ -1401,7 +1432,8 @@ pub fn try_to_constrained(
                     .iter()
                     .map(|y| middle - y)
                     .fold(f32::NEG_INFINITY, f32::max);
-                let up = below > above;
+                // A voice beside another turns its whole group its way.
+                let up = voiced.unwrap_or(below > above);
                 let sign = if up { 1.0 } else { -1.0 };
                 let x_off = if up {
                     head_box.map_or(NOTEHEAD_STEM_X, |b| b.right.0)
@@ -2073,10 +2105,11 @@ pub fn try_to_constrained(
                 }
                 TypedObjectId::Tie(_) => {
                     // A tie arcs from each start head to the head it continues
-                    // into, riding both heads' slots: in a chord the upper
-                    // ties arc above and the lower below, a middle or lone tie
-                    // away from its stem (by its staff position when it has
-                    // none). The structure's exact provenance rides its first
+                    // into, riding both heads' slots: beside another voice an
+                    // upper voice's ties arc above and a lower voice's below;
+                    // alone, in a chord the upper ties arc above and the lower
+                    // below, a middle or lone tie away from its stem (by its
+                    // staff position when it has none). The structure's exact provenance rides its first
                     // arc; a tie with no head to join keeps a traced anchor.
                     let mut joins: Vec<(&Head, &Head)> = Vec::new();
                     let mut start_event = None;
@@ -2099,9 +2132,14 @@ pub fn try_to_constrained(
                         .and_then(|segs| segs.last())
                         .filter(|seg| seg.drawn)
                         .map(|seg| seg.up);
+                    let voice = start_event.and_then(|e| event_voices.get(&e)).copied();
                     let n = joins.len();
                     for (i, (a, b)) in joins.iter().enumerate() {
-                        let above = if n > 1 && 2 * i + 1 < n {
+                        let above = if voice == Some(VoicePlace::Upper) {
+                            true
+                        } else if voice == Some(VoicePlace::Lower) {
+                            false
+                        } else if n > 1 && 2 * i + 1 < n {
                             true
                         } else if n > 1 && 2 * i + 1 > n {
                             false
@@ -2578,6 +2616,8 @@ struct StemSeg {
     comp: usize,
     /// Stem direction: up (right of the heads) or down (left of them).
     up: bool,
+    /// The direction its voice gives it beside another voice, if any.
+    voiced: Option<bool>,
     /// Where the stem attaches, as an x offset from the column's notehead x.
     x_off: f32,
     /// The stem's free end at its normal length, where a flag attaches.
@@ -3156,13 +3196,25 @@ fn components_of(
         .take(if implicit { 1 } else { usize::MAX })
 }
 
+/// The stem direction a voice beside another gives: up for an upper voice,
+/// down for a lower; none alone.
+fn voiced_up(place: VoicePlace) -> Option<bool> {
+    match place {
+        VoicePlace::Alone => None,
+        VoicePlace::Upper => Some(true),
+        VoicePlace::Lower => Some(false),
+    }
+}
+
 /// The stem of one component of a note, and the ink its column carries: the
 /// head furthest from the middle line decides the direction (a chord straddling
 /// it evenly, or a note on it, stems down), the stem reaches an octave from the
 /// outer head and never stops short of the middle line, and an eighth or
 /// shorter takes its flag at that tip, the stem lengthened to the flag's far
 /// edge where its ink passes the tip. `fallback` is where a head-less
-/// component's stem would sit.
+/// component's stem would sit. A voice beside another (`voiced`) turns the
+/// stem its own way instead.
+#[allow(clippy::too_many_arguments)]
 fn note_stem(
     value: NoteValue,
     yo: f32,
@@ -3171,6 +3223,7 @@ fn note_stem(
     name: &'static str,
     key: ColumnKey,
     comp: usize,
+    voiced: Option<bool>,
 ) -> (StemSeg, ColumnInk) {
     let ys: Vec<f32> = steps.iter().map(|step| step_to_y(yo, *step)).collect();
     let drawn = has_stem(value) && !ys.is_empty();
@@ -3182,7 +3235,7 @@ fn note_stem(
         .fold(f32::NEG_INFINITY, f32::max)
         .max(bottom);
     let middle = yo + STAFF_HEIGHT * 0.5;
-    let up = (top - middle) < (middle - bottom);
+    let up = voiced.unwrap_or((top - middle) < (middle - bottom));
     // Attachment: an up-stem rides the right edge of the lowest head, a
     // down-stem the left edge of the highest.
     let head_box = metrics(name).map(|m| m.bounding_box());
@@ -3239,6 +3292,7 @@ fn note_stem(
         drawn,
         comp,
         up,
+        voiced,
         x_off,
         tip,
         end,
@@ -3261,19 +3315,20 @@ fn merge_ink(
 }
 
 /// The `y` of the augmentation dots of each head of a chord, in the order the
-/// steps are given: a head on a line puts its dots in the space above, a head
+/// steps are given: a head on a line puts its dots in the space above (below,
+/// in a lower voice beside another, `lower`), a head
 /// in a space puts them beside it, and a second head wanting a space already
 /// taken goes to the next space down, so no two heads' dots coincide.
-fn dot_positions(yo: f32, steps: &[StaffStep]) -> Vec<f32> {
+fn dot_positions(yo: f32, steps: &[StaffStep], lower: bool) -> Vec<f32> {
     let mut order: Vec<usize> = (0..steps.len()).collect();
     order.sort_by(|a, b| steps[*b].cmp(&steps[*a]).then(a.cmp(b)));
     let mut taken: BTreeSet<StaffStep> = BTreeSet::new();
     let mut ys = vec![0.0; steps.len()];
     for i in order {
-        let mut space = if steps[i].rem_euclid(2) == 0 {
-            steps[i] + 1
-        } else {
-            steps[i]
+        let mut space = match (steps[i].rem_euclid(2) == 0, lower) {
+            (true, false) => steps[i] + 1,
+            (true, true) => steps[i] - 1,
+            (false, _) => steps[i],
         };
         while taken.contains(&space) {
             space -= 2;
@@ -4169,6 +4224,7 @@ mod tests {
         let region = RegionId::from_raw(1);
         let staff = StaffId::from_raw(10);
         let note = LayoutContent::Note(NoteContent {
+            voice: crate::logical::VoicePlace::Alone,
             position: TimePoint::Musical(MusicalPosition::origin()),
             components: vec![],
             pitches: vec![],
@@ -4286,6 +4342,7 @@ mod tests {
         spelling.accidentals.push(AccidentalId::new("sharp"));
         spelling.accidentals.push(AccidentalId::new("flat"));
         let note = LayoutContent::Note(NoteContent {
+            voice: crate::logical::VoicePlace::Alone,
             position: TimePoint::Musical(MusicalPosition::origin()),
             components: vec![],
             pitches: vec![NotePitch {
@@ -4364,6 +4421,7 @@ mod tests {
         let mut spelling = PitchSpelling::cmn(CmnNominal::C, 5);
         spelling.accidentals.push(AccidentalId::new("sharp"));
         let note = LayoutContent::Note(NoteContent {
+            voice: crate::logical::VoicePlace::Alone,
             position: TimePoint::Musical(MusicalPosition::origin()),
             components: vec![],
             pitches: vec![NotePitch {
@@ -4487,6 +4545,7 @@ mod tests {
             objects.push(manifested(
                 TypedObjectId::Event(EventId::from_raw(e)),
                 LayoutContent::Note(NoteContent {
+                    voice: crate::logical::VoicePlace::Alone,
                     position: at(start),
                     components: vec![component(NoteValue::Quarter, 0, false)],
                     pitches,
@@ -4513,6 +4572,7 @@ mod tests {
         objects.push(manifested(
             TypedObjectId::Event(EventId::from_raw(3)),
             LayoutContent::Note(NoteContent {
+                voice: crate::logical::VoicePlace::Alone,
                 position: at(2),
                 components: vec![
                     component(NoteValue::Half, 0, true),
@@ -4640,6 +4700,7 @@ mod tests {
                 manifested(
                     TypedObjectId::Event(EventId::from_raw(1)),
                     LayoutContent::Note(NoteContent {
+                        voice: crate::logical::VoicePlace::Alone,
                         position: TimePoint::Musical(MusicalPosition::origin()),
                         components: vec![component(value, dots)],
                         pitches: vec![NotePitch {
@@ -4708,6 +4769,7 @@ mod tests {
         let c = solve(vec![manifested(
             TypedObjectId::Event(event),
             LayoutContent::Unpitched(UnpitchedContent {
+                voice: crate::logical::VoicePlace::Alone,
                 position: TimePoint::Musical(MusicalPosition::origin()),
                 components: vec![component(NoteValue::Sixteenth, 0)],
                 staff_position: StaffPosition(4),
@@ -4951,6 +5013,7 @@ mod tests {
         };
         // A quarter tied to an eighth: two components at offsets 0 and 1/4.
         let note = LayoutContent::Note(NoteContent {
+            voice: crate::logical::VoicePlace::Alone,
             position: TimePoint::Musical(MusicalPosition::origin()),
             components: vec![
                 component(NoteValue::Quarter, 0, 1, true),
@@ -5145,6 +5208,7 @@ mod tests {
             tuplet: None,
         };
         let rest = LayoutContent::Rest(RestContent {
+            voice: crate::logical::VoicePlace::Alone,
             position: TimePoint::Musical(MusicalPosition::origin()),
             components: vec![component(0, 1), component(1, 16)],
             staff_position: None,
@@ -5210,6 +5274,7 @@ mod tests {
                 Provenance::manifested(TypedObjectId::Event(eid), region, vec![]),
                 Some(staff),
                 LayoutContent::Rest(RestContent {
+                    voice: crate::logical::VoicePlace::Alone,
                     position: TimePoint::Musical(MusicalPosition::origin()),
                     components,
                     staff_position: None,
@@ -5316,6 +5381,7 @@ mod tests {
         };
         // One event, two pitches at the same onset (a chord).
         let note = LayoutContent::Note(NoteContent {
+            voice: crate::logical::VoicePlace::Alone,
             position: TimePoint::Musical(MusicalPosition::origin()),
             components: vec![],
             pitches: vec![
@@ -5450,6 +5516,7 @@ mod tests {
                     TypedObjectId::Event(EventId::from_raw(eid)),
                     staff,
                     LayoutContent::Note(NoteContent {
+                        voice: crate::logical::VoicePlace::Alone,
                         position: TimePoint::Musical(MusicalPosition::origin()),
                         components: vec![],
                         pitches: vec![NotePitch {
@@ -6286,6 +6353,7 @@ mod tests {
                     manifested(
                         TypedObjectId::Event(EventId::from_raw(1)),
                         LayoutContent::Note(NoteContent {
+                            voice: crate::logical::VoicePlace::Alone,
                             position: TimePoint::Musical(MusicalPosition::origin()),
                             components: vec![],
                             pitches: vec![NotePitch {

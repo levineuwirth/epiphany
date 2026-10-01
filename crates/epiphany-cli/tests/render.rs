@@ -483,6 +483,183 @@ fn accidentals_are_drawn_against_the_key_and_the_measure() {
     );
 }
 
+/// Two voices on a staff turn apart wherever both show ink: the upper
+/// voice's stems and beams up, its rests, ties and slurs above; the lower's
+/// stems down, its rests below and a dot on a line under it. A voice alone
+/// keeps the pitch's rule.
+#[test]
+fn voices_turn_their_stems_rests_ties_and_dots_apart() {
+    use epiphany_core::{Event, TypedObjectId};
+
+    let note = |step: &str, octave: u8, duration: u8, voice: u8, kind: &str, extra: &str| {
+        // A tie goes before the voice; a dot and a slur's notation after the
+        // type.
+        let (before, after) = if extra.starts_with("<tie") {
+            (extra, "")
+        } else {
+            ("", extra)
+        };
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>{duration}</duration>{before}<voice>{voice}</voice><type>{kind}</type>\
+             {after}</note>"
+        )
+    };
+    let rest = |voice: u8| {
+        format!(
+            "<note><rest/><duration>2</duration><voice>{voice}</voice><type>quarter</type></note>"
+        )
+    };
+    let backup = "<backup><duration>8</duration></backup>";
+    let slur_start = "<notations><slur type=\"start\"/></notations>";
+    let slur_stop = "<notations><slur type=\"stop\"/></notations>";
+    let measures = [
+        // The upper voice's C, its rest and its A tied over; the lower's
+        // dotted G and rest.
+        format!(
+            "<attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+             </time><clef><sign>G</sign><line>2</line></clef></attributes>{}{}{}{backup}{}{}",
+            note("C", 5, 2, 1, "quarter", ""),
+            rest(1),
+            note("A", 4, 4, 1, "half", "<tie type=\"start\"/>"),
+            note("G", 4, 6, 2, "half", "<dot/>"),
+            rest(2),
+        ),
+        // The upper voice alone.
+        format!(
+            "{}{}",
+            note("A", 4, 4, 1, "half", "<tie type=\"stop\"/>"),
+            note("C", 5, 4, 1, "half", ""),
+        ),
+        // Two eighths beamed, B and C slurred over the lower voice's dotted
+        // E and rest.
+        format!(
+            "{}{}{}{}{backup}{}{}",
+            note("C", 5, 1, 1, "eighth", ""),
+            note("D", 5, 1, 1, "eighth", ""),
+            note("B", 4, 2, 1, "quarter", slur_start),
+            note("C", 5, 4, 1, "half", slur_stop),
+            note("E", 4, 6, 2, "half", "<dot/>"),
+            rest(2),
+        ),
+    ];
+    let body: String = measures
+        .iter()
+        .enumerate()
+        .map(|(m, content)| format!("<measure number=\"{}\">{content}</measure>", m + 1))
+        .collect();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">{body}</part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("voices.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let systems: Vec<_> = layout.systems().collect();
+    assert_eq!(systems.len(), 1);
+    let staff = &systems[0].staves[0].bounding_box;
+    let middle = staff.origin.y.0 + staff.size.height.0 / 2.0;
+    // Staff steps from the bottom line.
+    let step = |y: f32| ((y - middle) * 2.0).round() as i32 + 4;
+
+    // Each head's staff step and whether its note's stem (its event's one
+    // upright stroke) turns up, in time order and down a column.
+    let event_of = |source: &TypedObjectId| {
+        loaded
+            .reduced
+            .score
+            .events
+            .iter()
+            .find_map(|e| match (e, source) {
+                (Event::Pitched(n), TypedObjectId::Pitch(p))
+                    if n.pitches.iter().any(|i| i.id == *p) =>
+                {
+                    Some(TypedObjectId::Event(n.id))
+                }
+                _ => None,
+            })
+    };
+    let mut heads: Vec<(f32, i32, Option<bool>)> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("notehead"))
+        .map(|g| {
+            let (x, y) = (g.position.x.0, g.position.y.0);
+            let event = event_of(&g.provenance.source).expect("a head's note");
+            let stem = layout
+                .strokes
+                .iter()
+                .find(|s| s.provenance.source == event && s.from.x == s.to.x);
+            (x, step(y), stem.map(|s| s.from.y.0.max(s.to.y.0) > y + 1.0))
+        })
+        .collect();
+    heads.sort_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(&a.1)));
+    let up = Some(true);
+    let down = Some(false);
+    assert_eq!(
+        heads.iter().map(|h| (h.1, h.2)).collect::<Vec<_>>(),
+        [
+            // The upper voice's C up, where alone it would turn down; the
+            // lower voice's G down, where alone it would turn up; the A up.
+            (5, up),
+            (2, down),
+            (3, up),
+            // Alone: the A up and the C down, by their pitches.
+            (3, up),
+            (5, down),
+            // The beamed eighths up over the lower voice's E, down; the B on
+            // the middle line up, and the last C.
+            (5, up),
+            (0, down),
+            (6, up),
+            (4, up),
+            (5, up),
+        ]
+    );
+    // The upper voice's rest a space over the middle line; the lower
+    // voice's a space under it.
+    let mut rests: Vec<(f32, f32)> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "restQuarter")
+        .map(|g| (g.position.x.0, g.position.y.0 - middle))
+        .collect();
+    rests.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert_eq!(rests.len(), 3);
+    for (rest, want) in rests.iter().zip([1.0, -1.0, -1.0]) {
+        assert!(
+            (rest.1 - want).abs() < 1e-3,
+            "a rest {} from the middle",
+            rest.1
+        );
+    }
+    // The upper voice's tie arcs above, though alone its A's would arc below.
+    let tie = layout
+        .curves
+        .iter()
+        .find(|c| matches!(c.provenance.source, TypedObjectId::Tie(_)))
+        .expect("a tie");
+    assert!(tie.p1.y.0 > tie.p0.y.0, "the tie arcs above");
+    // And its slur, over the B and C whose stems turn up while the lower
+    // voice holds its E, where alone it would arc below.
+    let slur = layout
+        .curves
+        .iter()
+        .find(|c| matches!(c.provenance.source, TypedObjectId::Slur(_)))
+        .expect("a slur");
+    assert!(slur.p1.y.0 > slur.p0.y.0, "the slur arcs above");
+    // The lower voice's dotted G and E, each on a line, dot the space below.
+    let mut dots: Vec<(f32, i32)> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "augmentationDot")
+        .map(|g| (g.position.x.0, step(g.position.y.0)))
+        .collect();
+    dots.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert_eq!(dots.iter().map(|d| d.1).collect::<Vec<_>>(), [1, -1]);
+}
+
 /// A score's opening time signature stands a clear gap after the clef and
 /// key, and its first note a clear gap after the time signature, with or
 /// without a key signature.

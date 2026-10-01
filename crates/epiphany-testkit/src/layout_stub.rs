@@ -218,6 +218,7 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
     match rng.below(7) {
         0 => LayoutContent::Structural,
         6 => LayoutContent::Unpitched(UnpitchedContent {
+            voice: epiphany_layout_ir::VoicePlace::Alone,
             position: time(rng),
             components: components(rng),
             staff_position: epiphany_core::StaffPosition(rng.range(0, 16) as i16 - 4),
@@ -229,6 +230,7 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
             beams: Vec::new(),
         }),
         2 => LayoutContent::Note(NoteContent {
+            voice: epiphany_layout_ir::VoicePlace::Alone,
             position: time(rng),
             components: components(rng),
             pitches: vec![NotePitch {
@@ -237,6 +239,7 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
             }],
         }),
         3 => LayoutContent::Rest(RestContent {
+            voice: epiphany_layout_ir::VoicePlace::Alone,
             position: time(rng),
             components: components(rng),
             staff_position: rng
