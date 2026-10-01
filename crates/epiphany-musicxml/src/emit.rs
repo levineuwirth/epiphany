@@ -191,6 +191,13 @@ fn staff_lines(lines: Option<u8>) -> StaffLineConfiguration {
     }
 }
 
+/// Whether the model can tie `pitch` to its equal: a tie's paired pitches
+/// must be enharmonically equivalent, which the core answers only in a
+/// twelve-chromatic space, so not for a quarter-tone in `cmn-24`.
+pub(crate) fn tieable(pitch: &epiphany_core::Pitch) -> bool {
+    pitch.enharmonic_equivalent(pitch)
+}
+
 /// The events of a part by staff and onset, each list in source order.
 pub(crate) fn event_starts(
     events: &[crate::source::SourceEvent],
@@ -549,9 +556,21 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                 match found {
                     Some((j, b, len)) => {
                         used.entry(j).or_insert_with(|| vec![false; len])[b] = true;
-                        ends.entry(j)
-                            .or_default()
-                            .push((ids.pitches[p][i][a], ids.pitches[p][j][b]));
+                        if tieable(&x.pitch) {
+                            ends.entry(j)
+                                .or_default()
+                                .push((ids.pitches[p][i][a], ids.pitches[p][j][b]));
+                        } else {
+                            let measure = source.measures[event.measure].number.clone();
+                            source.features.record(
+                                FeatureClass::Content,
+                                "tie on a quarter-tone pitch",
+                                Place {
+                                    part: part.name.clone(),
+                                    measure,
+                                },
+                            );
+                        }
                     }
                     None => {
                         let measure = source.measures[event.measure].number.clone();

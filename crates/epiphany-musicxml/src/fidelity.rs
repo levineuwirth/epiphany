@@ -15,8 +15,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
-    AnchorOffset, Event, EventDuration, EventId, EventPosition, PitchSpacePosition, RationalTime,
-    Score, StaffId, TimeAnchor, TimeSignatureDisplay, VoiceId,
+    AnchorOffset, Event, EventDuration, EventId, EventPosition, Pitch, PitchSpacePosition,
+    RationalTime, Score, StaffId, TimeAnchor, TimeSignatureDisplay, VoiceId,
 };
 
 use crate::emit::{Import, Subject};
@@ -79,8 +79,8 @@ enum ContentKey {
     Rest {
         visible: bool,
     },
-    /// Sorted `(nominal, alteration, octave)` triples.
-    Pitched(Vec<(u8, i8, i8)>),
+    /// Sorted [`pitch_key`]s.
+    Pitched(Vec<(u8, i16, i8)>),
     Unpitched {
         step: i16,
         member: u32,
@@ -110,21 +110,31 @@ pub fn show(time: &RationalTime) -> String {
     }
 }
 
+/// A pitch as compared: its nominal, its alteration in quarter-tones and its
+/// octave, so that a `cmn-24` quarter-flat and a `cmn-12` flat, each an
+/// alteration of `-1` in its own space, differ. A pitch in any other space,
+/// which the importer never writes, compares as `(u8::MAX, 0, 0)`.
+fn pitch_key(pitch: &Pitch) -> (u8, i16, i8) {
+    let space = pitch.scale_position.space.as_str();
+    match &pitch.scale_position.position {
+        PitchSpacePosition::Cmn {
+            nominal,
+            alteration,
+            octave,
+        } if space == "cmn-12" || space == "cmn-24" => {
+            let per_step = if space == "cmn-12" { 2 } else { 1 };
+            (*nominal as u8, per_step * i16::from(*alteration), *octave)
+        }
+        _ => (u8::MAX, 0, 0),
+    }
+}
+
 fn source_key(event: &SourceEvent) -> Key {
     let content = match &event.content {
         Content::Rest { visible } => ContentKey::Rest { visible: *visible },
         Content::Pitched(pitches) => {
-            let mut triples: Vec<(u8, i8, i8)> = pitches
-                .iter()
-                .filter_map(|p| match &p.pitch.scale_position.position {
-                    PitchSpacePosition::Cmn {
-                        nominal,
-                        alteration,
-                        octave,
-                    } => Some((*nominal as u8, *alteration, *octave)),
-                    _ => None,
-                })
-                .collect();
+            let mut triples: Vec<(u8, i16, i8)> =
+                pitches.iter().map(|p| pitch_key(&p.pitch)).collect();
             triples.sort_unstable();
             ContentKey::Pitched(triples)
         }
@@ -154,17 +164,10 @@ fn graph_key(event: &Event) -> Key {
             visible: rest.visible,
         },
         Event::Pitched(pitched) => {
-            let mut triples: Vec<(u8, i8, i8)> = pitched
+            let mut triples: Vec<(u8, i16, i8)> = pitched
                 .pitches
                 .iter()
-                .filter_map(|p| match &p.pitch.scale_position.position {
-                    PitchSpacePosition::Cmn {
-                        nominal,
-                        alteration,
-                        octave,
-                    } => Some((*nominal as u8, *alteration, *octave)),
-                    _ => None,
-                })
+                .map(|p| pitch_key(&p.pitch))
                 .collect();
             triples.sort_unstable();
             ContentKey::Pitched(triples)
@@ -196,9 +199,9 @@ fn anchor_offset(anchor: &TimeAnchor) -> Option<RationalTime> {
     }
 }
 
-/// A tied pitch as compared: its staff, the start's onset, the pitch as
-/// `(nominal, alteration, octave)`, and the end's onset.
-type TiedPitch = (StaffId, RationalTime, (u8, i8, i8), RationalTime);
+/// A tied pitch as compared: its staff, the start's onset, the pitch's
+/// [`pitch_key`], and the end's onset.
+type TiedPitch = (StaffId, RationalTime, (u8, i16, i8), RationalTime);
 
 /// Where a graph event sits: its staff, its voice, and its key.
 struct Placed {
@@ -568,21 +571,9 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             };
             for (a, _) in tie.pitch_pairing.clone().unwrap_or_default() {
                 if let Some(ip) = first.pitches.iter().find(|ip| ip.id == a) {
-                    if let PitchSpacePosition::Cmn {
-                        nominal,
-                        alteration,
-                        octave,
-                    } = &ip.pitch.scale_position.position
-                    {
-                        *graph_ties
-                            .entry((
-                                *staff,
-                                start.clone(),
-                                (*nominal as u8, *alteration, *octave),
-                                end.clone(),
-                            ))
-                            .or_default() += 1;
-                    }
+                    *graph_ties
+                        .entry((*staff, start.clone(), pitch_key(&ip.pitch), end.clone()))
+                        .or_default() += 1;
                 }
             }
         }
@@ -605,25 +596,21 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                 if !ends {
                     continue; // recorded by the importer as a tie without an end
                 }
+                if !crate::emit::tieable(&pitch.pitch) {
+                    continue; // recorded by the importer as a tie on a quarter-tone
+                }
                 if let Some(why) = refused_tie(p, i) {
                     tie_explained.push(format!("{name}: tie at {} ({why})", show(&event.onset)));
                     continue;
                 }
-                if let PitchSpacePosition::Cmn {
-                    nominal,
-                    alteration,
-                    octave,
-                } = &pitch.pitch.scale_position.position
-                {
-                    *source_ties
-                        .entry((
-                            import.ids.staves[p][event.staff],
-                            event.onset.clone(),
-                            (*nominal as u8, *alteration, *octave),
-                            end.clone(),
-                        ))
-                        .or_default() += 1;
-                }
+                *source_ties
+                    .entry((
+                        import.ids.staves[p][event.staff],
+                        event.onset.clone(),
+                        pitch_key(&pitch.pitch),
+                        end.clone(),
+                    ))
+                    .or_default() += 1;
             }
         }
         if graph_ties != source_ties {

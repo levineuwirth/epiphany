@@ -27,6 +27,10 @@ pub enum ReadError {
     NotPartwise(String),
     /// A value the reader needs is malformed: `(line, what)`.
     Malformed(u32, String),
+    /// The file states something the model cannot hold and the importer
+    /// can neither approximate nor leave out, such as a pitch that is not a
+    /// whole number of quarter-tones: `(line, what)`.
+    Unsupported(u32, String),
 }
 
 impl std::fmt::Display for ReadError {
@@ -37,6 +41,7 @@ impl std::fmt::Display for ReadError {
                 write!(f, "root element is <{root}>, not <score-partwise>")
             }
             ReadError::Malformed(line, what) => write!(f, "line {line}: {what}"),
+            ReadError::Unsupported(line, what) => write!(f, "line {line}: unsupported: {what}"),
         }
     }
 }
@@ -407,7 +412,8 @@ fn nominal_of(step: &str) -> Option<CmnNominal> {
     })
 }
 
-/// A CMN pitch in `cmn-12`, as the importer writes every pitch.
+/// A CMN pitch in `cmn-12`, as the importer writes every pitch but a
+/// quarter-tone.
 pub fn cmn_pitch(nominal: CmnNominal, alteration: i8, octave: i8) -> Pitch {
     Pitch {
         scale_position: ScalePosition {
@@ -423,6 +429,34 @@ pub fn cmn_pitch(nominal: CmnNominal, alteration: i8, octave: i8) -> Pitch {
             realization: AcousticRealization::Implicit,
         },
     }
+}
+
+/// A CMN pitch whose alteration is counted in quarter-tones: in `cmn-12` when
+/// it is a whole number of semitones, and otherwise in `cmn-24`, whose
+/// chromatic step is the quarter-tone (a quarter-flat is `-1` there, a flat
+/// `-2`).
+pub fn quarter_tone_pitch(nominal: CmnNominal, quarter_tones: i8, octave: i8) -> Pitch {
+    if quarter_tones % 2 == 0 {
+        return cmn_pitch(nominal, quarter_tones / 2, octave);
+    }
+    let mut pitch = cmn_pitch(nominal, quarter_tones, octave);
+    pitch.scale_position.space = PitchSpaceId::new("cmn-24");
+    pitch
+}
+
+/// `written` moved by `transpose`, a MusicXML interval counted in semitones,
+/// which a `cmn-24` pitch moves by in quarter-tones.
+fn sounding(
+    written: Pitch,
+    transpose: Option<TranspositionInterval>,
+) -> Result<Pitch, epiphany_core::TransposeRefusal> {
+    let Some(mut interval) = transpose else {
+        return Ok(written);
+    };
+    if written.scale_position.space.as_str() == "cmn-24" {
+        interval.chromatic_steps *= 2;
+    }
+    written.transposed(interval)
 }
 
 /// The staff step of a written position read against a treble clef: E4, the
@@ -483,6 +517,10 @@ impl<'d, 'i> Reader<'d, 'i> {
 
     fn malformed(&self, node: Node, what: impl Into<String>) -> ReadError {
         ReadError::Malformed(self.line(node), what.into())
+    }
+
+    fn unsupported(&self, node: Node, what: impl Into<String>) -> ReadError {
+        ReadError::Unsupported(self.line(node), what.into())
     }
 
     fn read(mut self, root: Node) -> Result<SourceScore, ReadError> {
@@ -1124,30 +1162,26 @@ impl<'d, 'i> Reader<'d, 'i> {
             let octave: i8 = child_text(pitch, "octave")
                 .and_then(|o| o.parse().ok())
                 .ok_or_else(|| self.malformed(pitch, "a pitch without an octave"))?;
+            // `<alter>` counts semitones; a quarter-tone is half of one, and
+            // the model holds it in `cmn-24`. Anything finer is refused,
+            // never rounded.
             let alter_text = child_text(pitch, "alter").unwrap_or("0");
-            let alteration = match alter_text.parse::<i8>() {
-                Ok(a) => a,
-                Err(_) => {
-                    let value: f64 = alter_text
-                        .parse()
-                        .map_err(|_| self.malformed(pitch, format!("alter {alter_text:?}")))?;
-                    if value.fract() != 0.0 {
-                        self.features.record(
-                            FeatureClass::Content,
-                            "microtonal alteration",
-                            place.clone(),
-                        );
-                    }
-                    value.trunc() as i8
-                }
-            };
-            let written = cmn_pitch(nominal, alteration, octave);
-            let sounding = match state.file_transpose {
-                None => written,
-                Some(interval) => written.transposed(interval).map_err(|refusal| {
-                    self.malformed(pitch, format!("cannot transpose to sounding: {refusal:?}"))
-                })?,
-            };
+            let alter: f64 = alter_text
+                .parse()
+                .ok()
+                .filter(|a: &f64| a.abs() <= 12.0)
+                .ok_or_else(|| self.malformed(pitch, format!("alter {alter_text:?}")))?;
+            let doubled = alter * 2.0;
+            if doubled.fract() != 0.0 {
+                return Err(self.unsupported(
+                    pitch,
+                    format!("alter {alter_text}, not a whole number of quarter-tones"),
+                ));
+            }
+            let written = quarter_tone_pitch(nominal, doubled as i8, octave);
+            let sounding = sounding(written, state.file_transpose).map_err(|refusal| {
+                self.malformed(pitch, format!("cannot transpose to sounding: {refusal:?}"))
+            })?;
             Some(SourcePitch {
                 pitch: sounding,
                 tie_start,

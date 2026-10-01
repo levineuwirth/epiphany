@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<!-- Hand-written for epiphany-musicxml's tests. Quarter-tones stated by a
+     fractional <alter>: a quarter-flat G tied to its equal, a
+     three-quarter-sharp C, and an ordinary tie beside them. In a transposed
+     score, a B-flat clarinet's written D quarter-sharp sounds C
+     quarter-sharp. -->
+<score-partwise version="4.0">
+  <part-list>
+    <score-part id="P1"><part-name>Flute</part-name></score-part>
+    <score-part id="P2"><part-name>Clarinet in B-flat</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <key><fifths>0</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef>
+      </attributes>
+      <note><pitch><step>G</step><alter>-0.5</alter><octave>4</octave></pitch><duration>1</duration><tie type="start"/><voice>1</voice><type>quarter</type><accidental>quarter-flat</accidental><notations><tied type="start"/></notations></note>
+      <note><pitch><step>G</step><alter>-0.5</alter><octave>4</octave></pitch><duration>1</duration><tie type="stop"/><voice>1</voice><type>quarter</type><notations><tied type="stop"/></notations></note>
+      <note><pitch><step>C</step><alter>1.5</alter><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><accidental>three-quarters-sharp</accidental></note>
+      <note><pitch><step>A</step><octave>4</octave></pitch><duration>1</duration><tie type="start"/><voice>1</voice><type>quarter</type><notations><tied type="start"/></notations></note>
+    </measure>
+    <measure number="2">
+      <note><pitch><step>A</step><octave>4</octave></pitch><duration>2</duration><tie type="stop"/><voice>1</voice><type>half</type><notations><tied type="stop"/></notations></note>
+      <note><rest/><duration>2</duration><voice>1</voice><type>half</type></note>
+    </measure>
+  </part>
+  <part id="P2">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <key><fifths>2</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef>
+        <transpose><diatonic>-1</diatonic><chromatic>-2</chromatic></transpose>
+      </attributes>
+      <note><pitch><step>D</step><alter>0.5</alter><octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>whole</type><accidental>quarter-sharp</accidental></note>
+    </measure>
+    <measure number="2">
+      <note><rest measure="yes"/><duration>4</duration><voice>1</voice></note>
+    </measure>
+  </part>
+</score-partwise>

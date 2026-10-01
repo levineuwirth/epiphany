@@ -8,8 +8,8 @@ use std::path::Path;
 
 use epiphany_core::{
     check_invariants, AnchorOffset, Clef, ClefShape, Event, EventDuration, EventPosition,
-    PitchSpacePosition, RationalTime, Score, TieClass, TimeAnchor, TimeSignatureDisplay,
-    TranspositionInterval,
+    PitchSpacePosition, RationalTime, ScalePosition, Score, TieClass, TimeAnchor,
+    TimeSignatureDisplay, TranspositionInterval,
 };
 use epiphany_engrave::Engraver;
 use epiphany_layout_ir::{to_constrained, to_logical, ConstraintSolver, SolverConfig};
@@ -81,15 +81,21 @@ fn offset(anchor: &TimeAnchor) -> String {
     }
 }
 
-fn pitch_name(position: &PitchSpacePosition) -> String {
+/// A pitch's name: `Bb4`, or for a quarter-tone in `cmn-24` its alteration
+/// in signed quarter-tones, `G-1q4`.
+fn pitch_name(scale: &ScalePosition) -> String {
     let PitchSpacePosition::Cmn {
         nominal,
         alteration,
         octave,
-    } = position
+    } = &scale.position
     else {
-        return format!("{position:?}");
+        return format!("{scale:?}");
     };
+    if scale.space.as_str() == "cmn-24" {
+        return format!("{nominal:?}{alteration:+}q{octave}");
+    }
+    assert_eq!(scale.space.as_str(), "cmn-12");
     let accidental = match alteration {
         a if *a > 0 => "#".repeat(*a as usize),
         a => "b".repeat(a.unsigned_abs() as usize),
@@ -133,7 +139,7 @@ fn events(score: &Score) -> Vec<String> {
                     Event::Pitched(p) => p
                         .pitches
                         .iter()
-                        .map(|ip| pitch_name(&ip.pitch.scale_position.position))
+                        .map(|ip| pitch_name(&ip.pitch.scale_position))
                         .collect::<Vec<_>>()
                         .join(" "),
                     Event::Unpitched(u) => {
@@ -224,7 +230,7 @@ fn ties(score: &Score) -> Vec<String> {
             .pitches
             .iter()
             .find(|ip| ip.id == id)
-            .map(|ip| pitch_name(&ip.pitch.scale_position.position))
+            .map(|ip| pitch_name(&ip.pitch.scale_position))
             .unwrap_or_default(),
         _ => String::new(),
     };
@@ -468,8 +474,7 @@ fn a_concert_score_keeps_sounding_pitches_and_each_part_its_interval() {
                 .pitch
                 .transposed(inverse)
                 .expect("a CMN pitch transposes")
-                .scale_position
-                .position,
+                .scale_position,
         )
     };
     assert_eq!(written(0, 0), "D5");
@@ -516,6 +521,46 @@ fn unpitched_notes_keep_their_staff_step_and_instrument_member() {
     );
     assert_eq!(clefs(score), ["s0 0 perc3"]);
     assert_eq!(score.staves[0].default_staff_lines.line_count, 1);
+}
+
+#[test]
+fn a_quarter_tone_imports_at_its_pitch_in_cmn_24() {
+    let run = run("quarter_tones.musicxml");
+    all_applied(&run);
+    let score = &run.reduced.score;
+    assert_eq!(
+        events(score),
+        [
+            "s0 v0 0 1/4 G-1q4",
+            "s0 v0 1/4 1/4 G-1q4",
+            "s0 v0 1/2 1/4 C+3q5",
+            "s0 v0 3/4 1/4 A4",
+            "s0 v0 1 1/2 A4",
+            "s0 v0 3/2 1/2 rest",
+            "s1 v0 0 1 C+1q5",
+            "s1 v0 1 1 rest",
+        ]
+    );
+    assert_eq!(score.instruments[1].transposition, interval(-1, -2));
+    // A tie's pitches must be enharmonically equivalent, which the core
+    // answers only in a twelve-chromatic space: the quarter-tones' tie is
+    // recorded, and the ordinary tie beside it is made.
+    assert_eq!(ties(score), ["3/4 A4 -> 1 A4"]);
+    let kinds = &run.import.source.features.kinds;
+    let tie = &kinds["tie on a quarter-tone pitch"];
+    assert_eq!((tie.class, tie.places.len()), (FeatureClass::Content, 1));
+    assert!(!kinds.contains_key("tie without a matching end"));
+}
+
+#[test]
+fn a_pitch_finer_than_a_quarter_tone_is_refused_by_name() {
+    match import(&xml("eighth_tone.musicxml")) {
+        Err(ReadError::Unsupported(_, what)) => assert!(what.contains("alter 0.25"), "{what}"),
+        other => panic!(
+            "expected a named refusal, got {:?}",
+            other.map(|i| i.envelopes.len())
+        ),
+    }
 }
 
 #[test]
@@ -743,6 +788,17 @@ fn the_fidelity_comparison_catches_a_spoiled_score() {
     assert!(
         !compare(&import, &base.reduced).passed(),
         "a census mismatch was not caught"
+    );
+    // A quarter-tone is not the semitone of the same alteration count.
+    let quarter = run("quarter_tones.musicxml");
+    let mut reduced = quarter.reduced.clone();
+    let id = reduced.score.canvas.regions[0].staff_instances()[0].voices[0].events[0];
+    if let Some(Event::Pitched(p)) = reduced.score.events.get_mut(id) {
+        p.pitches[0].pitch.scale_position.space = epiphany_core::PitchSpaceId::new("cmn-12");
+    }
+    assert!(
+        !compare(&quarter.import, &reduced).passed(),
+        "a quarter-tone read as a semitone was not caught"
     );
     // So are the keys and clefs: one the reader lost is caught even where the
     // score agrees with the reader, as when a key before `<staves>` was lost.
