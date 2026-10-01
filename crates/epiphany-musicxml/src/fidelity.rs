@@ -690,6 +690,34 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             counts[m].voices = voices[m].len();
             counts[m].staves = staff_sets[m].len();
         }
+
+        // Quarter-tones, held to the file's `<alter>` and `<accidental>` as
+        // the census reads them, apart from the reader: those the score holds,
+        // those of refused events, and the dropped notes that were.
+        let quarter_tones = |content: &ContentKey| match content {
+            ContentKey::Pitched(pitches) => pitches.iter().filter(|k| k.1 % 2 != 0).count(),
+            _ => 0,
+        };
+        let held: usize = placed
+            .iter()
+            .filter(|pl| staves.contains(&pl.staff))
+            .map(|pl| quarter_tones(&pl.key.content))
+            .sum();
+        let refused_quarter_tones: usize = part
+            .events
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| refused(&Subject::Event(p, *i)).is_some())
+            .map(|(_, event)| quarter_tones(&source_key(event).content))
+            .sum();
+        let census = &source.census[p];
+        if held + refused_quarter_tones + part.dropped_quarter_tones != census.quarter_tones {
+            fidelity.failures.push(format!(
+                "{name}: {held} quarter-tones in the score ({refused_quarter_tones} more refused, \
+                 {} dropped and recorded), but the file makes {} notes quarter-tones",
+                part.dropped_quarter_tones, census.quarter_tones
+            ));
+        }
         let mut expected = vec![Counts::default(); source.measures.len()];
         let mut source_voices: Vec<BTreeSet<(usize, &str)>> =
             vec![BTreeSet::new(); source.measures.len()];

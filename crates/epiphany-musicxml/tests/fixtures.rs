@@ -553,6 +553,99 @@ fn a_quarter_tone_imports_at_its_pitch_in_cmn_24() {
 }
 
 #[test]
+fn a_quarter_tone_accidental_named_without_an_alter_gives_the_pitch_and_carries() {
+    let run = run("arrow_accidentals.musicxml");
+    all_applied(&run);
+    let score = &run.reduced.score;
+    assert_eq!(
+        events(score),
+        [
+            // Each name once.
+            "s0 v0 0 1/4 G-1q4",
+            "s0 v0 1/4 1/4 A-3q4",
+            "s0 v0 1/2 1/4 B+1q4",
+            "s0 v0 3/4 1/4 C-1q5",
+            "s0 v0 1 1/4 D+3q5",
+            "s0 v0 5/4 1/4 E+1q5",
+            "s0 v0 3/2 1/4 F+5q5",
+            "s0 v0 7/4 1/4 G+3q5",
+            "s0 v0 2 1/4 A-3q5",
+            "s0 v0 9/4 1/4 B-5q5",
+            "s0 v0 5/2 1/4 C-1q4",
+            "s0 v0 11/4 1/4 D+1q4",
+            "s0 v0 3 1/4 E-3q4",
+            "s0 v0 13/4 1/4 F+3q4",
+            "s0 v0 7/2 1/2 rest",
+            // The second voice's B three-quarter-flat at 17/4 reaches this B.
+            "s0 v0 4 1/2 rest",
+            "s0 v0 9/2 1/4 B-3q4",
+            "s0 v0 19/4 1/4 D5",
+            // Over a tie, to the tied note alone, and along a chain.
+            "s0 v0 5 1/4 C5",
+            "s0 v0 21/4 1/2 rest",
+            "s0 v0 23/4 1/4 B-1q4",
+            "s0 v0 6 1/4 B-1q4",
+            "s0 v0 25/4 1/4 B4",
+            "s0 v0 13/2 1/4 rest",
+            "s0 v0 27/4 1/4 A+1q4",
+            "s0 v0 7 1 A+1q4",
+            "s0 v0 8 1/2 A+1q4",
+            "s0 v0 17/2 1/2 rest",
+            // Two voices tie the same written D: each keeps its own.
+            "s0 v0 9 1 D5",
+            "s0 v0 10 1/2 D5",
+            "s0 v0 21/2 1/2 rest",
+            // Not before the accidental, not at another octave, not past a
+            // natural.
+            "s0 v1 4 1/4 B4",
+            "s0 v1 17/4 1/4 B-3q4",
+            "s0 v1 9/2 1/4 B3",
+            "s0 v1 19/4 1/4 B4",
+            "s0 v1 9 1/2 rest",
+            "s0 v1 19/2 1/2 D+1q5",
+            "s0 v1 10 1/2 D+1q5",
+            "s0 v1 21/2 1/2 rest",
+            "s1 v0 0 1 rest",
+            "s1 v0 1 1 rest",
+            "s1 v0 2 1 rest",
+            "s1 v0 3 1 rest",
+            // Not on the other staff.
+            "s1 v0 4 1/2 rest",
+            "s1 v0 9/2 1/4 B4",
+            "s1 v0 19/4 1/4 rest",
+            "s1 v0 5 1 rest",
+            "s1 v0 6 1 rest",
+            "s1 v0 7 1 rest",
+            "s1 v0 8 1 rest",
+            "s1 v0 9 1 rest",
+            "s1 v0 10 1 rest",
+        ]
+    );
+    assert_eq!(run.import.source.census[0].quarter_tones, 23);
+    assert_eq!(ties(score), ["9 D5 -> 10 D5"]);
+    let kinds = &run.import.source.features.kinds;
+    assert_eq!(kinds["tie on a quarter-tone pitch"].places.len(), 4);
+    assert!(!kinds.contains_key("tie without a matching end"));
+}
+
+#[test]
+fn an_accidental_with_no_alter_and_no_known_alteration_is_refused_by_name() {
+    let text = xml("eighth_tone.musicxml")
+        .replace("<alter>0.25</alter>", "")
+        .replace(
+            "<type>whole</type>",
+            "<type>whole</type><accidental>koron</accidental>",
+        );
+    match import(&text) {
+        Err(ReadError::Unsupported(_, what)) => assert!(what.contains("koron"), "{what}"),
+        other => panic!(
+            "expected a named refusal, got {:?}",
+            other.map(|i| i.envelopes.len())
+        ),
+    }
+}
+
+#[test]
 fn a_pitch_finer_than_a_quarter_tone_is_refused_by_name() {
     match import(&xml("eighth_tone.musicxml")) {
         Err(ReadError::Unsupported(_, what)) => assert!(what.contains("alter 0.25"), "{what}"),
@@ -799,6 +892,26 @@ fn the_fidelity_comparison_catches_a_spoiled_score() {
     assert!(
         !compare(&quarter.import, &reduced).passed(),
         "a quarter-tone read as a semitone was not caught"
+    );
+    // The quarter-tones are held to the file's `<alter>` and `<accidental>`
+    // too: one the reader lost is caught where the score agrees with it, as
+    // when an accidental's name was ignored.
+    let arrows = run("arrow_accidentals.musicxml");
+    let mut import = arrows.import.clone();
+    let mut reduced = arrows.reduced.clone();
+    let natural = epiphany_musicxml::source::cmn_pitch(epiphany_core::CmnNominal::G, 0, 4);
+    let id = reduced.score.canvas.regions[0].staff_instances()[0].voices[0].events[0];
+    if let Some(Event::Pitched(p)) = reduced.score.events.get_mut(id) {
+        p.pitches[0].pitch = natural.clone();
+    }
+    if let epiphany_musicxml::source::Content::Pitched(pitches) =
+        &mut import.source.parts[0].events[0].content
+    {
+        pitches[0].pitch = natural;
+    }
+    assert!(
+        !compare(&import, &reduced).passed(),
+        "a quarter-tone the reader lost was not caught"
     );
     // So are the keys and clefs: one the reader lost is caught even where the
     // score agrees with the reader, as when a key before `<staves>` was lost.
