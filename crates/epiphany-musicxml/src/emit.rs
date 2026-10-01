@@ -15,19 +15,20 @@ use epiphany_core::{
     KeySignature, KeySignatureChange, Measure, MeasureId, MeasureNumberVisibility, MetricTimeModel,
     MusicalDuration, MusicalPosition, OperationId, PitchId, PitchedEvent, PowerOfTwo, RationalTime,
     Region, RegionContent, RegionEdge, RegionId, RegionTimeModel, ReplicaId, Rest, ScoreMetadata,
-    Slur, SlurId, SlurKind, Staff, StaffExtent, StaffId, StaffInstance, StaffInstanceId,
-    StaffLineConfiguration, StaffPosition, StemConfiguration, Tie, TieClass, TieId, TimeAnchor,
-    TimeExtent, TimeSignature, TimeSignatureDisplay, TimeSignatureId, Timestamp, UnpitchedEvent,
-    UnpitchedMember, UnpitchedMemberId, Voice, VoiceId, VoiceOrigin, WallClockTime,
+    Slur, SlurId, SlurKind, Staff, StaffExtent, StaffGroup, StaffGroupId, StaffGroupKind, StaffId,
+    StaffInstance, StaffInstanceId, StaffLineConfiguration, StaffPosition, StemConfiguration, Tie,
+    TieClass, TieId, TimeAnchor, TimeExtent, TimeSignature, TimeSignatureDisplay, TimeSignatureId,
+    Timestamp, UnpitchedEvent, UnpitchedMember, UnpitchedMemberId, Voice, VoiceId, VoiceOrigin,
+    WallClockTime,
 };
 use epiphany_ops::{
     AuthorId, CausalContext, CreateCrossCuttingOp, CreateInstrumentOp, CreateMeasureOp,
-    CreateRegionOp, CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp, CrossCuttingValue,
-    HybridLogicalClock, InsertEventOp, OperationEnvelope, OperationKind, OperationPayload,
-    OperationStamp, SetMetadataOp, SetTimeSignatureOp,
+    CreateRegionOp, CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp,
+    CrossCuttingValue, HybridLogicalClock, InsertEventOp, OperationEnvelope, OperationKind,
+    OperationPayload, OperationStamp, SetMetadataOp, SetTimeSignatureOp,
 };
 
-use crate::source::{Content, FeatureClass, Meter, Place, SourceScore};
+use crate::source::{Content, FeatureClass, GroupKind, Meter, Place, SourceScore};
 
 /// The replica an import authors from unless told otherwise.
 pub const DEFAULT_REPLICA: ReplicaId = ReplicaId(0x6D75_7369_6378_6D6C);
@@ -54,6 +55,8 @@ pub enum Subject {
     Slur(usize, usize),
     /// A beam: part and index into its beams.
     Beam(usize, usize),
+    /// A staff group: index into [`SourceScore::groups`].
+    Group(usize),
 }
 
 /// What one emitted operation carries.
@@ -68,6 +71,8 @@ pub struct Label {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Ids {
     pub region: Option<RegionId>,
+    /// Per staff group.
+    pub groups: Vec<StaffGroupId>,
     pub instruments: Vec<InstrumentId>,
     /// Per part, per staff.
     pub staves: Vec<Vec<StaffId>>,
@@ -250,6 +255,32 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
         );
     }
 
+    // Staff groups, before the staves that name them.
+    let mut group_of: BTreeMap<(usize, usize), StaffGroupId> = BTreeMap::new();
+    for (k, group) in source.groups.iter().enumerate() {
+        let id: StaffGroupId = e.identity.mint();
+        e.emit(
+            "CreateStaffGroup",
+            Subject::Group(k),
+            OperationKind::CreateStaffGroup(CreateStaffGroupOp {
+                group: StaffGroup {
+                    id,
+                    name: None,
+                    kind: match group.kind {
+                        GroupKind::Brace => StaffGroupKind::GrandStaff,
+                        GroupKind::Bracket => StaffGroupKind::Bracket,
+                        GroupKind::SubBracket => StaffGroupKind::SubBracket,
+                    },
+                    members: Vec::new(),
+                },
+            }),
+        );
+        for staff in &group.staves {
+            group_of.insert(*staff, id);
+        }
+        ids.groups.push(id);
+    }
+
     // Instruments and their staves.
     for (p, part) in source.parts.iter().enumerate() {
         let instrument_id: InstrumentId = e.identity.mint();
@@ -292,7 +323,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                         abbreviation: part.abbreviation.clone(),
                         instrument: instrument_id,
                         default_staff_lines: staff_lines(staff.lines),
-                        group: None,
+                        group: group_of.get(&(p, s)).copied(),
                         default_clef: staff.clefs.first().map_or(Clef::treble(), |c| c.clef),
                     },
                 }),

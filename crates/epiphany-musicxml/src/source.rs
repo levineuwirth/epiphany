@@ -826,6 +826,114 @@ fn attribute_census(part: Node) -> (Vec<Vec<Stated<i8>>>, Vec<Vec<Stated<Clef>>>
     (keys, clefs)
 }
 
+/// A part-list entry, in order: a part's id, or a part-group's number and,
+/// for a start, its symbol.
+type ListEntry<'a> = (&'a str, Option<(String, Option<String>)>);
+
+/// What a staff group draws at its left: a brace (a grand staff), a bracket,
+/// or a thin square sub-bracket.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum GroupKind {
+    Brace,
+    Bracket,
+    SubBracket,
+}
+
+/// A staff group as read: its kind and its staves, each `(part, staff)`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SourceGroup {
+    pub kind: GroupKind,
+    pub staves: Vec<(usize, usize)>,
+}
+
+/// The staff groups a file's part-list and parts make, counted by a walk of
+/// their elements the reader does not run: groups a staff can be held in, and
+/// `<part-group>` starts that make none (the model holds a staff in at most
+/// one group).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct GroupCensus {
+    /// Groups made, by kind: braces, brackets, sub-brackets.
+    pub made: [usize; 3],
+    pub unmade: usize,
+}
+
+/// The staff groups a part-list and its parts make, by a walk of their
+/// elements of its own: a part whose `<staves>` exceed one is a brace; then
+/// each brace and bracket `<part-group>` makes a group if any of its parts'
+/// staves is not yet held, and a square one if none is; anything else, or a
+/// group restarted or never stopped, makes none.
+fn group_census(part_list: Node, parts: &[Node]) -> GroupCensus {
+    let staves: BTreeMap<&str, usize> = parts
+        .iter()
+        .map(|part| {
+            let count = children(*part, "measure")
+                .flat_map(|m| children(m, "attributes"))
+                .flat_map(|a| children(a, "staves"))
+                .filter_map(|s| text(s).parse::<usize>().ok())
+                .max()
+                .unwrap_or(1);
+            (part.attribute("id").unwrap_or(""), count)
+        })
+        .collect();
+    let mut census = GroupCensus::default();
+    let mut held: BTreeSet<(&str, usize)> = BTreeSet::new();
+    for (&id, &count) in &staves {
+        if count >= 2 {
+            census.made[0] += 1;
+            held.extend((0..count).map(|s| (id, s)));
+        }
+    }
+    let mut open: BTreeMap<&str, (&str, Vec<&str>)> = BTreeMap::new();
+    let mut closed: Vec<(&str, Vec<&str>)> = Vec::new();
+    for entry in elements(part_list) {
+        match (name(entry), entry.attribute("type")) {
+            ("score-part", _) => {
+                let id = entry.attribute("id").unwrap_or("");
+                if staves.contains_key(id) {
+                    open.values_mut().for_each(|(_, ids)| ids.push(id));
+                }
+            }
+            ("part-group", Some("start")) => {
+                let symbol = child_text(entry, "group-symbol").unwrap_or("none");
+                let number = entry.attribute("number").unwrap_or("1");
+                if open.insert(number, (symbol, Vec::new())).is_some() {
+                    census.unmade += 1;
+                }
+            }
+            ("part-group", Some("stop")) => {
+                let number = entry.attribute("number").unwrap_or("1");
+                if let Some(group) = open.remove(number) {
+                    closed.push(group);
+                }
+            }
+            _ => {}
+        }
+    }
+    census.unmade += open.len();
+    for (kind, wanted) in ["brace", "bracket", "square"].into_iter().enumerate() {
+        for (_, ids) in closed.iter().filter(|(symbol, _)| *symbol == wanted) {
+            let all: Vec<(&str, usize)> = ids
+                .iter()
+                .flat_map(|id| (0..staves[id]).map(move |s| (*id, s)))
+                .collect();
+            let free: Vec<(&str, usize)> =
+                all.iter().copied().filter(|s| !held.contains(s)).collect();
+            let makes = !free.is_empty() && (wanted != "square" || free.len() == all.len());
+            if makes {
+                census.made[kind] += 1;
+                held.extend(free);
+            } else {
+                census.unmade += 1;
+            }
+        }
+    }
+    census.unmade += closed
+        .iter()
+        .filter(|(symbol, _)| !matches!(*symbol, "brace" | "bracket" | "square"))
+        .count();
+    census
+}
+
 /// A partwise MusicXML score as the file states it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SourceScore {
@@ -841,6 +949,16 @@ pub struct SourceScore {
     pub features: Features,
     /// Per part, in part order.
     pub census: Vec<Census>,
+    /// The staff groups: a brace for each part of two or more staves, then
+    /// the part-list's brackets, braces and square sub-brackets over the
+    /// staves no group yet holds.
+    pub groups: Vec<SourceGroup>,
+    /// The part-list's `<part-group>`s that make no group, each recorded: a
+    /// symbol the model has no group for, a square sub-bracket inside another
+    /// group, a group with no staff left to hold, or one never stopped.
+    pub unmade_groups: usize,
+    /// The census's own count of the same.
+    pub group_census: GroupCensus,
 }
 
 impl SourceScore {
@@ -1094,6 +1212,10 @@ impl<'d, 'i> Reader<'d, 'i> {
         let mut concert = false;
         let mut score_parts: BTreeMap<String, Node> = BTreeMap::new();
         let mut part_nodes = Vec::new();
+        // The part-list in order: each part's id, and each group start
+        // (number, symbol) and stop (number).
+        let mut list: Vec<ListEntry> = Vec::new();
+        let mut part_list = None;
         for node in elements(root) {
             match name(node) {
                 "work" => {
@@ -1148,21 +1270,24 @@ impl<'d, 'i> Reader<'d, 'i> {
                         .record(FeatureClass::Presentation, "credit", score_place());
                 }
                 "part-list" => {
+                    part_list = Some(node);
                     for entry in elements(node) {
                         match name(entry) {
                             "score-part" => {
-                                let id = entry.attribute("id").unwrap_or("").to_owned();
-                                score_parts.insert(id, entry);
+                                let id = entry.attribute("id").unwrap_or("");
+                                list.push((id, None));
+                                score_parts.insert(id.to_owned(), entry);
                             }
                             "part-group" => {
-                                if entry.attribute("type") == Some("start") {
-                                    let symbol =
-                                        child_text(entry, "group-symbol").unwrap_or("none");
-                                    self.features.record(
-                                        FeatureClass::Content,
-                                        format!("part group ({symbol})"),
-                                        score_place(),
-                                    );
+                                let number = entry.attribute("number").unwrap_or("1").to_owned();
+                                let kind = entry.attribute("type").unwrap_or("");
+                                let symbol = (kind == "start").then(|| {
+                                    child_text(entry, "group-symbol")
+                                        .unwrap_or("none")
+                                        .to_owned()
+                                });
+                                if kind == "start" || kind == "stop" {
+                                    list.push(("", Some((number, symbol))));
                                 }
                             }
                             other => self.features.record(
@@ -1183,7 +1308,7 @@ impl<'d, 'i> Reader<'d, 'i> {
         }
 
         let mut reads = Vec::new();
-        for node in part_nodes {
+        for &node in &part_nodes {
             let id = node.attribute("id").unwrap_or("").to_owned();
             let Some(declaration) = score_parts.get(&id).copied() else {
                 return Err(self.malformed(node, format!("part {id:?} is not in the part-list")));
@@ -1282,6 +1407,9 @@ impl<'d, 'i> Reader<'d, 'i> {
             census.push(read.census);
         }
 
+        let (groups, unmade_groups) = self.groups(&list, &parts);
+        let group_census =
+            part_list.map_or_else(GroupCensus::default, |node| group_census(node, &part_nodes));
         Ok(SourceScore {
             title,
             composer,
@@ -1291,7 +1419,122 @@ impl<'d, 'i> Reader<'d, 'i> {
             meters,
             features: self.features,
             census,
+            groups,
+            unmade_groups,
+            group_census,
         })
+    }
+
+    /// The staff groups of the part-list `list` over `parts`, and how many of
+    /// its `<part-group>`s made none, each recorded. A staff is held in at most
+    /// one group: a part of two or more staves is a brace; then each brace and
+    /// bracket of the part-list holds those of its staves no group yet holds,
+    /// and a square sub-bracket all of its staves, if no group holds any.
+    fn groups(&mut self, list: &[ListEntry], parts: &[SourcePart]) -> (Vec<SourceGroup>, usize) {
+        let place = || Place {
+            part: String::new(),
+            measure: String::new(),
+        };
+        let index: BTreeMap<&str, usize> = parts
+            .iter()
+            .enumerate()
+            .map(|(p, part)| (part.id.as_str(), p))
+            .collect();
+        // Each part-group's symbol and the parts between its start and stop.
+        let mut open: BTreeMap<&str, (String, Vec<usize>)> = BTreeMap::new();
+        let mut spans: Vec<(String, Vec<usize>)> = Vec::new();
+        let mut unmade = 0;
+        for (id, group) in list {
+            match group {
+                None => {
+                    if let Some(&p) = index.get(id) {
+                        open.values_mut().for_each(|(_, parts)| parts.push(p));
+                    }
+                }
+                Some((number, Some(symbol))) => {
+                    if open
+                        .insert(number.as_str(), (symbol.clone(), Vec::new()))
+                        .is_some()
+                    {
+                        unmade += 1;
+                        self.features.record(
+                            FeatureClass::Notation,
+                            "part group begun again before its stop",
+                            place(),
+                        );
+                    }
+                }
+                Some((number, None)) => {
+                    if let Some(span) = open.remove(number.as_str()) {
+                        spans.push(span);
+                    }
+                }
+            }
+        }
+        for _ in open {
+            unmade += 1;
+            self.features
+                .record(FeatureClass::Notation, "part group without a stop", place());
+        }
+        let mut held: BTreeSet<(usize, usize)> = BTreeSet::new();
+        let mut groups = Vec::new();
+        for (p, part) in parts.iter().enumerate() {
+            if part.staves.len() >= 2 {
+                let staves: Vec<(usize, usize)> = (0..part.staves.len()).map(|s| (p, s)).collect();
+                held.extend(staves.iter().copied());
+                groups.push(SourceGroup {
+                    kind: GroupKind::Brace,
+                    staves,
+                });
+            }
+        }
+        let staves_of = |parts_in: &[usize]| -> Vec<(usize, usize)> {
+            parts_in
+                .iter()
+                .flat_map(|&p| (0..parts[p].staves.len()).map(move |s| (p, s)))
+                .collect()
+        };
+        for wanted in ["brace", "bracket", "square"] {
+            for (symbol, parts_in) in spans.iter().filter(|(symbol, _)| symbol == wanted) {
+                let staves = staves_of(parts_in);
+                let free: Vec<(usize, usize)> = staves
+                    .iter()
+                    .copied()
+                    .filter(|s| !held.contains(s))
+                    .collect();
+                let (kind, holds) = match symbol.as_str() {
+                    "brace" => (GroupKind::Brace, !free.is_empty()),
+                    "bracket" => (GroupKind::Bracket, !free.is_empty()),
+                    _ => (
+                        GroupKind::SubBracket,
+                        !free.is_empty() && free.len() == staves.len(),
+                    ),
+                };
+                if holds {
+                    held.extend(free.iter().copied());
+                    groups.push(SourceGroup { kind, staves: free });
+                } else {
+                    unmade += 1;
+                    self.features.record(
+                        FeatureClass::Notation,
+                        format!("part group ({symbol}) within another group"),
+                        place(),
+                    );
+                }
+            }
+        }
+        for (symbol, _) in spans
+            .iter()
+            .filter(|(symbol, _)| !matches!(symbol.as_str(), "brace" | "bracket" | "square"))
+        {
+            unmade += 1;
+            self.features.record(
+                FeatureClass::Notation,
+                format!("part group ({symbol})"),
+                place(),
+            );
+        }
+        (groups, unmade)
     }
 
     fn read_part(

@@ -8,7 +8,7 @@ use std::path::Path;
 
 use epiphany_core::{
     check_invariants, AnchorOffset, Clef, ClefShape, Event, EventDuration, EventPosition,
-    PitchSpacePosition, RationalTime, ScalePosition, Score, TieClass, TimeAnchor,
+    PitchSpacePosition, RationalTime, ScalePosition, Score, StaffId, TieClass, TimeAnchor,
     TimeSignatureDisplay, TranspositionInterval,
 };
 use epiphany_engrave::Engraver;
@@ -971,6 +971,59 @@ fn beams_join_the_notes_of_one_voice_from_begin_to_end() {
     );
     assert_eq!(source.parts[0].unmade_beams, 1);
     assert_eq!(source.features.kinds["beam without an end"].places.len(), 1);
+}
+
+#[test]
+fn part_groups_and_grand_staves_become_staff_groups() {
+    let run = run("groups.musicxml");
+    all_applied(&run);
+    let score = &run.reduced.score;
+    let ids = &run.import.ids;
+    let place = |staff: StaffId| -> String {
+        ids.staves
+            .iter()
+            .enumerate()
+            .find_map(|(p, staves)| {
+                staves
+                    .iter()
+                    .position(|s| *s == staff)
+                    .map(|s| format!("P{}.{}", p + 1, s + 1))
+            })
+            .unwrap_or_default()
+    };
+    let mut groups: Vec<String> = score
+        .staff_groups
+        .iter()
+        .map(|g| {
+            let mut members: Vec<String> = g.members.iter().map(|s| place(*s)).collect();
+            members.sort();
+            format!("{:?} {}", g.kind, members.join(" "))
+        })
+        .collect();
+    groups.sort();
+    assert_eq!(
+        groups,
+        [
+            "Bracket P1.1 P2.1",
+            "GrandStaff P3.1 P3.2",
+            "SubBracket P4.1 P5.1",
+        ]
+    );
+    let source = &run.import.source;
+    assert_eq!(source.unmade_groups, 3);
+    assert_eq!(
+        (source.group_census.made, source.group_census.unmade),
+        ([1, 1, 1], 3)
+    );
+    let kinds = &source.features.kinds;
+    assert_eq!(
+        kinds["part group (square) within another group"]
+            .places
+            .len(),
+        1
+    );
+    assert_eq!(kinds["part group (line)"].places.len(), 1);
+    assert_eq!(kinds["part group ()"].places.len(), 1);
 }
 
 #[test]

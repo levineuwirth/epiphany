@@ -16,12 +16,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
     AnchorOffset, Event, EventDuration, EventId, EventPosition, Pitch, PitchSpacePosition,
-    RationalTime, Score, StaffId, TimeAnchor, TimeSignatureDisplay, VoiceId,
+    RationalTime, Score, StaffGroupKind, StaffId, TimeAnchor, TimeSignatureDisplay, VoiceId,
 };
 
 use crate::emit::{Import, Subject};
 use crate::outcome::Reduced;
-use crate::source::{Content, QuarterTone, SourceEvent};
+use crate::source::{Content, GroupKind, QuarterTone, SourceEvent};
 
 /// Counts of one part in one measure.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -998,6 +998,73 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
     if graph_meters != source_meters {
         fidelity.failures.push(format!(
             "meters {graph_meters:?}, the source's {source_meters:?}"
+        ));
+    }
+
+    // Staff groups: each group's kind and staves, the score's against the
+    // reader's, and the reader's groups made and unmade against the census's.
+    let kind_of = |kind: &StaffGroupKind| -> &'static str {
+        match kind {
+            StaffGroupKind::GrandStaff => "brace",
+            StaffGroupKind::Bracket => "bracket",
+            StaffGroupKind::SubBracket => "sub-bracket",
+            StaffGroupKind::Choral => "choral",
+            StaffGroupKind::Registered(_) => "registered",
+        }
+    };
+    let mut graph_groups: Vec<(&str, Vec<StaffId>)> = score
+        .staff_groups
+        .iter()
+        .map(|g| {
+            let mut members = g.members.clone();
+            members.sort();
+            (kind_of(&g.kind), members)
+        })
+        .collect();
+    let mut source_groups: Vec<(&str, Vec<StaffId>)> = Vec::new();
+    for (k, group) in source.groups.iter().enumerate() {
+        if let Some(why) = refused(&Subject::Group(k)) {
+            fidelity.explained.push(format!("staff group {k} ({why})"));
+            continue;
+        }
+        let mut members: Vec<StaffId> = group
+            .staves
+            .iter()
+            .map(|&(p, s)| import.ids.staves[p][s])
+            .collect();
+        members.sort();
+        let kind = match group.kind {
+            GroupKind::Brace => "brace",
+            GroupKind::Bracket => "bracket",
+            GroupKind::SubBracket => "sub-bracket",
+        };
+        source_groups.push((kind, members));
+    }
+    graph_groups.sort();
+    source_groups.sort();
+    if graph_groups != source_groups {
+        let sizes = |groups: &[(&str, Vec<StaffId>)]| -> Vec<String> {
+            groups
+                .iter()
+                .map(|(kind, members)| format!("{kind} of {}", members.len()))
+                .collect()
+        };
+        fidelity.failures.push(format!(
+            "staff groups {:?} in the score, {:?} in the source (by kind and staves)",
+            sizes(&graph_groups),
+            sizes(&source_groups)
+        ));
+    }
+    let census = source.group_census;
+    let mut made = [0usize; 3];
+    for group in &source.groups {
+        made[group.kind as usize] += 1;
+    }
+    if made != census.made || source.unmade_groups != census.unmade {
+        fidelity.failures.push(format!(
+            "the reader made {made:?} staff groups (braces, brackets, sub-brackets) and \
+             recorded {} unmade, but the file makes {:?} and leaves {} unmade",
+            source.unmade_groups, census.made, census.unmade
         ));
     }
     fidelity
