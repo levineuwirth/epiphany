@@ -359,6 +359,37 @@ fn a_part_on_two_staves_shares_one_instrument() {
 }
 
 #[test]
+fn a_key_written_before_the_staves_reaches_each_staff_it_names() {
+    let run = run("keyed_grand_staves.musicxml");
+    all_applied(&run);
+    let score = &run.reduced.score;
+    assert_eq!(
+        events(score),
+        [
+            "s0 v0 0 1 D5",
+            "s0 v0 1 1 G4",
+            "s1 v0 0 1 Bb2",
+            "s1 v0 1 1 G2",
+            "s2 v0 0 1 E5",
+            "s2 v0 1 1 rest",
+            "s3 v0 0 1 F3",
+            "s3 v0 1 1 rest",
+        ]
+    );
+    assert_eq!(
+        keys(score),
+        ["s0 0 -2", "s0 1 1", "s1 0 -2", "s1 1 1", "s2 0 1", "s3 0 -1"]
+    );
+    assert_eq!(clefs(score), ["s0 0 G2", "s1 0 F4", "s2 0 G2", "s3 0 F4"]);
+    let census = &run.import.source.census;
+    assert_eq!(census[0].keys, [vec![-2, 1], vec![-2, 1]]);
+    assert_eq!(census[1].keys, [vec![1], vec![-1]]);
+    let lacking = &run.import.source.features.kinds["key for a staff the part lacks"];
+    assert_eq!(lacking.places.len(), 1);
+    assert_eq!(lacking.class, FeatureClass::Content);
+}
+
+#[test]
 fn ties_pair_their_pitches_and_slurs_their_events() {
     let run = run("ties_and_slurs.musicxml");
     all_applied(&run);
@@ -713,4 +744,27 @@ fn the_fidelity_comparison_catches_a_spoiled_score() {
         !compare(&import, &base.reduced).passed(),
         "a census mismatch was not caught"
     );
+    // So are the keys and clefs: one the reader lost is caught even where the
+    // score agrees with the reader, as when a key before `<staves>` was lost.
+    let keyed = run("keyed_grand_staves.musicxml");
+    for what in ["key", "clef"] {
+        let mut import = keyed.import.clone();
+        let mut reduced = keyed.reduced.clone();
+        let instance = &mut reduced.score.canvas.regions[0]
+            .content
+            .staff_instances_mut()
+            .expect("staff-based")[1];
+        let staff = &mut import.source.parts[0].staves[1];
+        if what == "key" {
+            instance.key_sequence.remove(0);
+            staff.keys.remove(0);
+        } else {
+            instance.clef_sequence.remove(0);
+            staff.clefs.remove(0);
+        }
+        assert!(
+            !compare(&import, &reduced).passed(),
+            "a {what} the reader lost was not caught"
+        );
+    }
 }

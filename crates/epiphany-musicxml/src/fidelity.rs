@@ -242,7 +242,7 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
 
     // The reader against the raw element count.
     for (p, part) in source.parts.iter().enumerate() {
-        let census = source.census[p];
+        let census = &source.census[p];
         let dropped = part.dropped_notes;
         let (mut notes, mut rests, mut extra) = (0, 0, 0);
         for event in &part.events {
@@ -264,6 +264,14 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                  ({dropped} dropped and recorded), but the file has {} pitched and {} unpitched \
                  notes, {} rests and {} chord members",
                 part.name, census.pitched, census.unpitched, census.rests, census.chord_members
+            ));
+        }
+        if census.keys.len() != part.staves.len() {
+            fidelity.failures.push(format!(
+                "{}: the reader holds {} staves, the file's <staves> declare {}",
+                part.name,
+                part.staves.len(),
+                census.keys.len()
             ));
         }
     }
@@ -480,6 +488,39 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             if graph_keys != source_keys {
                 fidelity.failures.push(format!(
                     "{label}: keys {graph_keys:?}, the source's {source_keys:?}"
+                ));
+            }
+            // The same keys and clefs held to the file's own elements, which
+            // the reader's placement of them cannot hide.
+            let census = &source.census[p];
+            let mut graph_fifths: Vec<i8> = instance
+                .key_sequence
+                .iter()
+                .map(|k| k.key.fifths())
+                .collect();
+            let mut file_fifths = census.keys.get(s).cloned().unwrap_or_default();
+            graph_fifths.sort_unstable();
+            file_fifths.sort_unstable();
+            if graph_fifths != file_fifths {
+                fidelity.failures.push(format!(
+                    "{label}: keys {graph_fifths:?} in the score, {file_fifths:?} in the file"
+                ));
+            }
+            let clef_key = |c: &epiphany_core::Clef| (c.shape as u8, c.line, c.octave_shift);
+            let mut graph_clefs: Vec<(u8, i8, i8)> = instance
+                .clef_sequence
+                .iter()
+                .map(|c| clef_key(&c.clef))
+                .collect();
+            let mut file_clefs: Vec<(u8, i8, i8)> = census
+                .clefs
+                .get(s)
+                .map_or_else(Vec::new, |cs| cs.iter().map(clef_key).collect());
+            graph_clefs.sort_unstable();
+            file_clefs.sort_unstable();
+            if graph_clefs != file_clefs {
+                fidelity.failures.push(format!(
+                    "{label}: clefs {graph_clefs:?} in the score, {file_clefs:?} in the file"
                 ));
             }
 

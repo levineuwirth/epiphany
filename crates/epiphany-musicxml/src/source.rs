@@ -234,8 +234,9 @@ pub struct SourcePart {
 }
 
 /// Raw counts taken straight from the `<note>` elements of a part, with no
-/// timing logic, as an independent check on the reader.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+/// timing logic, and the keys and clefs its `<attributes>` state, as an
+/// independent check on the reader.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Census {
     /// `<note>` elements with a `<pitch>`, not grace or cue.
     pub pitched: usize,
@@ -247,6 +248,81 @@ pub struct Census {
     pub chord_members: usize,
     /// Grace and cue notes, which are not imported.
     pub grace_or_cue: usize,
+    /// Per staff, the `fifths` of each `<key>` the model can hold (at most
+    /// seven accidentals) that applies to it: a numbered key to its staff,
+    /// an unnumbered one to every staff the part's `<staves>` declare.
+    pub keys: Vec<Vec<i8>>,
+    /// Per staff, each `<clef>` of a shape the model holds that applies to
+    /// it: a numbered clef to its staff, an unnumbered one to the first.
+    pub clefs: Vec<Vec<Clef>>,
+}
+
+/// The keys and clefs of a part's `<attributes>`, per staff, read straight
+/// from the elements. It shares none of the reader's order of reading, so it
+/// holds the reader's placement of them to account.
+fn attribute_census(part: Node) -> (Vec<Vec<i8>>, Vec<Vec<Clef>>) {
+    let attributes = || children(part, "measure").flat_map(|m| children(m, "attributes"));
+    let staves = attributes()
+        .flat_map(|a| children(a, "staves"))
+        .filter_map(|s| text(s).parse::<usize>().ok())
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let mut keys = vec![Vec::new(); staves];
+    let mut clefs = vec![Vec::new(); staves];
+    for a in attributes() {
+        for key in children(a, "key") {
+            let Some(fifths) = child_text(key, "fifths")
+                .and_then(|f| f.parse::<i8>().ok())
+                .filter(|f| (-7..=7).contains(f))
+            else {
+                continue;
+            };
+            match key.attribute("number") {
+                None => keys.iter_mut().for_each(|k| k.push(fifths)),
+                Some(n) => {
+                    let staff = n.parse::<usize>().ok().and_then(|n| n.checked_sub(1));
+                    if let Some(list) = staff.and_then(|s| keys.get_mut(s)) {
+                        list.push(fifths);
+                    }
+                }
+            }
+        }
+        for clef in children(a, "clef") {
+            let line = child_text(clef, "line").and_then(|l| l.parse::<i8>().ok());
+            let octave_shift = child_text(clef, "clef-octave-change")
+                .and_then(|o| o.parse::<i8>().ok())
+                .unwrap_or(0);
+            let (shape, default_line) = match child_text(clef, "sign") {
+                Some("G") => (ClefShape::G, 2),
+                Some("F") => (ClefShape::F, 4),
+                Some("C") => (ClefShape::C, 3),
+                Some("percussion") => (ClefShape::Percussion, 3),
+                _ => continue,
+            };
+            let value = if shape == ClefShape::Percussion {
+                Clef {
+                    shape,
+                    line: 3,
+                    octave_shift: 0,
+                }
+            } else {
+                Clef {
+                    shape,
+                    line: line.unwrap_or(default_line),
+                    octave_shift,
+                }
+            };
+            let staff = match clef.attribute("number") {
+                None => Some(0),
+                Some(n) => n.parse::<usize>().ok().and_then(|n| n.checked_sub(1)),
+            };
+            if let Some(list) = staff.and_then(|s| clefs.get_mut(s)) {
+                list.push(value);
+            }
+        }
+    }
+    (keys, clefs)
 }
 
 /// A partwise MusicXML score as the file states it.
@@ -828,6 +904,7 @@ impl<'d, 'i> Reader<'d, 'i> {
             );
         }
         read.part = part;
+        (read.census.keys, read.census.clefs) = attribute_census(node);
         Ok(read)
     }
 
@@ -1223,6 +1300,21 @@ impl<'d, 'i> Reader<'d, 'i> {
         let offset = |divisions: i64| {
             RationalTime::new(cursor, 4 * divisions).expect("divisions are positive")
         };
+        // The schema puts `<staves>` after `<key>`, but an unnumbered key
+        // applies to every staff and a numbered one names a staff, so the
+        // part's staves are known before any key or clef is placed.
+        if let Some(item) = child(attributes, "staves") {
+            let count = text(item)
+                .parse::<usize>()
+                .ok()
+                .filter(|c| (1..=16).contains(c))
+                .ok_or_else(|| self.malformed(item, format!("staves {:?}", text(item))))?;
+            while part.staves.len() < count {
+                part.staves.push(SourceStaff::default());
+                read.clef_offsets.push(Vec::new());
+                read.key_offsets.push(Vec::new());
+            }
+        }
         for item in elements(attributes) {
             match name(item) {
                 "divisions" => {
@@ -1234,18 +1326,7 @@ impl<'d, 'i> Reader<'d, 'i> {
                             self.malformed(item, format!("divisions {:?}", text(item)))
                         })?;
                 }
-                "staves" => {
-                    let count = text(item)
-                        .parse::<usize>()
-                        .ok()
-                        .filter(|c| (1..=16).contains(c))
-                        .ok_or_else(|| self.malformed(item, format!("staves {:?}", text(item))))?;
-                    while part.staves.len() < count {
-                        part.staves.push(SourceStaff::default());
-                        read.clef_offsets.push(Vec::new());
-                        read.key_offsets.push(Vec::new());
-                    }
-                }
+                "staves" => {}
                 "key" => {
                     let Some(fifths) =
                         child_text(item, "fifths").and_then(|f| f.parse::<i8>().ok())
@@ -1266,12 +1347,17 @@ impl<'d, 'i> Reader<'d, 'i> {
                         continue;
                     }
                     let staves: Vec<usize> = match item.attribute("number") {
-                        Some(n) => n
-                            .parse::<usize>()
-                            .ok()
-                            .filter(|n| *n >= 1 && *n <= part.staves.len())
-                            .map(|n| vec![n - 1])
-                            .unwrap_or_default(),
+                        Some(n) => match n.parse::<usize>() {
+                            Ok(n) if n >= 1 && n <= part.staves.len() => vec![n - 1],
+                            _ => {
+                                self.features.record(
+                                    FeatureClass::Content,
+                                    "key for a staff the part lacks",
+                                    place.clone(),
+                                );
+                                continue;
+                            }
+                        },
                         None => (0..part.staves.len()).collect(),
                     };
                     for s in staves {
