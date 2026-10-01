@@ -1113,3 +1113,15 @@ from the second system's left edge to its end, each note end still on its
 slot. Locked by `beams_stay_on_their_stems_through_spacing_and_justification`
 and `ties_cross_barlines_and_system_breaks` (`epiphany-cli`), which fail with
 the anchors ignored, or the half-arcs replaced by a geometric split.
+
+## ENGRAVER_VERSION 14 → 15: system-start leads (X2.6, 2026-10-01)
+
+The constrained IR is one strip per region with a single lead (clef and key)
+at its start; casting broke the strip into systems and drew no clef or key
+after the first. The constrained IR now carries, per staff, the lead in force
+from each clef or key change on (`SystemLead`), and casting draws it at each
+later system's left margin, from the staff instance's provenance under
+`SYSTEM_LEAD_SYNTHESIS`, moves the system's music right of it, reserves the
+widest lead in its break search, extends the staff lines under it, and counts
+it in the inter-staff solve and the quality census. Locked by
+`every_system_starts_with_its_clef_and_key` (`epiphany-cli`).

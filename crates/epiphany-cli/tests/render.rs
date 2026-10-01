@@ -346,10 +346,11 @@ fn ties_cross_barlines_and_system_breaks() {
                 (x + g.bounding_box.left.0, x + g.bounding_box.right.0)
             })
             .collect();
-        let (left, right) = (
-            system.bounding_box.origin.x.0,
-            system.bounding_box.origin.x.0 + system.bounding_box.size.width.0,
-        );
+        // The system's first and last heads: an arc continuing across the
+        // break starts before the first (after the system's lead) and one
+        // breaking off ends after the last.
+        let left = heads.iter().map(|h| h.0).fold(f32::INFINITY, f32::min);
+        let right = system.bounding_box.origin.x.0 + system.bounding_box.size.width.0;
         for &i in &system.primitives.curves {
             let arc = &layout.curves[i as usize];
             if !matches!(arc.provenance.source, TypedObjectId::Tie(_)) {
@@ -359,8 +360,8 @@ fn ties_cross_barlines_and_system_breaks() {
             let after_head = heads.iter().any(|(_, r)| (x0 - r - 0.15).abs() < 0.02);
             let before_head = heads.iter().any(|(l, _)| (l - x3 - 0.15).abs() < 0.02);
             assert!(
-                after_head || (x0 - left).abs() < 1.0,
-                "an arc starts just after a head, or at its system's start: {x0}"
+                after_head || (x0 < left && left - x0 < 1.5),
+                "an arc starts just after a head, or just before its system's first: {x0}"
             );
             assert!(
                 before_head || (right - x3).abs() < 1.0,
@@ -480,4 +481,101 @@ fn accidentals_are_drawn_against_the_key_and_the_measure() {
             s, None, s, n, // measure 4
         ]
     );
+}
+
+/// Every system opens with the clef and key signature in force, the key a
+/// clear gap after the clef; a treble clef an octave down and a percussion
+/// clef draw as themselves.
+#[test]
+fn every_system_starts_with_its_clef_and_key() {
+    use epiphany_cli::omissions::omissions;
+    use epiphany_core::TypedObjectId;
+
+    let staff = |sign: &str, line: u8, change: i8, step: &str, octave: u8, count: usize| {
+        let mut measures = String::new();
+        for m in 1..=count {
+            measures.push_str(&format!("<measure number=\"{m}\">"));
+            if m == 1 {
+                measures.push_str(&format!(
+                    "<attributes><divisions>1</divisions><key><fifths>-2</fifths></key>\
+                     <time><beats>4</beats><beat-type>4</beat-type></time>\
+                     <clef><sign>{sign}</sign><line>{line}</line>\
+                     <clef-octave-change>{change}</clef-octave-change></clef></attributes>"
+                ));
+            }
+            for _ in 0..4 {
+                measures.push_str(&format!(
+                    "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+                     <duration>1</duration><voice>1</voice></note>"
+                ));
+            }
+            measures.push_str("</measure>");
+        }
+        measures
+    };
+    let score = |measures: String| {
+        format!(
+            "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\">\
+             <part-name>Cello</part-name></score-part></part-list>\
+             <part id=\"P1\">{measures}</part></score-partwise>"
+        )
+    };
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("leads.musicxml");
+    std::fs::write(&path, score(staff("F", 4, 0, "D", 3, 160))).expect("written");
+    let loaded = load(&path).expect("loads");
+    let engraved = engrave(&loaded.reduced.score);
+    let layout = &engraved.layout;
+    assert!(layout.systems().count() > 2, "the score wraps");
+    let found = omissions(&loaded.reduced.score, layout, &engraved.diagnostics);
+    assert_eq!(found.kinds.get("clef at a system start"), None, "{found:?}");
+    assert_eq!(found.kinds.get("key signature at a system start"), None);
+    for system in layout.systems() {
+        let lead: Vec<_> = system
+            .primitives
+            .glyphs
+            .iter()
+            .map(|&i| &layout.glyphs[i as usize])
+            .filter(|g| matches!(g.provenance.source, TypedObjectId::StaffInstance(_)))
+            .collect();
+        let clef = lead
+            .iter()
+            .find(|g| g.glyph.as_str() == "fClef")
+            .expect("the system opens with its clef");
+        let flats: Vec<_> = lead
+            .iter()
+            .filter(|g| g.glyph.as_str() == "accidentalFlat")
+            .collect();
+        assert_eq!(flats.len(), 2, "and its key");
+        let clef_right = clef.position.x.0 + clef.bounding_box.right.0;
+        for flat in &flats {
+            assert!(flat.position.x.0 + flat.bounding_box.left.0 >= clef_right + 0.5);
+        }
+        // The system's music starts clear of its lead.
+        let lead_right = lead
+            .iter()
+            .map(|g| g.position.x.0 + g.bounding_box.right.0)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let music_left = system
+            .primitives
+            .glyphs
+            .iter()
+            .map(|&i| &layout.glyphs[i as usize])
+            .filter(|g| matches!(g.provenance.source, TypedObjectId::Pitch(_)))
+            .map(|g| g.position.x.0 + g.bounding_box.left.0)
+            .fold(f32::INFINITY, f32::min);
+        assert!(music_left > lead_right, "{music_left} after {lead_right}");
+    }
+
+    for (sign, line, change, name) in [
+        ("G", 2, -1, "gClef8vb"),
+        ("percussion", 3, 0, "unpitchedPercussionClef1"),
+    ] {
+        std::fs::write(&path, score(staff(sign, line, change, "B", 3, 2))).expect("written");
+        let loaded = load(&path).expect("loads");
+        let layout = engrave(&loaded.reduced.score).layout;
+        assert!(
+            layout.glyphs.iter().any(|g| g.glyph.as_str() == name),
+            "{name} is drawn"
+        );
+    }
 }

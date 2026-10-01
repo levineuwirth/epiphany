@@ -75,12 +75,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use epiphany_core::{StaffId, TypedObjectId};
 use epiphany_layout_ir::{
     continuation_instance_key, inter_staff_gap_id, is_barline_glyph, is_rigid_width_stroke,
-    synthesized_layout_id, BreakClass, BreakKind, ConstrainedLayoutIR, Curve, DecisionSource,
-    EngravingDecision, EngravingDecisionKind, EngravingOverrideId, GlyphObject, GlyphObjectId,
-    LayoutConstraint, LayoutObjectId, Margins, Point, PrimitiveIndices, Provenance, Rect,
-    ResolvedGlyph, ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem, Size2D,
-    SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey, SynthesisKind, SynthesisRegistryId,
-    VerticalBand, VerticalBandId, VerticalBandKind,
+    metrics, synthesized_layout_id, BreakClass, BreakKind, ConstrainedLayoutIR, Curve,
+    DecisionSource, EngravingDecision, EngravingDecisionKind, EngravingOverrideId, GlyphObject,
+    GlyphObjectId, GlyphStyle, LayoutConstraint, LayoutObjectId, LeadGlyph, Margins, Point,
+    PrimitiveIndices, Provenance, Rect, ResolvedGlyph, ResolvedMeasure, ResolvedPage,
+    ResolvedStaff, ResolvedSystem, Size2D, SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey,
+    SynthesisKind, SynthesisRegistryId, SystemLead, TimePoint, VerticalBand, VerticalBandId,
+    VerticalBandKind,
 };
 
 use crate::owning_glyph;
@@ -93,6 +94,14 @@ use crate::owning_glyph;
 /// extension kind (Chapter 7 §"Behavior Under Unknown Extensions").
 pub const SYSTEM_CONTINUATION_SYNTHESIS: SynthesisRegistryId =
     SynthesisRegistryId(0x5359_5354_4D53_4547); // "SYSTMSEG"
+
+/// The registry id for a glyph of a later system's lead (its clef and key
+/// signature), synthesized from the staff instance and keyed by the system's
+/// region-local ordinal and the glyph.
+pub const SYSTEM_LEAD_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5359_534C_4541_4447); // "SYSLEADG"
+
+/// The gap between a system-start lead's ink and the system's first column.
+const LEAD_GAP: f32 = 0.8;
 
 /// The vertical gap between consecutive **pages** in the single world frame, in
 /// staff spaces. Pages are separate physical sheets; this gap exists only in
@@ -169,8 +178,12 @@ impl Default for PageGeometry {
 /// populated page/system tree, the engraver's appended break decisions, and the
 /// break structure the constraint evaluation consults.
 pub(crate) struct CastLayout {
-    /// Final glyphs, in input order, positions baked into the world frame.
+    /// Final glyphs, in input order, positions baked into the world frame, then
+    /// the glyphs of later systems' leads.
     pub glyphs: Vec<ResolvedGlyph>,
+    /// The vertical band of each lead glyph, in the order they follow the
+    /// input's glyphs in `glyphs`.
+    pub lead_bands: Vec<VerticalBandId>,
     /// Final strokes: the input strokes in order (each translated with its
     /// system; a system-spanning stroke replaced by its first segment), then
     /// the synthesized continuation segments.
@@ -560,6 +573,24 @@ pub(crate) fn cast_off(
             f32::INFINITY
         }
     };
+    // Each region's system-start leads, and the widest of them: a later
+    // system's content starts after its lead, so breaking reserves it.
+    let mut leads_of: Vec<Vec<&SystemLead>> = vec![Vec::new(); input.regions.len()];
+    for lead in &input.system_leads {
+        if let Some(leads) = leads_of.get_mut(lead.region) {
+            leads.push(lead);
+        }
+    }
+    let lead_max: Vec<f32> = leads_of
+        .iter()
+        .map(|leads| {
+            leads
+                .iter()
+                .flat_map(|lead| &lead.entries)
+                .map(|(_, glyphs)| lead_width(glyphs))
+                .fold(0.0, f32::max)
+        })
+        .collect();
     let mut systems: Vec<SystemPlan> = Vec::new();
     let mut skipped: Vec<EngravingDecision> = Vec::new();
     for (r, infos) in region_slots.iter().enumerate() {
@@ -571,10 +602,53 @@ pub(crate) fn cast_off(
             &origins,
             region_source,
             width_limit,
+            lead_max[r],
             &mut systems,
             &mut skipped,
         );
     }
+
+    // What each system draws at its start: nothing for a region's first,
+    // whose lead the projection drew; for a later one, each staff's lead in
+    // force at its first slot's time.
+    let slot_time: BTreeMap<SpringSlotId, &TimePoint> = input
+        .horizontal_slots
+        .iter()
+        .map(|slot| (slot.id, &slot.time))
+        .collect();
+    let system_leads: Vec<Vec<(&SystemLead, &[LeadGlyph])>> = systems
+        .iter()
+        .map(|plan| {
+            let Some(time) = plan
+                .slots
+                .first()
+                .and_then(|&i| slot_time.get(&region_slots[plan.region][i].id))
+                .filter(|_| plan.local > 0)
+            else {
+                return Vec::new();
+            };
+            leads_of[plan.region]
+                .iter()
+                .filter_map(|lead| {
+                    lead.entries
+                        .iter()
+                        .rev()
+                        .find(|(from, _)| at_or_before(from, time))
+                        .or(lead.entries.first())
+                        .map(|(_, glyphs)| (*lead, glyphs.as_slice()))
+                })
+                .collect()
+        })
+        .collect();
+    let lead_w: Vec<f32> = system_leads
+        .iter()
+        .map(|leads| {
+            leads
+                .iter()
+                .map(|(_, glyphs)| lead_width(glyphs))
+                .fold(0.0, f32::max)
+        })
+        .collect();
 
     // (The old greedy pass needed a second widow-rebalance phase here; the
     // optimal break search evens the final system directly — see
@@ -811,6 +885,24 @@ pub(crate) fn cast_off(
         }
     }
 
+    // A later system's leads are its staves' content too.
+    for (s, leads) in system_leads.iter().enumerate() {
+        for (lead, glyphs) in leads {
+            for glyph in *glyphs {
+                if let Some(m) = metrics(glyph.name.as_str()) {
+                    let b = m.bounding_box();
+                    into_staff(
+                        &mut staff_ext,
+                        s,
+                        Some(lead.staff),
+                        glyph.y + b.bottom.0,
+                        glyph.y + b.top.0,
+                    );
+                }
+            }
+        }
+    }
+
     // Solve each system's inter-staff gaps: order the staves top-to-bottom by
     // their reference y (staff line, else content mid), keep that order fixed,
     // and shift each staff so its INK CLEARANCE to the one above realizes the
@@ -927,7 +1019,8 @@ pub(crate) fn cast_off(
             page_floor = cursor - content_height.max(0.0);
             page_systems.push(Vec::new());
         }
-        let base_dx = geometry.margins.left.0 - ext.min_x;
+        // A later system's content starts after its lead.
+        let base_dx = geometry.margins.left.0 + lead_w[s] - ext.min_x;
         let dy = cursor - ext.max_y;
         placements.push(justify_system(
             plan,
@@ -936,7 +1029,7 @@ pub(crate) fn cast_off(
             dy,
             &region_slots,
             &region_systems,
-            width_limit,
+            width_limit - lead_w[s],
         ));
         page_systems
             .last_mut()
@@ -1061,6 +1154,37 @@ pub(crate) fn cast_off(
         })
         .unzip();
 
+    // Each later system's leads, at its left margin, on their staves.
+    let mut glyphs = glyphs;
+    let mut glyph_system = glyph_system;
+    let mut lead_bands = Vec::new();
+    for (s, leads) in system_leads.iter().enumerate() {
+        for (lead, lead_glyphs) in leads {
+            let dy = placements[s].dy - staff_dy(s, Some(lead.staff));
+            for (i, glyph) in lead_glyphs.iter().enumerate() {
+                let Some(m) = metrics(glyph.name.as_str()) else {
+                    continue;
+                };
+                glyphs.push(ResolvedGlyph {
+                    provenance: Provenance::synthesized(
+                        lead.provenance.source,
+                        SynthesisKind::Registered(SYSTEM_LEAD_SYNTHESIS),
+                        SynthesisInstanceKey((systems[s].local as u128) << 16 | i as u128),
+                        lead.provenance.dependencies.clone(),
+                    ),
+                    glyph: glyph.name.clone(),
+                    position: Point::new(geometry.margins.left.0 + glyph.x, glyph.y + dy),
+                    transform: None,
+                    bounding_box: m.bounding_box(),
+                    style: GlyphStyle { rgba: 0x0000_00ff },
+                    layer: 0,
+                });
+                glyph_system.push(Some(s));
+                lead_bands.push(lead.band);
+            }
+        }
+    }
+
     // Per-system staff-line marks, for the resolved staff records below.
     let mut staff_marks: BTreeMap<(usize, StaffId), StaffAgg> = BTreeMap::new();
     let mut strokes: Vec<Stroke> = Vec::with_capacity(spaced_strokes.len());
@@ -1113,9 +1237,17 @@ pub(crate) fn cast_off(
                             spaced.provenance.dependencies.clone(),
                         )
                     };
+                    // A staff line reaches back under a later system's lead.
+                    let from_x = if lead_w[*s] > 0.0
+                        && matches!(spaced.provenance.source, TypedObjectId::Staff(_))
+                    {
+                        geometry.margins.left.0
+                    } else {
+                        p.x(from.x.0)
+                    };
                     let stroke = Stroke {
                         provenance,
-                        from: Point::new(p.x(from.x.0), from.y.0 + p.dy),
+                        from: Point::new(from_x, from.y.0 + p.dy),
                         to: Point::new(p.x(to.x.0), to.y.0 + p.dy),
                         thickness: spaced.thickness,
                         layer: spaced.layer,
@@ -1281,6 +1413,7 @@ pub(crate) fn cast_off(
                 &placements,
                 &staff_marks,
                 owned[s].clone(),
+                lead_w[s],
             )
         })
         .collect();
@@ -1323,6 +1456,7 @@ pub(crate) fn cast_off(
 
     CastLayout {
         glyphs,
+        lead_bands,
         strokes,
         curves,
         pages,
@@ -1369,6 +1503,7 @@ fn optimal_breaks(
     slots: &[SlotInfo],
     reqs: &BTreeMap<SpringSlotId, Vec<BreakReq>>,
     width_limit: f32,
+    lead: f32,
 ) -> BTreeSet<SpringSlotId> {
     let mut automatic = BTreeSet::new();
     if !width_limit.is_finite() || width_limit <= 0.0 || slots.is_empty() {
@@ -1391,12 +1526,12 @@ fn optimal_breaks(
     let n = pts.len(); // n - 1 measures between the n boundaries
 
     // A system spanning boundaries [a, b): its ink extent over slots
-    // `[pts[a] .. pts[b])`.
+    // `[pts[a] .. pts[b])`, and a later system's lead before it.
     let width = |a: usize, b: usize| -> f32 {
         let range = &slots[pts[a]..pts[b]];
         let lo = range.iter().map(|s| s.lo).fold(f32::INFINITY, f32::min);
         let hi = range.iter().map(|s| s.hi).fold(f32::NEG_INFINITY, f32::max);
-        (hi - lo).max(0.0)
+        (hi - lo).max(0.0) + if a > 0 { lead } else { 0.0 }
     };
 
     // dp[b] = the min `(cost, system_count)` to partition measures [0, b).
@@ -1462,12 +1597,13 @@ fn walk_region(
     origins: &BTreeMap<(u128, bool), EngravingOverrideId>,
     region_source: TypedObjectId,
     width_limit: f32,
+    lead: f32,
     systems: &mut Vec<SystemPlan>,
     skipped: &mut Vec<EngravingDecision>,
 ) {
     // The optimal automatic breaks (a global badness-minimizing partition,
     // bounded by the break requirements); the walk opens a system at each.
-    let automatic = optimal_breaks(slots, reqs, width_limit);
+    let automatic = optimal_breaks(slots, reqs, width_limit, lead);
 
     // Overflow safety net. A lead-only (note-less) run can defer a *planned*
     // break past its barline — the DP treats a requirement, or its own chosen
@@ -1552,7 +1688,8 @@ fn walk_region(
         if !break_here
             && has_note
             && (automatic.contains(&slot.id)
-                || (opens_measure(slots, i) && chunk_hi[i] - current_lo > width_limit))
+                || (opens_measure(slots, i)
+                    && chunk_hi[i] - current_lo > width_limit - if local > 0 { lead } else { 0.0 }))
         {
             break_here = true;
         }
@@ -1850,6 +1987,29 @@ fn half_arcs(cp: [Point; 4], edge_a: f32, edge_b: f32) -> ([Point; 4], [Point; 4
     )
 }
 
+/// Whether `a` is at or before `b` (times of one kind; across kinds, never).
+fn at_or_before(a: &TimePoint, b: &TimePoint) -> bool {
+    match (a, b) {
+        (TimePoint::Musical(a), TimePoint::Musical(b)) => a <= b,
+        (TimePoint::WallClock(a), TimePoint::WallClock(b)) => a <= b,
+        _ => false,
+    }
+}
+
+/// The width a system-start lead takes: its ink's right edge and the gap
+/// before the system's first column.
+fn lead_width(glyphs: &[LeadGlyph]) -> f32 {
+    let right = glyphs
+        .iter()
+        .filter_map(|g| Some(g.x + metrics(g.name.as_str())?.bounding_box().right.0))
+        .fold(0.0, f32::max);
+    if glyphs.is_empty() {
+        0.0
+    } else {
+        right + LEAD_GAP
+    }
+}
+
 /// A stroke translated rigidly by `(dx, dy)`.
 fn translated(stroke: &Stroke, dx: f32, dy: f32) -> Stroke {
     Stroke {
@@ -2012,6 +2172,7 @@ fn build_system(
     placements: &[Placement],
     staff_marks: &BTreeMap<(usize, StaffId), StaffAgg>,
     primitives: PrimitiveIndices,
+    lead: f32,
 ) -> ResolvedSystem {
     let region = &input.regions[plan.region];
     let p = placements[system];
@@ -2032,10 +2193,10 @@ fn build_system(
     let bounding_box = Rect {
         // Justification stretches the horizontal extent: the box spans the
         // system's world-frame ink, which for a justified system is the content
-        // width.
-        origin: Point::new(p.x(ext.min_x), ext.min_y + p.dy),
+        // width, and a later system's lead before it.
+        origin: Point::new(p.x(ext.min_x) - lead, ext.min_y + p.dy),
         size: Size2D {
-            width: StaffSpace(p.x(ext.max_x) - p.x(ext.min_x)),
+            width: StaffSpace(p.x(ext.max_x) - p.x(ext.min_x) + lead),
             height: StaffSpace(ext.max_y - ext.min_y),
         },
     };
@@ -2159,7 +2320,7 @@ mod tests {
         // subsuming the old widow rebalance. One automatic break, before the
         // fourth measure.
         let slots: Vec<SlotInfo> = (0..6).map(measure_slot).collect();
-        let breaks = optimal_breaks(&slots, &BTreeMap::new(), 42.0);
+        let breaks = optimal_breaks(&slots, &BTreeMap::new(), 42.0, 0.0);
         assert_eq!(
             breaks.len(),
             1,
@@ -2186,7 +2347,7 @@ mod tests {
                 hard: true,
             }],
         );
-        let breaks = optimal_breaks(&slots, &reqs, 42.0);
+        let breaks = optimal_breaks(&slots, &reqs, 42.0, 0.0);
         assert!(
             !breaks.contains(&slots[1].id),
             "the forced break is walk_region's, never reported here: {breaks:?}"
@@ -2204,11 +2365,11 @@ mod tests {
     #[test]
     fn optimal_breaks_is_deterministic_and_empty_when_unbounded() {
         let slots: Vec<SlotInfo> = (0..6).map(measure_slot).collect();
-        let a = optimal_breaks(&slots, &BTreeMap::new(), 42.0);
-        let b = optimal_breaks(&slots, &BTreeMap::new(), 42.0);
+        let a = optimal_breaks(&slots, &BTreeMap::new(), 42.0, 0.0);
+        let b = optimal_breaks(&slots, &BTreeMap::new(), 42.0, 0.0);
         assert_eq!(a, b, "a pure function of the inputs");
         assert!(
-            optimal_breaks(&slots, &BTreeMap::new(), f32::INFINITY).is_empty(),
+            optimal_breaks(&slots, &BTreeMap::new(), f32::INFINITY, 0.0).is_empty(),
             "an unbounded width wraps nothing"
         );
     }
@@ -2265,6 +2426,7 @@ mod tests {
             &BTreeMap::new(),
             TypedObjectId::Region(RegionId::new(ReplicaId(1), 1)),
             width_limit,
+            0.0,
             &mut systems,
             &mut skipped,
         );
@@ -2587,8 +2749,9 @@ mod tests {
             systems.iter().map(|s| s.primitives.strokes.len()).collect();
         assert_eq!(
             glyph_counts,
-            vec![26, 25],
-            "the six/four widow-rebalanced measure split's real per-system glyph counts"
+            vec![26, 26],
+            "the six/four widow-rebalanced measure split's real per-system glyph counts \
+             (the second system's lead adds its clef)"
         );
         assert_eq!(
             stroke_counts,

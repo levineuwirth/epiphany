@@ -97,11 +97,11 @@ pub use constrained::{
     try_to_constrained, Axis, BreakClass, BreakKind, BreakOrigin, ConstrainedLayoutIR,
     ConstrainedLayoutRegion, ConstrainedValidationError, ConstraintParameters,
     ConstraintRegistryId, Curve, GlyphObject, GlyphObjectId, GlyphStyle, LayoutConstraint,
-    LayoutTransformError, SpanAnchor, SpringSlot, Stroke,
+    LayoutTransformError, LeadGlyph, SpanAnchor, SpringSlot, Stroke, SystemLead,
 };
 pub use engrave_theory::{
-    accidental_glyph, clef_glyph, flag_count, flag_glyph, has_stem, key_signature, notehead_glyph,
-    rest_glyph, staff_position, staff_step_pitch, KeyAccidental, StaffStep,
+    accidental_glyph, clef_glyph, clef_glyph_for, flag_count, flag_glyph, has_stem, key_signature,
+    notehead_glyph, rest_glyph, staff_position, staff_step_pitch, KeyAccidental, StaffStep,
 };
 pub use engraving::{
     AuthorId, DecisionSource, EngravingDecision, EngravingDecisionId, EngravingDecisionKind,

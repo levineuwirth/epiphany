@@ -449,11 +449,59 @@ pub fn two_staff_wrapping_pressure(seed: u64) -> Score {
     score
 }
 
-/// A two-staff score whose LOWER staff engraves **no glyphs at all**: it is a
-/// percussion-clef placeholder — a staff instance with a `ClefChange` to
-/// `ClefShape::Percussion`, which has no bundled SMuFL glyph (it engraves to a
-/// traced anchor stroke), and no voices or measures. Its vertical band therefore
-/// owns five staff-line strokes plus that anchor, and **zero** members.
+/// [`percussion_placeholder_staff`] projected to the constrained IR with its
+/// lower staff's glyphs taken out — its clef, and its leads in later systems —
+/// so that staff's band owns its staff lines and no glyph. Since every clef
+/// shape has its glyph, no staff of a valid score engraves glyphless; this is
+/// the shape a consumer that finds a region's staff bands by their glyph
+/// `members` would lose, built for the tests that guard against that.
+pub fn percussion_placeholder_constrained(seed: u64) -> epiphany_layout_ir::ConstrainedLayoutIR {
+    use epiphany_layout_ir::{
+        to_constrained, to_logical, BravuraCatalog, GlyphCatalog, LayoutConstraint,
+        VerticalBandKind,
+    };
+    let score = percussion_placeholder_staff(seed);
+    let drum = score.staves[1].id;
+    let mut c = to_constrained(&to_logical(&score));
+    let band = c
+        .vertical_bands
+        .iter()
+        .find(|b| b.kind == VerticalBandKind::Staff(drum))
+        .map(|b| b.id)
+        .expect("the placeholder has its band");
+    let removed: std::collections::BTreeSet<_> = c
+        .glyphs
+        .iter()
+        .filter(|g| g.vertical_band == band)
+        .map(|g| g.id())
+        .collect();
+    c.glyphs.retain(|g| !removed.contains(&g.id()));
+    for b in &mut c.vertical_bands {
+        b.members.retain(|m| !removed.contains(m));
+    }
+    for slot in &mut c.horizontal_slots {
+        slot.members.retain(|m| !removed.contains(m));
+    }
+    c.horizontal_slots.retain(|slot| !slot.members.is_empty());
+    for region in &mut c.regions {
+        region.glyphs.retain(|g| !removed.contains(g));
+    }
+    c.constraints.retain(|constraint| match constraint {
+        LayoutConstraint::PositionWithin { glyph, .. } => !removed.contains(glyph),
+        LayoutConstraint::NoCollision { a, b } => !removed.contains(a) && !removed.contains(b),
+        _ => true,
+    });
+    c.system_leads.retain(|lead| lead.staff != drum);
+    let names: Vec<&str> = c.glyphs.iter().map(|g| g.glyph.as_str()).collect();
+    c.catalog = BravuraCatalog.identity(&names);
+    assert!(c.validate().is_ok(), "the stripped IR is still valid");
+    c
+}
+
+/// A two-staff score whose LOWER staff is a percussion-clef placeholder — a
+/// staff instance with a `ClefChange` to `ClefShape::Percussion` and no voices
+/// or measures — so its band owns five staff-line strokes and its clef alone
+/// ([`percussion_placeholder_constrained`] takes the clef out).
 ///
 /// The upper staff carries twelve plain measures of C4, so it wraps and its gap
 /// to the placeholder is slack everywhere. Together: a valid score on which any
@@ -851,11 +899,11 @@ mod tests {
 
     #[test]
     fn percussion_placeholder_staff_is_invariant_clean_and_glyphless_below() {
-        use epiphany_layout_ir::{to_constrained, to_logical, VerticalBandKind};
+        use epiphany_layout_ir::VerticalBandKind;
         let s = percussion_placeholder_staff(1);
         let v = check_invariants(&s);
         assert!(v.is_empty(), "percussion fixture has violations: {v:?}");
-        let c = to_constrained(&to_logical(&s));
+        let c = percussion_placeholder_constrained(1);
         let glyphless: Vec<_> = c
             .vertical_bands
             .iter()

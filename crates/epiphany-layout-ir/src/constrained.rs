@@ -20,9 +20,9 @@ use epiphany_core::{
 use epiphany_determinism::{DomainTag, Preimage};
 
 use crate::engrave_theory::{
-    accidental_glyph, alteration_glyph, clef_glyph, flag_count, flag_glyph, has_stem,
+    accidental_glyph, alteration_glyph, clef_glyph_for, flag_count, flag_glyph, has_stem,
     key_alteration, key_signature, notehead_glyph, rest_glyph, stack_alteration, staff_position,
-    KeyAccidental, StaffStep,
+    StaffStep,
 };
 use crate::engraving::{EngravingDecision, OverrideKind, OverridePriority, OverrideTarget};
 use crate::glyph::{metrics, BravuraCatalog, GlyphCatalog, GlyphCatalogIdentity, GlyphReference};
@@ -186,6 +186,35 @@ pub struct ConstrainedLayoutIR {
     /// (a beam on its outer stems), so a solver moves each end with its own
     /// column rather than stretching it with the columns between.
     pub span_anchors: Vec<SpanAnchor>,
+    /// What each staff shows where a later system of its region starts: the
+    /// clef and key signature in force there. The projection draws a region's
+    /// first lead itself; a solver that breaks the region into systems draws
+    /// these at each later system's start.
+    pub system_leads: Vec<SystemLead>,
+}
+
+/// One staff's system-start lead through its region (see
+/// [`ConstrainedLayoutIR::system_leads`]).
+#[derive(Clone, PartialEq, Debug)]
+pub struct SystemLead {
+    /// Index into [`ConstrainedLayoutIR::regions`].
+    pub region: usize,
+    pub staff: StaffId,
+    pub band: VerticalBandId,
+    /// The staff instance's provenance: each glyph a solver draws from this
+    /// lead is synthesized from it.
+    pub provenance: Provenance,
+    /// In time order, each lead from its time on: its glyphs, at an x offset
+    /// from the system's left edge and at their y in the constrained frame.
+    pub entries: Vec<(TimePoint, Vec<LeadGlyph>)>,
+}
+
+/// One glyph of a system-start lead.
+#[derive(Clone, PartialEq, Debug)]
+pub struct LeadGlyph {
+    pub name: GlyphReference,
+    pub x: f32,
+    pub y: f32,
 }
 
 /// The spring slots a spanning primitive's two ends ride. Each end keeps its
@@ -653,7 +682,8 @@ const REGION_GAP: f32 = 4.0; // horizontal gap between regions (no page layout i
 const NOTEHEAD_STEM_X: f32 = 1.15;
 const ACCIDENTAL_X: f32 = 1.1; // the innermost accidental sits this far left of its notehead
 const ACC_STACK_X: f32 = 0.9; // each further-out stacked accidental steps left by this
-const KEY_SIG_START: f32 = 2.7; // x where a key signature begins (just after the clef)
+const KEY_GAP: f32 = 0.6; // the gap between a clef's ink and the key signature after it
+const LEAD_GAP: f32 = 0.8; // the gap between a lead's ink and the first column after it
 const KEY_ACC_X: f32 = 0.9; // x advance per key-signature accidental
 const TIME_SIG_X: f32 = 0.5; // a time signature sits this far right of its barline
 const TIME_DIGIT_X: f32 = 0.8; // x advance per time-signature digit
@@ -827,12 +857,13 @@ pub fn try_to_constrained(
     let mut break_origins = Vec::new();
     let mut constrained_regions = Vec::new();
     let mut span_anchors: Vec<SpanAnchor> = Vec::new();
+    let mut system_leads: Vec<SystemLead> = Vec::new();
     // Regions tile left-to-right; this advances by each region's width so all
     // coordinates stay globally monotonic (the solver's coordinate remap relies
     // on it). v0 has no page casting-off, so this replaces region overlap.
     let mut region_x: f32 = 0.0;
 
-    for region in &logical.regions {
+    for (region_index, region) in logical.regions.iter().enumerate() {
         let region_id = match region.provenance.source {
             TypedObjectId::Region(id) => id,
             _ => {
@@ -921,10 +952,9 @@ pub fn try_to_constrained(
         // previous one by this much extra, so a note's accidental does not overlap
         // the previous note (the engraver's monotonic remap cannot un-overlap it).
         let mut column_overhang: BTreeMap<ColumnKey, f32> = BTreeMap::new();
-        // The widest key signature in the region (in accidentals): the lead area
-        // between clef and first note must fit it, so the first note column shifts
-        // right by it (zero when no staff declares a key — layout unchanged).
-        let mut key_sig_accs = 0usize;
+        // The right edge of the widest lead (clef and key signature): the first
+        // note column clears it.
+        let mut lead_right = 0.0f32;
         // This region's repeat structures (engraving content projected by the
         // logical stage), and every (column, staff) a measure's own barline
         // occupies — repeat signs replace a coinciding measure barline (pass 2
@@ -1119,14 +1149,41 @@ pub fn try_to_constrained(
                     repeats.push((id, content));
                 }
                 (TypedObjectId::StaffInstance(_), LayoutContent::Staff(content)) => {
-                    // The staff instance's clef glyph occupies the lead column. The
-                    // *displayed* clef is the one in force at the staff start, by
-                    // time — consistent with how notes resolve their active clef.
-                    let clef = active_clef_or(&content.clefs, &origin(), content.default_clef);
-                    if clef_glyph(clef.shape).is_some() {
+                    // The staff instance's clef and key signature occupy the lead
+                    // column; the first note column clears the widest of them.
+                    let glyphs = lead_glyphs(content, &origin(), yo);
+                    if !glyphs.is_empty() {
                         keys.insert(ColumnKey::Lead);
-                        // The key signature shares the lead column; reserve its width.
-                        key_sig_accs = key_sig_accs.max(key_accidentals_for(content).len());
+                        lead_right = lead_right.max(lead_extent(&glyphs));
+                    }
+                    // Its later systems' leads, from each clef or key change on.
+                    if let Some(staff) = staff {
+                        let mut times: Vec<TimePoint> = std::iter::once(origin())
+                            .chain(content.clefs.iter().map(|c| c.time.clone()))
+                            .chain(content.keys.iter().map(|k| k.time.clone()))
+                            .collect();
+                        times.sort_by(time_total);
+                        times.dedup();
+                        system_leads.push(SystemLead {
+                            region: region_index,
+                            staff,
+                            band: band_of(Some(staff)),
+                            provenance: object.provenance().clone(),
+                            entries: times
+                                .into_iter()
+                                .map(|time| {
+                                    let glyphs = lead_glyphs(content, &time, yo)
+                                        .into_iter()
+                                        .map(|(name, x, y)| LeadGlyph {
+                                            name: GlyphReference::borrowed(name),
+                                            x,
+                                            y,
+                                        })
+                                        .collect();
+                                    (time, glyphs)
+                                })
+                                .collect(),
+                        });
                     }
                 }
                 (TypedObjectId::StaffInstance(_), _) => {
@@ -1225,7 +1282,7 @@ pub fn try_to_constrained(
         // The first note column clears the clef *and* the key signature; each
         // timed column additionally clears the previous one by its accidental
         // overhang, so the source layout is collision-free.
-        let first_col = FIRST_COLUMN_X + key_sig_accs as f32 * KEY_ACC_X;
+        let first_col = FIRST_COLUMN_X.max(lead_right + LEAD_GAP);
         let total_overhang: f32 = column_overhang.values().sum();
         let local_right =
             first_col + total_overhang + timed_count as f32 * COLUMN_X_STEP + STAFF_RIGHT_MARGIN;
@@ -1524,60 +1581,55 @@ pub fn try_to_constrained(
                     }
                 }
                 TypedObjectId::StaffInstance(_) => {
-                    // The displayed clef is the one in force at the staff start, by
-                    // time — the same query the notes use, so they always agree.
-                    let clef = match content {
-                        Some(LayoutContent::Staff(c)) => {
-                            active_clef_or(&c.clefs, &origin(), c.default_clef)
+                    // The displayed clef and key are those in force at the staff
+                    // start, by time — the same query the notes use, so they
+                    // always agree. The clef carries the instance's provenance;
+                    // each key accidental is synthesized from it.
+                    let default_content;
+                    let content = match content {
+                        Some(LayoutContent::Staff(c)) => c,
+                        _ => {
+                            default_content = StaffContent {
+                                clefs: Vec::new(),
+                                keys: Vec::new(),
+                                default_clef: Clef::default(),
+                                beams: Vec::new(),
+                            };
+                            &default_content
                         }
-                        _ => Clef::default(),
                     };
-                    match clef_glyph(clef.shape) {
-                        Some(name) => {
-                            let info = column(&ColumnKey::Lead);
-                            let baseline = Point::new(info.x, yo + (clef.line as f32 - 1.0));
-                            emit.glyph(
-                                provenance,
-                                name,
-                                baseline,
-                                band_of(staff),
-                                staff,
-                                info.slot,
+                    let clef = active_clef_or(&content.clefs, &origin(), content.default_clef);
+                    let glyphs = lead_glyphs(content, &origin(), yo);
+                    if glyphs.is_empty() {
+                        emit.diag(provenance.source, unbundled(clef_label(clef.shape)));
+                        emit.stroke(anchor(
+                            provenance,
+                            Point::new(default_x, yo),
+                            band_of(staff),
+                        ));
+                    }
+                    let info = column(&ColumnKey::Lead);
+                    for (i, (name, x, y)) in glyphs.into_iter().enumerate() {
+                        let owned;
+                        let glyph_provenance = if i == 0 {
+                            provenance
+                        } else {
+                            owned = Provenance::synthesized(
+                                provenance.source,
+                                SynthesisKind::Registered(KEY_SIG_SYNTHESIS),
+                                SynthesisInstanceKey(i as u128 - 1),
+                                provenance.dependencies.clone(),
                             );
-                            // The key signature's sharp/flat zigzag: each accidental
-                            // a synthesized glyph in the lead area after the clef,
-                            // at its clef-relative staff position, sharing the lead
-                            // column slot.
-                            if let Some(LayoutContent::Staff(c)) = content {
-                                for (i, accidental) in key_accidentals_for(c).iter().enumerate() {
-                                    let key_provenance = Provenance::synthesized(
-                                        provenance.source,
-                                        SynthesisKind::Registered(KEY_SIG_SYNTHESIS),
-                                        SynthesisInstanceKey(i as u128),
-                                        provenance.dependencies.clone(),
-                                    );
-                                    emit.glyph(
-                                        &key_provenance,
-                                        accidental.glyph,
-                                        Point::new(
-                                            region_x + KEY_SIG_START + i as f32 * KEY_ACC_X,
-                                            step_to_y(yo, accidental.position),
-                                        ),
-                                        band_of(staff),
-                                        staff,
-                                        info.slot,
-                                    );
-                                }
-                            }
-                        }
-                        None => {
-                            emit.diag(provenance.source, unbundled(clef_label(clef.shape)));
-                            emit.stroke(anchor(
-                                provenance,
-                                Point::new(default_x, yo),
-                                band_of(staff),
-                            ));
-                        }
+                            &owned
+                        };
+                        emit.glyph(
+                            glyph_provenance,
+                            name,
+                            Point::new(info.x + x, y),
+                            band_of(staff),
+                            staff,
+                            info.slot,
+                        );
                     }
                 }
                 TypedObjectId::Event(eid) => match content {
@@ -2412,6 +2464,7 @@ pub fn try_to_constrained(
         diagnostics,
         catalog,
         span_anchors,
+        system_leads,
     })
 }
 
@@ -2973,36 +3026,6 @@ fn slur_endpoint_key(endpoint: &SlurEndpoint) -> Option<ColumnKey> {
     }
 }
 
-/// The key signature in force at a staff's start, by resolved time (the same
-/// rule as the active clef), or `None` when the staff declares no key. Absence
-/// means no signature drawn — distinct from a declared C-major (which also draws
-/// nothing, via an empty accidental set).
-fn active_key(keys: &[PlacedKeySignature]) -> Option<KeySignature> {
-    keys.iter()
-        .filter(|placed| {
-            matches!(
-                time_cmp(&placed.time, &origin()),
-                Some(Ordering::Less | Ordering::Equal)
-            )
-        })
-        .max_by(|a, b| time_total(&a.time, &b.time))
-        .or_else(|| keys.iter().min_by(|a, b| time_total(&a.time, &b.time)))
-        .map(|placed| placed.key)
-}
-
-/// The key signature's accidentals (the clef-relative zigzag) at a staff's start:
-/// the active key resolved under the active clef. Empty when no key is declared,
-/// the key is C major, or the clef has no diatonic positions (percussion).
-fn key_accidentals_for(content: &StaffContent) -> Vec<KeyAccidental> {
-    match active_key(&content.keys) {
-        Some(key) => key_signature(
-            key,
-            &active_clef_or(&content.clefs, &origin(), content.default_clef),
-        ),
-        None => Vec::new(),
-    }
-}
-
 /// The decimal digits of a displayed number (time-signature numerals, volta
 /// ending numbers), most significant first.
 fn digits_of(value: u32) -> Vec<u8> {
@@ -3182,6 +3205,37 @@ fn dot_positions(yo: f32, steps: &[StaffStep]) -> Vec<f32> {
         ys[i] = step_to_y(yo, space);
     }
     ys
+}
+
+/// The clef and key signature a staff shows at `at`: the clef in force there
+/// at x 0 on its line, and the key's accidentals after it, `KEY_GAP` clear of
+/// the clef's ink, `KEY_ACC_X` apart. Empty when the clef has no bundled
+/// glyph; no key accidental for a clef with no diatonic positions.
+fn lead_glyphs(content: &StaffContent, at: &TimePoint, yo: f32) -> Vec<(&'static str, f32, f32)> {
+    let clef = active_clef_or(&content.clefs, at, content.default_clef);
+    let Some(name) = clef_glyph_for(&clef) else {
+        return Vec::new();
+    };
+    let mut glyphs = vec![(name, 0.0, yo + (clef.line as f32 - 1.0))];
+    let clef_right = metrics(name).map_or(0.0, |m| m.bounding_box().right.0);
+    if let Some(key) = key_at(&content.keys, at) {
+        for (i, accidental) in key_signature(key, &clef).iter().enumerate() {
+            glyphs.push((
+                accidental.glyph,
+                clef_right + KEY_GAP + i as f32 * KEY_ACC_X,
+                step_to_y(yo, accidental.position),
+            ));
+        }
+    }
+    glyphs
+}
+
+/// The right edge of a lead's ink, from its glyphs' x offsets and metrics.
+fn lead_extent(glyphs: &[(&'static str, f32, f32)]) -> f32 {
+    glyphs
+        .iter()
+        .map(|(name, x, _)| x + metrics(name).map_or(0.0, |m| m.bounding_box().right.0))
+        .fold(0.0, f32::max)
 }
 
 /// The accidental each pitch's first head shows, by its staff's key and the
@@ -6118,57 +6172,81 @@ mod tests {
 
     /// `req:layoutir:coverage-diagnostics`: an object the projection cannot
     /// engrave faithfully is **recorded and still placed** — never guessed at,
-    /// never dropped. A percussion clef has no bundled glyph, so the staff
-    /// instance engraves to a zero-extent traced anchor that keeps its
-    /// provenance (a hit-test can still find it) while an `UnbundledGlyph`
-    /// diagnostic names the gap.
+    /// never dropped. A pitch spelled with a microtonal accidental draws its
+    /// notehead, while an `UnbundledGlyph` diagnostic names the accidental it
+    /// could not draw and no other accidental stands in for it.
     #[test]
     fn an_unengravable_object_is_recorded_and_still_placed() {
-        let (mut score, _) = repeat_ready_score(47);
-        let instance_id = score.canvas.regions[0].staff_instances()[0].id;
-        score.canvas.regions[0]
-            .content
-            .staff_instances_mut()
-            .expect("staff-based")[0]
-            .clef_sequence
-            .push(epiphany_core::ClefChange {
-                anchor: TimeAnchor::WallClock {
-                    time: epiphany_core::WallClockTime(0),
+        use crate::logical::{LayoutObject, LayoutRegion, LogicalLayoutIR, NoteContent, NotePitch};
+        use crate::time_axis::{MetricTimeAxis, TimeAxisModel};
+        use epiphany_core::{
+            AccidentalId, CmnNominal, EventId, MusicalPosition, PitchId, PitchSpelling, RegionId,
+            StaffId,
+        };
+
+        let region = RegionId::from_raw(1);
+        let staff = StaffId::from_raw(10);
+        let pitch = PitchId::from_raw(100);
+        let mut spelling = PitchSpelling::cmn(CmnNominal::E, 5);
+        spelling.accidentals.push(AccidentalId::new("quarter-flat"));
+        let manifested = |src, content| {
+            LayoutObject::from_projection_with_content(
+                Provenance::manifested(src, region, vec![]),
+                Some(staff),
+                content,
+            )
+        };
+        let c = to_constrained(&LogicalLayoutIR {
+            source: ScoreVersion::default(),
+            regions: vec![LayoutRegion {
+                provenance: Provenance::projected(TypedObjectId::Region(region), vec![]),
+                coordinate_system: crate::LocalCoordinateSystem::default(),
+                time_axis: TimeAxisModel::Metric(MetricTimeAxis::default()),
+                vertical_extent: crate::VerticalExtent {
+                    staves: vec![staff],
                 },
-                clef: epiphany_core::Clef {
-                    shape: epiphany_core::ClefShape::Percussion,
-                    line: 3,
-                    octave_shift: 0,
-                },
-            });
-        let c = to_constrained(&to_logical(&score));
-        let source = TypedObjectId::StaffInstance(instance_id);
+                objects: vec![
+                    manifested(
+                        TypedObjectId::Event(EventId::from_raw(1)),
+                        LayoutContent::Note(NoteContent {
+                            position: TimePoint::Musical(MusicalPosition::origin()),
+                            components: vec![],
+                            pitches: vec![NotePitch {
+                                pitch,
+                                spelling: Some(spelling),
+                            }],
+                        }),
+                    ),
+                    manifested(TypedObjectId::Pitch(pitch), LayoutContent::Structural),
+                ],
+            }],
+            engraving_decisions: vec![],
+            overrides: vec![],
+            cross_region: vec![],
+        });
+        let source = TypedObjectId::Pitch(pitch);
 
         // Recorded: the gap names the object and the glyph it wanted.
         let diagnostic = c
             .diagnostics
             .iter()
             .find(|d| d.source == source)
-            .expect("the unbundled clef is surfaced, not hidden");
+            .expect("the unbundled accidental is surfaced, not hidden");
         assert!(
-            matches!(diagnostic.kind, LayoutDiagnosticKind::UnbundledGlyph(_)),
+            matches!(&diagnostic.kind,
+                LayoutDiagnosticKind::UnbundledGlyph(g) if g.as_str() == "quarter-flat"),
             "and says why: {:?}",
             diagnostic.kind
         );
-
-        // Not guessed: no glyph stands in for the clef.
-        assert!(
-            !c.glyphs.iter().any(|g| g.provenance.source == source),
-            "no plausible substitute is drawn"
-        );
-        // Not dropped: a traced anchor keeps its provenance addressable.
-        let anchor = c
-            .strokes
+        // Still placed: the notehead stands; not guessed: no accidental does.
+        let glyphs: Vec<&str> = c
+            .glyphs
             .iter()
-            .find(|st| st.provenance.source == source)
-            .expect("the object is still placed, as a traced anchor");
-        assert_eq!(anchor.from, anchor.to, "a zero-extent anchor draws no ink");
-        assert_eq!(anchor.thickness.0, 0.0);
+            .filter(|g| g.provenance.source == source)
+            .map(|g| g.glyph.as_str())
+            .collect();
+        assert_eq!(glyphs, ["noteheadBlack"]);
+        assert!(c.validate().is_ok());
     }
 
     /// A stem points AWAY from the middle line — up for a head below it, down

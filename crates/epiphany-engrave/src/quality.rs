@@ -393,6 +393,22 @@ fn vertical_units(
                 add(system, glyph.vertical_band, ink[1], ink[3]);
             }
         }
+        // A later system's leads, appended after the input's glyphs, on the
+        // bands the casting pass placed them on.
+        for (k, band) in cast.lead_bands.iter().enumerate() {
+            let index = input.glyphs.len() + k;
+            if let (Some(Some(system)), Some(glyph)) =
+                (cast.glyph_system.get(index), cast.glyphs.get(index))
+            {
+                let (y, b) = (glyph.position.y.0, glyph.bounding_box);
+                add(
+                    *system,
+                    *band,
+                    f64::from(y + b.bottom.0),
+                    f64::from(y + b.top.0),
+                );
+            }
+        }
         for (index, stroke) in cast.strokes.iter().enumerate() {
             let Some(system) = cast.stroke_system[index] else {
                 continue;
@@ -1022,7 +1038,10 @@ mod tests {
     /// Runs the real pipeline far enough to hand `vertical_units` a `CastLayout`
     /// — the same spacing + casting-off `Engraver::resolve` performs.
     fn units(score: &epiphany_core::Score) -> VerticalUnits {
-        let input = to_constrained(&to_logical(score));
+        units_of(to_constrained(&to_logical(score)))
+    }
+
+    fn units_of(input: ConstrainedLayoutIR) -> VerticalUnits {
         let engraver = Engraver::default();
         let remap = crate::HorizontalRemap::build(&input);
         let (glyphs, strokes, curves) = (
@@ -1043,7 +1062,7 @@ mod tests {
     /// `members` drops it, and the axis loses the unit entirely.
     #[test]
     fn a_glyphless_staff_band_still_contributes_an_inter_staff_unit() {
-        let u = units(&epiphany_testkit::fixtures::percussion_placeholder_staff(1));
+        let u = units_of(epiphany_testkit::fixtures::percussion_placeholder_constrained(1));
         assert_eq!(
             u.inter_staff.len(),
             2,

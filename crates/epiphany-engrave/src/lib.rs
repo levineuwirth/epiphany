@@ -222,8 +222,11 @@ pub struct Engraver {
 /// through spacing and justification, instead of mapping through the
 /// coordinate map whole, and an anchored curve whose ends fall in two systems
 /// (a tie across a break) began drawing as two half-arcs to and from the
-/// systems' edges; an input with no anchor is unchanged).
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(14);
+/// systems' edges; an input with no anchor is unchanged), and to `15` when
+/// each later system of a region began opening with its staves' clefs and key
+/// signatures (`ConstrainedLayoutIR::system_leads`), its music moved right by
+/// the lead and its breaks reserving the lead's width.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(15);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -1216,22 +1219,42 @@ mod tests {
             "the honoured break increases the system count"
         );
         // The break lands at the anchor's column: the anchored slot's glyphs
-        // now start their system at the page's left content edge (up to the
-        // ledger-line extension, 0.3 staff spaces, which also participates in
-        // the system's extent and may sit left of the notehead box).
-        let left_edge = report
-            .layout
+        // are the first content of their system, after its lead at the left
+        // margin (its clef), with nothing but the lead before them.
+        let anchored: Vec<usize> = constrained
             .glyphs
             .iter()
-            .zip(&constrained.glyphs)
+            .enumerate()
             .filter(|(_, c)| c.horizontal_slot == break_slot)
-            .map(|(r, c)| r.position.x.0 + c.bounding_box.left.0)
+            .map(|(i, _)| i)
+            .collect();
+        let left_edge = anchored
+            .iter()
+            .map(|&i| {
+                report.layout.glyphs[i].position.x.0 + constrained.glyphs[i].bounding_box.left.0
+            })
             .fold(f32::INFINITY, f32::min);
+        let system = report
+            .layout
+            .systems()
+            .find(|s| s.primitives.glyphs.contains(&(anchored[0] as u32)))
+            .expect("the anchored column is in a system");
         let margin = engraver.geometry().margins.left.0;
+        let before: Vec<&ResolvedGlyph> = system
+            .primitives
+            .glyphs
+            .iter()
+            .map(|&i| &report.layout.glyphs[i as usize])
+            .filter(|g| g.position.x.0 < left_edge - 1e-3)
+            .collect();
+        assert!(!before.is_empty(), "the system opens with its lead");
         assert!(
-            left_edge >= margin - 1e-3 && left_edge <= margin + 0.5,
-            "the anchored column starts its system at the left margin \
-             (edge {left_edge}, margin {margin})"
+            before.iter().all(|g| matches!(
+                g.provenance.synthesis,
+                Some(epiphany_layout_ir::SynthesisKind::Registered(k))
+                    if k == casting::SYSTEM_LEAD_SYNTHESIS
+            ) && g.position.x.0 >= margin - 1e-3),
+            "nothing but the lead stands before the anchored column (edge {left_edge})"
         );
         // The decision record cites the user's override.
         assert!(report
@@ -2470,11 +2493,8 @@ mod tests {
     /// `quality::tests::a_glyphless_staff_band_still_contributes_an_inter_staff_unit`.)
     #[test]
     fn a_staff_band_owning_no_glyphs_is_still_laid_out_as_a_staff() {
-        use epiphany_layout_ir::{to_constrained, to_logical};
         let report = Engraver::default().solve(
-            &to_constrained(&to_logical(
-                &epiphany_testkit::fixtures::percussion_placeholder_staff(1),
-            )),
+            &epiphany_testkit::fixtures::percussion_placeholder_constrained(1),
             &SolverConfig::default(),
         );
         assert_eq!(report.status, SolveStatus::Solved);
@@ -2513,14 +2533,26 @@ mod tests {
         };
         let (first, second) = (pitch(systems[0]), pitch(systems[1]));
         assert!(
-            first > second + 8.0,
+            first > second + 7.5,
             "the pressured system opens far wider: {first} vs {second}"
         );
-        // The constrained stage stacks at SYSTEM_STAFF_PITCH = 12; the slack
-        // system is COMPRESSED below it, which an expand-only solve cannot do.
+        // The slack system is pulled to exactly what its own content needs:
+        // its notes sit inside the staves, so its tallest ink is its lead's
+        // treble clefs, reaching above the lower staff and below the upper,
+        // and the solve leaves the band's preferred gap between them, whether
+        // that is wider or narrower than the constrained stage's fixed pitch.
+        let clef = epiphany_layout_ir::metrics("gClef")
+            .expect("bundled")
+            .bounding_box();
+        let (above, below) = (1.0 + clef.top.0, -(1.0 + clef.bottom.0));
+        let gap = epiphany_layout_ir::VerticalBand::inter_staff_gap(
+            epiphany_layout_ir::VerticalBandId(0),
+        )
+        .preferred_height
+        .0;
         assert!(
-            second < 12.0,
-            "the slack system is pulled tighter than the fixed pitch: {second}"
+            (second - (above + below + gap)).abs() < 1e-3,
+            "the slack system realizes its own clefs' clearance: {second}"
         );
         assert_eq!(report.metric_vector.collision_penalty.0, 0.0);
     }

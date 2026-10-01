@@ -439,6 +439,7 @@ pub fn gen_constrained_layout_ir(rng: &mut Rng) -> ConstrainedLayoutIR {
             ..GlyphCatalogIdentity::default()
         },
         span_anchors: Vec::new(),
+        system_leads: Vec::new(),
     }
 }
 

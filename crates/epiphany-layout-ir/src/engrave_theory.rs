@@ -154,15 +154,26 @@ pub fn flag_glyph(value: NoteValue, stem: StemDirection) -> Option<&'static str>
     })
 }
 
-/// The SMuFL clef glyph for a clef shape, if one is bundled. A percussion clef
-/// reports `None` until its glyph is bundled — returning a G clef for it would
-/// be a semantic false positive, so the caller surfaces the gap instead.
+/// The SMuFL clef glyph for a clef shape, without an octave mark.
 pub fn clef_glyph(shape: ClefShape) -> Option<&'static str> {
     Some(match shape {
         ClefShape::G => "gClef",
         ClefShape::F => "fClef",
         ClefShape::C => "cClef",
-        ClefShape::Percussion => return None,
+        ClefShape::Percussion => "unpitchedPercussionClef1",
+    })
+}
+
+/// The SMuFL clef glyph for a clef, with the octave mark its shift calls for
+/// on a G or F clef (`gClef8vb` for a tenor's treble clef). A C clef with a
+/// shift, or a shift of more than an octave, draws without the mark.
+pub fn clef_glyph_for(clef: &Clef) -> Option<&'static str> {
+    Some(match (clef.shape, clef.octave_shift) {
+        (ClefShape::G, -1) => "gClef8vb",
+        (ClefShape::G, 1) => "gClef8va",
+        (ClefShape::F, -1) => "fClef8vb",
+        (ClefShape::F, 1) => "fClef8va",
+        (shape, _) => return clef_glyph(shape),
     })
 }
 
@@ -446,7 +457,16 @@ mod tests {
         assert_eq!(clef_glyph(ClefShape::G), Some("gClef"));
         assert_eq!(clef_glyph(ClefShape::F), Some("fClef"));
         assert_eq!(clef_glyph(ClefShape::C), Some("cClef"));
-        assert_eq!(clef_glyph(ClefShape::Percussion), None);
+        assert_eq!(
+            clef_glyph(ClefShape::Percussion),
+            Some("unpitchedPercussionClef1")
+        );
+        let tenor = Clef {
+            shape: ClefShape::G,
+            line: 2,
+            octave_shift: -1,
+        };
+        assert_eq!(clef_glyph_for(&tenor), Some("gClef8vb"));
         assert_eq!(
             accidental_glyph(&AccidentalId::new("sharp")),
             Some("accidentalSharp")
