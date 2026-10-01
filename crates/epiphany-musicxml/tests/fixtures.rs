@@ -931,6 +931,49 @@ fn parts_sharing_a_name_keep_their_own_accounts() {
 }
 
 #[test]
+fn beams_join_the_notes_of_one_voice_from_begin_to_end() {
+    let run = run("beams.musicxml");
+    all_applied(&run);
+    let score = &run.reduced.score;
+    let onset = |id| match score.events.get(id).map(Event::position) {
+        Some(EventPosition::Musical(p)) => rational(&p.0),
+        other => format!("{other:?}"),
+    };
+    let mut beams: Vec<String> = score
+        .cross_cutting
+        .beams
+        .iter()
+        .map(|b| {
+            b.events
+                .iter()
+                .map(|e| onset(*e))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    beams.sort();
+    // Onsets in whole notes: the pairs of measure 1, the sixteenths and the
+    // dotted pair of measure 2, and the second voice's pair there.
+    assert_eq!(
+        beams,
+        [
+            "0 1/8",
+            "1/2 5/8",
+            "1/2 9/16 5/8 11/16",
+            "1/4 3/8",
+            "3/4 15/16",
+        ]
+    );
+    let source = &run.import.source;
+    assert_eq!(
+        (source.census[0].beams, source.census[0].unmade_beams),
+        (5, 1)
+    );
+    assert_eq!(source.parts[0].unmade_beams, 1);
+    assert_eq!(source.features.kinds["beam without an end"].places.len(), 1);
+}
+
+#[test]
 fn a_timewise_score_is_refused_by_name() {
     match import(&xml("timewise.musicxml")) {
         Err(ReadError::NotPartwise(root)) => assert_eq!(root, "score-timewise"),

@@ -10,9 +10,9 @@
 use std::collections::BTreeMap;
 
 use epiphany_core::{
-    AnchorOffset, BeatGroup, Clef, ClefChange, Event, EventDuration, EventId, EventPosition,
-    ForeignFormatId, IdentifiedPitch, IdentityContext, Instrument, InstrumentId, KeySignature,
-    KeySignatureChange, Measure, MeasureId, MeasureNumberVisibility, MetricTimeModel,
+    AnchorOffset, Beam, BeamId, BeatGroup, Clef, ClefChange, Event, EventDuration, EventId,
+    EventPosition, ForeignFormatId, IdentifiedPitch, IdentityContext, Instrument, InstrumentId,
+    KeySignature, KeySignatureChange, Measure, MeasureId, MeasureNumberVisibility, MetricTimeModel,
     MusicalDuration, MusicalPosition, OperationId, PitchId, PitchedEvent, PowerOfTwo, RationalTime,
     Region, RegionContent, RegionEdge, RegionId, RegionTimeModel, ReplicaId, Rest, ScoreMetadata,
     Slur, SlurId, SlurKind, Staff, StaffExtent, StaffId, StaffInstance, StaffInstanceId,
@@ -52,6 +52,8 @@ pub enum Subject {
     Tie(usize, usize, usize),
     /// A slur: part and index into its slurs.
     Slur(usize, usize),
+    /// A beam: part and index into its beams.
+    Beam(usize, usize),
 }
 
 /// What one emitted operation carries.
@@ -691,6 +693,22 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                         kind: SlurKind::Legato,
                         curvature_override: None,
                         style: Default::default(),
+                    }),
+                }),
+            );
+        }
+        for (k, beam) in part.beams.iter().enumerate() {
+            let beam_id: BeamId = e.identity.mint();
+            e.emit(
+                "CreateCrossCutting(Beam)",
+                Subject::Beam(p, k),
+                OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Beam(Beam {
+                        id: beam_id,
+                        events: beam.events.iter().map(|&i| ids.events[p][i]).collect(),
+                        level: 1,
+                        sub_beams: Vec::new(),
+                        geometry_override: None,
                     }),
                 }),
             );

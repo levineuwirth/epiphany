@@ -208,6 +208,13 @@ pub struct SourceEvent {
     pub offset: usize,
 }
 
+/// A beamed group of a part's events, by index into [`SourcePart::events`]:
+/// the notes of one voice from a `<beam number="1">` begin to its end.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SourceBeam {
+    pub events: Vec<usize>,
+}
+
 /// A slur between two events of a part, by index into [`SourcePart::events`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SourceSlur {
@@ -239,6 +246,11 @@ pub struct SourcePart {
     pub members: Vec<SourceMember>,
     pub events: Vec<SourceEvent>,
     pub slurs: Vec<SourceSlur>,
+    pub beams: Vec<SourceBeam>,
+    /// The beams begun in the file that the reader made none of, each
+    /// recorded: one never ended, one begun again before its end, or one
+    /// ended on the note it began.
+    pub unmade_beams: usize,
     /// Chord notes recorded as unsupported and not imported: a cross-staff
     /// chord note, an unpitched chord note, a chord note joining a rest.
     pub dropped_notes: usize,
@@ -301,6 +313,12 @@ pub struct Census {
     pub quarter_tone_ties: usize,
     /// Grace and cue notes, which are not imported.
     pub grace_or_cue: usize,
+    /// Primary beams (`<beam number="1">`) the file begins and ends in one
+    /// voice, paired by a walk of the notes not joining a chord.
+    pub beams: usize,
+    /// Primary beams the file begins and never ends: one begun again before
+    /// its end, or still open when the part ends.
+    pub unmade_beams: usize,
     /// Per staff, the `fifths` of each `<key>` the model can hold (at most
     /// seven accidentals) that applies to it, where it is stated: a numbered
     /// key to its staff, an unnumbered one to every staff the part's
@@ -341,6 +359,8 @@ pub struct Kinds {
 /// tie, a rest never.
 fn note_census(part: Node) -> Census {
     let mut census = Census::default();
+    // Per voice, whether a primary beam is open.
+    let mut open: BTreeSet<&str> = BTreeSet::new();
     for note in children(part, "measure").flat_map(|m| children(m, "note")) {
         if child(note, "grace").is_some() || child(note, "cue").is_some() {
             census.grace_or_cue += 1;
@@ -355,9 +375,21 @@ fn note_census(part: Node) -> Census {
             census.rests += 1;
         }
         census.chord_members += usize::from(child(note, "chord").is_some());
+        let primary = children(note, "beam")
+            .find(|b| b.attribute("number").is_none_or(|n| n == "1"))
+            .map(text);
+        if let (None, Some(beam)) = (child(note, "chord"), primary) {
+            let voice = child_text(note, "voice").unwrap_or("1");
+            match beam {
+                "begin" if !open.insert(voice) => census.unmade_beams += 1,
+                "end" if open.remove(voice) => census.beams += 1,
+                _ => {}
+            }
+        }
         let tied = children(note, "tie").any(|t| t.attribute("type") == Some("start"));
         census.tie_starts += usize::from(tied && !rest);
     }
+    census.unmade_beams += open.len();
     census
 }
 
@@ -976,6 +1008,8 @@ struct PartState {
     file_transpose: Option<TranspositionInterval>,
     /// Open slurs by number: the index of their start event.
     open_slurs: BTreeMap<String, usize>,
+    /// Open beams by voice: the indices of their events so far.
+    open_beams: BTreeMap<String, Vec<usize>>,
     /// The last event a `<chord/>` note would join.
     last_event: Option<usize>,
     /// The measure's pitches as written, for [`Reader::carry`].
@@ -1311,6 +1345,7 @@ impl<'d, 'i> Reader<'d, 'i> {
             divisions: 1,
             file_transpose: None,
             open_slurs: BTreeMap::new(),
+            open_beams: BTreeMap::new(),
             last_event: None,
             written: Vec::new(),
             tied_over: BTreeMap::new(),
@@ -1324,6 +1359,8 @@ impl<'d, 'i> Reader<'d, 'i> {
             members: Vec::new(),
             events: Vec::new(),
             slurs: Vec::new(),
+            beams: Vec::new(),
+            unmade_beams: 0,
             dropped_notes: 0,
             dropped_quarter_tones: Vec::new(),
             dropped_tie_starts: 0,
@@ -1462,6 +1499,17 @@ impl<'d, 'i> Reader<'d, 'i> {
             .any(|e| matches!(e.content, Content::Unpitched { .. }))
         {
             part.members = members;
+        }
+        for _ in state.open_beams {
+            part.unmade_beams += 1;
+            self.features.record(
+                FeatureClass::Notation,
+                "beam without an end",
+                Place {
+                    part: part_name.clone(),
+                    measure: String::new(),
+                },
+            );
         }
         for (number, _) in state.open_slurs {
             self.features.record(
@@ -1681,17 +1729,12 @@ impl<'d, 'i> Reader<'d, 'i> {
         for item in elements(note) {
             match name(item) {
                 "chord" | "pitch" | "unpitched" | "rest" | "duration" | "voice" | "staff"
-                | "tie" | "type" | "dot" | "accidental" | "time-modification" | "instrument" => {}
+                | "tie" | "type" | "dot" | "accidental" | "time-modification" | "instrument"
+                | "beam" => {}
                 "notations" => {}
                 "stem" => {
                     self.features
                         .record(FeatureClass::Notation, "stem direction", place.clone())
-                }
-                "beam" => {
-                    if item.attribute("number").unwrap_or("1") == "1" && text(item) == "begin" {
-                        self.features
-                            .record(FeatureClass::Notation, "beam", place.clone());
-                    }
                 }
                 "notehead" => {
                     if text(item) != "normal" {
@@ -1984,6 +2027,45 @@ impl<'d, 'i> Reader<'d, 'i> {
         if let Some(mut written) = written {
             written.at = kept_at;
             state.written.push(written);
+        }
+
+        // The primary beam joins the notes of one voice, a chord by its first
+        // note; the shorter values' further beams follow from the notes.
+        let beam = children(note, "beam")
+            .find(|b| b.attribute("number").unwrap_or("1") == "1")
+            .map(text);
+        if let (false, Some(beam)) = (is_chord, beam) {
+            let voice = child_text(note, "voice").unwrap_or("1").to_owned();
+            match beam {
+                "begin"
+                    if state
+                        .open_beams
+                        .insert(voice.clone(), vec![event_index])
+                        .is_some() =>
+                {
+                    part.unmade_beams += 1;
+                    self.features.record(
+                        FeatureClass::Notation,
+                        "beam begun again before its end",
+                        place.clone(),
+                    );
+                }
+                "continue" | "end" => match state.open_beams.get_mut(&voice) {
+                    Some(events) => {
+                        events.push(event_index);
+                        if beam == "end" {
+                            let events = state.open_beams.remove(&voice).unwrap_or_default();
+                            part.beams.push(SourceBeam { events });
+                        }
+                    }
+                    None => self.features.record(
+                        FeatureClass::Notation,
+                        format!("beam {beam} without a begin"),
+                        place.clone(),
+                    ),
+                },
+                _ => {}
+            }
         }
 
         for (kind, number) in slur_marks {

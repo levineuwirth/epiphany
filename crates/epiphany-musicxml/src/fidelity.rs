@@ -775,6 +775,62 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             ));
         }
 
+        // Beams: (staff, each event's onset) on each side, and the reader's
+        // beams made and recorded unmade, each held to the census's own.
+        let mut graph_beams: BTreeMap<(StaffId, Vec<RationalTime>), isize> = BTreeMap::new();
+        for beam in &score.cross_cutting.beams {
+            let places: Option<Vec<&(StaffId, RationalTime)>> =
+                beam.events.iter().map(|e| event_place.get(e)).collect();
+            let Some(places) = places else {
+                continue;
+            };
+            let Some(&&(staff, _)) = places.first() else {
+                continue;
+            };
+            if !import.ids.staves[p].contains(&staff) {
+                continue;
+            }
+            let onsets = places.iter().map(|(_, onset)| onset.clone()).collect();
+            *graph_beams.entry((staff, onsets)).or_default() += 1;
+        }
+        let mut source_beams: BTreeMap<(StaffId, Vec<RationalTime>), isize> = BTreeMap::new();
+        for (k, beam) in part.beams.iter().enumerate() {
+            let Some(&first) = beam.events.first() else {
+                continue;
+            };
+            if let Some(why) = refused(&Subject::Beam(p, k)) {
+                fidelity.explained.push(format!(
+                    "{name}: beam at {} ({why})",
+                    show(&part.events[first].onset)
+                ));
+                continue;
+            }
+            let staff = import.ids.staves[p][part.events[first].staff];
+            let onsets = beam
+                .events
+                .iter()
+                .map(|&i| part.events[i].onset.clone())
+                .collect();
+            *source_beams.entry((staff, onsets)).or_default() += 1;
+        }
+        if graph_beams != source_beams {
+            fidelity.failures.push(format!(
+                "{name}: {} beams in the score, {} in the source",
+                graph_beams.values().sum::<isize>(),
+                source_beams.values().sum::<isize>()
+            ));
+        }
+        if part.beams.len() != census.beams || part.unmade_beams != census.unmade_beams {
+            fidelity.failures.push(format!(
+                "{name}: the reader made {} beams and recorded {} unmade, but the file \
+                 makes {} and leaves {} unmade",
+                part.beams.len(),
+                part.unmade_beams,
+                census.beams,
+                census.unmade_beams
+            ));
+        }
+
         // Counts per measure, from the score and from the source.
         let measure_of = |onset: &RationalTime| -> usize {
             source
