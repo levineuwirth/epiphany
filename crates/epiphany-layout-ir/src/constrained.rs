@@ -20,8 +20,9 @@ use epiphany_core::{
 use epiphany_determinism::{DomainTag, Preimage};
 
 use crate::engrave_theory::{
-    accidental_glyph, clef_glyph, flag_count, flag_glyph, has_stem, key_signature, notehead_glyph,
-    rest_glyph, staff_position, KeyAccidental, StaffStep,
+    accidental_glyph, alteration_glyph, clef_glyph, flag_count, flag_glyph, has_stem,
+    key_alteration, key_signature, notehead_glyph, rest_glyph, stack_alteration, staff_position,
+    KeyAccidental, StaffStep,
 };
 use crate::engraving::{EngravingDecision, OverrideKind, OverridePriority, OverrideTarget};
 use crate::glyph::{metrics, BravuraCatalog, GlyphCatalog, GlyphCatalogIdentity, GlyphReference};
@@ -894,6 +895,9 @@ pub fn try_to_constrained(
                 .unwrap_or_default()
         };
 
+        // Accidentals in context: which accidental each pitch's first head shows.
+        let shown_accidentals = context_accidentals(&region.objects);
+
         // Pass 1 — compute every glyph's notation, keyed for emission in pass 2,
         // and collect the distinct columns it occupies. A note/rest notated as a
         // multi-component (tied) decomposition yields one notehead/stem/rest per
@@ -954,13 +958,18 @@ pub fn try_to_constrained(
                                     kind: LayoutDiagnosticKind::MissingSpelling,
                                 });
                             }
-                            // The spelling's accidentals draw on the first component
-                            // only; an unbundled (microtonal) one is surfaced, not
-                            // guessed.
-                            let accidentals = if comp == 0 {
-                                pitch_accidentals(&pitch.spelling, pitch.pitch, &mut diagnostics)
-                            } else {
-                                Vec::new()
+                            // The accidental the key and the measure call for draws on
+                            // the first component only; a spelling whose alteration
+                            // is not whole semitones draws its own stack, and an
+                            // unbundled (microtonal) one is surfaced, not guessed.
+                            let accidentals = match (comp, shown_accidentals.get(&pitch.pitch)) {
+                                (0, Some(shown)) => shown.clone(),
+                                (0, None) => pitch_accidentals(
+                                    &pitch.spelling,
+                                    pitch.pitch,
+                                    &mut diagnostics,
+                                ),
+                                _ => Vec::new(),
                             };
                             if !accidentals.is_empty() {
                                 // The leftmost accidental's left edge, measured from
@@ -3173,6 +3182,107 @@ fn dot_positions(yo: f32, steps: &[StaffStep]) -> Vec<f32> {
         ys[i] = step_to_y(yo, space);
     }
     ys
+}
+
+/// The accidental each pitch's first head shows, by its staff's key and the
+/// earlier notes of its measure: none where the key, or an accidental earlier
+/// in the measure on the same letter and octave, already gives the pitch's
+/// alteration; the accidental of the alteration (a natural to cancel) where
+/// they give another, which then holds to the barline; and none on a note a
+/// tie continues into, which leaves the measure's state as it was. Every
+/// voice of a staff shares its state, taken in time order. A pitch whose
+/// spelling is not whole semitones is absent, and draws its own stack.
+fn context_accidentals(
+    objects: &[crate::logical::LayoutObject],
+) -> BTreeMap<PitchId, Vec<&'static str>> {
+    struct Staff<'a> {
+        keys: &'a [PlacedKeySignature],
+        measures: Vec<&'a TimePoint>,
+        notes: Vec<&'a crate::logical::NoteContent>,
+    }
+    let mut staves: BTreeMap<StaffId, Staff> = BTreeMap::new();
+    let mut tied_into: BTreeSet<PitchId> = BTreeSet::new();
+    for object in objects {
+        if let LayoutContent::Tie(tie) = object.content() {
+            tied_into.extend(tie.pairs.iter().map(|(_, end)| *end));
+        }
+        let Some(staff) = object.staff() else {
+            continue;
+        };
+        let entry = staves.entry(staff).or_insert(Staff {
+            keys: &[],
+            measures: Vec::new(),
+            notes: Vec::new(),
+        });
+        match object.content() {
+            LayoutContent::Staff(content) => entry.keys = content.keys.as_slice(),
+            LayoutContent::Measure(measure) => entry.measures.push(&measure.start),
+            LayoutContent::Note(note) => entry.notes.push(note),
+            _ => {}
+        }
+    }
+    let mut shown = BTreeMap::new();
+    for staff in staves.values_mut() {
+        staff.measures.sort_by(|a, b| time_total(a, b));
+        staff
+            .notes
+            .sort_by(|a, b| time_total(&a.position, &b.position));
+        let mut measure = None;
+        let mut state: BTreeMap<(epiphany_core::CmnNominal, i8), i8> = BTreeMap::new();
+        for note in &staff.notes {
+            let index = staff
+                .measures
+                .partition_point(|start| time_total(start, &note.position) != Ordering::Greater);
+            if measure != Some(index) {
+                measure = Some(index);
+                state.clear();
+            }
+            let key = key_at(staff.keys, &note.position);
+            for pitch in &note.pitches {
+                let Some(spelling) = &pitch.spelling else {
+                    continue;
+                };
+                let SpellingNominal::Cmn(nominal) = spelling.nominal else {
+                    continue;
+                };
+                let Some(alteration) = stack_alteration(&spelling.accidentals) else {
+                    continue;
+                };
+                if tied_into.contains(&pitch.pitch) {
+                    shown.insert(pitch.pitch, Vec::new());
+                    continue;
+                }
+                let place = (nominal, spelling.octave);
+                let current = state
+                    .get(&place)
+                    .copied()
+                    .unwrap_or_else(|| key.map_or(0, |k| key_alteration(k, nominal)));
+                let glyphs = if alteration == current {
+                    Vec::new()
+                } else {
+                    state.insert(place, alteration);
+                    alteration_glyph(alteration).into_iter().collect()
+                };
+                shown.insert(pitch.pitch, glyphs);
+            }
+        }
+    }
+    shown
+}
+
+/// The key signature in force at `at` (the latest change at or before it,
+/// else the earliest), or `None` when the staff declares none.
+fn key_at(keys: &[PlacedKeySignature], at: &TimePoint) -> Option<KeySignature> {
+    keys.iter()
+        .filter(|placed| {
+            matches!(
+                time_cmp(&placed.time, at),
+                Some(Ordering::Less | Ordering::Equal)
+            )
+        })
+        .max_by(|a, b| time_total(&a.time, &b.time))
+        .or_else(|| keys.iter().min_by(|a, b| time_total(&a.time, &b.time)))
+        .map(|placed| placed.key)
 }
 
 /// A tie's arc from head `a` (in column `from`) to head `b` (in column `to`):

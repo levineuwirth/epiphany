@@ -175,6 +175,64 @@ pub fn accidental_glyph(accidental: &AccidentalId) -> Option<&'static str> {
         "flat" => "accidentalFlat",
         "natural" => "accidentalNatural",
         "doublesharp" | "double-sharp" => "accidentalDoubleSharp",
+        "doubleflat" | "double-flat" | "flat-flat" => "accidentalDoubleFlat",
+        _ => return None,
+    })
+}
+
+/// The alteration, in semitones, a spelling's accidental stack states: none
+/// for an empty stack, the accidental's for a single standard one. `None` for
+/// a stack of several, or for an accidental of no whole number of semitones
+/// (a microtonal one): those are drawn as written, out of the key and
+/// measure context this tier tracks.
+pub fn stack_alteration(accidentals: &[AccidentalId]) -> Option<i8> {
+    match accidentals {
+        [] => Some(0),
+        [only] => match only.as_str() {
+            "natural" => Some(0),
+            "sharp" => Some(1),
+            "flat" => Some(-1),
+            "doublesharp" | "double-sharp" => Some(2),
+            "doubleflat" | "double-flat" | "flat-flat" => Some(-2),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The alteration, in semitones, a key signature gives a letter: a sharp for
+/// each of the first `fifths` letters of F C G D A E B, a flat for each of
+/// the first `-fifths` of B E A D G C F.
+pub fn key_alteration(key: KeySignature, nominal: CmnNominal) -> i8 {
+    const SHARPS: [CmnNominal; 7] = [
+        CmnNominal::F,
+        CmnNominal::C,
+        CmnNominal::G,
+        CmnNominal::D,
+        CmnNominal::A,
+        CmnNominal::E,
+        CmnNominal::B,
+    ];
+    let fifths = key.fifths();
+    let count = fifths.unsigned_abs() as usize;
+    if fifths > 0 && SHARPS[..count].contains(&nominal) {
+        1
+    } else if fifths < 0 && SHARPS[7 - count..].contains(&nominal) {
+        -1
+    } else {
+        0
+    }
+}
+
+/// The accidental glyph that states an alteration outright: a natural for
+/// none, a sharp or flat for one semitone, a double for two.
+pub fn alteration_glyph(alteration: i8) -> Option<&'static str> {
+    Some(match alteration {
+        0 => "accidentalNatural",
+        1 => "accidentalSharp",
+        -1 => "accidentalFlat",
+        2 => "accidentalDoubleSharp",
+        -2 => "accidentalDoubleFlat",
         _ => return None,
     })
 }

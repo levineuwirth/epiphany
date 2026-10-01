@@ -370,3 +370,114 @@ fn ties_cross_barlines_and_system_breaks() {
         }
     }
 }
+
+/// An accidental is drawn against the key and the measure: none where the key
+/// or an earlier accidental already gives the pitch, a natural to cancel one,
+/// held to the barline and only on its own octave, and none on a note a tie
+/// carries over the barline.
+#[test]
+fn accidentals_are_drawn_against_the_key_and_the_measure() {
+    use epiphany_core::TypedObjectId;
+
+    let note = |step: &str, alter: i32, octave: u8, duration: u8, tie: &str| {
+        format!(
+            "<note><pitch><step>{step}</step><alter>{alter}</alter><octave>{octave}</octave>\
+             </pitch><duration>{duration}</duration>{tie}<voice>1</voice></note>"
+        )
+    };
+    // Two flats: B and E are flat by the key.
+    let measures = [
+        // E-flat by the key, E natural, E natural again, E-flat again.
+        [
+            note("E", -1, 4, 1, ""),
+            note("E", 0, 4, 1, ""),
+            note("E", 0, 4, 1, ""),
+            note("E", -1, 4, 1, ""),
+        ]
+        .concat(),
+        // The barline cancels the natural; another octave has its own; a B
+        // natural, tied over the barline.
+        [
+            note("E", 0, 4, 1, ""),
+            note("E", 0, 5, 1, ""),
+            note("B", 0, 4, 2, "<tie type=\"start\"/>"),
+        ]
+        .concat(),
+        // The tied B natural shows nothing and sets nothing, so the next B
+        // natural shows its own; then B-flat again.
+        [
+            note("B", 0, 4, 2, "<tie type=\"stop\"/>"),
+            note("B", 0, 4, 1, ""),
+            note("B", -1, 4, 1, ""),
+        ]
+        .concat(),
+        // F-sharp, carried; F-sharp an octave up needs its own; F natural.
+        [
+            note("F", 1, 4, 1, ""),
+            note("F", 1, 4, 1, ""),
+            note("F", 1, 5, 1, ""),
+            note("F", 0, 4, 1, ""),
+        ]
+        .concat(),
+    ];
+    let mut body = String::new();
+    for (m, notes) in measures.iter().enumerate() {
+        body.push_str(&format!("<measure number=\"{}\">", m + 1));
+        if m == 0 {
+            body.push_str(
+                "<attributes><divisions>1</divisions><key><fifths>-2</fifths></key>\
+                 <time><beats>4</beats><beat-type>4</beat-type></time>\
+                 <clef><sign>G</sign><line>2</line></clef></attributes>",
+            );
+        }
+        body.push_str(notes);
+        body.push_str("</measure>");
+    }
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\">\
+         <part-name>Violin</part-name></score-part></part-list>\
+         <part id=\"P1\">{body}</part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("accidentals.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    // Each note's own accidental, in reading order: the accidental shares its
+    // notehead's pitch source.
+    let mut heads: Vec<_> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("notehead"))
+        .collect();
+    heads.sort_by(|a, b| a.position.x.0.total_cmp(&b.position.x.0));
+    let shown: Vec<Option<&str>> = heads
+        .iter()
+        .map(|head| {
+            layout
+                .glyphs
+                .iter()
+                .find(|g| {
+                    g.provenance.source == head.provenance.source
+                        && g.glyph.as_str().starts_with("accidental")
+                })
+                .map(|g| g.glyph.as_str())
+        })
+        .collect();
+    assert!(heads
+        .iter()
+        .all(|h| matches!(h.provenance.source, TypedObjectId::Pitch(_))));
+    let (n, f, s) = (
+        Some("accidentalNatural"),
+        Some("accidentalFlat"),
+        Some("accidentalSharp"),
+    );
+    assert_eq!(
+        shown,
+        [
+            None, n, None, f, // measure 1
+            n, n, n, // measure 2
+            None, n, f, // measure 3, the first note tied over
+            s, None, s, n, // measure 4
+        ]
+    );
+}
