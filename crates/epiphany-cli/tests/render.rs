@@ -183,3 +183,105 @@ fn a_measure_rest_is_a_whole_rest_in_any_meter_and_a_hidden_rest_draws_nothing()
         .iter()
         .all(|g| g.glyph.as_str() != "augmentationDot"));
 }
+
+/// Every beam's ends sit on the stems it joins, and every beamed stem ends on
+/// its beam, after the engraver re-spaces the columns and justifies the
+/// systems: on the imported beams of the fixture, and on a long score of
+/// eighths the meter beams in pairs across many justified systems.
+#[test]
+fn beams_stay_on_their_stems_through_spacing_and_justification() {
+    use epiphany_core::TypedObjectId;
+    use epiphany_layout_ir::{is_beam_stroke, ResolvedLayoutIR, Stroke};
+
+    fn check(layout: &ResolvedLayoutIR) -> usize {
+        let beams: Vec<&Stroke> = layout
+            .strokes
+            .iter()
+            .filter(|s| is_beam_stroke(s))
+            .collect();
+        for beam in &beams {
+            let stems: Vec<&Stroke> = layout
+                .strokes
+                .iter()
+                .filter(|s| {
+                    !is_beam_stroke(s)
+                        && s.from.x == s.to.x
+                        && s.from.y != s.to.y
+                        && matches!(s.provenance.source, TypedObjectId::Event(_))
+                        && beam.provenance.dependencies.contains(&s.provenance.source)
+                })
+                .collect();
+            let half = beam.thickness.0 / 2.0;
+            let on_stem = |x: f32| stems.iter().any(|s| (s.from.x.0 - x).abs() < 0.07);
+            let (from, to) = (beam.from.x.0, beam.to.x.0);
+            let hook = (to - from - 1.16).abs() < 0.02;
+            assert!(
+                if hook {
+                    on_stem(from + 0.06) || on_stem(to - 0.06)
+                } else {
+                    on_stem(from + 0.06) && on_stem(to - 0.06)
+                },
+                "a beam's ends sit on its stems: {from}..{to}"
+            );
+            // A stem beneath a beam's span ends within the beam nearest its
+            // tip, the outermost one.
+            for stem in stems
+                .iter()
+                .filter(|s| s.from.x.0 >= from && s.from.x.0 <= to)
+            {
+                let reach = beams
+                    .iter()
+                    .filter(|b| b.from.x.0 <= stem.from.x.0 && stem.from.x.0 <= b.to.x.0)
+                    .map(|b| {
+                        let t = (stem.from.x.0 - b.from.x.0) / (b.to.x.0 - b.from.x.0);
+                        let y = b.from.y.0 + t * (b.to.y.0 - b.from.y.0);
+                        (stem.to.y.0 - y).abs()
+                    })
+                    .fold(f32::INFINITY, f32::min);
+                assert!(reach <= half + 0.17, "a stem reaches its beam: {reach}");
+            }
+        }
+        beams.len()
+    }
+
+    let loaded = load(&fixture("beams.musicxml")).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    // Five beamed groups, the four sixteenths' second beam, and the
+    // sixteenth's hook beside its dotted eighth.
+    assert_eq!(check(&layout), 7);
+
+    let mut measures = String::new();
+    for m in 1..=160 {
+        measures.push_str(&format!("<measure number=\"{m}\">"));
+        if m == 1 {
+            measures.push_str(
+                "<attributes><divisions>2</divisions><time><beats>4</beats>\
+                 <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+                 </attributes>",
+            );
+        }
+        for step in ["C", "E", "D", "F", "E", "G", "F", "A"] {
+            measures.push_str(&format!(
+                "<note><pitch><step>{step}</step><octave>5</octave></pitch>\
+                 <duration>1</duration><voice>1</voice><type>eighth</type></note>"
+            ));
+        }
+        measures.push_str("</measure>");
+    }
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\">\
+         <part-name>Flute</part-name></score-part></part-list>\
+         <part id=\"P1\">{measures}</part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("long_eighths.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    assert!(layout.systems().count() > 2, "the score wraps");
+    // Pairs by beat: four beams a measure, and no beamed note keeps a flag.
+    assert_eq!(check(&layout), 160 * 4);
+    assert!(layout
+        .glyphs
+        .iter()
+        .all(|g| !g.glyph.as_str().starts_with("flag")));
+}

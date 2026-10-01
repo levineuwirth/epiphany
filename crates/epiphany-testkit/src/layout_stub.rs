@@ -226,6 +226,7 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
             default_clef: epiphany_core::Clef::default(),
             clefs: clefs(rng),
             keys: keys(rng),
+            beams: Vec::new(),
         }),
         2 => LayoutContent::Note(NoteContent {
             position: time(rng),
@@ -437,6 +438,7 @@ pub fn gen_constrained_layout_ir(rng: &mut Rng) -> ConstrainedLayoutIR {
             metrics_hash,
             ..GlyphCatalogIdentity::default()
         },
+        span_anchors: Vec::new(),
     }
 }
 

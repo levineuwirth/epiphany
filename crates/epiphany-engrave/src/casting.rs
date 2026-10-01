@@ -627,11 +627,21 @@ pub(crate) fn cast_off(
             clips[s] = (lo, hi);
         }
     }
+    let anchors = crate::span_anchors(input);
+    let anchored_system = |id: GlyphObjectId| -> Option<usize> {
+        let (start, end) = anchors.get(&id)?;
+        let s = *system_of_slot.get(start)?;
+        (system_of_slot.get(end) == Some(&s)).then_some(s)
+    };
     let fates: Vec<StrokeFate> = input
         .strokes
         .iter()
         .zip(spaced_strokes)
         .map(|(stroke, spaced)| {
+            // A stroke anchored at both ends within one system rides it.
+            if let Some(s) = anchored_system(stroke.id()) {
+                return StrokeFate::Rigid(Some(s));
+            }
             stroke_fate(
                 stroke,
                 spaced,
@@ -648,7 +658,10 @@ pub(crate) fn cast_off(
     // nearest-region / clip-overlap logic strokes use.
     let curve_fates: Vec<CurveFate> = spaced_curves
         .iter()
-        .map(|curve| curve_fate(curve, &region_spans, &region_systems, &clips))
+        .map(|curve| match anchored_system(curve.id()) {
+            Some(s) => CurveFate::Rigid(Some(s)),
+            None => curve_fate(curve, &region_spans, &region_systems, &clips),
+        })
         .collect();
 
     // ---- Inter-staff vertical solve + system extents -----------------------
@@ -1053,6 +1066,7 @@ pub(crate) fn cast_off(
                         placements[*s].sunk(staff_dy(*s, stroke_staff_of[si])),
                         &slot_source_x,
                         &input.glyphs,
+                        anchors.get(&source.id()),
                     ),
                     None => spaced.clone(),
                 };
@@ -1128,7 +1142,19 @@ pub(crate) fn cast_off(
                 let p = system
                     .map(|s| placements[s].sunk(staff_dy(s, curve_staff)))
                     .unwrap_or(Placement::rigid(0.0, 0.0));
-                let [p0, p1, p2, p3] = shift(curve.control_points(), p);
+                // An anchored curve's ends ride their slots' deltas; any other
+                // maps through the system's affine whole.
+                let slot_dx =
+                    |slot: &SpringSlotId| slot_source_x.get(slot).map(|&sx| p.slot_dx(sx));
+                let anchored = anchors
+                    .get(&curve.id())
+                    .filter(|_| system.is_some())
+                    .and_then(|(start, end)| Some((slot_dx(start)?, slot_dx(end)?)));
+                let [p0, p1, p2, p3] = match anchored {
+                    Some((start, end)) => crate::anchored_curve(curve.control_points(), start, end)
+                        .map(|pt| Point::new(pt.x.0, pt.y.0 + p.dy)),
+                    None => shift(curve.control_points(), p),
+                };
                 curves.push(Curve {
                     p0,
                     p1,
@@ -1834,7 +1860,23 @@ fn place_stroke(
     p: Placement,
     slot_source_x: &BTreeMap<SpringSlotId, f32>,
     glyphs: &[GlyphObject],
+    anchor: Option<&(SpringSlotId, SpringSlotId)>,
 ) -> Stroke {
+    // An anchored stroke (a beam): each end rides its own slot's delta.
+    let slot_dx = |slot: &SpringSlotId| slot_source_x.get(slot).map(|&sx| p.slot_dx(sx));
+    if let Some((from_dx, to_dx)) =
+        anchor.and_then(|(start, end)| Some((slot_dx(start)?, slot_dx(end)?)))
+    {
+        return Stroke {
+            provenance: spaced.provenance.clone(),
+            from: Point::new(spaced.from.x.0 + from_dx, spaced.from.y.0 + p.dy),
+            to: Point::new(spaced.to.x.0 + to_dx, spaced.to.y.0 + p.dy),
+            thickness: spaced.thickness,
+            layer: spaced.layer,
+            style: spaced.style,
+            vertical_band: spaced.vertical_band,
+        };
+    }
     if let Some(dx) = crate::component_glyph(source, glyphs)
         .and_then(|g| slot_source_x.get(&g.horizontal_slot))
         .map(|&sx| p.slot_dx(sx))

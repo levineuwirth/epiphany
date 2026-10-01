@@ -1097,3 +1097,15 @@ barline at its measure's start, and casting-off breaks *after* a barline
 (`opens_measure`): a system ends on its last measure's barline. Each measure
 now has a measure record, the last included. Locked by
 `a_barline_ends_each_measure_and_none_follows_the_opening_clef`.
+
+## ENGRAVER_VERSION 13 → 14: span anchors (X2.3, 2026-10-01)
+
+A beam spans columns but its ends sit on stems, offset from their columns'
+slot sources, and both the spacing pass's coordinate map and casting's
+justification affine move an off-source point by interpolation, which would
+pull a beam off its stems whenever the columns between re-space. The
+constrained IR now names, for such a primitive, the slots its two ends ride
+(`SpanAnchor`), and the engraver moves each end by its own slot's delta (a
+curve's inner control points keep their fractions of the span). Locked by
+`beams_stay_on_their_stems_through_spacing_and_justification`
+(`epiphany-cli`), which fails with the anchors ignored in either pass.

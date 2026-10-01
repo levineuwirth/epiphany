@@ -17,11 +17,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::prepass::{derive_annotations, DerivedAnnotations, PrePassProfile};
 use epiphany_core::{
-    AleatoricAnchoringDiscipline, AnchorOffset, AnnotationAnchor, CanonicalValue, Clef,
+    AleatoricAnchoringDiscipline, AnchorOffset, AnnotationAnchor, BeamId, CanonicalValue, Clef,
     CoordinateDiscipline, Event, EventDuration, EventId, EventPosition, KeySignature, LineStyle,
-    MeasurePosition, MusicalDuration, MusicalPosition, NotatedComponent, PitchId, PitchSpelling,
-    Region, RegionEdge, RegionId, RegionTimeModel, Score, SlurKind, SpaceUnit, StaffId,
-    StaffPosition, TimeAnchor, TimeSignatureDisplay, TupletId, TupletRatio, TypedObjectId,
+    MeasurePosition, MusicalDuration, MusicalPosition, NotatedComponent, NoteValue, PitchId,
+    PitchSpelling, Region, RegionEdge, RegionId, RegionTimeModel, Score, SlurKind, SpaceUnit,
+    StaffId, StaffPosition, TimeAnchor, TimeSignatureDisplay, TupletId, TupletRatio, TypedObjectId,
     WallClockTime,
 };
 use epiphany_determinism::{DomainTag, Preimage};
@@ -84,6 +84,18 @@ pub struct StaffContent {
     /// `StaffInstance`, and every consumer resolving "the clef at time t" needs
     /// both (`active_clef_or`).
     pub default_clef: Clef,
+    /// The instance's beamed groups: as the score's beams name them, or, in a
+    /// score that names none, by its meter's beats.
+    pub beams: Vec<BeamGroup>,
+}
+
+/// A beamed group: two or more notes of one voice, each an eighth or shorter
+/// notated as a single component, in time order; and the score's beam it
+/// comes from, if one does.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BeamGroup {
+    pub events: Vec<EventId>,
+    pub beam: Option<BeamId>,
 }
 
 /// A clef change with its score anchor resolved into the layout time axis.
@@ -586,7 +598,12 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                     .iter()
                     .filter_map(|change| time_anchor_dep(&change.anchor)),
             );
-            push(si_src, si_deps, staff, staff_content(score, si));
+            push(
+                si_src,
+                si_deps,
+                staff,
+                staff_content(score, si, &annotations),
+            );
             let spans = measure_spans(score, si);
             for voice in &si.voices {
                 let v_src = TypedObjectId::Voice(voice.id);
@@ -868,7 +885,11 @@ fn derive_score_version(score: &Score) -> ScoreVersion {
 /// resolved layout times. Empty sequences (a score that declares no clef/key)
 /// are carried as-is — the constrained pass defaults the *active* clef/key to
 /// treble / C major.
-fn staff_content(score: &Score, si: &epiphany_core::StaffInstance) -> LayoutContent {
+fn staff_content(
+    score: &Score,
+    si: &epiphany_core::StaffInstance,
+    annotations: &DerivedAnnotations,
+) -> LayoutContent {
     let default_clef = score
         .staves
         .iter()
@@ -893,7 +914,148 @@ fn staff_content(score: &Score, si: &epiphany_core::StaffInstance) -> LayoutCont
                 key: change.key,
             })
             .collect(),
+        beams: beam_groups(score, si, annotations),
     })
+}
+
+/// The beamed groups of a staff instance's notes. A score that names beams
+/// (an import, which carries its source's beaming) is beamed as it says, each
+/// beam split where a note it lists cannot be beamed. A score that names none
+/// is beamed by its meter: consecutive beamable notes of one voice, without a
+/// gap, within one beat group of the measure's time signature. A beamable note
+/// is a pitched or unpitched note notated as one eighth-or-shorter component
+/// outside a tuplet.
+pub(crate) fn beam_groups(
+    score: &Score,
+    si: &epiphany_core::StaffInstance,
+    annotations: &DerivedAnnotations,
+) -> Vec<BeamGroup> {
+    let musical = |eid: EventId| -> Option<(MusicalPosition, MusicalPosition)> {
+        let event = score.events.get(eid)?;
+        match (event.position(), event.duration()) {
+            (EventPosition::Musical(start), EventDuration::Musical(duration)) => {
+                Some((start.clone(), start.clone() + duration.clone()))
+            }
+            _ => None,
+        }
+    };
+    let beamable = |eid: EventId| -> bool {
+        let Some(event) = score.events.get(eid) else {
+            return false;
+        };
+        if !matches!(event, Event::Pitched(_) | Event::Unpitched(_)) || musical(eid).is_none() {
+            return false;
+        }
+        let components = components_of(annotations, eid);
+        matches!(components.as_slice(), [only] if only.tuplet.is_none()
+            && !matches!(only.base_value, NoteValue::Whole | NoteValue::Half | NoteValue::Quarter))
+    };
+    let in_instance: BTreeSet<EventId> = si
+        .voices
+        .iter()
+        .flat_map(|voice| voice.events.iter().copied())
+        .collect();
+    let mut groups = Vec::new();
+    if !score.cross_cutting.beams.is_empty() {
+        for beam in &score.cross_cutting.beams {
+            if !beam.events.iter().all(|e| in_instance.contains(e)) {
+                continue;
+            }
+            let mut events: Vec<EventId> = beam.events.clone();
+            events.sort_by_key(|e| musical(*e).map(|(start, _)| start));
+            for run in events.split(|e| !beamable(*e)) {
+                if run.len() >= 2 {
+                    groups.push(BeamGroup {
+                        events: run.to_vec(),
+                        beam: Some(beam.id),
+                    });
+                }
+            }
+        }
+        return groups;
+    }
+    // The beats of each measure: its time signature's beat groups laid end to
+    // end from its start (a measure under no known signature is one beat).
+    let mut beats: Vec<(MusicalPosition, MusicalPosition)> = Vec::new();
+    let mut groups_in_force: Option<Vec<MusicalDuration>> = None;
+    for (index, measure) in si.measures.iter().enumerate() {
+        if let Some(signature) = measure
+            .time_signature
+            .and_then(|id| score.time_signatures.iter().find(|t| t.id == id))
+        {
+            groups_in_force = Some(
+                signature
+                    .beat_groups()
+                    .iter()
+                    .map(|group| group.duration.clone())
+                    .collect(),
+            );
+        }
+        let TimePoint::Musical(start) = resolve_time_anchor(score, &measure.start) else {
+            continue;
+        };
+        let end = si.measures.get(index + 1).and_then(|next| {
+            match resolve_time_anchor(score, &next.start) {
+                TimePoint::Musical(end) => Some(end),
+                TimePoint::WallClock(_) => None,
+            }
+        });
+        let mut at = start.clone();
+        for duration in groups_in_force.iter().flatten() {
+            let next = at.clone() + duration.clone();
+            beats.push((at, next.clone()));
+            at = next;
+        }
+        if groups_in_force.is_none() {
+            if let Some(end) = end {
+                beats.push((start, end));
+            }
+        }
+    }
+    let beat_of = |start: &MusicalPosition, end: &MusicalPosition| {
+        beats
+            .iter()
+            .position(|(from, to)| from <= start && end <= to)
+    };
+    for voice in &si.voices {
+        let mut events: Vec<EventId> = voice.events.clone();
+        events.sort_by_key(|e| musical(*e).map(|(start, _)| start));
+        let mut run: Vec<EventId> = Vec::new();
+        let mut run_beat = None;
+        let mut run_end: Option<MusicalPosition> = None;
+        for eid in events {
+            let span = musical(eid);
+            let beat = span.as_ref().and_then(|(start, end)| beat_of(start, end));
+            let joins = beamable(eid)
+                && beat.is_some()
+                && beat == run_beat
+                && span.as_ref().map(|(start, _)| start) == run_end.as_ref();
+            if !joins {
+                if run.len() >= 2 {
+                    groups.push(BeamGroup {
+                        events: std::mem::take(&mut run),
+                        beam: None,
+                    });
+                }
+                run.clear();
+                run_beat = None;
+                if beamable(eid) && beat.is_some() {
+                    run_beat = beat;
+                }
+            }
+            if run_beat.is_some() {
+                run.push(eid);
+                run_end = span.map(|(_, end)| end);
+            }
+        }
+        if run.len() >= 2 {
+            groups.push(BeamGroup {
+                events: run,
+                beam: None,
+            });
+        }
+    }
+    groups
 }
 
 /// Where each measure of a staff instance starts and ends: at the next

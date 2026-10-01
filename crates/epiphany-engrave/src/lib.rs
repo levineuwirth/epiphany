@@ -216,8 +216,12 @@ pub struct Engraver {
 /// moved from before a barline to after it (the constrained stage now draws a
 /// barline where its measure ends, so a wrapping score's systems end on a
 /// barline and the next begins with what follows it; a score that does not
-/// wrap casts off as before, though its barlines stand elsewhere).
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(13);
+/// wrap casts off as before, though its barlines stand elsewhere), and to `14`
+/// when a stroke or curve the input anchors (`ConstrainedLayoutIR::span_anchors`,
+/// a beam) began riding the slots its anchor names at its two ends through
+/// spacing and justification, instead of mapping through the coordinate map
+/// whole; an input with no anchor is unchanged).
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(14);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -533,11 +537,19 @@ impl HorizontalRemap {
     /// ([`epiphany_layout_ir::is_rigid_width_stroke`]) — preserving both its length
     /// and its offset from its glyph, which maps by that same delta at its column.
     fn strokes(&self, input: &ConstrainedLayoutIR) -> Vec<Stroke> {
+        let anchors = span_anchors(input);
         input
             .strokes
             .iter()
             .map(|s| {
-                let (from_x, to_x) = if let Some(g) = component_glyph(s, &input.glyphs) {
+                let anchored = anchors.get(&s.id()).and_then(|(start, end)| {
+                    Some((self.slot_delta.get(start)?, self.slot_delta.get(end)?))
+                });
+                let (from_x, to_x) = if let Some((start, end)) = anchored {
+                    // A spanning stroke anchored at both ends (a beam): each
+                    // end rides its own slot, so it stays on the stem it meets.
+                    (s.from.x.0 + start, s.to.x.0 + end)
+                } else if let Some(g) = component_glyph(s, &input.glyphs) {
                     // A per-event component stroke (a stem, a ledger) translates
                     // rigidly by its *owning glyph's* slot delta — found by
                     // source, not the stroke's own x (a stem sits offset from its
@@ -572,17 +584,26 @@ impl HorizontalRemap {
     /// the arc stretches with the spacing between its endpoint columns. Each
     /// control point's y is preserved verbatim.
     fn curves(&self, input: &ConstrainedLayoutIR) -> Vec<Curve> {
+        let anchors = span_anchors(input);
         input
             .curves
             .iter()
             .map(|c| {
-                let map_x = |point: Point| Point::new(self.map(point.x.0), point.y.0);
+                let anchored = anchors.get(&c.id()).and_then(|(start, end)| {
+                    Some((*self.slot_delta.get(start)?, *self.slot_delta.get(end)?))
+                });
+                let [p0, p1, p2, p3] = match anchored {
+                    Some((start, end)) => anchored_curve(c.control_points(), start, end),
+                    None => c
+                        .control_points()
+                        .map(|point| Point::new(self.map(point.x.0), point.y.0)),
+                };
                 Curve {
                     provenance: c.provenance.clone(),
-                    p0: map_x(c.p0),
-                    p1: map_x(c.p1),
-                    p2: map_x(c.p2),
-                    p3: map_x(c.p3),
+                    p0,
+                    p1,
+                    p2,
+                    p3,
                     thickness: c.thickness,
                     layer: c.layer,
                     style: c.style,
@@ -592,6 +613,33 @@ impl HorizontalRemap {
             })
             .collect()
     }
+}
+
+/// Each anchored stroke's or curve's slots, by its stable id.
+pub(crate) fn span_anchors(
+    input: &ConstrainedLayoutIR,
+) -> BTreeMap<GlyphObjectId, (SpringSlotId, SpringSlotId)> {
+    input
+        .span_anchors
+        .iter()
+        .map(|anchor| (anchor.primitive, (anchor.start, anchor.end)))
+        .collect()
+}
+
+/// A curve whose first and last control points move by `start` and `end`
+/// respectively, its inner control points keeping their fractions of the
+/// span between them.
+pub(crate) fn anchored_curve(cp: [Point; 4], start: f32, end: f32) -> [Point; 4] {
+    let (x0, x3) = (cp[0].x.0, cp[3].x.0);
+    let (n0, n3) = (x0 + start, x3 + end);
+    let along = |x: f32| {
+        if (x3 - x0).abs() < f32::EPSILON {
+            x + start
+        } else {
+            n0 + (x - x0) * (n3 - n0) / (x3 - x0)
+        }
+    };
+    cp.map(|point| Point::new(along(point.x.0), point.y.0))
 }
 
 /// Linear interpolation/extrapolation through two control points.
@@ -866,6 +914,7 @@ mod tests {
                             default_clef: epiphany_core::Clef::default(),
                             clefs: vec![],
                             keys: vec![],
+                            beams: Vec::new(),
                         }),
                     ),
                     manifested(
@@ -1288,6 +1337,7 @@ mod tests {
                 default_clef: epiphany_core::Clef::default(),
                 clefs: vec![],
                 keys: vec![],
+                beams: Vec::new(),
             }),
         )];
         objects.extend(note(1, 101, MusicalPosition::origin()));
@@ -1795,6 +1845,7 @@ mod tests {
                                 time: TimePoint::Musical(MusicalPosition::origin()),
                                 key: KeySignature::new(3).expect("three sharps"),
                             }],
+                            beams: Vec::new(),
                         }),
                     ),
                     manifested(

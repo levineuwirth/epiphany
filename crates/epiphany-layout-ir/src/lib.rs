@@ -93,10 +93,11 @@ pub use cache::{
     ResolvedSystemCache, SystemId,
 };
 pub use constrained::{
-    active_clef, active_clef_or, is_rigid_width_stroke, to_constrained, try_to_constrained, Axis,
-    BreakClass, BreakKind, BreakOrigin, ConstrainedLayoutIR, ConstrainedLayoutRegion,
-    ConstrainedValidationError, ConstraintParameters, ConstraintRegistryId, Curve, GlyphObject,
-    GlyphObjectId, GlyphStyle, LayoutConstraint, LayoutTransformError, SpringSlot, Stroke,
+    active_clef, active_clef_or, is_beam_stroke, is_rigid_width_stroke, to_constrained,
+    try_to_constrained, Axis, BreakClass, BreakKind, BreakOrigin, ConstrainedLayoutIR,
+    ConstrainedLayoutRegion, ConstrainedValidationError, ConstraintParameters,
+    ConstraintRegistryId, Curve, GlyphObject, GlyphObjectId, GlyphStyle, LayoutConstraint,
+    LayoutTransformError, SpanAnchor, SpringSlot, Stroke,
 };
 pub use engrave_theory::{
     accidental_glyph, clef_glyph, flag_count, flag_glyph, has_stem, key_signature, notehead_glyph,

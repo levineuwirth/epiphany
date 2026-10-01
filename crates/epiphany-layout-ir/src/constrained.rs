@@ -181,6 +181,25 @@ pub struct ConstrainedLayoutIR {
     /// — but the gap is recorded so it is visible, not silently papered over.
     pub diagnostics: Vec<LayoutDiagnostic>,
     pub catalog: GlyphCatalogIdentity,
+    /// The spring slots each spanning stroke or curve rides at its two ends
+    /// (a beam on its outer stems), so a solver moves each end with its own
+    /// column rather than stretching it with the columns between.
+    pub span_anchors: Vec<SpanAnchor>,
+}
+
+/// The spring slots a spanning primitive's two ends ride. Each end keeps its
+/// offset from its own slot's source through re-spacing and justification, so
+/// a beam stays on the stems it joins however the columns between them are
+/// spaced. A primitive with no anchor maps through the solver's coordinate map
+/// as a whole.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct SpanAnchor {
+    /// The stable id of the stroke or curve.
+    pub primitive: GlyphObjectId,
+    /// The slot the stroke's `from` (a curve's `p0`) rides.
+    pub start: SpringSlotId,
+    /// The slot the stroke's `to` (a curve's `p3`) rides.
+    pub end: SpringSlotId,
 }
 
 /// An engraving-coverage gap the constrained pass surfaced (Chapter 7
@@ -372,6 +391,8 @@ pub enum ConstrainedValidationError {
     InvalidStrokeGeometry(GlyphObjectId),
     /// A curve has a non-finite control point or a non-finite/negative thickness.
     InvalidCurveGeometry(GlyphObjectId),
+    /// A span anchor names no stroke or curve, or a slot that does not exist.
+    DanglingSpanAnchor(GlyphObjectId),
 }
 
 /// A malformed logical-stage value that cannot be transformed without losing
@@ -587,6 +608,23 @@ impl ConstrainedLayoutIR {
                 return Err(ConstrainedValidationError::UnknownBand(curve.vertical_band));
             }
         }
+
+        let spanning: BTreeSet<GlyphObjectId> = self
+            .strokes
+            .iter()
+            .map(Stroke::id)
+            .chain(self.curves.iter().map(Curve::id))
+            .collect();
+        for anchor in &self.span_anchors {
+            if !spanning.contains(&anchor.primitive)
+                || !slot_ids.contains(&anchor.start)
+                || !slot_ids.contains(&anchor.end)
+            {
+                return Err(ConstrainedValidationError::DanglingSpanAnchor(
+                    anchor.primitive,
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -673,6 +711,14 @@ const FLAG_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x464C_4147_474C
 /// The registry id for an unpitched note's stem, synthesized from its event
 /// (whose exact provenance its first notehead carries) and keyed by component.
 const STEM_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5354_454D_5354_524B); // "STEMSTRK"
+/// The registry id for a beam stroke, synthesized from the score's beam, or
+/// from the first note of a group the meter beams, and keyed by group, level
+/// and run.
+const BEAM_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4245_414D_5354_524B); // "BEAMSTRK"
+const BEAM_THICKNESS: f32 = 0.5; // SMuFL's beamThickness
+const BEAM_STEP: f32 = 0.75; // centre to centre of stacked beams: a thickness and a 0.25 gap
+const MAX_BEAM_RISE: f32 = 1.0; // the most a beam rises or falls across its group, in staff spaces
+const BEAM_HOOK: f32 = 1.1; // the length of a lone note's partial beam
 
 /// The registry id for **notated-component synthesis**: a note/rest notated as a
 /// tied decomposition (e.g. a quarter tied to an eighth across a barline) draws
@@ -771,6 +817,7 @@ pub fn try_to_constrained(
     let mut constraints = Vec::new();
     let mut break_origins = Vec::new();
     let mut constrained_regions = Vec::new();
+    let mut span_anchors: Vec<SpanAnchor> = Vec::new();
     // Regions tile left-to-right; this advances by each region's width so all
     // coordinates stay globally monotonic (the solver's coordinate remap relies
     // on it). v0 has no page casting-off, so this replaces region overlap.
@@ -1197,6 +1244,187 @@ pub fn try_to_constrained(
                 .expect("every emitted column was collected in pass 1")
         };
         let default_x = region_x + CLEF_X;
+
+        // Beams. A group's stems all turn the way its note furthest from the
+        // middle line asks (down on a tie), and end on one straight beam whose
+        // rise is held to `MAX_BEAM_RISE` and is flat when an inner note is
+        // more extreme than both ends; the beam lies far enough out that every
+        // stem has its length (longer for three or more beams) and reaches the
+        // middle line. A further beam joins each run of notes short enough for
+        // it, and a lone short note takes a hook. Beamed notes take no flags.
+        // Each beam rides the slots of the stems it joins (`SpanAnchor`).
+        let mut beam_strokes: Vec<(Stroke, SpringSlotId, SpringSlotId)> = Vec::new();
+        for object in &region.objects {
+            let (Some(staff), LayoutContent::Staff(content)) = (object.staff(), object.content())
+            else {
+                continue;
+            };
+            let yo = y_origin(staff);
+            let middle = yo + STAFF_HEIGHT * 0.5;
+            let head_box = metrics("noteheadBlack").map(|m| m.bounding_box());
+            for (ordinal, group) in content.beams.iter().enumerate() {
+                let members: Vec<EventId> = group
+                    .events
+                    .iter()
+                    .copied()
+                    .filter(|e| {
+                        matches!(event_stems.get(e).map(Vec::as_slice), Some([seg]) if seg.drawn)
+                    })
+                    .collect();
+                if members.len() < 2 {
+                    continue;
+                }
+                let n = members.len();
+                let (his, los, counts, keys_of): (Vec<f32>, Vec<f32>, Vec<u8>, Vec<ColumnKey>) = {
+                    let segs: Vec<&StemSeg> = members.iter().map(|e| &event_stems[e][0]).collect();
+                    (
+                        segs.iter().map(|s| s.hi).collect(),
+                        segs.iter().map(|s| s.lo).collect(),
+                        segs.iter().map(|s| s.beams).collect(),
+                        segs.iter().map(|s| s.key.clone()).collect(),
+                    )
+                };
+                let above = his
+                    .iter()
+                    .map(|y| y - middle)
+                    .fold(f32::NEG_INFINITY, f32::max);
+                let below = los
+                    .iter()
+                    .map(|y| middle - y)
+                    .fold(f32::NEG_INFINITY, f32::max);
+                let up = below > above;
+                let sign = if up { 1.0 } else { -1.0 };
+                let x_off = if up {
+                    head_box.map_or(NOTEHEAD_STEM_X, |b| b.right.0)
+                } else {
+                    head_box.map_or(0.0, |b| b.left.0)
+                };
+                let xs: Vec<f32> = keys_of.iter().map(|k| column(k).x + x_off).collect();
+                // The head each stem leaves from, nearest the beam.
+                let near: Vec<f32> = if up { his.clone() } else { los.clone() };
+                let most = counts.iter().copied().max().unwrap_or(1);
+                let length = STEM_LENGTH + f32::from(most.saturating_sub(2)) * BEAM_STEP;
+                let (x0, xn) = (xs[0], xs[n - 1]);
+                let ends = [near[0], near[n - 1]];
+                let inner_extreme = near[1..n - 1].iter().any(|y| {
+                    if up {
+                        *y > ends[0].max(ends[1])
+                    } else {
+                        *y < ends[0].min(ends[1])
+                    }
+                });
+                let rise = if inner_extreme {
+                    0.0
+                } else {
+                    (ends[1] - ends[0]).clamp(-MAX_BEAM_RISE, MAX_BEAM_RISE)
+                };
+                let slope = if xn > x0 { rise / (xn - x0) } else { 0.0 };
+                let needs = (0..n).map(|i| {
+                    let need = if up {
+                        (near[i] + length).max(middle)
+                    } else {
+                        (near[i] - length).min(middle)
+                    };
+                    need - slope * (xs[i] - x0)
+                });
+                let intercept = if up {
+                    needs.fold(f32::NEG_INFINITY, f32::max)
+                } else {
+                    needs.fold(f32::INFINITY, f32::min)
+                };
+                // The outer edge of the outermost beam.
+                let edge = |x: f32| intercept + slope * (x - x0);
+                for (i, e) in members.iter().enumerate() {
+                    let seg = &mut event_stems.get_mut(e).expect("a member has a stem")[0];
+                    seg.up = up;
+                    seg.x_off = x_off;
+                    seg.end = edge(xs[i]) - sign * STEM_THICKNESS;
+                    seg.tip = seg.end;
+                    seg.flag = None;
+                    let entry =
+                        column_ink
+                            .entry((staff, keys_of[i].clone()))
+                            .or_insert(ColumnInk {
+                                top: seg.hi,
+                                bottom: seg.lo,
+                                stem_up: Some(up),
+                                centre: x_off * 0.5,
+                            });
+                    entry.stem_up = Some(up);
+                    if up {
+                        entry.top = entry.top.max(edge(xs[i]));
+                    } else {
+                        entry.bottom = entry.bottom.min(edge(xs[i]));
+                    }
+                }
+                let source = group
+                    .beam
+                    .map_or(TypedObjectId::Event(members[0]), TypedObjectId::Beam);
+                let dependencies: Vec<TypedObjectId> =
+                    members.iter().copied().map(TypedObjectId::Event).collect();
+                let slot = |i: usize| column(&keys_of[i]).slot;
+                for level in 1..=most {
+                    // The centre line of this level's beam.
+                    let centre = |x: f32| {
+                        edge(x) - sign * (BEAM_THICKNESS / 2.0 + f32::from(level - 1) * BEAM_STEP)
+                    };
+                    let mut runs: Vec<(usize, usize)> = Vec::new();
+                    for (i, &count) in counts.iter().enumerate() {
+                        if count < level {
+                            continue;
+                        }
+                        match runs.last_mut() {
+                            Some((_, end)) if *end + 1 == i => *end = i,
+                            _ => runs.push((i, i)),
+                        }
+                    }
+                    for (run, &(a, b)) in runs.iter().enumerate() {
+                        let (from_x, to_x, start, end) = if a < b {
+                            (
+                                xs[a] - STEM_THICKNESS / 2.0,
+                                xs[b] + STEM_THICKNESS / 2.0,
+                                slot(a),
+                                slot(b),
+                            )
+                        } else if a + 1 == n {
+                            // A lone short note last in its group hooks back.
+                            (
+                                xs[a] - BEAM_HOOK,
+                                xs[a] + STEM_THICKNESS / 2.0,
+                                slot(a),
+                                slot(a),
+                            )
+                        } else {
+                            (
+                                xs[a] - STEM_THICKNESS / 2.0,
+                                xs[a] + BEAM_HOOK,
+                                slot(a),
+                                slot(a),
+                            )
+                        };
+                        let provenance = Provenance::synthesized(
+                            source,
+                            SynthesisKind::Registered(BEAM_SYNTHESIS),
+                            SynthesisInstanceKey(
+                                (ordinal as u128) << 32 | u128::from(level) << 16 | run as u128,
+                            ),
+                            dependencies.clone(),
+                        );
+                        beam_strokes.push((
+                            line_stroke(
+                                provenance,
+                                Point::new(from_x, centre(from_x)),
+                                Point::new(to_x, centre(to_x)),
+                                BEAM_THICKNESS,
+                                band_of(Some(staff)),
+                            ),
+                            start,
+                            end,
+                        ));
+                    }
+                }
+            }
+        }
 
         // (provenance, owning staff, engraving content) for the region object,
         // then its contents, then this region's spanning cross-region objects.
@@ -1727,6 +1955,15 @@ pub fn try_to_constrained(
             }
         }
 
+        for (stroke, start, end) in beam_strokes {
+            span_anchors.push(SpanAnchor {
+                primitive: stroke.id(),
+                start,
+                end,
+            });
+            emit.stroke(stroke);
+        }
+
         // The repeat signs the measures could not carry: a composite sign at a
         // column with no measure barline on that staff (a mid-measure boundary,
         // a region edge without a final barline), and the dot pair beside a
@@ -2056,6 +2293,7 @@ pub fn try_to_constrained(
         engraving_decisions: logical.engraving_decisions.clone(),
         diagnostics,
         catalog,
+        span_anchors,
     })
 }
 
@@ -2097,6 +2335,8 @@ struct StemSeg {
     end: f32,
     /// The flag an unbeamed eighth or shorter carries.
     flag: Option<&'static str>,
+    /// How many flags, or beams, its value takes.
+    beams: u8,
 }
 
 /// The drawn extent of one staff's note column: what a slur arcing over or under
@@ -2776,6 +3016,7 @@ fn note_stem(
         tip,
         end,
         flag,
+        beams: flag_count(value),
     };
     (seg, ink)
 }
@@ -3007,6 +3248,15 @@ pub fn is_rigid_width_stroke(stroke: &Stroke) -> bool {
     matches!(
         stroke.provenance.synthesis,
         Some(SynthesisKind::Registered(k)) if k == LEDGER_LINE_SYNTHESIS
+    )
+}
+
+/// Whether a stroke is a beam (or a beam's hook). Its provenance names the
+/// notes it joins among its dependencies.
+pub fn is_beam_stroke(stroke: &Stroke) -> bool {
+    matches!(
+        stroke.provenance.synthesis,
+        Some(SynthesisKind::Registered(k)) if k == BEAM_SYNTHESIS
     )
 }
 
@@ -3910,6 +4160,7 @@ mod tests {
                 time: TimePoint::Musical(MusicalPosition::origin()),
                 key: KeySignature::new(2).expect("two sharps is a valid key"),
             }],
+            beams: Vec::new(),
         });
         let logical = LogicalLayoutIR {
             source: ScoreVersion::default(),
@@ -4239,6 +4490,7 @@ mod tests {
                 },
             ],
             keys: vec![],
+            beams: Vec::new(),
         });
         let logical = LogicalLayoutIR {
             source: ScoreVersion::default(),
@@ -4601,6 +4853,7 @@ mod tests {
                         default_clef: Clef::default(),
                         clefs: vec![],
                         keys: vec![],
+                        beams: Vec::new(),
                     }),
                 ),
                 with_content(

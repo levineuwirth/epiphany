@@ -635,6 +635,7 @@ mod tests {
             engraving_decisions: vec![],
             diagnostics: vec![],
             catalog,
+            span_anchors: Vec::new(),
         }
     }
 
@@ -723,6 +724,7 @@ mod tests {
             engraving_decisions: vec![],
             diagnostics: vec![],
             catalog: GlyphCatalogIdentity::default(),
+            span_anchors: Vec::new(),
         };
         let report = StubSolver.solve(&input, &SolverConfig::default());
         assert_eq!(report.status, SolveStatus::InternalError);
