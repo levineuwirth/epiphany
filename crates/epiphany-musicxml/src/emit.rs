@@ -92,9 +92,12 @@ pub struct Import {
     /// One per envelope, in the same order.
     pub labels: Vec<Label>,
     pub ids: Ids,
-    /// Per part: the tie starts recorded instead of tied, for want of a
-    /// matching end or because the core cannot tie quarter-tones.
-    pub recorded_ties: Vec<usize>,
+    /// Per part: the tie starts recorded instead of tied for want of a
+    /// matching end.
+    pub unended_ties: Vec<usize>,
+    /// Per part: the tie starts recorded instead of tied because the core
+    /// cannot tie quarter-tones.
+    pub quarter_tone_ties: Vec<usize>,
 }
 
 struct Emitter {
@@ -521,7 +524,8 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
     // into voices across a tie. One tie per end event. A tied unpitched note
     // continues into one of the same member at the same staff step; its tie
     // pairs no pitch, which the model admits, having none to pair.
-    let mut recorded_ties = vec![0; source.parts.len()];
+    let mut unended_ties = vec![0; source.parts.len()];
+    let mut quarter_tone_ties = vec![0; source.parts.len()];
     for (p, part) in source.parts.iter().enumerate() {
         let starts = event_starts(&part.events);
         for (i, event) in part.events.iter().enumerate() {
@@ -570,7 +574,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                         );
                     }
                     None => {
-                        recorded_ties[p] += 1;
+                        unended_ties[p] += 1;
                         source.features.record(
                             FeatureClass::Content,
                             "tie without a matching end",
@@ -625,7 +629,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                                 .or_default()
                                 .push((ids.pitches[p][i][a], ids.pitches[p][j][b]));
                         } else {
-                            recorded_ties[p] += 1;
+                            quarter_tone_ties[p] += 1;
                             let measure = source.measures[event.measure].number.clone();
                             source.features.record(
                                 FeatureClass::Content,
@@ -638,7 +642,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                         }
                     }
                     None => {
-                        recorded_ties[p] += 1;
+                        unended_ties[p] += 1;
                         let measure = source.measures[event.measure].number.clone();
                         source.features.record(
                             FeatureClass::Content,
@@ -699,6 +703,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
         envelopes: e.envelopes,
         labels: e.labels,
         ids,
-        recorded_ties,
+        unended_ties,
+        quarter_tone_ties,
     }
 }

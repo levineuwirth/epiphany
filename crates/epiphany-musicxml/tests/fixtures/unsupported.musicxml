@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
 <!-- Hand-written for epiphany-musicxml's tests. Features with no operation
-     yet: a dynamic, words, a grace note, a staccato, a fermata and a lyric.
-     Each is recorded by kind; none becomes an event. -->
+     yet: a dynamic, words, a grace note, a staccato, a fermata and a lyric;
+     a cue note, which keeps its time in the voice; and a chord note of
+     another duration than its chord's, which imports at the chord's. Each
+     is recorded by kind; none becomes an event of its own. -->
 <score-partwise version="4.0">
   <part-list>
     <score-part id="P1"><part-name>Soprano</part-name></score-part>
@@ -19,6 +21,11 @@
       <note><grace/><pitch><step>B</step><octave>4</octave></pitch><voice>1</voice><type>eighth</type></note>
       <note><pitch><step>C</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><notations><articulations><staccato/></articulations></notations><lyric number="1"><syllabic>single</syllabic><text>la</text></lyric></note>
       <note><pitch><step>D</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><notations><fermata/></notations></note>
+    </measure>
+    <measure number="2">
+      <note><cue/><pitch><step>E</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>
+      <note><pitch><step>F</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>
+      <note><chord/><pitch><step>A</step><octave>5</octave></pitch><duration>2</duration><voice>1</voice><type>half</type></note>
     </measure>
   </part>
 </score-partwise>

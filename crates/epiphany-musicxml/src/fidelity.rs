@@ -251,30 +251,49 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             .find_map(|(subject, _)| refused(subject))
     };
 
-    // The reader against the raw element count.
+    // The reader against the census's counts of the file's notes, kind by
+    // kind, less the chord notes the census finds the model cannot hold; and
+    // the reader's own count of the notes it dropped, against the census's.
     for (p, part) in source.parts.iter().enumerate() {
         let census = &source.census[p];
-        let dropped = part.dropped_notes;
-        let (mut notes, mut rests, mut extra) = (0, 0, 0);
+        let (mut pitched, mut unpitched, mut rests, mut extra) = (0, 0, 0, 0);
         for event in &part.events {
             match &event.content {
                 Content::Rest { .. } => rests += 1,
                 Content::Pitched(pitches) => {
-                    notes += pitches.len();
+                    pitched += pitches.len();
                     extra += pitches.len() - 1;
                 }
-                Content::Unpitched { .. } => notes += 1,
+                Content::Unpitched { .. } => unpitched += 1,
             }
         }
-        if notes + dropped != census.pitched + census.unpitched
-            || rests != census.rests
-            || extra + dropped != census.chord_members
+        let dropped = census.dropped;
+        let all_dropped = dropped.pitched + dropped.unpitched + dropped.rests;
+        if pitched + dropped.pitched != census.pitched
+            || unpitched + dropped.unpitched != census.unpitched
+            || rests + dropped.rests != census.rests
+            || extra + all_dropped != census.chord_members
         {
             fidelity.failures.push(format!(
-                "{}: the reader holds {notes} notes, {rests} rests and {extra} chord members \
-                 ({dropped} dropped and recorded), but the file has {} pitched and {} unpitched \
-                 notes, {} rests and {} chord members",
-                part.name, census.pitched, census.unpitched, census.rests, census.chord_members
+                "{}: the reader holds {pitched} pitched and {unpitched} unpitched notes, \
+                 {rests} rests and {extra} chord members, but the file has {} pitched and {} \
+                 unpitched notes, {} rests and {} chord members, of which {} pitched, {} \
+                 unpitched and {} rests are chord notes the model cannot hold",
+                part.name,
+                census.pitched,
+                census.unpitched,
+                census.rests,
+                census.chord_members,
+                dropped.pitched,
+                dropped.unpitched,
+                dropped.rests
+            ));
+        }
+        if part.dropped_notes != all_dropped {
+            fidelity.failures.push(format!(
+                "{}: the reader dropped and recorded {} chord notes, but the file has {} \
+                 the model cannot hold",
+                part.name, part.dropped_notes, all_dropped
             ));
         }
         if census.keys.len() != part.staves.len() {
@@ -501,15 +520,27 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                     "{label}: keys {graph_keys:?}, the source's {source_keys:?}"
                 ));
             }
-            // The same keys and clefs held to the file's own elements, which
-            // the reader's placement of them cannot hide.
+            // The same keys and clefs held to the file's own elements, each
+            // where the census finds it stated, which the reader's placement
+            // of them cannot hide. A measure starts where the reader puts it.
             let census = &source.census[p];
-            let mut graph_fifths: Vec<i8> = instance
+            let at = |stated_measure: usize, offset: &RationalTime| {
+                source
+                    .measures
+                    .get(stated_measure)
+                    .map(|m| m.onset.add(offset))
+            };
+            let mut graph_fifths: Vec<(Option<RationalTime>, i8)> = instance
                 .key_sequence
                 .iter()
-                .map(|k| k.key.fifths())
+                .map(|k| (anchor_offset(&k.anchor), k.key.fifths()))
                 .collect();
-            let mut file_fifths = census.keys.get(s).cloned().unwrap_or_default();
+            let mut file_fifths: Vec<(Option<RationalTime>, i8)> =
+                census.keys.get(s).map_or_else(Vec::new, |ks| {
+                    ks.iter()
+                        .map(|k| (at(k.measure, &k.offset), k.value))
+                        .collect()
+                });
             graph_fifths.sort_unstable();
             file_fifths.sort_unstable();
             if graph_fifths != file_fifths {
@@ -518,15 +549,17 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                 ));
             }
             let clef_key = |c: &epiphany_core::Clef| (c.shape as u8, c.line, c.octave_shift);
-            let mut graph_clefs: Vec<(u8, i8, i8)> = instance
+            type ClefAt = (Option<RationalTime>, (u8, i8, i8));
+            let mut graph_clefs: Vec<ClefAt> = instance
                 .clef_sequence
                 .iter()
-                .map(|c| clef_key(&c.clef))
+                .map(|c| (anchor_offset(&c.anchor), clef_key(&c.clef)))
                 .collect();
-            let mut file_clefs: Vec<(u8, i8, i8)> = census
-                .clefs
-                .get(s)
-                .map_or_else(Vec::new, |cs| cs.iter().map(clef_key).collect());
+            let mut file_clefs: Vec<ClefAt> = census.clefs.get(s).map_or_else(Vec::new, |cs| {
+                cs.iter()
+                    .map(|c| (at(c.measure, &c.offset), clef_key(&c.value)))
+                    .collect()
+            });
             graph_clefs.sort_unstable();
             file_clefs.sort_unstable();
             if graph_clefs != file_clefs {
@@ -673,18 +706,29 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             ));
         }
         // And held to the census's count of the file's tie starts, taken
-        // apart from the reader: each is tied in the score, recorded by the
-        // importer, explained by a refused tie, or on a note the reader
-        // dropped and recorded.
+        // apart from the reader: each is tied in the score, explained by a
+        // refused tie, or recorded by the importer as without an end, on a
+        // quarter-tone, or on a note the reader dropped; and each of those
+        // three records to the census's own count of its kind.
         let census = &source.census[p];
         let tied: isize = graph_ties.values().sum();
-        let recorded = import.recorded_ties.get(p).copied().unwrap_or(0);
+        let unended = import.unended_ties.get(p).copied().unwrap_or(0);
+        let quarter = import.quarter_tone_ties.get(p).copied().unwrap_or(0);
         let (refused_ties, dropped) = (tie_explained.len(), part.dropped_tie_starts);
-        if tied.unsigned_abs() + recorded + refused_ties + dropped != census.tie_starts {
+        if tied.unsigned_abs() + refused_ties + unended + quarter + dropped != census.tie_starts
+            || unended != census.unended_ties
+            || quarter != census.quarter_tone_ties
+            || dropped != census.dropped_tie_starts
+        {
             fidelity.failures.push(format!(
-                "{name}: {tied} tie starts tied in the score, {recorded} recorded, \
-                 {refused_ties} refused and {dropped} on dropped notes, but the file has {}",
-                census.tie_starts
+                "{name}: {tied} tie starts tied in the score and {refused_ties} refused; \
+                 {unended} recorded without an end, {quarter} on quarter-tones and {dropped} on \
+                 dropped notes; but the file has {} tie starts, {} without an end, {} on \
+                 quarter-tones and {} on chord notes the model cannot hold",
+                census.tie_starts,
+                census.unended_ties,
+                census.quarter_tone_ties,
+                census.dropped_tie_starts
             ));
         }
         fidelity.explained.extend(tie_explained);

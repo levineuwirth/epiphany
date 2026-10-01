@@ -6,7 +6,7 @@
 //! The reader interprets MusicXML; it builds no Epiphany value and emits no
 //! operation (that is [`crate::emit`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
     AcousticPitch, AcousticRealization, Clef, ClefShape, CmnNominal, Pitch, PitchSpaceId,
@@ -266,9 +266,11 @@ pub struct QuarterTone {
 
 /// Counts taken straight from a part's elements by walks the reader does not
 /// run, sharing none of its code, as an independent check on it: the
-/// `<note>` elements and their tie starts, with no timing logic; the keys and
-/// clefs its `<attributes>` state; and the quarter-tones, timed and valued by
-/// a reading of their own.
+/// `<note>` elements by kind and their tie starts, with no timing logic; the
+/// keys and clefs its `<attributes>` state; and, timed by a reading of their
+/// own, the quarter-tones at their values, the chord notes the model cannot
+/// hold, and the tie starts the file does not end or ends on a quarter-tone.
+/// Each count the reader keeps of what it leaves out is held to one of these.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Census {
     /// `<note>` elements with a `<pitch>`, not grace or cue.
@@ -282,21 +284,55 @@ pub struct Census {
     /// Of the counted pitched and unpitched notes, those with a
     /// `<tie type="start"/>` among their `<tie>` elements.
     pub tie_starts: usize,
+    /// Of the counted notes, the chord notes the model cannot hold, by kind:
+    /// a `<chord/>` note that is not pitched, or whose chord's first note is
+    /// not pitched or is on another `<staff>`.
+    pub dropped: Kinds,
+    /// Of the tie starts, those on dropped chord notes.
+    pub dropped_tie_starts: usize,
+    /// Of the other tie starts, those the file gives no stop: no note of the
+    /// part that is not dropped, on the same staff, at the same written step,
+    /// octave and alteration (an unpitched note: the same display step,
+    /// octave and instrument), carries a `<tie type="stop"/>` where the tied
+    /// note ends, in its measure or at the start of the next.
+    pub unended_ties: usize,
+    /// Of the tie starts the file ends, those on a quarter-tone, which the
+    /// model cannot tie.
+    pub quarter_tone_ties: usize,
     /// Grace and cue notes, which are not imported.
     pub grace_or_cue: usize,
     /// Per staff, the `fifths` of each `<key>` the model can hold (at most
-    /// seven accidentals) that applies to it: a numbered key to its staff,
-    /// an unnumbered one to every staff the part's `<staves>` declare.
-    pub keys: Vec<Vec<i8>>,
+    /// seven accidentals) that applies to it, where it is stated: a numbered
+    /// key to its staff, an unnumbered one to every staff the part's
+    /// `<staves>` declare.
+    pub keys: Vec<Vec<Stated<i8>>>,
     /// Per staff, each `<clef>` of a shape the model holds that applies to
-    /// it: a numbered clef to its staff, an unnumbered one to the first.
-    pub clefs: Vec<Vec<Clef>>,
+    /// it, where it is stated: a numbered clef to its staff, an unnumbered
+    /// one to the first.
+    pub clefs: Vec<Vec<Stated<Clef>>>,
     /// Pitched notes, not grace or cue, that the file makes quarter-tones:
     /// by a fractional `<alter>`, by a quarter-tone `<accidental>` with no
     /// `<alter>`, or by such an accidental carried to a note that writes
     /// neither. Each is read with its own timing, its own value for each
     /// name and its own transposition to the sounding pitch.
     pub quarter_tones: Vec<QuarterTone>,
+}
+
+/// A key or clef where the file states it: the index of its measure, and
+/// its offset within the measure in whole notes.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Stated<T> {
+    pub measure: usize,
+    pub offset: Time,
+    pub value: T,
+}
+
+/// Notes counted by kind.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Kinds {
+    pub pitched: usize,
+    pub unpitched: usize,
+    pub rests: usize,
 }
 
 /// The counts of a part's `<note>` elements, read from each note's own
@@ -325,18 +361,30 @@ fn note_census(part: Node) -> Census {
     census
 }
 
-/// The pitched notes of a part, not grace or cue, that its file makes
-/// quarter-tones, each where it falls and at the pitch it sounds: made so by
-/// a fractional `<alter>`, by a quarter-tone `<accidental>` with no `<alter>`
-/// (roadmap D20), or by such an accidental earlier in the measure on the same
-/// staff, step and octave, or tied over, when the note writes neither. It
-/// reads `<alter>`, `<accidental>`, `<divisions>` and `<transpose>` and times
-/// the notes itself, sharing none of the reader's code. A name's value comes
-/// from the accidental it alters and its arrow, not from the reader's table,
-/// and the sounding pitch from an arithmetic of its own, not from the core's
+/// A timed walk of a part's notes, not grace or cue, that the reader does not
+/// run: the quarter-tones its file makes, the chord notes the model cannot
+/// hold, and the tie starts the file leaves without a stop or puts on a
+/// quarter-tone.
+///
+/// A pitched note is a quarter-tone by a fractional `<alter>`, by a
+/// quarter-tone `<accidental>` with no `<alter>` (roadmap D20), or by such an
+/// accidental earlier in the measure on the same staff, step and octave, or
+/// tied over, when the note writes neither. The walk reads `<alter>`,
+/// `<accidental>`, `<divisions>` and `<transpose>` and times the notes
+/// itself, sharing none of the reader's code. A name's value comes from the
+/// accidental it alters and its arrow, not from the reader's table, and the
+/// sounding pitch from an arithmetic of its own, not from the core's
 /// transposition, so a quarter-tone the reader values or places wrongly shows
 /// as a difference, and not only one it misses.
-fn quarter_tone_census(part: Node) -> Vec<QuarterTone> {
+///
+/// A chord note is dropped by its own kind and staff and its chord's first
+/// note's, in the file's order, and a tie start is ended by a stop the walk
+/// finds itself: where the tied note ends in its measure, or at the start of
+/// the next when it ends with the measure's furthest note. So a tie the
+/// reader loses at its stop, a chord note it drops, or a note it takes for
+/// the other kind differs from these counts, rather than passing as a
+/// feature of the source.
+fn timed_census(part: Node, census: &mut Census) {
     /// Semitones above C of the naturals, C to B.
     const NATURALS: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
     /// The alteration in quarter-tones an accidental name states with no
@@ -366,14 +414,23 @@ fn quarter_tone_census(part: Node) -> Vec<QuarterTone> {
         };
         Some(2 * semitones + arrow)
     }
-    // Keyed by the written staff, step and octave, as the file spells them.
+    // Keyed by the written staff, step and octave, as the file spells them;
+    // for an unpitched note, its display step and octave.
     type Spot<'a> = (&'a str, &'a str, &'a str);
+    // What a tie holds: a spot, the instrument of an unpitched note, and a
+    // pitched note's alteration in quarter-tones.
+    type Held<'a> = (Spot<'a>, Option<&'a str>, i32);
     struct Marked<'a> {
         onset: i64,
         end: i64,
         offset: Time,
         spot: Spot<'a>,
         voice: &'a str,
+        /// The instrument of an unpitched note (`""` when it names none);
+        /// `None` for a pitched one.
+        unpitched: Option<&'a str>,
+        /// A chord note the model cannot hold.
+        dropped: bool,
         /// The alteration in quarter-tones its own `<alter>` or
         /// `<accidental>` states.
         own: Option<i32>,
@@ -392,6 +449,12 @@ fn quarter_tone_census(part: Node) -> Vec<QuarterTone> {
         let same = starts.iter().find(|(v, _)| *v == voice);
         same.or(starts.first()).map(|&(_, alteration)| alteration)
     };
+    // The tie starts that end with their measure's furthest note, each with
+    // whether it is a quarter-tone, waiting for the next measure's stops.
+    let mut waiting: Vec<(Held, bool)> = Vec::new();
+    // The kind and staff of the last note that is not a chord note: whether
+    // it is pitched, and its `<staff>`.
+    let mut head: Option<(bool, &str)> = None;
     let (mut divisions, mut transpose) = (1i64, (0i32, 0i32));
     for (index, measure) in children(part, "measure").enumerate() {
         let mut notes: Vec<Marked> = Vec::new();
@@ -424,16 +487,67 @@ fn quarter_tone_census(part: Node) -> Vec<QuarterTone> {
                 "backup" => cursor -= duration,
                 "forward" => cursor += duration,
                 "note" if child(item, "grace").is_none() => {
-                    if child(item, "chord").is_none() {
+                    let chord = child(item, "chord").is_some();
+                    if !chord {
                         last = cursor;
                         cursor += duration;
+                        furthest = furthest.max(cursor);
                     }
-                    let Some(pitch) = child(item, "pitch") else {
-                        continue;
-                    };
                     if child(item, "cue").is_some() {
                         continue;
                     }
+                    let (pitch, unpitched) = (child(item, "pitch"), child(item, "unpitched"));
+                    let staff = child_text(item, "staff").unwrap_or("1");
+                    let ties = |kind: &str| {
+                        children(item, "tie").any(|t| t.attribute("type") == Some(kind))
+                    };
+                    let dropped = if chord {
+                        !(pitch.is_some() && head == Some((true, staff)))
+                    } else {
+                        head = Some((pitch.is_some(), staff));
+                        false
+                    };
+                    if dropped {
+                        let rest = pitch.is_none() && unpitched.is_none();
+                        if pitch.is_some() {
+                            census.dropped.pitched += 1;
+                        } else if unpitched.is_some() {
+                            census.dropped.unpitched += 1;
+                        } else if child(item, "rest").is_some() {
+                            census.dropped.rests += 1;
+                        }
+                        census.dropped_tie_starts += usize::from(ties("start") && !rest);
+                    }
+                    let offset =
+                        RationalTime::new(last, 4 * divisions).unwrap_or_else(RationalTime::zero);
+                    if let Some(display) = unpitched.filter(|_| !dropped) {
+                        notes.push(Marked {
+                            onset: last,
+                            end: last + duration,
+                            offset,
+                            spot: (
+                                staff,
+                                child_text(display, "display-step").unwrap_or(""),
+                                child_text(display, "display-octave").unwrap_or(""),
+                            ),
+                            voice: child_text(item, "voice").unwrap_or("1"),
+                            unpitched: Some(
+                                child(item, "instrument")
+                                    .and_then(|i| i.attribute("id"))
+                                    .unwrap_or(""),
+                            ),
+                            dropped,
+                            own: None,
+                            accidental: false,
+                            tie_start: ties("start"),
+                            tie_stop: ties("stop"),
+                            transpose,
+                        });
+                        continue;
+                    }
+                    let Some(pitch) = pitch else {
+                        continue;
+                    };
                     let accidental = child_text(item, "accidental");
                     let own = match (child_text(pitch, "alter"), accidental) {
                         (Some(alter), _) => Some(
@@ -447,21 +561,19 @@ fn quarter_tone_census(part: Node) -> Vec<QuarterTone> {
                         (None, Some(name)) => Some(named(name).unwrap_or(0)),
                         (None, None) => None,
                     };
-                    let ties = |kind: &str| {
-                        children(item, "tie").any(|t| t.attribute("type") == Some(kind))
-                    };
                     let spot = (
-                        child_text(item, "staff").unwrap_or("1"),
+                        staff,
                         child_text(pitch, "step").unwrap_or(""),
                         child_text(pitch, "octave").unwrap_or(""),
                     );
                     notes.push(Marked {
                         onset: last,
                         end: last + duration,
-                        offset: RationalTime::new(last, 4 * divisions)
-                            .unwrap_or_else(RationalTime::zero),
+                        offset,
                         spot,
                         voice: child_text(item, "voice").unwrap_or("1"),
+                        unpitched: None,
+                        dropped,
                         own,
                         accidental: accidental.is_some(),
                         tie_start: ties("start"),
@@ -477,8 +589,22 @@ fn quarter_tone_census(part: Node) -> Vec<QuarterTone> {
         let incoming = std::mem::take(&mut over);
         let mut set: BTreeMap<Spot, (i64, i32)> = BTreeMap::new();
         let mut ending: BTreeMap<(Spot, i64), Starts> = BTreeMap::new();
+        // The stops of the notes kept, and the starts, each with its end and
+        // whether it is a quarter-tone.
+        let mut stops: BTreeSet<(Held, i64)> = BTreeSet::new();
+        let mut starts: Vec<(Held, i64, bool)> = Vec::new();
         for note in &notes {
             let Marked { onset, spot, .. } = *note;
+            if note.unpitched.is_some() {
+                let held = (spot, note.unpitched, 0);
+                if note.tie_stop {
+                    stops.insert((held, onset));
+                }
+                if note.tie_start {
+                    starts.push((held, note.end, false));
+                }
+                continue;
+            }
             let alteration = note.own.unwrap_or_else(|| {
                 let tied = if !note.tie_stop {
                     None
@@ -505,6 +631,15 @@ fn quarter_tone_census(part: Node) -> Vec<QuarterTone> {
                     over.entry(spot).or_default().push((note.voice, alteration));
                 }
             }
+            if !note.dropped {
+                let held = (spot, None, alteration);
+                if note.tie_stop {
+                    stops.insert((held, onset));
+                }
+                if note.tie_start {
+                    starts.push((held, note.end, alteration % 2 != 0));
+                }
+            }
             if alteration % 2 == 0 {
                 continue;
             }
@@ -529,14 +664,37 @@ fn quarter_tone_census(part: Node) -> Vec<QuarterTone> {
                 octave: octave as i8,
             });
         }
+        // A tie start is ended by a stop of the same holding where it ends:
+        // the previous measure's last notes at this one's start.
+        let mut ended = |held: &Held, at: i64, quarter: bool| {
+            if stops.contains(&(*held, at)) {
+                census.quarter_tone_ties += usize::from(quarter);
+            } else {
+                census.unended_ties += 1;
+            }
+        };
+        for (held, quarter) in std::mem::take(&mut waiting) {
+            ended(&held, 0, quarter);
+        }
+        for (held, end, quarter) in starts {
+            if end >= furthest {
+                waiting.push((held, quarter));
+            } else {
+                ended(&held, end, quarter);
+            }
+        }
     }
-    found
+    census.unended_ties += waiting.len();
+    census.quarter_tones = found;
 }
 
 /// The keys and clefs of a part's `<attributes>`, per staff, read straight
-/// from the elements. It shares none of the reader's order of reading, so it
-/// holds the reader's placement of them to account.
-fn attribute_census(part: Node) -> (Vec<Vec<i8>>, Vec<Vec<Clef>>) {
+/// from the elements, each at its measure and at an offset the census times
+/// itself from the notes, `<backup>` and `<forward>` before it. It shares
+/// none of the reader's order of reading, so it holds the reader's placement
+/// of them to account: on which staff, and when.
+#[allow(clippy::type_complexity)]
+fn attribute_census(part: Node) -> (Vec<Vec<Stated<i8>>>, Vec<Vec<Stated<Clef>>>) {
     let attributes = || children(part, "measure").flat_map(|m| children(m, "attributes"));
     let staves = attributes()
         .flat_map(|a| children(a, "staves"))
@@ -546,55 +704,90 @@ fn attribute_census(part: Node) -> (Vec<Vec<i8>>, Vec<Vec<Clef>>) {
         .max(1);
     let mut keys = vec![Vec::new(); staves];
     let mut clefs = vec![Vec::new(); staves];
-    for a in attributes() {
-        for key in children(a, "key") {
-            let Some(fifths) = child_text(key, "fifths")
-                .and_then(|f| f.parse::<i8>().ok())
-                .filter(|f| (-7..=7).contains(f))
-            else {
+    fn stated<T>(measure: usize, offset: &Time, value: T) -> Stated<T> {
+        Stated {
+            measure,
+            offset: offset.clone(),
+            value,
+        }
+    }
+    let mut divisions = 1i64;
+    for (index, measure) in children(part, "measure").enumerate() {
+        let mut cursor = 0i64;
+        for a in elements(measure) {
+            let duration = child_text(a, "duration")
+                .and_then(|d| d.parse::<i64>().ok())
+                .unwrap_or(0);
+            match name(a) {
+                "backup" => cursor -= duration,
+                "forward" => cursor += duration,
+                "note" if child(a, "grace").is_none() && child(a, "chord").is_none() => {
+                    cursor += duration;
+                }
+                _ => {}
+            }
+            if name(a) != "attributes" {
                 continue;
-            };
-            match key.attribute("number") {
-                None => keys.iter_mut().for_each(|k| k.push(fifths)),
-                Some(n) => {
-                    let staff = n.parse::<usize>().ok().and_then(|n| n.checked_sub(1));
-                    if let Some(list) = staff.and_then(|s| keys.get_mut(s)) {
-                        list.push(fifths);
+            }
+            if let Some(d) = child_text(a, "divisions")
+                .and_then(|d| d.parse::<i64>().ok())
+                .filter(|d| *d > 0)
+            {
+                divisions = d;
+            }
+            let offset =
+                RationalTime::new(cursor, 4 * divisions).unwrap_or_else(RationalTime::zero);
+            for key in children(a, "key") {
+                let Some(fifths) = child_text(key, "fifths")
+                    .and_then(|f| f.parse::<i8>().ok())
+                    .filter(|f| (-7..=7).contains(f))
+                else {
+                    continue;
+                };
+                match key.attribute("number") {
+                    None => keys
+                        .iter_mut()
+                        .for_each(|k| k.push(stated(index, &offset, fifths))),
+                    Some(n) => {
+                        let staff = n.parse::<usize>().ok().and_then(|n| n.checked_sub(1));
+                        if let Some(list) = staff.and_then(|s| keys.get_mut(s)) {
+                            list.push(stated(index, &offset, fifths));
+                        }
                     }
                 }
             }
-        }
-        for clef in children(a, "clef") {
-            let line = child_text(clef, "line").and_then(|l| l.parse::<i8>().ok());
-            let octave_shift = child_text(clef, "clef-octave-change")
-                .and_then(|o| o.parse::<i8>().ok())
-                .unwrap_or(0);
-            let (shape, default_line) = match child_text(clef, "sign") {
-                Some("G") => (ClefShape::G, 2),
-                Some("F") => (ClefShape::F, 4),
-                Some("C") => (ClefShape::C, 3),
-                Some("percussion") => (ClefShape::Percussion, 3),
-                _ => continue,
-            };
-            let value = if shape == ClefShape::Percussion {
-                Clef {
-                    shape,
-                    line: 3,
-                    octave_shift: 0,
+            for clef in children(a, "clef") {
+                let line = child_text(clef, "line").and_then(|l| l.parse::<i8>().ok());
+                let octave_shift = child_text(clef, "clef-octave-change")
+                    .and_then(|o| o.parse::<i8>().ok())
+                    .unwrap_or(0);
+                let (shape, default_line) = match child_text(clef, "sign") {
+                    Some("G") => (ClefShape::G, 2),
+                    Some("F") => (ClefShape::F, 4),
+                    Some("C") => (ClefShape::C, 3),
+                    Some("percussion") => (ClefShape::Percussion, 3),
+                    _ => continue,
+                };
+                let value = if shape == ClefShape::Percussion {
+                    Clef {
+                        shape,
+                        line: 3,
+                        octave_shift: 0,
+                    }
+                } else {
+                    Clef {
+                        shape,
+                        line: line.unwrap_or(default_line),
+                        octave_shift,
+                    }
+                };
+                let staff = match clef.attribute("number") {
+                    None => Some(0),
+                    Some(n) => n.parse::<usize>().ok().and_then(|n| n.checked_sub(1)),
+                };
+                if let Some(list) = staff.and_then(|s| clefs.get_mut(s)) {
+                    list.push(stated(index, &offset, value));
                 }
-            } else {
-                Clef {
-                    shape,
-                    line: line.unwrap_or(default_line),
-                    octave_shift,
-                }
-            };
-            let staff = match clef.attribute("number") {
-                None => Some(0),
-                Some(n) => n.parse::<usize>().ok().and_then(|n| n.checked_sub(1)),
-            };
-            if let Some(list) = staff.and_then(|s| clefs.get_mut(s)) {
-                list.push(value);
             }
         }
     }
@@ -1283,7 +1476,7 @@ impl<'d, 'i> Reader<'d, 'i> {
         read.part = part;
         read.census = note_census(node);
         (read.census.keys, read.census.clefs) = attribute_census(node);
-        read.census.quarter_tones = quarter_tone_census(node);
+        timed_census(node, &mut read.census);
         Ok(read)
     }
 

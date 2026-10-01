@@ -2,9 +2,10 @@
 <!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
 <!-- Hand-written for epiphany-musicxml's tests. Quarter-tones stated by a
      fractional <alter>: a quarter-flat G tied to its equal, a
-     three-quarter-sharp C, and an ordinary tie beside them. In a transposed
-     score, a B-flat clarinet's written D quarter-sharp sounds C
-     quarter-sharp. -->
+     three-quarter-sharp C, and an ordinary tie beside them, then a
+     quarter-flat E joining a rest as a chord note, which is dropped and
+     recorded. In a transposed score, a B-flat clarinet's written D
+     quarter-sharp sounds C quarter-sharp. -->
 <score-partwise version="4.0">
   <part-list>
     <score-part id="P1"><part-name>Flute</part-name></score-part>
@@ -26,6 +27,7 @@
     <measure number="2">
       <note><pitch><step>A</step><octave>4</octave></pitch><duration>2</duration><tie type="stop"/><voice>1</voice><type>half</type><notations><tied type="stop"/></notations></note>
       <note><rest/><duration>2</duration><voice>1</voice><type>half</type></note>
+      <note><chord/><pitch><step>E</step><alter>-0.5</alter><octave>5</octave></pitch><duration>2</duration><voice>1</voice><type>half</type><accidental>quarter-flat</accidental></note>
     </measure>
   </part>
   <part id="P2">

@@ -407,9 +407,25 @@ fn a_key_written_before_the_staves_reaches_each_staff_it_names() {
         ["s0 0 -2", "s0 1 1", "s1 0 -2", "s1 1 1", "s2 0 1", "s3 0 -1"]
     );
     assert_eq!(clefs(score), ["s0 0 G2", "s1 0 F4", "s2 0 G2", "s3 0 F4"]);
+    // The census's own reading: each key by measure index and offset.
     let census = &run.import.source.census;
-    assert_eq!(census[0].keys, [vec![-2, 1], vec![-2, 1]]);
-    assert_eq!(census[1].keys, [vec![1], vec![-1]]);
+    let stated = |part: usize| -> Vec<Vec<String>> {
+        census[part]
+            .keys
+            .iter()
+            .map(|staff| {
+                staff
+                    .iter()
+                    .map(|k| format!("m{} +{} {}", k.measure, show(&k.offset), k.value))
+                    .collect()
+            })
+            .collect()
+    };
+    assert_eq!(
+        stated(0),
+        [["m0 +0 -2", "m1 +0 1"], ["m0 +0 -2", "m1 +0 1"]]
+    );
+    assert_eq!(stated(1), [["m0 +0 1"], ["m0 +0 -1"]]);
     let lacking = &run.import.source.features.kinds["key for a staff the part lacks"];
     assert_eq!(lacking.places.len(), 1);
     assert_eq!(lacking.class, FeatureClass::Content);
@@ -584,9 +600,19 @@ fn a_quarter_tone_imports_at_its_pitch_in_cmn_24() {
             quarter_tone(0, (0, 1), 4, -1, 4),
             quarter_tone(0, (1, 4), 4, -1, 4),
             quarter_tone(0, (1, 2), 0, 3, 5),
+            quarter_tone(1, (1, 2), 2, -1, 5),
         ]
     );
     assert_eq!(census[1].quarter_tones, [quarter_tone(0, (0, 1), 0, 1, 5)]);
+    // The E joining a rest is dropped, and its quarter-tone is accounted for
+    // where it falls, at the rest's onset.
+    let flute = &run.import.source.parts[0];
+    assert_eq!(flute.dropped_notes, 1);
+    assert_eq!(census[0].dropped.pitched, 1);
+    assert_eq!(
+        flute.dropped_quarter_tones,
+        [quarter_tone(1, (1, 2), 2, -1, 5)]
+    );
     // A tie's pitches must be enharmonically equivalent, which the core
     // answers only in a twelve-chromatic space: the quarter-tones' tie is
     // recorded, and the ordinary tie beside it is made.
@@ -756,7 +782,7 @@ fn an_unpitched_note_ties_to_the_next_of_its_member_at_its_step() {
     // end, one on the snare drum's chord note, which is dropped.
     let source = &run.import.source;
     assert_eq!(source.census[0].tie_starts, 4);
-    assert_eq!(run.import.recorded_ties, [1]);
+    assert_eq!(run.import.unended_ties, [1]);
     assert_eq!(source.parts[0].dropped_tie_starts, 1);
     assert_eq!(
         source.features.kinds["tie without a matching end"]
@@ -822,9 +848,11 @@ fn a_pickup_reports_the_measures_the_reducer_refuses() {
 fn features_without_an_operation_are_recorded_by_kind_and_not_imported() {
     let run = run("unsupported.musicxml");
     all_applied(&run);
+    // The cue note keeps its quarter, so F5 starts a quarter into the
+    // second measure, its A5 at F5's duration.
     assert_eq!(
         events(&run.reduced.score),
-        ["s0 v0 0 1/4 C5", "s0 v0 1/4 1/4 D5"]
+        ["s0 v0 0 1/4 C5", "s0 v0 1/4 1/4 D5", "s0 v0 3/4 1/4 F5 A5"]
     );
     let content: Vec<(&str, usize)> = run
         .import
@@ -837,6 +865,8 @@ fn features_without_an_operation_are_recorded_by_kind_and_not_imported() {
         content,
         [
             ("articulations: staccato", 1),
+            ("chord note of a different duration", 1),
+            ("cue note", 1),
             ("direction: dynamics", 1),
             ("direction: words", 1),
             ("fermata", 1),
@@ -844,7 +874,7 @@ fn features_without_an_operation_are_recorded_by_kind_and_not_imported() {
             ("lyric", 1),
         ]
     );
-    assert_eq!(run.import.source.census[0].grace_or_cue, 1);
+    assert_eq!(run.import.source.census[0].grace_or_cue, 2);
 }
 
 #[test]
