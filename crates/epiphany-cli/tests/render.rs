@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use epiphany_cli::omissions::omissions;
 use epiphany_cli::{engrave, load, page};
 
 fn fixture(name: &str) -> PathBuf {
@@ -102,4 +103,49 @@ fn a_page_keeps_exactly_the_primitives_its_systems_own() {
     assert_eq!(total, owned, "every owned glyph is on exactly one page");
     assert!(page(&layout, layout.pages.len() + 1).is_none());
     assert!(page(&layout, 0).is_none());
+}
+
+/// A primitive no system owns is kept on a layout of one page, and counted as
+/// on no page when there are several.
+#[test]
+fn unowned_ink_is_kept_on_a_single_page_and_counted_on_several() {
+    let single = load(&fixture("single_part.musicxml")).expect("loads");
+    let mut layout = engrave(&single.reduced.score).layout;
+    assert_eq!(layout.pages.len(), 1);
+    let before = page(&layout, 1).expect("page 1").glyphs.len();
+    let moved = layout.pages[0].systems[0]
+        .primitives
+        .glyphs
+        .pop()
+        .expect("a glyph");
+    layout.unowned.glyphs.push(moved);
+    assert_eq!(page(&layout, 1).expect("page 1").glyphs.len(), before);
+    assert_eq!(
+        omissions(&single.reduced.score, &layout, &[])
+            .kinds
+            .get("ink on no page"),
+        None
+    );
+
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("long_score_unowned.musicxml");
+    std::fs::write(&path, long_score()).expect("written");
+    let long = load(&path).expect("loads");
+    let mut layout = engrave(&long.reduced.score).layout;
+    assert!(layout.pages.len() > 1);
+    let moved = layout.pages[0].systems[0]
+        .primitives
+        .glyphs
+        .pop()
+        .expect("a glyph");
+    layout.unowned.glyphs.push(moved);
+    let pages: usize = (1..=layout.pages.len())
+        .map(|n| page(&layout, n).expect("a page").glyphs.len())
+        .sum();
+    assert_eq!(pages + 1, layout.glyphs.len());
+    assert_eq!(
+        omissions(&long.reduced.score, &layout, &[])
+            .kinds
+            .get("ink on no page"),
+        Some(&1)
+    );
 }

@@ -14,7 +14,12 @@
 //! - a clef, and for a staff with a key, a key signature, missing where a
 //!   system starts; a clef change after the start with no clef drawn for it;
 //! - a time signature missing from the measure where a meter takes effect;
+//! - on a layout of several pages, ink no system owns, which is on no page;
 //! - each diagnostic the projection raised, by kind.
+//!
+//! Not checked, and counted as such: whether an accidental is the one the
+//! key and the measure's earlier notes call for; an unpitched note's value;
+//! and a key change after the start.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -261,6 +266,9 @@ pub fn omissions(
                         }
                     }
                     Event::Pitched(p) => {
+                        for _ in &p.pitches {
+                            out.skip("accidental: not checked against the key and the measure");
+                        }
                         let Some((exp, dots)) = value else {
                             out.skip("note: duration not one notated value");
                             continue;
@@ -287,6 +295,7 @@ pub fn omissions(
                             out.add("augmentation dot");
                         }
                     }
+                    Event::Unpitched(_) => out.skip("unpitched note: value not checked"),
                     _ => {}
                 }
             }
@@ -435,6 +444,21 @@ pub fn omissions(
             {
                 out.add("time signature");
             }
+        }
+    }
+
+    // Ink no system owns is drawn only on a layout of one page, which
+    // `page` keeps it on; on several, no page shows it.
+    if layout.pages.len() > 1 {
+        let unowned = &layout.unowned;
+        let strokes = unowned
+            .strokes
+            .iter()
+            .filter_map(|&i| layout.strokes.get(i as usize))
+            .filter(|s| s.from != s.to)
+            .count();
+        for _ in 0..unowned.glyphs.len() + strokes + unowned.curves.len() {
+            out.add("ink on no page");
         }
     }
 

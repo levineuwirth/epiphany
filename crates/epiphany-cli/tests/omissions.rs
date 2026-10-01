@@ -158,3 +158,35 @@ fn an_octave_clef_drawn_without_its_mark_is_counted() {
         0
     );
 }
+
+#[test]
+fn accidentals_and_unpitched_values_are_counted_as_not_checked() {
+    let unchecked = |name: &str| {
+        let (loaded, engraved) = loaded(name);
+        omissions(
+            &loaded.reduced.score,
+            &engraved.layout,
+            &engraved.diagnostics,
+        )
+        .unchecked
+    };
+    let pitched = unchecked("chords_and_voices.musicxml");
+    assert_eq!(
+        pitched.get("accidental: not checked against the key and the measure"),
+        Some(&7),
+        "one per pitch"
+    );
+    // The engraver draws no unpitched note yet, so each is counted as not
+    // drawn, and none reaches the value it would leave unchecked.
+    let (loaded, engraved) = loaded("percussion.musicxml");
+    let percussion = omissions(
+        &loaded.reduced.score,
+        &engraved.layout,
+        &engraved.diagnostics,
+    );
+    assert_eq!(
+        percussion.kinds.get("unpitched note not drawn"),
+        Some(&2),
+        "{percussion:?}"
+    );
+}
