@@ -1138,3 +1138,16 @@ thin line and hooks, from the group; and, for all but a choral group, each
 barline's lines continued from staff to staff under `JOINED_BARLINE_SYNTHESIS`.
 A single-staff score is unchanged. Locked by
 `groups_mark_their_staves_and_join_their_barlines` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 16 → 17: the gaps after a lead and a time signature (X2.7, 2026-10-01)
+
+The spacing pass separates neighbouring slots' ink by one gap of 0.3 staff
+spaces, and every slot's natural width was the same 1.5; the constrained
+stage's wider gap after the clef and key reached the page only through a
+barline that stood there in error, and when X2.1 removed it an opening time
+signature stood 0.3 from the clef and the first note 0.3 from the time
+signature. The lead's slot and a time signature's now take as natural width
+their ink and the gap after it, 0.8 after a lead and 1.0 after a time
+signature. Every score's first system moves right of its lead; later systems,
+which casting opens with their own lead, are unchanged. Locked by
+`the_opening_time_signature_clears_the_lead_and_the_music` (`epiphany-cli`).

@@ -713,6 +713,7 @@ const KEY_GAP: f32 = 0.6; // the gap between a clef's ink and the key signature 
 const LEAD_GAP: f32 = 0.8; // the gap between a lead's ink and the first column after it
 const KEY_ACC_X: f32 = 0.9; // x advance per key-signature accidental
 const TIME_SIG_X: f32 = 0.5; // a time signature sits this far right of its barline
+const SIGNATURE_GAP: f32 = 1.0; // the gap between a time signature's ink and the music after it
 const TIME_DIGIT_X: f32 = 0.8; // x advance per time-signature digit
                                // Repeat/volta engraving defaults (Minimal tier; SMuFL engraving-default
                                // neighborhood, not solver-negotiated).
@@ -2275,7 +2276,7 @@ pub fn try_to_constrained(
         // a slot to it (barline/lead/end columns are visual, not musical query
         // points, so they are omitted from it).
         let mut region_placements = Vec::new();
-        for info in columns.values() {
+        for (key, info) in &columns {
             let members = column_members.get(&info.slot).cloned().unwrap_or_default();
             // Realize a slot only if a glyph occupies the column — never an empty
             // slot (which would have a spacing target but no glyph the engraver
@@ -2283,15 +2284,37 @@ pub fn try_to_constrained(
             if members.is_empty() {
                 continue;
             }
-            // The spring slot's natural width is uniform; the engraver computes the
-            // collision-aware advance (per-slot bearings) when it re-spaces, and
-            // the *source* geometry below already separates columns enough that
-            // accidentals do not overlap the previous note.
+            // The spring slot's natural width is uniform, but for the lead's and a
+            // time signature's, which reserve their ink and the gap after it;
+            // the engraver computes the collision-aware advance (per-slot
+            // bearings) when it re-spaces, measuring a slot's width from its
+            // first glyph's baseline, and the *source* geometry below already
+            // separates columns enough that accidentals do not overlap the
+            // previous note.
+            let reserve = |gap: f32| {
+                let ink: Vec<&GlyphObject> = glyphs
+                    .iter()
+                    .filter(|g| g.horizontal_slot == info.slot)
+                    .collect();
+                ink.first().map_or(0.0, |first| {
+                    ink.iter()
+                        .map(|g| g.baseline.x.0 + g.bounding_box.right.0)
+                        .fold(f32::NEG_INFINITY, f32::max)
+                        - first.baseline.x.0
+                        + gap
+                })
+            };
+            let preferred = match key {
+                ColumnKey::Lead => reserve(LEAD_GAP),
+                ColumnKey::Timed(_, ColumnRole::Signature) => reserve(SIGNATURE_GAP),
+                _ => 0.0,
+            }
+            .max(COLUMN_PREFERRED_WIDTH);
             horizontal_slots.push(SpringSlot {
                 id: info.slot,
                 time: info.time.clone(),
                 min_width: StaffSpace(1.0),
-                preferred_width: StaffSpace(COLUMN_PREFERRED_WIDTH),
+                preferred_width: StaffSpace(preferred),
                 max_width: None,
                 stretch_factor: 1.0,
                 compress_factor: 1.0,

@@ -483,6 +483,55 @@ fn accidentals_are_drawn_against_the_key_and_the_measure() {
     );
 }
 
+/// A score's opening time signature stands a clear gap after the clef and
+/// key, and its first note a clear gap after the time signature, with or
+/// without a key signature.
+#[test]
+fn the_opening_time_signature_clears_the_lead_and_the_music() {
+    for (name, fifths) in [("opening_c.musicxml", 0), ("opening_f.musicxml", -1)] {
+        let xml = format!(
+            "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\">\
+             <part-name>A</part-name></score-part></part-list><part id=\"P1\">\
+             <measure number=\"1\"><attributes><divisions>1</divisions>\
+             <key><fifths>{fifths}</fifths></key><time><beats>2</beats>\
+             <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+             </attributes><note><pitch><step>A</step><octave>4</octave></pitch>\
+             <duration>2</duration><voice>1</voice><type>half</type></note></measure>\
+             </part></score-partwise>"
+        );
+        let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+        std::fs::write(&path, xml).expect("written");
+        let loaded = load(&path).expect("loads");
+        let layout = engrave(&loaded.reduced.score).layout;
+        let ink = |pick: &dyn Fn(&str) -> bool| -> (f32, f32) {
+            layout
+                .glyphs
+                .iter()
+                .filter(|g| pick(g.glyph.as_str()))
+                .map(|g| {
+                    let x = g.position.x.0;
+                    (x + g.bounding_box.left.0, x + g.bounding_box.right.0)
+                })
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(l, r), (a, b)| {
+                    (l.min(a), r.max(b))
+                })
+        };
+        let (_, lead) = ink(&|g| g == "gClef" || g.starts_with("accidental"));
+        let (digits_left, digits_right) = ink(&|g| g.starts_with("timeSig"));
+        let (head, _) = ink(&|g| g.starts_with("notehead"));
+        assert!(
+            digits_left - lead >= 0.8 - 1e-3,
+            "{name}: the time signature stands {} after the lead",
+            digits_left - lead
+        );
+        assert!(
+            head - digits_right >= 1.0 - 1e-3,
+            "{name}: the first note stands {} after the time signature",
+            head - digits_right
+        );
+    }
+}
+
 /// Every system opens with the clef and key signature in force, the key a
 /// clear gap after the clef; a treble clef an octave down and a percussion
 /// clef draw as themselves.

@@ -229,8 +229,12 @@ pub struct Engraver {
 /// system of two or more staves began opening with a line joining them, each
 /// staff group marking its staves left of it (a brace, a bracket, a
 /// sub-bracket) and a group's barlines running from staff to staff through it
-/// (`ConstrainedLayoutIR::staff_groups`; a single-staff score is unchanged).
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(16);
+/// (`ConstrainedLayoutIR::staff_groups`; a single-staff score is unchanged),
+/// and to `17` when the lead's slot and a time signature's began reserving
+/// their ink and the gap after it as their natural width (an opening time
+/// signature stood 0.3 staff spaces from the clef, and the first note as near
+/// it; every score's first system moves right of its lead).
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(17);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
