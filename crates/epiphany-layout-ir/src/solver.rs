@@ -781,8 +781,8 @@ mod tests {
         assert_eq!(layout.strokes.len(), input.strokes.len());
         assert_eq!(
             layout.glyphs.len(),
-            11,
-            "the rich fixture's real glyph count"
+            14,
+            "the rich fixture's real glyph count (its three eighths draw flags)"
         );
         assert_eq!(
             layout.strokes.len(),

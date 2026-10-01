@@ -149,3 +149,37 @@ fn unowned_ink_is_kept_on_a_single_page_and_counted_on_several() {
         Some(&1)
     );
 }
+
+/// A rest filling its measure is drawn as a whole rest in 3/4 and 2/4 alike,
+/// with no dot, and a hidden rest keeps its time but draws nothing.
+#[test]
+fn a_measure_rest_is_a_whole_rest_in_any_meter_and_a_hidden_rest_draws_nothing() {
+    let xml = "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\">\
+         <part-name>Flute</part-name></score-part></part-list><part id=\"P1\">\
+         <measure number=\"1\"><attributes><divisions>1</divisions><time><beats>3</beats>\
+         <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+         </attributes><note><rest measure=\"yes\"/><duration>3</duration><voice>1</voice>\
+         </note></measure>\
+         <measure number=\"2\"><attributes><time><beats>2</beats><beat-type>4</beat-type>\
+         </time></attributes><note><rest measure=\"yes\"/><duration>2</duration>\
+         <voice>1</voice></note></measure>\
+         <measure number=\"3\"><note print-object=\"no\"><rest/><duration>1</duration>\
+         <voice>1</voice></note><note><pitch><step>C</step><octave>5</octave></pitch>\
+         <duration>1</duration><voice>1</voice></note></measure>\
+         </part></score-partwise>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("measure_rests.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let rests: Vec<&str> = layout
+        .glyphs
+        .iter()
+        .map(|g| g.glyph.as_str())
+        .filter(|name| name.starts_with("rest"))
+        .collect();
+    assert_eq!(rests, ["restWhole", "restWhole"]);
+    assert!(layout
+        .glyphs
+        .iter()
+        .all(|g| g.glyph.as_str() != "augmentationDot"));
+}

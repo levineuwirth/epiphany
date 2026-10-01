@@ -215,8 +215,13 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
             _ => RepeatPlacement::Unresolved,
         }
     }
-    match rng.below(6) {
+    match rng.below(7) {
         0 => LayoutContent::Structural,
+        6 => LayoutContent::Unpitched(UnpitchedContent {
+            position: time(rng),
+            components: components(rng),
+            staff_position: epiphany_core::StaffPosition(rng.range(0, 16) as i16 - 4),
+        }),
         1 => LayoutContent::Staff(StaffContent {
             default_clef: epiphany_core::Clef::default(),
             clefs: clefs(rng),
@@ -236,6 +241,8 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
             staff_position: rng
                 .boolean()
                 .then(|| epiphany_core::StaffPosition(rng.range(0, 9) as i16)),
+            visible: rng.boolean(),
+            whole_measure: rng.boolean(),
         }),
         4 => LayoutContent::Measure(MeasureContent {
             start: time(rng),

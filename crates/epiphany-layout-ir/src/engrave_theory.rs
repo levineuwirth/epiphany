@@ -105,17 +105,18 @@ pub fn notehead_glyph(value: NoteValue) -> &'static str {
     }
 }
 
-/// The SMuFL rest glyph for a note value, if one is bundled. Only whole/half/
-/// quarter/eighth rests ship in the bundled metrics; a sixteenth-or-shorter rest
-/// reports `None` so the caller surfaces the missing glyph coverage rather than
-/// misrendering it as an eighth rest.
+/// The SMuFL rest glyph for a note value. Every value the model holds, the
+/// whole to the 64th, has its glyph bundled; the `Option` stays so a value
+/// added to the model without one is surfaced rather than misdrawn.
 pub fn rest_glyph(value: NoteValue) -> Option<&'static str> {
     Some(match value {
         NoteValue::Whole => "restWhole",
         NoteValue::Half => "restHalf",
         NoteValue::Quarter => "restQuarter",
         NoteValue::Eighth => "rest8th",
-        _ => return None,
+        NoteValue::Sixteenth => "rest16th",
+        NoteValue::ThirtySecond => "rest32nd",
+        NoteValue::SixtyFourth => "rest64th",
     })
 }
 
@@ -124,17 +125,33 @@ pub fn has_stem(value: NoteValue) -> bool {
     !matches!(value, NoteValue::Whole)
 }
 
-/// The SMuFL flag glyph for an *unbeamed* stemmed note value, if one is bundled.
-/// Only the eighth-note flag ships in the bundled metrics; shorter values need
-/// their own flag glyphs (or beaming, deferred past I-1) and report `None`.
-pub fn flag_glyph(value: NoteValue, stem: StemDirection) -> Option<&'static str> {
+/// How many flags (or beams) a note value carries: one for an eighth, two for
+/// a sixteenth, and so on; none for a quarter or longer.
+pub fn flag_count(value: NoteValue) -> u8 {
     match value {
-        NoteValue::Eighth => Some(match stem {
-            StemDirection::Up => "flag8thUp",
-            StemDirection::Down => "flag8thDown",
-        }),
-        _ => None,
+        NoteValue::Whole | NoteValue::Half | NoteValue::Quarter => 0,
+        NoteValue::Eighth => 1,
+        NoteValue::Sixteenth => 2,
+        NoteValue::ThirtySecond => 3,
+        NoteValue::SixtyFourth => 4,
     }
+}
+
+/// The SMuFL flag glyph for an *unbeamed* stemmed note value, eighth to 64th;
+/// `None` for a value that takes no flag.
+pub fn flag_glyph(value: NoteValue, stem: StemDirection) -> Option<&'static str> {
+    let up = matches!(stem, StemDirection::Up);
+    Some(match (value, up) {
+        (NoteValue::Eighth, true) => "flag8thUp",
+        (NoteValue::Eighth, false) => "flag8thDown",
+        (NoteValue::Sixteenth, true) => "flag16thUp",
+        (NoteValue::Sixteenth, false) => "flag16thDown",
+        (NoteValue::ThirtySecond, true) => "flag32ndUp",
+        (NoteValue::ThirtySecond, false) => "flag32ndDown",
+        (NoteValue::SixtyFourth, true) => "flag64thUp",
+        (NoteValue::SixtyFourth, false) => "flag64thDown",
+        _ => return None,
+    })
 }
 
 /// The SMuFL clef glyph for a clef shape, if one is bundled. A percussion clef
@@ -345,7 +362,14 @@ mod tests {
         assert_eq!(notehead_glyph(NoteValue::Sixteenth), "noteheadBlack");
         assert_eq!(rest_glyph(NoteValue::Whole), Some("restWhole"));
         assert_eq!(rest_glyph(NoteValue::Eighth), Some("rest8th"));
-        assert_eq!(rest_glyph(NoteValue::Sixteenth), None);
+        assert_eq!(rest_glyph(NoteValue::Sixteenth), Some("rest16th"));
+        assert_eq!(rest_glyph(NoteValue::SixtyFourth), Some("rest64th"));
+        assert_eq!(
+            flag_glyph(NoteValue::ThirtySecond, StemDirection::Down),
+            Some("flag32ndDown")
+        );
+        assert_eq!(flag_count(NoteValue::Quarter), 0);
+        assert_eq!(flag_count(NoteValue::SixtyFourth), 4);
         assert!(!has_stem(NoteValue::Whole));
         assert!(has_stem(NoteValue::Quarter));
         assert_eq!(flag_glyph(NoteValue::Quarter, StemDirection::Up), None);

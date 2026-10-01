@@ -99,8 +99,8 @@ pub use constrained::{
     GlyphObjectId, GlyphStyle, LayoutConstraint, LayoutTransformError, SpringSlot, Stroke,
 };
 pub use engrave_theory::{
-    accidental_glyph, clef_glyph, flag_glyph, has_stem, key_signature, notehead_glyph, rest_glyph,
-    staff_position, staff_step_pitch, KeyAccidental, StaffStep,
+    accidental_glyph, clef_glyph, flag_count, flag_glyph, has_stem, key_signature, notehead_glyph,
+    rest_glyph, staff_position, staff_step_pitch, KeyAccidental, StaffStep,
 };
 pub use engraving::{
     AuthorId, DecisionSource, EngravingDecision, EngravingDecisionId, EngravingDecisionKind,
@@ -122,8 +122,8 @@ pub use logical::{
     NotePitch, PlacedClef, PlacedComponent, PlacedKeySignature, RepeatContent, RepeatPlacement,
     RestContent, RestLayout, ScoreVersion, SlurContent, SlurDirection, SlurEndpoint, SlurLayout,
     SpannerLayout, StaffContent, StaffLayout, TextLayout, TieLayout, TimeSignatureContent,
-    TimeSignatureDisplayLayout, TrajectoryLayout, TupletDisplayLayout, VerticalExtent,
-    VoltaContent,
+    TimeSignatureDisplayLayout, TrajectoryLayout, TupletDisplayLayout, UnpitchedContent,
+    VerticalExtent, VoltaContent,
 };
 pub use provenance::{
     continuation_instance_key, manifestation_layout_id, stable_layout_id, synthesized_layout_id,

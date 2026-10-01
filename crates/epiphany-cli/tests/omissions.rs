@@ -176,8 +176,7 @@ fn accidentals_and_unpitched_values_are_counted_as_not_checked() {
         Some(&7),
         "one per pitch"
     );
-    // The engraver draws no unpitched note yet, so each is counted as not
-    // drawn, and none reaches the value it would leave unchecked.
+    // Each unpitched note is drawn, and its value is counted as not checked.
     let (loaded, engraved) = loaded("percussion.musicxml");
     let percussion = omissions(
         &loaded.reduced.score,
@@ -185,8 +184,11 @@ fn accidentals_and_unpitched_values_are_counted_as_not_checked() {
         &engraved.diagnostics,
     );
     assert_eq!(
-        percussion.kinds.get("unpitched note not drawn"),
+        percussion
+            .unchecked
+            .get("unpitched note: value not checked"),
         Some(&2),
         "{percussion:?}"
     );
+    assert_eq!(percussion.kinds.get("unpitched note not drawn"), None);
 }

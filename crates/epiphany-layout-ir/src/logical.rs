@@ -18,10 +18,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use epiphany_core::prepass::{derive_annotations, DerivedAnnotations, PrePassProfile};
 use epiphany_core::{
     AleatoricAnchoringDiscipline, AnchorOffset, AnnotationAnchor, CanonicalValue, Clef,
-    CoordinateDiscipline, Event, EventId, EventPosition, KeySignature, LineStyle, MeasurePosition,
-    MusicalDuration, MusicalPosition, NotatedComponent, PitchId, PitchSpelling, Region, RegionEdge,
-    RegionId, RegionTimeModel, Score, SlurKind, SpaceUnit, StaffId, StaffPosition, TimeAnchor,
-    TimeSignatureDisplay, TupletId, TupletRatio, TypedObjectId, WallClockTime,
+    CoordinateDiscipline, Event, EventDuration, EventId, EventPosition, KeySignature, LineStyle,
+    MeasurePosition, MusicalDuration, MusicalPosition, NotatedComponent, PitchId, PitchSpelling,
+    Region, RegionEdge, RegionId, RegionTimeModel, Score, SlurKind, SpaceUnit, StaffId,
+    StaffPosition, TimeAnchor, TimeSignatureDisplay, TupletId, TupletRatio, TypedObjectId,
+    WallClockTime,
 };
 use epiphany_determinism::{DomainTag, Preimage};
 
@@ -54,6 +55,8 @@ pub enum LayoutContent {
     Note(NoteContent),
     /// A rest: its note value and optional explicit staff position.
     Rest(RestContent),
+    /// An unpitched (percussion) note: its note value and staff position.
+    Unpitched(UnpitchedContent),
     /// A measure: whether it ends the staff (a final barline) and the time
     /// signature in force, when this measure introduces one.
     Measure(MeasureContent),
@@ -130,12 +133,27 @@ pub struct NotePitch {
 }
 
 /// A rest's notated content: its resolved start position, its placed notated
-/// components, and any explicit vertical position.
+/// components, any explicit vertical position, whether it is drawn, and
+/// whether it fills its measure (drawn as a whole rest in any meter).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RestContent {
     pub position: TimePoint,
     pub components: Vec<PlacedComponent>,
     pub staff_position: Option<StaffPosition>,
+    /// False for a hidden rest, which keeps its time but draws no ink.
+    pub visible: bool,
+    /// The rest starts its measure and lasts exactly as long.
+    pub whole_measure: bool,
+}
+
+/// An unpitched note's notated content: its resolved start position, its
+/// placed notated components, and its staff position (the bottom line `0`,
+/// one per diatonic step).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct UnpitchedContent {
+    pub position: TimePoint,
+    pub components: Vec<PlacedComponent>,
+    pub staff_position: StaffPosition,
 }
 
 /// A measure's notated content: its resolved start position, where it ends,
@@ -569,6 +587,7 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                     .filter_map(|change| time_anchor_dep(&change.anchor)),
             );
             push(si_src, si_deps, staff, staff_content(score, si));
+            let spans = measure_spans(score, si);
             for voice in &si.voices {
                 let v_src = TypedObjectId::Voice(voice.id);
                 push(v_src, vec![si_src], staff, LayoutContent::Structural);
@@ -580,7 +599,12 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                     deps.extend(pitches.iter().copied().map(TypedObjectId::Pitch));
                     // The event carries the notated content (note value + spelled
                     // pitches); the per-pitch objects are structural provenance.
-                    push(e_src, deps, staff, event_content(score, *eid, &annotations));
+                    push(
+                        e_src,
+                        deps,
+                        staff,
+                        event_content(score, *eid, &annotations, &spans),
+                    );
                     for pid in pitches {
                         push(
                             TypedObjectId::Pitch(pid),
@@ -872,12 +896,50 @@ fn staff_content(score: &Score, si: &epiphany_core::StaffInstance) -> LayoutCont
     })
 }
 
+/// Where each measure of a staff instance starts and ends: at the next
+/// measure's start, or, for the last, its start plus the length of the meter in
+/// force there (`None` when no measure of the instance names one).
+fn measure_spans(
+    score: &Score,
+    si: &epiphany_core::StaffInstance,
+) -> Vec<(TimePoint, Option<TimePoint>)> {
+    let mut length: Option<MusicalDuration> = None;
+    let mut spans = Vec::with_capacity(si.measures.len());
+    for (index, measure) in si.measures.iter().enumerate() {
+        if let Some(signature) = measure
+            .time_signature
+            .and_then(|id| score.time_signatures.iter().find(|t| t.id == id))
+        {
+            length = Some(signature.measure_duration().clone());
+        }
+        let start = resolve_time_anchor(score, &measure.start);
+        let end = match si.measures.get(index + 1) {
+            Some(next) => Some(resolve_time_anchor(score, &next.start)),
+            None => match (&start, &length) {
+                (TimePoint::Musical(position), Some(length)) => {
+                    Some(TimePoint::Musical(position.clone() + length.clone()))
+                }
+                _ => None,
+            },
+        };
+        spans.push((start, end));
+    }
+    spans
+}
+
 /// The notated content of an event: a note (its position, decomposition, and
-/// spelled pitches) for a pitched event, a rest for a rest, and structural for
-/// the kinds this Minimal slice does not yet engrave (unpitched / indeterminate
-/// / trajectory / graphic / cue). Every pitch is kept; an unspelled one carries
-/// `spelling: None` rather than being dropped.
-fn event_content(score: &Score, event: EventId, annotations: &DerivedAnnotations) -> LayoutContent {
+/// spelled pitches) for a pitched event, a rest for a rest, an unpitched note
+/// for an unpitched event, and structural for the kinds this Minimal slice
+/// does not yet engrave (indeterminate / trajectory / graphic / cue). Every
+/// pitch is kept; an unspelled one carries `spelling: None` rather than being
+/// dropped. `spans` are the measures of the event's staff instance, which say
+/// whether a rest fills its measure.
+fn event_content(
+    score: &Score,
+    event: EventId,
+    annotations: &DerivedAnnotations,
+    spans: &[(TimePoint, Option<TimePoint>)],
+) -> LayoutContent {
     let Some(graph_event) = score.events.get(event) else {
         return LayoutContent::Structural;
     };
@@ -901,10 +963,29 @@ fn event_content(score: &Score, event: EventId, annotations: &DerivedAnnotations
                 pitches,
             })
         }
-        Event::Rest(rest) => LayoutContent::Rest(RestContent {
-            position: event_time(&rest.position),
+        Event::Rest(rest) => {
+            let position = event_time(&rest.position);
+            let whole_measure = match (&position, &rest.duration) {
+                (TimePoint::Musical(start), EventDuration::Musical(duration)) => {
+                    let end = TimePoint::Musical(start.clone() + duration.clone());
+                    spans
+                        .iter()
+                        .any(|(s, e)| *s == position && e.as_ref() == Some(&end))
+                }
+                _ => false,
+            };
+            LayoutContent::Rest(RestContent {
+                position,
+                components,
+                staff_position: rest.vertical_position,
+                visible: rest.visible,
+                whole_measure,
+            })
+        }
+        Event::Unpitched(unpitched) => LayoutContent::Unpitched(UnpitchedContent {
+            position: event_time(&unpitched.position),
             components,
-            staff_position: rest.vertical_position,
+            staff_position: unpitched.staff_position,
         }),
         _ => LayoutContent::Structural,
     }
