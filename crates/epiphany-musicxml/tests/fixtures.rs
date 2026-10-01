@@ -657,6 +657,55 @@ fn a_pitch_finer_than_a_quarter_tone_is_refused_by_name() {
 }
 
 #[test]
+fn an_unpitched_note_ties_to_the_next_of_its_member_at_its_step() {
+    let run = run("percussion_ties.musicxml");
+    all_applied(&run);
+    let score = &run.reduced.score;
+    assert_eq!(
+        events(score),
+        [
+            "s0 v0 0 1/2 x5 m0",
+            "s0 v0 1/2 1/2 x5 m0",
+            "s0 v0 1 1 x10 m1",
+            "s0 v0 2 1/2 x10 m1",
+            "s0 v0 5/2 1/2 x5 m0",
+            "s0 v0 3 1 x10 m1",
+        ]
+    );
+    let onset = |id| match score.events.get(id).map(Event::position) {
+        Some(EventPosition::Musical(p)) => rational(&p.0),
+        other => format!("{other:?}"),
+    };
+    let ties: Vec<String> = score
+        .cross_cutting
+        .ties
+        .iter()
+        .map(|t| {
+            format!(
+                "{} -> {} {:?} {:?}",
+                onset(t.start_event),
+                onset(t.end_event),
+                t.class,
+                t.pitch_pairing
+            )
+        })
+        .collect();
+    assert_eq!(ties, ["0 -> 1/2 Standard None", "1 -> 2 Standard None"]);
+    // Four tie starts in the file: two tied, one recorded for want of an
+    // end, one on the snare drum's chord note, which is dropped.
+    let source = &run.import.source;
+    assert_eq!(source.census[0].tie_starts, 4);
+    assert_eq!(run.import.recorded_ties, [1]);
+    assert_eq!(source.parts[0].dropped_tie_starts, 1);
+    assert_eq!(
+        source.features.kinds["tie without a matching end"]
+            .places
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn tuplet_notes_sit_at_exact_positions_and_the_grouping_is_recorded() {
     let run = run("tuplet.musicxml");
     all_applied(&run);
@@ -912,6 +961,28 @@ fn the_fidelity_comparison_catches_a_spoiled_score() {
     assert!(
         !compare(&import, &reduced).passed(),
         "a quarter-tone the reader lost was not caught"
+    );
+    // And the ties to the file's count of tie starts: one the reader lost,
+    // as it lost every tie on an unpitched note, is caught where the score
+    // agrees with the reader.
+    let tied = run("percussion_ties.musicxml");
+    let mut import = tied.import.clone();
+    let mut reduced = tied.reduced.clone();
+    reduced.score.cross_cutting.ties.remove(0);
+    let events = &mut import.source.parts[0].events;
+    for (i, flag) in [(0, true), (1, false)] {
+        if let epiphany_musicxml::source::Content::Unpitched {
+            tie_start,
+            tie_stop,
+            ..
+        } = &mut events[i].content
+        {
+            *if flag { tie_start } else { tie_stop } = false;
+        }
+    }
+    assert!(
+        !compare(&import, &reduced).passed(),
+        "a tie the reader lost was not caught"
     );
     // So are the keys and clefs: one the reader lost is caught even where the
     // score agrees with the reader, as when a key before `<staves>` was lost.

@@ -138,7 +138,7 @@ fn source_key(event: &SourceEvent) -> Key {
             triples.sort_unstable();
             ContentKey::Pitched(triples)
         }
-        Content::Unpitched { step, member } => ContentKey::Unpitched {
+        Content::Unpitched { step, member, .. } => ContentKey::Unpitched {
             step: *step,
             member: *member as u32,
         },
@@ -199,9 +199,17 @@ fn anchor_offset(anchor: &TimeAnchor) -> Option<RationalTime> {
     }
 }
 
-/// A tied pitch as compared: its staff, the start's onset, the pitch's
-/// [`pitch_key`], and the end's onset.
-type TiedPitch = (StaffId, RationalTime, (u8, i16, i8), RationalTime);
+/// What a tie holds at its start: a pitch, by its [`pitch_key`], or an
+/// unpitched note, by its staff step and member.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Tied {
+    Pitch((u8, i16, i8)),
+    Unpitched { step: i16, member: u32 },
+}
+
+/// A tied note as compared: its staff, the start's onset, what is tied, and
+/// the end's onset.
+type TiedNote = (StaffId, RationalTime, Tied, RationalTime);
 
 /// Where a graph event sits: its staff, its voice, and its key.
 struct Placed {
@@ -551,8 +559,8 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             }
         }
 
-        // Ties: (staff, start onset, pitch, end onset) on each side.
-        let mut graph_ties: BTreeMap<TiedPitch, isize> = BTreeMap::new();
+        // Ties: (staff, start onset, what is tied, end onset) on each side.
+        let mut graph_ties: BTreeMap<TiedNote, isize> = BTreeMap::new();
         for tie in &score.cross_cutting.ties {
             let (Some((staff, start)), Some((_, end))) = (
                 event_place.get(&tie.start_event),
@@ -563,32 +571,76 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             if !import.ids.staves[p].contains(staff) {
                 continue;
             }
-            let Some(Event::Pitched(first)) = score.events.get(tie.start_event) else {
-                fidelity
-                    .failures
-                    .push(format!("{name}: a tie starts on a non-pitched event"));
-                continue;
-            };
-            for (a, _) in tie.pitch_pairing.clone().unwrap_or_default() {
-                if let Some(ip) = first.pitches.iter().find(|ip| ip.id == a) {
+            match score.events.get(tie.start_event) {
+                Some(Event::Pitched(first)) => {
+                    for (a, _) in tie.pitch_pairing.clone().unwrap_or_default() {
+                        if let Some(ip) = first.pitches.iter().find(|ip| ip.id == a) {
+                            let tied = Tied::Pitch(pitch_key(&ip.pitch));
+                            *graph_ties
+                                .entry((*staff, start.clone(), tied, end.clone()))
+                                .or_default() += 1;
+                        }
+                    }
+                }
+                Some(Event::Unpitched(u)) => {
+                    let tied = Tied::Unpitched {
+                        step: u.staff_position.0,
+                        member: u.instrument_member.0,
+                    };
                     *graph_ties
-                        .entry((*staff, start.clone(), pitch_key(&ip.pitch), end.clone()))
+                        .entry((*staff, start.clone(), tied, end.clone()))
                         .or_default() += 1;
                 }
+                _ => fidelity
+                    .failures
+                    .push(format!("{name}: a tie starts on a rest")),
             }
         }
         let starts = crate::emit::event_starts(&part.events);
         let mut source_ties = BTreeMap::new();
         let mut tie_explained = Vec::new();
         for (i, event) in part.events.iter().enumerate() {
+            let end = event.onset.add(&event.duration);
+            let at_end = starts
+                .get(&(event.staff, &end))
+                .map_or(&[][..], Vec::as_slice);
+            if let Content::Unpitched {
+                step,
+                member,
+                tie_start: true,
+                ..
+            } = &event.content
+            {
+                let ends = at_end.iter().any(|&j| {
+                    matches!(&part.events[j].content, Content::Unpitched {
+                        step: s, member: m, tie_stop: true, ..
+                    } if s == step && m == member)
+                });
+                if !ends {
+                    continue; // recorded by the importer as a tie without an end
+                }
+                if let Some(why) = refused_tie(p, i) {
+                    tie_explained.push(format!("{name}: tie at {} ({why})", show(&event.onset)));
+                    continue;
+                }
+                let tied = Tied::Unpitched {
+                    step: *step,
+                    member: *member as u32,
+                };
+                *source_ties
+                    .entry((
+                        import.ids.staves[p][event.staff],
+                        event.onset.clone(),
+                        tied,
+                        end.clone(),
+                    ))
+                    .or_default() += 1;
+                continue;
+            }
             let Content::Pitched(pitches) = &event.content else {
                 continue;
             };
-            let end = event.onset.add(&event.duration);
             for pitch in pitches.iter().filter(|x| x.tie_start) {
-                let at_end = starts
-                    .get(&(event.staff, &end))
-                    .map_or(&[][..], Vec::as_slice);
                 let ends = at_end.iter().map(|&j| &part.events[j]).any(|next| {
                     matches!(&next.content, Content::Pitched(ps)
                             if ps.iter().any(|y| y.tie_stop && y.pitch.scale_position == pitch.pitch.scale_position))
@@ -607,7 +659,7 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                     .entry((
                         import.ids.staves[p][event.staff],
                         event.onset.clone(),
-                        pitch_key(&pitch.pitch),
+                        Tied::Pitch(pitch_key(&pitch.pitch)),
                         end.clone(),
                     ))
                     .or_default() += 1;
@@ -615,9 +667,23 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
         }
         if graph_ties != source_ties {
             fidelity.failures.push(format!(
-                "{name}: {} tied pitches in the score, {} in the source",
+                "{name}: {} tied notes in the score, {} in the source",
                 graph_ties.values().sum::<isize>(),
                 source_ties.values().sum::<isize>()
+            ));
+        }
+        // And held to the file's own count of tie starts: each is tied in the
+        // score, recorded by the importer, explained by a refused tie, or on a
+        // note the reader dropped and recorded.
+        let census = &source.census[p];
+        let tied: isize = graph_ties.values().sum();
+        let recorded = import.recorded_ties.get(p).copied().unwrap_or(0);
+        let (refused_ties, dropped) = (tie_explained.len(), part.dropped_tie_starts);
+        if tied.unsigned_abs() + recorded + refused_ties + dropped != census.tie_starts {
+            fidelity.failures.push(format!(
+                "{name}: {tied} tie starts tied in the score, {recorded} recorded, \
+                 {refused_ties} refused and {dropped} on dropped notes, but the file has {}",
+                census.tie_starts
             ));
         }
         fidelity.explained.extend(tie_explained);
@@ -710,7 +776,6 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             .filter(|(i, _)| refused(&Subject::Event(p, *i)).is_some())
             .map(|(_, event)| quarter_tones(&source_key(event).content))
             .sum();
-        let census = &source.census[p];
         if held + refused_quarter_tones + part.dropped_quarter_tones != census.quarter_tones {
             fidelity.failures.push(format!(
                 "{name}: {held} quarter-tones in the score ({refused_quarter_tones} more refused, \

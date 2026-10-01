@@ -92,6 +92,9 @@ pub struct Import {
     /// One per envelope, in the same order.
     pub labels: Vec<Label>,
     pub ids: Ids,
+    /// Per part: the tie starts recorded instead of tied, for want of a
+    /// matching end or because the core cannot tie quarter-tones.
+    pub recorded_ties: Vec<usize>,
 }
 
 struct Emitter {
@@ -484,7 +487,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                     stem: StemConfiguration,
                     grace: None,
                 }),
-                Content::Unpitched { step, member } => Event::Unpitched(UnpitchedEvent {
+                Content::Unpitched { step, member, .. } => Event::Unpitched(UnpitchedEvent {
                     id,
                     voice,
                     position,
@@ -515,10 +518,71 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
     // Ties: each tied pitch continues into an event that starts where it
     // ends on its staff, holding the same pitch with a tie stop: in its own
     // voice when one does, else in another, since a chord's notes may part
-    // into voices across a tie. One tie per end event.
+    // into voices across a tie. One tie per end event. A tied unpitched note
+    // continues into one of the same member at the same staff step; its tie
+    // pairs no pitch, which the model admits, having none to pair.
+    let mut recorded_ties = vec![0; source.parts.len()];
     for (p, part) in source.parts.iter().enumerate() {
         let starts = event_starts(&part.events);
         for (i, event) in part.events.iter().enumerate() {
+            if let Content::Unpitched {
+                step,
+                member,
+                tie_start: true,
+                ..
+            } = &event.content
+            {
+                let end = event.onset.add(&event.duration);
+                let at_end = starts
+                    .get(&(event.staff, &end))
+                    .map_or(&[][..], Vec::as_slice);
+                let continues = |j: &&usize| {
+                    matches!(&part.events[**j].content, Content::Unpitched {
+                        step: s, member: m, tie_stop: true, ..
+                    } if s == step && m == member)
+                };
+                let found = at_end
+                    .iter()
+                    .filter(continues)
+                    .find(|&&j| part.events[j].voice == event.voice)
+                    .or_else(|| at_end.iter().find(continues));
+                match found {
+                    Some(&j) => {
+                        let class = if part.events[j].voice == event.voice {
+                            TieClass::Standard
+                        } else {
+                            TieClass::CrossVoice
+                        };
+                        let tie_id: TieId = e.identity.mint();
+                        e.emit(
+                            "CreateCrossCutting(Tie)",
+                            Subject::Tie(p, i, j),
+                            OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                                structure: CrossCuttingValue::Tie(Tie {
+                                    id: tie_id,
+                                    start_event: ids.events[p][i],
+                                    end_event: ids.events[p][j],
+                                    pitch_pairing: None,
+                                    class,
+                                    style: Default::default(),
+                                }),
+                            }),
+                        );
+                    }
+                    None => {
+                        recorded_ties[p] += 1;
+                        source.features.record(
+                            FeatureClass::Content,
+                            "tie without a matching end",
+                            Place {
+                                part: part.name.clone(),
+                                measure: source.measures[event.measure].number.clone(),
+                            },
+                        );
+                    }
+                }
+                continue;
+            }
             let Content::Pitched(pitches) = &event.content else {
                 continue;
             };
@@ -561,6 +625,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                                 .or_default()
                                 .push((ids.pitches[p][i][a], ids.pitches[p][j][b]));
                         } else {
+                            recorded_ties[p] += 1;
                             let measure = source.measures[event.measure].number.clone();
                             source.features.record(
                                 FeatureClass::Content,
@@ -573,6 +638,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                         }
                     }
                     None => {
+                        recorded_ties[p] += 1;
                         let measure = source.measures[event.measure].number.clone();
                         source.features.record(
                             FeatureClass::Content,
@@ -633,5 +699,6 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
         envelopes: e.envelopes,
         labels: e.labels,
         ids,
+        recorded_ties,
     }
 }

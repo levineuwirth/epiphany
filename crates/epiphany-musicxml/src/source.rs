@@ -180,9 +180,15 @@ pub enum Content {
     /// One or more pitches sounding together (a note or a chord).
     Pitched(Vec<SourcePitch>),
     /// An unpitched percussion note: its staff step (bottom line 0, one per
-    /// diatonic step, read against a treble clef as MusicXML prescribes) and
-    /// the index of its member in [`SourcePart::members`].
-    Unpitched { step: i16, member: usize },
+    /// diatonic step, read against a treble clef as MusicXML prescribes), the
+    /// index of its member in [`SourcePart::members`], and the file's tie
+    /// flags on it.
+    Unpitched {
+        step: i16,
+        member: usize,
+        tie_start: bool,
+        tie_stop: bool,
+    },
 }
 
 /// A note, chord or rest.
@@ -238,6 +244,8 @@ pub struct SourcePart {
     pub dropped_notes: usize,
     /// Of the dropped notes, those the file makes quarter-tones.
     pub dropped_quarter_tones: usize,
+    /// Of the dropped notes, those carrying a tie start.
+    pub dropped_tie_starts: usize,
 }
 
 /// Raw counts taken straight from the `<note>` elements of a part, with no
@@ -253,6 +261,9 @@ pub struct Census {
     pub rests: usize,
     /// Of the counted notes, those carrying `<chord/>`.
     pub chord_members: usize,
+    /// Of the counted pitched and unpitched notes, those carrying a
+    /// `<tie type="start"/>`.
+    pub tie_starts: usize,
     /// Grace and cue notes, which are not imported.
     pub grace_or_cue: usize,
     /// Per staff, the `fifths` of each `<key>` the model can hold (at most
@@ -1015,6 +1026,7 @@ impl<'d, 'i> Reader<'d, 'i> {
             slurs: Vec::new(),
             dropped_notes: 0,
             dropped_quarter_tones: 0,
+            dropped_tie_starts: 0,
         };
         let mut read = PartRead {
             part: part.clone(),
@@ -1346,6 +1358,9 @@ impl<'d, 'i> Reader<'d, 'i> {
         let voice = child_text(note, "voice").unwrap_or("1").to_owned();
         let tie_start = children(note, "tie").any(|t| t.attribute("type") == Some("start"));
         let tie_stop = children(note, "tie").any(|t| t.attribute("type") == Some("stop"));
+        if tie_start && has_rest.is_none() {
+            read.census.tie_starts += 1;
+        }
 
         let onset_div = if is_chord { *last_onset } else { *cursor };
         let visible = note.attribute("print-object") != Some("no");
@@ -1570,6 +1585,7 @@ impl<'d, 'i> Reader<'d, 'i> {
                 }
                 (Content::Pitched(_), Some(_)) => {
                     part.dropped_notes += 1;
+                    part.dropped_tie_starts += usize::from(tie_start && has_rest.is_none());
                     self.features.record(
                         FeatureClass::Content,
                         "cross-staff chord note",
@@ -1578,6 +1594,7 @@ impl<'d, 'i> Reader<'d, 'i> {
                 }
                 (Content::Unpitched { .. }, _) if has_unpitched.is_some() => {
                     part.dropped_notes += 1;
+                    part.dropped_tie_starts += usize::from(tie_start && has_rest.is_none());
                     self.features.record(
                         FeatureClass::Content,
                         "unpitched chord note",
@@ -1586,6 +1603,7 @@ impl<'d, 'i> Reader<'d, 'i> {
                 }
                 _ => {
                     part.dropped_notes += 1;
+                    part.dropped_tie_starts += usize::from(tie_start && has_rest.is_none());
                     self.features.record(
                         FeatureClass::Content,
                         "chord note joining a rest",
@@ -1621,7 +1639,12 @@ impl<'d, 'i> Reader<'d, 'i> {
                     }
                 };
                 member_steps.entry(member).or_insert(step);
-                Content::Unpitched { step, member }
+                Content::Unpitched {
+                    step,
+                    member,
+                    tie_start,
+                    tie_stop,
+                }
             } else {
                 Content::Rest { visible }
             };
