@@ -9,16 +9,21 @@ LaTeX suite in `spec/` is the model's normative source.
 Planning lives in `~/apocrypha`, not in this repository: start from
 `~/apocrypha/Negotia/Epiphany resume.md`, which says how work runs, which
 phase is open and what green means. Then read `docs/invariants.md`, the
-rules no change may break. `spec/CONTRACT_*`, `spec/EVIDENCE_*`, the Pass-13
-ledger (`spec/PASS13_CANDIDATES.md`) and `spec/HANDOFF_2026-08-07.md` are
-the history of a retired contract-and-ratification process, not instruction.
+rules no change may break. In `spec/`, besides the `.tex` suite, its PDFs and
+`vectors/`, the documents still in force are `QUICKSTART.md` (the crate
+layout and its early decisions), `RULING_GENESIS_PERSISTENCE.md`,
+`PLAN_EDITOR_APP.md` and the `ANALYSIS_*` files. Every other Markdown file
+there (the contracts, evidence, worklists, ratification logs, batch, plans,
+audits and drafts, the Pass-13 ledger and the August handoff) is the history
+of a retired contract-and-ratification process, not instruction.
 
 ## Green
 
 Green is `scripts/gate`: fmt, clippy, rustdoc, build and the workspace tests
 on CI's pinned toolchain with CI's `-D warnings`, then `git diff --check`,
 with a log per stage and the counts on its closing line. The line before it
-names the requirement labels `origin/main` defines and the tree does not;
+names the requirement labels `origin/main` defines and the tree does not
+(with `--spec`, a second line names those TeX does not define once built);
 a handoff carries that list, even when it is "none". `--full` adds the
 rest of CI's push checks, `--soak` its nightly soak, `--spec` the `xelatex`
 builds, `--spikes` the spike workspace, and `--print-plan` lists the

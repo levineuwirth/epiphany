@@ -72,10 +72,10 @@
 //!
 //! ## Implementation decisions (per QUICKSTART "Decisions you'll need to make")
 //!
-//! Fully sync, no async (decision 4); current stable Rust, MSRV 1.77
-//! (decision 5); `unsafe` forbidden crate-wide. Canonical iteration is enforced
-//! structurally with `BTreeMap`/`BTreeSet` and sorted projections
-//! (Appendix D §"Ordered Iteration").
+//! Fully sync, no async (decision 4); current stable Rust, MSRV the
+//! workspace's `rust-version` (decision 5); `unsafe` forbidden crate-wide.
+//! Canonical iteration is enforced structurally with `BTreeMap`/`BTreeSet`
+//! and sorted projections (Appendix D §"Ordered Iteration").
 
 mod anomaly;
 mod causal;

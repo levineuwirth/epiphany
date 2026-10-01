@@ -65,7 +65,7 @@ Per QUICKSTART "Decisions you'll need to make" (full rationale in `DECISIONS.md`
 - **Event-arena storage: `slotmap`** (decision 2) plus a hash index for the
   required `O(1)` `EventId` lookup and generation-checked stale handles.
 - **Sync only** (decision 4): no async anywhere.
-- **Current stable Rust** (decision 5); MSRV pinned at the workspace's 1.77.
+- **Current stable Rust** (decision 5); MSRV is the workspace's `rust-version`.
 - `RationalTime`'s promoted arm uses `num-rational`'s `BigRational`, the spec's
   reference design (Ch. 3 §"Recommended Implementation").
 - `unsafe` is forbidden crate-wide (`#![forbid(unsafe_code)]`).

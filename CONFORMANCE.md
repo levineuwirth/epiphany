@@ -10,7 +10,7 @@ in the Canonical Byte-Layout Reference (Appendix E) or cited inline.
 ## Platform and floating-point library
 
 The reference build and CI platform is Linux on x86-64, compiled with stable
-Rust (MSRV pinned in `Cargo.toml`, `rust-version = "1.77"`), default target
+Rust (MSRV pinned in `Cargo.toml`, `rust-version = "1.85"`), default target
 options — no `fast-math`-class flags anywhere in the workspace.
 
 Canonical state contains no *computed* floating-point values. Every float that

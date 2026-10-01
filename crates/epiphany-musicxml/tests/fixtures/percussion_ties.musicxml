@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<!-- Hand-written for epiphany-musicxml's tests. Ties on unpitched notes: a
+     snare drum tied within a measure, a cymbal tied across a barline, a
+     snare drum chord note with a tie (the chord note is dropped and
+     recorded), and a snare drum tied into a cymbal, which is no
+     continuation of it and is recorded as a tie without a matching end. -->
+<score-partwise version="4.0">
+  <part-list>
+    <score-part id="P1">
+      <part-name>Percussion</part-name>
+      <score-instrument id="P1-I1"><instrument-name>Snare Drum</instrument-name></score-instrument>
+      <score-instrument id="P1-I2"><instrument-name>Cymbal</instrument-name></score-instrument>
+    </score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>percussion</sign></clef>
+      </attributes>
+      <note><unpitched><display-step>C</display-step><display-octave>5</display-octave></unpitched><duration>2</duration><tie type="start"/><instrument id="P1-I1"/><voice>1</voice><type>half</type><notations><tied type="start"/></notations></note>
+      <note><unpitched><display-step>C</display-step><display-octave>5</display-octave></unpitched><duration>2</duration><tie type="stop"/><instrument id="P1-I1"/><voice>1</voice><type>half</type><notations><tied type="stop"/></notations></note>
+    </measure>
+    <measure number="2">
+      <note><unpitched><display-step>A</display-step><display-octave>5</display-octave></unpitched><duration>4</duration><tie type="start"/><instrument id="P1-I2"/><voice>1</voice><type>whole</type><notations><tied type="start"/></notations></note>
+      <note><chord/><unpitched><display-step>C</display-step><display-octave>5</display-octave></unpitched><duration>4</duration><tie type="start"/><instrument id="P1-I1"/><voice>1</voice><type>whole</type><notations><tied type="start"/></notations></note>
+    </measure>
+    <measure number="3">
+      <note><unpitched><display-step>A</display-step><display-octave>5</display-octave></unpitched><duration>2</duration><tie type="stop"/><instrument id="P1-I2"/><voice>1</voice><type>half</type><notations><tied type="stop"/></notations></note>
+      <note><unpitched><display-step>C</display-step><display-octave>5</display-octave></unpitched><duration>2</duration><tie type="start"/><instrument id="P1-I1"/><voice>1</voice><type>half</type><notations><tied type="start"/></notations></note>
+    </measure>
+    <measure number="4">
+      <note><unpitched><display-step>A</display-step><display-octave>5</display-octave></unpitched><duration>4</duration><tie type="stop"/><instrument id="P1-I2"/><voice>1</voice><type>whole</type><notations><tied type="stop"/></notations></note>
+    </measure>
+  </part>
+</score-partwise>

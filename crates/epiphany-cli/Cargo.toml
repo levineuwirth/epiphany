@@ -1,0 +1,25 @@
+[package]
+name = "epiphany-cli"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Command-line entry points: `epiphany render` engraves a MusicXML file to SVG, and `corpus-report` imports and renders a directory of exported scores and reports what each import could not carry."
+
+[[bin]]
+name = "epiphany"
+path = "src/main.rs"
+
+[[bin]]
+name = "corpus-report"
+path = "src/bin/corpus_report.rs"
+
+[dependencies]
+epiphany-core.workspace = true
+epiphany-ops.workspace = true
+epiphany-musicxml.workspace = true
+# The engraving pipeline: projection, the real solver, and the SVG renderer.
+epiphany-layout-ir.workspace = true
+epiphany-engrave.workspace = true
+epiphany-render-svg.workspace = true

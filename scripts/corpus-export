@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# Exports MuseScore scores to MusicXML, and MuseScore's own rendering of each to
+# PDF and page PNGs, for the corpus loop.
+#
+#   scripts/corpus-export [--force] [--memory SIZE] [--timeout SECONDS]
+#                         [--out DIR] [SCORE_DIR...]
+#
+# SCORE_DIR defaults to ~/Documents/Epiphany/excerpts and ~/Documents/Scores;
+# each `*.mscz` directly inside one is a score (MuseScore's `.mscbackup/` is not
+# read). DIR defaults to ${XDG_CACHE_HOME:-~/.cache}/epiphany-corpus. A score
+# `<SCORE_DIR>/<name>.mscz` exports to `DIR/<basename of SCORE_DIR>/<name>/`:
+# `<name>.musicxml`, `<name>.pdf` and `<name>-1.png`, `<name>-2.png`, … one per
+# page, and `<name>.exported`, a stamp written only once all three were
+# checked after MuseScore finished, so an interrupted run never leaves a
+# partial set of pages looking complete. A score whose stamp is newer than its
+# source is skipped unless --force is given.
+#
+# The scores are private (roadmap D11): nothing here is written inside the
+# repository. MuseScore never opens an original; each score is copied to a
+# staging directory under DIR first, and `mscore` runs on the copy.
+#
+# Scores export one at a time, each in its own `mscore -j` process (headless,
+# QT_QPA_PLATFORM=offscreen) inside a user scope capped at --memory (default
+# 8G, no swap) and killed after --timeout seconds (default 1800). One large
+# score's page rendering has held over 9 GiB, and several at once exhausted
+# this machine's memory: never run them in parallel. A score that hits either
+# limit fails alone and is reported. Every score missing one of its exports is
+# listed at the end with the reason: the memory cap or the timeout, MuseScore's
+# own error for that file from the log it writes for each run, or else which
+# exports it failed to write and its exit status. The script exits 1 when any
+# score failed and 2 when it cannot run at all, including when it cannot cap
+# MuseScore's memory.
+
+set -u
+
+force=0
+memory=8G
+timeout=1800
+out=${XDG_CACHE_HOME:-$HOME/.cache}/epiphany-corpus
+dirs=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --force) force=1 ;;
+        --memory | --timeout | --out)
+            [ $# -ge 2 ] || { echo "corpus-export: $1 needs a value" >&2; exit 2; }
+            case "$1" in
+                --memory) memory=$2 ;;
+                --timeout) timeout=$2 ;;
+                --out) out=$2 ;;
+            esac
+            shift
+            ;;
+        -h | --help)
+            sed -n '2,/^$/s/^# \{0,1\}//p' "$0"
+            exit 0
+            ;;
+        -*)
+            echo "corpus-export: unknown option: $1 (try --help)" >&2
+            exit 2
+            ;;
+        *) dirs+=("$1") ;;
+    esac
+    shift
+done
+[ ${#dirs[@]} -gt 0 ] || dirs=("$HOME/Documents/Epiphany/excerpts" "$HOME/Documents/Scores")
+
+command -v mscore >/dev/null || { echo "corpus-export: mscore is not on PATH" >&2; exit 2; }
+if ! systemd-run --user --scope --quiet -p MemoryMax="$memory" -p MemorySwapMax=0 true; then
+    echo "corpus-export: cannot run MuseScore under a $memory memory cap (systemd-run --user)" >&2
+    exit 2
+fi
+export QT_QPA_PLATFORM=offscreen
+logdir=${XDG_DATA_HOME:-$HOME/.local/share}/MuseScore/MuseScore4/logs
+
+mkdir -p "$out" || exit 2
+out=$(cd "$out" && pwd)
+repo=$(cd "$(dirname "$0")/.." && pwd)
+case "$out/" in
+    "$repo"/*)
+        echo "corpus-export: $out is inside the repository; the corpus stays outside it" >&2
+        exit 2
+        ;;
+esac
+staging=$(mktemp -d "$out/.staging.XXXXXX") || exit 2
+
+# The exports a score needs, each on its own line.
+exports_of() {
+    local dest=$1 name=$2
+    printf '%s\n' "$dest/$name.musicxml" "$dest/$name.pdf" "$dest/$name-1.png"
+}
+
+# Which of a score's exports are missing or empty, as a phrase; empty if none.
+missing_exports() {
+    local dest=$1 name=$2 file absent=()
+    while IFS= read -r file; do
+        [ -s "$file" ] || absent+=("${file##*.}")
+    done < <(exports_of "$dest" "$name")
+    echo "${absent[*]:-}"
+}
+
+# JSON string literal for a path (backslash and double quote escaped).
+json_string() {
+    local s=${1//\\/\\\\}
+    printf '"%s"' "${s//\"/\\\"}"
+}
+
+sources=() dests=() names=() skipped=0
+for dir in "${dirs[@]}"; do
+    if [ ! -d "$dir" ]; then
+        echo "corpus-export: no such directory: $dir" >&2
+        exit 2
+    fi
+    group=$(basename "$(cd "$dir" && pwd)")
+    for source in "$dir"/*.mscz; do
+        [ -f "$source" ] || continue
+        name=$(basename "$source" .mscz)
+        dest=$out/$group/$name
+        if [ "$force" = 0 ] && [ "$dest/$name.exported" -nt "$source" ] &&
+            [ -z "$(missing_exports "$dest" "$name")" ]; then
+            skipped=$((skipped + 1))
+            continue
+        fi
+        sources+=("$source") dests+=("$dest") names+=("$name")
+    done
+done
+echo "corpus-export: ${#sources[@]} to export, $skipped up to date, into $out"
+
+failures=()
+exported=0
+for i in "${!sources[@]}"; do
+    source=${sources[$i]} dest=${dests[$i]} name=${names[$i]}
+    copy=$staging/$i.mscz
+    job=$staging/$i.json
+    if ! cp -- "$source" "$copy"; then
+        failures+=("$source: could not be copied to the staging directory")
+        continue
+    fi
+    mkdir -p "$dest"
+    # Stale pages go first: a score that lost pages would keep its old last ones.
+    rm -f -- "$dest/$name.exported"
+    find "$dest" -maxdepth 1 -name "$name-*.png" -type f -delete
+    printf '[{"in": %s, "out": [%s, %s, %s]}]\n' "$(json_string "$copy")" \
+        "$(json_string "$dest/$name.musicxml")" "$(json_string "$dest/$name.pdf")" \
+        "$(json_string "$dest/$name.png")" >"$job"
+
+    marker=$staging/$i.marker
+    touch -- "$marker"
+    timeout --kill-after=30 "$timeout" \
+        systemd-run --user --scope --quiet -p MemoryMax="$memory" -p MemorySwapMax=0 \
+        mscore -j "$job" >"$staging/mscore.out" 2>&1
+    status=$?
+    missing=$(missing_exports "$dest" "$name")
+    rm -f -- "$copy" "$job"
+    if [ -z "$missing" ] && [ "$status" = 0 ]; then
+        touch -- "$dest/$name.exported"
+        exported=$((exported + 1))
+        rm -f -- "$marker"
+        continue
+    fi
+    reason=""
+    case $status in
+        124) reason="timed out after ${timeout}s" ;;
+        137) reason="killed, most likely at the $memory memory cap" ;;
+    esac
+    log=$(find "$logdir" -maxdepth 1 -name 'MuseScore_*.log' -newer "$marker" \
+        -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
+    rm -f -- "$marker"
+    if [ -n "$log" ]; then
+        errors=$(grep -F "$copy" "$log" | grep -E '\| ERROR \|' |
+            sed 's/.*| ERROR | [^|]*| //; s/, path: .*//; s/, in: .*//' | sort -u | paste -sd ';' -)
+        [ -z "$errors" ] || reason="${reason:+$reason; }MuseScore: $errors"
+    fi
+    if [ -n "$missing" ]; then
+        what="wrote no $missing"
+    else
+        what="wrote every export but exited nonzero"
+    fi
+    failures+=("$source: $what (mscore exit $status)${reason:+; $reason}")
+done
+
+rm -f -- "${staging:?}/mscore.out"
+rmdir -- "${staging:?}" 2>/dev/null
+
+echo "corpus-export: $exported exported, $skipped up to date, ${#failures[@]} failed"
+for failure in "${failures[@]}"; do
+    echo "FAILED $failure"
+done
+[ ${#failures[@]} -eq 0 ]

@@ -45,7 +45,8 @@ libxcb-xfixes0-dev libxkbcommon-dev libssl-dev` or their equivalents.
     scripts/gate                  # fmt, clippy, rustdoc, build, tests, diff check,
                                   # requirement labels removed from origin/main
     scripts/gate --full           # plus the rest of what CI runs
-    scripts/gate --spec           # plus the xelatex builds of the specification
+    scripts/gate --spec           # plus the xelatex builds of the specification,
+                                  # and the labels TeX no longer defines
     scripts/gate --print-plan     # list the stages
 
 The gate's closing line reports the test counts. To see the engraver's output
@@ -53,6 +54,19 @@ and the demo editor:
 
     cargo run -p epiphany-render-svg --example render_fixture -- ten_measure_single_staff --solver=real > out.svg
     cargo run -p epiphany-editor-gui
+
+To engrave a MusicXML file, or see what an import could not carry:
+
+    cargo run --release -p epiphany-cli --bin epiphany -- render score.musicxml --page 1 -o page-1.svg
+    cargo run --release -p epiphany-cli --bin epiphany -- import score.musicxml
+
+The corpus loop exports MuseScore scores headless (one at a time, under a
+memory cap) and reports on each import, rendering the chosen scores beside
+MuseScore's own pages; both write under `~/.cache/epiphany-corpus`, never
+into the repository:
+
+    scripts/corpus-export [SCORE_DIR...]
+    cargo run --release -p epiphany-cli --bin corpus-report
 
 The specification builds with `xelatex`, not `pdflatex`:
 `cd spec && latexmk -xelatex -interaction=nonstopmode core_spec.tex`.

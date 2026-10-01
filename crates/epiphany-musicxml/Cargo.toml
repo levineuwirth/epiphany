@@ -1,0 +1,22 @@
+[package]
+name = "epiphany-musicxml"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Imports partwise MusicXML into an Epiphany score through the public operation API: it reads a file into a source model, emits operations, reads back each operation's reduction outcome, and compares the reduced score against the source. Anything it cannot map is recorded by kind, never approximated."
+
+[dependencies]
+# The document graph the operations build (Score, Event, Pitch, ids, time).
+epiphany-core.workspace = true
+# The operation vocabulary, envelopes and the reduction the import goes through.
+epiphany-ops.workspace = true
+# A read-only XML DOM with no dependencies of its own (MSRV 1.60). The same
+# version the rendering stack already locks.
+roxmltree = "0.20"
+
+[dev-dependencies]
+# The fixture tests engrave each import to show it does not panic.
+epiphany-layout-ir.workspace = true
+epiphany-engrave.workspace = true
