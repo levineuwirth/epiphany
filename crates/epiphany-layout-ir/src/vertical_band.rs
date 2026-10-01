@@ -33,7 +33,27 @@ pub fn inter_staff_gap_id(region: LayoutObjectId, gap_index: usize) -> VerticalB
     VerticalBandId(preimage.finish_trunc128())
 }
 
-/// What a vertical band represents (Chapter 7: `VerticalBandKind`).
+/// What a vertical band represents (Chapter 7: `VerticalBandKind`), and so
+/// what its height means. Heights are in staff spaces, and each kind's is
+/// realized as follows:
+///
+/// - A **staff** band's height is its staff's box, the four spaces between
+///   its outer lines. It is not solved: the staff's content (ledger lines,
+///   stems, slurs, its clef) reaches beyond it, and that content, not the box,
+///   is what the gap bands on either side measure from.
+/// - An **inter-staff gap** band's height is the ink clearance between two
+///   adjacent staves of a system: from the lowest ink of the upper staff to
+///   the highest ink of the lower. The engraver's inter-staff solve sets every
+///   such clearance, in every system, to the band's `preferred_height`,
+///   opening a crowded pair and closing a slack one; the quality census
+///   (`req:qmc:vertical`) measures the realized clearance against the same
+///   number.
+/// - An **inter-system gap** band's height is the clearance between the
+///   content of two consecutive systems on a page. Casting stacks systems at
+///   its `preferred_height` and, on a page that is not the last, spreads them
+///   further so the page fills.
+/// - A **margin** band holds a region's content that belongs to no staff; its
+///   height is not solved.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum VerticalBandKind {
     /// A staff's own band.

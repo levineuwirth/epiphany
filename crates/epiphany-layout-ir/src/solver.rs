@@ -637,6 +637,7 @@ mod tests {
             catalog,
             span_anchors: Vec::new(),
             system_leads: Vec::new(),
+            staff_groups: Vec::new(),
         }
     }
 
@@ -727,6 +728,7 @@ mod tests {
             catalog: GlyphCatalogIdentity::default(),
             span_anchors: Vec::new(),
             system_leads: Vec::new(),
+            staff_groups: Vec::new(),
         };
         let report = StubSolver.solve(&input, &SolverConfig::default());
         assert_eq!(report.status, SolveStatus::InternalError);

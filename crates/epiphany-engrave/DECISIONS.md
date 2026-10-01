@@ -1125,3 +1125,16 @@ later system's left margin, from the staff instance's provenance under
 widest lead in its break search, extends the staff lines under it, and counts
 it in the inter-staff solve and the quality census. Locked by
 `every_system_starts_with_its_clef_and_key` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 15 → 16: staff groups and the systemic line (X2.7, 2026-10-01)
+
+Staff groups reached the constrained IR as anchors and nothing else; a
+system's staves stood unjoined, and every barline stopped at its own staff.
+The constrained IR now carries each staff group's kind, staves and joining
+(`GroupSpan`), and casting draws, per system: a line opening any system of two
+or more staves, from the region under `GROUP_SIGN_SYNTHESIS`; left of it, a
+brace scaled to its staves, a bracket's thick line and ends, or a sub-bracket's
+thin line and hooks, from the group; and, for all but a choral group, each
+barline's lines continued from staff to staff under `JOINED_BARLINE_SYNTHESIS`.
+A single-staff score is unchanged. Locked by
+`groups_mark_their_staves_and_join_their_barlines` (`epiphany-cli`).

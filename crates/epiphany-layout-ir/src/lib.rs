@@ -96,8 +96,8 @@ pub use constrained::{
     active_clef, active_clef_or, is_beam_stroke, is_rigid_width_stroke, to_constrained,
     try_to_constrained, Axis, BreakClass, BreakKind, BreakOrigin, ConstrainedLayoutIR,
     ConstrainedLayoutRegion, ConstrainedValidationError, ConstraintParameters,
-    ConstraintRegistryId, Curve, GlyphObject, GlyphObjectId, GlyphStyle, LayoutConstraint,
-    LayoutTransformError, LeadGlyph, SpanAnchor, SpringSlot, Stroke, SystemLead,
+    ConstraintRegistryId, Curve, GlyphObject, GlyphObjectId, GlyphStyle, GroupSign, GroupSpan,
+    LayoutConstraint, LayoutTransformError, LeadGlyph, SpanAnchor, SpringSlot, Stroke, SystemLead,
 };
 pub use engrave_theory::{
     accidental_glyph, clef_glyph, clef_glyph_for, flag_count, flag_glyph, has_stem, key_signature,
@@ -117,7 +117,7 @@ pub use glyph::{
 pub use hittest::{HitRegion, HitShape, HitTestMap, PrimitiveRef};
 pub use logical::{
     to_logical, BarLineLayout, BarlineKind, BeamGroupLayout, ChordLayout, ClefLayout,
-    CompositeLayoutObject, CrossRegionObject, CueLayout, GraphicLayout, GroupLayout,
+    CompositeLayoutObject, CrossRegionObject, CueLayout, GraphicLayout, GroupContent, GroupLayout,
     KeySignatureLayout, LayoutContent, LayoutObject, LayoutRegion, LocalCoordinateSystem,
     LogicalLayoutIR, MarkerLayout, MeasureContent, MultimeasureRestLayout, NoteContent, NoteLayout,
     NotePitch, PlacedClef, PlacedComponent, PlacedKeySignature, RepeatContent, RepeatPlacement,

@@ -77,11 +77,11 @@ use epiphany_layout_ir::{
     continuation_instance_key, inter_staff_gap_id, is_barline_glyph, is_rigid_width_stroke,
     metrics, synthesized_layout_id, BreakClass, BreakKind, ConstrainedLayoutIR, Curve,
     DecisionSource, EngravingDecision, EngravingDecisionKind, EngravingOverrideId, GlyphObject,
-    GlyphObjectId, GlyphStyle, LayoutConstraint, LayoutObjectId, LeadGlyph, Margins, Point,
-    PrimitiveIndices, Provenance, Rect, ResolvedGlyph, ResolvedMeasure, ResolvedPage,
-    ResolvedStaff, ResolvedSystem, Size2D, SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey,
-    SynthesisKind, SynthesisRegistryId, SystemLead, TimePoint, VerticalBand, VerticalBandId,
-    VerticalBandKind,
+    GlyphObjectId, GlyphReference, GlyphStyle, GroupSign, GroupSpan, LayoutConstraint,
+    LayoutObjectId, LeadGlyph, Margins, Point, PrimitiveIndices, Provenance, Rect, ResolvedGlyph,
+    ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem, Size2D, SpringSlotId, StaffSpace,
+    Stroke, SynthesisInstanceKey, SynthesisKind, SynthesisRegistryId, SystemLead, TimePoint,
+    Transform2D, VerticalBand, VerticalBandId, VerticalBandKind,
 };
 
 use crate::owning_glyph;
@@ -102,6 +102,25 @@ pub const SYSTEM_LEAD_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x535
 
 /// The gap between a system-start lead's ink and the system's first column.
 const LEAD_GAP: f32 = 0.8;
+
+/// The registry id for a staff group's sign (its brace, its bracket's line and
+/// ends, its sub-bracket's line and hooks) and a system's opening line,
+/// synthesized from the group or the region and keyed by the system's
+/// region-local ordinal and the element.
+pub const GROUP_SIGN_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4752_5053_4947_4E53); // "GRPSIGNS"
+/// The registry id for a barline's continuation down to the next staff of its
+/// group, synthesized from the barline's measure and keyed by its line.
+pub const JOINED_BARLINE_SYNTHESIS: SynthesisRegistryId =
+    SynthesisRegistryId(0x4A4F_494E_4241_524C); // "JOINBARL"
+/// SMuFL's thin barline and bracket thicknesses, and the separation between
+/// a thin and a thick barline.
+const THIN_BARLINE: f32 = 0.16;
+const BRACKET_THICKNESS: f32 = 0.5;
+const BARLINE_SEPARATION: f32 = 0.4;
+/// The gap between a system's opening line and a group sign left of it, and a
+/// sub-bracket's hooks' length.
+const GROUP_SIGN_GAP: f32 = 0.5;
+const SUB_BRACKET_HOOK: f32 = 0.5;
 
 /// The vertical gap between consecutive **pages** in the single world frame, in
 /// staff spaces. Pages are separate physical sheets; this gap exists only in
@@ -179,11 +198,12 @@ impl Default for PageGeometry {
 /// break structure the constraint evaluation consults.
 pub(crate) struct CastLayout {
     /// Final glyphs, in input order, positions baked into the world frame, then
-    /// the glyphs of later systems' leads.
+    /// the glyphs the casting pass adds: later systems' leads and staff groups'
+    /// signs.
     pub glyphs: Vec<ResolvedGlyph>,
-    /// The vertical band of each lead glyph, in the order they follow the
-    /// input's glyphs in `glyphs`.
-    pub lead_bands: Vec<VerticalBandId>,
+    /// The vertical band of each glyph the casting pass adds after the
+    /// input's (a later system's lead, a staff group's sign), in order.
+    pub appended_bands: Vec<VerticalBandId>,
     /// Final strokes: the input strokes in order (each translated with its
     /// system; a system-spanning stroke replaced by its first segment), then
     /// the synthesized continuation segments.
@@ -1157,7 +1177,7 @@ pub(crate) fn cast_off(
     // Each later system's leads, at its left margin, on their staves.
     let mut glyphs = glyphs;
     let mut glyph_system = glyph_system;
-    let mut lead_bands = Vec::new();
+    let mut appended_bands = Vec::new();
     for (s, leads) in system_leads.iter().enumerate() {
         for (lead, lead_glyphs) in leads {
             let dy = placements[s].dy - staff_dy(s, Some(lead.staff));
@@ -1180,7 +1200,7 @@ pub(crate) fn cast_off(
                     layer: 0,
                 });
                 glyph_system.push(Some(s));
-                lead_bands.push(lead.band);
+                appended_bands.push(lead.band);
             }
         }
     }
@@ -1371,6 +1391,191 @@ pub(crate) fn cast_off(
     curves.extend(curve_continuations);
     curve_system.extend(curve_continuation_system);
 
+    // ---- Staff groups and the systemic barline ------------------------------
+    // A system of two or more staves opens with a line joining them; each
+    // staff group marks its staves left of that line (a brace, a bracket, a
+    // thin sub-bracket) and, unless choral, joins its barlines from staff to
+    // staff. All of it is drawn here, where each system's staves stand.
+    let mut groups_of: Vec<Vec<&GroupSpan>> = vec![Vec::new(); input.regions.len()];
+    for group in &input.staff_groups {
+        if let Some(groups) = groups_of.get_mut(group.region) {
+            groups.push(group);
+        }
+    }
+    let ink = GlyphStyle { rgba: 0x0000_00ff };
+    let mut added: Vec<(Stroke, usize)> = Vec::new();
+    for (s, plan) in systems.iter().enumerate() {
+        let region = &input.regions[plan.region];
+        let margin = VerticalBandId(region.provenance.stable_id.0);
+        let marks: BTreeMap<StaffId, &StaffAgg> = staff_marks
+            .range((s, StaffId::from_raw(0))..=(s, StaffId::from_raw(u128::MAX)))
+            .map(|(&(_, staff), agg)| (staff, agg))
+            .collect();
+        let Some(left) = marks.values().map(|a| a.min_x).reduce(f32::min) else {
+            continue;
+        };
+        let sign = |element: u128, source: &Provenance| {
+            Provenance::synthesized(
+                source.source,
+                SynthesisKind::Registered(GROUP_SIGN_SYNTHESIS),
+                SynthesisInstanceKey((plan.local as u128) << 16 | element),
+                source.dependencies.clone(),
+            )
+        };
+        let mut line = |provenance: Provenance, from: Point, to: Point, thickness: f32| {
+            added.push((
+                Stroke {
+                    provenance,
+                    from,
+                    to,
+                    thickness: StaffSpace(thickness),
+                    layer: 0,
+                    style: ink,
+                    vertical_band: margin,
+                },
+                s,
+            ));
+        };
+        if marks.len() >= 2 {
+            let bottom = marks
+                .values()
+                .map(|a| a.min_y)
+                .fold(f32::INFINITY, f32::min);
+            let top = marks
+                .values()
+                .map(|a| a.max_y)
+                .fold(f32::NEG_INFINITY, f32::max);
+            line(
+                sign(0, &region.provenance),
+                Point::new(left, bottom),
+                Point::new(left, top),
+                THIN_BARLINE,
+            );
+        }
+        for (g, group) in groups_of[plan.region].iter().enumerate() {
+            let present: Vec<&StaffAgg> = group
+                .staves
+                .iter()
+                .filter_map(|st| marks.get(st).copied())
+                .collect();
+            let (Some(bottom), Some(top)) = (
+                present.iter().map(|a| a.min_y).reduce(f32::min),
+                present.iter().map(|a| a.max_y).reduce(f32::max),
+            ) else {
+                continue;
+            };
+            let element = |k: u128| (g as u128 + 1) << 8 | k;
+            match group.kind {
+                GroupSign::Brace => {
+                    if let Some(m) = metrics("brace") {
+                        let b = m.bounding_box();
+                        let scale_y = (top - bottom) / (b.top.0 - b.bottom.0).max(f32::EPSILON);
+                        let scale_x = scale_y.sqrt().clamp(1.0, 2.5);
+                        let x = left - GROUP_SIGN_GAP - b.right.0 * scale_x;
+                        glyphs.push(ResolvedGlyph {
+                            provenance: sign(element(0), &group.provenance),
+                            glyph: GlyphReference::borrowed("brace"),
+                            position: Point::new(x, bottom),
+                            transform: Some(Transform2D {
+                                matrix: [[scale_x, 0.0, 0.0], [0.0, scale_y, 0.0], [0.0, 0.0, 1.0]],
+                            }),
+                            bounding_box: b,
+                            style: ink,
+                            layer: 0,
+                        });
+                        glyph_system.push(Some(s));
+                        appended_bands.push(margin);
+                    }
+                }
+                GroupSign::Bracket => {
+                    let x = left - GROUP_SIGN_GAP - BRACKET_THICKNESS / 2.0;
+                    line(
+                        sign(element(0), &group.provenance),
+                        Point::new(x, bottom),
+                        Point::new(x, top),
+                        BRACKET_THICKNESS,
+                    );
+                    for (k, name, y) in [(1u128, "bracketTop", top), (2, "bracketBottom", bottom)] {
+                        if let Some(m) = metrics(name) {
+                            glyphs.push(ResolvedGlyph {
+                                provenance: sign(element(k), &group.provenance),
+                                glyph: GlyphReference::borrowed(name),
+                                position: Point::new(x - BRACKET_THICKNESS / 2.0, y),
+                                transform: None,
+                                bounding_box: m.bounding_box(),
+                                style: ink,
+                                layer: 0,
+                            });
+                            glyph_system.push(Some(s));
+                            appended_bands.push(margin);
+                        }
+                    }
+                }
+                GroupSign::SubBracket => {
+                    let x = left - GROUP_SIGN_GAP;
+                    line(
+                        sign(element(0), &group.provenance),
+                        Point::new(x, bottom),
+                        Point::new(x, top),
+                        THIN_BARLINE,
+                    );
+                    for (k, y) in [(1u128, top), (2, bottom)] {
+                        line(
+                            sign(element(k), &group.provenance),
+                            Point::new(x, y),
+                            Point::new(x + SUB_BRACKET_HOOK, y),
+                            THIN_BARLINE,
+                        );
+                    }
+                }
+            }
+            if !group.joined || present.len() < 2 {
+                continue;
+            }
+            // Each barline of a staff of the group continues down to the
+            // next staff below it in the group.
+            let mut order: Vec<(StaffId, &StaffAgg)> = group
+                .staves
+                .iter()
+                .filter_map(|st| marks.get(st).map(|a| (*st, *a)))
+                .collect();
+            order.sort_by(|a, b| b.1.max_y.total_cmp(&a.1.max_y));
+            for pair in order.windows(2) {
+                let ((upper, above), (_, below)) = (pair[0], pair[1]);
+                for (gi, glyph) in input.glyphs.iter().enumerate() {
+                    if glyph_system[gi] != Some(s) || glyph_staff_of[gi] != Some(upper) {
+                        continue;
+                    }
+                    let name = glyph.glyph.as_str();
+                    let resolved = &glyphs[gi];
+                    let x = resolved.position.x.0;
+                    for (k, (dx, thickness)) in barline_lines(name, &glyph.bounding_box)
+                        .into_iter()
+                        .enumerate()
+                    {
+                        let provenance = Provenance::synthesized(
+                            glyph.provenance.source,
+                            SynthesisKind::Registered(JOINED_BARLINE_SYNTHESIS),
+                            SynthesisInstanceKey(k as u128),
+                            vec![group.provenance.source],
+                        );
+                        line(
+                            provenance,
+                            Point::new(x + dx, below.max_y),
+                            Point::new(x + dx, above.min_y),
+                            thickness,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    for (stroke, s) in added {
+        strokes.push(stroke);
+        stroke_system.push(Some(s));
+    }
+
     // ---- Per-system primitive ownership (W1) -------------------------------
     // The partition already exists in `glyph_system`/`stroke_system`/
     // `curve_system` above; this just stops discarding it. For each flat
@@ -1456,7 +1661,7 @@ pub(crate) fn cast_off(
 
     CastLayout {
         glyphs,
-        lead_bands,
+        appended_bands,
         strokes,
         curves,
         pages,
@@ -1985,6 +2190,43 @@ fn half_arcs(cp: [Point; 4], edge_a: f32, edge_b: f32) -> ([Point; 4], [Point; 4
         arc(cp[0].x.0, cp[0].y.0, edge_a.max(cp[0].x.0), cp[0].y.0),
         arc(edge_b.min(cp[3].x.0), cp[3].y.0, cp[3].x.0, cp[3].y.0),
     )
+}
+
+/// The vertical lines of a barline glyph, as `(x offset from its origin,
+/// thickness)`: a single barline's thin line; a final barline's thin and
+/// thick; a repeat sign's thick and thin on the side its dots do not take.
+/// Any other glyph has none.
+fn barline_lines(name: &str, b: &epiphany_layout_ir::BoundingBox) -> Vec<(f32, f32)> {
+    let (left, right) = (b.left.0, b.right.0);
+    let thin = THIN_BARLINE / 2.0;
+    let thick = BRACKET_THICKNESS / 2.0;
+    match name {
+        "barlineSingle" => vec![((left + right) / 2.0, THIN_BARLINE)],
+        "barlineFinal" => vec![
+            (left + thin, THIN_BARLINE),
+            (right - thick, BRACKET_THICKNESS),
+        ],
+        "repeatRight" => vec![
+            (
+                right - 2.0 * thick - BARLINE_SEPARATION - thin,
+                THIN_BARLINE,
+            ),
+            (right - thick, BRACKET_THICKNESS),
+        ],
+        "repeatLeft" => vec![
+            (left + thick, BRACKET_THICKNESS),
+            (left + 2.0 * thick + BARLINE_SEPARATION + thin, THIN_BARLINE),
+        ],
+        "repeatRightLeft" => {
+            let middle = (left + right) / 2.0;
+            vec![
+                (middle, BRACKET_THICKNESS),
+                (middle - thick - BARLINE_SEPARATION - thin, THIN_BARLINE),
+                (middle + thick + BARLINE_SEPARATION + thin, THIN_BARLINE),
+            ]
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Whether `a` is at or before `b` (times of one kind; across kinds, never).

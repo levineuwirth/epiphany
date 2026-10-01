@@ -191,6 +191,33 @@ pub struct ConstrainedLayoutIR {
     /// first lead itself; a solver that breaks the region into systems draws
     /// these at each later system's start.
     pub system_leads: Vec<SystemLead>,
+    /// The staff groups of each region, which a solver marks where each
+    /// system's staves stand: a brace, a bracket or a sub-bracket at the left,
+    /// and, for all but a choral group, barlines joined from staff to staff.
+    pub staff_groups: Vec<GroupSpan>,
+}
+
+/// One staff group of a region (see [`ConstrainedLayoutIR::staff_groups`]).
+#[derive(Clone, PartialEq, Debug)]
+pub struct GroupSpan {
+    /// Index into [`ConstrainedLayoutIR::regions`].
+    pub region: usize,
+    pub kind: GroupSign,
+    /// Its staves in the region, top first.
+    pub staves: Vec<StaffId>,
+    /// Barlines run unbroken from staff to staff within the group.
+    pub joined: bool,
+    /// The group's provenance: what a solver draws for it is synthesized from
+    /// it.
+    pub provenance: Provenance,
+}
+
+/// What a staff group draws at its system's left.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum GroupSign {
+    Brace,
+    Bracket,
+    SubBracket,
 }
 
 /// One staff's system-start lead through its region (see
@@ -858,6 +885,7 @@ pub fn try_to_constrained(
     let mut constrained_regions = Vec::new();
     let mut span_anchors: Vec<SpanAnchor> = Vec::new();
     let mut system_leads: Vec<SystemLead> = Vec::new();
+    let mut staff_groups: Vec<GroupSpan> = Vec::new();
     // Regions tile left-to-right; this advances by each region's width so all
     // coordinates stay globally monotonic (the solver's coordinate remap relies
     // on it). v0 has no page casting-off, so this replaces region overlap.
@@ -2017,6 +2045,31 @@ pub fn try_to_constrained(
                         }
                     }
                 }
+                TypedObjectId::StaffGroup(_) => {
+                    // A staff group draws where a solver breaks the region into
+                    // systems; here its exact provenance rides a traced anchor.
+                    emit.stroke(anchor(provenance, Point::new(default_x, yo), band_of(None)));
+                    if let Some(LayoutContent::Group(group)) = content {
+                        use epiphany_core::StaffGroupKind;
+                        let sign = match group.kind {
+                            StaffGroupKind::GrandStaff => Some(GroupSign::Brace),
+                            StaffGroupKind::Bracket | StaffGroupKind::Choral => {
+                                Some(GroupSign::Bracket)
+                            }
+                            StaffGroupKind::SubBracket => Some(GroupSign::SubBracket),
+                            StaffGroupKind::Registered(_) => None,
+                        };
+                        if let Some(kind) = sign {
+                            staff_groups.push(GroupSpan {
+                                region: region_index,
+                                kind,
+                                staves: group.staves.clone(),
+                                joined: group.kind != StaffGroupKind::Choral,
+                                provenance: provenance.clone(),
+                            });
+                        }
+                    }
+                }
                 TypedObjectId::Tie(_) => {
                     // A tie arcs from each start head to the head it continues
                     // into, riding both heads' slots: in a chord the upper
@@ -2465,6 +2518,7 @@ pub fn try_to_constrained(
         catalog,
         span_anchors,
         system_leads,
+        staff_groups,
     })
 }
 

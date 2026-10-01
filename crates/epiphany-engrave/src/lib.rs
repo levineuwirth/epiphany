@@ -225,8 +225,12 @@ pub struct Engraver {
 /// systems' edges; an input with no anchor is unchanged), and to `15` when
 /// each later system of a region began opening with its staves' clefs and key
 /// signatures (`ConstrainedLayoutIR::system_leads`), its music moved right by
-/// the lead and its breaks reserving the lead's width.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(15);
+/// the lead and its breaks reserving the lead's width, and to `16` when a
+/// system of two or more staves began opening with a line joining them, each
+/// staff group marking its staves left of it (a brace, a bracket, a
+/// sub-bracket) and a group's barlines running from staff to staff through it
+/// (`ConstrainedLayoutIR::staff_groups`; a single-staff score is unchanged).
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(16);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -2461,7 +2465,11 @@ mod tests {
                 .strokes
                 .iter()
                 .filter(|st| {
-                    (st.from.x.0 - st.to.x.0).abs() < 1e-4 && (st.from.y.0 - st.to.y.0).abs() > 1e-3
+                    // A stem: an event's vertical stroke (a barline joint or a
+                    // system's opening line is vertical too, and no stem).
+                    matches!(st.provenance.source, TypedObjectId::Event(_))
+                        && (st.from.x.0 - st.to.x.0).abs() < 1e-4
+                        && (st.from.y.0 - st.to.y.0).abs() > 1e-3
                 })
                 .map(|st| {
                     heads

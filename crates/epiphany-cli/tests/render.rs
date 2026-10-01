@@ -579,3 +579,194 @@ fn every_system_starts_with_its_clef_and_key() {
         );
     }
 }
+
+/// A vertical band's height means what its kind says, and the solver realizes
+/// it on a full orchestral system: twenty-seven staves, their notes reaching
+/// above and below their staves by turns, each pair of adjacent staves set to
+/// the inter-staff band's ink clearance, which the quality census measures
+/// as realized everywhere.
+#[test]
+fn a_27_staff_system_realizes_every_inter_staff_clearance() {
+    use epiphany_engrave::Engraver;
+    use epiphany_layout_ir::{
+        to_constrained, to_logical, ConstraintSolver, SolveStatus, SolverConfig,
+    };
+
+    let mut list = String::new();
+    let mut parts = String::new();
+    for p in 1..=27 {
+        list.push_str(&format!(
+            "<score-part id=\"P{p}\"><part-name>Part {p}</part-name></score-part>"
+        ));
+        // Every third part climbs above its staff, every third dives below,
+        // the rest stay inside it.
+        let octave = [6, 3, 5][p % 3];
+        let mut measures = String::new();
+        for m in 1..=3 {
+            measures.push_str(&format!("<measure number=\"{m}\">"));
+            if m == 1 {
+                measures.push_str(
+                    "<attributes><divisions>1</divisions><time><beats>4</beats>\
+                     <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+                     </attributes>",
+                );
+            }
+            for step in ["C", "E", "G", "B"] {
+                measures.push_str(&format!(
+                    "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+                     <duration>1</duration><voice>1</voice></note>"
+                ));
+            }
+            measures.push_str("</measure>");
+        }
+        parts.push_str(&format!("<part id=\"P{p}\">{measures}</part>"));
+    }
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list>{list}</part-list>{parts}</score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("twenty_seven.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let report = Engraver::default().solve(
+        &to_constrained(&to_logical(&loaded.reduced.score)),
+        &SolverConfig::default(),
+    );
+    assert_eq!(report.status, SolveStatus::Solved, "{:?}", report.warnings);
+    let systems: Vec<_> = report.layout.systems().collect();
+    assert_eq!(systems.len(), 1, "three measures make one system");
+    assert_eq!(systems[0].staves.len(), 27);
+    // The census's realized clearances against the bands' declared heights.
+    assert!(
+        report.metric_vector.vertical_density_penalty.0 < 1e-4,
+        "every inter-staff clearance is realized: {}",
+        report.metric_vector.vertical_density_penalty.0
+    );
+    // The staves stand top to bottom in part order, the climbing and diving
+    // ones further apart than the plain ones.
+    let tops: Vec<f32> = systems[0]
+        .staves
+        .iter()
+        .map(|s| s.bounding_box.origin.y.0)
+        .collect();
+    assert!(tops.windows(2).all(|w| w[0] > w[1]));
+    let pitches: Vec<f32> = tops.windows(2).map(|w| w[0] - w[1]).collect();
+    let (least, most) = pitches
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &p| {
+            (a.min(p), b.max(p))
+        });
+    assert!(most > least + 2.0, "pitches {least}..{most}");
+}
+
+/// Staff groups mark their staves where each system stands: a line opens the
+/// system across all its staves, a brace marks the piano and a bracket the
+/// two parts that share it, and barlines run unbroken through a group's
+/// staves but not from one group to the next.
+#[test]
+fn groups_mark_their_staves_and_join_their_barlines() {
+    use epiphany_core::TypedObjectId;
+    use epiphany_engrave::casting::{GROUP_SIGN_SYNTHESIS, JOINED_BARLINE_SYNTHESIS};
+    use epiphany_layout_ir::SynthesisKind;
+
+    let loaded = load(&fixture("groups.musicxml")).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let registered = |k| Some(SynthesisKind::Registered(k));
+    let signs: Vec<_> = layout
+        .strokes
+        .iter()
+        .filter(|s| s.provenance.synthesis == registered(GROUP_SIGN_SYNTHESIS))
+        .collect();
+    let system = layout.systems().next().expect("a system");
+    let (top, bottom) =
+        system
+            .staves
+            .iter()
+            .fold((f32::NEG_INFINITY, f32::INFINITY), |(t, b), s| {
+                let y = s.bounding_box.origin.y.0;
+                (t.max(y + s.bounding_box.size.height.0), b.min(y))
+            });
+    // The opening line spans the whole system, from the region.
+    let opening = signs
+        .iter()
+        .find(|s| {
+            matches!(s.provenance.source, TypedObjectId::Region(_))
+                && (s.from.y.0 - bottom).abs() < 1e-3
+                && (s.to.y.0 - top).abs() < 1e-3
+        })
+        .expect("an opening line");
+    let line_x = opening.from.x.0;
+    // The staves top to bottom, each as (bottom, top): the flute, the oboe,
+    // the piano's two, the two violins, the cello.
+    let mut staves: Vec<(f32, f32)> = system
+        .staves
+        .iter()
+        .map(|s| {
+            let y = s.bounding_box.origin.y.0;
+            (y, y + s.bounding_box.size.height.0)
+        })
+        .collect();
+    staves.sort_by(|a, b| b.0.total_cmp(&a.0));
+    assert_eq!(staves.len(), 7);
+    let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
+    // Each group's upright sign stands left of the opening line, over its
+    // own staves: the bracket's line over the flute and oboe, the brace over
+    // the piano, the sub-bracket's line over the violins.
+    let upright: Vec<(f32, f32, f32)> = signs
+        .iter()
+        .filter(|s| {
+            matches!(s.provenance.source, TypedObjectId::StaffGroup(_)) && s.from.x == s.to.x
+        })
+        .map(|s| (s.from.x.0 + s.thickness.0 / 2.0, s.from.y.0, s.to.y.0))
+        .collect();
+    assert_eq!(upright.len(), 2, "{upright:?}");
+    for (right, from, to) in &upright {
+        assert!(
+            *right < line_x,
+            "a sign's line at {right} reaches the opening line"
+        );
+        assert!(
+            (near(*from, staves[1].0) && near(*to, staves[0].1))
+                || (near(*from, staves[5].0) && near(*to, staves[4].1)),
+            "a sign's line spans {from}..{to}"
+        );
+    }
+    let brace = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str() == "brace")
+        .expect("a brace");
+    assert!(matches!(
+        brace.provenance.source,
+        TypedObjectId::StaffGroup(_)
+    ));
+    let [[sx, ..], [_, sy, _], _] = brace.transform.expect("a scaled brace").matrix;
+    let b = &brace.bounding_box;
+    assert!(brace.position.x.0 + b.right.0 * sx < line_x);
+    assert!((brace.position.y.0 + b.bottom.0 * sy - staves[3].0).abs() < 0.05);
+    assert!((brace.position.y.0 + b.top.0 * sy - staves[2].1).abs() < 0.05);
+    let group_glyphs: Vec<&str> = layout
+        .glyphs
+        .iter()
+        .filter(|g| matches!(g.provenance.source, TypedObjectId::StaffGroup(_)))
+        .map(|g| g.glyph.as_str())
+        .collect();
+    assert!(group_glyphs.contains(&"bracketTop") && group_glyphs.contains(&"bracketBottom"));
+    // Joined barlines: one measure, so each of the seven staves has one final
+    // barline of two lines; the bracket joins its two staves, the brace the
+    // piano's two, the square sub-bracket its two; the cello stands alone.
+    // Each join closes one gap exactly, from the lower staff's top to the
+    // upper's bottom: the gaps under the flute, the piano's upper staff and
+    // the first violins, two lines each, and none between groups.
+    let mut gaps: Vec<usize> = layout
+        .strokes
+        .iter()
+        .filter(|s| s.provenance.synthesis == registered(JOINED_BARLINE_SYNTHESIS))
+        .map(|s| {
+            (0..staves.len() - 1)
+                .find(|&k| near(s.from.y.0, staves[k + 1].1) && near(s.to.y.0, staves[k].0))
+                .unwrap_or_else(|| panic!("a join spans {}..{}", s.from.y.0, s.to.y.0))
+        })
+        .collect();
+    gaps.sort();
+    assert_eq!(gaps, [0, 0, 2, 2, 4, 4]);
+}

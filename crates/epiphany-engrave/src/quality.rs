@@ -395,7 +395,7 @@ fn vertical_units(
         }
         // A later system's leads, appended after the input's glyphs, on the
         // bands the casting pass placed them on.
-        for (k, band) in cast.lead_bands.iter().enumerate() {
+        for (k, band) in cast.appended_bands.iter().enumerate() {
             let index = input.glyphs.len() + k;
             if let (Some(Some(system)), Some(glyph)) =
                 (cast.glyph_system.get(index), cast.glyphs.get(index))

@@ -69,6 +69,16 @@ pub enum LayoutContent {
     Slur(SlurContent),
     /// A tie: the two events it joins and the pitches it pairs.
     Tie(TieContent),
+    /// A staff group: its kind and its staves in this region, top first.
+    Group(GroupContent),
+}
+
+/// A staff group's content in one region: its kind, and those of its staves
+/// the region manifests, in the region's staff order.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GroupContent {
+    pub kind: epiphany_core::StaffGroupKind,
+    pub staves: Vec<StaffId>,
 }
 
 /// A tie's content: the events it joins, and each `(start, end)` pitch pair
@@ -685,6 +695,29 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                     measure_deps,
                     Some(si.staff),
                     measure_content(score, measure, next, barline),
+                );
+            }
+        }
+
+        // Staff groups whose staves this region manifests, each with the ones
+        // it holds here, in the region's order.
+        for group in &score.staff_groups {
+            let staves: Vec<StaffId> = region
+                .staff_extent
+                .staves
+                .iter()
+                .copied()
+                .filter(|staff| group.members.contains(staff))
+                .collect();
+            if !staves.is_empty() {
+                push(
+                    TypedObjectId::StaffGroup(group.id),
+                    staves.iter().copied().map(TypedObjectId::Staff).collect(),
+                    None,
+                    LayoutContent::Group(GroupContent {
+                        kind: group.kind.clone(),
+                        staves,
+                    }),
                 );
             }
         }

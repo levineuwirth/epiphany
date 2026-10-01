@@ -2,13 +2,13 @@ fixture=three_staff_close_content solver=engrave
 glyph_count=18
 path_count=18
 fallback_rect_count=0
-stroke_count=77
+stroke_count=78
 curve_count=1
-provenance_count=96
+provenance_count=97
 layer_count=1
 hard_constraint_count=27
 xml_well_formed=true
-view_box=[5.5000005 -61.851246 17.226833 56.35067]
+view_box=[5.4850006 -61.851246 17.241833 56.35067]
 class_counts:
   barline=3
   clef=3

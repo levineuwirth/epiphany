@@ -440,6 +440,7 @@ pub fn gen_constrained_layout_ir(rng: &mut Rng) -> ConstrainedLayoutIR {
         },
         span_anchors: Vec::new(),
         system_leads: Vec::new(),
+        staff_groups: Vec::new(),
     }
 }
 
