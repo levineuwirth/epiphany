@@ -672,9 +672,10 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                 source_ties.values().sum::<isize>()
             ));
         }
-        // And held to the file's own count of tie starts: each is tied in the
-        // score, recorded by the importer, explained by a refused tie, or on a
-        // note the reader dropped and recorded.
+        // And held to the census's count of the file's tie starts, taken
+        // apart from the reader: each is tied in the score, recorded by the
+        // importer, explained by a refused tie, or on a note the reader
+        // dropped and recorded.
         let census = &source.census[p];
         let tied: isize = graph_ties.values().sum();
         let recorded = import.recorded_ties.get(p).copied().unwrap_or(0);

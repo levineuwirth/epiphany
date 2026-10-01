@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
 <!-- Hand-written for epiphany-musicxml's tests. A tie on one pitch of a
-     chord across the barline, a tie between single notes, and two slurs. -->
+     chord across the barline, a tie between single notes, two slurs, and a
+     chain of two ties whose middle note stops one and starts the next. -->
 <score-partwise version="4.0">
   <part-list>
     <score-part id="P1"><part-name>Violin</part-name></score-part>
@@ -25,6 +26,11 @@
       <note><pitch><step>F</step><octave>5</octave></pitch><duration>1</duration><tie type="start"/><voice>1</voice><type>quarter</type></note>
       <note><pitch><step>F</step><octave>5</octave></pitch><duration>1</duration><tie type="stop"/><voice>1</voice><type>quarter</type><notations><slur type="stop" number="2"/></notations></note>
       <note><rest/><duration>1</duration><voice>1</voice><type>quarter</type></note>
+    </measure>
+    <measure number="3">
+      <note><pitch><step>E</step><octave>5</octave></pitch><duration>2</duration><tie type="start"/><voice>1</voice><type>half</type><notations><tied type="start"/></notations></note>
+      <note><pitch><step>E</step><octave>5</octave></pitch><duration>1</duration><tie type="stop"/><tie type="start"/><voice>1</voice><type>quarter</type><notations><tied type="stop"/><tied type="start"/></notations></note>
+      <note><pitch><step>E</step><octave>5</octave></pitch><duration>1</duration><tie type="stop"/><voice>1</voice><type>quarter</type><notations><tied type="stop"/></notations></note>
     </measure>
   </part>
 </score-partwise>

@@ -248,10 +248,11 @@ pub struct SourcePart {
     pub dropped_tie_starts: usize,
 }
 
-/// Counts taken straight from a part's elements, sharing none of the
-/// reader's code, as an independent check on it: the `<note>` elements, with
-/// no timing logic; the keys and clefs its `<attributes>` state; and the
-/// quarter-tones, timed by a reading of their own.
+/// Counts taken straight from a part's elements by walks the reader does not
+/// run, sharing none of its code, as an independent check on it: the
+/// `<note>` elements and their tie starts, with no timing logic; the keys and
+/// clefs its `<attributes>` state; and the quarter-tones, timed by a reading
+/// of their own.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Census {
     /// `<note>` elements with a `<pitch>`, not grace or cue.
@@ -262,8 +263,8 @@ pub struct Census {
     pub rests: usize,
     /// Of the counted notes, those carrying `<chord/>`.
     pub chord_members: usize,
-    /// Of the counted pitched and unpitched notes, those carrying a
-    /// `<tie type="start"/>`.
+    /// Of the counted pitched and unpitched notes, those with a
+    /// `<tie type="start"/>` among their `<tie>` elements.
     pub tie_starts: usize,
     /// Grace and cue notes, which are not imported.
     pub grace_or_cue: usize,
@@ -279,6 +280,32 @@ pub struct Census {
     /// `<alter>`, or by such an accidental carried to a note that writes
     /// neither. Read with its own timing and its own list of names.
     pub quarter_tones: usize,
+}
+
+/// The counts of a part's `<note>` elements, read from each note's own
+/// children with an exclusion of its own: grace and cue notes apart, what
+/// every other note is, whether it joins a chord, and whether it starts a
+/// tie, a rest never.
+fn note_census(part: Node) -> Census {
+    let mut census = Census::default();
+    for note in children(part, "measure").flat_map(|m| children(m, "note")) {
+        if child(note, "grace").is_some() || child(note, "cue").is_some() {
+            census.grace_or_cue += 1;
+            continue;
+        }
+        let rest = child(note, "rest").is_some();
+        if child(note, "pitch").is_some() {
+            census.pitched += 1;
+        } else if child(note, "unpitched").is_some() {
+            census.unpitched += 1;
+        } else if rest {
+            census.rests += 1;
+        }
+        census.chord_members += usize::from(child(note, "chord").is_some());
+        let tied = children(note, "tie").any(|t| t.attribute("type") == Some("start"));
+        census.tie_starts += usize::from(tied && !rest);
+    }
+    census
 }
 
 /// The pitched notes of a part, not grace or cue, that its file makes
@@ -1175,6 +1202,7 @@ impl<'d, 'i> Reader<'d, 'i> {
             );
         }
         read.part = part;
+        read.census = note_census(node);
         (read.census.keys, read.census.clefs) = attribute_census(node);
         read.census.quarter_tones = quarter_tone_census(node);
         Ok(read)
@@ -1303,7 +1331,6 @@ impl<'d, 'i> Reader<'d, 'i> {
         let grace = child(note, "grace").is_some();
         let cue = child(note, "cue").is_some();
         if grace || cue {
-            read.census.grace_or_cue += 1;
             let kind = if grace { "grace note" } else { "cue note" };
             self.features
                 .record(FeatureClass::Content, kind, place.clone());
@@ -1317,22 +1344,17 @@ impl<'d, 'i> Reader<'d, 'i> {
         let has_pitch = child(note, "pitch");
         let has_unpitched = child(note, "unpitched");
         let has_rest = child(note, "rest");
-        match (
-            has_pitch.is_some(),
-            has_unpitched.is_some(),
-            has_rest.is_some(),
+        if !matches!(
+            (
+                has_pitch.is_some(),
+                has_unpitched.is_some(),
+                has_rest.is_some()
+            ),
+            (true, false, false) | (false, true, false) | (false, false, true)
         ) {
-            (true, false, false) => read.census.pitched += 1,
-            (false, true, false) => read.census.unpitched += 1,
-            (false, false, true) => read.census.rests += 1,
-            _ => {
-                return Err(
-                    self.malformed(note, "a note needs exactly one of pitch, unpitched or rest")
-                )
-            }
-        }
-        if is_chord {
-            read.census.chord_members += 1;
+            return Err(
+                self.malformed(note, "a note needs exactly one of pitch, unpitched or rest")
+            );
         }
 
         let duration_div = self.duration(note)?;
@@ -1359,9 +1381,6 @@ impl<'d, 'i> Reader<'d, 'i> {
         let voice = child_text(note, "voice").unwrap_or("1").to_owned();
         let tie_start = children(note, "tie").any(|t| t.attribute("type") == Some("start"));
         let tie_stop = children(note, "tie").any(|t| t.attribute("type") == Some("stop"));
-        if tie_start && has_rest.is_none() {
-            read.census.tie_starts += 1;
-        }
 
         let onset_div = if is_chord { *last_onset } else { *cursor };
         let visible = note.attribute("print-object") != Some("no");

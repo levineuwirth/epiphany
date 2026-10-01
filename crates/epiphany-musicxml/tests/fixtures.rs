@@ -411,10 +411,23 @@ fn ties_pair_their_pitches_and_slurs_their_events() {
             "s0 v0 5/4 1/4 F5",
             "s0 v0 3/2 1/4 F5",
             "s0 v0 7/4 1/4 rest",
+            "s0 v0 2 1/2 E5",
+            "s0 v0 5/2 1/4 E5",
+            "s0 v0 11/4 1/4 E5",
         ]
     );
-    assert_eq!(ties(score), ["3/4 G4 -> 1 G4", "5/4 F5 -> 3/2 F5"]);
+    assert_eq!(
+        ties(score),
+        [
+            "3/4 G4 -> 1 G4",
+            "5/4 F5 -> 3/2 F5",
+            "2 E5 -> 5/2 E5",
+            "5/2 E5 -> 11/4 E5"
+        ]
+    );
     assert_eq!(slurs(score), ["0 -> 1/2", "1 -> 3/2"]);
+    // The middle of the chain writes `<tie type="stop"/>` before its start.
+    assert_eq!(run.import.source.census[0].tie_starts, 4);
 }
 
 #[test]
