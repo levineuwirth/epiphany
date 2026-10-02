@@ -604,8 +604,8 @@ fn accidentals_are_drawn_against_the_key_and_the_measure() {
             note("B", 0, 4, 2, "<tie type=\"start\"/>"),
         ]
         .concat(),
-        // The tied B natural shows nothing and sets nothing, so the next B
-        // natural shows its own; then B-flat again.
+        // The tied B natural shows nothing, and the next B natural shows its
+        // own; then B-flat again.
         [
             note("B", 0, 4, 2, "<tie type=\"stop\"/>"),
             note("B", 0, 4, 1, ""),
@@ -618,6 +618,23 @@ fn accidentals_are_drawn_against_the_key_and_the_measure() {
             note("F", 1, 4, 1, ""),
             note("F", 1, 5, 1, ""),
             note("F", 0, 4, 1, ""),
+        ]
+        .concat(),
+        // F by the key, G, and F-sharp tied over the barline.
+        [
+            note("F", 0, 4, 1, ""),
+            note("G", 0, 4, 1, ""),
+            note("F", 1, 4, 2, "<tie type=\"start\"/>"),
+        ]
+        .concat(),
+        // The tied F-sharp shows nothing; the F natural after it a courtesy
+        // natural, though the key gives it; F-sharp again its sharp; E-flat
+        // by the key nothing.
+        [
+            note("F", 1, 4, 1, "<tie type=\"stop\"/>"),
+            note("F", 0, 4, 1, ""),
+            note("F", 1, 4, 1, ""),
+            note("E", -1, 4, 1, ""),
         ]
         .concat(),
     ];
@@ -679,6 +696,8 @@ fn accidentals_are_drawn_against_the_key_and_the_measure() {
             n, n, n, // measure 2
             None, n, f, // measure 3, the first note tied over
             s, None, s, n, // measure 4
+            None, None, s, // measure 5
+            None, n, s, None, // measure 6, the first note tied over
         ]
     );
 }

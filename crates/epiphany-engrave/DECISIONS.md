@@ -1290,3 +1290,16 @@ their segment). A note held from before stands to the rest's left and does
 not move it; so a held note's tie can still pass over a rest beside it,
 which this does not address. Locked by
 `a_rest_stands_clear_of_another_voices_notes` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 24 → 25: the accidental after a tied one (X3.0, 2026-10-03)
+
+A note a tie continues into shows no accidental and left its measure's state
+as the key gave it, so after an F sharp tied over the barline a later F
+natural in the bar stood bare: right by the strict rule, since the tie
+carries the sharp to the tied note alone, but read as ambiguous, and
+MuseScore prints the courtesy natural. Where the tied note's alteration is
+not what its measure gave, its letter and octave are now marked as carried,
+an alteration no note has, so the next note of that letter and octave shows
+its own accidental: a courtesy natural, or the tied one's restated, as
+Gould restates it after a tie. Locked by
+`accidentals_are_drawn_against_the_key_and_the_measure` (`epiphany-cli`).

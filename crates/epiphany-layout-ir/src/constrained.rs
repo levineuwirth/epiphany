@@ -3663,14 +3663,20 @@ fn lead_extent(glyphs: &[(&'static str, f32, f32)]) -> f32 {
         .fold(0.0, f32::max)
 }
 
+/// The measure state of a letter and octave a tie has carried an
+/// accidental into: no alteration, so the next such note shows its own.
+const CARRIED: i8 = i8::MIN;
+
 /// The accidental each pitch's first head shows, by its staff's key and the
 /// earlier notes of its measure: none where the key, or an accidental earlier
 /// in the measure on the same letter and octave, already gives the pitch's
 /// alteration; the accidental of the alteration (a natural to cancel) where
 /// they give another, which then holds to the barline; and none on a note a
-/// tie continues into, which leaves the measure's state as it was. Every
-/// voice of a staff shares its state, taken in time order. A pitch whose
-/// spelling is not whole semitones is absent, and draws its own stack.
+/// tie continues into. Where that note's alteration is not what the measure
+/// gave, the next note of its letter and octave in the measure shows its own
+/// accidental, the tied one's restated or a courtesy natural. Every voice of
+/// a staff shares its state, taken in time order. A pitch whose spelling is
+/// not whole semitones is absent, and draws its own stack.
 fn context_accidentals(
     objects: &[crate::logical::LayoutObject],
 ) -> BTreeMap<PitchId, Vec<&'static str>> {
@@ -3727,15 +3733,21 @@ fn context_accidentals(
                 let Some(alteration) = stack_alteration(&spelling.accidentals) else {
                     continue;
                 };
-                if tied_into.contains(&pitch.pitch) {
-                    shown.insert(pitch.pitch, Vec::new());
-                    continue;
-                }
                 let place = (nominal, spelling.octave);
                 let current = state
                     .get(&place)
                     .copied()
                     .unwrap_or_else(|| key.map_or(0, |k| key_alteration(k, nominal)));
+                if tied_into.contains(&pitch.pitch) {
+                    // A tie carries its accidental to the tied note alone: a
+                    // later note of its letter and octave in the bar states
+                    // its own, a courtesy where the key would give it.
+                    shown.insert(pitch.pitch, Vec::new());
+                    if alteration != current {
+                        state.insert(place, CARRIED);
+                    }
+                    continue;
+                }
                 let glyphs = if alteration == current {
                     Vec::new()
                 } else {

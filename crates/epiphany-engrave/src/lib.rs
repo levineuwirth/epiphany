@@ -264,8 +264,11 @@ pub struct Engraver {
 /// its stem), and when a measure record's edges began moving with the slots
 /// that hold them, and to `24` when a rest beside another voice began moving
 /// further off its place, a space at a time, until it stands clear of the
-/// other voice's notes that start with it.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(24);
+/// other voice's notes that start with it, and to `25` when a note tied over
+/// the barline with an alteration its measure did not give began making the
+/// next note of its letter and octave in the measure show its own
+/// accidental, the tied one's restated or a courtesy natural.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(25);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
