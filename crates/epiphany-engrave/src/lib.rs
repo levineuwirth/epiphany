@@ -250,8 +250,13 @@ pub struct Engraver {
 /// tie continued into a later system began starting clear of the system's
 /// lead, or of a time signature opening it, and arcing as a tie of its own
 /// length, at least a tie's length, to its note: the system's lead and its
-/// break search make the room, and its opening columns keep their place.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(21);
+/// break search make the room, and its opening columns keep their place,
+/// and to `22` when the break search began counting the ink a system's
+/// columns do not hold, half a staff line's thickness at each end and the
+/// first system's staff lines left of its clef, so no system runs past the
+/// right margin, and each system's staff lines began ending with the barline
+/// that closes it, a final barline's thick line included.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(22);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

@@ -942,6 +942,9 @@ pub struct SourceScore {
     /// `<defaults><concert-score/>`: the file writes transposing parts at
     /// concert pitch.
     pub concert: bool,
+    /// `<defaults><page-layout>`: the page the file sets the score on, when
+    /// it gives one whole.
+    pub page: Option<SourcePage>,
     pub parts: Vec<SourcePart>,
     pub measures: Vec<SourceMeasure>,
     /// The meter changes of the first part, which govern the score.
@@ -959,6 +962,46 @@ pub struct SourceScore {
     pub unmade_groups: usize,
     /// The census's own count of the same.
     pub group_census: GroupCensus,
+}
+
+/// A page as `<defaults><page-layout>` sets it, in staff spaces: a tenth is a
+/// tenth of a staff space whatever `<scaling>` makes it in millimeters.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SourcePage {
+    pub width: f32,
+    pub height: f32,
+    pub left: f32,
+    pub right: f32,
+    pub top: f32,
+    pub bottom: f32,
+}
+
+// Every field is finite (`read` admits no other), so equality is total.
+impl Eq for SourcePage {}
+
+impl SourcePage {
+    /// The page of a `<page-layout>`: its size and its first margins (the
+    /// odd pages' where odd and even differ), or `None` when any is missing
+    /// or the content area would be empty.
+    fn read(layout: Node) -> Option<SourcePage> {
+        let tenths = |node: Node, name: &str| -> Option<f32> {
+            let v: f32 = child_text(node, name)?.trim().parse().ok()?;
+            (v.is_finite() && v >= 0.0).then_some(v / 10.0)
+        };
+        let margins = elements(layout)
+            .filter(|n| name(*n) == "page-margins")
+            .find(|n| n.attribute("type") != Some("even"))?;
+        let page = SourcePage {
+            width: tenths(layout, "page-width")?,
+            height: tenths(layout, "page-height")?,
+            left: tenths(margins, "left-margin")?,
+            right: tenths(margins, "right-margin")?,
+            top: tenths(margins, "top-margin")?,
+            bottom: tenths(margins, "bottom-margin")?,
+        };
+        (page.width > page.left + page.right && page.height > page.top + page.bottom)
+            .then_some(page)
+    }
 }
 
 impl SourceScore {
@@ -1210,6 +1253,7 @@ impl<'d, 'i> Reader<'d, 'i> {
         let mut title = None;
         let mut composer = None;
         let mut concert = false;
+        let mut page = None;
         let mut score_parts: BTreeMap<String, Node> = BTreeMap::new();
         let mut part_nodes = Vec::new();
         // The part-list in order: each part's id, and each group start
@@ -1256,6 +1300,15 @@ impl<'d, 'i> Reader<'d, 'i> {
                     for part in elements(node) {
                         if name(part) == "concert-score" {
                             concert = true;
+                        } else if name(part) == "page-layout" && page.is_none() {
+                            // The page is the renderer's to cast off against;
+                            // the score graph does not hold it.
+                            page = SourcePage::read(part);
+                            self.features.record(
+                                FeatureClass::Presentation,
+                                "defaults: page-layout",
+                                score_place(),
+                            );
                         } else {
                             self.features.record(
                                 FeatureClass::Presentation,
@@ -1414,6 +1467,7 @@ impl<'d, 'i> Reader<'d, 'i> {
             title,
             composer,
             concert,
+            page,
             parts,
             measures,
             meters,

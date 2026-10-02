@@ -659,6 +659,34 @@ pub(crate) fn cast_off(
         let short = TIE_CONTINUATION - (curve.p3.x.0 - before - TIE_LEAD_CLEARANCE);
         room[r][i] = room[r][i].max(short);
     }
+    // A system's staff lines, and a ledger line at either end, reach half
+    // their thickness past the columns' ink, which the break search measures
+    // by: it reserves the widest such stroke's thickness, a half at each end.
+    let edge = input
+        .strokes
+        .iter()
+        .filter(|s| {
+            is_rigid_width_stroke(s) || matches!(s.provenance.source, TypedObjectId::Staff(_))
+        })
+        .map(|s| s.thickness.0)
+        .fold(0.0, f32::max);
+    // A region's first system opens with its staff lines, which start left of
+    // its first column's ink.
+    let staff_left: Vec<f32> = region_slots
+        .iter()
+        .map(|infos| {
+            let Some(first) = infos.first() else {
+                return f32::INFINITY;
+            };
+            spaced_strokes
+                .iter()
+                .filter(|s| matches!(s.provenance.source, TypedObjectId::Staff(_)))
+                .map(|s| (s.from.x.0.min(s.to.x.0), s.from.x.0.max(s.to.x.0)))
+                .filter(|&(lo, hi)| lo <= first.lo && hi >= first.lo)
+                .map(|(lo, _)| lo)
+                .fold(first.lo, f32::min)
+        })
+        .collect();
     let mut systems: Vec<SystemPlan> = Vec::new();
     let mut skipped: Vec<EngravingDecision> = Vec::new();
     for (r, infos) in region_slots.iter().enumerate() {
@@ -669,9 +697,12 @@ pub(crate) fn cast_off(
             &reqs,
             &origins,
             region_source,
-            width_limit,
-            lead_max[r],
-            &room[r],
+            Bounds {
+                width_limit: width_limit - edge,
+                left: staff_left[r],
+                lead: lead_max[r],
+                room: &room[r],
+            },
             &mut systems,
             &mut skipped,
         );
@@ -752,6 +783,22 @@ pub(crate) fn cast_off(
                 .flat_map(|(_, glyphs)| glyphs.iter())
                 .filter_map(|g| Some(g.x + metrics(g.name.as_str())?.bounding_box().right.0))
                 .reduce(f32::max)
+        })
+        .collect();
+
+    // Where each system's staff lines end: the right edge of the barline that
+    // closes it, a final barline's thick line included, when one does.
+    let staff_end: Vec<Option<f32>> = systems
+        .iter()
+        .map(|plan| {
+            let slots = &region_slots[plan.region];
+            let &last = plan.slots.last()?;
+            slots[last].barline.then(|| {
+                plan.slots
+                    .iter()
+                    .map(|&i| slots[i].hi)
+                    .fold(f32::NEG_INFINITY, f32::max)
+            })
         })
         .collect();
 
@@ -964,7 +1011,12 @@ pub(crate) fn cast_off(
         };
         for (s, from, to) in segs {
             let (lo_y, hi_y) = (from.y.0.min(to.y.0) - half, from.y.0.max(to.y.0) + half);
-            extents[s].add_x(from.x.0 - half, to.x.0 + half);
+            // A staff line ends with its system's closing barline.
+            let right = match staff_end[s] {
+                Some(end) if is_staff_line => end,
+                _ => to.x.0,
+            };
+            extents[s].add_x(from.x.0 - half, right + half);
             match staff {
                 Some(_) => into_staff(&mut staff_ext, s, staff, lo_y, hi_y),
                 None => extents[s].add_y(lo_y, hi_y),
@@ -1325,14 +1377,19 @@ pub(crate) fn cast_off(
         match fate {
             StrokeFate::Rigid(sys) => {
                 let stroke = match sys {
-                    Some(s) => place_stroke(
-                        source,
-                        spaced,
-                        placements[*s].sunk(staff_dy(*s, stroke_staff_of[si])),
-                        &slot_source_x,
-                        &input.glyphs,
-                        anchors.get(&source.id()),
-                    ),
+                    Some(s) => {
+                        let p = placements[*s].sunk(staff_dy(*s, stroke_staff_of[si]));
+                        let mut stroke = place_stroke(
+                            source,
+                            spaced,
+                            p,
+                            &slot_source_x,
+                            &input.glyphs,
+                            anchors.get(&source.id()),
+                        );
+                        end_staff_line(&mut stroke, staff_end[*s].map(|x| p.x(x)));
+                        stroke
+                    }
                     None => spaced.clone(),
                 };
                 if let (Some(s), TypedObjectId::Staff(staff)) = (sys, spaced.provenance.source) {
@@ -1366,7 +1423,7 @@ pub(crate) fn cast_off(
                     } else {
                         p.x(from.x.0)
                     };
-                    let stroke = Stroke {
+                    let mut stroke = Stroke {
                         provenance,
                         from: Point::new(from_x, from.y.0 + p.dy),
                         to: Point::new(p.x(to.x.0), to.y.0 + p.dy),
@@ -1375,6 +1432,7 @@ pub(crate) fn cast_off(
                         style: spaced.style,
                         vertical_band: spaced.vertical_band,
                     };
+                    end_staff_line(&mut stroke, staff_end[*s].map(|x| p.x(x)));
                     if let TypedObjectId::Staff(staff) = spaced.provenance.source {
                         mark_staff(&mut staff_marks, *s, staff, &stroke);
                     }
@@ -1823,10 +1881,14 @@ fn page_top_content(p: usize, geometry: &PageGeometry) -> f32 {
 fn optimal_breaks(
     slots: &[SlotInfo],
     reqs: &BTreeMap<SpringSlotId, Vec<BreakReq>>,
-    width_limit: f32,
-    lead: f32,
-    room: &[f32],
+    bounds: &Bounds,
 ) -> BTreeSet<SpringSlotId> {
+    let &Bounds {
+        width_limit,
+        left,
+        lead,
+        room,
+    } = bounds;
     let mut automatic = BTreeSet::new();
     if !width_limit.is_finite() || width_limit <= 0.0 || slots.is_empty() {
         return automatic; // unbounded width: nothing wraps
@@ -1848,11 +1910,13 @@ fn optimal_breaks(
     let n = pts.len(); // n - 1 measures between the n boundaries
 
     // A system spanning boundaries [a, b): its ink extent over slots
-    // `[pts[a] .. pts[b])`, and a later system's lead before it, with the
-    // room a tie continued into its first slot needs there.
+    // `[pts[a] .. pts[b])`, from the staff lines' start for the first, and a
+    // later system's lead before it, with the room a tie continued into its
+    // first slot needs there.
     let width = |a: usize, b: usize| -> f32 {
         let range = &slots[pts[a]..pts[b]];
-        let lo = range.iter().map(|s| s.lo).fold(f32::INFINITY, f32::min);
+        let start = if a == 0 { left } else { f32::INFINITY };
+        let lo = range.iter().map(|s| s.lo).fold(start, f32::min);
         let hi = range.iter().map(|s| s.hi).fold(f32::NEG_INFINITY, f32::max);
         (hi - lo).max(0.0) + if a > 0 { lead + room[pts[a]] } else { 0.0 }
     };
@@ -1910,9 +1974,19 @@ fn opens_measure(slots: &[SlotInfo], i: usize) -> bool {
     i > 0 && slots[i - 1].barline && !slots[i - 1].final_barline
 }
 
+/// What a region's systems must fit: the content width; where the region's
+/// staff lines start, which its first system's width counts from; the widest
+/// lead a later system opens with; and, by slot, the room a tie continued
+/// into a system opening there needs.
+struct Bounds<'a> {
+    width_limit: f32,
+    left: f32,
+    lead: f32,
+    room: &'a [f32],
+}
+
 /// Walks one region's slots, opening a system at each break requirement and at
-/// each optimal automatic break (`optimal_breaks`). A later system reserves
-/// `lead`, and the `room` its first slot asks for a tie continued into it.
+/// each optimal automatic break (`optimal_breaks`), within `bounds`.
 #[allow(clippy::too_many_arguments)]
 fn walk_region(
     region: usize,
@@ -1920,15 +1994,19 @@ fn walk_region(
     reqs: &BTreeMap<SpringSlotId, Vec<BreakReq>>,
     origins: &BTreeMap<(u128, bool), EngravingOverrideId>,
     region_source: TypedObjectId,
-    width_limit: f32,
-    lead: f32,
-    room: &[f32],
+    bounds: Bounds,
     systems: &mut Vec<SystemPlan>,
     skipped: &mut Vec<EngravingDecision>,
 ) {
+    let Bounds {
+        width_limit,
+        left,
+        lead,
+        room,
+    } = bounds;
     // The optimal automatic breaks (a global badness-minimizing partition,
     // bounded by the break requirements); the walk opens a system at each.
-    let automatic = optimal_breaks(slots, reqs, width_limit, lead, room);
+    let automatic = optimal_breaks(slots, reqs, &bounds);
 
     // Overflow safety net. A lead-only (note-less) run can defer a *planned*
     // break past its barline — the DP treats a requirement, or its own chosen
@@ -1976,7 +2054,7 @@ fn walk_region(
             }
             current.push(i);
             has_note = slot.note;
-            current_lo = slot.lo;
+            current_lo = slot.lo.min(left);
             continue;
         }
         let mut break_here = false;
@@ -2449,6 +2527,20 @@ fn justify_system(
     }
 }
 
+/// Ends a staff line at `end`, the right edge of the barline closing its
+/// system, so the staff runs under the whole barline and no further. Any
+/// other stroke, or a system no barline closes, is left as placed.
+fn end_staff_line(stroke: &mut Stroke, end: Option<f32>) {
+    let (TypedObjectId::Staff(_), Some(end)) = (stroke.provenance.source, end) else {
+        return;
+    };
+    if stroke.to.x.0 >= stroke.from.x.0 {
+        stroke.to = Point::new(end, stroke.to.y.0);
+    } else {
+        stroke.from = Point::new(end, stroke.from.y.0);
+    }
+}
+
 /// Places a whole stroke under a system's justification. A per-event component
 /// stroke (a stem or ledger) tracks its notehead: both endpoints translate by
 /// the owning slot's delta, so it stays attached without stretching its offset.
@@ -2687,6 +2779,16 @@ mod tests {
 
     /// A uniform test measure: one break-candidate barline slot per measure,
     /// spanning `[i·10, i·10 + 9]` (each measure ~9 wide, step 10).
+    /// Bounds with no lead, and no staff lines left of the first column.
+    fn bounds(width_limit: f32, room: &[f32]) -> Bounds<'_> {
+        Bounds {
+            width_limit,
+            left: f32::INFINITY,
+            lead: 0.0,
+            room,
+        }
+    }
+
     fn measure_slot(i: usize) -> SlotInfo {
         SlotInfo {
             id: SpringSlotId(i as u128 + 1),
@@ -2709,7 +2811,7 @@ mod tests {
         // subsuming the old widow rebalance. One automatic break, before the
         // fourth measure.
         let slots: Vec<SlotInfo> = (0..6).map(measure_slot).collect();
-        let breaks = optimal_breaks(&slots, &BTreeMap::new(), 42.0, 0.0, &[0.0; 6]);
+        let breaks = optimal_breaks(&slots, &BTreeMap::new(), &bounds(42.0, &[0.0; 6]));
         assert_eq!(
             breaks.len(),
             1,
@@ -2731,7 +2833,7 @@ mod tests {
         let slots: Vec<SlotInfo> = (0..6).map(measure_slot).collect();
         let mut room = [0.0; 6];
         room[3] = 14.0;
-        let breaks = optimal_breaks(&slots, &BTreeMap::new(), 42.0, 0.0, &room);
+        let breaks = optimal_breaks(&slots, &BTreeMap::new(), &bounds(42.0, &room));
         assert_eq!(breaks, BTreeSet::from([slots[2].id]), "{breaks:?}");
     }
 
@@ -2750,7 +2852,7 @@ mod tests {
                 hard: true,
             }],
         );
-        let breaks = optimal_breaks(&slots, &reqs, 42.0, 0.0, &[0.0; 6]);
+        let breaks = optimal_breaks(&slots, &reqs, &bounds(42.0, &[0.0; 6]));
         assert!(
             !breaks.contains(&slots[1].id),
             "the forced break is walk_region's, never reported here: {breaks:?}"
@@ -2768,11 +2870,11 @@ mod tests {
     #[test]
     fn optimal_breaks_is_deterministic_and_empty_when_unbounded() {
         let slots: Vec<SlotInfo> = (0..6).map(measure_slot).collect();
-        let a = optimal_breaks(&slots, &BTreeMap::new(), 42.0, 0.0, &[0.0; 6]);
-        let b = optimal_breaks(&slots, &BTreeMap::new(), 42.0, 0.0, &[0.0; 6]);
+        let a = optimal_breaks(&slots, &BTreeMap::new(), &bounds(42.0, &[0.0; 6]));
+        let b = optimal_breaks(&slots, &BTreeMap::new(), &bounds(42.0, &[0.0; 6]));
         assert_eq!(a, b, "a pure function of the inputs");
         assert!(
-            optimal_breaks(&slots, &BTreeMap::new(), f32::INFINITY, 0.0, &[0.0; 6]).is_empty(),
+            optimal_breaks(&slots, &BTreeMap::new(), &bounds(f32::INFINITY, &[0.0; 6])).is_empty(),
             "an unbounded width wraps nothing"
         );
     }
@@ -2819,9 +2921,7 @@ mod tests {
             &reqs,
             &BTreeMap::new(),
             TypedObjectId::Region(RegionId::new(ReplicaId(1), 1)),
-            42.0,
-            0.0,
-            &room,
+            bounds(42.0, &room),
             &mut systems,
             &mut Vec::new(),
         );
@@ -2880,9 +2980,7 @@ mod tests {
             &reqs,
             &BTreeMap::new(),
             TypedObjectId::Region(RegionId::new(ReplicaId(1), 1)),
-            width_limit,
-            0.0,
-            &[0.0; 6],
+            bounds(width_limit, &[0.0; 6]),
             &mut systems,
             &mut skipped,
         );

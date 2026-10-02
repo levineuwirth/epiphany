@@ -1228,3 +1228,26 @@ before the note. The first half is unchanged. Locked by
 and the break search's reservation by
 `optimal_breaks_reserves_the_room_a_continued_tie_needs` and
 `the_overflow_net_reserves_the_room_a_continued_tie_needs`.
+
+## ENGRAVER_VERSION 21 → 22: systems within the margins, staff lines to the closing barline (X3.0, 2026-10-03)
+
+The break search measured a system by its columns' ink, while the system's
+extent, which justification fills to the content width, also holds each
+staff line's half-thickness at both ends and, on a region's first system, the
+staff lines' start about a space left of the clef. A system the search fitted
+with less slack than that ran past the right margin, and justification, which
+only stretches, left it there. The search now reserves the widest staff or
+ledger line's thickness from the width, and counts the first system from its
+staff lines' start; the overflow net does the same. Separately, a region's
+last system kept its staff lines where the spacing map extrapolated them,
+which stopped them between a final barline's thin and thick lines. Each
+system's staff lines now end at the right edge of the barline that closes it.
+Locked by `a_score_takes_its_files_page_and_keeps_within_its_margins` and
+`staff_lines_end_with_the_barline_that_closes_their_system` (`epiphany-cli`).
+
+The command-line tools now cast a file onto the page its MusicXML
+`<defaults><page-layout>` gives, in staff spaces (a tenth is a tenth of a
+staff space), rather than the default A4 at an 8 mm staff: the page its
+writer drew it on, so the two read side by side. The score graph does not
+hold the page; `epiphany_cli::geometry` reads it from the source, and a file
+without one takes the default.

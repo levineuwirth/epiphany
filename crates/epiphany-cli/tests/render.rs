@@ -1666,3 +1666,177 @@ fn groups_mark_their_staves_and_join_their_barlines() {
     gaps.sort();
     assert_eq!(gaps, [0, 0, 2, 2, 4, 4]);
 }
+
+/// A score of `measures` measures of mixed quarters and eighths, some with
+/// ledger lines, on a page `width` staff spaces wide as its `<defaults>` set
+/// it (in tenths, ten to a staff space), or on the default page.
+fn paged_score(measures: usize, width: Option<f32>) -> String {
+    let mut body = String::new();
+    for m in 1..=measures {
+        body.push_str(&format!("<measure number=\"{m}\">"));
+        if m == 1 {
+            body.push_str(
+                "<attributes><divisions>2</divisions><time><beats>4</beats>\
+                 <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+                 </attributes>",
+            );
+        }
+        let notes: &[(&str, u8, u8)] = match m % 3 {
+            0 => &[
+                ("C", 4, 2),
+                ("A", 5, 2),
+                ("E", 4, 1),
+                ("F", 4, 1),
+                ("G", 4, 2),
+            ],
+            1 => &[
+                ("D", 4, 1),
+                ("E", 4, 1),
+                ("F", 4, 2),
+                ("C", 6, 2),
+                ("B", 4, 2),
+            ],
+            _ => &[("G", 4, 4), ("C", 4, 1), ("D", 4, 1), ("A", 3, 2)],
+        };
+        for (step, octave, duration) in notes {
+            body.push_str(&pitched(step, 0, *octave, *duration, 1, false));
+        }
+        body.push_str("</measure>");
+    }
+    let defaults = width.map_or(String::new(), |w| {
+        format!(
+            "<defaults><scaling><millimeters>7</millimeters><tenths>40</tenths></scaling>\
+             <page-layout><page-width>{}</page-width><page-height>1500</page-height>\
+             <page-margins type=\"both\"><left-margin>75</left-margin>\
+             <right-margin>75</right-margin><top-margin>75</top-margin>\
+             <bottom-margin>75</bottom-margin></page-margins></page-layout></defaults>",
+            (w * 10.0).round()
+        )
+    });
+    format!(
+        "<score-partwise version=\"4.0\">{defaults}<part-list><score-part id=\"P1\">\
+         <part-name>A</part-name></score-part></part-list><part id=\"P1\">{body}</part>\
+         </score-partwise>"
+    )
+}
+
+/// A score is set on the page its file gives, and no system's ink, a stroke's
+/// half-thickness included, runs past the right margin, whatever the width.
+#[test]
+fn a_score_takes_its_files_page_and_keeps_within_its_margins() {
+    use epiphany_cli::engrave_loaded;
+
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("paged.musicxml");
+    let default_page = epiphany_engrave::PageGeometry::default();
+    std::fs::write(&path, paged_score(18, None)).expect("written");
+    assert_eq!(
+        epiphany_cli::geometry(&load(&path).expect("loads").import.source),
+        default_page,
+        "a file with no page layout takes the default page"
+    );
+    let mut overruns = Vec::new();
+    let mut breaks = std::collections::BTreeSet::new();
+    for k in 0..150 {
+        let width = (400 + 3 * k) as f32 / 10.0;
+        std::fs::write(&path, paged_score(18, Some(width))).expect("written");
+        let loaded = load(&path).expect("loads");
+        let geometry = epiphany_cli::geometry(&loaded.import.source);
+        assert!((geometry.size.width.0 - width).abs() < 1e-4);
+        assert_eq!(geometry.margins.right.0, 7.5);
+        let layout = engrave_loaded(&loaded).layout;
+        let right = width - 7.5;
+        let mut systems = Vec::new();
+        for (s, system) in layout.systems().enumerate() {
+            let glyphs = system
+                .primitives
+                .glyphs
+                .iter()
+                .map(|&i| glyph_box(&layout.glyphs[i as usize])[2]);
+            let strokes = system
+                .primitives
+                .strokes
+                .iter()
+                .map(|&i| &layout.strokes[i as usize])
+                .map(|st| st.from.x.0.max(st.to.x.0) + st.thickness.0 / 2.0);
+            let ink = glyphs.chain(strokes).fold(f32::NEG_INFINITY, f32::max);
+            if ink > right + 1e-3 {
+                overruns.push(format!(
+                    "width {width}: system {s} ink to {ink}, margin {right}"
+                ));
+            }
+            systems.push(system.primitives.glyphs.len());
+        }
+        breaks.insert(systems.len());
+    }
+    assert!(
+        breaks.len() > 3,
+        "the widths break the score differently: {breaks:?}"
+    );
+    assert!(overruns.is_empty(), "{overruns:#?}");
+}
+
+/// Every system's staff lines run to the right edge of the barline that
+/// closes it, the last system's final barline's thick line included, and no
+/// further.
+#[test]
+fn staff_lines_end_with_the_barline_that_closes_their_system() {
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("closing_barlines.musicxml");
+    for (measures, at_least) in [(14, 3), (2, 1)] {
+        std::fs::write(&path, paged_score(measures, Some(70.0))).expect("written");
+        let loaded = load(&path).expect("loads");
+        let layout = epiphany_cli::engrave_loaded(&loaded).layout;
+        staff_lines_end_with_their_barlines(&layout, at_least);
+    }
+}
+
+/// Every system's staff lines end at its closing barline's right edge.
+fn staff_lines_end_with_their_barlines(
+    layout: &epiphany_layout_ir::ResolvedLayoutIR,
+    at_least: usize,
+) {
+    let systems: Vec<_> = layout.systems().collect();
+    assert!(systems.len() >= at_least, "{} systems", systems.len());
+    for (s, system) in systems.iter().enumerate() {
+        let barline = system
+            .primitives
+            .glyphs
+            .iter()
+            .map(|&i| &layout.glyphs[i as usize])
+            .filter(|g| g.glyph.as_str().starts_with("barline"))
+            .map(glyph_box)
+            .max_by(|a, b| a[2].total_cmp(&b[2]))
+            .expect("a system closes on a barline");
+        let last = s + 1 == systems.len();
+        let name = system
+            .primitives
+            .glyphs
+            .iter()
+            .map(|&i| &layout.glyphs[i as usize])
+            .find(|g| glyph_box(g) == barline)
+            .map(|g| g.glyph.as_str().to_owned());
+        assert_eq!(
+            name.as_deref(),
+            Some(if last {
+                "barlineFinal"
+            } else {
+                "barlineSingle"
+            })
+        );
+        let ends: Vec<f32> = system
+            .primitives
+            .strokes
+            .iter()
+            .map(|&i| &layout.strokes[i as usize])
+            .filter(|st| matches!(st.provenance.source, epiphany_core::TypedObjectId::Staff(_)))
+            .map(|st| st.from.x.0.max(st.to.x.0))
+            .collect();
+        assert_eq!(ends.len(), 5, "system {s} draws one staff");
+        for end in ends {
+            assert!(
+                (end - barline[2]).abs() < 1e-3,
+                "system {s}: a staff line ends at {end}, its barline at {}",
+                barline[2]
+            );
+        }
+    }
+}
