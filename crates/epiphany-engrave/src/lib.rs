@@ -272,8 +272,12 @@ pub struct Engraver {
 /// of their members on their voice's or stems' side, with a bracket unless
 /// their notes are beamed together as one group, and their members began
 /// beaming as their notated values read; and a treble or bass clef two
-/// octaves up or down began drawing its 15 mark.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(26);
+/// octaves up or down began drawing its 15 mark, and to `27` when the
+/// decomposition pre-pass reached version 2: notes are written by each
+/// measure's own meter, a pickup keeps its place in its bar, and a span one
+/// value expresses within a bar is drawn as that value, dotted or
+/// double-dotted, rather than as tied parts.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(27);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

@@ -1596,3 +1596,25 @@ mutation perturbing only one implementation's boundary-selector or
 cross-clock handling is caught by the agreement test going red, independent
 of whether either implementation individually still passes its own unit
 coverage.
+
+## The default decomposition algorithm, version 2 (X3.3, X3.4, 2026-10-03)
+
+Version 1 decomposed every event against one measure length per region (the
+first time signature found), so after a meter change its barlines fell in
+the wrong places (P12-H4); it took the region origin for a barline, so a
+pickup's notes were placed as if on the downbeat; and it split any span that
+crossed a boundary at least as strong as its start, so a note the file writes
+as one value — a half on beat 2, a dotted half, a dotted quarter off the beat
+— came out as tied parts. Version 2: `ScoreLayout` carries each staff instance's bars
+(`instance_bars`: measures from their region-relative anchors, the governing
+signature carried forward, the last measure its signature's length, a short
+first measure shifted by the beats it lacks); `decompose_metric` splits at
+those barlines, falling back to the region's first meter where a staff
+instance's measures do not resolve; within a bar a span `note_for_units`
+expresses is written whole, and only a span no value expresses falls to
+version 1's boundary splitting. `MAX_DOTS` is 2. Rests follow the same rule,
+which an import's rests already satisfy (each MusicXML rest is one value).
+The `DecompositionAlgorithmId` stays `"default"`; the version lives in the
+requirement, and derived output is recomputed, never migrated. The prepass
+harness's two syncopation fixtures now hold five-eighth spans, which no one
+value expresses, so its non-vacuity spread still sees tied splits recur.

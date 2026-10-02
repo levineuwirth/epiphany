@@ -396,7 +396,7 @@ fn chord_pitches_all_spelled() {
 const WHOLE: i64 = GRID_DEN;
 
 fn lengths(start: i64, dur: i64) -> Vec<(NoteValue, u8)> {
-    decompose_metric(start, dur, WHOLE).unwrap()
+    decompose_metric(start, dur, &[], WHOLE).unwrap()
 }
 
 #[test]
@@ -422,34 +422,98 @@ fn whole_note_fills_the_measure() {
 }
 
 #[test]
-fn half_note_on_beat_two_ties_across_the_mid_measure() {
-    // A half note starting on beat 2 of 4/4 crosses the strong mid-measure point
-    // and must be written as two tied quarters.
-    assert_eq!(
-        lengths(WHOLE / 4, WHOLE / 2),
-        vec![(NoteValue::Quarter, 0), (NoteValue::Quarter, 0)]
-    );
-}
-
-#[test]
-fn syncopation_eighth_then_quarter() {
-    // [1/8, 1/2): an eighth tied to a quarter.
+fn a_span_the_bar_holds_as_one_value_is_that_value() {
+    // Version 2: a half on beat 2 of 4/4, a dotted quarter off the beat, and a
+    // half from the offbeat are each one value within the bar, written whole
+    // (version 1 tied them across the boundaries they cross).
+    assert_eq!(lengths(WHOLE / 4, WHOLE / 2), vec![(NoteValue::Half, 0)]);
     assert_eq!(
         lengths(WHOLE / 8, WHOLE * 3 / 8),
-        vec![(NoteValue::Eighth, 0), (NoteValue::Quarter, 0)]
+        vec![(NoteValue::Quarter, 1)]
     );
+    assert_eq!(lengths(WHOLE / 8, WHOLE / 2), vec![(NoteValue::Half, 0)]);
+    // Two dots: a double-dotted quarter, seven sixteenths.
+    assert_eq!(lengths(0, WHOLE * 7 / 16), vec![(NoteValue::Quarter, 2)]);
 }
 
 #[test]
-fn classic_offbeat_eighth_quarter_eighth() {
-    // [1/8, 5/8): eighth, quarter, eighth across beat 3.
+fn a_span_no_value_expresses_splits_at_its_strongest_boundary() {
+    // [1/8, 3/4): five eighths from the offbeat, which no one value is: an
+    // eighth to beat 2, a quarter to the middle of the bar, a quarter after.
     assert_eq!(
-        lengths(WHOLE / 8, WHOLE / 2),
+        lengths(WHOLE / 8, WHOLE * 5 / 8),
         vec![
             (NoteValue::Eighth, 0),
             (NoteValue::Quarter, 0),
-            (NoteValue::Eighth, 0)
+            (NoteValue::Quarter, 0)
         ]
+    );
+}
+
+#[test]
+fn bars_of_each_meter_place_the_barlines() {
+    // A bar of 3/4, then bars of 2/4: a half from beat 3 of the 3/4 bar
+    // crosses its barline at 3/4 (not at the whole note the region's first
+    // meter would put it): quarter tied to quarter. A dotted half filling
+    // the 3/4 bar is one value.
+    let bars = [
+        Bar {
+            start: 0,
+            len: WHOLE * 3 / 4,
+            shift: 0,
+        },
+        Bar {
+            start: WHOLE * 3 / 4,
+            len: WHOLE / 2,
+            shift: 0,
+        },
+    ];
+    assert_eq!(
+        decompose_metric(WHOLE / 2, WHOLE / 2, &bars, WHOLE),
+        Some(vec![(NoteValue::Quarter, 0), (NoteValue::Quarter, 0)])
+    );
+    assert_eq!(
+        decompose_metric(0, WHOLE * 3 / 4, &bars, WHOLE),
+        Some(vec![(NoteValue::Half, 1)])
+    );
+    // Past the last bar, bars repeat its length: a whole note from 5/4 spans
+    // the 2/4 bar from 5/4 and the next: half tied to half.
+    assert_eq!(
+        decompose_metric(WHOLE * 5 / 4, WHOLE, &bars, WHOLE),
+        Some(vec![(NoteValue::Half, 0), (NoteValue::Half, 0)])
+    );
+}
+
+#[test]
+fn a_pickup_keeps_its_place_in_the_bar() {
+    // A one-beat pickup in 4/4 (shifted three beats into its bar), then a
+    // full bar: the pickup's quarter is one value, and a half from the
+    // pickup's start crosses the barline after one beat.
+    let bars = [
+        Bar {
+            start: 0,
+            len: WHOLE / 4,
+            shift: WHOLE * 3 / 4,
+        },
+        Bar {
+            start: WHOLE / 4,
+            len: WHOLE,
+            shift: 0,
+        },
+    ];
+    assert_eq!(
+        decompose_metric(0, WHOLE / 4, &bars, WHOLE),
+        Some(vec![(NoteValue::Quarter, 0)])
+    );
+    assert_eq!(
+        decompose_metric(0, WHOLE / 2, &bars, WHOLE),
+        Some(vec![(NoteValue::Quarter, 0), (NoteValue::Quarter, 0)])
+    );
+    // The pickup's second eighth stands at [7/8, 1) of the bar it belongs to:
+    // one eighth.
+    assert_eq!(
+        decompose_metric(WHOLE / 8, WHOLE / 8, &bars, WHOLE),
+        Some(vec![(NoteValue::Eighth, 0)])
     );
 }
 
@@ -485,13 +549,13 @@ fn sub_sixtyfourth_duration_is_ungriddable_not_silently_dropped() {
     // decompose to an empty/short list that violates invariant 15.
     let u = to_grid_units(&r(1, 128)).unwrap();
     assert_eq!(u, 32, "1/128 is below the sixty-fourth (64-unit) floor");
-    assert_eq!(decompose_metric(0, u, WHOLE), None);
+    assert_eq!(decompose_metric(0, u, &[], WHOLE), None);
     // A clean head (a quarter) plus a sub-grid tail (1/128) must also be rejected,
     // not emitted as a quarter whose components fall short of the duration.
-    assert_eq!(decompose_metric(0, WHOLE / 4 + u, WHOLE), None);
+    assert_eq!(decompose_metric(0, WHOLE / 4 + u, &[], WHOLE), None);
     // A whole-note (clean) decomposition is unaffected by the reconstruction check.
     assert_eq!(
-        decompose_metric(0, WHOLE, WHOLE),
+        decompose_metric(0, WHOLE, &[], WHOLE),
         Some(vec![(NoteValue::Whole, 0)])
     );
 }
@@ -534,10 +598,10 @@ fn degenerate_zero_measure_is_ungriddable_not_a_panic() {
     // sums to a zero `measure_duration`, so `resolve_measure_units` can yield 0.
     // Such a measure has no barline grid, so a positive-duration event under it
     // must report ungriddable rather than dividing by zero in the offset reduction.
-    assert_eq!(decompose_metric(0, WHOLE / 4, 0), None);
-    assert_eq!(decompose_metric(WHOLE / 2, WHOLE, 0), None);
+    assert_eq!(decompose_metric(0, WHOLE / 4, &[], 0), None);
+    assert_eq!(decompose_metric(WHOLE / 2, WHOLE, &[], 0), None);
     // A zero-duration event is still vacuously representable regardless of measure.
-    assert_eq!(decompose_metric(0, 0, 0), Some(Vec::new()));
+    assert_eq!(decompose_metric(0, 0, &[], 0), Some(Vec::new()));
 }
 
 #[test]

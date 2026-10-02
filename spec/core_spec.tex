@@ -2483,26 +2483,35 @@ algorithm is, in outline:
   by versioned identifier} disposition of
   Appendix~\ref{app:determinism} Section~\ref{sec:det:open}. The
   reserved identifier \texttt{DecompositionAlgorithmId}
-  \texttt{"default"} denotes, at version~1, the integer-grid
+  \texttt{"default"} denotes, at version~2, the integer-grid
   metric splitter, whose scope bounds are part of its normative
   definition:
   \begin{itemize}
-    \item a single governing meter per region --- a mid-region
-      meter change reduces cleanly into the region's grid (the
-      Operation Catalog pins those semantics), but derived
-      notation honours only the first governing meter until a
-      wider algorithm version lands;
-    \item the region origin is assumed to fall on a barline
-      (anacrusis/pickup handling deferred);
-    \item compound-meter beat grouping uses the dyadic default;
+    \item barlines are each staff instance's measures: a measure
+      starts where its region-relative anchor puts it and lasts until
+      the next, the last as long as its governing time signature's bar
+      (the measure's own signature, else the latest before it); where a
+      staff instance's measures do not resolve so, barlines fall at the
+      region's first governing meter, as at version~1;
+    \item a first measure shorter than its signature's bar is a pickup,
+      and its events keep their place in that bar (it begins as far in
+      as the beats it lacks);
+    \item within a bar, a span that is one notated value (with at most
+      two augmentation dots, \texttt{MAX\_DOTS}~$=$~2) is written as that
+      value; any other span is split at the strongest metric boundary it
+      crosses, recursively, and a span crossing a barline is split there
+      with ties;
+    \item metric strength within a bar is dyadic from its start, and
+      compound-meter beat grouping uses the dyadic default;
     \item tuplet nesting and cross-beat tuplet members are out of
-      scope;
-    \item at most one augmentation dot
-      (\texttt{MAX\_DOTS}~$=$~1); a double-dotted value is
-      written as tied components --- correct, if not the most
-      compact.
+      scope.
   \end{itemize}
-  A wider algorithm is a \emph{version bump}, which
+  Version~1 honoured only the first governing meter of a region,
+  assumed the region origin on a barline, wrote at most one dot, and
+  split a span at any interior boundary at least as strong as its
+  start even when one value expressed it (a half note on the second
+  beat of a $\frac{4}{4}$ bar was two tied quarters). A wider algorithm
+  is a \emph{version bump}, which
   deterministically invalidates derived output under the
   derived-annotation model --- no state migration. Style-choice
   selection among multiple valid decompositions (e.g.,
@@ -17064,6 +17073,14 @@ layouts they own versus inherit:
   shape/\texttt{end\_tempo} compatibility without determining whether a
   constant segment records an \texttt{end\_tempo} at all. The enumeration is
   unchanged.
+  \\
+  \today & \sectionsc{Sounding Duration and Notational Decomposition} &
+  \textbf{X3.3 and X3.4: the default decomposition algorithm reaches
+  version~2.} Requirement~\ref{req:time:decomposition-algorithm}'s scope
+  bounds widen: barlines from each staff instance's measures, so every
+  governing meter is honoured; a pickup keeps its place in its bar; a span
+  one value expresses within a bar is that value, dotted or double-dotted.
+  Derived output is invalidated, not migrated.
   \\
   \today & Chapter 6 \texttt{OperationKind}, Chapter 8
   \texttt{OperationKindTag}, \sectionsc{Re-Anchoring} &

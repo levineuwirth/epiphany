@@ -1146,7 +1146,8 @@ fn seconds_stand_either_side_of_the_stem() {
             note("G4", 1, 1, false, "", begin),
             note("A4", 1, 1, true, "", "<type>eighth</type>"),
             note("A5", 1, 1, false, "", end),
-            rest(6, 1),
+            rest(2, 1),
+            rest(4, 1),
         ]
         .concat(),
     ];
@@ -1874,11 +1875,13 @@ fn a_split_notes_tie_takes_its_voices_side() {
     use epiphany_core::TypedObjectId;
 
     let backup = "<backup><duration>8</duration></backup>";
+    // An eighth, five eighths from the offbeat (which no one value is: an
+    // eighth tied to two quarters), and a quarter.
     let voice = |step: &str, octave: u8, voice: u8| {
         format!(
             "{}{}{}",
-            pitched(step, 0, octave, 2, voice, false),
-            pitched(step, 0, octave, 4, voice, false),
+            pitched(step, 0, octave, 1, voice, false),
+            pitched(step, 0, octave, 5, voice, false),
             pitched(step, 0, octave, 2, voice, false)
         )
     };
@@ -1887,22 +1890,20 @@ fn a_split_notes_tie_takes_its_voices_side() {
         &[format!("{}{backup}{}", voice("D", 5, 1), voice("F", 4, 2))],
     );
     let layout = engrave(&loaded.reduced.score).layout;
-    // The halves on the second beat are each drawn as two tied quarters.
+    // Each voice's long note is drawn as three tied parts.
     let mut ties: Vec<_> = layout
         .curves
         .iter()
         .filter(|c| matches!(c.provenance.source, TypedObjectId::Pitch(_)))
         .collect();
-    assert_eq!(ties.len(), 2, "each voice's half splits once");
+    assert_eq!(ties.len(), 4, "each voice's long note splits twice");
     ties.sort_by(|a, b| b.p0.y.0.total_cmp(&a.p0.y.0));
-    assert!(
-        ties[0].p1.y.0 > ties[0].p0.y.0,
-        "the upper voice's tie arcs above"
-    );
-    assert!(
-        ties[1].p1.y.0 < ties[1].p0.y.0,
-        "the lower voice's tie arcs below"
-    );
+    for tie in &ties[..2] {
+        assert!(tie.p1.y.0 > tie.p0.y.0, "the upper voice's ties arc above");
+    }
+    for tie in &ties[2..] {
+        assert!(tie.p1.y.0 < tie.p0.y.0, "the lower voice's ties arc below");
+    }
 }
 
 /// A tie leaving or meeting a head with other ink beside it at the tie's
@@ -2381,4 +2382,61 @@ fn a_tuplet_draws_its_number_and_a_bracket_unless_beamed_alone() {
             );
         }
     }
+}
+
+/// The decomposition takes each measure's own meter: after a change from 4/4
+/// to 3/4 a dotted half fills each 3/4 bar as one value, where a single
+/// meter for the region would put a phantom barline inside the third bar and
+/// tie its dotted half across it; and the new meter's signature is drawn.
+#[test]
+fn notes_take_their_values_from_every_meter() {
+    use epiphany_core::TypedObjectId;
+
+    let note = |step: &str, duration: u8, kind: &str, dot: bool| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>4</octave></pitch>\
+             <duration>{duration}</duration><voice>1</voice><type>{kind}</type>{}</note>",
+            if dot { "<dot/>" } else { "" }
+        )
+    };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">\
+         <measure number=\"1\"><attributes><divisions>2</divisions><time><beats>4</beats>\
+         <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+         </attributes>{}</measure>\
+         <measure number=\"2\"><attributes><time><beats>3</beats><beat-type>4</beat-type>\
+         </time></attributes>{}</measure>\
+         <measure number=\"3\">{}</measure>\
+         <measure number=\"4\">{}</measure></part></score-partwise>",
+        note("C", 8, "whole", false),
+        note("D", 6, "half", true),
+        note("E", 6, "half", true),
+        note("F", 6, "half", true),
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("meters.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let heads = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("notehead"))
+        .count();
+    assert_eq!(heads, 4, "one head a measure");
+    let dots = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "augmentationDot")
+        .count();
+    assert_eq!(dots, 3, "each dotted half keeps its dot");
+    assert!(
+        !layout
+            .curves
+            .iter()
+            .any(|c| matches!(c.provenance.source, TypedObjectId::Pitch(_))),
+        "no note is split into tied parts"
+    );
+    // The 3/4 signature drawn where it begins.
+    assert!(layout.glyphs.iter().any(|g| g.glyph.as_str() == "timeSig3"));
 }

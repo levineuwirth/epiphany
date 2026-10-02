@@ -1327,3 +1327,14 @@ octaves up or down, which drew without its mark. Locked by
 `a_tuplet_draws_its_number_and_a_bracket_unless_beamed_alone`
 (`epiphany-cli`); the rich fixture's golden gains its tuplet's number and
 bracket.
+
+## ENGRAVER_VERSION 26 → 27: the decomposition's version 2 (X3.3, X3.4, 2026-10-03)
+
+What the engraver draws for a note's rhythm comes from the decomposition
+pre-pass in `epiphany-core`, which version 2 of the default algorithm changes
+(core specification `req:time:decomposition-algorithm`; `epiphany-core`'s
+`DECISIONS.md`): bars from each staff instance's measures, so a note after a
+meter change is written against its own bar; a pickup's notes keep their place
+in the bar; and a span one value expresses within a bar is that value, up to
+two dots. Locked by `notes_take_their_values_from_every_meter`
+(`epiphany-cli`) and the pre-pass's unit tests.
