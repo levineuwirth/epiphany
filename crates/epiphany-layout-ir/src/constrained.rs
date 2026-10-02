@@ -979,6 +979,7 @@ pub fn try_to_constrained(
         // this is keyed by staff as well as column.
         let mut column_ink: BTreeMap<(StaffId, ColumnKey), ColumnInk> = BTreeMap::new();
         let mut event_rests: BTreeMap<EventId, Vec<RestSeg>> = BTreeMap::new();
+        let mut sounding: Vec<Sounding> = Vec::new();
         // Every column that needs an x. A column earns a spring slot only if a
         // glyph actually lands in it (decided after emission, by occupancy), so a
         // stroke-only column — e.g. an unbundled rest, or a pitch-less note — gets
@@ -1047,6 +1048,12 @@ pub fn try_to_constrained(
                         }
                         let steps: Vec<StaffStep> =
                             placed.iter().map(|(_, step, _, _)| *step).collect();
+                        sounding.push(Sounding {
+                            staff,
+                            event: eid,
+                            start: time.clone(),
+                            ys: steps.iter().map(|s| step_to_y(yo, *s)).collect(),
+                        });
                         let dot_ys = dot_positions(yo, &steps, note.voice == VoicePlace::Lower);
                         for ((pitch, step, accidentals, alteration), dot_y) in
                             placed.into_iter().zip(dot_ys)
@@ -1102,6 +1109,12 @@ pub fn try_to_constrained(
                         components_of(&unpitched.components).enumerate()
                     {
                         let time = shift_time(&unpitched.position, &offset);
+                        sounding.push(Sounding {
+                            staff,
+                            event: eid,
+                            start: time.clone(),
+                            ys: vec![step_to_y(yo, step)],
+                        });
                         let key = ColumnKey::Timed(time, ColumnRole::Note);
                         keys.insert(key.clone());
                         let name = notehead_glyph(value);
@@ -1158,7 +1171,7 @@ pub fn try_to_constrained(
                         // unbundled rest is a traced anchor *there*, not at a
                         // default x, and later components do not vanish. A
                         // hidden rest keeps its column and draws nothing.
-                        let key = ColumnKey::Timed(time, ColumnRole::Note);
+                        let key = ColumnKey::Timed(time.clone(), ColumnRole::Note);
                         keys.insert(key.clone());
                         // A rest filling its measure is a whole rest in any meter,
                         // hanging from the fourth line; every other rest sits on
@@ -1186,6 +1199,9 @@ pub fn try_to_constrained(
                             comp,
                             visible: rest.visible,
                             dots,
+                            staff,
+                            start: time,
+                            voice: rest.voice,
                         });
                         if rest.whole_measure {
                             break;
@@ -1295,6 +1311,9 @@ pub fn try_to_constrained(
                 }
             }
         }
+
+        // Each rest beside another voice, clear of that voice's notes.
+        clear_rests(&mut event_rests, &sounding);
 
         // Each staff column's heads, set clear of each other, with the stem
         // of a voice that moves moving with it.
@@ -2867,6 +2886,66 @@ struct RestSeg {
     /// A hidden rest keeps its column and draws no ink.
     visible: bool,
     dots: u8,
+    /// Its staff, onset and voice's place, which decide which other notes it
+    /// stands clear of.
+    staff: Option<StaffId>,
+    start: TimePoint,
+    voice: VoicePlace,
+}
+
+/// One component of a note or unpitched note, starting at `start` on
+/// `staff`, with the `y` of each of its heads: a rest of another voice
+/// starting with it stands clear of them.
+struct Sounding {
+    staff: Option<StaffId>,
+    event: EventId,
+    start: TimePoint,
+    ys: Vec<f32>,
+}
+
+/// How far a rest moved off its place beside another voice stands clear of
+/// that voice's heads.
+const REST_CLEARANCE: f32 = 0.25;
+
+/// Moves each rest of a voice beside another, a space at a time away from
+/// the middle of the staff (up for an upper voice, down for a lower), until
+/// its glyph stands `REST_CLEARANCE` clear of every head of another note on
+/// its staff that starts with it, and so stands in its column. A note held
+/// from before stands to its left.
+fn clear_rests(rests: &mut BTreeMap<EventId, Vec<RestSeg>>, sounding: &[Sounding]) {
+    for (eid, segs) in rests.iter_mut() {
+        for seg in segs.iter_mut() {
+            let up = match seg.voice {
+                VoicePlace::Upper => true,
+                VoicePlace::Lower => false,
+                VoicePlace::Alone => continue,
+            };
+            let Some(bounds) = seg.name.and_then(metrics).map(|m| m.bounding_box()) else {
+                continue;
+            };
+            let start = &seg.start;
+            let heads = sounding
+                .iter()
+                .filter(|s| s.staff == seg.staff && s.event != *eid)
+                .filter(|s| time_total(&s.start, start) == Ordering::Equal)
+                .flat_map(|s| s.ys.iter().copied());
+            if up {
+                let Some(top) = heads.reduce(f32::max) else {
+                    continue;
+                };
+                while seg.y + bounds.bottom.0 < top + 0.5 + REST_CLEARANCE {
+                    seg.y += 1.0;
+                }
+            } else {
+                let Some(bottom) = heads.reduce(f32::min) else {
+                    continue;
+                };
+                while seg.y + bounds.top.0 > bottom - 0.5 - REST_CLEARANCE {
+                    seg.y -= 1.0;
+                }
+            }
+        }
+    }
 }
 
 /// A horizontal column the spacing pass tiles left-to-right. The clef sits in the

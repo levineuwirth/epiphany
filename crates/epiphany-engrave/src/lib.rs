@@ -262,8 +262,10 @@ pub struct Engraver {
 /// tie a staff space to run, when a split note's tie began taking its side
 /// as a tie between notes does (its voice, then its place in the chord, then
 /// its stem), and when a measure record's edges began moving with the slots
-/// that hold them.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(23);
+/// that hold them, and to `24` when a rest beside another voice began moving
+/// further off its place, a space at a time, until it stands clear of the
+/// other voice's notes that start with it.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(24);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

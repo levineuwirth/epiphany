@@ -1277,3 +1277,16 @@ the slots' glyphs do, not through the justification's affine, which set an
 opening time signature's measure up to (a − 1) times its ink's offset right
 of the ink. Locked by `a_tie_stands_clear_of_the_ink_beside_its_heads` and
 `a_split_notes_tie_takes_its_voices_side` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 23 → 24: rests clear of another voice's notes (X3.0, 2026-10-03)
+
+Beside another voice a rest moved one space off its place, up for an upper
+voice and down for a lower, whatever the other voice held there, so a lower
+voice's rest under an upper voice's low chord stood on its heads. A rest now
+keeps moving a space at a time the same way until its glyph stands 0.25 clear
+of every head of another note on its staff that starts with it, the notes
+that stand in its column (MuseScore's rule, as its rests avoid the chords of
+their segment). A note held from before stands to the rest's left and does
+not move it; so a held note's tie can still pass over a rest beside it,
+which this does not address. Locked by
+`a_rest_stands_clear_of_another_voices_notes` (`epiphany-cli`).

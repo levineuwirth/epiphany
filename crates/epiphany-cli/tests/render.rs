@@ -2016,3 +2016,80 @@ fn a_tie_stands_clear_of_the_ink_beside_its_heads() {
         }
     }
 }
+
+/// A rest of one voice moves off its place, away from the other voice, until
+/// it stands clear of the other voice's notes that start with it; a rest with
+/// none beside it keeps its place a space off the middle line.
+#[test]
+fn a_rest_stands_clear_of_another_voices_notes() {
+    let backup = "<backup><duration>8</duration></backup>";
+    let rest = |duration: u8, voice: u8| {
+        format!("<note><rest/><duration>{duration}</duration><voice>{voice}</voice></note>")
+    };
+    let measures = [
+        // The lower voice rests under the upper voice's low chord.
+        format!(
+            "{}{}{}{backup}{}{}",
+            pitched("E", 0, 4, 2, 1, false),
+            pitched("G", 0, 4, 2, 1, true),
+            pitched("C", 0, 5, 6, 1, false),
+            rest(2, 2),
+            pitched("A", 0, 4, 6, 2, false),
+        ),
+        // The upper voice rests over the lower voice's high chord; the lower
+        // voice rests last with no note starting beside it.
+        format!(
+            "{}{}{backup}{}{}{}{}",
+            rest(2, 1),
+            pitched("C", 0, 5, 6, 1, false),
+            pitched("D", 0, 5, 2, 2, false),
+            pitched("F", 0, 5, 2, 2, true),
+            pitched("A", 0, 4, 4, 2, false),
+            rest(2, 2),
+        ),
+    ];
+    let loaded = treble_part("rest_clearance.musicxml", &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let staff = &layout.systems().next().expect("a system").staves[0].bounding_box;
+    let middle = staff.origin.y.0 + staff.size.height.0 / 2.0;
+    let heads: Vec<[f32; 4]> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("notehead"))
+        .map(glyph_box)
+        .collect();
+    let mut rests: Vec<_> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("rest"))
+        .collect();
+    rests.sort_by(|a, b| a.position.x.0.total_cmp(&b.position.x.0));
+    assert_eq!(rests.len(), 3);
+    for (k, rest) in rests.iter().take(2).enumerate() {
+        let r = glyph_box(rest);
+        // The heads of its column: those whose x range meets the rest's.
+        let column: Vec<_> = heads
+            .iter()
+            .filter(|h| h[0] < r[2] && h[2] > r[0])
+            .collect();
+        assert_eq!(column.len(), 2, "rest {k} stands beside a chord");
+        for h in column {
+            let gap = (h[1] - r[3]).max(r[1] - h[3]);
+            assert!(gap >= 0.25 - 1e-3, "rest {k} stands {gap} from a head");
+        }
+    }
+    let (lower, upper, alone) = (rests[0], rests[1], rests[2]);
+    assert!(
+        lower.position.y.0 < middle - 1.5,
+        "the lower voice's rest moved down"
+    );
+    assert!(
+        upper.position.y.0 > middle + 1.5,
+        "the upper voice's rest moved up"
+    );
+    assert!(
+        (alone.position.y.0 - (middle - 1.0)).abs() < 1e-3,
+        "the lower rest beside no note keeps its place, {} from the middle",
+        alone.position.y.0 - middle
+    );
+}
