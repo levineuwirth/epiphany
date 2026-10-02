@@ -635,6 +635,9 @@ mod tests {
             engraving_decisions: vec![],
             diagnostics: vec![],
             catalog,
+            span_anchors: Vec::new(),
+            system_leads: Vec::new(),
+            staff_groups: Vec::new(),
         }
     }
 
@@ -723,6 +726,9 @@ mod tests {
             engraving_decisions: vec![],
             diagnostics: vec![],
             catalog: GlyphCatalogIdentity::default(),
+            span_anchors: Vec::new(),
+            system_leads: Vec::new(),
+            staff_groups: Vec::new(),
         };
         let report = StubSolver.solve(&input, &SolverConfig::default());
         assert_eq!(report.status, SolveStatus::InternalError);
@@ -781,15 +787,16 @@ mod tests {
         assert_eq!(layout.strokes.len(), input.strokes.len());
         assert_eq!(
             layout.glyphs.len(),
-            11,
-            "the rich fixture's real glyph count"
+            14,
+            "the rich fixture's real glyph count (its three eighths draw flags)"
         );
         assert_eq!(
             layout.strokes.len(),
-            38,
+            37,
             "the rich fixture's real stroke count"
         );
-        assert_eq!(layout.curves.len(), 1);
+        // Its tie, drawn as an arc, and the curve added above.
+        assert_eq!(layout.curves.len(), 2);
 
         // Every system's own bucket is empty — the stub attributes nothing.
         let system_count = layout.systems().count();
@@ -808,7 +815,10 @@ mod tests {
             layout.unowned.strokes,
             (0..layout.strokes.len() as u32).collect::<Vec<_>>()
         );
-        assert_eq!(layout.unowned.curves, vec![0]);
+        assert_eq!(
+            layout.unowned.curves,
+            (0..layout.curves.len() as u32).collect::<Vec<_>>()
+        );
     }
 
     #[test]

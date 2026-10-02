@@ -17,11 +17,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::prepass::{derive_annotations, DerivedAnnotations, PrePassProfile};
 use epiphany_core::{
-    AleatoricAnchoringDiscipline, AnchorOffset, AnnotationAnchor, CanonicalValue, Clef,
-    CoordinateDiscipline, Event, EventId, EventPosition, KeySignature, LineStyle, MeasurePosition,
-    MusicalDuration, MusicalPosition, NotatedComponent, PitchId, PitchSpelling, Region, RegionEdge,
-    RegionId, RegionTimeModel, Score, SlurKind, SpaceUnit, StaffId, StaffPosition, TimeAnchor,
-    TimeSignatureDisplay, TupletId, TupletRatio, TypedObjectId, WallClockTime,
+    AleatoricAnchoringDiscipline, AnchorOffset, AnnotationAnchor, BeamId, CanonicalValue, Clef,
+    CoordinateDiscipline, Event, EventDuration, EventId, EventPosition, KeySignature, LineStyle,
+    MeasurePosition, MusicalDuration, MusicalPosition, NotatedComponent, NoteValue, PitchId,
+    PitchSpelling, Region, RegionEdge, RegionId, RegionTimeModel, Score, SlurKind, SpaceUnit,
+    StaffId, StaffPosition, TimeAnchor, TimeSignatureDisplay, TupletId, TupletRatio, TypedObjectId,
+    WallClockTime,
 };
 use epiphany_determinism::{DomainTag, Preimage};
 
@@ -54,6 +55,8 @@ pub enum LayoutContent {
     Note(NoteContent),
     /// A rest: its note value and optional explicit staff position.
     Rest(RestContent),
+    /// An unpitched (percussion) note: its note value and staff position.
+    Unpitched(UnpitchedContent),
     /// A measure: whether it ends the staff (a final barline) and the time
     /// signature in force, when this measure introduces one.
     Measure(MeasureContent),
@@ -64,6 +67,29 @@ pub enum LayoutContent {
     /// A slur: its two endpoint onsets (resolved to columns in the constrained
     /// pass), its arc direction, and any authored curvature/style overrides.
     Slur(SlurContent),
+    /// A tie: the two events it joins and the pitches it pairs.
+    Tie(TieContent),
+    /// A staff group: its kind and its staves in this region, top first.
+    Group(GroupContent),
+}
+
+/// A staff group's content in one region: its kind, and those of its staves
+/// the region manifests, in the region's staff order.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GroupContent {
+    pub kind: epiphany_core::StaffGroupKind,
+    pub staves: Vec<StaffId>,
+}
+
+/// A tie's content: the events it joins, and each `(start, end)` pitch pair
+/// it ties — the score's pairing, or, where it names none, the end event's
+/// pitch equal to each start pitch. An unpitched tie pairs no pitch and joins
+/// the two notes' heads.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TieContent {
+    pub start: EventId,
+    pub end: EventId,
+    pub pairs: Vec<(PitchId, PitchId)>,
 }
 
 /// The clef and key-signature sequences in force across a staff instance,
@@ -81,6 +107,18 @@ pub struct StaffContent {
     /// `StaffInstance`, and every consumer resolving "the clef at time t" needs
     /// both (`active_clef_or`).
     pub default_clef: Clef,
+    /// The instance's beamed groups: as the score's beams name them, or, in a
+    /// score that names none, by its meter's beats.
+    pub beams: Vec<BeamGroup>,
+}
+
+/// A beamed group: two or more notes of one voice, each an eighth or shorter
+/// notated as a single component, in time order; and the score's beam it
+/// comes from, if one does.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BeamGroup {
+    pub events: Vec<EventId>,
+    pub beam: Option<BeamId>,
 }
 
 /// A clef change with its score anchor resolved into the layout time axis.
@@ -100,12 +138,29 @@ pub struct PlacedKeySignature {
 
 /// A note or chord's notated content: its resolved start position, its placed
 /// notated components (one notehead/tie segment each, at successive offsets — a
-/// multi-component decomposition is *not* collapsed), and its spelled pitches.
+/// multi-component decomposition is *not* collapsed), its spelled pitches, and
+/// where its voice stands among its staff's.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct NoteContent {
     pub position: TimePoint,
     pub components: Vec<PlacedComponent>,
     pub pitches: Vec<NotePitch>,
+    pub voice: VoicePlace,
+}
+
+/// Where an event's voice stands among its staff's at the event's time. Alone,
+/// a note turns its stem by its pitches and a rest sits at the middle of the
+/// staff. Beside another voice, an upper voice's stems turn up and its ties,
+/// slurs and rests go above, a lower voice's down and below. A voice's own stem
+/// direction, where it has one, places it throughout; otherwise the staff's
+/// first voice is upper wherever another voice shows a note or a visible rest
+/// during the event, and alone elsewhere, and each later voice is lower or
+/// upper by turns (the second lower, the third upper) wherever it shows ink.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum VoicePlace {
+    Alone,
+    Upper,
+    Lower,
 }
 
 /// One notated component placed within a note or rest: its offset from the
@@ -130,19 +185,40 @@ pub struct NotePitch {
 }
 
 /// A rest's notated content: its resolved start position, its placed notated
-/// components, and any explicit vertical position.
+/// components, any explicit vertical position, whether it is drawn, and
+/// whether it fills its measure (drawn as a whole rest in any meter).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RestContent {
     pub position: TimePoint,
     pub components: Vec<PlacedComponent>,
     pub staff_position: Option<StaffPosition>,
+    /// False for a hidden rest, which keeps its time but draws no ink.
+    pub visible: bool,
+    /// The rest starts its measure and lasts exactly as long.
+    pub whole_measure: bool,
+    pub voice: VoicePlace,
 }
 
-/// A measure's notated content: its resolved start position, which barline ends
-/// it, and the time signature it introduces, if any.
+/// An unpitched note's notated content: its resolved start position, its
+/// placed notated components, and its staff position (the bottom line `0`,
+/// one per diatonic step).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct UnpitchedContent {
+    pub position: TimePoint,
+    pub components: Vec<PlacedComponent>,
+    pub staff_position: StaffPosition,
+    pub voice: VoicePlace,
+}
+
+/// A measure's notated content: its resolved start position, where it ends,
+/// which barline ends it, and the time signature it introduces, if any.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct MeasureContent {
     pub start: TimePoint,
+    /// The next measure's start in the same staff instance, where this
+    /// measure's barline stands; `None` for the instance's last measure, whose
+    /// barline closes the region.
+    pub end: Option<TimePoint>,
     pub barline: BarlineKind,
     pub time_signature: Option<TimeSignatureContent>,
 }
@@ -248,7 +324,9 @@ pub enum SlurEndpoint {
 }
 
 /// A slur's arc direction. `Auto` lets the engraver choose (Minimal: above the
-/// staff); `Above`/`Below` are authored via `curvature_override.direction`.
+/// staff); `Above`/`Below` are authored via `curvature_override.direction`, or,
+/// unauthored, given by the voice of the slur's first note when it stands
+/// beside another ([`VoicePlace`]).
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum SlurDirection {
     Auto,
@@ -523,6 +601,8 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
         }
     }
 
+    // Every event's place among its staff's voices, for the slurs below.
+    let mut all_places: BTreeMap<EventId, VoicePlace> = BTreeMap::new();
     for (region_index, region) in score.canvas.regions.iter().enumerate() {
         let region_id = region.id;
         let mut objects = Vec::new();
@@ -564,7 +644,15 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                     .iter()
                     .filter_map(|change| time_anchor_dep(&change.anchor)),
             );
-            push(si_src, si_deps, staff, staff_content(score, si));
+            push(
+                si_src,
+                si_deps,
+                staff,
+                staff_content(score, si, &annotations),
+            );
+            let spans = measure_spans(score, si);
+            let places = voice_places(score, si);
+            all_places.extend(&places);
             for voice in &si.voices {
                 let v_src = TypedObjectId::Voice(voice.id);
                 push(v_src, vec![si_src], staff, LayoutContent::Structural);
@@ -576,7 +664,12 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                     deps.extend(pitches.iter().copied().map(TypedObjectId::Pitch));
                     // The event carries the notated content (note value + spelled
                     // pitches); the per-pitch objects are structural provenance.
-                    push(e_src, deps, staff, event_content(score, *eid, &annotations));
+                    push(
+                        e_src,
+                        deps,
+                        staff,
+                        event_content(score, *eid, &annotations, &spans, &places),
+                    );
                     for pid in pitches {
                         push(
                             TypedObjectId::Pitch(pid),
@@ -614,11 +707,42 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                 if let Some(anchor_dep) = time_anchor_dep(&measure.start) {
                     measure_deps.push(anchor_dep);
                 }
+                // The measure ends where the next one starts, so it depends on
+                // what that start resolves through as well.
+                let next = si.measures.get(index + 1);
+                if let Some(anchor_dep) = next.and_then(|m| time_anchor_dep(&m.start)) {
+                    if !measure_deps.contains(&anchor_dep) {
+                        measure_deps.push(anchor_dep);
+                    }
+                }
                 push(
                     TypedObjectId::Measure(measure.id),
                     measure_deps,
                     Some(si.staff),
-                    measure_content(score, measure, barline),
+                    measure_content(score, measure, next, barline),
+                );
+            }
+        }
+
+        // Staff groups whose staves this region manifests, each with the ones
+        // it holds here, in the region's order.
+        for group in &score.staff_groups {
+            let staves: Vec<StaffId> = region
+                .staff_extent
+                .staves
+                .iter()
+                .copied()
+                .filter(|staff| group.members.contains(staff))
+                .collect();
+            if !staves.is_empty() {
+                push(
+                    TypedObjectId::StaffGroup(group.id),
+                    staves.iter().copied().map(TypedObjectId::Staff).collect(),
+                    None,
+                    LayoutContent::Group(GroupContent {
+                        kind: group.kind.clone(),
+                        staves,
+                    }),
                 );
             }
         }
@@ -699,9 +823,9 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
         if !seen.insert(provenance.stable_id) {
             continue;
         }
-        // A repeat structure or slur carries its resolved engraving content
-        // (barline placements / endpoint onsets). Every other cross-cutting
-        // object is structural in this tier.
+        // A repeat structure, slur or tie carries its resolved engraving
+        // content (barline placements / endpoint onsets / the pitches it
+        // pairs). Every other cross-cutting object is structural in this tier.
         let content = match src {
             TypedObjectId::RepeatStructure(id) => score
                 .cross_cutting
@@ -715,7 +839,14 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                 .slurs
                 .iter()
                 .find(|slur| slur.id == id)
-                .map(|slur| slur_content(score, slur))
+                .map(|slur| slur_content(score, slur, &all_places))
+                .unwrap_or_default(),
+            TypedObjectId::Tie(id) => score
+                .cross_cutting
+                .ties
+                .iter()
+                .find(|tie| tie.id == id)
+                .map(|tie| tie_content(score, tie))
                 .unwrap_or_default(),
             _ => LayoutContent::Structural,
         };
@@ -832,7 +963,11 @@ fn derive_score_version(score: &Score) -> ScoreVersion {
 /// resolved layout times. Empty sequences (a score that declares no clef/key)
 /// are carried as-is — the constrained pass defaults the *active* clef/key to
 /// treble / C major.
-fn staff_content(score: &Score, si: &epiphany_core::StaffInstance) -> LayoutContent {
+fn staff_content(
+    score: &Score,
+    si: &epiphany_core::StaffInstance,
+    annotations: &DerivedAnnotations,
+) -> LayoutContent {
     let default_clef = score
         .staves
         .iter()
@@ -857,18 +992,199 @@ fn staff_content(score: &Score, si: &epiphany_core::StaffInstance) -> LayoutCont
                 key: change.key,
             })
             .collect(),
+        beams: beam_groups(score, si, annotations),
     })
 }
 
+/// The beamed groups of a staff instance's notes. A score that names beams
+/// (an import, which carries its source's beaming) is beamed as it says, each
+/// beam split where a note it lists cannot be beamed. A score that names none
+/// is beamed by its meter: consecutive beamable notes of one voice, without a
+/// gap, within one beat group of the measure's time signature. A beamable note
+/// is a pitched or unpitched note notated as one eighth-or-shorter component
+/// outside a tuplet.
+pub(crate) fn beam_groups(
+    score: &Score,
+    si: &epiphany_core::StaffInstance,
+    annotations: &DerivedAnnotations,
+) -> Vec<BeamGroup> {
+    let musical = |eid: EventId| -> Option<(MusicalPosition, MusicalPosition)> {
+        let event = score.events.get(eid)?;
+        match (event.position(), event.duration()) {
+            (EventPosition::Musical(start), EventDuration::Musical(duration)) => {
+                Some((start.clone(), start.clone() + duration.clone()))
+            }
+            _ => None,
+        }
+    };
+    let beamable = |eid: EventId| -> bool {
+        let Some(event) = score.events.get(eid) else {
+            return false;
+        };
+        if !matches!(event, Event::Pitched(_) | Event::Unpitched(_)) || musical(eid).is_none() {
+            return false;
+        }
+        let components = components_of(annotations, eid);
+        matches!(components.as_slice(), [only] if only.tuplet.is_none()
+            && !matches!(only.base_value, NoteValue::Whole | NoteValue::Half | NoteValue::Quarter))
+    };
+    let in_instance: BTreeSet<EventId> = si
+        .voices
+        .iter()
+        .flat_map(|voice| voice.events.iter().copied())
+        .collect();
+    let mut groups = Vec::new();
+    if !score.cross_cutting.beams.is_empty() {
+        for beam in &score.cross_cutting.beams {
+            if !beam.events.iter().all(|e| in_instance.contains(e)) {
+                continue;
+            }
+            let mut events: Vec<EventId> = beam.events.clone();
+            events.sort_by_key(|e| musical(*e).map(|(start, _)| start));
+            for run in events.split(|e| !beamable(*e)) {
+                if run.len() >= 2 {
+                    groups.push(BeamGroup {
+                        events: run.to_vec(),
+                        beam: Some(beam.id),
+                    });
+                }
+            }
+        }
+        return groups;
+    }
+    // The beats of each measure: its time signature's beat groups laid end to
+    // end from its start (a measure under no known signature is one beat).
+    let mut beats: Vec<(MusicalPosition, MusicalPosition)> = Vec::new();
+    let mut groups_in_force: Option<Vec<MusicalDuration>> = None;
+    for (index, measure) in si.measures.iter().enumerate() {
+        if let Some(signature) = measure
+            .time_signature
+            .and_then(|id| score.time_signatures.iter().find(|t| t.id == id))
+        {
+            groups_in_force = Some(
+                signature
+                    .beat_groups()
+                    .iter()
+                    .map(|group| group.duration.clone())
+                    .collect(),
+            );
+        }
+        let TimePoint::Musical(start) = resolve_time_anchor(score, &measure.start) else {
+            continue;
+        };
+        let end = si.measures.get(index + 1).and_then(|next| {
+            match resolve_time_anchor(score, &next.start) {
+                TimePoint::Musical(end) => Some(end),
+                TimePoint::WallClock(_) => None,
+            }
+        });
+        let mut at = start.clone();
+        for duration in groups_in_force.iter().flatten() {
+            let next = at.clone() + duration.clone();
+            beats.push((at, next.clone()));
+            at = next;
+        }
+        if groups_in_force.is_none() {
+            if let Some(end) = end {
+                beats.push((start, end));
+            }
+        }
+    }
+    let beat_of = |start: &MusicalPosition, end: &MusicalPosition| {
+        beats
+            .iter()
+            .position(|(from, to)| from <= start && end <= to)
+    };
+    for voice in &si.voices {
+        let mut events: Vec<EventId> = voice.events.clone();
+        events.sort_by_key(|e| musical(*e).map(|(start, _)| start));
+        let mut run: Vec<EventId> = Vec::new();
+        let mut run_beat = None;
+        let mut run_end: Option<MusicalPosition> = None;
+        for eid in events {
+            let span = musical(eid);
+            let beat = span.as_ref().and_then(|(start, end)| beat_of(start, end));
+            let joins = beamable(eid)
+                && beat.is_some()
+                && beat == run_beat
+                && span.as_ref().map(|(start, _)| start) == run_end.as_ref();
+            if !joins {
+                if run.len() >= 2 {
+                    groups.push(BeamGroup {
+                        events: std::mem::take(&mut run),
+                        beam: None,
+                    });
+                }
+                run.clear();
+                run_beat = None;
+                if beamable(eid) && beat.is_some() {
+                    run_beat = beat;
+                }
+            }
+            if run_beat.is_some() {
+                run.push(eid);
+                run_end = span.map(|(_, end)| end);
+            }
+        }
+        if run.len() >= 2 {
+            groups.push(BeamGroup {
+                events: run,
+                beam: None,
+            });
+        }
+    }
+    groups
+}
+
+/// Where each measure of a staff instance starts and ends: at the next
+/// measure's start, or, for the last, its start plus the length of the meter in
+/// force there (`None` when no measure of the instance names one).
+fn measure_spans(
+    score: &Score,
+    si: &epiphany_core::StaffInstance,
+) -> Vec<(TimePoint, Option<TimePoint>)> {
+    let mut length: Option<MusicalDuration> = None;
+    let mut spans = Vec::with_capacity(si.measures.len());
+    for (index, measure) in si.measures.iter().enumerate() {
+        if let Some(signature) = measure
+            .time_signature
+            .and_then(|id| score.time_signatures.iter().find(|t| t.id == id))
+        {
+            length = Some(signature.measure_duration().clone());
+        }
+        let start = resolve_time_anchor(score, &measure.start);
+        let end = match si.measures.get(index + 1) {
+            Some(next) => Some(resolve_time_anchor(score, &next.start)),
+            None => match (&start, &length) {
+                (TimePoint::Musical(position), Some(length)) => {
+                    Some(TimePoint::Musical(position.clone() + length.clone()))
+                }
+                _ => None,
+            },
+        };
+        spans.push((start, end));
+    }
+    spans
+}
+
 /// The notated content of an event: a note (its position, decomposition, and
-/// spelled pitches) for a pitched event, a rest for a rest, and structural for
-/// the kinds this Minimal slice does not yet engrave (unpitched / indeterminate
-/// / trajectory / graphic / cue). Every pitch is kept; an unspelled one carries
-/// `spelling: None` rather than being dropped.
-fn event_content(score: &Score, event: EventId, annotations: &DerivedAnnotations) -> LayoutContent {
+/// spelled pitches) for a pitched event, a rest for a rest, an unpitched note
+/// for an unpitched event, and structural for the kinds this Minimal slice
+/// does not yet engrave (indeterminate / trajectory / graphic / cue). Every
+/// pitch is kept; an unspelled one carries `spelling: None` rather than being
+/// dropped. `spans` are the measures of the event's staff instance, which say
+/// whether a rest fills its measure.
+fn event_content(
+    score: &Score,
+    event: EventId,
+    annotations: &DerivedAnnotations,
+    spans: &[(TimePoint, Option<TimePoint>)],
+    places: &BTreeMap<EventId, VoicePlace>,
+) -> LayoutContent {
     let Some(graph_event) = score.events.get(event) else {
         return LayoutContent::Structural;
     };
+    let voice = places.get(&event).copied().unwrap_or(VoicePlace::Alone);
     let components = placed_components(score, components_of(annotations, event));
     match graph_event {
         Event::Pitched(pitched) => {
@@ -887,15 +1203,103 @@ fn event_content(score: &Score, event: EventId, annotations: &DerivedAnnotations
                 position: event_time(&pitched.position),
                 components,
                 pitches,
+                voice,
             })
         }
-        Event::Rest(rest) => LayoutContent::Rest(RestContent {
-            position: event_time(&rest.position),
+        Event::Rest(rest) => {
+            let position = event_time(&rest.position);
+            let whole_measure = match (&position, &rest.duration) {
+                (TimePoint::Musical(start), EventDuration::Musical(duration)) => {
+                    let end = TimePoint::Musical(start.clone() + duration.clone());
+                    spans
+                        .iter()
+                        .any(|(s, e)| *s == position && e.as_ref() == Some(&end))
+                }
+                _ => false,
+            };
+            LayoutContent::Rest(RestContent {
+                position,
+                components,
+                staff_position: rest.vertical_position,
+                visible: rest.visible,
+                whole_measure,
+                voice,
+            })
+        }
+        Event::Unpitched(unpitched) => LayoutContent::Unpitched(UnpitchedContent {
+            position: event_time(&unpitched.position),
             components,
-            staff_position: rest.vertical_position,
+            staff_position: unpitched.staff_position,
+            voice,
         }),
         _ => LayoutContent::Structural,
     }
+}
+
+/// Each event's [`VoicePlace`] among its staff instance's voices: the first
+/// voice (the primary, else the first listed) is upper during any other
+/// voice's ink and alone elsewhere; each later voice, by its order, is lower,
+/// upper, lower and so on; a voice stating its stem direction is upper or
+/// lower by it throughout. Only a note, an unpitched note or a visible rest at
+/// a musical position with a musical duration shows ink.
+fn voice_places(score: &Score, si: &epiphany_core::StaffInstance) -> BTreeMap<EventId, VoicePlace> {
+    let mut voices: Vec<&epiphany_core::Voice> = si.voices.iter().collect();
+    voices.sort_by_key(|v| !v.is_primary);
+    let span = |eid: &EventId| -> Option<(MusicalPosition, MusicalPosition)> {
+        let (position, duration, visible) = match score.events.get(*eid)? {
+            Event::Pitched(e) => (&e.position, &e.duration, true),
+            Event::Unpitched(e) => (&e.position, &e.duration, true),
+            Event::Rest(e) => (&e.position, &e.duration, e.visible),
+            _ => return None,
+        };
+        match (position, duration, visible) {
+            (EventPosition::Musical(start), EventDuration::Musical(length), true) => {
+                Some((start.clone(), start.clone() + length.clone()))
+            }
+            _ => None,
+        }
+    };
+    // Each later voice's inked spans in time order, each with the furthest
+    // end of those up to it.
+    let others: Vec<Vec<(MusicalPosition, MusicalPosition)>> = voices
+        .iter()
+        .skip(1)
+        .map(|v| {
+            let mut spans: Vec<_> = v.events.iter().filter_map(span).collect();
+            spans.sort();
+            let mut furthest: Option<MusicalPosition> = None;
+            for (_, end) in &mut spans {
+                if let Some(f) = furthest.as_ref().filter(|f| *f > end) {
+                    *end = f.clone();
+                }
+                furthest = Some(end.clone());
+            }
+            spans
+        })
+        .collect();
+    let overlaps = |start: &MusicalPosition, end: &MusicalPosition| {
+        others.iter().any(|spans| {
+            let before = spans.partition_point(|(s, _)| s < end);
+            before > 0 && spans[before - 1].1 > *start
+        })
+    };
+    let mut places = BTreeMap::new();
+    for (k, voice) in voices.iter().enumerate() {
+        for eid in &voice.events {
+            let place = match voice.default_stem_direction {
+                Some(epiphany_core::StemDirection::Up) => VoicePlace::Upper,
+                Some(epiphany_core::StemDirection::Down) => VoicePlace::Lower,
+                None if k % 2 == 1 => VoicePlace::Lower,
+                None if k > 0 => VoicePlace::Upper,
+                None => match span(eid) {
+                    Some((start, end)) if overlaps(&start, &end) => VoicePlace::Upper,
+                    _ => VoicePlace::Alone,
+                },
+            };
+            places.insert(*eid, place);
+        }
+    }
+    places
 }
 
 /// An event's concrete position as a layout [`TimePoint`] (the two share the
@@ -1095,13 +1499,23 @@ fn repeat_content(score: &Score, rp: &epiphany_core::RepeatStructure) -> LayoutC
 /// A slur's engraving content: each endpoint event resolved to its onset (or
 /// [`SlurEndpoint::Unresolved`] when the event is missing), plus the authored
 /// curvature/style overrides. Direction defaults to [`SlurDirection::Auto`]
-/// when the override leaves it unset.
-fn slur_content(score: &Score, slur: &epiphany_core::Slur) -> LayoutContent {
+/// when the override leaves it unset, unless the slur starts on a voice
+/// beside another, which puts it above for an upper voice and below for a
+/// lower.
+fn slur_content(
+    score: &Score,
+    slur: &epiphany_core::Slur,
+    places: &BTreeMap<EventId, VoicePlace>,
+) -> LayoutContent {
     use epiphany_core::CurveDirection;
     let direction = match slur.curvature_override.as_ref().and_then(|o| o.direction) {
         Some(CurveDirection::Above) => SlurDirection::Above,
         Some(CurveDirection::Below) => SlurDirection::Below,
-        None => SlurDirection::Auto,
+        None => match places.get(&slur.start_event) {
+            Some(VoicePlace::Upper) => SlurDirection::Above,
+            Some(VoicePlace::Lower) => SlurDirection::Below,
+            _ => SlurDirection::Auto,
+        },
     };
     LayoutContent::Slur(SlurContent {
         start: slur_endpoint(score, slur.start_event),
@@ -1111,6 +1525,34 @@ fn slur_content(score: &Score, slur: &epiphany_core::Slur) -> LayoutContent {
         thickness: slur.style.thickness,
         kind: slur.kind,
         line: slur.style.line,
+    })
+}
+
+/// A tie's content (see [`TieContent`]).
+fn tie_content(score: &Score, tie: &epiphany_core::Tie) -> LayoutContent {
+    let pairs = match &tie.pitch_pairing {
+        Some(pairs) => pairs.clone(),
+        None => match (
+            score.events.get(tie.start_event),
+            score.events.get(tie.end_event),
+        ) {
+            (Some(Event::Pitched(start)), Some(Event::Pitched(end))) => start
+                .pitches
+                .iter()
+                .filter_map(|a| {
+                    end.pitches
+                        .iter()
+                        .find(|b| b.pitch.scale_position == a.pitch.scale_position)
+                        .map(|b| (a.id, b.id))
+                })
+                .collect(),
+            _ => Vec::new(),
+        },
+    };
+    LayoutContent::Tie(TieContent {
+        start: tie.start_event,
+        end: tie.end_event,
+        pairs,
     })
 }
 
@@ -1203,13 +1645,15 @@ fn components_of(annotations: &DerivedAnnotations, event: EventId) -> Vec<Notate
         .unwrap_or_default()
 }
 
-/// The notated content of a measure: its start anchor, its ending barline, and
-/// the time signature it introduces, resolved to numerator/denominator when
-/// standard or irrational (compound / mixed / symbolic meters are not engraved
-/// in I-1).
+/// The notated content of a measure: its start anchor, its end (the start of
+/// `next`, the following measure of its staff instance), its ending barline,
+/// and the time signature it introduces, resolved to numerator/denominator
+/// when standard or irrational (compound / mixed / symbolic meters are not
+/// engraved in I-1).
 fn measure_content(
     score: &Score,
     measure: &epiphany_core::Measure,
+    next: Option<&epiphany_core::Measure>,
     barline: BarlineKind,
 ) -> LayoutContent {
     let time_signature = measure
@@ -1217,6 +1661,7 @@ fn measure_content(
         .and_then(|id| time_signature_content(score, id));
     LayoutContent::Measure(MeasureContent {
         start: resolve_time_anchor(score, &measure.start),
+        end: next.map(|m| resolve_time_anchor(score, &m.start)),
         barline,
         time_signature,
     })

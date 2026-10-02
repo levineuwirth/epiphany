@@ -212,8 +212,46 @@ pub struct Engraver {
 /// move — plain content settles near a pitch of 10.6 staff spaces — while a
 /// single-staff score is again unchanged. The same version repairs a cascade
 /// defect: a pair below the first was over-separated by exactly the shift above
-/// it, so 3+-staff scores tighten further).
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(12);
+/// it, so 3+-staff scores tighten further), and to `13` when a system break
+/// moved from before a barline to after it (the constrained stage now draws a
+/// barline where its measure ends, so a wrapping score's systems end on a
+/// barline and the next begins with what follows it; a score that does not
+/// wrap casts off as before, though its barlines stand elsewhere), and to `14`
+/// when a stroke or curve the input anchors (`ConstrainedLayoutIR::span_anchors`,
+/// a beam, a tie) began riding the slots its anchor names at its two ends
+/// through spacing and justification, instead of mapping through the
+/// coordinate map whole, and an anchored curve whose ends fall in two systems
+/// (a tie across a break) began drawing as two half-arcs to and from the
+/// systems' edges; an input with no anchor is unchanged), and to `15` when
+/// each later system of a region began opening with its staves' clefs and key
+/// signatures (`ConstrainedLayoutIR::system_leads`), its music moved right by
+/// the lead and its breaks reserving the lead's width, and to `16` when a
+/// system of two or more staves began opening with a line joining them, each
+/// staff group marking its staves left of it (a brace, a bracket, a
+/// sub-bracket) and a group's barlines running from staff to staff through it
+/// (`ConstrainedLayoutIR::staff_groups`; a single-staff score is unchanged),
+/// and to `17` when the lead's slot and a time signature's began reserving
+/// their ink and the gap after it as their natural width (an opening time
+/// signature stood 0.3 staff spaces from the clef, and the first note as near
+/// it; every score's first system moves right of its lead), and to `18` when
+/// two voices on a staff began turning apart (`VoicePlace`): beside another
+/// voice an upper voice's stems, beams, ties and slurs go up and its rests
+/// above their place, a lower voice's down and below (a staff of one voice is
+/// unchanged), and to `19` when a column's accidentals began standing by
+/// their ink rather than at a fixed distance from their heads: clear of the
+/// column's heads, of the ledger lines they span and of each other, across
+/// voices, the highest nearest the heads and a column further out for each
+/// that would touch one already placed, and to `20` when the heads of a
+/// column began standing clear of each other: a head a second from its
+/// chord-mate across the stem, a voice a second from another to its right
+/// with their stems in one line and its stem, beams, ties and ledger lines
+/// with it, a column's dots right of all its heads, and every two heads of a
+/// column a second or unison apart obliged not to collide, and to `21` when a
+/// tie continued into a later system began starting clear of the system's
+/// lead, or of a time signature opening it, and arcing as a tie of its own
+/// length, at least a tie's length, to its note: the system's lead and its
+/// break search make the room, and its opening columns keep their place.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(21);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -529,11 +567,19 @@ impl HorizontalRemap {
     /// ([`epiphany_layout_ir::is_rigid_width_stroke`]) — preserving both its length
     /// and its offset from its glyph, which maps by that same delta at its column.
     fn strokes(&self, input: &ConstrainedLayoutIR) -> Vec<Stroke> {
+        let anchors = span_anchors(input);
         input
             .strokes
             .iter()
             .map(|s| {
-                let (from_x, to_x) = if let Some(g) = component_glyph(s, &input.glyphs) {
+                let anchored = anchors.get(&s.id()).and_then(|(start, end)| {
+                    Some((self.slot_delta.get(start)?, self.slot_delta.get(end)?))
+                });
+                let (from_x, to_x) = if let Some((start, end)) = anchored {
+                    // A spanning stroke anchored at both ends (a beam): each
+                    // end rides its own slot, so it stays on the stem it meets.
+                    (s.from.x.0 + start, s.to.x.0 + end)
+                } else if let Some(g) = component_glyph(s, &input.glyphs) {
                     // A per-event component stroke (a stem, a ledger) translates
                     // rigidly by its *owning glyph's* slot delta — found by
                     // source, not the stroke's own x (a stem sits offset from its
@@ -568,17 +614,26 @@ impl HorizontalRemap {
     /// the arc stretches with the spacing between its endpoint columns. Each
     /// control point's y is preserved verbatim.
     fn curves(&self, input: &ConstrainedLayoutIR) -> Vec<Curve> {
+        let anchors = span_anchors(input);
         input
             .curves
             .iter()
             .map(|c| {
-                let map_x = |point: Point| Point::new(self.map(point.x.0), point.y.0);
+                let anchored = anchors.get(&c.id()).and_then(|(start, end)| {
+                    Some((*self.slot_delta.get(start)?, *self.slot_delta.get(end)?))
+                });
+                let [p0, p1, p2, p3] = match anchored {
+                    Some((start, end)) => anchored_curve(c.control_points(), start, end),
+                    None => c
+                        .control_points()
+                        .map(|point| Point::new(self.map(point.x.0), point.y.0)),
+                };
                 Curve {
                     provenance: c.provenance.clone(),
-                    p0: map_x(c.p0),
-                    p1: map_x(c.p1),
-                    p2: map_x(c.p2),
-                    p3: map_x(c.p3),
+                    p0,
+                    p1,
+                    p2,
+                    p3,
                     thickness: c.thickness,
                     layer: c.layer,
                     style: c.style,
@@ -588,6 +643,33 @@ impl HorizontalRemap {
             })
             .collect()
     }
+}
+
+/// Each anchored stroke's or curve's slots, by its stable id.
+pub(crate) fn span_anchors(
+    input: &ConstrainedLayoutIR,
+) -> BTreeMap<GlyphObjectId, (SpringSlotId, SpringSlotId)> {
+    input
+        .span_anchors
+        .iter()
+        .map(|anchor| (anchor.primitive, (anchor.start, anchor.end)))
+        .collect()
+}
+
+/// A curve whose first and last control points move by `start` and `end`
+/// respectively, its inner control points keeping their fractions of the
+/// span between them.
+pub(crate) fn anchored_curve(cp: [Point; 4], start: f32, end: f32) -> [Point; 4] {
+    let (x0, x3) = (cp[0].x.0, cp[3].x.0);
+    let (n0, n3) = (x0 + start, x3 + end);
+    let along = |x: f32| {
+        if (x3 - x0).abs() < f32::EPSILON {
+            x + start
+        } else {
+            n0 + (x - x0) * (n3 - n0) / (x3 - x0)
+        }
+    };
+    cp.map(|point| Point::new(along(point.x.0), point.y.0))
 }
 
 /// Linear interpolation/extrapolation through two control points.
@@ -862,11 +944,13 @@ mod tests {
                             default_clef: epiphany_core::Clef::default(),
                             clefs: vec![],
                             keys: vec![],
+                            beams: Vec::new(),
                         }),
                     ),
                     manifested(
                         TypedObjectId::Event(EventId::from_raw(1)),
                         LayoutContent::Note(NoteContent {
+                            voice: epiphany_layout_ir::VoicePlace::Alone,
                             position: TimePoint::Musical(MusicalPosition::origin()),
                             components: vec![],
                             pitches: vec![NotePitch {
@@ -1161,22 +1245,42 @@ mod tests {
             "the honoured break increases the system count"
         );
         // The break lands at the anchor's column: the anchored slot's glyphs
-        // now start their system at the page's left content edge (up to the
-        // ledger-line extension, 0.3 staff spaces, which also participates in
-        // the system's extent and may sit left of the notehead box).
-        let left_edge = report
-            .layout
+        // are the first content of their system, after its lead at the left
+        // margin (its clef), with nothing but the lead before them.
+        let anchored: Vec<usize> = constrained
             .glyphs
             .iter()
-            .zip(&constrained.glyphs)
+            .enumerate()
             .filter(|(_, c)| c.horizontal_slot == break_slot)
-            .map(|(r, c)| r.position.x.0 + c.bounding_box.left.0)
+            .map(|(i, _)| i)
+            .collect();
+        let left_edge = anchored
+            .iter()
+            .map(|&i| {
+                report.layout.glyphs[i].position.x.0 + constrained.glyphs[i].bounding_box.left.0
+            })
             .fold(f32::INFINITY, f32::min);
+        let system = report
+            .layout
+            .systems()
+            .find(|s| s.primitives.glyphs.contains(&(anchored[0] as u32)))
+            .expect("the anchored column is in a system");
         let margin = engraver.geometry().margins.left.0;
+        let before: Vec<&ResolvedGlyph> = system
+            .primitives
+            .glyphs
+            .iter()
+            .map(|&i| &report.layout.glyphs[i as usize])
+            .filter(|g| g.position.x.0 < left_edge - 1e-3)
+            .collect();
+        assert!(!before.is_empty(), "the system opens with its lead");
         assert!(
-            left_edge >= margin - 1e-3 && left_edge <= margin + 0.5,
-            "the anchored column starts its system at the left margin \
-             (edge {left_edge}, margin {margin})"
+            before.iter().all(|g| matches!(
+                g.provenance.synthesis,
+                Some(epiphany_layout_ir::SynthesisKind::Registered(k))
+                    if k == casting::SYSTEM_LEAD_SYNTHESIS
+            ) && g.position.x.0 >= margin - 1e-3),
+            "nothing but the lead stands before the anchored column (edge {left_edge})"
         );
         // The decision record cites the user's override.
         assert!(report
@@ -1265,6 +1369,7 @@ mod tests {
                 manifested(
                     TypedObjectId::Event(EventId::from_raw(eid)),
                     LayoutContent::Note(NoteContent {
+                        voice: epiphany_layout_ir::VoicePlace::Alone,
                         position: TimePoint::Musical(pos),
                         components: whole(),
                         // C6 is a step above the treble staff, so each head earns
@@ -1284,6 +1389,7 @@ mod tests {
                 default_clef: epiphany_core::Clef::default(),
                 clefs: vec![],
                 keys: vec![],
+                beams: Vec::new(),
             }),
         )];
         objects.extend(note(1, 101, MusicalPosition::origin()));
@@ -1685,6 +1791,7 @@ mod tests {
                 spelling.accidentals.push(AccidentalId::new("sharp"));
             }
             LayoutContent::Note(NoteContent {
+                voice: epiphany_layout_ir::VoicePlace::Alone,
                 position: time,
                 components: vec![],
                 pitches: vec![NotePitch {
@@ -1791,11 +1898,13 @@ mod tests {
                                 time: TimePoint::Musical(MusicalPosition::origin()),
                                 key: KeySignature::new(3).expect("three sharps"),
                             }],
+                            beams: Vec::new(),
                         }),
                     ),
                     manifested(
                         TypedObjectId::Event(EventId::from_raw(1)),
                         LayoutContent::Note(NoteContent {
+                            voice: epiphany_layout_ir::VoicePlace::Alone,
                             position: TimePoint::Musical(MusicalPosition::origin()),
                             components: vec![],
                             pitches: vec![NotePitch {
@@ -2080,6 +2189,54 @@ mod tests {
         ))
     }
 
+    /// A barline ends its measure: none stands between the opening clef and
+    /// the first note, each of the ten measures (four quarters each) is closed
+    /// by its own barline after its notes, and the last by the final barline
+    /// rather than sharing a bar with the one before.
+    #[test]
+    fn a_barline_ends_each_measure_and_none_follows_the_opening_clef() {
+        let input = ten_measure_constrained();
+        let layout = Engraver::default()
+            .solve(&input, &SolverConfig::default())
+            .layout;
+        for system in layout.systems() {
+            let mut glyphs: Vec<&ResolvedGlyph> = system
+                .primitives
+                .glyphs
+                .iter()
+                .map(|&i| &layout.glyphs[i as usize])
+                .collect();
+            glyphs.sort_by(|a, b| a.position.x.0.total_cmp(&b.position.x.0));
+            // Noteheads counted between barlines, in reading order: every run
+            // of four is closed by a barline, and the system ends on one.
+            let mut run = 0;
+            for glyph in &glyphs {
+                let name = glyph.glyph.as_str();
+                if name.starts_with("notehead") {
+                    run += 1;
+                } else if name.starts_with("barline") {
+                    assert_eq!(run, 4, "a barline closes a measure of four notes");
+                    run = 0;
+                }
+            }
+            assert_eq!(run, 0, "the system ends on a barline");
+        }
+        let barlines: Vec<&str> = layout
+            .glyphs
+            .iter()
+            .map(|g| g.glyph.as_str())
+            .filter(|name| name.starts_with("barline"))
+            .collect();
+        assert_eq!(barlines.len(), 10, "one barline per measure");
+        assert_eq!(
+            barlines
+                .iter()
+                .filter(|name| **name == "barlineFinal")
+                .count(),
+            1
+        );
+    }
+
     #[test]
     fn greedy_wrap_breaks_at_measure_boundaries() {
         let input = ten_measure_constrained();
@@ -2110,22 +2267,32 @@ mod tests {
                 "every system starts at the left content margin"
             );
         }
-        // The greedy pass breaks at measure boundaries only: each wrapped
-        // system after the first begins with a barline column.
-        for system in &systems[1..] {
-            let top = system.bounding_box.origin.y.0 + system.bounding_box.size.height.0;
-            let bottom = system.bounding_box.origin.y.0;
-            let first_glyph = layout
+        // Breaks fall at measure boundaries only, and a barline ends its
+        // measure: every system ends on a barline, and none after the first
+        // begins with one.
+        for (k, system) in systems.iter().enumerate() {
+            let glyphs: Vec<&ResolvedGlyph> = system
+                .primitives
                 .glyphs
                 .iter()
-                .filter(|g| g.position.y.0 >= bottom - 1e-3 && g.position.y.0 <= top + 1e-3)
-                .min_by(|a, b| a.position.x.0.total_cmp(&b.position.x.0))
-                .expect("a wrapped system has glyphs");
+                .map(|&i| &layout.glyphs[i as usize])
+                .collect();
+            let by_x = |a: &&&ResolvedGlyph, b: &&&ResolvedGlyph| {
+                a.position.x.0.total_cmp(&b.position.x.0)
+            };
+            let last = glyphs.iter().max_by(by_x).expect("a system has glyphs");
             assert!(
-                first_glyph.glyph.as_str().starts_with("barline"),
-                "a greedy system boundary sits at a measure boundary, got {}",
-                first_glyph.glyph.as_str()
+                last.glyph.as_str().starts_with("barline"),
+                "system {k} ends on a barline, got {}",
+                last.glyph.as_str()
             );
+            if k > 0 {
+                let first = glyphs.iter().min_by(by_x).expect("a system has glyphs");
+                assert!(
+                    !first.glyph.as_str().starts_with("barline"),
+                    "system {k} begins after the barline ending the previous one"
+                );
+            }
         }
         // One Automatic engraved decision per chosen boundary, *appended* to
         // the pipeline's own decisions (which are carried through unchanged).
@@ -2323,7 +2490,11 @@ mod tests {
                 .strokes
                 .iter()
                 .filter(|st| {
-                    (st.from.x.0 - st.to.x.0).abs() < 1e-4 && (st.from.y.0 - st.to.y.0).abs() > 1e-3
+                    // A stem: an event's vertical stroke (a barline joint or a
+                    // system's opening line is vertical too, and no stem).
+                    matches!(st.provenance.source, TypedObjectId::Event(_))
+                        && (st.from.x.0 - st.to.x.0).abs() < 1e-4
+                        && (st.from.y.0 - st.to.y.0).abs() > 1e-3
                 })
                 .map(|st| {
                     heads
@@ -2355,11 +2526,8 @@ mod tests {
     /// `quality::tests::a_glyphless_staff_band_still_contributes_an_inter_staff_unit`.)
     #[test]
     fn a_staff_band_owning_no_glyphs_is_still_laid_out_as_a_staff() {
-        use epiphany_layout_ir::{to_constrained, to_logical};
         let report = Engraver::default().solve(
-            &to_constrained(&to_logical(
-                &epiphany_testkit::fixtures::percussion_placeholder_staff(1),
-            )),
+            &epiphany_testkit::fixtures::percussion_placeholder_constrained(1),
             &SolverConfig::default(),
         );
         assert_eq!(report.status, SolveStatus::Solved);
@@ -2398,14 +2566,26 @@ mod tests {
         };
         let (first, second) = (pitch(systems[0]), pitch(systems[1]));
         assert!(
-            first > second + 8.0,
+            first > second + 7.5,
             "the pressured system opens far wider: {first} vs {second}"
         );
-        // The constrained stage stacks at SYSTEM_STAFF_PITCH = 12; the slack
-        // system is COMPRESSED below it, which an expand-only solve cannot do.
+        // The slack system is pulled to exactly what its own content needs:
+        // its notes sit inside the staves, so its tallest ink is its lead's
+        // treble clefs, reaching above the lower staff and below the upper,
+        // and the solve leaves the band's preferred gap between them, whether
+        // that is wider or narrower than the constrained stage's fixed pitch.
+        let clef = epiphany_layout_ir::metrics("gClef")
+            .expect("bundled")
+            .bounding_box();
+        let (above, below) = (1.0 + clef.top.0, -(1.0 + clef.bottom.0));
+        let gap = epiphany_layout_ir::VerticalBand::inter_staff_gap(
+            epiphany_layout_ir::VerticalBandId(0),
+        )
+        .preferred_height
+        .0;
         assert!(
-            second < 12.0,
-            "the slack system is pulled tighter than the fixed pitch: {second}"
+            (second - (above + below + gap)).abs() < 1e-3,
+            "the slack system realizes its own clefs' clearance: {second}"
         );
         assert_eq!(report.metric_vector.collision_penalty.0, 0.0);
     }
@@ -2702,10 +2882,9 @@ mod tests {
                 );
             }
         }
-        // Nine of the fixture's ten measures are marked by a start barline
-        // column (the final-barline measure's start is not marked by any
-        // column in this projection, so its record is honestly omitted).
-        assert_eq!(measure_records, 9);
+        // Each of the fixture's ten measures is closed by its own barline, the
+        // last by the final barline, and so has a record.
+        assert_eq!(measure_records, 10);
     }
 
     #[test]

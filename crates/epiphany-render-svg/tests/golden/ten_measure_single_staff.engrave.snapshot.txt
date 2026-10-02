@@ -1,15 +1,15 @@
 fixture=ten_measure_single_staff solver=engrave
-glyph_count=51
-path_count=51
+glyph_count=52
+path_count=52
 fallback_rect_count=0
-stroke_count=96
-curve_count=0
-provenance_count=147
+stroke_count=95
+curve_count=1
+provenance_count=148
 layer_count=1
 hard_constraint_count=90
 xml_well_formed=true
-view_box=[5.4999986 -26.090391 94.000015 20.589813]
+view_box=[5.435 -27.787155 94.06501 22.286577]
 class_counts:
   barline=10
-  clef=1
+  clef=2
   notehead=40

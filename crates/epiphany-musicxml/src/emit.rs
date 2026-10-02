@@ -10,24 +10,25 @@
 use std::collections::BTreeMap;
 
 use epiphany_core::{
-    AnchorOffset, BeatGroup, Clef, ClefChange, Event, EventDuration, EventId, EventPosition,
-    ForeignFormatId, IdentifiedPitch, IdentityContext, Instrument, InstrumentId, KeySignature,
-    KeySignatureChange, Measure, MeasureId, MeasureNumberVisibility, MetricTimeModel,
+    AnchorOffset, Beam, BeamId, BeatGroup, Clef, ClefChange, Event, EventDuration, EventId,
+    EventPosition, ForeignFormatId, IdentifiedPitch, IdentityContext, Instrument, InstrumentId,
+    KeySignature, KeySignatureChange, Measure, MeasureId, MeasureNumberVisibility, MetricTimeModel,
     MusicalDuration, MusicalPosition, OperationId, PitchId, PitchedEvent, PowerOfTwo, RationalTime,
     Region, RegionContent, RegionEdge, RegionId, RegionTimeModel, ReplicaId, Rest, ScoreMetadata,
-    Slur, SlurId, SlurKind, Staff, StaffExtent, StaffId, StaffInstance, StaffInstanceId,
-    StaffLineConfiguration, StaffPosition, StemConfiguration, Tie, TieClass, TieId, TimeAnchor,
-    TimeExtent, TimeSignature, TimeSignatureDisplay, TimeSignatureId, Timestamp, UnpitchedEvent,
-    UnpitchedMember, UnpitchedMemberId, Voice, VoiceId, VoiceOrigin, WallClockTime,
+    Slur, SlurId, SlurKind, Staff, StaffExtent, StaffGroup, StaffGroupId, StaffGroupKind, StaffId,
+    StaffInstance, StaffInstanceId, StaffLineConfiguration, StaffPosition, StemConfiguration, Tie,
+    TieClass, TieId, TimeAnchor, TimeExtent, TimeSignature, TimeSignatureDisplay, TimeSignatureId,
+    Timestamp, UnpitchedEvent, UnpitchedMember, UnpitchedMemberId, Voice, VoiceId, VoiceOrigin,
+    WallClockTime,
 };
 use epiphany_ops::{
     AuthorId, CausalContext, CreateCrossCuttingOp, CreateInstrumentOp, CreateMeasureOp,
-    CreateRegionOp, CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp, CrossCuttingValue,
-    HybridLogicalClock, InsertEventOp, OperationEnvelope, OperationKind, OperationPayload,
-    OperationStamp, SetMetadataOp, SetTimeSignatureOp,
+    CreateRegionOp, CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp,
+    CrossCuttingValue, HybridLogicalClock, InsertEventOp, OperationEnvelope, OperationKind,
+    OperationPayload, OperationStamp, SetMetadataOp, SetTimeSignatureOp,
 };
 
-use crate::source::{Content, FeatureClass, Meter, Place, SourceScore};
+use crate::source::{Content, FeatureClass, GroupKind, Meter, Place, SourceScore};
 
 /// The replica an import authors from unless told otherwise.
 pub const DEFAULT_REPLICA: ReplicaId = ReplicaId(0x6D75_7369_6378_6D6C);
@@ -52,6 +53,10 @@ pub enum Subject {
     Tie(usize, usize, usize),
     /// A slur: part and index into its slurs.
     Slur(usize, usize),
+    /// A beam: part and index into its beams.
+    Beam(usize, usize),
+    /// A staff group: index into [`SourceScore::groups`].
+    Group(usize),
 }
 
 /// What one emitted operation carries.
@@ -66,6 +71,8 @@ pub struct Label {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Ids {
     pub region: Option<RegionId>,
+    /// Per staff group.
+    pub groups: Vec<StaffGroupId>,
     pub instruments: Vec<InstrumentId>,
     /// Per part, per staff.
     pub staves: Vec<Vec<StaffId>>,
@@ -92,9 +99,12 @@ pub struct Import {
     /// One per envelope, in the same order.
     pub labels: Vec<Label>,
     pub ids: Ids,
-    /// Per part: the tie starts recorded instead of tied, for want of a
-    /// matching end or because the core cannot tie quarter-tones.
-    pub recorded_ties: Vec<usize>,
+    /// Per part: the tie starts recorded instead of tied for want of a
+    /// matching end.
+    pub unended_ties: Vec<usize>,
+    /// Per part: the tie starts recorded instead of tied because the core
+    /// cannot tie quarter-tones.
+    pub quarter_tone_ties: Vec<usize>,
 }
 
 struct Emitter {
@@ -245,6 +255,32 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
         );
     }
 
+    // Staff groups, before the staves that name them.
+    let mut group_of: BTreeMap<(usize, usize), StaffGroupId> = BTreeMap::new();
+    for (k, group) in source.groups.iter().enumerate() {
+        let id: StaffGroupId = e.identity.mint();
+        e.emit(
+            "CreateStaffGroup",
+            Subject::Group(k),
+            OperationKind::CreateStaffGroup(CreateStaffGroupOp {
+                group: StaffGroup {
+                    id,
+                    name: None,
+                    kind: match group.kind {
+                        GroupKind::Brace => StaffGroupKind::GrandStaff,
+                        GroupKind::Bracket => StaffGroupKind::Bracket,
+                        GroupKind::SubBracket => StaffGroupKind::SubBracket,
+                    },
+                    members: Vec::new(),
+                },
+            }),
+        );
+        for staff in &group.staves {
+            group_of.insert(*staff, id);
+        }
+        ids.groups.push(id);
+    }
+
     // Instruments and their staves.
     for (p, part) in source.parts.iter().enumerate() {
         let instrument_id: InstrumentId = e.identity.mint();
@@ -287,7 +323,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                         abbreviation: part.abbreviation.clone(),
                         instrument: instrument_id,
                         default_staff_lines: staff_lines(staff.lines),
-                        group: None,
+                        group: group_of.get(&(p, s)).copied(),
                         default_clef: staff.clefs.first().map_or(Clef::treble(), |c| c.clef),
                     },
                 }),
@@ -521,7 +557,8 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
     // into voices across a tie. One tie per end event. A tied unpitched note
     // continues into one of the same member at the same staff step; its tie
     // pairs no pitch, which the model admits, having none to pair.
-    let mut recorded_ties = vec![0; source.parts.len()];
+    let mut unended_ties = vec![0; source.parts.len()];
+    let mut quarter_tone_ties = vec![0; source.parts.len()];
     for (p, part) in source.parts.iter().enumerate() {
         let starts = event_starts(&part.events);
         for (i, event) in part.events.iter().enumerate() {
@@ -570,7 +607,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                         );
                     }
                     None => {
-                        recorded_ties[p] += 1;
+                        unended_ties[p] += 1;
                         source.features.record(
                             FeatureClass::Content,
                             "tie without a matching end",
@@ -625,7 +662,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                                 .or_default()
                                 .push((ids.pitches[p][i][a], ids.pitches[p][j][b]));
                         } else {
-                            recorded_ties[p] += 1;
+                            quarter_tone_ties[p] += 1;
                             let measure = source.measures[event.measure].number.clone();
                             source.features.record(
                                 FeatureClass::Content,
@@ -638,7 +675,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                         }
                     }
                     None => {
-                        recorded_ties[p] += 1;
+                        unended_ties[p] += 1;
                         let measure = source.measures[event.measure].number.clone();
                         source.features.record(
                             FeatureClass::Content,
@@ -691,6 +728,22 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                 }),
             );
         }
+        for (k, beam) in part.beams.iter().enumerate() {
+            let beam_id: BeamId = e.identity.mint();
+            e.emit(
+                "CreateCrossCutting(Beam)",
+                Subject::Beam(p, k),
+                OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Beam(Beam {
+                        id: beam_id,
+                        events: beam.events.iter().map(|&i| ids.events[p][i]).collect(),
+                        level: 1,
+                        sub_beams: Vec::new(),
+                        geometry_override: None,
+                    }),
+                }),
+            );
+        }
     }
 
     Import {
@@ -699,6 +752,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
         envelopes: e.envelopes,
         labels: e.labels,
         ids,
-        recorded_ties,
+        unended_ties,
+        quarter_tone_ties,
     }
 }

@@ -61,6 +61,7 @@
 //! * **`symbol_density_uniformity`** — per-region CV of glyphs-per-width
 //!   density over systems with positive width.
 
+use epiphany_core::TypedObjectId;
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_layout_ir::quality::{
@@ -125,6 +126,8 @@ const SLUR_APEX_SAMPLES: usize = 32;
 fn slur_shape_raw(spaced_curves: &[Curve]) -> f64 {
     let per_curve: Vec<f64> = spaced_curves
         .iter()
+        // The units are slurs; a tie's arc is not one.
+        .filter(|curve| matches!(curve.provenance.source, TypedObjectId::Slur(_)))
         .filter_map(|curve| {
             let cp = curve.control_points();
             let (a, b) = (point(cp[0]), point(cp[3]));
@@ -388,6 +391,22 @@ fn vertical_units(
             if let Some(system) = system_of_glyph(index) {
                 let ink = ink_box(cast, input, index);
                 add(system, glyph.vertical_band, ink[1], ink[3]);
+            }
+        }
+        // A later system's leads, appended after the input's glyphs, on the
+        // bands the casting pass placed them on.
+        for (k, band) in cast.appended_bands.iter().enumerate() {
+            let index = input.glyphs.len() + k;
+            if let (Some(Some(system)), Some(glyph)) =
+                (cast.glyph_system.get(index), cast.glyphs.get(index))
+            {
+                let (y, b) = (glyph.position.y.0, glyph.bounding_box);
+                add(
+                    *system,
+                    *band,
+                    f64::from(y + b.bottom.0),
+                    f64::from(y + b.top.0),
+                );
             }
         }
         for (index, stroke) in cast.strokes.iter().enumerate() {
@@ -966,7 +985,10 @@ mod tests {
         // near-zero the catalog's rationale describes, *measured* from the
         // resolved page tree rather than assumed.
         let report = Engraver::default().solve(&ten_measure(), &SolverConfig::default());
-        assert_eq!(report.metric_vector.vertical_density_penalty.0, 0.0);
+        // Zero to the f32 precision the baked positions carry: the fixture's
+        // tie arcs below the first system, so its extent is no longer a whole
+        // number of staff spaces.
+        assert!(report.metric_vector.vertical_density_penalty.0.abs() < 1e-6);
     }
 
     #[test]
@@ -1016,7 +1038,10 @@ mod tests {
     /// Runs the real pipeline far enough to hand `vertical_units` a `CastLayout`
     /// — the same spacing + casting-off `Engraver::resolve` performs.
     fn units(score: &epiphany_core::Score) -> VerticalUnits {
-        let input = to_constrained(&to_logical(score));
+        units_of(to_constrained(&to_logical(score)))
+    }
+
+    fn units_of(input: ConstrainedLayoutIR) -> VerticalUnits {
         let engraver = Engraver::default();
         let remap = crate::HorizontalRemap::build(&input);
         let (glyphs, strokes, curves) = (
@@ -1037,7 +1062,7 @@ mod tests {
     /// `members` drops it, and the axis loses the unit entirely.
     #[test]
     fn a_glyphless_staff_band_still_contributes_an_inter_staff_unit() {
-        let u = units(&epiphany_testkit::fixtures::percussion_placeholder_staff(1));
+        let u = units_of(epiphany_testkit::fixtures::percussion_placeholder_constrained(1));
         assert_eq!(
             u.inter_staff.len(),
             2,

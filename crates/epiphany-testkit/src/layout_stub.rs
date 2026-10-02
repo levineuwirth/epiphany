@@ -215,14 +215,22 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
             _ => RepeatPlacement::Unresolved,
         }
     }
-    match rng.below(6) {
+    match rng.below(7) {
         0 => LayoutContent::Structural,
+        6 => LayoutContent::Unpitched(UnpitchedContent {
+            voice: epiphany_layout_ir::VoicePlace::Alone,
+            position: time(rng),
+            components: components(rng),
+            staff_position: epiphany_core::StaffPosition(rng.range(0, 16) as i16 - 4),
+        }),
         1 => LayoutContent::Staff(StaffContent {
             default_clef: epiphany_core::Clef::default(),
             clefs: clefs(rng),
             keys: keys(rng),
+            beams: Vec::new(),
         }),
         2 => LayoutContent::Note(NoteContent {
+            voice: epiphany_layout_ir::VoicePlace::Alone,
             position: time(rng),
             components: components(rng),
             pitches: vec![NotePitch {
@@ -231,14 +239,18 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
             }],
         }),
         3 => LayoutContent::Rest(RestContent {
+            voice: epiphany_layout_ir::VoicePlace::Alone,
             position: time(rng),
             components: components(rng),
             staff_position: rng
                 .boolean()
                 .then(|| epiphany_core::StaffPosition(rng.range(0, 9) as i16)),
+            visible: rng.boolean(),
+            whole_measure: rng.boolean(),
         }),
         4 => LayoutContent::Measure(MeasureContent {
             start: time(rng),
+            end: rng.boolean().then(|| time(rng)),
             barline: barline(rng),
             time_signature: rng.boolean().then(|| TimeSignatureContent {
                 numerator: rng.range(1, 13) as u16,
@@ -429,6 +441,9 @@ pub fn gen_constrained_layout_ir(rng: &mut Rng) -> ConstrainedLayoutIR {
             metrics_hash,
             ..GlyphCatalogIdentity::default()
         },
+        span_anchors: Vec::new(),
+        system_leads: Vec::new(),
+        staff_groups: Vec::new(),
     }
 }
 
@@ -1605,7 +1620,7 @@ mod tests {
         assert!(report.glyphs > 0);
         assert_eq!(
             report.render_primitives,
-            report.glyphs + report.render_strokes
+            report.glyphs + report.render_strokes + report.render_curves
         );
 
         let measures = report

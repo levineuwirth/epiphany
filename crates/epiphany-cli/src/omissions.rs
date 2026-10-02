@@ -8,13 +8,19 @@
 //!
 //! - an event, pitch, tie or slur with no primitive at all;
 //! - a notehead or rest drawn at a value other than its duration's, a flag or
-//!   an augmentation dot the duration needs and the event lacks, for every
+//!   an augmentation dot the duration needs and the event lacks (an eighth or
+//!   shorter needs a flag or a beam), for every
 //!   event whose duration is one notated value (a duration that needs a tie or
 //!   a tuplet to notate is counted as not checked);
 //! - a clef, and for a staff with a key, a key signature, missing where a
 //!   system starts; a clef change after the start with no clef drawn for it;
 //! - a time signature missing from the measure where a meter takes effect;
+//! - on a layout of several pages, ink no system owns, which is on no page;
 //! - each diagnostic the projection raised, by kind.
+//!
+//! Not checked, and counted as such: whether an accidental is the one the
+//! key and the measure's earlier notes call for; an unpitched note's value;
+//! and a key change after the start.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -23,7 +29,7 @@ use epiphany_core::{
     StaffInstanceId, TimeAnchor, TypedObjectId,
 };
 use epiphany_layout_ir::constrained::{LayoutDiagnostic, LayoutDiagnosticKind};
-use epiphany_layout_ir::ResolvedLayoutIR;
+use epiphany_layout_ir::{is_beam_stroke, ResolvedLayoutIR};
 
 /// Engraving omissions by kind, with counts; and what was not checked.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -154,6 +160,13 @@ pub fn omissions(
     for c in &layout.curves {
         inked.insert(c.provenance.source);
     }
+    // The notes a beam joins, named among its dependencies.
+    let beamed: BTreeSet<TypedObjectId> = layout
+        .strokes
+        .iter()
+        .filter(|s| is_beam_stroke(s))
+        .flat_map(|s| s.provenance.dependencies.iter().copied())
+        .collect();
     let names = |source: TypedObjectId| glyphs.get(&source).cloned().unwrap_or_default();
 
     let instances: Vec<&epiphany_core::StaffInstance> = score
@@ -261,6 +274,9 @@ pub fn omissions(
                         }
                     }
                     Event::Pitched(p) => {
+                        for _ in &p.pitches {
+                            out.skip("accidental: not checked against the key and the measure");
+                        }
                         let Some((exp, dots)) = value else {
                             out.skip("note: duration not one notated value");
                             continue;
@@ -276,8 +292,11 @@ pub fn omissions(
                                 out.add("notehead of another value");
                             }
                         }
-                        if exp <= -3 && !own.iter().any(|g| g.starts_with("flag")) {
-                            out.add("flag (no beams are drawn either)");
+                        if exp <= -3
+                            && !own.iter().any(|g| g.starts_with("flag"))
+                            && !beamed.contains(&TypedObjectId::Event(*id))
+                        {
+                            out.add("flag or beam");
                         }
                         let dotted = own.contains(&"augmentationDot")
                             || p.pitches.iter().any(|ip| {
@@ -287,6 +306,7 @@ pub fn omissions(
                             out.add("augmentation dot");
                         }
                     }
+                    Event::Unpitched(_) => out.skip("unpitched note: value not checked"),
                     _ => {}
                 }
             }
@@ -435,6 +455,21 @@ pub fn omissions(
             {
                 out.add("time signature");
             }
+        }
+    }
+
+    // Ink no system owns is drawn only on a layout of one page, which
+    // `page` keeps it on; on several, no page shows it.
+    if layout.pages.len() > 1 {
+        let unowned = &layout.unowned;
+        let strokes = unowned
+            .strokes
+            .iter()
+            .filter_map(|&i| layout.strokes.get(i as usize))
+            .filter(|s| s.from != s.to)
+            .count();
+        for _ in 0..unowned.glyphs.len() + strokes + unowned.curves.len() {
+            out.add("ink on no page");
         }
     }
 

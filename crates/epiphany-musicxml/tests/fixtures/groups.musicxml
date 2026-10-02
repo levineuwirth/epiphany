@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<!-- Hand-written for epiphany-musicxml's tests. Staff groups: a bracket
+     over two parts and a piano, with a square sub-bracket nested inside it
+     over the two; a square over two more parts on its own; and a line
+     group over a last part. The piano's two staves are a brace, so the
+     bracket holds the other two parts; the nested square and the line make
+     no group, and are recorded, as is a start with an empty symbol inside
+     the line, which stops nothing. -->
+<score-partwise version="4.0">
+  <part-list>
+    <part-group type="start" number="1"><group-symbol>bracket</group-symbol></part-group>
+    <part-group type="start" number="2"><group-symbol>square</group-symbol></part-group>
+    <score-part id="P1"><part-name>Flute</part-name></score-part>
+    <score-part id="P2"><part-name>Oboe</part-name></score-part>
+    <part-group type="stop" number="2"></part-group>
+    <score-part id="P3"><part-name>Piano</part-name></score-part>
+    <part-group type="stop" number="1"></part-group>
+    <part-group type="start" number="1"><group-symbol>square</group-symbol></part-group>
+    <score-part id="P4"><part-name>Violin I</part-name></score-part>
+    <score-part id="P5"><part-name>Violin II</part-name></score-part>
+    <part-group type="stop" number="1"></part-group>
+    <part-group type="start" number="1"><group-symbol>line</group-symbol></part-group>
+    <part-group type="start" number="2"><group-symbol></group-symbol></part-group>
+    <score-part id="P6"><part-name>Cello</part-name></score-part>
+    <part-group type="stop" number="2"></part-group>
+    <part-group type="stop" number="1"></part-group>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>
+      <note><rest measure="yes"/><duration>4</duration><voice>1</voice><staff>1</staff></note>
+    </measure>
+  </part>
+  <part id="P2">
+    <measure number="1">
+      <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>
+      <note><rest measure="yes"/><duration>4</duration><voice>1</voice><staff>1</staff></note>
+    </measure>
+  </part>
+  <part id="P3">
+    <measure number="1">
+      <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><staves>2</staves><clef number="1"><sign>G</sign><line>2</line></clef><clef number="2"><sign>F</sign><line>4</line></clef></attributes>
+      <note><rest measure="yes"/><duration>4</duration><voice>1</voice><staff>1</staff></note><backup><duration>4</duration></backup><note><rest measure="yes"/><duration>4</duration><voice>5</voice><staff>2</staff></note>
+    </measure>
+  </part>
+  <part id="P4">
+    <measure number="1">
+      <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>
+      <note><rest measure="yes"/><duration>4</duration><voice>1</voice><staff>1</staff></note>
+    </measure>
+  </part>
+  <part id="P5">
+    <measure number="1">
+      <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>
+      <note><rest measure="yes"/><duration>4</duration><voice>1</voice><staff>1</staff></note>
+    </measure>
+  </part>
+  <part id="P6">
+    <measure number="1">
+      <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>
+      <note><rest measure="yes"/><duration>4</duration><voice>1</voice><staff>1</staff></note>
+    </measure>
+  </part>
+</score-partwise>

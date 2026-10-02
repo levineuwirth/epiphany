@@ -18,9 +18,10 @@
 //!    additive analog of the Quality Metric Catalog's break/imbalance
 //!    distribution cost; including the final system in the sum is what removes
 //!    the old separate widow rebalance. Breaks fall only at **measure
-//!    boundaries** — the barline columns (`to_constrained` draws each measure's
-//!    barline at its start column; the region-final barline closes the region
-//!    and is never a break candidate). A **hard** `SystemBreakAt`/`PageBreakAt`
+//!    boundaries** — after a barline column (`to_constrained` draws each
+//!    measure's barline where the measure ends, so a system ends on the
+//!    barline and the next begins with what follows it; the region-final
+//!    barline closes the region). A **hard** `SystemBreakAt`/`PageBreakAt`
 //!    is *always* honoured at its slot (and bounds the search's segments); a
 //!    **soft** one is honoured unless doing so would close a system with no
 //!    musical content (no notehead/rest column) — the documented exceptional
@@ -74,12 +75,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use epiphany_core::{StaffId, TypedObjectId};
 use epiphany_layout_ir::{
     continuation_instance_key, inter_staff_gap_id, is_barline_glyph, is_rigid_width_stroke,
-    synthesized_layout_id, BreakClass, BreakKind, ConstrainedLayoutIR, Curve, DecisionSource,
-    EngravingDecision, EngravingDecisionKind, EngravingOverrideId, GlyphObject, GlyphObjectId,
-    LayoutConstraint, LayoutObjectId, Margins, Point, PrimitiveIndices, Provenance, Rect,
-    ResolvedGlyph, ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem, Size2D,
-    SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey, SynthesisKind, SynthesisRegistryId,
-    VerticalBand, VerticalBandId, VerticalBandKind,
+    metrics, synthesized_layout_id, tie_arc, BreakClass, BreakKind, ConstrainedLayoutIR, Curve,
+    DecisionSource, EngravingDecision, EngravingDecisionKind, EngravingOverrideId, GlyphObject,
+    GlyphObjectId, GlyphReference, GlyphStyle, GroupSign, GroupSpan, LayoutConstraint,
+    LayoutObjectId, LeadGlyph, Margins, Point, PrimitiveIndices, Provenance, Rect, ResolvedGlyph,
+    ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem, Size2D, SpringSlotId, StaffSpace,
+    Stroke, SynthesisInstanceKey, SynthesisKind, SynthesisRegistryId, SystemLead, TimePoint,
+    Transform2D, VerticalBand, VerticalBandId, VerticalBandKind,
 };
 
 use crate::owning_glyph;
@@ -92,6 +94,40 @@ use crate::owning_glyph;
 /// extension kind (Chapter 7 §"Behavior Under Unknown Extensions").
 pub const SYSTEM_CONTINUATION_SYNTHESIS: SynthesisRegistryId =
     SynthesisRegistryId(0x5359_5354_4D53_4547); // "SYSTMSEG"
+
+/// The registry id for a glyph of a later system's lead (its clef and key
+/// signature), synthesized from the staff instance and keyed by the system's
+/// region-local ordinal and the glyph.
+pub const SYSTEM_LEAD_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5359_534C_4541_4447); // "SYSLEADG"
+
+/// The gap between a system-start lead's ink and the system's first column.
+const LEAD_GAP: f32 = 0.8;
+
+/// A tie continued into a later system starts this far clear of the system's
+/// lead (the widest of its staves' clefs and key signatures)…
+const TIE_LEAD_CLEARANCE: f32 = 0.4;
+/// …and runs at least this far to its note: a system that opens on the note
+/// widens its lead by what the gap after the lead leaves short.
+const TIE_CONTINUATION: f32 = 1.5;
+
+/// The registry id for a staff group's sign (its brace, its bracket's line and
+/// ends, its sub-bracket's line and hooks) and a system's opening line,
+/// synthesized from the group or the region and keyed by the system's
+/// region-local ordinal and the element.
+pub const GROUP_SIGN_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4752_5053_4947_4E53); // "GRPSIGNS"
+/// The registry id for a barline's continuation down to the next staff of its
+/// group, synthesized from the barline's measure and keyed by its line.
+pub const JOINED_BARLINE_SYNTHESIS: SynthesisRegistryId =
+    SynthesisRegistryId(0x4A4F_494E_4241_524C); // "JOINBARL"
+/// SMuFL's thin barline and bracket thicknesses, and the separation between
+/// a thin and a thick barline.
+const THIN_BARLINE: f32 = 0.16;
+const BRACKET_THICKNESS: f32 = 0.5;
+const BARLINE_SEPARATION: f32 = 0.4;
+/// The gap between a system's opening line and a group sign left of it, and a
+/// sub-bracket's hooks' length.
+const GROUP_SIGN_GAP: f32 = 0.5;
+const SUB_BRACKET_HOOK: f32 = 0.5;
 
 /// The vertical gap between consecutive **pages** in the single world frame, in
 /// staff spaces. Pages are separate physical sheets; this gap exists only in
@@ -168,8 +204,13 @@ impl Default for PageGeometry {
 /// populated page/system tree, the engraver's appended break decisions, and the
 /// break structure the constraint evaluation consults.
 pub(crate) struct CastLayout {
-    /// Final glyphs, in input order, positions baked into the world frame.
+    /// Final glyphs, in input order, positions baked into the world frame, then
+    /// the glyphs the casting pass adds: later systems' leads and staff groups'
+    /// signs.
     pub glyphs: Vec<ResolvedGlyph>,
+    /// The vertical band of each glyph the casting pass adds after the
+    /// input's (a later system's lead, a staff group's sign), in order.
+    pub appended_bands: Vec<VerticalBandId>,
     /// Final strokes: the input strokes in order (each translated with its
     /// system; a system-spanning stroke replaced by its first segment), then
     /// the synthesized continuation segments.
@@ -225,16 +266,15 @@ struct SlotInfo {
     hi: f32,
     /// Member glyph indices into the (parallel) input/spaced glyph vectors.
     members: Vec<usize>,
-    /// The column carries a barline glyph — a measure boundary.
+    /// The column carries a measure's barline — a measure boundary, after
+    /// which a system may break.
     barline: bool,
-    /// The column carries the region-final barline (never a break candidate).
+    /// The column carries the region-final barline (nothing follows it).
     final_barline: bool,
     /// The column carries musical content (a notehead or a rest).
     note: bool,
-    /// The directly-manifested barline glyph of a measure *start* (glyph
-    /// index), for the per-system measure records. `None` at the final
-    /// barline: that measure's start is not marked by any column in this
-    /// projection, so its record is omitted rather than fabricated.
+    /// The directly-manifested barline glyph that ends a measure (glyph
+    /// index), for the per-system measure records.
     measure_barline: Option<usize>,
 }
 
@@ -476,7 +516,8 @@ pub(crate) fn cast_off(
             entry.barline = true;
             if name == "barlineFinal" {
                 entry.final_barline = true;
-            } else if entry.measure_barline.is_none() {
+            }
+            if entry.measure_barline.is_none() {
                 entry.measure_barline = Some(i);
             }
         }
@@ -559,6 +600,65 @@ pub(crate) fn cast_off(
             f32::INFINITY
         }
     };
+    // Each region's system-start leads, and the widest of them: a later
+    // system's content starts after its lead, so breaking reserves it.
+    let mut leads_of: Vec<Vec<&SystemLead>> = vec![Vec::new(); input.regions.len()];
+    for lead in &input.system_leads {
+        if let Some(leads) = leads_of.get_mut(lead.region) {
+            leads.push(lead);
+        }
+    }
+    let lead_max: Vec<f32> = leads_of
+        .iter()
+        .map(|leads| {
+            leads
+                .iter()
+                .flat_map(|lead| &lead.entries)
+                .map(|(_, glyphs)| lead_width(glyphs))
+                .fold(0.0, f32::max)
+        })
+        .collect();
+    // The room a tie continued into a later system needs, by the slot that
+    // system would open on. The tie's second half starts `TIE_LEAD_CLEARANCE`
+    // clear of the lead, or of the columns before its note there, which hold
+    // no note (a time signature), and runs at least `TIE_CONTINUATION` to its
+    // note; the gap the spacing leaves may fall short. The system's lead
+    // widens by the room, and its opening columns keep their place after the
+    // lead, so the room stands before the note.
+    let anchors = crate::span_anchors(input);
+    let slot_index: BTreeMap<SpringSlotId, (usize, usize)> = region_slots
+        .iter()
+        .enumerate()
+        .flat_map(|(r, infos)| infos.iter().enumerate().map(move |(i, s)| (s.id, (r, i))))
+        .collect();
+    let mut room: Vec<Vec<f32>> = region_slots
+        .iter()
+        .map(|infos| vec![0.0; infos.len()])
+        .collect();
+    for curve in spaced_curves {
+        let Some((start, end)) = anchors.get(&curve.id()) else {
+            continue;
+        };
+        let (Some(&(r, a)), Some(&(rb, b))) = (slot_index.get(start), slot_index.get(end)) else {
+            continue;
+        };
+        let slots = &region_slots[r];
+        if r != rb || a >= b {
+            continue;
+        }
+        let Some(i) = (a + 1..=b).rev().find(|&i| opens_measure(slots, i)) else {
+            continue;
+        };
+        if slots[i..b].iter().any(|info| info.note) {
+            continue;
+        }
+        let before = slots[i..b]
+            .iter()
+            .map(|info| info.hi)
+            .fold(slots[i].lo - LEAD_GAP, f32::max);
+        let short = TIE_CONTINUATION - (curve.p3.x.0 - before - TIE_LEAD_CLEARANCE);
+        room[r][i] = room[r][i].max(short);
+    }
     let mut systems: Vec<SystemPlan> = Vec::new();
     let mut skipped: Vec<EngravingDecision> = Vec::new();
     for (r, infos) in region_slots.iter().enumerate() {
@@ -570,10 +670,90 @@ pub(crate) fn cast_off(
             &origins,
             region_source,
             width_limit,
+            lead_max[r],
+            &room[r],
             &mut systems,
             &mut skipped,
         );
     }
+
+    // What each system draws at its start: nothing for a region's first,
+    // whose lead the projection drew; for a later one, each staff's lead in
+    // force at its first slot's time.
+    let slot_time: BTreeMap<SpringSlotId, &TimePoint> = input
+        .horizontal_slots
+        .iter()
+        .map(|slot| (slot.id, &slot.time))
+        .collect();
+    let system_leads: Vec<Vec<(&SystemLead, &[LeadGlyph])>> = systems
+        .iter()
+        .map(|plan| {
+            let Some(time) = plan
+                .slots
+                .first()
+                .and_then(|&i| slot_time.get(&region_slots[plan.region][i].id))
+                .filter(|_| plan.local > 0)
+            else {
+                return Vec::new();
+            };
+            leads_of[plan.region]
+                .iter()
+                .filter_map(|lead| {
+                    lead.entries
+                        .iter()
+                        .rev()
+                        .find(|(from, _)| at_or_before(from, time))
+                        .or(lead.entries.first())
+                        .map(|(_, glyphs)| (*lead, glyphs.as_slice()))
+                })
+                .collect()
+        })
+        .collect();
+    // Each system's lead width: its widest staff's lead and gap, and the room
+    // a tie continued into the system needs there.
+    let lead_w: Vec<f32> = system_leads
+        .iter()
+        .zip(&systems)
+        .map(|(leads, plan)| {
+            let extra = match plan.slots.first() {
+                Some(&i) if plan.local > 0 => room[plan.region][i],
+                _ => 0.0,
+            };
+            leads
+                .iter()
+                .map(|(_, glyphs)| lead_width(glyphs))
+                .fold(0.0, f32::max)
+                + extra
+        })
+        .collect();
+    // The columns a later system opens with before its first note or rest (a
+    // time signature), each drawn back by the room its system's lead made, so
+    // it keeps its place after the lead.
+    let mut opening_shift: BTreeMap<SpringSlotId, f32> = BTreeMap::new();
+    for plan in &systems {
+        let slots = &region_slots[plan.region];
+        if let Some(&first) = plan.slots.first().filter(|_| plan.local > 0) {
+            let shift = room[plan.region][first];
+            for &i in plan.slots.iter().take_while(|&&i| !slots[i].note) {
+                if shift > 0.0 {
+                    opening_shift.insert(slots[i].id, shift);
+                }
+            }
+        }
+    }
+    let shift_of = |slot: SpringSlotId| opening_shift.get(&slot).copied().unwrap_or(0.0);
+    // The right edge of each later system's lead ink, the widest staff's, from
+    // the left margin.
+    let lead_ink: Vec<Option<f32>> = system_leads
+        .iter()
+        .map(|leads| {
+            leads
+                .iter()
+                .flat_map(|(_, glyphs)| glyphs.iter())
+                .filter_map(|g| Some(g.x + metrics(g.name.as_str())?.bounding_box().right.0))
+                .reduce(f32::max)
+        })
+        .collect();
 
     // (The old greedy pass needed a second widow-rebalance phase here; the
     // optimal break search evens the final system directly — see
@@ -626,11 +806,20 @@ pub(crate) fn cast_off(
             clips[s] = (lo, hi);
         }
     }
+    let anchored_system = |id: GlyphObjectId| -> Option<usize> {
+        let (start, end) = anchors.get(&id)?;
+        let s = *system_of_slot.get(start)?;
+        (system_of_slot.get(end) == Some(&s)).then_some(s)
+    };
     let fates: Vec<StrokeFate> = input
         .strokes
         .iter()
         .zip(spaced_strokes)
         .map(|(stroke, spaced)| {
+            // A stroke anchored at both ends within one system rides it.
+            if let Some(s) = anchored_system(stroke.id()) {
+                return StrokeFate::Rigid(Some(s));
+            }
             stroke_fate(
                 stroke,
                 spaced,
@@ -645,9 +834,41 @@ pub(crate) fn cast_off(
     // A curve rides one system whole when it fits within one, or splits into
     // per-system sub-cubics (de Casteljau) when it spans a break — the same
     // nearest-region / clip-overlap logic strokes use.
+    // An anchored curve whose ends land in two systems (a tie across a system
+    // break) becomes two half-arcs: one from its start to the first system's
+    // right edge, one from clear of the second system's lead to its end. Its
+    // ends at the notes keep riding their slots (`anchored_halves`).
+    let mut anchored_halves: BTreeSet<usize> = BTreeSet::new();
     let curve_fates: Vec<CurveFate> = spaced_curves
         .iter()
-        .map(|curve| curve_fate(curve, &region_spans, &region_systems, &clips))
+        .enumerate()
+        .map(|(ci, curve)| {
+            if let Some(s) = anchored_system(curve.id()) {
+                return CurveFate::Rigid(Some(s));
+            }
+            let halves = anchors.get(&curve.id()).and_then(|(start, end)| {
+                let (a, b) = (*system_of_slot.get(start)?, *system_of_slot.get(end)?);
+                let (edge_a, edge_b) = (clips[a].1, clips[b].0);
+                (a < b && edge_a.is_finite() && edge_b.is_finite()).then(|| {
+                    // The spaced frame has no lead: its ink ends as far before
+                    // the system's left edge as the lead's gap reaches.
+                    let lead = edge_b - lead_w[b] + lead_ink[b].unwrap_or(0.0);
+                    let plan = &systems[b];
+                    let before = ink_before(plan, &region_slots[plan.region], *end, |info| {
+                        info.hi - shift_of(info.id)
+                    });
+                    let from = lead.max(before.unwrap_or(f32::NEG_INFINITY)) + TIE_LEAD_CLEARANCE;
+                    (a, b, half_arcs(curve.control_points(), edge_a, from))
+                })
+            });
+            match halves {
+                Some((a, b, (first, second))) => {
+                    anchored_halves.insert(ci);
+                    CurveFate::Split(vec![(a, first), (b, second)])
+                }
+                None => curve_fate(curve, &region_spans, &region_systems, &clips),
+            }
+        })
         .collect();
 
     // ---- Inter-staff vertical solve + system extents -----------------------
@@ -767,11 +988,37 @@ pub(crate) fn cast_off(
             CurveFate::Split(segments) => segments.clone(),
         };
         for (s, cp) in segs {
+            // A tie's second half reaches back over its system's lead, which is
+            // placed before the system's content, not within it.
+            let left = if anchored_halves.contains(&ci) {
+                clips[s].0
+            } else {
+                f32::NEG_INFINITY
+            };
             for p in cp {
-                extents[s].add_x(p.x.0 - half, p.x.0 + half);
+                let x = p.x.0.max(left);
+                extents[s].add_x(x - half, x + half);
                 match staff {
                     Some(_) => into_staff(&mut staff_ext, s, staff, p.y.0 - half, p.y.0 + half),
                     None => extents[s].add_y(p.y.0 - half, p.y.0 + half),
+                }
+            }
+        }
+    }
+
+    // A later system's leads are its staves' content too.
+    for (s, leads) in system_leads.iter().enumerate() {
+        for (lead, glyphs) in leads {
+            for glyph in *glyphs {
+                if let Some(m) = metrics(glyph.name.as_str()) {
+                    let b = m.bounding_box();
+                    into_staff(
+                        &mut staff_ext,
+                        s,
+                        Some(lead.staff),
+                        glyph.y + b.bottom.0,
+                        glyph.y + b.top.0,
+                    );
                 }
             }
         }
@@ -893,7 +1140,8 @@ pub(crate) fn cast_off(
             page_floor = cursor - content_height.max(0.0);
             page_systems.push(Vec::new());
         }
-        let base_dx = geometry.margins.left.0 - ext.min_x;
+        // A later system's content starts after its lead.
+        let base_dx = geometry.margins.left.0 + lead_w[s] - ext.min_x;
         let dy = cursor - ext.max_y;
         placements.push(justify_system(
             plan,
@@ -902,7 +1150,7 @@ pub(crate) fn cast_off(
             dy,
             &region_slots,
             &region_systems,
-            width_limit,
+            width_limit - lead_w[s],
         ));
         page_systems
             .last_mut()
@@ -1013,7 +1261,7 @@ pub(crate) fn cast_off(
                         .copied()
                         .unwrap_or(spaced.position.x.0);
                     (
-                        placements[s].slot_dx(sx),
+                        placements[s].slot_dx(sx) - shift_of(glyph.horizontal_slot),
                         placements[s].dy - staff_dy(s, glyph_staff_of[gi]),
                     )
                 }
@@ -1026,6 +1274,37 @@ pub(crate) fn cast_off(
             (resolved, system)
         })
         .unzip();
+
+    // Each later system's leads, at its left margin, on their staves.
+    let mut glyphs = glyphs;
+    let mut glyph_system = glyph_system;
+    let mut appended_bands = Vec::new();
+    for (s, leads) in system_leads.iter().enumerate() {
+        for (lead, lead_glyphs) in leads {
+            let dy = placements[s].dy - staff_dy(s, Some(lead.staff));
+            for (i, glyph) in lead_glyphs.iter().enumerate() {
+                let Some(m) = metrics(glyph.name.as_str()) else {
+                    continue;
+                };
+                glyphs.push(ResolvedGlyph {
+                    provenance: Provenance::synthesized(
+                        lead.provenance.source,
+                        SynthesisKind::Registered(SYSTEM_LEAD_SYNTHESIS),
+                        SynthesisInstanceKey((systems[s].local as u128) << 16 | i as u128),
+                        lead.provenance.dependencies.clone(),
+                    ),
+                    glyph: glyph.name.clone(),
+                    position: Point::new(geometry.margins.left.0 + glyph.x, glyph.y + dy),
+                    transform: None,
+                    bounding_box: m.bounding_box(),
+                    style: GlyphStyle { rgba: 0x0000_00ff },
+                    layer: 0,
+                });
+                glyph_system.push(Some(s));
+                appended_bands.push(lead.band);
+            }
+        }
+    }
 
     // Per-system staff-line marks, for the resolved staff records below.
     let mut staff_marks: BTreeMap<(usize, StaffId), StaffAgg> = BTreeMap::new();
@@ -1052,6 +1331,7 @@ pub(crate) fn cast_off(
                         placements[*s].sunk(staff_dy(*s, stroke_staff_of[si])),
                         &slot_source_x,
                         &input.glyphs,
+                        anchors.get(&source.id()),
                     ),
                     None => spaced.clone(),
                 };
@@ -1078,9 +1358,17 @@ pub(crate) fn cast_off(
                             spaced.provenance.dependencies.clone(),
                         )
                     };
+                    // A staff line reaches back under a later system's lead.
+                    let from_x = if lead_w[*s] > 0.0
+                        && matches!(spaced.provenance.source, TypedObjectId::Staff(_))
+                    {
+                        geometry.margins.left.0
+                    } else {
+                        p.x(from.x.0)
+                    };
                     let stroke = Stroke {
                         provenance,
-                        from: Point::new(p.x(from.x.0), from.y.0 + p.dy),
+                        from: Point::new(from_x, from.y.0 + p.dy),
                         to: Point::new(p.x(to.x.0), to.y.0 + p.dy),
                         thickness: spaced.thickness,
                         layer: spaced.layer,
@@ -1127,7 +1415,19 @@ pub(crate) fn cast_off(
                 let p = system
                     .map(|s| placements[s].sunk(staff_dy(s, curve_staff)))
                     .unwrap_or(Placement::rigid(0.0, 0.0));
-                let [p0, p1, p2, p3] = shift(curve.control_points(), p);
+                // An anchored curve's ends ride their slots' deltas; any other
+                // maps through the system's affine whole.
+                let slot_dx =
+                    |slot: &SpringSlotId| slot_source_x.get(slot).map(|&sx| p.slot_dx(sx));
+                let anchored = anchors
+                    .get(&curve.id())
+                    .filter(|_| system.is_some())
+                    .and_then(|(start, end)| Some((slot_dx(start)?, slot_dx(end)?)));
+                let [p0, p1, p2, p3] = match anchored {
+                    Some((start, end)) => crate::anchored_curve(curve.control_points(), start, end)
+                        .map(|pt| Point::new(pt.x.0, pt.y.0 + p.dy)),
+                    None => shift(curve.control_points(), p),
+                };
                 curves.push(Curve {
                     p0,
                     p1,
@@ -1139,8 +1439,35 @@ pub(crate) fn cast_off(
             }
             CurveFate::Split(segments) => {
                 for (k, (s, cp)) in segments.iter().enumerate() {
-                    let [p0, p1, p2, p3] =
-                        shift(*cp, placements[*s].sunk(staff_dy(*s, curve_staff)));
+                    let p = placements[*s].sunk(staff_dy(*s, curve_staff));
+                    let [mut p0, mut p1, mut p2, mut p3] = shift(*cp, p);
+                    // A tie's half-arcs keep their note ends on their slots,
+                    // and the second starts clear of its system's lead, and of
+                    // any column before its note's (a time signature).
+                    if anchored_halves.contains(&ci) {
+                        if let Some((start, end)) = anchors.get(&curve.id()) {
+                            let slot_dx = |slot: &SpringSlotId| {
+                                slot_source_x.get(slot).map(|&sx| p.slot_dx(sx))
+                            };
+                            if k == 0 {
+                                if let Some(dx) = slot_dx(start) {
+                                    p0 = Point::new(cp[0].x.0 + dx, p0.y.0);
+                                }
+                            } else if let Some(dx) = slot_dx(end) {
+                                let x3 = cp[3].x.0 + dx;
+                                let plan = &systems[*s];
+                                let lead = geometry.margins.left.0 + lead_ink[*s].unwrap_or(0.0);
+                                let before =
+                                    ink_before(plan, &region_slots[plan.region], *end, |info| {
+                                        info.hi + p.slot_dx(info.x) - shift_of(info.id)
+                                    });
+                                let x0 = lead.max(before.unwrap_or(f32::NEG_INFINITY))
+                                    + TIE_LEAD_CLEARANCE;
+                                let above = cp[1].y.0 > cp[0].y.0;
+                                [p0, p1, p2, p3] = tie_arc(x0.min(x3), x3, p3.y.0, above);
+                            }
+                        }
+                    }
                     let provenance = if k == 0 {
                         curve.provenance.clone()
                     } else {
@@ -1176,6 +1503,191 @@ pub(crate) fn cast_off(
     }
     curves.extend(curve_continuations);
     curve_system.extend(curve_continuation_system);
+
+    // ---- Staff groups and the systemic barline ------------------------------
+    // A system of two or more staves opens with a line joining them; each
+    // staff group marks its staves left of that line (a brace, a bracket, a
+    // thin sub-bracket) and, unless choral, joins its barlines from staff to
+    // staff. All of it is drawn here, where each system's staves stand.
+    let mut groups_of: Vec<Vec<&GroupSpan>> = vec![Vec::new(); input.regions.len()];
+    for group in &input.staff_groups {
+        if let Some(groups) = groups_of.get_mut(group.region) {
+            groups.push(group);
+        }
+    }
+    let ink = GlyphStyle { rgba: 0x0000_00ff };
+    let mut added: Vec<(Stroke, usize)> = Vec::new();
+    for (s, plan) in systems.iter().enumerate() {
+        let region = &input.regions[plan.region];
+        let margin = VerticalBandId(region.provenance.stable_id.0);
+        let marks: BTreeMap<StaffId, &StaffAgg> = staff_marks
+            .range((s, StaffId::from_raw(0))..=(s, StaffId::from_raw(u128::MAX)))
+            .map(|(&(_, staff), agg)| (staff, agg))
+            .collect();
+        let Some(left) = marks.values().map(|a| a.min_x).reduce(f32::min) else {
+            continue;
+        };
+        let sign = |element: u128, source: &Provenance| {
+            Provenance::synthesized(
+                source.source,
+                SynthesisKind::Registered(GROUP_SIGN_SYNTHESIS),
+                SynthesisInstanceKey((plan.local as u128) << 16 | element),
+                source.dependencies.clone(),
+            )
+        };
+        let mut line = |provenance: Provenance, from: Point, to: Point, thickness: f32| {
+            added.push((
+                Stroke {
+                    provenance,
+                    from,
+                    to,
+                    thickness: StaffSpace(thickness),
+                    layer: 0,
+                    style: ink,
+                    vertical_band: margin,
+                },
+                s,
+            ));
+        };
+        if marks.len() >= 2 {
+            let bottom = marks
+                .values()
+                .map(|a| a.min_y)
+                .fold(f32::INFINITY, f32::min);
+            let top = marks
+                .values()
+                .map(|a| a.max_y)
+                .fold(f32::NEG_INFINITY, f32::max);
+            line(
+                sign(0, &region.provenance),
+                Point::new(left, bottom),
+                Point::new(left, top),
+                THIN_BARLINE,
+            );
+        }
+        for (g, group) in groups_of[plan.region].iter().enumerate() {
+            let present: Vec<&StaffAgg> = group
+                .staves
+                .iter()
+                .filter_map(|st| marks.get(st).copied())
+                .collect();
+            let (Some(bottom), Some(top)) = (
+                present.iter().map(|a| a.min_y).reduce(f32::min),
+                present.iter().map(|a| a.max_y).reduce(f32::max),
+            ) else {
+                continue;
+            };
+            let element = |k: u128| (g as u128 + 1) << 8 | k;
+            match group.kind {
+                GroupSign::Brace => {
+                    if let Some(m) = metrics("brace") {
+                        let b = m.bounding_box();
+                        let scale_y = (top - bottom) / (b.top.0 - b.bottom.0).max(f32::EPSILON);
+                        let scale_x = scale_y.sqrt().clamp(1.0, 2.5);
+                        let x = left - GROUP_SIGN_GAP - b.right.0 * scale_x;
+                        glyphs.push(ResolvedGlyph {
+                            provenance: sign(element(0), &group.provenance),
+                            glyph: GlyphReference::borrowed("brace"),
+                            position: Point::new(x, bottom),
+                            transform: Some(Transform2D {
+                                matrix: [[scale_x, 0.0, 0.0], [0.0, scale_y, 0.0], [0.0, 0.0, 1.0]],
+                            }),
+                            bounding_box: b,
+                            style: ink,
+                            layer: 0,
+                        });
+                        glyph_system.push(Some(s));
+                        appended_bands.push(margin);
+                    }
+                }
+                GroupSign::Bracket => {
+                    let x = left - GROUP_SIGN_GAP - BRACKET_THICKNESS / 2.0;
+                    line(
+                        sign(element(0), &group.provenance),
+                        Point::new(x, bottom),
+                        Point::new(x, top),
+                        BRACKET_THICKNESS,
+                    );
+                    for (k, name, y) in [(1u128, "bracketTop", top), (2, "bracketBottom", bottom)] {
+                        if let Some(m) = metrics(name) {
+                            glyphs.push(ResolvedGlyph {
+                                provenance: sign(element(k), &group.provenance),
+                                glyph: GlyphReference::borrowed(name),
+                                position: Point::new(x - BRACKET_THICKNESS / 2.0, y),
+                                transform: None,
+                                bounding_box: m.bounding_box(),
+                                style: ink,
+                                layer: 0,
+                            });
+                            glyph_system.push(Some(s));
+                            appended_bands.push(margin);
+                        }
+                    }
+                }
+                GroupSign::SubBracket => {
+                    let x = left - GROUP_SIGN_GAP;
+                    line(
+                        sign(element(0), &group.provenance),
+                        Point::new(x, bottom),
+                        Point::new(x, top),
+                        THIN_BARLINE,
+                    );
+                    for (k, y) in [(1u128, top), (2, bottom)] {
+                        line(
+                            sign(element(k), &group.provenance),
+                            Point::new(x, y),
+                            Point::new(x + SUB_BRACKET_HOOK, y),
+                            THIN_BARLINE,
+                        );
+                    }
+                }
+            }
+            if !group.joined || present.len() < 2 {
+                continue;
+            }
+            // Each barline of a staff of the group continues down to the
+            // next staff below it in the group.
+            let mut order: Vec<(StaffId, &StaffAgg)> = group
+                .staves
+                .iter()
+                .filter_map(|st| marks.get(st).map(|a| (*st, *a)))
+                .collect();
+            order.sort_by(|a, b| b.1.max_y.total_cmp(&a.1.max_y));
+            for pair in order.windows(2) {
+                let ((upper, above), (_, below)) = (pair[0], pair[1]);
+                for (gi, glyph) in input.glyphs.iter().enumerate() {
+                    if glyph_system[gi] != Some(s) || glyph_staff_of[gi] != Some(upper) {
+                        continue;
+                    }
+                    let name = glyph.glyph.as_str();
+                    let resolved = &glyphs[gi];
+                    let x = resolved.position.x.0;
+                    for (k, (dx, thickness)) in barline_lines(name, &glyph.bounding_box)
+                        .into_iter()
+                        .enumerate()
+                    {
+                        let provenance = Provenance::synthesized(
+                            glyph.provenance.source,
+                            SynthesisKind::Registered(JOINED_BARLINE_SYNTHESIS),
+                            SynthesisInstanceKey(k as u128),
+                            vec![group.provenance.source],
+                        );
+                        line(
+                            provenance,
+                            Point::new(x + dx, below.max_y),
+                            Point::new(x + dx, above.min_y),
+                            thickness,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    for (stroke, s) in added {
+        strokes.push(stroke);
+        stroke_system.push(Some(s));
+    }
 
     // ---- Per-system primitive ownership (W1) -------------------------------
     // The partition already exists in `glyph_system`/`stroke_system`/
@@ -1219,6 +1731,10 @@ pub(crate) fn cast_off(
                 &placements,
                 &staff_marks,
                 owned[s].clone(),
+                lead_w[s],
+                plan.slots
+                    .first()
+                    .map_or(0.0, |&i| shift_of(region_slots[plan.region][i].id)),
             )
         })
         .collect();
@@ -1261,6 +1777,7 @@ pub(crate) fn cast_off(
 
     CastLayout {
         glyphs,
+        appended_bands,
         strokes,
         curves,
         pages,
@@ -1307,19 +1824,21 @@ fn optimal_breaks(
     slots: &[SlotInfo],
     reqs: &BTreeMap<SpringSlotId, Vec<BreakReq>>,
     width_limit: f32,
+    lead: f32,
+    room: &[f32],
 ) -> BTreeSet<SpringSlotId> {
     let mut automatic = BTreeSet::new();
     if !width_limit.is_finite() || width_limit <= 0.0 || slots.is_empty() {
         return automatic; // unbounded width: nothing wraps
     }
-    let breakable = |slot: &SlotInfo| slot.barline && !slot.final_barline;
-    // Measure-boundary positions in slot-index space: region start, each
-    // breakable barline, region end. `forced[k]` marks a boundary carrying a
-    // break requirement (the DP may not span it). The region end is a boundary.
+    // Measure-boundary positions in slot-index space: region start, each slot
+    // that follows a barline, region end. `forced[k]` marks a boundary
+    // carrying a break requirement (the DP may not span it). The region end is
+    // a boundary.
     let mut pts: Vec<usize> = vec![0];
     let mut forced: Vec<bool> = vec![false];
     for (i, slot) in slots.iter().enumerate() {
-        if i > 0 && breakable(slot) {
+        if opens_measure(slots, i) {
             pts.push(i);
             forced.push(reqs.contains_key(&slot.id));
         }
@@ -1329,12 +1848,13 @@ fn optimal_breaks(
     let n = pts.len(); // n - 1 measures between the n boundaries
 
     // A system spanning boundaries [a, b): its ink extent over slots
-    // `[pts[a] .. pts[b])`.
+    // `[pts[a] .. pts[b])`, and a later system's lead before it, with the
+    // room a tie continued into its first slot needs there.
     let width = |a: usize, b: usize| -> f32 {
         let range = &slots[pts[a]..pts[b]];
         let lo = range.iter().map(|s| s.lo).fold(f32::INFINITY, f32::min);
         let hi = range.iter().map(|s| s.hi).fold(f32::NEG_INFINITY, f32::max);
-        (hi - lo).max(0.0)
+        (hi - lo).max(0.0) + if a > 0 { lead + room[pts[a]] } else { 0.0 }
     };
 
     // dp[b] = the min `(cost, system_count)` to partition measures [0, b).
@@ -1383,8 +1903,16 @@ fn optimal_breaks(
     automatic
 }
 
+/// Whether slot `i` opens a measure a system may start with: it follows a
+/// barline that is not the region's final one. A barline ends its measure, so
+/// a system ends on a barline and the next begins after it.
+fn opens_measure(slots: &[SlotInfo], i: usize) -> bool {
+    i > 0 && slots[i - 1].barline && !slots[i - 1].final_barline
+}
+
 /// Walks one region's slots, opening a system at each break requirement and at
-/// each optimal automatic break (`optimal_breaks`).
+/// each optimal automatic break (`optimal_breaks`). A later system reserves
+/// `lead`, and the `room` its first slot asks for a tie continued into it.
 #[allow(clippy::too_many_arguments)]
 fn walk_region(
     region: usize,
@@ -1393,12 +1921,14 @@ fn walk_region(
     origins: &BTreeMap<(u128, bool), EngravingOverrideId>,
     region_source: TypedObjectId,
     width_limit: f32,
+    lead: f32,
+    room: &[f32],
     systems: &mut Vec<SystemPlan>,
     skipped: &mut Vec<EngravingDecision>,
 ) {
     // The optimal automatic breaks (a global badness-minimizing partition,
     // bounded by the break requirements); the walk opens a system at each.
-    let automatic = optimal_breaks(slots, reqs, width_limit);
+    let automatic = optimal_breaks(slots, reqs, width_limit, lead, room);
 
     // Overflow safety net. A lead-only (note-less) run can defer a *planned*
     // break past its barline — the DP treats a requirement, or its own chosen
@@ -1412,10 +1942,9 @@ fn walk_region(
     // that would overflow the content width, exactly as first-fit did. In the
     // common (content-full) case the DP's break fires first, so the net never
     // triggers and the geometry is the optimizer's.
-    let breakable = |slot: &SlotInfo| slot.barline && !slot.final_barline;
     let mut chunk_hi = vec![f32::NEG_INFINITY; slots.len()];
     for i in (0..slots.len()).rev() {
-        let next = if i + 1 < slots.len() && !breakable(&slots[i + 1]) {
+        let next = if i + 1 < slots.len() && !opens_measure(slots, i + 1) {
             chunk_hi[i + 1]
         } else {
             f32::NEG_INFINITY
@@ -1484,7 +2013,14 @@ fn walk_region(
         if !break_here
             && has_note
             && (automatic.contains(&slot.id)
-                || (breakable(slot) && chunk_hi[i] - current_lo > width_limit))
+                || (opens_measure(slots, i)
+                    && chunk_hi[i] - current_lo
+                        > width_limit
+                            - if local > 0 {
+                                lead + room[current[0]]
+                            } else {
+                                0.0
+                            }))
         {
             break_here = true;
         }
@@ -1761,6 +2297,103 @@ fn interval_distance(lo: f32, hi: f32, clip: (f32, f32)) -> f32 {
     }
 }
 
+/// A tie cut at a system break into two half-arcs, each a complete small arc
+/// ending level with its note's end: the first, of the tie's own lift, from
+/// its start to `edge_a`, the first system's right content edge; the second,
+/// a tie of its own length, from `from_b`, clear of the second system's lead,
+/// to its end.
+fn half_arcs(cp: [Point; 4], edge_a: f32, from_b: f32) -> ([Point; 4], [Point; 4]) {
+    let lift = cp[1].y.0 - cp[0].y.0;
+    let (x0, y0) = (cp[0].x.0, cp[0].y.0);
+    let x3 = edge_a.max(x0);
+    let span = x3 - x0;
+    (
+        [
+            Point::new(x0, y0),
+            Point::new(x0 + span * 0.25, y0 + lift),
+            Point::new(x3 - span * 0.25, y0 + lift),
+            Point::new(x3, y0),
+        ],
+        tie_arc(from_b.min(cp[3].x.0), cp[3].x.0, cp[3].y.0, lift > 0.0),
+    )
+}
+
+/// The right ink edge, each mapped by `x`, of the columns of `plan` that
+/// stand before `end`'s.
+fn ink_before(
+    plan: &SystemPlan,
+    slots: &[SlotInfo],
+    end: SpringSlotId,
+    x: impl Fn(&SlotInfo) -> f32,
+) -> Option<f32> {
+    plan.slots
+        .iter()
+        .map(|&i| &slots[i])
+        .take_while(|info| info.id != end)
+        .map(x)
+        .reduce(f32::max)
+}
+
+/// The vertical lines of a barline glyph, as `(x offset from its origin,
+/// thickness)`: a single barline's thin line; a final barline's thin and
+/// thick; a repeat sign's thick and thin on the side its dots do not take.
+/// Any other glyph has none.
+fn barline_lines(name: &str, b: &epiphany_layout_ir::BoundingBox) -> Vec<(f32, f32)> {
+    let (left, right) = (b.left.0, b.right.0);
+    let thin = THIN_BARLINE / 2.0;
+    let thick = BRACKET_THICKNESS / 2.0;
+    match name {
+        "barlineSingle" => vec![((left + right) / 2.0, THIN_BARLINE)],
+        "barlineFinal" => vec![
+            (left + thin, THIN_BARLINE),
+            (right - thick, BRACKET_THICKNESS),
+        ],
+        "repeatRight" => vec![
+            (
+                right - 2.0 * thick - BARLINE_SEPARATION - thin,
+                THIN_BARLINE,
+            ),
+            (right - thick, BRACKET_THICKNESS),
+        ],
+        "repeatLeft" => vec![
+            (left + thick, BRACKET_THICKNESS),
+            (left + 2.0 * thick + BARLINE_SEPARATION + thin, THIN_BARLINE),
+        ],
+        "repeatRightLeft" => {
+            let middle = (left + right) / 2.0;
+            vec![
+                (middle, BRACKET_THICKNESS),
+                (middle - thick - BARLINE_SEPARATION - thin, THIN_BARLINE),
+                (middle + thick + BARLINE_SEPARATION + thin, THIN_BARLINE),
+            ]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Whether `a` is at or before `b` (times of one kind; across kinds, never).
+fn at_or_before(a: &TimePoint, b: &TimePoint) -> bool {
+    match (a, b) {
+        (TimePoint::Musical(a), TimePoint::Musical(b)) => a <= b,
+        (TimePoint::WallClock(a), TimePoint::WallClock(b)) => a <= b,
+        _ => false,
+    }
+}
+
+/// The width a system-start lead takes: its ink's right edge and the gap
+/// before the system's first column.
+fn lead_width(glyphs: &[LeadGlyph]) -> f32 {
+    let right = glyphs
+        .iter()
+        .filter_map(|g| Some(g.x + metrics(g.name.as_str())?.bounding_box().right.0))
+        .fold(0.0, f32::max);
+    if glyphs.is_empty() {
+        0.0
+    } else {
+        right + LEAD_GAP
+    }
+}
+
 /// A stroke translated rigidly by `(dx, dy)`.
 fn translated(stroke: &Stroke, dx: f32, dy: f32) -> Stroke {
     Stroke {
@@ -1827,7 +2460,23 @@ fn place_stroke(
     p: Placement,
     slot_source_x: &BTreeMap<SpringSlotId, f32>,
     glyphs: &[GlyphObject],
+    anchor: Option<&(SpringSlotId, SpringSlotId)>,
 ) -> Stroke {
+    // An anchored stroke (a beam): each end rides its own slot's delta.
+    let slot_dx = |slot: &SpringSlotId| slot_source_x.get(slot).map(|&sx| p.slot_dx(sx));
+    if let Some((from_dx, to_dx)) =
+        anchor.and_then(|(start, end)| Some((slot_dx(start)?, slot_dx(end)?)))
+    {
+        return Stroke {
+            provenance: spaced.provenance.clone(),
+            from: Point::new(spaced.from.x.0 + from_dx, spaced.from.y.0 + p.dy),
+            to: Point::new(spaced.to.x.0 + to_dx, spaced.to.y.0 + p.dy),
+            thickness: spaced.thickness,
+            layer: spaced.layer,
+            style: spaced.style,
+            vertical_band: spaced.vertical_band,
+        };
+    }
     if let Some(dx) = crate::component_glyph(source, glyphs)
         .and_then(|g| slot_source_x.get(&g.horizontal_slot))
         .map(|&sx| p.slot_dx(sx))
@@ -1894,10 +2543,11 @@ fn mark_staff(
 
 /// Builds one populated [`ResolvedSystem`]: a real world-frame bounding box, a
 /// staff record per staff whose lines reach this system (top staff first), and
-/// a measure record per measure-start barline column the system carries. What
-/// the pipeline does not know is left empty, never fabricated: a staff with no
-/// engraved lines yields no staff record, and the final-barline measure (whose
-/// start no column marks) yields no measure record.
+/// a measure record per barline the system carries, each for the measure the
+/// barline ends. What the pipeline does not know is left empty, never
+/// fabricated: a staff with no engraved lines yields no staff record. The
+/// system's first measure reaches back by `opening`, the shift its opening
+/// columns took to keep their place after the lead.
 #[allow(clippy::too_many_arguments)]
 fn build_system(
     system: usize,
@@ -1908,6 +2558,8 @@ fn build_system(
     placements: &[Placement],
     staff_marks: &BTreeMap<(usize, StaffId), StaffAgg>,
     primitives: PrimitiveIndices,
+    lead: f32,
+    opening: f32,
 ) -> ResolvedSystem {
     let region = &input.regions[plan.region];
     let p = placements[system];
@@ -1928,10 +2580,10 @@ fn build_system(
     let bounding_box = Rect {
         // Justification stretches the horizontal extent: the box spans the
         // system's world-frame ink, which for a justified system is the content
-        // width.
-        origin: Point::new(p.x(ext.min_x), ext.min_y + p.dy),
+        // width, and a later system's lead before it.
+        origin: Point::new(p.x(ext.min_x) - lead, ext.min_y + p.dy),
         size: Size2D {
-            width: StaffSpace(p.x(ext.max_x) - p.x(ext.min_x)),
+            width: StaffSpace(p.x(ext.max_x) - p.x(ext.min_x) + lead),
             height: StaffSpace(ext.max_y - ext.min_y),
         },
     };
@@ -1957,40 +2609,40 @@ fn build_system(
         top_b.total_cmp(&top_a)
     });
 
-    // Measures: each measure-start barline column opens a span that runs to the
-    // next such column in this system, or to the system's content edge.
+    // Measures: each barline column closes the measure its barline ends, which
+    // spans from the previous barline in this system (or the system's start)
+    // to it.
     let slots = &region_slots[plan.region];
-    let marks: Vec<(usize, usize)> = plan
+    let mut span_start = plan
         .slots
         .iter()
-        .filter_map(|&i| slots[i].measure_barline.map(|g| (i, g)))
-        .collect();
-    let measures: Vec<ResolvedMeasure> = marks
-        .iter()
-        .enumerate()
-        .filter_map(|(k, &(i, g))| {
-            let glyph = &input.glyphs[g];
-            let TypedObjectId::Measure(measure) = glyph.provenance.source else {
-                return None;
-            };
-            let start = slots[i].lo;
-            let end = marks
-                .get(k + 1)
-                .map(|&(next, _)| slots[next].lo)
-                .unwrap_or(ext.max_x);
-            Some(ResolvedMeasure {
-                provenance: glyph.provenance.clone(),
-                measure,
-                bounding_box: Rect {
-                    origin: Point::new(p.x(start), ext.min_y + p.dy),
-                    size: Size2D {
-                        width: StaffSpace(p.x(end) - p.x(start)),
-                        height: StaffSpace(ext.max_y - ext.min_y),
-                    },
+        .map(|&i| slots[i].lo)
+        .fold(f32::INFINITY, f32::min);
+    let mut measures: Vec<ResolvedMeasure> = Vec::new();
+    let mut back = opening;
+    for &i in &plan.slots {
+        let Some(g) = slots[i].measure_barline else {
+            continue;
+        };
+        let glyph = &input.glyphs[g];
+        let TypedObjectId::Measure(measure) = glyph.provenance.source else {
+            continue;
+        };
+        let (start, end) = (span_start, slots[i].hi);
+        span_start = end;
+        measures.push(ResolvedMeasure {
+            provenance: glyph.provenance.clone(),
+            measure,
+            bounding_box: Rect {
+                origin: Point::new(p.x(start) - back, ext.min_y + p.dy),
+                size: Size2D {
+                    width: StaffSpace(p.x(end) - p.x(start) + back),
+                    height: StaffSpace(ext.max_y - ext.min_y),
                 },
-            })
-        })
-        .collect();
+            },
+        });
+        back = 0.0;
+    }
 
     ResolvedSystem {
         provenance,
@@ -2057,7 +2709,7 @@ mod tests {
         // subsuming the old widow rebalance. One automatic break, before the
         // fourth measure.
         let slots: Vec<SlotInfo> = (0..6).map(measure_slot).collect();
-        let breaks = optimal_breaks(&slots, &BTreeMap::new(), 42.0);
+        let breaks = optimal_breaks(&slots, &BTreeMap::new(), 42.0, 0.0, &[0.0; 6]);
         assert_eq!(
             breaks.len(),
             1,
@@ -2067,6 +2719,20 @@ mod tests {
             breaks.contains(&slots[3].id),
             "the break is before the 4th measure (a 3/3 split): {breaks:?}"
         );
+    }
+
+    #[test]
+    fn optimal_breaks_reserves_the_room_a_continued_tie_needs() {
+        // Six uniform measures balance to [3, 3]. A tie continued into the
+        // fourth needs 14 more of its system's lead there, which no system of
+        // three or more measures opening on it has: the search breaks before
+        // the third instead, [2, 4], as wide as [4, 2] and with the larger
+        // final system.
+        let slots: Vec<SlotInfo> = (0..6).map(measure_slot).collect();
+        let mut room = [0.0; 6];
+        room[3] = 14.0;
+        let breaks = optimal_breaks(&slots, &BTreeMap::new(), 42.0, 0.0, &room);
+        assert_eq!(breaks, BTreeSet::from([slots[2].id]), "{breaks:?}");
     }
 
     #[test]
@@ -2084,7 +2750,7 @@ mod tests {
                 hard: true,
             }],
         );
-        let breaks = optimal_breaks(&slots, &reqs, 42.0);
+        let breaks = optimal_breaks(&slots, &reqs, 42.0, 0.0, &[0.0; 6]);
         assert!(
             !breaks.contains(&slots[1].id),
             "the forced break is walk_region's, never reported here: {breaks:?}"
@@ -2102,13 +2768,65 @@ mod tests {
     #[test]
     fn optimal_breaks_is_deterministic_and_empty_when_unbounded() {
         let slots: Vec<SlotInfo> = (0..6).map(measure_slot).collect();
-        let a = optimal_breaks(&slots, &BTreeMap::new(), 42.0);
-        let b = optimal_breaks(&slots, &BTreeMap::new(), 42.0);
+        let a = optimal_breaks(&slots, &BTreeMap::new(), 42.0, 0.0, &[0.0; 6]);
+        let b = optimal_breaks(&slots, &BTreeMap::new(), 42.0, 0.0, &[0.0; 6]);
         assert_eq!(a, b, "a pure function of the inputs");
         assert!(
-            optimal_breaks(&slots, &BTreeMap::new(), f32::INFINITY).is_empty(),
+            optimal_breaks(&slots, &BTreeMap::new(), f32::INFINITY, 0.0, &[0.0; 6]).is_empty(),
             "an unbounded width wraps nothing"
         );
+    }
+
+    #[test]
+    fn the_overflow_net_reserves_the_room_a_continued_tie_needs() {
+        // A note-less M0 whose soft break the walk skips, so the search's plan
+        // ([M1..M4] in one system) never opens, and the overflow net breaks
+        // before M3. M3's system then reserves the 25 a tie continued into it
+        // needs, so M4 no longer fits beside it and opens a third system.
+        use epiphany_core::{RegionId, ReplicaId};
+        let mk = |i: usize, lo: f32, hi: f32, note: bool| SlotInfo {
+            id: SpringSlotId(i as u128 + 1),
+            x: lo,
+            lo,
+            hi,
+            members: Vec::new(),
+            barline: true,
+            final_barline: false,
+            note,
+            measure_barline: None,
+        };
+        let slots = vec![
+            mk(0, 0.0, 20.0, false),
+            mk(1, 21.0, 30.0, true),
+            mk(2, 31.0, 40.0, true),
+            mk(3, 41.0, 50.0, true),
+            mk(4, 51.0, 60.0, true),
+        ];
+        let mut reqs: BTreeMap<SpringSlotId, Vec<BreakReq>> = BTreeMap::new();
+        reqs.insert(
+            slots[1].id,
+            vec![BreakReq {
+                page: false,
+                hard: false,
+            }],
+        );
+        let mut room = [0.0; 5];
+        room[3] = 25.0;
+        let mut systems = Vec::new();
+        walk_region(
+            0,
+            &slots,
+            &reqs,
+            &BTreeMap::new(),
+            TypedObjectId::Region(RegionId::new(ReplicaId(1), 1)),
+            42.0,
+            0.0,
+            &room,
+            &mut systems,
+            &mut Vec::new(),
+        );
+        let opened: Vec<Vec<usize>> = systems.into_iter().map(|plan| plan.slots).collect();
+        assert_eq!(opened, [vec![0, 1, 2], vec![3], vec![4]]);
     }
 
     #[test]
@@ -2163,6 +2881,8 @@ mod tests {
             &BTreeMap::new(),
             TypedObjectId::Region(RegionId::new(ReplicaId(1), 1)),
             width_limit,
+            0.0,
+            &[0.0; 6],
             &mut systems,
             &mut skipped,
         );
@@ -2196,8 +2916,7 @@ mod tests {
         // mint a phantom measure record (a standalone sign and the dot pair
         // are repeat-synthesized, not measure barlines) or lose one (a morphed
         // barline still marks its measure): both fixtures cast off to the same
-        // nine records — one per measure-*start* barline column; the final
-        // measure's barline closes the region and yields none, by convention.
+        // ten records, one per measure, each from the barline that ends it.
         let solve = |score| {
             Engraver::default().solve(
                 &to_constrained(&to_logical(&score)),
@@ -2219,8 +2938,8 @@ mod tests {
                 .map(|system| system.measures.len())
                 .sum()
         };
-        assert_eq!(measure_count(&plain), 9);
-        assert_eq!(measure_count(&repeats), 9);
+        assert_eq!(measure_count(&plain), 10);
+        assert_eq!(measure_count(&repeats), 10);
         // The volta brackets sit above the staff, so the system carrying them
         // is taller than any repeat-free system.
         let max_height = |report: &crate::SolveReport| -> f32 {
@@ -2486,13 +3205,15 @@ mod tests {
             systems.iter().map(|s| s.primitives.strokes.len()).collect();
         assert_eq!(
             glyph_counts,
-            vec![26, 25],
-            "the six/four widow-rebalanced measure split's real per-system glyph counts"
+            vec![26, 26],
+            "the six/four widow-rebalanced measure split's real per-system glyph counts \
+             (the second system's lead adds its clef)"
         );
         assert_eq!(
             stroke_counts,
-            vec![51, 45],
-            "the six/four widow-rebalanced measure split's real per-system stroke counts"
+            vec![50, 45],
+            "the six/four widow-rebalanced measure split's real per-system stroke counts \
+             (the tie in the first system is a curve)"
         );
         assert_eq!(
             glyph_counts[0] + glyph_counts[1],

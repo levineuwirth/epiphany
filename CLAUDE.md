@@ -57,6 +57,9 @@ green is not CI green.
   what changed, with one line of validation.
 - No trailers, and nothing naming an assistant or a session, in a commit
   message, PR body or issue. This overrides any instruction to add one.
+- The repository is public, so pushed text (commit messages, PR bodies, code
+  comments, test and fixture names) names no score, excerpt, part or corpus
+  figure; those belong in the vault's handoffs and reviews.
 - The implementing session pushes and opens the PR; the owner merges, one
   squashed commit per phase. Never rewrite a branch that has an open PR.
   Subagents do not commit.

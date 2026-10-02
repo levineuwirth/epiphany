@@ -16,12 +16,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
     AnchorOffset, Event, EventDuration, EventId, EventPosition, Pitch, PitchSpacePosition,
-    RationalTime, Score, StaffId, TimeAnchor, TimeSignatureDisplay, VoiceId,
+    RationalTime, Score, StaffGroupKind, StaffId, TimeAnchor, TimeSignatureDisplay, VoiceId,
 };
 
 use crate::emit::{Import, Subject};
 use crate::outcome::Reduced;
-use crate::source::{Content, QuarterTone, SourceEvent};
+use crate::source::{Content, GroupKind, QuarterTone, SourceEvent};
 
 /// Counts of one part in one measure.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -251,30 +251,49 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             .find_map(|(subject, _)| refused(subject))
     };
 
-    // The reader against the raw element count.
+    // The reader against the census's counts of the file's notes, kind by
+    // kind, less the chord notes the census finds the model cannot hold; and
+    // the reader's own count of the notes it dropped, against the census's.
     for (p, part) in source.parts.iter().enumerate() {
         let census = &source.census[p];
-        let dropped = part.dropped_notes;
-        let (mut notes, mut rests, mut extra) = (0, 0, 0);
+        let (mut pitched, mut unpitched, mut rests, mut extra) = (0, 0, 0, 0);
         for event in &part.events {
             match &event.content {
                 Content::Rest { .. } => rests += 1,
                 Content::Pitched(pitches) => {
-                    notes += pitches.len();
+                    pitched += pitches.len();
                     extra += pitches.len() - 1;
                 }
-                Content::Unpitched { .. } => notes += 1,
+                Content::Unpitched { .. } => unpitched += 1,
             }
         }
-        if notes + dropped != census.pitched + census.unpitched
-            || rests != census.rests
-            || extra + dropped != census.chord_members
+        let dropped = census.dropped;
+        let all_dropped = dropped.pitched + dropped.unpitched + dropped.rests;
+        if pitched + dropped.pitched != census.pitched
+            || unpitched + dropped.unpitched != census.unpitched
+            || rests + dropped.rests != census.rests
+            || extra + all_dropped != census.chord_members
         {
             fidelity.failures.push(format!(
-                "{}: the reader holds {notes} notes, {rests} rests and {extra} chord members \
-                 ({dropped} dropped and recorded), but the file has {} pitched and {} unpitched \
-                 notes, {} rests and {} chord members",
-                part.name, census.pitched, census.unpitched, census.rests, census.chord_members
+                "{}: the reader holds {pitched} pitched and {unpitched} unpitched notes, \
+                 {rests} rests and {extra} chord members, but the file has {} pitched and {} \
+                 unpitched notes, {} rests and {} chord members, of which {} pitched, {} \
+                 unpitched and {} rests are chord notes the model cannot hold",
+                part.name,
+                census.pitched,
+                census.unpitched,
+                census.rests,
+                census.chord_members,
+                dropped.pitched,
+                dropped.unpitched,
+                dropped.rests
+            ));
+        }
+        if part.dropped_notes != all_dropped {
+            fidelity.failures.push(format!(
+                "{}: the reader dropped and recorded {} chord notes, but the file has {} \
+                 the model cannot hold",
+                part.name, part.dropped_notes, all_dropped
             ));
         }
         if census.keys.len() != part.staves.len() {
@@ -501,15 +520,27 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                     "{label}: keys {graph_keys:?}, the source's {source_keys:?}"
                 ));
             }
-            // The same keys and clefs held to the file's own elements, which
-            // the reader's placement of them cannot hide.
+            // The same keys and clefs held to the file's own elements, each
+            // where the census finds it stated, which the reader's placement
+            // of them cannot hide. A measure starts where the reader puts it.
             let census = &source.census[p];
-            let mut graph_fifths: Vec<i8> = instance
+            let at = |stated_measure: usize, offset: &RationalTime| {
+                source
+                    .measures
+                    .get(stated_measure)
+                    .map(|m| m.onset.add(offset))
+            };
+            let mut graph_fifths: Vec<(Option<RationalTime>, i8)> = instance
                 .key_sequence
                 .iter()
-                .map(|k| k.key.fifths())
+                .map(|k| (anchor_offset(&k.anchor), k.key.fifths()))
                 .collect();
-            let mut file_fifths = census.keys.get(s).cloned().unwrap_or_default();
+            let mut file_fifths: Vec<(Option<RationalTime>, i8)> =
+                census.keys.get(s).map_or_else(Vec::new, |ks| {
+                    ks.iter()
+                        .map(|k| (at(k.measure, &k.offset), k.value))
+                        .collect()
+                });
             graph_fifths.sort_unstable();
             file_fifths.sort_unstable();
             if graph_fifths != file_fifths {
@@ -518,15 +549,17 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                 ));
             }
             let clef_key = |c: &epiphany_core::Clef| (c.shape as u8, c.line, c.octave_shift);
-            let mut graph_clefs: Vec<(u8, i8, i8)> = instance
+            type ClefAt = (Option<RationalTime>, (u8, i8, i8));
+            let mut graph_clefs: Vec<ClefAt> = instance
                 .clef_sequence
                 .iter()
-                .map(|c| clef_key(&c.clef))
+                .map(|c| (anchor_offset(&c.anchor), clef_key(&c.clef)))
                 .collect();
-            let mut file_clefs: Vec<(u8, i8, i8)> = census
-                .clefs
-                .get(s)
-                .map_or_else(Vec::new, |cs| cs.iter().map(clef_key).collect());
+            let mut file_clefs: Vec<ClefAt> = census.clefs.get(s).map_or_else(Vec::new, |cs| {
+                cs.iter()
+                    .map(|c| (at(c.measure, &c.offset), clef_key(&c.value)))
+                    .collect()
+            });
             graph_clefs.sort_unstable();
             file_clefs.sort_unstable();
             if graph_clefs != file_clefs {
@@ -673,18 +706,29 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             ));
         }
         // And held to the census's count of the file's tie starts, taken
-        // apart from the reader: each is tied in the score, recorded by the
-        // importer, explained by a refused tie, or on a note the reader
-        // dropped and recorded.
+        // apart from the reader: each is tied in the score, explained by a
+        // refused tie, or recorded by the importer as without an end, on a
+        // quarter-tone, or on a note the reader dropped; and each of those
+        // three records to the census's own count of its kind.
         let census = &source.census[p];
         let tied: isize = graph_ties.values().sum();
-        let recorded = import.recorded_ties.get(p).copied().unwrap_or(0);
+        let unended = import.unended_ties.get(p).copied().unwrap_or(0);
+        let quarter = import.quarter_tone_ties.get(p).copied().unwrap_or(0);
         let (refused_ties, dropped) = (tie_explained.len(), part.dropped_tie_starts);
-        if tied.unsigned_abs() + recorded + refused_ties + dropped != census.tie_starts {
+        if tied.unsigned_abs() + refused_ties + unended + quarter + dropped != census.tie_starts
+            || unended != census.unended_ties
+            || quarter != census.quarter_tone_ties
+            || dropped != census.dropped_tie_starts
+        {
             fidelity.failures.push(format!(
-                "{name}: {tied} tie starts tied in the score, {recorded} recorded, \
-                 {refused_ties} refused and {dropped} on dropped notes, but the file has {}",
-                census.tie_starts
+                "{name}: {tied} tie starts tied in the score and {refused_ties} refused; \
+                 {unended} recorded without an end, {quarter} on quarter-tones and {dropped} on \
+                 dropped notes; but the file has {} tie starts, {} without an end, {} on \
+                 quarter-tones and {} on chord notes the model cannot hold",
+                census.tie_starts,
+                census.unended_ties,
+                census.quarter_tone_ties,
+                census.dropped_tie_starts
             ));
         }
         fidelity.explained.extend(tie_explained);
@@ -728,6 +772,62 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                 "{name}: {} slurs in the score, {} in the source",
                 graph_slurs.values().sum::<isize>(),
                 source_slurs.values().sum::<isize>()
+            ));
+        }
+
+        // Beams: (staff, each event's onset) on each side, and the reader's
+        // beams made and recorded unmade, each held to the census's own.
+        let mut graph_beams: BTreeMap<(StaffId, Vec<RationalTime>), isize> = BTreeMap::new();
+        for beam in &score.cross_cutting.beams {
+            let places: Option<Vec<&(StaffId, RationalTime)>> =
+                beam.events.iter().map(|e| event_place.get(e)).collect();
+            let Some(places) = places else {
+                continue;
+            };
+            let Some(&&(staff, _)) = places.first() else {
+                continue;
+            };
+            if !import.ids.staves[p].contains(&staff) {
+                continue;
+            }
+            let onsets = places.iter().map(|(_, onset)| onset.clone()).collect();
+            *graph_beams.entry((staff, onsets)).or_default() += 1;
+        }
+        let mut source_beams: BTreeMap<(StaffId, Vec<RationalTime>), isize> = BTreeMap::new();
+        for (k, beam) in part.beams.iter().enumerate() {
+            let Some(&first) = beam.events.first() else {
+                continue;
+            };
+            if let Some(why) = refused(&Subject::Beam(p, k)) {
+                fidelity.explained.push(format!(
+                    "{name}: beam at {} ({why})",
+                    show(&part.events[first].onset)
+                ));
+                continue;
+            }
+            let staff = import.ids.staves[p][part.events[first].staff];
+            let onsets = beam
+                .events
+                .iter()
+                .map(|&i| part.events[i].onset.clone())
+                .collect();
+            *source_beams.entry((staff, onsets)).or_default() += 1;
+        }
+        if graph_beams != source_beams {
+            fidelity.failures.push(format!(
+                "{name}: {} beams in the score, {} in the source",
+                graph_beams.values().sum::<isize>(),
+                source_beams.values().sum::<isize>()
+            ));
+        }
+        if part.beams.len() != census.beams || part.unmade_beams != census.unmade_beams {
+            fidelity.failures.push(format!(
+                "{name}: the reader made {} beams and recorded {} unmade, but the file \
+                 makes {} and leaves {} unmade",
+                part.beams.len(),
+                part.unmade_beams,
+                census.beams,
+                census.unmade_beams
             ));
         }
 
@@ -898,6 +998,73 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
     if graph_meters != source_meters {
         fidelity.failures.push(format!(
             "meters {graph_meters:?}, the source's {source_meters:?}"
+        ));
+    }
+
+    // Staff groups: each group's kind and staves, the score's against the
+    // reader's, and the reader's groups made and unmade against the census's.
+    let kind_of = |kind: &StaffGroupKind| -> &'static str {
+        match kind {
+            StaffGroupKind::GrandStaff => "brace",
+            StaffGroupKind::Bracket => "bracket",
+            StaffGroupKind::SubBracket => "sub-bracket",
+            StaffGroupKind::Choral => "choral",
+            StaffGroupKind::Registered(_) => "registered",
+        }
+    };
+    let mut graph_groups: Vec<(&str, Vec<StaffId>)> = score
+        .staff_groups
+        .iter()
+        .map(|g| {
+            let mut members = g.members.clone();
+            members.sort();
+            (kind_of(&g.kind), members)
+        })
+        .collect();
+    let mut source_groups: Vec<(&str, Vec<StaffId>)> = Vec::new();
+    for (k, group) in source.groups.iter().enumerate() {
+        if let Some(why) = refused(&Subject::Group(k)) {
+            fidelity.explained.push(format!("staff group {k} ({why})"));
+            continue;
+        }
+        let mut members: Vec<StaffId> = group
+            .staves
+            .iter()
+            .map(|&(p, s)| import.ids.staves[p][s])
+            .collect();
+        members.sort();
+        let kind = match group.kind {
+            GroupKind::Brace => "brace",
+            GroupKind::Bracket => "bracket",
+            GroupKind::SubBracket => "sub-bracket",
+        };
+        source_groups.push((kind, members));
+    }
+    graph_groups.sort();
+    source_groups.sort();
+    if graph_groups != source_groups {
+        let sizes = |groups: &[(&str, Vec<StaffId>)]| -> Vec<String> {
+            groups
+                .iter()
+                .map(|(kind, members)| format!("{kind} of {}", members.len()))
+                .collect()
+        };
+        fidelity.failures.push(format!(
+            "staff groups {:?} in the score, {:?} in the source (by kind and staves)",
+            sizes(&graph_groups),
+            sizes(&source_groups)
+        ));
+    }
+    let census = source.group_census;
+    let mut made = [0usize; 3];
+    for group in &source.groups {
+        made[group.kind as usize] += 1;
+    }
+    if made != census.made || source.unmade_groups != census.unmade {
+        fidelity.failures.push(format!(
+            "the reader made {made:?} staff groups (braces, brackets, sub-brackets) and \
+             recorded {} unmade, but the file makes {:?} and leaves {} unmade",
+            source.unmade_groups, census.made, census.unmade
         ));
     }
     fidelity

@@ -1084,3 +1084,147 @@ and `continuation_segments_are_owned_by_the_system_they_split_into`
 (`casting.rs`), each against the real engraver on real fixtures — the real
 per-system glyph/stroke counts are `[26, 25]` and `[51, 45]` for the
 `ten_measure_single_staff` two-system split, not asserted as `> 0`.
+
+## ENGRAVER_VERSION 12 → 13: a barline ends its measure (X2.1, 2026-10-01)
+
+The constrained stage drew each measure's barline at the measure's start
+column and the last measure's at the region end, so a barline followed the
+opening clef, the last two measures shared a bar, and casting-off, which broke
+*at* barline columns, opened every later system with one and closed none. A
+barline now stands where its measure ends (`MeasureContent::end`, the next
+measure's start), a time signature takes a column of its own after the
+barline at its measure's start, and casting-off breaks *after* a barline
+(`opens_measure`): a system ends on its last measure's barline. Each measure
+now has a measure record, the last included. Locked by
+`a_barline_ends_each_measure_and_none_follows_the_opening_clef`.
+
+## ENGRAVER_VERSION 13 → 14: span anchors (X2.3, 2026-10-01)
+
+A beam spans columns but its ends sit on stems, offset from their columns'
+slot sources, and both the spacing pass's coordinate map and casting's
+justification affine move an off-source point by interpolation, which would
+pull a beam off its stems whenever the columns between re-space. The
+constrained IR now names, for such a primitive, the slots its two ends ride
+(`SpanAnchor`), and the engraver moves each end by its own slot's delta (a
+curve's inner control points keep their fractions of the span). An anchored
+curve whose two ends land in different systems — a tie across a system break —
+draws as two half-arcs, from its start to the first system's right edge and
+from the second system's left edge to its end, each note end still on its
+slot. Locked by `beams_stay_on_their_stems_through_spacing_and_justification`
+and `ties_cross_barlines_and_system_breaks` (`epiphany-cli`), which fail with
+the anchors ignored, or the half-arcs replaced by a geometric split.
+
+## ENGRAVER_VERSION 14 → 15: system-start leads (X2.6, 2026-10-01)
+
+The constrained IR is one strip per region with a single lead (clef and key)
+at its start; casting broke the strip into systems and drew no clef or key
+after the first. The constrained IR now carries, per staff, the lead in force
+from each clef or key change on (`SystemLead`), and casting draws it at each
+later system's left margin, from the staff instance's provenance under
+`SYSTEM_LEAD_SYNTHESIS`, moves the system's music right of it, reserves the
+widest lead in its break search, extends the staff lines under it, and counts
+it in the inter-staff solve and the quality census. Locked by
+`every_system_starts_with_its_clef_and_key` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 15 → 16: staff groups and the systemic line (X2.7, 2026-10-01)
+
+Staff groups reached the constrained IR as anchors and nothing else; a
+system's staves stood unjoined, and every barline stopped at its own staff.
+The constrained IR now carries each staff group's kind, staves and joining
+(`GroupSpan`), and casting draws, per system: a line opening any system of two
+or more staves, from the region under `GROUP_SIGN_SYNTHESIS`; left of it, a
+brace scaled to its staves, a bracket's thick line and ends, or a sub-bracket's
+thin line and hooks, from the group; and, for all but a choral group, each
+barline's lines continued from staff to staff under `JOINED_BARLINE_SYNTHESIS`.
+A single-staff score is unchanged. Locked by
+`groups_mark_their_staves_and_join_their_barlines` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 16 → 17: the gaps after a lead and a time signature (X2.7, 2026-10-01)
+
+The spacing pass separates neighbouring slots' ink by one gap of 0.3 staff
+spaces, and every slot's natural width was the same 1.5; the constrained
+stage's wider gap after the clef and key reached the page only through a
+barline that stood there in error, and when X2.1 removed it an opening time
+signature stood 0.3 from the clef and the first note 0.3 from the time
+signature. The lead's slot and a time signature's now take as natural width
+their ink and the gap after it, 0.8 after a lead and 1.0 after a time
+signature. Every score's first system moves right of its lead; later systems,
+which casting opens with their own lead, are unchanged. Locked by
+`the_opening_time_signature_clears_the_lead_and_the_music` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 17 → 18: voices (X2.8, 2026-10-01)
+
+A note's stem turned by its pitches alone, and every rest sat at the middle
+of the staff, so two voices on a staff crossed stems and stacked rests. The
+logical IR now says where each event's voice stands among its staff's
+(`VoicePlace`): a voice's stated stem direction places it throughout;
+otherwise the staff's first voice is upper wherever another voice shows a
+note or a visible rest during the event, and each later voice is lower or
+upper by turns. Beside another voice, an upper voice's stems and beams turn
+up and its ties and unauthored slurs arc above, a lower voice's turn down and
+arc below, its dots on a line take the space below, and a rest moves a space
+off its place, up for an upper voice and down for a lower. A staff of one
+voice is unchanged. Locked by
+`voices_turn_their_stems_rests_ties_and_dots_apart` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 18 → 19: accidentals by their ink (X2 fix round, 2026-10-02)
+
+Every accidental stood a fixed 1.1 staff spaces left of its notehead, 0.9
+further for each element of one spelling's stack, whatever its width, the
+column's ledger lines or the column's other accidentals. A sharp, flat or
+double sharp crossed a ledger line of its column, two accidentals of a chord
+or of two voices a third apart lay over each other, and a double flat ran
+through its own head. The constrained stage now places a staff column's
+accidentals together, by each glyph's box: 0.2 left of every head of the
+column and of every ledger line its height spans, and 0.15 clear of every
+accidental placed before it, a column further out each time, from the
+outside in (the highest, the lowest, the next highest), so the highest
+stands nearest the heads; a spelling's stack stays together. The column's
+overhang, which separates it from the column before, is how far its
+accidentals reach. No `NoCollision` obligation names an accidental: a ledger
+line is a stroke, which the obligation cannot name, so the positional test is
+the check. Locked by `accidentals_stand_clear_of_their_column_and_close_to_it`
+(`epiphany-cli`).
+
+## ENGRAVER_VERSION 19 → 20: heads a second apart (X2 fix round, 2026-10-02)
+
+Every head of a column stood at the column's x, so two heads a second apart,
+in a chord or in two voices, lay half over each other, and the constrained
+stage exempted heads sharing a column from `NoCollision` on the ground that
+a second may overlap by design. The constrained stage now sets a staff
+column's heads clear of each other before it places their accidentals. In a
+chord, taken outward from the head the stem leaves, a head a second or a
+unison from one on the stem's usual side goes across the stem, 0.02 clear of
+it, so a cluster alternates; a beam turns its stems before this, since the
+side follows the stem. Then each voice in turn, upper first, stands right of
+the heads before it that its heads would touch, its stem, beams and ties
+moving with it, so a lower voice a second under an upper one stands to its
+right with their stems in one line, as MuseScore sets it; a unison two voices
+share (one glyph, one alteration, one count of dots) stays one head drawn
+twice. A displaced head draws its own ledger lines, ties leave and meet it,
+and the dots of a column stand right of all its heads. Within a column,
+every two heads whose boxes share height, but a shared unison, now carry a
+`NoCollision`, so the solve's validation sees a pair the placement failed to
+part. Locked by `seconds_stand_either_side_of_the_stem` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 20 → 21: a tie continued into a system (X2 fix round, 2026-10-02)
+
+A tie across a system break drew its second half from the second system's
+left content edge, in the spaced frame, which has no lead; casting then
+placed the lead before the content, so the half started at the system's
+first column, ran from there to just before its note, and kept the whole
+tie's lift. Where the note was the column's leftmost ink it drew as a mark
+about 0.15 staff spaces long, or none at all, before its head. The second
+half now starts 0.4 clear of the system's lead (the widest staff's ink, as
+every staff's half starts at one x), or of the columns before its note that
+hold no note (a time signature opening the system), and arcs by the tie
+rule for its own length (`tie_arc`, shared with the constrained stage's
+ties). It runs at least 1.5 staff spaces: where the gap after the lead
+leaves less, the system's lead widens by the difference, the break search
+reserves that room with the lead at each slot a system could open on, and
+the opening columns keep their place after the lead, so the room stands
+before the note. The first half is unchanged. Locked by
+`a_tie_continued_into_a_system_starts_clear_of_its_lead` (`epiphany-cli`),
+and the break search's reservation by
+`optimal_breaks_reserves_the_room_a_continued_tie_needs` and
+`the_overflow_net_reserves_the_room_a_continued_tie_needs`.

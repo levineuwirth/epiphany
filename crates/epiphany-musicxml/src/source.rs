@@ -6,7 +6,7 @@
 //! The reader interprets MusicXML; it builds no Epiphany value and emits no
 //! operation (that is [`crate::emit`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
     AcousticPitch, AcousticRealization, Clef, ClefShape, CmnNominal, Pitch, PitchSpaceId,
@@ -208,6 +208,13 @@ pub struct SourceEvent {
     pub offset: usize,
 }
 
+/// A beamed group of a part's events, by index into [`SourcePart::events`]:
+/// the notes of one voice from a `<beam number="1">` begin to its end.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SourceBeam {
+    pub events: Vec<usize>,
+}
+
 /// A slur between two events of a part, by index into [`SourcePart::events`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SourceSlur {
@@ -239,6 +246,11 @@ pub struct SourcePart {
     pub members: Vec<SourceMember>,
     pub events: Vec<SourceEvent>,
     pub slurs: Vec<SourceSlur>,
+    pub beams: Vec<SourceBeam>,
+    /// The beams begun in the file that the reader made none of, each
+    /// recorded: one never ended, one begun again before its end, or one
+    /// ended on the note it began.
+    pub unmade_beams: usize,
     /// Chord notes recorded as unsupported and not imported: a cross-staff
     /// chord note, an unpitched chord note, a chord note joining a rest.
     pub dropped_notes: usize,
@@ -266,9 +278,11 @@ pub struct QuarterTone {
 
 /// Counts taken straight from a part's elements by walks the reader does not
 /// run, sharing none of its code, as an independent check on it: the
-/// `<note>` elements and their tie starts, with no timing logic; the keys and
-/// clefs its `<attributes>` state; and the quarter-tones, timed and valued by
-/// a reading of their own.
+/// `<note>` elements by kind and their tie starts, with no timing logic; the
+/// keys and clefs its `<attributes>` state; and, timed by a reading of their
+/// own, the quarter-tones at their values, the chord notes the model cannot
+/// hold, and the tie starts the file does not end or ends on a quarter-tone.
+/// Each count the reader keeps of what it leaves out is held to one of these.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Census {
     /// `<note>` elements with a `<pitch>`, not grace or cue.
@@ -282,15 +296,38 @@ pub struct Census {
     /// Of the counted pitched and unpitched notes, those with a
     /// `<tie type="start"/>` among their `<tie>` elements.
     pub tie_starts: usize,
+    /// Of the counted notes, the chord notes the model cannot hold, by kind:
+    /// a `<chord/>` note that is not pitched, or whose chord's first note is
+    /// not pitched or is on another `<staff>`.
+    pub dropped: Kinds,
+    /// Of the tie starts, those on dropped chord notes.
+    pub dropped_tie_starts: usize,
+    /// Of the other tie starts, those the file gives no stop: no note of the
+    /// part that is not dropped, on the same staff, at the same written step,
+    /// octave and alteration (an unpitched note: the same display step,
+    /// octave and instrument), carries a `<tie type="stop"/>` where the tied
+    /// note ends, in its measure or at the start of the next.
+    pub unended_ties: usize,
+    /// Of the tie starts the file ends, those on a quarter-tone, which the
+    /// model cannot tie.
+    pub quarter_tone_ties: usize,
     /// Grace and cue notes, which are not imported.
     pub grace_or_cue: usize,
+    /// Primary beams (`<beam number="1">`) the file begins and ends in one
+    /// voice, paired by a walk of the notes not joining a chord.
+    pub beams: usize,
+    /// Primary beams the file begins and never ends: one begun again before
+    /// its end, or still open when the part ends.
+    pub unmade_beams: usize,
     /// Per staff, the `fifths` of each `<key>` the model can hold (at most
-    /// seven accidentals) that applies to it: a numbered key to its staff,
-    /// an unnumbered one to every staff the part's `<staves>` declare.
-    pub keys: Vec<Vec<i8>>,
+    /// seven accidentals) that applies to it, where it is stated: a numbered
+    /// key to its staff, an unnumbered one to every staff the part's
+    /// `<staves>` declare.
+    pub keys: Vec<Vec<Stated<i8>>>,
     /// Per staff, each `<clef>` of a shape the model holds that applies to
-    /// it: a numbered clef to its staff, an unnumbered one to the first.
-    pub clefs: Vec<Vec<Clef>>,
+    /// it, where it is stated: a numbered clef to its staff, an unnumbered
+    /// one to the first.
+    pub clefs: Vec<Vec<Stated<Clef>>>,
     /// Pitched notes, not grace or cue, that the file makes quarter-tones:
     /// by a fractional `<alter>`, by a quarter-tone `<accidental>` with no
     /// `<alter>`, or by such an accidental carried to a note that writes
@@ -299,12 +336,31 @@ pub struct Census {
     pub quarter_tones: Vec<QuarterTone>,
 }
 
+/// A key or clef where the file states it: the index of its measure, and
+/// its offset within the measure in whole notes.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Stated<T> {
+    pub measure: usize,
+    pub offset: Time,
+    pub value: T,
+}
+
+/// Notes counted by kind.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Kinds {
+    pub pitched: usize,
+    pub unpitched: usize,
+    pub rests: usize,
+}
+
 /// The counts of a part's `<note>` elements, read from each note's own
 /// children with an exclusion of its own: grace and cue notes apart, what
 /// every other note is, whether it joins a chord, and whether it starts a
 /// tie, a rest never.
 fn note_census(part: Node) -> Census {
     let mut census = Census::default();
+    // Per voice, whether a primary beam is open.
+    let mut open: BTreeSet<&str> = BTreeSet::new();
     for note in children(part, "measure").flat_map(|m| children(m, "note")) {
         if child(note, "grace").is_some() || child(note, "cue").is_some() {
             census.grace_or_cue += 1;
@@ -319,24 +375,48 @@ fn note_census(part: Node) -> Census {
             census.rests += 1;
         }
         census.chord_members += usize::from(child(note, "chord").is_some());
+        let primary = children(note, "beam")
+            .find(|b| b.attribute("number").is_none_or(|n| n == "1"))
+            .map(text);
+        if let (None, Some(beam)) = (child(note, "chord"), primary) {
+            let voice = child_text(note, "voice").unwrap_or("1");
+            match beam {
+                "begin" if !open.insert(voice) => census.unmade_beams += 1,
+                "end" if open.remove(voice) => census.beams += 1,
+                _ => {}
+            }
+        }
         let tied = children(note, "tie").any(|t| t.attribute("type") == Some("start"));
         census.tie_starts += usize::from(tied && !rest);
     }
+    census.unmade_beams += open.len();
     census
 }
 
-/// The pitched notes of a part, not grace or cue, that its file makes
-/// quarter-tones, each where it falls and at the pitch it sounds: made so by
-/// a fractional `<alter>`, by a quarter-tone `<accidental>` with no `<alter>`
-/// (roadmap D20), or by such an accidental earlier in the measure on the same
-/// staff, step and octave, or tied over, when the note writes neither. It
-/// reads `<alter>`, `<accidental>`, `<divisions>` and `<transpose>` and times
-/// the notes itself, sharing none of the reader's code. A name's value comes
-/// from the accidental it alters and its arrow, not from the reader's table,
-/// and the sounding pitch from an arithmetic of its own, not from the core's
+/// A timed walk of a part's notes, not grace or cue, that the reader does not
+/// run: the quarter-tones its file makes, the chord notes the model cannot
+/// hold, and the tie starts the file leaves without a stop or puts on a
+/// quarter-tone.
+///
+/// A pitched note is a quarter-tone by a fractional `<alter>`, by a
+/// quarter-tone `<accidental>` with no `<alter>` (roadmap D20), or by such an
+/// accidental earlier in the measure on the same staff, step and octave, or
+/// tied over, when the note writes neither. The walk reads `<alter>`,
+/// `<accidental>`, `<divisions>` and `<transpose>` and times the notes
+/// itself, sharing none of the reader's code. A name's value comes from the
+/// accidental it alters and its arrow, not from the reader's table, and the
+/// sounding pitch from an arithmetic of its own, not from the core's
 /// transposition, so a quarter-tone the reader values or places wrongly shows
 /// as a difference, and not only one it misses.
-fn quarter_tone_census(part: Node) -> Vec<QuarterTone> {
+///
+/// A chord note is dropped by its own kind and staff and its chord's first
+/// note's, in the file's order, and a tie start is ended by a stop the walk
+/// finds itself: where the tied note ends in its measure, or at the start of
+/// the next when it ends with the measure's furthest note. So a tie the
+/// reader loses at its stop, a chord note it drops, or a note it takes for
+/// the other kind differs from these counts, rather than passing as a
+/// feature of the source.
+fn timed_census(part: Node, census: &mut Census) {
     /// Semitones above C of the naturals, C to B.
     const NATURALS: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
     /// The alteration in quarter-tones an accidental name states with no
@@ -366,14 +446,23 @@ fn quarter_tone_census(part: Node) -> Vec<QuarterTone> {
         };
         Some(2 * semitones + arrow)
     }
-    // Keyed by the written staff, step and octave, as the file spells them.
+    // Keyed by the written staff, step and octave, as the file spells them;
+    // for an unpitched note, its display step and octave.
     type Spot<'a> = (&'a str, &'a str, &'a str);
+    // What a tie holds: a spot, the instrument of an unpitched note, and a
+    // pitched note's alteration in quarter-tones.
+    type Held<'a> = (Spot<'a>, Option<&'a str>, i32);
     struct Marked<'a> {
         onset: i64,
         end: i64,
         offset: Time,
         spot: Spot<'a>,
         voice: &'a str,
+        /// The instrument of an unpitched note (`""` when it names none);
+        /// `None` for a pitched one.
+        unpitched: Option<&'a str>,
+        /// A chord note the model cannot hold.
+        dropped: bool,
         /// The alteration in quarter-tones its own `<alter>` or
         /// `<accidental>` states.
         own: Option<i32>,
@@ -392,6 +481,12 @@ fn quarter_tone_census(part: Node) -> Vec<QuarterTone> {
         let same = starts.iter().find(|(v, _)| *v == voice);
         same.or(starts.first()).map(|&(_, alteration)| alteration)
     };
+    // The tie starts that end with their measure's furthest note, each with
+    // whether it is a quarter-tone, waiting for the next measure's stops.
+    let mut waiting: Vec<(Held, bool)> = Vec::new();
+    // The kind and staff of the last note that is not a chord note: whether
+    // it is pitched, and its `<staff>`.
+    let mut head: Option<(bool, &str)> = None;
     let (mut divisions, mut transpose) = (1i64, (0i32, 0i32));
     for (index, measure) in children(part, "measure").enumerate() {
         let mut notes: Vec<Marked> = Vec::new();
@@ -424,16 +519,67 @@ fn quarter_tone_census(part: Node) -> Vec<QuarterTone> {
                 "backup" => cursor -= duration,
                 "forward" => cursor += duration,
                 "note" if child(item, "grace").is_none() => {
-                    if child(item, "chord").is_none() {
+                    let chord = child(item, "chord").is_some();
+                    if !chord {
                         last = cursor;
                         cursor += duration;
+                        furthest = furthest.max(cursor);
                     }
-                    let Some(pitch) = child(item, "pitch") else {
-                        continue;
-                    };
                     if child(item, "cue").is_some() {
                         continue;
                     }
+                    let (pitch, unpitched) = (child(item, "pitch"), child(item, "unpitched"));
+                    let staff = child_text(item, "staff").unwrap_or("1");
+                    let ties = |kind: &str| {
+                        children(item, "tie").any(|t| t.attribute("type") == Some(kind))
+                    };
+                    let dropped = if chord {
+                        !(pitch.is_some() && head == Some((true, staff)))
+                    } else {
+                        head = Some((pitch.is_some(), staff));
+                        false
+                    };
+                    if dropped {
+                        let rest = pitch.is_none() && unpitched.is_none();
+                        if pitch.is_some() {
+                            census.dropped.pitched += 1;
+                        } else if unpitched.is_some() {
+                            census.dropped.unpitched += 1;
+                        } else if child(item, "rest").is_some() {
+                            census.dropped.rests += 1;
+                        }
+                        census.dropped_tie_starts += usize::from(ties("start") && !rest);
+                    }
+                    let offset =
+                        RationalTime::new(last, 4 * divisions).unwrap_or_else(RationalTime::zero);
+                    if let Some(display) = unpitched.filter(|_| !dropped) {
+                        notes.push(Marked {
+                            onset: last,
+                            end: last + duration,
+                            offset,
+                            spot: (
+                                staff,
+                                child_text(display, "display-step").unwrap_or(""),
+                                child_text(display, "display-octave").unwrap_or(""),
+                            ),
+                            voice: child_text(item, "voice").unwrap_or("1"),
+                            unpitched: Some(
+                                child(item, "instrument")
+                                    .and_then(|i| i.attribute("id"))
+                                    .unwrap_or(""),
+                            ),
+                            dropped,
+                            own: None,
+                            accidental: false,
+                            tie_start: ties("start"),
+                            tie_stop: ties("stop"),
+                            transpose,
+                        });
+                        continue;
+                    }
+                    let Some(pitch) = pitch else {
+                        continue;
+                    };
                     let accidental = child_text(item, "accidental");
                     let own = match (child_text(pitch, "alter"), accidental) {
                         (Some(alter), _) => Some(
@@ -447,21 +593,19 @@ fn quarter_tone_census(part: Node) -> Vec<QuarterTone> {
                         (None, Some(name)) => Some(named(name).unwrap_or(0)),
                         (None, None) => None,
                     };
-                    let ties = |kind: &str| {
-                        children(item, "tie").any(|t| t.attribute("type") == Some(kind))
-                    };
                     let spot = (
-                        child_text(item, "staff").unwrap_or("1"),
+                        staff,
                         child_text(pitch, "step").unwrap_or(""),
                         child_text(pitch, "octave").unwrap_or(""),
                     );
                     notes.push(Marked {
                         onset: last,
                         end: last + duration,
-                        offset: RationalTime::new(last, 4 * divisions)
-                            .unwrap_or_else(RationalTime::zero),
+                        offset,
                         spot,
                         voice: child_text(item, "voice").unwrap_or("1"),
+                        unpitched: None,
+                        dropped,
                         own,
                         accidental: accidental.is_some(),
                         tie_start: ties("start"),
@@ -477,8 +621,22 @@ fn quarter_tone_census(part: Node) -> Vec<QuarterTone> {
         let incoming = std::mem::take(&mut over);
         let mut set: BTreeMap<Spot, (i64, i32)> = BTreeMap::new();
         let mut ending: BTreeMap<(Spot, i64), Starts> = BTreeMap::new();
+        // The stops of the notes kept, and the starts, each with its end and
+        // whether it is a quarter-tone.
+        let mut stops: BTreeSet<(Held, i64)> = BTreeSet::new();
+        let mut starts: Vec<(Held, i64, bool)> = Vec::new();
         for note in &notes {
             let Marked { onset, spot, .. } = *note;
+            if note.unpitched.is_some() {
+                let held = (spot, note.unpitched, 0);
+                if note.tie_stop {
+                    stops.insert((held, onset));
+                }
+                if note.tie_start {
+                    starts.push((held, note.end, false));
+                }
+                continue;
+            }
             let alteration = note.own.unwrap_or_else(|| {
                 let tied = if !note.tie_stop {
                     None
@@ -505,6 +663,15 @@ fn quarter_tone_census(part: Node) -> Vec<QuarterTone> {
                     over.entry(spot).or_default().push((note.voice, alteration));
                 }
             }
+            if !note.dropped {
+                let held = (spot, None, alteration);
+                if note.tie_stop {
+                    stops.insert((held, onset));
+                }
+                if note.tie_start {
+                    starts.push((held, note.end, alteration % 2 != 0));
+                }
+            }
             if alteration % 2 == 0 {
                 continue;
             }
@@ -529,14 +696,37 @@ fn quarter_tone_census(part: Node) -> Vec<QuarterTone> {
                 octave: octave as i8,
             });
         }
+        // A tie start is ended by a stop of the same holding where it ends:
+        // the previous measure's last notes at this one's start.
+        let mut ended = |held: &Held, at: i64, quarter: bool| {
+            if stops.contains(&(*held, at)) {
+                census.quarter_tone_ties += usize::from(quarter);
+            } else {
+                census.unended_ties += 1;
+            }
+        };
+        for (held, quarter) in std::mem::take(&mut waiting) {
+            ended(&held, 0, quarter);
+        }
+        for (held, end, quarter) in starts {
+            if end >= furthest {
+                waiting.push((held, quarter));
+            } else {
+                ended(&held, end, quarter);
+            }
+        }
     }
-    found
+    census.unended_ties += waiting.len();
+    census.quarter_tones = found;
 }
 
 /// The keys and clefs of a part's `<attributes>`, per staff, read straight
-/// from the elements. It shares none of the reader's order of reading, so it
-/// holds the reader's placement of them to account.
-fn attribute_census(part: Node) -> (Vec<Vec<i8>>, Vec<Vec<Clef>>) {
+/// from the elements, each at its measure and at an offset the census times
+/// itself from the notes, `<backup>` and `<forward>` before it. It shares
+/// none of the reader's order of reading, so it holds the reader's placement
+/// of them to account: on which staff, and when.
+#[allow(clippy::type_complexity)]
+fn attribute_census(part: Node) -> (Vec<Vec<Stated<i8>>>, Vec<Vec<Stated<Clef>>>) {
     let attributes = || children(part, "measure").flat_map(|m| children(m, "attributes"));
     let staves = attributes()
         .flat_map(|a| children(a, "staves"))
@@ -546,59 +736,202 @@ fn attribute_census(part: Node) -> (Vec<Vec<i8>>, Vec<Vec<Clef>>) {
         .max(1);
     let mut keys = vec![Vec::new(); staves];
     let mut clefs = vec![Vec::new(); staves];
-    for a in attributes() {
-        for key in children(a, "key") {
-            let Some(fifths) = child_text(key, "fifths")
-                .and_then(|f| f.parse::<i8>().ok())
-                .filter(|f| (-7..=7).contains(f))
-            else {
+    fn stated<T>(measure: usize, offset: &Time, value: T) -> Stated<T> {
+        Stated {
+            measure,
+            offset: offset.clone(),
+            value,
+        }
+    }
+    let mut divisions = 1i64;
+    for (index, measure) in children(part, "measure").enumerate() {
+        let mut cursor = 0i64;
+        for a in elements(measure) {
+            let duration = child_text(a, "duration")
+                .and_then(|d| d.parse::<i64>().ok())
+                .unwrap_or(0);
+            match name(a) {
+                "backup" => cursor -= duration,
+                "forward" => cursor += duration,
+                "note" if child(a, "grace").is_none() && child(a, "chord").is_none() => {
+                    cursor += duration;
+                }
+                _ => {}
+            }
+            if name(a) != "attributes" {
                 continue;
-            };
-            match key.attribute("number") {
-                None => keys.iter_mut().for_each(|k| k.push(fifths)),
-                Some(n) => {
-                    let staff = n.parse::<usize>().ok().and_then(|n| n.checked_sub(1));
-                    if let Some(list) = staff.and_then(|s| keys.get_mut(s)) {
-                        list.push(fifths);
+            }
+            if let Some(d) = child_text(a, "divisions")
+                .and_then(|d| d.parse::<i64>().ok())
+                .filter(|d| *d > 0)
+            {
+                divisions = d;
+            }
+            let offset =
+                RationalTime::new(cursor, 4 * divisions).unwrap_or_else(RationalTime::zero);
+            for key in children(a, "key") {
+                let Some(fifths) = child_text(key, "fifths")
+                    .and_then(|f| f.parse::<i8>().ok())
+                    .filter(|f| (-7..=7).contains(f))
+                else {
+                    continue;
+                };
+                match key.attribute("number") {
+                    None => keys
+                        .iter_mut()
+                        .for_each(|k| k.push(stated(index, &offset, fifths))),
+                    Some(n) => {
+                        let staff = n.parse::<usize>().ok().and_then(|n| n.checked_sub(1));
+                        if let Some(list) = staff.and_then(|s| keys.get_mut(s)) {
+                            list.push(stated(index, &offset, fifths));
+                        }
                     }
                 }
             }
-        }
-        for clef in children(a, "clef") {
-            let line = child_text(clef, "line").and_then(|l| l.parse::<i8>().ok());
-            let octave_shift = child_text(clef, "clef-octave-change")
-                .and_then(|o| o.parse::<i8>().ok())
-                .unwrap_or(0);
-            let (shape, default_line) = match child_text(clef, "sign") {
-                Some("G") => (ClefShape::G, 2),
-                Some("F") => (ClefShape::F, 4),
-                Some("C") => (ClefShape::C, 3),
-                Some("percussion") => (ClefShape::Percussion, 3),
-                _ => continue,
-            };
-            let value = if shape == ClefShape::Percussion {
-                Clef {
-                    shape,
-                    line: 3,
-                    octave_shift: 0,
+            for clef in children(a, "clef") {
+                let line = child_text(clef, "line").and_then(|l| l.parse::<i8>().ok());
+                let octave_shift = child_text(clef, "clef-octave-change")
+                    .and_then(|o| o.parse::<i8>().ok())
+                    .unwrap_or(0);
+                let (shape, default_line) = match child_text(clef, "sign") {
+                    Some("G") => (ClefShape::G, 2),
+                    Some("F") => (ClefShape::F, 4),
+                    Some("C") => (ClefShape::C, 3),
+                    Some("percussion") => (ClefShape::Percussion, 3),
+                    _ => continue,
+                };
+                let value = if shape == ClefShape::Percussion {
+                    Clef {
+                        shape,
+                        line: 3,
+                        octave_shift: 0,
+                    }
+                } else {
+                    Clef {
+                        shape,
+                        line: line.unwrap_or(default_line),
+                        octave_shift,
+                    }
+                };
+                let staff = match clef.attribute("number") {
+                    None => Some(0),
+                    Some(n) => n.parse::<usize>().ok().and_then(|n| n.checked_sub(1)),
+                };
+                if let Some(list) = staff.and_then(|s| clefs.get_mut(s)) {
+                    list.push(stated(index, &offset, value));
                 }
-            } else {
-                Clef {
-                    shape,
-                    line: line.unwrap_or(default_line),
-                    octave_shift,
-                }
-            };
-            let staff = match clef.attribute("number") {
-                None => Some(0),
-                Some(n) => n.parse::<usize>().ok().and_then(|n| n.checked_sub(1)),
-            };
-            if let Some(list) = staff.and_then(|s| clefs.get_mut(s)) {
-                list.push(value);
             }
         }
     }
     (keys, clefs)
+}
+
+/// A part-list entry, in order: a part's id, or a part-group's number and,
+/// for a start, its symbol.
+type ListEntry<'a> = (&'a str, Option<(String, Option<String>)>);
+
+/// What a staff group draws at its left: a brace (a grand staff), a bracket,
+/// or a thin square sub-bracket.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum GroupKind {
+    Brace,
+    Bracket,
+    SubBracket,
+}
+
+/// A staff group as read: its kind and its staves, each `(part, staff)`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SourceGroup {
+    pub kind: GroupKind,
+    pub staves: Vec<(usize, usize)>,
+}
+
+/// The staff groups a file's part-list and parts make, counted by a walk of
+/// their elements the reader does not run: groups a staff can be held in, and
+/// `<part-group>` starts that make none (the model holds a staff in at most
+/// one group).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct GroupCensus {
+    /// Groups made, by kind: braces, brackets, sub-brackets.
+    pub made: [usize; 3],
+    pub unmade: usize,
+}
+
+/// The staff groups a part-list and its parts make, by a walk of their
+/// elements of its own: a part whose `<staves>` exceed one is a brace; then
+/// each brace and bracket `<part-group>` makes a group if any of its parts'
+/// staves is not yet held, and a square one if none is; anything else, or a
+/// group restarted or never stopped, makes none.
+fn group_census(part_list: Node, parts: &[Node]) -> GroupCensus {
+    let staves: BTreeMap<&str, usize> = parts
+        .iter()
+        .map(|part| {
+            let count = children(*part, "measure")
+                .flat_map(|m| children(m, "attributes"))
+                .flat_map(|a| children(a, "staves"))
+                .filter_map(|s| text(s).parse::<usize>().ok())
+                .max()
+                .unwrap_or(1);
+            (part.attribute("id").unwrap_or(""), count)
+        })
+        .collect();
+    let mut census = GroupCensus::default();
+    let mut held: BTreeSet<(&str, usize)> = BTreeSet::new();
+    for (&id, &count) in &staves {
+        if count >= 2 {
+            census.made[0] += 1;
+            held.extend((0..count).map(|s| (id, s)));
+        }
+    }
+    let mut open: BTreeMap<&str, (&str, Vec<&str>)> = BTreeMap::new();
+    let mut closed: Vec<(&str, Vec<&str>)> = Vec::new();
+    for entry in elements(part_list) {
+        match (name(entry), entry.attribute("type")) {
+            ("score-part", _) => {
+                let id = entry.attribute("id").unwrap_or("");
+                if staves.contains_key(id) {
+                    open.values_mut().for_each(|(_, ids)| ids.push(id));
+                }
+            }
+            ("part-group", Some("start")) => {
+                let symbol = child_text(entry, "group-symbol").unwrap_or("none");
+                let number = entry.attribute("number").unwrap_or("1");
+                if open.insert(number, (symbol, Vec::new())).is_some() {
+                    census.unmade += 1;
+                }
+            }
+            ("part-group", Some("stop")) => {
+                let number = entry.attribute("number").unwrap_or("1");
+                if let Some(group) = open.remove(number) {
+                    closed.push(group);
+                }
+            }
+            _ => {}
+        }
+    }
+    census.unmade += open.len();
+    for (kind, wanted) in ["brace", "bracket", "square"].into_iter().enumerate() {
+        for (_, ids) in closed.iter().filter(|(symbol, _)| *symbol == wanted) {
+            let all: Vec<(&str, usize)> = ids
+                .iter()
+                .flat_map(|id| (0..staves[id]).map(move |s| (*id, s)))
+                .collect();
+            let free: Vec<(&str, usize)> =
+                all.iter().copied().filter(|s| !held.contains(s)).collect();
+            let makes = !free.is_empty() && (wanted != "square" || free.len() == all.len());
+            if makes {
+                census.made[kind] += 1;
+                held.extend(free);
+            } else {
+                census.unmade += 1;
+            }
+        }
+    }
+    census.unmade += closed
+        .iter()
+        .filter(|(symbol, _)| !matches!(*symbol, "brace" | "bracket" | "square"))
+        .count();
+    census
 }
 
 /// A partwise MusicXML score as the file states it.
@@ -616,6 +949,16 @@ pub struct SourceScore {
     pub features: Features,
     /// Per part, in part order.
     pub census: Vec<Census>,
+    /// The staff groups: a brace for each part of two or more staves, then
+    /// the part-list's brackets, braces and square sub-brackets over the
+    /// staves no group yet holds.
+    pub groups: Vec<SourceGroup>,
+    /// The part-list's `<part-group>`s that make no group, each recorded: a
+    /// symbol the model has no group for, a square sub-bracket inside another
+    /// group, a group with no staff left to hold, or one never stopped.
+    pub unmade_groups: usize,
+    /// The census's own count of the same.
+    pub group_census: GroupCensus,
 }
 
 impl SourceScore {
@@ -783,6 +1126,8 @@ struct PartState {
     file_transpose: Option<TranspositionInterval>,
     /// Open slurs by number: the index of their start event.
     open_slurs: BTreeMap<String, usize>,
+    /// Open beams by voice: the indices of their events so far.
+    open_beams: BTreeMap<String, Vec<usize>>,
     /// The last event a `<chord/>` note would join.
     last_event: Option<usize>,
     /// The measure's pitches as written, for [`Reader::carry`].
@@ -867,6 +1212,10 @@ impl<'d, 'i> Reader<'d, 'i> {
         let mut concert = false;
         let mut score_parts: BTreeMap<String, Node> = BTreeMap::new();
         let mut part_nodes = Vec::new();
+        // The part-list in order: each part's id, and each group start
+        // (number, symbol) and stop (number).
+        let mut list: Vec<ListEntry> = Vec::new();
+        let mut part_list = None;
         for node in elements(root) {
             match name(node) {
                 "work" => {
@@ -921,21 +1270,24 @@ impl<'d, 'i> Reader<'d, 'i> {
                         .record(FeatureClass::Presentation, "credit", score_place());
                 }
                 "part-list" => {
+                    part_list = Some(node);
                     for entry in elements(node) {
                         match name(entry) {
                             "score-part" => {
-                                let id = entry.attribute("id").unwrap_or("").to_owned();
-                                score_parts.insert(id, entry);
+                                let id = entry.attribute("id").unwrap_or("");
+                                list.push((id, None));
+                                score_parts.insert(id.to_owned(), entry);
                             }
                             "part-group" => {
-                                if entry.attribute("type") == Some("start") {
-                                    let symbol =
-                                        child_text(entry, "group-symbol").unwrap_or("none");
-                                    self.features.record(
-                                        FeatureClass::Content,
-                                        format!("part group ({symbol})"),
-                                        score_place(),
-                                    );
+                                let number = entry.attribute("number").unwrap_or("1").to_owned();
+                                let kind = entry.attribute("type").unwrap_or("");
+                                let symbol = (kind == "start").then(|| {
+                                    child_text(entry, "group-symbol")
+                                        .unwrap_or("none")
+                                        .to_owned()
+                                });
+                                if kind == "start" || kind == "stop" {
+                                    list.push(("", Some((number, symbol))));
                                 }
                             }
                             other => self.features.record(
@@ -956,7 +1308,7 @@ impl<'d, 'i> Reader<'d, 'i> {
         }
 
         let mut reads = Vec::new();
-        for node in part_nodes {
+        for &node in &part_nodes {
             let id = node.attribute("id").unwrap_or("").to_owned();
             let Some(declaration) = score_parts.get(&id).copied() else {
                 return Err(self.malformed(node, format!("part {id:?} is not in the part-list")));
@@ -1055,6 +1407,9 @@ impl<'d, 'i> Reader<'d, 'i> {
             census.push(read.census);
         }
 
+        let (groups, unmade_groups) = self.groups(&list, &parts);
+        let group_census =
+            part_list.map_or_else(GroupCensus::default, |node| group_census(node, &part_nodes));
         Ok(SourceScore {
             title,
             composer,
@@ -1064,7 +1419,122 @@ impl<'d, 'i> Reader<'d, 'i> {
             meters,
             features: self.features,
             census,
+            groups,
+            unmade_groups,
+            group_census,
         })
+    }
+
+    /// The staff groups of the part-list `list` over `parts`, and how many of
+    /// its `<part-group>`s made none, each recorded. A staff is held in at most
+    /// one group: a part of two or more staves is a brace; then each brace and
+    /// bracket of the part-list holds those of its staves no group yet holds,
+    /// and a square sub-bracket all of its staves, if no group holds any.
+    fn groups(&mut self, list: &[ListEntry], parts: &[SourcePart]) -> (Vec<SourceGroup>, usize) {
+        let place = || Place {
+            part: String::new(),
+            measure: String::new(),
+        };
+        let index: BTreeMap<&str, usize> = parts
+            .iter()
+            .enumerate()
+            .map(|(p, part)| (part.id.as_str(), p))
+            .collect();
+        // Each part-group's symbol and the parts between its start and stop.
+        let mut open: BTreeMap<&str, (String, Vec<usize>)> = BTreeMap::new();
+        let mut spans: Vec<(String, Vec<usize>)> = Vec::new();
+        let mut unmade = 0;
+        for (id, group) in list {
+            match group {
+                None => {
+                    if let Some(&p) = index.get(id) {
+                        open.values_mut().for_each(|(_, parts)| parts.push(p));
+                    }
+                }
+                Some((number, Some(symbol))) => {
+                    if open
+                        .insert(number.as_str(), (symbol.clone(), Vec::new()))
+                        .is_some()
+                    {
+                        unmade += 1;
+                        self.features.record(
+                            FeatureClass::Notation,
+                            "part group begun again before its stop",
+                            place(),
+                        );
+                    }
+                }
+                Some((number, None)) => {
+                    if let Some(span) = open.remove(number.as_str()) {
+                        spans.push(span);
+                    }
+                }
+            }
+        }
+        for _ in open {
+            unmade += 1;
+            self.features
+                .record(FeatureClass::Notation, "part group without a stop", place());
+        }
+        let mut held: BTreeSet<(usize, usize)> = BTreeSet::new();
+        let mut groups = Vec::new();
+        for (p, part) in parts.iter().enumerate() {
+            if part.staves.len() >= 2 {
+                let staves: Vec<(usize, usize)> = (0..part.staves.len()).map(|s| (p, s)).collect();
+                held.extend(staves.iter().copied());
+                groups.push(SourceGroup {
+                    kind: GroupKind::Brace,
+                    staves,
+                });
+            }
+        }
+        let staves_of = |parts_in: &[usize]| -> Vec<(usize, usize)> {
+            parts_in
+                .iter()
+                .flat_map(|&p| (0..parts[p].staves.len()).map(move |s| (p, s)))
+                .collect()
+        };
+        for wanted in ["brace", "bracket", "square"] {
+            for (symbol, parts_in) in spans.iter().filter(|(symbol, _)| symbol == wanted) {
+                let staves = staves_of(parts_in);
+                let free: Vec<(usize, usize)> = staves
+                    .iter()
+                    .copied()
+                    .filter(|s| !held.contains(s))
+                    .collect();
+                let (kind, holds) = match symbol.as_str() {
+                    "brace" => (GroupKind::Brace, !free.is_empty()),
+                    "bracket" => (GroupKind::Bracket, !free.is_empty()),
+                    _ => (
+                        GroupKind::SubBracket,
+                        !free.is_empty() && free.len() == staves.len(),
+                    ),
+                };
+                if holds {
+                    held.extend(free.iter().copied());
+                    groups.push(SourceGroup { kind, staves: free });
+                } else {
+                    unmade += 1;
+                    self.features.record(
+                        FeatureClass::Notation,
+                        format!("part group ({symbol}) within another group"),
+                        place(),
+                    );
+                }
+            }
+        }
+        for (symbol, _) in spans
+            .iter()
+            .filter(|(symbol, _)| !matches!(symbol.as_str(), "brace" | "bracket" | "square"))
+        {
+            unmade += 1;
+            self.features.record(
+                FeatureClass::Notation,
+                format!("part group ({symbol})"),
+                place(),
+            );
+        }
+        (groups, unmade)
     }
 
     fn read_part(
@@ -1118,6 +1588,7 @@ impl<'d, 'i> Reader<'d, 'i> {
             divisions: 1,
             file_transpose: None,
             open_slurs: BTreeMap::new(),
+            open_beams: BTreeMap::new(),
             last_event: None,
             written: Vec::new(),
             tied_over: BTreeMap::new(),
@@ -1131,6 +1602,8 @@ impl<'d, 'i> Reader<'d, 'i> {
             members: Vec::new(),
             events: Vec::new(),
             slurs: Vec::new(),
+            beams: Vec::new(),
+            unmade_beams: 0,
             dropped_notes: 0,
             dropped_quarter_tones: Vec::new(),
             dropped_tie_starts: 0,
@@ -1270,6 +1743,17 @@ impl<'d, 'i> Reader<'d, 'i> {
         {
             part.members = members;
         }
+        for _ in state.open_beams {
+            part.unmade_beams += 1;
+            self.features.record(
+                FeatureClass::Notation,
+                "beam without an end",
+                Place {
+                    part: part_name.clone(),
+                    measure: String::new(),
+                },
+            );
+        }
         for (number, _) in state.open_slurs {
             self.features.record(
                 FeatureClass::Content,
@@ -1283,7 +1767,7 @@ impl<'d, 'i> Reader<'d, 'i> {
         read.part = part;
         read.census = note_census(node);
         (read.census.keys, read.census.clefs) = attribute_census(node);
-        read.census.quarter_tones = quarter_tone_census(node);
+        timed_census(node, &mut read.census);
         Ok(read)
     }
 
@@ -1488,17 +1972,12 @@ impl<'d, 'i> Reader<'d, 'i> {
         for item in elements(note) {
             match name(item) {
                 "chord" | "pitch" | "unpitched" | "rest" | "duration" | "voice" | "staff"
-                | "tie" | "type" | "dot" | "accidental" | "time-modification" | "instrument" => {}
+                | "tie" | "type" | "dot" | "accidental" | "time-modification" | "instrument"
+                | "beam" => {}
                 "notations" => {}
                 "stem" => {
                     self.features
                         .record(FeatureClass::Notation, "stem direction", place.clone())
-                }
-                "beam" => {
-                    if item.attribute("number").unwrap_or("1") == "1" && text(item) == "begin" {
-                        self.features
-                            .record(FeatureClass::Notation, "beam", place.clone());
-                    }
                 }
                 "notehead" => {
                     if text(item) != "normal" {
@@ -1791,6 +2270,45 @@ impl<'d, 'i> Reader<'d, 'i> {
         if let Some(mut written) = written {
             written.at = kept_at;
             state.written.push(written);
+        }
+
+        // The primary beam joins the notes of one voice, a chord by its first
+        // note; the shorter values' further beams follow from the notes.
+        let beam = children(note, "beam")
+            .find(|b| b.attribute("number").unwrap_or("1") == "1")
+            .map(text);
+        if let (false, Some(beam)) = (is_chord, beam) {
+            let voice = child_text(note, "voice").unwrap_or("1").to_owned();
+            match beam {
+                "begin"
+                    if state
+                        .open_beams
+                        .insert(voice.clone(), vec![event_index])
+                        .is_some() =>
+                {
+                    part.unmade_beams += 1;
+                    self.features.record(
+                        FeatureClass::Notation,
+                        "beam begun again before its end",
+                        place.clone(),
+                    );
+                }
+                "continue" | "end" => match state.open_beams.get_mut(&voice) {
+                    Some(events) => {
+                        events.push(event_index);
+                        if beam == "end" {
+                            let events = state.open_beams.remove(&voice).unwrap_or_default();
+                            part.beams.push(SourceBeam { events });
+                        }
+                    }
+                    None => self.features.record(
+                        FeatureClass::Notation,
+                        format!("beam {beam} without a begin"),
+                        place.clone(),
+                    ),
+                },
+                _ => {}
+            }
         }
 
         for (kind, number) in slur_marks {

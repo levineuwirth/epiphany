@@ -136,8 +136,11 @@ for i in "${!sources[@]}"; do
         continue
     fi
     mkdir -p "$dest"
-    # Stale pages go first: a score that lost pages would keep its old last ones.
-    rm -f -- "$dest/$name.exported"
+    # Every earlier export goes first, so what is there afterwards is this
+    # run's: a score that lost pages would keep its old last ones, and a run
+    # that fails before MuseScore writes would leave the last run's MusicXML
+    # and PDF to be counted as written.
+    rm -f -- "$dest/$name.exported" "$dest/$name.musicxml" "$dest/$name.pdf"
     find "$dest" -maxdepth 1 -name "$name-*.png" -type f -delete
     printf '[{"in": %s, "out": [%s, %s, %s]}]\n' "$(json_string "$copy")" \
         "$(json_string "$dest/$name.musicxml")" "$(json_string "$dest/$name.pdf")" \

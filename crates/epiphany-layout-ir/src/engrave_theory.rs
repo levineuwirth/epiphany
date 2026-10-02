@@ -105,17 +105,18 @@ pub fn notehead_glyph(value: NoteValue) -> &'static str {
     }
 }
 
-/// The SMuFL rest glyph for a note value, if one is bundled. Only whole/half/
-/// quarter/eighth rests ship in the bundled metrics; a sixteenth-or-shorter rest
-/// reports `None` so the caller surfaces the missing glyph coverage rather than
-/// misrendering it as an eighth rest.
+/// The SMuFL rest glyph for a note value. Every value the model holds, the
+/// whole to the 64th, has its glyph bundled; the `Option` stays so a value
+/// added to the model without one is surfaced rather than misdrawn.
 pub fn rest_glyph(value: NoteValue) -> Option<&'static str> {
     Some(match value {
         NoteValue::Whole => "restWhole",
         NoteValue::Half => "restHalf",
         NoteValue::Quarter => "restQuarter",
         NoteValue::Eighth => "rest8th",
-        _ => return None,
+        NoteValue::Sixteenth => "rest16th",
+        NoteValue::ThirtySecond => "rest32nd",
+        NoteValue::SixtyFourth => "rest64th",
     })
 }
 
@@ -124,28 +125,55 @@ pub fn has_stem(value: NoteValue) -> bool {
     !matches!(value, NoteValue::Whole)
 }
 
-/// The SMuFL flag glyph for an *unbeamed* stemmed note value, if one is bundled.
-/// Only the eighth-note flag ships in the bundled metrics; shorter values need
-/// their own flag glyphs (or beaming, deferred past I-1) and report `None`.
-pub fn flag_glyph(value: NoteValue, stem: StemDirection) -> Option<&'static str> {
+/// How many flags (or beams) a note value carries: one for an eighth, two for
+/// a sixteenth, and so on; none for a quarter or longer.
+pub fn flag_count(value: NoteValue) -> u8 {
     match value {
-        NoteValue::Eighth => Some(match stem {
-            StemDirection::Up => "flag8thUp",
-            StemDirection::Down => "flag8thDown",
-        }),
-        _ => None,
+        NoteValue::Whole | NoteValue::Half | NoteValue::Quarter => 0,
+        NoteValue::Eighth => 1,
+        NoteValue::Sixteenth => 2,
+        NoteValue::ThirtySecond => 3,
+        NoteValue::SixtyFourth => 4,
     }
 }
 
-/// The SMuFL clef glyph for a clef shape, if one is bundled. A percussion clef
-/// reports `None` until its glyph is bundled — returning a G clef for it would
-/// be a semantic false positive, so the caller surfaces the gap instead.
+/// The SMuFL flag glyph for an *unbeamed* stemmed note value, eighth to 64th;
+/// `None` for a value that takes no flag.
+pub fn flag_glyph(value: NoteValue, stem: StemDirection) -> Option<&'static str> {
+    let up = matches!(stem, StemDirection::Up);
+    Some(match (value, up) {
+        (NoteValue::Eighth, true) => "flag8thUp",
+        (NoteValue::Eighth, false) => "flag8thDown",
+        (NoteValue::Sixteenth, true) => "flag16thUp",
+        (NoteValue::Sixteenth, false) => "flag16thDown",
+        (NoteValue::ThirtySecond, true) => "flag32ndUp",
+        (NoteValue::ThirtySecond, false) => "flag32ndDown",
+        (NoteValue::SixtyFourth, true) => "flag64thUp",
+        (NoteValue::SixtyFourth, false) => "flag64thDown",
+        _ => return None,
+    })
+}
+
+/// The SMuFL clef glyph for a clef shape, without an octave mark.
 pub fn clef_glyph(shape: ClefShape) -> Option<&'static str> {
     Some(match shape {
         ClefShape::G => "gClef",
         ClefShape::F => "fClef",
         ClefShape::C => "cClef",
-        ClefShape::Percussion => return None,
+        ClefShape::Percussion => "unpitchedPercussionClef1",
+    })
+}
+
+/// The SMuFL clef glyph for a clef, with the octave mark its shift calls for
+/// on a G or F clef (`gClef8vb` for a tenor's treble clef). A C clef with a
+/// shift, or a shift of more than an octave, draws without the mark.
+pub fn clef_glyph_for(clef: &Clef) -> Option<&'static str> {
+    Some(match (clef.shape, clef.octave_shift) {
+        (ClefShape::G, -1) => "gClef8vb",
+        (ClefShape::G, 1) => "gClef8va",
+        (ClefShape::F, -1) => "fClef8vb",
+        (ClefShape::F, 1) => "fClef8va",
+        (shape, _) => return clef_glyph(shape),
     })
 }
 
@@ -158,6 +186,64 @@ pub fn accidental_glyph(accidental: &AccidentalId) -> Option<&'static str> {
         "flat" => "accidentalFlat",
         "natural" => "accidentalNatural",
         "doublesharp" | "double-sharp" => "accidentalDoubleSharp",
+        "doubleflat" | "double-flat" | "flat-flat" => "accidentalDoubleFlat",
+        _ => return None,
+    })
+}
+
+/// The alteration, in semitones, a spelling's accidental stack states: none
+/// for an empty stack, the accidental's for a single standard one. `None` for
+/// a stack of several, or for an accidental of no whole number of semitones
+/// (a microtonal one): those are drawn as written, out of the key and
+/// measure context this tier tracks.
+pub fn stack_alteration(accidentals: &[AccidentalId]) -> Option<i8> {
+    match accidentals {
+        [] => Some(0),
+        [only] => match only.as_str() {
+            "natural" => Some(0),
+            "sharp" => Some(1),
+            "flat" => Some(-1),
+            "doublesharp" | "double-sharp" => Some(2),
+            "doubleflat" | "double-flat" | "flat-flat" => Some(-2),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The alteration, in semitones, a key signature gives a letter: a sharp for
+/// each of the first `fifths` letters of F C G D A E B, a flat for each of
+/// the first `-fifths` of B E A D G C F.
+pub fn key_alteration(key: KeySignature, nominal: CmnNominal) -> i8 {
+    const SHARPS: [CmnNominal; 7] = [
+        CmnNominal::F,
+        CmnNominal::C,
+        CmnNominal::G,
+        CmnNominal::D,
+        CmnNominal::A,
+        CmnNominal::E,
+        CmnNominal::B,
+    ];
+    let fifths = key.fifths();
+    let count = fifths.unsigned_abs() as usize;
+    if fifths > 0 && SHARPS[..count].contains(&nominal) {
+        1
+    } else if fifths < 0 && SHARPS[7 - count..].contains(&nominal) {
+        -1
+    } else {
+        0
+    }
+}
+
+/// The accidental glyph that states an alteration outright: a natural for
+/// none, a sharp or flat for one semitone, a double for two.
+pub fn alteration_glyph(alteration: i8) -> Option<&'static str> {
+    Some(match alteration {
+        0 => "accidentalNatural",
+        1 => "accidentalSharp",
+        -1 => "accidentalFlat",
+        2 => "accidentalDoubleSharp",
+        -2 => "accidentalDoubleFlat",
         _ => return None,
     })
 }
@@ -345,7 +431,14 @@ mod tests {
         assert_eq!(notehead_glyph(NoteValue::Sixteenth), "noteheadBlack");
         assert_eq!(rest_glyph(NoteValue::Whole), Some("restWhole"));
         assert_eq!(rest_glyph(NoteValue::Eighth), Some("rest8th"));
-        assert_eq!(rest_glyph(NoteValue::Sixteenth), None);
+        assert_eq!(rest_glyph(NoteValue::Sixteenth), Some("rest16th"));
+        assert_eq!(rest_glyph(NoteValue::SixtyFourth), Some("rest64th"));
+        assert_eq!(
+            flag_glyph(NoteValue::ThirtySecond, StemDirection::Down),
+            Some("flag32ndDown")
+        );
+        assert_eq!(flag_count(NoteValue::Quarter), 0);
+        assert_eq!(flag_count(NoteValue::SixtyFourth), 4);
         assert!(!has_stem(NoteValue::Whole));
         assert!(has_stem(NoteValue::Quarter));
         assert_eq!(flag_glyph(NoteValue::Quarter, StemDirection::Up), None);
@@ -364,7 +457,16 @@ mod tests {
         assert_eq!(clef_glyph(ClefShape::G), Some("gClef"));
         assert_eq!(clef_glyph(ClefShape::F), Some("fClef"));
         assert_eq!(clef_glyph(ClefShape::C), Some("cClef"));
-        assert_eq!(clef_glyph(ClefShape::Percussion), None);
+        assert_eq!(
+            clef_glyph(ClefShape::Percussion),
+            Some("unpitchedPercussionClef1")
+        );
+        let tenor = Clef {
+            shape: ClefShape::G,
+            line: 2,
+            octave_shift: -1,
+        };
+        assert_eq!(clef_glyph_for(&tenor), Some("gClef8vb"));
         assert_eq!(
             accidental_glyph(&AccidentalId::new("sharp")),
             Some("accidentalSharp")
