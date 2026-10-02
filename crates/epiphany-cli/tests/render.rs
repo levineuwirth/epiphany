@@ -855,6 +855,285 @@ fn accidentals_stand_clear_of_their_column_and_close_to_it() {
     }
 }
 
+/// Heads a second apart stand either side of their stem: in a chord the head
+/// across the stem from the one the stem leaves, a cluster alternating, a
+/// ledger line under a head set left, ties leaving and dots clearing the head
+/// set right; a lower voice a second under an upper one stands to its right,
+/// their stems in one line, while voices a third apart, and a unison they
+/// share, stand together. The engraver holds each pair set apart to it.
+#[test]
+fn seconds_stand_either_side_of_the_stem() {
+    use epiphany_core::{Event, TypedObjectId};
+    use epiphany_layout_ir::{
+        to_constrained, to_logical, ConstraintSolver, LayoutConstraint, SolverConfig,
+    };
+
+    // A pitch as `G4` or `D#5`, of `duration` eighths in `voice`; `tie`
+    // precedes the voice and `after` follows it.
+    let note = |pitch: &str, duration: u8, voice: u8, chord: bool, tie: &str, after: &str| {
+        let (step, rest) = pitch.split_at(1);
+        let (alter, octave) = match rest.strip_prefix('#') {
+            Some(octave) => (1, octave),
+            None => (0, rest),
+        };
+        format!(
+            "<note>{}<pitch><step>{step}</step><alter>{alter}</alter><octave>{octave}</octave>\
+             </pitch><duration>{duration}</duration>{tie}<voice>{voice}</voice>{after}</note>",
+            if chord { "<chord/>" } else { "" }
+        )
+    };
+    let (start, stop) = ("<tie type=\"start\"/>", "<tie type=\"stop\"/>");
+    let dotted = "<type>half</type><dot/>";
+    let (begin, end) = (
+        "<type>eighth</type><beam number=\"1\">begin</beam>",
+        "<type>eighth</type><beam number=\"1\">end</beam>",
+    );
+    let rest = |duration: u8, voice: u8| {
+        format!("<note><rest/><duration>{duration}</duration><voice>{voice}</voice></note>")
+    };
+    let measures = [
+        [
+            note("F4", 2, 1, false, "", ""),
+            note("G4", 2, 1, true, "", ""),
+            note("C5", 2, 1, false, "", ""),
+            note("D#5", 2, 1, true, "", ""),
+            note("E5", 2, 1, true, "", ""),
+            note("A5", 2, 1, false, "", ""),
+            note("B5", 2, 1, true, "", ""),
+            note("G4", 2, 1, false, start, ""),
+            note("A4", 2, 1, true, start, ""),
+        ]
+        .concat(),
+        [
+            note("G4", 6, 1, false, stop, dotted),
+            note("A4", 6, 1, true, stop, dotted),
+            note("C5", 2, 1, false, "", ""),
+        ]
+        .concat(),
+        [
+            note("A4", 4, 1, false, "", ""),
+            note("C5", 2, 1, false, "", ""),
+            note("E5", 2, 1, false, "", ""),
+            "<backup><duration>8</duration></backup>".to_owned(),
+            note("G4", 1, 2, false, "", begin),
+            note("B4", 1, 2, false, "", end),
+            rest(2, 2),
+            note("A4", 2, 2, false, "", ""),
+            note("E5", 2, 2, false, "", ""),
+        ]
+        .concat(),
+        [
+            // A second whose beam turns its stem down.
+            note("G4", 1, 1, false, "", begin),
+            note("A4", 1, 1, true, "", "<type>eighth</type>"),
+            note("A5", 1, 1, false, "", end),
+            rest(6, 1),
+        ]
+        .concat(),
+    ];
+    let loaded = treble_part("seconds.musicxml", &measures);
+    let score = &loaded.reduced.score;
+    let layout = engrave(score).layout;
+    let staff = &layout.systems().next().expect("a system").staves[0].bounding_box;
+    let middle = staff.origin.y.0 + staff.size.height.0 / 2.0;
+    let step = |y: f32| ((y - middle) * 2.0).round() as i32 + 4;
+    // The width a head is set across by: its own, and the clearance.
+    let across = 1209.0 / 1024.0 + 0.02;
+    let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
+
+    let event_of = |source: &TypedObjectId| {
+        score.events.iter().find_map(|e| match (e, source) {
+            (Event::Pitched(n), TypedObjectId::Pitch(p))
+                if n.pitches.iter().any(|i| i.id == *p) =>
+            {
+                Some(n.id)
+            }
+            _ => None,
+        })
+    };
+    let heads: Vec<_> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("notehead"))
+        .collect();
+    // Each note's heads, by staff step: (step, left edge, box).
+    type ChordHead = (i32, f32, [f32; 4]);
+    let mut chords: Vec<(epiphany_core::EventId, Vec<ChordHead>)> = Vec::new();
+    for head in &heads {
+        let event = event_of(&head.provenance.source).expect("a head's note");
+        let entry = (step(head.position.y.0), glyph_box(head)[0], glyph_box(head));
+        match chords.iter_mut().find(|(e, _)| *e == event) {
+            Some((_, members)) => members.push(entry),
+            None => chords.push((event, vec![entry])),
+        }
+    }
+    for (_, members) in &mut chords {
+        members.sort_by_key(|m| m.0);
+    }
+    chords.sort_by(|a, b| {
+        let left = |c: &[ChordHead]| c.iter().map(|m| m.1).fold(f32::INFINITY, f32::min);
+        left(&a.1).total_cmp(&left(&b.1))
+    });
+    let with = |steps: &[i32]| -> Vec<&Vec<ChordHead>> {
+        chords
+            .iter()
+            .map(|(_, members)| members)
+            .filter(|members| members.iter().map(|m| m.0).collect::<Vec<_>>() == steps)
+            .collect()
+    };
+
+    // No two heads share ink, but a unison two voices share.
+    for (i, a) in heads.iter().enumerate() {
+        for b in &heads[i + 1..] {
+            let shared = a.glyph == b.glyph && a.position == b.position;
+            assert!(
+                shared || !boxes_overlap(glyph_box(a), glyph_box(b)),
+                "heads at steps {} and {} share ink",
+                step(a.position.y.0),
+                step(b.position.y.0)
+            );
+        }
+    }
+
+    // The upper head of each second right of the lower, whichever way the
+    // stem turns.
+    assert_eq!(
+        with(&[2, 3]).len(),
+        3,
+        "the tied, dotted and beamed seconds"
+    );
+    for chord in [with(&[1, 2]), with(&[2, 3])].concat() {
+        assert!(near(chord[1].1 - chord[0].1, across), "{chord:?}");
+    }
+    // Down-stems: the lower head left of the stem, a cluster alternating.
+    let cluster = with(&[5, 6, 7])[0];
+    assert!(near(cluster[0].1, cluster[2].1), "{cluster:?}");
+    assert!(near(cluster[2].1 - cluster[1].1, across), "{cluster:?}");
+    let ledgered = with(&[10, 11])[0];
+    assert!(near(ledgered[1].1 - ledgered[0].1, across), "{ledgered:?}");
+    // The stem runs between the heads of a second, up or, where its beam
+    // turns it, down.
+    let stem_x: Vec<f32> = layout
+        .strokes
+        .iter()
+        .filter(|s| s.from.x == s.to.x && s.from.y != s.to.y)
+        .map(|s| s.from.x.0)
+        .collect();
+    for chord in [with(&[1, 2])[0], with(&[2, 3])[2]] {
+        assert!(
+            stem_x
+                .iter()
+                .any(|x| *x > chord[0].2[2] - 0.1 && *x < chord[1].2[0] + 0.1),
+            "no stem between {chord:?}"
+        );
+    }
+
+    // A ledger line runs under the head set left of the stem.
+    let a5 = ledgered[0].2;
+    assert!(
+        layout
+            .strokes
+            .iter()
+            .filter(|s| epiphany_layout_ir::is_rigid_width_stroke(s))
+            .map(stroke_box)
+            .any(|l| near((l[1] + l[3]) / 2.0, (a5[1] + a5[3]) / 2.0)
+                && l[0] <= a5[0]
+                && l[2] >= a5[2]),
+        "no ledger line under the head set left"
+    );
+    // The sharp clears the cluster's head set left.
+    let sharp = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str() == "accidentalSharp")
+        .expect("the cluster's sharp");
+    assert!(near(cluster[1].1 - glyph_box(sharp)[2], 0.2));
+    for head in &heads {
+        assert!(!boxes_overlap(glyph_box(sharp), glyph_box(head)));
+    }
+
+    // The dotted second's dots stand in one column right of its head set
+    // right; the ties leave and meet heads, never start inside one.
+    let dotted = with(&[2, 3])[1];
+    let dots: Vec<f32> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "augmentationDot")
+        .map(|g| glyph_box(g)[0])
+        .collect();
+    assert_eq!(dots.len(), 2);
+    for dot in &dots {
+        assert!(near(*dot, dotted[1].2[2] + 0.25), "a dot at {dot}");
+    }
+    let ties: Vec<_> = layout
+        .curves
+        .iter()
+        .filter(|c| matches!(c.provenance.source, TypedObjectId::Tie(_)))
+        .collect();
+    assert_eq!(ties.len(), 2);
+    for tie in ties {
+        for end in [&tie.p0, &tie.p3] {
+            for head in &heads {
+                let b = glyph_box(head);
+                assert!(
+                    !(end.x.0 > b[0] && end.x.0 < b[2] && end.y.0 > b[1] && end.y.0 < b[3]),
+                    "a tie ends inside a head"
+                );
+            }
+        }
+    }
+
+    // Two voices a second apart: the lower to the right, the stems in one
+    // line; a third apart and a shared unison, together.
+    let (upper, lower) = (with(&[3])[0][0], with(&[2])[0][0]);
+    assert!(near(lower.1 - upper.1, across));
+    let voice_stems: Vec<f32> = layout
+        .strokes
+        .iter()
+        .filter(|s| s.from.x == s.to.x && s.from.y != s.to.y)
+        .map(|s| s.from.x.0)
+        .filter(|x| *x > upper.1 && *x < lower.2[2])
+        .collect();
+    assert_eq!(voice_stems.len(), 2, "{voice_stems:?}");
+    assert!((voice_stems[0] - voice_stems[1]).abs() <= 0.02 + 1e-3);
+    // The lower voice's beam starts on its stem, moved with it.
+    assert!(
+        layout
+            .strokes
+            .iter()
+            .filter(|s| epiphany_layout_ir::is_beam_stroke(s))
+            .any(|s| near(s.from.x.0.min(s.to.x.0), lower.1 - 0.06)),
+        "no beam on the moved stem"
+    );
+    let third = with(&[3])[1];
+    let c5: Vec<_> = with(&[5]);
+    assert_eq!(c5.len(), 2);
+    assert!(near(third[0].1, c5[1][0].1), "a third apart, together");
+    let unison = with(&[7]);
+    assert_eq!(unison.len(), 2);
+    assert!(near(unison[0][0].1, unison[1][0].1), "a shared unison");
+
+    // The constrained stage obliges each pair set apart within a column, and
+    // the engraver's solve holds every obligation.
+    let constrained = to_constrained(&to_logical(score));
+    let by_id: std::collections::BTreeMap<_, _> =
+        constrained.glyphs.iter().map(|g| (g.id(), g)).collect();
+    let within = constrained
+        .constraints
+        .iter()
+        .filter(|c| match c {
+            LayoutConstraint::NoCollision { a, b } => {
+                by_id[a].horizontal_slot == by_id[b].horizontal_slot
+            }
+            _ => false,
+        })
+        .count();
+    assert_eq!(within, 8, "one obligation per second set apart");
+    let report =
+        epiphany_engrave::Engraver::default().solve(&constrained, &SolverConfig::default());
+    assert!(report.unsatisfied_constraints.is_empty());
+}
+
 /// A score's opening time signature stands a clear gap after the clef and
 /// key, and its first note a clear gap after the time signature, with or
 /// without a key signature.

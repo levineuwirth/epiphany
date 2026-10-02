@@ -241,8 +241,13 @@ pub struct Engraver {
 /// their ink rather than at a fixed distance from their heads: clear of the
 /// column's heads, of the ledger lines they span and of each other, across
 /// voices, the highest nearest the heads and a column further out for each
-/// that would touch one already placed.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(19);
+/// that would touch one already placed, and to `20` when the heads of a
+/// column began standing clear of each other: a head a second from its
+/// chord-mate across the stem, a voice a second from another to its right
+/// with their stems in one line and its stem, beams, ties and ledger lines
+/// with it, a column's dots right of all its heads, and every two heads of a
+/// column a second or unison apart obliged not to collide.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(20);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

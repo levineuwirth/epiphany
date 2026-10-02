@@ -709,6 +709,7 @@ const REGION_GAP: f32 = 4.0; // horizontal gap between regions (no page layout i
 const NOTEHEAD_STEM_X: f32 = 1.15;
 const ACCIDENTAL_GAP: f32 = 0.2; // an accidental's ink stands this far clear of a head or ledger line
 const ACCIDENTAL_STACK_GAP: f32 = 0.15; // …and this far clear of another accidental
+const SECOND_CLEARANCE: f32 = 0.02; // heads set beside each other stand this far apart
 const KEY_GAP: f32 = 0.6; // the gap between a clef's ink and the key signature after it
 const LEAD_GAP: f32 = 0.8; // the gap between a lead's ink and the first column after it
 const KEY_ACC_X: f32 = 0.9; // x advance per key-signature accidental
@@ -1037,12 +1038,19 @@ pub fn try_to_constrained(
                                 ),
                                 _ => Vec::new(),
                             };
-                            placed.push((pitch.pitch, step, accidentals));
+                            let alteration = pitch.spelling.as_ref().and_then(|spelling| {
+                                matches!(spelling.nominal, SpellingNominal::Cmn(_))
+                                    .then(|| stack_alteration(&spelling.accidentals))
+                                    .flatten()
+                            });
+                            placed.push((pitch.pitch, step, accidentals, alteration));
                         }
                         let steps: Vec<StaffStep> =
-                            placed.iter().map(|(_, step, _)| *step).collect();
+                            placed.iter().map(|(_, step, _, _)| *step).collect();
                         let dot_ys = dot_positions(yo, &steps, note.voice == VoicePlace::Lower);
-                        for ((pitch, step, accidentals), dot_y) in placed.into_iter().zip(dot_ys) {
+                        for ((pitch, step, accidentals, alteration), dot_y) in
+                            placed.into_iter().zip(dot_ys)
+                        {
                             let heads = pitch_heads.entry(pitch).or_default();
                             column_heads
                                 .entry((staff, key.clone()))
@@ -1056,8 +1064,11 @@ pub fn try_to_constrained(
                                 comp,
                                 accidentals,
                                 accidental_x: Vec::new(),
+                                dx: 0.0,
+                                alteration,
                                 dots,
                                 dot_y,
+                                dot_x: 0.0,
                                 event: eid,
                                 tied,
                             });
@@ -1109,8 +1120,11 @@ pub fn try_to_constrained(
                             comp,
                             accidentals: Vec::new(),
                             accidental_x: Vec::new(),
+                            dx: 0.0,
+                            alteration: None,
                             dots,
                             dot_y,
+                            dot_x: 0.0,
                             event: eid,
                             tied,
                         });
@@ -1262,9 +1276,70 @@ pub fn try_to_constrained(
             }
         }
 
+        // A beam turns its stems before the heads are placed, since the side
+        // a second's heads take follows the stem.
+        for object in &region.objects {
+            let (Some(staff), LayoutContent::Staff(content)) = (object.staff(), object.content())
+            else {
+                continue;
+            };
+            let middle = y_origin(staff) + STAFF_HEIGHT * 0.5;
+            for group in &content.beams {
+                let Some((members, up)) = beam_members(group, &event_stems, middle) else {
+                    continue;
+                };
+                for event in members {
+                    if let Some(seg) = event_stems.get_mut(&event).and_then(|s| s.first_mut()) {
+                        seg.up = up;
+                    }
+                }
+            }
+        }
+
+        // Each staff column's heads, set clear of each other, with the stem
+        // of a voice that moves moving with it.
+        for refs in column_heads.values() {
+            let heads: Vec<&Head> = refs
+                .iter()
+                .map(|r| r.get(&pitch_heads, &unpitched_heads))
+                .collect();
+            let ups: Vec<bool> = heads
+                .iter()
+                .map(|head| {
+                    event_stems
+                        .get(&head.event)
+                        .and_then(|segs| segs.iter().find(|seg| seg.comp == head.comp))
+                        .is_none_or(|seg| seg.up)
+                })
+                .collect();
+            let places: Vec<VoicePlace> = heads
+                .iter()
+                .map(|head| {
+                    event_voices
+                        .get(&head.event)
+                        .copied()
+                        .unwrap_or(VoicePlace::Alone)
+                })
+                .collect();
+            let (dxs, shifts, dot_x) = place_heads(&heads, &ups, &places);
+            for (r, dx) in refs.iter().zip(dxs) {
+                let head = r.get_mut(&mut pitch_heads, &mut unpitched_heads);
+                head.dx = dx;
+                head.dot_x = dot_x;
+            }
+            for (event, comp, shift) in shifts {
+                if let Some(seg) = event_stems
+                    .get_mut(&event)
+                    .and_then(|segs| segs.iter_mut().find(|seg| seg.comp == comp))
+                {
+                    seg.dx = shift;
+                }
+            }
+        }
+
         // Each staff column's accidentals, placed together by their ink. The
         // source layout separates the column from the one before by as much
-        // as they reach left of its heads.
+        // as they reach left of its heads (and a head set left of a stem).
         for ((_, key), refs) in &column_heads {
             let heads: Vec<&Head> = refs
                 .iter()
@@ -1428,45 +1503,27 @@ pub fn try_to_constrained(
             let middle = yo + STAFF_HEIGHT * 0.5;
             let head_box = metrics("noteheadBlack").map(|m| m.bounding_box());
             for (ordinal, group) in content.beams.iter().enumerate() {
-                let members: Vec<EventId> = group
-                    .events
-                    .iter()
-                    .copied()
-                    .filter(|e| {
-                        matches!(event_stems.get(e).map(Vec::as_slice), Some([seg]) if seg.drawn)
-                    })
-                    .collect();
-                if members.len() < 2 {
+                let Some((members, up)) = beam_members(group, &event_stems, middle) else {
                     continue;
-                }
-                let n = members.len();
-                let voiced = members.iter().find_map(|e| event_stems[e][0].voiced);
-                let (his, los, counts, keys_of): (Vec<f32>, Vec<f32>, Vec<u8>, Vec<ColumnKey>) = {
-                    let segs: Vec<&StemSeg> = members.iter().map(|e| &event_stems[e][0]).collect();
-                    (
-                        segs.iter().map(|s| s.hi).collect(),
-                        segs.iter().map(|s| s.lo).collect(),
-                        segs.iter().map(|s| s.beams).collect(),
-                        segs.iter().map(|s| s.key.clone()).collect(),
-                    )
                 };
-                let above = his
-                    .iter()
-                    .map(|y| y - middle)
-                    .fold(f32::NEG_INFINITY, f32::max);
-                let below = los
-                    .iter()
-                    .map(|y| middle - y)
-                    .fold(f32::NEG_INFINITY, f32::max);
-                // A voice beside another turns its whole group its way.
-                let up = voiced.unwrap_or(below > above);
+                let n = members.len();
+                let segs: Vec<&StemSeg> = members.iter().map(|e| &event_stems[e][0]).collect();
+                let his: Vec<f32> = segs.iter().map(|s| s.hi).collect();
+                let los: Vec<f32> = segs.iter().map(|s| s.lo).collect();
+                let counts: Vec<u8> = segs.iter().map(|s| s.beams).collect();
+                let keys_of: Vec<ColumnKey> = segs.iter().map(|s| s.key.clone()).collect();
+                let dxs: Vec<f32> = segs.iter().map(|s| s.dx).collect();
                 let sign = if up { 1.0 } else { -1.0 };
                 let x_off = if up {
                     head_box.map_or(NOTEHEAD_STEM_X, |b| b.right.0)
                 } else {
                     head_box.map_or(0.0, |b| b.left.0)
                 };
-                let xs: Vec<f32> = keys_of.iter().map(|k| column(k).x + x_off).collect();
+                let xs: Vec<f32> = keys_of
+                    .iter()
+                    .zip(&dxs)
+                    .map(|(k, dx)| column(k).x + dx + x_off)
+                    .collect();
                 // The head each stem leaves from, nearest the beam.
                 let near: Vec<f32> = if up { his.clone() } else { los.clone() };
                 let most = counts.iter().copied().max().unwrap_or(1);
@@ -1767,7 +1824,7 @@ pub fn try_to_constrained(
                         }
                         for seg in segs {
                             let info = column(&seg.key);
-                            let stem_x = info.x + seg.x_off;
+                            let stem_x = info.x + seg.dx + seg.x_off;
                             let (from, to) = if seg.drawn {
                                 // The stem runs from the head it attaches to — the
                                 // lowest for an up-stem, the highest for a down one —
@@ -1776,7 +1833,8 @@ pub fn try_to_constrained(
                                 (Point::new(stem_x, base), Point::new(stem_x, seg.end))
                             } else {
                                 // A stemless value (whole note): a zero-length stem.
-                                (Point::new(info.x, seg.lo), Point::new(info.x, seg.lo))
+                                let x = info.x + seg.dx;
+                                (Point::new(x, seg.lo), Point::new(x, seg.lo))
                             };
                             let prov = if unpitched {
                                 Provenance::synthesized(
@@ -2407,9 +2465,9 @@ pub fn try_to_constrained(
 
         // NoCollision between *successive notehead columns* within each staff:
         // adjacent pairs in (column x, id) order, one linear chain per staff,
-        // not O(n²). Chord members share a column slot — a second or unison may
-        // genuinely overlap by design — so only cross-column neighbours carry
-        // the obligation.
+        // not O(n²); and, within a column, between every two heads whose boxes
+        // share height (a second or a unison, which the column's placement set
+        // apart), except a unison two voices share, one head drawn twice.
         for staff in &staves_in_order {
             let mut heads: Vec<&GlyphObject> = staff_members
                 .get(staff)
@@ -2431,6 +2489,27 @@ pub fn try_to_constrained(
                         a: pair[0].id(),
                         b: pair[1].id(),
                     });
+                }
+            }
+            let mut columns: BTreeMap<SpringSlotId, Vec<&GlyphObject>> = BTreeMap::new();
+            for head in &heads {
+                columns.entry(head.horizontal_slot).or_default().push(head);
+            }
+            for column in columns.values() {
+                for (i, a) in column.iter().enumerate() {
+                    for b in &column[i + 1..] {
+                        let level = a.baseline.y.0 + a.bounding_box.bottom.0
+                            < b.baseline.y.0 + b.bounding_box.top.0
+                            && b.baseline.y.0 + b.bounding_box.bottom.0
+                                < a.baseline.y.0 + a.bounding_box.top.0;
+                        let shared = a.glyph == b.glyph && a.baseline == b.baseline;
+                        if level && !shared {
+                            constraints.push(LayoutConstraint::NoCollision {
+                                a: a.id(),
+                                b: b.id(),
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -2625,9 +2704,18 @@ struct Head {
     /// Each accidental's origin `x`, from the column's, in the order of
     /// `accidentals`; set once the column's accidentals are placed together.
     accidental_x: Vec<f32>,
-    /// The component's augmentation dots, and the `y` of the space they sit in.
+    /// The head's `x` from its column's: across the stem from its chord-mate
+    /// a second away, or beside another voice's head, and `0.0` otherwise.
+    dx: f32,
+    /// The alteration its spelling gives (`None` unpitched or unspelled): two
+    /// voices' heads share a unison only at the same alteration.
+    alteration: Option<i8>,
+    /// The component's augmentation dots, the `y` of the space they sit in,
+    /// and the first dot's `x` from the column's, right of every head of the
+    /// staff's column.
     dots: u8,
     dot_y: f32,
+    dot_x: f32,
     /// The event the head belongs to, and whether its component is tied to
     /// the event's next one.
     event: EventId,
@@ -2685,6 +2773,9 @@ struct StemSeg {
     voiced: Option<bool>,
     /// Where the stem attaches, as an x offset from the column's notehead x.
     x_off: f32,
+    /// How far its voice stands right of the column's x, beside another
+    /// voice's head a second away.
+    dx: f32,
     /// The stem's free end at its normal length, where a flag attaches.
     tip: f32,
     /// Where the stem is drawn to: its tip, lengthened to reach the far edge of
@@ -3359,6 +3450,7 @@ fn note_stem(
         up,
         voiced,
         x_off,
+        dx: 0.0,
         tip,
         end,
         flag,
@@ -3550,8 +3642,8 @@ fn tie_curve(
 ) -> Curve {
     let right = metrics(a.name).map_or(NOTEHEAD_STEM_X, |m| m.bounding_box().right.0);
     let left = metrics(b.name).map_or(0.0, |m| m.bounding_box().left.0);
-    let x0 = from.x + right + TIE_GAP;
-    let x3 = (to.x + left - TIE_GAP).max(x0 + TIE_GAP);
+    let x0 = from.x + a.dx + right + TIE_GAP;
+    let x3 = (to.x + b.dx + left - TIE_GAP).max(x0 + TIE_GAP);
     let sign = if above { 1.0 } else { -1.0 };
     let y = a.y + sign * TIE_OFFSET;
     let span = x3 - x0;
@@ -3612,6 +3704,152 @@ fn component_ties(
     ties
 }
 
+/// The heads of one staff's column, set clear of each other: each head's `x`
+/// from the column's, the shift of each event (by component) that stands
+/// right of another voice's, and the `x` of the column's first dot.
+///
+/// In a chord, taken outward from the head the stem leaves (up from the
+/// lowest for an up-stem, down from the highest for a down-stem), a head a
+/// second or unison from one on the stem's usual side goes across the stem,
+/// clear of it: right of an up-stem, left of a down-stem, so a cluster
+/// alternates.
+/// Then each voice in turn (upper voices first) stands right of the heads
+/// before it that its heads would touch, its stem with it, so a lower voice a
+/// second under an upper one stands to its right with their stems in one
+/// line. A unison two voices share (one glyph, one alteration, one count of
+/// dots) is one head drawn twice. The dots of every head stand right of all
+/// of the column's heads. `ups` and `places` are each head's stem direction
+/// and voice place.
+fn place_heads(
+    heads: &[&Head],
+    ups: &[bool],
+    places: &[VoicePlace],
+) -> (Vec<f32>, Vec<(EventId, usize, f32)>, f32) {
+    let ink = |head: &Head| {
+        metrics(head.name).map_or([0.0, -0.5, NOTEHEAD_STEM_X, 0.5], |m| {
+            let b = m.bounding_box();
+            [b.left.0, b.bottom.0, b.right.0, b.top.0]
+        })
+    };
+    let mut dx = vec![0.0f32; heads.len()];
+    let mut events: Vec<EventId> = heads.iter().map(|head| head.event).collect();
+    events.sort();
+    events.dedup();
+    let of = |event: EventId| -> Vec<usize> {
+        (0..heads.len())
+            .filter(|i| heads[*i].event == event)
+            .collect()
+    };
+    for &event in &events {
+        let mut chord = of(event);
+        let up = ups[chord[0]];
+        chord.sort_by_key(|i| heads[*i].step);
+        if !up {
+            chord.reverse();
+        }
+        let mut previous: Option<(StaffStep, bool)> = None;
+        for i in chord {
+            let across =
+                matches!(previous, Some((step, false)) if (heads[i].step - step).abs() <= 1);
+            if across {
+                let [left, _, right, _] = ink(heads[i]);
+                dx[i] = if up {
+                    right - left + SECOND_CLEARANCE
+                } else {
+                    left - right - SECOND_CLEARANCE
+                };
+            }
+            previous = Some((heads[i].step, across));
+        }
+    }
+    let rank = |place: VoicePlace| match place {
+        VoicePlace::Upper => 0,
+        VoicePlace::Alone => 1,
+        VoicePlace::Lower => 2,
+    };
+    events.sort_by_key(|event| (rank(places[of(*event)[0]]), *event));
+    let mut shifts = Vec::new();
+    let mut standing: Vec<usize> = Vec::new();
+    for &event in &events {
+        let mine = of(event);
+        let mut shift = 0.0f32;
+        // Each pass moves it right of the furthest head it touches, so it
+        // ends within one pass per head standing.
+        for _ in 0..=standing.len() {
+            let mut reach = f32::NEG_INFINITY;
+            for &i in &mine {
+                let a = ink(heads[i]);
+                let (al, ar) = (shift + dx[i] + a[0], shift + dx[i] + a[2]);
+                let (ab, at) = (heads[i].y + a[1], heads[i].y + a[3]);
+                for &j in &standing {
+                    let b = ink(heads[j]);
+                    let (bl, br) = (dx[j] + b[0], dx[j] + b[2]);
+                    let (bb, bt) = (heads[j].y + b[1], heads[j].y + b[3]);
+                    let shared = heads[i].step == heads[j].step
+                        && heads[i].name == heads[j].name
+                        && heads[i].dots == heads[j].dots
+                        && heads[i].alteration == heads[j].alteration
+                        && shift + dx[i] == dx[j];
+                    if !shared && al < br && bl < ar && ab < bt && bb < at {
+                        reach = reach.max(br);
+                    }
+                }
+            }
+            if !reach.is_finite() {
+                break;
+            }
+            let left = mine
+                .iter()
+                .map(|&i| dx[i] + ink(heads[i])[0])
+                .fold(f32::INFINITY, f32::min);
+            shift = reach - left + SECOND_CLEARANCE;
+        }
+        if shift != 0.0 {
+            for &i in &mine {
+                dx[i] += shift;
+            }
+            shifts.push((event, heads[mine[0]].comp, shift));
+        }
+        standing.extend(mine);
+    }
+    let right = (0..heads.len())
+        .map(|i| dx[i] + ink(heads[i])[2])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let dot_x = if right.is_finite() { right } else { 0.0 } + DOT_GAP;
+    (dx, shifts, dot_x)
+}
+
+/// A beam group's members, one drawn stem each, and the way their stems
+/// turn: a voice beside another turns the whole group its way; otherwise the
+/// note furthest from the middle line decides (down on a tie). `None` for a
+/// group of fewer than two.
+fn beam_members(
+    group: &crate::logical::BeamGroup,
+    event_stems: &BTreeMap<EventId, Vec<StemSeg>>,
+    middle: f32,
+) -> Option<(Vec<EventId>, bool)> {
+    let members: Vec<EventId> = group
+        .events
+        .iter()
+        .copied()
+        .filter(|e| matches!(event_stems.get(e).map(Vec::as_slice), Some([seg]) if seg.drawn))
+        .collect();
+    if members.len() < 2 {
+        return None;
+    }
+    let segs: Vec<&StemSeg> = members.iter().map(|e| &event_stems[e][0]).collect();
+    let voiced = segs.iter().find_map(|seg| seg.voiced);
+    let above = segs
+        .iter()
+        .map(|seg| seg.hi - middle)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let below = segs
+        .iter()
+        .map(|seg| middle - seg.lo)
+        .fold(f32::NEG_INFINITY, f32::max);
+    Some((members, voiced.unwrap_or(below > above)))
+}
+
 /// The accidentals of one staff's column, placed together by their ink (each
 /// glyph's box), with `x` from the column's: each stands `ACCIDENTAL_GAP`
 /// left of every head of the column and of every ledger line its height
@@ -3627,7 +3865,7 @@ fn place_accidentals(heads: &[&Head]) -> (Vec<Vec<f32>>, f32) {
     // Each ledger line's left end and `y`.
     let mut ledgers: Vec<(f32, f32)> = Vec::new();
     for head in heads {
-        let left = metrics(head.name).map_or(0.0, |m| m.bounding_box().left.0);
+        let left = head.dx + metrics(head.name).map_or(0.0, |m| m.bounding_box().left.0);
         heads_left = heads_left.min(left);
         for step in ledger_steps(head.step) {
             let y = head.y + (step - head.step) as f32 * 0.5;
@@ -3718,10 +3956,11 @@ fn emit_head(
     band: VerticalBandId,
     staff: Option<StaffId>,
 ) {
+    let x = info.x + head.dx;
     emit.glyph(
         provenance,
         head.name,
-        Point::new(info.x, head.y),
+        Point::new(x, head.y),
         band,
         staff,
         info.slot,
@@ -3744,8 +3983,8 @@ fn emit_head(
         );
         emit.stroke(line_stroke(
             ledger_provenance,
-            Point::new(info.x + head_left - LEDGER_LINE_EXTENSION, y),
-            Point::new(info.x + head_right + LEDGER_LINE_EXTENSION, y),
+            Point::new(x + head_left - LEDGER_LINE_EXTENSION, y),
+            Point::new(x + head_right + LEDGER_LINE_EXTENSION, y),
             STAFF_LINE_THICKNESS,
             band,
         ));
@@ -3772,7 +4011,8 @@ fn emit_head(
             info.slot,
         );
     }
-    // Augmentation dots, right of the head in the space its dot `y` names.
+    // Augmentation dots, right of every head of the column, in the space its
+    // dot `y` names.
     for dot in 0..head.dots {
         let dot_provenance = Provenance::synthesized(
             provenance.source,
@@ -3780,7 +4020,7 @@ fn emit_head(
             SynthesisInstanceKey((head.comp as u128) << 8 | u128::from(dot)),
             provenance.dependencies.clone(),
         );
-        let x = info.x + head_right + DOT_GAP + f32::from(dot) * DOT_STEP;
+        let x = info.x + head.dot_x + f32::from(dot) * DOT_STEP;
         emit.glyph(
             &dot_provenance,
             "augmentationDot",
@@ -4092,7 +4332,8 @@ mod tests {
             .count();
         assert!(pairs > 0, "successive noteheads earn no-collision pairs");
         assert!(pairs < noteheads, "the chain is linear in the noteheads");
-        // Every no-collision endpoint is a notehead in a distinct column slot.
+        // Every no-collision endpoint is a notehead, the pair in two column
+        // slots or set apart within one.
         let by_id: BTreeMap<GlyphObjectId, &GlyphObject> =
             a.glyphs.iter().map(|g| (g.id(), g)).collect();
         for constraint in &a.constraints {
@@ -4104,7 +4345,11 @@ mod tests {
                 let (first, second) = (by_id[first], by_id[second]);
                 assert!(first.glyph.as_str().starts_with("notehead"));
                 assert!(second.glyph.as_str().starts_with("notehead"));
-                assert_ne!(first.horizontal_slot, second.horizontal_slot);
+                let apart = first.baseline.x.0 + first.bounding_box.right.0
+                    <= second.baseline.x.0 + second.bounding_box.left.0
+                    || second.baseline.x.0 + second.bounding_box.right.0
+                        <= first.baseline.x.0 + first.bounding_box.left.0;
+                assert!(first.horizontal_slot != second.horizontal_slot || apart);
             }
         }
         // No break constraints without projected break overrides.

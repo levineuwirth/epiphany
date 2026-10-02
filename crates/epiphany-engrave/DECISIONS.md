@@ -1185,3 +1185,24 @@ accidentals reach. No `NoCollision` obligation names an accidental: a ledger
 line is a stroke, which the obligation cannot name, so the positional test is
 the check. Locked by `accidentals_stand_clear_of_their_column_and_close_to_it`
 (`epiphany-cli`).
+
+## ENGRAVER_VERSION 19 → 20: heads a second apart (X2 fix round, 2026-10-02)
+
+Every head of a column stood at the column's x, so two heads a second apart,
+in a chord or in two voices, lay half over each other, and the constrained
+stage exempted heads sharing a column from `NoCollision` on the ground that
+a second may overlap by design. The constrained stage now sets a staff
+column's heads clear of each other before it places their accidentals. In a
+chord, taken outward from the head the stem leaves, a head a second or a
+unison from one on the stem's usual side goes across the stem, 0.02 clear of
+it, so a cluster alternates; a beam turns its stems before this, since the
+side follows the stem. Then each voice in turn, upper first, stands right of
+the heads before it that its heads would touch, its stem, beams and ties
+moving with it, so a lower voice a second under an upper one stands to its
+right with their stems in one line, as MuseScore sets it; a unison two voices
+share (one glyph, one alteration, one count of dots) stays one head drawn
+twice. A displaced head draws its own ledger lines, ties leave and meet it,
+and the dots of a column stand right of all its heads. Within a column,
+every two heads whose boxes share height, but a shared unison, now carry a
+`NoCollision`, so the solve's validation sees a pair the placement failed to
+part. Locked by `seconds_stand_either_side_of_the_stem` (`epiphany-cli`).
