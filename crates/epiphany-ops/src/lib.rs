@@ -158,6 +158,21 @@ pub mod vectors;
 ///   Either alone would require this bump. A base materialized under `0` holds
 ///   state this version would not have computed, so it must be rebuilt rather
 ///   than reused.
+/// * `2` — **X3.1** (2026-10-03, operation_catalog §CreateTuplet), which adds
+///   `CreateTuplet` and keeps tuplet membership in the referent index in both
+///   reduction modes. Two operations reducible before it now produce
+///   different **canonical reduced state** over a base that already holds a
+///   tuplet:
+///   - a `DeleteEvent` whose `ReplaceWithRest` compensation replaces a
+///     member puts the rest in the member's place in the index, so its
+///     effect no longer carries the `AttachmentTombstoned` repair the stale
+///     index used to record against the tuplet;
+///   - a cue event cascaded out from under a tuplet it belonged to now
+///     cascade-deletes the tuplet (a `CascadeDeleted` repair, and the
+///     tuplet removed from the graph), where the tuplet used to stay with
+///     an `AttachmentTombstoned` repair and a dead member.
+///
+///   Every verdict is unchanged; the effects and the graph differ.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
@@ -178,7 +193,7 @@ pub mod vectors;
 /// `epiphany-bundle` in order to use that crate's `ReductionAlgorithmVersion`
 /// wrapper. The wrapper is constructed at the composition boundary by whoever
 /// depends on both (P13-S27 pin 1, §0.3).
-pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 1;
+pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 2;
 
 pub use anomaly::{
     AnomalousReplicaSegment, IntegrityAnomaly, IntegrityAnomalyKind, ReplicaAnomalyReason,
@@ -203,15 +218,16 @@ pub use payload::{
     operation_block_introduced_minor, ChangeRegionTimeModelOp, CreateAnalysisLayerOp,
     CreateCrossCuttingOp, CreateInstrumentOp, CreateMeasureOp, CreatePartDefinitionOp,
     CreateRegionOp, CreateRepeatStructureOp, CreateStaffGroupOp, CreateStaffInstanceOp,
-    CreateStaffOp, CreateViewOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp,
-    DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteRepeatStructureOp,
-    DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
-    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationKindTag,
-    OperationPayload, PositionRemapping, ResolveConflictPayload, ResolveEquivocationPayload,
-    RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp, SetMetricGridOp,
-    SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp,
-    SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransactionCategory,
-    TransactionDescriptor, TransposeIntervalOp, TransposeOp, TupletCompensation,
+    CreateStaffOp, CreateTupletOp, CreateViewOp, CreateVoiceOp, CrossCuttingValue,
+    DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
+    DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
+    InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
+    OperationKind, OperationKindTag, OperationPayload, PositionRemapping, ResolveConflictPayload,
+    ResolveEquivocationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp,
+    SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
+    SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp,
+    TransactionCategory, TransactionDescriptor, TransposeIntervalOp, TransposeOp,
+    TupletCompensation,
 };
 pub use reduce::{
     canonical_reduction_order, measure_anchor_relation_for_agreement_test, GraphMaterialization,

@@ -35,8 +35,8 @@ use epiphany_ops::{
     ConflictKind, ConflictKindRegistryId, ConflictRecord, ConflictRegistry,
     ConflictResolutionState, CreateAnalysisLayerOp, CreateCrossCuttingOp, CreateInstrumentOp,
     CreateMeasureOp, CreatePartDefinitionOp, CreateRegionOp, CreateRepeatStructureOp,
-    CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateViewOp, CreateVoiceOp,
-    CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
+    CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateTupletOp, CreateViewOp,
+    CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
     DeleteRegionOp, DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp,
     ExtensionPreconditionId, FieldPath, HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp,
     IntegrityAnomaly, IntegrityAnomalyKind, IntegrityAnomalyRegistryId, MaterializedState,
@@ -655,7 +655,7 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
         }
         _ => {}
     }
-    let kind = match rng.below(40) {
+    let kind = match rng.below(41) {
         0 => {
             let pitches = if rng.boolean() {
                 vec![obj_pitch(rng.below(pitches))]
@@ -915,6 +915,16 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
                 MeasureId::new(OBJ_REPLICA, rng.below(2)),
                 TimeSignatureId::new(OBJ_REPLICA, rng.below(2)),
                 rng.below(4) as u32,
+            ),
+        }),
+        // X3.1: a tuplet over the shared event id space.
+        39 => OperationKind::CreateTuplet(CreateTupletOp {
+            tuplet: valuegen::tuplet(
+                TupletId::new(OBJ_REPLICA, rng.below(2)),
+                vec![
+                    EventId::new(OBJ_REPLICA, rng.below(4)),
+                    EventId::new(OBJ_REPLICA, rng.below(4)),
+                ],
             ),
         }),
         _ => OperationKind::Registered(
@@ -1958,6 +1968,7 @@ mod tests {
         let (mut saw_create_staff_group, mut saw_create_part_definition) = (false, false);
         let (mut saw_create_analysis_layer, mut saw_create_view) = (false, false);
         let mut saw_create_measure = false;
+        let mut saw_create_tuplet = false;
         for _ in 0..2000 {
             let OperationPayload::Primitive(kind) = operation_payload(&mut rng, 8, 8) else {
                 continue;
@@ -1973,6 +1984,7 @@ mod tests {
                 OperationKind::CreateAnalysisLayer(_) => saw_create_analysis_layer = true,
                 OperationKind::CreateView(_) => saw_create_view = true,
                 OperationKind::CreateMeasure(_) => saw_create_measure = true,
+                OperationKind::CreateTuplet(_) => saw_create_tuplet = true,
                 _ => {}
             }
         }
@@ -2015,6 +2027,10 @@ mod tests {
         assert!(
             saw_create_measure,
             "CreateMeasure (kind 39, G3b debt) never drawn in 2000 samples"
+        );
+        assert!(
+            saw_create_tuplet,
+            "CreateTuplet (kind 40, X3.1) never drawn in 2000 samples"
         );
     }
 

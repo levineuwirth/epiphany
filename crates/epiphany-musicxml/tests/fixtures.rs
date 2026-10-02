@@ -793,22 +793,74 @@ fn an_unpitched_note_ties_to_the_next_of_its_member_at_its_step() {
 }
 
 #[test]
-fn tuplet_notes_sit_at_exact_positions_and_the_grouping_is_recorded() {
+fn tuplets_import_with_their_ratios_and_members() {
     let run = run("tuplet.musicxml");
     all_applied(&run);
+    let score = &run.reduced.score;
+    let onsets: std::collections::BTreeMap<_, _> = score
+        .events
+        .iter()
+        .map(|event| match event.position() {
+            EventPosition::Musical(at) => (event.id(), rational(&at.0)),
+            other => panic!("a metric event, not {other:?}"),
+        })
+        .collect();
+    let mut tuplets: Vec<(u32, u32, Vec<String>, String)> = score
+        .cross_cutting
+        .tuplets
+        .iter()
+        .map(|tuplet| {
+            (
+                tuplet.ratio.actual(),
+                tuplet.ratio.notated(),
+                tuplet.members.iter().map(|m| onsets[m].clone()).collect(),
+                rational(&tuplet.required_total.0),
+            )
+        })
+        .collect();
+    tuplets.sort();
+    let strings = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     assert_eq!(
-        events(&run.reduced.score),
+        tuplets,
         [
-            "s0 v0 0 1/12 A4",
-            "s0 v0 1/12 1/12 B4",
-            "s0 v0 1/6 1/12 C5",
-            "s0 v0 1/4 1/4 D5",
+            // The triplet, the one with another begun inside it, and the
+            // second voice's beside a quarter.
+            (3, 2, strings(&["0", "1/12", "1/6"]), String::from("1/4")),
+            (
+                3,
+                2,
+                strings(&["1", "7/6", "4/3", "11/8", "17/12"]),
+                String::from("1/2")
+            ),
+            (3, 2, strings(&["3/4", "5/6", "11/12"]), String::from("1/4")),
+            // The sextuplet: its rest a member, its chord one.
+            (
+                6,
+                4,
+                strings(&["1/4", "7/24", "1/3", "3/8", "5/12", "11/24"]),
+                String::from("1/4")
+            ),
         ]
     );
-    let feature = &run.import.source.features.kinds["tuplet 3:2"];
-    assert_eq!(feature.class, FeatureClass::Content);
-    assert_eq!(feature.places.len(), 1);
-    assert!(run.reduced.score.cross_cutting.tuplets.is_empty());
+    for tuplet in &score.cross_cutting.tuplets {
+        assert!(tuplet.parent.is_none());
+    }
+    // The triplet with another begun inside it is made, its members its own
+    // and the inner one's; the inner one, and the one never stopped, are
+    // recorded and not made.
+    let part = &run.import.source.parts[0];
+    assert_eq!(part.tuplets.len(), 4, "{:?}", part.tuplets);
+    assert_eq!(part.unmade_tuplets, 2);
+    assert_eq!(part.tuplets[3].events.len(), 5);
+    let kinds = &run.import.source.features.kinds;
+    assert_eq!(kinds["tuplet 12:8 inside another"].places.len(), 1);
+    assert_eq!(kinds["tuplet without a stop"].places.len(), 1);
+    assert!(!kinds
+        .keys()
+        .any(|k| k.starts_with("tuplet 3:2") || k.starts_with("tuplet 6:4")));
+    let census = &run.import.source.census[0];
+    assert_eq!(census.tuplets.values().sum::<usize>(), 4);
+    assert_eq!(census.unmade_tuplets, 2);
 }
 
 #[test]

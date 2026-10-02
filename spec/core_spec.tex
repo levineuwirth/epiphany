@@ -7124,6 +7124,12 @@ pub enum OperationKind {
     // bare-value shape above -- Measure has no back-pointer to its parent.
     CreateMeasure(CreateMeasureOp),
 
+    // X3.1: mints a Tuplet into the cross-cutting registry. Like repeats,
+    // tuplets are not CrossCuttingValue kinds on the wire. Preconditioned on
+    // live members and parent and on the members' durations filling the
+    // tuplet's required total.
+    CreateTuplet(CreateTupletOp),
+
     // Layout-semantic operations
     SetUserSystemBreak(SetUserSystemBreakOp),
     SetUserPageBreak(SetUserPageBreakOp),
@@ -8376,7 +8382,9 @@ table is normative.
   Tuplet & Member event &
   Operation \MUST{} provide tuplet compensation
   (Section~\ref{sec:semops:deleteevent}); otherwise the operation
-  conflicts at precondition check &
+  conflicts at precondition check. A member tombstoned with no
+  compensation to declare (an undo of the transaction that inserted it,
+  or a cascade) cascade-deletes the tuplet &
   --- \\
 
   Spanner & Anchor &
@@ -12216,6 +12224,8 @@ pub enum OperationKindTag {
     // Genesis tranche G3b: the final rung, name-verbatim, as the four most
     // recent prior additions are. Closes the genesis ladder.
     CreateMeasure,
+    // X3.1: name-verbatim, as the five most recent prior additions are.
+    CreateTuplet,
 }
 
 pub enum BarrierScope {
@@ -17054,6 +17064,19 @@ layouts they own versus inherit:
   shape/\texttt{end\_tempo} compatibility without determining whether a
   constant segment records an \texttt{end\_tempo} at all. The enumeration is
   unchanged.
+  \\
+  \today & Chapter 6 \texttt{OperationKind}, Chapter 8
+  \texttt{OperationKindTag}, \sectionsc{Re-Anchoring} &
+  \textbf{X3.1: tuplets enter the operation set.} \texttt{OperationKind} and
+  \texttt{OperationKindTag} gain \texttt{CreateTuplet}, which mints a
+  \texttt{Tuplet} (\sectionsc{Tuplets as Grouping Objects}) into the
+  cross-cutting registry: semantics in the Operation Catalog
+  \sectionsc{CreateTuplet}, wire discriminant~40 and epoch~13 in the Binary
+  Format companion, the \texttt{create-tuplet} production in the Text
+  Projection companion. The re-anchoring table's ``Tuplet / Member event'' row
+  gains its uncompensated case: a member tombstoned with no compensation to
+  declare cascade-deletes the tuplet. The reduction algorithm version moves to
+  \texttt{2} (Operation Catalog, version~0.16.0 note).
   \\
   \bottomrule
 \end{longtable}

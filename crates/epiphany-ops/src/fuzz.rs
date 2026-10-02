@@ -91,7 +91,7 @@ fn pitch(n: u64) -> PitchId {
 
 /// Generates a random payload over the shared id space.
 fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
-    let kind = match rng.below(37) {
+    let kind = match rng.below(38) {
         0 => {
             let voice = VoiceId::new(ReplicaId(7), rng.below(3));
             let position = MusicalPosition(RationalTime::from_int(rng.below(4) as i32));
@@ -338,6 +338,17 @@ fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
                 epiphany_core::MeasureId::new(ReplicaId(7), rng.below(4)),
                 epiphany_core::TimeSignatureId::new(ReplicaId(7), rng.below(2)),
                 rng.below(4) as u32,
+            ),
+        }),
+        // X3.1: a tuplet over the shared event id space, its required total
+        // a twelfth per member, which members of other lengths do not fill.
+        37 => OperationKind::CreateTuplet(crate::payload::CreateTupletOp {
+            tuplet: valuegen::tuplet(
+                epiphany_core::TupletId::new(ReplicaId(7), rng.below(2)),
+                vec![
+                    EventId::new(ReplicaId(7), rng.below(4)),
+                    EventId::new(ReplicaId(7), rng.below(4)),
+                ],
             ),
         }),
         _ => OperationKind::SetStaffLayout(SetStaffLayoutOp {

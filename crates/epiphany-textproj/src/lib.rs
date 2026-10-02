@@ -69,7 +69,10 @@ use epiphany_ops::OperationEnvelope;
 /// not cosmetic. The `canonical-base` grammar production is retained (it is
 /// what the refusal is defined against, and what a future rebuild/repack
 /// flow will emit), but no document containing it round-trips.
-pub const COMPANION_VERSION: (u32, u32, u32) = (0, 14, 0);
+///
+/// Bumped again 0.14.0 → 0.15.0 by X3.1, which appended `create-tuplet` to
+/// the `kind` production — the same reasoning as every prior kind append.
+pub const COMPANION_VERSION: (u32, u32, u32) = (0, 15, 0);
 
 /// A parsed canonical Text Projection document.
 ///

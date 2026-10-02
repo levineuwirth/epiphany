@@ -3606,6 +3606,12 @@ canonical_value! {
     // layout, and no `textvalue_graph.rs` work — `struct_codec!` already
     // generated `Measure`'s `TextValue` impl alongside its `Codec`.
     Measure,
+    // X3.1 — CreateTuplet embeds the full value, the root-level mints' shape.
+    // `Tuplet` already has a `Codec` (`struct_codec!`) and already ships
+    // inside `Score`'s cross-cutting registry; this makes that existing layout
+    // reachable per-value. `TupletRatio::dec` re-validates the ratio, so a
+    // degenerate one never decodes.
+    Tuplet,
 }
 
 #[cfg(test)]

@@ -208,6 +208,17 @@ pub struct SourceEvent {
     pub offset: usize,
 }
 
+/// A tuplet of a part's events, by index into [`SourcePart::events`]: the
+/// notes and rests of one voice from a `<tuplet type="start">` to the stop of
+/// the same number, at the ratio its first note's `<time-modification>`
+/// gives (`actual` notes in the time of `normal`).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SourceTuplet {
+    pub actual: u32,
+    pub normal: u32,
+    pub events: Vec<usize>,
+}
+
 /// A beamed group of a part's events, by index into [`SourcePart::events`]:
 /// the notes of one voice from a `<beam number="1">` begin to its end.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -251,6 +262,11 @@ pub struct SourcePart {
     /// recorded: one never ended, one begun again before its end, or one
     /// ended on the note it began.
     pub unmade_beams: usize,
+    pub tuplets: Vec<SourceTuplet>,
+    /// The tuplets begun in the file that the reader made none of, each
+    /// recorded: one inside another (nesting is not yet read), one with no
+    /// usable ratio, or one never stopped.
+    pub unmade_tuplets: usize,
     /// Chord notes recorded as unsupported and not imported: a cross-staff
     /// chord note, an unpitched chord note, a chord note joining a rest.
     pub dropped_notes: usize,
@@ -319,6 +335,15 @@ pub struct Census {
     /// Primary beams the file begins and never ends: one begun again before
     /// its end, or still open when the part ends.
     pub unmade_beams: usize,
+    /// Tuplets the file begins and stops in one voice, outside any other, by
+    /// the ratio (`actual`, `normal`) their first note's
+    /// `<time-modification>` gives, paired by number by a walk of the notes
+    /// not joining a chord.
+    pub tuplets: BTreeMap<(u32, u32), usize>,
+    /// Tuplets the file begins and the reader cannot make: one begun inside
+    /// another, one whose first note gives no usable ratio, or one never
+    /// stopped.
+    pub unmade_tuplets: usize,
     /// Per staff, the `fifths` of each `<key>` the model can hold (at most
     /// seven accidentals) that applies to it, where it is stated: a numbered
     /// key to its staff, an unnumbered one to every staff the part's
@@ -361,6 +386,10 @@ fn note_census(part: Node) -> Census {
     let mut census = Census::default();
     // Per voice, whether a primary beam is open.
     let mut open: BTreeSet<&str> = BTreeSet::new();
+    // Per voice, the open tuplets by number, each with its ratio when the
+    // reader could make it.
+    type Open<'a> = Vec<(&'a str, Option<(u32, u32)>)>;
+    let mut tuplets: BTreeMap<&str, Open> = BTreeMap::new();
     for note in children(part, "measure").flat_map(|m| children(m, "note")) {
         if child(note, "grace").is_some() || child(note, "cue").is_some() {
             census.grace_or_cue += 1;
@@ -386,10 +415,39 @@ fn note_census(part: Node) -> Census {
                 _ => {}
             }
         }
+        if child(note, "chord").is_none() {
+            let voice = child_text(note, "voice").unwrap_or("1");
+            let stack = tuplets.entry(voice).or_default();
+            let marks: Vec<Node> = children(note, "notations")
+                .flat_map(|n| children(n, "tuplet"))
+                .collect();
+            for mark in marks
+                .iter()
+                .filter(|t| t.attribute("type") == Some("start"))
+            {
+                let ratio = child(note, "time-modification").and_then(|m| {
+                    let actual = child_text(m, "actual-notes")?.trim().parse::<u32>().ok()?;
+                    let normal = child_text(m, "normal-notes")?.trim().parse::<u32>().ok()?;
+                    (actual != 0 && normal != 0 && actual != normal).then_some((actual, normal))
+                });
+                let made = ratio.filter(|_| stack.is_empty());
+                stack.push((mark.attribute("number").unwrap_or("1"), made));
+            }
+            for mark in marks.iter().filter(|t| t.attribute("type") == Some("stop")) {
+                let number = mark.attribute("number").unwrap_or("1");
+                if let Some(at) = stack.iter().rposition(|(n, _)| *n == number) {
+                    match stack.remove(at).1 {
+                        Some(ratio) => *census.tuplets.entry(ratio).or_default() += 1,
+                        None => census.unmade_tuplets += 1,
+                    }
+                }
+            }
+        }
         let tied = children(note, "tie").any(|t| t.attribute("type") == Some("start"));
         census.tie_starts += usize::from(tied && !rest);
     }
     census.unmade_beams += open.len();
+    census.unmade_tuplets += tuplets.values().map(Vec::len).sum::<usize>();
     census
 }
 
@@ -1163,6 +1221,12 @@ fn zero() -> Time {
 
 // --- The reader. --------------------------------------------------------------
 
+struct OpenTuplet {
+    number: String,
+    ratio: Option<(u32, u32)>,
+    events: Vec<usize>,
+}
+
 struct PartState {
     divisions: i64,
     /// What is added to a pitch in the file to reach the sounding pitch.
@@ -1171,6 +1235,10 @@ struct PartState {
     open_slurs: BTreeMap<String, usize>,
     /// Open beams by voice: the indices of their events so far.
     open_beams: BTreeMap<String, Vec<usize>>,
+    /// Open tuplets by voice, innermost last: each one's number, its ratio
+    /// when it will be made (`None` for one recorded unmade), and the
+    /// indices of its events so far.
+    open_tuplets: BTreeMap<String, Vec<OpenTuplet>>,
     /// The last event a `<chord/>` note would join.
     last_event: Option<usize>,
     /// The measure's pitches as written, for [`Reader::carry`].
@@ -1643,6 +1711,7 @@ impl<'d, 'i> Reader<'d, 'i> {
             file_transpose: None,
             open_slurs: BTreeMap::new(),
             open_beams: BTreeMap::new(),
+            open_tuplets: BTreeMap::new(),
             last_event: None,
             written: Vec::new(),
             tied_over: BTreeMap::new(),
@@ -1658,6 +1727,8 @@ impl<'d, 'i> Reader<'d, 'i> {
             slurs: Vec::new(),
             beams: Vec::new(),
             unmade_beams: 0,
+            tuplets: Vec::new(),
+            unmade_tuplets: 0,
             dropped_notes: 0,
             dropped_quarter_tones: Vec::new(),
             dropped_tie_starts: 0,
@@ -1802,6 +1873,20 @@ impl<'d, 'i> Reader<'d, 'i> {
             self.features.record(
                 FeatureClass::Notation,
                 "beam without an end",
+                Place {
+                    part: part_name.clone(),
+                    measure: String::new(),
+                },
+            );
+        }
+        for open in state.open_tuplets.into_values().flatten() {
+            part.unmade_tuplets += 1;
+            self.features.record(
+                FeatureClass::Content,
+                match open.ratio {
+                    Some(_) => "tuplet without a stop",
+                    None => "tuplet not made, never stopped",
+                },
                 Place {
                     part: part_name.clone(),
                     measure: String::new(),
@@ -2072,21 +2157,6 @@ impl<'d, 'i> Reader<'d, 'i> {
                 "cautionary accidental",
                 place.clone(),
             );
-        }
-        if let Some(modification) = child(note, "time-modification") {
-            let actual = child_text(modification, "actual-notes").unwrap_or("?");
-            let normal = child_text(modification, "normal-notes").unwrap_or("?");
-            for notations in children(note, "notations") {
-                for tuplet in children(notations, "tuplet") {
-                    if tuplet.attribute("type") == Some("start") {
-                        self.features.record(
-                            FeatureClass::Content,
-                            format!("tuplet {actual}:{normal}"),
-                            place.clone(),
-                        );
-                    }
-                }
-            }
         }
         let mut slur_marks: Vec<(String, String)> = Vec::new();
         for notations in children(note, "notations") {
@@ -2362,6 +2432,75 @@ impl<'d, 'i> Reader<'d, 'i> {
                     ),
                 },
                 _ => {}
+            }
+        }
+
+        // A tuplet joins the notes and rests of one voice from its start to
+        // the stop of its number, a chord by its first note. One begun inside
+        // another is recorded and not made: nesting is not yet read.
+        if !is_chord {
+            let voice = child_text(note, "voice").unwrap_or("1").to_owned();
+            let marks: Vec<Node> = children(note, "notations")
+                .flat_map(|n| children(n, "tuplet"))
+                .collect();
+            let ratio = child(note, "time-modification").and_then(|m| {
+                let actual = child_text(m, "actual-notes")?.trim().parse::<u32>().ok()?;
+                let normal = child_text(m, "normal-notes")?.trim().parse::<u32>().ok()?;
+                (actual != 0 && normal != 0 && actual != normal).then_some((actual, normal))
+            });
+            let stack = state.open_tuplets.entry(voice).or_default();
+            for mark in marks
+                .iter()
+                .filter(|t| t.attribute("type") == Some("start"))
+            {
+                let made = match ratio {
+                    Some(r) if stack.is_empty() => Some(r),
+                    Some((actual, normal)) => {
+                        self.features.record(
+                            FeatureClass::Content,
+                            format!("tuplet {actual}:{normal} inside another"),
+                            place.clone(),
+                        );
+                        None
+                    }
+                    None => {
+                        self.features.record(
+                            FeatureClass::Content,
+                            "tuplet with no ratio",
+                            place.clone(),
+                        );
+                        None
+                    }
+                };
+                stack.push(OpenTuplet {
+                    number: mark.attribute("number").unwrap_or("1").to_owned(),
+                    ratio: made,
+                    events: Vec::new(),
+                });
+            }
+            for open in stack.iter_mut().filter(|open| open.ratio.is_some()) {
+                open.events.push(event_index);
+            }
+            for mark in marks.iter().filter(|t| t.attribute("type") == Some("stop")) {
+                let number = mark.attribute("number").unwrap_or("1");
+                match stack.iter().rposition(|open| open.number == number) {
+                    Some(at) => {
+                        let open = stack.remove(at);
+                        match open.ratio {
+                            Some((actual, normal)) => part.tuplets.push(SourceTuplet {
+                                actual,
+                                normal,
+                                events: open.events,
+                            }),
+                            None => part.unmade_tuplets += 1,
+                        }
+                    }
+                    None => self.features.record(
+                        FeatureClass::Content,
+                        "tuplet stop without a start",
+                        place.clone(),
+                    ),
+                }
             }
         }
 

@@ -231,7 +231,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.14.0 --- Pickup/anacrusis: what a partial measure actually costs (P13-S19)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.16.0 --- Tuplets enter the operation set}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -619,6 +619,39 @@ either of which alone would suffice:
 \texttt{0}~$\rightarrow$~\texttt{1}, and P13-S27's authority check refuses a
 base declaring the older version. Core specification \sectionsc{Canonical
 Document Identity} requires the bump for either class of change.
+
+\medskip
+
+\noindent\textbf{Version 0.16.0 (X3.1, tuplets).} Adds one operation kind,
+\texttt{CreateTuplet} (Section~\ref{sec:k0:create-tuplet}): the score's tuplets
+join the operation-authored surfaces, on the root-level mints' bare-value
+shape. Like repeats, tuplets live in the cross-cutting registry but are not
+\texttt{CrossCuttingValue} kinds on the wire. Schema major~0 unconditionally,
+epoch~13; wire discriminant~40. No new \texttt{PreconditionFailureReason}: a
+tuplet its members do not fill refuses with \texttt{EventDurationInvalid}.
+
+\textbf{Two existing operations now preserve tuplet consistency.}
+\texttt{DeleteEvent} (Section~\ref{sec:k0:delete-event}) reads a member's
+tuplets from the graph-independent referent index rather than the graph, so a
+member's delete without its compensation is refused base-free as well as
+graph-aware (before this revision only graph-aware reduction could see a
+tuplet, and no operation could make one), and its \texttt{ReplaceWithRest}
+compensation puts the rest in the deleted member's place in that index.
+\texttt{ModifyEvent} refuses a change to a tuplet member's duration
+(\texttt{EventDurationInvalid}). A member tombstoned by an undo
+cascade-deletes its tuplet.
+
+\textbf{A canonical base materialized before this rung \MUST{} be rebuilt
+rather than reused.} Two operations reducible before it change the state they
+produce over a base that already holds a tuplet. A \texttt{DeleteEvent} whose
+\texttt{ReplaceWithRest} compensation replaces a member: the index used to keep
+naming the deleted member, so the re-anchoring pass recorded an
+\texttt{AttachmentTombstoned} repair against the tuplet the graph had just
+given the rest; it records none now. And a cue event cascaded out from under a
+tuplet it belonged to: the tuplet used to stay, naming a dead member; it now
+cascade-deletes, in the effect and the graph. Accordingly
+\texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION} moves
+\texttt{1}~$\rightarrow$~\texttt{2}.
 
 % ===========================================================================
 \chapter{The Catalog Framework}
@@ -1867,6 +1900,73 @@ now blocks its own undo, exactly as a live meter-change reference already did.
 \textbf{Re-anchoring.} Not applicable (a measure mint references no
 tombstonable anchor of its own; there is no \texttt{DeleteMeasure} in this
 catalogue revision).
+
+\section{CreateTuplet}
+\label{sec:k0:create-tuplet}
+
+Ratified with X3.1: a \texttt{Tuplet} (core specification
+\sectionsc{Tuplets as Grouping Objects}) joins the operation-authored
+surfaces. Tuplets live in the cross-cutting registry
+(\texttt{CrossCuttingStructures.tuplets}) but, as repeats are not, they are
+\emph{not} \texttt{CrossCuttingValue} kinds on the wire --- the cross-cutting
+operations admit only \texttt{Tie}/\texttt{Slur}/\texttt{Beam}/\texttt{Spanner}
+(Section~\ref{sec:k0:create-cross-cutting}) --- so the tuplet's mint is a
+first-class primitive. It takes the root-level mints' bare-value shape
+(Section~\ref{sec:k0:create-view}): a tuplet carries its members by
+identifier and has no parent container.
+
+\textbf{Payload schema.} \texttt{CreateTupletOp \{ tuplet: Tuplet \}} --- the
+full value: identity, the \texttt{actual:notated} ratio, the member events,
+the optional parent tuplet, and the required total sounding duration of the
+members.
+
+\textbf{Canonical encoding.} The length-framed canonical bytes of
+\texttt{tuplet}. \texttt{Tuplet} has never been versioned --- its fields are an
+identifier, a \texttt{TupletRatio}, event identifiers, an optional tuplet
+identifier and a \texttt{MusicalDuration}, none with version branching of its
+own --- so this operation is schema major~0 unconditionally. A degenerate
+ratio does not decode (core specification
+requirement \texttt{req:time:tuplet-ratio-construction} holds at decode as at
+construction).
+
+\textbf{Reduction rule.} Set-union creation: a create mints the tuplet live
+if its id is fresh; a repeat create of a live id reduces idempotently
+(\texttt{NoOpReason::AlreadyApplied}), without value comparison, the
+cross-cutting discipline; a create naming a tombstoned id is a precondition
+no-op with \texttt{TargetTombstoned}. Graph-aware reduction pushes the value
+into the registry.
+
+Preconditions, checked graph-aware and base-free alike from the
+graph-independent indices, so the two modes never disagree: the tuplet has at
+least one member, every member is a live event and a carried parent is a live
+tuplet (else \texttt{TargetMissing}); and the members' sounding durations sum
+to exactly \texttt{required\_total} (else \texttt{EventDurationInvalid}), the
+core specification's tuplet duration consistency
+(\texttt{req:time:tuplet-duration-consistency}), which a create
+may not break.
+
+\textbf{Keeping consistency.} The members enter the referent index, in both
+modes, so the tuplet is seen wherever its members are: a \texttt{DeleteEvent}
+of a member must declare its tuplet compensation (re-anchoring table row
+``Tuplet / Member event''), its membership read from the index; a
+\texttt{ReplaceWithRest} compensation puts the rest in the deleted member's
+place in the index, as it does in the graph; and a \texttt{ModifyEvent} that
+would change a member's duration is refused as a precondition no-op with
+\texttt{EventDurationInvalid}.
+
+\textbf{Conflict cases.} None (set-union; the preconditions are gates, not
+conflicts).
+
+\textbf{Undo semantics.} Undo of a create tombstones the minted tuplet and
+removes it from the registry, with any decomposition attachment naming it
+(its reference would otherwise dangle). A member tombstoned by an undo of the
+transaction that inserted it declares no compensation; the tuplet it leaves
+can no longer fill its total, so it cascade-deletes, in the index and the
+graph alike, as \texttt{CascadeDeleteTuplets} would have.
+
+\textbf{Re-anchoring.} The tuplet references its members; the rule table's
+``Tuplet / Member event'' row governs a member's delete. Nesting is
+representable (\texttt{parent}) but no producer in this revision writes it.
 
 \section{Repeat Structures}
 \label{sec:k0:repeat-structures}

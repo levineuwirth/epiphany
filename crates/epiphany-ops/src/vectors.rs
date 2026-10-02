@@ -603,6 +603,46 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         measure_trailing,
     ));
 
+    // X3.1 (kind 40): a tuplet over two events.
+    let tuplet_envelope = OperationEnvelope {
+        id: OperationId::new(ReplicaId(1), 10),
+        author: crate::support::AuthorId(0),
+        stamp: crate::stamp::OperationStamp::new(
+            crate::stamp::HybridLogicalClock::new(epiphany_core::WallClockTime(1), 1),
+            OperationId::new(ReplicaId(1), 10),
+        ),
+        causal_context: crate::causal::CausalContext::new(),
+        transaction: None,
+        payload: crate::payload::OperationPayload::Primitive(
+            crate::payload::OperationKind::CreateTuplet(crate::payload::CreateTupletOp {
+                tuplet: crate::valuegen::tuplet(
+                    epiphany_core::TupletId::new(ReplicaId(1), 1),
+                    vec![
+                        epiphany_core::EventId::new(ReplicaId(1), 1),
+                        epiphany_core::EventId::new(ReplicaId(1), 2),
+                    ],
+                ),
+            }),
+        ),
+    };
+    let tuplet_envelope_bytes = tuplet_envelope.to_canonical_bytes();
+    v.push(row(
+        OE,
+        "accept",
+        "-",
+        "create_tuplet",
+        tuplet_envelope_bytes.clone(),
+    ));
+    let mut tuplet_trailing = tuplet_envelope_bytes;
+    tuplet_trailing.push(0);
+    v.push(row(
+        OE,
+        "reject",
+        "trailing-bytes",
+        "create_tuplet_trailing",
+        tuplet_trailing,
+    ));
+
     v
 }
 

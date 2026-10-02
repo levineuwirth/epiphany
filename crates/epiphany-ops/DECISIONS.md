@@ -2294,3 +2294,40 @@ pair of hooks from each side.
 **No `epiphany-bundle` change of any kind**, mirroring G3a: `Measure`'s one
 wire layout never gained a `schema_major()` arm, so the accept-set never
 moved.
+
+## X3.1 — `CreateTuplet`, kind/tag 40, epoch 13 (2026-10-03)
+
+The score graph has held tuplets since Pass 11 (`CrossCuttingStructures.tuplets`,
+invariant 16, the decomposition pre-pass's `decompose_tuplet_member`), but no
+operation could make one, so an import carried every tuplet's notes at exact
+positions and recorded the grouping unsupported.
+
+**A dedicated kind, not a `CrossCuttingValue` variant.** Tuplets live in the
+cross-cutting registry, as repeats do, and for the same reason do not ride the
+cross-cutting operations: those admit exactly tie, slur, beam and spanner, and
+a fifth `CrossCuttingValue` variant would reach `CreateCrossCutting`,
+`ModifyCrossCutting` and `DeleteCrossCutting` at once, with modify and delete
+semantics for tuplets nobody has designed. `CreateTuplet` carries the full
+`Tuplet` (bare-value shape, like `CreateView`); `Tuplet` already had a codec
+and a text projection from `struct_codec!`, and becomes a `CanonicalValue`.
+Schema major 0 (no versioned walk), epoch 13. No `DeleteTuplet` yet: undo of
+the create removes it, and authoring will want its own.
+
+**Preconditions read the graph-independent indices.** Members live, parent
+live, at least one member, and the members' durations from `voice_occupancy`
+summing to `required_total` (`EventDurationInvalid` otherwise; no new
+`PreconditionFailureReason`). The members enter `structures`, the referent
+index, in both modes — so `DeleteEvent`'s tuplet-compensation precondition now
+reads membership from the index (`containing_tuplets`) rather than from the
+graph, which only graph-aware reduction has; a `ReplaceWithRest` compensation
+rewrites the index entry to the rest; `ModifyEvent` refuses a member's
+duration change; and a member tombstoned with no compensation (undo, cue
+cascade) cascades the tuplet through the rule table's new `Tuplet` arm, with
+`materialize_graph_delete` removing it from the graph and `remove_tuplets`
+dropping any decomposition attachment naming it.
+
+**Reduction version 1 → 2.** Over a base already holding a tuplet, two
+operations reducible before produce different effects now (the
+`AttachmentTombstoned` repair the stale index used to record after a
+`ReplaceWithRest`; a cue cascade that now cascades its tuplet). Every verdict
+is unchanged. Locked by `a_base_tuplet_follows_its_members_replacement_and_cascade`.

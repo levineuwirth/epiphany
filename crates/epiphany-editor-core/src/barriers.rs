@@ -510,6 +510,22 @@ pub(crate) fn subjects_of(kind: &OperationKind, score: &Score) -> BarrierSubject
             TypedObjectId::RepeatStructure(op.repeat_structure_id()),
             repeat_context(score, &op.repeat),
         ),
+        // X3.1: a tuplet is a grouping over events, so — exactly like a
+        // cross-cutting create — it names its own object in the context its
+        // members resolve to.
+        OperationKind::CreateTuplet(op) => {
+            let members: Vec<TypedObjectId> = op
+                .tuplet
+                .members
+                .iter()
+                .copied()
+                .map(TypedObjectId::Event)
+                .collect();
+            one(
+                TypedObjectId::Tuplet(op.tuplet_id()),
+                structure_context(score, &members),
+            )
+        }
         OperationKind::DeleteRepeatStructure(op) => {
             let context = score
                 .cross_cutting

@@ -39,8 +39,8 @@ use epiphany_core::{
     RepeatStructure, RepeatStructureId, Rest, ScoreMetadata, Slur, Spanner, SpellingPrecedence,
     Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
     StaffLineConfiguration, TempoSegment, Tie, TimeAnchor, TimeSignature, TransactionId,
-    TranspositionInterval, TuningContextSettings, TupletId, TypedObjectId, ViewDefinition, ViewId,
-    Voice, VoiceId,
+    TranspositionInterval, TuningContextSettings, Tuplet, TupletId, TypedObjectId, ViewDefinition,
+    ViewId, Voice, VoiceId,
 };
 use epiphany_determinism::{
     sorted_canonical, CanonicalDecode, CanonicalEncode, CanonicalSet, DecodeError,
@@ -307,6 +307,13 @@ pub enum OperationKind {
     /// back-pointer to its parent, so the parent must ride along in the
     /// payload (and in the reducer's carried-value map, contract pin 5).
     CreateMeasure(CreateMeasureOp),
+    // --- X3.1: tuplets enter the operation set. Discriminant extends
+    // additively past 39. ---
+    /// Mint a `Tuplet` grouping live events (set-union creation, preconditioned
+    /// on its members and parent being live and its members' durations summing
+    /// to its required total). Tuplets live in the cross-cutting registry but,
+    /// like repeats, are not `CrossCuttingValue` kinds on the wire.
+    CreateTuplet(CreateTupletOp),
 }
 
 impl OperationKind {
@@ -430,6 +437,8 @@ impl OperationKind {
             OperationKind::CreateView(_) => 38,
             // Genesis tranche G3b; appended past 38.
             OperationKind::CreateMeasure(_) => 39,
+            // X3.1; appended past 39.
+            OperationKind::CreateTuplet(_) => 40,
         }
     }
 
@@ -499,6 +508,8 @@ impl OperationKind {
             // Minor 12 (Genesis tranche G3b), ratified
             // `spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4.
             OperationKind::CreateMeasure(_) => Some(12),
+            // Minor 13 (X3.1).
+            OperationKind::CreateTuplet(_) => Some(13),
         }
     }
 
@@ -557,6 +568,7 @@ impl OperationKind {
             // Genesis tranche G3b. Name-verbatim, as every genesis addition
             // since G1 has been (contract pin 3's precedent).
             OperationKind::CreateMeasure(_) => OperationKindTag::CreateMeasure,
+            OperationKind::CreateTuplet(_) => OperationKindTag::CreateTuplet,
         }
     }
 }
@@ -608,6 +620,7 @@ impl CanonicalEncode for OperationKind {
             OperationKind::CreateAnalysisLayer(op) => op.encode_canonical(out),
             OperationKind::CreateView(op) => op.encode_canonical(out),
             OperationKind::CreateMeasure(op) => op.encode_canonical(out),
+            OperationKind::CreateTuplet(op) => op.encode_canonical(out),
         }
     }
 }
@@ -674,6 +687,8 @@ pub enum OperationKindTag {
     CreateView,
     /// Genesis tranche G3b.
     CreateMeasure,
+    /// X3.1.
+    CreateTuplet,
 }
 
 /// The discriminant of [`OperationKindTag::Registered`], the one tag that
@@ -794,6 +809,7 @@ operation_kind_tag_vocabulary! {
     CreateAnalysisLayer = 37 => "create-analysis-layer" @ Some(11),
     CreateView = 38 => "create-view" @ Some(11),
     CreateMeasure = 39 => "create-measure" @ Some(12),
+    CreateTuplet = 40 => "create-tuplet" @ Some(13),
 }
 
 impl CanonicalEncode for OperationKindTag {
@@ -1922,6 +1938,29 @@ impl CanonicalEncode for CreateMeasureOp {
     }
 }
 
+/// Mint a [`Tuplet`] in the score's cross-cutting registry (operation_catalog
+/// §CreateTuplet). Carries the full value, the root-level mints' bare-value
+/// shape: identity, ratio, members, parent and required total. Set-union
+/// creation, preconditioned on every member and the parent being live and
+/// the members' sounding durations summing to `required_total`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CreateTupletOp {
+    pub tuplet: Tuplet,
+}
+
+impl CreateTupletOp {
+    /// The minted tuplet's identifier.
+    pub fn tuplet_id(&self) -> TupletId {
+        self.tuplet.id
+    }
+}
+
+impl CanonicalEncode for CreateTupletOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_lp_bytes(out, &self.tuplet.canonical_bytes());
+    }
+}
+
 /// Set, replace, or (`None`) remove the single meter change at the anchor's
 /// resolved musical position in a region's default metric grid
 /// (operation_catalog §"Meter and Tempo Overwrites"). Carries the full
@@ -2201,7 +2240,7 @@ mod tests {
         // GOLDEN LOCK: the discriminant byte leads every canonically-encoded
         // primitive payload (operation_catalog §"Value-Typed Payloads"), so the
         // literal values are normative wire facts. Encodings are append-only:
-        // new kinds append past 39; the values below never change.
+        // new kinds append past 40; the values below never change.
         //
         // P13-S15: this table stopped at 29 while ten kinds were appended past
         // it (Push 4a through genesis G3b), so every one of 30..=39 sat with no
@@ -2243,7 +2282,7 @@ mod tests {
         let anchor = || valuegen::region_start_anchor(region, MusicalPosition::origin());
 
         let repeat_id = RepeatStructureId::new(r, 12);
-        let table: [(OperationKind, u8); 40] = [
+        let table: [(OperationKind, u8); 41] = [
             (
                 OperationKind::InsertEvent(InsertEventOp {
                     staff_instance: instance,
@@ -2503,6 +2542,12 @@ mod tests {
                     ),
                 }),
                 39,
+            ),
+            (
+                OperationKind::CreateTuplet(CreateTupletOp {
+                    tuplet: valuegen::tuplet(TupletId::new(r, 18), vec![event_a, event_b]),
+                }),
+                40,
             ),
         ];
         for (kind, expected) in &table {
@@ -2776,7 +2821,7 @@ mod tests {
         // break that locality. This table replaces only
         // `phase3_tag_discriminants_are_golden` (retired), whose entire
         // subject was tag→byte for 24–29 and nothing else.
-        let table: [(OperationKindTag, u8); 40] = [
+        let table: [(OperationKindTag, u8); 41] = [
             (OperationKindTag::InsertEvent, 0),
             (OperationKindTag::DeleteEvent, 1),
             (OperationKindTag::ModifyEvent, 2),
@@ -2822,6 +2867,7 @@ mod tests {
             (OperationKindTag::CreateAnalysisLayer, 37),
             (OperationKindTag::CreateView, 38),
             (OperationKindTag::CreateMeasure, 39),
+            (OperationKindTag::CreateTuplet, 40),
         ];
 
         // --- Coverage (derived; see the header comment above) ---
@@ -2830,8 +2876,8 @@ mod tests {
             expected.push(OperationKindTag::Registered(OperationKindRegistryId(0)));
             assert_eq!(
                 expected.len(),
-                40,
-                "sanity: the vocabulary itself is 40 wide"
+                41,
+                "sanity: the vocabulary itself is 41 wide"
             );
 
             // Tag-set equality with `Registered`'s payload id normalized
@@ -2853,15 +2899,15 @@ mod tests {
             );
             assert_eq!(
                 table_tags.len(),
-                40,
+                41,
                 "duplicate rows would satisfy the length without covering the vocabulary"
             );
 
             let byte_set: std::collections::BTreeSet<u8> = table.iter().map(|(_, b)| *b).collect();
             assert_eq!(
                 byte_set,
-                (0u8..40).collect::<std::collections::BTreeSet<u8>>(),
-                "the table's byte set must be exactly 0..=39, no gaps, no repeats"
+                (0u8..41).collect::<std::collections::BTreeSet<u8>>(),
+                "the table's byte set must be exactly 0..=40, no gaps, no repeats"
             );
         }
 

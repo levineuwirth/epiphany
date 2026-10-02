@@ -42,7 +42,8 @@ use epiphany_core::{
     SpellingSource, Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
     StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, TimeAnchor, TimeSignature,
     TimeSignatureId, TransactionId, TransposeRefusal, TranspositionInterval, TuningContextSettings,
-    TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId, VoiceOrigin, WallClockDuration,
+    TupletId, TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId, VoiceOrigin,
+    WallClockDuration,
 };
 use epiphany_determinism::CanonicalEncode;
 
@@ -60,8 +61,8 @@ use crate::opset::OperationSet;
 use crate::payload::{
     resolved_anchor_position, CreateAnalysisLayerOp, CreateCrossCuttingOp, CreateInstrumentOp,
     CreateMeasureOp, CreatePartDefinitionOp, CreateRegionOp, CreateRepeatStructureOp,
-    CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateViewOp, CreateVoiceOp,
-    CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
+    CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateTupletOp, CreateViewOp,
+    CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
     DeleteRegionOp, DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
     InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
     OperationKind, OperationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp,
@@ -993,6 +994,26 @@ fn edit_tempo_map_segments(
 }
 
 /// The working state of one reduction pass.
+/// Removes the tuplets `removed` from the graph, with every decomposition
+/// attachment naming one. A decomposition component records its tuplet by id;
+/// once that tuplet is gone the reference would dangle (invariant 6,
+/// cross-cutting references resolve), so the attachment goes too.
+fn remove_tuplets(score: &mut Score, removed: &BTreeSet<TupletId>) {
+    if removed.is_empty() {
+        return;
+    }
+    score
+        .cross_cutting
+        .tuplets
+        .retain(|tuplet| !removed.contains(&tuplet.id));
+    score.decomposition_attachments.retain(|attachment| {
+        !attachment
+            .components
+            .iter()
+            .any(|component| component.tuplet.is_some_and(|t| removed.contains(&t)))
+    });
+}
+
 struct Reducer<'a> {
     op_set: &'a OperationSet,
     // Canonical results.
@@ -2620,20 +2641,33 @@ impl<'a> Reducer<'a> {
         &self,
         op: &DeleteEventOp,
     ) -> Result<(), PreconditionFailureReason> {
+        // Tuplet membership reads the referent index, which both reduction
+        // modes keep, so a member's delete without its compensation is
+        // refused in each alike.
+        let containing_tuplets = self.containing_tuplets(op.event);
         let Some(score) = self.graph.as_ref() else {
-            return Ok(());
+            return match &op.tuplet_compensation {
+                TupletCompensation::NotInTuplet if !containing_tuplets.is_empty() => {
+                    Err(PreconditionFailureReason::TupletCompensationInvalid)
+                }
+                TupletCompensation::RewriteTuplets { .. } => {
+                    Err(PreconditionFailureReason::TupletCompensationInvalid)
+                }
+                TupletCompensation::CascadeDeleteTuplets { tuplets } => {
+                    let listed: BTreeSet<_> = tuplets.iter().copied().collect();
+                    if listed == containing_tuplets && !listed.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(PreconditionFailureReason::TupletCompensationInvalid)
+                    }
+                }
+                _ => Ok(()),
+            };
         };
         let event = score
             .events
             .get(op.event)
             .ok_or(PreconditionFailureReason::TargetMissing)?;
-        let containing_tuplets: Vec<_> = score
-            .cross_cutting
-            .tuplets
-            .iter()
-            .filter(|tuplet| tuplet.members.contains(&op.event))
-            .map(|tuplet| tuplet.id)
-            .collect();
         match &op.tuplet_compensation {
             TupletCompensation::NotInTuplet if !containing_tuplets.is_empty() => {
                 Err(PreconditionFailureReason::TupletCompensationInvalid)
@@ -2657,8 +2691,7 @@ impl<'a> Reducer<'a> {
             }
             TupletCompensation::CascadeDeleteTuplets { tuplets } => {
                 let listed: BTreeSet<_> = tuplets.iter().copied().collect();
-                let containing: BTreeSet<_> = containing_tuplets.into_iter().collect();
-                if listed == containing && !listed.is_empty() {
+                if listed == containing_tuplets && !listed.is_empty() {
                     Ok(())
                 } else {
                     Err(PreconditionFailureReason::TupletCompensationInvalid)
@@ -2760,23 +2793,23 @@ impl<'a> Reducer<'a> {
             }
             TupletCompensation::CascadeDeleteTuplets { tuplets } => {
                 let removed: BTreeSet<_> = tuplets.iter().copied().collect();
-                score
+                remove_tuplets(score, &removed);
+            }
+            // No compensation, yet a tuplet names the event: the precondition
+            // refuses this for a `DeleteEvent`, so it is an undo tombstoning a
+            // member, and the tuplet cascades (the ledger's rule-table row
+            // does the same).
+            TupletCompensation::NotInTuplet => {
+                let removed: BTreeSet<_> = score
                     .cross_cutting
                     .tuplets
-                    .retain(|tuplet| !removed.contains(&tuplet.id));
-                // A decomposition component records its tuplet by id; once that tuplet is
-                // gone the reference would dangle (invariant 6, cross-cutting refs
-                // resolve), so drop any attachment that names a removed tuplet. The
-                // member it described is being tombstoned in the same cascade, so the
-                // decomposition has nothing left to describe.
-                score.decomposition_attachments.retain(|attachment| {
-                    !attachment
-                        .components
-                        .iter()
-                        .any(|component| component.tuplet.is_some_and(|t| removed.contains(&t)))
-                });
+                    .iter()
+                    .filter(|tuplet| tuplet.members.contains(&op.event))
+                    .map(|tuplet| tuplet.id)
+                    .collect();
+                remove_tuplets(score, &removed);
             }
-            TupletCompensation::NotInTuplet | TupletCompensation::RewriteTuplets { .. } => {}
+            TupletCompensation::RewriteTuplets { .. } => {}
         }
 
         // Keep the materialized graph reference-clean. The detailed repair
@@ -2984,6 +3017,9 @@ impl<'a> Reducer<'a> {
                 TypedObjectId::RepeatStructure(id) => {
                     score.cross_cutting.repeats.retain(|value| value.id != *id);
                 }
+                TypedObjectId::Tuplet(id) => {
+                    remove_tuplets(score, &BTreeSet::from([*id]));
+                }
                 // Phase-3 mints: a tombstoned staff / time signature leaves the
                 // graph (the undo path preconditions no live reference remains).
                 TypedObjectId::Staff(id) => {
@@ -3146,6 +3182,7 @@ impl<'a> Reducer<'a> {
                 OperationKind::CreateAnalysisLayer(op) => self.create_analysis_layer(env, op),
                 OperationKind::CreateView(op) => self.create_view(env, op),
                 OperationKind::CreateMeasure(op) => self.create_measure(env, op),
+                OperationKind::CreateTuplet(op) => self.create_tuplet(env, op),
             },
             OperationPayload::ResolveConflict(op) => self.resolve_conflict(env, op),
             OperationPayload::UndoTransaction(op) => self.undo_transaction(env, op),
@@ -3640,6 +3677,17 @@ impl<'a> Reducer<'a> {
                     }
                 };
                 let rest_obj = TypedObjectId::Event(new_rest);
+                // The rest takes the deleted member's place in each tuplet's
+                // referent-index entry, as it does in the graph's members.
+                for tuplet in self.containing_tuplets(op.event) {
+                    if let Some(members) = self.structures.get_mut(&TypedObjectId::Tuplet(tuplet)) {
+                        for member in members.iter_mut() {
+                            if *member == ev_obj {
+                                *member = rest_obj;
+                            }
+                        }
+                    }
+                }
                 self.objects.insert(rest_obj, ObjectState::Live);
                 self.minted_by.insert(rest_obj, env.id);
                 self.note_minted(env, rest_obj);
@@ -3990,6 +4038,98 @@ impl<'a> Reducer<'a> {
         // no write chain a repeat could be recorded into.
         self.repeat_values.insert(op.repeat.id, op.repeat.clone());
         OperationEffect::Applied
+    }
+
+    /// Mints a tuplet (operation_catalog §CreateTuplet): set-union creation,
+    /// preconditioned on every member being a live event, the parent (if any)
+    /// a live tuplet, and the members' sounding durations, read from the
+    /// graph-independent `voice_occupancy`, summing to the tuplet's
+    /// `required_total` (invariant 16, which a create may not break). The
+    /// members enter the referent index, so their tombstones and a
+    /// `DeleteEvent`'s tuplet compensation see the tuplet in both reduction
+    /// modes.
+    fn create_tuplet(&mut self, env: &OperationEnvelope, op: &CreateTupletOp) -> OperationEffect {
+        let sid = TypedObjectId::Tuplet(op.tuplet.id);
+        match self.objects.get(&sid) {
+            Some(ObjectState::Live) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::AlreadyApplied,
+                }
+            }
+            Some(ObjectState::Tombstoned { .. }) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::TargetTombstoned,
+                }
+            }
+            None => {}
+        }
+        let members: Vec<TypedObjectId> = op
+            .tuplet
+            .members
+            .iter()
+            .copied()
+            .map(TypedObjectId::Event)
+            .collect();
+        let parent = op.tuplet.parent.map(TypedObjectId::Tuplet);
+        let missing = members.is_empty()
+            || members
+                .iter()
+                .chain(&parent)
+                .any(|object| !matches!(self.objects.get(object), Some(ObjectState::Live)));
+        if missing {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
+        let total = op
+            .tuplet
+            .members
+            .iter()
+            .map(|member| {
+                self.voice_occupancy
+                    .values()
+                    .flatten()
+                    .find(|(_, _, event)| event == member)
+                    .map(|(_, duration, _)| duration.clone())
+            })
+            .try_fold(MusicalDuration::zero(), |sum, duration| {
+                duration.map(|duration| sum + duration)
+            });
+        if total.as_ref() != Some(&op.tuplet.required_total) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::EventDurationInvalid,
+                },
+            };
+        }
+        if let Some(score) = self.graph.as_mut() {
+            score.cross_cutting.tuplets.push(op.tuplet.clone());
+        }
+        self.objects.insert(sid, ObjectState::Live);
+        self.minted_by.insert(sid, env.id);
+        self.note_minted(env, sid);
+        self.structures.insert(sid, members);
+        OperationEffect::Applied
+    }
+
+    /// The live tuplets whose members include `event`, from the referent
+    /// index, which holds them in both reduction modes.
+    fn containing_tuplets(&self, event: EventId) -> BTreeSet<TupletId> {
+        let member = TypedObjectId::Event(event);
+        self.structures
+            .iter()
+            .filter_map(|(sid, members)| match sid {
+                TypedObjectId::Tuplet(id)
+                    if members.contains(&member)
+                        && matches!(self.objects.get(sid), Some(ObjectState::Live)) =>
+                {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     fn delete_repeat_structure(
@@ -7717,6 +7857,23 @@ impl<'a> Reducer<'a> {
                 },
             };
         }
+        // A tuplet's members fill its required total (invariant 16): a member
+        // keeps its duration, which only a tuplet-aware edit may change.
+        if !self.containing_tuplets(event_id).is_empty() {
+            let current = self
+                .voice_occupancy
+                .values()
+                .flatten()
+                .find(|(_, _, event)| *event == event_id)
+                .map(|(_, duration, _)| EventDuration::Musical(duration.clone()));
+            if current.as_ref() != Some(op.event.duration()) {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::EventDurationInvalid,
+                    },
+                };
+            }
+        }
         let prev = self
             .event_modify_chain
             .get(&event_id)
@@ -8545,6 +8702,16 @@ impl<'a> Reducer<'a> {
             match sid {
                 TypedObjectId::Tie(_) => {
                     // A tie's existence requires both endpoints: cascade-delete.
+                    self.cascade_structure(env, sid, repairs);
+                }
+                // A member's delete must declare its tuplet compensation
+                // (rule table "Tuplet / Member event"), which a `DeleteEvent`
+                // precondition enforces and which leaves no tuplet naming the
+                // member by now. A member tombstoned with no compensation to
+                // declare (an undo of the transaction that inserted it) leaves
+                // a tuplet whose members no longer fill its total: it
+                // cascades, as `CascadeDeleteTuplets` would have.
+                TypedObjectId::Tuplet(_) => {
                     self.cascade_structure(env, sid, repairs);
                 }
                 // The graph-only referent kinds — markers, cue events,
@@ -13006,6 +13173,14 @@ mod tests {
         // `MaterializedState` still embeds no `Score` field value for the
         // carried `Measure`, so there remains no surface on this type for a
         // leak to appear on.
+        //
+        // Re-pinned again at X3.1: `gen_payload` gained `CreateTuplet` (arm
+        // 37), and `rng.below(37)` became `below(38)` — the same reshuffle,
+        // same reasoning. `CreateTuplet` is schema major 0 unconditionally (no
+        // `schema_major()` arm: `Tuplet` has no versioned walk), and
+        // `MaterializedState` embeds no `Score` field value for the carried
+        // `Tuplet`, so there remains no surface on this type for a leak to
+        // appear on.
         let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xBA5E);
         let envelopes = crate::fuzz::gen_envelope_set(&mut rng, 200);
         let mut set = OperationSet::new();
@@ -13015,7 +13190,7 @@ mod tests {
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "aefd8ecd6df3abecb84229d5b77585dead9575b6f6554097bbd6907c7b0329d7"
+            "8a069e7759ce8fdb5f318498c0e20e6b96451764fa7531324548d4a99523cef7"
         );
     }
 
@@ -23492,5 +23667,677 @@ mod tests {
                  not AlreadyApplied"
             );
         }
+    }
+
+    // =========================================================================
+    // X3.1: CreateTuplet (operation_catalog §CreateTuplet).
+    // =========================================================================
+
+    /// A tuplet over `members`, its required total `total` whole notes.
+    fn tuplet_over(id: u64, members: &[EventId], total: i64) -> epiphany_core::Tuplet {
+        epiphany_core::Tuplet {
+            id: TupletId::new(ReplicaId(1), id),
+            ratio: epiphany_core::TupletRatio::new(3, 2).expect("not degenerate"),
+            members: members.to_vec(),
+            parent: None,
+            required_total: epiphany_core::MusicalDuration(
+                RationalTime::new(total, 1).expect("a nonzero denominator"),
+            ),
+        }
+    }
+
+    fn create_tuplet(tuplet: epiphany_core::Tuplet) -> OperationKind {
+        OperationKind::CreateTuplet(CreateTupletOp { tuplet })
+    }
+
+    fn no_op_reason(state: &MaterializedState, id: OperationId) -> Option<NoOpReason> {
+        match effect_of(state, id) {
+            Some(OperationEffect::NoOp { reason }) => Some(reason.clone()),
+            _ => None,
+        }
+    }
+
+    fn refused(reason: PreconditionFailureReason) -> Option<NoOpReason> {
+        Some(NoOpReason::PreconditionFailedUnderReduction { reason })
+    }
+
+    /// A tuplet mints over live members whose durations fill its required
+    /// total; a missing member or parent, no members, or a total its members
+    /// do not fill each refuse it, and a second create of a live id is
+    /// idempotent.
+    #[test]
+    fn create_tuplet_mints_over_live_members_that_fill_it() {
+        let (e1, e2) = (
+            EventId::new(ReplicaId(1), 100),
+            EventId::new(ReplicaId(1), 101),
+        );
+        let ghost = EventId::new(ReplicaId(1), 6_666);
+        let mut orphan = tuplet_over(5, &[e1, e2], 2);
+        orphan.parent = Some(TupletId::new(ReplicaId(1), 77));
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            insert(1, 0, 10, 1, 100, 0),
+            insert(1, 1, 11, 1, 101, 1),
+            prim_env(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                create_tuplet(tuplet_over(1, &[e1, e2], 2)),
+            ),
+            prim_env(
+                1,
+                3,
+                13,
+                seen_r1(2),
+                create_tuplet(tuplet_over(1, &[e1, e2], 2)),
+            ),
+            prim_env(
+                1,
+                4,
+                14,
+                seen_r1(3),
+                create_tuplet(tuplet_over(2, &[e1, ghost], 2)),
+            ),
+            prim_env(
+                1,
+                5,
+                15,
+                seen_r1(4),
+                create_tuplet(tuplet_over(3, &[e1, e2], 1)),
+            ),
+            prim_env(1, 6, 16, seen_r1(5), create_tuplet(tuplet_over(4, &[], 0))),
+            prim_env(1, 7, 17, seen_r1(6), create_tuplet(orphan)),
+        ]);
+        let state = set.reduce();
+        let id = |c| OperationId::new(ReplicaId(1), c);
+        assert!(matches!(
+            state
+                .objects
+                .get(&TypedObjectId::Tuplet(TupletId::new(ReplicaId(1), 1))),
+            Some(ObjectState::Live)
+        ));
+        assert_eq!(effect_of(&state, id(2)), Some(&OperationEffect::Applied));
+        assert_eq!(
+            no_op_reason(&state, id(3)),
+            Some(NoOpReason::AlreadyApplied)
+        );
+        assert_eq!(
+            no_op_reason(&state, id(4)),
+            refused(PreconditionFailureReason::TargetMissing)
+        );
+        assert_eq!(
+            no_op_reason(&state, id(5)),
+            refused(PreconditionFailureReason::EventDurationInvalid)
+        );
+        assert_eq!(
+            no_op_reason(&state, id(6)),
+            refused(PreconditionFailureReason::TargetMissing)
+        );
+        assert_eq!(
+            no_op_reason(&state, id(7)),
+            refused(PreconditionFailureReason::TargetMissing)
+        );
+        for n in 2..=5 {
+            assert!(
+                !state
+                    .objects
+                    .contains_key(&TypedObjectId::Tuplet(TupletId::new(ReplicaId(1), n))),
+                "refused tuplet {n} minted nothing"
+            );
+        }
+    }
+
+    /// Graph-aware reduction mints the tuplet into the score, its members'
+    /// durations read from the base, and refuses one they do not fill; the
+    /// score stays invariant-clean.
+    #[test]
+    fn create_tuplet_materializes_into_the_graph() {
+        use epiphany_core::generators::valid_score;
+        let base = valid_score(0x5EED);
+        let members: Vec<EventId> = base
+            .voices()
+            .map(|(_, _, v)| v.events.clone())
+            .next()
+            .expect("the fixture has a voice")
+            .into_iter()
+            .take(2)
+            .collect();
+        let total = members
+            .iter()
+            .map(
+                |e| match base.events.get(*e).expect("a base event").duration() {
+                    EventDuration::Musical(d) => d.clone(),
+                    other => panic!("a metric fixture event, not {other:?}"),
+                },
+            )
+            .fold(MusicalDuration::zero(), |a, b| a + b);
+        let mut tuplet = tuplet_over(1, &members, 1);
+        tuplet.required_total = total;
+        let mut short = tuplet.clone();
+        short.id = TupletId::new(ReplicaId(1), 2);
+        short.required_total = MusicalDuration::whole() + short.required_total;
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            prim_env(
+                1,
+                0,
+                10,
+                CausalContext::new(),
+                create_tuplet(tuplet.clone()),
+            ),
+            prim_env(1, 1, 11, seen_r1(0), create_tuplet(short)),
+        ]);
+        let graph = set.reduce_onto(&base);
+        assert!(graph.score.cross_cutting.tuplets.contains(&tuplet));
+        assert_eq!(
+            graph.score.cross_cutting.tuplets.len(),
+            base.cross_cutting.tuplets.len() + 1
+        );
+        assert_eq!(
+            no_op_reason(&graph.state, OperationId::new(ReplicaId(1), 1)),
+            refused(PreconditionFailureReason::EventDurationInvalid)
+        );
+        assert!(epiphany_core::check_invariants(&graph.score).is_empty());
+    }
+
+    /// A tuplet's member is deleted only with its compensation, in both
+    /// reduction modes alike, and the cascade removes the tuplet.
+    #[test]
+    fn a_tuplet_member_is_deleted_only_with_its_compensation() {
+        let (e1, e2) = (
+            EventId::new(ReplicaId(1), 100),
+            EventId::new(ReplicaId(1), 101),
+        );
+        let tid = TupletId::new(ReplicaId(1), 1);
+        let delete = |event, tuplet_compensation| {
+            OperationKind::DeleteEvent(DeleteEventOp {
+                event,
+                tuplet_compensation,
+            })
+        };
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            insert(1, 0, 10, 1, 100, 0),
+            insert(1, 1, 11, 1, 101, 1),
+            prim_env(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                create_tuplet(tuplet_over(1, &[e1, e2], 2)),
+            ),
+            prim_env(
+                1,
+                3,
+                13,
+                seen_r1(2),
+                delete(e1, TupletCompensation::NotInTuplet),
+            ),
+            prim_env(
+                1,
+                4,
+                14,
+                seen_r1(3),
+                delete(
+                    e1,
+                    TupletCompensation::CascadeDeleteTuplets { tuplets: vec![tid] },
+                ),
+            ),
+        ]);
+        let state = set.reduce();
+        assert_eq!(
+            no_op_reason(&state, OperationId::new(ReplicaId(1), 3)),
+            refused(PreconditionFailureReason::TupletCompensationInvalid),
+            "the ledger refuses the uncompensated delete as the graph does"
+        );
+        assert!(matches!(
+            state.objects.get(&TypedObjectId::Tuplet(tid)),
+            Some(ObjectState::Tombstoned { .. })
+        ));
+        assert!(matches!(
+            state.objects.get(&TypedObjectId::Event(e1)),
+            Some(ObjectState::Tombstoned { .. })
+        ));
+
+        // A rest replacing a member takes its place in the tuplet: the tuplet
+        // stays, and the rest is now a member whose delete needs compensation.
+        let rest = EventId::new(ReplicaId(1), 102);
+        let replacement = crate::valuegen::insert_event_value(
+            rest,
+            VoiceId::new(ReplicaId(9), 1),
+            pos(0),
+            MusicalDuration::whole(),
+            &[],
+        );
+        let Event::Rest(replacement) = replacement else {
+            panic!("an event with no pitches is a rest")
+        };
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            insert(1, 0, 10, 1, 100, 0),
+            insert(1, 1, 11, 1, 101, 1),
+            prim_env(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                create_tuplet(tuplet_over(1, &[e1, e2], 2)),
+            ),
+            prim_env(
+                1,
+                3,
+                13,
+                seen_r1(2),
+                delete(
+                    e1,
+                    TupletCompensation::ReplaceWithRest { rest: replacement },
+                ),
+            ),
+            prim_env(
+                1,
+                4,
+                14,
+                seen_r1(3),
+                delete(rest, TupletCompensation::NotInTuplet),
+            ),
+        ]);
+        let state = set.reduce();
+        assert!(matches!(
+            state.objects.get(&TypedObjectId::Tuplet(tid)),
+            Some(ObjectState::Live)
+        ));
+        assert_eq!(
+            no_op_reason(&state, OperationId::new(ReplicaId(1), 4)),
+            refused(PreconditionFailureReason::TupletCompensationInvalid),
+            "the replacing rest is a member"
+        );
+
+        // The same verdicts under graph-aware reduction, over a base's events.
+        use epiphany_core::generators::valid_score;
+        let base = valid_score(0x5EED);
+        let members: Vec<EventId> = base
+            .voices()
+            .map(|(_, _, v)| v.events.clone())
+            .next()
+            .expect("the fixture has a voice")
+            .into_iter()
+            .take(2)
+            .collect();
+        let mut tuplet = tuplet_over(1, &members, 1);
+        tuplet.required_total = members
+            .iter()
+            .map(
+                |e| match base.events.get(*e).expect("a base event").duration() {
+                    EventDuration::Musical(d) => d.clone(),
+                    other => panic!("a metric fixture event, not {other:?}"),
+                },
+            )
+            .fold(MusicalDuration::zero(), |a, b| a + b);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            prim_env(
+                1,
+                0,
+                10,
+                CausalContext::new(),
+                create_tuplet(tuplet.clone()),
+            ),
+            prim_env(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                delete(members[0], TupletCompensation::NotInTuplet),
+            ),
+            prim_env(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                delete(
+                    members[0],
+                    TupletCompensation::CascadeDeleteTuplets { tuplets: vec![tid] },
+                ),
+            ),
+        ]);
+        let graph = set.reduce_onto(&base);
+        assert_eq!(
+            no_op_reason(&graph.state, OperationId::new(ReplicaId(1), 1)),
+            refused(PreconditionFailureReason::TupletCompensationInvalid)
+        );
+        assert!(!graph.score.cross_cutting.tuplets.contains(&tuplet));
+        assert!(epiphany_core::check_invariants(&graph.score).is_empty());
+    }
+
+    /// A tuplet member's duration stays; a modify that keeps it applies.
+    #[test]
+    fn modify_event_keeps_a_tuplet_members_duration() {
+        let (e1, e2) = (
+            EventId::new(ReplicaId(1), 100),
+            EventId::new(ReplicaId(1), 101),
+        );
+        let modify = |duration| {
+            OperationKind::ModifyEvent(crate::payload::ModifyEventOp {
+                event: crate::valuegen::insert_event_value(
+                    e1,
+                    VoiceId::new(ReplicaId(9), 1),
+                    pos(0),
+                    duration,
+                    &[],
+                ),
+            })
+        };
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            insert(1, 0, 10, 1, 100, 0),
+            insert(1, 1, 11, 1, 101, 1),
+            prim_env(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                create_tuplet(tuplet_over(1, &[e1, e2], 2)),
+            ),
+            prim_env(
+                1,
+                3,
+                13,
+                seen_r1(2),
+                modify(MusicalDuration(RationalTime::new(1, 2).expect("a half"))),
+            ),
+            prim_env(1, 4, 14, seen_r1(3), modify(MusicalDuration::whole())),
+        ]);
+        let state = set.reduce();
+        assert_eq!(
+            no_op_reason(&state, OperationId::new(ReplicaId(1), 3)),
+            refused(PreconditionFailureReason::EventDurationInvalid)
+        );
+        assert!(!matches!(
+            effect_of(&state, OperationId::new(ReplicaId(1), 4)),
+            Some(OperationEffect::NoOp { .. })
+        ));
+    }
+
+    /// Undoing the transaction that inserted a tuplet's members cascades the
+    /// tuplet, which no compensation could be declared for; undoing the
+    /// tuplet's own create removes it from the graph.
+    #[test]
+    fn undo_cascades_a_tuplet_whose_members_it_removes() {
+        let (e1, e2) = (
+            EventId::new(ReplicaId(1), 100),
+            EventId::new(ReplicaId(1), 101),
+        );
+        let tid = TupletId::new(ReplicaId(1), 1);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+        let mut a = insert(1, 1, 11, 1, 100, 0);
+        a.transaction = Some(tx);
+        a.causal_context = seen_r1(0);
+        let mut b = insert(1, 2, 12, 1, 101, 1);
+        b.transaction = Some(tx);
+        b.causal_context = seen_r1(1);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            a,
+            b,
+            prim_env(
+                1,
+                3,
+                13,
+                seen_r1(2),
+                create_tuplet(tuplet_over(1, &[e1, e2], 2)),
+            ),
+            undo_env(1, 4, 14, seen_r1(3), tx, UndoPolicy::StrictInverse),
+        ]);
+        let state = set.reduce();
+        assert!(matches!(
+            state.objects.get(&TypedObjectId::Tuplet(tid)),
+            Some(ObjectState::Tombstoned { .. })
+        ));
+
+        use epiphany_core::generators::valid_score;
+        let base = valid_score(0x5EED);
+        let members: Vec<EventId> = base
+            .voices()
+            .map(|(_, _, v)| v.events.clone())
+            .next()
+            .expect("the fixture has a voice")
+            .into_iter()
+            .take(2)
+            .collect();
+        let mut tuplet = tuplet_over(1, &members, 1);
+        tuplet.required_total = members
+            .iter()
+            .map(
+                |e| match base.events.get(*e).expect("a base event").duration() {
+                    EventDuration::Musical(d) => d.clone(),
+                    other => panic!("a metric fixture event, not {other:?}"),
+                },
+            )
+            .fold(MusicalDuration::zero(), |a, b| a + b);
+        let tx = TransactionId::new(ReplicaId(1), 901);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(1, 1, 11, seen_r1(0), tx, create_tuplet(tuplet.clone())),
+            undo_env(1, 2, 12, seen_r1(1), tx, UndoPolicy::StrictInverse),
+        ]);
+        let graph = set.reduce_onto(&base);
+        assert!(!graph.score.cross_cutting.tuplets.contains(&tuplet));
+        assert!(matches!(
+            graph.state.objects.get(&TypedObjectId::Tuplet(tuplet.id)),
+            Some(ObjectState::Tombstoned { .. })
+        ));
+
+        // Undoing the insert of a member the graph holds removes the tuplet
+        // from the graph as well as the ledger.
+        let (_, instance, voice) = base.voices().next().expect("the fixture has a voice");
+        let (voice, at) = (
+            voice.id,
+            voice
+                .events
+                .iter()
+                .map(|e| {
+                    let event = base.events.get(*e).expect("a base event");
+                    match (event.position(), event.duration()) {
+                        (EventPosition::Musical(p), EventDuration::Musical(d)) => {
+                            p.clone() + d.clone()
+                        }
+                        _ => panic!("a metric fixture event"),
+                    }
+                })
+                .max()
+                .expect("the voice has events"),
+        );
+        let added = EventId::new(ReplicaId(1), 500);
+        let tx = TransactionId::new(ReplicaId(1), 902);
+        let mut tuplet = tuplet_over(3, &[members[0], added], 1);
+        tuplet.required_total = match base
+            .events
+            .get(members[0])
+            .expect("a base event")
+            .duration()
+        {
+            EventDuration::Musical(d) => d.clone() + MusicalDuration::whole(),
+            other => panic!("a metric fixture event, not {other:?}"),
+        };
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::InsertEvent(InsertEventOp {
+                    staff_instance: instance,
+                    event: crate::valuegen::insert_event_value(
+                        added,
+                        voice,
+                        at,
+                        MusicalDuration::whole(),
+                        &[],
+                    ),
+                }),
+            ),
+            prim_env(1, 2, 12, seen_r1(1), create_tuplet(tuplet.clone())),
+            undo_env(1, 3, 13, seen_r1(2), tx, UndoPolicy::StrictInverse),
+        ]);
+        let graph = set.reduce_onto(&base);
+        assert_eq!(
+            effect_of(&graph.state, OperationId::new(ReplicaId(1), 2)),
+            Some(&OperationEffect::Applied),
+            "the tuplet over a base event and an inserted one mints"
+        );
+        assert!(matches!(
+            graph.state.objects.get(&TypedObjectId::Tuplet(tuplet.id)),
+            Some(ObjectState::Tombstoned { .. })
+        ));
+        assert!(!graph.score.cross_cutting.tuplets.contains(&tuplet));
+        assert!(epiphany_core::check_invariants(&graph.score).is_empty());
+    }
+
+    /// Over a base holding a tuplet (reduction version 2): a member replaced
+    /// by a rest leaves the tuplet live with the rest in its place and no
+    /// repair recorded against it, and a member cascaded away (a cue whose
+    /// source is deleted) cascades the tuplet out of the effect and the
+    /// graph alike, where version 1 recorded `AttachmentTombstoned` and left
+    /// the tuplet naming a dead member.
+    #[test]
+    fn a_base_tuplet_follows_its_members_replacement_and_cascade() {
+        use epiphany_core::generators::valid_score;
+        use epiphany_core::{
+            check_invariants, CueEvent, CueRendering, EventPosition, MusicalPosition, Rest,
+        };
+        let repairs_of = |state: &MaterializedState, id: OperationId| -> Vec<RepairRecord> {
+            match effect_of(state, id) {
+                Some(OperationEffect::AppliedWithRepair { repairs }) => repairs.clone(),
+                Some(OperationEffect::Applied) => Vec::new(),
+                other => panic!("expected an applied effect, got {other:?}"),
+            }
+        };
+
+        // A tuplet over a voice's first two events; the first replaced.
+        let mut base = valid_score(0x5EED);
+        let (voice, x, y) = {
+            let v = &base.canvas.regions[0].staff_instances()[0].voices[0];
+            (v.id, v.events[0], v.events[1])
+        };
+        let duration = |e: EventId| match base.events.get(e).expect("a base event").duration() {
+            EventDuration::Musical(d) => d.clone(),
+            other => panic!("a metric fixture event, not {other:?}"),
+        };
+        let mut tuplet = tuplet_over(1, &[x, y], 1);
+        tuplet.required_total = duration(x) + duration(y);
+        base.cross_cutting.tuplets.push(tuplet.clone());
+        assert!(
+            check_invariants(&base).is_empty(),
+            "the tuplet base is well-formed"
+        );
+        let x_event = base.events.get(x).expect("a base event").clone();
+        let rest = Rest {
+            id: EventId::new(ReplicaId(9), 9_003),
+            voice,
+            position: x_event.position().clone(),
+            duration: x_event.duration().clone(),
+            vertical_position: None,
+            visible: true,
+        };
+        let replace = prim_env(
+            2,
+            0,
+            20,
+            CausalContext::new(),
+            OperationKind::DeleteEvent(DeleteEventOp {
+                event: x,
+                tuplet_compensation: TupletCompensation::ReplaceWithRest { rest: rest.clone() },
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![replace.clone()]);
+        let result = set.reduce_onto(&base);
+        let tid = TypedObjectId::Tuplet(tuplet.id);
+        assert!(matches!(
+            result.state.objects.get(&tid),
+            Some(ObjectState::Live)
+        ));
+        assert!(
+            !repairs_of(&result.state, replace.id)
+                .iter()
+                .any(|r| r.target == tid),
+            "no repair is recorded against the tuplet that kept its rest"
+        );
+        let kept = result
+            .score
+            .cross_cutting
+            .tuplets
+            .iter()
+            .find(|t| t.id == tuplet.id)
+            .expect("the tuplet stays in the graph");
+        assert_eq!(kept.members, vec![rest.id, y]);
+        assert!(check_invariants(&result.score).is_empty());
+
+        // A tuplet over a cue sourced on the voice's first event; deleting
+        // that event cascades the cue, and the cue the tuplet.
+        let mut base = valid_score(0x5EED);
+        let (voice, x, count) = {
+            let v = &base.canvas.regions[0].staff_instances()[0].voices[0];
+            (v.id, v.events[0], v.events.len() as i64)
+        };
+        let cue = EventId::new(ReplicaId(9), 9_001);
+        base.events
+            .insert(Event::Cue(CueEvent {
+                id: cue,
+                voice,
+                position: EventPosition::Musical(MusicalPosition(
+                    RationalTime::new(count, 4).unwrap(),
+                )),
+                duration: EventDuration::Musical(MusicalDuration(RationalTime::new(1, 4).unwrap())),
+                source: vec![x],
+                rendering: CueRendering,
+            }))
+            .expect("fresh cue id");
+        base.canvas.regions[0]
+            .content
+            .staff_instances_mut()
+            .expect("staff-based content")[0]
+            .voices[0]
+            .events
+            .push(cue);
+        let mut tuplet = tuplet_over(2, &[cue], 1);
+        tuplet.required_total = MusicalDuration(RationalTime::new(1, 4).unwrap());
+        base.cross_cutting.tuplets.push(tuplet.clone());
+        assert!(
+            check_invariants(&base).is_empty(),
+            "the cue tuplet base is well-formed"
+        );
+        let delete = prim_env(
+            2,
+            0,
+            20,
+            CausalContext::new(),
+            OperationKind::DeleteEvent(DeleteEventOp {
+                event: x,
+                tuplet_compensation: TupletCompensation::NotInTuplet,
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![delete.clone()]);
+        let result = set.reduce_onto(&base);
+        let tid = TypedObjectId::Tuplet(tuplet.id);
+        assert!(matches!(
+            result.state.objects.get(&tid),
+            Some(ObjectState::Tombstoned { .. })
+        ));
+        let tuplet_repairs: Vec<RepairKind> = repairs_of(&result.state, delete.id)
+            .into_iter()
+            .filter(|r| r.target == tid)
+            .map(|r| r.kind)
+            .collect();
+        assert_eq!(tuplet_repairs, vec![RepairKind::CascadeDeleted]);
+        assert!(!result.score.cross_cutting.tuplets.contains(&tuplet));
+        assert!(check_invariants(&result.score).is_empty());
     }
 }

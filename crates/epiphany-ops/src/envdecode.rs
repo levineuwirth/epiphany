@@ -36,8 +36,8 @@ use epiphany_core::{
     MusicalPosition, OperationId, PartDefinition, PitchId, PitchSpelling, RegionId,
     RegionTimeModel, RepeatStructureId, ReplicaId, ScoreMetadata, SpellingPrecedence, Staff,
     StaffGroup, StaffInstance, StaffInstanceId, StaffLineConfiguration, TimeAnchor, TimeSignature,
-    TranspositionInterval, TuningContextSettings, TupletId, TypedObjectId, ViewDefinition, Voice,
-    VoiceId, WallClockTime,
+    TranspositionInterval, TuningContextSettings, Tuplet, TupletId, TypedObjectId, ViewDefinition,
+    Voice, VoiceId, WallClockTime,
 };
 use epiphany_core::{
     Beam, Event, IdentifiedPitch, Pitch, Region, RepeatStructure, Rest, Slur, Spanner, Tie,
@@ -616,6 +616,9 @@ fn operation_kind(r: &mut Reader<'_>) -> Result<OperationKind> {
             instance: staff_instance_id(r)?,
             measure: value::<Measure>(r, "Measure")?,
         }),
+        40 => OperationKind::CreateTuplet(CreateTupletOp {
+            tuplet: value::<Tuplet>(r, "Tuplet")?,
+        }),
         tag => {
             return Err(EnvelopeDecodeError::InvalidTag {
                 kind: "OperationKind",
@@ -959,6 +962,14 @@ pub(crate) mod tests {
                         epiphany_core::MeasureId::new(ReplicaId(7), 1),
                         epiphany_core::TimeSignatureId::new(ReplicaId(7), 1),
                         1,
+                    ),
+                })
+            }
+            OperationKindTag::CreateTuplet => {
+                OperationKind::CreateTuplet(crate::payload::CreateTupletOp {
+                    tuplet: valuegen::tuplet(
+                        epiphany_core::TupletId::new(ReplicaId(7), 1),
+                        vec![EventId::new(ReplicaId(7), 1), EventId::new(ReplicaId(7), 2)],
                     ),
                 })
             }

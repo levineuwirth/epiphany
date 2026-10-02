@@ -27,8 +27,8 @@ use epiphany_core::{
 };
 use epiphany_ops::{
     AuthorId, CausalContext, CreateAnalysisLayerOp, CreateMeasureOp, CreatePartDefinitionOp,
-    CreateStaffGroupOp, CreateViewOp, DeleteRegionOp, HybridLogicalClock, OperationEnvelope,
-    OperationKind, OperationPayload, OperationStamp, SetTuningContextOp,
+    CreateStaffGroupOp, CreateTupletOp, CreateViewOp, DeleteRegionOp, HybridLogicalClock,
+    OperationEnvelope, OperationKind, OperationPayload, OperationStamp, SetTuningContextOp,
 };
 
 use crate::parse::parse_document;
@@ -289,6 +289,28 @@ fn measure_envelope(counter: u64, physical_time: i64) -> OperationEnvelope {
     }
 }
 
+/// X3.1 (kind 40): a tuplet over two events. Same rationale as
+/// `staff_group_envelope` above.
+fn tuplet_envelope(counter: u64, physical_time: i64) -> OperationEnvelope {
+    let id = OperationId::new(ReplicaId(1), counter);
+    OperationEnvelope {
+        id,
+        author: AuthorId(0xAB),
+        stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(physical_time), 0), id),
+        causal_context: CausalContext::new(),
+        transaction: None,
+        payload: OperationPayload::Primitive(OperationKind::CreateTuplet(CreateTupletOp {
+            tuplet: epiphany_ops::valuegen::tuplet(
+                epiphany_core::TupletId::new(ReplicaId(1), 1),
+                vec![
+                    epiphany_core::EventId::new(ReplicaId(1), 1),
+                    epiphany_core::EventId::new(ReplicaId(1), 2),
+                ],
+            ),
+        })),
+    }
+}
+
 fn profiles(custom: bool) -> Vec<ProfileDeclaration> {
     let mut profiles = vec![ProfileDeclaration::full()];
     if custom {
@@ -466,6 +488,17 @@ fn accept_documents() -> Vec<(&'static str, String)> {
         blobs: Vec::new(),
         envelopes: vec![measure_envelope(12, 1200)],
     };
+    // X3.1: kind 40 in the committed corpus, the same discipline.
+    let tuplet = TextDocument {
+        document_id: DocumentId([11; 16]),
+        manifest_schema_version: SchemaVersion::V0,
+        lineage_id: None,
+        profiles: profiles(false),
+        extensions: Vec::new(),
+        canonical_base: None,
+        blobs: Vec::new(),
+        envelopes: vec![tuplet_envelope(13, 1300)],
+    };
 
     vec![
         (
@@ -513,6 +546,10 @@ fn accept_documents() -> Vec<(&'static str, String)> {
         (
             "create_measure",
             project_text_document(&measure).expect("an accept document carries no canonical base"),
+        ),
+        (
+            "create_tuplet",
+            project_text_document(&tuplet).expect("an accept document carries no canonical base"),
         ),
     ]
 }
@@ -597,16 +634,15 @@ pub fn document_vectors() -> Vec<TextVector> {
         .map(|(name, text)| (SURFACE, "accept", "-", *name, text.as_bytes().to_vec()))
         .collect();
 
-    // The rejected version must be one this crate does NOT implement.
-    // `CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 3b moved `COMPANION_VERSION` to
-    // 0.14.0; this vector now names 0.13.0, the immediately superseded
-    // companion (previously 0.12.0, when the committed version was 0.13.0) —
-    // rejecting the version right behind you is exactly the deferred
-    // migrate-on-read posture (`req:textproj:header-version`).
+    // The rejected version must be one this crate does NOT implement. X3.1
+    // moved `COMPANION_VERSION` to 0.15.0; this vector now names 0.14.0, the
+    // immediately superseded companion (previously 0.13.0, when the committed
+    // version was 0.14.0) — rejecting the version right behind you is exactly
+    // the deferred migrate-on-read posture (`req:textproj:header-version`).
     let wrong_version = replace_once(
         minimal,
+        "(text-projection (0 15 0))",
         "(text-projection (0 14 0))",
-        "(text-projection (0 13 0))",
     );
     vectors.push((
         SURFACE,
@@ -961,7 +997,7 @@ mod tests {
     #[test]
     fn the_reference_implementation_agrees_with_every_vector() {
         match verify(COMMITTED) {
-            Ok(count) => assert_eq!(count, 20, "the corpus has unexpectedly thinned"),
+            Ok(count) => assert_eq!(count, 21, "the corpus has unexpectedly thinned"),
             Err(failures) => panic!(
                 "{} disagreement(s):\n{}",
                 failures.len(),
@@ -1032,25 +1068,47 @@ mod tests {
         }
     }
 
-    /// (t12) Genesis tranche G3b: text projection round-trips the new
-    /// `create-measure` kind, and the companion version is **0.14.0**
-    /// (`CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 3b bumped it from 0.13.0), with
-    /// the negative vector rejecting **0.13.0** (the immediately superseded
-    /// companion).
+    /// (t12) Genesis tranche G3b: text projection round-trips the
+    /// `create-measure` kind.
     ///
     /// **Mutation:** drop `OperationKindTag::CreateMeasure` from
+    /// `OperationKind::parse` in `textproj_kind.rs`; must fail.
+    #[test]
+    fn t12_g3b_kind_round_trips() {
+        let name = "create_measure";
+        let text = accept_documents()
+            .into_iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("accept document is absent: {name}"))
+            .1;
+        let document = parse_document(&text).unwrap_or_else(|e| panic!("{name} must parse: {e}"));
+        assert_eq!(document.envelopes.len(), 1, "{name} carries one envelope");
+        let reprojected =
+            project_text_document(&document).expect("an accept document carries no canonical base");
+        assert_eq!(
+            reprojected, text,
+            "{name}: project(serialize(parse(T))) == T must hold"
+        );
+    }
+
+    /// (t13) X3.1: text projection round-trips the new `create-tuplet` kind,
+    /// and the companion version is **0.15.0** (bumped from 0.14.0), with the
+    /// negative vector rejecting **0.14.0** (the immediately superseded
+    /// companion).
+    ///
+    /// **Mutation:** drop `OperationKindTag::CreateTuplet` from
     /// `OperationKind::parse` in `textproj_kind.rs`; must fail. Separately,
-    /// leave `COMPANION_VERSION` at `(0, 13, 0)`; the negative vector must
+    /// leave `COMPANION_VERSION` at `(0, 14, 0)`; the negative vector must
     /// fail.
     #[test]
-    fn t12_g3b_kinds_round_trip_and_companion_is_0_14_0_rejecting_0_13_0() {
+    fn t13_x3_kind_round_trips_and_companion_is_0_15_0_rejecting_0_14_0() {
         assert_eq!(
             crate::COMPANION_VERSION,
-            (0, 14, 0),
-            "the companion version must be 0.14.0"
+            (0, 15, 0),
+            "the companion version must be 0.15.0"
         );
 
-        let name = "create_measure";
+        let name = "create_tuplet";
         let text = accept_documents()
             .into_iter()
             .find(|(n, _)| *n == name)
@@ -1066,7 +1124,7 @@ mod tests {
         );
 
         // The negative vector must reject exactly the immediately superseded
-        // companion, 0.13.0.
+        // companion, 0.14.0.
         let rows = parse(COMMITTED).expect("the committed corpus parses");
         let superseded = rows
             .iter()
@@ -1075,8 +1133,8 @@ mod tests {
         assert_eq!(superseded.verdict, "reject");
         let text = String::from_utf8(superseded.text.clone()).expect("utf8");
         assert!(
-            text.contains("(text-projection (0 13 0))"),
-            "the negative vector must name the immediately superseded companion 0.13.0, got: {text}"
+            text.contains("(text-projection (0 14 0))"),
+            "the negative vector must name the immediately superseded companion 0.14.0, got: {text}"
         );
         assert!(
             parse_document(&text).is_err(),

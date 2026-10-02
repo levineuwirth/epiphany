@@ -10,8 +10,8 @@ use unicode_normalization::UnicodeNormalization;
 use crate::payload::{
     ChangeRegionTimeModelOp, CreateAnalysisLayerOp, CreateCrossCuttingOp, CreateInstrumentOp,
     CreateMeasureOp, CreatePartDefinitionOp, CreateRegionOp, CreateRepeatStructureOp,
-    CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateViewOp, CreateVoiceOp,
-    DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
+    CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateTupletOp, CreateViewOp,
+    CreateVoiceOp, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
     DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
     InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
     OperationKind, OperationKindTag, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp,
@@ -245,6 +245,7 @@ impl TextValue for OperationKind {
                 self.tag(),
                 vec![op.instance.project(), op.measure.project()],
             ),
+            OperationKind::CreateTuplet(op) => production(self.tag(), vec![op.tuplet.project()]),
         }
     }
 
@@ -631,6 +632,14 @@ impl TextValue for OperationKind {
                     measure: TextValue::parse(measure)?,
                 })
             }
+            OperationKindTag::CreateTuplet => {
+                let [tuplet] = fields(s, tag, 1)? else {
+                    unreachable!("the arity-1 check returned one field")
+                };
+                OperationKind::CreateTuplet(CreateTupletOp {
+                    tuplet: TextValue::parse(tuplet)?,
+                })
+            }
         })
     }
 }
@@ -684,7 +693,7 @@ mod tests {
     #[test]
     fn every_operation_kind_round_trips_with_canonical_text() {
         let tags: Vec<_> = all_tags().collect();
-        assert_eq!(tags.len(), 40, "the grammar has 40 kind productions");
+        assert_eq!(tags.len(), 41, "the grammar has 41 kind productions");
         for tag in tags {
             round_trip(&sample_kind(tag));
         }

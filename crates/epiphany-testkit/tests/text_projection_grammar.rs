@@ -308,14 +308,15 @@ fn the_kind_productions_are_the_operation_vocabulary() {
     // `SetCanvasLayoutDefaults` and `SetSpellingPrecedence`; genesis G2b took
     // it from 34 to 35 by adding `SetTuningContext`; genesis G3a took it
     // from 35 to 39 by adding `CreateStaffGroup`, `CreatePartDefinition`,
-    // `CreateAnalysisLayer`, and `CreateView`; genesis G3b takes it from 39
-    // to 40 by adding `CreateMeasure`). It stays a literal on purpose:
-    // deriving it from `PAYLOAD_FREE.len()` would make the assertion
-    // vacuous, since that is the very list it exists to pin.
+    // `CreateAnalysisLayer`, and `CreateView`; genesis G3b took it from 39
+    // to 40 by adding `CreateMeasure`; X3.1 takes it from 40 to 41 by adding
+    // `CreateTuplet`). It stays a literal on purpose: deriving it from
+    // `PAYLOAD_FREE.len()` would make the assertion vacuous, since that is
+    // the very list it exists to pin.
     assert_eq!(
         expected.len(),
-        40,
-        "39 payload-free kinds plus `Registered`"
+        41,
+        "40 payload-free kinds plus `Registered`"
     );
 
     let actual = alternatives("kind");

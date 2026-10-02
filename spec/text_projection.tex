@@ -234,7 +234,7 @@
   {\Large\scshape\color{epiphanyslate}Text Projection}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.14.0 --- Canonical bases leave the companion: the container epoch carries what text cannot}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.15.0 --- Tuplets reach the grammar}\\[4pt]
   {\small\color{epiphanyslate}Normative for the text form it defines}
   \vfill
 \end{titlepage}
@@ -483,7 +483,7 @@ A projection is, in order:
 \begin{requirement}
   \label{req:textproj:header-version}
   A parser implementing this companion \MUST{} accept exactly one header
-  version: \texttt{(0 14 0)}, the version of the companion it implements. It
+  version: \texttt{(0 15 0)}, the version of the companion it implements. It
   \MUST{} reject any other version at line one.
 
   Multi-version acceptance and text migrate-on-read are deferred in the same
@@ -534,7 +534,7 @@ projection introduces no ordering of its own.
   A parser \MUST{} reject every \texttt{(blob ...)} line whose blob is
   unreferenced by canonical state
   (Requirement~\ref{req:textproj:canonical-blobs}). At companion
-  version~0.14.0, neither a canonical operation nor canonical reduced state can
+  version~0.15.0, neither a canonical operation nor canonical reduced state can
   carry a \texttt{BlobId}; canonical state therefore cannot reference a blob,
   and a parser \MUST{} reject every \texttt{(blob ...)} line.
 \end{requirement}
@@ -1092,6 +1092,7 @@ kind           ::= "(insert-event " bytes " " value ")"
                | "(create-analysis-layer " value ")"
                | "(create-view " value ")"
                | "(create-measure " value ")"
+               | "(create-tuplet " value ")"
 
 tuplet-comp    ::= "not-in-tuplet" | "(replace-with-rest " value ")"
                | "(rewrite-tuplets (" bytes* "))"
@@ -1168,7 +1169,7 @@ A document of one operation --- a transposition of two pitches up a perfect
 fifth --- projects to four lines:
 
 \begin{lstlisting}
-(text-projection (0 14 0))
+(text-projection (0 15 0))
 (document #x05050505050505050505050505050505 (schema 0 1))
 (profile full (0 1 0) (constraints 67108864 (retention 1 () true)))
 (envelope #x00000000000000070000000000000001 #x00000000000000000000000011223344 (stamp 42 7 #x00000000000000070000000000000001) (causal ((#x0000000000000001 3)) (#x00000000000000020000000000000009)) (some #x00000000000000070000000000000005) (primitive (transpose-interval (#x00000000000000070000000000000001 #x00000000000000070000000000000002) (transposition-interval 4 7))))
@@ -1475,6 +1476,18 @@ containing it parses, projects, or serializes
   change, and holding the version would leave two mutually incompatible readings
   of \texttt{(0 13 0)}. The \texttt{canonical-base} production is retained in the
   grammar --- a refusal is defined against it, and a repack flow will emit it. \\
+
+    \today & Chapter 5 & 0.15.0 --- Tuplets reach the grammar (X3.1). The
+  \texttt{kind} production gains \texttt{"(create-tuplet " value ")"}
+  (\texttt{req:textproj:operation-vocabulary}), the operation that mints a
+  \texttt{Tuplet}; its \texttt{value} is the tuplet's struct projection, which
+  the Core Specification's codec already defines.
+
+  Same forcing reason as every prior grammar-extending bump: holding the
+  version while extending the grammar would leave two mutually incompatible
+  grammars both claiming \texttt{(0 14 0)}. Cached projections at
+  \texttt{(0 14 0)} do not migrate; a stale \texttt{TextProjection} chunk is
+  regenerated, not converted. \\
 \bottomrule
 \end{longtable}
 

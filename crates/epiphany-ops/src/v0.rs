@@ -127,6 +127,9 @@ pub enum V0OperationKind {
     // predates the catalog entirely), so it round-trips by identity like
     // every other v1-native kind above.
     CreateMeasure(crate::payload::CreateMeasureOp),
+    // X3.1 — born at wire-disc 40; no lossy v0 form, so it round-trips by
+    // identity like every v1-native kind above.
+    CreateTuplet(crate::payload::CreateTupletOp),
 }
 
 /// v0 `InsertEvent`: the event was a bare [`EventId`] plus the reduction-relevant

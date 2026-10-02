@@ -831,6 +831,73 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             ));
         }
 
+        // Tuplets: (staff, each member's onset, ratio) on each side, and the
+        // reader's tuplets made, by ratio, and recorded unmade, each held to
+        // the census's own walk of the file.
+        type TupletKey = (StaffId, Vec<RationalTime>, (u32, u32));
+        let mut graph_tuplets: BTreeMap<TupletKey, isize> = BTreeMap::new();
+        for tuplet in &score.cross_cutting.tuplets {
+            let places: Option<Vec<&(StaffId, RationalTime)>> =
+                tuplet.members.iter().map(|e| event_place.get(e)).collect();
+            let Some(places) = places else {
+                continue;
+            };
+            let Some(&&(staff, _)) = places.first() else {
+                continue;
+            };
+            if !import.ids.staves[p].contains(&staff) {
+                continue;
+            }
+            let onsets = places.iter().map(|(_, onset)| onset.clone()).collect();
+            let ratio = (tuplet.ratio.actual(), tuplet.ratio.notated());
+            *graph_tuplets.entry((staff, onsets, ratio)).or_default() += 1;
+        }
+        let mut source_tuplets: BTreeMap<TupletKey, isize> = BTreeMap::new();
+        let mut made: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+        for (k, tuplet) in part.tuplets.iter().enumerate() {
+            *made.entry((tuplet.actual, tuplet.normal)).or_default() += 1;
+            let Some(&first) = tuplet.events.first() else {
+                continue;
+            };
+            if let Some(why) = refused(&Subject::Tuplet(p, k)) {
+                fidelity.explained.push(format!(
+                    "{name}: tuplet {}:{} at {} ({why})",
+                    tuplet.actual,
+                    tuplet.normal,
+                    show(&part.events[first].onset)
+                ));
+                continue;
+            }
+            let staff = import.ids.staves[p][part.events[first].staff];
+            let onsets = tuplet
+                .events
+                .iter()
+                .map(|&i| part.events[i].onset.clone())
+                .collect();
+            *source_tuplets
+                .entry((staff, onsets, (tuplet.actual, tuplet.normal)))
+                .or_default() += 1;
+        }
+        if graph_tuplets != source_tuplets {
+            fidelity.failures.push(format!(
+                "{name}: {} tuplets in the score, {} in the source",
+                graph_tuplets.values().sum::<isize>(),
+                source_tuplets.values().sum::<isize>()
+            ));
+        }
+        if made != census.tuplets || part.unmade_tuplets != census.unmade_tuplets {
+            fidelity.failures.push(format!(
+                "{name}: the reader made {} tuplets ({:?}) and recorded {} unmade, but the \
+                 file makes {} ({:?}) and leaves {} unmade",
+                part.tuplets.len(),
+                made,
+                part.unmade_tuplets,
+                census.tuplets.values().sum::<usize>(),
+                census.tuplets,
+                census.unmade_tuplets
+            ));
+        }
+
         // Counts per measure, from the score and from the source.
         let measure_of = |onset: &RationalTime| -> usize {
             source
