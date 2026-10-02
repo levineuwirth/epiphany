@@ -1618,3 +1618,29 @@ The `DecompositionAlgorithmId` stays `"default"`; the version lives in the
 requirement, and derived output is recomputed, never migrated. The prepass
 harness's two syncopation fixtures now hold five-eighth spans, which no one
 value expresses, so its non-vacuity spread still sees tied splits recur.
+
+## Pickups (X3.5, 2026-10-03)
+
+**P13-S19 closes for a first measure.** Invariant 20's boundary clause measured
+the second measure's distance from the first against a full bar, so a pickup's
+successor, and with it every later measure an import made, was flagged (and
+refused by `create_measure`, its mirror in `epiphany-ops`). The clause now
+accepts, at `i == 1` only, any positive distance less than the governing
+signature's `measure_duration()`: the first measure may be a pickup. Every
+later distance is still a full bar. A short measure after the first (a
+repeat's split bar) still has no per-measure duration in the model, so its
+successor is still flagged. Locked by
+`m35_pickup_successor_boundary_admits_the_pickup_alone`.
+
+**P13-S24 closed with version 2 of the decomposition algorithm** (above): the
+splitter's barlines come from the staff instance's measures, and a short first
+measure is shifted by the beats it lacks, so the region origin is no longer
+taken for a barline (`instance_bars_take_each_measure_and_shift_a_pickup`).
+P12-H4's "region origin assumed to be a barline" no longer holds.
+
+**P13-S18 and P13-S23 stay open.** Invariant 20's three genuine abstentions
+(A4, B4, B5) are exactly the pairs P13-S23's common timeline would place: a
+`WallClock` offset against a musical one, a `Measure` end, distinct-id
+referents. Pickups need none of it: the importer anchors every measure and
+meter change at its region's start with a musical offset, which the relation
+already orders and measures.

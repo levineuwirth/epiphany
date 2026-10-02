@@ -2331,3 +2331,15 @@ operations reducible before produce different effects now (the
 `AttachmentTombstoned` repair the stale index used to record after a
 `ReplaceWithRest`; a cue cascade that now cascades its tuplet). Every verdict
 is unchanged. Locked by `a_base_tuplet_follows_its_members_replacement_and_cascade`.
+
+## X3.5 — a pickup's successor applies (2026-10-03)
+
+`create_measure`'s clause 3 compared every successor's distance with the
+governing signature's full bar, so after a pickup the rest of the instance was
+refused `MeasureMeterMismatch` (P13-S19). While the predecessor is the instance's
+only live measure the distance may now also be any positive duration less than
+the bar, mirroring invariant 20's boundary clause at `i == 1`. A short measure
+later in the instance is still not modelled, so its successor still refuses.
+This is a verdict change, folded into reduction version 2 (its Bumps entry
+names it). Locked by `g3b_create_measure_pickup_successor_applies_end_to_end`,
+whose second case refuses a successor more than a bar after the first measure.

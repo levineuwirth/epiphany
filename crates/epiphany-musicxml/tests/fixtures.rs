@@ -13,7 +13,6 @@ use epiphany_core::{
 };
 use epiphany_engrave::Engraver;
 use epiphany_layout_ir::{to_constrained, to_logical, ConstraintSolver, SolverConfig};
-use epiphany_musicxml::emit::Subject;
 use epiphany_musicxml::fidelity::{compare, show, Fidelity};
 use epiphany_musicxml::outcome::{reduce, Reduced, Verdict};
 use epiphany_musicxml::source::{FeatureClass, QuarterTone};
@@ -864,36 +863,17 @@ fn tuplets_import_with_their_ratios_and_members() {
 }
 
 #[test]
-fn a_pickup_reports_the_measures_the_reducer_refuses() {
+fn a_pickup_imports_in_full() {
     let run = run("pickup.musicxml");
-    let refused: Vec<(Subject, &Verdict)> = run
-        .reduced
-        .rejected()
-        .map(|i| {
-            (
-                run.import.labels[i].subject.clone(),
-                &run.reduced.verdicts[i],
-            )
-        })
-        .collect();
-    let mismatch = Verdict::Refused(String::from("MeasureMeterMismatch"));
-    assert_eq!(
-        refused,
-        [
-            (Subject::Measure(0, 0, 1), &mismatch),
-            (Subject::Measure(0, 0, 2), &mismatch),
-        ]
-    );
+    all_applied(&run);
     let score = &run.reduced.score;
-    assert_eq!(measure_starts(score, 0), ["0"]);
+    // The measure after the pickup starts a beat in, the next a bar later.
+    assert_eq!(measure_starts(score, 0), ["0", "1/4", "1"]);
     assert_eq!(
         events(score),
         ["s0 v0 0 1/4 G4", "s0 v0 1/4 3/4 C5", "s0 v0 1 3/4 E5"]
     );
-    // The absent measures are explained by the refusals, not silently passed.
-    assert_eq!(run.fidelity.explained.len(), 2);
-    assert!(run.fidelity.explained[0].contains("measure 1 absent"));
-    assert!(run.fidelity.explained[0].contains("MeasureMeterMismatch"));
+    assert!(run.fidelity.explained.is_empty());
 }
 
 #[test]

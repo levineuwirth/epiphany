@@ -5777,6 +5777,10 @@ impl<'a> Reducer<'a> {
         // outcome: pin 6c case 1 makes `None` an abstention (allow the
         // mint), while `Indeterminate` still fails closed with
         // `MeasureOrderUnverifiable` (pin 7). Collapsing them was the bug.
+        // A pickup (P13-S19, X3.5): the instance's first measure may be
+        // shorter than its bar, so its successor follows it by less than a
+        // full bar, never more.
+        let after_first = self.live_measure_starts(op.instance).len() == 1;
         if let Some(prev_start) = &predecessor {
             match self.governing_time_signature(&sequence, prev_start) {
                 GoverningElement::Unique(sig) => {
@@ -5789,6 +5793,10 @@ impl<'a> Reducer<'a> {
                         expected,
                     ) {
                         (Some(delta), Some(expected)) if delta == expected => {}
+                        (Some(delta), Some(expected))
+                            if after_first
+                                && delta > MusicalDuration::zero()
+                                && delta < expected => {}
                         (Some(_), Some(_)) => {
                             return OperationEffect::NoOp {
                                 reason: NoOpReason::PreconditionFailedUnderReduction {
@@ -20553,114 +20561,119 @@ mod tests {
         );
     }
 
-    /// Pin 4 (spec/CONTRACT_P13S19_PARTIAL.md): a pickup's successor is
-    /// refused end-to-end, not merely read off the reducer's source. The
-    /// pickup itself — first measure of the instance, `time_signature:
-    /// None` so the agreement clause (clause 2, which is NOT
-    /// predecessor-dependent) is avoided by declaration rather than by any
-    /// first-measure exemption — mints `Applied`: clauses 1 and 3 are
-    /// vacuous for it (no predecessor). Its successor, ALSO declaring
-    /// `time_signature: None` (so its own clause 2 is out of the way and
-    /// the refusal below cannot be clause 2's), starts only HALF a
-    /// `measure_duration` after the pickup — the pickup's own actual
-    /// (unmodelled) content length, not the governing signature's full
-    /// whole-note bar — and clause 3 refuses it: `MeasureMeterMismatch`.
-    /// The governing signature's own write and the pickup's mint are both
-    /// asserted `Applied` before the refusal is asserted, so envelope
-    /// counter gaps cannot make either op silently pending and pass the
-    /// refusal off as something it isn't.
+    /// A pickup (P13-S19, closed by X3.5) end to end: the instance's first
+    /// measure may be shorter than its bar, so its successor, half a bar
+    /// later, applies. The allowance is the first measure's alone: a third
+    /// measure half a bar after the successor is refused
+    /// `MeasureMeterMismatch`, and so is a successor more than a full bar
+    /// after the pickup. Every measure declares `time_signature: None`, so
+    /// no refusal here can be clause 2's; the governing signature's write is
+    /// asserted `Applied` first, so a counter gap cannot pass a pending op
+    /// off as a verdict.
     #[test]
-    fn g3b_create_measure_pickup_successor_refused_end_to_end() {
+    fn g3b_create_measure_pickup_successor_applies_end_to_end() {
         let region = RegionId::new(ReplicaId(1), 90);
         let instance = StaffInstanceId::new(ReplicaId(1), 91);
         let staff = StaffId::new(ReplicaId(1), 92);
-        let mut envs = g3b_region_and_instance_envs(1, region, instance, staff);
-
         let sig_a = TimeSignatureId::new(ReplicaId(1), 93);
-        // numerator 4 -> measure_duration = 4/4 = one whole note ("a full bar").
-        let set_sig_a = prim_env(
-            1,
-            2,
-            2,
-            CausalContext::new(),
-            OperationKind::SetTimeSignature(SetTimeSignatureOp {
-                region,
-                anchor: g3b_region_anchor(region, 0),
-                time_signature: Some(crate::valuegen::time_signature(sig_a, 4)),
-            }),
-        );
-        envs.push(set_sig_a.clone());
 
-        fn measure(id: u64, start: TimeAnchor, sig: Option<TimeSignatureId>) -> Measure {
+        fn measure(id: u64, region: RegionId, offset: (i64, i64)) -> Measure {
             Measure {
                 id: MeasureId::new(ReplicaId(1), id),
-                start,
-                time_signature: sig,
+                start: TimeAnchor::Region {
+                    id: region,
+                    edge: RegionEdge::Start,
+                    offset: if offset.0 == 0 {
+                        AnchorOffset::Zero
+                    } else {
+                        AnchorOffset::Musical(MusicalDuration(
+                            RationalTime::new(offset.0, offset.1).unwrap(),
+                        ))
+                    },
+                },
+                time_signature: None,
                 explicit_number: None,
                 number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
             }
         }
 
-        // The pickup: first measure, `None` (pin 4's fixture constraint —
-        // `Some` of a disagreeing signature would be refused by clause 2
-        // instead, for a reason that has nothing to do with partiality).
-        let pickup = g3b_measure_env(
-            1,
-            3,
-            3,
-            instance,
-            measure(400, g3b_region_anchor(region, 0), None),
-        );
+        // The measures after the signature, each at its offset in whole
+        // notes; returns the reduced state and their envelopes.
+        let reduce_with = |offsets: &[(i64, i64)]| {
+            let mut envs = g3b_region_and_instance_envs(1, region, instance, staff);
+            // numerator 4 -> measure_duration = 4/4 = one whole note.
+            let set_sig_a = prim_env(
+                1,
+                2,
+                2,
+                CausalContext::new(),
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region,
+                    anchor: g3b_region_anchor(region, 0),
+                    time_signature: Some(crate::valuegen::time_signature(sig_a, 4)),
+                }),
+            );
+            envs.push(set_sig_a.clone());
+            let measures: Vec<OperationEnvelope> = offsets
+                .iter()
+                .enumerate()
+                .map(|(i, &offset)| {
+                    let n = 3 + i as u64;
+                    g3b_measure_env(
+                        1,
+                        n,
+                        n as i64,
+                        instance,
+                        measure(400 + i as u64, region, offset),
+                    )
+                })
+                .collect();
+            envs.extend(measures.iter().cloned());
+            let mut set = OperationSet::new();
+            set.accept_all(envs);
+            let state = set.reduce();
+            assert_eq!(
+                g3b_effect_of(&state, set_sig_a.id),
+                Some(OperationEffect::Applied),
+                "the governing signature must itself be applied, or the verdicts below prove \
+                 nothing"
+            );
+            (state, measures)
+        };
+        let mismatch = Some(OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::MeasureMeterMismatch,
+            },
+        });
 
-        // The successor: also `None`, so ITS clause 2 is equally out of the
-        // way. Half a whole note after the pickup — not the full bar sig_a
-        // demands.
-        let successor = g3b_measure_env(
-            1,
-            4,
-            4,
-            instance,
-            measure(
-                401,
-                TimeAnchor::Region {
-                    id: region,
-                    edge: RegionEdge::Start,
-                    offset: AnchorOffset::Musical(MusicalDuration(
-                        RationalTime::new(1, 2).unwrap(),
-                    )),
-                },
-                None,
-            ),
-        );
-
-        envs.extend([pickup.clone(), successor.clone()]);
-        let mut set = OperationSet::new();
-        set.accept_all(envs);
-        let state = set.reduce();
-
+        // A half-bar pickup, its successor, and a measure half a bar later.
+        let (state, ms) = reduce_with(&[(0, 1), (1, 2), (1, 1)]);
         assert_eq!(
-            g3b_effect_of(&state, set_sig_a.id),
+            g3b_effect_of(&state, ms[0].id),
             Some(OperationEffect::Applied),
-            "the governing signature must itself be applied, or the refusal below proves nothing"
+            "the pickup itself has no predecessor"
         );
         assert_eq!(
-            g3b_effect_of(&state, pickup.id),
+            g3b_effect_of(&state, ms[1].id),
             Some(OperationEffect::Applied),
-            "pin 1: the pickup itself is neither refused nor flagged — clauses 1 and 3 are \
-             vacuous for a first measure, and clause 2 is avoided here by declaring `None`, \
-             not by any first-measure exemption"
+            "a pickup's successor follows it by less than a full bar"
         );
         assert_eq!(
-            g3b_effect_of(&state, successor.id),
-            Some(OperationEffect::NoOp {
-                reason: NoOpReason::PreconditionFailedUnderReduction {
-                    reason: PreconditionFailureReason::MeasureMeterMismatch
-                }
-            }),
-            "pin 4: the pickup's successor is measured against the governing signature's FULL \
-             measure_duration (one whole note), not the pickup's own half-note actual length — \
-             clause 3 refuses it MeasureMeterMismatch, and (both sides declaring `None`) this \
-             refusal cannot be clause 2's"
+            g3b_effect_of(&state, ms[2].id),
+            mismatch,
+            "only the first measure may be short: the successor's own bar is full"
+        );
+
+        // A successor more than a full bar after the first measure.
+        let (state, ms) = reduce_with(&[(0, 1), (3, 2)]);
+        assert_eq!(
+            g3b_effect_of(&state, ms[0].id),
+            Some(OperationEffect::Applied)
+        );
+        assert_eq!(
+            g3b_effect_of(&state, ms[1].id),
+            mismatch,
+            "a first measure is never longer than its bar"
         );
     }
 

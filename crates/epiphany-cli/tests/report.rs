@@ -28,6 +28,14 @@ fn the_report_reads_complete_and_incomplete_exports_and_names_each() {
     let pickup = std::fs::read_to_string(fixture("pickup.musicxml")).expect("fixture");
     export(&cache, "Scores", "stamped", &single, true);
     export(&cache, "Scores", "unstamped", &pickup, false);
+    // A short measure after the first is refused, unlike a pickup.
+    let short = pickup.replacen(
+        "<step>C</step><octave>5</octave></pitch><duration>3</duration><voice>1</voice><type>half</type><dot/>",
+        "<step>C</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type>",
+        1,
+    );
+    assert_ne!(short, pickup, "the fixture's second measure is shortened");
+    export(&cache, "Scores", "short", &short, true);
     export(
         &cache,
         "Scores",
@@ -58,8 +66,14 @@ fn the_report_reads_complete_and_incomplete_exports_and_names_each() {
     let unstamped = block("unstamped");
     assert!(unstamped.contains("an incomplete export"), "{unstamped}");
     assert!(
-        unstamped.contains("CreateMeasure refused: MeasureMeterMismatch ×2"),
+        unstamped.contains("rejected operations: none"),
         "{unstamped}"
+    );
+
+    let short = block("short");
+    assert!(
+        short.contains("CreateMeasure refused: MeasureMeterMismatch ×1"),
+        "{short}"
     );
 
     let truncated = block("truncated");

@@ -641,9 +641,20 @@ compensation puts the rest in the deleted member's place in that index.
 (\texttt{EventDurationInvalid}). A member tombstoned by an undo
 cascade-deletes its tuplet.
 
+\textbf{A pickup's successor now applies (X3.5, P13-S19).}
+\texttt{CreateMeasure}'s boundary-distance precondition
+(Section~\ref{sec:k0:create-measure}) measured a first measure's successor
+against a full bar, so after a pickup every later measure was refused
+\texttt{MeasureMeterMismatch}. While the predecessor is the instance's only
+live measure, the successor's delta may now also be any positive duration less
+than the governing signature's \texttt{measure\_duration()}: a first measure may
+be a pickup. A short measure after the first is still not modelled, and its
+successor still refuses.
+
 \textbf{A canonical base materialized before this rung \MUST{} be rebuilt
 rather than reused.} Two operations reducible before it change the state they
-produce over a base that already holds a tuplet. A \texttt{DeleteEvent} whose
+produce over a base that already holds a tuplet, and one changes its verdict
+(a pickup's successor, above). A \texttt{DeleteEvent} whose
 \texttt{ReplaceWithRest} compensation replaces a member: the index used to keep
 naming the deleted member, so the re-anchoring pass recorded an
 \texttt{AttachmentTombstoned} repair against the tuplet the graph had just
@@ -1848,17 +1859,17 @@ every non-\texttt{WallClock} referent of \texttt{measure.start} (an
 \textbf{Ordering and boundary-distance preconditions (core specification
 \sectionsc{Graph Invariants}, invariant 20).} Graph-aware, against the current
 last live measure of the same instance (vacuous for an instance's first
-measure's own ordering and boundary-distance clauses, for lack of a
-predecessor to compare against --- but \textbf{not} for that same pickup's own
-successor, which is checked against this same governing signature's full
-\texttt{measure\_duration()} from the pickup's start, and refuses with
-\texttt{MeasureMeterMismatch} when the pickup's actual, shorter length
-disagrees with it): the carried \texttt{start} must be \textbf{comparable} to
-the predecessor's start and \textbf{strictly after} it (else
-\texttt{MeasureOutOfOrder}), and, when a governing time signature is
-determinable, the \textbf{musical delta} between the two starts must equal
-that signature's \texttt{measure\_duration()} (else
-\texttt{MeasureMeterMismatch}). Either comparison being \textbf{unverifiable}
+measure, for lack of a predecessor to compare against): the carried
+\texttt{start} must be \textbf{comparable} to the predecessor's start and
+\textbf{strictly after} it (else \texttt{MeasureOutOfOrder}), and, when a
+governing time signature is determinable, the \textbf{musical delta} between
+the two starts must equal that signature's \texttt{measure\_duration()} (else
+\texttt{MeasureMeterMismatch}). The one exception is a pickup: while the
+predecessor is the instance's only live measure, it may be shorter than its
+bar, so the delta may also be any positive duration less than
+\texttt{measure\_duration()} (since version~0.16.0; before it, a pickup's
+successor refused). A short measure after the first is not modelled: its
+successor still refuses. Either comparison being \textbf{unverifiable}
 --- the two starts are not comparable, or the delta is not computable ---
 refuses with \texttt{MeasureOrderUnverifiable} rather than silently permitting
 an unverifiable mint. A resolving \texttt{time\_signature} that

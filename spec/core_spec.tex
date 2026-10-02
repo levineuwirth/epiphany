@@ -6717,16 +6717,16 @@ The score graph maintains a set of structural invariants. Implementations
       raises no violation --- wherever the comparison or the
       distance cannot be decided (base-ingested data may predate
       this rule); this is deliberate abstention, not a soundness
-      gap. A pickup/anacrusis first measure has no predecessor, so
-      only the BOUNDARY clause is vacuous for it; the AGREEMENT
-      clause is not predecessor-dependent and still applies (unless
+      gap. A first measure has no predecessor, so only the BOUNDARY
+      clause is vacuous for it; the AGREEMENT clause is not
+      predecessor-dependent and still applies (unless
       \texttt{time\_signature} is \texttt{None} or agrees with the
-      governing grid). Regardless of what the pickup itself
-      declares, its successor's boundary distance is measured
-      against this same governing signature's full
-      \texttt{measure\_duration()}, and IS flagged when that
-      distance is the pickup's own shorter length rather than a
-      full bar.
+      governing grid). A first measure may be a pickup, shorter
+      than its bar: the second measure's distance from it may be
+      any positive duration up to the governing signature's
+      \texttt{measure\_duration()} (phase X3, P13-S19). Every later
+      distance is a full bar; a short measure after the first is
+      not modelled.
     \item (P13-S16.) \texttt{Staff.group} and
       \texttt{StaffGroup.members} AGREE in both directions:
       whenever a \texttt{Staff} names a \texttt{StaffGroup}, that
@@ -17094,6 +17094,14 @@ layouts they own versus inherit:
   gains its uncompensated case: a member tombstoned with no compensation to
   declare cascade-deletes the tuplet. The reduction algorithm version moves to
   \texttt{2} (Operation Catalog, version~0.16.0 note).
+  \\
+  \today & \sectionsc{Graph Invariants} &
+  \textbf{X3.5: a pickup's successor is consistent.} Graph invariant~20's
+  boundary clause measured the second measure's distance from a first measure
+  against a full bar, so every pickup's successor was flagged (P13-S19). A
+  first measure may now be shorter than its bar; every later distance is still
+  a full bar. \texttt{CreateMeasure} admits the same successor (Operation
+  Catalog, version~0.16.0 note).
   \\
   \bottomrule
 \end{longtable}

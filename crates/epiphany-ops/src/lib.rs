@@ -172,7 +172,11 @@ pub mod vectors;
 ///     tuplet removed from the graph), where the tuplet used to stay with
 ///     an `AttachmentTombstoned` repair and a dead member.
 ///
-///   Every verdict is unchanged; the effects and the graph differ.
+///   And **X3.5** (2026-10-03, operation_catalog §CreateMeasure) changes a
+///   **reduction verdict**: a `CreateMeasure` whose predecessor is its
+///   instance's only live measure, and which starts less than a full bar
+///   after it, now applies (the first measure is a pickup) where version `1`
+///   refused it `MeasureMeterMismatch`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

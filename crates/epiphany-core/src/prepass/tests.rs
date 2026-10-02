@@ -1564,3 +1564,93 @@ fn unknown_algorithm_ids_error() {
         "an unknown decomposition algorithm errors; nothing is substituted"
     );
 }
+
+/// A staff instance's bars come from its measures: each starts where its
+/// region-relative anchor puts it and lasts until the next, the last its
+/// governing signature's bar, the signature carried forward; a first measure
+/// shorter than its bar is a pickup, shifted by the beats it lacks. A
+/// pickup's note of five sixteenths, which no one value is, then splits as
+/// the end of the bar it belongs to — a sixteenth, then the bar's last
+/// quarter — not as a downbeat would.
+#[test]
+fn instance_bars_take_each_measure_and_shift_a_pickup() {
+    use crate::graph::{
+        BeatGroup, Measure, MeasureNumberVisibility, PowerOfTwo, TimeSignature,
+        TimeSignatureDisplay,
+    };
+    use crate::{AnchorOffset, RegionEdge};
+    let mut score = metric_score(|_, _| (Vec::new(), Vec::new()));
+    let signature: crate::ids::TimeSignatureId = score.identity.mint();
+    let quarter = MusicalDuration(r(1, 4));
+    score.time_signatures.push(
+        TimeSignature::new(
+            signature,
+            TimeSignatureDisplay::Standard {
+                numerator: 3,
+                denominator: PowerOfTwo::new(4).unwrap(),
+            },
+            MusicalDuration(r(3, 4)),
+            vec![
+                BeatGroup {
+                    duration: quarter.clone(),
+                    subdivision: None,
+                    accent: 0
+                };
+                3
+            ],
+        )
+        .expect("three quarters fill 3/4"),
+    );
+    let region = score.canvas.regions[0].id;
+    let starts = [
+        (r(0, 1), Some(signature)),
+        (r(5, 16), None),
+        (r(17, 16), None),
+    ];
+    let mut measures = Vec::new();
+    for (start, time_signature) in starts {
+        measures.push(Measure {
+            id: score.identity.mint(),
+            start: TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(MusicalDuration(start)),
+            },
+            time_signature,
+            explicit_number: None,
+            number_visibility: MeasureNumberVisibility::Auto,
+        });
+    }
+    score.canvas.regions[0]
+        .content
+        .staff_instances_mut()
+        .expect("staff-based")[0]
+        .measures = measures;
+    let si = &score.canvas.regions[0].staff_instances()[0];
+    let bars = instance_bars(&score, si);
+    let units = |n, d| to_grid_units(&r(n, d)).unwrap();
+    assert_eq!(
+        bars,
+        vec![
+            Bar {
+                start: 0,
+                len: units(5, 16),
+                shift: units(7, 16),
+            },
+            Bar {
+                start: units(5, 16),
+                len: units(3, 4),
+                shift: 0,
+            },
+            Bar {
+                start: units(17, 16),
+                len: units(3, 4),
+                shift: 0,
+            },
+        ]
+    );
+    assert_eq!(
+        decompose_metric(0, units(5, 16), &bars, WHOLE),
+        Some(vec![(NoteValue::Sixteenth, 0), (NoteValue::Quarter, 0)])
+    );
+}
