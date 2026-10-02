@@ -237,8 +237,12 @@ pub struct Engraver {
 /// two voices on a staff began turning apart (`VoicePlace`): beside another
 /// voice an upper voice's stems, beams, ties and slurs go up and its rests
 /// above their place, a lower voice's down and below (a staff of one voice is
-/// unchanged).
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(18);
+/// unchanged), and to `19` when a column's accidentals began standing by
+/// their ink rather than at a fixed distance from their heads: clear of the
+/// column's heads, of the ledger lines they span and of each other, across
+/// voices, the highest nearest the heads and a column further out for each
+/// that would touch one already placed.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(19);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

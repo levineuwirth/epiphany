@@ -660,6 +660,201 @@ fn voices_turn_their_stems_rests_ties_and_dots_apart() {
     assert_eq!(dots.iter().map(|d| d.1).collect::<Vec<_>>(), [1, -1]);
 }
 
+/// A glyph's ink box on the page: left, bottom, right, top.
+fn glyph_box(glyph: &epiphany_layout_ir::ResolvedGlyph) -> [f32; 4] {
+    let (x, y, b) = (glyph.position.x.0, glyph.position.y.0, &glyph.bounding_box);
+    [x + b.left.0, y + b.bottom.0, x + b.right.0, y + b.top.0]
+}
+
+/// A straight stroke's ink box on the page.
+fn stroke_box(stroke: &epiphany_layout_ir::Stroke) -> [f32; 4] {
+    let half = stroke.thickness.0 / 2.0;
+    let (a, b) = (&stroke.from, &stroke.to);
+    if (a.y.0 - b.y.0).abs() < 1e-4 {
+        [
+            a.x.0.min(b.x.0),
+            a.y.0 - half,
+            a.x.0.max(b.x.0),
+            a.y.0 + half,
+        ]
+    } else {
+        [
+            a.x.0 - half,
+            a.y.0.min(b.y.0),
+            a.x.0 + half,
+            a.y.0.max(b.y.0),
+        ]
+    }
+}
+
+/// Whether two boxes share ink; touching edges do not.
+fn boxes_overlap(a: [f32; 4], b: [f32; 4]) -> bool {
+    a[2] > b[0] && b[2] > a[0] && a[3] > b[1] && b[3] > a[1]
+}
+
+/// Writes a one-part treble-clef score in 4/4 of `measures` and loads it.
+fn treble_part(name: &str, measures: &[String]) -> epiphany_cli::Loaded {
+    let body: String = measures
+        .iter()
+        .enumerate()
+        .map(|(m, content)| {
+            let attributes = if m == 0 {
+                "<attributes><divisions>2</divisions><time><beats>4</beats>\
+                 <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+                 </attributes>"
+            } else {
+                ""
+            };
+            format!(
+                "<measure number=\"{}\">{attributes}{content}</measure>",
+                m + 1
+            )
+        })
+        .collect();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">{body}</part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::write(&path, xml).expect("written");
+    load(&path).expect("loads")
+}
+
+/// A pitched note of `duration` eighths in `voice`, a chord member when
+/// `chord`.
+fn pitched(step: &str, alter: i8, octave: u8, duration: u8, voice: u8, chord: bool) -> String {
+    format!(
+        "<note>{}<pitch><step>{step}</step><alter>{alter}</alter><octave>{octave}</octave>\
+         </pitch><duration>{duration}</duration><voice>{voice}</voice></note>",
+        if chord { "<chord/>" } else { "" }
+    )
+}
+
+/// The accidentals of a column stand clear of its heads, of the ledger lines
+/// their height spans, of each other and of every stem, each as near its
+/// head as that allows: the highest nearest, a column further out for each
+/// that would touch one already placed, across voices.
+#[test]
+fn accidentals_stand_clear_of_their_column_and_close_to_it() {
+    let measures = [
+        [
+            // A sharp on a ledger-line note.
+            pitched("C", 1, 4, 2, 1, false),
+            // A flat whose height spans its own ledger and a chord-mate's.
+            pitched("G", 0, 3, 2, 1, false),
+            pitched("B", -1, 3, 2, 1, true),
+            // A third with two sharps.
+            pitched("F", 1, 4, 2, 1, false),
+            pitched("A", 1, 4, 2, 1, true),
+            // Three flats a third apart.
+            pitched("E", -1, 4, 2, 1, false),
+            pitched("G", -1, 4, 2, 1, true),
+            pitched("B", -1, 4, 2, 1, true),
+        ]
+        .concat(),
+        [
+            // A double flat; a sharp over another voice's flat; a natural.
+            pitched("B", -2, 4, 2, 1, false),
+            pitched("C", 1, 5, 2, 1, false),
+            pitched("B", 0, 4, 4, 1, false),
+            "<backup><duration>8</duration></backup>".to_owned(),
+            pitched("E", 0, 4, 2, 2, false),
+            pitched("A", -1, 4, 2, 2, false),
+            pitched("D", 0, 4, 4, 2, false),
+        ]
+        .concat(),
+    ];
+    let loaded = treble_part("accidental_columns.musicxml", &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let staff = &layout.systems().next().expect("a system").staves[0].bounding_box;
+    let middle = staff.origin.y.0 + staff.size.height.0 / 2.0;
+    let step = |y: f32| ((y - middle) * 2.0).round() as i32 + 4;
+
+    let heads: Vec<_> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("notehead"))
+        .collect();
+    let accidentals: Vec<_> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("accidental"))
+        .collect();
+    let ledgers: Vec<[f32; 4]> = layout
+        .strokes
+        .iter()
+        .filter(|s| epiphany_layout_ir::is_rigid_width_stroke(s))
+        .map(stroke_box)
+        .collect();
+    let stems: Vec<[f32; 4]> = layout
+        .strokes
+        .iter()
+        .filter(|s| s.from.x == s.to.x && s.from.y != s.to.y)
+        .map(stroke_box)
+        .collect();
+    assert!(ledgers.len() >= 4 && !stems.is_empty());
+
+    // Clear of every head, accidental, ledger line and stem.
+    for (i, a) in accidentals.iter().enumerate() {
+        let ink = glyph_box(a);
+        let name = (a.glyph.as_str(), step(a.position.y.0));
+        for head in &heads {
+            assert!(!boxes_overlap(ink, glyph_box(head)), "{name:?} on a head");
+        }
+        for (j, b) in accidentals.iter().enumerate() {
+            assert!(
+                i == j || !boxes_overlap(ink, glyph_box(b)),
+                "{name:?} on another accidental"
+            );
+        }
+        for ledger in &ledgers {
+            assert!(!boxes_overlap(ink, *ledger), "{name:?} on a ledger line");
+        }
+        for stem in &stems {
+            assert!(!boxes_overlap(ink, *stem), "{name:?} on a stem");
+        }
+    }
+
+    // And as near its head as that allows: each accidental's ink stands this
+    // far left of its own head's (0.2 from a head, 0.3 further past a ledger
+    // line it spans, and a column further out by the width of the one it
+    // clears and 0.15).
+    let (sharp, flat) = (1020.0 / 1024.0, 926.0 / 1024.0);
+    let placed: Vec<(&str, i32, f32)> = accidentals
+        .iter()
+        .map(|a| {
+            let own = heads
+                .iter()
+                .find(|h| h.provenance.source == a.provenance.source)
+                .expect("an accidental's head");
+            let gap = glyph_box(own)[0] - glyph_box(a)[2];
+            (a.glyph.as_str(), step(a.position.y.0), gap)
+        })
+        .collect();
+    let expected = [
+        ("accidentalSharp", -2, 0.5),               // C sharp, past its ledger
+        ("accidentalFlat", -3, 0.5),                // B flat, past two ledgers
+        ("accidentalSharp", 3, 0.2),                // A sharp, nearest
+        ("accidentalSharp", 1, 0.2 + sharp + 0.15), // F sharp, a column out
+        ("accidentalFlat", 4, 0.2),                 // B flat, nearest
+        ("accidentalFlat", 0, 0.2 + flat + 0.15),   // E flat, a column out
+        ("accidentalFlat", 2, 0.2 + 2.0 * (flat + 0.15)), // G flat, two out
+        ("accidentalDoubleFlat", 4, 0.2),           // B double flat
+        ("accidentalSharp", 5, 0.2),                // C sharp, nearest
+        ("accidentalFlat", 3, 0.2 + sharp + 0.15),  // the other voice's A flat
+        ("accidentalNatural", 4, 0.2),              // B natural
+    ];
+    assert_eq!(accidentals.len(), expected.len(), "{placed:?}");
+    let mut remaining = placed.clone();
+    for (name, at, gap) in expected {
+        let found = remaining
+            .iter()
+            .position(|p| p.0 == name && p.1 == at && (p.2 - gap).abs() < 1e-3)
+            .unwrap_or_else(|| panic!("no {name} at step {at}, {gap} off its head: {placed:?}"));
+        remaining.remove(found);
+    }
+}
+
 /// A score's opening time signature stands a clear gap after the clef and
 /// key, and its first note a clear gap after the time signature, with or
 /// without a key signature.

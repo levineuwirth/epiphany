@@ -707,8 +707,8 @@ const REGION_GAP: f32 = 4.0; // horizontal gap between regions (no page layout i
                              // uses its own bounding box (right edge for an up-stem, left for a down-stem —
                              // SMuFL's `stemUpSE` / `stemDownNW`, which for `noteheadBlack` are x = 1.18 / 0).
 const NOTEHEAD_STEM_X: f32 = 1.15;
-const ACCIDENTAL_X: f32 = 1.1; // the innermost accidental sits this far left of its notehead
-const ACC_STACK_X: f32 = 0.9; // each further-out stacked accidental steps left by this
+const ACCIDENTAL_GAP: f32 = 0.2; // an accidental's ink stands this far clear of a head or ledger line
+const ACCIDENTAL_STACK_GAP: f32 = 0.15; // …and this far clear of another accidental
 const KEY_GAP: f32 = 0.6; // the gap between a clef's ink and the key signature after it
 const LEAD_GAP: f32 = 0.8; // the gap between a lead's ink and the first column after it
 const KEY_ACC_X: f32 = 0.9; // x advance per key-signature accidental
@@ -965,6 +965,10 @@ pub fn try_to_constrained(
         // component, each at `position + component.offset`.
         let mut pitch_heads: BTreeMap<PitchId, Vec<Head>> = BTreeMap::new();
         let mut unpitched_heads: BTreeMap<EventId, Vec<Head>> = BTreeMap::new();
+        // Every head of each staff's column, whatever its voice: what an
+        // accidental beside one of them must clear.
+        let mut column_heads: BTreeMap<(Option<StaffId>, ColumnKey), Vec<HeadRef>> =
+            BTreeMap::new();
         let mut event_stems: BTreeMap<EventId, Vec<StemSeg>> = BTreeMap::new();
         // Each note's and unpitched note's place among its staff's voices.
         let mut event_voices: BTreeMap<EventId, VoicePlace> = BTreeMap::new();
@@ -1033,28 +1037,25 @@ pub fn try_to_constrained(
                                 ),
                                 _ => Vec::new(),
                             };
-                            if !accidentals.is_empty() {
-                                // The leftmost accidental's left edge, measured from
-                                // the notehead (innermost at ACCIDENTAL_X, each
-                                // further-out one ACC_STACK_X beyond).
-                                let overhang =
-                                    ACCIDENTAL_X + (accidentals.len() - 1) as f32 * ACC_STACK_X;
-                                let entry = column_overhang.entry(key.clone()).or_insert(0.0);
-                                *entry = entry.max(overhang);
-                            }
                             placed.push((pitch.pitch, step, accidentals));
                         }
                         let steps: Vec<StaffStep> =
                             placed.iter().map(|(_, step, _)| *step).collect();
                         let dot_ys = dot_positions(yo, &steps, note.voice == VoicePlace::Lower);
                         for ((pitch, step, accidentals), dot_y) in placed.into_iter().zip(dot_ys) {
-                            pitch_heads.entry(pitch).or_default().push(Head {
+                            let heads = pitch_heads.entry(pitch).or_default();
+                            column_heads
+                                .entry((staff, key.clone()))
+                                .or_default()
+                                .push(HeadRef::Pitch(pitch, heads.len()));
+                            heads.push(Head {
                                 name,
                                 key: key.clone(),
                                 y: step_to_y(yo, step),
                                 step,
                                 comp,
                                 accidentals,
+                                accidental_x: Vec::new(),
                                 dots,
                                 dot_y,
                                 event: eid,
@@ -1095,13 +1096,19 @@ pub fn try_to_constrained(
                         let name = notehead_glyph(value);
                         let dot_y =
                             dot_positions(yo, &[step], unpitched.voice == VoicePlace::Lower)[0];
-                        unpitched_heads.entry(eid).or_default().push(Head {
+                        let heads = unpitched_heads.entry(eid).or_default();
+                        column_heads
+                            .entry((staff, key.clone()))
+                            .or_default()
+                            .push(HeadRef::Unpitched(eid, heads.len()));
+                        heads.push(Head {
                             name,
                             key: key.clone(),
                             y: step_to_y(yo, step),
                             step,
                             comp,
                             accidentals: Vec::new(),
+                            accidental_x: Vec::new(),
                             dots,
                             dot_y,
                             event: eid,
@@ -1252,6 +1259,25 @@ pub fn try_to_constrained(
                     keys.insert(ColumnKey::Lead);
                 }
                 _ => {}
+            }
+        }
+
+        // Each staff column's accidentals, placed together by their ink. The
+        // source layout separates the column from the one before by as much
+        // as they reach left of its heads.
+        for ((_, key), refs) in &column_heads {
+            let heads: Vec<&Head> = refs
+                .iter()
+                .map(|r| r.get(&pitch_heads, &unpitched_heads))
+                .collect();
+            let (origins, leftmost) = place_accidentals(&heads);
+            for (r, xs) in refs.iter().zip(origins) {
+                r.get_mut(&mut pitch_heads, &mut unpitched_heads)
+                    .accidental_x = xs;
+            }
+            if leftmost < 0.0 {
+                let entry = column_overhang.entry(key.clone()).or_insert(0.0);
+                *entry = entry.max(-leftmost);
             }
         }
 
@@ -2596,6 +2622,9 @@ struct Head {
     /// each drawn left of the notehead. Present only on the first component (a tie
     /// carries it; later components do not repeat it).
     accidentals: Vec<&'static str>,
+    /// Each accidental's origin `x`, from the column's, in the order of
+    /// `accidentals`; set once the column's accidentals are placed together.
+    accidental_x: Vec<f32>,
     /// The component's augmentation dots, and the `y` of the space they sit in.
     dots: u8,
     dot_y: f32,
@@ -2603,6 +2632,42 @@ struct Head {
     /// the event's next one.
     event: EventId,
     tied: bool,
+}
+
+/// Where a head is kept: the `index`th head of a pitch, or of an unpitched
+/// note.
+#[derive(Clone, Copy)]
+enum HeadRef {
+    Pitch(PitchId, usize),
+    Unpitched(EventId, usize),
+}
+
+impl HeadRef {
+    fn get<'a>(
+        self,
+        pitched: &'a BTreeMap<PitchId, Vec<Head>>,
+        unpitched: &'a BTreeMap<EventId, Vec<Head>>,
+    ) -> &'a Head {
+        match self {
+            HeadRef::Pitch(pitch, index) => &pitched[&pitch][index],
+            HeadRef::Unpitched(event, index) => &unpitched[&event][index],
+        }
+    }
+
+    fn get_mut<'a>(
+        self,
+        pitched: &'a mut BTreeMap<PitchId, Vec<Head>>,
+        unpitched: &'a mut BTreeMap<EventId, Vec<Head>>,
+    ) -> &'a mut Head {
+        let heads = match self {
+            HeadRef::Pitch(pitch, _) => pitched.get_mut(&pitch),
+            HeadRef::Unpitched(event, _) => unpitched.get_mut(&event),
+        };
+        let index = match self {
+            HeadRef::Pitch(_, index) | HeadRef::Unpitched(_, index) => index,
+        };
+        &mut heads.expect("a recorded head is kept")[index]
+    }
 }
 
 /// One component's stem geometry, computed before column x is known (carried as
@@ -3547,6 +3612,100 @@ fn component_ties(
     ties
 }
 
+/// The accidentals of one staff's column, placed together by their ink (each
+/// glyph's box), with `x` from the column's: each stands `ACCIDENTAL_GAP`
+/// left of every head of the column and of every ledger line its height
+/// spans, and `ACCIDENTAL_STACK_GAP` clear of every accidental placed before
+/// it that it would otherwise touch, a column further out each time. They are
+/// placed from the outside in (the highest, the lowest, the next highest, and
+/// so on), so the highest stands nearest the heads; a pitch's own stack stays
+/// together, innermost nearest. Returns each head's accidental origins, and
+/// the leftmost ink of the column's heads and accidentals.
+fn place_accidentals(heads: &[&Head]) -> (Vec<Vec<f32>>, f32) {
+    let ledger_half = STAFF_LINE_THICKNESS / 2.0;
+    let mut heads_left = f32::INFINITY;
+    // Each ledger line's left end and `y`.
+    let mut ledgers: Vec<(f32, f32)> = Vec::new();
+    for head in heads {
+        let left = metrics(head.name).map_or(0.0, |m| m.bounding_box().left.0);
+        heads_left = heads_left.min(left);
+        for step in ledger_steps(head.step) {
+            let y = head.y + (step - head.step) as f32 * 0.5;
+            ledgers.push((left - LEDGER_LINE_EXTENSION, y));
+        }
+    }
+    if !heads_left.is_finite() {
+        heads_left = 0.0;
+    }
+    let mut order: Vec<usize> = (0..heads.len())
+        .filter(|i| !heads[*i].accidentals.is_empty())
+        .collect();
+    order.sort_by(|a, b| heads[*b].y.total_cmp(&heads[*a].y).then(a.cmp(b)));
+    let mut outside_in = Vec::with_capacity(order.len());
+    let (mut top, mut bottom) = (0, order.len());
+    while top < bottom {
+        outside_in.push(order[top]);
+        top += 1;
+        if top < bottom {
+            bottom -= 1;
+            outside_in.push(order[bottom]);
+        }
+    }
+    // Each placed stack's box: left, bottom, right, top.
+    let mut placed: Vec<[f32; 4]> = Vec::new();
+    let mut origins = vec![Vec::new(); heads.len()];
+    let mut leftmost = heads_left;
+    for i in outside_in {
+        let head = heads[i];
+        let boxes: Vec<[f32; 4]> = head
+            .accidentals
+            .iter()
+            .map(|name| {
+                metrics(name).map_or([0.0, -1.0, 1.0, 1.0], |m| {
+                    let b = m.bounding_box();
+                    [b.left.0, b.bottom.0, b.right.0, b.top.0]
+                })
+            })
+            .collect();
+        let low = head.y + boxes.iter().map(|b| b[1]).fold(f32::INFINITY, f32::min);
+        let high = head.y + boxes.iter().map(|b| b[3]).fold(f32::NEG_INFINITY, f32::max);
+        let width = boxes.iter().map(|b| b[2] - b[0]).sum::<f32>()
+            + boxes.len().saturating_sub(1) as f32 * ACCIDENTAL_STACK_GAP;
+        let mut right = heads_left - ACCIDENTAL_GAP;
+        for (end, y) in &ledgers {
+            if y + ledger_half > low && y - ledger_half < high {
+                right = right.min(end - ACCIDENTAL_GAP);
+            }
+        }
+        // Step out past each placed stack it would touch.
+        loop {
+            let clash = placed
+                .iter()
+                .filter(|p| {
+                    p[3] > low
+                        && p[1] < high
+                        && right - width < p[2] + ACCIDENTAL_STACK_GAP
+                        && right > p[0] - ACCIDENTAL_STACK_GAP
+                })
+                .map(|p| p[0])
+                .fold(f32::INFINITY, f32::min);
+            if !clash.is_finite() {
+                break;
+            }
+            right = clash - ACCIDENTAL_STACK_GAP;
+        }
+        placed.push([right - width, low, right, high]);
+        leftmost = leftmost.min(right - width);
+        let mut edge = right;
+        for b in &boxes {
+            let origin = edge - b[2];
+            origins[i].push(origin);
+            edge = origin + b[0] - ACCIDENTAL_STACK_GAP;
+        }
+    }
+    (origins, leftmost)
+}
+
 /// Draws a notehead with what rides with it: the ledger lines it needs, its
 /// accidental stack, and its augmentation dots. `provenance` is the head's own;
 /// every other primitive is synthesized from its source.
@@ -3592,17 +3751,18 @@ fn emit_head(
         ));
     }
     // The spelling's accidental stack: synthesized glyphs left of the notehead
-    // (innermost nearest it), at its staff position, sharing the notehead's
-    // column slot. Emitted *after* the notehead so the slot's source x stays
-    // the notehead's.
-    for (stack, accidental) in head.accidentals.iter().enumerate() {
+    // (innermost nearest it), where its column placed them, at its staff
+    // position, sharing the notehead's column slot. Emitted *after* the
+    // notehead so the slot's source x stays the notehead's.
+    for (stack, (accidental, offset)) in head.accidentals.iter().zip(&head.accidental_x).enumerate()
+    {
         let acc_provenance = Provenance::synthesized(
             provenance.source,
             SynthesisKind::Registered(ACCIDENTAL_SYNTHESIS),
             SynthesisInstanceKey((head.comp as u128) << 8 | stack as u128),
             provenance.dependencies.clone(),
         );
-        let x = info.x - ACCIDENTAL_X - stack as f32 * ACC_STACK_X;
+        let x = info.x + offset;
         emit.glyph(
             &acc_provenance,
             accidental,

@@ -1166,3 +1166,22 @@ arc below, its dots on a line take the space below, and a rest moves a space
 off its place, up for an upper voice and down for a lower. A staff of one
 voice is unchanged. Locked by
 `voices_turn_their_stems_rests_ties_and_dots_apart` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 18 → 19: accidentals by their ink (X2 fix round, 2026-10-02)
+
+Every accidental stood a fixed 1.1 staff spaces left of its notehead, 0.9
+further for each element of one spelling's stack, whatever its width, the
+column's ledger lines or the column's other accidentals. A sharp, flat or
+double sharp crossed a ledger line of its column, two accidentals of a chord
+or of two voices a third apart lay over each other, and a double flat ran
+through its own head. The constrained stage now places a staff column's
+accidentals together, by each glyph's box: 0.2 left of every head of the
+column and of every ledger line its height spans, and 0.15 clear of every
+accidental placed before it, a column further out each time, from the
+outside in (the highest, the lowest, the next highest), so the highest
+stands nearest the heads; a spelling's stack stays together. The column's
+overhang, which separates it from the column before, is how far its
+accidentals reach. No `NoCollision` obligation names an accidental: a ledger
+line is a stroke, which the obligation cannot name, so the positional test is
+the check. Locked by `accidentals_stand_clear_of_their_column_and_close_to_it`
+(`epiphany-cli`).
