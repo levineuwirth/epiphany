@@ -780,6 +780,13 @@ const BEAM_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4245_414D_5354
 /// tied components of one note, synthesized from the tie or the pitch.
 const TIE_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5449_4541_5243_5321); // "TIEARCS!"
 const TIE_GAP: f32 = 0.15; // the gap between a tie's end and its notehead
+/// A tuplet's number and the bracket beside it, synthesized from the tuplet
+/// (its first digit carries the tuplet's own provenance).
+const TUPLET_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5455_504C_4554_4E4F); // "TUPLETNO"
+const TUPLET_CLEARANCE: f32 = 0.5; // a tuplet's number or bracket stands this far clear of its notes' ink
+const TUPLET_HOOK: f32 = 0.6; // the length of a bracket's end hooks, toward the notes
+const TUPLET_NUMBER_GAP: f32 = 0.25; // the gap each side of the number in its bracket
+const TUPLET_BRACKET_THICKNESS: f32 = 0.16; // SMuFL's tupletBracketThickness
 const TIE_OFFSET: f32 = 0.4; // how far off its heads' centres a tie's ends sit
 const TIE_MIN_HEIGHT: f32 = 0.3; // a tie's apex height, at least…
 const TIE_MAX_HEIGHT: f32 = 0.8; // …and at most, in staff spaces
@@ -1513,6 +1520,9 @@ pub fn try_to_constrained(
         // it, and a lone short note takes a hook. Beamed notes take no flags.
         // Each beam rides the slots of the stems it joins (`SpanAnchor`).
         let mut beam_strokes: Vec<(Stroke, SpringSlotId, SpringSlotId)> = Vec::new();
+        // Each drawn beam group's members, in event order: a tuplet whose
+        // notes are exactly one of them shows its number alone.
+        let mut beam_sets: BTreeSet<Vec<EventId>> = BTreeSet::new();
         for object in &region.objects {
             let (Some(staff), LayoutContent::Staff(content)) = (object.staff(), object.content())
             else {
@@ -1525,6 +1535,9 @@ pub fn try_to_constrained(
                 let Some((members, up)) = beam_members(group, &event_stems, middle) else {
                     continue;
                 };
+                let mut sorted = members.clone();
+                sorted.sort();
+                beam_sets.insert(sorted);
                 let n = members.len();
                 let segs: Vec<&StemSeg> = members.iter().map(|e| &event_stems[e][0]).collect();
                 let his: Vec<f32> = segs.iter().map(|s| s.hi).collect();
@@ -2258,6 +2271,74 @@ pub fn try_to_constrained(
                                 provenance: provenance.clone(),
                             });
                         }
+                    }
+                }
+                TypedObjectId::Tuplet(_) => {
+                    // A tuplet's number, and its bracket unless its notes are
+                    // one beam group, beside its members on its voice's side.
+                    let marks = match (content, staff) {
+                        (Some(LayoutContent::Tuplet(tuplet)), Some(st)) => tuplet_marks(
+                            tuplet,
+                            &TupletInk {
+                                columns: &columns,
+                                stems: &event_stems,
+                                rests: &event_rests,
+                                ink: staff_notes.get(&st).unwrap_or(&no_notes),
+                                voices: &event_voices,
+                                beams: &beam_sets,
+                            },
+                        ),
+                        _ => None,
+                    };
+                    match marks {
+                        Some(marks) => {
+                            for (k, (name, at)) in marks.digits.into_iter().enumerate() {
+                                let digit_provenance = if k == 0 {
+                                    provenance.clone()
+                                } else {
+                                    Provenance::synthesized(
+                                        provenance.source,
+                                        SynthesisKind::Registered(TUPLET_SYNTHESIS),
+                                        SynthesisInstanceKey(k as u128),
+                                        provenance.dependencies.clone(),
+                                    )
+                                };
+                                emit.glyph(
+                                    &digit_provenance,
+                                    name,
+                                    at,
+                                    band_of(staff),
+                                    staff,
+                                    marks.slot,
+                                );
+                            }
+                            for (k, (from, to, start, end)) in marks.bracket.into_iter().enumerate()
+                            {
+                                let stroke = line_stroke(
+                                    Provenance::synthesized(
+                                        provenance.source,
+                                        SynthesisKind::Registered(TUPLET_SYNTHESIS),
+                                        SynthesisInstanceKey(1 << 16 | k as u128),
+                                        provenance.dependencies.clone(),
+                                    ),
+                                    from,
+                                    to,
+                                    TUPLET_BRACKET_THICKNESS,
+                                    band_of(staff),
+                                );
+                                span_anchors.push(SpanAnchor {
+                                    primitive: stroke.id(),
+                                    start,
+                                    end,
+                                });
+                                emit.stroke(stroke);
+                            }
+                        }
+                        None => emit.stroke(anchor(
+                            provenance,
+                            Point::new(default_x, yo),
+                            band_of(staff),
+                        )),
                     }
                 }
                 TypedObjectId::Tie(_) => {
@@ -3844,6 +3925,182 @@ fn tie_curve(
         style: ink(),
         line: LineStyle::Solid,
         vertical_band: band,
+    }
+}
+
+/// What a tuplet's marks are placed by: the columns, each event's stems and
+/// rests (their columns and extents), the drawn ink of its staff's columns
+/// (heads, stems and beams), each event's voice place, and the staff's drawn
+/// beam groups by their sorted members.
+struct TupletInk<'a> {
+    columns: &'a BTreeMap<ColumnKey, ColumnInfo>,
+    stems: &'a BTreeMap<EventId, Vec<StemSeg>>,
+    rests: &'a BTreeMap<EventId, Vec<RestSeg>>,
+    ink: &'a BTreeMap<ColumnKey, ColumnInk>,
+    voices: &'a BTreeMap<EventId, VoicePlace>,
+    beams: &'a BTreeSet<Vec<EventId>>,
+}
+
+/// A tuplet's marks: its number's digit glyphs and where they stand, the slot
+/// the number rides (its middle member's column), and the bracket's strokes,
+/// each with the slots its two ends ride.
+struct TupletMarks {
+    digits: Vec<(&'static str, Point)>,
+    slot: SpringSlotId,
+    bracket: Vec<(Point, Point, SpringSlotId, SpringSlotId)>,
+}
+
+/// A tuplet's number and bracket, from its first member's column to its last
+/// member's, standing `TUPLET_CLEARANCE` clear of the ink of every column
+/// between: above for an upper voice, below for a lower, and alone on the
+/// side most of its stems point (above when none has a stem). The number
+/// shows the ratio's `actual` term, centered on the span; the bracket, with
+/// a gap for the number and its ends hooked toward the notes, is left out
+/// when the members are notes beamed together as one group. `None` when no
+/// member has a column on the staff.
+fn tuplet_marks(tuplet: &crate::logical::TupletContent, at: &TupletInk) -> Option<TupletMarks> {
+    let keys_of = |event: &EventId| -> Vec<ColumnKey> {
+        let stems = at
+            .stems
+            .get(event)
+            .into_iter()
+            .flatten()
+            .map(|s| s.key.clone());
+        let rests = at
+            .rests
+            .get(event)
+            .into_iter()
+            .flatten()
+            .map(|r| r.key.clone());
+        stems.chain(rests).collect()
+    };
+    let mut keys: Vec<ColumnKey> = tuplet.members.iter().flat_map(keys_of).collect();
+    keys.sort();
+    let (first, last) = (keys.first()?.clone(), keys.last()?.clone());
+    let middle = tuplet.members.get(tuplet.members.len() / 2).and_then(|e| {
+        let mut own = keys_of(e);
+        own.sort();
+        own.into_iter().next()
+    })?;
+    let (left, right, slot) = (
+        at.columns.get(&first)?,
+        at.columns.get(&last)?,
+        at.columns.get(&middle)?.slot,
+    );
+    let head_right = metrics("noteheadBlack").map_or(NOTEHEAD_STEM_X, |m| m.bounding_box().right.0);
+    let (x0, x1) = (left.x, right.x + head_right);
+
+    let segs: Vec<&StemSeg> = tuplet
+        .members
+        .iter()
+        .filter_map(|e| at.stems.get(e)?.first())
+        .filter(|seg| seg.drawn)
+        .collect();
+    let ups = segs.iter().filter(|seg| seg.up).count();
+    let above = match tuplet.members.first().and_then(|e| at.voices.get(e)) {
+        Some(VoicePlace::Upper) => true,
+        Some(VoicePlace::Lower) => false,
+        _ => 2 * ups >= segs.len(),
+    };
+
+    // The ink the marks clear: every column between the first member's and
+    // the last's, and each member rest's glyph.
+    let mut top = f32::NEG_INFINITY;
+    let mut bottom = f32::INFINITY;
+    for ink in at.ink.range(first..=last).map(|(_, ink)| ink) {
+        top = top.max(ink.top);
+        bottom = bottom.min(ink.bottom);
+    }
+    for rest in tuplet
+        .members
+        .iter()
+        .filter_map(|e| at.rests.get(e))
+        .flatten()
+    {
+        if let Some(b) = rest.name.and_then(metrics).map(|m| m.bounding_box()) {
+            top = top.max(rest.y + b.top.0);
+            bottom = bottom.min(rest.y + b.bottom.0);
+        }
+    }
+    if !top.is_finite() || !bottom.is_finite() {
+        return None;
+    }
+
+    let names: Vec<&'static str> = digits_of(tuplet.ratio.actual())
+        .into_iter()
+        .map(tuplet_digit)
+        .collect();
+    let boxes: Vec<BoundingBox> = names
+        .iter()
+        .map(|name| metrics(name).map(|m| m.bounding_box()))
+        .collect::<Option<_>>()?;
+    let width: f32 = boxes.iter().map(|b| b.right.0 - b.left.0).sum();
+    let height = boxes.iter().map(|b| b.top.0).fold(0.0, f32::max);
+    let base = if above {
+        top + TUPLET_CLEARANCE
+    } else {
+        bottom - TUPLET_CLEARANCE
+    };
+    let baseline = if above { base } else { base - height };
+    let mut x = (x0 + x1) / 2.0 - width / 2.0;
+    let mut digits = Vec::with_capacity(names.len());
+    for (name, b) in names.iter().zip(&boxes) {
+        digits.push((*name, Point::new(x - b.left.0, baseline)));
+        x += b.right.0 - b.left.0;
+    }
+
+    let mut members = tuplet.members.clone();
+    members.sort();
+    let beamed =
+        tuplet.members.iter().all(|e| at.rests.get(e).is_none()) && at.beams.contains(&members);
+    let mut bracket = Vec::new();
+    if !beamed {
+        let line = baseline + height / 2.0;
+        let hook = if above {
+            line - TUPLET_HOOK
+        } else {
+            line + TUPLET_HOOK
+        };
+        let (gap0, gap1) = (
+            (x0 + x1) / 2.0 - width / 2.0 - TUPLET_NUMBER_GAP,
+            (x0 + x1) / 2.0 + width / 2.0 + TUPLET_NUMBER_GAP,
+        );
+        let (start, end) = (left.slot, right.slot);
+        bracket.push((Point::new(x0, hook), Point::new(x0, line), start, start));
+        bracket.push((
+            Point::new(x0, line),
+            Point::new(gap0.max(x0), line),
+            start,
+            slot,
+        ));
+        bracket.push((
+            Point::new(gap1.min(x1), line),
+            Point::new(x1, line),
+            slot,
+            end,
+        ));
+        bracket.push((Point::new(x1, line), Point::new(x1, hook), end, end));
+    }
+    Some(TupletMarks {
+        digits,
+        slot,
+        bracket,
+    })
+}
+
+/// The SMuFL tuplet digit glyph for `digit` (0–9).
+fn tuplet_digit(digit: u8) -> &'static str {
+    match digit {
+        0 => "tuplet0",
+        1 => "tuplet1",
+        2 => "tuplet2",
+        3 => "tuplet3",
+        4 => "tuplet4",
+        5 => "tuplet5",
+        6 => "tuplet6",
+        7 => "tuplet7",
+        8 => "tuplet8",
+        _ => "tuplet9",
     }
 }
 

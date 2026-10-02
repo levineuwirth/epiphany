@@ -1487,6 +1487,8 @@ fn every_system_starts_with_its_clef_and_key() {
 
     for (sign, line, change, name) in [
         ("G", 2, -1, "gClef8vb"),
+        ("G", 2, 2, "gClef15ma"),
+        ("F", 4, -2, "fClef15mb"),
         ("percussion", 3, 0, "unpitchedPercussionClef1"),
     ] {
         std::fs::write(&path, score(staff(sign, line, change, "B", 3, 2))).expect("written");
@@ -2111,4 +2113,272 @@ fn a_rest_stands_clear_of_another_voices_notes() {
         "the lower rest beside no note keeps its place, {} from the middle",
         alone.position.y.0 - middle
     );
+}
+
+/// A tuplet draws its number, the ratio's actual term, clear of its notes on
+/// its stems' or voice's side: alone over a group beamed together, and in a
+/// bracket hooked toward the notes when a rest is among its members.
+#[test]
+fn a_tuplet_draws_its_number_and_a_bracket_unless_beamed_alone() {
+    use epiphany_core::TypedObjectId;
+
+    let note = |step: &str, octave: u8, duration: u8, voice: u8, kind: &str, extra: &str| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>{duration}</duration><voice>{voice}</voice><type>{kind}</type>\
+             {extra}</note>"
+        )
+    };
+    let modification = |actual: u8, normal: u8| {
+        format!(
+            "<time-modification><actual-notes>{actual}</actual-notes>\
+             <normal-notes>{normal}</normal-notes></time-modification>"
+        )
+    };
+    let mark = |kind: &str| format!("<notations><tuplet type=\"{kind}\"/></notations>");
+    let beam = |state: &str| format!("<beam number=\"1\">{state}</beam>");
+    let triplet = modification(3, 2);
+    let sextuplet = modification(6, 4);
+    // Divisions 12: a triplet eighth is 4, a sextuplet sixteenth 2.
+    let measure1 = [
+        // A beamed triplet of low eighths, stems up.
+        note(
+            "E",
+            4,
+            4,
+            1,
+            "eighth",
+            &format!("{}{triplet}{}", beam("begin"), mark("start")),
+        ),
+        note(
+            "F",
+            4,
+            4,
+            1,
+            "eighth",
+            &format!("{}{triplet}", beam("continue")),
+        ),
+        note(
+            "G",
+            4,
+            4,
+            1,
+            "eighth",
+            &format!("{}{triplet}{}", beam("end"), mark("stop")),
+        ),
+        // A triplet with a rest among its members.
+        format!(
+            "<note><rest/><duration>4</duration><voice>1</voice><type>eighth</type>\
+             {triplet}{}</note>",
+            mark("start")
+        ),
+        note(
+            "A",
+            4,
+            4,
+            1,
+            "eighth",
+            &format!("{}{triplet}", beam("begin")),
+        ),
+        note(
+            "B",
+            4,
+            4,
+            1,
+            "eighth",
+            &format!("{}{triplet}{}", beam("end"), mark("stop")),
+        ),
+    ]
+    .concat();
+    let measure2 = [
+        // A beamed sextuplet of sixteenths, then a half.
+        note(
+            "C",
+            5,
+            2,
+            1,
+            "16th",
+            &format!("{}{sextuplet}{}", beam("begin"), mark("start")),
+        ),
+        note(
+            "D",
+            5,
+            2,
+            1,
+            "16th",
+            &format!("{}{sextuplet}", beam("continue")),
+        ),
+        note(
+            "E",
+            5,
+            2,
+            1,
+            "16th",
+            &format!("{}{sextuplet}", beam("continue")),
+        ),
+        note(
+            "F",
+            5,
+            2,
+            1,
+            "16th",
+            &format!("{}{sextuplet}", beam("continue")),
+        ),
+        note(
+            "G",
+            5,
+            2,
+            1,
+            "16th",
+            &format!("{}{sextuplet}", beam("continue")),
+        ),
+        note(
+            "A",
+            5,
+            2,
+            1,
+            "16th",
+            &format!("{}{sextuplet}{}", beam("end"), mark("stop")),
+        ),
+        note("C", 5, 12, 1, "quarter", ""),
+        // The lower voice: a quarter, then a beamed triplet below.
+        "<backup><duration>24</duration></backup>".to_owned(),
+        note("G", 4, 12, 2, "quarter", ""),
+        note(
+            "F",
+            4,
+            4,
+            2,
+            "eighth",
+            &format!("{}{triplet}{}", beam("begin"), mark("start")),
+        ),
+        note(
+            "E",
+            4,
+            4,
+            2,
+            "eighth",
+            &format!("{}{triplet}", beam("continue")),
+        ),
+        note(
+            "D",
+            4,
+            4,
+            2,
+            "eighth",
+            &format!("{}{triplet}{}", beam("end"), mark("stop")),
+        ),
+    ]
+    .concat();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>12</divisions><time><beats>2</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{measure1}</measure>\
+         <measure number=\"2\">{measure2}</measure></part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("tuplets.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    assert_eq!(loaded.reduced.score.cross_cutting.tuplets.len(), 4);
+    let layout = engrave(&loaded.reduced.score).layout;
+
+    // The numbers, left to right: the triplets' 3s and the sextuplet's 6.
+    let mut numbers: Vec<_> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("tuplet"))
+        .collect();
+    numbers.sort_by(|a, b| a.position.x.0.total_cmp(&b.position.x.0));
+    assert_eq!(
+        numbers.iter().map(|g| g.glyph.as_str()).collect::<Vec<_>>(),
+        ["tuplet3", "tuplet3", "tuplet6", "tuplet3"]
+    );
+    // Only the triplet with a rest is bracketed: two lines and two hooks.
+    let brackets: Vec<_> = layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            matches!(s.provenance.source, TypedObjectId::Tuplet(_))
+                && (s.from.x.0 - s.to.x.0).abs() + (s.from.y.0 - s.to.y.0).abs() > 1e-3
+        })
+        .collect();
+    assert_eq!(brackets.len(), 4, "one bracket of four strokes");
+    let rest = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str() == "rest8th")
+        .expect("the bracketed triplet's rest");
+    let bracketed = numbers[1];
+    for stroke in &brackets {
+        for end in [&stroke.from, &stroke.to] {
+            assert!(
+                end.x.0 >= glyph_box(rest)[0] - 1e-3,
+                "the bracket starts at its first member"
+            );
+        }
+    }
+    let (bracket_line_y, hook_low) =
+        brackets
+            .iter()
+            .fold((f32::NEG_INFINITY, f32::INFINITY), |(hi, lo), s| {
+                (
+                    hi.max(s.from.y.0.max(s.to.y.0)),
+                    lo.min(s.from.y.0.min(s.to.y.0)),
+                )
+            });
+    let b = glyph_box(bracketed);
+    assert!(
+        b[1] < bracket_line_y && b[3] > bracket_line_y,
+        "the bracketed number sits on its line"
+    );
+    assert!(
+        hook_low < bracket_line_y,
+        "the hooks point down to the notes"
+    );
+
+    // Each number stands at least the clearance off every head and stem
+    // under it: above for the first three, below for the lower voice's.
+    let heads_and_stems: Vec<[f32; 4]> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("notehead"))
+        .map(glyph_box)
+        .chain(
+            layout
+                .strokes
+                .iter()
+                .filter(|s| s.from.x == s.to.x && s.from.y != s.to.y)
+                .map(stroke_box),
+        )
+        .chain(
+            layout
+                .strokes
+                .iter()
+                .filter(|s| epiphany_layout_ir::is_beam_stroke(s))
+                .map(stroke_box),
+        )
+        .collect();
+    for (k, number) in numbers.iter().enumerate() {
+        let n = glyph_box(number);
+        let under: Vec<&[f32; 4]> = heads_and_stems
+            .iter()
+            .filter(|ink| ink[0] < n[2] && ink[2] > n[0])
+            .collect();
+        assert!(!under.is_empty(), "number {k} stands over ink");
+        if k < 3 {
+            let top = under.iter().map(|i| i[3]).fold(f32::NEG_INFINITY, f32::max);
+            assert!(
+                n[1] >= top + 0.5 - 0.05,
+                "number {k} stands clear above, {} over {top}",
+                n[1]
+            );
+        } else {
+            let bottom = under.iter().map(|i| i[1]).fold(f32::INFINITY, f32::min);
+            assert!(
+                n[3] <= bottom - 0.5 + 0.05,
+                "the lower voice's number stands clear below"
+            );
+        }
+    }
 }

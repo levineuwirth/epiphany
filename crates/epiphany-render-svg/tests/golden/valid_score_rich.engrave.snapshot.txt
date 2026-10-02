@@ -1,12 +1,12 @@
 fixture=valid_score_rich solver=engrave
-glyph_count=14
-path_count=14
+glyph_count=15
+path_count=15
 fallback_rect_count=0
-stroke_count=37
+stroke_count=40
 curve_count=1
-provenance_count=52
+provenance_count=56
 layer_count=1
-hard_constraint_count=18
+hard_constraint_count=19
 xml_well_formed=true
 view_box=[5.4999995 -38.812546 17.458525 33.311966]
 class_counts:
@@ -14,3 +14,4 @@ class_counts:
   clef=3
   flag=3
   notehead=7
+  other=1

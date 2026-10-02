@@ -267,8 +267,13 @@ pub struct Engraver {
 /// other voice's notes that start with it, and to `25` when a note tied over
 /// the barline with an alteration its measure did not give began making the
 /// next note of its letter and octave in the measure show its own
-/// accidental, the tied one's restated or a courtesy natural.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(25);
+/// accidental, the tied one's restated or a courtesy natural, and to `26`
+/// when tuplets began drawing: their number, the ratio's actual term, clear
+/// of their members on their voice's or stems' side, with a bracket unless
+/// their notes are beamed together as one group, and their members began
+/// beaming as their notated values read; and a treble or bass clef two
+/// octaves up or down began drawing its 15 mark.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(26);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

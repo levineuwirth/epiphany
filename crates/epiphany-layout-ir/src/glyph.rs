@@ -276,6 +276,21 @@ pub const BRAVURA_METRICS: &[GlyphMetric] = &[
     GlyphMetric::new("bracketBottom", 1921, [0, -1209, 1922, 0]),
     GlyphMetric::new("dynamicForte", 1491, [-578, -623, 1491, 1819]),
     GlyphMetric::new("dynamicPiano", 1495, [-365, -582, 1500, 1123]),
+    GlyphMetric::new("tuplet0", 1307, [-2, -33, 1304, 1536]),
+    GlyphMetric::new("tuplet1", 1008, [40, 0, 1049, 1524]),
+    GlyphMetric::new("tuplet2", 1307, [40, -25, 1348, 1536]),
+    GlyphMetric::new("tuplet3", 1212, [40, -33, 1254, 1536]),
+    GlyphMetric::new("tuplet4", 1241, [40, 0, 1283, 1524]),
+    GlyphMetric::new("tuplet5", 1298, [40, -33, 1340, 1528]),
+    GlyphMetric::new("tuplet6", 1245, [42, -33, 1287, 1536]),
+    GlyphMetric::new("tuplet7", 1241, [122, -17, 1364, 1524]),
+    GlyphMetric::new("tuplet8", 1282, [40, -33, 1324, 1536]),
+    GlyphMetric::new("tuplet9", 1245, [40, -33, 1286, 1536]),
+    GlyphMetric::new("tupletColon", 455, [40, 237, 496, 1098]),
+    GlyphMetric::new("gClef15mb", 2748, [0, -3609, 2749, 4498]),
+    GlyphMetric::new("gClef15ma", 2748, [0, -2696, 2749, 5403]),
+    GlyphMetric::new("fClef15mb", 2802, [-21, -3040, 2802, 1074]),
+    GlyphMetric::new("fClef15ma", 2802, [-21, -2601, 2802, 2032]),
 ];
 
 /// Looks up one glyph's metrics by SMuFL name, if bundled.

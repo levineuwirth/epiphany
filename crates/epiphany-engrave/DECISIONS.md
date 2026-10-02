@@ -1303,3 +1303,27 @@ an alteration no note has, so the next note of that letter and octave shows
 its own accidental: a courtesy natural, or the tied one's restated, as
 Gould restates it after a tie. Locked by
 `accidentals_are_drawn_against_the_key_and_the_measure` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 25 → 26: tuplets drawn (X3.2, 2026-10-03)
+
+A tuplet reached the constrained IR as a traced anchor, and its members, which
+the pre-pass decomposes to notated values through the tuplet's ratio, were
+left unbeamed (a beamable note had to be outside a tuplet). The logical IR now
+gives a tuplet its content (`TupletContent`: ratio and members), and the
+constrained stage draws, for a tuplet whose members share one staff, its
+number (SMuFL's `tuplet0`–`tuplet9`, now bundled, showing the ratio's actual
+term) centered on its span from its first member's column to its last's. It
+stands 0.5 clear of the ink of every column between (heads, stems and beams
+on that staff, and its member rests): above for an upper voice, below for a
+lower, and for a voice alone on the side most of its members' stems point,
+above when none has a stem. A bracket of 0.16, gapped for the number, with
+0.6 hooks toward the notes, is drawn unless the members are notes beamed
+together as exactly one group — MuseScore's automatic rule, which its
+exported `bracket` attributes follow. The number rides its middle
+member's slot, the bracket's ends their members' slots. Tuplet members are now
+beamable. A tuplet across staves still draws nothing. Also: `gClef15ma`,
+`gClef15mb`, `fClef15ma` and `fClef15mb` are bundled and drawn for a clef two
+octaves up or down, which drew without its mark. Locked by
+`a_tuplet_draws_its_number_and_a_bracket_unless_beamed_alone`
+(`epiphany-cli`); the rich fixture's golden gains its tuplet's number and
+bracket.

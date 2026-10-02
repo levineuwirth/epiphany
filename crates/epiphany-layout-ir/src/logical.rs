@@ -69,8 +69,18 @@ pub enum LayoutContent {
     Slur(SlurContent),
     /// A tie: the two events it joins and the pitches it pairs.
     Tie(TieContent),
+    /// A tuplet: its ratio and its members, in time order.
+    Tuplet(TupletContent),
     /// A staff group: its kind and its staves in this region, top first.
     Group(GroupContent),
+}
+
+/// A tuplet's content: its ratio, whose `actual` term it shows, and its
+/// member events, in the score's order.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TupletContent {
+    pub ratio: TupletRatio,
+    pub members: Vec<EventId>,
 }
 
 /// A staff group's content in one region: its kind, and those of its staves
@@ -823,9 +833,10 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
         if !seen.insert(provenance.stable_id) {
             continue;
         }
-        // A repeat structure, slur or tie carries its resolved engraving
-        // content (barline placements / endpoint onsets / the pitches it
-        // pairs). Every other cross-cutting object is structural in this tier.
+        // A repeat structure, slur, tie or tuplet carries its resolved
+        // engraving content (barline placements / endpoint onsets / the
+        // pitches it pairs / its ratio and members). Every other cross-cutting
+        // object is structural in this tier.
         let content = match src {
             TypedObjectId::RepeatStructure(id) => score
                 .cross_cutting
@@ -847,6 +858,18 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                 .iter()
                 .find(|tie| tie.id == id)
                 .map(|tie| tie_content(score, tie))
+                .unwrap_or_default(),
+            TypedObjectId::Tuplet(id) => score
+                .cross_cutting
+                .tuplets
+                .iter()
+                .find(|tuplet| tuplet.id == id)
+                .map(|tuplet| {
+                    LayoutContent::Tuplet(TupletContent {
+                        ratio: tuplet.ratio,
+                        members: tuplet.members.clone(),
+                    })
+                })
                 .unwrap_or_default(),
             _ => LayoutContent::Structural,
         };
@@ -1001,8 +1024,8 @@ fn staff_content(
 /// beam split where a note it lists cannot be beamed. A score that names none
 /// is beamed by its meter: consecutive beamable notes of one voice, without a
 /// gap, within one beat group of the measure's time signature. A beamable note
-/// is a pitched or unpitched note notated as one eighth-or-shorter component
-/// outside a tuplet.
+/// is a pitched or unpitched note notated as one eighth-or-shorter component,
+/// in a tuplet or not: a tuplet's notated values are beamed as they read.
 pub(crate) fn beam_groups(
     score: &Score,
     si: &epiphany_core::StaffInstance,
@@ -1025,8 +1048,8 @@ pub(crate) fn beam_groups(
             return false;
         }
         let components = components_of(annotations, eid);
-        matches!(components.as_slice(), [only] if only.tuplet.is_none()
-            && !matches!(only.base_value, NoteValue::Whole | NoteValue::Half | NoteValue::Quarter))
+        matches!(components.as_slice(), [only]
+            if !matches!(only.base_value, NoteValue::Whole | NoteValue::Half | NoteValue::Quarter))
     };
     let in_instance: BTreeSet<EventId> = si
         .voices
