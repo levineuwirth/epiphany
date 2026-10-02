@@ -3628,6 +3628,22 @@ fn key_at(keys: &[PlacedKeySignature], at: &TimePoint) -> Option<KeySignature> {
         .map(|placed| placed.key)
 }
 
+/// A tie's control points from `x0` to `x3`, its ends level at `y`, arcing
+/// above or below and rising with its length to at most `TIE_MAX_HEIGHT`.
+pub fn tie_arc(x0: f32, x3: f32, y: f32, above: bool) -> [Point; 4] {
+    let sign = if above { 1.0 } else { -1.0 };
+    let span = x3 - x0;
+    let height = (span * 0.15).clamp(TIE_MIN_HEIGHT, TIE_MAX_HEIGHT);
+    // A cubic's control points sit 4/3 of the apex height off the chord.
+    let lift = sign * height * 4.0 / 3.0;
+    [
+        Point::new(x0, y),
+        Point::new(x0 + span * 0.25, y + lift),
+        Point::new(x3 - span * 0.25, y + lift),
+        Point::new(x3, y),
+    ]
+}
+
 /// A tie's arc from head `a` (in column `from`) to head `b` (in column `to`):
 /// from just right of `a` to just left of `b`, a little off the heads on the
 /// side it arcs to, rising with its length to at most `TIE_MAX_HEIGHT`.
@@ -3645,17 +3661,13 @@ fn tie_curve(
     let x0 = from.x + a.dx + right + TIE_GAP;
     let x3 = (to.x + b.dx + left - TIE_GAP).max(x0 + TIE_GAP);
     let sign = if above { 1.0 } else { -1.0 };
-    let y = a.y + sign * TIE_OFFSET;
-    let span = x3 - x0;
-    let height = (span * 0.15).clamp(TIE_MIN_HEIGHT, TIE_MAX_HEIGHT);
-    // A cubic's control points sit 4/3 of the apex height off the chord.
-    let lift = sign * height * 4.0 / 3.0;
+    let [p0, p1, p2, p3] = tie_arc(x0, x3, a.y + sign * TIE_OFFSET, above);
     Curve {
         provenance,
-        p0: Point::new(x0, y),
-        p1: Point::new(x0 + span * 0.25, y + lift),
-        p2: Point::new(x3 - span * 0.25, y + lift),
-        p3: Point::new(x3, y),
+        p0,
+        p1,
+        p2,
+        p3,
         thickness: StaffSpace(TIE_THICKNESS),
         layer: 0,
         style: ink(),

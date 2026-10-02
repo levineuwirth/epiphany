@@ -347,9 +347,17 @@ fn ties_cross_barlines_and_system_breaks() {
             })
             .collect();
         // The system's first and last heads: an arc continuing across the
-        // break starts before the first (after the system's lead) and one
+        // break starts before the first, after the system's lead, and one
         // breaking off ends after the last.
         let left = heads.iter().map(|h| h.0).fold(f32::INFINITY, f32::min);
+        let lead = system
+            .primitives
+            .glyphs
+            .iter()
+            .map(|&i| &layout.glyphs[i as usize])
+            .filter(|g| matches!(g.provenance.source, TypedObjectId::StaffInstance(_)))
+            .map(|g| g.position.x.0 + g.bounding_box.right.0)
+            .fold(f32::NEG_INFINITY, f32::max);
         let right = system.bounding_box.origin.x.0 + system.bounding_box.size.width.0;
         for &i in &system.primitives.curves {
             let arc = &layout.curves[i as usize];
@@ -360,8 +368,8 @@ fn ties_cross_barlines_and_system_breaks() {
             let after_head = heads.iter().any(|(_, r)| (x0 - r - 0.15).abs() < 0.02);
             let before_head = heads.iter().any(|(l, _)| (l - x3 - 0.15).abs() < 0.02);
             assert!(
-                after_head || (x0 < left && left - x0 < 1.5),
-                "an arc starts just after a head, or just before its system's first: {x0}"
+                after_head || (lead < x0 && x0 < left),
+                "an arc starts just after a head, or between its system's lead and first: {x0}"
             );
             assert!(
                 before_head || (right - x3).abs() < 1.0,
@@ -369,6 +377,194 @@ fn ties_cross_barlines_and_system_breaks() {
             );
             assert!(after_head || before_head, "an arc meets a head it joins");
         }
+    }
+}
+
+/// A tie continued across a system break starts its second half clear of the
+/// system's lead (the widest staff's clef and key signature) or of a time
+/// signature opening the system, and arcs as a tie of its own length to just
+/// before its note, at least a tie's length: the system's lead makes room for
+/// it, and the break search reserves that room, so no system runs past the
+/// right margin.
+#[test]
+fn a_tie_continued_into_a_system_starts_clear_of_its_lead() {
+    use epiphany_core::TypedObjectId;
+    use epiphany_engrave::PageGeometry;
+
+    // Two staves of whole notes tied over every barline: a treble staff's C4
+    // on its ledger line, and a bass staff in four flats with a chord whose
+    // ties arc above and below. With `meters`, every measure changes meter,
+    // so every system opens with a time signature.
+    let score = |meters: bool| {
+        let count = 60;
+        let part = |id: &str, clef: &str, fifths: i8, notes: &str| {
+            let mut measures = String::new();
+            for m in 1..=count {
+                let (beats, value, kind) = if meters && m % 2 == 0 {
+                    (2, 2, "half")
+                } else {
+                    (4, 4, "whole")
+                };
+                measures.push_str(&format!("<measure number=\"{m}\">"));
+                if m == 1 || meters {
+                    let opening = if m == 1 {
+                        format!(
+                            "<divisions>1</divisions><key><fifths>{fifths}</fifths></key>\
+                             <time><beats>{beats}</beats><beat-type>4</beat-type></time>{clef}"
+                        )
+                    } else {
+                        format!("<time><beats>{beats}</beats><beat-type>4</beat-type></time>")
+                    };
+                    measures.push_str(&format!("<attributes>{opening}</attributes>"));
+                }
+                let ties = match m {
+                    1 => "<tie type=\"start\"/>",
+                    m if m == count => "<tie type=\"stop\"/>",
+                    _ => "<tie type=\"stop\"/><tie type=\"start\"/>",
+                };
+                measures.push_str(
+                    &notes
+                        .replace("{ties}", ties)
+                        .replace("{value}", &value.to_string())
+                        .replace("{kind}", kind),
+                );
+                measures.push_str("</measure>");
+            }
+            format!("<part id=\"{id}\">{measures}</part>")
+        };
+        let note = |step: &str, alter: i8, octave: u8, chord: bool| {
+            format!(
+                "<note>{}<pitch><step>{step}</step><alter>{alter}</alter><octave>{octave}\
+                 </octave></pitch><duration>{{value}}</duration>{{ties}}<voice>1</voice>\
+                 <type>{{kind}}</type></note>",
+                if chord { "<chord/>" } else { "" }
+            )
+        };
+        format!(
+            "<score-partwise version=\"4.0\"><part-list>\
+             <score-part id=\"P1\"><part-name>A</part-name></score-part>\
+             <score-part id=\"P2\"><part-name>B</part-name></score-part></part-list>{}{}\
+             </score-partwise>",
+            part(
+                "P1",
+                "<clef><sign>G</sign><line>2</line></clef>",
+                0,
+                &note("C", 0, 4, false)
+            ),
+            part(
+                "P2",
+                "<clef><sign>F</sign><line>4</line></clef>",
+                -4,
+                &(note("F", 0, 3, false) + &note("A", -1, 3, true))
+            ),
+        )
+    };
+    let geometry = PageGeometry::default();
+    let margin_right = geometry.size.width.0 - geometry.margins.right.0;
+    for meters in [false, true] {
+        let name = format!(
+            "continued_ties_{}.musicxml",
+            if meters { "meters" } else { "one_meter" }
+        );
+        let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+        std::fs::write(&path, score(meters)).expect("written");
+        let loaded = load(&path).expect("loads");
+        // A tie joins events: the chord's two arcs are one tie.
+        assert_eq!(loaded.reduced.score.cross_cutting.ties.len(), 2 * 59);
+        let layout = engrave(&loaded.reduced.score).layout;
+        let systems: Vec<_> = layout.systems().collect();
+        assert!(systems.len() > 2, "the score wraps");
+        let mut continued = 0;
+        for (k, system) in systems.iter().enumerate() {
+            let glyphs: Vec<_> = system
+                .primitives
+                .glyphs
+                .iter()
+                .map(|&i| &layout.glyphs[i as usize])
+                .collect();
+            let right_of =
+                |g: &&epiphany_layout_ir::ResolvedGlyph| g.position.x.0 + g.bounding_box.right.0;
+            let heads: Vec<_> = glyphs
+                .iter()
+                .filter(|g| g.glyph.as_str().starts_with("notehead"))
+                .map(|g| g.position.x.0 + g.bounding_box.left.0)
+                .collect();
+            let first = heads.iter().copied().fold(f32::INFINITY, f32::min);
+            // What stands before the system's first note: its lead, and with
+            // `meters` its time signature.
+            let lead = glyphs
+                .iter()
+                .filter(|g| matches!(g.provenance.source, TypedObjectId::StaffInstance(_)))
+                .map(right_of)
+                .fold(f32::NEG_INFINITY, f32::max);
+            let opening = glyphs
+                .iter()
+                .filter(|g| g.glyph.as_str().starts_with("timeSig") && right_of(g) < first)
+                .map(right_of)
+                .fold(lead, f32::max);
+            if k > 0 {
+                assert_eq!(opening > lead, meters, "a time signature opens system {k}");
+                // The system's first measure holds its opening columns.
+                let measure = system.measures.first().expect("a measure").bounding_box;
+                let left = glyphs
+                    .iter()
+                    .filter(|g| right_of(g) <= opening && right_of(g) > lead)
+                    .map(|g| g.position.x.0 + g.bounding_box.left.0)
+                    .fold(first, f32::min);
+                assert!(
+                    measure.origin.x.0 < left + 0.01,
+                    "system {k}'s first measure starts at {left}, not {:?}",
+                    measure.origin.x
+                );
+            }
+            let ink_right = glyphs
+                .iter()
+                .map(right_of)
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert!(
+                ink_right <= margin_right + 0.01,
+                "system {k} ends at {ink_right}, past the margin at {margin_right}"
+            );
+            for &i in &system.primitives.curves {
+                let arc = &layout.curves[i as usize];
+                let (x0, x3) = (arc.p0.x.0, arc.p3.x.0);
+                if !matches!(arc.provenance.source, TypedObjectId::Tie(_)) || x0 > first {
+                    continue;
+                }
+                continued += 1;
+                assert!(k > 0, "the first system continues no tie");
+                assert!(
+                    (x0 - opening - 0.4).abs() < 1e-3,
+                    "system {k}: a continued tie starts 0.4 clear of {opening}, not at {x0}"
+                );
+                assert!(
+                    heads.iter().any(|l| (l - x3 - 0.15).abs() < 1e-3),
+                    "system {k}: a continued tie ends just before its note, not at {x3}"
+                );
+                // A justified system stretches the gap after a time signature.
+                let most = if meters { f32::INFINITY } else { 1.6 };
+                assert!(
+                    (1.5..most).contains(&(x3 - x0)),
+                    "system {k}: a continued tie runs a tie's length, not {}",
+                    x3 - x0
+                );
+                let above = arc.p1.y.0 > arc.p0.y.0;
+                let rule = epiphany_layout_ir::tie_arc(x0, x3, arc.p0.y.0, above);
+                for (point, expected) in [arc.p0, arc.p1, arc.p2, arc.p3].iter().zip(rule) {
+                    assert!(
+                        (point.x.0 - expected.x.0).abs() < 1e-3
+                            && (point.y.0 - expected.y.0).abs() < 1e-3,
+                        "system {k}: a continued tie arcs as a tie of its length: \
+                         {point:?} against {expected:?}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            continued,
+            3 * (systems.len() - 1),
+            "three ties cross each break"
+        );
     }
 }
 

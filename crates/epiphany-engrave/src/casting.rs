@@ -75,7 +75,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use epiphany_core::{StaffId, TypedObjectId};
 use epiphany_layout_ir::{
     continuation_instance_key, inter_staff_gap_id, is_barline_glyph, is_rigid_width_stroke,
-    metrics, synthesized_layout_id, BreakClass, BreakKind, ConstrainedLayoutIR, Curve,
+    metrics, synthesized_layout_id, tie_arc, BreakClass, BreakKind, ConstrainedLayoutIR, Curve,
     DecisionSource, EngravingDecision, EngravingDecisionKind, EngravingOverrideId, GlyphObject,
     GlyphObjectId, GlyphReference, GlyphStyle, GroupSign, GroupSpan, LayoutConstraint,
     LayoutObjectId, LeadGlyph, Margins, Point, PrimitiveIndices, Provenance, Rect, ResolvedGlyph,
@@ -102,6 +102,13 @@ pub const SYSTEM_LEAD_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x535
 
 /// The gap between a system-start lead's ink and the system's first column.
 const LEAD_GAP: f32 = 0.8;
+
+/// A tie continued into a later system starts this far clear of the system's
+/// lead (the widest of its staves' clefs and key signatures)…
+const TIE_LEAD_CLEARANCE: f32 = 0.4;
+/// …and runs at least this far to its note: a system that opens on the note
+/// widens its lead by what the gap after the lead leaves short.
+const TIE_CONTINUATION: f32 = 1.5;
 
 /// The registry id for a staff group's sign (its brace, its bracket's line and
 /// ends, its sub-bracket's line and hooks) and a system's opening line,
@@ -611,6 +618,47 @@ pub(crate) fn cast_off(
                 .fold(0.0, f32::max)
         })
         .collect();
+    // The room a tie continued into a later system needs, by the slot that
+    // system would open on. The tie's second half starts `TIE_LEAD_CLEARANCE`
+    // clear of the lead, or of the columns before its note there, which hold
+    // no note (a time signature), and runs at least `TIE_CONTINUATION` to its
+    // note; the gap the spacing leaves may fall short. The system's lead
+    // widens by the room, and its opening columns keep their place after the
+    // lead, so the room stands before the note.
+    let anchors = crate::span_anchors(input);
+    let slot_index: BTreeMap<SpringSlotId, (usize, usize)> = region_slots
+        .iter()
+        .enumerate()
+        .flat_map(|(r, infos)| infos.iter().enumerate().map(move |(i, s)| (s.id, (r, i))))
+        .collect();
+    let mut room: Vec<Vec<f32>> = region_slots
+        .iter()
+        .map(|infos| vec![0.0; infos.len()])
+        .collect();
+    for curve in spaced_curves {
+        let Some((start, end)) = anchors.get(&curve.id()) else {
+            continue;
+        };
+        let (Some(&(r, a)), Some(&(rb, b))) = (slot_index.get(start), slot_index.get(end)) else {
+            continue;
+        };
+        let slots = &region_slots[r];
+        if r != rb || a >= b {
+            continue;
+        }
+        let Some(i) = (a + 1..=b).rev().find(|&i| opens_measure(slots, i)) else {
+            continue;
+        };
+        if slots[i..b].iter().any(|info| info.note) {
+            continue;
+        }
+        let before = slots[i..b]
+            .iter()
+            .map(|info| info.hi)
+            .fold(slots[i].lo - LEAD_GAP, f32::max);
+        let short = TIE_CONTINUATION - (curve.p3.x.0 - before - TIE_LEAD_CLEARANCE);
+        room[r][i] = room[r][i].max(short);
+    }
     let mut systems: Vec<SystemPlan> = Vec::new();
     let mut skipped: Vec<EngravingDecision> = Vec::new();
     for (r, infos) in region_slots.iter().enumerate() {
@@ -623,6 +671,7 @@ pub(crate) fn cast_off(
             region_source,
             width_limit,
             lead_max[r],
+            &room[r],
             &mut systems,
             &mut skipped,
         );
@@ -660,13 +709,49 @@ pub(crate) fn cast_off(
                 .collect()
         })
         .collect();
+    // Each system's lead width: its widest staff's lead and gap, and the room
+    // a tie continued into the system needs there.
     let lead_w: Vec<f32> = system_leads
         .iter()
-        .map(|leads| {
+        .zip(&systems)
+        .map(|(leads, plan)| {
+            let extra = match plan.slots.first() {
+                Some(&i) if plan.local > 0 => room[plan.region][i],
+                _ => 0.0,
+            };
             leads
                 .iter()
                 .map(|(_, glyphs)| lead_width(glyphs))
                 .fold(0.0, f32::max)
+                + extra
+        })
+        .collect();
+    // The columns a later system opens with before its first note or rest (a
+    // time signature), each drawn back by the room its system's lead made, so
+    // it keeps its place after the lead.
+    let mut opening_shift: BTreeMap<SpringSlotId, f32> = BTreeMap::new();
+    for plan in &systems {
+        let slots = &region_slots[plan.region];
+        if let Some(&first) = plan.slots.first().filter(|_| plan.local > 0) {
+            let shift = room[plan.region][first];
+            for &i in plan.slots.iter().take_while(|&&i| !slots[i].note) {
+                if shift > 0.0 {
+                    opening_shift.insert(slots[i].id, shift);
+                }
+            }
+        }
+    }
+    let shift_of = |slot: SpringSlotId| opening_shift.get(&slot).copied().unwrap_or(0.0);
+    // The right edge of each later system's lead ink, the widest staff's, from
+    // the left margin.
+    let lead_ink: Vec<Option<f32>> = system_leads
+        .iter()
+        .map(|leads| {
+            leads
+                .iter()
+                .flat_map(|(_, glyphs)| glyphs.iter())
+                .filter_map(|g| Some(g.x + metrics(g.name.as_str())?.bounding_box().right.0))
+                .reduce(f32::max)
         })
         .collect();
 
@@ -721,7 +806,6 @@ pub(crate) fn cast_off(
             clips[s] = (lo, hi);
         }
     }
-    let anchors = crate::span_anchors(input);
     let anchored_system = |id: GlyphObjectId| -> Option<usize> {
         let (start, end) = anchors.get(&id)?;
         let s = *system_of_slot.get(start)?;
@@ -752,7 +836,7 @@ pub(crate) fn cast_off(
     // nearest-region / clip-overlap logic strokes use.
     // An anchored curve whose ends land in two systems (a tie across a system
     // break) becomes two half-arcs: one from its start to the first system's
-    // right edge, one from the second system's left edge to its end. Its
+    // right edge, one from clear of the second system's lead to its end. Its
     // ends at the notes keep riding their slots (`anchored_halves`).
     let mut anchored_halves: BTreeSet<usize> = BTreeSet::new();
     let curve_fates: Vec<CurveFate> = spaced_curves
@@ -765,8 +849,17 @@ pub(crate) fn cast_off(
             let halves = anchors.get(&curve.id()).and_then(|(start, end)| {
                 let (a, b) = (*system_of_slot.get(start)?, *system_of_slot.get(end)?);
                 let (edge_a, edge_b) = (clips[a].1, clips[b].0);
-                (a < b && edge_a.is_finite() && edge_b.is_finite())
-                    .then(|| (a, b, half_arcs(curve.control_points(), edge_a, edge_b)))
+                (a < b && edge_a.is_finite() && edge_b.is_finite()).then(|| {
+                    // The spaced frame has no lead: its ink ends as far before
+                    // the system's left edge as the lead's gap reaches.
+                    let lead = edge_b - lead_w[b] + lead_ink[b].unwrap_or(0.0);
+                    let plan = &systems[b];
+                    let before = ink_before(plan, &region_slots[plan.region], *end, |info| {
+                        info.hi - shift_of(info.id)
+                    });
+                    let from = lead.max(before.unwrap_or(f32::NEG_INFINITY)) + TIE_LEAD_CLEARANCE;
+                    (a, b, half_arcs(curve.control_points(), edge_a, from))
+                })
             });
             match halves {
                 Some((a, b, (first, second))) => {
@@ -895,8 +988,16 @@ pub(crate) fn cast_off(
             CurveFate::Split(segments) => segments.clone(),
         };
         for (s, cp) in segs {
+            // A tie's second half reaches back over its system's lead, which is
+            // placed before the system's content, not within it.
+            let left = if anchored_halves.contains(&ci) {
+                clips[s].0
+            } else {
+                f32::NEG_INFINITY
+            };
             for p in cp {
-                extents[s].add_x(p.x.0 - half, p.x.0 + half);
+                let x = p.x.0.max(left);
+                extents[s].add_x(x - half, x + half);
                 match staff {
                     Some(_) => into_staff(&mut staff_ext, s, staff, p.y.0 - half, p.y.0 + half),
                     None => extents[s].add_y(p.y.0 - half, p.y.0 + half),
@@ -1160,7 +1261,7 @@ pub(crate) fn cast_off(
                         .copied()
                         .unwrap_or(spaced.position.x.0);
                     (
-                        placements[s].slot_dx(sx),
+                        placements[s].slot_dx(sx) - shift_of(glyph.horizontal_slot),
                         placements[s].dy - staff_dy(s, glyph_staff_of[gi]),
                     )
                 }
@@ -1339,8 +1440,10 @@ pub(crate) fn cast_off(
             CurveFate::Split(segments) => {
                 for (k, (s, cp)) in segments.iter().enumerate() {
                     let p = placements[*s].sunk(staff_dy(*s, curve_staff));
-                    let [mut p0, p1, p2, mut p3] = shift(*cp, p);
-                    // A tie's half-arcs keep their note ends on their slots.
+                    let [mut p0, mut p1, mut p2, mut p3] = shift(*cp, p);
+                    // A tie's half-arcs keep their note ends on their slots,
+                    // and the second starts clear of its system's lead, and of
+                    // any column before its note's (a time signature).
                     if anchored_halves.contains(&ci) {
                         if let Some((start, end)) = anchors.get(&curve.id()) {
                             let slot_dx = |slot: &SpringSlotId| {
@@ -1351,7 +1454,17 @@ pub(crate) fn cast_off(
                                     p0 = Point::new(cp[0].x.0 + dx, p0.y.0);
                                 }
                             } else if let Some(dx) = slot_dx(end) {
-                                p3 = Point::new(cp[3].x.0 + dx, p3.y.0);
+                                let x3 = cp[3].x.0 + dx;
+                                let plan = &systems[*s];
+                                let lead = geometry.margins.left.0 + lead_ink[*s].unwrap_or(0.0);
+                                let before =
+                                    ink_before(plan, &region_slots[plan.region], *end, |info| {
+                                        info.hi + p.slot_dx(info.x) - shift_of(info.id)
+                                    });
+                                let x0 = lead.max(before.unwrap_or(f32::NEG_INFINITY))
+                                    + TIE_LEAD_CLEARANCE;
+                                let above = cp[1].y.0 > cp[0].y.0;
+                                [p0, p1, p2, p3] = tie_arc(x0.min(x3), x3, p3.y.0, above);
                             }
                         }
                     }
@@ -1619,6 +1732,9 @@ pub(crate) fn cast_off(
                 &staff_marks,
                 owned[s].clone(),
                 lead_w[s],
+                plan.slots
+                    .first()
+                    .map_or(0.0, |&i| shift_of(region_slots[plan.region][i].id)),
             )
         })
         .collect();
@@ -1709,6 +1825,7 @@ fn optimal_breaks(
     reqs: &BTreeMap<SpringSlotId, Vec<BreakReq>>,
     width_limit: f32,
     lead: f32,
+    room: &[f32],
 ) -> BTreeSet<SpringSlotId> {
     let mut automatic = BTreeSet::new();
     if !width_limit.is_finite() || width_limit <= 0.0 || slots.is_empty() {
@@ -1731,12 +1848,13 @@ fn optimal_breaks(
     let n = pts.len(); // n - 1 measures between the n boundaries
 
     // A system spanning boundaries [a, b): its ink extent over slots
-    // `[pts[a] .. pts[b])`, and a later system's lead before it.
+    // `[pts[a] .. pts[b])`, and a later system's lead before it, with the
+    // room a tie continued into its first slot needs there.
     let width = |a: usize, b: usize| -> f32 {
         let range = &slots[pts[a]..pts[b]];
         let lo = range.iter().map(|s| s.lo).fold(f32::INFINITY, f32::min);
         let hi = range.iter().map(|s| s.hi).fold(f32::NEG_INFINITY, f32::max);
-        (hi - lo).max(0.0) + if a > 0 { lead } else { 0.0 }
+        (hi - lo).max(0.0) + if a > 0 { lead + room[pts[a]] } else { 0.0 }
     };
 
     // dp[b] = the min `(cost, system_count)` to partition measures [0, b).
@@ -1793,7 +1911,8 @@ fn opens_measure(slots: &[SlotInfo], i: usize) -> bool {
 }
 
 /// Walks one region's slots, opening a system at each break requirement and at
-/// each optimal automatic break (`optimal_breaks`).
+/// each optimal automatic break (`optimal_breaks`). A later system reserves
+/// `lead`, and the `room` its first slot asks for a tie continued into it.
 #[allow(clippy::too_many_arguments)]
 fn walk_region(
     region: usize,
@@ -1803,12 +1922,13 @@ fn walk_region(
     region_source: TypedObjectId,
     width_limit: f32,
     lead: f32,
+    room: &[f32],
     systems: &mut Vec<SystemPlan>,
     skipped: &mut Vec<EngravingDecision>,
 ) {
     // The optimal automatic breaks (a global badness-minimizing partition,
     // bounded by the break requirements); the walk opens a system at each.
-    let automatic = optimal_breaks(slots, reqs, width_limit, lead);
+    let automatic = optimal_breaks(slots, reqs, width_limit, lead, room);
 
     // Overflow safety net. A lead-only (note-less) run can defer a *planned*
     // break past its barline — the DP treats a requirement, or its own chosen
@@ -1894,7 +2014,13 @@ fn walk_region(
             && has_note
             && (automatic.contains(&slot.id)
                 || (opens_measure(slots, i)
-                    && chunk_hi[i] - current_lo > width_limit - if local > 0 { lead } else { 0.0 }))
+                    && chunk_hi[i] - current_lo
+                        > width_limit
+                            - if local > 0 {
+                                lead + room[current[0]]
+                            } else {
+                                0.0
+                            }))
         {
             break_here = true;
         }
@@ -2171,25 +2297,41 @@ fn interval_distance(lo: f32, hi: f32, clip: (f32, f32)) -> f32 {
     }
 }
 
-/// A curve cut at a system break into two half-arcs of the same lift: the
-/// first from its start to `edge_a`, the first system's right content edge,
-/// the second from `edge_b`, the second system's left content edge, to its
-/// end. Each half is a complete small arc ending level with its note's end.
-fn half_arcs(cp: [Point; 4], edge_a: f32, edge_b: f32) -> ([Point; 4], [Point; 4]) {
+/// A tie cut at a system break into two half-arcs, each a complete small arc
+/// ending level with its note's end: the first, of the tie's own lift, from
+/// its start to `edge_a`, the first system's right content edge; the second,
+/// a tie of its own length, from `from_b`, clear of the second system's lead,
+/// to its end.
+fn half_arcs(cp: [Point; 4], edge_a: f32, from_b: f32) -> ([Point; 4], [Point; 4]) {
     let lift = cp[1].y.0 - cp[0].y.0;
-    let arc = |x0: f32, y0: f32, x3: f32, y3: f32| {
-        let span = (x3 - x0).max(0.0);
+    let (x0, y0) = (cp[0].x.0, cp[0].y.0);
+    let x3 = edge_a.max(x0);
+    let span = x3 - x0;
+    (
         [
             Point::new(x0, y0),
             Point::new(x0 + span * 0.25, y0 + lift),
-            Point::new(x3 - span * 0.25, y3 + lift),
-            Point::new(x3, y3),
-        ]
-    };
-    (
-        arc(cp[0].x.0, cp[0].y.0, edge_a.max(cp[0].x.0), cp[0].y.0),
-        arc(edge_b.min(cp[3].x.0), cp[3].y.0, cp[3].x.0, cp[3].y.0),
+            Point::new(x3 - span * 0.25, y0 + lift),
+            Point::new(x3, y0),
+        ],
+        tie_arc(from_b.min(cp[3].x.0), cp[3].x.0, cp[3].y.0, lift > 0.0),
     )
+}
+
+/// The right ink edge, each mapped by `x`, of the columns of `plan` that
+/// stand before `end`'s.
+fn ink_before(
+    plan: &SystemPlan,
+    slots: &[SlotInfo],
+    end: SpringSlotId,
+    x: impl Fn(&SlotInfo) -> f32,
+) -> Option<f32> {
+    plan.slots
+        .iter()
+        .map(|&i| &slots[i])
+        .take_while(|info| info.id != end)
+        .map(x)
+        .reduce(f32::max)
 }
 
 /// The vertical lines of a barline glyph, as `(x offset from its origin,
@@ -2403,7 +2545,9 @@ fn mark_staff(
 /// staff record per staff whose lines reach this system (top staff first), and
 /// a measure record per barline the system carries, each for the measure the
 /// barline ends. What the pipeline does not know is left empty, never
-/// fabricated: a staff with no engraved lines yields no staff record.
+/// fabricated: a staff with no engraved lines yields no staff record. The
+/// system's first measure reaches back by `opening`, the shift its opening
+/// columns took to keep their place after the lead.
 #[allow(clippy::too_many_arguments)]
 fn build_system(
     system: usize,
@@ -2415,6 +2559,7 @@ fn build_system(
     staff_marks: &BTreeMap<(usize, StaffId), StaffAgg>,
     primitives: PrimitiveIndices,
     lead: f32,
+    opening: f32,
 ) -> ResolvedSystem {
     let region = &input.regions[plan.region];
     let p = placements[system];
@@ -2474,6 +2619,7 @@ fn build_system(
         .map(|&i| slots[i].lo)
         .fold(f32::INFINITY, f32::min);
     let mut measures: Vec<ResolvedMeasure> = Vec::new();
+    let mut back = opening;
     for &i in &plan.slots {
         let Some(g) = slots[i].measure_barline else {
             continue;
@@ -2488,13 +2634,14 @@ fn build_system(
             provenance: glyph.provenance.clone(),
             measure,
             bounding_box: Rect {
-                origin: Point::new(p.x(start), ext.min_y + p.dy),
+                origin: Point::new(p.x(start) - back, ext.min_y + p.dy),
                 size: Size2D {
-                    width: StaffSpace(p.x(end) - p.x(start)),
+                    width: StaffSpace(p.x(end) - p.x(start) + back),
                     height: StaffSpace(ext.max_y - ext.min_y),
                 },
             },
         });
+        back = 0.0;
     }
 
     ResolvedSystem {
@@ -2562,7 +2709,7 @@ mod tests {
         // subsuming the old widow rebalance. One automatic break, before the
         // fourth measure.
         let slots: Vec<SlotInfo> = (0..6).map(measure_slot).collect();
-        let breaks = optimal_breaks(&slots, &BTreeMap::new(), 42.0, 0.0);
+        let breaks = optimal_breaks(&slots, &BTreeMap::new(), 42.0, 0.0, &[0.0; 6]);
         assert_eq!(
             breaks.len(),
             1,
@@ -2572,6 +2719,20 @@ mod tests {
             breaks.contains(&slots[3].id),
             "the break is before the 4th measure (a 3/3 split): {breaks:?}"
         );
+    }
+
+    #[test]
+    fn optimal_breaks_reserves_the_room_a_continued_tie_needs() {
+        // Six uniform measures balance to [3, 3]. A tie continued into the
+        // fourth needs 14 more of its system's lead there, which no system of
+        // three or more measures opening on it has: the search breaks before
+        // the third instead, [2, 4], as wide as [4, 2] and with the larger
+        // final system.
+        let slots: Vec<SlotInfo> = (0..6).map(measure_slot).collect();
+        let mut room = [0.0; 6];
+        room[3] = 14.0;
+        let breaks = optimal_breaks(&slots, &BTreeMap::new(), 42.0, 0.0, &room);
+        assert_eq!(breaks, BTreeSet::from([slots[2].id]), "{breaks:?}");
     }
 
     #[test]
@@ -2589,7 +2750,7 @@ mod tests {
                 hard: true,
             }],
         );
-        let breaks = optimal_breaks(&slots, &reqs, 42.0, 0.0);
+        let breaks = optimal_breaks(&slots, &reqs, 42.0, 0.0, &[0.0; 6]);
         assert!(
             !breaks.contains(&slots[1].id),
             "the forced break is walk_region's, never reported here: {breaks:?}"
@@ -2607,13 +2768,65 @@ mod tests {
     #[test]
     fn optimal_breaks_is_deterministic_and_empty_when_unbounded() {
         let slots: Vec<SlotInfo> = (0..6).map(measure_slot).collect();
-        let a = optimal_breaks(&slots, &BTreeMap::new(), 42.0, 0.0);
-        let b = optimal_breaks(&slots, &BTreeMap::new(), 42.0, 0.0);
+        let a = optimal_breaks(&slots, &BTreeMap::new(), 42.0, 0.0, &[0.0; 6]);
+        let b = optimal_breaks(&slots, &BTreeMap::new(), 42.0, 0.0, &[0.0; 6]);
         assert_eq!(a, b, "a pure function of the inputs");
         assert!(
-            optimal_breaks(&slots, &BTreeMap::new(), f32::INFINITY, 0.0).is_empty(),
+            optimal_breaks(&slots, &BTreeMap::new(), f32::INFINITY, 0.0, &[0.0; 6]).is_empty(),
             "an unbounded width wraps nothing"
         );
+    }
+
+    #[test]
+    fn the_overflow_net_reserves_the_room_a_continued_tie_needs() {
+        // A note-less M0 whose soft break the walk skips, so the search's plan
+        // ([M1..M4] in one system) never opens, and the overflow net breaks
+        // before M3. M3's system then reserves the 25 a tie continued into it
+        // needs, so M4 no longer fits beside it and opens a third system.
+        use epiphany_core::{RegionId, ReplicaId};
+        let mk = |i: usize, lo: f32, hi: f32, note: bool| SlotInfo {
+            id: SpringSlotId(i as u128 + 1),
+            x: lo,
+            lo,
+            hi,
+            members: Vec::new(),
+            barline: true,
+            final_barline: false,
+            note,
+            measure_barline: None,
+        };
+        let slots = vec![
+            mk(0, 0.0, 20.0, false),
+            mk(1, 21.0, 30.0, true),
+            mk(2, 31.0, 40.0, true),
+            mk(3, 41.0, 50.0, true),
+            mk(4, 51.0, 60.0, true),
+        ];
+        let mut reqs: BTreeMap<SpringSlotId, Vec<BreakReq>> = BTreeMap::new();
+        reqs.insert(
+            slots[1].id,
+            vec![BreakReq {
+                page: false,
+                hard: false,
+            }],
+        );
+        let mut room = [0.0; 5];
+        room[3] = 25.0;
+        let mut systems = Vec::new();
+        walk_region(
+            0,
+            &slots,
+            &reqs,
+            &BTreeMap::new(),
+            TypedObjectId::Region(RegionId::new(ReplicaId(1), 1)),
+            42.0,
+            0.0,
+            &room,
+            &mut systems,
+            &mut Vec::new(),
+        );
+        let opened: Vec<Vec<usize>> = systems.into_iter().map(|plan| plan.slots).collect();
+        assert_eq!(opened, [vec![0, 1, 2], vec![3], vec![4]]);
     }
 
     #[test]
@@ -2669,6 +2882,7 @@ mod tests {
             TypedObjectId::Region(RegionId::new(ReplicaId(1), 1)),
             width_limit,
             0.0,
+            &[0.0; 6],
             &mut systems,
             &mut skipped,
         );

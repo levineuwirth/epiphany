@@ -1206,3 +1206,25 @@ and the dots of a column stand right of all its heads. Within a column,
 every two heads whose boxes share height, but a shared unison, now carry a
 `NoCollision`, so the solve's validation sees a pair the placement failed to
 part. Locked by `seconds_stand_either_side_of_the_stem` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 20 → 21: a tie continued into a system (X2 fix round, 2026-10-02)
+
+A tie across a system break drew its second half from the second system's
+left content edge, in the spaced frame, which has no lead; casting then
+placed the lead before the content, so the half started at the system's
+first column, ran from there to just before its note, and kept the whole
+tie's lift. Where the note was the column's leftmost ink it drew as a mark
+about 0.15 staff spaces long, or none at all, before its head. The second
+half now starts 0.4 clear of the system's lead (the widest staff's ink, as
+every staff's half starts at one x), or of the columns before its note that
+hold no note (a time signature opening the system), and arcs by the tie
+rule for its own length (`tie_arc`, shared with the constrained stage's
+ties). It runs at least 1.5 staff spaces: where the gap after the lead
+leaves less, the system's lead widens by the difference, the break search
+reserves that room with the lead at each slot a system could open on, and
+the opening columns keep their place after the lead, so the room stands
+before the note. The first half is unchanged. Locked by
+`a_tie_continued_into_a_system_starts_clear_of_its_lead` (`epiphany-cli`),
+and the break search's reservation by
+`optimal_breaks_reserves_the_room_a_continued_tie_needs` and
+`the_overflow_net_reserves_the_room_a_continued_tie_needs`.

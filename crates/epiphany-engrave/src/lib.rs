@@ -246,8 +246,12 @@ pub struct Engraver {
 /// chord-mate across the stem, a voice a second from another to its right
 /// with their stems in one line and its stem, beams, ties and ledger lines
 /// with it, a column's dots right of all its heads, and every two heads of a
-/// column a second or unison apart obliged not to collide.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(20);
+/// column a second or unison apart obliged not to collide, and to `21` when a
+/// tie continued into a later system began starting clear of the system's
+/// lead, or of a time signature opening it, and arcing as a tie of its own
+/// length, at least a tie's length, to its note: the system's lead and its
+/// break search make the room, and its opening columns keep their place.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(21);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
