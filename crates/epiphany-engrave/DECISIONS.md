@@ -1338,3 +1338,24 @@ meter change is written against its own bar; a pickup's notes keep their place
 in the bar; and a span one value expresses within a bar is that value, up to
 two dots. Locked by `notes_take_their_values_from_every_meter`
 (`epiphany-cli`) and the pre-pass's unit tests.
+
+## ENGRAVER_VERSION 27 → 28: clef changes drawn (X3.6, 2026-10-03)
+
+A staff instance's clef sequence held every change the importer read, and the
+notes after a change were already placed by the clef in force, but only a
+system's lead showed a clef, so a change inside a system was invisible. Each
+change now stands in a `Clef` column of its own at its time, ordered before
+the barline and notes there: mid-measure it is drawn just before its note; at
+a measure's start, before that measure's barline, so when the measure opens a
+system the change ends the system before as a courtesy and the new system's
+lead shows the clef. The glyphs are SMuFL's change-size clefs (`gClefChange`,
+`fClefChange`, `cClefChange`); SMuFL has no change-size octave clef, so an
+octave clef draws its `clef8` or `clef15` numeral centred over or under the
+clef, reaching 0.1 staff space into its box as Bravura's own octave clefs do.
+A change restating the clef in force draws nothing. The column reserves the
+clef's ink and a 0.5 gap; in the source geometry the next column clears it.
+Key changes inside a system are still not drawn (the lead shows the key in
+force at each system's start). Locked by
+`clef_changes_are_drawn_where_they_take_effect` (`epiphany-cli`); the omission
+census now counts only real changes and finds a system's lead clef as its
+leftmost.

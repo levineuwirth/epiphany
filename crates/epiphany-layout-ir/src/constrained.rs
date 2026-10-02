@@ -715,6 +715,8 @@ const LEAD_GAP: f32 = 0.8; // the gap between a lead's ink and the first column 
 const KEY_ACC_X: f32 = 0.9; // x advance per key-signature accidental
 const TIME_SIG_X: f32 = 0.5; // a time signature sits this far right of its barline
 const SIGNATURE_GAP: f32 = 1.0; // the gap between a time signature's ink and the music after it
+const CLEF_CHANGE_GAP: f32 = 0.5; // the gap between a clef change's ink and the barline or note after it
+const CLEF_NUMERAL_OVERLAP: f32 = 0.1; // how far an octave numeral reaches into its clef's box, as Bravura's octave clefs draw it
 const REST_VOICE_SHIFT: f32 = 1.0; // how far a rest beside another voice moves off its place
 const TIME_DIGIT_X: f32 = 0.8; // x advance per time-signature digit
                                // Repeat/volta engraving defaults (Minimal tier; SMuFL engraving-default
@@ -814,6 +816,12 @@ const ACCIDENTAL_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4143_434
 /// the key, but its accidental glyphs (the sharp/flat zigzag) each need a
 /// distinct stable id, so they are synthesized from the staff instance.
 const KEY_SIG_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4B45_5953_4947_4E5F); // "KEYSIGN_"
+
+/// The registry id for a **clef change**: the staff instance carries its clef
+/// sequence, and each change it draws within a system (the clef, and an
+/// octave clef's numeral) is synthesized from it, keyed by the change's place
+/// among the drawn changes and the glyph's within the change.
+const CLEF_CHANGE_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x434C_4546_4348_4E47); // "CLEFCHNG"
 
 /// The registry id for **time-signature synthesis**: the measure introduces the
 /// meter, but its numerator/denominator digit glyphs each need a distinct stable
@@ -997,6 +1005,8 @@ pub fn try_to_constrained(
         // previous one by this much extra, so a note's accidental does not overlap
         // the previous note (the engraver's monotonic remap cannot un-overlap it).
         let mut column_overhang: BTreeMap<ColumnKey, f32> = BTreeMap::new();
+        // How far each clef-change column's ink reaches right of it.
+        let mut clef_reach: BTreeMap<ColumnKey, f32> = BTreeMap::new();
         // The right edge of the widest lead (clef and key signature): the first
         // note column clears it.
         let mut lead_right = 0.0f32;
@@ -1259,6 +1269,15 @@ pub fn try_to_constrained(
                         keys.insert(ColumnKey::Lead);
                         lead_right = lead_right.max(lead_extent(&glyphs));
                     }
+                    // Each clef change in a column of its own at its time,
+                    // before the barline or notes there.
+                    for (time, clef) in drawn_clef_changes(content) {
+                        let key = ColumnKey::Timed(time, ColumnRole::Clef);
+                        let reach = lead_extent(&clef_change_glyphs(&clef, yo));
+                        let entry = clef_reach.entry(key.clone()).or_insert(0.0);
+                        *entry = entry.max(reach);
+                        keys.insert(key);
+                    }
                     // Its later systems' leads, from each clef or key change on.
                     if let Some(staff) = staff {
                         let mut times: Vec<TimePoint> = std::iter::once(origin())
@@ -1454,6 +1473,17 @@ pub fn try_to_constrained(
                     .entry(ColumnKey::Timed(time, ColumnRole::Signature))
                     .or_insert(0.0);
                 *entry = entry.max(reach);
+            }
+        }
+
+        // The column after a clef change clears the change's ink and gap.
+        for (key, reach) in &clef_reach {
+            let extra = reach + CLEF_CHANGE_GAP - COLUMN_X_STEP;
+            let next = keys
+                .range((std::ops::Bound::Excluded(key), std::ops::Bound::Unbounded))
+                .next();
+            if let (Some(next), true) = (next, extra > 0.0) {
+                *column_overhang.entry(next.clone()).or_insert(0.0) += extra;
             }
         }
 
@@ -1860,6 +1890,28 @@ pub fn try_to_constrained(
                             staff,
                             info.slot,
                         );
+                    }
+                    // Each clef change, in its column.
+                    for (c, (time, clef)) in drawn_clef_changes(content).into_iter().enumerate() {
+                        let info = column(&ColumnKey::Timed(time, ColumnRole::Clef));
+                        for (g, (name, x, y)) in
+                            clef_change_glyphs(&clef, yo).into_iter().enumerate()
+                        {
+                            let glyph_provenance = Provenance::synthesized(
+                                provenance.source,
+                                SynthesisKind::Registered(CLEF_CHANGE_SYNTHESIS),
+                                SynthesisInstanceKey((c as u128) << 8 | g as u128),
+                                provenance.dependencies.clone(),
+                            );
+                            emit.glyph(
+                                &glyph_provenance,
+                                name,
+                                Point::new(info.x + x, y),
+                                band_of(staff),
+                                staff,
+                                info.slot,
+                            );
+                        }
                     }
                 }
                 TypedObjectId::Event(eid) => match content {
@@ -2586,6 +2638,7 @@ pub fn try_to_constrained(
             let preferred = match key {
                 ColumnKey::Lead => reserve(LEAD_GAP),
                 ColumnKey::Timed(_, ColumnRole::Signature) => reserve(SIGNATURE_GAP),
+                ColumnKey::Timed(_, ColumnRole::Clef) => reserve(CLEF_CHANGE_GAP),
                 _ => 0.0,
             }
             .max(COLUMN_PREFERRED_WIDTH);
@@ -3041,11 +3094,14 @@ enum ColumnKey {
     End,
 }
 
-/// Within one musical time: the barline ending the measure before it, then
-/// the signatures the measure starting there introduces, then its notes. A
-/// system break falls between the barline and what follows it.
+/// Within one musical time: a clef change taking effect there, then the
+/// barline ending the measure before it, then the signatures the measure
+/// starting there introduces, then its notes. A system break falls between
+/// the barline and what follows it, so a clef change at a measure's start
+/// ends the system before it, as a courtesy, when that measure opens the next.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum ColumnRole {
+    Clef,
     Barline,
     Signature,
     Note,
@@ -3742,6 +3798,64 @@ fn lead_extent(glyphs: &[(&'static str, f32, f32)]) -> f32 {
         .iter()
         .map(|(name, x, _)| x + metrics(name).map_or(0.0, |m| m.bounding_box().right.0))
         .fold(0.0, f32::max)
+}
+
+/// The clef changes a staff draws within its systems, in time order: each
+/// change after the staff's start whose clef differs from the one in force
+/// before it. A change restating the clef in force draws nothing; at a
+/// system's start the lead shows the clef in force either way.
+fn drawn_clef_changes(content: &StaffContent) -> Vec<(TimePoint, Clef)> {
+    let mut times: Vec<TimePoint> = content
+        .clefs
+        .iter()
+        .map(|c| c.time.clone())
+        .filter(|t| time_total(t, &origin()) == Ordering::Greater)
+        .collect();
+    times.sort_by(time_total);
+    times.dedup();
+    let mut current = active_clef_or(&content.clefs, &origin(), content.default_clef);
+    let mut out = Vec::new();
+    for time in times {
+        let clef = active_clef_or(&content.clefs, &time, content.default_clef);
+        if clef != current {
+            out.push((time, clef));
+        }
+        current = clef;
+    }
+    out
+}
+
+/// A clef change's glyphs, smaller than a staff's leading clef: the change
+/// clef on its line at x 0 and, for an octave clef, its numeral centred over
+/// or under it, since SMuFL has no change-size octave clef. A shape with no
+/// change glyph draws its full clef; none without a bundled glyph.
+fn clef_change_glyphs(clef: &Clef, yo: f32) -> Vec<(&'static str, f32, f32)> {
+    let y = yo + (clef.line as f32 - 1.0);
+    let name = match clef.shape {
+        epiphany_core::ClefShape::G => "gClefChange",
+        epiphany_core::ClefShape::F => "fClefChange",
+        epiphany_core::ClefShape::C => "cClefChange",
+        epiphany_core::ClefShape::Percussion => {
+            return clef_glyph_for(clef).map_or(Vec::new(), |name| vec![(name, 0.0, y)]);
+        }
+    };
+    let mut glyphs = vec![(name, 0.0, y)];
+    let numeral = match clef.octave_shift.unsigned_abs() {
+        1 => "clef8",
+        2 => "clef15",
+        _ => return glyphs,
+    };
+    if let (Some(c), Some(n)) = (metrics(name), metrics(numeral)) {
+        let (c, n) = (c.bounding_box(), n.bounding_box());
+        let x = (c.left.0 + c.right.0 - n.left.0 - n.right.0) / 2.0;
+        let ny = if clef.octave_shift > 0 {
+            y + c.top.0 - CLEF_NUMERAL_OVERLAP - n.bottom.0
+        } else {
+            y + c.bottom.0 + CLEF_NUMERAL_OVERLAP - n.top.0
+        };
+        glyphs.push((numeral, x, ny));
+    }
+    glyphs
 }
 
 /// The measure state of a letter and octave a tie has carried an

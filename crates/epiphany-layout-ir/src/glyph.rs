@@ -291,6 +291,13 @@ pub const BRAVURA_METRICS: &[GlyphMetric] = &[
     GlyphMetric::new("gClef15ma", 2748, [0, -2696, 2749, 5403]),
     GlyphMetric::new("fClef15mb", 2802, [-21, -3040, 2802, 1074]),
     GlyphMetric::new("fClef15ma", 2802, [-21, -2601, 2802, 2032]),
+    // A clef change's smaller clefs, and the octave numerals drawn with one
+    // (no change-size octave clef exists).
+    GlyphMetric::new("gClefChange", 1802, [0, -1864, 1803, 2896]),
+    GlyphMetric::new("fClefChange", 1892, [-62, -1696, 1897, 697]),
+    GlyphMetric::new("cClefChange", 2073, [0, -1360, 2073, 1360]),
+    GlyphMetric::new("clef8", 840, [0, 0, 840, 1012]),
+    GlyphMetric::new("clef15", 1470, [0, -13, 1471, 1045]),
 ];
 
 /// Looks up one glyph's metrics by SMuFL name, if bundled.

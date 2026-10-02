@@ -276,8 +276,12 @@ pub struct Engraver {
 /// decomposition pre-pass reached version 2: notes are written by each
 /// measure's own meter, a pickup keeps its place in its bar, and a span one
 /// value expresses within a bar is drawn as that value, dotted or
-/// double-dotted, rather than as tied parts.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(27);
+/// double-dotted, rather than as tied parts, and to `28` when clef changes
+/// began drawing where they take effect, in change-size clefs: mid-measure
+/// before their note, at a measure's start before its barline (a courtesy at
+/// a system's end when the measure opens the next), an octave clef with its
+/// numeral, a restated clef not at all.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(28);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

@@ -242,7 +242,7 @@ mod tests {
     fn every_bundled_glyph_round_trips_byte_for_byte() {
         assert_eq!(
             BRAVURA_OUTLINES.len(),
-            72,
+            77,
             "sanity: the bundled glyph count moved"
         );
         for o in BRAVURA_OUTLINES {

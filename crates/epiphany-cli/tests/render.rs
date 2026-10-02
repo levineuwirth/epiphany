@@ -2440,3 +2440,186 @@ fn notes_take_their_values_from_every_meter() {
     // The 3/4 signature drawn where it begins.
     assert!(layout.glyphs.iter().any(|g| g.glyph.as_str() == "timeSig3"));
 }
+
+/// A clef change is drawn smaller than a leading clef, where it takes effect:
+/// mid-measure just before its note, which then reads in the new clef; at a
+/// measure's start before that barline, so a change opening a system ends the
+/// system before as a courtesy while the new system's lead shows it. A clef
+/// restated draws nothing, and an octave clef's numeral stands over its clef.
+#[test]
+fn clef_changes_are_drawn_where_they_take_effect() {
+    use epiphany_cli::omissions::omissions;
+    use epiphany_core::TypedObjectId;
+
+    let clef = |sign: &str, line: u8, change: i8| {
+        format!(
+            "<attributes><clef><sign>{sign}</sign><line>{line}</line>\
+             <clef-octave-change>{change}</clef-octave-change></clef></attributes>"
+        )
+    };
+    let note = |step: &str, octave: u8| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>1</duration><voice>1</voice><type>quarter</type></note>"
+        )
+    };
+    let b4 = note("B", 4);
+    let d3 = note("D", 3);
+    let mut measures = vec![
+        format!(
+            "<attributes><divisions>1</divisions><time><beats>4</beats>\
+             <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+             </attributes>{b4}{b4}{b4}{b4}"
+        ),
+        // Mid-measure: D3 below the treble staff, then on the bass staff's
+        // middle line.
+        format!("{b4}{d3}{}{d3}{d3}", clef("F", 4, 0)),
+        format!("{}{b4}{b4}{b4}{b4}", clef("G", 2, 0)),
+        // Restated: nothing to draw.
+        format!("{}{b4}{b4}{b4}{b4}", clef("G", 2, 0)),
+        format!("{b4}{}{b4}{b4}{b4}", clef("G", 2, 1)),
+    ];
+    // A change at every measure's start from here, so some open systems.
+    for m in 0..55 {
+        let (sign, line) = if m % 2 == 0 { ("F", 4) } else { ("G", 2) };
+        measures.push(format!("{}{d3}{d3}{d3}{d3}", clef(sign, line, 0)));
+    }
+    let body: String = measures
+        .iter()
+        .enumerate()
+        .map(|(m, content)| format!("<measure number=\"{}\">{content}</measure>", m + 1))
+        .collect();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">{body}</part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("clef_changes.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let engraved = engrave(&loaded.reduced.score);
+    let layout = &engraved.layout;
+    let found = omissions(&loaded.reduced.score, layout, &engraved.diagnostics);
+    assert_eq!(found.kinds.get("clef change"), None, "{found:?}");
+    assert_eq!(
+        found.kinds.get("clef of another shape at a system start"),
+        None
+    );
+
+    let changes: Vec<_> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().ends_with("ClefChange"))
+        .collect();
+    assert_eq!(changes.len(), 3 + 55, "every change but the restatement");
+
+    let systems: Vec<_> = layout.systems().collect();
+    assert!(systems.len() > 2, "the score wraps");
+    let in_system = |s: usize, keep: &dyn Fn(&epiphany_layout_ir::ResolvedGlyph) -> bool| {
+        let mut glyphs: Vec<&epiphany_layout_ir::ResolvedGlyph> = systems[s]
+            .primitives
+            .glyphs
+            .iter()
+            .map(|&i| &layout.glyphs[i as usize])
+            .filter(|g| keep(g))
+            .collect();
+        glyphs.sort_by(|a, b| a.position.x.0.total_cmp(&b.position.x.0));
+        glyphs
+    };
+    let head = |g: &epiphany_layout_ir::ResolvedGlyph| g.glyph.as_str().starts_with("notehead");
+    let barline = |g: &epiphany_layout_ir::ResolvedGlyph| g.glyph.as_str() == "barlineSingle";
+    let left = |g: &epiphany_layout_ir::ResolvedGlyph| g.position.x.0 + g.bounding_box.left.0;
+    let right = |g: &epiphany_layout_ir::ResolvedGlyph| g.position.x.0 + g.bounding_box.right.0;
+
+    // The first system: measures 1 to 5, in order.
+    let heads = in_system(0, &head);
+    let bars = in_system(0, &barline);
+    let first_changes = in_system(0, &|g| g.glyph.as_str().ends_with("ClefChange"));
+    // Mid-measure, between the second and third notes of measure 2, which
+    // then reads in the bass clef: six staff spaces higher.
+    let bass = first_changes[0];
+    assert_eq!(bass.glyph.as_str(), "fClefChange");
+    let (before, after) = (heads[5], heads[6]);
+    assert!(right(before) <= left(bass) && right(bass) + 0.5 <= left(after) + 1e-3);
+    assert!(
+        (after.position.y.0 - before.position.y.0 - 6.0).abs() < 1e-3,
+        "{} then {}",
+        before.position.y.0,
+        after.position.y.0
+    );
+    // At measure 3's start, before the barline closing measure 2 and after
+    // its last note.
+    let treble = first_changes[1];
+    assert_eq!(treble.glyph.as_str(), "gClefChange");
+    assert!(right(heads[7]) <= left(treble));
+    assert!(right(treble) + 0.5 <= left(bars[1]) + 1e-3 && left(bars[1]) <= left(heads[8]));
+    // The octave clef in measure 5: its numeral centred over it.
+    let octave = first_changes[2];
+    let numeral = in_system(0, &|g| g.glyph.as_str() == "clef8")
+        .into_iter()
+        .next()
+        .expect("an octave clef draws its numeral");
+    let centre = |g: &epiphany_layout_ir::ResolvedGlyph| (left(g) + right(g)) / 2.0;
+    assert!((centre(numeral) - centre(octave)).abs() < 1e-3);
+    assert!(
+        numeral.position.y.0 + numeral.bounding_box.bottom.0
+            >= octave.position.y.0 + octave.bounding_box.top.0 - 0.1 - 1e-3
+    );
+
+    // Before the engraver re-spaces, the constrained layout's own geometry
+    // keeps every change clear of what follows it.
+    let constrained =
+        epiphany_layout_ir::to_constrained(&epiphany_layout_ir::to_logical(&loaded.reduced.score));
+    let source_box = |g: &epiphany_layout_ir::GlyphObject| {
+        [
+            g.baseline.x.0 + g.bounding_box.left.0,
+            g.baseline.y.0 + g.bounding_box.bottom.0,
+            g.baseline.x.0 + g.bounding_box.right.0,
+            g.baseline.y.0 + g.bounding_box.top.0,
+        ]
+    };
+    let source_changes: Vec<_> = constrained
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().ends_with("ClefChange"))
+        .collect();
+    assert_eq!(source_changes.len(), changes.len());
+    for change in &source_changes {
+        for other in &constrained.glyphs {
+            if std::ptr::eq(*change, other) || other.glyph.as_str().starts_with("clef") {
+                continue;
+            }
+            assert!(
+                !boxes_overlap(source_box(change), source_box(other)),
+                "{} overlaps {} before spacing",
+                change.glyph.as_str(),
+                other.glyph.as_str()
+            );
+        }
+    }
+
+    // Every later system opens on a measure whose change ends the system
+    // before, after its last note and before its closing barline, and its
+    // lead shows the clef that change makes.
+    for s in 1..systems.len() {
+        let before = in_system(s - 1, &|g| {
+            g.glyph.as_str().contains("Clef") || head(g) || barline(g)
+        });
+        let n = before.len();
+        let (courtesy, closing) = (before[n - 2], before[n - 1]);
+        assert!(
+            courtesy.glyph.as_str().ends_with("ClefChange") && barline(closing),
+            "system {s}: {} then {}",
+            courtesy.glyph.as_str(),
+            closing.glyph.as_str()
+        );
+        let lead = in_system(s, &|g| {
+            matches!(g.provenance.source, TypedObjectId::StaffInstance(_))
+                && g.glyph.as_str().contains("Clef")
+        })[0];
+        assert_eq!(
+            lead.glyph.as_str().replace("Change", ""),
+            courtesy.glyph.as_str().replace("Change", ""),
+            "system {s}"
+        );
+    }
+}

@@ -360,11 +360,14 @@ pub fn omissions(
                 .filter(|g| g.provenance.source == source)
                 .map(|g| g.glyph.as_str())
                 .collect();
-            let clefs: Vec<&str> = mine
+            // The system's clefs from the left, its lead's first.
+            let mut placed: Vec<(f32, &str)> = owned
                 .iter()
-                .copied()
-                .filter(|g| g.contains("Clef"))
+                .filter(|g| g.provenance.source == source && g.glyph.as_str().contains("Clef"))
+                .map(|g| (g.position.x.0, g.glyph.as_str()))
                 .collect();
+            placed.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let clefs: Vec<&str> = placed.into_iter().map(|(_, name)| name).collect();
             *clefs_drawn.entry(instance.id).or_default() += clefs.len();
             *systems_with.entry(instance.id).or_default() += 1;
             let in_effect = |anchors: Vec<(RationalTime, usize)>| {
@@ -395,7 +398,9 @@ pub fn omissions(
                         };
                         if !drawn.contains(shape) {
                             out.add("clef of another shape at a system start");
-                        } else if clef.octave_shift != 0 && !drawn.contains("8v") {
+                        } else if clef.octave_shift != 0
+                            && epiphany_layout_ir::clef_glyph_for(&clef) != Some(*drawn)
+                        {
                             out.add("clef octave mark");
                         }
                     }
@@ -416,10 +421,16 @@ pub fn omissions(
         }
     }
     for instance in &instances {
-        let changes = instance
+        // A change is a clef other than the one in force before it.
+        let mut sequence: Vec<(RationalTime, epiphany_core::Clef)> = instance
             .clef_sequence
             .iter()
-            .filter(|c| offset(&c.anchor).is_some_and(|o| o != RationalTime::zero()))
+            .filter_map(|c| Some((offset(&c.anchor)?, c.clef)))
+            .collect();
+        sequence.sort_by(|a, b| a.0.cmp(&b.0));
+        let changes = sequence
+            .windows(2)
+            .filter(|w| w[1].0 != RationalTime::zero() && w[1].1 != w[0].1)
             .count();
         let drawn = clefs_drawn.get(&instance.id).copied().unwrap_or(0);
         let at_starts = systems_with.get(&instance.id).copied().unwrap_or(0);
