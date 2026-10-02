@@ -255,8 +255,15 @@ pub struct Engraver {
 /// columns do not hold, half a staff line's thickness at each end and the
 /// first system's staff lines left of its clef, so no system runs past the
 /// right margin, and each system's staff lines began ending with the barline
-/// that closes it, a final barline's thick line included.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(22);
+/// that closes it, a final barline's thick line included, and to `23` when a
+/// tie's ends began standing clear of the ink beside its heads at the tie's
+/// height (a head set across the stem or another voice's beside it, a stem,
+/// a ledger line, a dot, an accidental) and the spacing began giving every
+/// tie a staff space to run, when a split note's tie began taking its side
+/// as a tie between notes does (its voice, then its place in the chord, then
+/// its stem), and when a measure record's edges began moving with the slots
+/// that hold them.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(23);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

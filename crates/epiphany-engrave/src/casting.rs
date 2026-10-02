@@ -2704,11 +2704,14 @@ fn build_system(
     // Measures: each barline column closes the measure its barline ends, which
     // spans from the previous barline in this system (or the system's start)
     // to it.
+    // A slot's ink edges move with its glyphs, by the slot's own delta.
     let slots = &region_slots[plan.region];
+    let lo = |i: usize| slots[i].lo + p.slot_dx(slots[i].x);
+    let hi = |i: usize| slots[i].hi + p.slot_dx(slots[i].x);
     let mut span_start = plan
         .slots
         .iter()
-        .map(|&i| slots[i].lo)
+        .map(|&i| lo(i))
         .fold(f32::INFINITY, f32::min);
     let mut measures: Vec<ResolvedMeasure> = Vec::new();
     let mut back = opening;
@@ -2720,15 +2723,15 @@ fn build_system(
         let TypedObjectId::Measure(measure) = glyph.provenance.source else {
             continue;
         };
-        let (start, end) = (span_start, slots[i].hi);
+        let (start, end) = (span_start, hi(i));
         span_start = end;
         measures.push(ResolvedMeasure {
             provenance: glyph.provenance.clone(),
             measure,
             bounding_box: Rect {
-                origin: Point::new(p.x(start) - back, ext.min_y + p.dy),
+                origin: Point::new(start - back, ext.min_y + p.dy),
                 size: Size2D {
-                    width: StaffSpace(p.x(end) - p.x(start) + back),
+                    width: StaffSpace(end - start + back),
                     height: StaffSpace(ext.max_y - ext.min_y),
                 },
             },

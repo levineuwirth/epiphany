@@ -537,8 +537,12 @@ fn a_tie_continued_into_a_system_starts_clear_of_its_lead() {
                     (x0 - opening - 0.4).abs() < 1e-3,
                     "system {k}: a continued tie starts 0.4 clear of {opening}, not at {x0}"
                 );
+                // 0.15 clear of its note, or of the down-stem at its left
+                // that the tie's height meets.
                 assert!(
-                    heads.iter().any(|l| (l - x3 - 0.15).abs() < 1e-3),
+                    heads
+                        .iter()
+                        .any(|l| [0.15, 0.21].iter().any(|d| (l - x3 - d).abs() < 1e-3)),
                     "system {k}: a continued tie ends just before its note, not at {x3}"
                 );
                 // A justified system stretches the gap after a time signature.
@@ -1837,6 +1841,178 @@ fn staff_lines_end_with_their_barlines(
                 "system {s}: a staff line ends at {end}, its barline at {}",
                 barline[2]
             );
+        }
+    }
+}
+
+/// A note the pre-pass splits into tied parts ties them on its voice's side,
+/// as a tie between two notes does: the upper voice's above and the lower's
+/// below, though each stem would turn its tie toward the other voice.
+#[test]
+fn a_split_notes_tie_takes_its_voices_side() {
+    use epiphany_core::TypedObjectId;
+
+    let backup = "<backup><duration>8</duration></backup>";
+    let voice = |step: &str, octave: u8, voice: u8| {
+        format!(
+            "{}{}{}",
+            pitched(step, 0, octave, 2, voice, false),
+            pitched(step, 0, octave, 4, voice, false),
+            pitched(step, 0, octave, 2, voice, false)
+        )
+    };
+    let loaded = treble_part(
+        "split_ties.musicxml",
+        &[format!("{}{backup}{}", voice("D", 5, 1), voice("F", 4, 2))],
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    // The halves on the second beat are each drawn as two tied quarters.
+    let mut ties: Vec<_> = layout
+        .curves
+        .iter()
+        .filter(|c| matches!(c.provenance.source, TypedObjectId::Pitch(_)))
+        .collect();
+    assert_eq!(ties.len(), 2, "each voice's half splits once");
+    ties.sort_by(|a, b| b.p0.y.0.total_cmp(&a.p0.y.0));
+    assert!(
+        ties[0].p1.y.0 > ties[0].p0.y.0,
+        "the upper voice's tie arcs above"
+    );
+    assert!(
+        ties[1].p1.y.0 < ties[1].p0.y.0,
+        "the lower voice's tie arcs below"
+    );
+}
+
+/// A tie leaving or meeting a head with other ink beside it at the tie's
+/// height (a head set across the stem, another voice's head, a stem, a
+/// ledger line, a dot) stands clear of it: no point of a tie's stroke lies
+/// within any head, stem, ledger line, dot or accidental.
+#[test]
+fn a_tie_stands_clear_of_the_ink_beside_its_heads() {
+    use epiphany_core::TypedObjectId;
+
+    let (start, stop) = ("<tie type=\"start\"/>", "<tie type=\"stop\"/>");
+    let note =
+        |step: &str, alter: i8, octave: u8, duration: u8, voice: u8, chord: bool, tie: &str| {
+            format!(
+                "<note>{}<pitch><step>{step}</step><alter>{alter}</alter><octave>{octave}</octave>\
+             </pitch><duration>{duration}</duration>{tie}<voice>{voice}</voice></note>",
+                if chord { "<chord/>" } else { "" }
+            )
+        };
+    let rest = |duration: u8, voice: u8| {
+        format!("<note><rest/><duration>{duration}</duration><voice>{voice}</voice></note>")
+    };
+    let measures = [
+        // A second tied from whole notes to halves, the upper head set
+        // right of the halves' stem over the lower's ledger lines.
+        [
+            note("A", 0, 3, 8, 1, false, start),
+            note("B", -1, 3, 8, 1, true, start),
+        ]
+        .concat(),
+        [
+            note("A", 0, 3, 4, 1, false, stop),
+            note("B", -1, 3, 4, 1, true, stop),
+            note("C", 0, 5, 4, 1, false, ""),
+        ]
+        .concat(),
+        // An upper voice's half tied over beside the lower voice's quarter
+        // on the same G, set to its right.
+        [
+            note("G", 0, 4, 4, 1, false, start),
+            note("G", 0, 4, 4, 1, false, stop),
+            "<backup><duration>8</duration></backup>".to_owned(),
+            note("G", 0, 4, 2, 2, false, ""),
+            rest(2, 2),
+            rest(4, 2),
+        ]
+        .concat(),
+        // A dotted B on the middle line, its dot in the space above, tied
+        // over above.
+        [
+            note("B", 0, 4, 6, 1, false, start),
+            note("B", 0, 4, 2, 1, false, stop),
+        ]
+        .concat(),
+        // A second inside the staff tied to itself, the upper head set right
+        // of the stem, which the tie meeting it passes.
+        [
+            note("F", 0, 4, 4, 1, false, start),
+            note("G", 0, 4, 4, 1, true, start),
+            note("F", 0, 4, 4, 1, false, stop),
+            note("G", 0, 4, 4, 1, true, stop),
+        ]
+        .concat(),
+        // An E tied into a chord whose F sharp's accidental stands at the
+        // tie's height before the column.
+        [
+            note("E", 0, 5, 4, 1, false, start),
+            note("E", 0, 5, 4, 1, false, stop),
+            note("F", 1, 5, 4, 1, true, ""),
+        ]
+        .concat(),
+    ];
+    let loaded = treble_part("tie_clearance.musicxml", &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let mut ink: Vec<(String, [f32; 4])> = layout
+        .glyphs
+        .iter()
+        .filter(|g| {
+            let name = g.glyph.as_str();
+            name.starts_with("notehead")
+                || name.starts_with("accidental")
+                || name == "augmentationDot"
+        })
+        .map(|g| (g.glyph.as_str().to_owned(), glyph_box(g)))
+        .collect();
+    for stroke in &layout.strokes {
+        let stem = stroke.from.x == stroke.to.x && stroke.from.y != stroke.to.y;
+        if stem && !matches!(stroke.provenance.source, TypedObjectId::Measure(_)) {
+            ink.push(("stem".to_owned(), stroke_box(stroke)));
+        } else if epiphany_layout_ir::is_rigid_width_stroke(stroke) {
+            ink.push(("ledger line".to_owned(), stroke_box(stroke)));
+        }
+    }
+    let ties: Vec<_> = layout
+        .curves
+        .iter()
+        .filter(|c| {
+            matches!(
+                c.provenance.source,
+                TypedObjectId::Tie(_) | TypedObjectId::Pitch(_)
+            )
+        })
+        .collect();
+    assert_eq!(
+        ties.len(),
+        7,
+        "the seconds' four ties, the half's, the dotted B's, the E's"
+    );
+    for tie in ties {
+        let [p0, p1, p2, p3] = [tie.p0, tie.p1, tie.p2, tie.p3].map(|p| (p.x.0, p.y.0));
+        // The spacing gives every tie room to run a staff space.
+        assert!(p3.0 - p0.0 > 1.0 - 1e-3, "a tie runs {}", p3.0 - p0.0);
+        let half = tie.thickness.0 / 2.0;
+        for k in 0..=100 {
+            let t = k as f32 / 100.0;
+            let u = 1.0 - t;
+            let at = |a: f32, b: f32, c: f32, d: f32| {
+                u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d
+            };
+            let (x, y) = (at(p0.0, p1.0, p2.0, p3.0), at(p0.1, p1.1, p2.1, p3.1));
+            let stroke = [x - half, y - half, x + half, y + half];
+            for (name, b) in &ink {
+                assert!(
+                    !boxes_overlap(stroke, *b),
+                    "a tie from ({:.2}, {:.2}) to ({:.2}, {:.2}) runs through a {name} at {b:?}",
+                    p0.0,
+                    p0.1,
+                    p3.0,
+                    p3.1
+                );
+            }
         }
     }
 }

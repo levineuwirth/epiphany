@@ -1692,6 +1692,60 @@ pub fn try_to_constrained(
         }
         let no_notes: BTreeMap<ColumnKey, ColumnInk> = BTreeMap::new();
 
+        // Each event's heads by component, highest first: a tie takes its side
+        // from its head's place among them.
+        let mut chord_ys: BTreeMap<(EventId, usize), Vec<f32>> = BTreeMap::new();
+        for head in pitch_heads
+            .values()
+            .chain(unpitched_heads.values())
+            .flatten()
+        {
+            chord_ys
+                .entry((head.event, head.comp))
+                .or_default()
+                .push(head.y);
+        }
+        for ys in chord_ys.values_mut() {
+            ys.sort_by(|a, b| b.total_cmp(a));
+        }
+        // Each staff column's ink a tie's end must stand clear of.
+        let mut tie_ink: BTreeMap<(Option<StaffId>, ColumnKey), Vec<InkBox>> = BTreeMap::new();
+        for ((staff, key), refs) in &column_heads {
+            let Some(info) = columns.get(key) else {
+                continue;
+            };
+            let yo = staff.map(&y_origin).unwrap_or(0.0);
+            let boxes = tie_ink.entry((*staff, key.clone())).or_default();
+            let mut stems = BTreeSet::new();
+            for r in refs {
+                let head = r.get(&pitch_heads, &unpitched_heads);
+                boxes.extend(column_ink_boxes(head, info.x, yo));
+                if stems.insert((head.event, head.comp)) {
+                    let seg = event_stems
+                        .get(&head.event)
+                        .and_then(|segs| segs.iter().find(|seg| seg.comp == head.comp))
+                        .filter(|seg| seg.drawn);
+                    if let Some(seg) = seg {
+                        let x = info.x + seg.dx + seg.x_off;
+                        let base = if seg.up { seg.lo } else { seg.hi };
+                        boxes.push(InkBox {
+                            left: x - STEM_THICKNESS / 2.0,
+                            right: x + STEM_THICKNESS / 2.0,
+                            bottom: base.min(seg.end),
+                            top: base.max(seg.end),
+                            behind: false,
+                        });
+                    }
+                }
+            }
+        }
+        let ties = TieSides {
+            voices: &event_voices,
+            chords: &chord_ys,
+            stems: &event_stems,
+            ink: &tie_ink,
+        };
+
         // Pass 2 — emit. Each logical object's exact provenance lands on exactly
         // one primitive; the extras a multi-component object owns are synthesized.
         for (provenance, staff, content) in specs {
@@ -1809,9 +1863,9 @@ pub fn try_to_constrained(
                             for (curve, start, end) in component_ties(
                                 provenance,
                                 heads,
-                                &event_stems,
+                                &ties,
                                 &columns,
-                                yo,
+                                (staff, yo),
                                 band_of(staff),
                             ) {
                                 span_anchors.push(SpanAnchor {
@@ -1978,9 +2032,9 @@ pub fn try_to_constrained(
                         for (curve, start, end) in component_ties(
                             provenance,
                             heads,
-                            &event_stems,
+                            &ties,
                             &columns,
-                            yo,
+                            (staff, yo),
                             band_of(staff),
                         ) {
                             span_anchors.push(SpanAnchor {
@@ -2219,17 +2273,7 @@ pub fn try_to_constrained(
                     let voice = start_event.and_then(|e| event_voices.get(&e)).copied();
                     let n = joins.len();
                     for (i, (a, b)) in joins.iter().enumerate() {
-                        let above = if voice == Some(VoicePlace::Upper) {
-                            true
-                        } else if voice == Some(VoicePlace::Lower) {
-                            false
-                        } else if n > 1 && 2 * i + 1 < n {
-                            true
-                        } else if n > 1 && 2 * i + 1 > n {
-                            false
-                        } else {
-                            stem_up.map_or(a.y >= yo + STAFF_HEIGHT * 0.5, |up| !up)
-                        };
+                        let above = tie_above(voice, i, n, stem_up, a.y, yo);
                         let tie_provenance = if i == 0 {
                             provenance.clone()
                         } else {
@@ -2241,8 +2285,21 @@ pub fn try_to_constrained(
                             )
                         };
                         let (from, to) = (column(&a.key), column(&b.key));
-                        let curve =
-                            tie_curve(tie_provenance, a, from, b, to, above, band_of(staff));
+                        let ink = |key: &ColumnKey| {
+                            tie_ink
+                                .get(&(staff, key.clone()))
+                                .map_or(&[][..], Vec::as_slice)
+                        };
+                        let curve = tie_curve(
+                            tie_provenance,
+                            a,
+                            from,
+                            b,
+                            to,
+                            above,
+                            band_of(staff),
+                            (ink(&a.key), ink(&b.key)),
+                        );
                         span_anchors.push(SpanAnchor {
                             primitive: curve.id(),
                             start: from.slot,
@@ -3647,6 +3704,7 @@ pub fn tie_arc(x0: f32, x3: f32, y: f32, above: bool) -> [Point; 4] {
 /// A tie's arc from head `a` (in column `from`) to head `b` (in column `to`):
 /// from just right of `a` to just left of `b`, a little off the heads on the
 /// side it arcs to, rising with its length to at most `TIE_MAX_HEIGHT`.
+#[allow(clippy::too_many_arguments)]
 fn tie_curve(
     provenance: Provenance,
     a: &Head,
@@ -3655,13 +3713,35 @@ fn tie_curve(
     to: &ColumnInfo,
     above: bool,
     band: VerticalBandId,
+    (from_ink, to_ink): (&[InkBox], &[InkBox]),
 ) -> Curve {
-    let right = metrics(a.name).map_or(NOTEHEAD_STEM_X, |m| m.bounding_box().right.0);
-    let left = metrics(b.name).map_or(0.0, |m| m.bounding_box().left.0);
-    let x0 = from.x + a.dx + right + TIE_GAP;
-    let x3 = (to.x + b.dx + left - TIE_GAP).max(x0 + TIE_GAP);
+    let extent = |head: &Head, x: f32| {
+        metrics(head.name).map_or((x, x + NOTEHEAD_STEM_X), |m| {
+            let b = m.bounding_box();
+            (x + b.left.0, x + b.right.0)
+        })
+    };
     let sign = if above { 1.0 } else { -1.0 };
-    let [p0, p1, p2, p3] = tie_arc(x0, x3, a.y + sign * TIE_OFFSET, above);
+    let y = a.y + sign * TIE_OFFSET;
+    let (x0, x3) = tie_ends(
+        from_ink,
+        extent(a, from.x + a.dx),
+        to_ink,
+        extent(b, to.x + b.dx),
+        y,
+    );
+    // Each end rides its own column's slot, and the spacing gives the tie
+    // its length, so in this frame, where columns stand closer than they
+    // will, the end may fall before the start; the arc keeps its control
+    // points' fractions of the span, which must not vanish.
+    let x3 = if from.slot == to.slot {
+        x3.max(x0 + TIE_GAP)
+    } else if (x3 - x0).abs() < 1e-3 {
+        x0 + 1e-3
+    } else {
+        x3
+    };
+    let [p0, p1, p2, p3] = tie_arc(x0, x3, y, above);
     Curve {
         provenance,
         p0,
@@ -3676,15 +3756,135 @@ fn tie_curve(
     }
 }
 
+/// Whether the `i`th of `n` ties leaving one chord, highest first, arcs
+/// above: by its voice's place beside another voice; then, in a chord, the
+/// upper half above and the lower half below; then, for the middle tie of
+/// an odd chord or a single note, away from its stem, or from the middle
+/// line when it has none.
+fn tie_above(
+    voice: Option<VoicePlace>,
+    i: usize,
+    n: usize,
+    stem_up: Option<bool>,
+    y: f32,
+    yo: f32,
+) -> bool {
+    match voice {
+        Some(VoicePlace::Upper) => true,
+        Some(VoicePlace::Lower) => false,
+        _ if n > 1 && 2 * i + 1 < n => true,
+        _ if n > 1 && 2 * i + 1 > n => false,
+        _ => stem_up.map_or(y >= yo + STAFF_HEIGHT * 0.5, |up| !up),
+    }
+}
+
+/// What a tie between a note's components takes its side from: each event's
+/// voice place, its heads by component (highest first) and its stems.
+struct TieSides<'a> {
+    voices: &'a BTreeMap<EventId, VoicePlace>,
+    chords: &'a BTreeMap<(EventId, usize), Vec<f32>>,
+    stems: &'a BTreeMap<EventId, Vec<StemSeg>>,
+    /// Each staff column's ink, which a tie's ends stand clear of.
+    ink: &'a BTreeMap<(Option<StaffId>, ColumnKey), Vec<InkBox>>,
+}
+
+/// A box of a staff column's ink on the page, which a tie's end stands clear
+/// of: a head, a ledger line, a stem, a dot or an accidental. An accidental
+/// stands `behind` its head, left of the column, and only meets a tie's
+/// arriving end.
+#[derive(Clone, Copy)]
+struct InkBox {
+    left: f32,
+    right: f32,
+    bottom: f32,
+    top: f32,
+    behind: bool,
+}
+
+/// How far above and below a tie's end its ink reaches, near its head.
+const TIE_END_REACH: f32 = 0.2;
+
+/// The ink a head brings to its column: the head, its ledger lines, its dots
+/// and its accidentals, in page coordinates, from the column's `x` and its
+/// staff's `yo`.
+fn column_ink_boxes(head: &Head, x: f32, yo: f32) -> Vec<InkBox> {
+    let at = |name: &str, ox: f32, oy: f32, behind: bool| {
+        metrics(name).map(|m| {
+            let b = m.bounding_box();
+            InkBox {
+                left: ox + b.left.0,
+                right: ox + b.right.0,
+                bottom: oy + b.bottom.0,
+                top: oy + b.top.0,
+                behind,
+            }
+        })
+    };
+    let hx = x + head.dx;
+    let mut boxes: Vec<InkBox> = at(head.name, hx, head.y, false).into_iter().collect();
+    let head_box = metrics(head.name).map(|m| m.bounding_box());
+    let left = head_box.map_or(0.0, |b| b.left.0);
+    let right = head_box.map_or(NOTEHEAD_STEM_X, |b| b.right.0);
+    for step in ledger_steps(head.step) {
+        let y = step_to_y(yo, step);
+        boxes.push(InkBox {
+            left: hx + left - LEDGER_LINE_EXTENSION,
+            right: hx + right + LEDGER_LINE_EXTENSION,
+            bottom: y - STAFF_LINE_THICKNESS / 2.0,
+            top: y + STAFF_LINE_THICKNESS / 2.0,
+            behind: false,
+        });
+    }
+    for dot in 0..head.dots {
+        let dx = x + head.dot_x + f32::from(dot) * DOT_STEP;
+        boxes.extend(at("augmentationDot", dx, head.dot_y, false));
+    }
+    for (name, offset) in head.accidentals.iter().zip(&head.accidental_x) {
+        boxes.extend(at(name, x + offset, head.y, true));
+    }
+    boxes
+}
+
+/// Where a tie at height `y` from head `a` (left edge `a_left`, right edge
+/// `a_right`) to head `b` (`b_left`, `b_right`) may start and end: right of
+/// every box of `from`'s ink its end meets there that does not stand wholly
+/// left of `a`, and left of every box of `to`'s ink its end meets that does
+/// not stand wholly right of `b`, each by `TIE_GAP`. A head set beside its
+/// own across a stem, another voice's head beside it, a stem, a ledger line,
+/// a dot or an accidental at the tie's height is passed, not run through.
+fn tie_ends(
+    from: &[InkBox],
+    (a_left, a_right): (f32, f32),
+    to: &[InkBox],
+    (b_left, b_right): (f32, f32),
+    y: f32,
+) -> (f32, f32) {
+    let meets = |b: &&InkBox| b.bottom < y + TIE_END_REACH && b.top > y - TIE_END_REACH;
+    let start = from
+        .iter()
+        .filter(|b| !b.behind && b.right > a_left)
+        .filter(meets)
+        .map(|b| b.right)
+        .fold(a_right, f32::max);
+    let end = to
+        .iter()
+        .filter(|b| b.left < b_right)
+        .filter(meets)
+        .map(|b| b.left)
+        .fold(b_left, f32::min);
+    (start + TIE_GAP, end - TIE_GAP)
+}
+
 /// The ties between the successive components of one pitch (or unpitched
-/// note) that its decomposition ties, each arcing away from its component's
-/// stem, synthesized from `provenance`, with the slots its ends ride.
+/// note) that its decomposition ties, each taking its side as a tie between
+/// two events does (`tie_above`), synthesized from `provenance`, with the
+/// slots its ends ride.
 fn component_ties(
     provenance: &Provenance,
     heads: &[Head],
-    event_stems: &BTreeMap<EventId, Vec<StemSeg>>,
+    sides: &TieSides,
     columns: &BTreeMap<ColumnKey, ColumnInfo>,
-    yo: f32,
+    (staff, yo): (Option<StaffId>, f32),
     band: VerticalBandId,
 ) -> Vec<(Curve, SpringSlotId, SpringSlotId)> {
     let mut ties = Vec::new();
@@ -3696,19 +3896,42 @@ fn component_ties(
         let (Some(from), Some(to)) = (columns.get(&a.key), columns.get(&b.key)) else {
             continue;
         };
-        let seg = event_stems
+        let stem_up = sides
+            .stems
             .get(&a.event)
             .and_then(|segs| segs.iter().find(|seg| seg.comp == a.comp))
-            .filter(|seg| seg.drawn);
-        let above = seg.map_or(a.y >= yo + STAFF_HEIGHT * 0.5, |seg| !seg.up);
+            .filter(|seg| seg.drawn)
+            .map(|seg| seg.up);
+        let chord = sides
+            .chords
+            .get(&(a.event, a.comp))
+            .map_or(&[][..], Vec::as_slice);
+        let i = chord.iter().position(|&y| y == a.y).unwrap_or(0);
+        let voice = sides.voices.get(&a.event).copied();
+        let above = tie_above(voice, i, chord.len(), stem_up, a.y, yo);
         let tie_provenance = Provenance::synthesized(
             provenance.source,
             SynthesisKind::Registered(TIE_SYNTHESIS),
             SynthesisInstanceKey(1 << 64 | a.comp as u128),
             provenance.dependencies.clone(),
         );
+        let ink = |key: &ColumnKey| {
+            sides
+                .ink
+                .get(&(staff, key.clone()))
+                .map_or(&[][..], Vec::as_slice)
+        };
         ties.push((
-            tie_curve(tie_provenance, a, from, b, to, above, band),
+            tie_curve(
+                tie_provenance,
+                a,
+                from,
+                b,
+                to,
+                above,
+                band,
+                (ink(&a.key), ink(&b.key)),
+            ),
             from.slot,
             to.slot,
         ));

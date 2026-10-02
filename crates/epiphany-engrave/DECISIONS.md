@@ -1251,3 +1251,29 @@ staff space), rather than the default A4 at an 8 mm staff: the page its
 writer drew it on, so the two read side by side. The score graph does not
 hold the page; `epiphany_cli::geometry` reads it from the source, and a file
 without one takes the default.
+
+## ENGRAVER_VERSION 22 → 23: ties clear of the ink beside their heads (X3.0, 2026-10-03)
+
+A tie ran from 0.15 right of its head to 0.15 left of the next, whatever
+stood beside them, so once a second's head stood across the stem, or another
+voice's head beside it, a tie leaving or meeting the head next to it ran
+through that head, the stem or the column's ledger lines; a tie leaving a
+dotted note on a line ran through its dot; one arriving beside a chord-mate's
+accidental ran through it. The constrained stage now gathers each staff
+column's ink (heads where they are set, ledger lines, stems, dots,
+accidentals), and a tie starts 0.15 right of every box of its first column
+that meets its height (0.2 above and below its end) and does not stand wholly
+left of its head, and ends 0.15 left of every such box of its second column,
+accidentals included. Its ends ride their own slots, so the constrained
+frame, where columns stand closer than the spacing will set them, no longer
+clamps the end after the start. The spacing pass now gives every tie anchored
+to two slots at least a staff space between its ends (`TIE_MIN_SPAN`), as a
+least distance between those slots. A split note's own tie now takes its
+side as a tie between two notes does, by its voice beside another, then its
+place in the chord, then its stem (`tie_above`); it took it from the stem
+alone, so in a two-voice staff each voice's split ties arced toward the
+other. A measure record's edges now move with their slots' own deltas, as
+the slots' glyphs do, not through the justification's affine, which set an
+opening time signature's measure up to (a − 1) times its ink's offset right
+of the ink. Locked by `a_tie_stands_clear_of_the_ink_beside_its_heads` and
+`a_split_notes_tie_takes_its_voices_side` (`epiphany-cli`).
