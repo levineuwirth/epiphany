@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use epiphany_cli::{engrave, load, page, svg, Loaded};
+use epiphany_cli::{engrave_loaded, load, page, svg, Loaded};
 use epiphany_musicxml::source::FeatureClass;
 
 const USAGE: &str = "usage: epiphany render <file.musicxml> [--page N] [-o out.svg]\n       \
@@ -68,7 +68,7 @@ fn render_command(args: &[String]) -> ExitCode {
         Ok(loaded) => loaded,
         Err(e) => return fail(&format!("{}: {e}", file.display())),
     };
-    let engraved = engrave(&loaded.reduced.score);
+    let engraved = engrave_loaded(&loaded);
     let pages = engraved.layout.pages.len();
     let Some(layout) = page(&engraved.layout, number) else {
         return fail(&format!("{}: page {number} of {pages}", file.display()));

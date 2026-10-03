@@ -49,7 +49,7 @@ pub mod outcome;
 pub mod source;
 
 pub use emit::{Import, DEFAULT_REPLICA};
-pub use source::{ReadError, SourceScore};
+pub use source::{ReadError, SourcePage, SourceScore};
 
 /// Reads a partwise MusicXML document and emits the operations that build it,
 /// authored from [`DEFAULT_REPLICA`].

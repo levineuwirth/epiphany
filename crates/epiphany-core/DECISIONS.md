@@ -1596,3 +1596,51 @@ mutation perturbing only one implementation's boundary-selector or
 cross-clock handling is caught by the agreement test going red, independent
 of whether either implementation individually still passes its own unit
 coverage.
+
+## The default decomposition algorithm, version 2 (X3.3, X3.4, 2026-10-03)
+
+Version 1 decomposed every event against one measure length per region (the
+first time signature found), so after a meter change its barlines fell in
+the wrong places (P12-H4); it took the region origin for a barline, so a
+pickup's notes were placed as if on the downbeat; and it split any span that
+crossed a boundary at least as strong as its start, so a note the file writes
+as one value — a half on beat 2, a dotted half, a dotted quarter off the beat
+— came out as tied parts. Version 2: `ScoreLayout` carries each staff instance's bars
+(`instance_bars`: measures from their region-relative anchors, the governing
+signature carried forward, the last measure its signature's length, a short
+first measure shifted by the beats it lacks); `decompose_metric` splits at
+those barlines, falling back to the region's first meter where a staff
+instance's measures do not resolve; within a bar a span `note_for_units`
+expresses is written whole, and only a span no value expresses falls to
+version 1's boundary splitting. `MAX_DOTS` is 2. Rests follow the same rule,
+which an import's rests already satisfy (each MusicXML rest is one value).
+The `DecompositionAlgorithmId` stays `"default"`; the version lives in the
+requirement, and derived output is recomputed, never migrated. The prepass
+harness's two syncopation fixtures now hold five-eighth spans, which no one
+value expresses, so its non-vacuity spread still sees tied splits recur.
+
+## Pickups (X3.5, 2026-10-03)
+
+**P13-S19 closes for a first measure.** Invariant 20's boundary clause measured
+the second measure's distance from the first against a full bar, so a pickup's
+successor, and with it every later measure an import made, was flagged (and
+refused by `create_measure`, its mirror in `epiphany-ops`). The clause now
+accepts, at `i == 1` only, any positive distance less than the governing
+signature's `measure_duration()`: the first measure may be a pickup. Every
+later distance is still a full bar. A short measure after the first (a
+repeat's split bar) still has no per-measure duration in the model, so its
+successor is still flagged. Locked by
+`m35_pickup_successor_boundary_admits_the_pickup_alone`.
+
+**P13-S24 closed with version 2 of the decomposition algorithm** (above): the
+splitter's barlines come from the staff instance's measures, and a short first
+measure is shifted by the beats it lacks, so the region origin is no longer
+taken for a barline (`instance_bars_take_each_measure_and_shift_a_pickup`).
+P12-H4's "region origin assumed to be a barline" no longer holds.
+
+**P13-S18 and P13-S23 stay open.** Invariant 20's three genuine abstentions
+(A4, B4, B5) are exactly the pairs P13-S23's common timeline would place: a
+`WallClock` offset against a musical one, a `Measure` end, distinct-id
+referents. Pickups need none of it: the importer anchors every measure and
+meter change at its region's start with a musical offset, which the relation
+already orders and measures.

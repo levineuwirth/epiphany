@@ -13,7 +13,6 @@ use epiphany_core::{
 };
 use epiphany_engrave::Engraver;
 use epiphany_layout_ir::{to_constrained, to_logical, ConstraintSolver, SolverConfig};
-use epiphany_musicxml::emit::Subject;
 use epiphany_musicxml::fidelity::{compare, show, Fidelity};
 use epiphany_musicxml::outcome::{reduce, Reduced, Verdict};
 use epiphany_musicxml::source::{FeatureClass, QuarterTone};
@@ -793,55 +792,88 @@ fn an_unpitched_note_ties_to_the_next_of_its_member_at_its_step() {
 }
 
 #[test]
-fn tuplet_notes_sit_at_exact_positions_and_the_grouping_is_recorded() {
+fn tuplets_import_with_their_ratios_and_members() {
     let run = run("tuplet.musicxml");
     all_applied(&run);
-    assert_eq!(
-        events(&run.reduced.score),
-        [
-            "s0 v0 0 1/12 A4",
-            "s0 v0 1/12 1/12 B4",
-            "s0 v0 1/6 1/12 C5",
-            "s0 v0 1/4 1/4 D5",
-        ]
-    );
-    let feature = &run.import.source.features.kinds["tuplet 3:2"];
-    assert_eq!(feature.class, FeatureClass::Content);
-    assert_eq!(feature.places.len(), 1);
-    assert!(run.reduced.score.cross_cutting.tuplets.is_empty());
-}
-
-#[test]
-fn a_pickup_reports_the_measures_the_reducer_refuses() {
-    let run = run("pickup.musicxml");
-    let refused: Vec<(Subject, &Verdict)> = run
-        .reduced
-        .rejected()
-        .map(|i| {
+    let score = &run.reduced.score;
+    let onsets: std::collections::BTreeMap<_, _> = score
+        .events
+        .iter()
+        .map(|event| match event.position() {
+            EventPosition::Musical(at) => (event.id(), rational(&at.0)),
+            other => panic!("a metric event, not {other:?}"),
+        })
+        .collect();
+    let mut tuplets: Vec<(u32, u32, Vec<String>, String)> = score
+        .cross_cutting
+        .tuplets
+        .iter()
+        .map(|tuplet| {
             (
-                run.import.labels[i].subject.clone(),
-                &run.reduced.verdicts[i],
+                tuplet.ratio.actual(),
+                tuplet.ratio.notated(),
+                tuplet.members.iter().map(|m| onsets[m].clone()).collect(),
+                rational(&tuplet.required_total.0),
             )
         })
         .collect();
-    let mismatch = Verdict::Refused(String::from("MeasureMeterMismatch"));
+    tuplets.sort();
+    let strings = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     assert_eq!(
-        refused,
+        tuplets,
         [
-            (Subject::Measure(0, 0, 1), &mismatch),
-            (Subject::Measure(0, 0, 2), &mismatch),
+            // The triplet, the one with another begun inside it, and the
+            // second voice's beside a quarter.
+            (3, 2, strings(&["0", "1/12", "1/6"]), String::from("1/4")),
+            (
+                3,
+                2,
+                strings(&["1", "7/6", "4/3", "11/8", "17/12"]),
+                String::from("1/2")
+            ),
+            (3, 2, strings(&["3/4", "5/6", "11/12"]), String::from("1/4")),
+            // The sextuplet: its rest a member, its chord one.
+            (
+                6,
+                4,
+                strings(&["1/4", "7/24", "1/3", "3/8", "5/12", "11/24"]),
+                String::from("1/4")
+            ),
         ]
     );
+    for tuplet in &score.cross_cutting.tuplets {
+        assert!(tuplet.parent.is_none());
+    }
+    // The triplet with another begun inside it is made, its members its own
+    // and the inner one's; the inner one, and the one never stopped, are
+    // recorded and not made.
+    let part = &run.import.source.parts[0];
+    assert_eq!(part.tuplets.len(), 4, "{:?}", part.tuplets);
+    assert_eq!(part.unmade_tuplets, 2);
+    assert_eq!(part.tuplets[3].events.len(), 5);
+    let kinds = &run.import.source.features.kinds;
+    assert_eq!(kinds["tuplet 12:8 inside another"].places.len(), 1);
+    assert_eq!(kinds["tuplet without a stop"].places.len(), 1);
+    assert!(!kinds
+        .keys()
+        .any(|k| k.starts_with("tuplet 3:2") || k.starts_with("tuplet 6:4")));
+    let census = &run.import.source.census[0];
+    assert_eq!(census.tuplets.values().sum::<usize>(), 4);
+    assert_eq!(census.unmade_tuplets, 2);
+}
+
+#[test]
+fn a_pickup_imports_in_full() {
+    let run = run("pickup.musicxml");
+    all_applied(&run);
     let score = &run.reduced.score;
-    assert_eq!(measure_starts(score, 0), ["0"]);
+    // The measure after the pickup starts a beat in, the next a bar later.
+    assert_eq!(measure_starts(score, 0), ["0", "1/4", "1"]);
     assert_eq!(
         events(score),
         ["s0 v0 0 1/4 G4", "s0 v0 1/4 3/4 C5", "s0 v0 1 3/4 E5"]
     );
-    // The absent measures are explained by the refusals, not silently passed.
-    assert_eq!(run.fidelity.explained.len(), 2);
-    assert!(run.fidelity.explained[0].contains("measure 1 absent"));
-    assert!(run.fidelity.explained[0].contains("MeasureMeterMismatch"));
+    assert!(run.fidelity.explained.is_empty());
 }
 
 #[test]

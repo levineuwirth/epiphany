@@ -755,23 +755,26 @@ fn fx_meter_three_four() -> Score {
 // ===========================================================================
 
 fn fx_syncopation_offbeat() -> Score {
-    // [1/8, 1/2): an eighth tied to a quarter — a multi-component decomposition.
+    // [1/8, 3/4): five eighths from the offbeat, which no one value is — an
+    // eighth tied to two quarters, split at beat 2 and the middle of the bar.
+    // (A dotted quarter from the offbeat, which this fixture held under
+    // decomposition version 1, is one value since version 2.)
     let mut b = OneStaff::new(0xF101);
     let v = b.voice();
-    add_note(&mut b, v, mpos(1, 8), mdur(3, 8), 48);
+    add_note(&mut b, v, mpos(1, 8), mdur(5, 8), 48);
     b.finish(metric())
 }
 
 fn fx_mixed_rhythm() -> Score {
-    // One bar mixing three note values (eighth, quarter, half) with a syncopated
-    // eighth-tied-to-quarter. A single fixture that both spans ≥2 note values *and*
+    // One bar mixing note values with a syncopation no one value expresses,
+    // an eighth tied to two quarters. A single fixture that both spans ≥2 note values *and*
     // produces a tied multi-component split, so the non-vacuity spread checks keep
     // margin beyond the corpus's other rhythmic fixtures.
     let mut b = OneStaff::new(0xF205);
     let v = b.voice();
     add_note(&mut b, v, mpos(0, 8), mdur(1, 8), 48); // eighth on the downbeat
-    add_note(&mut b, v, mpos(1, 8), mdur(3, 8), 50); // syncopation: eighth + quarter
-    add_note(&mut b, v, mpos(1, 2), mdur(1, 2), 52); // half on beat 3
+    add_note(&mut b, v, mpos(1, 8), mdur(5, 8), 50); // syncopation: eighth + quarter + quarter
+    add_note(&mut b, v, mpos(3, 4), mdur(1, 4), 52); // quarter on beat 4
     b.finish(metric())
 }
 

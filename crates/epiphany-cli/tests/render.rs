@@ -537,8 +537,12 @@ fn a_tie_continued_into_a_system_starts_clear_of_its_lead() {
                     (x0 - opening - 0.4).abs() < 1e-3,
                     "system {k}: a continued tie starts 0.4 clear of {opening}, not at {x0}"
                 );
+                // 0.15 clear of its note, or of the down-stem at its left
+                // that the tie's height meets.
                 assert!(
-                    heads.iter().any(|l| (l - x3 - 0.15).abs() < 1e-3),
+                    heads
+                        .iter()
+                        .any(|l| [0.15, 0.21].iter().any(|d| (l - x3 - d).abs() < 1e-3)),
                     "system {k}: a continued tie ends just before its note, not at {x3}"
                 );
                 // A justified system stretches the gap after a time signature.
@@ -600,8 +604,8 @@ fn accidentals_are_drawn_against_the_key_and_the_measure() {
             note("B", 0, 4, 2, "<tie type=\"start\"/>"),
         ]
         .concat(),
-        // The tied B natural shows nothing and sets nothing, so the next B
-        // natural shows its own; then B-flat again.
+        // The tied B natural shows nothing, and the next B natural shows its
+        // own; then B-flat again.
         [
             note("B", 0, 4, 2, "<tie type=\"stop\"/>"),
             note("B", 0, 4, 1, ""),
@@ -614,6 +618,23 @@ fn accidentals_are_drawn_against_the_key_and_the_measure() {
             note("F", 1, 4, 1, ""),
             note("F", 1, 5, 1, ""),
             note("F", 0, 4, 1, ""),
+        ]
+        .concat(),
+        // F by the key, G, and F-sharp tied over the barline.
+        [
+            note("F", 0, 4, 1, ""),
+            note("G", 0, 4, 1, ""),
+            note("F", 1, 4, 2, "<tie type=\"start\"/>"),
+        ]
+        .concat(),
+        // The tied F-sharp shows nothing; the F natural after it a courtesy
+        // natural, though the key gives it; F-sharp again its sharp; E-flat
+        // by the key nothing.
+        [
+            note("F", 1, 4, 1, "<tie type=\"stop\"/>"),
+            note("F", 0, 4, 1, ""),
+            note("F", 1, 4, 1, ""),
+            note("E", -1, 4, 1, ""),
         ]
         .concat(),
     ];
@@ -675,6 +696,8 @@ fn accidentals_are_drawn_against_the_key_and_the_measure() {
             n, n, n, // measure 2
             None, n, f, // measure 3, the first note tied over
             s, None, s, n, // measure 4
+            None, None, s, // measure 5
+            None, n, s, None, // measure 6, the first note tied over
         ]
     );
 }
@@ -1123,7 +1146,8 @@ fn seconds_stand_either_side_of_the_stem() {
             note("G4", 1, 1, false, "", begin),
             note("A4", 1, 1, true, "", "<type>eighth</type>"),
             note("A5", 1, 1, false, "", end),
-            rest(6, 1),
+            rest(2, 1),
+            rest(4, 1),
         ]
         .concat(),
     ];
@@ -1464,6 +1488,8 @@ fn every_system_starts_with_its_clef_and_key() {
 
     for (sign, line, change, name) in [
         ("G", 2, -1, "gClef8vb"),
+        ("G", 2, 2, "gClef15ma"),
+        ("F", 4, -2, "fClef15mb"),
         ("percussion", 3, 0, "unpitchedPercussionClef1"),
     ] {
         std::fs::write(&path, score(staff(sign, line, change, "B", 3, 2))).expect("written");
@@ -1665,4 +1691,1263 @@ fn groups_mark_their_staves_and_join_their_barlines() {
         .collect();
     gaps.sort();
     assert_eq!(gaps, [0, 0, 2, 2, 4, 4]);
+}
+
+/// A score of `measures` measures of mixed quarters and eighths, some with
+/// ledger lines, on a page `width` staff spaces wide as its `<defaults>` set
+/// it (in tenths, ten to a staff space), or on the default page.
+fn paged_score(measures: usize, width: Option<f32>) -> String {
+    let mut body = String::new();
+    for m in 1..=measures {
+        body.push_str(&format!("<measure number=\"{m}\">"));
+        if m == 1 {
+            body.push_str(
+                "<attributes><divisions>2</divisions><time><beats>4</beats>\
+                 <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+                 </attributes>",
+            );
+        }
+        let notes: &[(&str, u8, u8)] = match m % 3 {
+            0 => &[
+                ("C", 4, 2),
+                ("A", 5, 2),
+                ("E", 4, 1),
+                ("F", 4, 1),
+                ("G", 4, 2),
+            ],
+            1 => &[
+                ("D", 4, 1),
+                ("E", 4, 1),
+                ("F", 4, 2),
+                ("C", 6, 2),
+                ("B", 4, 2),
+            ],
+            _ => &[("G", 4, 4), ("C", 4, 1), ("D", 4, 1), ("A", 3, 2)],
+        };
+        for (step, octave, duration) in notes {
+            body.push_str(&pitched(step, 0, *octave, *duration, 1, false));
+        }
+        body.push_str("</measure>");
+    }
+    let defaults = width.map_or(String::new(), |w| {
+        format!(
+            "<defaults><scaling><millimeters>7</millimeters><tenths>40</tenths></scaling>\
+             <page-layout><page-width>{}</page-width><page-height>1500</page-height>\
+             <page-margins type=\"both\"><left-margin>75</left-margin>\
+             <right-margin>75</right-margin><top-margin>75</top-margin>\
+             <bottom-margin>75</bottom-margin></page-margins></page-layout></defaults>",
+            (w * 10.0).round()
+        )
+    });
+    format!(
+        "<score-partwise version=\"4.0\">{defaults}<part-list><score-part id=\"P1\">\
+         <part-name>A</part-name></score-part></part-list><part id=\"P1\">{body}</part>\
+         </score-partwise>"
+    )
+}
+
+/// A score is set on the page its file gives, and no system's ink, a stroke's
+/// half-thickness included, runs past the right margin, whatever the width.
+#[test]
+fn a_score_takes_its_files_page_and_keeps_within_its_margins() {
+    use epiphany_cli::engrave_loaded;
+
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("paged.musicxml");
+    let default_page = epiphany_engrave::PageGeometry::default();
+    std::fs::write(&path, paged_score(18, None)).expect("written");
+    assert_eq!(
+        epiphany_cli::geometry(&load(&path).expect("loads").import.source),
+        default_page,
+        "a file with no page layout takes the default page"
+    );
+    let mut overruns = Vec::new();
+    let mut breaks = std::collections::BTreeSet::new();
+    for k in 0..150 {
+        let width = (400 + 3 * k) as f32 / 10.0;
+        std::fs::write(&path, paged_score(18, Some(width))).expect("written");
+        let loaded = load(&path).expect("loads");
+        let geometry = epiphany_cli::geometry(&loaded.import.source);
+        assert!((geometry.size.width.0 - width).abs() < 1e-4);
+        assert_eq!(geometry.margins.right.0, 7.5);
+        let layout = engrave_loaded(&loaded).layout;
+        let right = width - 7.5;
+        let mut systems = Vec::new();
+        for (s, system) in layout.systems().enumerate() {
+            let glyphs = system
+                .primitives
+                .glyphs
+                .iter()
+                .map(|&i| glyph_box(&layout.glyphs[i as usize])[2]);
+            let strokes = system
+                .primitives
+                .strokes
+                .iter()
+                .map(|&i| &layout.strokes[i as usize])
+                .map(|st| st.from.x.0.max(st.to.x.0) + st.thickness.0 / 2.0);
+            let ink = glyphs.chain(strokes).fold(f32::NEG_INFINITY, f32::max);
+            if ink > right + 1e-3 {
+                overruns.push(format!(
+                    "width {width}: system {s} ink to {ink}, margin {right}"
+                ));
+            }
+            systems.push(system.primitives.glyphs.len());
+        }
+        breaks.insert(systems.len());
+    }
+    assert!(
+        breaks.len() > 3,
+        "the widths break the score differently: {breaks:?}"
+    );
+    assert!(overruns.is_empty(), "{overruns:#?}");
+}
+
+/// Every system's staff lines run to the right edge of the barline that
+/// closes it, the last system's final barline's thick line included, and no
+/// further.
+#[test]
+fn staff_lines_end_with_the_barline_that_closes_their_system() {
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("closing_barlines.musicxml");
+    for (measures, at_least) in [(14, 3), (2, 1)] {
+        std::fs::write(&path, paged_score(measures, Some(70.0))).expect("written");
+        let loaded = load(&path).expect("loads");
+        let layout = epiphany_cli::engrave_loaded(&loaded).layout;
+        staff_lines_end_with_their_barlines(&layout, at_least);
+    }
+}
+
+/// Every system's staff lines end at its closing barline's right edge.
+fn staff_lines_end_with_their_barlines(
+    layout: &epiphany_layout_ir::ResolvedLayoutIR,
+    at_least: usize,
+) {
+    let systems: Vec<_> = layout.systems().collect();
+    assert!(systems.len() >= at_least, "{} systems", systems.len());
+    for (s, system) in systems.iter().enumerate() {
+        let barline = system
+            .primitives
+            .glyphs
+            .iter()
+            .map(|&i| &layout.glyphs[i as usize])
+            .filter(|g| g.glyph.as_str().starts_with("barline"))
+            .map(glyph_box)
+            .max_by(|a, b| a[2].total_cmp(&b[2]))
+            .expect("a system closes on a barline");
+        let last = s + 1 == systems.len();
+        let name = system
+            .primitives
+            .glyphs
+            .iter()
+            .map(|&i| &layout.glyphs[i as usize])
+            .find(|g| glyph_box(g) == barline)
+            .map(|g| g.glyph.as_str().to_owned());
+        assert_eq!(
+            name.as_deref(),
+            Some(if last {
+                "barlineFinal"
+            } else {
+                "barlineSingle"
+            })
+        );
+        let ends: Vec<f32> = system
+            .primitives
+            .strokes
+            .iter()
+            .map(|&i| &layout.strokes[i as usize])
+            .filter(|st| matches!(st.provenance.source, epiphany_core::TypedObjectId::Staff(_)))
+            .map(|st| st.from.x.0.max(st.to.x.0))
+            .collect();
+        assert_eq!(ends.len(), 5, "system {s} draws one staff");
+        for end in ends {
+            assert!(
+                (end - barline[2]).abs() < 1e-3,
+                "system {s}: a staff line ends at {end}, its barline at {}",
+                barline[2]
+            );
+        }
+    }
+}
+
+/// A note the pre-pass splits into tied parts ties them on its voice's side,
+/// as a tie between two notes does: the upper voice's above and the lower's
+/// below, though each stem would turn its tie toward the other voice.
+#[test]
+fn a_split_notes_tie_takes_its_voices_side() {
+    use epiphany_core::TypedObjectId;
+
+    let backup = "<backup><duration>8</duration></backup>";
+    // An eighth, five eighths from the offbeat (which no one value is: an
+    // eighth tied to two quarters), and a quarter.
+    let voice = |step: &str, octave: u8, voice: u8| {
+        format!(
+            "{}{}{}",
+            pitched(step, 0, octave, 1, voice, false),
+            pitched(step, 0, octave, 5, voice, false),
+            pitched(step, 0, octave, 2, voice, false)
+        )
+    };
+    let loaded = treble_part(
+        "split_ties.musicxml",
+        &[format!("{}{backup}{}", voice("D", 5, 1), voice("F", 4, 2))],
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    // Each voice's long note is drawn as three tied parts.
+    let mut ties: Vec<_> = layout
+        .curves
+        .iter()
+        .filter(|c| matches!(c.provenance.source, TypedObjectId::Pitch(_)))
+        .collect();
+    assert_eq!(ties.len(), 4, "each voice's long note splits twice");
+    ties.sort_by(|a, b| b.p0.y.0.total_cmp(&a.p0.y.0));
+    for tie in &ties[..2] {
+        assert!(tie.p1.y.0 > tie.p0.y.0, "the upper voice's ties arc above");
+    }
+    for tie in &ties[2..] {
+        assert!(tie.p1.y.0 < tie.p0.y.0, "the lower voice's ties arc below");
+    }
+}
+
+/// A tie leaving or meeting a head with other ink beside it at the tie's
+/// height (a head set across the stem, another voice's head, a stem, a
+/// ledger line, a dot) stands clear of it: no point of a tie's stroke lies
+/// within any head, stem, ledger line, dot or accidental.
+#[test]
+fn a_tie_stands_clear_of_the_ink_beside_its_heads() {
+    use epiphany_core::TypedObjectId;
+
+    let (start, stop) = ("<tie type=\"start\"/>", "<tie type=\"stop\"/>");
+    let note =
+        |step: &str, alter: i8, octave: u8, duration: u8, voice: u8, chord: bool, tie: &str| {
+            format!(
+                "<note>{}<pitch><step>{step}</step><alter>{alter}</alter><octave>{octave}</octave>\
+             </pitch><duration>{duration}</duration>{tie}<voice>{voice}</voice></note>",
+                if chord { "<chord/>" } else { "" }
+            )
+        };
+    let rest = |duration: u8, voice: u8| {
+        format!("<note><rest/><duration>{duration}</duration><voice>{voice}</voice></note>")
+    };
+    let measures = [
+        // A second tied from whole notes to halves, the upper head set
+        // right of the halves' stem over the lower's ledger lines.
+        [
+            note("A", 0, 3, 8, 1, false, start),
+            note("B", -1, 3, 8, 1, true, start),
+        ]
+        .concat(),
+        [
+            note("A", 0, 3, 4, 1, false, stop),
+            note("B", -1, 3, 4, 1, true, stop),
+            note("C", 0, 5, 4, 1, false, ""),
+        ]
+        .concat(),
+        // An upper voice's half tied over beside the lower voice's quarter
+        // on the same G, set to its right.
+        [
+            note("G", 0, 4, 4, 1, false, start),
+            note("G", 0, 4, 4, 1, false, stop),
+            "<backup><duration>8</duration></backup>".to_owned(),
+            note("G", 0, 4, 2, 2, false, ""),
+            rest(2, 2),
+            rest(4, 2),
+        ]
+        .concat(),
+        // A dotted B on the middle line, its dot in the space above, tied
+        // over above.
+        [
+            note("B", 0, 4, 6, 1, false, start),
+            note("B", 0, 4, 2, 1, false, stop),
+        ]
+        .concat(),
+        // A second inside the staff tied to itself, the upper head set right
+        // of the stem, which the tie meeting it passes.
+        [
+            note("F", 0, 4, 4, 1, false, start),
+            note("G", 0, 4, 4, 1, true, start),
+            note("F", 0, 4, 4, 1, false, stop),
+            note("G", 0, 4, 4, 1, true, stop),
+        ]
+        .concat(),
+        // An E tied into a chord whose F sharp's accidental stands at the
+        // tie's height before the column.
+        [
+            note("E", 0, 5, 4, 1, false, start),
+            note("E", 0, 5, 4, 1, false, stop),
+            note("F", 1, 5, 4, 1, true, ""),
+        ]
+        .concat(),
+    ];
+    let loaded = treble_part("tie_clearance.musicxml", &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let mut ink: Vec<(String, [f32; 4])> = layout
+        .glyphs
+        .iter()
+        .filter(|g| {
+            let name = g.glyph.as_str();
+            name.starts_with("notehead")
+                || name.starts_with("accidental")
+                || name == "augmentationDot"
+        })
+        .map(|g| (g.glyph.as_str().to_owned(), glyph_box(g)))
+        .collect();
+    for stroke in &layout.strokes {
+        let stem = stroke.from.x == stroke.to.x && stroke.from.y != stroke.to.y;
+        if stem && !matches!(stroke.provenance.source, TypedObjectId::Measure(_)) {
+            ink.push(("stem".to_owned(), stroke_box(stroke)));
+        } else if epiphany_layout_ir::is_rigid_width_stroke(stroke) {
+            ink.push(("ledger line".to_owned(), stroke_box(stroke)));
+        }
+    }
+    let ties: Vec<_> = layout
+        .curves
+        .iter()
+        .filter(|c| {
+            matches!(
+                c.provenance.source,
+                TypedObjectId::Tie(_) | TypedObjectId::Pitch(_)
+            )
+        })
+        .collect();
+    assert_eq!(
+        ties.len(),
+        7,
+        "the seconds' four ties, the half's, the dotted B's, the E's"
+    );
+    for tie in ties {
+        let [p0, p1, p2, p3] = [tie.p0, tie.p1, tie.p2, tie.p3].map(|p| (p.x.0, p.y.0));
+        // The spacing gives every tie room to run a staff space.
+        assert!(p3.0 - p0.0 > 1.0 - 1e-3, "a tie runs {}", p3.0 - p0.0);
+        let half = tie.thickness.0 / 2.0;
+        for k in 0..=100 {
+            let t = k as f32 / 100.0;
+            let u = 1.0 - t;
+            let at = |a: f32, b: f32, c: f32, d: f32| {
+                u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d
+            };
+            let (x, y) = (at(p0.0, p1.0, p2.0, p3.0), at(p0.1, p1.1, p2.1, p3.1));
+            let stroke = [x - half, y - half, x + half, y + half];
+            for (name, b) in &ink {
+                assert!(
+                    !boxes_overlap(stroke, *b),
+                    "a tie from ({:.2}, {:.2}) to ({:.2}, {:.2}) runs through a {name} at {b:?}",
+                    p0.0,
+                    p0.1,
+                    p3.0,
+                    p3.1
+                );
+            }
+        }
+    }
+}
+
+/// A rest of one voice moves off its place, away from the other voice, until
+/// it stands clear of the other voice's notes that start with it; a rest with
+/// none beside it keeps its place a space off the middle line.
+#[test]
+fn a_rest_stands_clear_of_another_voices_notes() {
+    let backup = "<backup><duration>8</duration></backup>";
+    let rest = |duration: u8, voice: u8| {
+        format!("<note><rest/><duration>{duration}</duration><voice>{voice}</voice></note>")
+    };
+    let measures = [
+        // The lower voice rests under the upper voice's low chord.
+        format!(
+            "{}{}{}{backup}{}{}",
+            pitched("E", 0, 4, 2, 1, false),
+            pitched("G", 0, 4, 2, 1, true),
+            pitched("C", 0, 5, 6, 1, false),
+            rest(2, 2),
+            pitched("A", 0, 4, 6, 2, false),
+        ),
+        // The upper voice rests over the lower voice's high chord; the lower
+        // voice rests last with no note starting beside it.
+        format!(
+            "{}{}{backup}{}{}{}{}",
+            rest(2, 1),
+            pitched("C", 0, 5, 6, 1, false),
+            pitched("D", 0, 5, 2, 2, false),
+            pitched("F", 0, 5, 2, 2, true),
+            pitched("A", 0, 4, 4, 2, false),
+            rest(2, 2),
+        ),
+    ];
+    let loaded = treble_part("rest_clearance.musicxml", &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let staff = &layout.systems().next().expect("a system").staves[0].bounding_box;
+    let middle = staff.origin.y.0 + staff.size.height.0 / 2.0;
+    let heads: Vec<[f32; 4]> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("notehead"))
+        .map(glyph_box)
+        .collect();
+    let mut rests: Vec<_> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("rest"))
+        .collect();
+    rests.sort_by(|a, b| a.position.x.0.total_cmp(&b.position.x.0));
+    assert_eq!(rests.len(), 3);
+    for (k, rest) in rests.iter().take(2).enumerate() {
+        let r = glyph_box(rest);
+        // The heads of its column: those whose x range meets the rest's.
+        let column: Vec<_> = heads
+            .iter()
+            .filter(|h| h[0] < r[2] && h[2] > r[0])
+            .collect();
+        assert_eq!(column.len(), 2, "rest {k} stands beside a chord");
+        for h in column {
+            let gap = (h[1] - r[3]).max(r[1] - h[3]);
+            assert!(gap >= 0.25 - 1e-3, "rest {k} stands {gap} from a head");
+        }
+    }
+    let (lower, upper, alone) = (rests[0], rests[1], rests[2]);
+    assert!(
+        lower.position.y.0 < middle - 1.5,
+        "the lower voice's rest moved down"
+    );
+    assert!(
+        upper.position.y.0 > middle + 1.5,
+        "the upper voice's rest moved up"
+    );
+    assert!(
+        (alone.position.y.0 - (middle - 1.0)).abs() < 1e-3,
+        "the lower rest beside no note keeps its place, {} from the middle",
+        alone.position.y.0 - middle
+    );
+}
+
+/// A tuplet draws its number, the ratio's actual term, clear of its notes on
+/// its stems' or voice's side: alone over a group beamed together, and in a
+/// bracket hooked toward the notes when a rest is among its members.
+#[test]
+fn a_tuplet_draws_its_number_and_a_bracket_unless_beamed_alone() {
+    use epiphany_core::TypedObjectId;
+
+    let note = |step: &str, octave: u8, duration: u8, voice: u8, kind: &str, extra: &str| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>{duration}</duration><voice>{voice}</voice><type>{kind}</type>\
+             {extra}</note>"
+        )
+    };
+    let modification = |actual: u8, normal: u8| {
+        format!(
+            "<time-modification><actual-notes>{actual}</actual-notes>\
+             <normal-notes>{normal}</normal-notes></time-modification>"
+        )
+    };
+    let mark = |kind: &str| format!("<notations><tuplet type=\"{kind}\"/></notations>");
+    let beam = |state: &str| format!("<beam number=\"1\">{state}</beam>");
+    let triplet = modification(3, 2);
+    let sextuplet = modification(6, 4);
+    // Divisions 12: a triplet eighth is 4, a sextuplet sixteenth 2.
+    let measure1 = [
+        // A beamed triplet of low eighths, stems up.
+        note(
+            "E",
+            4,
+            4,
+            1,
+            "eighth",
+            &format!("{}{triplet}{}", beam("begin"), mark("start")),
+        ),
+        note(
+            "F",
+            4,
+            4,
+            1,
+            "eighth",
+            &format!("{}{triplet}", beam("continue")),
+        ),
+        note(
+            "G",
+            4,
+            4,
+            1,
+            "eighth",
+            &format!("{}{triplet}{}", beam("end"), mark("stop")),
+        ),
+        // A triplet with a rest among its members.
+        format!(
+            "<note><rest/><duration>4</duration><voice>1</voice><type>eighth</type>\
+             {triplet}{}</note>",
+            mark("start")
+        ),
+        note(
+            "A",
+            4,
+            4,
+            1,
+            "eighth",
+            &format!("{}{triplet}", beam("begin")),
+        ),
+        note(
+            "B",
+            4,
+            4,
+            1,
+            "eighth",
+            &format!("{}{triplet}{}", beam("end"), mark("stop")),
+        ),
+    ]
+    .concat();
+    let measure2 = [
+        // A beamed sextuplet of sixteenths, then a half.
+        note(
+            "C",
+            5,
+            2,
+            1,
+            "16th",
+            &format!("{}{sextuplet}{}", beam("begin"), mark("start")),
+        ),
+        note(
+            "D",
+            5,
+            2,
+            1,
+            "16th",
+            &format!("{}{sextuplet}", beam("continue")),
+        ),
+        note(
+            "E",
+            5,
+            2,
+            1,
+            "16th",
+            &format!("{}{sextuplet}", beam("continue")),
+        ),
+        note(
+            "F",
+            5,
+            2,
+            1,
+            "16th",
+            &format!("{}{sextuplet}", beam("continue")),
+        ),
+        note(
+            "G",
+            5,
+            2,
+            1,
+            "16th",
+            &format!("{}{sextuplet}", beam("continue")),
+        ),
+        note(
+            "A",
+            5,
+            2,
+            1,
+            "16th",
+            &format!("{}{sextuplet}{}", beam("end"), mark("stop")),
+        ),
+        note("C", 5, 12, 1, "quarter", ""),
+        // The lower voice: a quarter, then a beamed triplet below.
+        "<backup><duration>24</duration></backup>".to_owned(),
+        note("G", 4, 12, 2, "quarter", ""),
+        note(
+            "F",
+            4,
+            4,
+            2,
+            "eighth",
+            &format!("{}{triplet}{}", beam("begin"), mark("start")),
+        ),
+        note(
+            "E",
+            4,
+            4,
+            2,
+            "eighth",
+            &format!("{}{triplet}", beam("continue")),
+        ),
+        note(
+            "D",
+            4,
+            4,
+            2,
+            "eighth",
+            &format!("{}{triplet}{}", beam("end"), mark("stop")),
+        ),
+    ]
+    .concat();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>12</divisions><time><beats>2</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{measure1}</measure>\
+         <measure number=\"2\">{measure2}</measure></part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("tuplets.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    assert_eq!(loaded.reduced.score.cross_cutting.tuplets.len(), 4);
+    let layout = engrave(&loaded.reduced.score).layout;
+
+    // The numbers, left to right: the triplets' 3s and the sextuplet's 6.
+    let mut numbers: Vec<_> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("tuplet"))
+        .collect();
+    numbers.sort_by(|a, b| a.position.x.0.total_cmp(&b.position.x.0));
+    assert_eq!(
+        numbers.iter().map(|g| g.glyph.as_str()).collect::<Vec<_>>(),
+        ["tuplet3", "tuplet3", "tuplet6", "tuplet3"]
+    );
+    // Only the triplet with a rest is bracketed: two lines and two hooks.
+    let brackets: Vec<_> = layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            matches!(s.provenance.source, TypedObjectId::Tuplet(_))
+                && (s.from.x.0 - s.to.x.0).abs() + (s.from.y.0 - s.to.y.0).abs() > 1e-3
+        })
+        .collect();
+    assert_eq!(brackets.len(), 4, "one bracket of four strokes");
+    let rest = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str() == "rest8th")
+        .expect("the bracketed triplet's rest");
+    let bracketed = numbers[1];
+    for stroke in &brackets {
+        for end in [&stroke.from, &stroke.to] {
+            assert!(
+                end.x.0 >= glyph_box(rest)[0] - 1e-3,
+                "the bracket starts at its first member"
+            );
+        }
+    }
+    let (bracket_line_y, hook_low) =
+        brackets
+            .iter()
+            .fold((f32::NEG_INFINITY, f32::INFINITY), |(hi, lo), s| {
+                (
+                    hi.max(s.from.y.0.max(s.to.y.0)),
+                    lo.min(s.from.y.0.min(s.to.y.0)),
+                )
+            });
+    let b = glyph_box(bracketed);
+    assert!(
+        b[1] < bracket_line_y && b[3] > bracket_line_y,
+        "the bracketed number sits on its line"
+    );
+    assert!(
+        hook_low < bracket_line_y,
+        "the hooks point down to the notes"
+    );
+
+    // Each number stands at least the clearance off every head and stem
+    // under it: above for the first three, below for the lower voice's.
+    let heads_and_stems: Vec<[f32; 4]> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("notehead"))
+        .map(glyph_box)
+        .chain(
+            layout
+                .strokes
+                .iter()
+                .filter(|s| s.from.x == s.to.x && s.from.y != s.to.y)
+                .map(stroke_box),
+        )
+        .chain(
+            layout
+                .strokes
+                .iter()
+                .filter(|s| epiphany_layout_ir::is_beam_stroke(s))
+                .map(stroke_box),
+        )
+        .collect();
+    for (k, number) in numbers.iter().enumerate() {
+        let n = glyph_box(number);
+        let under: Vec<&[f32; 4]> = heads_and_stems
+            .iter()
+            .filter(|ink| ink[0] < n[2] && ink[2] > n[0])
+            .collect();
+        assert!(!under.is_empty(), "number {k} stands over ink");
+        if k < 3 {
+            let top = under.iter().map(|i| i[3]).fold(f32::NEG_INFINITY, f32::max);
+            assert!(
+                n[1] >= top + 0.5 - 0.05,
+                "number {k} stands clear above, {} over {top}",
+                n[1]
+            );
+        } else {
+            let bottom = under.iter().map(|i| i[1]).fold(f32::INFINITY, f32::min);
+            assert!(
+                n[3] <= bottom - 0.5 + 0.05,
+                "the lower voice's number stands clear below"
+            );
+        }
+    }
+}
+
+/// The decomposition takes each measure's own meter: after a change from 4/4
+/// to 3/4 a dotted half fills each 3/4 bar as one value, where a single
+/// meter for the region would put a phantom barline inside the third bar and
+/// tie its dotted half across it; and the new meter's signature is drawn.
+#[test]
+fn notes_take_their_values_from_every_meter() {
+    use epiphany_core::TypedObjectId;
+
+    let note = |step: &str, duration: u8, kind: &str, dot: bool| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>4</octave></pitch>\
+             <duration>{duration}</duration><voice>1</voice><type>{kind}</type>{}</note>",
+            if dot { "<dot/>" } else { "" }
+        )
+    };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">\
+         <measure number=\"1\"><attributes><divisions>2</divisions><time><beats>4</beats>\
+         <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+         </attributes>{}</measure>\
+         <measure number=\"2\"><attributes><time><beats>3</beats><beat-type>4</beat-type>\
+         </time></attributes>{}</measure>\
+         <measure number=\"3\">{}</measure>\
+         <measure number=\"4\">{}</measure></part></score-partwise>",
+        note("C", 8, "whole", false),
+        note("D", 6, "half", true),
+        note("E", 6, "half", true),
+        note("F", 6, "half", true),
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("meters.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let heads = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("notehead"))
+        .count();
+    assert_eq!(heads, 4, "one head a measure");
+    let dots = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "augmentationDot")
+        .count();
+    assert_eq!(dots, 3, "each dotted half keeps its dot");
+    assert!(
+        !layout
+            .curves
+            .iter()
+            .any(|c| matches!(c.provenance.source, TypedObjectId::Pitch(_))),
+        "no note is split into tied parts"
+    );
+    // The 3/4 signature drawn where it begins.
+    assert!(layout.glyphs.iter().any(|g| g.glyph.as_str() == "timeSig3"));
+}
+
+/// A clef change is drawn smaller than a leading clef, where it takes effect:
+/// mid-measure just before its note, which then reads in the new clef; at a
+/// measure's start before that barline, so a change opening a system ends the
+/// system before as a courtesy while the new system's lead shows it. A clef
+/// restated draws nothing, and an octave clef's numeral stands over its clef.
+#[test]
+fn clef_changes_are_drawn_where_they_take_effect() {
+    use epiphany_cli::omissions::omissions;
+    use epiphany_core::TypedObjectId;
+
+    let clef = |sign: &str, line: u8, change: i8| {
+        format!(
+            "<attributes><clef><sign>{sign}</sign><line>{line}</line>\
+             <clef-octave-change>{change}</clef-octave-change></clef></attributes>"
+        )
+    };
+    let note = |step: &str, octave: u8| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>1</duration><voice>1</voice><type>quarter</type></note>"
+        )
+    };
+    let b4 = note("B", 4);
+    let d3 = note("D", 3);
+    let mut measures = vec![
+        format!(
+            "<attributes><divisions>1</divisions><time><beats>4</beats>\
+             <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+             </attributes>{b4}{b4}{b4}{b4}"
+        ),
+        // Mid-measure: D3 below the treble staff, then on the bass staff's
+        // middle line.
+        format!("{b4}{d3}{}{d3}{d3}", clef("F", 4, 0)),
+        format!("{}{b4}{b4}{b4}{b4}", clef("G", 2, 0)),
+        // Restated: nothing to draw.
+        format!("{}{b4}{b4}{b4}{b4}", clef("G", 2, 0)),
+        format!("{b4}{}{b4}{b4}{b4}", clef("G", 2, 1)),
+    ];
+    // A change at every measure's start from here, so some open systems.
+    for m in 0..55 {
+        let (sign, line) = if m % 2 == 0 { ("F", 4) } else { ("G", 2) };
+        measures.push(format!("{}{d3}{d3}{d3}{d3}", clef(sign, line, 0)));
+    }
+    let body: String = measures
+        .iter()
+        .enumerate()
+        .map(|(m, content)| format!("<measure number=\"{}\">{content}</measure>", m + 1))
+        .collect();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">{body}</part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("clef_changes.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let engraved = engrave(&loaded.reduced.score);
+    let layout = &engraved.layout;
+    let found = omissions(&loaded.reduced.score, layout, &engraved.diagnostics);
+    assert_eq!(found.kinds.get("clef change"), None, "{found:?}");
+    assert_eq!(
+        found.kinds.get("clef of another shape at a system start"),
+        None
+    );
+
+    let changes: Vec<_> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().ends_with("ClefChange"))
+        .collect();
+    assert_eq!(changes.len(), 3 + 55, "every change but the restatement");
+
+    let systems: Vec<_> = layout.systems().collect();
+    assert!(systems.len() > 2, "the score wraps");
+    let in_system = |s: usize, keep: &dyn Fn(&epiphany_layout_ir::ResolvedGlyph) -> bool| {
+        let mut glyphs: Vec<&epiphany_layout_ir::ResolvedGlyph> = systems[s]
+            .primitives
+            .glyphs
+            .iter()
+            .map(|&i| &layout.glyphs[i as usize])
+            .filter(|g| keep(g))
+            .collect();
+        glyphs.sort_by(|a, b| a.position.x.0.total_cmp(&b.position.x.0));
+        glyphs
+    };
+    let head = |g: &epiphany_layout_ir::ResolvedGlyph| g.glyph.as_str().starts_with("notehead");
+    let barline = |g: &epiphany_layout_ir::ResolvedGlyph| g.glyph.as_str() == "barlineSingle";
+    let left = |g: &epiphany_layout_ir::ResolvedGlyph| g.position.x.0 + g.bounding_box.left.0;
+    let right = |g: &epiphany_layout_ir::ResolvedGlyph| g.position.x.0 + g.bounding_box.right.0;
+
+    // The first system: measures 1 to 5, in order.
+    let heads = in_system(0, &head);
+    let bars = in_system(0, &barline);
+    let first_changes = in_system(0, &|g| g.glyph.as_str().ends_with("ClefChange"));
+    // Mid-measure, between the second and third notes of measure 2, which
+    // then reads in the bass clef: six staff spaces higher.
+    let bass = first_changes[0];
+    assert_eq!(bass.glyph.as_str(), "fClefChange");
+    let (before, after) = (heads[5], heads[6]);
+    assert!(right(before) <= left(bass) && right(bass) + 0.5 <= left(after) + 1e-3);
+    assert!(
+        (after.position.y.0 - before.position.y.0 - 6.0).abs() < 1e-3,
+        "{} then {}",
+        before.position.y.0,
+        after.position.y.0
+    );
+    // At measure 3's start, before the barline closing measure 2 and after
+    // its last note.
+    let treble = first_changes[1];
+    assert_eq!(treble.glyph.as_str(), "gClefChange");
+    assert!(right(heads[7]) <= left(treble));
+    assert!(right(treble) + 0.5 <= left(bars[1]) + 1e-3 && left(bars[1]) <= left(heads[8]));
+    // The octave clef in measure 5: its numeral centred over it.
+    let octave = first_changes[2];
+    let numeral = in_system(0, &|g| g.glyph.as_str() == "clef8")
+        .into_iter()
+        .next()
+        .expect("an octave clef draws its numeral");
+    let centre = |g: &epiphany_layout_ir::ResolvedGlyph| (left(g) + right(g)) / 2.0;
+    assert!((centre(numeral) - centre(octave)).abs() < 1e-3);
+    assert!(
+        numeral.position.y.0 + numeral.bounding_box.bottom.0
+            >= octave.position.y.0 + octave.bounding_box.top.0 - 0.1 - 1e-3
+    );
+
+    // Before the engraver re-spaces, the constrained layout's own geometry
+    // keeps every change clear of what follows it.
+    let constrained =
+        epiphany_layout_ir::to_constrained(&epiphany_layout_ir::to_logical(&loaded.reduced.score));
+    let source_box = |g: &epiphany_layout_ir::GlyphObject| {
+        [
+            g.baseline.x.0 + g.bounding_box.left.0,
+            g.baseline.y.0 + g.bounding_box.bottom.0,
+            g.baseline.x.0 + g.bounding_box.right.0,
+            g.baseline.y.0 + g.bounding_box.top.0,
+        ]
+    };
+    let source_changes: Vec<_> = constrained
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().ends_with("ClefChange"))
+        .collect();
+    assert_eq!(source_changes.len(), changes.len());
+    for change in &source_changes {
+        for other in &constrained.glyphs {
+            if std::ptr::eq(*change, other) || other.glyph.as_str().starts_with("clef") {
+                continue;
+            }
+            assert!(
+                !boxes_overlap(source_box(change), source_box(other)),
+                "{} overlaps {} before spacing",
+                change.glyph.as_str(),
+                other.glyph.as_str()
+            );
+        }
+    }
+
+    // Every later system opens on a measure whose change ends the system
+    // before, after its last note and before its closing barline, and its
+    // lead shows the clef that change makes.
+    for s in 1..systems.len() {
+        let before = in_system(s - 1, &|g| {
+            g.glyph.as_str().contains("Clef") || head(g) || barline(g)
+        });
+        let n = before.len();
+        let (courtesy, closing) = (before[n - 2], before[n - 1]);
+        assert!(
+            courtesy.glyph.as_str().ends_with("ClefChange") && barline(closing),
+            "system {s}: {} then {}",
+            courtesy.glyph.as_str(),
+            closing.glyph.as_str()
+        );
+        let lead = in_system(s, &|g| {
+            matches!(g.provenance.source, TypedObjectId::StaffInstance(_))
+                && g.glyph.as_str().contains("Clef")
+        })[0];
+        assert_eq!(
+            lead.glyph.as_str().replace("Change", ""),
+            courtesy.glyph.as_str().replace("Change", ""),
+            "system {s}"
+        );
+    }
+}
+
+/// A tuplet opening on a hidden rest still engraves: its bracket rides the
+/// columns its members draw in, since a column nothing draws in has no slot
+/// to anchor it.
+#[test]
+fn a_tuplet_opening_on_a_hidden_rest_still_engraves() {
+    let triplet = |inner: &str, edge: &str| {
+        format!(
+            "<note{inner}><duration>2</duration><voice>1</voice><type>eighth</type>\
+             <time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes>\
+             </time-modification>{edge}</note>"
+        )
+    };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>6</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{}{}{}{}{}{}</measure>\
+         </part></score-partwise>",
+        triplet(
+            " print-object=\"no\"><rest/",
+            "<notations><tuplet type=\"start\" bracket=\"yes\"/></notations>"
+        ),
+        triplet("><pitch><step>C</step><octave>5</octave></pitch", ""),
+        triplet(
+            "><pitch><step>D</step><octave>5</octave></pitch",
+            "<notations><tuplet type=\"stop\"/></notations>"
+        ),
+        quarter("E"),
+        quarter("F"),
+        quarter("G"),
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("hidden_rest_tuplet.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    assert_eq!(loaded.reduced.score.cross_cutting.tuplets.len(), 1);
+    let layout = engrave(&loaded.reduced.score).layout;
+    assert_eq!(layout.pages.len(), 1, "the score engraves");
+    assert!(layout.glyphs.iter().any(|g| g.glyph.as_str() == "tuplet3"));
+    let bracket = layout
+        .strokes
+        .iter()
+        .filter(|s| matches!(s.provenance.source, epiphany_core::TypedObjectId::Tuplet(_)))
+        .count();
+    assert!(bracket >= 2, "the bracket is drawn: {bracket} strokes");
+}
+
+fn quarter(step: &str) -> String {
+    format!(
+        "<note><pitch><step>{step}</step><octave>5</octave></pitch><duration>6</duration>\
+         <voice>1</voice><type>quarter</type></note>"
+    )
+}
+
+/// Every stem stands on a head of its own note, and every head that takes a
+/// stem has its note's stem, after spacing and justification: told apart by
+/// provenance, not by nearness. The glyph nearest a stem can belong to
+/// another column: a beamed sextuplet's number stands between its third and
+/// fourth notes, in the fourth's column, just left of the third's up-stem;
+/// and a whole-note chord's displaced head on the lower staff stands just
+/// right of the next column's head on the upper staff.
+#[test]
+fn a_stem_stands_on_its_own_heads() {
+    use std::collections::BTreeMap;
+
+    use epiphany_core::{Event, TypedObjectId};
+
+    let note = |step: &str, alter: i8, octave: u8, duration: u8, kind: &str, extra: &str| {
+        format!(
+            "<note><pitch><step>{step}</step><alter>{alter}</alter><octave>{octave}</octave>\
+             </pitch><duration>{duration}</duration><voice>1</voice><type>{kind}</type>\
+             {extra}<staff>1</staff></note>"
+        )
+    };
+    let beams = |state: &str, levels: u8| -> String {
+        (1..=levels)
+            .map(|n| format!("<beam number=\"{n}\">{state}</beam>"))
+            .collect()
+    };
+    let tuplet = |actual: u8, normal: u8, mark: &str| {
+        let modification = format!(
+            "<time-modification><actual-notes>{actual}</actual-notes>\
+             <normal-notes>{normal}</normal-notes></time-modification>"
+        );
+        match mark {
+            "" => modification,
+            _ => format!("{modification}<notations><tuplet type=\"{mark}\"/></notations>"),
+        }
+    };
+    let rest = "<note><rest/><duration>12</duration><voice>1</voice><type>quarter</type>\
+                <staff>1</staff></note>";
+    // Divisions 12: a sextuplet sixteenth is 2, a quarter 12.
+    let sextuplets: String = (0..2)
+        .map(|_| {
+            ["D", "E", "F", "G", "A", "G"]
+                .iter()
+                .enumerate()
+                .map(|(i, step)| {
+                    let (state, mark) = match i {
+                        0 => ("begin", "start"),
+                        5 => ("end", "stop"),
+                        _ => ("continue", ""),
+                    };
+                    let extra = format!("{}{}", beams(state, 2), tuplet(6, 4, mark));
+                    note(step, 0, 4, 2, "16th", &extra)
+                })
+                .collect::<String>()
+        })
+        .collect::<String>()
+        + &note("G", 0, 4, 12, "quarter", "")
+        + &note("B", 0, 4, 12, "quarter", "");
+    let after_rests = [
+        rest.to_string(),
+        note("A", 0, 4, 12, "quarter", ""),
+        rest.to_string(),
+        note("F", 1, 4, 12, "quarter", ""),
+    ]
+    .concat();
+    let whole_second = "<note><pitch><step>C</step><octave>3</octave></pitch>\
+         <duration>48</duration><voice>5</voice><type>whole</type><staff>2</staff></note>\
+         <note><chord/><pitch><step>D</step><octave>3</octave></pitch><duration>48</duration>\
+         <voice>5</voice><type>whole</type><staff>2</staff></note>";
+    let measure_rest = "<note><rest measure=\"yes\"/><duration>48</duration><voice>5</voice>\
+         <staff>2</staff></note>";
+    let body: String = (1..=16)
+        .map(|m| {
+            let attributes = if m == 1 {
+                "<attributes><divisions>12</divisions><time><beats>4</beats>\
+                 <beat-type>4</beat-type></time><staves>2</staves><clef number=\"1\">\
+                 <sign>G</sign><line>2</line></clef><clef number=\"2\"><sign>F</sign>\
+                 <line>4</line></clef></attributes>"
+            } else {
+                ""
+            };
+            let (upper, lower) = if m % 2 == 0 {
+                (&after_rests, whole_second)
+            } else {
+                (&sextuplets, measure_rest)
+            };
+            format!(
+                "<measure number=\"{m}\">{attributes}{upper}<backup><duration>48</duration>\
+                 </backup>{lower}</measure>"
+            )
+        })
+        .collect();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">{body}</part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("stems_on_heads.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let score = &loaded.reduced.score;
+    let layout = epiphany_cli::engrave_loaded(&loaded).layout;
+    assert!(
+        layout.systems().count() > 1,
+        "the score wraps, so its systems are justified"
+    );
+
+    let mut event_of = BTreeMap::new();
+    for event in score.events.iter() {
+        if let Event::Pitched(pitched) = event {
+            for pitch in &pitched.pitches {
+                event_of.insert(pitch.id, pitched.id);
+            }
+        }
+    }
+    // Each note's heads, (left, right, y, takes a stem), and its stems,
+    // (x, low, high).
+    let mut heads: BTreeMap<_, Vec<(f32, f32, f32, bool)>> = BTreeMap::new();
+    for glyph in &layout.glyphs {
+        let name = glyph.glyph.as_str();
+        let (true, TypedObjectId::Pitch(pitch)) =
+            (name.starts_with("notehead"), glyph.provenance.source)
+        else {
+            continue;
+        };
+        let [left, _, right, _] = glyph_box(glyph);
+        heads.entry(event_of[&pitch]).or_default().push((
+            left,
+            right,
+            glyph.position.y.0,
+            name != "noteheadWhole",
+        ));
+    }
+    let mut stems: BTreeMap<_, Vec<(f32, f32, f32)>> = BTreeMap::new();
+    for stroke in &layout.strokes {
+        let TypedObjectId::Event(event) = stroke.provenance.source else {
+            continue;
+        };
+        if stroke.from.x.0 != stroke.to.x.0 || stroke.from.y.0 == stroke.to.y.0 {
+            continue;
+        }
+        stems.entry(event).or_default().push((
+            stroke.from.x.0,
+            stroke.from.y.0.min(stroke.to.y.0),
+            stroke.from.y.0.max(stroke.to.y.0),
+        ));
+    }
+    // A stem touches a head it stands at the side of, reaching its height.
+    let touches = |(x, low, high): (f32, f32, f32), (left, right, y, _): (f32, f32, f32, bool)| {
+        left - 0.08 <= x && x <= right + 0.08 && low - 0.1 <= y && y <= high + 0.1
+    };
+    let mut apart = Vec::new();
+    for (event, own) in &heads {
+        let theirs = stems.get(event).map(Vec::as_slice).unwrap_or(&[]);
+        for &stem in theirs {
+            if !own.iter().any(|&head| touches(stem, head)) {
+                apart.push(format!("{event:?}: a stem at {stem:?} on none of {own:?}"));
+            }
+        }
+        for &head in own.iter().filter(|head| head.3) {
+            if !theirs.iter().any(|&stem| touches(stem, head)) {
+                apart.push(format!("{event:?}: a head at {head:?} has no stem"));
+            }
+        }
+    }
+    let stemmed: usize = stems.values().map(Vec::len).sum();
+    assert_eq!(stemmed, 128, "every quarter and sixteenth has its stem");
+    assert!(apart.is_empty(), "{apart:#?}");
+}
+
+/// A rest filling a pickup keeps the value the file writes, as a rest filling
+/// a full bar is a measure rest: a pickup is not a measure's worth of
+/// silence. The omission census reads both alike.
+#[test]
+fn a_rest_filling_a_pickup_keeps_its_value() {
+    let xml = "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">\
+         <measure number=\"0\" implicit=\"yes\"><attributes><divisions>1</divisions>\
+         <time><beats>3</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line>\
+         </clef></attributes><note><rest/><duration>1</duration><voice>1</voice>\
+         <type>quarter</type></note></measure>\
+         <measure number=\"1\"><note><rest measure=\"yes\"/><duration>3</duration>\
+         <voice>1</voice></note></measure>\
+         <measure number=\"2\"><note><rest/><duration>3</duration><voice>1</voice>\
+         <type>half</type><dot/></note></measure></part></score-partwise>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("pickup_rest.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let engraved = engrave(&loaded.reduced.score);
+    let rests: Vec<&str> = engraved
+        .layout
+        .glyphs
+        .iter()
+        .map(|g| g.glyph.as_str())
+        .filter(|g| g.starts_with("rest"))
+        .collect();
+    assert_eq!(rests, vec!["restQuarter", "restWhole", "restWhole"]);
+    let found = omissions(
+        &loaded.reduced.score,
+        &engraved.layout,
+        &engraved.diagnostics,
+    );
+    assert_eq!(
+        found.kinds.get("rest drawn at another value"),
+        None,
+        "{found:?}"
+    );
+}
+
+/// A hand-written score through the whole pipeline, import to page, locked
+/// to a golden. Its features are counted first, so the golden cannot lock a
+/// page that lost one: a pickup whose rests keep their values, a key
+/// signature, a meter change, beams, dots, accidentals and a second,
+/// triplets beamed and bracketed, two voices on a staff, a tie, a slur, and
+/// a grand staff that changes clef mid-measure and back. Regenerate
+/// deliberately, with renders beside it, with `UPDATE_GOLDEN=1`.
+#[test]
+fn a_hand_written_score_engraves_to_its_golden() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("notation.svg");
+    let _ = std::fs::remove_file(&out);
+    let status = Command::new(env!("CARGO_BIN_EXE_epiphany"))
+        .arg("render")
+        .arg(fixture("notation.musicxml"))
+        .args(["--page", "1", "-o"])
+        .arg(&out)
+        .output()
+        .expect("runs");
+    assert!(status.status.success(), "{status:?}");
+    let svg = std::fs::read_to_string(&out).expect("an SVG was written");
+
+    let count = |needle: &str| svg.matches(needle).count();
+    for (glyph, expected) in [
+        ("restQuarter", 6),
+        ("restHalf", 1),
+        ("restWhole", 1),
+        ("augmentationDot", 5),
+        ("accidentalSharp", 3),
+        ("accidentalNatural", 1),
+        ("accidentalFlat", 6),
+        ("timeSig3", 3),
+        ("tuplet3", 2),
+        ("gClefChange", 1),
+        ("fClefChange", 1),
+        ("brace", 1),
+    ] {
+        assert_eq!(
+            count(&format!("data-glyph=\"{glyph}\"")),
+            expected,
+            "{glyph}"
+        );
+    }
+    assert_eq!(count("data-kind=\"curve\""), 2, "a tie and a slur");
+    assert!(count("stroke-width=\"0.5\"") >= 2, "the two beams");
+    // The omission census agrees: nothing the file holds is drawn otherwise.
+    let loaded = load(&fixture("notation.musicxml")).expect("loads");
+    let engraved = epiphany_cli::engrave_loaded(&loaded);
+    let found = omissions(
+        &loaded.reduced.score,
+        &engraved.layout,
+        &engraved.diagnostics,
+    );
+    assert!(found.kinds.is_empty(), "{found:?}");
+
+    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/notation.page-1.svg");
+    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        std::fs::create_dir_all(golden.parent().expect("a directory")).expect("created");
+        std::fs::write(&golden, &svg).expect("golden written");
+    }
+    let expected = std::fs::read_to_string(&golden)
+        .unwrap_or_else(|e| panic!("{}: {e}; regenerate with UPDATE_GOLDEN=1", golden.display()));
+    assert!(
+        expected == svg,
+        "the page differs from {}; if intended, regenerate with UPDATE_GOLDEN=1",
+        golden.display()
+    );
 }

@@ -194,6 +194,31 @@ pub fn omissions(
         .collect();
     meter_lengths.sort();
 
+    // A tuplet member's written value is its sounding span scaled by the
+    // ratio of every tuplet holding it, its own and their parents'.
+    let tuplet_of: BTreeMap<epiphany_core::TupletId, &epiphany_core::Tuplet> = score
+        .cross_cutting
+        .tuplets
+        .iter()
+        .map(|t| (t.id, t))
+        .collect();
+    let mut written_scale: BTreeMap<epiphany_core::EventId, RationalTime> = BTreeMap::new();
+    for tuplet in &score.cross_cutting.tuplets {
+        let mut scale = RationalTime::from_int(1);
+        let mut next = Some(tuplet);
+        let mut seen = BTreeSet::new();
+        while let Some(t) = next.filter(|t| seen.insert(t.id)) {
+            let ratio =
+                RationalTime::new(i64::from(t.ratio.actual()), i64::from(t.ratio.notated()))
+                    .expect("a tuplet ratio has no zero term");
+            scale = scale.mul(&ratio);
+            next = t.parent.and_then(|p| tuplet_of.get(&p).copied());
+        }
+        for member in &tuplet.members {
+            written_scale.insert(*member, scale.clone());
+        }
+    }
+
     // Events, by what their durations and contents call for.
     for instance in &instances {
         let mut measures: Vec<RationalTime> = instance
@@ -202,19 +227,22 @@ pub fn omissions(
             .filter_map(|m| offset(&m.start))
             .collect();
         measures.sort();
-        let measure_span = |onset: &RationalTime| -> Option<(RationalTime, RationalTime)> {
+        // The measure holding an onset: its start, its length, and whether
+        // it is a full bar. A first measure shorter than its bar is a pickup,
+        // whose rests keep their values.
+        let measure_span = |onset: &RationalTime| -> Option<(RationalTime, RationalTime, bool)> {
             let i = measures.partition_point(|m| m <= onset).checked_sub(1)?;
             let start = measures[i].clone();
+            let bar = meter_lengths
+                .partition_point(|(o, _)| o <= &start)
+                .checked_sub(1)
+                .map(|k| meter_lengths[k].1.clone());
             let length = match measures.get(i + 1) {
                 Some(next) => next.sub(&start),
-                None => {
-                    let k = meter_lengths
-                        .partition_point(|(o, _)| o <= &start)
-                        .checked_sub(1)?;
-                    meter_lengths[k].1.clone()
-                }
+                None => bar.clone()?,
             };
-            Some((start, length))
+            let pickup = i == 0 && bar.as_ref().is_some_and(|bar| &length < bar);
+            Some((start, length, !pickup))
         };
         for voice in &instance.voices {
             for id in &voice.events {
@@ -245,9 +273,13 @@ pub fn omissions(
                     });
                     continue;
                 }
-                let whole_measure = measure_span(&onset.0)
-                    .is_some_and(|(start, length)| start == onset.0 && length == duration.0);
-                let value = notated(&duration.0);
+                let whole_measure = measure_span(&onset.0).is_some_and(|(start, length, full)| {
+                    full && start == onset.0 && length == duration.0
+                });
+                let value = notated(&match written_scale.get(id) {
+                    Some(scale) => duration.0.mul(scale),
+                    None => duration.0.clone(),
+                });
                 match event {
                     Event::Rest(_) => {
                         let drawn: Vec<&str> = own
@@ -360,11 +392,14 @@ pub fn omissions(
                 .filter(|g| g.provenance.source == source)
                 .map(|g| g.glyph.as_str())
                 .collect();
-            let clefs: Vec<&str> = mine
+            // The system's clefs from the left, its lead's first.
+            let mut placed: Vec<(f32, &str)> = owned
                 .iter()
-                .copied()
-                .filter(|g| g.contains("Clef"))
+                .filter(|g| g.provenance.source == source && g.glyph.as_str().contains("Clef"))
+                .map(|g| (g.position.x.0, g.glyph.as_str()))
                 .collect();
+            placed.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let clefs: Vec<&str> = placed.into_iter().map(|(_, name)| name).collect();
             *clefs_drawn.entry(instance.id).or_default() += clefs.len();
             *systems_with.entry(instance.id).or_default() += 1;
             let in_effect = |anchors: Vec<(RationalTime, usize)>| {
@@ -395,7 +430,9 @@ pub fn omissions(
                         };
                         if !drawn.contains(shape) {
                             out.add("clef of another shape at a system start");
-                        } else if clef.octave_shift != 0 && !drawn.contains("8v") {
+                        } else if clef.octave_shift != 0
+                            && epiphany_layout_ir::clef_glyph_for(&clef) != Some(*drawn)
+                        {
                             out.add("clef octave mark");
                         }
                     }
@@ -416,10 +453,16 @@ pub fn omissions(
         }
     }
     for instance in &instances {
-        let changes = instance
+        // A change is a clef other than the one in force before it.
+        let mut sequence: Vec<(RationalTime, epiphany_core::Clef)> = instance
             .clef_sequence
             .iter()
-            .filter(|c| offset(&c.anchor).is_some_and(|o| o != RationalTime::zero()))
+            .filter_map(|c| Some((offset(&c.anchor)?, c.clef)))
+            .collect();
+        sequence.sort_by(|a, b| a.0.cmp(&b.0));
+        let changes = sequence
+            .windows(2)
+            .filter(|w| w[1].0 != RationalTime::zero() && w[1].1 != w[0].1)
             .count();
         let drawn = clefs_drawn.get(&instance.id).copied().unwrap_or(0);
         let at_starts = systems_with.get(&instance.id).copied().unwrap_or(0);

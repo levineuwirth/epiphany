@@ -34,7 +34,7 @@ use epiphany_core::{
     EventId, PitchId, PitchSpaceId, RegionId, Score, StaffInstanceId, TypedObjectId, VoiceId,
 };
 use epiphany_layout_ir::{BarrierScope, EditBarrier, EditContext, EditOracle, ExtensionRef};
-use epiphany_ops::{OperationKind, OperationKindTag};
+use epiphany_ops::{OperationKind, OperationKindTag, SetClefOp, SetKeySignatureOp};
 
 /// One active extension declaration's barrier view: the declaring extension
 /// (named when its barrier refuses an edit, and recorded for tombstoning when
@@ -498,6 +498,12 @@ pub(crate) fn subjects_of(kind: &OperationKind, score: &Score) -> BarrierSubject
                 Some(op.staff_instance),
             ),
         ),
+        // X3.6: a clef or key change edits its staff instance's sequence.
+        OperationKind::SetClef(SetClefOp { instance, .. })
+        | OperationKind::SetKeySignature(SetKeySignatureOp { instance, .. }) => one(
+            TypedObjectId::StaffInstance(*instance),
+            ctx(region_of_staff_instance(score, *instance), Some(*instance)),
+        ),
         OperationKind::SetMetadata(_)
         | OperationKind::DeclareTransaction(_)
         | OperationKind::SetCanvasLayoutDefaults(_)
@@ -510,6 +516,22 @@ pub(crate) fn subjects_of(kind: &OperationKind, score: &Score) -> BarrierSubject
             TypedObjectId::RepeatStructure(op.repeat_structure_id()),
             repeat_context(score, &op.repeat),
         ),
+        // X3.1: a tuplet is a grouping over events, so — exactly like a
+        // cross-cutting create — it names its own object in the context its
+        // members resolve to.
+        OperationKind::CreateTuplet(op) => {
+            let members: Vec<TypedObjectId> = op
+                .tuplet
+                .members
+                .iter()
+                .copied()
+                .map(TypedObjectId::Event)
+                .collect();
+            one(
+                TypedObjectId::Tuplet(op.tuplet_id()),
+                structure_context(score, &members),
+            )
+        }
         OperationKind::DeleteRepeatStructure(op) => {
             let context = score
                 .cross_cutting

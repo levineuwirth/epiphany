@@ -461,6 +461,23 @@ pub fn measure(id: MeasureId, time_signature: TimeSignatureId, explicit_number: 
     }
 }
 
+/// A 3:2 [`Tuplet`](epiphany_core::Tuplet) (X3.1) of the given `members`, with no parent: the value
+/// a `CreateTuplet` mints. Its required total is a twelfth of a whole note
+/// per member, the sounding length of a triplet eighth, so three members
+/// fill a quarter.
+pub fn tuplet(id: epiphany_core::TupletId, members: Vec<EventId>) -> epiphany_core::Tuplet {
+    let required_total = MusicalDuration(
+        epiphany_core::RationalTime::new(members.len() as i64, 12).expect("a nonzero denominator"),
+    );
+    epiphany_core::Tuplet {
+        id,
+        ratio: epiphany_core::TupletRatio::new(3, 2).expect("3:2 is not degenerate"),
+        members,
+        parent: None,
+        required_total,
+    }
+}
+
 /// Canvas layout defaults with an `nth`-distinct page width (genesis tranche
 /// G2a) — distinct `nth` give distinct `CanvasLayoutDefaults` values so a
 /// harness can drive concurrent `SetCanvasLayoutDefaults`s, an advisory LWW

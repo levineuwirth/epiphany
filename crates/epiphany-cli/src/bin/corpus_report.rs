@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use epiphany_cli::omissions::omissions;
-use epiphany_cli::{engrave, load, page, svg, Loaded};
+use epiphany_cli::{engrave_loaded, load, page, svg, Loaded};
 use epiphany_musicxml::source::FeatureClass;
 
 struct Score {
@@ -219,7 +219,7 @@ fn main() -> ExitCode {
             }
         };
         let (events, rejected) = report(&loaded, &mut text);
-        let engraved = engrave(&loaded.reduced.score);
+        let engraved = engrave_loaded(&loaded);
         let omitted = omissions(
             &loaded.reduced.score,
             &engraved.layout,

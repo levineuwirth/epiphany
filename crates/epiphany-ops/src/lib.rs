@@ -158,6 +158,44 @@ pub mod vectors;
 ///   Either alone would require this bump. A base materialized under `0` holds
 ///   state this version would not have computed, so it must be rebuilt rather
 ///   than reused.
+/// * `2` — **X3** (2026-10-03). X3.1 adds `CreateTuplet` (operation_catalog
+///   §CreateTuplet) and keeps tuplet membership in the referent index in both
+///   reduction modes; X3.5 admits a pickup (operation_catalog
+///   §CreateMeasure). On histories of the operation kinds that existed before
+///   it, three **reduction verdicts** change, each intended:
+///   - a base-free `DeleteEvent` declaring `RewriteTuplets`, or
+///     `CascadeDeleteTuplets` not naming exactly the live tuplets that hold
+///     the event, is refused `TupletCompensationInvalid`, as graph-aware
+///     reduction refuses it, where version `1` applied it base-free with a
+///     `TupletCompensated` repair against a tuplet no operation had minted
+///     (and, for the cascade, that id tombstoned), on any history at all;
+///   - a `ModifyEvent` changing a tuplet member's duration is refused
+///     `EventDurationInvalid`, where version `1` applied it over a base
+///     holding the tuplet and broke invariant 16;
+///   - a `CreateMeasure` whose predecessor is its instance's only live
+///     measure, and which starts less than a full bar after it, applies (the
+///     first measure is a pickup), where version `1` refused it
+///     `MeasureMeterMismatch`.
+///
+///   And two operations produce different **canonical reduced state** over a
+///   base that already holds a tuplet, each intended:
+///   - a `DeleteEvent` whose `ReplaceWithRest` compensation replaces a
+///     member puts the rest in the member's place in the index, so its
+///     effect no longer carries the `AttachmentTombstoned` repair the stale
+///     index used to record against the tuplet;
+///   - a member tombstoned with no compensation to declare, as a cue event
+///     cascaded out from under the tuplet is, cascade-deletes the tuplet: a
+///     `CascadeDeleted` repair, and the tuplet and any decomposition
+///     attachment naming it removed from the graph, where version `1`
+///     recorded `AttachmentTombstoned` and left the tuplet naming a dead
+///     member.
+///
+///   Locked by `version_2_verdicts_on_histories_that_make_no_tuplet` (the
+///   first two verdicts), `g3b_create_measure_pickup_successor_applies_end_to_end`
+///   (the third) and `a_base_tuplet_follows_its_members_replacement_and_cascade`
+///   (the state). The same rule cascades a tuplet whose member an undo
+///   removes, on histories that create the tuplet, which version `1` could
+///   not reduce (`undo_cascades_a_tuplet_whose_members_it_removes`).
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
@@ -178,7 +216,7 @@ pub mod vectors;
 /// `epiphany-bundle` in order to use that crate's `ReductionAlgorithmVersion`
 /// wrapper. The wrapper is constructed at the composition boundary by whoever
 /// depends on both (P13-S27 pin 1, §0.3).
-pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 1;
+pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 2;
 
 pub use anomaly::{
     AnomalousReplicaSegment, IntegrityAnomaly, IntegrityAnomalyKind, ReplicaAnomalyReason,
@@ -203,15 +241,16 @@ pub use payload::{
     operation_block_introduced_minor, ChangeRegionTimeModelOp, CreateAnalysisLayerOp,
     CreateCrossCuttingOp, CreateInstrumentOp, CreateMeasureOp, CreatePartDefinitionOp,
     CreateRegionOp, CreateRepeatStructureOp, CreateStaffGroupOp, CreateStaffInstanceOp,
-    CreateStaffOp, CreateViewOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp,
-    DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteRepeatStructureOp,
-    DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
-    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationKindTag,
-    OperationPayload, PositionRemapping, ResolveConflictPayload, ResolveEquivocationPayload,
-    RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp, SetMetricGridOp,
-    SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp,
-    SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransactionCategory,
-    TransactionDescriptor, TransposeIntervalOp, TransposeOp, TupletCompensation,
+    CreateStaffOp, CreateTupletOp, CreateViewOp, CreateVoiceOp, CrossCuttingValue,
+    DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
+    DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
+    InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
+    OperationKind, OperationKindTag, OperationPayload, PositionRemapping, ResolveConflictPayload,
+    ResolveEquivocationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetClefOp,
+    SetKeySignatureOp, SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp,
+    SetTempoSegmentOp, SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp,
+    SetUserSystemBreakOp, TransactionCategory, TransactionDescriptor, TransposeIntervalOp,
+    TransposeOp, TupletCompensation,
 };
 pub use reduce::{
     canonical_reduction_order, measure_anchor_relation_for_agreement_test, GraphMaterialization,

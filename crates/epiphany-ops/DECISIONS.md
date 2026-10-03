@@ -2294,3 +2294,96 @@ pair of hooks from each side.
 **No `epiphany-bundle` change of any kind**, mirroring G3a: `Measure`'s one
 wire layout never gained a `schema_major()` arm, so the accept-set never
 moved.
+
+## X3.1 — `CreateTuplet`, kind/tag 40, epoch 13 (2026-10-03)
+
+The score graph has held tuplets since Pass 11 (`CrossCuttingStructures.tuplets`,
+invariant 16, the decomposition pre-pass's `decompose_tuplet_member`), but no
+operation could make one, so an import carried every tuplet's notes at exact
+positions and recorded the grouping unsupported.
+
+**A dedicated kind, not a `CrossCuttingValue` variant.** Tuplets live in the
+cross-cutting registry, as repeats do, and for the same reason do not ride the
+cross-cutting operations: those admit exactly tie, slur, beam and spanner, and
+a fifth `CrossCuttingValue` variant would reach `CreateCrossCutting`,
+`ModifyCrossCutting` and `DeleteCrossCutting` at once, with modify and delete
+semantics for tuplets nobody has designed. `CreateTuplet` carries the full
+`Tuplet` (bare-value shape, like `CreateView`); `Tuplet` already had a codec
+and a text projection from `struct_codec!`, and becomes a `CanonicalValue`.
+Schema major 0 (no versioned walk), epoch 13. No `DeleteTuplet` yet: undo of
+the create removes it, and authoring will want its own.
+
+**Preconditions read the graph-independent indices.** Members live, parent
+live, at least one member, and the members' durations from `voice_occupancy`
+summing to `required_total` (`EventDurationInvalid` otherwise; no new
+`PreconditionFailureReason`). The members enter `structures`, the referent
+index, in both modes — so `DeleteEvent`'s tuplet-compensation precondition now
+reads membership from the index (`containing_tuplets`) rather than from the
+graph, which only graph-aware reduction has; a `ReplaceWithRest` compensation
+rewrites the index entry to the rest; `ModifyEvent` refuses a member's
+duration change; and a member tombstoned with no compensation (undo, cue
+cascade) cascades the tuplet through the rule table's new `Tuplet` arm, with
+`materialize_graph_delete` removing it from the graph and `remove_tuplets`
+dropping any decomposition attachment naming it.
+
+**Reduction version 1 → 2.** Reading membership from the index changes two
+verdicts on histories that make no tuplet. Base-free, a `DeleteEvent`
+declaring `RewriteTuplets`, or `CascadeDeleteTuplets` not naming exactly the
+live tuplets that hold the event, is now refused `TupletCompensationInvalid`,
+as graph-aware reduction refuses it; it used to apply, recording a
+compensation against a tuplet no operation had minted and, for the cascade,
+tombstoning that id. And a `ModifyEvent` changing a member's duration is
+refused `EventDurationInvalid`, where over a base holding the tuplet it used
+to apply and break invariant 16. Both are intended: the modes now agree, and
+neither old verdict kept the graph consistent. Over a base already holding a
+tuplet, two operations also produce different state (the
+`AttachmentTombstoned` repair the stale index used to record after a
+`ReplaceWithRest` is gone; a cue cascade now cascades its tuplet). An earlier
+draft of this entry said every verdict was unchanged, which was wrong. The
+`Bumps` entry lists every change version 2 makes, X3.5's pickup verdict with
+them. Locked by `version_2_verdicts_on_histories_that_make_no_tuplet` and
+`a_base_tuplet_follows_its_members_replacement_and_cascade`.
+
+## X3.5 — a pickup's successor applies (2026-10-03)
+
+`create_measure`'s clause 3 compared every successor's distance with the
+governing signature's full bar, so after a pickup the rest of the instance was
+refused `MeasureMeterMismatch` (P13-S19). While the predecessor is the instance's
+only live measure the distance may now also be any positive duration less than
+the bar, mirroring invariant 20's boundary clause at `i == 1`. A short measure
+later in the instance is still not modelled, so its successor still refuses.
+This is a verdict change, folded into reduction version 2 (its Bumps entry
+names it). Locked by `g3b_create_measure_pickup_successor_applies_end_to_end`,
+whose second case refuses a successor more than a bar after the first measure.
+
+## X3.6 — `SetClef` and `SetKeySignature`, kinds/tags 41 and 42, epoch 14 (2026-10-03)
+
+A staff instance's clef and key sequences could be written only whole, by
+`CreateStaffInstance`; authoring needs to add, change or remove one change on
+an existing staff.
+
+**Two kinds, one rule.** Each is a structural LWW register keyed by
+`(instance, position)`, the meter change's discipline: a concurrent write of
+another value is a `StructuralFieldCollision` the later write wins, of the
+same value `AlreadyApplied`; undo writes back the key's predecessor. The
+chains are seeded from the base's instances and from `CreateStaffInstance`,
+so a write over an imported change has that change as its predecessor. The
+precondition is the instance's liveness alone (`staff_instance_slot`, which
+`SetStaffLayout` now shares), read from the object index, so both reduction
+modes agree.
+
+**An offset, not an anchor.** The payload carries `offset: RationalTime` from
+the instance's region start, and the graph holds the change anchored at the
+region's start with that musical offset, as the importer writes it. A free
+`TimeAnchor` could name an event or a measure, and a clef change anchored to
+a measure would be an eighth surface for the `Measure` strand guard, with no
+re-anchoring for an event; the offset form names nothing an undo can strand.
+`resolved_anchor_position` buckets a base change anchored any other way at the
+origin, as it does for meter and tempo changes.
+
+**No reduction version bump.** Only the new kinds write the new registers,
+and the seeds change no other operation's verdict or state. The fuzz stream
+draws the two kinds, so its digest is re-pinned. Locked by
+`set_clef_and_key_edit_their_instance_sequences`,
+`concurrent_clef_writes_conflict_and_the_later_wins` and
+`undo_restores_a_staff_change_or_its_absence`.

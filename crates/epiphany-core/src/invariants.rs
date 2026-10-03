@@ -2785,7 +2785,7 @@ impl<'a> GraphIndex<'a> {
     ///     | A2 | agreement | declared signature does not resolve | delegated to invariant 10's per-measure arm |
     ///     | A3 | agreement | `Governing20::None` | vacuous — no governing signature exists to disagree with |
     ///     | A4 | agreement | `Governing20::Indeterminate` | genuine abstention — the relation cannot place a candidate |
-    ///     | B1 | boundary | first measure (`i == 0`) | the pickup/anacrusis deferral, filed as `P13-S19` |
+    ///     | B1 | boundary | first measure (`i == 0`) | no predecessor; a pickup's successor may follow it by less than a full bar (P13-S19, closed by X3.5) |
     ///     | B2 | boundary | governing signature does not resolve | delegated to invariant 10's grid-level arms |
     ///     | B3 | boundary | `Governing20::None` | vacuous, same as A3 |
     ///     | B4 | boundary | `Governing20::Indeterminate` | genuine abstention, same as A4 |
@@ -2859,6 +2859,13 @@ impl<'a> GraphIndex<'a> {
                             };
                             match self.measure20_musical_delta(&prev.start, &m.start) {
                                 Some(delta) if &delta == ts.measure_duration() => {}
+                                // The first measure may be a pickup, shorter
+                                // than its bar (P13-S19, X3.5): its successor
+                                // follows it by less than a full bar.
+                                Some(delta)
+                                    if i == 1
+                                        && delta > MusicalDuration::zero()
+                                        && &delta < ts.measure_duration() => {}
                                 Some(_) => {
                                     out.push(WellFormednessViolation::invariant(
                                         GraphInvariant::MeasureMeterConsistency,
@@ -5091,51 +5098,67 @@ mod g3b_measure20_tests {
         );
     }
 
-    /// M35: this IS the pickup/anacrusis demonstration (spec/CONTRACT_P13S19_
-    /// PARTIAL.md pin 1). `m0` is a first measure occupying only half a bar
-    /// -- a pickup -- and by itself is flagged by neither clause: it has no
-    /// predecessor, so the boundary clause is vacuous, and it avoids the
-    /// agreement clause here by declaring `None` (not by any first-measure
-    /// exemption -- there is none). `m1` is its successor, comparable and
-    /// correctly ordered, but only HALF a `measure_duration` away -- the
-    /// pickup's own actual length, not the governing signature's full bar.
-    /// Removing the boundary clause must let THAT go undetected. Both
-    /// measures avoid the agreement clause (`None`) so only boundary can
-    /// fire.
+    /// M35: the pickup (P13-S19, closed by X3.5). `m0` is a first measure
+    /// occupying only half a bar and has no predecessor, so the boundary
+    /// clause is vacuous for it; it avoids the agreement clause by declaring
+    /// `None`, not by any first-measure exemption. `m1`, half a bar later,
+    /// is the pickup's successor and is admitted. `m2`, half a bar after
+    /// `m1`, is not: only the first measure may be short. Removing the
+    /// boundary clause must let `m2` go undetected; removing the pickup
+    /// allowance must flag `m1`. Every measure declares `None`, so only
+    /// boundary can fire.
     #[test]
-    fn m35_pickup_successor_boundary_flags_wrong_distance() {
+    fn m35_pickup_successor_boundary_admits_the_pickup_alone() {
         let replica = ReplicaId(7);
         let (active, ts_active) = sig(replica, 1);
         let region = probe_region_id();
+        let at = |n: u64, offset: (i64, i64)| Measure {
+            id: MeasureId::new(replica, n),
+            start: TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(MusicalDuration(
+                    RationalTime::new(offset.0, offset.1).unwrap(),
+                )),
+            },
+            time_signature: None,
+            explicit_number: None,
+            number_visibility: Default::default(),
+        };
         let m0 = measure_at(MeasureId::new(replica, 10), region, 0, None);
 
-        // The pickup by itself: a first measure has no predecessor, so the
-        // boundary clause is vacuous for it, and `None` separately avoids
-        // the agreement clause -- neither is an exemption granted TO the
-        // agreement clause itself (pin 1).
         let (lone, _) = score_with(Some(active), vec![ts_active.clone()], vec![m0.clone()]);
         assert!(
             !fires(&lone, GraphInvariant::MeasureMeterConsistency),
             "the pickup by itself, first measure, no predecessor, must not be flagged"
         );
 
-        // Half a whole note later — not a full measure_duration away.
-        let m1 = Measure {
-            id: MeasureId::new(replica, 11),
-            start: TimeAnchor::Region {
-                id: region,
-                edge: RegionEdge::Start,
-                offset: AnchorOffset::Musical(MusicalDuration(RationalTime::new(1, 2).unwrap())),
-            },
-            time_signature: None,
-            explicit_number: None,
-            number_visibility: Default::default(),
-        };
-        let (score, _) = score_with(Some(active), vec![ts_active], vec![m0, m1]);
+        let m1 = at(11, (1, 2));
+        let (pickup, _) = score_with(
+            Some(active),
+            vec![ts_active.clone()],
+            vec![m0.clone(), m1.clone()],
+        );
+        assert!(
+            !fires(&pickup, GraphInvariant::MeasureMeterConsistency),
+            "a pickup's successor follows it by less than a full bar"
+        );
+
+        let (score, _) = score_with(
+            Some(active),
+            vec![ts_active.clone()],
+            vec![m0.clone(), m1, at(12, (1, 1))],
+        );
         assert!(
             fires(&score, GraphInvariant::MeasureMeterConsistency),
-            "a measure at the wrong distance from its predecessor must violate invariant 20 \
-             even though neither declares a time signature"
+            "a measure at the wrong distance from a predecessor other than the first must \
+             violate invariant 20 even though neither declares a time signature"
+        );
+
+        let (long, _) = score_with(Some(active), vec![ts_active], vec![m0, at(13, (3, 2))]);
+        assert!(
+            fires(&long, GraphInvariant::MeasureMeterConsistency),
+            "a first measure is never longer than its bar"
         );
     }
 
@@ -6396,8 +6419,8 @@ mod g3b_dispatch_tests {
         let mut s = crate::generators::valid_score(4242);
         let replica = s.identity.replica_id;
         // Corrupt ONLY invariant 20: two measures, both `None` (so
-        // agreement never fires), at the wrong boundary distance from each
-        // other.
+        // agreement never fires), more than a full bar apart (less would be
+        // a pickup).
         let region_id = s.canvas.regions[0].id;
         let sig_id = TimeSignatureId::new(replica, 900);
         let measure_duration = MusicalDuration::whole();
@@ -6432,7 +6455,7 @@ mod g3b_dispatch_tests {
             start: TimeAnchor::Region {
                 id: region_id,
                 edge: RegionEdge::Start,
-                offset: AnchorOffset::Musical(MusicalDuration(RationalTime::new(1, 3).unwrap())),
+                offset: AnchorOffset::Musical(MusicalDuration(RationalTime::new(4, 3).unwrap())),
             },
             time_signature: None,
             explicit_number: None,

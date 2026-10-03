@@ -192,3 +192,76 @@ fn accidentals_and_unpitched_values_are_counted_as_not_checked() {
     );
     assert_eq!(percussion.kinds.get("unpitched note not drawn"), None);
 }
+
+/// A tuplet member is checked against its written value, its sounding span
+/// scaled by its tuplet's ratio: four quarters in the time of three sound
+/// as dotted eighths and two in the time of three as dotted quarters, and
+/// neither is a dotted note missing its dot or flag.
+#[test]
+fn a_tuplet_member_is_read_at_its_written_value() {
+    let member = |step: &str, duration: u8, actual: u8, normal: u8| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>4</octave></pitch>\
+             <duration>{duration}</duration><voice>1</voice><type>quarter</type>\
+             <time-modification><actual-notes>{actual}</actual-notes>\
+             <normal-notes>{normal}</normal-notes></time-modification></note>"
+        )
+    };
+    let rest = "<note><rest/><duration>4</duration><voice>1</voice><type>quarter</type></note>";
+    let quadruplet: String = ["C", "D", "E", "F"]
+        .iter()
+        .enumerate()
+        .map(|(i, step)| {
+            let note = member(step, 3, 4, 3);
+            match i {
+                0 => note.replace(
+                    "</time-modification>",
+                    "</time-modification><notations><tuplet type=\"start\"/></notations>",
+                ),
+                3 => note.replace(
+                    "</time-modification>",
+                    "</time-modification><notations><tuplet type=\"stop\"/></notations>",
+                ),
+                _ => note,
+            }
+        })
+        .collect();
+    let duplet = format!(
+        "{}{}",
+        member("G", 6, 2, 3).replace(
+            "</time-modification>",
+            "</time-modification><notations><tuplet type=\"start\"/></notations>"
+        ),
+        member("A", 6, 2, 3).replace(
+            "</time-modification>",
+            "</time-modification><notations><tuplet type=\"stop\"/></notations>"
+        ),
+    );
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">\
+         <measure number=\"1\"><attributes><divisions>4</divisions><time><beats>4</beats>\
+         <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+         </attributes>{quadruplet}{rest}</measure>\
+         <measure number=\"2\">{duplet}{rest}</measure></part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("tuplet_values.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    assert_eq!(loaded.reduced.score.cross_cutting.tuplets.len(), 2);
+    let engraved = engrave(&loaded.reduced.score);
+    for kind in [
+        "augmentation dot",
+        "flag or beam",
+        "notehead of another value",
+    ] {
+        assert_eq!(count(&loaded, &engraved, kind), 0, "{kind}");
+    }
+    let heads = engraved
+        .layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "noteheadBlack")
+        .count();
+    assert_eq!(heads, 6, "six quarter-note heads, none dotted or split");
+}
