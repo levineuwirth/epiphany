@@ -33,13 +33,14 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use epiphany_core::{
     canonical_pitch_bytes, derive_promoted_voice_id, simplest_spelling, AnalysisLayer,
-    AnalysisLayerId, AnchorOffset, AnnotationAnchor, CanonicalValue, CanvasLayoutDefaults, Event,
-    EventDuration, EventId, EventPosition, GestureAnchoring, Instrument, InstrumentId, Measure,
-    MeasureId, MeasurePosition, MeterChange, MetricGrid, MusicalDuration, MusicalPosition,
-    OperationId, PartDefinition, PartDefinitionId, Pitch, PitchId, PitchSpelling, RationalTime,
-    RegionEdge, RegionId, RegionTimeModel, RepeatStructure, RepeatStructureId, ReplicaId, Score,
-    ScoreMetadata, SpellingAttachment, SpellingDirective, SpellingPrecedence, SpellingScope,
-    SpellingSource, Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
+    AnalysisLayerId, AnchorOffset, AnnotationAnchor, CanonicalValue, CanvasLayoutDefaults, Clef,
+    ClefChange, Event, EventDuration, EventId, EventPosition, GestureAnchoring, Instrument,
+    InstrumentId, KeySignature, KeySignatureChange, Measure, MeasureId, MeasurePosition,
+    MeterChange, MetricGrid, MusicalDuration, MusicalPosition, OperationId, PartDefinition,
+    PartDefinitionId, Pitch, PitchId, PitchSpelling, RationalTime, RegionEdge, RegionId,
+    RegionTimeModel, RepeatStructure, RepeatStructureId, ReplicaId, Score, ScoreMetadata,
+    SpellingAttachment, SpellingDirective, SpellingPrecedence, SpellingScope, SpellingSource,
+    Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
     StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, TimeAnchor, TimeSignature,
     TimeSignatureId, TransactionId, TransposeRefusal, TranspositionInterval, TuningContextSettings,
     TupletId, TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId, VoiceOrigin,
@@ -65,10 +66,10 @@ use crate::payload::{
     CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
     DeleteRegionOp, DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
     InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
-    OperationKind, OperationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp,
-    SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
-    SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp, TransposeIntervalOp, TransposeOp,
-    TupletCompensation,
+    OperationKind, OperationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetClefOp,
+    SetKeySignatureOp, SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp,
+    SetTempoSegmentOp, SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp,
+    TransposeIntervalOp, TransposeOp, TupletCompensation,
 };
 use crate::stamp::StampTuple;
 use crate::support::{ObjectKind, SerializedCanonicalInputs};
@@ -943,6 +944,18 @@ enum ValueRestoration {
         instance: StaffInstanceId,
         value: Option<StaffLayoutValue>,
     },
+    /// X3.6.
+    Clef {
+        instance: StaffInstanceId,
+        position: MusicalPosition,
+        value: Option<Clef>,
+    },
+    /// X3.6.
+    Key {
+        instance: StaffInstanceId,
+        position: MusicalPosition,
+        value: Option<KeySignature>,
+    },
     SystemBreak {
         region: RegionId,
         position: MusicalPosition,
@@ -990,6 +1003,55 @@ fn edit_tempo_map_segments(
             .position(|existing| resolved_anchor_position(&existing.start) > *position)
             .unwrap_or(map.segments.len());
         map.segments.insert(index, segment.clone());
+    }
+}
+
+/// Replaces (or removes, for `None`) the change at `position` in a staff
+/// instance's clef or key sequence, keeping the sequence ordered by resolved
+/// position — the LWW key's resolution, so one position holds one change.
+fn edit_staff_changes<T>(
+    sequence: &mut Vec<T>,
+    anchor: impl Fn(&T) -> &TimeAnchor,
+    position: &MusicalPosition,
+    change: Option<T>,
+) {
+    sequence.retain(|existing| resolved_anchor_position(anchor(existing)) != *position);
+    if let Some(change) = change {
+        let index = sequence
+            .iter()
+            .position(|existing| resolved_anchor_position(anchor(existing)) > *position)
+            .unwrap_or(sequence.len());
+        sequence.insert(index, change);
+    }
+}
+
+/// The clef and key chains of a reducer.
+type ClefChains = BTreeMap<(StaffInstanceId, MusicalPosition), WriteChain<Option<Clef>>>;
+type KeyChains = BTreeMap<(StaffInstanceId, MusicalPosition), WriteChain<Option<KeySignature>>>;
+
+/// Seeds the clef and key chains from an instance's own sequences, so a later
+/// write's chain-predecessor is what the base or the create held.
+fn seed_staff_changes(clefs: &mut ClefChains, keys: &mut KeyChains, instance: &StaffInstance) {
+    for change in &instance.clef_sequence {
+        clefs
+            .entry((instance.id, resolved_anchor_position(&change.anchor)))
+            .or_insert_with(WriteChain::new)
+            .seed(Some(change.clef));
+    }
+    for change in &instance.key_sequence {
+        keys.entry((instance.id, resolved_anchor_position(&change.anchor)))
+            .or_insert_with(WriteChain::new)
+            .seed(Some(change.key));
+    }
+}
+
+/// The anchor `position` after `region`'s start, as the importer writes a
+/// staff instance's changes.
+fn region_position_anchor(region: RegionId, position: &MusicalPosition) -> TimeAnchor {
+    TimeAnchor::Region {
+        id: region,
+        edge: RegionEdge::Start,
+        offset: AnchorOffset::Musical(MusicalDuration(position.0.clone())),
     }
 }
 
@@ -1080,6 +1142,11 @@ struct Reducer<'a> {
     tempo_segment_chain:
         BTreeMap<(Option<RegionId>, MusicalPosition), WriteChain<Option<TempoSegment>>>,
     staff_layout_chain: BTreeMap<StaffInstanceId, WriteChain<StaffLayoutValue>>,
+    // X3.6: each staff instance's clef and key changes, keyed by musical
+    // position in its region (`SetClef`, `SetKeySignature`), seeded from the
+    // base or the created instance; `None` = an explicit removal.
+    clef_chain: ClefChains,
+    key_chain: KeyChains,
     // Carried values of set-union-minted staves and time signatures, for the
     // byte-identical-re-carry idempotence check (operation_catalog §CreateStaff:
     // identical re-create is idempotent; a differing value under a live id is a
@@ -1229,6 +1296,8 @@ struct WorkingSnapshot {
     tempo_segment_chain:
         BTreeMap<(Option<RegionId>, MusicalPosition), WriteChain<Option<TempoSegment>>>,
     staff_layout_chain: BTreeMap<StaffInstanceId, WriteChain<StaffLayoutValue>>,
+    clef_chain: ClefChains,
+    key_chain: KeyChains,
     staff_values: BTreeMap<StaffId, Staff>,
     time_signature_values: BTreeMap<TimeSignatureId, TimeSignature>,
     instrument_values: BTreeMap<InstrumentId, Instrument>,
@@ -1563,6 +1632,8 @@ impl<'a> Reducer<'a> {
             meter_change_chain: BTreeMap::new(),
             tempo_segment_chain: BTreeMap::new(),
             staff_layout_chain: BTreeMap::new(),
+            clef_chain: BTreeMap::new(),
+            key_chain: BTreeMap::new(),
             staff_values: BTreeMap::new(),
             time_signature_values: BTreeMap::new(),
             instrument_values: BTreeMap::new(),
@@ -1770,6 +1841,7 @@ impl<'a> Reducer<'a> {
                         instance.staff_lines_override.clone(),
                         instance.visible,
                     ));
+                seed_staff_changes(&mut self.clef_chain, &mut self.key_chain, instance);
                 // Genesis tranche G3b (contract pin 6c, disposition A): record
                 // whether this instance authored a local grid override, so a
                 // later CreateMeasure can distinguish override from
@@ -3183,6 +3255,8 @@ impl<'a> Reducer<'a> {
                 OperationKind::CreateView(op) => self.create_view(env, op),
                 OperationKind::CreateMeasure(op) => self.create_measure(env, op),
                 OperationKind::CreateTuplet(op) => self.create_tuplet(env, op),
+                OperationKind::SetClef(op) => self.set_clef(env, op),
+                OperationKind::SetKeySignature(op) => self.set_key_signature(env, op),
             },
             OperationPayload::ResolveConflict(op) => self.resolve_conflict(env, op),
             OperationPayload::UndoTransaction(op) => self.undo_transaction(env, op),
@@ -4480,6 +4554,7 @@ impl<'a> Reducer<'a> {
                 op.instance.staff_lines_override.clone(),
                 op.instance.visible,
             ));
+        seed_staff_changes(&mut self.clef_chain, &mut self.key_chain, &op.instance);
         OperationEffect::Applied
     }
 
@@ -6157,23 +6232,8 @@ impl<'a> Reducer<'a> {
         env: &OperationEnvelope,
         op: &SetStaffLayoutOp,
     ) -> OperationEffect {
-        match self
-            .objects
-            .get(&TypedObjectId::StaffInstance(op.staff_instance))
-        {
-            None => {
-                return OperationEffect::NoOp {
-                    reason: NoOpReason::PreconditionFailedUnderReduction {
-                        reason: PreconditionFailureReason::TargetMissing,
-                    },
-                }
-            }
-            Some(ObjectState::Tombstoned { .. }) => {
-                return OperationEffect::NoOp {
-                    reason: NoOpReason::TargetTombstoned,
-                }
-            }
-            Some(ObjectState::Live) => {}
+        if let Some(effect) = self.staff_instance_slot(op.staff_instance) {
+            return effect;
         }
         if self.graph.is_some() {
             if let Some(instrument) = op.instrument_override {
@@ -6200,6 +6260,172 @@ impl<'a> Reducer<'a> {
             .record(env.id, env.transaction, value.clone());
         self.graph_set_staff_layout(op.staff_instance, &value);
         OperationEffect::Applied
+    }
+
+    /// `Some(NoOp)` when `instance` is missing (`TargetMissing`) or tombstoned
+    /// (`TargetTombstoned`); `None` when it is live. Reads only the base-free
+    /// object index, so both reduction modes agree.
+    fn staff_instance_slot(&self, instance: StaffInstanceId) -> Option<OperationEffect> {
+        match self.objects.get(&TypedObjectId::StaffInstance(instance)) {
+            None => Some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            }),
+            Some(ObjectState::Tombstoned { .. }) => Some(OperationEffect::NoOp {
+                reason: NoOpReason::TargetTombstoned,
+            }),
+            Some(ObjectState::Live) => None,
+        }
+    }
+
+    /// The effect of a structural LWW write against its key's last write
+    /// (the meter change's discipline): applied, or a
+    /// `StructuralFieldCollision` the later write wins when the two are
+    /// concurrent and differ. `Err` carries `AlreadyApplied` for a concurrent
+    /// write of the same value, which records nothing.
+    fn structural_write_effect<V: PartialEq>(
+        &mut self,
+        env: &OperationEnvelope,
+        prev: Option<(OperationId, V)>,
+        written: &V,
+        field: &str,
+        object: TypedObjectId,
+    ) -> Result<OperationEffect, OperationEffect> {
+        match prev {
+            Some((prev_op, prev_value)) if self.concurrent(env.id, prev_op) => {
+                if prev_value == *written {
+                    return Err(OperationEffect::NoOp {
+                        reason: NoOpReason::AlreadyApplied,
+                    });
+                }
+                let conflict = ConflictRecord::new(
+                    ConflictKind::StructuralFieldCollision {
+                        winner: env.id,
+                        loser: prev_op,
+                        field: FieldPath(field.to_string()),
+                    },
+                    vec![env.id, prev_op],
+                    vec![object],
+                );
+                let cid = conflict.id;
+                self.conflicts.insert(conflict);
+                Ok(OperationEffect::Conflicted { conflict: cid })
+            }
+            _ => Ok(OperationEffect::Applied),
+        }
+    }
+
+    /// X3.6 (operation_catalog §SetClef): sets, replaces or removes the clef
+    /// change at a musical offset in a live staff instance's region, a
+    /// structural LWW register keyed by `(instance, position)`.
+    fn set_clef(&mut self, env: &OperationEnvelope, op: &SetClefOp) -> OperationEffect {
+        if let Some(effect) = self.staff_instance_slot(op.instance) {
+            return effect;
+        }
+        let key = (op.instance, op.position());
+        let prev = self
+            .clef_chain
+            .get(&key)
+            .and_then(|chain| chain.last_write())
+            .map(|write| (write.op, write.value));
+        let effect = match self.structural_write_effect(
+            env,
+            prev,
+            &op.clef,
+            "clef_sequence",
+            TypedObjectId::StaffInstance(op.instance),
+        ) {
+            Ok(effect) => effect,
+            Err(effect) => return effect,
+        };
+        self.clef_chain
+            .entry(key.clone())
+            .or_insert_with(WriteChain::new)
+            .record(env.id, env.transaction, op.clef);
+        self.graph_apply_clef(op.instance, &key.1, op.clef);
+        effect
+    }
+
+    /// X3.6 (operation_catalog §SetKeySignature): [`Self::set_clef`] for the
+    /// key sequence.
+    fn set_key_signature(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &SetKeySignatureOp,
+    ) -> OperationEffect {
+        if let Some(effect) = self.staff_instance_slot(op.instance) {
+            return effect;
+        }
+        let key = (op.instance, op.position());
+        let prev = self
+            .key_chain
+            .get(&key)
+            .and_then(|chain| chain.last_write())
+            .map(|write| (write.op, write.value));
+        let effect = match self.structural_write_effect(
+            env,
+            prev,
+            &op.key,
+            "key_sequence",
+            TypedObjectId::StaffInstance(op.instance),
+        ) {
+            Ok(effect) => effect,
+            Err(effect) => return effect,
+        };
+        self.key_chain
+            .entry(key.clone())
+            .or_insert_with(WriteChain::new)
+            .record(env.id, env.transaction, op.key);
+        self.graph_apply_key(op.instance, &key.1, op.key);
+        effect
+    }
+
+    /// The live instance `instance_id` in the graph, with its region's id.
+    fn graph_staff_instance(
+        &mut self,
+        instance_id: StaffInstanceId,
+    ) -> Option<(RegionId, &mut StaffInstance)> {
+        let score = self.graph.as_mut()?;
+        score.canvas.regions.iter_mut().find_map(|region| {
+            let region_id = region.id;
+            let instances = region.content.staff_instances_mut()?;
+            let instance = instances.iter_mut().find(|i| i.id == instance_id)?;
+            Some((region_id, instance))
+        })
+    }
+
+    /// Puts `clef` (nothing, for `None`) at `position` in the instance's clef
+    /// sequence, in place of whatever change resolved there.
+    fn graph_apply_clef(
+        &mut self,
+        instance_id: StaffInstanceId,
+        position: &MusicalPosition,
+        clef: Option<Clef>,
+    ) {
+        if let Some((region, instance)) = self.graph_staff_instance(instance_id) {
+            let change = clef.map(|clef| ClefChange {
+                anchor: region_position_anchor(region, position),
+                clef,
+            });
+            edit_staff_changes(&mut instance.clef_sequence, |c| &c.anchor, position, change);
+        }
+    }
+
+    /// [`Self::graph_apply_clef`] for the key sequence.
+    fn graph_apply_key(
+        &mut self,
+        instance_id: StaffInstanceId,
+        position: &MusicalPosition,
+        key: Option<KeySignature>,
+    ) {
+        if let Some((region, instance)) = self.graph_staff_instance(instance_id) {
+            let change = key.map(|key| KeySignatureChange {
+                anchor: region_position_anchor(region, position),
+                key,
+            });
+            edit_staff_changes(&mut instance.key_sequence, |k| &k.anchor, position, change);
+        }
     }
 
     fn graph_set_staff_layout(&mut self, instance_id: StaffInstanceId, value: &StaffLayoutValue) {
@@ -7408,6 +7634,38 @@ impl<'a> Reducer<'a> {
                 }
             }
         }
+        for ((instance, position), chain) in &self.clef_chain {
+            if !slot_live(TypedObjectId::StaffInstance(*instance)) {
+                continue;
+            }
+            match chain.undo_verdict(tx) {
+                ChainUndoVerdict::NotWritten => {}
+                ChainUndoVerdict::Superseded { by } => superseded.push(by),
+                ChainUndoVerdict::Restore(predecessor) => {
+                    restorations.push(ValueRestoration::Clef {
+                        instance: *instance,
+                        position: position.clone(),
+                        value: predecessor.and_then(Predecessor::into_value),
+                    })
+                }
+            }
+        }
+        for ((instance, position), chain) in &self.key_chain {
+            if !slot_live(TypedObjectId::StaffInstance(*instance)) {
+                continue;
+            }
+            match chain.undo_verdict(tx) {
+                ChainUndoVerdict::NotWritten => {}
+                ChainUndoVerdict::Superseded { by } => superseded.push(by),
+                ChainUndoVerdict::Restore(predecessor) => {
+                    restorations.push(ValueRestoration::Key {
+                        instance: *instance,
+                        position: position.clone(),
+                        value: predecessor.and_then(Predecessor::into_value),
+                    })
+                }
+            }
+        }
         for ((region, position), chain) in &self.break_chain {
             if !slot_live(TypedObjectId::Region(*region)) {
                 continue;
@@ -7628,6 +7886,28 @@ impl<'a> Reducer<'a> {
                             .or_insert_with(WriteChain::new)
                             .record(env.id, env.transaction, value);
                     }
+                }
+                ValueRestoration::Clef {
+                    instance,
+                    position,
+                    value,
+                } => {
+                    self.clef_chain
+                        .entry((instance, position.clone()))
+                        .or_insert_with(WriteChain::new)
+                        .record(env.id, env.transaction, value);
+                    self.graph_apply_clef(instance, &position, value);
+                }
+                ValueRestoration::Key {
+                    instance,
+                    position,
+                    value,
+                } => {
+                    self.key_chain
+                        .entry((instance, position.clone()))
+                        .or_insert_with(WriteChain::new)
+                        .record(env.id, env.transaction, value);
+                    self.graph_apply_key(instance, &position, value);
                 }
                 ValueRestoration::SystemBreak {
                     region,
@@ -9601,6 +9881,8 @@ impl<'a> Reducer<'a> {
             meter_change_chain: self.meter_change_chain.clone(),
             tempo_segment_chain: self.tempo_segment_chain.clone(),
             staff_layout_chain: self.staff_layout_chain.clone(),
+            clef_chain: self.clef_chain.clone(),
+            key_chain: self.key_chain.clone(),
             staff_values: self.staff_values.clone(),
             time_signature_values: self.time_signature_values.clone(),
             instrument_values: self.instrument_values.clone(),
@@ -9648,6 +9930,8 @@ impl<'a> Reducer<'a> {
         self.meter_change_chain = s.meter_change_chain;
         self.tempo_segment_chain = s.tempo_segment_chain;
         self.staff_layout_chain = s.staff_layout_chain;
+        self.clef_chain = s.clef_chain;
+        self.key_chain = s.key_chain;
         self.staff_values = s.staff_values;
         self.time_signature_values = s.time_signature_values;
         self.instrument_values = s.instrument_values;
@@ -13189,6 +13473,13 @@ mod tests {
         // `MaterializedState` embeds no `Score` field value for the carried
         // `Tuplet`, so there remains no surface on this type for a leak to
         // appear on.
+        //
+        // Re-pinned again at X3.6: `gen_payload` gained `SetClef` and
+        // `SetKeySignature` (arms 38, 39), and `rng.below(38)` became
+        // `below(40)` — the same reshuffle, same reasoning. Both are schema
+        // major 0 unconditionally, and `MaterializedState` embeds no `Score`
+        // field value for a clef or key, so there remains no surface on this
+        // type for a leak to appear on.
         let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xBA5E);
         let envelopes = crate::fuzz::gen_envelope_set(&mut rng, 200);
         let mut set = OperationSet::new();
@@ -13198,7 +13489,7 @@ mod tests {
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "8a069e7759ce8fdb5f318498c0e20e6b96451764fa7531324548d4a99523cef7"
+            "110807c575e2c88301c7d53292716c36ff476c97c7ca17551022d8627bd89f53"
         );
     }
 
@@ -24352,5 +24643,359 @@ mod tests {
         assert_eq!(tuplet_repairs, vec![RepairKind::CascadeDeleted]);
         assert!(!result.score.cross_cutting.tuplets.contains(&tuplet));
         assert!(check_invariants(&result.score).is_empty());
+    }
+
+    // --- X3.6: SetClef and SetKeySignature. ---
+
+    fn whole_notes(n: i64, d: i64) -> RationalTime {
+        RationalTime::new(n, d).expect("a valid offset")
+    }
+
+    fn set_clef_kind(
+        instance: StaffInstanceId,
+        offset: RationalTime,
+        clef: Option<Clef>,
+    ) -> OperationKind {
+        OperationKind::SetClef(SetClefOp {
+            instance,
+            offset,
+            clef,
+        })
+    }
+
+    fn set_key_kind(
+        instance: StaffInstanceId,
+        offset: RationalTime,
+        key: Option<KeySignature>,
+    ) -> OperationKind {
+        OperationKind::SetKeySignature(SetKeySignatureOp {
+            instance,
+            offset,
+            key,
+        })
+    }
+
+    /// The fixture score's first staff instance, with its region.
+    fn first_staff_instance(score: &Score) -> (RegionId, StaffInstance) {
+        score
+            .canvas
+            .regions
+            .iter()
+            .find_map(|r| Some((r.id, r.staff_instances().first()?.clone())))
+            .expect("the fixture has a staff instance")
+    }
+
+    /// The fixture's staff instance after reduction.
+    fn reduced_instance(score: &Score, id: StaffInstanceId) -> StaffInstance {
+        score
+            .canvas
+            .regions
+            .iter()
+            .flat_map(|r| r.staff_instances())
+            .find(|i| i.id == id)
+            .expect("the instance survives")
+            .clone()
+    }
+
+    /// A clef or key change is written into its staff instance's sequence at
+    /// its offset, in position order; a later write at the same offset
+    /// replaces it or, with `None`, removes it; a missing instance refuses.
+    /// Ledger reduction reaches the same verdicts for an instance the set
+    /// itself creates.
+    #[test]
+    fn set_clef_and_key_edit_their_instance_sequences() {
+        let base = epiphany_core::generators::valid_score(0x5EED);
+        let (region, instance) = first_staff_instance(&base);
+        let alto = Clef {
+            shape: epiphany_core::ClefShape::C,
+            line: 3,
+            octave_shift: 0,
+        };
+        let missing = StaffInstanceId::new(ReplicaId(9), 999);
+        let envelopes = vec![
+            prim_env(
+                1,
+                0,
+                10,
+                CausalContext::new(),
+                set_clef_kind(instance.id, whole_notes(3, 1), Some(Clef::bass())),
+            ),
+            prim_env(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                set_clef_kind(instance.id, whole_notes(1, 2), Some(alto)),
+            ),
+            prim_env(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                set_key_kind(instance.id, whole_notes(1, 2), KeySignature::new(-3)),
+            ),
+            prim_env(
+                1,
+                3,
+                13,
+                seen_r1(2),
+                set_clef_kind(instance.id, whole_notes(5, 1), Some(Clef::treble())),
+            ),
+            prim_env(
+                1,
+                4,
+                14,
+                seen_r1(3),
+                set_clef_kind(missing, whole_notes(0, 1), Some(Clef::bass())),
+            ),
+            prim_env(
+                1,
+                5,
+                15,
+                seen_r1(4),
+                set_clef_kind(instance.id, whole_notes(5, 1), None),
+            ),
+        ];
+        let mut set = OperationSet::new();
+        set.accept_all(envelopes);
+        let graph = set.reduce_onto(&base);
+        for counter in [0, 1, 2, 3, 5] {
+            assert_eq!(
+                effect_at(&graph.state, counter),
+                Some(&OperationEffect::Applied)
+            );
+        }
+        let missing_effect = OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::TargetMissing,
+            },
+        };
+        assert_eq!(effect_at(&graph.state, 4), Some(&missing_effect));
+
+        // Base-free, over an instance the set creates.
+        let ledger_region = RegionId::new(ReplicaId(1), 90);
+        let ledger_instance = StaffInstanceId::new(ReplicaId(1), 91);
+        let mut envs = g3b_region_and_instance_envs(
+            1,
+            ledger_region,
+            ledger_instance,
+            StaffId::new(ReplicaId(1), 92),
+        );
+        let writes = [
+            prim_env(
+                1,
+                10,
+                20,
+                CausalContext::new(),
+                set_clef_kind(ledger_instance, whole_notes(1, 2), Some(alto)),
+            ),
+            prim_env(
+                1,
+                11,
+                21,
+                CausalContext::new(),
+                set_key_kind(ledger_instance, whole_notes(1, 2), KeySignature::new(-3)),
+            ),
+            prim_env(
+                1,
+                12,
+                22,
+                CausalContext::new(),
+                set_clef_kind(missing, whole_notes(0, 1), Some(Clef::bass())),
+            ),
+        ];
+        envs.extend(writes.iter().cloned());
+        let mut ledger_set = OperationSet::new();
+        ledger_set.accept_all(envs);
+        let ledger = ledger_set.reduce();
+        assert_eq!(
+            effect_of(&ledger, writes[0].id),
+            Some(&OperationEffect::Applied)
+        );
+        assert_eq!(
+            effect_of(&ledger, writes[1].id),
+            Some(&OperationEffect::Applied)
+        );
+        assert_eq!(effect_of(&ledger, writes[2].id), Some(&missing_effect));
+
+        let anchor = |offset: RationalTime| TimeAnchor::Region {
+            id: region,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Musical(MusicalDuration(offset)),
+        };
+        let after = reduced_instance(&graph.score, instance.id);
+        let mut clefs = instance.clef_sequence.clone();
+        clefs.push(ClefChange {
+            anchor: anchor(whole_notes(1, 2)),
+            clef: alto,
+        });
+        clefs.push(ClefChange {
+            anchor: anchor(whole_notes(3, 1)),
+            clef: Clef::bass(),
+        });
+        clefs.sort_by_key(|c| resolved_anchor_position(&c.anchor));
+        assert_eq!(
+            after.clef_sequence, clefs,
+            "the change at 1/2 stands before the one at 3; the one at 5 was set, then removed"
+        );
+        assert!(after.key_sequence.contains(&KeySignatureChange {
+            anchor: anchor(whole_notes(1, 2)),
+            key: KeySignature::new(-3).expect("a valid key"),
+        }));
+        assert!(after.key_sequence.windows(2).all(
+            |w| resolved_anchor_position(&w[0].anchor) < resolved_anchor_position(&w[1].anchor)
+        ));
+        assert!(epiphany_core::check_invariants(&graph.score).is_empty());
+    }
+
+    /// Concurrent writes of different clefs at one offset conflict, the later
+    /// in canonical order winning; a concurrent write of the value already
+    /// there is already applied.
+    #[test]
+    fn concurrent_clef_writes_conflict_and_the_later_wins() {
+        let base = epiphany_core::generators::valid_score(0x5EED);
+        let (_, instance) = first_staff_instance(&base);
+        let at = whole_notes(2, 1);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            prim_env(
+                1,
+                0,
+                10,
+                CausalContext::new(),
+                set_clef_kind(instance.id, at.clone(), Some(Clef::bass())),
+            ),
+            prim_env(
+                2,
+                0,
+                11,
+                CausalContext::new(),
+                set_clef_kind(instance.id, at.clone(), Some(Clef::treble())),
+            ),
+            prim_env(
+                3,
+                0,
+                12,
+                CausalContext::new(),
+                set_clef_kind(instance.id, at.clone(), Some(Clef::treble())),
+            ),
+        ]);
+        let graph = set.reduce_onto(&base);
+        assert!(matches!(
+            effect_of(&graph.state, OperationId::new(ReplicaId(2), 0)),
+            Some(OperationEffect::Conflicted { .. })
+        ));
+        assert_eq!(
+            no_op_reason(&graph.state, OperationId::new(ReplicaId(3), 0)),
+            Some(NoOpReason::AlreadyApplied)
+        );
+        assert_eq!(graph.state.conflicts.records().len(), 1);
+        let after = reduced_instance(&graph.score, instance.id);
+        let at_two: Vec<Clef> = after
+            .clef_sequence
+            .iter()
+            .filter(|c| resolved_anchor_position(&c.anchor) == MusicalPosition(at.clone()))
+            .map(|c| c.clef)
+            .collect();
+        assert_eq!(at_two, vec![Clef::treble()]);
+    }
+
+    /// Undo restores what a change replaced: the earlier key where one stood,
+    /// the base's own clef change, and no clef where none was.
+    #[test]
+    fn undo_restores_a_staff_change_or_its_absence() {
+        let mut base = epiphany_core::generators::valid_score(0x5EED);
+        let (region, _) = first_staff_instance(&base);
+        // The base holds a change of its own, a treble clef a measure in.
+        let based = ClefChange {
+            anchor: TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(MusicalDuration(whole_notes(1, 1))),
+            },
+            clef: Clef::treble(),
+        };
+        base.canvas
+            .regions
+            .iter_mut()
+            .find(|r| r.id == region)
+            .and_then(|r| r.content.staff_instances_mut())
+            .and_then(|instances| instances.first_mut())
+            .expect("the fixture's instance")
+            .clef_sequence
+            .push(based.clone());
+        let (_, instance) = first_staff_instance(&base);
+        let tx = TransactionId::from_raw(61);
+        let (key_at, clef_at) = (whole_notes(4, 1), whole_notes(5, 1));
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            prim_env(
+                1,
+                0,
+                10,
+                CausalContext::new(),
+                set_key_kind(instance.id, key_at.clone(), KeySignature::new(-3)),
+            ),
+            declare_transaction(1, 1, 11, seen_r1(0), tx),
+            tx_member(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                tx,
+                set_key_kind(instance.id, key_at.clone(), KeySignature::new(2)),
+            ),
+            tx_member(
+                1,
+                3,
+                13,
+                seen_r1(2),
+                tx,
+                set_clef_kind(instance.id, clef_at.clone(), Some(Clef::bass())),
+            ),
+            tx_member(
+                1,
+                4,
+                14,
+                seen_r1(3),
+                tx,
+                set_clef_kind(instance.id, whole_notes(1, 1), Some(Clef::bass())),
+            ),
+        ]);
+        let done = set.reduce_onto(&base);
+        let before = reduced_instance(&done.score, instance.id);
+        assert!(before.clef_sequence.iter().any(|c| c.clef == Clef::bass()
+            && resolved_anchor_position(&c.anchor) == MusicalPosition(clef_at.clone())));
+        assert!(
+            !before.clef_sequence.contains(&based),
+            "the base's change was overwritten"
+        );
+        set.accept_all(vec![undo_env(
+            1,
+            5,
+            15,
+            seen_r1(4),
+            tx,
+            UndoPolicy::StrictInverse,
+        )]);
+        let undone = set.reduce_onto(&base);
+        assert_eq!(effect_at(&undone.state, 5), Some(&OperationEffect::Applied));
+        let after = reduced_instance(&undone.score, instance.id);
+        let key_there: Vec<KeySignature> = after
+            .key_sequence
+            .iter()
+            .filter(|k| resolved_anchor_position(&k.anchor) == MusicalPosition(key_at.clone()))
+            .map(|k| k.key)
+            .collect();
+        assert_eq!(key_there, vec![KeySignature::new(-3).expect("a valid key")]);
+        assert!(!after
+            .clef_sequence
+            .iter()
+            .any(|c| resolved_anchor_position(&c.anchor) == MusicalPosition(clef_at.clone())));
+        assert!(
+            after.clef_sequence.contains(&based),
+            "the base's change is back"
+        );
+        assert_eq!(after.clef_sequence, instance.clef_sequence);
     }
 }

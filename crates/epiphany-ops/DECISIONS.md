@@ -2343,3 +2343,35 @@ later in the instance is still not modelled, so its successor still refuses.
 This is a verdict change, folded into reduction version 2 (its Bumps entry
 names it). Locked by `g3b_create_measure_pickup_successor_applies_end_to_end`,
 whose second case refuses a successor more than a bar after the first measure.
+
+## X3.6 — `SetClef` and `SetKeySignature`, kinds/tags 41 and 42, epoch 14 (2026-10-03)
+
+A staff instance's clef and key sequences could be written only whole, by
+`CreateStaffInstance`; authoring needs to add, change or remove one change on
+an existing staff.
+
+**Two kinds, one rule.** Each is a structural LWW register keyed by
+`(instance, position)`, the meter change's discipline: a concurrent write of
+another value is a `StructuralFieldCollision` the later write wins, of the
+same value `AlreadyApplied`; undo writes back the key's predecessor. The
+chains are seeded from the base's instances and from `CreateStaffInstance`,
+so a write over an imported change has that change as its predecessor. The
+precondition is the instance's liveness alone (`staff_instance_slot`, which
+`SetStaffLayout` now shares), read from the object index, so both reduction
+modes agree.
+
+**An offset, not an anchor.** The payload carries `offset: RationalTime` from
+the instance's region start, and the graph holds the change anchored at the
+region's start with that musical offset, as the importer writes it. A free
+`TimeAnchor` could name an event or a measure, and a clef change anchored to
+a measure would be an eighth surface for the `Measure` strand guard, with no
+re-anchoring for an event; the offset form names nothing an undo can strand.
+`resolved_anchor_position` buckets a base change anchored any other way at the
+origin, as it does for meter and tempo changes.
+
+**No reduction version bump.** Only the new kinds write the new registers,
+and the seeds change no other operation's verdict or state. The fuzz stream
+draws the two kinds, so its digest is re-pinned. Locked by
+`set_clef_and_key_edit_their_instance_sequences`,
+`concurrent_clef_writes_conflict_and_the_later_wins` and
+`undo_restores_a_staff_change_or_its_absence`.

@@ -32,12 +32,12 @@
 //! payloads.
 
 use epiphany_core::{
-    AnalysisLayer, AnalysisLayerId, Beam, CanonicalValue, CanvasLayoutDefaults, Event,
-    EventDuration, EventId, EventPosition, IdentifiedPitch, Instrument, InstrumentId, Measure,
-    MeasureId, MetricGrid, MusicalDuration, MusicalPosition, OperationId, PartDefinition,
-    PartDefinitionId, Pitch, PitchId, PitchSpelling, Region, RegionId, RegionTimeModel,
-    RepeatStructure, RepeatStructureId, Rest, ScoreMetadata, Slur, Spanner, SpellingPrecedence,
-    Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
+    AnalysisLayer, AnalysisLayerId, Beam, CanonicalValue, CanvasLayoutDefaults, Clef, Event,
+    EventDuration, EventId, EventPosition, IdentifiedPitch, Instrument, InstrumentId, KeySignature,
+    Measure, MeasureId, MetricGrid, MusicalDuration, MusicalPosition, OperationId, PartDefinition,
+    PartDefinitionId, Pitch, PitchId, PitchSpelling, RationalTime, Region, RegionId,
+    RegionTimeModel, RepeatStructure, RepeatStructureId, Rest, ScoreMetadata, Slur, Spanner,
+    SpellingPrecedence, Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
     StaffLineConfiguration, TempoSegment, Tie, TimeAnchor, TimeSignature, TransactionId,
     TranspositionInterval, TuningContextSettings, Tuplet, TupletId, TypedObjectId, ViewDefinition,
     ViewId, Voice, VoiceId,
@@ -314,6 +314,14 @@ pub enum OperationKind {
     /// to its required total). Tuplets live in the cross-cutting registry but,
     /// like repeats, are not `CrossCuttingValue` kinds on the wire.
     CreateTuplet(CreateTupletOp),
+    // --- X3.6: clef and key changes on an existing staff instance.
+    // Discriminants extend additively past 40. ---
+    /// Set, replace, or remove the clef change at a musical offset in a staff
+    /// instance's region (LWW structural overwrite).
+    SetClef(SetClefOp),
+    /// Set, replace, or remove the key-signature change at a musical offset
+    /// in a staff instance's region (LWW structural overwrite).
+    SetKeySignature(SetKeySignatureOp),
 }
 
 impl OperationKind {
@@ -439,6 +447,9 @@ impl OperationKind {
             OperationKind::CreateMeasure(_) => 39,
             // X3.1; appended past 39.
             OperationKind::CreateTuplet(_) => 40,
+            // X3.6; appended past 40.
+            OperationKind::SetClef(_) => 41,
+            OperationKind::SetKeySignature(_) => 42,
         }
     }
 
@@ -510,6 +521,8 @@ impl OperationKind {
             OperationKind::CreateMeasure(_) => Some(12),
             // Minor 13 (X3.1).
             OperationKind::CreateTuplet(_) => Some(13),
+            // Minor 14 (X3.6).
+            OperationKind::SetClef(_) | OperationKind::SetKeySignature(_) => Some(14),
         }
     }
 
@@ -569,6 +582,8 @@ impl OperationKind {
             // since G1 has been (contract pin 3's precedent).
             OperationKind::CreateMeasure(_) => OperationKindTag::CreateMeasure,
             OperationKind::CreateTuplet(_) => OperationKindTag::CreateTuplet,
+            OperationKind::SetClef(_) => OperationKindTag::SetClef,
+            OperationKind::SetKeySignature(_) => OperationKindTag::SetKeySignature,
         }
     }
 }
@@ -621,6 +636,8 @@ impl CanonicalEncode for OperationKind {
             OperationKind::CreateView(op) => op.encode_canonical(out),
             OperationKind::CreateMeasure(op) => op.encode_canonical(out),
             OperationKind::CreateTuplet(op) => op.encode_canonical(out),
+            OperationKind::SetClef(op) => op.encode_canonical(out),
+            OperationKind::SetKeySignature(op) => op.encode_canonical(out),
         }
     }
 }
@@ -689,6 +706,10 @@ pub enum OperationKindTag {
     CreateMeasure,
     /// X3.1.
     CreateTuplet,
+    /// X3.6.
+    SetClef,
+    /// X3.6.
+    SetKeySignature,
 }
 
 /// The discriminant of [`OperationKindTag::Registered`], the one tag that
@@ -810,6 +831,8 @@ operation_kind_tag_vocabulary! {
     CreateView = 38 => "create-view" @ Some(11),
     CreateMeasure = 39 => "create-measure" @ Some(12),
     CreateTuplet = 40 => "create-tuplet" @ Some(13),
+    SetClef = 41 => "set-clef" @ Some(14),
+    SetKeySignature = 42 => "set-key-signature" @ Some(14),
 }
 
 impl CanonicalEncode for OperationKindTag {
@@ -1961,6 +1984,70 @@ impl CanonicalEncode for CreateTupletOp {
     }
 }
 
+/// Set, replace, or (`None`) remove the clef change `offset` whole notes
+/// after the start of a staff instance's region (operation_catalog §SetClef).
+/// LWW structural overwrite keyed by `(instance, offset)`. The change is
+/// placed by its offset rather than an arbitrary anchor, so it can name no
+/// event or measure that an undo could strand.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SetClefOp {
+    pub instance: StaffInstanceId,
+    pub offset: RationalTime,
+    pub clef: Option<Clef>,
+}
+
+impl SetClefOp {
+    /// The change's musical position in its region — the LWW key.
+    pub fn position(&self) -> MusicalPosition {
+        MusicalPosition(self.offset.clone())
+    }
+}
+
+impl CanonicalEncode for SetClefOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_canon(out, &self.instance);
+        push_lp_bytes(out, &self.offset.canonical_bytes());
+        match &self.clef {
+            None => push_tag(out, 0),
+            Some(clef) => {
+                push_tag(out, 1);
+                push_lp_bytes(out, &clef.canonical_bytes());
+            }
+        }
+    }
+}
+
+/// Set, replace, or (`None`) remove the key-signature change `offset` whole
+/// notes after the start of a staff instance's region (operation_catalog
+/// §SetKeySignature): [`SetClefOp`]'s shape and rule for the key sequence.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SetKeySignatureOp {
+    pub instance: StaffInstanceId,
+    pub offset: RationalTime,
+    pub key: Option<KeySignature>,
+}
+
+impl SetKeySignatureOp {
+    /// The change's musical position in its region — the LWW key.
+    pub fn position(&self) -> MusicalPosition {
+        MusicalPosition(self.offset.clone())
+    }
+}
+
+impl CanonicalEncode for SetKeySignatureOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_canon(out, &self.instance);
+        push_lp_bytes(out, &self.offset.canonical_bytes());
+        match &self.key {
+            None => push_tag(out, 0),
+            Some(key) => {
+                push_tag(out, 1);
+                push_lp_bytes(out, &key.canonical_bytes());
+            }
+        }
+    }
+}
+
 /// Set, replace, or (`None`) remove the single meter change at the anchor's
 /// resolved musical position in a region's default metric grid
 /// (operation_catalog §"Meter and Tempo Overwrites"). Carries the full
@@ -2240,7 +2327,7 @@ mod tests {
         // GOLDEN LOCK: the discriminant byte leads every canonically-encoded
         // primitive payload (operation_catalog §"Value-Typed Payloads"), so the
         // literal values are normative wire facts. Encodings are append-only:
-        // new kinds append past 40; the values below never change.
+        // new kinds append past 42; the values below never change.
         //
         // P13-S15: this table stopped at 29 while ten kinds were appended past
         // it (Push 4a through genesis G3b), so every one of 30..=39 sat with no
@@ -2282,7 +2369,7 @@ mod tests {
         let anchor = || valuegen::region_start_anchor(region, MusicalPosition::origin());
 
         let repeat_id = RepeatStructureId::new(r, 12);
-        let table: [(OperationKind, u8); 41] = [
+        let table: [(OperationKind, u8); 43] = [
             (
                 OperationKind::InsertEvent(InsertEventOp {
                     staff_instance: instance,
@@ -2548,6 +2635,22 @@ mod tests {
                     tuplet: valuegen::tuplet(TupletId::new(r, 18), vec![event_a, event_b]),
                 }),
                 40,
+            ),
+            (
+                OperationKind::SetClef(SetClefOp {
+                    instance,
+                    offset: RationalTime::zero(),
+                    clef: Some(Clef::bass()),
+                }),
+                41,
+            ),
+            (
+                OperationKind::SetKeySignature(SetKeySignatureOp {
+                    instance,
+                    offset: RationalTime::zero(),
+                    key: KeySignature::new(-2),
+                }),
+                42,
             ),
         ];
         for (kind, expected) in &table {
@@ -2821,7 +2924,7 @@ mod tests {
         // break that locality. This table replaces only
         // `phase3_tag_discriminants_are_golden` (retired), whose entire
         // subject was tag→byte for 24–29 and nothing else.
-        let table: [(OperationKindTag, u8); 41] = [
+        let table: [(OperationKindTag, u8); 43] = [
             (OperationKindTag::InsertEvent, 0),
             (OperationKindTag::DeleteEvent, 1),
             (OperationKindTag::ModifyEvent, 2),
@@ -2868,6 +2971,8 @@ mod tests {
             (OperationKindTag::CreateView, 38),
             (OperationKindTag::CreateMeasure, 39),
             (OperationKindTag::CreateTuplet, 40),
+            (OperationKindTag::SetClef, 41),
+            (OperationKindTag::SetKeySignature, 42),
         ];
 
         // --- Coverage (derived; see the header comment above) ---
@@ -2876,8 +2981,8 @@ mod tests {
             expected.push(OperationKindTag::Registered(OperationKindRegistryId(0)));
             assert_eq!(
                 expected.len(),
-                41,
-                "sanity: the vocabulary itself is 41 wide"
+                43,
+                "sanity: the vocabulary itself is 43 wide"
             );
 
             // Tag-set equality with `Registered`'s payload id normalized
@@ -2899,15 +3004,15 @@ mod tests {
             );
             assert_eq!(
                 table_tags.len(),
-                41,
+                43,
                 "duplicate rows would satisfy the length without covering the vocabulary"
             );
 
             let byte_set: std::collections::BTreeSet<u8> = table.iter().map(|(_, b)| *b).collect();
             assert_eq!(
                 byte_set,
-                (0u8..41).collect::<std::collections::BTreeSet<u8>>(),
-                "the table's byte set must be exactly 0..=40, no gaps, no repeats"
+                (0u8..43).collect::<std::collections::BTreeSet<u8>>(),
+                "the table's byte set must be exactly 0..=42, no gaps, no repeats"
             );
         }
 

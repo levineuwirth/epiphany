@@ -34,7 +34,7 @@ use epiphany_core::{
     EventId, PitchId, PitchSpaceId, RegionId, Score, StaffInstanceId, TypedObjectId, VoiceId,
 };
 use epiphany_layout_ir::{BarrierScope, EditBarrier, EditContext, EditOracle, ExtensionRef};
-use epiphany_ops::{OperationKind, OperationKindTag};
+use epiphany_ops::{OperationKind, OperationKindTag, SetClefOp, SetKeySignatureOp};
 
 /// One active extension declaration's barrier view: the declaring extension
 /// (named when its barrier refuses an edit, and recorded for tombstoning when
@@ -497,6 +497,12 @@ pub(crate) fn subjects_of(kind: &OperationKind, score: &Score) -> BarrierSubject
                 region_of_staff_instance(score, op.staff_instance),
                 Some(op.staff_instance),
             ),
+        ),
+        // X3.6: a clef or key change edits its staff instance's sequence.
+        OperationKind::SetClef(SetClefOp { instance, .. })
+        | OperationKind::SetKeySignature(SetKeySignatureOp { instance, .. }) => one(
+            TypedObjectId::StaffInstance(*instance),
+            ctx(region_of_staff_instance(score, *instance), Some(*instance)),
         ),
         OperationKind::SetMetadata(_)
         | OperationKind::DeclareTransaction(_)

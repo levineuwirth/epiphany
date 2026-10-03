@@ -231,7 +231,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.16.0 --- Tuplets enter the operation set}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.17.0 --- Clef and key changes enter the operation set}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -663,6 +663,15 @@ tuplet it belonged to: the tuplet used to stay, naming a dead member; it now
 cascade-deletes, in the effect and the graph. Accordingly
 \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION} moves
 \texttt{1}~$\rightarrow$~\texttt{2}.
+
+\noindent\textbf{Version 0.17.0 (X3.6, clef and key changes).} Adds two
+operation kinds, \texttt{SetClef} and \texttt{SetKeySignature}
+(Section~\ref{sec:k0:set-clef}): a staff instance's clef and key sequences,
+written until now only by \texttt{CreateStaffInstance}, take a change at a
+time. Schema major~0 unconditionally, epoch~14; wire discriminants~41
+and~42. No new \texttt{PreconditionFailureReason}. The reduction algorithm
+version does not move: no operation reducible before changes its verdict or
+the state it produces, since only the new kinds write the new registers.
 
 % ===========================================================================
 \chapter{The Catalog Framework}
@@ -1978,6 +1987,55 @@ graph alike, as \texttt{CascadeDeleteTuplets} would have.
 \textbf{Re-anchoring.} The tuplet references its members; the rule table's
 ``Tuplet / Member event'' row governs a member's delete. Nesting is
 representable (\texttt{parent}) but no producer in this revision writes it.
+
+\section{SetClef and SetKeySignature}
+\label{sec:k0:set-clef}
+
+Ratified with X3.6: a staff instance's clef and key sequences
+(\texttt{StaffInstance.clef\_sequence}, \texttt{key\_sequence}), which only
+\texttt{CreateStaffInstance} could write, become editable change by change,
+which authoring needs. The two kinds share one rule; this section states it
+for \texttt{SetClef} and \texttt{SetKeySignature} reads the same with the key
+for the clef.
+
+\textbf{Payload schema.} \texttt{SetClefOp \{ instance: StaffInstanceId,
+offset: RationalTime, clef: Option<Clef> \}} and \texttt{SetKeySignatureOp
+\{ instance: StaffInstanceId, offset: RationalTime, key:
+Option<KeySignature> \}}: the change \texttt{offset} whole notes after the
+start of the instance's region, \texttt{None} to remove it. The change is
+placed by its offset rather than by an arbitrary \texttt{TimeAnchor}, so it
+names no event or measure an undo could strand; the graph holds it anchored
+at the region's start with that musical offset, the form the importer writes.
+
+\textbf{Canonical encoding.} The instance's id (16 bytes), the length-framed
+canonical bytes of \texttt{offset}, then an option tag (\texttt{0} absent,
+\texttt{1} present) and, when present, the length-framed canonical bytes of the
+value. Neither value has been versioned standalone, so both operations are
+schema major~0 unconditionally; \texttt{KeySignature} re-validates its fifths
+at decode.
+
+\textbf{Reduction rule.} A structural last-writer-wins register keyed by
+\texttt{(instance, offset)}, on the meter change's discipline
+(Section~\ref{sec:k0:meter-tempo}): a write sets, replaces or removes the
+one change at that position in the sequence, which stays ordered by
+position; a change already there, from the base or the instance's creation,
+is the key's predecessor. The instance must be live: missing, the operation
+is a precondition no-op with \texttt{TargetMissing}; tombstoned, with
+\texttt{TargetTombstoned}. The check reads the graph-independent object
+index, so both reduction modes agree.
+
+\textbf{Conflict cases.} A write concurrent with the key's last write and
+carrying a different value records a \texttt{StructuralFieldCollision} on
+\texttt{clef\_sequence} (\texttt{key\_sequence}), the later write in
+canonical order winning; carrying the same value, it is a no-op
+(\texttt{AlreadyApplied}).
+
+\textbf{Undo semantics.} Value-restoring: undo writes back the key's
+predecessor --- the earlier change, or none --- unless a later write
+superseded the undone one.
+
+\textbf{Re-anchoring.} None: the change names only its staff instance, whose
+deletion takes the sequence with it.
 
 \section{Repeat Structures}
 \label{sec:k0:repeat-structures}

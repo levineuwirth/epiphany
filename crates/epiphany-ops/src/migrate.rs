@@ -201,6 +201,9 @@ fn project_kind(kind: &OperationKind) -> V0OperationKind {
         OperationKind::CreateMeasure(op) => V0OperationKind::CreateMeasure(op.clone()),
         // X3.1: born past v0; projected verbatim.
         OperationKind::CreateTuplet(op) => V0OperationKind::CreateTuplet(op.clone()),
+        // X3.6: born past v0; projected verbatim.
+        OperationKind::SetClef(op) => V0OperationKind::SetClef(op.clone()),
+        OperationKind::SetKeySignature(op) => V0OperationKind::SetKeySignature(op.clone()),
     }
 }
 
@@ -376,6 +379,9 @@ fn migrate_kind(kind: &V0OperationKind, context: &Score) -> Result<OperationKind
         V0OperationKind::CreateMeasure(op) => OperationKind::CreateMeasure(op.clone()),
         // X3.1: identity round-trip (no lossy v0 form).
         V0OperationKind::CreateTuplet(op) => OperationKind::CreateTuplet(op.clone()),
+        // X3.6: identity round-trip (no lossy v0 form).
+        V0OperationKind::SetClef(op) => OperationKind::SetClef(op.clone()),
+        V0OperationKind::SetKeySignature(op) => OperationKind::SetKeySignature(op.clone()),
     })
 }
 

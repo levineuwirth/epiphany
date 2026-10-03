@@ -227,11 +227,11 @@ pub use payload::{
     DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
     InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
     OperationKind, OperationKindTag, OperationPayload, PositionRemapping, ResolveConflictPayload,
-    ResolveEquivocationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp,
-    SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
-    SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp,
-    TransactionCategory, TransactionDescriptor, TransposeIntervalOp, TransposeOp,
-    TupletCompensation,
+    ResolveEquivocationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetClefOp,
+    SetKeySignatureOp, SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp,
+    SetTempoSegmentOp, SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp,
+    SetUserSystemBreakOp, TransactionCategory, TransactionDescriptor, TransposeIntervalOp,
+    TransposeOp, TupletCompensation,
 };
 pub use reduce::{
     canonical_reduction_order, measure_anchor_relation_for_agreement_test, GraphMaterialization,

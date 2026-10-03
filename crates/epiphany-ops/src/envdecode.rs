@@ -42,7 +42,7 @@ use epiphany_core::{
 use epiphany_core::{
     Beam, Event, IdentifiedPitch, Pitch, Region, RepeatStructure, Rest, Slur, Spanner, Tie,
 };
-use epiphany_core::{CanonicalValue, TempoSegment};
+use epiphany_core::{CanonicalValue, Clef, KeySignature, RationalTime, TempoSegment};
 use epiphany_determinism::{CanonicalDecode, CanonicalEncode};
 
 use crate::causal::CausalContext;
@@ -619,6 +619,16 @@ fn operation_kind(r: &mut Reader<'_>) -> Result<OperationKind> {
         40 => OperationKind::CreateTuplet(CreateTupletOp {
             tuplet: value::<Tuplet>(r, "Tuplet")?,
         }),
+        41 => OperationKind::SetClef(SetClefOp {
+            instance: staff_instance_id(r)?,
+            offset: value::<RationalTime>(r, "RationalTime")?,
+            clef: opt(r, |r| value::<Clef>(r, "Clef"))?,
+        }),
+        42 => OperationKind::SetKeySignature(SetKeySignatureOp {
+            instance: staff_instance_id(r)?,
+            offset: value::<RationalTime>(r, "RationalTime")?,
+            key: opt(r, |r| value::<KeySignature>(r, "KeySignature"))?,
+        }),
         tag => {
             return Err(EnvelopeDecodeError::InvalidTag {
                 kind: "OperationKind",
@@ -971,6 +981,18 @@ pub(crate) mod tests {
                         epiphany_core::TupletId::new(ReplicaId(7), 1),
                         vec![EventId::new(ReplicaId(7), 1), EventId::new(ReplicaId(7), 2)],
                     ),
+                })
+            }
+            OperationKindTag::SetClef => OperationKind::SetClef(crate::payload::SetClefOp {
+                instance: StaffInstanceId::new(ReplicaId(7), 1),
+                offset: epiphany_core::RationalTime::new(3, 4).expect("a valid offset"),
+                clef: Some(epiphany_core::Clef::bass()),
+            }),
+            OperationKindTag::SetKeySignature => {
+                OperationKind::SetKeySignature(crate::payload::SetKeySignatureOp {
+                    instance: StaffInstanceId::new(ReplicaId(7), 1),
+                    offset: epiphany_core::RationalTime::new(3, 4).expect("a valid offset"),
+                    key: epiphany_core::KeySignature::new(3),
                 })
             }
         }

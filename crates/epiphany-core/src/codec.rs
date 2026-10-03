@@ -3564,6 +3564,11 @@ canonical_value! {
     // one already has a `Codec` impl the whole-score codec uses; this macro
     // only makes that existing layout reachable per-value.
     RationalTime,
+    // X3.6 — SetClef and SetKeySignature embed the bare values. Both already
+    // have a `Codec` and ship inside a staff instance's change sequences;
+    // `KeySignature::dec` re-validates its fifths.
+    Clef,
+    KeySignature,
     ScoreTuningContext,
     TuningOverride,
     TuningScope,

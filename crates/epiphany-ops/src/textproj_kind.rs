@@ -14,10 +14,10 @@ use crate::payload::{
     CreateVoiceOp, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
     DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
     InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
-    OperationKind, OperationKindTag, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp,
-    SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
-    SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp,
-    TransactionDescriptor, TransposeIntervalOp, TransposeOp,
+    OperationKind, OperationKindTag, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetClefOp,
+    SetKeySignatureOp, SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp,
+    SetTempoSegmentOp, SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp,
+    SetUserSystemBreakOp, TransactionDescriptor, TransposeIntervalOp, TransposeOp,
 };
 use crate::support::OperationKindRegistryId;
 
@@ -246,6 +246,18 @@ impl TextValue for OperationKind {
                 vec![op.instance.project(), op.measure.project()],
             ),
             OperationKind::CreateTuplet(op) => production(self.tag(), vec![op.tuplet.project()]),
+            OperationKind::SetClef(op) => production(
+                self.tag(),
+                vec![
+                    op.instance.project(),
+                    op.offset.project(),
+                    op.clef.project(),
+                ],
+            ),
+            OperationKind::SetKeySignature(op) => production(
+                self.tag(),
+                vec![op.instance.project(), op.offset.project(), op.key.project()],
+            ),
         }
     }
 
@@ -640,6 +652,26 @@ impl TextValue for OperationKind {
                     tuplet: TextValue::parse(tuplet)?,
                 })
             }
+            OperationKindTag::SetClef => {
+                let [instance, offset, clef] = fields(s, tag, 3)? else {
+                    unreachable!("the arity-3 check returned three fields")
+                };
+                OperationKind::SetClef(SetClefOp {
+                    instance: TextValue::parse(instance)?,
+                    offset: TextValue::parse(offset)?,
+                    clef: TextValue::parse(clef)?,
+                })
+            }
+            OperationKindTag::SetKeySignature => {
+                let [instance, offset, key] = fields(s, tag, 3)? else {
+                    unreachable!("the arity-3 check returned three fields")
+                };
+                OperationKind::SetKeySignature(SetKeySignatureOp {
+                    instance: TextValue::parse(instance)?,
+                    offset: TextValue::parse(offset)?,
+                    key: TextValue::parse(key)?,
+                })
+            }
         })
     }
 }
@@ -693,7 +725,7 @@ mod tests {
     #[test]
     fn every_operation_kind_round_trips_with_canonical_text() {
         let tags: Vec<_> = all_tags().collect();
-        assert_eq!(tags.len(), 41, "the grammar has 41 kind productions");
+        assert_eq!(tags.len(), 43, "the grammar has 43 kind productions");
         for tag in tags {
             round_trip(&sample_kind(tag));
         }

@@ -91,7 +91,7 @@ fn pitch(n: u64) -> PitchId {
 
 /// Generates a random payload over the shared id space.
 fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
-    let kind = match rng.below(38) {
+    let kind = match rng.below(40) {
         0 => {
             let voice = VoiceId::new(ReplicaId(7), rng.below(3));
             let position = MusicalPosition(RationalTime::from_int(rng.below(4) as i32));
@@ -350,6 +350,20 @@ fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
                     EventId::new(ReplicaId(7), rng.below(4)),
                 ],
             ),
+        }),
+        // X3.6: a clef or key change, set or removed, at one of two offsets
+        // on one of the shared staff instances.
+        38 => OperationKind::SetClef(crate::payload::SetClefOp {
+            instance: StaffInstanceId::new(ReplicaId(7), rng.below(3)),
+            offset: epiphany_core::RationalTime::from_int(rng.below(2) as i32),
+            clef: rng.chance(2).then(epiphany_core::Clef::bass),
+        }),
+        39 => OperationKind::SetKeySignature(crate::payload::SetKeySignatureOp {
+            instance: StaffInstanceId::new(ReplicaId(7), rng.below(3)),
+            offset: epiphany_core::RationalTime::from_int(rng.below(2) as i32),
+            key: rng
+                .chance(2)
+                .then(|| epiphany_core::KeySignature::new(-2).expect("a valid key")),
         }),
         _ => OperationKind::SetStaffLayout(SetStaffLayoutOp {
             staff_instance: StaffInstanceId::new(ReplicaId(7), rng.below(3)),

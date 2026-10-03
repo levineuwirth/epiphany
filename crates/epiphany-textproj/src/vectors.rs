@@ -28,7 +28,8 @@ use epiphany_core::{
 use epiphany_ops::{
     AuthorId, CausalContext, CreateAnalysisLayerOp, CreateMeasureOp, CreatePartDefinitionOp,
     CreateStaffGroupOp, CreateTupletOp, CreateViewOp, DeleteRegionOp, HybridLogicalClock,
-    OperationEnvelope, OperationKind, OperationPayload, OperationStamp, SetTuningContextOp,
+    OperationEnvelope, OperationKind, OperationPayload, OperationStamp, SetClefOp,
+    SetKeySignatureOp, SetTuningContextOp,
 };
 
 use crate::parse::parse_document;
@@ -311,6 +312,36 @@ fn tuplet_envelope(counter: u64, physical_time: i64) -> OperationEnvelope {
     }
 }
 
+/// X3.6 (kinds 41 and 42): a clef change and a key change three quarters
+/// into a staff instance's region. Same rationale as `staff_group_envelope`
+/// above.
+fn staff_change_envelope(counter: u64, physical_time: i64, clef: bool) -> OperationEnvelope {
+    let id = OperationId::new(ReplicaId(1), counter);
+    let instance = epiphany_core::StaffInstanceId::new(ReplicaId(1), 1);
+    let offset = epiphany_core::RationalTime::new(3, 4).expect("a valid offset");
+    let kind = if clef {
+        OperationKind::SetClef(SetClefOp {
+            instance,
+            offset,
+            clef: Some(epiphany_core::Clef::bass()),
+        })
+    } else {
+        OperationKind::SetKeySignature(SetKeySignatureOp {
+            instance,
+            offset,
+            key: epiphany_core::KeySignature::new(-3),
+        })
+    };
+    OperationEnvelope {
+        id,
+        author: AuthorId(0xAB),
+        stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(physical_time), 0), id),
+        causal_context: CausalContext::new(),
+        transaction: None,
+        payload: OperationPayload::Primitive(kind),
+    }
+}
+
 fn profiles(custom: bool) -> Vec<ProfileDeclaration> {
     let mut profiles = vec![ProfileDeclaration::full()];
     if custom {
@@ -499,6 +530,19 @@ fn accept_documents() -> Vec<(&'static str, String)> {
         blobs: Vec::new(),
         envelopes: vec![tuplet_envelope(13, 1300)],
     };
+    // X3.6: kinds 41 and 42 in the committed corpus, the same discipline.
+    let staff_change = |id: u8, counter: u64, clef: bool| TextDocument {
+        document_id: DocumentId([id; 16]),
+        manifest_schema_version: SchemaVersion::V0,
+        lineage_id: None,
+        profiles: profiles(false),
+        extensions: Vec::new(),
+        canonical_base: None,
+        blobs: Vec::new(),
+        envelopes: vec![staff_change_envelope(counter, counter as i64 * 100, clef)],
+    };
+    let clef = staff_change(12, 14, true);
+    let key = staff_change(13, 15, false);
 
     vec![
         (
@@ -550,6 +594,14 @@ fn accept_documents() -> Vec<(&'static str, String)> {
         (
             "create_tuplet",
             project_text_document(&tuplet).expect("an accept document carries no canonical base"),
+        ),
+        (
+            "set_clef",
+            project_text_document(&clef).expect("an accept document carries no canonical base"),
+        ),
+        (
+            "set_key_signature",
+            project_text_document(&key).expect("an accept document carries no canonical base"),
         ),
     ]
 }
@@ -634,15 +686,15 @@ pub fn document_vectors() -> Vec<TextVector> {
         .map(|(name, text)| (SURFACE, "accept", "-", *name, text.as_bytes().to_vec()))
         .collect();
 
-    // The rejected version must be one this crate does NOT implement. X3.1
-    // moved `COMPANION_VERSION` to 0.15.0; this vector now names 0.14.0, the
-    // immediately superseded companion (previously 0.13.0, when the committed
-    // version was 0.14.0) — rejecting the version right behind you is exactly
+    // The rejected version must be one this crate does NOT implement. X3.6
+    // moved `COMPANION_VERSION` to 0.16.0; this vector now names 0.15.0, the
+    // immediately superseded companion (previously 0.14.0, when the committed
+    // version was 0.15.0) — rejecting the version right behind you is exactly
     // the deferred migrate-on-read posture (`req:textproj:header-version`).
     let wrong_version = replace_once(
         minimal,
+        "(text-projection (0 16 0))",
         "(text-projection (0 15 0))",
-        "(text-projection (0 14 0))",
     );
     vectors.push((
         SURFACE,
@@ -997,7 +1049,7 @@ mod tests {
     #[test]
     fn the_reference_implementation_agrees_with_every_vector() {
         match verify(COMMITTED) {
-            Ok(count) => assert_eq!(count, 21, "the corpus has unexpectedly thinned"),
+            Ok(count) => assert_eq!(count, 23, "the corpus has unexpectedly thinned"),
             Err(failures) => panic!(
                 "{} disagreement(s):\n{}",
                 failures.len(),
@@ -1091,23 +1143,12 @@ mod tests {
         );
     }
 
-    /// (t13) X3.1: text projection round-trips the new `create-tuplet` kind,
-    /// and the companion version is **0.15.0** (bumped from 0.14.0), with the
-    /// negative vector rejecting **0.14.0** (the immediately superseded
-    /// companion).
+    /// (t13) X3.1: text projection round-trips the `create-tuplet` kind.
     ///
     /// **Mutation:** drop `OperationKindTag::CreateTuplet` from
-    /// `OperationKind::parse` in `textproj_kind.rs`; must fail. Separately,
-    /// leave `COMPANION_VERSION` at `(0, 14, 0)`; the negative vector must
-    /// fail.
+    /// `OperationKind::parse` in `textproj_kind.rs`; must fail.
     #[test]
-    fn t13_x3_kind_round_trips_and_companion_is_0_15_0_rejecting_0_14_0() {
-        assert_eq!(
-            crate::COMPANION_VERSION,
-            (0, 15, 0),
-            "the companion version must be 0.15.0"
-        );
-
+    fn t13_x3_tuplet_kind_round_trips() {
         let name = "create_tuplet";
         let text = accept_documents()
             .into_iter()
@@ -1122,9 +1163,44 @@ mod tests {
             reprojected, text,
             "{name}: project(serialize(parse(T))) == T must hold"
         );
+    }
+
+    /// (t14) X3.6: text projection round-trips the new `set-clef` and
+    /// `set-key-signature` kinds, and the companion version is **0.16.0**
+    /// (bumped from 0.15.0), with the negative vector rejecting **0.15.0**
+    /// (the immediately superseded companion).
+    ///
+    /// **Mutation:** drop `OperationKindTag::SetClef` from
+    /// `OperationKind::parse` in `textproj_kind.rs`; must fail. Separately,
+    /// leave `COMPANION_VERSION` at `(0, 15, 0)`; the negative vector must
+    /// fail.
+    #[test]
+    fn t14_x3_staff_change_kinds_round_trip_and_companion_is_0_16_0_rejecting_0_15_0() {
+        assert_eq!(
+            crate::COMPANION_VERSION,
+            (0, 16, 0),
+            "the companion version must be 0.16.0"
+        );
+
+        for name in ["set_clef", "set_key_signature"] {
+            let text = accept_documents()
+                .into_iter()
+                .find(|(n, _)| *n == name)
+                .unwrap_or_else(|| panic!("accept document is absent: {name}"))
+                .1;
+            let document =
+                parse_document(&text).unwrap_or_else(|e| panic!("{name} must parse: {e}"));
+            assert_eq!(document.envelopes.len(), 1, "{name} carries one envelope");
+            let reprojected = project_text_document(&document)
+                .expect("an accept document carries no canonical base");
+            assert_eq!(
+                reprojected, text,
+                "{name}: project(serialize(parse(T))) == T must hold"
+            );
+        }
 
         // The negative vector must reject exactly the immediately superseded
-        // companion, 0.14.0.
+        // companion, 0.15.0.
         let rows = parse(COMMITTED).expect("the committed corpus parses");
         let superseded = rows
             .iter()
@@ -1133,8 +1209,8 @@ mod tests {
         assert_eq!(superseded.verdict, "reject");
         let text = String::from_utf8(superseded.text.clone()).expect("utf8");
         assert!(
-            text.contains("(text-projection (0 14 0))"),
-            "the negative vector must name the immediately superseded companion 0.14.0, got: {text}"
+            text.contains("(text-projection (0 15 0))"),
+            "the negative vector must name the immediately superseded companion 0.15.0, got: {text}"
         );
         assert!(
             parse_document(&text).is_err(),

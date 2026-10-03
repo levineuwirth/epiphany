@@ -7139,6 +7139,12 @@ pub enum OperationKind {
     // tuplet's required total.
     CreateTuplet(CreateTupletOp),
 
+    // X3.6: set, replace or remove the clef or key-signature change at a
+    // musical offset in a live staff instance's region (structural LWW, keyed
+    // by instance and position, like a meter change).
+    SetClef(SetClefOp),
+    SetKeySignature(SetKeySignatureOp),
+
     // Layout-semantic operations
     SetUserSystemBreak(SetUserSystemBreakOp),
     SetUserPageBreak(SetUserPageBreakOp),
@@ -12235,6 +12241,9 @@ pub enum OperationKindTag {
     CreateMeasure,
     // X3.1: name-verbatim, as the five most recent prior additions are.
     CreateTuplet,
+    // X3.6: name-verbatim.
+    SetClef,
+    SetKeySignature,
 }
 
 pub enum BarrierScope {
@@ -17102,6 +17111,18 @@ layouts they own versus inherit:
   first measure may now be shorter than its bar; every later distance is still
   a full bar. \texttt{CreateMeasure} admits the same successor (Operation
   Catalog, version~0.16.0 note).
+  \\
+  \today & Chapter 6 \texttt{OperationKind}, Chapter 8
+  \texttt{OperationKindTag} &
+  \textbf{X3.6: clef and key changes enter the operation set.}
+  \texttt{OperationKind} and \texttt{OperationKindTag} gain \texttt{SetClef}
+  and \texttt{SetKeySignature}, which set, replace or remove the change at a
+  musical offset in a live staff instance's clef or key sequence: semantics in
+  the Operation Catalog \sectionsc{SetClef and SetKeySignature}, wire
+  discriminants~41 and~42 and epoch~14 in the Binary Format companion, the
+  \texttt{set-clef} and \texttt{set-key-signature} productions in the Text
+  Projection companion. The reduction algorithm version does not move: no
+  operation reducible before changes its verdict or the state it produces.
   \\
   \bottomrule
 \end{longtable}

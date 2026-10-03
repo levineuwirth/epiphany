@@ -130,6 +130,9 @@ pub enum V0OperationKind {
     // X3.1 — born at wire-disc 40; no lossy v0 form, so it round-trips by
     // identity like every v1-native kind above.
     CreateTuplet(crate::payload::CreateTupletOp),
+    // X3.6 — born at wire-discs 41 and 42; identity round-trips.
+    SetClef(crate::payload::SetClefOp),
+    SetKeySignature(crate::payload::SetKeySignatureOp),
 }
 
 /// v0 `InsertEvent`: the event was a bare [`EventId`] plus the reduction-relevant

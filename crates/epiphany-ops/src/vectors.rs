@@ -643,6 +643,47 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         tuplet_trailing,
     ));
 
+    // X3.6 (kinds 41 and 42): a clef change and a key change.
+    let staff_change = |counter: u64, kind: crate::payload::OperationKind| OperationEnvelope {
+        id: OperationId::new(ReplicaId(1), counter),
+        author: crate::support::AuthorId(0),
+        stamp: crate::stamp::OperationStamp::new(
+            crate::stamp::HybridLogicalClock::new(epiphany_core::WallClockTime(1), 1),
+            OperationId::new(ReplicaId(1), counter),
+        ),
+        causal_context: crate::causal::CausalContext::new(),
+        transaction: None,
+        payload: crate::payload::OperationPayload::Primitive(kind),
+    };
+    let instance = epiphany_core::StaffInstanceId::new(ReplicaId(1), 1);
+    let offset = epiphany_core::RationalTime::new(3, 4).expect("a valid offset");
+    for (name, envelope) in [
+        (
+            "set_clef",
+            staff_change(
+                11,
+                crate::payload::OperationKind::SetClef(crate::payload::SetClefOp {
+                    instance,
+                    offset: offset.clone(),
+                    clef: Some(epiphany_core::Clef::bass()),
+                }),
+            ),
+        ),
+        (
+            "set_key_signature",
+            staff_change(
+                12,
+                crate::payload::OperationKind::SetKeySignature(crate::payload::SetKeySignatureOp {
+                    instance,
+                    offset: offset.clone(),
+                    key: None,
+                }),
+            ),
+        ),
+    ] {
+        v.push(row(OE, "accept", "-", name, envelope.to_canonical_bytes()));
+    }
+
     v
 }
 
