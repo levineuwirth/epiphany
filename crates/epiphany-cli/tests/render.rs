@@ -2662,3 +2662,71 @@ fn a_rest_filling_a_pickup_keeps_its_value() {
         "{found:?}"
     );
 }
+
+/// A hand-written score through the whole pipeline, import to page, locked
+/// to a golden. Its features are counted first, so the golden cannot lock a
+/// page that lost one: a pickup whose rests keep their values, a key
+/// signature, a meter change, beams, dots, accidentals and a second,
+/// triplets beamed and bracketed, two voices on a staff, a tie, a slur, and
+/// a grand staff that changes clef mid-measure and back. Regenerate
+/// deliberately, with renders beside it, with `UPDATE_GOLDEN=1`.
+#[test]
+fn a_hand_written_score_engraves_to_its_golden() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("notation.svg");
+    let _ = std::fs::remove_file(&out);
+    let status = Command::new(env!("CARGO_BIN_EXE_epiphany"))
+        .arg("render")
+        .arg(fixture("notation.musicxml"))
+        .args(["--page", "1", "-o"])
+        .arg(&out)
+        .output()
+        .expect("runs");
+    assert!(status.status.success(), "{status:?}");
+    let svg = std::fs::read_to_string(&out).expect("an SVG was written");
+
+    let count = |needle: &str| svg.matches(needle).count();
+    for (glyph, expected) in [
+        ("restQuarter", 6),
+        ("restHalf", 1),
+        ("restWhole", 1),
+        ("augmentationDot", 5),
+        ("accidentalSharp", 3),
+        ("accidentalNatural", 1),
+        ("accidentalFlat", 6),
+        ("timeSig3", 3),
+        ("tuplet3", 2),
+        ("gClefChange", 1),
+        ("fClefChange", 1),
+        ("brace", 1),
+    ] {
+        assert_eq!(
+            count(&format!("data-glyph=\"{glyph}\"")),
+            expected,
+            "{glyph}"
+        );
+    }
+    assert_eq!(count("data-kind=\"curve\""), 2, "a tie and a slur");
+    assert!(count("stroke-width=\"0.5\"") >= 2, "the two beams");
+    // The omission census agrees: nothing the file holds is drawn otherwise.
+    let loaded = load(&fixture("notation.musicxml")).expect("loads");
+    let engraved = epiphany_cli::engrave_loaded(&loaded);
+    let found = omissions(
+        &loaded.reduced.score,
+        &engraved.layout,
+        &engraved.diagnostics,
+    );
+    assert!(found.kinds.is_empty(), "{found:?}");
+
+    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/notation.page-1.svg");
+    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        std::fs::create_dir_all(golden.parent().expect("a directory")).expect("created");
+        std::fs::write(&golden, &svg).expect("golden written");
+    }
+    let expected = std::fs::read_to_string(&golden)
+        .unwrap_or_else(|e| panic!("{}: {e}; regenerate with UPDATE_GOLDEN=1", golden.display()));
+    assert!(
+        expected == svg,
+        "the page differs from {}; if intended, regenerate with UPDATE_GOLDEN=1",
+        golden.display()
+    );
+}
