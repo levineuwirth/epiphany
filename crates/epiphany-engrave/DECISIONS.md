@@ -1372,3 +1372,15 @@ measure's own signature or the region's meter in force there; the omission
 census applies the same rule, so the two cannot agree on the wrong glyph, as
 they did. A mid-score short measure is still not modelled. Locked by
 `a_rest_filling_a_pickup_keeps_its_value` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 29 → 30: a tuplet's bracket rides inked columns (X3.2, 2026-10-03)
+
+A spring slot is realized only by a glyph in its column, and a hidden rest
+keeps its column but draws nothing. A tuplet whose first or last member was a
+hidden rest, alone in its column, anchored its bracket's end to that column's
+slot, which did not exist: the constrained layout then failed validation
+(`DanglingSpanAnchor`) and the engraver returned `InternalError` with no page
+at all, for the whole score. The bracket's ends now ride the first and last
+columns its members draw in; the number keeps its middle member's column,
+which its own glyph realizes. Locked by
+`a_tuplet_opening_on_a_hidden_rest_still_engraves` (`epiphany-cli`).

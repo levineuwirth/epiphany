@@ -2624,6 +2624,59 @@ fn clef_changes_are_drawn_where_they_take_effect() {
     }
 }
 
+/// A tuplet opening on a hidden rest still engraves: its bracket rides the
+/// columns its members draw in, since a column nothing draws in has no slot
+/// to anchor it.
+#[test]
+fn a_tuplet_opening_on_a_hidden_rest_still_engraves() {
+    let triplet = |inner: &str, edge: &str| {
+        format!(
+            "<note{inner}><duration>2</duration><voice>1</voice><type>eighth</type>\
+             <time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes>\
+             </time-modification>{edge}</note>"
+        )
+    };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>6</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{}{}{}{}{}{}</measure>\
+         </part></score-partwise>",
+        triplet(
+            " print-object=\"no\"><rest/",
+            "<notations><tuplet type=\"start\" bracket=\"yes\"/></notations>"
+        ),
+        triplet("><pitch><step>C</step><octave>5</octave></pitch", ""),
+        triplet(
+            "><pitch><step>D</step><octave>5</octave></pitch",
+            "<notations><tuplet type=\"stop\"/></notations>"
+        ),
+        quarter("E"),
+        quarter("F"),
+        quarter("G"),
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("hidden_rest_tuplet.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    assert_eq!(loaded.reduced.score.cross_cutting.tuplets.len(), 1);
+    let layout = engrave(&loaded.reduced.score).layout;
+    assert_eq!(layout.pages.len(), 1, "the score engraves");
+    assert!(layout.glyphs.iter().any(|g| g.glyph.as_str() == "tuplet3"));
+    let bracket = layout
+        .strokes
+        .iter()
+        .filter(|s| matches!(s.provenance.source, epiphany_core::TypedObjectId::Tuplet(_)))
+        .count();
+    assert!(bracket >= 2, "the bracket is drawn: {bracket} strokes");
+}
+
+fn quarter(step: &str) -> String {
+    format!(
+        "<note><pitch><step>{step}</step><octave>5</octave></pitch><duration>6</duration>\
+         <voice>1</voice><type>quarter</type></note>"
+    )
+}
+
 /// A rest filling a pickup keeps the value the file writes, as a rest filling
 /// a full bar is a measure rest: a pickup is not a measure's worth of
 /// silence. The omission census reads both alike.

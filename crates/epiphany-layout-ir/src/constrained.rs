@@ -4073,7 +4073,10 @@ struct TupletMarks {
 /// when the members are notes beamed together as one group. `None` when no
 /// member has a column on the staff.
 fn tuplet_marks(tuplet: &crate::logical::TupletContent, at: &TupletInk) -> Option<TupletMarks> {
-    let keys_of = |event: &EventId| -> Vec<ColumnKey> {
+    // A member's columns; with `inked`, only those it draws in, since a
+    // column's slot is realized only by a glyph, and a bracket end anchored
+    // to a hidden rest's column would name a slot that does not exist.
+    let keys_of = |event: &EventId, inked: bool| -> Vec<ColumnKey> {
         let stems = at
             .stems
             .get(event)
@@ -4085,14 +4088,20 @@ fn tuplet_marks(tuplet: &crate::logical::TupletContent, at: &TupletInk) -> Optio
             .get(event)
             .into_iter()
             .flatten()
+            .filter(|r| !inked || (r.visible && r.name.is_some()))
             .map(|r| r.key.clone());
         stems.chain(rests).collect()
     };
-    let mut keys: Vec<ColumnKey> = tuplet.members.iter().flat_map(keys_of).collect();
+    let mut keys: Vec<ColumnKey> = tuplet
+        .members
+        .iter()
+        .flat_map(|e| keys_of(e, true))
+        .collect();
     keys.sort();
     let (first, last) = (keys.first()?.clone(), keys.last()?.clone());
+    // The number's own glyph realizes its slot, so any member column serves.
     let middle = tuplet.members.get(tuplet.members.len() / 2).and_then(|e| {
-        let mut own = keys_of(e);
+        let mut own = keys_of(e, false);
         own.sort();
         own.into_iter().next()
     })?;
