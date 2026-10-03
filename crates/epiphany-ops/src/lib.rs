@@ -162,13 +162,21 @@ pub mod vectors;
 ///   §CreateTuplet) and keeps tuplet membership in the referent index in both
 ///   reduction modes; X3.5 admits a pickup (operation_catalog
 ///   §CreateMeasure). On histories of the operation kinds that existed before
-///   it, three **reduction verdicts** change, each intended:
+///   it, four **reduction verdicts** change, each intended:
 ///   - a base-free `DeleteEvent` declaring `RewriteTuplets`, or
 ///     `CascadeDeleteTuplets` not naming exactly the live tuplets that hold
 ///     the event, is refused `TupletCompensationInvalid`, as graph-aware
 ///     reduction refuses it, where version `1` applied it base-free with a
 ///     `TupletCompensated` repair against a tuplet no operation had minted
 ///     (and, for the cascade, that id tombstoned), on any history at all;
+///   - a base-free `DeleteEvent` whose `ReplaceWithRest` rest differs in
+///     duration from the event, read from `voice_occupancy`, is refused
+///     `TupletCompensationInvalid`, as graph-aware reduction refuses it,
+///     where version `1` applied it base-free. `CreateTuplet` makes the
+///     declaration ordinary base-free and a concurrent trim makes it stale,
+///     so without this check one valid history reduced differently in the
+///     two modes. Whether the rest's id is fresh stays a graph-aware,
+///     referential check;
 ///   - a `ModifyEvent` changing a tuplet member's duration is refused
 ///     `EventDurationInvalid`, where version `1` applied it over a base
 ///     holding the tuplet and broke invariant 16;
@@ -184,18 +192,22 @@ pub mod vectors;
 ///     effect no longer carries the `AttachmentTombstoned` repair the stale
 ///     index used to record against the tuplet;
 ///   - a member tombstoned with no compensation to declare, as a cue event
-///     cascaded out from under the tuplet is, cascade-deletes the tuplet: a
-///     `CascadeDeleted` repair, and the tuplet and any decomposition
-///     attachment naming it removed from the graph, where version `1`
-///     recorded `AttachmentTombstoned` and left the tuplet naming a dead
-///     member.
+///     cascaded out from under the tuplet is, or as the rest is when an undo
+///     removes the transaction that replaced a member with it,
+///     cascade-deletes the tuplet: a `CascadeDeleted` repair, and the tuplet
+///     and any decomposition attachment naming it removed from the graph,
+///     where version `1` left the tuplet naming a dead member (for the cue,
+///     with an `AttachmentTombstoned` repair).
 ///
 ///   Locked by `version_2_verdicts_on_histories_that_make_no_tuplet` (the
-///   first two verdicts), `g3b_create_measure_pickup_successor_applies_end_to_end`
-///   (the third) and `a_base_tuplet_follows_its_members_replacement_and_cascade`
-///   (the state). The same rule cascades a tuplet whose member an undo
-///   removes, on histories that create the tuplet, which version `1` could
-///   not reduce (`undo_cascades_a_tuplet_whose_members_it_removes`).
+///   first and third verdicts), the `reduction_modes` tests of
+///   `epiphany-musicxml`, which reduce one history both ways and compare
+///   (the second), `g3b_create_measure_pickup_successor_applies_end_to_end`
+///   (the fourth) and `a_base_tuplet_follows_its_members_replacement_and_cascade`
+///   (the state, the undone replacement among it). The same rule cascades a
+///   tuplet whose member an undo removes on histories that create the
+///   tuplet, which version `1` could not reduce
+///   (`undo_cascades_a_tuplet_whose_members_it_removes`).
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

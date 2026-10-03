@@ -2733,7 +2733,25 @@ impl<'a> Reducer<'a> {
                         Err(PreconditionFailureReason::TupletCompensationInvalid)
                     }
                 }
-                _ => Ok(()),
+                // The rest takes the event's place, so it carries the event's
+                // duration, read from `voice_occupancy` as graph-aware
+                // reduction reads it from the graph: a concurrent trim leaves
+                // a declared rest stale in both modes alike. Whether the
+                // rest's id is fresh is referential, and stays graph-aware.
+                TupletCompensation::ReplaceWithRest { rest } => {
+                    let current = self
+                        .voice_occupancy
+                        .values()
+                        .flatten()
+                        .find(|(_, _, event)| *event == op.event)
+                        .map(|(_, duration, _)| EventDuration::Musical(duration.clone()));
+                    if current.as_ref() == Some(&rest.duration) {
+                        Ok(())
+                    } else {
+                        Err(PreconditionFailureReason::TupletCompensationInvalid)
+                    }
+                }
+                TupletCompensation::NotInTuplet => Ok(()),
             };
         };
         let event = score
@@ -24505,10 +24523,10 @@ mod tests {
 
     /// Over a base holding a tuplet (reduction version 2): a member replaced
     /// by a rest leaves the tuplet live with the rest in its place and no
-    /// repair recorded against it, and a member cascaded away (a cue whose
-    /// source is deleted) cascades the tuplet out of the effect and the
-    /// graph alike, where version 1 recorded `AttachmentTombstoned` and left
-    /// the tuplet naming a dead member.
+    /// repair recorded against it; and a member removed with no compensation
+    /// to declare (the rest, when an undo removes the replacement; a cue
+    /// whose source is deleted) cascades the tuplet out of the effect and the
+    /// graph alike, where version 1 left the tuplet naming a dead member.
     #[test]
     fn a_base_tuplet_follows_its_members_replacement_and_cascade() {
         use epiphany_core::generators::valid_score;
@@ -24581,6 +24599,55 @@ mod tests {
             .find(|t| t.id == tuplet.id)
             .expect("the tuplet stays in the graph");
         assert_eq!(kept.members, vec![rest.id, y]);
+        assert!(check_invariants(&result.score).is_empty());
+
+        // The same replacement in a transaction, then undone: the undo
+        // tombstones the rest it minted, a member no compensation can be
+        // declared for, so the tuplet cascades out of the effect and the
+        // graph, where version 1 left it naming the dead rest.
+        let tx = TransactionId::new(ReplicaId(2), 900);
+        let replace_in_tx = tx_member(
+            2,
+            1,
+            21,
+            CausalContext::new().with_seen(ReplicaId(2), 0),
+            tx,
+            OperationKind::DeleteEvent(DeleteEventOp {
+                event: x,
+                tuplet_compensation: TupletCompensation::ReplaceWithRest { rest: rest.clone() },
+            }),
+        );
+        let undo = undo_env(
+            2,
+            2,
+            22,
+            CausalContext::new().with_seen(ReplicaId(2), 1),
+            tx,
+            UndoPolicy::StrictInverse,
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(2, 0, 20, CausalContext::new(), tx),
+            replace_in_tx,
+            undo.clone(),
+        ]);
+        let result = set.reduce_onto(&base);
+        let cascaded: Vec<TypedObjectId> = repairs_of(&result.state, undo.id)
+            .into_iter()
+            .filter(|r| r.kind == RepairKind::CascadeDeleted)
+            .map(|r| r.target)
+            .collect();
+        assert_eq!(cascaded, vec![TypedObjectId::Event(rest.id), tid]);
+        assert!(matches!(
+            result.state.objects.get(&tid),
+            Some(ObjectState::Tombstoned { .. })
+        ));
+        assert!(!result
+            .score
+            .cross_cutting
+            .tuplets
+            .iter()
+            .any(|t| t.id == tuplet.id));
         assert!(check_invariants(&result.score).is_empty());
 
         // A tuplet over a cue sourced on the voice's first event; deleting

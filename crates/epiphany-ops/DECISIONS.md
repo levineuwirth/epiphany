@@ -2334,15 +2334,36 @@ as graph-aware reduction refuses it; it used to apply, recording a
 compensation against a tuplet no operation had minted and, for the cascade,
 tombstoning that id. And a `ModifyEvent` changing a member's duration is
 refused `EventDurationInvalid`, where over a base holding the tuplet it used
-to apply and break invariant 16. Both are intended: the modes now agree, and
-neither old verdict kept the graph consistent. Over a base already holding a
-tuplet, two operations also produce different state (the
-`AttachmentTombstoned` repair the stale index used to record after a
-`ReplaceWithRest` is gone; a cue cascade now cascades its tuplet). An earlier
-draft of this entry said every verdict was unchanged, which was wrong. The
-`Bumps` entry lists every change version 2 makes, X3.5's pickup verdict with
-them. Locked by `version_2_verdicts_on_histories_that_make_no_tuplet` and
+to apply and break invariant 16. Both are intended: the modes now agree on
+those two compensations, and neither old verdict kept the graph consistent.
+Over a base already holding a tuplet, two operations also produce different
+state (the `AttachmentTombstoned` repair the stale index used to record after
+a `ReplaceWithRest` is gone; a member tombstoned with no compensation to
+declare, a cascaded cue or the rest an undo removes, now cascades its tuplet).
+An earlier draft of this entry said every verdict was unchanged, which was
+wrong. The `Bumps` entry lists every change version 2 makes, X3.5's pickup
+verdict with them. Locked by
+`version_2_verdicts_on_histories_that_make_no_tuplet` and
 `a_base_tuplet_follows_its_members_replacement_and_cascade`.
+
+**A replacement rest's duration is checked base-free (also version 2).**
+Base-free reduction accepted every `ReplaceWithRest`, while graph-aware
+reduction refuses a rest whose duration differs from the event's. Before
+`CreateTuplet` no valid base-free history declared the compensation, since a
+client declares it only for a tuplet member; now one does, and a concurrent
+trim makes its rest stale. Author B trims a note while author A, who has not
+seen the trim, makes it a tuplet member and replaces it with a rest of its old
+duration: with B's trim first, both modes refuse the tuplet, and then the rest
+applied base-free and was refused graph-aware, so the note's state and the
+canonical bytes differed by mode. Base-free reduction now reads the event's
+duration from `voice_occupancy`, as `CreateTuplet` and `ModifyEvent` read a
+member's, and refuses the rest when it differs or the event has no metric
+placement (no live event of a base-free history lacks one: every event is an
+insert or a replacement rest, each placed). Whether the rest's id is fresh is
+referential and stays graph-aware, as the catalog's referential preconditions
+do. Locked by the `reduction_modes` integration tests of `epiphany-musicxml`,
+which reduce histories taking every compensation path both ways and compare
+every effect, every object and the canonical bytes.
 
 ## X3.5 — a pickup's successor applies (2026-10-03)
 
