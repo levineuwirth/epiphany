@@ -194,6 +194,31 @@ pub fn omissions(
         .collect();
     meter_lengths.sort();
 
+    // A tuplet member's written value is its sounding span scaled by the
+    // ratio of every tuplet holding it, its own and their parents'.
+    let tuplet_of: BTreeMap<epiphany_core::TupletId, &epiphany_core::Tuplet> = score
+        .cross_cutting
+        .tuplets
+        .iter()
+        .map(|t| (t.id, t))
+        .collect();
+    let mut written_scale: BTreeMap<epiphany_core::EventId, RationalTime> = BTreeMap::new();
+    for tuplet in &score.cross_cutting.tuplets {
+        let mut scale = RationalTime::from_int(1);
+        let mut next = Some(tuplet);
+        let mut seen = BTreeSet::new();
+        while let Some(t) = next.filter(|t| seen.insert(t.id)) {
+            let ratio =
+                RationalTime::new(i64::from(t.ratio.actual()), i64::from(t.ratio.notated()))
+                    .expect("a tuplet ratio has no zero term");
+            scale = scale.mul(&ratio);
+            next = t.parent.and_then(|p| tuplet_of.get(&p).copied());
+        }
+        for member in &tuplet.members {
+            written_scale.insert(*member, scale.clone());
+        }
+    }
+
     // Events, by what their durations and contents call for.
     for instance in &instances {
         let mut measures: Vec<RationalTime> = instance
@@ -251,7 +276,10 @@ pub fn omissions(
                 let whole_measure = measure_span(&onset.0).is_some_and(|(start, length, full)| {
                     full && start == onset.0 && length == duration.0
                 });
-                let value = notated(&duration.0);
+                let value = notated(&match written_scale.get(id) {
+                    Some(scale) => duration.0.mul(scale),
+                    None => duration.0.clone(),
+                });
                 match event {
                     Event::Rest(_) => {
                         let drawn: Vec<&str> = own
