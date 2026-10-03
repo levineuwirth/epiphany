@@ -2677,6 +2677,174 @@ fn quarter(step: &str) -> String {
     )
 }
 
+/// Every stem stands on a head of its own note, and every head that takes a
+/// stem has its note's stem, after spacing and justification: told apart by
+/// provenance, not by nearness. The glyph nearest a stem can belong to
+/// another column: a beamed sextuplet's number stands between its third and
+/// fourth notes, in the fourth's column, just left of the third's up-stem;
+/// and a whole-note chord's displaced head on the lower staff stands just
+/// right of the next column's head on the upper staff.
+#[test]
+fn a_stem_stands_on_its_own_heads() {
+    use std::collections::BTreeMap;
+
+    use epiphany_core::{Event, TypedObjectId};
+
+    let note = |step: &str, alter: i8, octave: u8, duration: u8, kind: &str, extra: &str| {
+        format!(
+            "<note><pitch><step>{step}</step><alter>{alter}</alter><octave>{octave}</octave>\
+             </pitch><duration>{duration}</duration><voice>1</voice><type>{kind}</type>\
+             {extra}<staff>1</staff></note>"
+        )
+    };
+    let beams = |state: &str, levels: u8| -> String {
+        (1..=levels)
+            .map(|n| format!("<beam number=\"{n}\">{state}</beam>"))
+            .collect()
+    };
+    let tuplet = |actual: u8, normal: u8, mark: &str| {
+        let modification = format!(
+            "<time-modification><actual-notes>{actual}</actual-notes>\
+             <normal-notes>{normal}</normal-notes></time-modification>"
+        );
+        match mark {
+            "" => modification,
+            _ => format!("{modification}<notations><tuplet type=\"{mark}\"/></notations>"),
+        }
+    };
+    let rest = "<note><rest/><duration>12</duration><voice>1</voice><type>quarter</type>\
+                <staff>1</staff></note>";
+    // Divisions 12: a sextuplet sixteenth is 2, a quarter 12.
+    let sextuplets: String = (0..2)
+        .map(|_| {
+            ["D", "E", "F", "G", "A", "G"]
+                .iter()
+                .enumerate()
+                .map(|(i, step)| {
+                    let (state, mark) = match i {
+                        0 => ("begin", "start"),
+                        5 => ("end", "stop"),
+                        _ => ("continue", ""),
+                    };
+                    let extra = format!("{}{}", beams(state, 2), tuplet(6, 4, mark));
+                    note(step, 0, 4, 2, "16th", &extra)
+                })
+                .collect::<String>()
+        })
+        .collect::<String>()
+        + &note("G", 0, 4, 12, "quarter", "")
+        + &note("B", 0, 4, 12, "quarter", "");
+    let after_rests = [
+        rest.to_string(),
+        note("A", 0, 4, 12, "quarter", ""),
+        rest.to_string(),
+        note("F", 1, 4, 12, "quarter", ""),
+    ]
+    .concat();
+    let whole_second = "<note><pitch><step>C</step><octave>3</octave></pitch>\
+         <duration>48</duration><voice>5</voice><type>whole</type><staff>2</staff></note>\
+         <note><chord/><pitch><step>D</step><octave>3</octave></pitch><duration>48</duration>\
+         <voice>5</voice><type>whole</type><staff>2</staff></note>";
+    let measure_rest = "<note><rest measure=\"yes\"/><duration>48</duration><voice>5</voice>\
+         <staff>2</staff></note>";
+    let body: String = (1..=16)
+        .map(|m| {
+            let attributes = if m == 1 {
+                "<attributes><divisions>12</divisions><time><beats>4</beats>\
+                 <beat-type>4</beat-type></time><staves>2</staves><clef number=\"1\">\
+                 <sign>G</sign><line>2</line></clef><clef number=\"2\"><sign>F</sign>\
+                 <line>4</line></clef></attributes>"
+            } else {
+                ""
+            };
+            let (upper, lower) = if m % 2 == 0 {
+                (&after_rests, whole_second)
+            } else {
+                (&sextuplets, measure_rest)
+            };
+            format!(
+                "<measure number=\"{m}\">{attributes}{upper}<backup><duration>48</duration>\
+                 </backup>{lower}</measure>"
+            )
+        })
+        .collect();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">{body}</part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("stems_on_heads.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let score = &loaded.reduced.score;
+    let layout = epiphany_cli::engrave_loaded(&loaded).layout;
+    assert!(
+        layout.systems().count() > 1,
+        "the score wraps, so its systems are justified"
+    );
+
+    let mut event_of = BTreeMap::new();
+    for event in score.events.iter() {
+        if let Event::Pitched(pitched) = event {
+            for pitch in &pitched.pitches {
+                event_of.insert(pitch.id, pitched.id);
+            }
+        }
+    }
+    // Each note's heads, (left, right, y, takes a stem), and its stems,
+    // (x, low, high).
+    let mut heads: BTreeMap<_, Vec<(f32, f32, f32, bool)>> = BTreeMap::new();
+    for glyph in &layout.glyphs {
+        let name = glyph.glyph.as_str();
+        let (true, TypedObjectId::Pitch(pitch)) =
+            (name.starts_with("notehead"), glyph.provenance.source)
+        else {
+            continue;
+        };
+        let [left, _, right, _] = glyph_box(glyph);
+        heads.entry(event_of[&pitch]).or_default().push((
+            left,
+            right,
+            glyph.position.y.0,
+            name != "noteheadWhole",
+        ));
+    }
+    let mut stems: BTreeMap<_, Vec<(f32, f32, f32)>> = BTreeMap::new();
+    for stroke in &layout.strokes {
+        let TypedObjectId::Event(event) = stroke.provenance.source else {
+            continue;
+        };
+        if stroke.from.x.0 != stroke.to.x.0 || stroke.from.y.0 == stroke.to.y.0 {
+            continue;
+        }
+        stems.entry(event).or_default().push((
+            stroke.from.x.0,
+            stroke.from.y.0.min(stroke.to.y.0),
+            stroke.from.y.0.max(stroke.to.y.0),
+        ));
+    }
+    // A stem touches a head it stands at the side of, reaching its height.
+    let touches = |(x, low, high): (f32, f32, f32), (left, right, y, _): (f32, f32, f32, bool)| {
+        left - 0.08 <= x && x <= right + 0.08 && low - 0.1 <= y && y <= high + 0.1
+    };
+    let mut apart = Vec::new();
+    for (event, own) in &heads {
+        let theirs = stems.get(event).map(Vec::as_slice).unwrap_or(&[]);
+        for &stem in theirs {
+            if !own.iter().any(|&head| touches(stem, head)) {
+                apart.push(format!("{event:?}: a stem at {stem:?} on none of {own:?}"));
+            }
+        }
+        for &head in own.iter().filter(|head| head.3) {
+            if !theirs.iter().any(|&stem| touches(stem, head)) {
+                apart.push(format!("{event:?}: a head at {head:?} has no stem"));
+            }
+        }
+    }
+    let stemmed: usize = stems.values().map(Vec::len).sum();
+    assert_eq!(stemmed, 128, "every quarter and sixteenth has its stem");
+    assert!(apart.is_empty(), "{apart:#?}");
+}
+
 /// A rest filling a pickup keeps the value the file writes, as a rest filling
 /// a full bar is a measure rest: a pickup is not a measure's worth of
 /// silence. The omission census reads both alike.

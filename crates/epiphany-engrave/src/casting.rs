@@ -2541,11 +2541,12 @@ fn end_staff_line(stroke: &mut Stroke, end: Option<f32>) {
     }
 }
 
-/// Places a whole stroke under a system's justification. A per-event component
-/// stroke (a stem or ledger) tracks its notehead: both endpoints translate by
-/// the owning slot's delta, so it stays attached without stretching its offset.
-/// A spanning stroke (a staff line, a volta bracket) stretches with the system:
-/// each endpoint maps through the affine.
+/// Places a whole stroke under a system's justification. An anchored stroke
+/// rides its slots: a beam's ends move with the stems it joins, a stem with
+/// its heads. A per-event component stroke (a ledger) tracks its notehead:
+/// both endpoints translate by the owning slot's delta, so it stays attached
+/// without stretching its offset. A spanning stroke (a staff line, a volta
+/// bracket) stretches with the system: each endpoint maps through the affine.
 fn place_stroke(
     source: &Stroke,
     spaced: &Stroke,
@@ -2554,7 +2555,7 @@ fn place_stroke(
     glyphs: &[GlyphObject],
     anchor: Option<&(SpringSlotId, SpringSlotId)>,
 ) -> Stroke {
-    // An anchored stroke (a beam): each end rides its own slot's delta.
+    // An anchored stroke (a beam, a stem): each end rides its own slot's delta.
     let slot_dx = |slot: &SpringSlotId| slot_source_x.get(slot).map(|&sx| p.slot_dx(sx));
     if let Some((from_dx, to_dx)) =
         anchor.and_then(|(start, end)| Some((slot_dx(start)?, slot_dx(end)?)))

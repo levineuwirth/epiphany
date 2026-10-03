@@ -184,7 +184,8 @@ pub struct ConstrainedLayoutIR {
     pub catalog: GlyphCatalogIdentity,
     /// The spring slots each spanning stroke or curve rides at its two ends
     /// (a beam on its outer stems), so a solver moves each end with its own
-    /// column rather than stretching it with the columns between.
+    /// column rather than stretching it with the columns between; and the one
+    /// slot a stem rides at both ends, its heads' column.
     pub span_anchors: Vec<SpanAnchor>,
     /// What each staff shows where a later system of its region starts: the
     /// clef and key signature in force there. The projection draws a region's
@@ -247,8 +248,9 @@ pub struct LeadGlyph {
 /// The spring slots a spanning primitive's two ends ride. Each end keeps its
 /// offset from its own slot's source through re-spacing and justification, so
 /// a beam stays on the stems it joins however the columns between them are
-/// spaced. A primitive with no anchor maps through the solver's coordinate map
-/// as a whole.
+/// spaced. A stem names its heads' slot at both ends and so moves with them.
+/// A primitive with no anchor maps through the solver's coordinate map as a
+/// whole.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct SpanAnchor {
     /// The stable id of the stroke or curve.
@@ -1550,6 +1552,9 @@ pub fn try_to_constrained(
         // it, and a lone short note takes a hook. Beamed notes take no flags.
         // Each beam rides the slots of the stems it joins (`SpanAnchor`).
         let mut beam_strokes: Vec<(Stroke, SpringSlotId, SpringSlotId)> = Vec::new();
+        // Each stem and the slot of the column its heads stand in, which it
+        // rides at both ends once the slot is known to be realized.
+        let mut stem_slots: Vec<(GlyphObjectId, SpringSlotId)> = Vec::new();
         // Each drawn beam group's members, in event order: a tuplet whose
         // notes are exactly one of them shows its number alone.
         let mut beam_sets: BTreeSet<Vec<EventId>> = BTreeSet::new();
@@ -1984,7 +1989,7 @@ pub fn try_to_constrained(
                             } else {
                                 component_provenance(provenance, seg.comp)
                             };
-                            emit.stroke(Stroke {
+                            let stem = Stroke {
                                 provenance: prov,
                                 from,
                                 to,
@@ -1992,7 +1997,9 @@ pub fn try_to_constrained(
                                 layer: 0,
                                 style: ink(),
                                 vertical_band: band_of(staff),
-                            });
+                            };
+                            stem_slots.push((stem.id(), info.slot));
+                            emit.stroke(stem);
                             // The flag hangs from the stem's normal tip, its left
                             // edge on the stem's.
                             if let Some(flag) = seg.flag {
@@ -2600,6 +2607,20 @@ pub fn try_to_constrained(
             staves_in_order,
             ..
         } = emit;
+
+        // A stem rides its own column's slot, the one its heads realize, so it
+        // moves with its heads however the solver spaces and justifies, and
+        // never with whatever glyph stands nearest it (the next column's
+        // accidental, a tuplet number, a change clef, a note on another staff).
+        for (primitive, slot) in stem_slots {
+            if column_members.get(&slot).is_some_and(|m| !m.is_empty()) {
+                span_anchors.push(SpanAnchor {
+                    primitive,
+                    start: slot,
+                    end: slot,
+                });
+            }
+        }
 
         // One spring slot per glyph-bearing column, in column order (so the solver
         // accumulates a monotonic x), members = the column's glyphs. Stroke-only

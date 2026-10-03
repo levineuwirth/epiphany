@@ -1384,3 +1384,26 @@ at all, for the whole score. The bracket's ends now ride the first and last
 columns its members draw in; the number keeps its middle member's column,
 which its own glyph realizes. Locked by
 `a_tuplet_opening_on_a_hidden_rest_still_engraves` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 30 → 31: a stem rides its own heads' slot (X3 fix round 1, 2026-10-03)
+
+A stem has no glyph of its own source (its heads are traced to pitches, it to
+the event) and stands offset from its column, so the spacing pass and casting
+gave it the slot of the glyph with the greatest baseline at or before its x,
+on any staff. That glyph was usually a head of its own column, but not
+always: a beamed sextuplet's number stands between its third and fourth
+notes, in the fourth's column, just left of the third's up-stem; a chord's
+displaced head on another staff can stand just right of the next column's
+head; a volta's ending number, the next note's accidental, a change clef.
+The stem then moved with that column, and wherever spacing or justification
+moved the two columns apart it stood beside its head, either side, with its
+head drawn stemless. The constrained stage now gives every stem a
+`SpanAnchor` naming its heads' slot at both ends, and the solver, which reads
+anchors first in the spacing remap, in casting and in assigning a stroke to
+its system, moves the stem with its heads by identity. Only a stem whose
+column drew no glyph would go unanchored, since its slot would not exist; a
+pitched note has at least one pitch, so its heads always realize it. The
+nearest-glyph rule is otherwise left only for zero-extent traced anchors,
+which draw nothing. Locked by `a_stem_stands_on_its_own_heads` (`epiphany-cli`) and
+`stem_offsets_from_the_notehead_survive_justification`, which now includes
+the repeats fixture; the repeats golden's second ending had one such stem.
