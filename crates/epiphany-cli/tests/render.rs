@@ -2623,3 +2623,42 @@ fn clef_changes_are_drawn_where_they_take_effect() {
         );
     }
 }
+
+/// A rest filling a pickup keeps the value the file writes, as a rest filling
+/// a full bar is a measure rest: a pickup is not a measure's worth of
+/// silence. The omission census reads both alike.
+#[test]
+fn a_rest_filling_a_pickup_keeps_its_value() {
+    let xml = "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">\
+         <measure number=\"0\" implicit=\"yes\"><attributes><divisions>1</divisions>\
+         <time><beats>3</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line>\
+         </clef></attributes><note><rest/><duration>1</duration><voice>1</voice>\
+         <type>quarter</type></note></measure>\
+         <measure number=\"1\"><note><rest measure=\"yes\"/><duration>3</duration>\
+         <voice>1</voice></note></measure>\
+         <measure number=\"2\"><note><rest/><duration>3</duration><voice>1</voice>\
+         <type>half</type><dot/></note></measure></part></score-partwise>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("pickup_rest.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let engraved = engrave(&loaded.reduced.score);
+    let rests: Vec<&str> = engraved
+        .layout
+        .glyphs
+        .iter()
+        .map(|g| g.glyph.as_str())
+        .filter(|g| g.starts_with("rest"))
+        .collect();
+    assert_eq!(rests, vec!["restQuarter", "restWhole", "restWhole"]);
+    let found = omissions(
+        &loaded.reduced.score,
+        &engraved.layout,
+        &engraved.diagnostics,
+    );
+    assert_eq!(
+        found.kinds.get("rest drawn at another value"),
+        None,
+        "{found:?}"
+    );
+}

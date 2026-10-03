@@ -660,7 +660,11 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                 staff,
                 staff_content(score, si, &annotations),
             );
-            let spans = measure_spans(score, si);
+            let grid = region
+                .content
+                .staff_based()
+                .and_then(|c| c.default_metric_grid.as_ref());
+            let spans = measure_spans(score, si, grid);
             let places = voice_places(score, si);
             all_places.extend(&places);
             for voice in &si.voices {
@@ -1165,6 +1169,7 @@ pub(crate) fn beam_groups(
 fn measure_spans(
     score: &Score,
     si: &epiphany_core::StaffInstance,
+    grid: Option<&epiphany_core::MetricGrid>,
 ) -> Vec<(TimePoint, Option<TimePoint>)> {
     let mut length: Option<MusicalDuration> = None;
     let mut spans = Vec::with_capacity(si.measures.len());
@@ -1185,9 +1190,51 @@ fn measure_spans(
                 _ => None,
             },
         };
-        spans.push((start, end));
+        // A first measure shorter than its bar is a pickup, not a measure: a
+        // rest filling it keeps its own value, as the file writes it.
+        let bar = length
+            .clone()
+            .or_else(|| grid.and_then(|grid| meter_at(score, grid, &start)));
+        let pickup = index == 0
+            && match (&start, &end, &bar) {
+                (TimePoint::Musical(s), Some(TimePoint::Musical(e)), Some(bar)) => {
+                    *e < s.clone() + bar.clone()
+                }
+                _ => false,
+            };
+        spans.push((start, if pickup { None } else { end }));
     }
     spans
+}
+
+/// The bar of the meter a grid has in force at `at`: its latest change at or
+/// before it, or its first.
+fn meter_at(
+    score: &Score,
+    grid: &epiphany_core::MetricGrid,
+    at: &TimePoint,
+) -> Option<MusicalDuration> {
+    let placed: Vec<(TimePoint, &epiphany_core::MeterChange)> = grid
+        .meter_sequence
+        .iter()
+        .map(|change| (resolve_time_anchor(score, &change.anchor), change))
+        .collect();
+    let change = placed
+        .iter()
+        .filter(|(time, _)| {
+            matches!(
+                crate::time_axis::time_cmp(time, at),
+                Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+            )
+        })
+        .max_by(|a, b| crate::time_axis::time_cmp(&a.0, &b.0).unwrap_or(std::cmp::Ordering::Equal))
+        .or_else(|| placed.first())
+        .map(|(_, change)| change)?;
+    score
+        .time_signatures
+        .iter()
+        .find(|t| t.id == change.time_signature)
+        .map(|t| t.measure_duration().clone())
 }
 
 /// The notated content of an event: a note (its position, decomposition, and

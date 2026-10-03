@@ -202,19 +202,22 @@ pub fn omissions(
             .filter_map(|m| offset(&m.start))
             .collect();
         measures.sort();
-        let measure_span = |onset: &RationalTime| -> Option<(RationalTime, RationalTime)> {
+        // The measure holding an onset: its start, its length, and whether
+        // it is a full bar. A first measure shorter than its bar is a pickup,
+        // whose rests keep their values.
+        let measure_span = |onset: &RationalTime| -> Option<(RationalTime, RationalTime, bool)> {
             let i = measures.partition_point(|m| m <= onset).checked_sub(1)?;
             let start = measures[i].clone();
+            let bar = meter_lengths
+                .partition_point(|(o, _)| o <= &start)
+                .checked_sub(1)
+                .map(|k| meter_lengths[k].1.clone());
             let length = match measures.get(i + 1) {
                 Some(next) => next.sub(&start),
-                None => {
-                    let k = meter_lengths
-                        .partition_point(|(o, _)| o <= &start)
-                        .checked_sub(1)?;
-                    meter_lengths[k].1.clone()
-                }
+                None => bar.clone()?,
             };
-            Some((start, length))
+            let pickup = i == 0 && bar.as_ref().is_some_and(|bar| &length < bar);
+            Some((start, length, !pickup))
         };
         for voice in &instance.voices {
             for id in &voice.events {
@@ -245,8 +248,9 @@ pub fn omissions(
                     });
                     continue;
                 }
-                let whole_measure = measure_span(&onset.0)
-                    .is_some_and(|(start, length)| start == onset.0 && length == duration.0);
+                let whole_measure = measure_span(&onset.0).is_some_and(|(start, length, full)| {
+                    full && start == onset.0 && length == duration.0
+                });
                 let value = notated(&duration.0);
                 match event {
                     Event::Rest(_) => {

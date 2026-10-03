@@ -280,8 +280,10 @@ pub struct Engraver {
 /// began drawing where they take effect, in change-size clefs: mid-measure
 /// before their note, at a measure's start before its barline (a courtesy at
 /// a system's end when the measure opens the next), an octave clef with its
-/// numeral, a restated clef not at all.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(28);
+/// numeral, a restated clef not at all, and to `29` when a rest filling a
+/// pickup began keeping the value its file writes rather than drawing as a
+/// measure rest.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(29);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

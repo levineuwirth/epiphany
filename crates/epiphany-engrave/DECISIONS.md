@@ -1359,3 +1359,16 @@ force at each system's start). Locked by
 `clef_changes_are_drawn_where_they_take_effect` (`epiphany-cli`); the omission
 census now counts only real changes and finds a system's lead clef as its
 leftmost.
+
+## ENGRAVER_VERSION 28 → 29: a pickup's rests keep their values (X3.5, 2026-10-03)
+
+X2 drew a rest that fills its measure as a whole rest in any meter, which is
+the measure rest's convention; with pickups imported, a first measure shorter
+than its bar is a measure too, so a quarter rest filling a one-beat pickup
+drew as a whole rest. An exporter writes a pickup's rests at their values,
+and the music reads them so. `measure_spans` (layout-ir) now leaves a first
+measure shorter than its bar out of the measure-rest rule, its bar the
+measure's own signature or the region's meter in force there; the omission
+census applies the same rule, so the two cannot agree on the wrong glyph, as
+they did. A mid-score short measure is still not modelled. Locked by
+`a_rest_filling_a_pickup_keeps_its_value` (`epiphany-cli`).
