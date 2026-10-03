@@ -635,8 +635,11 @@ tuplet its members do not fill refuses with \texttt{EventDurationInvalid}.
 tuplets from the graph-independent referent index rather than the graph, so a
 member's delete without its compensation is refused base-free as well as
 graph-aware (before this revision only graph-aware reduction could see a
-tuplet, and no operation could make one), and its \texttt{ReplaceWithRest}
-compensation puts the rest in the deleted member's place in that index.
+tuplet, and no operation could make one); base-free reduction also refuses,
+as graph-aware reduction does, a \texttt{RewriteTuplets} compensation and a
+\texttt{CascadeDeleteTuplets} that does not name exactly the live tuplets
+holding the event; and its \texttt{ReplaceWithRest} compensation puts the
+rest in the deleted member's place in that index.
 \texttt{ModifyEvent} refuses a change to a tuplet member's duration
 (\texttt{EventDurationInvalid}). A member tombstoned by an undo
 cascade-deletes its tuplet.
@@ -652,15 +655,25 @@ be a pickup. A short measure after the first is still not modelled, and its
 successor still refuses.
 
 \textbf{A canonical base materialized before this rung \MUST{} be rebuilt
-rather than reused.} Two operations reducible before it change the state they
-produce over a base that already holds a tuplet, and one changes its verdict
-(a pickup's successor, above). A \texttt{DeleteEvent} whose
+rather than reused.} On histories of the operation kinds that existed before
+it, three verdicts change and two operations change the state they produce.
+The verdicts: a base-free \texttt{DeleteEvent} declaring
+\texttt{RewriteTuplets}, or \texttt{CascadeDeleteTuplets} not naming exactly
+the live tuplets that hold the event, is refused
+\texttt{TupletCompensationInvalid}, where it applied with a compensation
+recorded against a tuplet no operation had minted (and, for the cascade, that
+identifier tombstoned); a \texttt{ModifyEvent} changing a tuplet member's
+duration over a base holding the tuplet is refused
+\texttt{EventDurationInvalid}, where it applied and broke the tuplet's
+duration consistency; and a pickup's successor applies (above). The states,
+over a base that already holds a tuplet: a \texttt{DeleteEvent} whose
 \texttt{ReplaceWithRest} compensation replaces a member: the index used to keep
 naming the deleted member, so the re-anchoring pass recorded an
 \texttt{AttachmentTombstoned} repair against the tuplet the graph had just
-given the rest; it records none now. And a cue event cascaded out from under a
-tuplet it belonged to: the tuplet used to stay, naming a dead member; it now
-cascade-deletes, in the effect and the graph. Accordingly
+given the rest; it records none now. And a member tombstoned with no
+compensation to declare, as a cue event cascaded out from under its tuplet
+is: the tuplet used to stay, naming a dead member; it now cascade-deletes, in
+the effect and the graph. Accordingly
 \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION} moves
 \texttt{1}~$\rightarrow$~\texttt{2}.
 
@@ -810,6 +823,10 @@ deletes of the same event are idempotent.
 
 \textbf{Conflict cases.} None for the delete itself. Graph-aware reduction
 refuses an ill-formed tuplet compensation as a precondition failure (no-op).
+Base-free reduction refuses, from the referent index, a member's delete that
+declares no compensation, any \texttt{RewriteTuplets}, and a
+\texttt{CascadeDeleteTuplets} that does not name exactly the live tuplets
+holding the event.
 
 \textbf{Undo semantics.} An insert-shaped compensation re-introduces the
 tombstoned content; for the prototype's minted-object model this is the inverse

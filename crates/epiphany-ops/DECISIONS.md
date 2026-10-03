@@ -2326,11 +2326,23 @@ cascade) cascades the tuplet through the rule table's new `Tuplet` arm, with
 `materialize_graph_delete` removing it from the graph and `remove_tuplets`
 dropping any decomposition attachment naming it.
 
-**Reduction version 1 → 2.** Over a base already holding a tuplet, two
-operations reducible before produce different effects now (the
+**Reduction version 1 → 2.** Reading membership from the index changes two
+verdicts on histories that make no tuplet. Base-free, a `DeleteEvent`
+declaring `RewriteTuplets`, or `CascadeDeleteTuplets` not naming exactly the
+live tuplets that hold the event, is now refused `TupletCompensationInvalid`,
+as graph-aware reduction refuses it; it used to apply, recording a
+compensation against a tuplet no operation had minted and, for the cascade,
+tombstoning that id. And a `ModifyEvent` changing a member's duration is
+refused `EventDurationInvalid`, where over a base holding the tuplet it used
+to apply and break invariant 16. Both are intended: the modes now agree, and
+neither old verdict kept the graph consistent. Over a base already holding a
+tuplet, two operations also produce different state (the
 `AttachmentTombstoned` repair the stale index used to record after a
-`ReplaceWithRest`; a cue cascade that now cascades its tuplet). Every verdict
-is unchanged. Locked by `a_base_tuplet_follows_its_members_replacement_and_cascade`.
+`ReplaceWithRest` is gone; a cue cascade now cascades its tuplet). An earlier
+draft of this entry said every verdict was unchanged, which was wrong. The
+`Bumps` entry lists every change version 2 makes, X3.5's pickup verdict with
+them. Locked by `version_2_verdicts_on_histories_that_make_no_tuplet` and
+`a_base_tuplet_follows_its_members_replacement_and_cascade`.
 
 ## X3.5 — a pickup's successor applies (2026-10-03)
 

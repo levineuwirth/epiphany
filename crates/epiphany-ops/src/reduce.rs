@@ -24645,6 +24645,113 @@ mod tests {
         assert!(check_invariants(&result.score).is_empty());
     }
 
+    /// Reduction version 2's verdicts on histories that make no tuplet.
+    /// Base-free, a `DeleteEvent` declaring `RewriteTuplets`, or
+    /// `CascadeDeleteTuplets` naming tuplets that do not hold the event, is
+    /// refused `TupletCompensationInvalid`, as graph-aware reduction refuses
+    /// it; version 1 applied both base-free, recording a compensation against
+    /// a tuplet no operation minted and, for the cascade, tombstoning its id.
+    /// And over a base holding a tuplet, a `ModifyEvent` that would change a
+    /// member's duration is refused `EventDurationInvalid`, where version 1
+    /// applied it and broke invariant 16.
+    #[test]
+    fn version_2_verdicts_on_histories_that_make_no_tuplet() {
+        use epiphany_core::check_invariants;
+        use epiphany_core::generators::valid_score;
+
+        let base = valid_score(0x5EED);
+        let x = base.canvas.regions[0].staff_instances()[0].voices[0].events[0];
+        let (e, t) = (
+            EventId::new(ReplicaId(1), 100),
+            TupletId::new(ReplicaId(9), 1),
+        );
+        for compensation in [
+            TupletCompensation::RewriteTuplets { tuplets: vec![t] },
+            TupletCompensation::CascadeDeleteTuplets { tuplets: vec![t] },
+        ] {
+            let delete = |event, seen| {
+                prim_env(
+                    2,
+                    0,
+                    20,
+                    seen,
+                    OperationKind::DeleteEvent(DeleteEventOp {
+                        event,
+                        tuplet_compensation: compensation.clone(),
+                    }),
+                )
+            };
+            let mut set = OperationSet::new();
+            set.accept_all(vec![insert(1, 0, 10, 1, 100, 0), delete(e, seen_r1(0))]);
+            let state = set.reduce();
+            let id = OperationId::new(ReplicaId(2), 0);
+            assert_eq!(
+                no_op_reason(&state, id),
+                refused(PreconditionFailureReason::TupletCompensationInvalid),
+                "base-free, {compensation:?}"
+            );
+            assert!(matches!(
+                state.objects.get(&TypedObjectId::Event(e)),
+                Some(ObjectState::Live)
+            ));
+            assert_eq!(
+                state.objects.get(&TypedObjectId::Tuplet(t)),
+                None,
+                "no tuplet id is tombstoned"
+            );
+            let mut set = OperationSet::new();
+            set.accept_all(vec![delete(x, CausalContext::new())]);
+            let graph = set.reduce_onto(&base);
+            assert_eq!(
+                no_op_reason(&graph.state, id),
+                refused(PreconditionFailureReason::TupletCompensationInvalid),
+                "graph-aware, {compensation:?}"
+            );
+        }
+
+        // A tuplet over the voice's first two events; the first halved.
+        let mut base = base;
+        let y = base.canvas.regions[0].staff_instances()[0].voices[0].events[1];
+        let duration =
+            |score: &Score, e: EventId| match score.events.get(e).expect("an event").duration() {
+                EventDuration::Musical(d) => d.clone(),
+                other => panic!("a metric fixture event, not {other:?}"),
+            };
+        let mut tuplet = tuplet_over(1, &[x, y], 1);
+        tuplet.required_total = duration(&base, x) + duration(&base, y);
+        base.cross_cutting.tuplets.push(tuplet);
+        assert!(
+            check_invariants(&base).is_empty(),
+            "the base is well-formed"
+        );
+        let mut halved = base.events.get(x).expect("a base event").clone();
+        let half = EventDuration::Musical(MusicalDuration(
+            duration(&base, x)
+                .0
+                .mul(&RationalTime::new(1, 2).expect("a half")),
+        ));
+        match &mut halved {
+            Event::Pitched(event) => event.duration = half,
+            Event::Rest(event) => event.duration = half,
+            other => panic!("a note or rest, not {other:?}"),
+        }
+        let modify = prim_env(
+            2,
+            0,
+            20,
+            CausalContext::new(),
+            OperationKind::ModifyEvent(crate::payload::ModifyEventOp { event: halved }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![modify.clone()]);
+        let graph = set.reduce_onto(&base);
+        assert_eq!(
+            no_op_reason(&graph.state, modify.id),
+            refused(PreconditionFailureReason::EventDurationInvalid)
+        );
+        assert!(check_invariants(&graph.score).is_empty());
+    }
+
     // --- X3.6: SetClef and SetKeySignature. ---
 
     fn whole_notes(n: i64, d: i64) -> RationalTime {
